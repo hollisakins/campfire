@@ -15,9 +15,10 @@ import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 import { isFilterableLine } from '@/lib/linelist';
 import { encodeBitmask } from '@/lib/flags';
 import {
-  firstBandOf, firstConeOf, firstLineOf, isCone, isExists, isPredicate,
+  firstConeOf, isCone, isExists, isPredicate,
   type ExistsNode, type PredicateNode, type Scalar, type TreeNode, type TreeRoot,
 } from './tree';
+import { lineWantsFresh } from './vocabulary';
 
 /** The root a view mode queries. */
 export function rootOf(viewMode: 'objects' | 'spectra' | undefined): TreeRoot {
@@ -131,26 +132,37 @@ export function filterNodes(filters: Partial<FilterOptions> | undefined, root: T
   return [...legacyNodes(filters, root), ...(filters?.conditions ?? [])];
 }
 
-/** True when the query needs the tree path (it carries free conditions). */
-export function hasTreeConditions(filters: Partial<FilterOptions> | undefined): boolean {
-  return (filters?.conditions?.length ?? 0) > 0;
+/**
+ * True when the legacy RPC parameters cannot carry the (normalized) state:
+ * it holds conditions beyond the pills' shapes, or asks for a line or band
+ * column other than the one its pill filters on.
+ */
+export function needsTreePath(filters: Partial<FilterOptions> | undefined): boolean {
+  if ((filters?.conditions?.length ?? 0) > 0) return true;
+  const line = activeLineOf(filters);
+  if (line && line !== (filters?.line?.trim() || null)) return true;
+  const band = activeBandOf(filters);
+  if (band && band !== (filters?.band?.trim() || null)) return true;
+  return false;
 }
 
-/** The line whose S/N the table shows and sorts on: the line pill, else the
- *  first line condition. */
-export function activeLineOf(filters: Partial<FilterOptions> | undefined, root: TreeRoot = 'objects'): string | null {
-  const line = filters?.line?.trim();
-  if (line && isFilterableLine(line)) return line;
-  const fromTree = firstLineOf(filters?.conditions ?? [], root);
-  return fromTree && isFilterableLine(fromTree) ? fromTree : null;
+/** The line whose S/N the table shows and sorts on: the `column` toggle of a
+ *  line row (`show_line`), never implied by a filter. */
+export function activeLineOf(filters: Partial<FilterOptions> | undefined): string | null {
+  const line = filters?.show_line?.trim();
+  return line && isFilterableLine(line) ? line : null;
 }
 
-/** The band whose magnitude and S/N the table shows: the band pill, else the
- *  first band condition. */
-export function activeBandOf(filters: Partial<FilterOptions> | undefined, root: TreeRoot = 'objects'): string | null {
-  const band = filters?.band?.trim();
-  if (band) return band;
-  return firstBandOf(filters?.conditions ?? [], root);
+/** The band whose magnitude and S/N the table shows (`show_band`). */
+export function activeBandOf(filters: Partial<FilterOptions> | undefined): string | null {
+  return filters?.show_band?.trim() || null;
+}
+
+/** Whether the shown line's column should count stale fits: it does unless a
+ *  row for that line asks for a fresh fit. */
+export function lineColumnIncludesStale(filters: Partial<FilterOptions> | undefined, root: TreeRoot): boolean {
+  const line = activeLineOf(filters);
+  return !(line && lineWantsFresh(filterNodes(filters, root), line));
 }
 
 /** The position the distance column measures from: the position pill, else
@@ -335,32 +347,6 @@ export function liftConditions(nodes: TreeNode[], filters: FilterOptions, root: 
 export function normalizeFilters(filters: Partial<FilterOptions> | undefined, root: TreeRoot): FilterOptions {
   const full: FilterOptions = { ...DEFAULT_FILTERS, ...(filters ?? {}) };
   return liftConditions(full.conditions ?? [], { ...full, conditions: [] }, root);
-}
-
-/** The pill values a tree holds, read for the filter bar's chips. */
-export function slotFilters(nodes: TreeNode[], root: TreeRoot): FilterOptions {
-  return liftTree(nodes, root).filters;
-}
-
-/**
- * The tree with the given pills set: the nodes that fed the patched slots are
- * replaced (in place, the first one's position) by the patch's own nodes, or
- * removed when the patch clears the pill.
- */
-export function setSlots(nodes: TreeNode[], patch: Partial<FilterOptions>, root: TreeRoot): TreeNode[] {
-  const keys = new Set(Object.keys(patch) as (keyof FilterOptions)[]);
-  const { lifted } = liftTree(nodes, root);
-  const drop = new Set<number>();
-  for (const l of lifted) if (l.keys.some((k) => keys.has(k))) drop.add(l.index);
-  const fresh = legacyNodes(patch, root);
-  const out: TreeNode[] = [];
-  let placed = false;
-  nodes.forEach((node, i) => {
-    if (!drop.has(i)) { out.push(node); return; }
-    if (!placed) { out.push(...fresh); placed = true; }
-  });
-  if (!placed) out.push(...fresh);
-  return out;
 }
 
 export type { ExistsNode };

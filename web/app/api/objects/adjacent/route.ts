@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { getRequestPrincipal } from '@/lib/auth/identity';
 import { buildFilterParams } from '@/lib/actions/filter-params';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
-import { hasTreeConditions, normalizeFilters } from '@/lib/catalog-query/legacy';
+import { needsTreePath, normalizeFilters } from '@/lib/catalog-query/legacy';
 import { matchFilterIds } from '@/lib/server/catalog-query';
 
 export interface AdjacentObjectsResponse {
@@ -57,7 +57,7 @@ export async function GET(request: NextRequest) {
   try {
     // free conditions (phase 3b): the tree once, its ids to the legacy RPC
     let objectIds: number[] | null = null;
-    if (hasTreeConditions(filters)) {
+    if (needsTreePath(filters)) {
       const matched = await matchFilterIds(principal.supabase, 'objects', filters, slugs, principal.user.id);
       if (matched.error) return Response.json({ error: matched.error }, { status: 400 });
       objectIds = matched.ids;

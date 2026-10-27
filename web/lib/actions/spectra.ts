@@ -7,7 +7,7 @@ import { getRequestIdentity } from '@/lib/auth/identity';
 import { paginateRpc } from '@/lib/supabase/paginate';
 import type { SpectrumTarget, Spectrum, ObjectDetail, PinnedObjectMetadata } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
-import { activeBandOf, activeLineOf, distanceReferenceOf, hasTreeConditions, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
+import { activeBandOf, activeLineOf, distanceReferenceOf, lineColumnIncludesStale, needsTreePath, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
 import { filterTree, matchFilterIds, treeRejection } from '@/lib/server/catalog-query';
 import type { FilterOptions } from './filter-params';
 export type { FilterOptions, FilterMode } from './filter-params';
@@ -102,11 +102,12 @@ export async function getSpectra(
     filters = normalizeFilters(filters, root);
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
-    // The tree path (phase 3b): while the state carries free conditions the
-    // whole of it is one predicate tree, and the wrapper RPC feeds the legacy
-    // list RPC the ids. The pills' line / band / position then only drive
-    // the Line S/N, Mag and distance columns and sorts.
-    const treePath = hasTreeConditions(filters);
+    // The tree path (phase 3b): when the legacy parameters cannot carry the
+    // state (conditions beyond the pills, or a column other than the pill's
+    // line / band) the whole of it is one predicate tree, and the wrapper RPC
+    // feeds the legacy list RPC the ids. Line, band and position then only
+    // drive the Line S/N, Mag and distance columns and sorts.
+    const treePath = needsTreePath(filters);
     const rpcName = treePath
       ? (viewMode === 'spectra' ? 'catalog_query_spectra' : 'catalog_query_objects')
       : (viewMode === 'spectra' ? 'get_filtered_spectra_paginated' : 'get_filtered_objects_paginated');
@@ -116,6 +117,12 @@ export async function getSpectra(
     let callParams: Record<string, unknown>;
     if (treePath) {
       const reference = distanceReferenceOf(filters, root);
+      // the shown line / band: the pill's own window when it is the pill's,
+      // else the whole of its values
+      const showLine = activeLineOf(filters);
+      const showBand = activeBandOf(filters);
+      const lineIsPill = showLine !== null && showLine === rpcParams.p_line;
+      const bandIsPill = showBand !== null && showBand === rpcParams.p_band;
       callParams = {
         p_tree: filterTree(filters, root),
         p_program_slugs: rpcParams.p_program_slugs,
@@ -129,17 +136,16 @@ export async function getSpectra(
         p_page_size: pageSize,
         p_include_count: includeCount,
         p_viewer_id: user.id,
-        p_line: activeLineOf(filters, root),
-        p_line_snr_min: rpcParams.p_line_snr_min ?? null,
-        p_line_snr_max: rpcParams.p_line_snr_max ?? null,
-        // a line named by a condition rather than the pill admits stale fits
-        // unless the condition says otherwise, so its column shows them too
-        p_line_include_stale: rpcParams.p_line !== undefined ? rpcParams.p_line_include_stale : true,
-        p_band: activeBandOf(filters, root),
-        p_band_mag_min: rpcParams.p_band_mag_min ?? null,
-        p_band_mag_max: rpcParams.p_band_mag_max ?? null,
-        p_band_snr_min: rpcParams.p_band_snr_min ?? null,
-        p_band_snr_max: rpcParams.p_band_snr_max ?? null,
+        p_line: showLine,
+        p_line_snr_min: lineIsPill ? rpcParams.p_line_snr_min ?? null : null,
+        p_line_snr_max: lineIsPill ? rpcParams.p_line_snr_max ?? null : null,
+        // the column counts stale fits unless a row for the line asks for a fresh one
+        p_line_include_stale: lineColumnIncludesStale(filters, root),
+        p_band: showBand,
+        p_band_mag_min: bandIsPill ? rpcParams.p_band_mag_min ?? null : null,
+        p_band_mag_max: bandIsPill ? rpcParams.p_band_mag_max ?? null : null,
+        p_band_snr_min: bandIsPill ? rpcParams.p_band_snr_min ?? null : null,
+        p_band_snr_max: bandIsPill ? rpcParams.p_band_snr_max ?? null : null,
         p_coord_ra: reference?.ra ?? null,
         p_coord_dec: reference?.dec ?? null,
         ...(viewMode === 'spectra' ? { p_include_thumbnails: true } : {}),
@@ -618,7 +624,7 @@ export async function getInspectionQueueIds(
 
     // free conditions (phase 3b): the tree once, its ids to the legacy RPC
     let objectIds: number[] | null = null;
-    if (hasTreeConditions(filters)) {
+    if (needsTreePath(filters)) {
       const matched = await matchFilterIds(supabase, 'objects', filters, accessibleProgramSlugs, user.id);
       if (matched.error) return { ids: [], error: matched.error };
       objectIds = matched.ids;

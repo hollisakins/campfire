@@ -112,15 +112,23 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     dq_flags_mode: parseMode('dq_flags_mode'),
     list_ids_mode: parseMode('tags_mode'),
     conditions: [],
+    show_line: null,
+    show_band: null,
   };
   // an unreadable q is dropped whole rather than half-applied
   const root = rootOf(parseViewModeFromURL(searchParams));
   const conditions = parseConditions(searchParams.get('q'), root) ?? [];
+  // the columns a measurement row shows; an older link's line / band pill
+  // showed its column, so it still does
+  const colLine = searchParams.get('col_line')?.trim() || null;
+  const colBand = searchParams.get('col_band')?.trim() || null;
   return {
     ...DEFAULT_FILTERS,
     search: filters.search,
     search_scope: filters.search_scope,
     conditions: [...legacyNodes(filters, root), ...conditions],
+    show_line: colLine && isFilterableLine(colLine) ? colLine : filters.line,
+    show_band: colBand ?? filters.band,
   };
 }
 
@@ -180,6 +188,8 @@ export function filtersToURLParams(
   if (q) {
     params.set('q', q);
   }
+  if (filters.show_line) params.set('col_line', filters.show_line);
+  if (filters.show_band) params.set('col_band', filters.show_band);
   if (filters.search) {
     params.set('search', filters.search);
   }

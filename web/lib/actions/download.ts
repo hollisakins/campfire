@@ -11,7 +11,7 @@ import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { paginateRpcKeyset } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
-import { activeBandOf, activeLineOf, hasTreeConditions, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
+import { needsTreePath, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
 import { matchFilterIds } from '@/lib/server/catalog-query';
 import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
@@ -159,7 +159,7 @@ export async function generateCSV(
 
     const includeDistance = filters.coordinate_search !== null;
     // free conditions (phase 3b): the tree once, its ids to the export RPC
-    const treePath = hasTreeConditions(filters);
+    const treePath = needsTreePath(filters);
 
     if (viewMode === 'objects') {
       // Objects mode: one row per sky-object (cross-program grouped position)
@@ -195,7 +195,8 @@ export async function generateCSV(
         includeDistance ? 'asc' : sortDirection,
         [r => r.object_id],
       );
-      const csv = objectsRowsToCsv(rows, includeDistance, activeLineOf(filters, 'objects'), activeBandOf(filters, 'objects'));
+      // the export RPC's line / band are filter and column at once: the pill's
+      const csv = objectsRowsToCsv(rows, includeDistance, rpcParams.p_line ?? null, rpcParams.p_band ?? null);
 
       const objectIds = rows.map(r => r.object_id);
       trackDownload({

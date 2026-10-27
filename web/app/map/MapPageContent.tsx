@@ -4,7 +4,7 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useSearchParams, usePathname } from 'next/navigation';
 import type { MapLayer, MapObjectMarker, FitsglDataset } from '@/lib/actions/map';
 import { MapViewerWrapper } from '@/components/map/MapViewerWrapper';
-import { AdvancedFiltersPanel } from '@/components/spectra/AdvancedFiltersPanel';
+import { FiltersModal } from '@/components/filters/FiltersModal';
 import { isDefaultFilters, type FilterOptions } from '@/lib/actions/filter-params';
 import { parseFiltersFromURL, filtersToURLParams } from '@/lib/utils/url-params';
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
@@ -158,11 +158,11 @@ export function MapPageContent({
         hasActiveFilters={hasActiveFilters}
         onFieldChange={handleFieldChange}
       />
-      <AdvancedFiltersPanel
+      <FiltersModal
         isOpen={panelOpen}
         onClose={() => setPanelOpen(false)}
         filters={filters}
-        onFiltersChange={handleFilterChange}
+        onApply={handleFilterChange}
         availablePrograms={availablePrograms}
         availableFields={availableFields}
         availableObservations={availableObservations}

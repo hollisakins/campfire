@@ -7,7 +7,7 @@ import { paginateRpc, paginateRpcKeyset, paginateQuery } from '@/lib/supabase/pa
 import type { WCSParams } from '@/lib/utils/wcs';
 import type { FilterOptions } from './filter-params';
 import { buildFilterParams } from './filter-params';
-import { hasTreeConditions, normalizeFilters } from '@/lib/catalog-query/legacy';
+import { needsTreePath, normalizeFilters } from '@/lib/catalog-query/legacy';
 import { matchFilterIds } from '@/lib/server/catalog-query';
 
 // ============================================
@@ -321,7 +321,7 @@ export async function getFilteredObjectIds(
 
     // free conditions (phase 3b): the tree once, its ids to the legacy RPC
     let objectIds: number[] | null = null;
-    if (hasTreeConditions(filters)) {
+    if (needsTreePath(filters)) {
       const matched = await matchFilterIds(supabase, 'objects', filters, accessibleProgramSlugs, user.id);
       if (matched.error) return { objectIds: [], error: matched.error };
       objectIds = matched.ids;

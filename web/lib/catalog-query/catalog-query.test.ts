@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { CATALOGUE, CORRELATIONS, OPS_BY_TYPE, TREE_TABLES } from './catalogue';
 import { describeNode, encodeConditions, parseConditions, rerootNodes, validateNode, type TreeNode } from './tree';
-import { activeLineOf, distanceReferenceOf, filterNodes, legacyNodes, liftConditions, normalizeFilters, setSlots, slotFilters } from './legacy';
+import { activeLineOf, distanceReferenceOf, filterNodes, legacyNodes, liftConditions, needsTreePath, normalizeFilters } from './legacy';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
 import { filtersToURLParams, parseFiltersFromURL } from '@/lib/utils/url-params';
 
@@ -190,27 +190,6 @@ describe('free conditions', () => {
     expect(twice.conditions).toEqual([{ col: 'field', op: 'in', v: ['b'] }]);
   });
 
-  it('lets the pills read and write their own node of the tree', () => {
-    const lineCut: TreeNode = { exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'OIII5007' }, { col: 'snr', op: 'gte', v: 3 }] };
-    let tree: TreeNode[] = [lineCut];
-    tree = setSlots(tree, { programs: ['jades'] }, 'objects');
-    expect(tree).toEqual([lineCut, { exists: 'targets', where: [{ col: 'program_slug', op: 'in', v: ['jades'] }] }]);
-    tree = setSlots(tree, { redshift_min: 4, redshift_max: null }, 'objects');
-    expect(slotFilters(tree, 'objects').programs).toEqual(['jades']);
-    expect(slotFilters(tree, 'objects').redshift_min).toBe(4);
-    // the line node is the Line pill's own shape, so it reads as that pill (stale fits admitted)
-    expect(slotFilters(tree, 'objects').line).toBe('OIII5007');
-    expect(slotFilters(tree, 'objects').line_include_stale).toBe(true);
-    expect(slotFilters(tree, 'objects').conditions).toEqual([]);
-    // rewriting a pill replaces its node in place; clearing it removes the node
-    tree = setSlots(tree, { programs: ['jades', 'ceers'] }, 'objects');
-    expect(tree[1]).toEqual({ exists: 'targets', where: [{ col: 'program_slug', op: 'in', v: ['jades', 'ceers'] }] });
-    tree = setSlots(tree, { programs: [] }, 'objects');
-    expect(tree).toEqual([lineCut, { col: 'redshift', op: 'gte', v: 4 }]);
-    // a line pill the modal adds is a node like any other: two lines are two nodes
-    expect(slotFilters([lineCut, lineCut], 'objects').conditions).toEqual([lineCut]);
-  });
-
   it('drops an unreadable q whole', () => {
     expect(parseFiltersFromURL(new URLSearchParams({ q: '{"col":"passwd","op":"eq","v":1}', z_min: '2' })).conditions).toEqual([{ col: 'redshift', op: 'gte', v: 2 }]);
     expect(parseFiltersFromURL(new URLSearchParams({ q: 'not json' })).conditions).toEqual([]);
@@ -239,12 +218,23 @@ describe('free conditions', () => {
     expect(lifted.conditions).toEqual([{ col: 'redshift', op: 'gt', v: 5 }, line]);
   });
 
-  it('drive the Line S/N column and the distance reference', () => {
-    expect(activeLineOf({ ...DEFAULT_FILTERS, conditions: [either] }, 'objects')).toBe('OIII5007');
-    expect(activeLineOf({ ...DEFAULT_FILTERS, line: 'Halpha', conditions: [either] }, 'objects')).toBe('Halpha');
-    expect(activeLineOf({ ...DEFAULT_FILTERS, conditions: [{ exists: 'lines', where: [{ col: 'snr', op: 'gte', v: 3 }] }] }, 'objects')).toBeNull();
+  it('show the column a row asks for, never one a filter implies', () => {
+    expect(activeLineOf({ ...DEFAULT_FILTERS, conditions: [either] })).toBeNull();
+    expect(activeLineOf({ ...DEFAULT_FILTERS, show_line: 'Halpha' })).toBe('Halpha');
+    expect(activeLineOf({ ...DEFAULT_FILTERS, show_line: 'CIII1907' })).toBeNull();
     expect(distanceReferenceOf({ ...DEFAULT_FILTERS, conditions: [{ cone: { ra: 150, dec: 2, radius: 0.1 } }] }, 'objects')).toEqual({ ra: 150, dec: 2 });
     expect(distanceReferenceOf(DEFAULT_FILTERS, 'objects')).toBeNull();
+    // the URL carries the columns; an older link's line pill still shows its column
+    const params = filtersToURLParams({ ...DEFAULT_FILTERS, show_line: 'Halpha', show_band: 'f444w' }, 1, 50, 'object_id', 'asc', 'objects');
+    expect(params.get('col_line')).toBe('Halpha');
+    expect(parseFiltersFromURL(params).show_band).toBe('f444w');
+    expect(parseFiltersFromURL(new URLSearchParams({ line: 'Halpha' })).show_line).toBe('Halpha');
+    // a column the pill cannot carry sends the state down the tree path
+    const pill = normalizeFilters({ ...DEFAULT_FILTERS, conditions: legacyNodes({ line: 'Halpha', line_snr_min: 3 }, 'objects') }, 'objects');
+    expect(needsTreePath(pill)).toBe(false);
+    expect(needsTreePath({ ...pill, show_line: 'Halpha' })).toBe(false);
+    expect(needsTreePath({ ...pill, show_line: 'OIII5007' })).toBe(true);
+    expect(needsTreePath({ ...pill, show_band: 'f444w' })).toBe(true);
   });
 
   it('describe themselves', () => {

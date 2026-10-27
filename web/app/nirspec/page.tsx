@@ -23,7 +23,7 @@ import { useSpectraQuery } from '@/lib/hooks/useSpectraQuery';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
 import { useDrTag } from '@/lib/dr/client';
 import { activeBandOf, activeLineOf, distanceReferenceOf, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
-import { rerootNodes } from '@/lib/catalog-query/tree';
+import { rerootConditions } from '@/lib/catalog-query/vocabulary';
 import { DR_PARAM } from '@/lib/dr/tag';
 
 // Inner component that uses useSearchParams (must be wrapped in Suspense)
@@ -156,11 +156,11 @@ function SpectraPageContent() {
   // Handle view mode change
   const handleViewModeChange = (newMode: ViewMode) => {
     startTransition(() => {
-      // free conditions are written against the view's root table: re-read
-      // them against the new one (a predicate on the old root becomes an
-      // exists over it)
+      // the tree is written against the view's root: read it against the new
+      // one, keeping what it means (the Spectrum card becomes the spectrum,
+      // the top level its object, and back)
       if (filters.conditions.length > 0 && rootOf(newMode) !== rootOf(viewMode)) {
-        setFilters({ ...filters, conditions: rerootNodes(filters.conditions, rootOf(viewMode), rootOf(newMode)) });
+        setFilters({ ...filters, conditions: rerootConditions(filters.conditions, rootOf(viewMode), rootOf(newMode)) });
       }
       setViewMode(newMode);
       setPage(1);
@@ -260,8 +260,8 @@ function SpectraPageContent() {
           viewMode={viewMode}
           onViewModeChange={handleViewModeChange}
           hasCoordinateSearch={distanceReferenceOf(filters, rootOf(viewMode)) !== null}
-          activeLine={activeLineOf(filters, rootOf(viewMode))}
-          activeBand={activeBandOf(filters, rootOf(viewMode))}
+          activeLine={activeLineOf(filters)}
+          activeBand={activeBandOf(filters)}
           currentFilterParams={withTag(filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection, viewMode))}
           loading={loading}
           error={error}

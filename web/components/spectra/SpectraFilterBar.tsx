@@ -1,17 +1,27 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+/**
+ * The filter bar of the NIRSpec table (Catalog Read Model phase 3b, design
+ * doc Figure 8): the search box, the familiar chips for the primary
+ * properties, then one chip per other card of the tree (a measurement, a
+ * Spectrum card, an "any of" group, an advanced node), so nothing active is
+ * ever folded into a count. The chips read and write the tree in `?q=`; the
+ * Filters button opens the modal over the same state.
+ */
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { X, Search, ChevronDown, SlidersHorizontal, Map } from 'lucide-react';
-import { FilterChip, FilterOption } from '@/components/ui/FilterChip';
-import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
-import { AdvancedFiltersPanel, BAR_SLOT_KEYS } from './AdvancedFiltersPanel';
-import { rerootNodes } from '@/lib/catalog-query/tree';
-import { liftTree, rootOf, setSlots } from '@/lib/catalog-query/legacy';
-import { REDSHIFT_QUALITY } from '@/lib/flags';
+import { FiltersModal } from '@/components/filters/FiltersModal';
+import { ItemChip, PropertyChip, type CardsContext, type Level } from '@/components/filters/FilterCards';
+import { buildChoices, valueLabelFor } from '@/components/filters/filter-choices';
+import { applyConditions } from '@/components/filters/filter-state';
+import { rootOf } from '@/lib/catalog-query/legacy';
+import {
+  compileProperty, describeItem, findProperty, propertyDef, readConditions, replaceAt, rerootConditions,
+  type Item, type PropertyItem,
+} from '@/lib/catalog-query/vocabulary';
 import { filtersToURLParams } from '@/lib/utils/url-params';
 import type { Program } from '@/lib/types';
-import { OBSERVATION_COLORS } from '@/components/map/observation-colors';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
 import type { FilterOptions, FilterMode, SearchScope } from '@/lib/actions/filter-params';
 import type { ViewMode } from '@/lib/actions/spectra-types';
@@ -37,15 +47,15 @@ interface SpectraFilterBarProps {
   availablePrograms: Program[];
   availableFields: string[];
   availableObservations: string[];
-  /** Photometry bands the band filter can offer (/api/filter-options). */
+  /** Photometry bands the Photometry rows can offer (/api/filter-options). */
   availableBands?: string[];
   className?: string;
   isSearchDebouncing?: boolean;
   viewMode?: ViewMode;
 }
 
-// Shortcut for "All inspected" quality values (everything except "Not Inspected")
-const INSPECTED_QUALITY_VALUES = [1, 2, 3, 4]; // Impossible, Tentative, Probable, Secure
+/** The chips the bar always shows, in order. */
+const BAR_KEYS = ['program', 'field', 'observation', 'redshift', 'quality'] as const;
 
 export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   filters,
@@ -63,7 +73,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   // Local state for scope dropdown
   const [scopeDropdownOpen, setScopeDropdownOpen] = useState(false);
   const scopeDropdownRef = useRef<HTMLDivElement>(null);
-  // Panel state
+  // Modal state
   const [panelOpen, setPanelOpen] = useState(false);
 
   // Track the last value WE sent to the parent to distinguish our echoes from external changes
@@ -71,26 +81,18 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
 
   // Sync from props ONLY for external changes (e.g., URL navigation), not our own echoes
   useEffect(() => {
-    // If this is the value we just sent, it's our own echo - ignore it
-    if (filters.search === lastSentValueRef.current) {
-      return;
-    }
-    // External change (e.g., URL navigation) - sync to local state
+    if (filters.search === lastSentValueRef.current) return;
     setLocalSearch(filters.search);
     lastSentValueRef.current = filters.search;
   }, [filters.search]);
 
   // Debounce updates to parent - only propagate after 300ms of no typing
   useEffect(() => {
-    // Skip if values are already in sync
     if (localSearch === filters.search) return;
-
     const timer = setTimeout(() => {
-      // Update the ref BEFORE calling parent to mark this as "our" change
       lastSentValueRef.current = localSearch;
       onFiltersChange({ ...filters, search: localSearch });
     }, 300);
-
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localSearch]); // Intentionally exclude filters and onFiltersChange to prevent loops
@@ -106,79 +108,67 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Get current scope option
   const searchScopeOptions = getSearchScopeOptions(viewMode);
   const currentScope = searchScopeOptions.find(s => s.value === filters.search_scope) || searchScopeOptions[0];
-
-  // Handle scope change
   const handleScopeChange = (scope: SearchScope) => {
     onFiltersChange({ ...filters, search_scope: scope });
     setScopeDropdownOpen(false);
   };
 
-  // The tree is the state (phase 3b): each pill reads its own node of the
-  // tree and writes it back; the Advanced badge counts the other nodes.
+  // The tree is the state: the bar is one reading of it
   const root = rootOf(viewMode);
-  const lift = liftTree(filters.conditions, root);
-  const slots = lift.filters;
-  const patch = (p: Partial<AdvancedFilterOptions>) =>
-    onFiltersChange({ ...filters, conditions: setSlots(filters.conditions, p, root) });
-  const updateFilter = <K extends keyof AdvancedFilterOptions>(key: K, value: AdvancedFilterOptions[K]) =>
-    patch({ [key]: value } as Partial<AdvancedFilterOptions>);
+  const isSpectra = root === 'spectra';
+  const reading = useMemo(() => readConditions(filters.conditions, root), [filters.conditions, root]);
+  const choices = useMemo(
+    () => buildChoices({ programs: availablePrograms, fields: availableFields, observations: availableObservations, bands: availableBands }),
+    [availablePrograms, availableFields, availableObservations, availableBands],
+  );
+  const label = useMemo(() => valueLabelFor(choices), [choices]);
+  const ctx: CardsContext = {
+    root,
+    nodes: filters.conditions,
+    onChange: (next) => onFiltersChange(applyConditions(filters, next, root)),
+    choices,
+    label,
+    showLine: filters.show_line,
+    showBand: filters.show_band,
+    onShowColumn: (kind, key) => onFiltersChange(kind === 'line' ? { ...filters, show_line: key } : { ...filters, show_band: key }),
+    hideKeys: ['tag'],
+  };
 
-  // Sort programs by max JWST PID (ascending), then convert to filter options
-  const sortedPrograms = [...availablePrograms].sort((a, b) => {
-    const maxA = a.jwst_pids?.length ? Math.max(...a.jwst_pids) : 0;
-    const maxB = b.jwst_pids?.length ? Math.max(...b.jwst_pids) : 0;
-    return maxA - maxB;
+  // the bar's own chips: at the spectra root Program and Observation are the
+  // spectrum's, the rest its object's
+  const objectLevel: Level = isSpectra ? { table: 'spectra', path: [], itsObject: true } : { table: 'objects', path: [] };
+  const barChips = BAR_KEYS.map((key) => {
+    const scope = isSpectra && (key === 'program' || key === 'observation') ? 'spectrum' : 'object';
+    const def = propertyDef(scope, key)!;
+    const item = findProperty(reading.items, scope, key);
+    const level: Level = scope === 'spectrum' ? { table: 'spectra', path: [] } : objectLevel;
+    return { def, item, level };
   });
-  const programOptions: FilterOption[] = sortedPrograms.map((p) => ({
-    value: p.slug,
-    label: p.program_name || p.slug,
-  }));
+  const needsReview = findProperty(reading.items, 'object', 'needs_review');
+  const barItems = new Set<Item>(barChips.map((c) => c.item).filter((it): it is PropertyItem => it !== undefined));
+  if (needsReview) barItems.add(needsReview);
+  const otherItems = reading.items.filter((it) => !barItems.has(it));
 
-  // Convert fields to filter options (display in all caps)
-  const fieldOptions: FilterOption[] = availableFields.map((f) => ({
-    value: f,
-    label: f.toUpperCase(),
-  }));
-
-  // Convert observations to filter options
-  const observationOptions: FilterOption[] = availableObservations.map((o, idx) => ({
-    value: o,
-    label: o,
-    color: OBSERVATION_COLORS[idx % OBSERVATION_COLORS.length],
-  }));
-
-  // Convert quality options
-  const qualityOptions: FilterOption[] = REDSHIFT_QUALITY.map((q) => ({
-    value: q.value,
-    label: q.label,
-    icon: q.icon,
-    color: q.color,
-  }));
-
-  // The nodes of the tree this bar does not show as a pill: the Advanced badge
-  const barNodes = new Set(lift.lifted.filter((l) => l.keys.some((k) => BAR_SLOT_KEYS.includes(k))).map((l) => l.index));
-  const panelFilterCount = filters.conditions.length - barNodes.size;
+  const setNeedsReview = (checked: boolean) => {
+    const def = propertyDef('object', 'needs_review')!;
+    const node = checked ? compileProperty(def, { kind: 'bool', value: true }, objectLevel.table) : null;
+    if (needsReview) ctx.onChange(replaceAt(filters.conditions, needsReview.path, node));
+    else if (node) ctx.onChange([...filters.conditions, node]);
+  };
 
   const hasActiveFilters = filters.conditions.length > 0 || filters.search.length > 0;
-
   const handleClearAll = () => {
     setLocalSearch('');
     onFiltersChange(DEFAULT_FILTERS);
   };
-
-  const clearPanelFilters = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onFiltersChange({ ...filters, conditions: filters.conditions.filter((_, i) => barNodes.has(i)) });
-  };
+  const toneOf = (it: Item) => (it.kind === 'spectrum' ? 'spectrum' : it.kind === 'advanced' ? 'advanced' : 'default');
 
   return (
     <div className={`space-y-3 ${className}`}>
       {/* Search bar with scope dropdown */}
       <div className="relative max-w-md flex" ref={scopeDropdownRef}>
-        {/* Scope dropdown button */}
         <div className="relative">
           <button
             onClick={() => setScopeDropdownOpen(!scopeDropdownOpen)}
@@ -187,7 +177,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
             <span className="whitespace-nowrap">{currentScope.label}</span>
             <ChevronDown className={`w-3.5 h-3.5 transition-transform ${scopeDropdownOpen ? 'rotate-180' : ''}`} />
           </button>
-          {/* Dropdown menu */}
           {scopeDropdownOpen && (
             <div className="absolute top-full left-0 mt-1 w-40 bg-background border border-border rounded-lg shadow-lg z-50 py-1">
               {searchScopeOptions.map((option) => (
@@ -195,9 +184,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
                   key={option.value}
                   onClick={() => handleScopeChange(option.value)}
                   className={`w-full text-left px-3 py-2 text-sm hover:bg-card-hover transition-colors ${
-                    filters.search_scope === option.value
-                      ? 'text-primary font-medium'
-                      : 'text-text-primary'
+                    filters.search_scope === option.value ? 'text-primary font-medium' : 'text-text-primary'
                   }`}
                 >
                   {option.label}
@@ -206,7 +193,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
             </div>
           )}
         </div>
-        {/* Search input */}
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
           <input
@@ -216,7 +202,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
             placeholder={currentScope.placeholder}
             className="w-full pl-10 pr-10 py-2 text-sm border border-border rounded-r-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
           />
-          {/* Show clear button when there's text */}
           {localSearch && (
             <button
               onClick={() => setLocalSearch('')}
@@ -228,109 +213,50 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         </div>
       </div>
 
-      {/* Filter chips */}
+      {/* The chips */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* Program filter */}
-        <FilterChip
-          label="Program"
-          options={programOptions}
-          selected={slots.programs}
-          onChange={(selected) => updateFilter('programs', selected as string[])}
-          searchable
-          footerLink={{ label: "Browse all programs", href: "/nirspec/metadata" }}
-        />
+        {barChips.map(({ def, item, level }, i) => (
+          <React.Fragment key={`${def.scope}.${def.key}`}>
+            {i === 3 && <div className="h-6 w-px bg-border mx-1" />}
+            <PropertyChip def={def} item={item} level={level} ctx={ctx}
+              extraCheckbox={def.key === 'quality' ? {
+                label: 'Needs review only',
+                checked: needsReview?.value.kind === 'bool' && needsReview.value.value,
+                onChange: setNeedsReview,
+              } : undefined} />
+          </React.Fragment>
+        ))}
 
-        {/* Field filter */}
-        <FilterChip
-          label="Field"
-          options={fieldOptions}
-          selected={slots.fields}
-          onChange={(selected) => updateFilter('fields', selected as string[])}
-          searchable
-        />
+        {otherItems.length > 0 && <div className="h-6 w-px bg-border mx-1" />}
+        {otherItems.map((it) => (
+          <ItemChip key={it.path.join('.')} text={describeItem(it, label)} tone={toneOf(it)}
+            onClick={() => setPanelOpen(true)}
+            onRemove={() => ctx.onChange(replaceAt(filters.conditions, it.path, null))} />
+        ))}
 
-        {/* Observation filter */}
-        <FilterChip
-          label="Observation"
-          options={observationOptions}
-          selected={slots.observations}
-          onChange={(selected) => updateFilter('observations', selected as string[])}
-          searchable
-          footerLink={{ label: "Browse all programs", href: "/nirspec/metadata" }}
-        />
-
-        {/* Divider */}
         <div className="h-6 w-px bg-border mx-1" />
 
-        {/* Redshift range filter */}
-        <RangeFilterChip
-          label="Redshift"
-          min={slots.redshift_min}
-          max={slots.redshift_max}
-          onChange={(min, max) => patch({ redshift_min: min, redshift_max: max })}
-          minBound={0}
-          maxBound={15}
-          step={0.1}
-          precision={2}
-        />
-
-        {/* Quality filter with "All inspected" shortcut and "Needs review only" toggle */}
-        <FilterChip
-          label="Quality"
-          options={qualityOptions}
-          selected={slots.redshift_quality}
-          onChange={(selected) => updateFilter('redshift_quality', selected as number[])}
-          shortcut={{ label: 'All inspected', values: INSPECTED_QUALITY_VALUES }}
-          extraCheckbox={{
-            label: 'Needs review only',
-            checked: slots.needs_review === true,
-            onChange: (checked) => updateFilter('needs_review', checked ? true : null),
-          }}
-        />
-
-        {/* Divider */}
-        <div className="h-6 w-px bg-border mx-1" />
-
-        {/* Advanced Filters button */}
+        {/* Filters: the modal over the same state */}
         <button
           onClick={() => setPanelOpen(true)}
-          className={`
-            inline-flex items-center gap-1.5 px-3 h-8 rounded-full text-sm font-medium
-            border transition-all duration-200
-            ${panelFilterCount > 0
-              ? 'bg-primary/10 border-primary text-primary'
-              : 'bg-card border-border text-text-secondary hover:border-text-secondary dark:hover:border-border-strong hover:text-text-primary'
-            }
-          `}
+          className="inline-flex items-center gap-1.5 px-3 h-8 rounded-full text-sm font-medium border border-border bg-card text-text-secondary hover:border-text-secondary dark:hover:border-border-strong hover:text-text-primary transition-all duration-200"
         >
           <SlidersHorizontal className="w-4 h-4" />
-          <span>Advanced</span>
-          {panelFilterCount > 0 && (
-            <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-primary text-on-primary">
-              {panelFilterCount}
-            </span>
-          )}
-          {panelFilterCount > 0 ? (
-            <X
-              className="w-3.5 h-3.5 hover:text-primary-hover cursor-pointer"
-              onClick={clearPanelFilters}
-            />
-          ) : (
-            <ChevronDown className="w-3.5 h-3.5" />
-          )}
+          <span>Filters</span>
         </button>
 
         {/* Show on Map button */}
         <button
           onClick={() => {
             // the map queries objects: conditions written against spectra move over
-            const mapFilters = viewMode === 'spectra'
-              ? { ...filters, conditions: rerootNodes(filters.conditions, 'spectra', 'objects') }
+            const mapFilters = isSpectra
+              ? { ...filters, conditions: rerootConditions(filters.conditions, 'spectra', 'objects') }
               : filters;
             const filterParams = filtersToURLParams(mapFilters);
             // If exactly one field is selected, also set it as the map field param
-            if (slots.fields.length === 1) {
-              filterParams.set('field', slots.fields[0]);
+            const field = findProperty(reading.items, 'object', 'field');
+            if (field && field.value.kind === 'choice' && field.value.values.length === 1 && !field.value.not) {
+              filterParams.set('field', String(field.value.values[0]));
             }
             const qs = filterParams.toString();
             router.push(`/map${qs ? `?${qs}` : ''}`);
@@ -342,7 +268,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           <span>Map</span>
         </button>
 
-        {/* Clear all button */}
         {hasActiveFilters && (
           <>
             <div className="h-6 w-px bg-border mx-1" />
@@ -357,12 +282,11 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         )}
       </div>
 
-      {/* Advanced Filters Panel */}
-      <AdvancedFiltersPanel
+      <FiltersModal
         isOpen={panelOpen}
         onClose={() => setPanelOpen(false)}
         filters={filters}
-        onFiltersChange={onFiltersChange}
+        onApply={onFiltersChange}
         availablePrograms={availablePrograms}
         availableFields={availableFields}
         availableObservations={availableObservations}

@@ -10,7 +10,7 @@
  * through the viewer's ref handle (FitsGL owns culling/hit-test), and the shared
  * `CoordinateOverlay` / `MapContextMenu` are fed via callbacks. Shutters + the Layers
  * panel + tool rail + status pill land in later chunks; the NIRSpec Filters slide-over
- * reuses the existing `AdvancedFiltersPanel`.
+ * reuses the existing `FiltersModal`.
  *
  * `onCursor`/`onFrame` are fixed at viewer construction, so everything they touch is
  * read through refs (never stale closures).
@@ -109,7 +109,7 @@ interface FitsGLMapSurfaceProps {
   onCursorCoords: (coords: { ra: number; dec: number } | null) => void;
   /** Right-click at a sky position → shared MapContextMenu. */
   onContextMenu: (data: { coords: { ra: number; dec: number }; position: { x: number; y: number } }) => void;
-  /** Opens the shared NIRSpec-filters slide-over (page-level AdvancedFiltersPanel). */
+  /** Opens the shared NIRSpec filters modal (page-level FiltersModal). */
   onOpenFilters?: () => void;
   hasActiveFilters?: boolean;
 }
