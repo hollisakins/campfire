@@ -2064,16 +2064,20 @@ GRANT EXECUTE ON FUNCTION public.objects_matching_band_filter(TEXT, DOUBLE PRECI
 GRANT EXECUTE ON FUNCTION public.objects_matching_band_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT[], BOOLEAN) TO service_role;
 
 -- object_line_columns / object_band_columns (Catalog Read Model phase 3c,
--- #660): the Line S/N and Mag columns for SEVERAL lines / bands at once. One
--- row per object with a JSON map keyed by line / band, so the list RPCs join
--- it once (hash join, like object_line_values) and carry the map in the row;
--- a sort key 'line_snr:<line>' reads one entry. Display only: nothing
--- filters on these. The gates are object_line_values' / object_band_values'
--- verbatim (SECURITY DEFINER for the same reason: read under RLS, every row
--- re-ran the two-hop policy chain). An empty or NULL list yields no rows
--- without touching the table.
+-- #660): the Line S/N and Mag columns for SEVERAL lines / bands at once. The
+-- asked keys come as a JSON map, each with the window that admitted the row
+-- (`{"Halpha": {"snr_min": 3}}`, `{"f444w": {"mag_max": 27}}`; an empty
+-- object is "any"), applied row by row before the aggregate, so a column
+-- never shows a value outside the window that admitted it (the invariant of
+-- object_line_values / object_band_values, kept per key). One row per object
+-- with a JSON map keyed by line / band, so the list RPCs join it once (hash
+-- join) and carry the map in the row; a sort key 'line_snr:<line>' reads one
+-- entry. Display only: nothing filters on these. The gates are
+-- object_line_values' / object_band_values' verbatim (SECURITY DEFINER for the
+-- same reason). A NULL or non-object map yields no rows without touching the
+-- table.
 CREATE OR REPLACE FUNCTION public.object_line_columns(
-  p_lines TEXT[],
+  p_lines JSONB,
   p_include_stale BOOLEAN,
   p_program_slugs TEXT[],
   p_include_unpublished BOOLEAN DEFAULT false
@@ -2090,7 +2094,8 @@ AS $$
            max(l.snr) AS snr,
            -- the flux of the best-S/N fit of the line
            (array_agg(l.flux ORDER BY l.snr DESC NULLS LAST))[1] AS flux
-    FROM public.cat_lines l
+    FROM jsonb_each(CASE WHEN jsonb_typeof(p_lines) = 'object' THEN p_lines ELSE '{}'::jsonb END) spec(line, w)
+    JOIN public.cat_lines l ON l.line = spec.line
     CROSS JOIN LATERAL (
       SELECT f.program_slug, f.stale_redshift
       FROM public.cat_line_fits f WHERE f.spectrum_id = l.spectrum_id LIMIT 1
@@ -2103,10 +2108,11 @@ AS $$
       SELECT o.programs, o.has_published_spectrum, o.observations, o.is_active
       FROM public.cat_objects o WHERE o.id = l.object_id LIMIT 1
     ) o
-    WHERE p_lines IS NOT NULL AND cardinality(p_lines) > 0
-      AND l.line = ANY(p_lines)
-      AND l.snr IS NOT NULL
+    WHERE l.snr IS NOT NULL
       AND l.object_id IS NOT NULL
+      -- the key's own window
+      AND ((spec.w ->> 'snr_min') IS NULL OR l.snr >= (spec.w ->> 'snr_min')::double precision)
+      AND ((spec.w ->> 'snr_max') IS NULL OR l.snr <= (spec.w ->> 'snr_max')::double precision)
       AND f.program_slug = ANY(p_program_slugs)
       AND (p_include_unpublished OR s.deploy_status = 'published')
       AND (p_include_stale OR NOT f.stale_redshift)
@@ -2133,11 +2139,11 @@ AS $$
   GROUP BY per_line.object_id;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.object_line_columns(TEXT[], BOOLEAN, TEXT[], BOOLEAN) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.object_line_columns(TEXT[], BOOLEAN, TEXT[], BOOLEAN) TO service_role;
+GRANT EXECUTE ON FUNCTION public.object_line_columns(JSONB, BOOLEAN, TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.object_line_columns(JSONB, BOOLEAN, TEXT[], BOOLEAN) TO service_role;
 
 CREATE OR REPLACE FUNCTION public.object_band_columns(
-  p_bands TEXT[],
+  p_bands JSONB,
   p_program_slugs TEXT[],
   p_include_unpublished BOOLEAN DEFAULT false
 )
@@ -2150,11 +2156,16 @@ AS $$
          jsonb_object_agg(per_band.band, jsonb_build_object('mag', per_band.mag, 'snr', per_band.snr))
   FROM (
     SELECT b.object_id, b.band, min(b.mag) AS mag, max(b.snr) AS snr
-    FROM public.cat_photometry b
+    FROM jsonb_each(CASE WHEN jsonb_typeof(p_bands) = 'object' THEN p_bands ELSE '{}'::jsonb END) spec(band, w)
+    JOIN public.cat_photometry b ON b.band = spec.band
     JOIN public.cat_objects o ON o.id = b.object_id
-    WHERE p_bands IS NOT NULL AND cardinality(p_bands) > 0
-      AND b.band = ANY(p_bands)
-      AND b.object_id IS NOT NULL
+    WHERE b.object_id IS NOT NULL
+      -- the key's own window, row by row (so the shown magnitude and S/N
+      -- both come from matches inside it)
+      AND ((spec.w ->> 'mag_min') IS NULL OR b.mag >= (spec.w ->> 'mag_min')::double precision)
+      AND ((spec.w ->> 'mag_max') IS NULL OR b.mag <= (spec.w ->> 'mag_max')::double precision)
+      AND ((spec.w ->> 'snr_min') IS NULL OR b.snr >= (spec.w ->> 'snr_min')::double precision)
+      AND ((spec.w ->> 'snr_max') IS NULL OR b.snr <= (spec.w ->> 'snr_max')::double precision)
       AND o.programs && p_program_slugs
       AND (p_include_unpublished OR o.has_published_spectrum)
       AND (COALESCE((SELECT auth.role()), '') = 'service_role' OR (
@@ -2173,19 +2184,19 @@ AS $$
   GROUP BY per_band.object_id;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.object_band_columns(TEXT[], TEXT[], BOOLEAN) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.object_band_columns(TEXT[], TEXT[], BOOLEAN) TO service_role;
+GRANT EXECUTE ON FUNCTION public.object_band_columns(JSONB, TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.object_band_columns(JSONB, TEXT[], BOOLEAN) TO service_role;
 
 -- The sort keys 'line_snr:<line>' / 'band_mag:<band>' / 'band_snr:<band>'
 -- (phase 3c): the key after the colon, when the prefix is one of the three
 -- and the key is among the asked columns; NULL otherwise.
-CREATE OR REPLACE FUNCTION public.measurement_sort_key(p_sort_column TEXT, p_line_columns TEXT[], p_band_columns TEXT[])
+CREATE OR REPLACE FUNCTION public.measurement_sort_key(p_sort_column TEXT, p_line_columns JSONB, p_band_columns JSONB)
 RETURNS TEXT
 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 AS $$
   SELECT CASE
-    WHEN p_sort_column LIKE 'line_snr:%' AND split_part(p_sort_column, ':', 2) = ANY(COALESCE(p_line_columns, '{}')) THEN split_part(p_sort_column, ':', 2)
-    WHEN (p_sort_column LIKE 'band_mag:%' OR p_sort_column LIKE 'band_snr:%') AND split_part(p_sort_column, ':', 2) = ANY(COALESCE(p_band_columns, '{}')) THEN split_part(p_sort_column, ':', 2)
+    WHEN p_sort_column LIKE 'line_snr:%' AND jsonb_typeof(p_line_columns) = 'object' AND p_line_columns ? split_part(p_sort_column, ':', 2) THEN split_part(p_sort_column, ':', 2)
+    WHEN (p_sort_column LIKE 'band_mag:%' OR p_sort_column LIKE 'band_snr:%') AND jsonb_typeof(p_band_columns) = 'object' AND p_band_columns ? split_part(p_sort_column, ':', 2) THEN split_part(p_sort_column, ':', 2)
   END;
 $$;
 
@@ -3636,11 +3647,13 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   -- Line S/N / Mag columns and sort keys) and p_coord_* only the distance
   -- reference (the distance column and sort); none of them narrows the
   -- tree's selection (Codex on #659).
-  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only,
-  -- the row carries line_columns / band_columns maps and a sort key may be
+  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only.
+  -- JSON maps of the asked keys, each with the window that admitted the row
+  -- (`{"Halpha": {"snr_min": 3}}`, `{"f444w": {"mag_max": 27}}`); the row
+  -- carries line_columns / band_columns maps and a sort key may be
   -- 'line_snr:<line>', 'band_mag:<band>' or 'band_snr:<band>'.
-  p_line_columns TEXT[] DEFAULT NULL,
-  p_band_columns TEXT[] DEFAULT NULL,
+  p_line_columns JSONB DEFAULT NULL,
+  p_band_columns JSONB DEFAULT NULL,
   p_measurements_display_only BOOLEAN DEFAULT false
 )
 RETURNS TABLE(
@@ -3803,9 +3816,12 @@ BEGIN
       bv.mag AS band_mag,
       bv.snr AS band_snr,
       -- the several-columns maps (phase 3c): this spectrum's lines, its object's bands
-      CASE WHEN p_line_columns IS NOT NULL AND cardinality(p_line_columns) > 0 THEN
+      CASE WHEN jsonb_typeof(p_line_columns) = 'object' THEN
         (SELECT jsonb_object_agg(__l.line, jsonb_build_object('snr', __l.snr, 'flux', __l.flux))
-         FROM public.cat_lines __l WHERE __l.spectrum_id = s.id AND __l.line = ANY(p_line_columns))
+         FROM jsonb_each(p_line_columns) __spec(line, w)
+         JOIN public.cat_lines __l ON __l.spectrum_id = s.id AND __l.line = __spec.line
+         WHERE ((__spec.w ->> 'snr_min') IS NULL OR __l.snr >= (__spec.w ->> 'snr_min')::double precision)
+           AND ((__spec.w ->> 'snr_max') IS NULL OR __l.snr <= (__spec.w ->> 'snr_max')::double precision))
       END AS line_columns,
       bc.band_columns,
       CASE
@@ -4137,11 +4153,13 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   -- Line S/N / Mag columns and sort keys) and p_coord_* only the distance
   -- reference (the distance column and sort); none of them narrows the
   -- tree's selection (Codex on #659).
-  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only,
-  -- the row carries line_columns / band_columns maps and a sort key may be
+  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only.
+  -- JSON maps of the asked keys, each with the window that admitted the row
+  -- (`{"Halpha": {"snr_min": 3}}`, `{"f444w": {"mag_max": 27}}`); the row
+  -- carries line_columns / band_columns maps and a sort key may be
   -- 'line_snr:<line>', 'band_mag:<band>' or 'band_snr:<band>'.
-  p_line_columns TEXT[] DEFAULT NULL,
-  p_band_columns TEXT[] DEFAULT NULL,
+  p_line_columns JSONB DEFAULT NULL,
+  p_band_columns JSONB DEFAULT NULL,
   p_measurements_display_only BOOLEAN DEFAULT false
 )
 RETURNS TABLE(
@@ -5330,11 +5348,13 @@ CREATE OR REPLACE FUNCTION public.catalog_query_objects(
   p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
-  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only,
-  -- the row carries line_columns / band_columns maps and a sort key may be
+  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only.
+  -- JSON maps of the asked keys, each with the window that admitted the row
+  -- (`{"Halpha": {"snr_min": 3}}`, `{"f444w": {"mag_max": 27}}`); the row
+  -- carries line_columns / band_columns maps and a sort key may be
   -- 'line_snr:<line>', 'band_mag:<band>' or 'band_snr:<band>'.
-  p_line_columns TEXT[] DEFAULT NULL,
-  p_band_columns TEXT[] DEFAULT NULL,
+  p_line_columns JSONB DEFAULT NULL,
+  p_band_columns JSONB DEFAULT NULL,
   -- the distance reference: the 'distance' column and sort measure from here
   -- (the portal passes the tree's cone centre); required for sort = distance
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
@@ -5397,9 +5417,9 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], double precision, double precision, text, text, uuid) IS 'The objects list for a predicate tree (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_objects_paginated(p_object_ids := ...), so the row shape, sort, paging and cursor are the legacy RPC''s. p_line / p_band only drive the Line S/N and Mag columns and sorts, p_coord_ra / p_coord_dec only the distance column and sort (the legacy RPC runs with p_measurements_display_only, so none of them filters). The explicit scope goes through to the tree for a service-role caller.';
-REVOKE ALL ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], double precision, double precision, text, text, uuid) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], double precision, double precision, text, text, uuid) TO authenticated, service_role;
+COMMENT ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, double precision, double precision, text, text, uuid) IS 'The objects list for a predicate tree (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_objects_paginated(p_object_ids := ...), so the row shape, sort, paging and cursor are the legacy RPC''s. p_line / p_band only drive the Line S/N and Mag columns and sorts, p_coord_ra / p_coord_dec only the distance column and sort (the legacy RPC runs with p_measurements_display_only, so none of them filters). The explicit scope goes through to the tree for a service-role caller.';
+REVOKE ALL ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, double precision, double precision, text, text, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, double precision, double precision, text, text, uuid) TO authenticated, service_role;
 
 -- The spectra twin.
 CREATE OR REPLACE FUNCTION public.catalog_query_spectra(
@@ -5425,11 +5445,13 @@ CREATE OR REPLACE FUNCTION public.catalog_query_spectra(
   p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
-  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only,
-  -- the row carries line_columns / band_columns maps and a sort key may be
+  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only.
+  -- JSON maps of the asked keys, each with the window that admitted the row
+  -- (`{"Halpha": {"snr_min": 3}}`, `{"f444w": {"mag_max": 27}}`); the row
+  -- carries line_columns / band_columns maps and a sort key may be
   -- 'line_snr:<line>', 'band_mag:<band>' or 'band_snr:<band>'.
-  p_line_columns TEXT[] DEFAULT NULL,
-  p_band_columns TEXT[] DEFAULT NULL,
+  p_line_columns JSONB DEFAULT NULL,
+  p_band_columns JSONB DEFAULT NULL,
   p_viewer_id UUID DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
@@ -5491,9 +5513,9 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], uuid, double precision, double precision, text, text, uuid) IS 'The spectra list for a predicate tree rooted at spectra (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_spectra_paginated(p_spectrum_ids := ...).';
-REVOKE ALL ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], uuid, double precision, double precision, text, text, uuid) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], uuid, double precision, double precision, text, text, uuid) TO authenticated, service_role;
+COMMENT ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, uuid, double precision, double precision, text, text, uuid) IS 'The spectra list for a predicate tree rooted at spectra (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_spectra_paginated(p_spectrum_ids := ...).';
+REVOKE ALL ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, uuid, double precision, double precision, text, text, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, uuid, double precision, double precision, text, text, uuid) TO authenticated, service_role;
 
 
 -- =============================================================================
@@ -5551,11 +5573,13 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
-  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only,
-  -- the row carries line_columns / band_columns maps and a sort key may be
+  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only.
+  -- JSON maps of the asked keys, each with the window that admitted the row
+  -- (`{"Halpha": {"snr_min": 3}}`, `{"f444w": {"mag_max": 27}}`); the row
+  -- carries line_columns / band_columns maps and a sort key may be
   -- 'line_snr:<line>', 'band_mag:<band>' or 'band_snr:<band>'.
-  p_line_columns TEXT[] DEFAULT NULL,
-  p_band_columns TEXT[] DEFAULT NULL,
+  p_line_columns JSONB DEFAULT NULL,
+  p_band_columns JSONB DEFAULT NULL,
   -- restrict to these ids: the objects a predicate tree selects (catalog_match_ids(); Catalog Read Model phase 3b)
   p_object_ids INTEGER[] DEFAULT NULL
 )
@@ -5916,11 +5940,13 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
-  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only,
-  -- the row carries line_columns / band_columns maps and a sort key may be
+  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only.
+  -- JSON maps of the asked keys, each with the window that admitted the row
+  -- (`{"Halpha": {"snr_min": 3}}`, `{"f444w": {"mag_max": 27}}`); the row
+  -- carries line_columns / band_columns maps and a sort key may be
   -- 'line_snr:<line>', 'band_mag:<band>' or 'band_snr:<band>'.
-  p_line_columns TEXT[] DEFAULT NULL,
-  p_band_columns TEXT[] DEFAULT NULL,
+  p_line_columns JSONB DEFAULT NULL,
+  p_band_columns JSONB DEFAULT NULL,
   -- restrict to these ids: the objects a predicate tree selects (catalog_match_ids(); Catalog Read Model phase 3b)
   p_object_ids INTEGER[] DEFAULT NULL
 )
@@ -6265,11 +6291,13 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
-  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only,
-  -- the row carries line_columns / band_columns maps and a sort key may be
+  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only.
+  -- JSON maps of the asked keys, each with the window that admitted the row
+  -- (`{"Halpha": {"snr_min": 3}}`, `{"f444w": {"mag_max": 27}}`); the row
+  -- carries line_columns / band_columns maps and a sort key may be
   -- 'line_snr:<line>', 'band_mag:<band>' or 'band_snr:<band>'.
-  p_line_columns TEXT[] DEFAULT NULL,
-  p_band_columns TEXT[] DEFAULT NULL,
+  p_line_columns JSONB DEFAULT NULL,
+  p_band_columns JSONB DEFAULT NULL,
   -- restrict to these ids: the spectra a predicate tree selects (catalog_match_ids(); Catalog Read Model phase 3b)
   p_spectrum_ids INTEGER[] DEFAULT NULL,
   p_after_id INTEGER DEFAULT NULL, p_page_size INTEGER DEFAULT 5000
@@ -6361,9 +6389,12 @@ BEGIN
       END AS line_snr,
       bv.mag AS band_mag,
       bv.snr AS band_snr,
-      CASE WHEN p_line_columns IS NOT NULL AND cardinality(p_line_columns) > 0 THEN
+      CASE WHEN jsonb_typeof(p_line_columns) = 'object' THEN
         (SELECT jsonb_object_agg(__l.line, jsonb_build_object('snr', __l.snr, 'flux', __l.flux))
-         FROM public.cat_lines __l WHERE __l.spectrum_id = s.id AND __l.line = ANY(p_line_columns))
+         FROM jsonb_each(p_line_columns) __spec(line, w)
+         JOIN public.cat_lines __l ON __l.spectrum_id = s.id AND __l.line = __spec.line
+         WHERE ((__spec.w ->> 'snr_min') IS NULL OR __l.snr >= (__spec.w ->> 'snr_min')::double precision)
+           AND ((__spec.w ->> 'snr_max') IS NULL OR __l.snr <= (__spec.w ->> 'snr_max')::double precision))
       END AS line_columns,
       bc.band_columns
     FROM public.cat_targets t
@@ -6498,11 +6529,13 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
-  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only,
-  -- the row carries line_columns / band_columns maps and a sort key may be
+  -- Several Line S/N / Mag columns at once (phase 3c, #660): display only.
+  -- JSON maps of the asked keys, each with the window that admitted the row
+  -- (`{"Halpha": {"snr_min": 3}}`, `{"f444w": {"mag_max": 27}}`); the row
+  -- carries line_columns / band_columns maps and a sort key may be
   -- 'line_snr:<line>', 'band_mag:<band>' or 'band_snr:<band>'.
-  p_line_columns TEXT[] DEFAULT NULL,
-  p_band_columns TEXT[] DEFAULT NULL,
+  p_line_columns JSONB DEFAULT NULL,
+  p_band_columns JSONB DEFAULT NULL,
   -- restrict to these ids: the objects a predicate tree selects (catalog_match_ids(); Catalog Read Model phase 3b)
   p_object_ids INTEGER[] DEFAULT NULL,
   p_after_object_id TEXT DEFAULT NULL, p_page_size INTEGER DEFAULT 5000
@@ -13660,7 +13693,7 @@ REVOKE ALL ON FUNCTION public.filter_link_storage_keys(p_keys text[], p_program_
 REVOKE ALL ON FUNCTION public.fitsgl_dataset_is_public(p_field text, p_tiles text[], p_bands text[], p_pixel_scale text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_activity_feed(p_include_comments boolean, p_include_inspections boolean, p_user_ids uuid[], p_include_system boolean, p_field_names text[], p_page integer, p_page_size integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_activity_users() FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_adjacent_objects(p_current_object_id text, p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_sort_column text, p_sort_direction text, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_line_columns text[], p_band_columns text[], p_object_ids integer[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_adjacent_objects(p_current_object_id text, p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_sort_column text, p_sort_direction text, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_line_columns jsonb, p_band_columns jsonb, p_object_ids integer[]) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_admin_deploy_events(p_action text, p_observation text, p_field text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_admin_deployments(p_status text, p_instrument text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_admin_exposure_facets() FROM PUBLIC, anon;
@@ -13668,16 +13701,16 @@ REVOKE ALL ON FUNCTION public.get_admin_exposure_neighbors(p_current_id integer,
 REVOKE ALL ON FUNCTION public.get_admin_exposures(p_field text, p_filter text, p_detector text, p_review_status text, p_stage text, p_correction text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_search text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_admin_storage_facets() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_admin_storage_objects(p_product_type text, p_status text, p_field text, p_observation text, p_backend text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_search text) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_csv_export_objects(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_line_columns text[], p_band_columns text[], p_object_ids integer[], p_after_object_id text, p_page_size integer) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_csv_export_spectra(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_dq_flags_include_any integer, p_dq_flags_include_all integer, p_dq_flags_exclude integer, p_list_ids integer[], p_list_ids_mode text, p_search text, p_inspected_only boolean, p_needs_review boolean, p_has_photometry boolean, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_line_columns text[], p_band_columns text[], p_spectrum_ids integer[], p_after_id integer, p_page_size integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_csv_export_objects(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_line_columns jsonb, p_band_columns jsonb, p_object_ids integer[], p_after_object_id text, p_page_size integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_csv_export_spectra(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_dq_flags_include_any integer, p_dq_flags_include_all integer, p_dq_flags_exclude integer, p_list_ids integer[], p_list_ids_mode text, p_search text, p_inspected_only boolean, p_needs_review boolean, p_has_photometry boolean, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_line_columns jsonb, p_band_columns jsonb, p_spectrum_ids integer[], p_after_id integer, p_page_size integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_database_overview(p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_deploy_scope_version(p_scope_type text, p_scope_key text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_download_stats(p_days integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_field_object_markers(p_field text, p_include_unpublished boolean, p_cursor text, p_page_size integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_field_shutters(p_field text, p_cursor integer, p_page_size integer, p_ra_min double precision, p_ra_max double precision, p_dec_min double precision, p_dec_max double precision) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_filtered_object_ids(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_line_columns text[], p_band_columns text[], p_object_ids integer[]) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_filtered_objects_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_viewer_id uuid, p_object_ids integer[], p_line_columns text[], p_band_columns text[], p_measurements_display_only boolean) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_filtered_spectra_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_dq_flags_include_any integer, p_dq_flags_include_all integer, p_dq_flags_exclude integer, p_list_ids integer[], p_list_ids_mode text, p_search text, p_inspected_only boolean, p_needs_review boolean, p_has_photometry boolean, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_thumbnails boolean, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_spectrum_ids integer[], p_line_columns text[], p_band_columns text[], p_measurements_display_only boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_filtered_object_ids(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_line_columns jsonb, p_band_columns jsonb, p_object_ids integer[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_filtered_objects_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_viewer_id uuid, p_object_ids integer[], p_line_columns jsonb, p_band_columns jsonb, p_measurements_display_only boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_filtered_spectra_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_dq_flags_include_any integer, p_dq_flags_include_all integer, p_dq_flags_exclude integer, p_list_ids integer[], p_list_ids_mode text, p_search text, p_inspected_only boolean, p_needs_review boolean, p_has_photometry boolean, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_thumbnails boolean, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_spectrum_ids integer[], p_line_columns jsonb, p_band_columns jsonb, p_measurements_display_only boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_lifecycle_status() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_line_fits_for_sync(p_program_slugs text[], p_updated_since timestamp with time zone, p_limit integer, p_include_unpublished boolean, p_include_counts boolean, p_after_id integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_lists_for_sync(p_user_id uuid, p_include_unpublished boolean) FROM PUBLIC, anon;

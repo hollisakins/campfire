@@ -2,9 +2,10 @@ SET lock_timeout = '5s';
 SET statement_timeout = '60s';
 -- Catalog Read Model phase 3c (#660): several Line S/N / Mag columns at once.
 -- object_line_columns / object_band_columns return a per-object JSON map of
--- the asked lines / bands; the eight catalog RPCs take p_line_columns /
--- p_band_columns (display only), carry line_columns / band_columns in their
--- rows, and sort on 'line_snr:<line>' / 'band_mag:<band>' / 'band_snr:<band>'.
+-- the asked lines / bands, each key with the window that admitted the row;
+-- the eight catalog RPCs take p_line_columns / p_band_columns (JSON maps,
+-- display only), carry line_columns / band_columns in their rows, and sort
+-- on 'line_snr:<line>' / 'band_mag:<band>' / 'band_snr:<band>'.
 SET local check_function_bodies = off;
 
 DROP FUNCTION
@@ -168,8 +169,8 @@ CREATE OR REPLACE FUNCTION public.catalog_query_objects (
   p_band_mag_max         double precision DEFAULT NULL::double precision,
   p_band_snr_min         double precision DEFAULT NULL::double precision,
   p_band_snr_max         double precision DEFAULT NULL::double precision,
-  p_line_columns         text[]           DEFAULT NULL::text[],
-  p_band_columns         text[]           DEFAULT NULL::text[],
+  p_line_columns         jsonb            DEFAULT NULL::jsonb,
+  p_band_columns         jsonb            DEFAULT NULL::jsonb,
   p_coord_ra             double precision DEFAULT NULL::double precision,
   p_coord_dec            double precision DEFAULT NULL::double precision,
   p_comment_search       text             DEFAULT NULL::text,
@@ -239,7 +240,7 @@ $function$;
 REVOKE ALL
   ON FUNCTION
     "public"."catalog_query_objects"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], double precision, double precision, text, text, uuid)
+    precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, double precision, double precision, text, text, uuid)
   FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.catalog_query_spectra (
@@ -265,8 +266,8 @@ CREATE OR REPLACE FUNCTION public.catalog_query_spectra (
   p_band_mag_max         double precision DEFAULT NULL::double precision,
   p_band_snr_min         double precision DEFAULT NULL::double precision,
   p_band_snr_max         double precision DEFAULT NULL::double precision,
-  p_line_columns         text[]           DEFAULT NULL::text[],
-  p_band_columns         text[]           DEFAULT NULL::text[],
+  p_line_columns         jsonb            DEFAULT NULL::jsonb,
+  p_band_columns         jsonb            DEFAULT NULL::jsonb,
   p_viewer_id            uuid             DEFAULT NULL::uuid,
   p_coord_ra             double precision DEFAULT NULL::double precision,
   p_coord_dec            double precision DEFAULT NULL::double precision,
@@ -337,7 +338,7 @@ $function$;
 REVOKE ALL
   ON FUNCTION
     "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], uuid, double precision, double precision, text, text, uuid)
+    precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, uuid, double precision, double precision, text, text, uuid)
   FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.get_adjacent_objects (
@@ -381,8 +382,8 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects (
   p_band_mag_max          double precision DEFAULT NULL::double precision,
   p_band_snr_min          double precision DEFAULT NULL::double precision,
   p_band_snr_max          double precision DEFAULT NULL::double precision,
-  p_line_columns          text[]           DEFAULT NULL::text[],
-  p_band_columns          text[]           DEFAULT NULL::text[],
+  p_line_columns          jsonb            DEFAULT NULL::jsonb,
+  p_band_columns          jsonb            DEFAULT NULL::jsonb,
   p_object_ids            integer[]        DEFAULT NULL::integer[]
 )
   RETURNS TABLE (
@@ -684,7 +685,7 @@ REVOKE ALL
     double precision,
     double precision,
     text,
-    text, uuid, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[])
+    text, uuid, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[])
   FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.get_csv_export_objects (
@@ -724,8 +725,8 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects (
   p_band_mag_max          double precision DEFAULT NULL::double precision,
   p_band_snr_min          double precision DEFAULT NULL::double precision,
   p_band_snr_max          double precision DEFAULT NULL::double precision,
-  p_line_columns          text[]           DEFAULT NULL::text[],
-  p_band_columns          text[]           DEFAULT NULL::text[],
+  p_line_columns          jsonb            DEFAULT NULL::jsonb,
+  p_band_columns          jsonb            DEFAULT NULL::jsonb,
   p_object_ids            integer[]        DEFAULT NULL::integer[],
   p_after_object_id       text             DEFAULT NULL::text,
   p_page_size             integer          DEFAULT 5000
@@ -1029,7 +1030,7 @@ REVOKE ALL
     text,
     uuid,
     boolean,
-    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[], text, integer)
+    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[], text, integer)
   FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.get_csv_export_spectra (
@@ -1071,8 +1072,8 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra (
   p_band_mag_max          double precision DEFAULT NULL::double precision,
   p_band_snr_min          double precision DEFAULT NULL::double precision,
   p_band_snr_max          double precision DEFAULT NULL::double precision,
-  p_line_columns          text[]           DEFAULT NULL::text[],
-  p_band_columns          text[]           DEFAULT NULL::text[],
+  p_line_columns          jsonb            DEFAULT NULL::jsonb,
+  p_band_columns          jsonb            DEFAULT NULL::jsonb,
   p_spectrum_ids          integer[]        DEFAULT NULL::integer[],
   p_after_id              integer          DEFAULT NULL::integer,
   p_page_size             integer          DEFAULT 5000
@@ -1176,9 +1177,12 @@ BEGIN
       END AS line_snr,
       bv.mag AS band_mag,
       bv.snr AS band_snr,
-      CASE WHEN p_line_columns IS NOT NULL AND cardinality(p_line_columns) > 0 THEN
+      CASE WHEN jsonb_typeof(p_line_columns) = 'object' THEN
         (SELECT jsonb_object_agg(__l.line, jsonb_build_object('snr', __l.snr, 'flux', __l.flux))
-         FROM public.cat_lines __l WHERE __l.spectrum_id = s.id AND __l.line = ANY(p_line_columns))
+         FROM jsonb_each(p_line_columns) __spec(line, w)
+         JOIN public.cat_lines __l ON __l.spectrum_id = s.id AND __l.line = __spec.line
+         WHERE ((__spec.w ->> 'snr_min') IS NULL OR __l.snr >= (__spec.w ->> 'snr_min')::double precision)
+           AND ((__spec.w ->> 'snr_max') IS NULL OR __l.snr <= (__spec.w ->> 'snr_max')::double precision))
       END AS line_columns,
       bc.band_columns
     FROM public.cat_targets t
@@ -1274,7 +1278,7 @@ REVOKE ALL
     double precision,
     double precision,
     boolean,
-    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[], integer, integer)
+    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[], integer, integer)
   FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.get_filtered_object_ids (
@@ -1317,8 +1321,8 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids (
   p_band_mag_max          double precision DEFAULT NULL::double precision,
   p_band_snr_min          double precision DEFAULT NULL::double precision,
   p_band_snr_max          double precision DEFAULT NULL::double precision,
-  p_line_columns          text[]           DEFAULT NULL::text[],
-  p_band_columns          text[]           DEFAULT NULL::text[],
+  p_line_columns          jsonb            DEFAULT NULL::jsonb,
+  p_band_columns          jsonb            DEFAULT NULL::jsonb,
   p_object_ids            integer[]        DEFAULT NULL::integer[]
 )
   RETURNS TABLE (
@@ -1614,7 +1618,7 @@ REVOKE ALL
     text,
     text,
     uuid,
-    text, text, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[])
+    text, text, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[])
   FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated (
@@ -1665,8 +1669,8 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated (
   p_after_tiebreak            text[]           DEFAULT NULL::text[],
   p_viewer_id                 uuid             DEFAULT NULL::uuid,
   p_object_ids                integer[]        DEFAULT NULL::integer[],
-  p_line_columns              text[]           DEFAULT NULL::text[],
-  p_band_columns              text[]           DEFAULT NULL::text[],
+  p_line_columns              jsonb            DEFAULT NULL::jsonb,
+  p_band_columns              jsonb            DEFAULT NULL::jsonb,
   p_measurements_display_only boolean          DEFAULT false
 )
   RETURNS TABLE (
@@ -2303,7 +2307,7 @@ REVOKE ALL
     text,
     double precision,
     double precision,
-    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], text[], text[], boolean)
+    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], jsonb, jsonb, boolean)
   FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated (
@@ -2355,8 +2359,8 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated (
   p_after_sort_num            double precision DEFAULT NULL::double precision,
   p_after_tiebreak            text[]           DEFAULT NULL::text[],
   p_spectrum_ids              integer[]        DEFAULT NULL::integer[],
-  p_line_columns              text[]           DEFAULT NULL::text[],
-  p_band_columns              text[]           DEFAULT NULL::text[],
+  p_line_columns              jsonb            DEFAULT NULL::jsonb,
+  p_band_columns              jsonb            DEFAULT NULL::jsonb,
   p_measurements_display_only boolean          DEFAULT false
 )
   RETURNS TABLE (
@@ -2524,9 +2528,12 @@ BEGIN
       bv.mag AS band_mag,
       bv.snr AS band_snr,
       -- the several-columns maps (phase 3c): this spectrum's lines, its object's bands
-      CASE WHEN p_line_columns IS NOT NULL AND cardinality(p_line_columns) > 0 THEN
+      CASE WHEN jsonb_typeof(p_line_columns) = 'object' THEN
         (SELECT jsonb_object_agg(__l.line, jsonb_build_object('snr', __l.snr, 'flux', __l.flux))
-         FROM public.cat_lines __l WHERE __l.spectrum_id = s.id AND __l.line = ANY(p_line_columns))
+         FROM jsonb_each(p_line_columns) __spec(line, w)
+         JOIN public.cat_lines __l ON __l.spectrum_id = s.id AND __l.line = __spec.line
+         WHERE ((__spec.w ->> 'snr_min') IS NULL OR __l.snr >= (__spec.w ->> 'snr_min')::double precision)
+           AND ((__spec.w ->> 'snr_max') IS NULL OR __l.snr <= (__spec.w ->> 'snr_max')::double precision))
       END AS line_columns,
       bc.band_columns,
       CASE
@@ -2806,13 +2813,13 @@ REVOKE ALL
     text,
     double precision,
     double precision,
-    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], text[], text[], boolean)
+    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], jsonb, jsonb, boolean)
   FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.measurement_sort_key (
   p_sort_column  text,
-  p_line_columns text[],
-  p_band_columns text[]
+  p_line_columns jsonb,
+  p_band_columns jsonb
 )
   RETURNS text
   LANGUAGE sql
@@ -2820,15 +2827,15 @@ CREATE OR REPLACE FUNCTION public.measurement_sort_key (
   PARALLEL SAFE
   AS $function$
   SELECT CASE
-    WHEN p_sort_column LIKE 'line_snr:%' AND split_part(p_sort_column, ':', 2) = ANY(COALESCE(p_line_columns, '{}')) THEN split_part(p_sort_column, ':', 2)
-    WHEN (p_sort_column LIKE 'band_mag:%' OR p_sort_column LIKE 'band_snr:%') AND split_part(p_sort_column, ':', 2) = ANY(COALESCE(p_band_columns, '{}')) THEN split_part(p_sort_column, ':', 2)
+    WHEN p_sort_column LIKE 'line_snr:%' AND jsonb_typeof(p_line_columns) = 'object' AND p_line_columns ? split_part(p_sort_column, ':', 2) THEN split_part(p_sort_column, ':', 2)
+    WHEN (p_sort_column LIKE 'band_mag:%' OR p_sort_column LIKE 'band_snr:%') AND jsonb_typeof(p_band_columns) = 'object' AND p_band_columns ? split_part(p_sort_column, ':', 2) THEN split_part(p_sort_column, ':', 2)
   END;
 $function$;
 
-REVOKE ALL ON FUNCTION "public"."measurement_sort_key"(text, text[], text[]) FROM PUBLIC, "anon";
+REVOKE ALL ON FUNCTION "public"."measurement_sort_key"(text, jsonb, jsonb) FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.object_band_columns (
-  p_bands               text[],
+  p_bands               jsonb,
   p_program_slugs       text[],
   p_include_unpublished boolean DEFAULT false
 )
@@ -2846,11 +2853,16 @@ CREATE OR REPLACE FUNCTION public.object_band_columns (
          jsonb_object_agg(per_band.band, jsonb_build_object('mag', per_band.mag, 'snr', per_band.snr))
   FROM (
     SELECT b.object_id, b.band, min(b.mag) AS mag, max(b.snr) AS snr
-    FROM public.cat_photometry b
+    FROM jsonb_each(CASE WHEN jsonb_typeof(p_bands) = 'object' THEN p_bands ELSE '{}'::jsonb END) spec(band, w)
+    JOIN public.cat_photometry b ON b.band = spec.band
     JOIN public.cat_objects o ON o.id = b.object_id
-    WHERE p_bands IS NOT NULL AND cardinality(p_bands) > 0
-      AND b.band = ANY(p_bands)
-      AND b.object_id IS NOT NULL
+    WHERE b.object_id IS NOT NULL
+      -- the key's own window, row by row (so the shown magnitude and S/N
+      -- both come from matches inside it)
+      AND ((spec.w ->> 'mag_min') IS NULL OR b.mag >= (spec.w ->> 'mag_min')::double precision)
+      AND ((spec.w ->> 'mag_max') IS NULL OR b.mag <= (spec.w ->> 'mag_max')::double precision)
+      AND ((spec.w ->> 'snr_min') IS NULL OR b.snr >= (spec.w ->> 'snr_min')::double precision)
+      AND ((spec.w ->> 'snr_max') IS NULL OR b.snr <= (spec.w ->> 'snr_max')::double precision)
       AND o.programs && p_program_slugs
       AND (p_include_unpublished OR o.has_published_spectrum)
       AND (COALESCE((SELECT auth.role()), '') = 'service_role' OR (
@@ -2869,10 +2881,10 @@ CREATE OR REPLACE FUNCTION public.object_band_columns (
   GROUP BY per_band.object_id;
 $function$;
 
-REVOKE ALL ON FUNCTION "public"."object_band_columns"(text[], text[], boolean) FROM PUBLIC, "anon";
+REVOKE ALL ON FUNCTION "public"."object_band_columns"(jsonb, text[], boolean) FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.object_line_columns (
-  p_lines               text[],
+  p_lines               jsonb,
   p_include_stale       boolean,
   p_program_slugs       text[],
   p_include_unpublished boolean DEFAULT false
@@ -2894,7 +2906,8 @@ CREATE OR REPLACE FUNCTION public.object_line_columns (
            max(l.snr) AS snr,
            -- the flux of the best-S/N fit of the line
            (array_agg(l.flux ORDER BY l.snr DESC NULLS LAST))[1] AS flux
-    FROM public.cat_lines l
+    FROM jsonb_each(CASE WHEN jsonb_typeof(p_lines) = 'object' THEN p_lines ELSE '{}'::jsonb END) spec(line, w)
+    JOIN public.cat_lines l ON l.line = spec.line
     CROSS JOIN LATERAL (
       SELECT f.program_slug, f.stale_redshift
       FROM public.cat_line_fits f WHERE f.spectrum_id = l.spectrum_id LIMIT 1
@@ -2907,10 +2920,11 @@ CREATE OR REPLACE FUNCTION public.object_line_columns (
       SELECT o.programs, o.has_published_spectrum, o.observations, o.is_active
       FROM public.cat_objects o WHERE o.id = l.object_id LIMIT 1
     ) o
-    WHERE p_lines IS NOT NULL AND cardinality(p_lines) > 0
-      AND l.line = ANY(p_lines)
-      AND l.snr IS NOT NULL
+    WHERE l.snr IS NOT NULL
       AND l.object_id IS NOT NULL
+      -- the key's own window
+      AND ((spec.w ->> 'snr_min') IS NULL OR l.snr >= (spec.w ->> 'snr_min')::double precision)
+      AND ((spec.w ->> 'snr_max') IS NULL OR l.snr <= (spec.w ->> 'snr_max')::double precision)
       AND f.program_slug = ANY(p_program_slugs)
       AND (p_include_unpublished OR s.deploy_status = 'published')
       AND (p_include_stale OR NOT f.stale_redshift)
@@ -2937,67 +2951,67 @@ CREATE OR REPLACE FUNCTION public.object_line_columns (
   GROUP BY per_line.object_id;
 $function$;
 
-REVOKE ALL ON FUNCTION "public"."object_line_columns"(text[], boolean, text[], boolean) FROM PUBLIC, "anon";
+REVOKE ALL ON FUNCTION "public"."object_line_columns"(jsonb, boolean, text[], boolean) FROM PUBLIC, "anon";
 
 COMMENT ON FUNCTION
   "public"."catalog_query_objects"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double
   precision,
   boolean,
-  text, double precision, double precision, double precision, double precision, text[], text[], double precision, double precision, text, text, uuid) IS 'The objects list for a predicate tree (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_objects_paginated(p_object_ids := ...), so the row shape, sort, paging and cursor are the legacy RPC''s. p_line / p_band only drive the Line S/N and Mag columns and sorts, p_coord_ra / p_coord_dec only the distance column and sort (the legacy RPC runs with p_measurements_display_only, so none of them filters). The explicit scope goes through to the tree for a service-role caller.';
+  text, double precision, double precision, double precision, double precision, jsonb, jsonb, double precision, double precision, text, text, uuid) IS 'The objects list for a predicate tree (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_objects_paginated(p_object_ids := ...), so the row shape, sort, paging and cursor are the legacy RPC''s. p_line / p_band only drive the Line S/N and Mag columns and sorts, p_coord_ra / p_coord_dec only the distance column and sort (the legacy RPC runs with p_measurements_display_only, so none of them filters). The explicit scope goes through to the tree for a service-role caller.';
 
 COMMENT ON FUNCTION
   "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
   precision,
   boolean,
   text,
-  double precision, double precision, double precision, double precision, text[], text[], uuid, double precision, double precision, text, text, uuid) IS 'The spectra list for a predicate tree rooted at spectra (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_spectra_paginated(p_spectrum_ids := ...).';
+  double precision, double precision, double precision, double precision, jsonb, jsonb, uuid, double precision, double precision, text, text, uuid) IS 'The spectra list for a predicate tree rooted at spectra (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_spectra_paginated(p_spectrum_ids := ...).';
 
 GRANT EXECUTE
   ON FUNCTION
     "public"."catalog_query_objects"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], double precision, double precision, text, text, uuid)
+    precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, double precision, double precision, text, text, uuid)
   TO "authenticated";
 
 REVOKE ALL
   ON FUNCTION
     "public"."catalog_query_objects"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], double precision, double precision, text, text, uuid)
+    precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, double precision, double precision, text, text, uuid)
   FROM "postgres";
 
 GRANT EXECUTE
   ON FUNCTION
     "public"."catalog_query_objects"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], double precision, double precision, text, text, uuid)
+    precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, double precision, double precision, text, text, uuid)
   TO "postgres";
 
 GRANT EXECUTE
   ON FUNCTION
     "public"."catalog_query_objects"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], double precision, double precision, text, text, uuid)
+    precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, double precision, double precision, text, text, uuid)
   TO "service_role";
 
 GRANT EXECUTE
   ON FUNCTION
     "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], uuid, double precision, double precision, text, text, uuid)
+    precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, uuid, double precision, double precision, text, text, uuid)
   TO "authenticated";
 
 REVOKE ALL
   ON FUNCTION
     "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], uuid, double precision, double precision, text, text, uuid)
+    precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, uuid, double precision, double precision, text, text, uuid)
   FROM "postgres";
 
 GRANT EXECUTE
   ON FUNCTION
     "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], uuid, double precision, double precision, text, text, uuid)
+    precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, uuid, double precision, double precision, text, text, uuid)
   TO "postgres";
 
 GRANT EXECUTE
   ON FUNCTION
     "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], uuid, double precision, double precision, text, text, uuid)
+    precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, uuid, double precision, double precision, text, text, uuid)
   TO "service_role";
 
 GRANT EXECUTE
@@ -3019,7 +3033,7 @@ GRANT EXECUTE
     double precision,
     double precision,
     text,
-    text, uuid, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[])
+    text, uuid, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[])
   TO "authenticated";
 
 REVOKE ALL
@@ -3041,7 +3055,7 @@ REVOKE ALL
     double precision,
     double precision,
     text,
-    text, uuid, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[])
+    text, uuid, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[])
   FROM "postgres";
 
 GRANT EXECUTE
@@ -3063,7 +3077,7 @@ GRANT EXECUTE
     double precision,
     double precision,
     text,
-    text, uuid, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[])
+    text, uuid, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[])
   TO "postgres";
 
 GRANT EXECUTE
@@ -3085,7 +3099,7 @@ GRANT EXECUTE
     double precision,
     double precision,
     text,
-    text, uuid, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[])
+    text, uuid, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[])
   TO "service_role";
 
 GRANT EXECUTE
@@ -3107,7 +3121,7 @@ GRANT EXECUTE
     text,
     uuid,
     boolean,
-    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[], text, integer)
+    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[], text, integer)
   TO "authenticated";
 
 REVOKE ALL
@@ -3129,7 +3143,7 @@ REVOKE ALL
     text,
     uuid,
     boolean,
-    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[], text, integer)
+    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[], text, integer)
   FROM "postgres";
 
 GRANT EXECUTE
@@ -3151,7 +3165,7 @@ GRANT EXECUTE
     text,
     uuid,
     boolean,
-    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[], text, integer)
+    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[], text, integer)
   TO "postgres";
 
 GRANT EXECUTE
@@ -3173,7 +3187,7 @@ GRANT EXECUTE
     text,
     uuid,
     boolean,
-    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[], text, integer)
+    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[], text, integer)
   TO "service_role";
 
 GRANT EXECUTE
@@ -3197,7 +3211,7 @@ GRANT EXECUTE
     double precision,
     double precision,
     boolean,
-    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[], integer, integer)
+    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[], integer, integer)
   TO "authenticated";
 
 REVOKE ALL
@@ -3221,7 +3235,7 @@ REVOKE ALL
     double precision,
     double precision,
     boolean,
-    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[], integer, integer)
+    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[], integer, integer)
   FROM "postgres";
 
 GRANT EXECUTE
@@ -3245,7 +3259,7 @@ GRANT EXECUTE
     double precision,
     double precision,
     boolean,
-    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[], integer, integer)
+    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[], integer, integer)
   TO "postgres";
 
 GRANT EXECUTE
@@ -3269,7 +3283,7 @@ GRANT EXECUTE
     double precision,
     double precision,
     boolean,
-    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[], integer, integer)
+    text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[], integer, integer)
   TO "service_role";
 
 GRANT EXECUTE
@@ -3291,7 +3305,7 @@ GRANT EXECUTE
     text,
     text,
     uuid,
-    text, text, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[])
+    text, text, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[])
   TO "authenticated";
 
 REVOKE ALL
@@ -3313,7 +3327,7 @@ REVOKE ALL
     text,
     text,
     uuid,
-    text, text, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[])
+    text, text, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[])
   FROM "postgres";
 
 GRANT EXECUTE
@@ -3335,7 +3349,7 @@ GRANT EXECUTE
     text,
     text,
     uuid,
-    text, text, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[])
+    text, text, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[])
   TO "postgres";
 
 GRANT EXECUTE
@@ -3357,7 +3371,7 @@ GRANT EXECUTE
     text,
     text,
     uuid,
-    text, text, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, text[], text[], integer[])
+    text, text, boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, jsonb, jsonb, integer[])
   TO "service_role";
 
 GRANT EXECUTE
@@ -3387,7 +3401,7 @@ GRANT EXECUTE
     text,
     double precision,
     double precision,
-    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], text[], text[], boolean)
+    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], jsonb, jsonb, boolean)
   TO "authenticated";
 
 REVOKE ALL
@@ -3417,7 +3431,7 @@ REVOKE ALL
     text,
     double precision,
     double precision,
-    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], text[], text[], boolean)
+    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], jsonb, jsonb, boolean)
   FROM "postgres";
 
 GRANT EXECUTE
@@ -3447,7 +3461,7 @@ GRANT EXECUTE
     text,
     double precision,
     double precision,
-    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], text[], text[], boolean)
+    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], jsonb, jsonb, boolean)
   TO "postgres";
 
 GRANT EXECUTE
@@ -3477,7 +3491,7 @@ GRANT EXECUTE
     text,
     double precision,
     double precision,
-    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], text[], text[], boolean)
+    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], jsonb, jsonb, boolean)
   TO "service_role";
 
 GRANT EXECUTE
@@ -3509,7 +3523,7 @@ GRANT EXECUTE
     text,
     double precision,
     double precision,
-    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], text[], text[], boolean)
+    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], jsonb, jsonb, boolean)
   TO "authenticated";
 
 REVOKE ALL
@@ -3541,7 +3555,7 @@ REVOKE ALL
     text,
     double precision,
     double precision,
-    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], text[], text[], boolean)
+    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], jsonb, jsonb, boolean)
   FROM "postgres";
 
 GRANT EXECUTE
@@ -3573,7 +3587,7 @@ GRANT EXECUTE
     text,
     double precision,
     double precision,
-    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], text[], text[], boolean)
+    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], jsonb, jsonb, boolean)
   TO "postgres";
 
 GRANT EXECUTE
@@ -3605,29 +3619,29 @@ GRANT EXECUTE
     text,
     double precision,
     double precision,
-    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], text[], text[], boolean)
+    boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], jsonb, jsonb, boolean)
   TO "service_role";
 
-GRANT EXECUTE ON FUNCTION "public"."measurement_sort_key"(text, text[], text[]) TO "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."measurement_sort_key"(text, jsonb, jsonb) TO "authenticated";
 
-REVOKE ALL ON FUNCTION "public"."measurement_sort_key"(text, text[], text[]) FROM "postgres";
+REVOKE ALL ON FUNCTION "public"."measurement_sort_key"(text, jsonb, jsonb) FROM "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."measurement_sort_key"(text, text[], text[]) TO "postgres";
+GRANT EXECUTE ON FUNCTION "public"."measurement_sort_key"(text, jsonb, jsonb) TO "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."measurement_sort_key"(text, text[], text[]) TO "service_role";
+GRANT EXECUTE ON FUNCTION "public"."measurement_sort_key"(text, jsonb, jsonb) TO "service_role";
 
-GRANT EXECUTE ON FUNCTION "public"."object_band_columns"(text[], text[], boolean) TO "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."object_band_columns"(jsonb, text[], boolean) TO "authenticated";
 
-REVOKE ALL ON FUNCTION "public"."object_band_columns"(text[], text[], boolean) FROM "postgres";
+REVOKE ALL ON FUNCTION "public"."object_band_columns"(jsonb, text[], boolean) FROM "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."object_band_columns"(text[], text[], boolean) TO "postgres";
+GRANT EXECUTE ON FUNCTION "public"."object_band_columns"(jsonb, text[], boolean) TO "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."object_band_columns"(text[], text[], boolean) TO "service_role";
+GRANT EXECUTE ON FUNCTION "public"."object_band_columns"(jsonb, text[], boolean) TO "service_role";
 
-GRANT EXECUTE ON FUNCTION "public"."object_line_columns"(text[], boolean, text[], boolean) TO "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."object_line_columns"(jsonb, boolean, text[], boolean) TO "authenticated";
 
-REVOKE ALL ON FUNCTION "public"."object_line_columns"(text[], boolean, text[], boolean) FROM "postgres";
+REVOKE ALL ON FUNCTION "public"."object_line_columns"(jsonb, boolean, text[], boolean) FROM "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."object_line_columns"(text[], boolean, text[], boolean) TO "postgres";
+GRANT EXECUTE ON FUNCTION "public"."object_line_columns"(jsonb, boolean, text[], boolean) TO "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."object_line_columns"(text[], boolean, text[], boolean) TO "service_role";
+GRANT EXECUTE ON FUNCTION "public"."object_line_columns"(jsonb, boolean, text[], boolean) TO "service_role";

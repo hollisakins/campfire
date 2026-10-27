@@ -182,10 +182,6 @@ export interface FilterRpcParams {
   p_band_mag_max?: number | null;
   p_band_snr_min?: number | null;
   p_band_snr_max?: number | null;
-  /** The several-columns maps (phase 3c): display only, present while any
-   *  line / band is shown, on every catalog RPC. */
-  p_line_columns?: string[];
-  p_band_columns?: string[];
 }
 
 /**
@@ -263,13 +259,6 @@ export function buildFilterParams(
         }
       : {};
 
-  const lines = (filters?.show_lines ?? []).filter(isFilterableLine);
-  const bands = (filters?.show_bands ?? []).map((b) => b.trim()).filter(Boolean);
-  const columnParams: Pick<FilterRpcParams, 'p_line_columns' | 'p_band_columns'> = {
-    ...(lines.length ? { p_line_columns: lines } : {}),
-    ...(bands.length ? { p_band_columns: bands } : {}),
-  };
-
   return {
     p_program_slugs: accessibleProgramSlugs,
     p_filter_programs: filters?.programs && filters.programs.length > 0 ? filters.programs : null,
@@ -301,7 +290,6 @@ export function buildFilterParams(
     p_comment_user_id: commentUserId,
     ...lineParams,
     ...bandParams,
-    ...columnParams,
   };
 }
 

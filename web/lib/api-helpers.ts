@@ -165,12 +165,13 @@ export function bandFilterRpcParams(searchParams: URLSearchParams): {
  * `band_mag:<band>` / `band_snr:<band>` sorts on one of them. Present only
  * while asked for, like the line and band parameters.
  */
-export function measurementColumnsRpcParams(searchParams: URLSearchParams): { p_line_columns?: string[]; p_band_columns?: string[] } {
+export function measurementColumnsRpcParams(searchParams: URLSearchParams): { p_line_columns?: Record<string, object>; p_band_columns?: Record<string, object> } {
   const lines = (parseCSV(searchParams.get('line_columns')) ?? []).filter(isFilterableLine);
   const bands = parseCSV(searchParams.get('band_columns')) ?? [];
+  // a JSON map of the asked keys; the API has no per-key window, so every value counts
   return {
-    ...(lines.length ? { p_line_columns: lines } : {}),
-    ...(bands.length ? { p_band_columns: bands } : {}),
+    ...(lines.length ? { p_line_columns: Object.fromEntries(lines.map((l) => [l, {}])) } : {}),
+    ...(bands.length ? { p_band_columns: Object.fromEntries(bands.map((b) => [b, {}])) } : {}),
   };
 }
 

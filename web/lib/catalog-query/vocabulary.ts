@@ -747,8 +747,17 @@ export function measurementKeys(nodes: TreeNode[], kind: MeasurementKind): strin
  * every catalog RPC (`p_line_columns` / `p_band_columns`).
  */
 export function columnKeys(nodes: TreeNode[], kind: MeasurementKind): string[] {
+  return columnSpecs(nodes, kind).map((c) => c.key);
+}
+
+/** A column's window: the row's own range clauses on the quantities the
+ *  column shows, so the shown value is one that admitted the row. */
+export interface ColumnWindow { snr_min?: number; snr_max?: number; mag_min?: number; mag_max?: number }
+
+/** The columns of a kind with their windows (the first row of a key wins). */
+export function columnSpecs(nodes: TreeNode[], kind: MeasurementKind): { key: string; window: ColumnWindow }[] {
   const def = MEASUREMENTS[kind];
-  const out: string[] = [];
+  const out: { key: string; window: ColumnWindow }[] = [];
   const walk = (list: TreeNode[]) => {
     for (const n of list) {
       if (isOr(n)) continue;
@@ -756,7 +765,17 @@ export function columnKeys(nodes: TreeNode[], kind: MeasurementKind): string[] {
         if (n.not) continue;
         if (n.exists === def.table) {
           const k = measurementKey(n, def);
-          if (k && !out.includes(k.key)) out.push(k.key);
+          if (k && !out.some((c) => c.key === k.key)) {
+            const window: ColumnWindow = {};
+            for (const w of n.where ?? []) {
+              if (!isPredicate(w) || (w.col !== 'snr' && w.col !== 'mag')) continue;
+              const b = rangeBounds(w);
+              if (!b) continue;
+              if (b[0] !== null) window[`${w.col}_min` as keyof ColumnWindow] = b[0];
+              if (b[1] !== null) window[`${w.col}_max` as keyof ColumnWindow] = b[1];
+            }
+            out.push({ key: k.key, window });
+          }
         }
         walk(n.where ?? []);
       } else if (isAnd(n)) {

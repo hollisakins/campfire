@@ -18,7 +18,7 @@ import {
   firstConeOf, isCone, isExists, isPredicate,
   type ExistsNode, type PredicateNode, type Scalar, type TreeNode, type TreeRoot,
 } from './tree';
-import { lineWantsFresh } from './vocabulary';
+import { columnSpecs, lineWantsFresh, type ColumnWindow } from './vocabulary';
 
 /** The root a view mode queries. */
 export function rootOf(viewMode: 'objects' | 'spectra' | undefined): TreeRoot {
@@ -154,19 +154,28 @@ export function activeBandsOf(filters: Partial<FilterOptions> | undefined): stri
 
 /**
  * The column parameters of every catalog RPC (phase 3c): the shown lines
- * and bands, display only, and whether the line columns count stale fits
- * (they do unless a shown line's row asks for a fresh fit; the flag also
- * governs the legacy line pill's own filter, which asks the same question).
+ * and bands as JSON maps, each key with the window of its own row (so the
+ * shown value is one that admitted the row), display only. With no line
+ * pill set, the stale flag the line columns read is "count stale fits unless
+ * a shown line's row asks for a fresh fit"; with a pill set, the flag stays
+ * the pill's own (it governs the pill's filter) and the columns follow it.
  */
 export function measurementColumnParams(filters: Partial<FilterOptions> | undefined, root: TreeRoot): {
-  p_line_columns?: string[]; p_band_columns?: string[]; p_line_include_stale?: boolean;
+  p_line_columns?: Record<string, ColumnWindow>; p_band_columns?: Record<string, ColumnWindow>; p_line_include_stale?: boolean;
 } {
-  const lines = activeLinesOf(filters);
-  const bands = activeBandsOf(filters);
-  const nodes = lines.length ? filterNodes(filters, root) : [];
+  const lines = new Set(activeLinesOf(filters));
+  const bands = new Set(activeBandsOf(filters));
+  if (lines.size === 0 && bands.size === 0) return {};
+  const nodes = filterNodes(filters, root);
+  const lineMap = Object.fromEntries(columnSpecs(nodes, 'line').filter((c) => lines.has(c.key)).map((c) => [c.key, c.window]));
+  const bandMap = Object.fromEntries(columnSpecs(nodes, 'band').filter((c) => bands.has(c.key)).map((c) => [c.key, c.window]));
+  const pillLine = Boolean(filters?.line?.trim() && isFilterableLine(filters.line.trim()));
   return {
-    ...(lines.length ? { p_line_columns: lines, p_line_include_stale: !lines.some((l) => lineWantsFresh(nodes, l)) } : {}),
-    ...(bands.length ? { p_band_columns: bands } : {}),
+    ...(Object.keys(lineMap).length ? {
+      p_line_columns: lineMap,
+      ...(pillLine ? {} : { p_line_include_stale: !Object.keys(lineMap).some((l) => lineWantsFresh(nodes, l)) }),
+    } : {}),
+    ...(Object.keys(bandMap).length ? { p_band_columns: bandMap } : {}),
   };
 }
 

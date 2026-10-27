@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { CATALOGUE, CORRELATIONS, OPS_BY_TYPE, TREE_TABLES } from './catalogue';
 import { describeNode, encodeConditions, parseConditions, rerootNodes, validateNode, type TreeNode } from './tree';
-import { activeLinesOf, distanceReferenceOf, filterNodes, legacyNodes, liftConditions, needsTreePath, normalizeFilters } from './legacy';
+import { activeLinesOf, distanceReferenceOf, filterNodes, legacyNodes, liftConditions, measurementColumnParams, needsTreePath, normalizeFilters } from './legacy';
 import { DEFAULT_FILTERS, buildFilterParams } from '@/lib/actions/filter-params';
 import { isValidSortColumn } from '@/lib/actions/spectra-types';
 import { filtersToURLParams, parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
@@ -254,8 +254,14 @@ describe('free conditions', () => {
     const pill = normalizeFilters({ ...DEFAULT_FILTERS, conditions: legacyNodes({ line: 'Halpha', line_snr_min: 3 }, 'objects') }, 'objects');
     expect(needsTreePath(pill)).toBe(false);
     expect(needsTreePath({ ...pill, show_lines: ['OIII5007'], show_bands: ['f444w'] })).toBe(false);
-    expect(buildFilterParams({ ...pill, show_lines: ['OIII5007', 'CIII1907'], show_bands: ['f444w'] }, ['p']).p_line_columns).toEqual(['OIII5007']);
-    expect(buildFilterParams({ ...pill, show_lines: ['OIII5007'], show_bands: ['f444w'] }, ['p']).p_band_columns).toEqual(['f444w']);
+    // the column parameters: each shown key with the window of its own row; the stale flag is the pill's when a pill is set
+    const cols = measurementColumnParams({ ...pill, conditions: [...pill.conditions, line, ...legacyNodes({ band: 'f444w', band_mag_max: 27, band_snr_min: 5 }, 'objects')], show_lines: ['Halpha', 'OIII5007', 'CIII1907'], show_bands: ['f444w'] }, 'objects');
+    expect(cols.p_line_columns).toEqual({ Halpha: { snr_min: 3 }, OIII5007: { snr_min: 3 } });
+    expect(cols.p_band_columns).toEqual({ f444w: { mag_max: 27, snr_min: 5 } });
+    expect('p_line_include_stale' in cols).toBe(false);
+    const noPill = measurementColumnParams({ ...DEFAULT_FILTERS, conditions: [line], show_lines: ['OIII5007'] }, 'objects');
+    expect(noPill.p_line_include_stale).toBe(true);
+    expect(measurementColumnParams(DEFAULT_FILTERS, 'objects')).toEqual({});
     expect('p_line_columns' in buildFilterParams(DEFAULT_FILTERS, ['p'])).toBe(false);
     // and a measurement column is a sort key of its own
     expect(isValidSortColumn('line_snr:OIII5007', 'objects')).toBe(true);
