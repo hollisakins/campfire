@@ -11,6 +11,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { X, Search, ChevronDown, SlidersHorizontal, Map } from 'lucide-react';
+import type { FilterOption } from '@/components/ui/FilterChip';
+import { getAvailableLists } from '@/lib/actions/lists';
 import { FiltersModal } from '@/components/filters/FiltersModal';
 import { ItemChip, PropertyChip, type CardsContext, type Level } from '@/components/filters/FilterCards';
 import { buildChoices, valueLabelFor } from '@/components/filters/filter-choices';
@@ -54,8 +56,10 @@ interface SpectraFilterBarProps {
   viewMode?: ViewMode;
 }
 
-/** The chips the bar always shows, in order. */
-const BAR_KEYS = ['program', 'field', 'observation', 'redshift', 'quality'] as const;
+/** The chips the bar always shows, in order (Tags only for a viewer with lists). */
+const BAR_KEYS = ['program', 'field', 'position', 'redshift', 'quality', 'grating', 'tag'] as const;
+/** A divider goes before these. */
+const DIVIDER_BEFORE = new Set<string>(['redshift', 'grating']);
 
 export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   filters,
@@ -75,6 +79,15 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   const scopeDropdownRef = useRef<HTMLDivElement>(null);
   // Modal state
   const [panelOpen, setPanelOpen] = useState(false);
+  // the viewer's tags, for the Tags chip (once)
+  const [lists, setLists] = useState<FilterOption[]>([]);
+  useEffect(() => {
+    let live = true;
+    getAvailableLists().then(({ lists: rows }) => {
+      if (live) setLists(rows.map((l) => ({ value: l.id, label: l.name, color: l.color ?? undefined, icon: l.icon ?? undefined })));
+    });
+    return () => { live = false; };
+  }, []);
 
   // Track the last value WE sent to the parent to distinguish our echoes from external changes
   const lastSentValueRef = useRef(filters.search);
@@ -120,8 +133,8 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   const isSpectra = root === 'spectra';
   const reading = useMemo(() => readConditions(filters.conditions, root), [filters.conditions, root]);
   const choices = useMemo(
-    () => buildChoices({ programs: availablePrograms, fields: availableFields, observations: availableObservations, bands: availableBands }),
-    [availablePrograms, availableFields, availableObservations, availableBands],
+    () => ({ ...buildChoices({ programs: availablePrograms, fields: availableFields, observations: availableObservations, bands: availableBands }), lists }),
+    [availablePrograms, availableFields, availableObservations, availableBands, lists],
   );
   const label = useMemo(() => valueLabelFor(choices), [choices]);
   const ctx: CardsContext = {
@@ -130,14 +143,15 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     onChange: (next) => onFiltersChange(applyConditions(filters, next, root)),
     choices,
     label,
-    hideKeys: ['tag'],
+    hideKeys: lists.length === 0 ? ['tag'] : [],
   };
 
   // the bar's own chips: at the spectra root Program and Observation are the
   // spectrum's, the rest its object's
   const objectLevel: Level = isSpectra ? { table: 'spectra', path: [], itsObject: true } : { table: 'objects', path: [] };
-  const barChips = BAR_KEYS.map((key) => {
-    const scope = isSpectra && (key === 'program' || key === 'observation') ? 'spectrum' : 'object';
+  const barChips = BAR_KEYS.filter((key) => key !== 'tag' || lists.length > 0).map((key) => {
+    // at the spectra root Program and Grating are the spectrum's own
+    const scope = isSpectra && (key === 'program' || key === 'grating') ? 'spectrum' : 'object';
     const def = propertyDef(scope, key)!;
     // a choice chip owns every node of its key at this level
     const items = reading.items.filter((it): it is PropertyItem => it.kind === 'property' && it.def.scope === scope && it.def.key === key);
@@ -165,8 +179,9 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
 
   return (
     <div className={`space-y-3 ${className}`}>
-      {/* Search bar with scope dropdown */}
-      <div className="relative max-w-md flex" ref={scopeDropdownRef}>
+      {/* Search bar with scope dropdown; the map link at the far right */}
+      <div className="flex items-start gap-3">
+      <div className="relative max-w-md flex flex-1" ref={scopeDropdownRef}>
         <div className="relative">
           <button
             onClick={() => setScopeDropdownOpen(!scopeDropdownOpen)}
@@ -210,12 +225,37 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
           )}
         </div>
       </div>
+        <span className="flex-1" />
+        {/* View on map: a link out, not a filter */}
+        <button
+          onClick={() => {
+            // the map queries objects: conditions written against spectra move over
+            const mapFilters = isSpectra
+              ? { ...filters, conditions: rerootConditions(filters.conditions, 'spectra', 'objects') }
+              : filters;
+            const filterParams = filtersToURLParams(mapFilters);
+            // If exactly one field is selected, also set it as the map field param
+            const field = findProperty(reading.items, 'object', 'field');
+            if (field && field.value.kind === 'choice' && field.value.values.length === 1 && !field.value.not) {
+              filterParams.set('field', String(field.value.values[0]));
+            }
+            const qs = filterParams.toString();
+            router.push(`/map${qs ? `?${qs}` : ''}`);
+          }}
+          className="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-card-hover transition-colors"
+          title="View these objects on the map"
+          aria-label="View on map"
+        >
+          <Map className="w-4 h-4" />
+          <span className="hidden sm:inline">Map</span>
+        </button>
+      </div>
 
       {/* The chips */}
       <div className="flex flex-wrap items-center gap-2">
-        {barChips.map(({ def, items, level }, i) => (
+        {barChips.map(({ def, items, level }) => (
           <React.Fragment key={`${def.scope}.${def.key}`}>
-            {i === 3 && <div className="h-6 w-px bg-border mx-1" />}
+            {DIVIDER_BEFORE.has(def.key) && <div className="h-6 w-px bg-border mx-1" />}
             <PropertyChip def={def} items={items} level={level} ctx={ctx}
               extraCheckbox={def.key === 'quality' ? {
                 label: 'Needs review only',
@@ -234,36 +274,13 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
 
         <div className="h-6 w-px bg-border mx-1" />
 
-        {/* Filters: the modal over the same state */}
+        {/* Advanced: the modal over the same state */}
         <button
           onClick={() => setPanelOpen(true)}
           className="inline-flex items-center gap-1.5 px-3 h-8 rounded-full text-sm font-medium border border-border bg-card text-text-secondary hover:border-text-secondary dark:hover:border-border-strong hover:text-text-primary transition-all duration-200"
         >
           <SlidersHorizontal className="w-4 h-4" />
-          <span>Filters</span>
-        </button>
-
-        {/* Show on Map button */}
-        <button
-          onClick={() => {
-            // the map queries objects: conditions written against spectra move over
-            const mapFilters = isSpectra
-              ? { ...filters, conditions: rerootConditions(filters.conditions, 'spectra', 'objects') }
-              : filters;
-            const filterParams = filtersToURLParams(mapFilters);
-            // If exactly one field is selected, also set it as the map field param
-            const field = findProperty(reading.items, 'object', 'field');
-            if (field && field.value.kind === 'choice' && field.value.values.length === 1 && !field.value.not) {
-              filterParams.set('field', String(field.value.values[0]));
-            }
-            const qs = filterParams.toString();
-            router.push(`/map${qs ? `?${qs}` : ''}`);
-          }}
-          className="inline-flex items-center gap-1.5 px-3 h-8 rounded-full text-sm font-medium border border-border bg-card text-text-secondary hover:border-text-secondary dark:hover:border-border-strong hover:text-text-primary transition-all duration-200"
-          title="Show filtered objects on map"
-        >
-          <Map className="w-4 h-4" />
-          <span>Map</span>
+          <span>Advanced</span>
         </button>
 
         {hasActiveFilters && (
@@ -289,6 +306,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         availableFields={availableFields}
         availableObservations={availableObservations}
         availableBands={availableBands}
+        availableLists={lists}
         viewMode={viewMode}
       />
     </div>

@@ -37,6 +37,8 @@ interface FiltersModalProps {
   availableFields?: string[];
   availableObservations?: string[];
   availableBands?: string[];
+  /** The viewer's tags, when the page already has them; else fetched on open. */
+  availableLists?: FilterOption[];
   viewMode?: ViewMode;
   /** The map has its own position tools: no position chip there. */
   hidePosition?: boolean;
@@ -48,7 +50,7 @@ const EYEBROW = 'text-[11px] font-semibold uppercase tracking-wider text-text-te
 
 export function FiltersModal({
   isOpen, onClose, filters, onApply,
-  availablePrograms = [], availableFields = [], availableObservations = [], availableBands = [],
+  availablePrograms = [], availableFields = [], availableObservations = [], availableBands = [], availableLists,
   viewMode = 'objects', hidePosition = false, title = 'Advanced Filters',
 }: FiltersModalProps) {
   const root = rootOf(viewMode);
@@ -58,14 +60,15 @@ export function FiltersModal({
   const [draft, setDraft] = useState<FilterOptions>(filters);
   useEffect(() => { if (isOpen) setDraft(filters); }, [isOpen, filters]);
 
-  // the viewer's tags, once per opening
-  const [listOptions, setListOptions] = useState<FilterOption[]>([]);
+  // the viewer's tags: the page's, else once per opening
+  const [fetchedLists, setFetchedLists] = useState<FilterOption[]>([]);
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || availableLists) return;
     getAvailableLists().then(({ lists }) => {
-      setListOptions(lists.map((l) => ({ value: l.id, label: l.name, color: l.color ?? undefined, icon: l.icon ?? undefined })));
+      setFetchedLists(lists.map((l) => ({ value: l.id, label: l.name, color: l.color ?? undefined, icon: l.icon ?? undefined })));
     });
-  }, [isOpen]);
+  }, [isOpen, availableLists]);
+  const listOptions = availableLists ?? fetchedLists;
 
   useEffect(() => {
     if (!isOpen) return;
