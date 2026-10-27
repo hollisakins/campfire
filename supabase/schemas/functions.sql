@@ -2067,9 +2067,12 @@ GRANT EXECUTE ON FUNCTION public.objects_matching_band_filter(TEXT, DOUBLE PRECI
 -- #660): the Line S/N and Mag columns for SEVERAL lines / bands at once. The
 -- asked keys come as a JSON map, each with the window that admitted the row
 -- (`{"Halpha": {"snr_min": 3}}`, `{"f444w": {"mag_max": 27}}`; an empty
--- object is "any"), applied row by row before the aggregate, so a column
--- never shows a value outside the window that admitted it (the invariant of
--- object_line_values / object_band_values, kept per key). One row per object
+-- object is "any"), tested on the same aggregates the single-column helpers
+-- test (max S/N over the object's fits of the line; min magnitude and max S/N
+-- over its matches in the band, which may come from different rows), so a
+-- column shows exactly the pair the filter admitted and never a value
+-- outside its window (the invariant of object_line_values /
+-- object_band_values, kept per key). One row per object
 -- with a JSON map keyed by line / band, so the list RPCs join it once (hash
 -- join) and carry the map in the row; a sort key 'line_snr:<line>' reads one
 -- entry. Display only: nothing filters on these. The gates are
@@ -2110,9 +2113,6 @@ AS $$
     ) o
     WHERE l.snr IS NOT NULL
       AND l.object_id IS NOT NULL
-      -- the key's own window
-      AND ((spec.w ->> 'snr_min') IS NULL OR l.snr >= (spec.w ->> 'snr_min')::double precision)
-      AND ((spec.w ->> 'snr_max') IS NULL OR l.snr <= (spec.w ->> 'snr_max')::double precision)
       AND f.program_slug = ANY(p_program_slugs)
       AND (p_include_unpublished OR s.deploy_status = 'published')
       AND (p_include_stale OR NOT f.stale_redshift)
@@ -2134,7 +2134,10 @@ AS $$
              OR ((SELECT NOT public.is_link_account())
                  AND public.dr_browse_tag() = ANY ((SELECT public.dr_visible_tags())::text[])))
       ))
-    GROUP BY l.object_id, l.line
+    GROUP BY l.object_id, l.line, spec.w
+    -- the key's own window, on the aggregate the filter tested
+    HAVING ((spec.w ->> 'snr_min') IS NULL OR max(l.snr) >= (spec.w ->> 'snr_min')::double precision)
+       AND ((spec.w ->> 'snr_max') IS NULL OR max(l.snr) <= (spec.w ->> 'snr_max')::double precision)
   ) per_line
   GROUP BY per_line.object_id;
 $$;
@@ -2160,12 +2163,6 @@ AS $$
     JOIN public.cat_photometry b ON b.band = spec.band
     JOIN public.cat_objects o ON o.id = b.object_id
     WHERE b.object_id IS NOT NULL
-      -- the key's own window, row by row (so the shown magnitude and S/N
-      -- both come from matches inside it)
-      AND ((spec.w ->> 'mag_min') IS NULL OR b.mag >= (spec.w ->> 'mag_min')::double precision)
-      AND ((spec.w ->> 'mag_max') IS NULL OR b.mag <= (spec.w ->> 'mag_max')::double precision)
-      AND ((spec.w ->> 'snr_min') IS NULL OR b.snr >= (spec.w ->> 'snr_min')::double precision)
-      AND ((spec.w ->> 'snr_max') IS NULL OR b.snr <= (spec.w ->> 'snr_max')::double precision)
       AND o.programs && p_program_slugs
       AND (p_include_unpublished OR o.has_published_spectrum)
       AND (COALESCE((SELECT auth.role()), '') = 'service_role' OR (
@@ -2179,7 +2176,13 @@ AS $$
              OR ((SELECT NOT public.is_link_account())
                  AND public.dr_browse_tag() = ANY ((SELECT public.dr_visible_tags())::text[])))
       ))
-    GROUP BY b.object_id, b.band
+    GROUP BY b.object_id, b.band, spec.w
+    -- the key's own window, on the aggregates the filter tested (no bound is
+    -- pushed into WHERE on purpose: see object_band_values)
+    HAVING ((spec.w ->> 'mag_min') IS NULL OR min(b.mag) >= (spec.w ->> 'mag_min')::double precision)
+       AND ((spec.w ->> 'mag_max') IS NULL OR min(b.mag) <= (spec.w ->> 'mag_max')::double precision)
+       AND ((spec.w ->> 'snr_min') IS NULL OR max(b.snr) >= (spec.w ->> 'snr_min')::double precision)
+       AND ((spec.w ->> 'snr_max') IS NULL OR max(b.snr) <= (spec.w ->> 'snr_max')::double precision)
   ) per_band
   GROUP BY per_band.object_id;
 $$;

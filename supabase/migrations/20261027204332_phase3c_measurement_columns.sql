@@ -2,10 +2,11 @@ SET lock_timeout = '5s';
 SET statement_timeout = '60s';
 -- Catalog Read Model phase 3c (#660): several Line S/N / Mag columns at once.
 -- object_line_columns / object_band_columns return a per-object JSON map of
--- the asked lines / bands, each key with the window that admitted the row;
--- the eight catalog RPCs take p_line_columns / p_band_columns (JSON maps,
--- display only), carry line_columns / band_columns in their rows, and sort
--- on 'line_snr:<line>' / 'band_mag:<band>' / 'band_snr:<band>'.
+-- the asked lines / bands, each key with the window that admitted the row
+-- (tested on the aggregates the filters test); the eight catalog RPCs take
+-- p_line_columns / p_band_columns (JSON maps, display only), carry
+-- line_columns / band_columns in their rows, and sort on 'line_snr:<line>' /
+-- 'band_mag:<band>' / 'band_snr:<band>'.
 SET local check_function_bodies = off;
 
 DROP FUNCTION
@@ -2863,12 +2864,6 @@ CREATE OR REPLACE FUNCTION public.object_band_columns (
     JOIN public.cat_photometry b ON b.band = spec.band
     JOIN public.cat_objects o ON o.id = b.object_id
     WHERE b.object_id IS NOT NULL
-      -- the key's own window, row by row (so the shown magnitude and S/N
-      -- both come from matches inside it)
-      AND ((spec.w ->> 'mag_min') IS NULL OR b.mag >= (spec.w ->> 'mag_min')::double precision)
-      AND ((spec.w ->> 'mag_max') IS NULL OR b.mag <= (spec.w ->> 'mag_max')::double precision)
-      AND ((spec.w ->> 'snr_min') IS NULL OR b.snr >= (spec.w ->> 'snr_min')::double precision)
-      AND ((spec.w ->> 'snr_max') IS NULL OR b.snr <= (spec.w ->> 'snr_max')::double precision)
       AND o.programs && p_program_slugs
       AND (p_include_unpublished OR o.has_published_spectrum)
       AND (COALESCE((SELECT auth.role()), '') = 'service_role' OR (
@@ -2882,7 +2877,13 @@ CREATE OR REPLACE FUNCTION public.object_band_columns (
              OR ((SELECT NOT public.is_link_account())
                  AND public.dr_browse_tag() = ANY ((SELECT public.dr_visible_tags())::text[])))
       ))
-    GROUP BY b.object_id, b.band
+    GROUP BY b.object_id, b.band, spec.w
+    -- the key's own window, on the aggregates the filter tested (no bound is
+    -- pushed into WHERE on purpose: see object_band_values)
+    HAVING ((spec.w ->> 'mag_min') IS NULL OR min(b.mag) >= (spec.w ->> 'mag_min')::double precision)
+       AND ((spec.w ->> 'mag_max') IS NULL OR min(b.mag) <= (spec.w ->> 'mag_max')::double precision)
+       AND ((spec.w ->> 'snr_min') IS NULL OR max(b.snr) >= (spec.w ->> 'snr_min')::double precision)
+       AND ((spec.w ->> 'snr_max') IS NULL OR max(b.snr) <= (spec.w ->> 'snr_max')::double precision)
   ) per_band
   GROUP BY per_band.object_id;
 $function$;
@@ -2928,9 +2929,6 @@ CREATE OR REPLACE FUNCTION public.object_line_columns (
     ) o
     WHERE l.snr IS NOT NULL
       AND l.object_id IS NOT NULL
-      -- the key's own window
-      AND ((spec.w ->> 'snr_min') IS NULL OR l.snr >= (spec.w ->> 'snr_min')::double precision)
-      AND ((spec.w ->> 'snr_max') IS NULL OR l.snr <= (spec.w ->> 'snr_max')::double precision)
       AND f.program_slug = ANY(p_program_slugs)
       AND (p_include_unpublished OR s.deploy_status = 'published')
       AND (p_include_stale OR NOT f.stale_redshift)
@@ -2952,7 +2950,10 @@ CREATE OR REPLACE FUNCTION public.object_line_columns (
              OR ((SELECT NOT public.is_link_account())
                  AND public.dr_browse_tag() = ANY ((SELECT public.dr_visible_tags())::text[])))
       ))
-    GROUP BY l.object_id, l.line
+    GROUP BY l.object_id, l.line, spec.w
+    -- the key's own window, on the aggregate the filter tested
+    HAVING ((spec.w ->> 'snr_min') IS NULL OR max(l.snr) >= (spec.w ->> 'snr_min')::double precision)
+       AND ((spec.w ->> 'snr_max') IS NULL OR max(l.snr) <= (spec.w ->> 'snr_max')::double precision)
   ) per_line
   GROUP BY per_line.object_id;
 $function$;
