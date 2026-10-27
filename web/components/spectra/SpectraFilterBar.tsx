@@ -12,7 +12,8 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { X, Search, ChevronDown, SlidersHorizontal, Map } from 'lucide-react';
 import type { FilterOption } from '@/components/ui/FilterChip';
-import { getAvailableLists } from '@/lib/actions/lists';
+import { useAvailableListsQuery } from '@/lib/hooks/useAvailableListsQuery';
+import { useAuth } from '@/lib/contexts/AuthContext';
 import { FiltersModal } from '@/components/filters/FiltersModal';
 import { ItemChip, PropertyChip, type CardsContext, type Level } from '@/components/filters/FilterCards';
 import { buildChoices, valueLabelFor } from '@/components/filters/filter-choices';
@@ -79,15 +80,14 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   const scopeDropdownRef = useRef<HTMLDivElement>(null);
   // Modal state
   const [panelOpen, setPanelOpen] = useState(false);
-  // the viewer's tags, for the Tags chip (once)
-  const [lists, setLists] = useState<FilterOption[]>([]);
-  useEffect(() => {
-    let live = true;
-    getAvailableLists().then(({ lists: rows }) => {
-      if (live) setLists(rows.map((l) => ({ value: l.id, label: l.name, color: l.color ?? undefined, icon: l.icon ?? undefined })));
-    });
-    return () => { live = false; };
-  }, []);
+  // the viewer's tags, for the Tags chip: a GET route read alongside the
+  // page's other reads (decision D-C), once auth has resolved to a user
+  const { user, loading: authLoading } = useAuth();
+  const { data: listsResult } = useAvailableListsQuery(!authLoading && !!user);
+  const lists = useMemo<FilterOption[]>(
+    () => (listsResult?.lists ?? []).map((l) => ({ value: l.id, label: l.name, color: l.color ?? undefined, icon: l.icon ?? undefined })),
+    [listsResult],
+  );
 
   // Track the last value WE sent to the parent to distinguish our echoes from external changes
   const lastSentValueRef = useRef(filters.search);

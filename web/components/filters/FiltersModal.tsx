@@ -15,10 +15,10 @@ import { DEFAULT_FILTERS, type FilterOptions } from '@/lib/actions/filter-params
 import type { ViewMode } from '@/lib/actions/spectra-types';
 import { defaultSortColumn } from '@/lib/actions/spectra-types';
 import type { Program } from '@/lib/types';
+import { useAvailableListsQuery } from '@/lib/hooks/useAvailableListsQuery';
 import { useDrTag } from '@/lib/dr/client';
 import { filtersToURLParams } from '@/lib/utils/url-params';
 import type { CatalogQueryCountResponse } from '@/app/api/catalog-query/count/route';
-import { getAvailableLists } from '@/lib/actions/lists';
 import { rootOf } from '@/lib/catalog-query/legacy';
 import { encodeConditions, parseConditions, type TreeNode } from '@/lib/catalog-query/tree';
 import { readConditions } from '@/lib/catalog-query/vocabulary';
@@ -60,15 +60,12 @@ export function FiltersModal({
   const [draft, setDraft] = useState<FilterOptions>(filters);
   useEffect(() => { if (isOpen) setDraft(filters); }, [isOpen, filters]);
 
-  // the viewer's tags: the page's, else once per opening
-  const [fetchedLists, setFetchedLists] = useState<FilterOption[]>([]);
-  useEffect(() => {
-    if (!isOpen || availableLists) return;
-    getAvailableLists().then(({ lists }) => {
-      setFetchedLists(lists.map((l) => ({ value: l.id, label: l.name, color: l.color ?? undefined, icon: l.icon ?? undefined })));
-    });
-  }, [isOpen, availableLists]);
-  const listOptions = availableLists ?? fetchedLists;
+  // the viewer's tags: the page's, else read through the GET route while open
+  const { data: fetched } = useAvailableListsQuery(isOpen && !availableLists);
+  const listOptions = useMemo<FilterOption[]>(
+    () => availableLists ?? (fetched?.lists ?? []).map((l) => ({ value: l.id, label: l.name, color: l.color ?? undefined, icon: l.icon ?? undefined })),
+    [availableLists, fetched],
+  );
 
   useEffect(() => {
     if (!isOpen) return;
