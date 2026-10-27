@@ -13,7 +13,7 @@
  * several things must hold on the same spectrum.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Lock, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Lock, Plus, X } from 'lucide-react';
 import { FilterChip, type FilterOption } from '@/components/ui/FilterChip';
 import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
 import { CoordinateSearchChip, type CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
@@ -74,7 +74,6 @@ const CHIP_IDLE = 'bg-card border-border text-text-secondary hover:border-text-s
 const CHIP_ON = 'bg-primary/10 border-primary text-primary';
 const ADD = `${CHIP} border-dashed bg-transparent text-text-secondary hover:text-text-primary hover:border-text-secondary cursor-pointer`;
 const CARET = `appearance-none pr-7 bg-[length:12px] bg-[right_10px_center] bg-no-repeat bg-[url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%2394a3b8%22 stroke-width=%222.5%22><path d=%22m6 9 6 6 6-6%22/></svg>')]`;
-const ADD_SELECT = `${ADD} ${CARET}`;
 const INPUT = 'px-2 py-1 text-sm border border-border rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-transparent';
 const SMALL_SELECT = `${INPUT} ${CARET} pr-6 py-0.5 text-xs`;
 const EYEBROW = 'text-[11px] font-semibold uppercase tracking-wider text-text-tertiary';
@@ -244,19 +243,6 @@ export function PropertyChip({ def, items, level, ctx, extraCheckbox, onOpenAdva
 
 // ---------------------------------------------------------------- adders
 
-/** A native select styled as a dashed chip: never clipped by a scrolling parent. */
-function AddSelect({ label, options, onPick, className = ADD_SELECT }: {
-  label: string; options: { value: string; label: string }[]; onPick: (value: string) => void; className?: string;
-}) {
-  if (options.length === 0) return null;
-  return (
-    <select className={className} value="" onChange={(e) => { if (e.target.value) onPick(e.target.value); }} aria-label={label}>
-      <option value="">{label}</option>
-      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
-  );
-}
-
 /**
  * The "+ property" adder: every property of the noun with a checkbox, checked
  * when its chip is showing. Checking shows a chip to fill in; unchecking
@@ -300,11 +286,47 @@ function AddPropertyChip({ defs, fixed, shown, onToggle, onGroup }: {
           {onGroup && (
             <div className="border-t border-border p-2">
               <button type="button" onClick={() => { onGroup(); setOpen(false); }}
-                className="w-full px-3 py-1.5 text-sm text-primary hover:text-primary-hover hover:bg-primary/10 rounded-md text-left transition-colors font-medium">
-                Any of… <span className="font-normal text-text-tertiary">an OR across properties</span>
+                className="w-full inline-flex items-center gap-2 px-3 py-1.5 text-sm text-primary hover:text-primary-hover hover:bg-primary/10 rounded-md text-left transition-colors font-medium">
+                <Plus className="w-3.5 h-3.5" /> Any of…
               </button>
             </div>
           )}
+        </Popover>
+      )}
+    </div>
+  );
+}
+
+/** A single pick from a list of properties: the first arm of a new group,
+ *  or the next one. As a "+" when `plus`, greyed while `disabled`. */
+function PickPropertyMenu({ defs, onPick, label, plus = false, disabled = false }: {
+  defs: PropertyDef[]; onPick: (def: PropertyDef) => void; label?: string; plus?: boolean; disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => { if (!isInsidePopover(e.target, ref.current)) setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
+  const cls = plus
+    ? `inline-flex items-center justify-center w-7 h-7 rounded-full border border-dashed transition-colors ${disabled ? 'border-border text-text-tertiary opacity-50 cursor-default' : 'border-border-strong text-text-secondary hover:text-text-primary hover:border-text-secondary'}`
+    : `${ADD} ${disabled ? 'opacity-50 cursor-default' : ''}`;
+  return (
+    <div ref={ref} className="relative inline-block">
+      <button type="button" onClick={() => { if (!disabled) setOpen(!open); }} className={cls} disabled={disabled} aria-label={plus ? 'Add an alternative' : label}>
+        {plus ? <Plus className="w-3.5 h-3.5" /> : <><span>{label}</span><ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} /></>}
+      </button>
+      {open && !disabled && (
+        <Popover anchorRef={ref} open={open} className="min-w-[200px] max-w-[300px] bg-card border border-border rounded-lg shadow-lg p-1">
+          <div className="max-h-[320px] overflow-y-auto">
+            {defs.map((def) => (
+              <button key={def.key} type="button" onClick={() => { onPick(def); setOpen(false); }}
+                className="w-full px-3 py-2 text-sm text-left rounded-md text-text-primary hover:bg-card-hover transition-colors">
+                {def.label}
+              </button>
+            ))}
+          </div>
         </Popover>
       )}
     </div>
@@ -520,9 +542,10 @@ function AnyOfGroup({ item, level, ctx, noun }: { item: AnyOfItem; level: Level;
         <>
           <span className="text-xs text-text-tertiary">or</span>
           <PropertyChip def={pending} items={[]} level={armLevel} ctx={{ ...ctx, onChange: (n) => { setPending(null); ctx.onChange(n); } }} />
+          <button type="button" onClick={() => setPending(null)} className={ICON_BTN} aria-label="Cancel"><X className="w-3 h-3" /></button>
         </>
       )}
-      <AddSelect label="+ alternative" options={defs.map((d) => ({ value: d.key, label: d.label }))} onPick={(k) => setPending(defs.find((d) => d.key === k) ?? null)} className={`${SMALL_SELECT} border-dashed cursor-pointer`} />
+      <PickPropertyMenu plus defs={defs.filter((d) => d !== pending)} disabled={pending !== null} onPick={setPending} />
       <button type="button" onClick={() => ctx.onChange(replaceAt(ctx.nodes, item.path, null))} className={ICON_BTN} aria-label="Remove group">
         <X className="w-3.5 h-3.5" />
       </button>
@@ -568,7 +591,8 @@ export interface NounBodyProps {
  */
 export function NounBody({ noun, items, level, ctx, demote = [] }: NounBodyProps) {
   const [pending, setPending] = useState<string[]>([]);
-  const [pendingGroup, setPendingGroup] = useState<PropertyDef | null>(null);
+  // a group being started: open (no property yet), or seeded with one
+  const [pendingGroup, setPendingGroup] = useState<{ def: PropertyDef | null } | null>(null);
   const hide = new Set(ctx.hideKeys ?? []);
   const defs = propertiesOf(noun).filter((d) => !hide.has(d.key));
   const props = items.filter((it): it is PropertyItem => it.kind === 'property');
@@ -611,15 +635,17 @@ export function NounBody({ noun, items, level, ctx, demote = [] }: NounBodyProps
           );
         })}
         <AddPropertyChip defs={offered} fixed={fixed} shown={new Set(visible.map((d) => d.key))}
-          onToggle={toggleProperty} onGroup={() => setPendingGroup(defs.find((d) => d.primary) ?? defs[0])} />
+          onToggle={toggleProperty} onGroup={() => setPendingGroup({ def: null })} />
       </div>
 
       {groups.map((g) => <AnyOfGroup key={g.path.join('.')} item={g} level={level} ctx={ctx} noun={noun} />)}
       {pendingGroup && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border-strong px-3 py-2">
           <span className={`${EYEBROW} text-primary`}>any of</span>
-          <AddSelect label={pendingGroup.label} options={defs.filter((d) => d.key !== 'needs_review').map((d) => ({ value: d.key, label: d.label }))} onPick={(k) => setPendingGroup(defs.find((d) => d.key === k) ?? null)} className={`${SMALL_SELECT} cursor-pointer`} />
-          <GroupSeed key={pendingGroup.key} def={pendingGroup} level={level} ctx={ctx} onDone={() => setPendingGroup(null)} />
+          {pendingGroup.def
+            ? <GroupSeed key={pendingGroup.def.key} def={pendingGroup.def} level={level} ctx={ctx} onDone={() => setPendingGroup(null)} />
+            : <PickPropertyMenu label="property" defs={offered} onPick={(def) => setPendingGroup({ def })} />}
+          <PickPropertyMenu plus defs={offered} disabled onPick={() => undefined} />
           <button type="button" onClick={() => setPendingGroup(null)} className={ICON_BTN} aria-label="Cancel group"><X className="w-3.5 h-3.5" /></button>
         </div>
       )}
