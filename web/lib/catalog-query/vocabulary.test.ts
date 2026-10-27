@@ -5,9 +5,9 @@ import { describe, expect, it } from 'vitest';
 import { legacyNodes, normalizeFilters } from './legacy';
 import { validateNode, type TreeNode } from './tree';
 import {
-  appendAt, compileMeasurement, compileProperty, describeItem, findProperty, lineWantsFresh, measurementKeys, nodeAt,
-  promoteImplicit, propertyDef, readConditions, replaceAt, rerootConditions, setNegated, tidyConditions,
-  type Item, type MeasurementItem, type SpectrumItem,
+  appendAt, compileChoice, compileMeasurement, compileProperty, describeItem, findProperty, lineWantsFresh, measurementKeys, nodeAt,
+  propertyDef, readChoiceState, readConditions, removePaths, replaceAt, rerootConditions, setNegated, tidyConditions,
+  type Item, type MeasurementItem, type PropertyItem, type SpectrumItem,
 } from './vocabulary';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
 
@@ -44,6 +44,25 @@ describe('compiling', () => {
     expect(o('redshift', { kind: 'range', min: 4.5, max: null })).toEqual(legacyNodes({ redshift_min: 4.5 }, 'objects')[0]);
     expect(o('quality', { kind: 'choice', values: [3, 4] })).toEqual(legacyNodes({ redshift_quality: [3, 4] }, 'objects')[0]);
     expect(o('tag', { kind: 'choice', values: [1, 2], not: true })).toEqual(legacyNodes({ list_ids: [1, 2], list_ids_mode: 'none' }, 'objects')[0]);
+    // coverage: the grating pill's three shapes come from one chip's state
+    const grating = def('object', 'grating');
+    expect(compileChoice(grating, { include: ['G395M'], mode: 'any', exclude: [] }, 'objects')).toEqual(legacyNodes({ gratings: ['G395M'], gratings_mode: 'any' }, 'objects'));
+    expect(compileChoice(grating, { include: ['G395M', 'PRISM'], mode: 'all', exclude: [] }, 'objects')).toEqual(legacyNodes({ gratings: ['G395M', 'PRISM'], gratings_mode: 'all' }, 'objects'));
+    expect(compileChoice(grating, { include: [], mode: 'any', exclude: ['G395M'] }, 'objects')).toEqual(legacyNodes({ gratings: ['G395M'], gratings_mode: 'none' }, 'objects'));
+    // tags: A and B but not C, in one chip
+    const tags = compileChoice(def('object', 'tag'), { include: [1, 2], mode: 'all', exclude: [3] }, 'objects');
+    expect(tags).toEqual([
+      { exists: 'object_list_members', where: [{ col: 'list_id', op: 'eq', v: 1 }] },
+      { exists: 'object_list_members', where: [{ col: 'list_id', op: 'eq', v: 2 }] },
+      { exists: 'object_list_members', where: [{ col: 'list_id', op: 'in', v: [3] }], not: true },
+    ]);
+    const tagItems = readConditions(tags, 'objects').items.filter((it): it is PropertyItem => it.kind === 'property' && it.def.key === 'tag');
+    expect(readChoiceState(tagItems)).toEqual({ include: [1, 2], mode: 'all', exclude: [3] });
+    // flags: any of two, none of a third
+    const dq = def('spectrum', 'dq_flags');
+    const flags = compileChoice(dq, { include: [1, 4], mode: 'any', exclude: [16] }, 'spectra');
+    expect(flags).toEqual([{ col: 'dq_flags', op: 'anybits', v: 5 }, { col: 'dq_flags', op: 'nobits', v: 16 }]);
+    expect(readChoiceState(readConditions(flags, 'spectra').items as PropertyItem[])).toEqual({ include: [1, 4], mode: 'any', exclude: [16] });
     expect(o('position', { kind: 'position', ra: 150.1, dec: 2.2, radius: 0.1 })).toEqual(legacyNodes({ coordinate_search: { ra: 150.1, dec: 2.2, radius: 6, radius_unit: 'arcmin' } }, 'objects')[0]);
     expect(o('inspected', { kind: 'bool', value: true })).toEqual(legacyNodes({ inspected_only: true }, 'objects')[0]);
     expect(o('needs_review', { kind: 'bool', value: true })).toEqual(legacyNodes({ needs_review: true }, 'objects')[0]);
@@ -95,7 +114,7 @@ describe('compiling', () => {
 describe('reading', () => {
   it('reads the design doc\'s example as its cards', () => {
     const { items } = readConditions(figure6, 'objects');
-    expect(items.map((it) => it.kind)).toEqual(['property', 'property', 'property', 'anyOf', 'measurement', 'spectrum', 'spectrum', 'advanced']);
+    expect(items.map((it) => it.kind)).toEqual(['property', 'property', 'property', 'anyOf', 'measurement', 'spectrum', 'property', 'advanced']);
     expect(items.every((it) => it.noun === 'object')).toBe(true);
     expect(findProperty(items, 'object', 'program')?.value).toEqual({ kind: 'choice', values: ['jades'] });
     expect(findProperty(items, 'object', 'field')?.path).toEqual([0]);
@@ -107,34 +126,35 @@ describe('reading', () => {
     expect(band.clauses[1].path).toEqual([4, 2]);
     const card = items[5] as SpectrumItem;
     expect(card.not).toBe(false);
-    expect(card.implicit).toBe(false);
     expect(card.items.map((it) => (it.kind === 'property' ? it.def.key : it.kind === 'measurement' ? it.key : it.kind))).toEqual(['grating', 'snr', 'Halpha', 'OIII5007']);
     expect(card.items.every((it) => it.noun === 'spectrum')).toBe(true);
     expect((card.items[3] as MeasurementItem).clauses[0].path).toEqual([5, 3, 1]);
-    const none = items[6] as SpectrumItem;
-    expect(none.not).toBe(true);
-    // the fit's χ² is not vocabulary: a one-row card would hide it, so it is advanced
+    // "no PRISM spectrum" is the Grating chip's exclusion, not a card
+    const none = items[6] as PropertyItem;
+    expect(none.def.key).toBe('grating');
+    expect(none.value).toEqual({ kind: 'choice', values: ['PRISM'], not: true });
+    // the fit's χ² is not vocabulary: advanced
     expect(items[7].kind).toBe('advanced');
   });
 
-  it('reads a bare line or fit on the object as a one-row card', () => {
+  it('reads a bare line or fit property on the object as the object\'s (any spectrum)', () => {
     const nodes: TreeNode[] = [
       { exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'Halpha' }, { col: 'snr', op: 'gte', v: 3 }, { exists: 'line_fits', where: [{ col: 'stale_redshift', op: 'eq', v: false }] }], not: true },
       { exists: 'line_fits', where: [{ col: 'n_detected', op: 'gte', v: 2 }] },
+      { exists: 'spectra', where: [{ col: 'grating', op: 'eq', v: 'G395M' }] },
     ];
     const { items } = readConditions(nodes, 'objects');
-    const card = items[0] as SpectrumItem;
-    expect(card.kind).toBe('spectrum');
-    expect(card.implicit).toBe(true);
-    expect(card.not).toBe(true);
-    expect(card.path).toEqual([0]);
-    const row = card.items[0] as MeasurementItem;
+    const row = items[0] as MeasurementItem;
+    expect(row.kind).toBe('measurement');
+    expect(row.noun).toBe('object');
+    expect(row.not).toBe(true);
     expect(row.path).toEqual([0]);
-    expect(row.not).toBe(false);
     expect(row.clauses.map((c) => c.kind === 'property' && [c.def.key, c.value])).toEqual([['snr', { kind: 'range', min: 3, max: null }], ['fresh', { kind: 'bool', value: true }]]);
-    const fit = items[1] as SpectrumItem;
-    expect(fit.implicit).toBe(true);
-    expect(fit.items[0].kind === 'property' && fit.items[0].def.key).toBe('n_detected');
+    const fit = items[1] as PropertyItem;
+    expect(fit.kind === 'property' && fit.def.key).toBe('n_detected');
+    // the legacy "all" grating shape is a Grating chip value, not a card
+    const g = items[2] as PropertyItem;
+    expect(g.kind === 'property' && g.def.key).toBe('grating');
   });
 
   it('separates the spectrum\'s own from its object\'s at the spectra root', () => {
@@ -151,11 +171,12 @@ describe('reading', () => {
     const spectrum = items.filter((it) => it.noun === 'spectrum');
     const object = items.filter((it) => it.noun === 'object');
     expect(spectrum.map((it) => (it.kind === 'property' ? it.def.key : it.kind === 'measurement' ? it.key : it.kind))).toEqual(['grating', 'Halpha', 'program']);
-    expect(object.map((it) => (it.kind === 'property' ? it.def.key : it.kind === 'measurement' ? it.key : it.kind))).toEqual(['redshift', 'spectrum', 'field', 'f444w', 'tag']);
+    expect(object.map((it) => (it.kind === 'property' ? it.def.key : it.kind === 'measurement' ? it.key : it.kind))).toEqual(['redshift', 'grating', 'field', 'f444w', 'tag']);
     expect(findProperty(object, 'object', 'redshift')?.path).toEqual([2, 0]);
-    const sibling = object[1] as SpectrumItem;
-    expect(sibling.not).toBe(true);
-    expect(sibling.path).toEqual([2, 1]);
+    // "no PRISM spectrum" of its object is the object's Grating exclusion
+    const none = object[1] as PropertyItem;
+    expect(none.value).toEqual({ kind: 'choice', values: ['PRISM'], not: true });
+    expect(none.path).toEqual([2, 1]);
     // inside a card the object's properties are not vocabulary
     const inCard = readConditions([{ exists: 'spectra', where: [{ exists: 'objects', where: [{ col: 'redshift', op: 'gte', v: 5 }] }] }], 'objects');
     expect((inCard.items[0] as SpectrumItem).items[0].kind).toBe('advanced');
@@ -186,6 +207,9 @@ describe('reading', () => {
       ['object', 'inspected', { kind: 'bool', value: false }, 'objects'],
       ['object', 'has_photometry', { kind: 'bool', value: false }, 'objects'],
       ['object', 'position', { kind: 'position', ra: 1, dec: -2, radius: 0.05 }, 'objects'],
+      ['object', 'grating', { kind: 'choice', values: ['G395M'], not: true }, 'objects'],
+      ['object', 'grating', { kind: 'choice', values: ['G395M'] }, 'spectra'],
+      ['object', 'max_snr', { kind: 'range', min: 5, max: null }, 'objects'],
       ['object', 'position', { kind: 'position', ra: 1, dec: -2, radius: 0.05 }, 'spectra'],
       ['object', 'field', { kind: 'choice', values: ['f'] }, 'spectra'],
       ['object', 'quality', { kind: 'choice', values: [4] }, 'spectra'],
@@ -229,22 +253,19 @@ describe('editing by path', () => {
     expect(nodeAt(tree, [prism])).toEqual({ exists: 'spectra', where: [{ col: 'grating', op: 'in', v: ['PRISM'] }], not: true });
     const withOr = appendAt([{ or: [{ col: 'redshift', op: 'gte', v: 5 }, { col: 'photo_z', op: 'gte', v: 5 }] }], [0, 1], { col: 'has_photometry', op: 'eq', v: true });
     expect(withOr[0]).toEqual({ or: [{ col: 'redshift', op: 'gte', v: 5 }, { and: [{ col: 'photo_z', op: 'gte', v: 5 }, { col: 'has_photometry', op: 'eq', v: true }] }] });
-    // an implicit card gains a chip and becomes a card
     const bare: TreeNode[] = [{ exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'Halpha' }], not: true }];
-    expect(promoteImplicit(bare, [0], { col: 'grating', op: 'in', v: ['G395M'] })).toEqual([
-      { exists: 'spectra', where: [{ exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'Halpha' }] }, { col: 'grating', op: 'in', v: ['G395M'] }], not: true },
-    ]);
     expect(setNegated(bare, [0], false)).toEqual([{ exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'Halpha' }] }]);
+    // several nodes removed at once, from the back so the paths stay valid
+    const cardWhere = (figure6[5] as { where: TreeNode[] }).where;
+    expect(removePaths(figure6, [[1], [5, 2], [6]])).toEqual([figure6[0], figure6[2], figure6[3], figure6[4],
+      { exists: 'spectra', where: [cardWhere[0], cardWhere[1], cardWhere[3]] }, figure6[7]]);
   });
 
-  it('tidies a one-row card back to the bare row and drops empty wrappers', () => {
+  it('keeps a one-row card (it is what the user built) and drops empty wrappers and groups', () => {
     const card: TreeNode = { exists: 'spectra', where: [{ exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'Halpha' }] }], not: true };
-    expect(tidyConditions([card])).toEqual([{ exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'Halpha' }], not: true }]);
-    // a card whose row is itself negated is not the same thing: kept
-    const keep: TreeNode = { exists: 'spectra', where: [{ exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'Halpha' }], not: true }] };
-    expect(tidyConditions([keep])).toEqual([keep]);
-    expect(tidyConditions([{ exists: 'objects', where: [] }, { exists: 'objects', where: [card] }], 'spectra'))
-      .toEqual([{ exists: 'objects', where: [{ exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'Halpha' }], not: true }] }]);
+    expect(tidyConditions([card])).toEqual([card]);
+    expect(tidyConditions([{ exists: 'objects', where: [] }, { exists: 'objects', where: [card] }, { or: [] }], 'spectra'))
+      .toEqual([{ exists: 'objects', where: [card] }]);
   });
 });
 
@@ -257,10 +278,10 @@ describe('the two roots', () => {
     const object = items.filter((it) => it.noun === 'object');
     // the G395M card is the spectrum; its two lines came with it
     expect(spectrum.map((it) => (it.kind === 'property' ? it.def.key : it.kind === 'measurement' ? it.key : it.kind))).toEqual(['grating', 'snr', 'Halpha', 'OIII5007']);
-    // the PRISM card is a sibling spectrum of the object; the χ² node rides along as advanced
+    // "no PRISM" is its object's Grating chip; the χ² node rides along as advanced
     expect(object.map((it) => (it.kind === 'property' ? it.def.key : it.kind === 'measurement' ? it.key : it.kind)))
-      .toEqual(['field', 'program', 'quality', 'anyOf', 'f444w', 'spectrum', 'advanced']);
-    expect((object[5] as SpectrumItem).not).toBe(true);
+      .toEqual(['field', 'program', 'quality', 'anyOf', 'f444w', 'grating', 'advanced']);
+    expect((object[5] as PropertyItem).value).toEqual({ kind: 'choice', values: ['PRISM'], not: true });
     // and back
     const back = rerootConditions(atSpectra, 'spectra', 'objects');
     expect(back).toEqual(figure6);
@@ -280,10 +301,12 @@ describe('the two roots', () => {
       { exists: 'objects', where: [two[1]] },
     ]);
     expect(rerootConditions(atSpectra, 'spectra', 'objects')).toEqual(two);
-    // a lone line row stays the bare node both ways
+    // an object's line row ("any spectrum") stays its object's at the spectra root, and comes back
     const lone: TreeNode[] = [{ exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'Halpha' }] }, { col: 'redshift', op: 'gte', v: 5 }];
-    expect(rerootConditions(lone, 'objects', 'spectra')).toEqual([lone[0], { exists: 'objects', where: [lone[1]] }]);
+    expect(rerootConditions(lone, 'objects', 'spectra')).toEqual([{ exists: 'objects', where: [lone[0]] }, { exists: 'objects', where: [lone[1]] }]);
     expect(rerootConditions(rerootConditions(lone, 'objects', 'spectra'), 'spectra', 'objects')).toEqual(lone);
+    // a line row at the spectra root is this spectrum's: a card at the objects root
+    expect(rerootConditions([lone[0]], 'spectra', 'objects')).toEqual([{ exists: 'spectra', where: [lone[0]] }]);
   });
 });
 
@@ -303,7 +326,7 @@ describe('columns and words', () => {
     expect(words[3]).toBe('Redshift: 5 – 8 or Photo-z: 5 – 8');
     expect(words[4]).toBe('f444w mag ≤ 27 AB, S/N ≥ 5');
     expect(words[5]).toBe('Spectrum: Grating: G395M · S/N: ≥ 3 · Halpha S/N ≥ 3 · OIII5007 S/N ≥ 3');
-    expect(words[6]).toBe('No spectrum: Grating: PRISM');
+    expect(words[6]).toBe('Grating: none of PRISM');
     expect(words[7]).toBe('has a line fit where χ² < 2');
   });
 });

@@ -8,9 +8,10 @@
  *   Spectrum  properties (grating, S/N, exposure time, quality flags, …)
  *             and measurements keyed by line (S/N, flux, rest EW, …)
  *
- * An object has many spectra; a spectrum has exactly one object. Scope is
- * containment: everything inside one Spectrum card holds on the same row of
- * `spectra`. The tree in `?q=` stays the state; this module is its reading
+ * An object has many spectra; a spectrum has exactly one object. At the
+ * object level a spectrum's property or a line is a question about any of
+ * its spectra (grating coverage, "Hα detected"); scope is containment, so
+ * everything inside one Spectrum card holds on the same row of `spectra`. The tree in `?q=` stays the state; this module is its reading
  * (`readConditions`) and its writing (`compileProperty`,
  * `compileMeasurement`, the path edits). Whatever the cards cannot show
  * reads as an `advanced` item, never as nothing.
@@ -60,6 +61,9 @@ export interface PropertyDef {
   kind: PropertyKind;
   /** Offered on the first list of its scope (always shown as a chip). */
   primary?: boolean;
+  /** A relation an object has several of (tags, gratings, programs): the
+   *  included values take an any / all switch. */
+  multi?: boolean;
   choices?: LeafChoices;
   unit?: string;
   range?: RangeHints;
@@ -81,20 +85,26 @@ const snrQuick = [{ label: '≥ 3', min: 3, max: null }, { label: '≥ 5', min: 
 /** The properties of the four scopes, in the order the cards show them. */
 export const PROPERTIES: PropertyDef[] = [
   // Object
-  { key: 'program', scope: 'object', label: 'Program', kind: 'choice', primary: true, choices: 'program', shapes: { objects: via(['targets'], 'program_slug'), spectra: via(['targets'], 'program_slug') } },
+  { key: 'program', scope: 'object', label: 'Program', kind: 'choice', primary: true, multi: true, choices: 'program', shapes: { objects: via(['targets'], 'program_slug'), spectra: via(['targets'], 'program_slug') } },
   { key: 'field', scope: 'object', label: 'Field', kind: 'choice', primary: true, choices: 'field', shapes: { objects: direct('field'), spectra: via(['targets'], 'field') } },
-  { key: 'observation', scope: 'object', label: 'Observation', kind: 'choice', primary: true, choices: 'observation', shapes: { objects: via(['targets'], 'observation'), spectra: via(['targets'], 'observation') } },
+  { key: 'observation', scope: 'object', label: 'Observation', kind: 'choice', primary: true, multi: true, choices: 'observation', shapes: { objects: via(['targets'], 'observation'), spectra: via(['targets'], 'observation') } },
   { key: 'redshift', scope: 'object', label: 'Redshift', kind: 'range', primary: true, range: { min: 0, max: 15, step: 0.1, precision: 2 }, shapes: { objects: direct('redshift') } },
   // before quality: `redshift_quality = 0` is "not inspected", not a quality pick
   { key: 'inspected', scope: 'object', label: 'Inspected', kind: 'bool', shapes: { objects: { via: [], col: 'redshift_quality', bool: { true: { op: 'gt', v: 0 }, false: { op: 'eq', v: 0 } } } } },
   { key: 'quality', scope: 'object', label: 'Quality', kind: 'choice', primary: true, choices: 'quality', shapes: { objects: direct('redshift_quality') } },
   { key: 'position', scope: 'object', label: 'Position', kind: 'position', primary: true, shapes: { objects: direct(''), spectra: via(['targets'], '') } },
-  { key: 'tag', scope: 'object', label: 'Tags', kind: 'choice', primary: true, choices: 'list', shapes: { objects: via(['object_list_members'], 'list_id'), spectra: via(['object_list_members'], 'list_id') } },
+  { key: 'tag', scope: 'object', label: 'Tags', kind: 'choice', primary: true, multi: true, choices: 'list', shapes: { objects: via(['object_list_members'], 'list_id'), spectra: via(['object_list_members'], 'list_id') } },
+  // coverage: any of the object's spectra (the legacy grating pill's three shapes)
+  { key: 'grating', scope: 'object', label: 'Grating', kind: 'choice', primary: true, multi: true, choices: 'grating', shapes: { objects: via(['spectra'], 'grating'), spectra: { via: ['objects', 'spectra'], col: 'grating' } } },
+  { key: 'max_snr', scope: 'object', label: 'Max S/N', kind: 'range', range: { min: 0, max: 100000, step: 1, precision: 0, quick: snrQuick, side: 'min' }, shapes: { objects: direct('max_snr') } },
+  { key: 'max_exptime', scope: 'object', label: 'Max exp. time', kind: 'range', unit: 's', range: { min: 0, max: 50000, step: 100, precision: 0, side: 'min' }, shapes: { objects: direct('max_exposure_time') } },
   { key: 'needs_review', scope: 'object', label: 'Needs review', kind: 'bool', shapes: { objects: direct('needs_review') } },
   { key: 'photo_z', scope: 'object', label: 'Photo-z', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2 }, shapes: { objects: direct('photo_z') } },
   { key: 'has_photometry', scope: 'object', label: 'Has photometry', kind: 'bool', shapes: { objects: direct('has_photometry') } },
   { key: 'redshift_auto', scope: 'object', label: 'Auto redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2 }, shapes: { objects: direct('redshift_auto') } },
   { key: 'redshift_inspected', scope: 'object', label: 'Inspected redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2 }, shapes: { objects: direct('redshift_inspected') } },
+  { key: 'n_detected', scope: 'object', label: 'Lines detected (any spectrum)', kind: 'range', range: { min: 0, max: 50, step: 1, precision: 0, side: 'min' }, shapes: { objects: via(['line_fits'], 'n_detected') } },
+  { key: 'fresh', scope: 'object', label: 'Fresh line fit (any spectrum)', kind: 'bool', shapes: { objects: { via: ['line_fits'], col: 'stale_redshift', invert: true } } },
   // Spectrum
   { key: 'grating', scope: 'spectrum', label: 'Grating', kind: 'choice', primary: true, choices: 'grating', shapes: { spectra: direct('grating') } },
   { key: 'snr', scope: 'spectrum', label: 'S/N', kind: 'range', primary: true, range: { min: 0, max: 100000, step: 1, precision: 0, quick: snrQuick, side: 'min' }, shapes: { spectra: direct('signal_to_noise') } },
@@ -212,6 +222,70 @@ export function compileProperty(def: PropertyDef, value: PropertyValue, table: T
   return wrap(leaf, shape.via, not);
 }
 
+/** What one choice or flags chip holds: its included values (any of them,
+ *  or all of them for a multi-valued relation) and its excluded values. */
+export interface ChoiceState { include: Scalar[]; mode: 'any' | 'all'; exclude: Scalar[] }
+
+function bitsOf(mask: number): number[] {
+  const out: number[] = [];
+  for (let b = 0; b < 31; b++) if (mask & (1 << b)) out.push(1 << b);
+  return out;
+}
+
+/** The nodes a chip's state compiles to: one include node (or one per value
+ *  for "all of"), one exclude node. */
+export function compileChoice(def: PropertyDef, state: ChoiceState, table: TreeTable): TreeNode[] {
+  const out: TreeNode[] = [];
+  const push = (n: TreeNode | null) => { if (n) out.push(n); };
+  if (def.kind === 'flags') {
+    const mask = (v: Scalar[]) => v.reduce<number>((m, x) => m | (typeof x === 'number' ? x : 0), 0);
+    if (state.include.length) push(compileProperty(def, { kind: 'flags', mode: state.mode, mask: mask(state.include) }, table));
+    if (state.exclude.length) push(compileProperty(def, { kind: 'flags', mode: 'none', mask: mask(state.exclude) }, table));
+    return out;
+  }
+  if (state.include.length) {
+    if (state.mode === 'all' && def.multi && state.include.length > 1) {
+      // the legacy "all" shape: one node per value, `= v`
+      for (const v of state.include) {
+        const n = compileProperty(def, { kind: 'choice', values: [v] }, table);
+        push(n && asEq(n));
+      }
+    } else {
+      push(compileProperty(def, { kind: 'choice', values: state.include }, table));
+    }
+  }
+  if (state.exclude.length) push(compileProperty(def, { kind: 'choice', values: state.exclude, not: true }, table));
+  return out;
+}
+
+/** `in [v]` written as `= v`, at the leaf of its chain. */
+function asEq(node: TreeNode): TreeNode {
+  if (isExists(node) && node.where?.length === 1) return { ...node, where: [asEq(node.where[0])] };
+  if (isPredicate(node) && node.op === 'in' && Array.isArray(node.v) && node.v.length === 1) return { col: node.col, op: 'eq', v: node.v[0] as Scalar };
+  return node;
+}
+
+/** The state the items of one key at one level amount to. */
+export function readChoiceState(items: PropertyItem[]): ChoiceState {
+  const include: Scalar[] = [];
+  const exclude: Scalar[] = [];
+  let positives = 0;
+  let allSingle = true;
+  for (const it of items) {
+    if (it.value.kind === 'choice') {
+      const target = it.value.not ? exclude : include;
+      for (const v of it.value.values) if (!target.includes(v)) target.push(v);
+      if (!it.value.not) { positives++; if (it.value.values.length !== 1) allSingle = false; }
+    } else if (it.value.kind === 'flags') {
+      const target = it.value.mode === 'none' ? exclude : include;
+      for (const v of bitsOf(it.value.mask)) if (!target.includes(v)) target.push(v);
+      if (it.value.mode === 'all') { positives += 2; }
+      else if (it.value.mode === 'any') { positives++; allSingle = allSingle && bitsOf(it.value.mask).length === 1; }
+    }
+  }
+  return { include, mode: positives > 1 && allSingle ? 'all' : 'any', exclude };
+}
+
 /** A measurement: `exists lines|photometry where key = X and clauses`. */
 export function compileMeasurement(kind: MeasurementKind, key: string, clauses: { def: PropertyDef; value: PropertyValue }[], not = false): ExistsNode {
   const m = MEASUREMENTS[kind];
@@ -234,12 +308,7 @@ export interface MeasurementItem {
   kind: 'measurement'; noun: Noun; path: Path; measure: MeasurementKind; key: string; not: boolean;
   clauses: (PropertyItem | AdvancedItem)[];
 }
-export interface SpectrumItem {
-  kind: 'spectrum'; noun: 'object'; path: Path; not: boolean; items: Item[];
-  /** A bare `exists lines` / `exists line_fits` on the object: a card with
-   *  one row, whose node is the row's own. */
-  implicit: boolean;
-}
+export interface SpectrumItem { kind: 'spectrum'; noun: 'object'; path: Path; not: boolean; items: Item[] }
 export interface AnyOfItem { kind: 'anyOf'; noun: Noun; path: Path; arms: Item[][] }
 export interface AdvancedItem { kind: 'advanced'; noun: Noun; path: Path; node: TreeNode; table: TreeTable }
 export type Item = PropertyItem | MeasurementItem | SpectrumItem | AnyOfItem | AdvancedItem;
@@ -370,26 +439,25 @@ function readNode(node: TreeNode, table: 'objects' | 'spectra', path: Path, ctx:
     return [{ kind: 'anyOf', noun: armNoun, path, arms }];
   }
   if (table === 'objects') {
+    // the object's own, including what it asks of any of its spectra
+    // (grating coverage, a fit property) before a card
+    const p = readProperty(node, 'objects', ['object']);
+    if (p) return [{ kind: 'property', noun: 'object', path, def: p.def, value: p.value }];
     if (isExists(node)) {
       if (node.exists === 'spectra') {
-        return [{ kind: 'spectrum', noun: 'object', path, not: Boolean(node.not), implicit: false, items: readLevel(node.where ?? [], 'spectra', path, { inCard: true }) }];
+        return [{ kind: 'spectrum', noun: 'object', path, not: Boolean(node.not), items: readLevel(node.where ?? [], 'spectra', path, { inCard: true }) }];
       }
-      if (node.exists === 'lines' || node.exists === 'line_fits') {
-        // a bare measurement or fit property of "some spectrum": a one-row card
-        const inner: ExistsNode = { exists: node.exists, ...(node.where ? { where: node.where } : {}) };
-        const items = readNode(inner, 'spectra', path, { inCard: true });
-        if (items.length === 1 && items[0].kind !== 'advanced') {
-          return [{ kind: 'spectrum', noun: 'object', path, not: Boolean(node.not), implicit: true, items }];
-        }
-        return advanced();
+      if (node.exists === 'lines') {
+        // a line of any of its spectra
+        const m = readMeasurement(node, 'line', 'object', path, Boolean(node.not));
+        return m ? [m] : advanced();
       }
       if (node.exists === 'photometry') {
         const m = readMeasurement(node, 'band', 'object', path, Boolean(node.not));
         return m ? [m] : advanced();
       }
     }
-    const p = readProperty(node, 'objects', ['object']);
-    return p ? [{ kind: 'property', noun: 'object', path, def: p.def, value: p.value }] : advanced();
+    return advanced();
   }
   // table === 'spectra'
   if (isExists(node) && node.exists === 'lines') {
@@ -491,15 +559,16 @@ export function appendAt(nodes: TreeNode[], path: Path, node: TreeNode): TreeNod
   return replaceAt(nodes, path, { and: [target, node] });
 }
 
-/** An implicit card (a bare `exists lines` on the object) made explicit with
- *  one more clause: `exists spectra where [the row, node]`. */
-export function promoteImplicit(nodes: TreeNode[], path: Path, node: TreeNode): TreeNode[] {
-  const row = nodeAt(nodes, path);
-  if (!row || !isExists(row)) return nodes;
-  const inner: ExistsNode = { exists: row.exists, ...(row.where ? { where: row.where } : {}) };
-  const card: ExistsNode = { exists: 'spectra', where: [inner, node] };
-  if (row.not) card.not = true;
-  return replaceAt(nodes, path, card);
+/** `nodes` without the nodes at `paths` (deepest / last first, so the other
+ *  paths stay valid). */
+export function removePaths(nodes: TreeNode[], paths: Path[]): TreeNode[] {
+  const order = [...paths].sort((a, b) => {
+    for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return b[i] - a[i];
+    return b.length - a.length;
+  });
+  let out = nodes;
+  for (const p of order) out = replaceAt(out, p, null);
+  return out;
 }
 
 /** The exists at `path` with its negation set. */
@@ -512,30 +581,16 @@ export function setNegated(nodes: TreeNode[], path: Path, not: boolean): TreeNod
   return replaceAt(nodes, path, out);
 }
 
-/**
- * The tree tidied after an edit: a Spectrum card holding one line row and
- * nothing else is written as the bare `exists lines` on the object (the
- * cheaper node, the legacy Line pill's own shape), an `exists objects`
- * wrapper with nothing left inside goes.
- */
+/** The tree tidied after an edit: an `exists objects` wrapper with nothing
+ *  left inside goes, an empty group goes. */
 export function tidyConditions(nodes: TreeNode[], table: TreeTable = 'objects'): TreeNode[] {
   const out: TreeNode[] = [];
   for (const node of nodes) {
-    if (isAnd(node)) { out.push({ and: tidyConditions(node.and, table) }); continue; }
-    if (isOr(node)) { out.push({ or: tidyConditions(node.or, table) }); continue; }
+    if (isAnd(node)) { const and = tidyConditions(node.and, table); if (and.length) out.push({ and }); continue; }
+    if (isOr(node)) { const or = tidyConditions(node.or, table); if (or.length) out.push({ or }); continue; }
     if (!isExists(node)) { out.push(node); continue; }
     const where = tidyConditions(node.where ?? [], node.exists);
     if (node.exists === 'objects' && !node.not && where.length === 0) continue;
-    if (node.exists === 'spectra' && table === 'objects' && where.length === 1) {
-      const only = where[0];
-      if (isExists(only) && (only.exists === 'lines' || only.exists === 'line_fits') && !only.not) {
-        const flat: ExistsNode = { exists: only.exists };
-        if (only.where) flat.where = only.where;
-        if (node.not) flat.not = true;
-        out.push(flat);
-        continue;
-      }
-    }
     out.push(withChildren(node, where));
   }
   return out;
@@ -560,9 +615,12 @@ function spectrumScopedAtSpectraRoot(node: TreeNode): boolean {
   return false;
 }
 
-/** Whether a node at the objects root belongs in a Spectrum card. */
-function spectrumScopedAtObjectsRoot(node: TreeNode): boolean {
-  return isExists(node) && (node.exists === 'spectra' || node.exists === 'lines' || node.exists === 'line_fits');
+/** A Spectrum card at the objects root: an `exists spectra` that is not the
+ *  Grating chip's own node (a sole grating predicate, which is coverage). */
+function isCardAtObjectsRoot(node: TreeNode): boolean {
+  if (!isExists(node) || node.exists !== 'spectra') return false;
+  const w = node.where ?? [];
+  return !(w.length === 1 && isPredicate(w[0]) && w[0].col === 'grating');
 }
 
 function flattenAnds(nodes: TreeNode[]): TreeNode[] {
@@ -579,24 +637,13 @@ export function rerootConditions(nodes: TreeNode[], from: TreeRoot, to: TreeRoot
   if (from === to) return nodes;
   const flat = flattenAnds(nodes);
   if (from === 'objects' && to === 'spectra') {
-    // the spectrum: the first explicit card, else the first line row, else the first fit property
-    const rank = (n: TreeNode) => (isExists(n) && !n.not ? (n.exists === 'spectra' ? 0 : n.exists === 'lines' ? 1 : n.exists === 'line_fits' ? 2 : 9) : 9);
-    let chosen = -1;
-    flat.forEach((n, i) => { if (spectrumScopedAtObjectsRoot(n) && rank(n) < 9 && (chosen < 0 || rank(n) < rank(flat[chosen]))) chosen = i; });
+    // the spectrum is the first card; every other node, cards included, is its object's
+    const chosen = flat.findIndex((n) => isCardAtObjectsRoot(n) && !(n as ExistsNode).not && ((n as ExistsNode).where?.length ?? 0) > 0);
     const out: TreeNode[] = [];
     flat.forEach((n, i) => {
-      if (spectrumScopedAtObjectsRoot(n) && isExists(n)) {
-        if (i === chosen) {
-          if (n.exists === 'spectra') out.push(...(n.where ?? []));
-          else out.push(n);
-        } else {
-          out.push({ exists: 'objects', where: [n] });
-        }
-      } else if (isExists(n) && (n.exists === 'photometry' || n.exists === 'object_list_members' || n.exists === 'catalog_matches' || n.exists === 'targets')) {
-        out.push(n);
-      } else {
-        out.push({ exists: 'objects', where: [n] });
-      }
+      if (i === chosen) out.push(...((n as ExistsNode).where ?? []));
+      else if (isExists(n) && (n.exists === 'photometry' || n.exists === 'object_list_members' || n.exists === 'catalog_matches' || n.exists === 'targets')) out.push(n);
+      else out.push({ exists: 'objects', where: [n] });
     });
     return out;
   }
@@ -617,10 +664,7 @@ export function rerootConditions(nodes: TreeNode[], from: TreeRoot, to: TreeRoot
       else top.push(n);
     }
     if (card.length === 0) return top;
-    const own: TreeNode = card.length === 1 && isExists(card[0]) && (card[0].exists === 'lines' || card[0].exists === 'line_fits') && !card[0].not
-      ? card[0]
-      : { exists: 'spectra', where: card };
-    top.splice(cardAt, 0, own);
+    top.splice(cardAt, 0, { exists: 'spectra', where: card });
     return top;
   }
   // targets is not a vocabulary root: wrap generically

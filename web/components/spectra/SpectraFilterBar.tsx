@@ -142,12 +142,13 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   const barChips = BAR_KEYS.map((key) => {
     const scope = isSpectra && (key === 'program' || key === 'observation') ? 'spectrum' : 'object';
     const def = propertyDef(scope, key)!;
-    const item = findProperty(reading.items, scope, key);
+    // a choice chip owns every node of its key at this level
+    const items = reading.items.filter((it): it is PropertyItem => it.kind === 'property' && it.def.scope === scope && it.def.key === key);
     const level: Level = scope === 'spectrum' ? { table: 'spectra', path: [] } : objectLevel;
-    return { def, item, level };
+    return { def, items, level };
   });
   const needsReview = findProperty(reading.items, 'object', 'needs_review');
-  const barItems = new Set<Item>(barChips.map((c) => c.item).filter((it): it is PropertyItem => it !== undefined));
+  const barItems = new Set<Item>(barChips.flatMap((c) => c.items));
   if (needsReview) barItems.add(needsReview);
   const otherItems = reading.items.filter((it) => !barItems.has(it));
 
@@ -215,10 +216,10 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
 
       {/* The chips */}
       <div className="flex flex-wrap items-center gap-2">
-        {barChips.map(({ def, item, level }, i) => (
+        {barChips.map(({ def, items, level }, i) => (
           <React.Fragment key={`${def.scope}.${def.key}`}>
             {i === 3 && <div className="h-6 w-px bg-border mx-1" />}
-            <PropertyChip def={def} item={item} level={level} ctx={ctx}
+            <PropertyChip def={def} items={items} level={level} ctx={ctx}
               extraCheckbox={def.key === 'quality' ? {
                 label: 'Needs review only',
                 checked: needsReview?.value.kind === 'bool' && needsReview.value.value,

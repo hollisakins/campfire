@@ -216,7 +216,7 @@ export function FiltersModal({
               </section>
               <section className="rounded-lg border border-border bg-card p-3 border-l-[3px] border-l-primary">
                 <div className="text-sm font-semibold text-text-primary mb-2">its object</div>
-                <NounBody noun="object" items={objectItems} level={{ table: 'spectra', path: [], itsObject: true }} ctx={ctx} demote={['program', 'observation']} />
+                <NounBody noun="object" items={objectItems} level={{ table: 'spectra', path: [], itsObject: true }} ctx={ctx} demote={['program', 'observation', 'grating']} />
               </section>
             </>
           ) : (

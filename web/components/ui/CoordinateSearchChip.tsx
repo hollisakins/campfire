@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDown, X, MapPin } from 'lucide-react';
+import { ChevronDown, X } from 'lucide-react';
 import { parseCoordinates, convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 import { Popover, isInsidePopover } from './Popover';
 
@@ -124,10 +124,10 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
   const isActive = value != null;
 
   const getDisplayText = () => {
-    if (!isActive) return 'RA/Dec';
+    if (!isActive) return 'Position';
     const unitLabel = value.radius_unit === 'degrees' ? '°' :
                       value.radius_unit === 'arcmin' ? "'" : '"';
-    return `RA/Dec: ${value.ra.toFixed(2)}°, ${value.dec.toFixed(2)}° (${value.radius}${unitLabel})`;
+    return `Position: ${value.ra.toFixed(2)}°, ${value.dec.toFixed(2)}° (${value.radius}${unitLabel})`;
   };
 
   return (
@@ -144,7 +144,6 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
           }
         `}
       >
-        <MapPin className="w-3.5 h-3.5 flex-shrink-0" />
         <span className="truncate max-w-[250px]">{getDisplayText()}</span>
         {isActive ? (
           <X
