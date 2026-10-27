@@ -178,15 +178,17 @@ export function PropertyChip({ def, items, level, ctx, extraCheckbox, onOpenAdva
         return;
       }
       const nodes = compileChoice(def, merged, tableOf(first));
-      // the first node is replaced in place (the chip keeps its position and
-      // its container), the other old nodes go, the other new nodes follow
-      const inArm = first.path.length > 1 && (() => { const parent = nodeAt(ctx.nodes, first.path.slice(0, -1)); return parent !== undefined && isOr(parent); })();
-      const head: TreeNode | null = nodes.length === 0 ? null : nodes.length === 1 || !inArm ? nodes[0] : { and: nodes };
+      // the first node is replaced in place (the chip keeps its position, its
+      // container and its scope), the other old nodes go; further new nodes
+      // follow it at the top level, or ride with it as one `and` deeper down
+      // (inside an OR arm, a card, or the spectrum's `exists objects`)
+      const atTop = first.path.length === 1;
+      const head: TreeNode | null = nodes.length === 0 ? null : nodes.length === 1 || atTop ? nodes[0] : { and: nodes };
       let out = replaceAt(ctx.nodes, first.path, head);
       const others = items.slice(1).map((it) => it.path);
       // the first path's node is gone when head is null: later siblings moved up by one
       if (others.length) out = removePaths(out, head ? others : others.map((p) => shiftAfter(p, first.path)));
-      if (!inArm && nodes.length > 1) out = addManyToLevel(out, level, nodes.slice(1));
+      if (atTop && nodes.length > 1) out = [...out, ...nodes.slice(1)];
       ctx.onChange(out);
     };
     const scalars = (v: unknown[]) => v.filter((x): x is string | number => typeof x === 'string' || typeof x === 'number');

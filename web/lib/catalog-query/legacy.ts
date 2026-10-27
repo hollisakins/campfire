@@ -239,7 +239,8 @@ function liftOne(node: TreeNode, root: TreeRoot, f: Slot): Slot | null {
     if ((p = inPredicate(node, 'program_slug')) && empty('programs')) { const v = strings(p.v); if (v) return { programs: v }; }
     if ((p = inPredicate(node, 'observation')) && empty('observations')) { const v = strings(p.v); if (v) return { observations: v }; }
     if ((p = inPredicate(node, 'grating')) && empty('gratings')) { const v = strings(p.v); if (v) return { gratings: v, gratings_mode: 'any' }; }
-    if (node.col === 'grating' && node.op === 'nin' && empty('gratings')) { const v = strings(node.v); if (v) return { gratings: v, gratings_mode: 'none' }; }
+    // `grating nin` stays in the tree: the spectra list and CSV RPCs apply
+    // `grating = ANY(p_gratings)` whatever p_gratings_mode says
     if (node.col === 'signal_to_noise' && empty('max_snr_min') && empty('max_snr_max')) { const b = bounds(node); if (b) return { max_snr_min: b[0], max_snr_max: b[1] }; }
     if (node.col === 'exposure_time' && empty('max_exposure_time_min') && empty('max_exposure_time_max')) { const b = bounds(node); if (b) return { max_exposure_time_min: b[0], max_exposure_time_max: b[1] }; }
   }

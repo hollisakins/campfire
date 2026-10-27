@@ -202,6 +202,13 @@ describe('free conditions', () => {
     expect(parseConditions('{"v":2,"and":[{"col":"redshift","op":"gt","v":1}]}', 'objects')).toBeNull();
   });
 
+  it('leaves a spectra-view grating exclusion in the tree (the spectra RPCs ignore the mode)', () => {
+    const f = normalizeFilters({ ...DEFAULT_FILTERS, conditions: [{ col: 'grating', op: 'nin', v: ['PRISM'] }, { col: 'grating', op: 'in', v: ['G395M'] }] }, 'spectra');
+    expect(f.gratings).toEqual(['G395M']);
+    expect(f.conditions).toEqual([{ col: 'grating', op: 'nin', v: ['PRISM'] }]);
+    expect(needsTreePath(f)).toBe(true);
+  });
+
   it('read against the view root from the URL', () => {
     const f = parseFiltersFromURL(new URLSearchParams({ view: 'spectra', q: '{"col":"signal_to_noise","op":"gte","v":5}' }));
     expect(normalizeFilters(f, 'spectra').max_snr_min).toBe(5);
