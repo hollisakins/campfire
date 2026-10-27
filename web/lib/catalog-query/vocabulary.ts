@@ -573,6 +573,28 @@ export function appendAt(nodes: TreeNode[], path: Path, node: TreeNode): TreeNod
   return replaceAt(nodes, path, { and: [target, node] });
 }
 
+/**
+ * A Spectrum card keeps its contents in one `and` group inside the exists
+ * (`exists spectra where [{and: [...]}]`), so a card holding a grating alone
+ * is never the Grating chip's bare `exists spectra where grating in [...]`.
+ * The path of a card's contents, and the card with a node added to them.
+ */
+export function cardContentsPath(nodes: TreeNode[], cardPath: Path): Path {
+  const card = nodeAt(nodes, cardPath);
+  if (card && isExists(card) && card.where?.length === 1 && isAnd(card.where[0])) return [...cardPath, 0];
+  return cardPath;
+}
+
+export function addToCard(nodes: TreeNode[], cardPath: Path, node: TreeNode): TreeNode[] {
+  const card = nodeAt(nodes, cardPath);
+  if (!card || !isExists(card)) return nodes;
+  const where = card.where ?? [];
+  const inner = where.length === 1 && isAnd(where[0]) ? where[0].and : where;
+  const next: ExistsNode = { exists: card.exists, where: [{ and: [...inner, node] }] };
+  if (card.not) next.not = true;
+  return replaceAt(nodes, cardPath, next);
+}
+
 /** `nodes` without the nodes at `paths` (deepest / last first, so the other
  *  paths stay valid). */
 export function removePaths(nodes: TreeNode[], paths: Path[]): TreeNode[] {
@@ -678,7 +700,9 @@ export function rerootConditions(nodes: TreeNode[], from: TreeRoot, to: TreeRoot
       else top.push(n);
     }
     if (card.length === 0) return top;
-    top.splice(cardAt, 0, { exists: 'spectra', where: card });
+    // a card of one grating predicate would read as the Grating chip: keep it a card
+    const lone = card.length === 1 && isPredicate(card[0]) && card[0].col === 'grating';
+    top.splice(cardAt, 0, { exists: 'spectra', where: lone ? [{ and: card }] : card });
     return top;
   }
   // targets is not a vocabulary root: wrap generically

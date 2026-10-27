@@ -21,8 +21,8 @@ import { Popover, isInsidePopover } from '@/components/ui/Popover';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 import { describeNode, isExists, isOr, type TreeNode, type TreeRoot } from '@/lib/catalog-query/tree';
 import {
-  MEASUREMENTS, appendAt, compileChoice, compileMeasurement, compileProperty, describeItem, nodeAt, propertiesOf, readChoiceState, removePaths,
-  replaceAt, setNegated, tableAtPath,
+  MEASUREMENTS, addToCard, appendAt, cardContentsPath, compileChoice, compileMeasurement, compileProperty, describeItem, nodeAt, propertiesOf,
+  readChoiceState, removePaths, replaceAt, setNegated, tableAtPath,
   type AdvancedItem, type AnyOfItem, type Item, type MeasurementItem, type MeasurementKind, type Noun, type Path,
   type PropertyDef, type PropertyItem, type PropertyValue, type SpectrumItem, type ValueLabel,
 } from '@/lib/catalog-query/vocabulary';
@@ -37,6 +37,8 @@ export interface Level {
   path: Path;
   /** At the spectra root, the spectrum's object: a new card is a sibling spectrum of it. */
   itsObject?: boolean;
+  /** The container is a Spectrum card: its contents live in their own group. */
+  card?: boolean;
 }
 
 export interface CardsContext {
@@ -54,6 +56,7 @@ export interface CardsContext {
 
 function addToLevel(nodes: TreeNode[], level: Level, node: TreeNode): TreeNode[] {
   if (level.itsObject && isExists(node) && node.exists === 'spectra') return appendAt(nodes, [], { exists: 'objects', where: [node] });
+  if (level.card) return addToCard(nodes, level.path, node);
   return appendAt(nodes, level.path, node);
 }
 
@@ -693,21 +696,22 @@ function GroupSeed({ def, level, ctx, onDone }: { def: PropertyDef; level: Level
 /** The node a chip just appended into `level`, with its path. */
 function findAppended(before: TreeNode[], after: TreeNode[], level: Level): { node: TreeNode; path: Path } | null {
   const container = (nodes: TreeNode[]) => {
-    if (level.path.length === 0) return nodes;
+    const path = level.card ? cardContentsPath(nodes, level.path) : level.path;
+    if (path.length === 0) return { list: nodes, path };
     let list: TreeNode[] = nodes;
     let node: TreeNode | undefined;
-    for (const i of level.path) { node = list[i]; if (!node) return null; list = isExists(node) ? node.where ?? [] : 'and' in node ? node.and : 'or' in node ? node.or : []; }
-    return list;
+    for (const i of path) { node = list[i]; if (!node) return null; list = isExists(node) ? node.where ?? [] : 'and' in node ? node.and : 'or' in node ? node.or : []; }
+    return { list, path };
   };
   const b = container(before);
   const a = container(after);
-  if (!a || !b || a.length !== b.length + 1) return null;
-  return { node: a[a.length - 1], path: [...level.path, a.length - 1] };
+  if (!a || !b || a.list.length !== b.list.length + 1) return null;
+  return { node: a.list[a.list.length - 1], path: [...a.path, a.list.length - 1] };
 }
 
 /** One spectrum of an object: everything inside holds on the same spectrum. */
 export function SpectrumCard({ item, ctx }: { item: SpectrumItem; ctx: CardsContext }) {
-  const level: Level = { table: 'spectra', path: item.path };
+  const level: Level = { table: 'spectra', path: item.path, card: true };
   return (
     <div className={`rounded-lg border border-border bg-card p-3 border-l-[3px] ${item.not ? 'border-l-amber-600' : 'border-l-teal-600'}`}>
       <div className="flex items-center gap-2 mb-2">

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { legacyNodes, normalizeFilters } from './legacy';
 import { validateNode, type TreeNode } from './tree';
 import {
-  appendAt, compileChoice, compileMeasurement, compileProperty, describeItem, findProperty, lineWantsFresh, measurementKeys, nodeAt,
+  addToCard, appendAt, cardContentsPath, compileChoice, compileMeasurement, compileProperty, describeItem, findProperty, lineWantsFresh, measurementKeys, nodeAt,
   propertyDef, readChoiceState, readConditions, removePaths, replaceAt, rerootConditions, setNegated, tableAtPath, tidyConditions,
   type Item, type MeasurementItem, type PropertyItem, type SpectrumItem,
 } from './vocabulary';
@@ -259,6 +259,28 @@ describe('editing by path', () => {
     const cardWhere = (figure6[5] as { where: TreeNode[] }).where;
     expect(removePaths(figure6, [[1], [5, 2], [6]])).toEqual([figure6[0], figure6[2], figure6[3], figure6[4],
       { exists: 'spectra', where: [cardWhere[0], cardWhere[1], cardWhere[3]] }, figure6[7]]);
+  });
+
+  it('keeps a card with one grating a card, apart from the Grating chip', () => {
+    // a new card, then its first chip: the contents get their own group
+    let nodes: TreeNode[] = [{ exists: 'spectra' }];
+    expect(readConditions(nodes, 'objects').items[0].kind).toBe('spectrum');
+    nodes = addToCard(nodes, [0], { col: 'grating', op: 'in', v: ['G395M'] });
+    expect(nodes).toEqual([{ exists: 'spectra', where: [{ and: [{ col: 'grating', op: 'in', v: ['G395M'] }] }] }]);
+    for (const n of nodes) expect(validateNode(n, 'objects')).toEqual(n);
+    const card = readConditions(nodes, 'objects').items[0] as SpectrumItem;
+    expect(card.kind).toBe('spectrum');
+    expect(card.items.map((it) => it.kind === 'property' && [it.def.scope, it.def.key, it.path])).toEqual([['spectrum', 'grating', [0, 0, 0]]]);
+    expect(cardContentsPath(nodes, [0])).toEqual([0, 0]);
+    expect(tableAtPath(nodes, 'objects', [0, 0, 0])).toBe('spectra');
+    // the bare shape is the chip
+    expect(readConditions([{ exists: 'spectra', where: [{ col: 'grating', op: 'in', v: ['G395M'] }] }], 'objects').items[0].kind).toBe('property');
+    // removing the chip leaves an empty card
+    expect(replaceAt(nodes, [0, 0, 0], null)).toEqual([{ exists: 'spectra' }]);
+    // and the card survives the view switch both ways
+    const atSpectra = rerootConditions(nodes, 'objects', 'spectra');
+    expect(atSpectra).toEqual([{ and: [{ col: 'grating', op: 'in', v: ['G395M'] }] }]);
+    expect(readConditions(rerootConditions(atSpectra, 'spectra', 'objects'), 'objects').items[0].kind).toBe('spectrum');
   });
 
   it('knows the table a node sits in, so a replacement is written against it', () => {
