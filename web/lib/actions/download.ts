@@ -11,7 +11,8 @@ import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { paginateRpcKeyset } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
-import { activeBandOf, activeLineOf, needsTreePath, normalizeFilters, rootOf, shownMeasurementParams } from '@/lib/catalog-query/legacy';
+import { activeBandsOf, activeLinesOf, measurementColumnParams, needsTreePath, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
+import { measurementSort } from './spectra-types';
 import { matchFilterIds } from '@/lib/server/catalog-query';
 import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
@@ -69,6 +70,17 @@ interface PhotometryBands {
   };
 }
 
+/** A per-key map of a measurement's numbers, as the RPCs' line_columns / band_columns. */
+type MeasurementColumns<K extends string> = Record<string, Partial<Record<K, number | null>>>;
+
+/** The sort value of a measurement column ('line_snr:<line>', …) on a CSV row, or undefined for a fixed column. */
+function measurementSortValue(row: { line_columns: MeasurementColumns<'snr' | 'flux'> | null; band_columns: MeasurementColumns<'mag' | 'snr'> | null }, sortColumn: string): ((r: typeof row) => CsvSortValue) | undefined {
+  const m = measurementSort(sortColumn);
+  if (!m) return undefined;
+  void row;
+  return (r) => (m.kind === 'line_snr' ? r.line_columns?.[m.key]?.snr : m.kind === 'band_mag' ? r.band_columns?.[m.key]?.mag : r.band_columns?.[m.key]?.snr) ?? null;
+}
+
 interface ObjectsCsvRow {
   object_id: string;
   field: string;
@@ -85,6 +97,8 @@ interface ObjectsCsvRow {
   line_snr: number | null;     // best S/N in the filtered emission line; null without a line filter
   band_mag: number | null;     // AB magnitude in the filtered band; null without a band filter
   band_snr: number | null;     // S/N in the filtered band; null without a band filter
+  line_columns: MeasurementColumns<'snr' | 'flux'> | null;  // the shown lines (phase 3c)
+  band_columns: MeasurementColumns<'mag' | 'snr'> | null;   // the shown bands
   member_target_ids: string;   // semicolon-separated
   distance: number | null;
   lists: string | null;        // semicolon-separated list slugs
@@ -111,6 +125,8 @@ interface SpectraCsvRow {
   line_snr: number | null;     // S/N in the filtered emission line; null without a line filter
   band_mag: number | null;     // parent object's AB magnitude in the filtered band; null without a band filter
   band_snr: number | null;     // parent object's S/N in the filtered band; null without a band filter
+  line_columns: MeasurementColumns<'snr' | 'flux'> | null;  // this spectrum's shown lines (phase 3c)
+  band_columns: MeasurementColumns<'mag' | 'snr'> | null;   // the parent object's shown bands
   exposure_time: number | null;
   fits_path: string;
   program_slug: string;
@@ -180,7 +196,7 @@ export async function generateCSV(
       }
 
       const { data: rows, error: rpcError } = await paginateRpcKeyset<ObjectsCsvRow>(
-        supabase, 'get_csv_export_objects', { ...objectsParams, ...shownMeasurementParams(filters, 'objects', rpcParams), p_object_ids: treeObjectIds },
+        supabase, 'get_csv_export_objects', { ...objectsParams, ...measurementColumnParams(filters, 'objects'), p_object_ids: treeObjectIds },
         { cursorParam: 'p_after_object_id', getCursor: r => r.object_id, maxRows: CSV_EXPORT_ROW_LIMIT },
       );
 
@@ -191,13 +207,12 @@ export async function generateCSV(
 
       sortCsvRows(
         rows,
-        includeDistance ? OBJECTS_CSV_SORT.distance : (OBJECTS_CSV_SORT[sortColumn] ?? OBJECTS_CSV_SORT.object_id),
+        includeDistance ? OBJECTS_CSV_SORT.distance : (OBJECTS_CSV_SORT[sortColumn] ?? measurementSortValue(rows[0] ?? { line_columns: null, band_columns: null }, sortColumn) ?? OBJECTS_CSV_SORT.object_id),
         includeDistance ? 'asc' : sortDirection,
         [r => r.object_id],
       );
-      // the columns the table shows (the export RPC's line / band are filter
-      // and column at once; the shown ones select nothing the tree did not)
-      const csv = objectsRowsToCsv(rows, includeDistance, activeLineOf(filters) ?? rpcParams.p_line ?? null, activeBandOf(filters) ?? rpcParams.p_band ?? null);
+      // the columns the table shows: every shown line and band (phase 3c)
+      const csv = objectsRowsToCsv(rows, includeDistance, activeLinesOf(filters), activeBandsOf(filters));
 
       const objectIds = rows.map(r => r.object_id);
       trackDownload({
@@ -220,7 +235,7 @@ export async function generateCSV(
       spectrumIds = matched.ids;
     }
     const { data: rows, error: rpcError } = await paginateRpcKeyset<SpectraCsvRow>(
-      supabase, 'get_csv_export_spectra', { ...rpcParams, p_spectrum_ids: spectrumIds },
+      supabase, 'get_csv_export_spectra', { ...rpcParams, ...measurementColumnParams(filters, 'spectra'), p_spectrum_ids: spectrumIds },
       { cursorParam: 'p_after_id', getCursor: r => r.id, maxRows: CSV_EXPORT_ROW_LIMIT },
     );
 
@@ -231,11 +246,11 @@ export async function generateCSV(
 
     sortCsvRows(
       rows,
-      includeDistance ? SPECTRA_CSV_SORT.distance : (SPECTRA_CSV_SORT[sortColumn] ?? SPECTRA_CSV_SORT.spectrum_id),
+      includeDistance ? SPECTRA_CSV_SORT.distance : (SPECTRA_CSV_SORT[sortColumn] ?? measurementSortValue(rows[0] ?? { line_columns: null, band_columns: null }, sortColumn) ?? SPECTRA_CSV_SORT.spectrum_id),
       includeDistance ? 'asc' : sortDirection,
       [r => r.target_id, r => r.grating],
     );
-    const csv = spectraRowsToCsv(rows, includeDistance, filters.line, filters.band);
+    const csv = spectraRowsToCsv(rows, includeDistance, activeLinesOf(filters), activeBandsOf(filters));
 
     const targetIds = [...new Set(rows.map(r => r.target_id))];
     trackDownload({
@@ -341,7 +356,7 @@ function sortCsvRows<T>(
 /**
  * Convert spectra-mode CSV export rows to CSV string (one row per spectrum)
  */
-function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, lineColumn: string | null = null, bandColumn: string | null = null): string {
+function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, shownLines: string[] = [], shownBands: string[] = []): string {
   // Spectra-mode CSV contains only per-spectrum info. redshift /
   // redshift_quality / last_inspected_* are parent-object state and belong in
   // the objects CSV. The per-spectrum auto-fit redshift is surfaced as
@@ -354,12 +369,10 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, lineC
     'dec',
     'redshift_auto',
     'signal_to_noise',
-    // the filtered emission line's S/N, only while a line filter is active
-    // (escaped like a data cell: the name comes from the URL)
-    ...(lineColumn ? [escapeCsvValue(`snr_${lineColumn}`)] : []),
-    // the filtered band's magnitude and S/N, only while a band filter is
-    // active (escaped the same way — the name comes from the URL)
-    ...(bandColumn ? [escapeCsvValue(`mag_${bandColumn}`), escapeCsvValue(`snr_${bandColumn}`)] : []),
+    // the shown lines' S/N and flux, the shown bands' magnitude and S/N
+    // (phase 3c; escaped like a data cell: the names come from the URL)
+    ...shownLines.flatMap((l) => [escapeCsvValue(`snr_${l}`), escapeCsvValue(`flux_${l}`)]),
+    ...shownBands.flatMap((b) => [escapeCsvValue(`mag_${b}`), escapeCsvValue(`snr_${b}`)]),
     'exposure_time',
     'fits_path',
     'program_slug',
@@ -390,10 +403,7 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, lineC
     values.push(
       row.redshift_auto != null ? row.redshift_auto.toFixed(6) : '',
       row.signal_to_noise != null ? row.signal_to_noise.toFixed(2) : '',
-      ...(lineColumn ? [row.line_snr != null ? row.line_snr.toFixed(2) : ''] : []),
-      ...(bandColumn
-        ? [row.band_mag != null ? row.band_mag.toFixed(3) : '', row.band_snr != null ? row.band_snr.toFixed(2) : '']
-        : []),
+      ...measurementCells(row, shownLines, shownBands),
       row.exposure_time != null ? row.exposure_time.toFixed(0) : '',
       escapeCsvValue(row.fits_path),
       escapeCsvValue(row.program_slug),
@@ -431,7 +441,16 @@ function collectSortedBands(rows: ObjectsCsvRow[]): string[] {
 /**
  * Convert objects-mode CSV export rows to CSV string
  */
-function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean, lineColumn: string | null = null, bandColumn: string | null = null): string {
+/** The CSV cells of the shown lines (S/N, flux) and bands (mag, S/N) of one row. */
+function measurementCells(row: { line_columns: MeasurementColumns<'snr' | 'flux'> | null; band_columns: MeasurementColumns<'mag' | 'snr'> | null }, lines: string[], bands: string[]): string[] {
+  const num = (v: number | null | undefined, digits: number, sci = false) => (v == null ? '' : sci ? v.toExponential(4) : v.toFixed(digits));
+  return [
+    ...lines.flatMap((l) => [num(row.line_columns?.[l]?.snr, 2), num(row.line_columns?.[l]?.flux, 0, true)]),
+    ...bands.flatMap((b) => [num(row.band_columns?.[b]?.mag, 3), num(row.band_columns?.[b]?.snr, 2)]),
+  ];
+}
+
+function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean, shownLines: string[] = [], shownBands: string[] = []): string {
   const sortedBands = collectSortedBands(rows);
 
   const columns = [
@@ -446,15 +465,13 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean, lineC
     'programs',
     'gratings',
     'max_snr',
-    // the filtered emission line's best S/N, only while a line filter is active
-    // (escaped like a data cell: the name comes from the URL)
-    ...(lineColumn ? [escapeCsvValue(`snr_${lineColumn}`)] : []),
-    // the filtered band's magnitude and S/N, only while a band filter is
-    // active. Redundant with the f_/e_ pair below for an objects export that
-    // carries the same band, and deliberately so: these are the two numbers
-    // the filter and the on-screen sort acted on, in the units they were
-    // expressed in.
-    ...(bandColumn ? [escapeCsvValue(`mag_${bandColumn}`), escapeCsvValue(`snr_${bandColumn}`)] : []),
+    // the shown lines' best S/N and flux, the shown bands' magnitude and S/N
+    // (phase 3c; escaped like a data cell: the names come from the URL). The
+    // band pair is redundant with the f_/e_ pair below for a band the export
+    // carries, and deliberately so: these are the two numbers the filter and
+    // the on-screen sort acted on, in the units they were expressed in.
+    ...shownLines.flatMap((l) => [escapeCsvValue(`snr_${l}`), escapeCsvValue(`flux_${l}`)]),
+    ...shownBands.flatMap((b) => [escapeCsvValue(`mag_${b}`), escapeCsvValue(`snr_${b}`)]),
     'max_exposure_time',
     'member_target_ids',
     'tags',
@@ -491,10 +508,7 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean, lineC
       escapeCsvValue(row.programs || ''),
       escapeCsvValue(row.gratings || ''),
       row.max_snr != null ? row.max_snr.toFixed(2) : '',
-      ...(lineColumn ? [row.line_snr != null ? row.line_snr.toFixed(2) : ''] : []),
-      ...(bandColumn
-        ? [row.band_mag != null ? row.band_mag.toFixed(3) : '', row.band_snr != null ? row.band_snr.toFixed(2) : '']
-        : []),
+      ...measurementCells(row, shownLines, shownBands),
       row.max_exposure_time != null ? row.max_exposure_time.toFixed(0) : '',
       escapeCsvValue(row.member_target_ids || ''),
       escapeCsvValue(row.lists || ''),

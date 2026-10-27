@@ -157,6 +157,29 @@ export function bandFilterRpcParams(searchParams: URLSearchParams): {
   };
 }
 
+/**
+ * The several-columns parameters of the v1 list endpoints (phase 3c, #660):
+ * `line_columns=Halpha,OIII5007` and `band_columns=f444w,f150w` add
+ * `line_columns` / `band_columns` maps to every row (display only; the
+ * scalar `line` / `band` columns stay), and `sort=line_snr:<line>` /
+ * `band_mag:<band>` / `band_snr:<band>` sorts on one of them. Present only
+ * while asked for, like the line and band parameters.
+ */
+export function measurementColumnsRpcParams(searchParams: URLSearchParams): { p_line_columns?: Record<string, object>; p_band_columns?: Record<string, object> } {
+  const lines = (parseCSV(searchParams.get('line_columns')) ?? []).filter(isFilterableLine);
+  const bands = parseCSV(searchParams.get('band_columns')) ?? [];
+  // a JSON map of the asked keys; the API has no per-key window, so every value counts
+  return {
+    ...(lines.length ? { p_line_columns: Object.fromEntries(lines.map((l) => [l, {}])) } : {}),
+    ...(bands.length ? { p_band_columns: Object.fromEntries(bands.map((b) => [b, {}])) } : {}),
+  };
+}
+
+/** A sort column of the v1 list endpoints: a fixed name, or 'line_snr:<line>' / 'band_mag:<band>' / 'band_snr:<band>'. */
+export function isMeasurementSort(column: string): boolean {
+  return /^(line_snr|band_mag|band_snr):[^,]+$/.test(column);
+}
+
 /** The `line` query parameter, when set, must name a filterable catalog entry. */
 export function invalidLineParam(searchParams: URLSearchParams): string | null {
   const line = searchParams.get('line')?.trim();

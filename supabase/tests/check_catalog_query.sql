@@ -431,4 +431,72 @@ BEGIN
 END $$;
 RESET ROLE;
 
+-- ------------------------------------------------------------------ 9 (several line / band columns at once, phase 3c, #660)
+-- p_line_columns / p_band_columns put a per-key map on every row, display
+-- only (the count never moves), and 'line_snr:<line>' / 'band_mag:<band>' /
+-- 'band_snr:<band>' sort on one entry; the same on the wrappers, prev / next,
+-- the id list and the CSV exports. The maps answer to the viewer's scope.
+SELECT set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}', true);
+SET LOCAL ROLE authenticated;
+DO $$
+DECLARE
+  slugs text[] := public.accessible_program_slugs();
+  plain bigint; with_cols bigint;
+  got text[]; snrs double precision[];
+  v_snr double precision; v_has boolean; v_has2 boolean;
+  r record;
+BEGIN
+  -- the maps: CQ-A has CIII1908 (S/N 5) and OIII5007; CQ-B has OIII5007 only; the band f444w on CQ-A
+  SELECT COALESCE(array_agg((e -> 'line_columns' -> 'CIII1908' ->> 'snr')::text ORDER BY e ->> 'object_id'), '{}') INTO got
+    FROM public.get_filtered_objects_paginated(slugs, p_line_columns := '{"CIII1908": {}, "OIII5007": {}}', p_line_include_stale := true, p_band_columns := '{"f444w": {}}', p_fields := '{zzz_cq_field}', p_page_size := 10) g, jsonb_array_elements(g.targets) e;
+  IF cardinality(got) = 0 THEN RAISE EXCEPTION 'no CQ rows with columns'; END IF;
+  SELECT (e -> 'line_columns' -> 'CIII1908' ->> 'snr')::double precision, (e -> 'line_columns' ? 'OIII5007')
+    INTO v_snr, v_has FROM public.get_filtered_objects_paginated(slugs, p_line_columns := '{"CIII1908": {}, "OIII5007": {}}', p_line_include_stale := true, p_fields := '{zzz_cq_field}', p_page_size := 10) g, jsonb_array_elements(g.targets) e
+    WHERE e ->> 'object_id' = 'CQ-A';
+  IF v_snr IS NULL OR NOT COALESCE(v_has, false) THEN RAISE EXCEPTION 'CQ-A line columns: snr % oiii %', v_snr, v_has; END IF;
+  -- the band map, on the seeded catalog (the CQ fixture carries no photometry)
+  SELECT bool_or(e -> 'band_columns' -> 'f444w' ->> 'mag' IS NOT NULL) INTO v_has2
+    FROM public.get_filtered_objects_paginated(slugs, p_band_columns := '{"f444w": {}}', p_has_photometry := true, p_page_size := 50) g, jsonb_array_elements(g.targets) e;
+  IF NOT COALESCE(v_has2, false) THEN RAISE EXCEPTION 'no band_columns on any seeded object with photometry'; END IF;
+  -- the window that admitted the row bounds the shown value: CQ-A's CIII1908 has S/N 5, so an upper bound of 4 shows nothing for it
+  SELECT (e -> 'line_columns' -> 'CIII1908' ->> 'snr')::double precision INTO v_snr
+    FROM public.get_filtered_objects_paginated(slugs, p_line_columns := '{"CIII1908": {"snr_max": 4}}', p_line_include_stale := true, p_fields := '{zzz_cq_field}', p_page_size := 10) g, jsonb_array_elements(g.targets) e
+    WHERE e ->> 'object_id' = 'CQ-A';
+  IF v_snr IS NOT NULL THEN RAISE EXCEPTION 'a value outside its window was shown: %', v_snr; END IF;
+  SELECT (e -> 'line_columns' -> 'CIII1908' ->> 'snr')::double precision INTO v_snr
+    FROM public.get_filtered_objects_paginated(slugs, p_line_columns := '{"CIII1908": {"snr_min": 4}}', p_line_include_stale := true, p_fields := '{zzz_cq_field}', p_page_size := 10) g, jsonb_array_elements(g.targets) e
+    WHERE e ->> 'object_id' = 'CQ-A';
+  IF v_snr IS NULL THEN RAISE EXCEPTION 'a value inside its window was not shown'; END IF;
+  -- display only: the count is the count without them
+  SELECT total_count INTO plain FROM public.get_filtered_objects_paginated(slugs, p_fields := '{zzz_cq_field}', p_page_size := 1);
+  SELECT total_count INTO with_cols FROM public.get_filtered_objects_paginated(slugs, p_fields := '{zzz_cq_field}', p_line_columns := '{"CIII1908": {}}', p_band_columns := '{"f444w": {}}', p_page_size := 1);
+  IF plain <> with_cols THEN RAISE EXCEPTION 'the columns narrowed the list: % vs %', plain, with_cols; END IF;
+  -- the sort key: descending S/N in the named line, NULLs last; an unknown key falls back to object_id
+  SELECT COALESCE(array_agg((e -> 'line_columns' -> 'OIII5007' ->> 'snr')::double precision), '{}') INTO snrs
+    FROM public.get_filtered_objects_paginated(slugs, p_fields := '{zzz_cq_field}', p_line_columns := '{"OIII5007": {}}', p_line_include_stale := true, p_sort_column := 'line_snr:OIII5007', p_sort_direction := 'desc', p_page_size := 10) g, jsonb_array_elements(g.targets) e;
+  IF cardinality(snrs) < 2 OR snrs[1] IS NULL OR snrs[1] < snrs[2] THEN RAISE EXCEPTION 'line_snr:OIII5007 desc did not sort: %', snrs; END IF;
+  SELECT COALESCE(array_agg(e ->> 'object_id'), '{}') INTO got
+    FROM public.get_filtered_objects_paginated(slugs, p_fields := '{zzz_cq_field}', p_sort_column := 'line_snr:OIII5007', p_page_size := 10) g, jsonb_array_elements(g.targets) e;
+  IF got <> (SELECT array_agg(x ORDER BY x) FROM unnest(got) x) THEN RAISE EXCEPTION 'an unasked key did not fall back to object_id: %', got; END IF;
+  -- the spectra list: this spectrum's lines
+  SELECT (e -> 'line_columns' -> 'CIII1908' ->> 'snr')::double precision INTO v_snr
+    FROM public.get_filtered_spectra_paginated(slugs, p_line_columns := '{"CIII1908": {}}', p_fields := '{zzz_cq_field}', p_sort_column := 'line_snr:CIII1908', p_sort_direction := 'desc', p_page_size := 1) g, jsonb_array_elements(g.targets) e;
+  IF v_snr IS NULL THEN RAISE EXCEPTION 'spectra line_columns empty'; END IF;
+  -- the wrappers, prev / next, the id list and the exports take them too
+  SELECT bool_or(e -> 'line_columns' ? 'CIII1908') INTO v_has FROM public.catalog_query_objects('{"col": "field", "op": "eq", "v": "zzz_cq_field"}', slugs, p_line_columns := '{"CIII1908": {}}', p_line_include_stale := true, p_sort_column := 'line_snr:CIII1908', p_page_size := 10) g, jsonb_array_elements(g.targets) e;
+  IF NOT COALESCE(v_has, false) THEN RAISE EXCEPTION 'catalog_query_objects lost the columns'; END IF;
+  SELECT bool_or(e -> 'line_columns' ? 'CIII1908') INTO v_has FROM public.catalog_query_spectra('{"exists": "objects", "where": [{"col": "field", "op": "eq", "v": "zzz_cq_field"}]}', slugs, p_line_columns := '{"CIII1908": {}}', p_page_size := 10) g, jsonb_array_elements(g.targets) e;
+  IF NOT COALESCE(v_has, false) THEN RAISE EXCEPTION 'catalog_query_spectra lost the columns'; END IF;
+  SELECT * INTO r FROM public.get_adjacent_objects('CQ-A', slugs, p_fields := '{zzz_cq_field}', p_line_columns := '{"OIII5007": {}}', p_line_include_stale := true, p_sort_column := 'line_snr:OIII5007', p_sort_direction := 'desc');
+  IF r.total_count = 0 THEN RAISE EXCEPTION 'get_adjacent_objects with a line_snr:<line> sort found nothing'; END IF;
+  SELECT COALESCE(array_agg(g.object_id), '{}') INTO got FROM public.get_filtered_object_ids(slugs, p_fields := '{zzz_cq_field}', p_line_columns := '{"OIII5007": {}}', p_line_include_stale := true, p_sort_column := 'line_snr:OIII5007', p_sort_direction := 'desc') g;
+  IF cardinality(got) = 0 THEN RAISE EXCEPTION 'get_filtered_object_ids with the columns found nothing'; END IF;
+  SELECT bool_or(g.line_columns ? 'CIII1908') INTO v_has FROM public.get_csv_export_objects(slugs, p_fields := '{zzz_cq_field}', p_line_columns := '{"CIII1908": {}}', p_line_include_stale := true, p_page_size := 10) g;
+  IF NOT COALESCE(v_has, false) THEN RAISE EXCEPTION 'get_csv_export_objects lost the columns'; END IF;
+  SELECT count(*) INTO plain FROM public.get_csv_export_spectra(slugs, p_fields := '{zzz_cq_field}', p_line_columns := '{"CIII1908": {}}', p_page_size := 10) g WHERE g.line_columns ? 'CIII1908';
+  IF plain = 0 THEN RAISE EXCEPTION 'get_csv_export_spectra lost the columns'; END IF;
+  RAISE NOTICE 'OK 9: several line / band columns at once, display only, sortable';
+END $$;
+RESET ROLE;
+
 ROLLBACK;

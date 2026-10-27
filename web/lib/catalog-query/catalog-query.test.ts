@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { CATALOGUE, CORRELATIONS, OPS_BY_TYPE, TREE_TABLES } from './catalogue';
 import { describeNode, encodeConditions, parseConditions, rerootNodes, validateNode, type TreeNode } from './tree';
-import { activeLineOf, distanceReferenceOf, filterNodes, legacyNodes, liftConditions, needsTreePath, normalizeFilters } from './legacy';
-import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
-import { filtersToURLParams, parseFiltersFromURL } from '@/lib/utils/url-params';
+import { activeLinesOf, distanceReferenceOf, filterNodes, legacyNodes, liftConditions, measurementColumnParams, needsTreePath, normalizeFilters } from './legacy';
+import { DEFAULT_FILTERS, buildFilterParams } from '@/lib/actions/filter-params';
+import { isValidSortColumn } from '@/lib/actions/spectra-types';
+import { filtersToURLParams, parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
 
 const functionsSql = readFileSync(fileURLToPath(new URL('../../../supabase/schemas/functions.sql', import.meta.url)), 'utf8');
 
@@ -234,28 +235,39 @@ describe('free conditions', () => {
     expect(lifted.conditions).toEqual([{ col: 'redshift', op: 'gt', v: 5 }, line]);
   });
 
-  it('show the column a row asks for, never one a filter implies', () => {
-    expect(activeLineOf({ ...DEFAULT_FILTERS, conditions: [either] })).toBeNull();
-    expect(activeLineOf({ ...DEFAULT_FILTERS, show_line: 'Halpha' })).toBe('Halpha');
-    expect(activeLineOf({ ...DEFAULT_FILTERS, show_line: 'CIII1907' })).toBeNull();
+  it('show every line and band the rows are sure of, never one a filter implies', () => {
+    expect(activeLinesOf({ ...DEFAULT_FILTERS, conditions: [either] })).toEqual([]);
+    expect(activeLinesOf({ ...DEFAULT_FILTERS, show_lines: ['Halpha', 'CIII1907', 'OIII5007'] })).toEqual(['Halpha', 'OIII5007']);
     expect(distanceReferenceOf({ ...DEFAULT_FILTERS, conditions: [{ cone: { ra: 150, dec: 2, radius: 0.1 } }] }, 'objects')).toEqual({ ra: 150, dec: 2 });
     expect(distanceReferenceOf(DEFAULT_FILTERS, 'objects')).toBeNull();
-    // the columns follow the rows: the first line and the first band filtered on, from any link
+    // the columns follow the rows the tree is sure of: every one (#660), from any link
     const rows = { ...DEFAULT_FILTERS, conditions: [...legacyNodes({ band: 'f444w', band_mag_max: 27 }, 'objects'), line, either] };
     const params = filtersToURLParams(rows, 1, 50, 'object_id', 'asc', 'objects');
     expect(params.has('col_line')).toBe(false);
-    expect(parseFiltersFromURL(params).show_band).toBe('f444w');
-    // the first line row the tree is sure of; the one inside `either` (an OR) is not a column
-    expect(parseFiltersFromURL(params).show_line).toBe('OIII5007');
-    expect(parseFiltersFromURL(new URLSearchParams({ q: JSON.stringify(either) })).show_line).toBeNull();
-    expect(parseFiltersFromURL(new URLSearchParams({ line: 'Halpha' })).show_line).toBe('Halpha');
-    expect(parseFiltersFromURL(new URLSearchParams({ z_min: '4' })).show_line).toBeNull();
-    // a column the pill cannot carry sends the state down the tree path
+    expect(parseFiltersFromURL(params).show_bands).toEqual(['f444w']);
+    // the line inside `either` (an OR) is not a column
+    expect(parseFiltersFromURL(params).show_lines).toEqual(['OIII5007']);
+    expect(parseFiltersFromURL(new URLSearchParams({ q: JSON.stringify(either) })).show_lines).toEqual([]);
+    expect(parseFiltersFromURL(new URLSearchParams({ line: 'Halpha' })).show_lines).toEqual(['Halpha']);
+    expect(parseFiltersFromURL(new URLSearchParams({ z_min: '4' })).show_lines).toEqual([]);
+    // the columns are display-only parameters on every RPC: they never decide the path
     const pill = normalizeFilters({ ...DEFAULT_FILTERS, conditions: legacyNodes({ line: 'Halpha', line_snr_min: 3 }, 'objects') }, 'objects');
     expect(needsTreePath(pill)).toBe(false);
-    expect(needsTreePath({ ...pill, show_line: 'Halpha' })).toBe(false);
-    expect(needsTreePath({ ...pill, show_line: 'OIII5007' })).toBe(true);
-    expect(needsTreePath({ ...pill, show_band: 'f444w' })).toBe(true);
+    expect(needsTreePath({ ...pill, show_lines: ['OIII5007'], show_bands: ['f444w'] })).toBe(false);
+    // the column parameters: each shown key with the window of its own row; the stale flag is the pill's when a pill is set
+    const cols = measurementColumnParams({ ...pill, conditions: [...pill.conditions, line, ...legacyNodes({ band: 'f444w', band_mag_max: 27, band_snr_min: 5 }, 'objects')], show_lines: ['Halpha', 'OIII5007', 'CIII1907'], show_bands: ['f444w'] }, 'objects');
+    expect(cols.p_line_columns).toEqual({ Halpha: { snr_min: 3 }, OIII5007: { snr_min: 3 } });
+    expect(cols.p_band_columns).toEqual({ f444w: { mag_max: 27, snr_min: 5 } });
+    expect('p_line_include_stale' in cols).toBe(false);
+    const noPill = measurementColumnParams({ ...DEFAULT_FILTERS, conditions: [line], show_lines: ['OIII5007'] }, 'objects');
+    expect(noPill.p_line_include_stale).toBe(true);
+    expect(measurementColumnParams(DEFAULT_FILTERS, 'objects')).toEqual({});
+    expect('p_line_columns' in buildFilterParams(DEFAULT_FILTERS, ['p'])).toBe(false);
+    // and a measurement column is a sort key of its own
+    expect(isValidSortColumn('line_snr:OIII5007', 'objects')).toBe(true);
+    expect(isValidSortColumn('band_mag:f444w', 'spectra')).toBe(true);
+    expect(isValidSortColumn('line_snr:', 'objects')).toBe(false);
+    expect(parseSortingFromURL(new URLSearchParams({ sort: 'line_snr:OIII5007', dir: 'desc' }), 'objects')).toEqual({ sortColumn: 'line_snr:OIII5007', sortDirection: 'desc' });
   });
 
   it('describe themselves', () => {

@@ -43,7 +43,15 @@ export const VALID_SORT_COLUMNS = [
   'max_snr', 'max_exposure_time', 'signal_to_noise', 'exposure_time', 'grating', 'distance',
   'object_id', 'n_targets', 'n_spectra', 'photo_z', 'line_snr', 'band_mag', 'band_snr'
 ] as const;
-export type SortColumn = typeof VALID_SORT_COLUMNS[number];
+/** A fixed column, or a measurement column keyed by its line / band
+ *  (phase 3c, #660): 'line_snr:Halpha', 'band_mag:f444w', 'band_snr:f444w'. */
+export type SortColumn = typeof VALID_SORT_COLUMNS[number] | `line_snr:${string}` | `band_mag:${string}` | `band_snr:${string}`;
+
+/** The measurement a prefixed sort column names, or null for a fixed column. */
+export function measurementSort(column: string): { kind: 'line_snr' | 'band_mag' | 'band_snr'; key: string } | null {
+  const m = /^(line_snr|band_mag|band_snr):(.+)$/.exec(column);
+  return m ? { kind: m[1] as 'line_snr' | 'band_mag' | 'band_snr', key: m[2] } : null;
+}
 
 /** Default sort column for a given view mode */
 export function defaultSortColumn(viewMode: ViewMode): SortColumn {
@@ -53,5 +61,8 @@ export function defaultSortColumn(viewMode: ViewMode): SortColumn {
 /** Check if a sort column is valid for the given view mode */
 export function isValidSortColumn(column: string, viewMode: ViewMode): boolean {
   const valid = viewMode === 'spectra' ? SPECTRA_SORT_COLUMNS : OBJECTS_SORT_COLUMNS;
-  return (valid as readonly string[]).includes(column);
+  if ((valid as readonly string[]).includes(column)) return true;
+  // a measurement column: the RPCs honour it while the key is among the shown columns
+  const m = measurementSort(column);
+  return m !== null && m.key.trim() !== '' && !m.key.includes(',');
 }

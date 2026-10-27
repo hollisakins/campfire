@@ -71,12 +71,12 @@ export interface FilterOptions {
    *  as one tree (lib/catalog-query/legacy.ts); otherwise the legacy RPC
    *  parameters below carry it unchanged. */
   conditions: TreeNode[];
-  /** The line whose S/N the table shows and sorts on, and the band whose
-   *  magnitude and S/N it shows (phase 3b): derived from the tree, the first
-   *  line and the first band filtered on (every one, once #660 lets the RPCs
-   *  take several). Display only; nothing is filtered by them. */
-  show_line: string | null;
-  show_band: string | null;
+  /** The lines whose S/N and the bands whose magnitude and S/N the table
+   *  shows (phase 3c, #660): derived from the tree, every line and band
+   *  filtered on that every selected row is sure to have. Display only;
+   *  nothing is filtered by them. */
+  show_lines: string[];
+  show_bands: string[];
 }
 
 export const DEFAULT_FILTERS: FilterOptions = {
@@ -112,8 +112,8 @@ export const DEFAULT_FILTERS: FilterOptions = {
   dq_flags_mode: 'any',
   list_ids_mode: 'any',
   conditions: [],
-  show_line: null,
-  show_band: null,
+  show_lines: [],
+  show_bands: [],
 };
 
 /** True when every filter is at its default (nothing selects). */
