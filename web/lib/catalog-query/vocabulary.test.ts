@@ -6,7 +6,7 @@ import { legacyNodes, normalizeFilters } from './legacy';
 import { validateNode, type TreeNode } from './tree';
 import {
   addToCard, appendAt, cardContentsPath, compileChoice, compileMeasurement, compileProperty, describeItem, findProperty, lineWantsFresh, measurementKeys, nodeAt,
-  propertyDef, readChoiceState, readConditions, removePaths, replaceAt, rerootConditions, setNegated, tableAtPath, tidyConditions,
+  propertyDef, readChoiceState, readConditions, removePaths, replaceAt, rerootConditions, setNegated, tableAtPath, tidyConditions, treeReadsColumn,
   type Item, type MeasurementItem, type PropertyItem, type SpectrumItem,
 } from './vocabulary';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
@@ -369,6 +369,14 @@ describe('the two roots', () => {
 });
 
 describe('columns and words', () => {
+  it('knows whether a tree constrains a column anywhere (the inspection queue\'s default)', () => {
+    expect(treeReadsColumn(figure6, 'objects', 'objects', 'redshift_quality')).toBe(true);
+    expect(treeReadsColumn([{ col: 'redshift_quality', op: 'nin', v: [0] }], 'objects', 'objects', 'redshift_quality')).toBe(true);
+    expect(treeReadsColumn([{ or: [{ col: 'redshift_quality', op: 'in', v: [4] }, { col: 'photo_z', op: 'gte', v: 5 }] }], 'objects', 'objects', 'redshift_quality')).toBe(true);
+    expect(treeReadsColumn([{ exists: 'spectra', where: [{ col: 'grating', op: 'in', v: ['PRISM'] }] }], 'objects', 'objects', 'redshift_quality')).toBe(false);
+    expect(treeReadsColumn([{ exists: 'objects', where: [{ col: 'redshift_quality', op: 'in', v: [4] }] }], 'spectra', 'objects', 'redshift_quality')).toBe(true);
+  });
+
   it('names the measurements a tree carries and whether a line asks for a fresh fit', () => {
     expect(measurementKeys(figure6, 'line')).toEqual(['Halpha', 'OIII5007']);
     expect(measurementKeys(figure6, 'band')).toEqual(['f444w']);

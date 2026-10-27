@@ -761,6 +761,19 @@ export function lineWantsFresh(nodes: TreeNode[], line: string): boolean {
   return found;
 }
 
+/** True when some predicate of the tree reads `col` of `table` (anywhere:
+ *  in a group, inside an exists). */
+export function treeReadsColumn(nodes: TreeNode[], root: TreeRoot, table: TreeTable, col: string): boolean {
+  const walk = (list: TreeNode[], at: TreeTable): boolean => list.some((n) => {
+    if (isPredicate(n)) return at === table && n.col === col;
+    if (isAnd(n)) return walk(n.and, at);
+    if (isOr(n)) return walk(n.or, at);
+    if (isExists(n)) return walk(n.where ?? [], n.exists);
+    return false;
+  });
+  return walk(nodes, root);
+}
+
 // ---------------------------------------------------------------- words
 
 export type ValueLabel = (choices: LeafChoices | undefined, value: Scalar) => string;

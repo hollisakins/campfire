@@ -631,7 +631,8 @@ export function NounBody({ noun, items, level, ctx, demote = [] }: NounBodyProps
   const needsReviewDef = defs.find((d) => d.key === 'needs_review');
   const commitNeedsReview = (checked: boolean) => {
     if (!needsReviewDef) return;
-    const node = checked ? compileProperty(needsReviewDef, { kind: 'bool', value: true }, level.table) : null;
+    const table = needsReview ? tableAtPath(ctx.nodes, ctx.root, needsReview.path) : level.table;
+    const node = checked ? compileProperty(needsReviewDef, { kind: 'bool', value: true }, table) : null;
     if (needsReview) ctx.onChange(replaceAt(ctx.nodes, needsReview.path, node));
     else if (node) ctx.onChange(addToLevel(ctx.nodes, level, node));
   };

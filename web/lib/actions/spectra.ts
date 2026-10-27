@@ -9,6 +9,7 @@ import type { SpectrumTarget, Spectrum, ObjectDetail, PinnedObjectMetadata } fro
 import { buildFilterParams } from './filter-params';
 import { activeBandOf, activeLineOf, distanceReferenceOf, lineColumnIncludesStale, needsTreePath, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
 import { filterTree, matchFilterIds, treeRejection } from '@/lib/server/catalog-query';
+import { treeReadsColumn } from '@/lib/catalog-query/vocabulary';
 import type { FilterOptions } from './filter-params';
 export type { FilterOptions, FilterMode } from './filter-params';
 
@@ -616,8 +617,12 @@ export async function getInspectionQueueIds(
     }
 
     filters = normalizeFilters(filters, 'objects');
-    const hasQualityFilter = filters?.redshift_quality && filters.redshift_quality.length > 0;
-    const qualityFilter = hasQualityFilter ? filters!.redshift_quality : [0];
+    // the queue is the uninspected by default, unless the state says which
+    // qualities it wants: the pill, or a quality predicate the pill cannot
+    // carry (an exclusion, an "any of" arm), which the tree path applies
+    const pillQuality = filters.redshift_quality ?? [];
+    const treeQuality = treeReadsColumn(filters.conditions ?? [], 'objects', 'objects', 'redshift_quality');
+    const qualityFilter = pillQuality.length > 0 ? pillQuality : treeQuality ? null : [0];
 
     const baseRpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 

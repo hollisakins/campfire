@@ -19,7 +19,7 @@ import { buildChoices, valueLabelFor } from '@/components/filters/filter-choices
 import { applyConditions } from '@/components/filters/filter-state';
 import { rootOf } from '@/lib/catalog-query/legacy';
 import {
-  compileProperty, describeItem, findProperty, propertyDef, readConditions, replaceAt, rerootConditions,
+  compileProperty, describeItem, findProperty, propertyDef, readConditions, replaceAt, rerootConditions, tableAtPath,
   type Item, type PropertyItem,
 } from '@/lib/catalog-query/vocabulary';
 import { filtersToURLParams } from '@/lib/utils/url-params';
@@ -165,7 +165,9 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
 
   const setNeedsReview = (checked: boolean) => {
     const def = propertyDef('object', 'needs_review')!;
-    const node = checked ? compileProperty(def, { kind: 'bool', value: true }, objectLevel.table) : null;
+    // a replacement is written against the table its node sits in
+    const table = needsReview ? tableAtPath(filters.conditions, root, needsReview.path) : objectLevel.table;
+    const node = checked ? compileProperty(def, { kind: 'bool', value: true }, table) : null;
     if (needsReview) ctx.onChange(replaceAt(filters.conditions, needsReview.path, node));
     else if (node) ctx.onChange([...filters.conditions, node]);
   };
