@@ -116,6 +116,8 @@ interface FilterChipProps {
    *  are any of them or all of them. Shown once two are included. */
   mode?: 'any' | 'all';
   onModeChange?: (mode: 'any' | 'all') => void;
+  /** Mount with the dropdown open (a chip the user just asked for). */
+  defaultOpen?: boolean;
 }
 
 export const FilterChip: React.FC<FilterChipProps> = ({
@@ -134,9 +136,10 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   onExcludedChange,
   mode = 'any',
   onModeChange,
+  defaultOpen = false,
 }) => {
   const triState = Boolean(onExcludedChange);
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(defaultOpen);
   const [searchTerm, setSearchTerm] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);

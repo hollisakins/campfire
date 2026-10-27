@@ -21,6 +21,8 @@ interface RangeFilterChipProps {
   precision?: number;
   quickRanges?: QuickRange[];
   className?: string;
+  /** Mount with the dropdown open (a chip the user just asked for). */
+  defaultOpen?: boolean;
 }
 
 export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
@@ -34,8 +36,9 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
   precision = 2,
   quickRanges,
   className = '',
+  defaultOpen = false,
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(defaultOpen);
   const [localMin, setLocalMin] = useState<string>(min?.toString() ?? '');
   const [localMax, setLocalMax] = useState<string>(max?.toString() ?? '');
   const containerRef = useRef<HTMLDivElement>(null);

@@ -9,9 +9,8 @@
  * same dialog serves the table page and the map.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, X } from 'lucide-react';
+import { Check, ClipboardPaste, Copy, X } from 'lucide-react';
 import type { FilterOption } from '@/components/ui/FilterChip';
-import { Popover, isInsidePopover } from '@/components/ui/Popover';
 import { DEFAULT_FILTERS, type FilterOptions } from '@/lib/actions/filter-params';
 import type { ViewMode } from '@/lib/actions/spectra-types';
 import { defaultSortColumn } from '@/lib/actions/spectra-types';
@@ -51,7 +50,7 @@ const EYEBROW = 'text-[11px] font-semibold uppercase tracking-wider text-text-te
 export function FiltersModal({
   isOpen, onClose, filters, onApply,
   availablePrograms = [], availableFields = [], availableObservations = [], availableBands = [],
-  viewMode = 'objects', hidePosition = false, title = 'Filters',
+  viewMode = 'objects', hidePosition = false, title = 'Advanced Filters',
 }: FiltersModalProps) {
   const root = rootOf(viewMode);
   const isSpectra = viewMode === 'spectra';
@@ -115,45 +114,36 @@ export function FiltersModal({
     return () => { clearTimeout(t); controller.abort(); };
   }, [isOpen, draft, viewMode, dr]);
 
-  // the Query menu: copy, paste, SQL
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [pasteOpen, setPasteOpen] = useState(false);
-  const [pasteText, setPasteText] = useState('');
-  const [pasteError, setPasteError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<'query' | 'sql' | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => { if (!isInsidePopover(e.target, menuRef.current)) { setMenuOpen(false); setPasteOpen(false); } };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, []);
-  const flash = (what: 'query' | 'sql') => { setCopied(what); setTimeout(() => setCopied(null), 1500); };
+  // copy the query, paste one from the clipboard, copy its SQL
+  const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const say = (text: string, error = false) => {
+    setNotice({ text, error });
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), error ? 3000 : 1500);
+  };
   const copyQuery = async () => {
     const q = encodeConditions(draft.conditions) ?? '{"and":[]}';
-    await navigator.clipboard.writeText(q);
-    flash('query');
-    setMenuOpen(false);
+    try { await navigator.clipboard.writeText(q); say('Query copied'); } catch { say('Clipboard not available', true); }
+  };
+  const pasteQuery = async () => {
+    let text: string;
+    try { text = (await navigator.clipboard.readText()).trim(); } catch { say('Clipboard not available', true); return; }
+    const nodes = parseConditions(text, root);
+    if (!nodes) { say('The clipboard is not a query this catalog knows', true); return; }
+    setDraft((d) => applyConditions(d, nodes, root));
+    say(`Query pasted: ${nodes.length} ${nodes.length === 1 ? 'condition' : 'conditions'}`);
   };
   const copySql = async () => {
     const tree = treeOf(draft.conditions);
-    if (!tree) { await navigator.clipboard.writeText(`SELECT r.* FROM public.${root} r;`); flash('sql'); setMenuOpen(false); return; }
     try {
+      if (!tree) { await navigator.clipboard.writeText(`SELECT r.* FROM public.${root} r;`); say('SQL copied'); return; }
       const res = await fetchJson<CatalogQuerySqlResponse>(`/api/catalog-query/sql?root=${root}&q=${encodeURIComponent(JSON.stringify(tree))}`);
       await navigator.clipboard.writeText(`SELECT r.*\nFROM public.${root} r\nWHERE ${res.sql};`);
-      flash('sql');
+      say('SQL copied');
     } catch {
-      setPasteError('Could not compile the query');
+      say('Could not compile the query', true);
     }
-    setMenuOpen(false);
-  };
-  const applyPaste = () => {
-    const nodes = parseConditions(pasteText.trim(), root);
-    if (!nodes) { setPasteError('Not a query this catalog knows'); return; }
-    setDraft((d) => applyConditions(d, nodes, root));
-    setPasteText('');
-    setPasteError(null);
-    setPasteOpen(false);
-    setMenuOpen(false);
   };
 
   if (!isOpen) return null;
@@ -174,33 +164,20 @@ export function FiltersModal({
       >
         {/* Header */}
         <div className="flex items-center gap-2 px-5 py-3 border-b border-border bg-surface-2">
-          <h2 className="text-base font-semibold text-text-primary">{title} · {noun}</h2>
+          <h2 className="text-base font-semibold text-text-primary">{title}</h2>
+          {notice && (
+            <span className={`inline-flex items-center gap-1 text-xs ${notice.error ? 'text-red-500' : 'text-text-secondary'}`}>
+              {!notice.error && <Check className="w-3.5 h-3.5" />}{notice.text}
+            </span>
+          )}
           <span className="flex-1" />
-          <div ref={menuRef} className="relative">
-            <button type="button" onClick={() => setMenuOpen(!menuOpen)} className={`${BTN} inline-flex items-center gap-1.5 py-1.5`}>
-              {copied ? <Check className="w-4 h-4" /> : null}
-              {copied === 'query' ? 'Copied' : copied === 'sql' ? 'SQL copied' : 'Query'}
-              <ChevronDown className="w-3.5 h-3.5" />
-            </button>
-            {menuOpen && (
-              <Popover anchorRef={menuRef} open={menuOpen} className="w-[320px] bg-card border border-border rounded-lg shadow-lg p-1 text-sm">
-                <button type="button" onClick={copyQuery} className="w-full text-left px-3 py-2 rounded-md hover:bg-card-hover text-text-primary">Copy query</button>
-                <button type="button" onClick={() => { setPasteOpen(!pasteOpen); setPasteError(null); }} className="w-full text-left px-3 py-2 rounded-md hover:bg-card-hover text-text-primary">Paste query…</button>
-                {pasteOpen && (
-                  <div className="px-2 pb-2">
-                    <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} rows={4} placeholder='{"and":[…]}'
-                      className="w-full px-2 py-1.5 text-xs font-mono border border-border rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary/40" />
-                    {pasteError && <p className="text-xs text-red-500 mt-1">{pasteError}</p>}
-                    <div className="flex justify-end mt-1.5">
-                      <button type="button" onClick={applyPaste} className="px-3 py-1 text-xs font-medium rounded-md bg-primary text-on-primary hover:bg-primary-hover">Use this query</button>
-                    </div>
-                  </div>
-                )}
-                <div className="border-t border-border my-1" />
-                <button type="button" onClick={copySql} className="w-full text-left px-3 py-2 rounded-md hover:bg-card-hover text-text-secondary">Copy as SQL</button>
-              </Popover>
-            )}
-          </div>
+          <button type="button" onClick={copyQuery} className={`${BTN} inline-flex items-center gap-1.5 py-1.5`} title="Copy the query to the clipboard">
+            <Copy className="w-3.5 h-3.5" /> Copy
+          </button>
+          <button type="button" onClick={pasteQuery} className={`${BTN} inline-flex items-center gap-1.5 py-1.5`} title="Replace the conditions with the query on the clipboard">
+            <ClipboardPaste className="w-3.5 h-3.5" /> Paste
+          </button>
+          <button type="button" onClick={copySql} className="px-2 py-1.5 text-xs text-text-tertiary hover:text-text-secondary" title="Copy the SQL this query compiles to">SQL</button>
           <button type="button" onClick={() => setDraft((d) => ({ ...DEFAULT_FILTERS, search: d.search, search_scope: d.search_scope }))} disabled={conditionCount === 0 && !draft.show_line && !draft.show_band} className={BTN}>
             Clear
           </button>
@@ -224,7 +201,6 @@ export function FiltersModal({
             </>
           ) : (
             <section>
-              <div className={`${EYEBROW} mb-2`}>Object</div>
               <NounBody noun="object" items={objectItems} level={{ table: 'objects', path: [] }} ctx={ctx} />
             </section>
           )}

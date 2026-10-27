@@ -16,14 +16,17 @@ interface CoordinateSearchChipProps {
   value?: CoordinateSearchValue | null;
   onChange: (value: CoordinateSearchValue | null) => void;
   className?: string;
+  /** Mount with the dropdown open (a chip the user just asked for). */
+  defaultOpen?: boolean;
 }
 
 export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
   value,
   onChange,
   className = '',
+  defaultOpen = false,
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(defaultOpen);
   const [coordInput, setCoordInput] = useState('');
   const [radiusInput, setRadiusInput] = useState('1');
   const [unitInput, setUnitInput] = useState<'degrees' | 'arcmin' | 'arcsec'>('arcmin');

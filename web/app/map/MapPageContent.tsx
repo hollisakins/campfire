@@ -168,7 +168,6 @@ export function MapPageContent({
         availableObservations={availableObservations}
         availableBands={filterOptionsResult?.photometry_bands ?? []}
         hidePosition
-        title="Filters"
       />
     </div>
   );

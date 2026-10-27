@@ -112,8 +112,8 @@ function positionToChip(v: PropertyValue & { kind: 'position' }): CoordinateSear
 }
 
 /** A yes / no property: a two-option dropdown. */
-function YesNoChip({ label, value, onChange }: { label: string; value: boolean | null; onChange: (v: boolean | null) => void }) {
-  const [open, setOpen] = useState(false);
+function YesNoChip({ label, value, onChange, defaultOpen = false }: { label: string; value: boolean | null; onChange: (v: boolean | null) => void; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const onDown = (e: MouseEvent) => { if (!isInsidePopover(e.target, ref.current)) setOpen(false); };
@@ -148,10 +148,12 @@ function YesNoChip({ label, value, onChange }: { label: string; value: boolean |
  * them, and its excluded values); the others own one node. With no node yet
  * the first value writes a new one into `level`.
  */
-export function PropertyChip({ def, items, level, ctx, extraCheckbox, onOpenAdvanced }: {
+export function PropertyChip({ def, items, level, ctx, extraCheckbox, onOpenAdvanced, defaultOpen = false }: {
   def: PropertyDef; items: PropertyItem[]; level: Level; ctx: CardsContext;
   extraCheckbox?: { label: string; checked: boolean; onChange: (checked: boolean) => void };
   onOpenAdvanced?: () => void;
+  /** Mount with the dropdown open: a chip the user just asked for. */
+  defaultOpen?: boolean;
 }) {
   const first = items[0];
   // a replacement is written against the table its node already sits in
@@ -201,6 +203,7 @@ export function PropertyChip({ def, items, level, ctx, extraCheckbox, onOpenAdva
         footerLink={def.choices === 'program' || def.choices === 'observation' ? { label: 'Browse all programs', href: '/nirspec/metadata' } : undefined}
         extraCheckbox={extraCheckbox}
         shortcut={def.choices === 'quality' ? { label: 'All inspected', values: [1, 2, 3, 4] } : undefined}
+        defaultOpen={defaultOpen}
       />
     );
   }
@@ -220,12 +223,13 @@ export function PropertyChip({ def, items, level, ctx, extraCheckbox, onOpenAdva
           onChange={(min, max) => commitOne(min === null && max === null ? null : { kind: 'range', min, max })}
           minBound={r?.min} maxBound={r?.max} step={r?.step} precision={r?.precision}
           quickRanges={r?.quick}
+          defaultOpen={defaultOpen}
         />
       );
     }
     case 'bool': {
       const current = value?.kind === 'bool' ? value.value : null;
-      return <YesNoChip label={def.label} value={current} onChange={(v) => commitOne(v === null ? null : { kind: 'bool', value: v })} />;
+      return <YesNoChip label={def.label} value={current} onChange={(v) => commitOne(v === null ? null : { kind: 'bool', value: v })} defaultOpen={defaultOpen} />;
     }
     case 'position': {
       const current = value?.kind === 'position' ? value : null;
@@ -233,6 +237,7 @@ export function PropertyChip({ def, items, level, ctx, extraCheckbox, onOpenAdva
         <CoordinateSearchChip
           value={current ? positionToChip(current) : null}
           onChange={(v) => commitOne(v ? { kind: 'position', ra: v.ra, dec: v.dec, radius: convertRadiusToDegrees(v.radius, v.radius_unit) } : null)}
+          defaultOpen={defaultOpen}
         />
       );
     }
@@ -541,7 +546,7 @@ function AnyOfGroup({ item, level, ctx, noun }: { item: AnyOfItem; level: Level;
       {pending && (
         <>
           <span className="text-xs text-text-tertiary">or</span>
-          <PropertyChip def={pending} items={[]} level={armLevel} ctx={{ ...ctx, onChange: (n) => { setPending(null); ctx.onChange(n); } }} />
+          <PropertyChip def={pending} items={[]} level={armLevel} ctx={{ ...ctx, onChange: (n) => { setPending(null); ctx.onChange(n); } }} defaultOpen />
           <button type="button" onClick={() => setPending(null)} className={ICON_BTN} aria-label="Cancel"><X className="w-3 h-3" /></button>
         </>
       )}
@@ -655,7 +660,12 @@ export function NounBody({ noun, items, level, ctx, demote = [] }: NounBodyProps
 
       {noun === 'object' && (
         <div className="space-y-2">
-          {cards.map((c) => <SpectrumCard key={c.path.join('.')} item={c} ctx={ctx} />)}
+          {cards.map((c, i) => (
+            <React.Fragment key={c.path.join('.')}>
+              {i > 0 && <div className={`${EYEBROW} pl-3`}>and</div>}
+              <SpectrumCard item={c} ctx={ctx} />
+            </React.Fragment>
+          ))}
           <button type="button" onClick={addCard} className={ADD} title="Conditions that must hold on one and the same spectrum">+ spectrum</button>
         </div>
       )}
@@ -668,7 +678,7 @@ export function NounBody({ noun, items, level, ctx, demote = [] }: NounBodyProps
 /** The chip that seeds an "any of" group: its first value writes `{ or: [node] }`. */
 function GroupSeed({ def, level, ctx, onDone }: { def: PropertyDef; level: Level; ctx: CardsContext; onDone: () => void }) {
   return (
-    <PropertyChip def={def} items={[]} level={level} ctx={{
+    <PropertyChip def={def} items={[]} level={level} defaultOpen ctx={{
       ...ctx,
       onChange: (next) => {
         // the chip appended a node at the level's end: wrap that node into a group
