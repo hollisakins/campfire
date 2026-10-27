@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
   const slugs = principal.access.accessibleSlugs;
   if (slugs.length === 0) return Response.json(EMPTY, { headers: NO_STORE });
 
-  const filters = normalizeFilters(parseFiltersFromURL(sp), 'objects');
+  const filters = normalizeFilters(parseFiltersFromURL(sp, 'objects'), 'objects');
   const { sortColumn, sortDirection } = parseSortingFromURL(sp, 'objects');
   const rpcParams = buildFilterParams(filters, slugs, principal.user.id);
 

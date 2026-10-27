@@ -78,7 +78,8 @@ describe('compiling', () => {
     expect(so('field', { kind: 'choice', values: ['f'] })).toEqual(legacyNodes({ fields: ['f'] }, 'spectra')[0]);
     expect(so('redshift', { kind: 'range', min: 4, max: null })).toEqual(legacyNodes({ redshift_min: 4 }, 'spectra')[0]);
     expect(so('position', { kind: 'position', ra: 1, dec: 2, radius: 0.1 })).toEqual({ exists: 'targets', where: [{ cone: { ra: 1, dec: 2, radius: 0.1 } }] });
-    expect(so('program', { kind: 'choice', values: ['p'] })).toEqual({ exists: 'targets', where: [{ col: 'program_slug', op: 'in', v: ['p'] }] });
+    // "observed in" goes through the object at the spectra root: a spectrum has one target
+    expect(so('program', { kind: 'choice', values: ['p'] })).toEqual({ exists: 'objects', where: [{ exists: 'targets', where: [{ col: 'program_slug', op: 'in', v: ['p'] }] }] });
     expect(so('needs_review', { kind: 'bool', value: true })).toEqual({ exists: 'objects', where: [{ col: 'needs_review', op: 'eq', v: true }] });
     // nothing selects nothing
     expect(o('program', { kind: 'choice', values: [] })).toBeNull();
@@ -325,6 +326,25 @@ describe('the two roots', () => {
     expect(back).toEqual(figure6);
     expect(nodeAt(back, [5])).toEqual(figure6[5]);
     expect(nodeAt(back, [6])).toEqual(figure6[6]);
+  });
+
+  it('keeps "observed in all of A and B" an object\'s question at the spectra root', () => {
+    const both = compileChoice(def('object', 'program'), { include: ['a', 'b'], mode: 'all', exclude: [] }, 'objects');
+    const atSpectra = rerootConditions(both, 'objects', 'spectra');
+    // through the object: a spectrum has one target, so two bare target predicates could never both hold
+    expect(atSpectra).toEqual(both.map((n) => ({ exists: 'objects', where: [n] })));
+    const items = readConditions(atSpectra, 'spectra').items;
+    expect(items.every((it) => it.noun === 'object' && it.kind === 'property' && it.def.key === 'program')).toBe(true);
+    expect(rerootConditions(atSpectra, 'spectra', 'objects')).toEqual(both);
+    // the object's own column goes through the object too, and comes back
+    const field = compileProperty(def('object', 'field'), { kind: 'choice', values: ['f'] }, 'objects')!;
+    expect(rerootConditions([field], 'objects', 'spectra')).toEqual([{ exists: 'objects', where: [field] }]);
+    expect(rerootConditions(rerootConditions([field], 'objects', 'spectra'), 'spectra', 'objects')).toEqual([field]);
+    // a pasted spectra-root field through the target (the legacy shape) is the object's and stays bare
+    const viaTarget: TreeNode = { exists: 'targets', where: [{ col: 'field', op: 'in', v: ['f'] }] };
+    expect(rerootConditions(rerootConditions([viaTarget], 'spectra', 'objects'), 'objects', 'spectra')).toEqual([viaTarget]);
+    // and the adder at the spectra root writes "observed in" through the object
+    expect(compileProperty(def('object', 'program'), { kind: 'choice', values: ['a'] }, 'spectra')).toEqual({ exists: 'objects', where: [{ exists: 'targets', where: [{ col: 'program_slug', op: 'in', v: ['a'] }] }] });
   });
 
   it('keeps two cards as two spectra, not one', () => {

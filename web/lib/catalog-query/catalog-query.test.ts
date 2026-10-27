@@ -212,6 +212,10 @@ describe('free conditions', () => {
   it('read against the view root from the URL', () => {
     const f = parseFiltersFromURL(new URLSearchParams({ view: 'spectra', q: '{"col":"signal_to_noise","op":"gte","v":5}' }));
     expect(normalizeFilters(f, 'spectra').max_snr_min).toBe(5);
+    // a caller that queries objects (prev / next, the inspection queue) reads a spectra link as a card
+    const asObjects = parseFiltersFromURL(new URLSearchParams({ view: 'spectra', q: '{"col":"signal_to_noise","op":"gte","v":5}' }), 'objects');
+    expect(asObjects.conditions).toEqual([{ exists: 'spectra', where: [{ col: 'signal_to_noise', op: 'gte', v: 5 }] }]);
+    expect(normalizeFilters(asObjects, 'objects').conditions).toEqual(asObjects.conditions);
     expect(parseFiltersFromURL(new URLSearchParams({ q: '{"col":"signal_to_noise","op":"gte","v":5}' })).conditions).toEqual([]);
   });
 

@@ -88,9 +88,10 @@ const snrQuick = [{ label: '≥ 3', min: 3, max: null }, { label: '≥ 5', min: 
 /** The properties of the four scopes, in the order the cards show them. */
 export const PROPERTIES: PropertyDef[] = [
   // Object
-  { key: 'program', scope: 'object', label: 'Program', kind: 'choice', primary: true, multi: true, choices: 'program', shapes: { objects: via(['targets'], 'program_slug'), spectra: via(['targets'], 'program_slug') } },
+  // no spectra shape: at the spectra root "observed in" goes through the object (a spectrum has one target)
+  { key: 'program', scope: 'object', label: 'Program', kind: 'choice', primary: true, multi: true, choices: 'program', shapes: { objects: via(['targets'], 'program_slug') } },
   { key: 'field', scope: 'object', label: 'Field', kind: 'choice', primary: true, choices: 'field', shapes: { objects: direct('field'), spectra: via(['targets'], 'field') } },
-  { key: 'observation', scope: 'object', label: 'Observation', kind: 'choice', primary: true, multi: true, choices: 'observation', shapes: { objects: via(['targets'], 'observation'), spectra: via(['targets'], 'observation') } },
+  { key: 'observation', scope: 'object', label: 'Observation', kind: 'choice', primary: true, multi: true, choices: 'observation', shapes: { objects: via(['targets'], 'observation') } },
   { key: 'redshift', scope: 'object', label: 'Redshift', kind: 'range', primary: true, range: { min: 0, max: 15, step: 0.1, precision: 2, quick: zQuick }, shapes: { objects: direct('redshift') } },
   // before quality: `redshift_quality = 0` is "not inspected", not a quality pick
   { key: 'inspected', scope: 'object', label: 'Inspected', kind: 'bool', shapes: { objects: { via: [], col: 'redshift_quality', bool: { true: { op: 'gt', v: 0 }, false: { op: 'eq', v: 0 } } } } },
@@ -679,9 +680,16 @@ export function rerootConditions(nodes: TreeNode[], from: TreeRoot, to: TreeRoot
     // the spectrum is the first card; every other node, cards included, is its object's
     const chosen = flat.findIndex((n) => isCardAtObjectsRoot(n) && !(n as ExistsNode).not && ((n as ExistsNode).where?.length ?? 0) > 0);
     const out: TreeNode[] = [];
+    // what the spectrum correlates to the same way as its object stays bare:
+    // photometry, tags, catalog matches, and a target's field or position
+    // (the same for every target of the object); "observed in" via targets
+    // goes through the object, since a spectrum has one target
+    const bare = (n: TreeNode) => isExists(n) && (
+      n.exists === 'photometry' || n.exists === 'object_list_members' || n.exists === 'catalog_matches'
+      || (n.exists === 'targets' && n.where?.length === 1 && (isCone(n.where[0]) || (isPredicate(n.where[0]) && n.where[0].col === 'field'))));
     flat.forEach((n, i) => {
       if (i === chosen) out.push(...((n as ExistsNode).where ?? []));
-      else if (isExists(n) && (n.exists === 'photometry' || n.exists === 'object_list_members' || n.exists === 'catalog_matches' || n.exists === 'targets')) out.push(n);
+      else if (bare(n)) out.push(n);
       else out.push({ exists: 'objects', where: [n] });
     });
     return out;

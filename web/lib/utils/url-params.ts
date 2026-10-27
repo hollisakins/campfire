@@ -9,7 +9,8 @@ import { VALID_SORT_COLUMNS, isValidSortColumn, defaultSortColumn } from '@/lib/
 import { isFilterableLine } from '@/lib/linelist';
 import { encodeConditions, parseConditions } from '@/lib/catalog-query/tree';
 import { filterNodes, legacyNodes, rootOf } from '@/lib/catalog-query/legacy';
-import { measurementKeys } from '@/lib/catalog-query/vocabulary';
+import { measurementKeys, rerootConditions } from '@/lib/catalog-query/vocabulary';
+import type { TreeRoot } from '@/lib/catalog-query/tree';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
 
 // Valid search scope values
@@ -27,7 +28,7 @@ export const DEFAULT_PAGE_SIZE = 50;
  * parameters of an older link (`programs=`, `z_min=`, `line=`, …) become its
  * leading nodes. Only the search box lives outside the tree.
  */
-export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilterOptions {
+export function parseFiltersFromURL(searchParams: URLSearchParams, root?: TreeRoot): AdvancedFilterOptions {
   const parseArray = (key: string): string[] => {
     const value = searchParams.get(key);
     return value ? value.split(',').filter(Boolean) : [];
@@ -117,10 +118,13 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     show_band: null,
   };
   // an unreadable q is dropped whole rather than half-applied
-  const root = rootOf(parseViewModeFromURL(searchParams));
-  const conditions = parseConditions(searchParams.get('q'), root) ?? [];
+  const urlRoot = rootOf(parseViewModeFromURL(searchParams));
+  const conditions = parseConditions(searchParams.get('q'), urlRoot) ?? [];
+  // a caller that queries another root than the link's view (the object
+  // page's prev / next, the inspection queue) reads the tree against its own
+  const parsed = [...legacyNodes(filters, urlRoot), ...conditions];
+  const all = root && root !== urlRoot ? rerootConditions(parsed, urlRoot, root) : parsed;
   // the columns follow the rows: the first line and the first band filtered on
-  const all = [...legacyNodes(filters, root), ...conditions];
   return {
     ...DEFAULT_FILTERS,
     search: filters.search,

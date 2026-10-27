@@ -53,7 +53,11 @@ export interface CardsContext {
 }
 
 function addToLevel(nodes: TreeNode[], level: Level, node: TreeNode): TreeNode[] {
-  if (level.itsObject && isExists(node) && node.exists === 'spectra') return appendAt(nodes, [], { exists: 'objects', where: [node] });
+  // under "its object" a card, a line of any of its spectra, or a fit
+  // property is the object's, not this spectrum's
+  if (level.itsObject && isExists(node) && (node.exists === 'spectra' || node.exists === 'lines' || node.exists === 'line_fits')) {
+    return appendAt(nodes, [], { exists: 'objects', where: [node] });
+  }
   if (level.card) return addToCard(nodes, level.path, node);
   return appendAt(nodes, level.path, node);
 }
