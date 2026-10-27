@@ -158,13 +158,15 @@ export const FilterChip: React.FC<FilterChipProps> = ({
     if (!isOpen) setSearchTerm('');
   }, [isOpen]);
 
-  // Filter options by search term, and sort selected to top when searchable
+  // Filter options by search term, and sort selected to top when searchable.
+  // Never in a three-state chip: an option that moves under the pointer
+  // breaks the second click.
   const filteredOptions = (() => {
     let opts = options;
     if (searchable && searchTerm) {
       opts = opts.filter(opt => opt.label.toLowerCase().includes(searchTerm.toLowerCase()));
     }
-    if (searchable && selected.length > 0 && !searchTerm) {
+    if (searchable && !triState && selected.length > 0 && !searchTerm) {
       const selectedSet = new Set(selected);
       opts = [...opts].sort((a, b) => {
         const aSelected = selectedSet.has(a.value) ? 0 : 1;
@@ -272,22 +274,6 @@ export const FilterChip: React.FC<FilterChipProps> = ({
             </div>
           )}
 
-          {/* any of / all of, once two values are included */}
-          {onModeChange && selected.length >= 2 && (
-            <div className="px-2 pt-2 flex items-center gap-2 text-xs text-text-secondary">
-              <span>match</span>
-              <div className="inline-flex rounded-md border border-border overflow-hidden">
-                {(['any', 'all'] as const).map((m) => (
-                  <button key={m} type="button" onClick={() => onModeChange(m)}
-                    className={`px-2 py-0.5 ${mode === m ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-card-hover'}`}>
-                    {m === 'any' ? 'any' : 'all'}
-                  </button>
-                ))}
-              </div>
-              <span>of the included</span>
-            </div>
-          )}
-
           {/* Scrollable checkbox list */}
           <div className="max-h-[300px] overflow-y-auto">
             <div className="p-1">
@@ -337,6 +323,24 @@ export const FilterChip: React.FC<FilterChipProps> = ({
             </div>
           </div>
 
+          {/* any of / all of the included values: always in place for a
+              multi-valued relation, live once two are included, so nothing
+              moves when the second one is clicked */}
+          {onModeChange && (
+            <div className={`border-t border-border px-3 py-2 flex items-center gap-2 text-xs ${selected.length >= 2 ? 'text-text-secondary' : 'text-text-tertiary'}`}>
+              <span>match</span>
+              <div className={`inline-flex rounded-md border border-border overflow-hidden ${selected.length >= 2 ? '' : 'opacity-50'}`}>
+                {(['any', 'all'] as const).map((m) => (
+                  <button key={m} type="button" onClick={() => onModeChange(m)} disabled={selected.length < 2}
+                    className={`px-2 py-0.5 ${mode === m ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-card-hover'} disabled:cursor-default`}>
+                    {m}
+                  </button>
+                ))}
+              </div>
+              <span>of the included</span>
+            </div>
+          )}
+
           {/* Extra checkbox (e.g., "Needs review only" for the Quality filter) */}
           {extraCheckbox && (
             <div className="border-t border-border p-1">
@@ -374,7 +378,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
           )}
 
           {/* Clear all button */}
-          {multiSelect && (selected.length > 0 || excluded.length > 0 || extraCheckbox?.checked) && (
+          {multiSelect && (triState || selected.length > 0 || excluded.length > 0 || extraCheckbox?.checked) && (
             <div className={`${shortcut ? 'px-2 pb-2' : 'border-t border-border p-2'}`}>
               <button
                 onClick={() => {
@@ -382,7 +386,8 @@ export const FilterChip: React.FC<FilterChipProps> = ({
                   if (extraCheckbox?.checked) extraCheckbox.onChange(false);
                   setIsOpen(false);
                 }}
-                className="w-full px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-card-hover rounded-md text-left transition-colors"
+                disabled={selected.length === 0 && excluded.length === 0 && !extraCheckbox?.checked}
+                className="w-full px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-card-hover rounded-md text-left transition-colors disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-default"
               >
                 Clear all
               </button>
