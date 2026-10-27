@@ -235,7 +235,7 @@ export async function generateCSV(
       spectrumIds = matched.ids;
     }
     const { data: rows, error: rpcError } = await paginateRpcKeyset<SpectraCsvRow>(
-      supabase, 'get_csv_export_spectra', { ...rpcParams, p_spectrum_ids: spectrumIds },
+      supabase, 'get_csv_export_spectra', { ...rpcParams, ...measurementColumnParams(filters, 'spectra'), p_spectrum_ids: spectrumIds },
       { cursorParam: 'p_after_id', getCursor: r => r.id, maxRows: CSV_EXPORT_ROW_LIMIT },
     );
 

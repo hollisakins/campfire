@@ -3820,7 +3820,10 @@ BEGIN
         (SELECT jsonb_object_agg(__l.line, jsonb_build_object('snr', __l.snr, 'flux', __l.flux))
          FROM jsonb_each(p_line_columns) __spec(line, w)
          JOIN public.cat_lines __l ON __l.spectrum_id = s.id AND __l.line = __spec.line
-         WHERE ((__spec.w ->> 'snr_min') IS NULL OR __l.snr >= (__spec.w ->> 'snr_min')::double precision)
+         -- the stale gate the object-level columns apply (the fit's stored flag)
+         JOIN public.cat_line_fits __f ON __f.spectrum_id = s.id
+         WHERE (COALESCE(p_line_include_stale, false) OR NOT __f.stale_redshift)
+           AND ((__spec.w ->> 'snr_min') IS NULL OR __l.snr >= (__spec.w ->> 'snr_min')::double precision)
            AND ((__spec.w ->> 'snr_max') IS NULL OR __l.snr <= (__spec.w ->> 'snr_max')::double precision))
       END AS line_columns,
       bc.band_columns,
@@ -6393,7 +6396,10 @@ BEGIN
         (SELECT jsonb_object_agg(__l.line, jsonb_build_object('snr', __l.snr, 'flux', __l.flux))
          FROM jsonb_each(p_line_columns) __spec(line, w)
          JOIN public.cat_lines __l ON __l.spectrum_id = s.id AND __l.line = __spec.line
-         WHERE ((__spec.w ->> 'snr_min') IS NULL OR __l.snr >= (__spec.w ->> 'snr_min')::double precision)
+         -- the stale gate the object-level columns apply (the fit's stored flag)
+         JOIN public.cat_line_fits __f ON __f.spectrum_id = s.id
+         WHERE (COALESCE(p_line_include_stale, false) OR NOT __f.stale_redshift)
+           AND ((__spec.w ->> 'snr_min') IS NULL OR __l.snr >= (__spec.w ->> 'snr_min')::double precision)
            AND ((__spec.w ->> 'snr_max') IS NULL OR __l.snr <= (__spec.w ->> 'snr_max')::double precision))
       END AS line_columns,
       bc.band_columns
