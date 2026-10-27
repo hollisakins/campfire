@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDown, X, MapPin } from 'lucide-react';
+import { ChevronDown, X } from 'lucide-react';
 import { parseCoordinates, convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
+import { Popover, isInsidePopover } from './Popover';
 
 export interface CoordinateSearchValue {
   ra: number;
@@ -15,14 +16,17 @@ interface CoordinateSearchChipProps {
   value?: CoordinateSearchValue | null;
   onChange: (value: CoordinateSearchValue | null) => void;
   className?: string;
+  /** Mount with the dropdown open (a chip the user just asked for). */
+  defaultOpen?: boolean;
 }
 
 export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
   value,
   onChange,
   className = '',
+  defaultOpen = false,
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(defaultOpen);
   const [coordInput, setCoordInput] = useState('');
   const [radiusInput, setRadiusInput] = useState('1');
   const [unitInput, setUnitInput] = useState<'degrees' | 'arcmin' | 'arcsec'>('arcmin');
@@ -46,7 +50,7 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+      if (!isInsidePopover(event.target, containerRef.current)) {
         setIsOpen(false);
       }
     };
@@ -123,10 +127,10 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
   const isActive = value != null;
 
   const getDisplayText = () => {
-    if (!isActive) return 'RA/Dec';
+    if (!isActive) return 'Position';
     const unitLabel = value.radius_unit === 'degrees' ? '°' :
                       value.radius_unit === 'arcmin' ? "'" : '"';
-    return `RA/Dec: ${value.ra.toFixed(2)}°, ${value.dec.toFixed(2)}° (${value.radius}${unitLabel})`;
+    return `Position: ${value.ra.toFixed(2)}°, ${value.dec.toFixed(2)}° (${value.radius}${unitLabel})`;
   };
 
   return (
@@ -143,7 +147,6 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
           }
         `}
       >
-        <MapPin className="w-3.5 h-3.5 flex-shrink-0" />
         <span className="truncate max-w-[250px]">{getDisplayText()}</span>
         {isActive ? (
           <X
@@ -157,7 +160,7 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-[320px] bg-card border border-border rounded-lg shadow-lg p-4">
+        <Popover anchorRef={containerRef} open={isOpen} onClose={() => setIsOpen(false)} className="w-[320px] bg-card border border-border rounded-lg shadow-lg p-4">
           <div className="space-y-4">
             {/* Coordinate input */}
             <div>
@@ -232,7 +235,7 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
               </button>
             </div>
           </div>
-        </div>
+        </Popover>
       )}
     </div>
   );

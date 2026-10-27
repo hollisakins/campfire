@@ -1,27 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_FILTERS, buildFilterParams, hasLineFilter } from '@/lib/actions/filter-params';
 import { filtersToURLParams, parseFiltersFromURL } from '@/lib/utils/url-params';
+import { normalizeFilters } from '@/lib/catalog-query/legacy';
 import { LINE_FILTER_OPTIONS, isFilterableLine, lineLabel } from '@/lib/linelist';
 
 describe('emission-line filter', () => {
   it('round-trips through the URL and only while a line is set', () => {
     const filters = { ...DEFAULT_FILTERS, line: 'CIII1908', line_snr_min: 3, line_include_stale: true };
+    // the URL carries the tree (phase 3b): the pill is its exists node
     const params = filtersToURLParams(filters, 1, 50, 'object_id', 'asc', 'objects');
-    expect(params.get('line')).toBe('CIII1908');
-    expect(params.get('line_snr_min')).toBe('3');
-    expect(params.get('line_stale')).toBe('true');
+    const node = { exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'CIII1908' }, { col: 'snr', op: 'gte', v: 3 }] };
+    expect(JSON.parse(params.get('q')!)).toEqual(node);
+    expect(params.has('line')).toBe(false);
     const back = parseFiltersFromURL(params);
-    expect(back.line).toBe('CIII1908');
-    expect(back.line_snr_min).toBe(3);
-    expect(back.line_snr_max).toBeNull();
-    expect(back.line_include_stale).toBe(true);
-    // bounds without a line are dropped from the URL
+    expect(back.conditions).toEqual([node]);
+    const pills = normalizeFilters(back, 'objects');
+    expect(pills.line).toBe('CIII1908');
+    expect(pills.line_snr_min).toBe(3);
+    expect(pills.line_snr_max).toBeNull();
+    expect(pills.line_include_stale).toBe(true);
+    // an older link's parameters read as the node, fresh fits only by default
+    const legacy = parseFiltersFromURL(new URLSearchParams({ line: 'CIII1908', line_snr_min: '3' }));
+    expect(legacy.conditions).toEqual([{ exists: 'lines', where: [...node.where, { exists: 'line_fits', where: [{ col: 'stale_redshift', op: 'eq', v: false }] }] }]);
+    expect(normalizeFilters(legacy, 'objects').line_include_stale).toBe(false);
+    // bounds without a line are nothing
     const orphan = filtersToURLParams({ ...DEFAULT_FILTERS, line_snr_min: 3 }, 1, 50, 'object_id', 'asc', 'objects');
-    expect(orphan.has('line')).toBe(false);
-    expect(orphan.has('line_snr_min')).toBe(false);
+    expect(orphan.has('q')).toBe(false);
     // an unknown or component name from a shared link is dropped, never echoed
     for (const bad of ['=HYPERLINK("x")', 'x,y', 'CIII1907', 'nope']) {
-      expect(parseFiltersFromURL(new URLSearchParams({ line: bad })).line).toBeNull();
+      expect(parseFiltersFromURL(new URLSearchParams({ line: bad })).conditions).toEqual([]);
       expect('p_line' in buildFilterParams({ ...DEFAULT_FILTERS, line: bad }, ['ember-uds'])).toBe(false);
     }
   });

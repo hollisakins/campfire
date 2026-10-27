@@ -20,7 +20,7 @@ function InspectPageInner() {
   const urlParams = new URLSearchParams(searchParams.toString());
   urlParams.delete('start');
   const filterStr = urlParams.toString();
-  const filters = parseFiltersFromURL(urlParams);
+  const filters = parseFiltersFromURL(urlParams, 'objects');
   const { sortColumn, sortDirection } = parseSortingFromURL(urlParams, 'objects');
 
   const [object, setObject] = useState<ObjectDetail | null>(null);

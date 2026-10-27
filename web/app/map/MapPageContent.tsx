@@ -4,8 +4,8 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useSearchParams, usePathname } from 'next/navigation';
 import type { MapLayer, MapObjectMarker, FitsglDataset } from '@/lib/actions/map';
 import { MapViewerWrapper } from '@/components/map/MapViewerWrapper';
-import { AdvancedFiltersPanel } from '@/components/spectra/AdvancedFiltersPanel';
-import type { FilterOptions } from '@/lib/actions/filter-params';
+import { FiltersModal } from '@/components/filters/FiltersModal';
+import { isDefaultFilters, type FilterOptions } from '@/lib/actions/filter-params';
 import { parseFiltersFromURL, filtersToURLParams } from '@/lib/utils/url-params';
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
@@ -50,25 +50,7 @@ export function MapPageContent({
   const { debouncedValue: debouncedFilters } = useDebouncedValue(filters, 300);
 
   // Check if any filters are active
-  const hasActiveFilters = useMemo(() => {
-    return (
-      filters.programs.length > 0 ||
-      filters.fields.length > 0 ||
-      filters.observations.length > 0 ||
-      filters.redshift_quality.length > 0 ||
-      filters.redshift_min !== null ||
-      filters.redshift_max !== null ||
-      (filters.gratings?.length ?? 0) > 0 ||
-      filters.coordinate_search !== null ||
-      filters.max_snr_min !== null ||
-      filters.max_snr_max !== null ||
-      filters.max_exposure_time_min !== null ||
-      filters.max_exposure_time_max !== null ||
-      (filters.list_ids?.length ?? 0) > 0 ||
-      (filters.dq_flags?.length ?? 0) > 0 ||
-      filters.search.length > 0
-    );
-  }, [filters]);
+  const hasActiveFilters = useMemo(() => !isDefaultFilters(filters), [filters]);
 
   // Start the marker query with the page, not with the lazily loaded map
   // chunk (perf T1-6 / #502): same TanStack key as MapViewer's own call, so
@@ -88,6 +70,8 @@ export function MapPageContent({
   const { user, loading: authLoading } = useAuth();
   const { data: filterOptionsResult } = useFilterOptionsQuery(!authLoading && !!user);
   const availablePrograms = filterOptionsResult?.programs ?? [];
+  const availableFields = filterOptionsResult?.fields ?? [];
+  const availableObservations = filterOptionsResult?.observations ?? [];
 
   // Scope filter query to the current map field so the RPC only returns
   // objects visible on this field (avoids fetching IDs across all fields).
@@ -174,15 +158,16 @@ export function MapPageContent({
         hasActiveFilters={hasActiveFilters}
         onFieldChange={handleFieldChange}
       />
-      <AdvancedFiltersPanel
+      <FiltersModal
         isOpen={panelOpen}
         onClose={() => setPanelOpen(false)}
         filters={filters}
-        onFiltersChange={handleFilterChange}
-        showBasicFilters={true}
+        onApply={handleFilterChange}
         availablePrograms={availablePrograms}
-        availableObservations={[]}
+        availableFields={availableFields}
+        availableObservations={availableObservations}
         availableBands={filterOptionsResult?.photometry_bands ?? []}
+        hidePosition
       />
     </div>
   );

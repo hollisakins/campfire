@@ -7,6 +7,9 @@ import { getRequestIdentity } from '@/lib/auth/identity';
 import { paginateRpc } from '@/lib/supabase/paginate';
 import type { SpectrumTarget, Spectrum, ObjectDetail, PinnedObjectMetadata } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
+import { activeBandOf, activeLineOf, distanceReferenceOf, lineColumnIncludesStale, needsTreePath, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
+import { filterTree, matchFilterIds, treeRejection } from '@/lib/server/catalog-query';
+import { treeReadsColumn } from '@/lib/catalog-query/vocabulary';
 import type { FilterOptions } from './filter-params';
 export type { FilterOptions, FilterMode } from './filter-params';
 
@@ -94,16 +97,70 @@ export async function getSpectra(
       };
     }
 
+    // the tree is the state: what its pills' nodes say moves into the legacy
+    // parameters, and only a real residual needs the tree path
+    const root = rootOf(viewMode);
+    filters = normalizeFilters(filters, root);
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
-    const rpcName = viewMode === 'spectra'
-      ? 'get_filtered_spectra_paginated'
-      : 'get_filtered_objects_paginated';
+    // The tree path (phase 3b): when the legacy parameters cannot carry the
+    // state (conditions beyond the pills, or a column other than the pill's
+    // line / band) the whole of it is one predicate tree, and the wrapper RPC
+    // feeds the legacy list RPC the ids. Line, band and position then only
+    // drive the Line S/N, Mag and distance columns and sorts.
+    const tree = filterTree(filters, root);
+    // a column the pills cannot carry with nothing to select on: the legacy
+    // RPC with its measurements display-only (the wrappers need a tree)
+    const displayOnly = needsTreePath(filters) && tree === null;
+    const treePath = needsTreePath(filters) && tree !== null;
+    const showLine = activeLineOf(filters);
+    const showBand = activeBandOf(filters);
+    const shownParams = displayOnly ? {
+      p_measurements_display_only: true,
+      ...(showLine ? { p_line: showLine, p_line_snr_min: null, p_line_snr_max: null, p_line_include_stale: lineColumnIncludesStale(filters, root) } : {}),
+      ...(showBand ? { p_band: showBand, p_band_mag_min: null, p_band_mag_max: null, p_band_snr_min: null, p_band_snr_max: null } : {}),
+    } : {};
+    const rpcName = treePath
+      ? (viewMode === 'spectra' ? 'catalog_query_spectra' : 'catalog_query_objects')
+      : (viewMode === 'spectra' ? 'get_filtered_spectra_paginated' : 'get_filtered_objects_paginated');
 
     // Build final params for the chosen RPC
     // Objects RPC has a smaller parameter set (no bitmask flags, thumbnails)
     let callParams: Record<string, unknown>;
-    if (viewMode === 'objects') {
+    if (treePath) {
+      const reference = distanceReferenceOf(filters, root);
+      // the shown line / band: the pill's own window when it is the pill's,
+      // else the whole of its values
+      const lineIsPill = showLine !== null && showLine === rpcParams.p_line;
+      const bandIsPill = showBand !== null && showBand === rpcParams.p_band;
+      callParams = {
+        p_tree: tree,
+        p_program_slugs: rpcParams.p_program_slugs,
+        p_search: rpcParams.p_search,
+        p_comment_search: rpcParams.p_comment_search,
+        p_comment_search_scope: rpcParams.p_comment_search_scope,
+        p_comment_user_id: rpcParams.p_comment_user_id,
+        p_sort_column: sortColumn,
+        p_sort_direction: sortDirection,
+        p_page: page,
+        p_page_size: pageSize,
+        p_include_count: includeCount,
+        p_viewer_id: user.id,
+        p_line: showLine,
+        p_line_snr_min: lineIsPill ? rpcParams.p_line_snr_min ?? null : null,
+        p_line_snr_max: lineIsPill ? rpcParams.p_line_snr_max ?? null : null,
+        // the column counts stale fits unless a row for the line asks for a fresh one
+        p_line_include_stale: lineColumnIncludesStale(filters, root),
+        p_band: showBand,
+        p_band_mag_min: bandIsPill ? rpcParams.p_band_mag_min ?? null : null,
+        p_band_mag_max: bandIsPill ? rpcParams.p_band_mag_max ?? null : null,
+        p_band_snr_min: bandIsPill ? rpcParams.p_band_snr_min ?? null : null,
+        p_band_snr_max: bandIsPill ? rpcParams.p_band_snr_max ?? null : null,
+        p_coord_ra: reference?.ra ?? null,
+        p_coord_dec: reference?.dec ?? null,
+        ...(viewMode === 'spectra' ? { p_include_thumbnails: true } : {}),
+      };
+    } else if (viewMode === 'objects') {
       callParams = {
         p_program_slugs: rpcParams.p_program_slugs,
         p_filter_programs: rpcParams.p_filter_programs,
@@ -150,6 +207,7 @@ export async function getSpectra(
           p_band_snr_min: rpcParams.p_band_snr_min,
           p_band_snr_max: rpcParams.p_band_snr_max,
         } : {}),
+        ...shownParams,
       };
     } else {
       callParams = {
@@ -160,6 +218,7 @@ export async function getSpectra(
         p_page_size: pageSize,
         p_include_thumbnails: true,
         p_include_count: includeCount,
+        ...shownParams,
       };
     }
 
@@ -175,7 +234,7 @@ export async function getSpectra(
         pageSize,
         totalPages: 0,
         isComplete: true,
-        error: error.message,
+        error: treeRejection(error) ?? error.message,
         isAuthenticated: true,
       };
     }
@@ -557,8 +616,13 @@ export async function getInspectionQueueIds(
       return { ids: [] };
     }
 
-    const hasQualityFilter = filters?.redshift_quality && filters.redshift_quality.length > 0;
-    const qualityFilter = hasQualityFilter ? filters!.redshift_quality : [0];
+    filters = normalizeFilters(filters, 'objects');
+    // the queue is the uninspected by default, unless the state says which
+    // qualities it wants: the pill, or a quality predicate the pill cannot
+    // carry (an exclusion, an "any of" arm), which the tree path applies
+    const pillQuality = filters.redshift_quality ?? [];
+    const treeQuality = treeReadsColumn(filters.conditions ?? [], 'objects', 'objects', 'redshift_quality');
+    const qualityFilter = pillQuality.length > 0 ? pillQuality : treeQuality ? null : [0];
 
     const baseRpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
@@ -574,6 +638,14 @@ export async function getInspectionQueueIds(
     } = baseRpcParams;
     /* eslint-enable @typescript-eslint/no-unused-vars */
 
+    // free conditions (phase 3b): the tree once, its ids to the legacy RPC
+    let objectIds: number[] | null = null;
+    if (needsTreePath(filters)) {
+      const matched = await matchFilterIds(supabase, 'objects', filters, accessibleProgramSlugs, user.id);
+      if (matched.error) return { ids: [], error: matched.error };
+      objectIds = matched.ids;
+    }
+
     const { data: allRows, error: rpcError } = await paginateRpc<{ object_id: string }>(
       supabase,
       'get_filtered_object_ids',
@@ -582,6 +654,7 @@ export async function getInspectionQueueIds(
         p_redshift_quality: qualityFilter,
         p_sort_column: sortColumn,
         p_sort_direction: sortDirection,
+        p_object_ids: objectIds,
       },
     );
 

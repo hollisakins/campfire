@@ -22,6 +22,8 @@ import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useSpectraQuery } from '@/lib/hooks/useSpectraQuery';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
 import { useDrTag } from '@/lib/dr/client';
+import { activeBandOf, activeLineOf, distanceReferenceOf, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
+import { rerootConditions } from '@/lib/catalog-query/vocabulary';
 import { DR_PARAM } from '@/lib/dr/tag';
 
 // Inner component that uses useSearchParams (must be wrapped in Suspense)
@@ -154,6 +156,12 @@ function SpectraPageContent() {
   // Handle view mode change
   const handleViewModeChange = (newMode: ViewMode) => {
     startTransition(() => {
+      // the tree is written against the view's root: read it against the new
+      // one, keeping what it means (the Spectrum card becomes the spectrum,
+      // the top level its object, and back)
+      if (filters.conditions.length > 0 && rootOf(newMode) !== rootOf(viewMode)) {
+        setFilters({ ...filters, conditions: rerootConditions(filters.conditions, rootOf(viewMode), rootOf(newMode)) });
+      }
       setViewMode(newMode);
       setPage(1);
       // Reset sort column if invalid for the new mode
@@ -251,13 +259,13 @@ function SpectraPageContent() {
           onSortChange={handleSortChange}
           viewMode={viewMode}
           onViewModeChange={handleViewModeChange}
-          hasCoordinateSearch={filters.coordinate_search !== null}
-          activeLine={filters.line}
-          activeBand={filters.band}
+          hasCoordinateSearch={distanceReferenceOf(filters, rootOf(viewMode)) !== null}
+          activeLine={activeLineOf(filters)}
+          activeBand={activeBandOf(filters)}
           currentFilterParams={withTag(filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection, viewMode))}
           loading={loading}
           error={error}
-          filters={filters}
+          filters={normalizeFilters(filters, rootOf(viewMode))}
         />
       </div>
     </div>

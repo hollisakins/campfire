@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_FILTERS, buildFilterParams, hasBandFilter } from '@/lib/actions/filter-params';
 import { filtersToURLParams, parseFiltersFromURL } from '@/lib/utils/url-params';
+import { normalizeFilters } from '@/lib/catalog-query/legacy';
 import { OBJECTS_SORT_COLUMNS, SPECTRA_SORT_COLUMNS, isValidSortColumn } from '@/lib/actions/spectra-types';
 
 describe('photometry band filter', () => {
@@ -11,27 +12,33 @@ describe('photometry band filter', () => {
       band_mag_max: 27.5,
       band_snr_min: 5,
     };
+    // the URL carries the tree (phase 3b): the pill is its exists node
     const params = filtersToURLParams(filters, 1, 50, 'object_id', 'asc', 'objects');
-    expect(params.get('band')).toBe('f444w');
-    expect(params.get('band_mag_max')).toBe('27.5');
-    expect(params.get('band_snr_min')).toBe('5');
-    expect(params.has('band_mag_min')).toBe(false);
+    const node = { exists: 'photometry', where: [{ col: 'band', op: 'eq', v: 'f444w' }, { col: 'mag', op: 'lte', v: 27.5 }, { col: 'snr', op: 'gte', v: 5 }] };
+    expect(JSON.parse(params.get('q')!)).toEqual(node);
+    expect(params.has('band')).toBe(false);
 
+    // back from the URL it is a node of the tree, and the pill once normalized
     const back = parseFiltersFromURL(params);
-    expect(back.band).toBe('f444w');
-    expect(back.band_mag_max).toBe(27.5);
-    expect(back.band_mag_min).toBeNull();
-    expect(back.band_snr_min).toBe(5);
-    expect(back.band_snr_max).toBeNull();
+    expect(back.conditions).toEqual([node]);
+    const pills = normalizeFilters(back, 'objects');
+    expect(pills.band).toBe('f444w');
+    expect(pills.band_mag_max).toBe(27.5);
+    expect(pills.band_mag_min).toBeNull();
+    expect(pills.band_snr_min).toBe(5);
+    expect(pills.band_snr_max).toBeNull();
+    expect(pills.conditions).toEqual([]);
 
-    // windows without a band are dropped from the URL
+    // an older link's parameters read as the same node
+    const legacy = parseFiltersFromURL(new URLSearchParams({ band: 'f444w', band_mag_max: '27.5', band_snr_min: '5' }));
+    expect(legacy.conditions).toEqual([node]);
+
+    // windows without a band are nothing
     const orphan = filtersToURLParams(
       { ...DEFAULT_FILTERS, band_mag_max: 27.5, band_snr_min: 5 },
       1, 50, 'object_id', 'asc', 'objects',
     );
-    expect(orphan.has('band')).toBe(false);
-    expect(orphan.has('band_mag_max')).toBe(false);
-    expect(orphan.has('band_snr_min')).toBe(false);
+    expect(orphan.has('q')).toBe(false);
   });
 
   it('sends the RPC parameters only while a band is set', () => {
@@ -53,7 +60,7 @@ describe('photometry band filter', () => {
 
   it('treats a blank or whitespace-only band as no filter', () => {
     for (const blank of ['', '   ']) {
-      expect(parseFiltersFromURL(new URLSearchParams({ band: blank })).band).toBeNull();
+      expect(parseFiltersFromURL(new URLSearchParams({ band: blank })).conditions).toEqual([]);
       expect('p_band' in buildFilterParams({ ...DEFAULT_FILTERS, band: blank }, ['ember-uds'])).toBe(false);
     }
   });

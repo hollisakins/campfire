@@ -385,4 +385,50 @@ BEGIN
 END $$;
 RESET ROLE;
 
+-- ------------------------------------------------------------------ 8 (the id lists on the other legacy RPCs, phase 3b)
+-- The portal evaluates a tree once (catalog_match_ids) and hands the ids to
+-- the map, the inspection queue, the CSV exports and the prev/next
+-- navigation through their p_object_ids / p_spectrum_ids; the wrappers
+-- forward the list RPCs' comment search.
+SELECT set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}', true);
+SET LOCAL ROLE authenticated;
+DO $$
+DECLARE
+  slugs text[] := public.accessible_program_slugs();
+  tree jsonb := '{"exists": "lines", "where": [{"col": "line", "op": "eq", "v": "CIII1908"}, {"col": "snr", "op": "gte", "v": 5}]}';
+  ids integer[]; sids integer[];
+  want text[]; got text[]; gotids integer[];
+  r record;
+BEGIN
+  ids := public.catalog_match_ids('objects', tree);
+  SELECT COALESCE(array_agg(o.object_id ORDER BY o.object_id), '{}') INTO want FROM public.objects o WHERE o.id = ANY(ids);
+  IF NOT ('CQ-A' = ANY (want)) OR 'CQ-B' = ANY (want) THEN RAISE EXCEPTION 'fixture: expected CQ-A and not CQ-B, got %', want; END IF;
+  SELECT COALESCE(array_agg(g.object_id ORDER BY g.object_id), '{}') INTO got FROM public.get_filtered_object_ids(slugs, p_object_ids := ids) g;
+  IF got <> want THEN RAISE EXCEPTION 'get_filtered_object_ids(p_object_ids): % vs %', got, want; END IF;
+  SELECT COALESCE(array_agg(g.object_id ORDER BY g.object_id), '{}') INTO got FROM public.get_csv_export_objects(slugs, p_object_ids := ids) g;
+  IF got <> want THEN RAISE EXCEPTION 'get_csv_export_objects(p_object_ids): % vs %', got, want; END IF;
+  -- the ids combine with the legacy filters (AND): a field no CQ object has empties the set
+  SELECT COALESCE(array_agg(g.object_id), '{}') INTO got FROM public.get_filtered_object_ids(slugs, p_fields := '{no_such_field}', p_object_ids := ids) g;
+  IF cardinality(got) <> 0 THEN RAISE EXCEPTION 'p_object_ids did not AND with p_fields: %', got; END IF;
+  SELECT * INTO r FROM public.get_adjacent_objects(want[1], slugs, p_object_ids := ids);
+  IF r.total_count <> cardinality(want) OR r.current_index <> 1 OR r.prev_object_id IS NOT NULL
+     OR (cardinality(want) > 1 AND r.next_object_id IS DISTINCT FROM want[2]) THEN
+    RAISE EXCEPTION 'get_adjacent_objects(p_object_ids): %', r;
+  END IF;
+  sids := public.catalog_match_ids('spectra', tree);
+  SELECT COALESCE(array_agg(g.id ORDER BY g.id), '{}') INTO gotids FROM public.get_csv_export_spectra(slugs, p_spectrum_ids := sids) g;
+  IF NOT (gotids <@ sids AND sids <@ gotids) OR cardinality(sids) = 0 THEN
+    RAISE EXCEPTION 'get_csv_export_spectra(p_spectrum_ids): % vs %', gotids, sids;
+  END IF;
+  -- the wrappers forward the comment search: a search no comment matches empties the page
+  SELECT COALESCE(array_agg(e ->> 'object_id'), '{}') INTO got
+    FROM public.catalog_query_objects(tree, slugs, p_page_size := 100, p_comment_search := 'zzz-no-such-comment', p_comment_search_scope := 'everyone') g, jsonb_array_elements(g.targets) e;
+  IF cardinality(got) <> 0 THEN RAISE EXCEPTION 'catalog_query_objects ignored the comment search: %', got; END IF;
+  SELECT COALESCE(array_agg(e ->> 'target_id'), '{}') INTO got
+    FROM public.catalog_query_spectra(tree, slugs, p_page_size := 100, p_comment_search := 'zzz-no-such-comment', p_comment_search_scope := 'everyone') g, jsonb_array_elements(g.targets) e;
+  IF cardinality(got) <> 0 THEN RAISE EXCEPTION 'catalog_query_spectra ignored the comment search: %', got; END IF;
+  RAISE NOTICE 'OK 8: the id lists on the other legacy RPCs, the comment search through the wrappers';
+END $$;
+RESET ROLE;
+
 ROLLBACK;

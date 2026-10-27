@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server';
 import { getRequestPrincipal } from '@/lib/auth/identity';
 import { buildFilterParams } from '@/lib/actions/filter-params';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
+import { needsTreePath, normalizeFilters, shownMeasurementParams } from '@/lib/catalog-query/legacy';
+import { matchFilterIds } from '@/lib/server/catalog-query';
 
 export interface AdjacentObjectsResponse {
   prev: string | null;
@@ -40,7 +42,7 @@ export async function GET(request: NextRequest) {
   const slugs = principal.access.accessibleSlugs;
   if (slugs.length === 0) return Response.json(EMPTY, { headers: NO_STORE });
 
-  const filters = parseFiltersFromURL(sp);
+  const filters = normalizeFilters(parseFiltersFromURL(sp, 'objects'), 'objects');
   const { sortColumn, sortDirection } = parseSortingFromURL(sp, 'objects');
   const rpcParams = buildFilterParams(filters, slugs, principal.user.id);
 
@@ -53,11 +55,21 @@ export async function GET(request: NextRequest) {
   /* eslint-enable @typescript-eslint/no-unused-vars */
 
   try {
+    // free conditions (phase 3b): the tree once, its ids to the legacy RPC
+    let objectIds: number[] | null = null;
+    if (needsTreePath(filters)) {
+      const matched = await matchFilterIds(principal.supabase, 'objects', filters, slugs, principal.user.id);
+      if (matched.error) return Response.json({ error: matched.error }, { status: 400 });
+      objectIds = matched.ids;
+    }
     const { data, error } = await principal.supabase.rpc('get_adjacent_objects', {
       p_current_object_id: objectId,
       ...objectsParams,
+      // the shown line / band, so a line_snr / band_mag sort walks the table's order
+      ...shownMeasurementParams(filters, 'objects', rpcParams),
       p_sort_column: sortColumn,
       p_sort_direction: sortDirection,
+      p_object_ids: objectIds,
     });
     if (error) {
       console.error('adjacent objects error:', error);

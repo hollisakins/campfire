@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Keep the scrollbar's gutter whether or not the page scrolls, so locking
+   the body behind a modal (overflow: hidden) never shifts the page. */
+html {
+  scrollbar-gutter: stable;
+}
+
 :root {
   --foreground-rgb: 33, 28, 23;
   --background-start-rgb: 250, 248, 244;

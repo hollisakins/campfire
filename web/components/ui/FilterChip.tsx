@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDown, X, Check, Search, HelpCircle } from 'lucide-react';
+import { ChevronDown, X, Check, Minus, Search, HelpCircle } from 'lucide-react';
 import Link from 'next/link';
+import { Popover, isInsidePopover } from './Popover';
 
 export interface FilterOption {
   value: string | number;
@@ -101,11 +102,22 @@ interface FilterChipProps {
   shortcut?: ShortcutButton;
   searchable?: boolean;
   footerLink?: FooterLink;
-  /** Direction dropdown opens. Default 'bottom'. Use 'top' when chip is near bottom of viewport. */
+  /** Kept for callers; the dropdown now places itself from the viewport. */
   dropdownPlacement?: 'bottom' | 'top';
   /** Optional toggleable checkbox rendered below the options list, for filters that are
    *  conceptually related to the main filter but aren't one of its discrete values. */
   extraCheckbox?: ExtraCheckbox;
+  /** Three-state options (phase 3b): a click includes a value, a second click
+   *  excludes it, a third clears it. `excluded` is the excluded set, and
+   *  every change reports both sets at once (one state, one commit). */
+  excluded?: (string | number)[];
+  onExcludedChange?: (selected: (string | number)[], excluded: (string | number)[]) => void;
+  /** For a relation with several values per row: whether the included values
+   *  are any of them or all of them. Shown once two are included. */
+  mode?: 'any' | 'all';
+  onModeChange?: (mode: 'any' | 'all') => void;
+  /** Mount with the dropdown open (a chip the user just asked for). */
+  defaultOpen?: boolean;
 }
 
 export const FilterChip: React.FC<FilterChipProps> = ({
@@ -119,10 +131,15 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   shortcut,
   searchable = false,
   footerLink,
-  dropdownPlacement = 'bottom',
   extraCheckbox,
+  excluded = [],
+  onExcludedChange,
+  mode = 'any',
+  onModeChange,
+  defaultOpen = false,
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const triState = Boolean(onExcludedChange);
+  const [isOpen, setIsOpen] = useState(defaultOpen);
   const [searchTerm, setSearchTerm] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -130,7 +147,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+      if (!isInsidePopover(event.target, containerRef.current)) {
         setIsOpen(false);
       }
     };
@@ -144,13 +161,15 @@ export const FilterChip: React.FC<FilterChipProps> = ({
     if (!isOpen) setSearchTerm('');
   }, [isOpen]);
 
-  // Filter options by search term, and sort selected to top when searchable
+  // Filter options by search term, and sort selected to top when searchable.
+  // Never in a three-state chip: an option that moves under the pointer
+  // breaks the second click.
   const filteredOptions = (() => {
     let opts = options;
     if (searchable && searchTerm) {
       opts = opts.filter(opt => opt.label.toLowerCase().includes(searchTerm.toLowerCase()));
     }
-    if (searchable && selected.length > 0 && !searchTerm) {
+    if (searchable && !triState && selected.length > 0 && !searchTerm) {
       const selectedSet = new Set(selected);
       opts = [...opts].sort((a, b) => {
         const aSelected = selectedSet.has(a.value) ? 0 : 1;
@@ -162,6 +181,13 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   })();
 
   const handleToggle = (value: string | number) => {
+    if (triState && onExcludedChange) {
+      // none → included → excluded → none, reported as one change
+      if (selected.includes(value)) onExcludedChange(selected.filter(v => v !== value), [...excluded, value]);
+      else if (excluded.includes(value)) onExcludedChange(selected, excluded.filter(v => v !== value));
+      else onExcludedChange([...selected, value], excluded);
+      return;
+    }
     if (multiSelect) {
       if (selected.includes(value)) {
         onChange(selected.filter(v => v !== value));
@@ -176,15 +202,22 @@ export const FilterChip: React.FC<FilterChipProps> = ({
 
   const handleClear = (e: React.MouseEvent) => {
     e.stopPropagation();
-    onChange([]);
+    if (onExcludedChange) onExcludedChange([], []); else onChange([]);
     if (extraCheckbox?.checked) extraCheckbox.onChange(false);
   };
 
-  const activeCount = selected.length + (extraCheckbox?.checked ? 1 : 0);
+  const activeCount = selected.length + excluded.length + (extraCheckbox?.checked ? 1 : 0);
   const isActive = activeCount > 0;
-  const displayText = isActive
-    ? `${label} (${activeCount})`
-    : label;
+  // a single-select chip names its pick; a multi-select counts them
+  const soleOption = !multiSelect && selected.length === 1 ? options.find((o) => o.value === selected[0]) : undefined;
+  const nameOf = (v: string | number) => { const o = options.find((x) => x.value === v); return o ? (o.short ?? o.label) : String(v); };
+  const displayText = soleOption
+    ? `${label}: ${soleOption.short ?? soleOption.label}`
+    : triState && isActive && selected.length + excluded.length <= 2
+      ? `${label}: ${[...selected.map(nameOf), ...excluded.map((v) => `not ${nameOf(v)}`)].join(selected.length > 1 && mode === 'all' ? ' & ' : ', ')}`
+      : isActive
+        ? `${label} (${selected.length}${excluded.length ? `, not ${excluded.length}` : ''}${extraCheckbox?.checked ? ' +1' : ''})`
+        : label;
 
   return (
     <div
@@ -222,8 +255,11 @@ export const FilterChip: React.FC<FilterChipProps> = ({
 
       {/* Dropdown */}
       {isOpen && !disabled && (
-        <div
-          className={`absolute z-50 ${dropdownPlacement === 'top' ? 'bottom-full mb-1' : 'mt-1'} ${searchable ? 'min-w-[280px] max-w-[360px]' : 'min-w-[200px] max-w-[280px]'} bg-card border border-border rounded-lg shadow-lg`}
+        <Popover
+          anchorRef={containerRef}
+          open={isOpen}
+          onClose={() => setIsOpen(false)}
+          className={`${searchable ? 'min-w-[280px] max-w-[360px]' : 'min-w-[200px] max-w-[280px]'} bg-card border border-border rounded-lg shadow-lg`}
         >
           {/* Search input */}
           {searchable && (
@@ -247,17 +283,19 @@ export const FilterChip: React.FC<FilterChipProps> = ({
             <div className="p-1">
               {filteredOptions.map((option) => {
                 const isSelected = selected.includes(option.value);
+                const isExcluded = triState && excluded.includes(option.value);
                 return (
                   <button
                     key={option.value}
                     onClick={() => handleToggle(option.value)}
                     className="w-full flex items-center gap-3 px-3 py-2 text-sm text-left hover:bg-card-hover rounded-md transition-colors"
+                    title={triState ? (isSelected ? 'Click again to exclude' : isExcluded ? 'Click again to clear' : 'Include') : undefined}
                   >
-                    {/* Checkbox */}
+                    {/* Checkbox: included, excluded, or neither */}
                     <div
                       className={`
                         w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all duration-200
-                        ${isSelected ? 'bg-primary border-primary scale-110' : 'border-border dark:border-border-strong'}
+                        ${isSelected ? 'bg-primary border-primary scale-110' : isExcluded ? 'bg-red-500/80 border-red-600 scale-110' : 'border-border dark:border-border-strong'}
                       `}
                       style={
                         isSelected && option.color
@@ -266,13 +304,14 @@ export const FilterChip: React.FC<FilterChipProps> = ({
                       }
                     >
                       {isSelected && <Check className="w-3 h-3 text-on-primary" />}
+                      {isExcluded && <Minus className="w-3 h-3 text-white" />}
                     </div>
 
                     {/* Icon */}
                     {option.icon && <span className="text-sm">{option.icon}</span>}
 
                     {/* Label */}
-                    <span className={isSelected ? 'text-text-primary' : 'text-text-secondary'}>
+                    <span className={isSelected ? 'text-text-primary' : isExcluded ? 'text-text-secondary line-through' : 'text-text-secondary'}>
                       {option.label}
                     </span>
                   </button>
@@ -287,6 +326,24 @@ export const FilterChip: React.FC<FilterChipProps> = ({
               )}
             </div>
           </div>
+
+          {/* any of / all of the included values: always in place for a
+              multi-valued relation, live once two are included, so nothing
+              moves when the second one is clicked */}
+          {onModeChange && (
+            <div className={`border-t border-border px-3 py-2 flex items-center gap-2 text-xs ${selected.length >= 2 ? 'text-text-secondary' : 'text-text-tertiary'}`}>
+              <span>match</span>
+              <div className={`inline-flex rounded-md border border-border overflow-hidden ${selected.length >= 2 ? '' : 'opacity-50'}`}>
+                {(['any', 'all'] as const).map((m) => (
+                  <button key={m} type="button" onClick={() => onModeChange(m)} disabled={selected.length < 2}
+                    className={`px-2 py-0.5 ${mode === m ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-card-hover'} disabled:cursor-default`}>
+                    {m}
+                  </button>
+                ))}
+              </div>
+              <span>of the included</span>
+            </div>
+          )}
 
           {/* Extra checkbox (e.g., "Needs review only" for the Quality filter) */}
           {extraCheckbox && (
@@ -315,7 +372,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
             <div className="border-t border-border p-2">
               <button
                 onClick={() => {
-                  onChange(shortcut.values);
+                  if (onExcludedChange) onExcludedChange(shortcut.values, []); else onChange(shortcut.values);
                 }}
                 className="w-full px-3 py-1.5 text-sm text-primary hover:text-primary-hover hover:bg-primary/10 rounded-md text-left transition-colors font-medium"
               >
@@ -325,15 +382,16 @@ export const FilterChip: React.FC<FilterChipProps> = ({
           )}
 
           {/* Clear all button */}
-          {multiSelect && (selected.length > 0 || extraCheckbox?.checked) && (
+          {multiSelect && (triState || selected.length > 0 || excluded.length > 0 || extraCheckbox?.checked) && (
             <div className={`${shortcut ? 'px-2 pb-2' : 'border-t border-border p-2'}`}>
               <button
                 onClick={() => {
-                  onChange([]);
+                  if (onExcludedChange) onExcludedChange([], []); else onChange([]);
                   if (extraCheckbox?.checked) extraCheckbox.onChange(false);
                   setIsOpen(false);
                 }}
-                className="w-full px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-card-hover rounded-md text-left transition-colors"
+                disabled={selected.length === 0 && excluded.length === 0 && !extraCheckbox?.checked}
+                className="w-full px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary hover:bg-card-hover rounded-md text-left transition-colors disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-default"
               >
                 Clear all
               </button>
@@ -352,7 +410,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
               </Link>
             </div>
           )}
-        </div>
+        </Popover>
       )}
     </div>
   );

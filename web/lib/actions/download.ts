@@ -11,6 +11,8 @@ import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { paginateRpcKeyset } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
+import { activeBandOf, activeLineOf, needsTreePath, normalizeFilters, rootOf, shownMeasurementParams } from '@/lib/catalog-query/legacy';
+import { matchFilterIds } from '@/lib/server/catalog-query';
 import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
 import { generateDownloadUrls } from '@/lib/r2';
@@ -152,9 +154,12 @@ export async function generateCSV(
       return { csv: null, error: 'No accessible programs' };
     }
 
+    filters = normalizeFilters(filters, rootOf(viewMode));
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     const includeDistance = filters.coordinate_search !== null;
+    // free conditions (phase 3b): the tree once, its ids to the export RPC
+    const treePath = needsTreePath(filters);
 
     if (viewMode === 'objects') {
       // Objects mode: one row per sky-object (cross-program grouped position)
@@ -167,8 +172,15 @@ export async function generateCSV(
       } = rpcParams;
       /* eslint-enable @typescript-eslint/no-unused-vars */
 
+      let treeObjectIds: number[] | null = null;
+      if (treePath) {
+        const matched = await matchFilterIds(supabase, 'objects', filters, accessibleProgramSlugs, user.id);
+        if (matched.error) return { csv: null, error: matched.error };
+        treeObjectIds = matched.ids;
+      }
+
       const { data: rows, error: rpcError } = await paginateRpcKeyset<ObjectsCsvRow>(
-        supabase, 'get_csv_export_objects', { ...objectsParams },
+        supabase, 'get_csv_export_objects', { ...objectsParams, ...shownMeasurementParams(filters, 'objects', rpcParams), p_object_ids: treeObjectIds },
         { cursorParam: 'p_after_object_id', getCursor: r => r.object_id, maxRows: CSV_EXPORT_ROW_LIMIT },
       );
 
@@ -183,7 +195,9 @@ export async function generateCSV(
         includeDistance ? 'asc' : sortDirection,
         [r => r.object_id],
       );
-      const csv = objectsRowsToCsv(rows, includeDistance, filters.line, filters.band);
+      // the columns the table shows (the export RPC's line / band are filter
+      // and column at once; the shown ones select nothing the tree did not)
+      const csv = objectsRowsToCsv(rows, includeDistance, activeLineOf(filters) ?? rpcParams.p_line ?? null, activeBandOf(filters) ?? rpcParams.p_band ?? null);
 
       const objectIds = rows.map(r => r.object_id);
       trackDownload({
@@ -199,8 +213,14 @@ export async function generateCSV(
     }
 
     // Spectra mode: one row per (target_id, grating).
+    let spectrumIds: number[] | null = null;
+    if (treePath) {
+      const matched = await matchFilterIds(supabase, 'spectra', filters, accessibleProgramSlugs, user.id);
+      if (matched.error) return { csv: null, error: matched.error };
+      spectrumIds = matched.ids;
+    }
     const { data: rows, error: rpcError } = await paginateRpcKeyset<SpectraCsvRow>(
-      supabase, 'get_csv_export_spectra', { ...rpcParams },
+      supabase, 'get_csv_export_spectra', { ...rpcParams, p_spectrum_ids: spectrumIds },
       { cursorParam: 'p_after_id', getCursor: r => r.id, maxRows: CSV_EXPORT_ROW_LIMIT },
     );
 

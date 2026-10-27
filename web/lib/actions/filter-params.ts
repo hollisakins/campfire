@@ -10,6 +10,7 @@
 import type { CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 import { isFilterableLine } from '@/lib/linelist';
+import type { TreeNode } from '@/lib/catalog-query/tree';
 
 // Canonical filter mode type for any/all/none filtering
 export type FilterMode = 'any' | 'all' | 'none';
@@ -64,6 +65,18 @@ export interface FilterOptions {
   gratings_mode: FilterMode;
   dq_flags_mode: FilterMode;
   list_ids_mode: FilterMode;
+  /** Free conditions of the predicate tree (Catalog Read Model phase 3b),
+   *  ANDed with every pill above: what the Advanced modal's conditions zone
+   *  edits and `?q=` carries. While any is set the whole state is evaluated
+   *  as one tree (lib/catalog-query/legacy.ts); otherwise the legacy RPC
+   *  parameters below carry it unchanged. */
+  conditions: TreeNode[];
+  /** The line whose S/N the table shows and sorts on, and the band whose
+   *  magnitude and S/N it shows (phase 3b): derived from the tree, the first
+   *  line and the first band filtered on (every one, once #660 lets the RPCs
+   *  take several). Display only; nothing is filtered by them. */
+  show_line: string | null;
+  show_band: string | null;
 }
 
 export const DEFAULT_FILTERS: FilterOptions = {
@@ -98,7 +111,22 @@ export const DEFAULT_FILTERS: FilterOptions = {
   gratings_mode: 'any',
   dq_flags_mode: 'any',
   list_ids_mode: 'any',
+  conditions: [],
+  show_line: null,
+  show_band: null,
 };
+
+/** True when every filter is at its default (nothing selects). */
+export function isDefaultFilters(filters: Partial<FilterOptions> | undefined): boolean {
+  if (!filters) return true;
+  return !(Object.keys(filters) as (keyof FilterOptions)[]).some((key) => {
+    const value = filters[key];
+    const fallback = DEFAULT_FILTERS[key];
+    if (Array.isArray(value)) return value.length > 0;
+    if (value === null || value === undefined) return false;
+    return value !== fallback;
+  });
+}
 
 /**
  * Typed RPC params shared by all filter-based Supabase RPCs
