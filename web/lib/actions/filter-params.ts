@@ -72,9 +72,9 @@ export interface FilterOptions {
    *  parameters below carry it unchanged. */
   conditions: TreeNode[];
   /** The line whose S/N the table shows and sorts on, and the band whose
-   *  magnitude and S/N it shows (phase 3b): the `column` toggle of a
-   *  measurement row, carried as `col_line` / `col_band`. Display only;
-   *  nothing is filtered by them. */
+   *  magnitude and S/N it shows (phase 3b): derived from the tree, the first
+   *  line and the first band filtered on (every one, once #660 lets the RPCs
+   *  take several). Display only; nothing is filtered by them. */
   show_line: string | null;
   show_band: string | null;
 }

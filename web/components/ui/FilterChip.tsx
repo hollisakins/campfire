@@ -258,6 +258,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
         <Popover
           anchorRef={containerRef}
           open={isOpen}
+          onClose={() => setIsOpen(false)}
           className={`${searchable ? 'min-w-[280px] max-w-[360px]' : 'min-w-[200px] max-w-[280px]'} bg-card border border-border rounded-lg shadow-lg`}
         >
           {/* Search input */}

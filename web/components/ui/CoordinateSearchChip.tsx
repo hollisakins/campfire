@@ -160,7 +160,7 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
 
       {/* Dropdown */}
       {isOpen && (
-        <Popover anchorRef={containerRef} open={isOpen} className="w-[320px] bg-card border border-border rounded-lg shadow-lg p-4">
+        <Popover anchorRef={containerRef} open={isOpen} onClose={() => setIsOpen(false)} className="w-[320px] bg-card border border-border rounded-lg shadow-lg p-4">
           <div className="space-y-4">
             {/* Coordinate input */}
             <div>

@@ -9,6 +9,7 @@ import { VALID_SORT_COLUMNS, isValidSortColumn, defaultSortColumn } from '@/lib/
 import { isFilterableLine } from '@/lib/linelist';
 import { encodeConditions, parseConditions } from '@/lib/catalog-query/tree';
 import { filterNodes, legacyNodes, rootOf } from '@/lib/catalog-query/legacy';
+import { measurementKeys } from '@/lib/catalog-query/vocabulary';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
 
 // Valid search scope values
@@ -118,17 +119,15 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
   // an unreadable q is dropped whole rather than half-applied
   const root = rootOf(parseViewModeFromURL(searchParams));
   const conditions = parseConditions(searchParams.get('q'), root) ?? [];
-  // the columns a measurement row shows; an older link's line / band pill
-  // showed its column, so it still does
-  const colLine = searchParams.get('col_line')?.trim() || null;
-  const colBand = searchParams.get('col_band')?.trim() || null;
+  // the columns follow the rows: the first line and the first band filtered on
+  const all = [...legacyNodes(filters, root), ...conditions];
   return {
     ...DEFAULT_FILTERS,
     search: filters.search,
     search_scope: filters.search_scope,
-    conditions: [...legacyNodes(filters, root), ...conditions],
-    show_line: colLine && isFilterableLine(colLine) ? colLine : filters.line,
-    show_band: colBand ?? filters.band,
+    conditions: all,
+    show_line: measurementKeys(all, 'line')[0] ?? null,
+    show_band: measurementKeys(all, 'band')[0] ?? null,
   };
 }
 
@@ -188,8 +187,6 @@ export function filtersToURLParams(
   if (q) {
     params.set('q', q);
   }
-  if (filters.show_line) params.set('col_line', filters.show_line);
-  if (filters.show_band) params.set('col_band', filters.show_band);
   if (filters.search) {
     params.set('search', filters.search);
   }

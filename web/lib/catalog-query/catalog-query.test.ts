@@ -141,7 +141,8 @@ describe('free conditions', () => {
     const params = filtersToURLParams(filters, 1, 50, 'object_id', 'asc', 'objects');
     expect(params.has('z_min')).toBe(false);
     expect(JSON.parse(params.get('q')!)).toEqual({ and: filters.conditions });
-    expect(parseFiltersFromURL(params)).toEqual(filters);
+    // the columns follow the rows the tree carries
+    expect(parseFiltersFromURL(params)).toEqual({ ...filters, show_line: 'OIII5007', show_band: 'f444w' });
     const one = filtersToURLParams({ ...DEFAULT_FILTERS, conditions: [either] }, 1, 50, 'object_id', 'asc', 'objects');
     expect(JSON.parse(one.get('q')!)).toEqual(either);
     expect(encodeConditions([])).toBeNull();
@@ -228,11 +229,14 @@ describe('free conditions', () => {
     expect(activeLineOf({ ...DEFAULT_FILTERS, show_line: 'CIII1907' })).toBeNull();
     expect(distanceReferenceOf({ ...DEFAULT_FILTERS, conditions: [{ cone: { ra: 150, dec: 2, radius: 0.1 } }] }, 'objects')).toEqual({ ra: 150, dec: 2 });
     expect(distanceReferenceOf(DEFAULT_FILTERS, 'objects')).toBeNull();
-    // the URL carries the columns; an older link's line pill still shows its column
-    const params = filtersToURLParams({ ...DEFAULT_FILTERS, show_line: 'Halpha', show_band: 'f444w' }, 1, 50, 'object_id', 'asc', 'objects');
-    expect(params.get('col_line')).toBe('Halpha');
+    // the columns follow the rows: the first line and the first band filtered on, from any link
+    const rows = { ...DEFAULT_FILTERS, conditions: [...legacyNodes({ band: 'f444w', band_mag_max: 27 }, 'objects'), either] };
+    const params = filtersToURLParams(rows, 1, 50, 'object_id', 'asc', 'objects');
+    expect(params.has('col_line')).toBe(false);
     expect(parseFiltersFromURL(params).show_band).toBe('f444w');
+    expect(parseFiltersFromURL(params).show_line).toBe('OIII5007');
     expect(parseFiltersFromURL(new URLSearchParams({ line: 'Halpha' })).show_line).toBe('Halpha');
+    expect(parseFiltersFromURL(new URLSearchParams({ z_min: '4' })).show_line).toBeNull();
     // a column the pill cannot carry sends the state down the tree path
     const pill = normalizeFilters({ ...DEFAULT_FILTERS, conditions: legacyNodes({ line: 'Halpha', line_snr_min: 3 }, 'objects') }, 'objects');
     expect(needsTreePath(pill)).toBe(false);

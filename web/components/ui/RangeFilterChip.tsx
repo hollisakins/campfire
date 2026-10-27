@@ -82,7 +82,7 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
       </button>
 
       {isOpen && (
-        <Popover anchorRef={containerRef} open={isOpen} className="w-[300px] bg-card border border-border rounded-lg shadow-lg p-4">
+        <Popover anchorRef={containerRef} open={isOpen} onClose={() => setIsOpen(false)} className="w-[300px] bg-card border border-border rounded-lg shadow-lg p-4">
           <RangeEditor min={min} max={max} minBound={minBound} maxBound={maxBound} precision={precision} unit={unit} side={side}
             quickRanges={quickRanges ?? DEFAULT_QUICK}
             onApply={(lo, hi) => { onChange(lo, hi); setIsOpen(false); }} />

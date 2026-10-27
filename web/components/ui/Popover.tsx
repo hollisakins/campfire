@@ -8,6 +8,8 @@ interface PopoverProps {
   open: boolean;
   className?: string;
   children: React.ReactNode;
+  /** Escape closes the popover (and reaches nothing behind it, such as a modal). */
+  onClose?: () => void;
 }
 
 /**
@@ -16,8 +18,21 @@ interface PopoverProps {
  * the Advanced modal never cuts it off. Click-outside handlers must treat
  * `[data-popover]` descendants as inside (see `isInsidePopover`).
  */
-export function Popover({ anchorRef, open, className = '', children }: PopoverProps) {
+export function Popover({ anchorRef, open, className = '', children, onClose }: PopoverProps) {
   const [style, setStyle] = useState<React.CSSProperties | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open || !onClose) return;
+    // capture phase, before the document's own bubble listeners (a modal's Escape)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      onClose();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [open, onClose]);
 
   useLayoutEffect(() => {
     if (!open) { setStyle(null); return; }

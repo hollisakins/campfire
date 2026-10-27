@@ -48,9 +48,6 @@ export interface CardsContext {
   onChange: (nodes: TreeNode[]) => void;
   choices: FilterChoices;
   label: ValueLabel;
-  showLine: string | null;
-  showBand: string | null;
-  onShowColumn: (kind: MeasurementKind, key: string | null) => void;
   /** Property keys the cards do not offer here (the map has its own position tools). */
   hideKeys?: string[];
 }
@@ -133,7 +130,7 @@ function YesNoChip({ label, value, onChange, defaultOpen = false }: { label: str
           : <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />}
       </button>
       {open && (
-        <Popover anchorRef={ref} open={open} className="min-w-[160px] bg-card border border-border rounded-lg shadow-lg p-1 text-sm">
+        <Popover anchorRef={ref} open={open} onClose={() => setOpen(false)} className="min-w-[160px] bg-card border border-border rounded-lg shadow-lg p-1 text-sm">
           {[true, false].map((v) => (
             <button key={String(v)} type="button" onClick={() => { onChange(v); setOpen(false); }}
               className={`w-full text-left px-3 py-2 rounded-md hover:bg-card-hover ${value === v ? 'text-primary font-medium' : 'text-text-primary'}`}>
@@ -275,7 +272,7 @@ function AddPropertyChip({ defs, fixed, shown, onToggle, onGroup }: {
         <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <Popover anchorRef={ref} open={open} className="min-w-[240px] max-w-[320px] bg-card border border-border rounded-lg shadow-lg">
+        <Popover anchorRef={ref} open={open} onClose={() => setOpen(false)} className="min-w-[240px] max-w-[320px] bg-card border border-border rounded-lg shadow-lg">
           <div className="max-h-[320px] overflow-y-auto p-1">
             {defs.map((def) => {
               const isFixed = fixed.has(def.key);
@@ -327,7 +324,7 @@ function PickPropertyMenu({ defs, onPick, label, plus = false, disabled = false 
         {plus ? <Plus className="w-3.5 h-3.5" /> : <><span>{label}</span><ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} /></>}
       </button>
       {open && !disabled && (
-        <Popover anchorRef={ref} open={open} className="min-w-[200px] max-w-[300px] bg-card border border-border rounded-lg shadow-lg p-1">
+        <Popover anchorRef={ref} open={open} onClose={() => setOpen(false)} className="min-w-[200px] max-w-[300px] bg-card border border-border rounded-lg shadow-lg p-1">
           <div className="max-h-[320px] overflow-y-auto">
             {defs.map((def) => (
               <button key={def.key} type="button" onClick={() => { onPick(def); setOpen(false); }}
@@ -365,7 +362,7 @@ function RangeCell({ def, value, onCommit }: { def: PropertyDef; value: { min: n
         {rangeText(min, max, r?.precision ?? 2)}
       </button>
       {open && (
-        <Popover anchorRef={ref} open={open} className="w-[300px] bg-card border border-border rounded-lg shadow-lg p-4">
+        <Popover anchorRef={ref} open={open} onClose={() => setOpen(false)} className="w-[300px] bg-card border border-border rounded-lg shadow-lg p-4">
           <div className="text-xs font-medium text-text-secondary mb-3">{def.label}{def.unit ? ` (${def.unit})` : ''}</div>
           <RangeEditor min={min} max={max} minBound={r?.min} maxBound={r?.max} precision={r?.precision} unit={def.unit} side={r?.side} quickRanges={r?.quick}
             onApply={(lo, hi) => { onCommit(lo, hi); setOpen(false); }} />
@@ -391,7 +388,6 @@ function MeasurementRowCells({ item, ctx, columns }: { item: MeasurementItem; ct
     if (clause) ctx.onChange(replaceAt(ctx.nodes, clause.path, node));
     else if (node) ctx.onChange(appendAt(ctx.nodes, item.path, node));
   };
-  const shown = item.measure === 'line' ? ctx.showLine === item.key : ctx.showBand === item.key;
   const keyLabel = ctx.label(m.keyCol, item.key);
   const details = propertiesOf(m.scope).filter((d) => !d.primary);
   const advanced = item.clauses.filter((c): c is AdvancedItem => c.kind === 'advanced');
@@ -452,13 +448,6 @@ function MeasurementRowCells({ item, ctx, columns }: { item: MeasurementItem; ct
           </span>
         </td>
         {columns.map((def) => <td key={def.key} className="py-1 pr-3">{cell(def)}</td>)}
-        <td className="py-1 pr-2 text-right whitespace-nowrap">
-          <button type="button" onClick={() => ctx.onShowColumn(item.measure, shown ? null : item.key)}
-            className={`inline-flex items-center gap-1.5 text-xs ${shown ? 'text-primary' : 'text-text-tertiary hover:text-text-secondary'}`}
-            title={shown ? 'Shown as a column of the table' : 'Show as a column of the table'}>
-            <span className={`inline-block w-3 h-3 rounded border ${shown ? 'bg-primary border-primary' : 'border-border-strong'}`} />
-          </button>
-        </td>
         <td className="py-1 text-right">
           <button type="button" onClick={() => ctx.onChange(replaceAt(ctx.nodes, item.path, null))} className={ICON_BTN} aria-label="Remove">
             <X className="w-3.5 h-3.5" />
@@ -467,7 +456,7 @@ function MeasurementRowCells({ item, ctx, columns }: { item: MeasurementItem; ct
       </tr>
       {open && (
         <tr>
-          <td colSpan={columns.length + 3} className="pb-2 pl-6">
+          <td colSpan={columns.length + 2} className="pb-2 pl-6">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-text-secondary">
               {details.map((def) => (
                 <span key={def.key} className="inline-flex items-center gap-1.5">
@@ -524,7 +513,6 @@ export function MeasurementTable({ kind, items, level, ctx, title }: { kind: Mea
             <tr className="text-[11px] uppercase tracking-wider text-text-tertiary">
               <th className="font-medium text-left pr-3 pb-1">{m.label}</th>
               {columns.map((d) => <th key={d.key} className="font-medium text-left pr-3 pb-1">{d.label}{d.unit ? ` (${d.unit})` : ''}</th>)}
-              <th className="font-medium text-right pr-2 pb-1">column</th>
               <th />
             </tr>
           </thead>
@@ -672,10 +660,10 @@ export function NounBody({ noun, items, level, ctx, demote = [] }: NounBodyProps
       )}
 
       {noun === 'object' && <MeasurementTable kind="band" items={rows('band')} level={level} ctx={ctx} title="Photometry" />}
-      <MeasurementTable kind="line" items={rows('line')} level={level} ctx={ctx} title={noun === 'object' ? 'Lines, in any spectrum' : 'Lines'} />
+      <MeasurementTable kind="line" items={rows('line')} level={level} ctx={ctx} title="Lines" />
 
       {noun === 'object' && (
-        <div className="space-y-2">
+        <div className="space-y-2 pt-3 border-t border-border">
           {cards.map((c, i) => (
             <React.Fragment key={c.path.join('.')}>
               {i > 0 && <div className={`${EYEBROW} pl-3`}>and</div>}

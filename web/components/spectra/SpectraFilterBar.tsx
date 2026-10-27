@@ -130,9 +130,6 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     onChange: (next) => onFiltersChange(applyConditions(filters, next, root)),
     choices,
     label,
-    showLine: filters.show_line,
-    showBand: filters.show_band,
-    onShowColumn: (kind, key) => onFiltersChange(kind === 'line' ? { ...filters, show_line: key } : { ...filters, show_band: key }),
     hideKeys: ['tag'],
   };
 

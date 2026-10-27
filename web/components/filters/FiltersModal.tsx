@@ -20,10 +20,9 @@ import { filtersToURLParams } from '@/lib/utils/url-params';
 import type { CatalogQueryCountResponse } from '@/app/api/catalog-query/count/route';
 import { getAvailableLists } from '@/lib/actions/lists';
 import { rootOf } from '@/lib/catalog-query/legacy';
-import { encodeConditions, parseConditions, treeOf, type TreeNode } from '@/lib/catalog-query/tree';
+import { encodeConditions, parseConditions, type TreeNode } from '@/lib/catalog-query/tree';
 import { readConditions } from '@/lib/catalog-query/vocabulary';
 import { fetchJson } from '@/lib/fetch-json';
-import type { CatalogQuerySqlResponse } from '@/app/api/catalog-query/sql/route';
 import { NounBody, type CardsContext } from './FilterCards';
 import { buildChoices, valueLabelFor } from './filter-choices';
 import { applyConditions } from './filter-state';
@@ -92,9 +91,6 @@ export function FiltersModal({
     onChange: (next: TreeNode[]) => setDraft((d) => applyConditions(d, next, root)),
     choices,
     label,
-    showLine: draft.show_line,
-    showBand: draft.show_band,
-    onShowColumn: (kind, key) => setDraft((d) => (kind === 'line' ? { ...d, show_line: key } : { ...d, show_band: key })),
     hideKeys: [...(hidePosition ? ['position'] : []), ...(listOptions.length === 0 ? ['tag'] : [])],
   };
 
@@ -134,17 +130,6 @@ export function FiltersModal({
     setDraft((d) => applyConditions(d, nodes, root));
     say(`Query pasted: ${nodes.length} ${nodes.length === 1 ? 'condition' : 'conditions'}`);
   };
-  const copySql = async () => {
-    const tree = treeOf(draft.conditions);
-    try {
-      if (!tree) { await navigator.clipboard.writeText(`SELECT r.* FROM public.${root} r;`); say('SQL copied'); return; }
-      const res = await fetchJson<CatalogQuerySqlResponse>(`/api/catalog-query/sql?root=${root}&q=${encodeURIComponent(JSON.stringify(tree))}`);
-      await navigator.clipboard.writeText(`SELECT r.*\nFROM public.${root} r\nWHERE ${res.sql};`);
-      say('SQL copied');
-    } catch {
-      say('Could not compile the query', true);
-    }
-  };
 
   if (!isOpen) return null;
 
@@ -177,8 +162,7 @@ export function FiltersModal({
           <button type="button" onClick={pasteQuery} className={`${BTN} inline-flex items-center gap-1.5 py-1.5`} title="Replace the conditions with the query on the clipboard">
             <ClipboardPaste className="w-3.5 h-3.5" /> Paste
           </button>
-          <button type="button" onClick={copySql} className="px-2 py-1.5 text-xs text-text-tertiary hover:text-text-secondary" title="Copy the SQL this query compiles to">SQL</button>
-          <button type="button" onClick={() => setDraft((d) => ({ ...DEFAULT_FILTERS, search: d.search, search_scope: d.search_scope }))} disabled={conditionCount === 0 && !draft.show_line && !draft.show_band} className={BTN}>
+          <button type="button" onClick={() => setDraft((d) => ({ ...DEFAULT_FILTERS, search: d.search, search_scope: d.search_scope }))} disabled={conditionCount === 0} className={BTN}>
             Clear
           </button>
           <button onClick={onClose} className="p-2 rounded-lg text-text-secondary hover:bg-card-hover hover:text-text-primary transition-colors" aria-label="Cancel">

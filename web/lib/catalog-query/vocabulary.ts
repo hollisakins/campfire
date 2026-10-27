@@ -80,6 +80,9 @@ export type PropertyValue =
 
 const direct = (col: string): Shape => ({ via: [], col });
 const via = (tables: TreeTable[], col: string): Shape => ({ via: tables, col });
+const zQuick = [{ label: '0 – 2', min: 0, max: 2 }, { label: '2 – 4', min: 2, max: 4 }, { label: '4 – 6', min: 4, max: 6 }, { label: '6 – 8', min: 6, max: 8 }, { label: '≥ 8', min: 8, max: null }];
+const nQuick = [{ label: '≥ 1', min: 1, max: null }, { label: '≥ 2', min: 2, max: null }, { label: '≥ 3', min: 3, max: null }, { label: '≥ 5', min: 5, max: null }];
+const kmsQuick = [{ label: '≤ 100', min: null, max: 100 }, { label: '≤ 300', min: null, max: 300 }, { label: '≥ 500', min: 500, max: null }, { label: '≥ 1000', min: 1000, max: null }];
 const snrQuick = [{ label: '≥ 3', min: 3, max: null }, { label: '≥ 5', min: 5, max: null }, { label: '≥ 10', min: 10, max: null }, { label: '≥ 20', min: 20, max: null }];
 
 /** The properties of the four scopes, in the order the cards show them. */
@@ -88,7 +91,7 @@ export const PROPERTIES: PropertyDef[] = [
   { key: 'program', scope: 'object', label: 'Program', kind: 'choice', primary: true, multi: true, choices: 'program', shapes: { objects: via(['targets'], 'program_slug'), spectra: via(['targets'], 'program_slug') } },
   { key: 'field', scope: 'object', label: 'Field', kind: 'choice', primary: true, choices: 'field', shapes: { objects: direct('field'), spectra: via(['targets'], 'field') } },
   { key: 'observation', scope: 'object', label: 'Observation', kind: 'choice', primary: true, multi: true, choices: 'observation', shapes: { objects: via(['targets'], 'observation'), spectra: via(['targets'], 'observation') } },
-  { key: 'redshift', scope: 'object', label: 'Redshift', kind: 'range', primary: true, range: { min: 0, max: 15, step: 0.1, precision: 2 }, shapes: { objects: direct('redshift') } },
+  { key: 'redshift', scope: 'object', label: 'Redshift', kind: 'range', primary: true, range: { min: 0, max: 15, step: 0.1, precision: 2, quick: zQuick }, shapes: { objects: direct('redshift') } },
   // before quality: `redshift_quality = 0` is "not inspected", not a quality pick
   { key: 'inspected', scope: 'object', label: 'Inspected', kind: 'bool', shapes: { objects: { via: [], col: 'redshift_quality', bool: { true: { op: 'gt', v: 0 }, false: { op: 'eq', v: 0 } } } } },
   { key: 'quality', scope: 'object', label: 'Quality', kind: 'choice', primary: true, choices: 'quality', shapes: { objects: direct('redshift_quality') } },
@@ -99,11 +102,11 @@ export const PROPERTIES: PropertyDef[] = [
   { key: 'max_snr', scope: 'object', label: 'Max S/N', kind: 'range', range: { min: 0, max: 100000, step: 1, precision: 0, quick: snrQuick, side: 'min' }, shapes: { objects: direct('max_snr') } },
   { key: 'max_exptime', scope: 'object', label: 'Max exp. time', kind: 'range', unit: 's', range: { min: 0, max: 50000, step: 100, precision: 0, side: 'min' }, shapes: { objects: direct('max_exposure_time') } },
   { key: 'needs_review', scope: 'object', label: 'Needs review', kind: 'bool', shapes: { objects: direct('needs_review') } },
-  { key: 'photo_z', scope: 'object', label: 'Photo-z', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2 }, shapes: { objects: direct('photo_z') } },
+  { key: 'photo_z', scope: 'object', label: 'Photo-z', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2, quick: zQuick }, shapes: { objects: direct('photo_z') } },
   { key: 'has_photometry', scope: 'object', label: 'Has photometry', kind: 'bool', shapes: { objects: direct('has_photometry') } },
-  { key: 'redshift_auto', scope: 'object', label: 'Auto redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2 }, shapes: { objects: direct('redshift_auto') } },
-  { key: 'redshift_inspected', scope: 'object', label: 'Inspected redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2 }, shapes: { objects: direct('redshift_inspected') } },
-  { key: 'n_detected', scope: 'object', label: 'Lines detected (any spectrum)', kind: 'range', range: { min: 0, max: 50, step: 1, precision: 0, side: 'min' }, shapes: { objects: via(['line_fits'], 'n_detected') } },
+  { key: 'redshift_auto', scope: 'object', label: 'Auto redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2, quick: zQuick }, shapes: { objects: direct('redshift_auto') } },
+  { key: 'redshift_inspected', scope: 'object', label: 'Inspected redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2, quick: zQuick }, shapes: { objects: direct('redshift_inspected') } },
+  { key: 'n_detected', scope: 'object', label: 'Lines detected (any spectrum)', kind: 'range', range: { min: 0, max: 50, step: 1, precision: 0, side: 'min', quick: nQuick }, shapes: { objects: via(['line_fits'], 'n_detected') } },
   { key: 'fresh', scope: 'object', label: 'Fresh line fit (any spectrum)', kind: 'bool', shapes: { objects: { via: ['line_fits'], col: 'stale_redshift', invert: true } } },
   // Spectrum
   { key: 'grating', scope: 'spectrum', label: 'Grating', kind: 'choice', primary: true, choices: 'grating', shapes: { spectra: direct('grating') } },
@@ -112,25 +115,25 @@ export const PROPERTIES: PropertyDef[] = [
   { key: 'program', scope: 'spectrum', label: 'Program', kind: 'choice', primary: true, choices: 'program', shapes: { spectra: direct('program_slug') } },
   { key: 'observation', scope: 'spectrum', label: 'Observation', kind: 'choice', primary: true, choices: 'observation', shapes: { spectra: direct('observation') } },
   { key: 'dq_flags', scope: 'spectrum', label: 'Quality flags', kind: 'flags', primary: true, choices: 'dq_flags', shapes: { spectra: direct('dq_flags') } },
-  { key: 'n_detected', scope: 'spectrum', label: 'Lines detected', kind: 'range', range: { min: 0, max: 50, step: 1, precision: 0, side: 'min' }, shapes: { spectra: via(['line_fits'], 'n_detected') } },
+  { key: 'n_detected', scope: 'spectrum', label: 'Lines detected', kind: 'range', range: { min: 0, max: 50, step: 1, precision: 0, side: 'min', quick: nQuick }, shapes: { spectra: via(['line_fits'], 'n_detected') } },
   { key: 'fresh', scope: 'spectrum', label: 'Fresh line fit', kind: 'bool', shapes: { spectra: { via: ['line_fits'], col: 'stale_redshift', invert: true } } },
-  { key: 'confidence', scope: 'spectrum', label: 'Redshift fit confidence', kind: 'range', range: { min: 0, max: 1, step: 0.01, precision: 2, side: 'min' }, shapes: { spectra: direct('confidence') } },
-  { key: 'redshift_auto', scope: 'spectrum', label: 'Auto redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2 }, shapes: { spectra: direct('redshift_auto') } },
-  { key: 'z_fit', scope: 'spectrum', label: 'Fitted redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 3 }, shapes: { spectra: via(['line_fits'], 'z_fit') } },
-  { key: 'sigma_v', scope: 'spectrum', label: 'Velocity dispersion', kind: 'range', unit: 'km/s', range: { min: 0, max: 5000, step: 10, precision: 0 }, shapes: { spectra: via(['line_fits'], 'sigma_v') } },
+  { key: 'confidence', scope: 'spectrum', label: 'Redshift fit confidence', kind: 'range', range: { min: 0, max: 1, step: 0.01, precision: 2, side: 'min', quick: [{ label: '≥ 0.5', min: 0.5, max: null }, { label: '≥ 0.9', min: 0.9, max: null }, { label: '≥ 0.99', min: 0.99, max: null }] }, shapes: { spectra: direct('confidence') } },
+  { key: 'redshift_auto', scope: 'spectrum', label: 'Auto redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2, quick: zQuick }, shapes: { spectra: direct('redshift_auto') } },
+  { key: 'z_fit', scope: 'spectrum', label: 'Fitted redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 3, quick: zQuick }, shapes: { spectra: via(['line_fits'], 'z_fit') } },
+  { key: 'sigma_v', scope: 'spectrum', label: 'Velocity dispersion', kind: 'range', unit: 'km/s', range: { min: 0, max: 5000, step: 10, precision: 0, quick: kmsQuick }, shapes: { spectra: via(['line_fits'], 'sigma_v') } },
   // Line (the clauses of a line measurement)
   { key: 'snr', scope: 'line', label: 'S/N', kind: 'range', primary: true, range: { min: 0, max: 1000, step: 1, precision: 1, side: 'min', quick: snrQuick }, shapes: { lines: direct('snr') } },
-  { key: 'flux', scope: 'line', label: 'Flux', kind: 'range', unit: 'erg/s/cm²', range: { min: 0, max: 1e-12, step: 1e-18, precision: 3, side: 'min' }, shapes: { lines: direct('flux') } },
-  { key: 'ew_rest', scope: 'line', label: 'Rest EW', kind: 'range', unit: 'Å', range: { min: 0, max: 10000, step: 1, precision: 1, side: 'min' }, shapes: { lines: direct('ew_rest') } },
+  { key: 'flux', scope: 'line', label: 'Flux', kind: 'range', unit: 'erg/s/cm²', range: { min: 0, max: 1e-12, step: 1e-18, precision: 3, side: 'min', quick: [{ label: '≥ 1e-19', min: 1e-19, max: null }, { label: '≥ 1e-18', min: 1e-18, max: null }, { label: '≥ 1e-17', min: 1e-17, max: null }] }, shapes: { lines: direct('flux') } },
+  { key: 'ew_rest', scope: 'line', label: 'Rest EW', kind: 'range', unit: 'Å', range: { min: 0, max: 10000, step: 1, precision: 1, side: 'min', quick: [{ label: '≥ 10', min: 10, max: null }, { label: '≥ 50', min: 50, max: null }, { label: '≥ 100', min: 100, max: null }, { label: '≥ 300', min: 300, max: null }] }, shapes: { lines: direct('ew_rest') } },
   { key: 'component', scope: 'line', label: 'Component', kind: 'choice', choices: 'component', shapes: { lines: direct('component') } },
-  { key: 'dv', scope: 'line', label: 'Velocity offset', kind: 'range', unit: 'km/s', range: { min: -5000, max: 5000, step: 10, precision: 0 }, shapes: { lines: direct('dv') } },
-  { key: 'sigma_v', scope: 'line', label: 'Velocity dispersion', kind: 'range', unit: 'km/s', range: { min: 0, max: 5000, step: 10, precision: 0 }, shapes: { lines: direct('sigma_v') } },
+  { key: 'dv', scope: 'line', label: 'Velocity offset', kind: 'range', unit: 'km/s', range: { min: -5000, max: 5000, step: 10, precision: 0, quick: [{ label: '±100', min: -100, max: 100 }, { label: '±300', min: -300, max: 300 }, { label: '≥ 300', min: 300, max: null }, { label: '≤ −300', min: null, max: -300 }] }, shapes: { lines: direct('dv') } },
+  { key: 'sigma_v', scope: 'line', label: 'Velocity dispersion', kind: 'range', unit: 'km/s', range: { min: 0, max: 5000, step: 10, precision: 0, quick: kmsQuick }, shapes: { lines: direct('sigma_v') } },
   { key: 'flags', scope: 'line', label: 'Line flags', kind: 'flags', choices: 'line_flags', shapes: { lines: direct('flags') } },
   { key: 'fresh', scope: 'line', label: 'Fresh fit', kind: 'bool', shapes: { lines: { via: ['line_fits'], col: 'stale_redshift', invert: true } } },
   // Band (the clauses of a band measurement)
   { key: 'mag', scope: 'band', label: 'mag', kind: 'range', primary: true, unit: 'AB', range: { min: 15, max: 35, step: 0.1, precision: 1, side: 'max', quick: [{ label: '≤ 25', min: null, max: 25 }, { label: '≤ 27', min: null, max: 27 }, { label: '≤ 29', min: null, max: 29 }] }, shapes: { photometry: direct('mag') } },
   { key: 'snr', scope: 'band', label: 'S/N', kind: 'range', primary: true, range: { min: 0, max: 10000, step: 1, precision: 1, side: 'min', quick: snrQuick }, shapes: { photometry: direct('snr') } },
-  { key: 'flux', scope: 'band', label: 'Flux', kind: 'range', unit: 'µJy', range: { min: 0, max: 1e6, step: 0.01, precision: 3, side: 'min' }, shapes: { photometry: direct('flux') } },
+  { key: 'flux', scope: 'band', label: 'Flux', kind: 'range', unit: 'µJy', range: { min: 0, max: 1e6, step: 0.01, precision: 3, side: 'min', quick: [{ label: '≥ 0.01', min: 0.01, max: null }, { label: '≥ 0.1', min: 0.1, max: null }, { label: '≥ 1', min: 1, max: null }] }, shapes: { photometry: direct('flux') } },
 ];
 
 export function propertiesOf(scope: Scope): PropertyDef[] {
