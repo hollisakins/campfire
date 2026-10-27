@@ -13,7 +13,7 @@
  * several things must hold on the same spectrum.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Lock, X } from 'lucide-react';
 import { FilterChip, type FilterOption } from '@/components/ui/FilterChip';
 import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
 import { CoordinateSearchChip, type CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
@@ -254,6 +254,60 @@ function AddSelect({ label, options, onPick, className = ADD_SELECT }: {
       <option value="">{label}</option>
       {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
     </select>
+  );
+}
+
+/**
+ * The "+ property" adder: every property of the noun with a checkbox, checked
+ * when its chip is showing. Checking shows a chip to fill in; unchecking
+ * removes the chip and whatever it selected. The primary chips are always
+ * showing and read as fixed.
+ */
+function AddPropertyChip({ defs, fixed, shown, onToggle, onGroup }: {
+  defs: PropertyDef[]; fixed: Set<string>; shown: Set<string>; onToggle: (key: string, on: boolean) => void; onGroup?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => { if (!isInsidePopover(e.target, ref.current)) setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
+  return (
+    <div ref={ref} className="relative inline-block">
+      <button type="button" onClick={() => setOpen(!open)} className={ADD}>
+        <span>+ property</span>
+        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <Popover anchorRef={ref} open={open} className="min-w-[240px] max-w-[320px] bg-card border border-border rounded-lg shadow-lg">
+          <div className="max-h-[320px] overflow-y-auto p-1">
+            {defs.map((def) => {
+              const isFixed = fixed.has(def.key);
+              const on = isFixed || shown.has(def.key);
+              return (
+                <button key={def.key} type="button" onClick={() => { if (!isFixed) onToggle(def.key, !on); }}
+                  className={`w-full flex items-center gap-3 px-3 py-2 text-sm text-left rounded-md transition-colors ${isFixed ? 'cursor-default' : 'hover:bg-card-hover'}`}
+                  title={isFixed ? 'Always shown' : on ? 'Remove this chip and what it selects' : 'Add this chip'}>
+                  <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${on ? (isFixed ? 'bg-border-strong border-border-strong' : 'bg-primary border-primary') : 'border-border dark:border-border-strong'}`}>
+                    {on && (isFixed ? <Lock className="w-2.5 h-2.5 text-on-primary" /> : <Check className="w-3 h-3 text-on-primary" />)}
+                  </span>
+                  <span className={on ? 'text-text-primary' : 'text-text-secondary'}>{def.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          {onGroup && (
+            <div className="border-t border-border p-2">
+              <button type="button" onClick={() => { onGroup(); setOpen(false); }}
+                className="w-full px-3 py-1.5 text-sm text-primary hover:text-primary-hover hover:bg-primary/10 rounded-md text-left transition-colors font-medium">
+                Any of… <span className="font-normal text-text-tertiary">an OR across properties</span>
+              </button>
+            </div>
+          )}
+        </Popover>
+      )}
+    </div>
   );
 }
 
@@ -520,8 +574,16 @@ export function NounBody({ noun, items, level, ctx, demote = [] }: NounBodyProps
   const props = items.filter((it): it is PropertyItem => it.kind === 'property');
   const byKey = new Map<string, PropertyItem[]>();
   for (const p of props) byKey.set(p.def.key, [...(byKey.get(p.def.key) ?? []), p]);
-  const visible = defs.filter((d) => (d.primary && !demote.includes(d.key)) || byKey.has(d.key) || pending.includes(d.key));
-  const more = defs.filter((d) => !visible.includes(d) && d.key !== 'needs_review');
+  const fixed = new Set(defs.filter((d) => d.primary && !demote.includes(d.key)).map((d) => d.key));
+  const visible = defs.filter((d) => fixed.has(d.key) || byKey.has(d.key) || pending.includes(d.key));
+  // the adder's list: everything but what the Quality chip already carries
+  const offered = defs.filter((d) => !(d.key === 'needs_review' && noun === 'object'));
+  const toggleProperty = (key: string, on: boolean) => {
+    if (on) { setPending((p) => (p.includes(key) ? p : [...p, key])); return; }
+    setPending((p) => p.filter((k) => k !== key));
+    const its = byKey.get(key);
+    if (its?.length) ctx.onChange(removePaths(ctx.nodes, its.map((it) => it.path)));
+  };
   const groups = items.filter((it): it is AnyOfItem => it.kind === 'anyOf');
   const rows = (kind: MeasurementKind) => items.filter((it): it is MeasurementItem => it.kind === 'measurement' && it.measure === kind);
   const cards = items.filter((it): it is SpectrumItem => it.kind === 'spectrum');
@@ -548,12 +610,8 @@ export function NounBody({ noun, items, level, ctx, demote = [] }: NounBodyProps
                 : undefined} />
           );
         })}
-        <AddSelect label="+ property"
-          options={[...more.map((d) => ({ value: d.key, label: d.label })), { value: '__anyof', label: 'Any of… (an OR across properties)' }]}
-          onPick={(k) => {
-            if (k === '__anyof') { setPendingGroup(defs.find((d) => d.primary) ?? defs[0]); return; }
-            setPending((p) => (p.includes(k) ? p : [...p, k]));
-          }} />
+        <AddPropertyChip defs={offered} fixed={fixed} shown={new Set(visible.map((d) => d.key))}
+          onToggle={toggleProperty} onGroup={() => setPendingGroup(defs.find((d) => d.primary) ?? defs[0])} />
       </div>
 
       {groups.map((g) => <AnyOfGroup key={g.path.join('.')} item={g} level={level} ctx={ctx} noun={noun} />)}
