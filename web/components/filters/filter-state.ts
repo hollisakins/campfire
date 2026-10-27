@@ -1,17 +1,17 @@
 /**
  * The filter state after a card edit: the tree tidied, and the columns
- * derived from it (every line or band filtered on is a column of the table;
- * until the list RPCs take several, #660, the first of each kind).
+ * derived from it (every line and band filtered on that every selected row
+ * is sure to have is a column of the table, #660).
  */
 import type { FilterOptions } from '@/lib/actions/filter-params';
 import type { TreeNode, TreeRoot } from '@/lib/catalog-query/tree';
 import { columnKeys, tidyConditions } from '@/lib/catalog-query/vocabulary';
 
-export function withColumns<T extends Pick<FilterOptions, 'conditions'>>(filters: T): T & Pick<FilterOptions, 'show_line' | 'show_band'> {
+export function withColumns<T extends Pick<FilterOptions, 'conditions'>>(filters: T): T & Pick<FilterOptions, 'show_lines' | 'show_bands'> {
   return {
     ...filters,
-    show_line: columnKeys(filters.conditions, 'line')[0] ?? null,
-    show_band: columnKeys(filters.conditions, 'band')[0] ?? null,
+    show_lines: columnKeys(filters.conditions, 'line'),
+    show_bands: columnKeys(filters.conditions, 'band'),
   };
 }
 

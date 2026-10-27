@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { bandFilterRpcParams, getAccessiblePrograms, invalidLineParam, isAdminUser, lineFilterRpcParams, parseCSV, parseIntCSV, parseTreeParam, resolveListIds, treeRejection } from '@/lib/api-helpers';
+import { bandFilterRpcParams, getAccessiblePrograms, invalidLineParam, isAdminUser, isMeasurementSort, lineFilterRpcParams, measurementColumnsRpcParams, parseCSV, parseIntCSV, parseTreeParam, resolveListIds, treeRejection } from '@/lib/api-helpers';
 import { createServiceClient } from '@/lib/supabase/server';
 import { authenticateApiRequest } from '@/lib/api-auth';
 import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
@@ -146,7 +146,7 @@ export async function GET(request: NextRequest) {
     ];
     const sortColumn = searchParams.get('sort') || 'spectrum_id';
     const sortDirection = searchParams.get('sort_dir') || 'asc';
-    const finalSortColumn = validSortColumns.includes(sortColumn) ? sortColumn : 'spectrum_id';
+    const finalSortColumn = validSortColumns.includes(sortColumn) || isMeasurementSort(sortColumn) ? sortColumn : 'spectrum_id';
 
     const lineError = invalidLineParam(searchParams);
     if (lineError) {
@@ -199,6 +199,7 @@ export async function GET(request: NextRequest) {
       p_include_count: includeCount,
       ...lineFilterRpcParams(searchParams),
       ...bandFilterRpcParams(searchParams),
+      ...measurementColumnsRpcParams(searchParams),
       ...cursorRpcParams(cursor),
     };
 
@@ -217,6 +218,7 @@ export async function GET(request: NextRequest) {
           ...cursorRpcParams(cursor),
           ...lineFilterRpcParams(searchParams),
           ...bandFilterRpcParams(searchParams),
+          ...measurementColumnsRpcParams(searchParams),
           // ra / dec alone are the distance reference (the distance column and
           // sort); the tree's cone does the selecting
           p_coord_ra: ra && dec ? parseFloat(ra) : null,

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { bandFilterRpcParams, getAccessiblePrograms, invalidLineParam, isAdminUser, lineFilterRpcParams, parseCSV, parseIntCSV, parseTreeParam, resolveListIds, treeRejection } from '@/lib/api-helpers';
+import { bandFilterRpcParams, getAccessiblePrograms, invalidLineParam, isAdminUser, isMeasurementSort, lineFilterRpcParams, measurementColumnsRpcParams, parseCSV, parseIntCSV, parseTreeParam, resolveListIds, treeRejection } from '@/lib/api-helpers';
 import { createServiceClient } from '@/lib/supabase/server';
 import { authenticateApiRequest } from '@/lib/api-auth';
 import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
@@ -139,7 +139,7 @@ export async function GET(request: NextRequest) {
     ];
     const sortColumn = searchParams.get('sort') || 'object_id';
     const sortDirection = searchParams.get('sort_dir') || 'asc';
-    const finalSortColumn = validSortColumns.includes(sortColumn) ? sortColumn : 'object_id';
+    const finalSortColumn = validSortColumns.includes(sortColumn) || isMeasurementSort(sortColumn) ? sortColumn : 'object_id';
 
     const lineError = invalidLineParam(searchParams);
     if (lineError) {
@@ -188,6 +188,7 @@ export async function GET(request: NextRequest) {
       ...cursorRpcParams(cursor),
       ...lineFilterRpcParams(searchParams),
       ...bandFilterRpcParams(searchParams),
+      ...measurementColumnsRpcParams(searchParams),
     };
 
     // p_viewer_id scopes each object's `lists` to what this key's user may see:
@@ -211,6 +212,7 @@ export async function GET(request: NextRequest) {
           p_viewer_id: userId,
           ...lineFilterRpcParams(searchParams),
           ...bandFilterRpcParams(searchParams),
+          ...measurementColumnsRpcParams(searchParams),
         })
       : await supabase.rpc('get_filtered_objects_paginated', {
           ...rpcParams,

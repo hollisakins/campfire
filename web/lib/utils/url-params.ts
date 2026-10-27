@@ -5,7 +5,7 @@
 
 import type { AdvancedFilterOptions, SearchScope, FilterMode } from '@/components/spectra/SpectraFilterBar';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
-import { VALID_SORT_COLUMNS, isValidSortColumn, defaultSortColumn } from '@/lib/actions/spectra-types';
+import { isValidSortColumn, defaultSortColumn } from '@/lib/actions/spectra-types';
 import { isFilterableLine } from '@/lib/linelist';
 import { encodeConditions, parseConditions } from '@/lib/catalog-query/tree';
 import { filterNodes, legacyNodes, rootOf } from '@/lib/catalog-query/legacy';
@@ -114,8 +114,8 @@ export function parseFiltersFromURL(searchParams: URLSearchParams, root?: TreeRo
     dq_flags_mode: parseMode('dq_flags_mode'),
     list_ids_mode: parseMode('tags_mode'),
     conditions: [],
-    show_line: null,
-    show_band: null,
+    show_lines: [],
+    show_bands: [],
   };
   // an unreadable q is dropped whole rather than half-applied
   const urlRoot = rootOf(parseViewModeFromURL(searchParams));
@@ -130,8 +130,8 @@ export function parseFiltersFromURL(searchParams: URLSearchParams, root?: TreeRo
     search: filters.search,
     search_scope: filters.search_scope,
     conditions: all,
-    show_line: columnKeys(all, 'line')[0] ?? null,
-    show_band: columnKeys(all, 'band')[0] ?? null,
+    show_lines: columnKeys(all, 'line'),
+    show_bands: columnKeys(all, 'band'),
   };
 }
 
@@ -165,7 +165,7 @@ export function parseSortingFromURL(searchParams: URLSearchParams, viewMode: Vie
   const fallback = defaultSortColumn(viewMode);
   const sort = searchParams.get('sort') || fallback;
   const dir = searchParams.get('dir') || 'asc';
-  const isValid = VALID_SORT_COLUMNS.includes(sort as SortColumn) && isValidSortColumn(sort, viewMode);
+  const isValid = isValidSortColumn(sort, viewMode);
   return {
     sortColumn: isValid ? (sort as SortColumn) : fallback,
     sortDirection: dir === 'desc' ? 'desc' : 'asc',

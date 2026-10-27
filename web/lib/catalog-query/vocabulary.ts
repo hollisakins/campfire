@@ -743,9 +743,8 @@ export function measurementKeys(nodes: TreeNode[], kind: MeasurementKind): strin
 /**
  * The keys of the measurements every selected row is sure to have: the
  * rows that are not negated and not inside an "any of" arm. These are the
- * columns (`show_line` / `show_band`): an RPC that takes `p_line` / `p_band`
- * as a filter as well as a column (the CSV export, prev / next) then selects
- * nothing the tree did not already.
+ * columns (`show_lines` / `show_bands`, #660), display-only parameters of
+ * every catalog RPC (`p_line_columns` / `p_band_columns`).
  */
 export function columnKeys(nodes: TreeNode[], kind: MeasurementKind): string[] {
   const def = MEASUREMENTS[kind];

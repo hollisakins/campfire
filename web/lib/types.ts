@@ -589,6 +589,11 @@ export interface SpectrumTarget extends DbTarget {
    *  same pair. */
   band_mag?: number | null;
   band_snr?: number | null;
+  /** The shown lines' S/N and flux keyed by line (phase 3c, #660; objects:
+   *  the best member spectrum's); null when none is shown. */
+  line_columns?: Record<string, { snr: number | null; flux: number | null }> | null;
+  /** The shown bands' magnitude and S/N keyed by band; null when none is shown. */
+  band_columns?: Record<string, { mag: number | null; snr: number | null }> | null;
   num_gratings?: number;
   comments?: CommentWithUser[];
   parent_object_id?: string;

@@ -23,7 +23,7 @@ import { PinButton } from './PinButton';
 import { DQ_FLAGS, decodeBitmask } from '@/lib/flags';
 import { lineLabel } from '@/lib/linelist';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
-import { defaultSortColumn } from '@/lib/actions/spectra-types';
+import { defaultSortColumn, measurementSort } from '@/lib/actions/spectra-types';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
 import { formatDistance } from '@/lib/utils/coordinate-parser';
@@ -73,9 +73,6 @@ const SPECTRA_COLUMN_TO_SERVER: Record<string, SortColumn> = {
   'exposure_time': 'exposure_time',
   'grating': 'grating',
   'distance': 'distance',
-  'line_snr': 'line_snr',
-  'band_mag': 'band_mag',
-  'band_snr': 'band_snr',
 };
 
 // Column visibility configuration — objects mode (unique sky positions).
@@ -112,22 +109,23 @@ const OBJECTS_COLUMN_TO_SERVER: Record<string, SortColumn> = {
   'max_exposure_time': 'max_exposure_time',
   'photo_z': 'photo_z',
   'distance': 'distance',
-  'line_snr': 'line_snr',
-  'band_mag': 'band_mag',
-  'band_snr': 'band_snr',
 };
 
-// Shown (in both modes) only while an emission-line filter is active: the
-// row's S/N in that line, which the server also sorts on ('line_snr').
-const LINE_SNR_COLUMN: ColumnDefinition = { id: 'line_snr', label: 'Line S/N', defaultVisible: true };
+const EMPTY_KEYS: string[] = [];
 
-// Shown (in both modes) only while a photometry-band filter is active: the
-// object's AB magnitude and S/N in that band, which the server also sorts on
-// ('band_mag' / 'band_snr').
-const BAND_COLUMNS: ColumnDefinition[] = [
-  { id: 'band_mag', label: 'Mag', defaultVisible: true },
-  { id: 'band_snr', label: 'Band S/N', defaultVisible: true },
-];
+// Shown (in both modes) while lines / bands are filtered on (phase 3c,
+// #660): one S/N column per shown line, a magnitude and an S/N column per
+// shown band, each a server sort key ('line_snr:<line>', 'band_mag:<band>',
+// 'band_snr:<band>'; the column id is the sort key).
+function measurementColumnDefs(lines: string[], bands: string[]): ColumnDefinition[] {
+  return [
+    ...lines.map((l) => ({ id: `line_snr:${l}`, label: `${lineLabel(l)} S/N`, defaultVisible: true })),
+    ...bands.flatMap((b) => [
+      { id: `band_mag:${b}`, label: `${b.toUpperCase()} mag`, defaultVisible: true },
+      { id: `band_snr:${b}`, label: `${b.toUpperCase()} S/N`, defaultVisible: true },
+    ]),
+  ];
+}
 
 interface SpectraTableProps {
   spectra: SpectrumTarget[];
@@ -156,9 +154,9 @@ interface SpectraTableProps {
   // Download props
   filters?: AdvancedFilterOptions;
   /** Catalog line of the active emission-line filter (adds the Line S/N column). */
-  activeLine?: string | null;
+  activeLines?: string[];
   /** Band of the active photometry filter (adds the Mag and Band S/N columns). */
-  activeBand?: string | null;
+  activeBands?: string[];
 }
 
 // Helper to get quality label and color
@@ -273,8 +271,8 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   loading = false,
   error = null,
   filters,
-  activeLine = null,
-  activeBand = null,
+  activeLines = EMPTY_KEYS,
+  activeBands = EMPTY_KEYS,
 }) => {
   const { user, userProfile } = useAuth();
   // Release browsing (P6c-1): pins, inspection and bulk downloads are live-only.
@@ -288,10 +286,9 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   const columnConfig = useMemo(
     () => [
       ...(isObjectsMode ? OBJECTS_COLUMNS : SPECTRA_MODE_COLUMNS),
-      ...(activeLine ? [LINE_SNR_COLUMN] : []),
-      ...(activeBand ? BAND_COLUMNS : []),
+      ...measurementColumnDefs(activeLines, activeBands),
     ],
-    [isObjectsMode, activeLine, activeBand],
+    [isObjectsMode, activeLines, activeBands],
   );
   const COLUMN_TO_SERVER_NAME = isObjectsMode ? OBJECTS_COLUMN_TO_SERVER : SPECTRA_COLUMN_TO_SERVER;
 
@@ -364,7 +361,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       // Still notify parent for URL sync (but parent will skip refetch)
       if (newSorting.length > 0) {
         const columnId = newSorting[0].id;
-        const serverColumn = COLUMN_TO_SERVER_NAME[columnId];
+        const serverColumn = COLUMN_TO_SERVER_NAME[columnId] ?? (measurementSort(columnId) ? (columnId as SortColumn) : undefined);
         if (serverColumn) {
           onSortChange(serverColumn, newSorting[0].desc ? 'desc' : 'asc');
         }
@@ -373,7 +370,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       // Server-side mode: notify parent to trigger refetch
       if (newSorting.length > 0) {
         const columnId = newSorting[0].id;
-        const serverColumn = COLUMN_TO_SERVER_NAME[columnId];
+        const serverColumn = COLUMN_TO_SERVER_NAME[columnId] ?? (measurementSort(columnId) ? (columnId as SortColumn) : undefined);
         if (serverColumn) {
           onSortChange(serverColumn, newSorting[0].desc ? 'desc' : 'asc');
         }
@@ -807,16 +804,16 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       // through to the inversion), so the client-side sort taken for small
       // result sets (isFullDataset) disagreed with the paginated order, with
       // adjacent-object navigation and with the CSV.
-      ...(activeLine ? [{
-        id: 'line_snr',
+      ...activeLines.map((line) => ({
+        id: `line_snr:${line}`,
         minSize: 100,
-        accessorFn: (row: SpectrumTarget) => row.line_snr ?? undefined,
+        accessorFn: (row: SpectrumTarget) => row.line_columns?.[line]?.snr ?? undefined,
         sortUndefined: 'last' as const,
         header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
-          <SortableHeader column={column} className="normal-case">{lineLabel(activeLine)} S/N</SortableHeader>
+          <SortableHeader column={column} className="normal-case">{lineLabel(line)} S/N</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
-          const snr = row.original.line_snr;
+          const snr = row.original.line_columns?.[line]?.snr;
           if (snr == null) return <span className="text-xs text-text-secondary dark:text-text-tertiary">—</span>;
           return (
             <span className={`text-sm font-mono ${snr >= 3 ? 'text-text-primary' : 'text-text-secondary'}`}>
@@ -825,37 +822,36 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           );
         },
         sortingFn: 'basic' as const,
-      } satisfies ColumnDef<SpectrumTarget>] : []),
-      // Both modes: AB magnitude and S/N in the filtered photometry band, only
-      // while a band filter is active. Object-level in both modes (photometry
-      // belongs to the sky position), sorted server-side. A non-detection has
-      // no magnitude, so an em dash there is data, not a missing value — its
-      // S/N, which can be negative, is the cell next door.
-      // sortUndefined 'last' for the same reason as line_snr above.
-      ...(activeBand ? [{
-        id: 'band_mag',
+      } satisfies ColumnDef<SpectrumTarget>)),
+      // Both modes: AB magnitude and S/N in each shown photometry band.
+      // Object-level in both modes (photometry belongs to the sky position),
+      // sorted server-side. A non-detection has no magnitude, so an em dash
+      // there is data, not a missing value — its S/N, which can be negative,
+      // is the cell next door. sortUndefined 'last' as for the lines above.
+      ...activeBands.flatMap((band) => [{
+        id: `band_mag:${band}`,
         minSize: 90,
-        accessorFn: (row: SpectrumTarget) => row.band_mag ?? undefined,
+        accessorFn: (row: SpectrumTarget) => row.band_columns?.[band]?.mag ?? undefined,
         sortUndefined: 'last' as const,
         header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
-          <SortableHeader column={column} className="normal-case">{activeBand.toUpperCase()} mag</SortableHeader>
+          <SortableHeader column={column} className="normal-case">{band.toUpperCase()} mag</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
-          const mag = row.original.band_mag;
+          const mag = row.original.band_columns?.[band]?.mag;
           if (mag == null) return <span className="text-xs text-text-secondary dark:text-text-tertiary">—</span>;
           return <span className="text-sm font-mono text-text-primary">{mag.toFixed(2)}</span>;
         },
         sortingFn: 'basic' as const,
       } satisfies ColumnDef<SpectrumTarget>, {
-        id: 'band_snr',
+        id: `band_snr:${band}`,
         minSize: 100,
-        accessorFn: (row: SpectrumTarget) => row.band_snr ?? undefined,
+        accessorFn: (row: SpectrumTarget) => row.band_columns?.[band]?.snr ?? undefined,
         sortUndefined: 'last' as const,
         header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
-          <SortableHeader column={column} className="normal-case">{activeBand.toUpperCase()} S/N</SortableHeader>
+          <SortableHeader column={column} className="normal-case">{band.toUpperCase()} S/N</SortableHeader>
         ),
         cell: ({ row }: { row: { original: SpectrumTarget } }) => {
-          const snr = row.original.band_snr;
+          const snr = row.original.band_columns?.[band]?.snr;
           if (snr == null) return <span className="text-xs text-text-secondary dark:text-text-tertiary">—</span>;
           return (
             <span className={`text-sm font-mono ${snr >= 3 ? 'text-text-primary' : 'text-text-secondary'}`}>
@@ -864,7 +860,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           );
         },
         sortingFn: 'basic' as const,
-      } satisfies ColumnDef<SpectrumTarget>] : []),
+      } satisfies ColumnDef<SpectrumTarget>]),
       // Spectra mode: signal_to_noise column (per-spectrum)
       ...(isSpectraMode ? [{
         id: 'signal_to_noise',
@@ -976,7 +972,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
     ],
     // readOnly (P6c-1) toggles the pin column; the rest were already omitted upstream
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [hasCoordinateSearch, currentFilterParams, isSpectraMode, isObjectsMode, activeLine, activeBand, readOnly]
+    [hasCoordinateSearch, currentFilterParams, isSpectraMode, isObjectsMode, activeLines, activeBands, readOnly]
   );
 
   // Convert column visibility state to TanStack Table format.

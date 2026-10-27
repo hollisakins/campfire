@@ -134,54 +134,40 @@ export function filterNodes(filters: Partial<FilterOptions> | undefined, root: T
 
 /**
  * True when the legacy RPC parameters cannot carry the (normalized) state:
- * it holds conditions beyond the pills' shapes, or asks for a line or band
- * column other than the one its pill filters on.
+ * it holds conditions beyond the pills' shapes. (The columns are display-only
+ * parameters on every RPC, so they never decide the path.)
  */
 export function needsTreePath(filters: Partial<FilterOptions> | undefined): boolean {
-  if ((filters?.conditions?.length ?? 0) > 0) return true;
-  const line = activeLineOf(filters);
-  if (line && line !== (filters?.line?.trim() || null)) return true;
-  const band = activeBandOf(filters);
-  if (band && band !== (filters?.band?.trim() || null)) return true;
-  return false;
+  return (filters?.conditions?.length ?? 0) > 0;
 }
 
-/** The line whose S/N the table shows and sorts on: the `column` toggle of a
- *  line row (`show_line`), never implied by a filter. */
-export function activeLineOf(filters: Partial<FilterOptions> | undefined): string | null {
-  const line = filters?.show_line?.trim();
-  return line && isFilterableLine(line) ? line : null;
+/** The lines whose S/N the table shows and may sort on (`show_lines`),
+ *  never implied by a filter. */
+export function activeLinesOf(filters: Partial<FilterOptions> | undefined): string[] {
+  return (filters?.show_lines ?? []).filter(isFilterableLine);
 }
 
-/** The band whose magnitude and S/N the table shows (`show_band`). */
-export function activeBandOf(filters: Partial<FilterOptions> | undefined): string | null {
-  return filters?.show_band?.trim() || null;
+/** The bands whose magnitude and S/N the table shows (`show_bands`). */
+export function activeBandsOf(filters: Partial<FilterOptions> | undefined): string[] {
+  return (filters?.show_bands ?? []).map((b) => b.trim()).filter(Boolean);
 }
 
 /**
- * The shown line / band for an RPC that takes `p_line` / `p_band` as a
- * filter and a column at once (the CSV exports, prev / next): the pill's own
- * parameters when the column is the pill's, else the column alone (its
- * filter selects nothing the tree does not, see `columnKeys`).
+ * The column parameters of every catalog RPC (phase 3c): the shown lines
+ * and bands, display only, and whether the line columns count stale fits
+ * (they do unless a shown line's row asks for a fresh fit; the flag also
+ * governs the legacy line pill's own filter, which asks the same question).
  */
-export function shownMeasurementParams(filters: Partial<FilterOptions> | undefined, root: TreeRoot, pill: { p_line?: string; p_band?: string }): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  const line = activeLineOf(filters);
-  if (line && pill.p_line !== line) {
-    Object.assign(out, { p_line: line, p_line_snr_min: null, p_line_snr_max: null, p_line_include_stale: lineColumnIncludesStale(filters, root) });
-  }
-  const band = activeBandOf(filters);
-  if (band && pill.p_band !== band) {
-    Object.assign(out, { p_band: band, p_band_mag_min: null, p_band_mag_max: null, p_band_snr_min: null, p_band_snr_max: null });
-  }
-  return out;
-}
-
-/** Whether the shown line's column should count stale fits: it does unless a
- *  row for that line asks for a fresh fit. */
-export function lineColumnIncludesStale(filters: Partial<FilterOptions> | undefined, root: TreeRoot): boolean {
-  const line = activeLineOf(filters);
-  return !(line && lineWantsFresh(filterNodes(filters, root), line));
+export function measurementColumnParams(filters: Partial<FilterOptions> | undefined, root: TreeRoot): {
+  p_line_columns?: string[]; p_band_columns?: string[]; p_line_include_stale?: boolean;
+} {
+  const lines = activeLinesOf(filters);
+  const bands = activeBandsOf(filters);
+  const nodes = lines.length ? filterNodes(filters, root) : [];
+  return {
+    ...(lines.length ? { p_line_columns: lines, p_line_include_stale: !lines.some((l) => lineWantsFresh(nodes, l)) } : {}),
+    ...(bands.length ? { p_band_columns: bands } : {}),
+  };
 }
 
 /** The position the distance column measures from: the position pill, else

@@ -7,7 +7,7 @@ import { getRequestIdentity } from '@/lib/auth/identity';
 import { paginateRpc } from '@/lib/supabase/paginate';
 import type { SpectrumTarget, Spectrum, ObjectDetail, PinnedObjectMetadata } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
-import { activeBandOf, activeLineOf, distanceReferenceOf, lineColumnIncludesStale, needsTreePath, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
+import { distanceReferenceOf, measurementColumnParams, needsTreePath, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
 import { filterTree, matchFilterIds, treeRejection } from '@/lib/server/catalog-query';
 import { treeReadsColumn } from '@/lib/catalog-query/vocabulary';
 import type { FilterOptions } from './filter-params';
@@ -109,17 +109,10 @@ export async function getSpectra(
     // feeds the legacy list RPC the ids. Line, band and position then only
     // drive the Line S/N, Mag and distance columns and sorts.
     const tree = filterTree(filters, root);
-    // a column the pills cannot carry with nothing to select on: the legacy
-    // RPC with its measurements display-only (the wrappers need a tree)
-    const displayOnly = needsTreePath(filters) && tree === null;
     const treePath = needsTreePath(filters) && tree !== null;
-    const showLine = activeLineOf(filters);
-    const showBand = activeBandOf(filters);
-    const shownParams = displayOnly ? {
-      p_measurements_display_only: true,
-      ...(showLine ? { p_line: showLine, p_line_snr_min: null, p_line_snr_max: null, p_line_include_stale: lineColumnIncludesStale(filters, root) } : {}),
-      ...(showBand ? { p_band: showBand, p_band_mag_min: null, p_band_mag_max: null, p_band_snr_min: null, p_band_snr_max: null } : {}),
-    } : {};
+    // the columns (phase 3c): display only, the same on both paths; the
+    // stale flag they carry is the legacy line pill's own question too
+    const columnParams = measurementColumnParams(filters, root);
     const rpcName = treePath
       ? (viewMode === 'spectra' ? 'catalog_query_spectra' : 'catalog_query_objects')
       : (viewMode === 'spectra' ? 'get_filtered_spectra_paginated' : 'get_filtered_objects_paginated');
@@ -129,10 +122,6 @@ export async function getSpectra(
     let callParams: Record<string, unknown>;
     if (treePath) {
       const reference = distanceReferenceOf(filters, root);
-      // the shown line / band: the pill's own window when it is the pill's,
-      // else the whole of its values
-      const lineIsPill = showLine !== null && showLine === rpcParams.p_line;
-      const bandIsPill = showBand !== null && showBand === rpcParams.p_band;
       callParams = {
         p_tree: tree,
         p_program_slugs: rpcParams.p_program_slugs,
@@ -146,18 +135,19 @@ export async function getSpectra(
         p_page_size: pageSize,
         p_include_count: includeCount,
         p_viewer_id: user.id,
-        p_line: showLine,
-        p_line_snr_min: lineIsPill ? rpcParams.p_line_snr_min ?? null : null,
-        p_line_snr_max: lineIsPill ? rpcParams.p_line_snr_max ?? null : null,
-        // the column counts stale fits unless a row for the line asks for a fresh one
-        p_line_include_stale: lineColumnIncludesStale(filters, root),
-        p_band: showBand,
-        p_band_mag_min: bandIsPill ? rpcParams.p_band_mag_min ?? null : null,
-        p_band_mag_max: bandIsPill ? rpcParams.p_band_mag_max ?? null : null,
-        p_band_snr_min: bandIsPill ? rpcParams.p_band_snr_min ?? null : null,
-        p_band_snr_max: bandIsPill ? rpcParams.p_band_snr_max ?? null : null,
+        // the legacy scalar column (the API's line_snr / band_mag): the pill's own
+        p_line: rpcParams.p_line ?? null,
+        p_line_snr_min: rpcParams.p_line_snr_min ?? null,
+        p_line_snr_max: rpcParams.p_line_snr_max ?? null,
+        p_line_include_stale: rpcParams.p_line_include_stale ?? true,
+        p_band: rpcParams.p_band ?? null,
+        p_band_mag_min: rpcParams.p_band_mag_min ?? null,
+        p_band_mag_max: rpcParams.p_band_mag_max ?? null,
+        p_band_snr_min: rpcParams.p_band_snr_min ?? null,
+        p_band_snr_max: rpcParams.p_band_snr_max ?? null,
         p_coord_ra: reference?.ra ?? null,
         p_coord_dec: reference?.dec ?? null,
+        ...columnParams,
         ...(viewMode === 'spectra' ? { p_include_thumbnails: true } : {}),
       };
     } else if (viewMode === 'objects') {
@@ -207,7 +197,7 @@ export async function getSpectra(
           p_band_snr_min: rpcParams.p_band_snr_min,
           p_band_snr_max: rpcParams.p_band_snr_max,
         } : {}),
-        ...shownParams,
+        ...columnParams,
       };
     } else {
       callParams = {
@@ -218,7 +208,7 @@ export async function getSpectra(
         p_page_size: pageSize,
         p_include_thumbnails: true,
         p_include_count: includeCount,
-        ...shownParams,
+        ...columnParams,
       };
     }
 
@@ -266,6 +256,8 @@ export async function getSpectra(
           line_snr: obj.line_snr ?? null,
           band_mag: obj.band_mag ?? null,
           band_snr: obj.band_snr ?? null,
+          line_columns: obj.line_columns ?? null,
+          band_columns: obj.band_columns ?? null,
           created_at: obj.created_at,
           spectra: [],
           // Objects-specific fields
@@ -321,6 +313,8 @@ export async function getSpectra(
         line_snr: obj.line_snr ?? null,
         band_mag: obj.band_mag ?? null,
         band_snr: obj.band_snr ?? null,
+        line_columns: obj.line_columns ?? null,
+        band_columns: obj.band_columns ?? null,
         num_gratings: spectra.length,
       } as SpectrumTarget;
     });
@@ -651,6 +645,7 @@ export async function getInspectionQueueIds(
       'get_filtered_object_ids',
       {
         ...objectParams,
+        ...measurementColumnParams(filters, 'objects'),
         p_redshift_quality: qualityFilter,
         p_sort_column: sortColumn,
         p_sort_direction: sortDirection,
