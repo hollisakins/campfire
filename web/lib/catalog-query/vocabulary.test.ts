@@ -6,7 +6,7 @@ import { legacyNodes, normalizeFilters } from './legacy';
 import { validateNode, type TreeNode } from './tree';
 import {
   addToCard, appendAt, cardContentsPath, compileChoice, compileMeasurement, compileProperty, describeItem, findProperty, lineWantsFresh, measurementKeys, nodeAt,
-  propertyDef, readChoiceState, readConditions, removePaths, replaceAt, rerootConditions, setNegated, tableAtPath, tidyConditions, treeReadsColumn,
+  columnKeys, propertyDef, readChoiceState, readConditions, removePaths, replaceAt, rerootConditions, setNegated, tableAtPath, tidyConditions, treeReadsColumn,
   type Item, type MeasurementItem, type PropertyItem, type SpectrumItem,
 } from './vocabulary';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
@@ -380,6 +380,13 @@ describe('columns and words', () => {
   it('names the measurements a tree carries and whether a line asks for a fresh fit', () => {
     expect(measurementKeys(figure6, 'line')).toEqual(['Halpha', 'OIII5007']);
     expect(measurementKeys(figure6, 'band')).toEqual(['f444w']);
+    // a column is a row every selected object is sure to have: not negated, not an OR arm
+    expect(columnKeys(figure6, 'line')).toEqual(['Halpha', 'OIII5007']);
+    const absent: TreeNode = { exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'Halpha' }], not: true };
+    const either: TreeNode = { or: [{ exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'OIII5007' }] }, { col: 'photo_z', op: 'gte', v: 5 }] };
+    expect(measurementKeys([absent, either], 'line')).toEqual(['Halpha', 'OIII5007']);
+    expect(columnKeys([absent, either], 'line')).toEqual([]);
+    expect(columnKeys([{ exists: 'spectra', where: [{ and: [{ exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'CIII1908' }] }] }] }], 'line')).toEqual(['CIII1908']);
     expect(lineWantsFresh(figure6, 'Halpha')).toBe(false);
     const fresh = compileMeasurement('line', 'Halpha', [{ def: def('line', 'fresh'), value: { kind: 'bool', value: true } }]);
     expect(lineWantsFresh([{ exists: 'spectra', where: [fresh] }], 'Halpha')).toBe(true);

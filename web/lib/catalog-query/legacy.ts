@@ -158,6 +158,25 @@ export function activeBandOf(filters: Partial<FilterOptions> | undefined): strin
   return filters?.show_band?.trim() || null;
 }
 
+/**
+ * The shown line / band for an RPC that takes `p_line` / `p_band` as a
+ * filter and a column at once (the CSV exports, prev / next): the pill's own
+ * parameters when the column is the pill's, else the column alone (its
+ * filter selects nothing the tree does not, see `columnKeys`).
+ */
+export function shownMeasurementParams(filters: Partial<FilterOptions> | undefined, root: TreeRoot, pill: { p_line?: string; p_band?: string }): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const line = activeLineOf(filters);
+  if (line && pill.p_line !== line) {
+    Object.assign(out, { p_line: line, p_line_snr_min: null, p_line_snr_max: null, p_line_include_stale: lineColumnIncludesStale(filters, root) });
+  }
+  const band = activeBandOf(filters);
+  if (band && pill.p_band !== band) {
+    Object.assign(out, { p_band: band, p_band_mag_min: null, p_band_mag_max: null, p_band_snr_min: null, p_band_snr_max: null });
+  }
+  return out;
+}
+
 /** Whether the shown line's column should count stale fits: it does unless a
  *  row for that line asks for a fresh fit. */
 export function lineColumnIncludesStale(filters: Partial<FilterOptions> | undefined, root: TreeRoot): boolean {

@@ -534,9 +534,11 @@ export function MeasurementTable({ kind, items, level, ctx, title }: { kind: Mea
 // ---------------------------------------------------------------- groups and blocks
 
 /** An "any of" group: alternatives across properties, each arm a chip. */
-function AnyOfGroup({ item, level, ctx, noun }: { item: AnyOfItem; level: Level; ctx: CardsContext; noun: Noun }) {
+function AnyOfGroup({ item, ctx, noun }: { item: AnyOfItem; ctx: CardsContext; noun: Noun }) {
   const [pending, setPending] = useState<PropertyDef | null>(null);
-  const armLevel: Level = { table: level.table, path: item.path };
+  // the group may sit inside the spectrum's `exists objects`: its arms are written against that table
+  const armTable = tableAtPath(ctx.nodes, ctx.root, [...item.path, 0]);
+  const armLevel: Level = { table: armTable === 'spectra' ? 'spectra' : 'objects', path: item.path };
   const used = new Set(item.arms.flat().filter((it): it is PropertyItem => it.kind === 'property').map((it) => it.def.key));
   const defs = propertiesOf(noun).filter((d) => !(ctx.hideKeys ?? []).includes(d.key) && !used.has(d.key) && d.key !== 'needs_review');
   return (
@@ -654,7 +656,7 @@ export function NounBody({ noun, items, level, ctx, demote = [] }: NounBodyProps
           onToggle={toggleProperty} onGroup={() => setPendingGroup({ def: null })} />
       </div>
 
-      {groups.map((g) => <AnyOfGroup key={g.path.join('.')} item={g} level={level} ctx={ctx} noun={noun} />)}
+      {groups.map((g) => <AnyOfGroup key={g.path.join('.')} item={g} ctx={ctx} noun={noun} />)}
       {pendingGroup && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border-strong px-3 py-2">
           <span className={`${EYEBROW} text-primary`}>any of</span>

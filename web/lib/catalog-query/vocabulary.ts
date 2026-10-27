@@ -740,6 +740,35 @@ export function measurementKeys(nodes: TreeNode[], kind: MeasurementKind): strin
   return out;
 }
 
+/**
+ * The keys of the measurements every selected row is sure to have: the
+ * rows that are not negated and not inside an "any of" arm. These are the
+ * columns (`show_line` / `show_band`): an RPC that takes `p_line` / `p_band`
+ * as a filter as well as a column (the CSV export, prev / next) then selects
+ * nothing the tree did not already.
+ */
+export function columnKeys(nodes: TreeNode[], kind: MeasurementKind): string[] {
+  const def = MEASUREMENTS[kind];
+  const out: string[] = [];
+  const walk = (list: TreeNode[]) => {
+    for (const n of list) {
+      if (isOr(n)) continue;
+      if (isExists(n)) {
+        if (n.not) continue;
+        if (n.exists === def.table) {
+          const k = measurementKey(n, def);
+          if (k && !out.includes(k.key)) out.push(k.key);
+        }
+        walk(n.where ?? []);
+      } else if (isAnd(n)) {
+        walk(n.and);
+      }
+    }
+  };
+  walk(nodes);
+  return out;
+}
+
 /** True when some line row for `line` asks for a fresh fit, so its column
  *  should hide stale fits too. */
 export function lineWantsFresh(nodes: TreeNode[], line: string): boolean {

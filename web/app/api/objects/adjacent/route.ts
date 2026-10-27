@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { getRequestPrincipal } from '@/lib/auth/identity';
 import { buildFilterParams } from '@/lib/actions/filter-params';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
-import { needsTreePath, normalizeFilters } from '@/lib/catalog-query/legacy';
+import { needsTreePath, normalizeFilters, shownMeasurementParams } from '@/lib/catalog-query/legacy';
 import { matchFilterIds } from '@/lib/server/catalog-query';
 
 export interface AdjacentObjectsResponse {
@@ -65,6 +65,8 @@ export async function GET(request: NextRequest) {
     const { data, error } = await principal.supabase.rpc('get_adjacent_objects', {
       p_current_object_id: objectId,
       ...objectsParams,
+      // the shown line / band, so a line_snr / band_mag sort walks the table's order
+      ...shownMeasurementParams(filters, 'objects', rpcParams),
       p_sort_column: sortColumn,
       p_sort_direction: sortDirection,
       p_object_ids: objectIds,

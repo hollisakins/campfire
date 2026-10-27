@@ -9,7 +9,7 @@ import { VALID_SORT_COLUMNS, isValidSortColumn, defaultSortColumn } from '@/lib/
 import { isFilterableLine } from '@/lib/linelist';
 import { encodeConditions, parseConditions } from '@/lib/catalog-query/tree';
 import { filterNodes, legacyNodes, rootOf } from '@/lib/catalog-query/legacy';
-import { measurementKeys, rerootConditions } from '@/lib/catalog-query/vocabulary';
+import { columnKeys, rerootConditions } from '@/lib/catalog-query/vocabulary';
 import type { TreeRoot } from '@/lib/catalog-query/tree';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
 
@@ -130,8 +130,8 @@ export function parseFiltersFromURL(searchParams: URLSearchParams, root?: TreeRo
     search: filters.search,
     search_scope: filters.search_scope,
     conditions: all,
-    show_line: measurementKeys(all, 'line')[0] ?? null,
-    show_band: measurementKeys(all, 'band')[0] ?? null,
+    show_line: columnKeys(all, 'line')[0] ?? null,
+    show_band: columnKeys(all, 'band')[0] ?? null,
   };
 }
 

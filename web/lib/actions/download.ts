@@ -11,7 +11,7 @@ import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { paginateRpcKeyset } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
-import { needsTreePath, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
+import { activeBandOf, activeLineOf, needsTreePath, normalizeFilters, rootOf, shownMeasurementParams } from '@/lib/catalog-query/legacy';
 import { matchFilterIds } from '@/lib/server/catalog-query';
 import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
@@ -180,7 +180,7 @@ export async function generateCSV(
       }
 
       const { data: rows, error: rpcError } = await paginateRpcKeyset<ObjectsCsvRow>(
-        supabase, 'get_csv_export_objects', { ...objectsParams, p_object_ids: treeObjectIds },
+        supabase, 'get_csv_export_objects', { ...objectsParams, ...shownMeasurementParams(filters, 'objects', rpcParams), p_object_ids: treeObjectIds },
         { cursorParam: 'p_after_object_id', getCursor: r => r.object_id, maxRows: CSV_EXPORT_ROW_LIMIT },
       );
 
@@ -195,8 +195,9 @@ export async function generateCSV(
         includeDistance ? 'asc' : sortDirection,
         [r => r.object_id],
       );
-      // the export RPC's line / band are filter and column at once: the pill's
-      const csv = objectsRowsToCsv(rows, includeDistance, rpcParams.p_line ?? null, rpcParams.p_band ?? null);
+      // the columns the table shows (the export RPC's line / band are filter
+      // and column at once; the shown ones select nothing the tree did not)
+      const csv = objectsRowsToCsv(rows, includeDistance, activeLineOf(filters) ?? rpcParams.p_line ?? null, activeBandOf(filters) ?? rpcParams.p_band ?? null);
 
       const objectIds = rows.map(r => r.object_id);
       trackDownload({

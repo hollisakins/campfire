@@ -141,8 +141,8 @@ describe('free conditions', () => {
     const params = filtersToURLParams(filters, 1, 50, 'object_id', 'asc', 'objects');
     expect(params.has('z_min')).toBe(false);
     expect(JSON.parse(params.get('q')!)).toEqual({ and: filters.conditions });
-    // the columns follow the rows the tree carries
-    expect(parseFiltersFromURL(params)).toEqual({ ...filters, show_line: 'OIII5007', show_band: 'f444w' });
+    // the columns follow the rows the tree is sure of: `either` is an OR, so neither of its rows is one
+    expect(parseFiltersFromURL(params)).toEqual(filters);
     const one = filtersToURLParams({ ...DEFAULT_FILTERS, conditions: [either] }, 1, 50, 'object_id', 'asc', 'objects');
     expect(JSON.parse(one.get('q')!)).toEqual(either);
     expect(encodeConditions([])).toBeNull();
@@ -241,11 +241,13 @@ describe('free conditions', () => {
     expect(distanceReferenceOf({ ...DEFAULT_FILTERS, conditions: [{ cone: { ra: 150, dec: 2, radius: 0.1 } }] }, 'objects')).toEqual({ ra: 150, dec: 2 });
     expect(distanceReferenceOf(DEFAULT_FILTERS, 'objects')).toBeNull();
     // the columns follow the rows: the first line and the first band filtered on, from any link
-    const rows = { ...DEFAULT_FILTERS, conditions: [...legacyNodes({ band: 'f444w', band_mag_max: 27 }, 'objects'), either] };
+    const rows = { ...DEFAULT_FILTERS, conditions: [...legacyNodes({ band: 'f444w', band_mag_max: 27 }, 'objects'), line, either] };
     const params = filtersToURLParams(rows, 1, 50, 'object_id', 'asc', 'objects');
     expect(params.has('col_line')).toBe(false);
     expect(parseFiltersFromURL(params).show_band).toBe('f444w');
+    // the first line row the tree is sure of; the one inside `either` (an OR) is not a column
     expect(parseFiltersFromURL(params).show_line).toBe('OIII5007');
+    expect(parseFiltersFromURL(new URLSearchParams({ q: JSON.stringify(either) })).show_line).toBeNull();
     expect(parseFiltersFromURL(new URLSearchParams({ line: 'Halpha' })).show_line).toBe('Halpha');
     expect(parseFiltersFromURL(new URLSearchParams({ z_min: '4' })).show_line).toBeNull();
     // a column the pill cannot carry sends the state down the tree path
