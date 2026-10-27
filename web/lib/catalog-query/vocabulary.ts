@@ -516,6 +516,20 @@ function withChildren(node: TreeNode, children: TreeNode[]): TreeNode {
   return { or: children };
 }
 
+/** The table the node at `path` is evaluated against: its nearest exists
+ *  ancestor's child table, else the root. */
+export function tableAtPath(nodes: TreeNode[], root: TreeRoot, path: Path): TreeTable {
+  let table: TreeTable = root;
+  let list: TreeNode[] | null = nodes;
+  for (let i = 0; i < path.length - 1; i++) {
+    const node: TreeNode | undefined = list?.[path[i]];
+    if (!node) return table;
+    if (isExists(node)) table = node.exists;
+    list = childrenOf(node);
+  }
+  return table;
+}
+
 export function nodeAt(nodes: TreeNode[], path: Path): TreeNode | undefined {
   let list: TreeNode[] | null = nodes;
   let node: TreeNode | undefined;

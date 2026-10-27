@@ -108,9 +108,10 @@ interface FilterChipProps {
    *  conceptually related to the main filter but aren't one of its discrete values. */
   extraCheckbox?: ExtraCheckbox;
   /** Three-state options (phase 3b): a click includes a value, a second click
-   *  excludes it, a third clears it. `excluded` is the excluded set. */
+   *  excludes it, a third clears it. `excluded` is the excluded set, and
+   *  every change reports both sets at once (one state, one commit). */
   excluded?: (string | number)[];
-  onExcludedChange?: (excluded: (string | number)[]) => void;
+  onExcludedChange?: (selected: (string | number)[], excluded: (string | number)[]) => void;
   /** For a relation with several values per row: whether the included values
    *  are any of them or all of them. Shown once two are included. */
   mode?: 'any' | 'all';
@@ -176,10 +177,10 @@ export const FilterChip: React.FC<FilterChipProps> = ({
 
   const handleToggle = (value: string | number) => {
     if (triState && onExcludedChange) {
-      // none → included → excluded → none
-      if (selected.includes(value)) { onChange(selected.filter(v => v !== value)); onExcludedChange([...excluded, value]); }
-      else if (excluded.includes(value)) onExcludedChange(excluded.filter(v => v !== value));
-      else onChange([...selected, value]);
+      // none → included → excluded → none, reported as one change
+      if (selected.includes(value)) onExcludedChange(selected.filter(v => v !== value), [...excluded, value]);
+      else if (excluded.includes(value)) onExcludedChange(selected, excluded.filter(v => v !== value));
+      else onExcludedChange([...selected, value], excluded);
       return;
     }
     if (multiSelect) {
@@ -196,8 +197,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
 
   const handleClear = (e: React.MouseEvent) => {
     e.stopPropagation();
-    onChange([]);
-    if (excluded.length && onExcludedChange) onExcludedChange([]);
+    if (onExcludedChange) onExcludedChange([], []); else onChange([]);
     if (extraCheckbox?.checked) extraCheckbox.onChange(false);
   };
 
@@ -364,7 +364,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
             <div className="border-t border-border p-2">
               <button
                 onClick={() => {
-                  onChange(shortcut.values);
+                  if (onExcludedChange) onExcludedChange(shortcut.values, []); else onChange(shortcut.values);
                 }}
                 className="w-full px-3 py-1.5 text-sm text-primary hover:text-primary-hover hover:bg-primary/10 rounded-md text-left transition-colors font-medium"
               >
@@ -378,8 +378,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
             <div className={`${shortcut ? 'px-2 pb-2' : 'border-t border-border p-2'}`}>
               <button
                 onClick={() => {
-                  onChange([]);
-                  if (excluded.length && onExcludedChange) onExcludedChange([]);
+                  if (onExcludedChange) onExcludedChange([], []); else onChange([]);
                   if (extraCheckbox?.checked) extraCheckbox.onChange(false);
                   setIsOpen(false);
                 }}

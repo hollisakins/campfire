@@ -28,7 +28,8 @@ export function treeRejection(error: { code?: string; message?: string } | null 
 
 /**
  * The ids `root` rows the filter state selects, evaluated under the caller's
- * session (RLS) with the explicit scope the RPC also takes.
+ * session (RLS) with the explicit scope the RPC also takes. A state with
+ * nothing to select on (a column toggle alone) is unrestricted: null ids.
  */
 export async function matchFilterIds(
   supabase: SupabaseClient,
@@ -36,9 +37,9 @@ export async function matchFilterIds(
   filters: Partial<FilterOptions> | undefined,
   programSlugs: string[],
   viewerId: string | null,
-): Promise<{ ids: number[]; error?: string }> {
+): Promise<{ ids: number[] | null; error?: string }> {
   const tree = filterTree(filters, root);
-  if (!tree) return { ids: [] };
+  if (!tree) return { ids: null };
   const { data, error } = await supabase.rpc('catalog_match_ids', {
     p_root: root,
     p_tree: tree,

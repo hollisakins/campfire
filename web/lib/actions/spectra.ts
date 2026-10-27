@@ -107,7 +107,18 @@ export async function getSpectra(
     // line / band) the whole of it is one predicate tree, and the wrapper RPC
     // feeds the legacy list RPC the ids. Line, band and position then only
     // drive the Line S/N, Mag and distance columns and sorts.
-    const treePath = needsTreePath(filters);
+    const tree = filterTree(filters, root);
+    // a column the pills cannot carry with nothing to select on: the legacy
+    // RPC with its measurements display-only (the wrappers need a tree)
+    const displayOnly = needsTreePath(filters) && tree === null;
+    const treePath = needsTreePath(filters) && tree !== null;
+    const showLine = activeLineOf(filters);
+    const showBand = activeBandOf(filters);
+    const shownParams = displayOnly ? {
+      p_measurements_display_only: true,
+      ...(showLine ? { p_line: showLine, p_line_snr_min: null, p_line_snr_max: null, p_line_include_stale: lineColumnIncludesStale(filters, root) } : {}),
+      ...(showBand ? { p_band: showBand, p_band_mag_min: null, p_band_mag_max: null, p_band_snr_min: null, p_band_snr_max: null } : {}),
+    } : {};
     const rpcName = treePath
       ? (viewMode === 'spectra' ? 'catalog_query_spectra' : 'catalog_query_objects')
       : (viewMode === 'spectra' ? 'get_filtered_spectra_paginated' : 'get_filtered_objects_paginated');
@@ -119,12 +130,10 @@ export async function getSpectra(
       const reference = distanceReferenceOf(filters, root);
       // the shown line / band: the pill's own window when it is the pill's,
       // else the whole of its values
-      const showLine = activeLineOf(filters);
-      const showBand = activeBandOf(filters);
       const lineIsPill = showLine !== null && showLine === rpcParams.p_line;
       const bandIsPill = showBand !== null && showBand === rpcParams.p_band;
       callParams = {
-        p_tree: filterTree(filters, root),
+        p_tree: tree,
         p_program_slugs: rpcParams.p_program_slugs,
         p_search: rpcParams.p_search,
         p_comment_search: rpcParams.p_comment_search,
@@ -197,6 +206,7 @@ export async function getSpectra(
           p_band_snr_min: rpcParams.p_band_snr_min,
           p_band_snr_max: rpcParams.p_band_snr_max,
         } : {}),
+        ...shownParams,
       };
     } else {
       callParams = {
@@ -207,6 +217,7 @@ export async function getSpectra(
         p_page_size: pageSize,
         p_include_thumbnails: true,
         p_include_count: includeCount,
+        ...shownParams,
       };
     }
 

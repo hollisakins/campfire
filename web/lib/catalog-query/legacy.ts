@@ -204,9 +204,10 @@ function soleWhere(node: TreeNode, table: string): TreeNode | null {
 /** The slot a single node fills when that slot is empty, or null. */
 function liftOne(node: TreeNode, root: TreeRoot, f: Slot): Slot | null {
   const spectraRoot = root === 'spectra';
+  // a boolean false is a value (has_photometry = false selects), not an empty slot
   const empty = (k: keyof FilterOptions) => {
     const v = f[k];
-    return v == null || v === false || (Array.isArray(v) && v.length === 0);
+    return v == null || (Array.isArray(v) && v.length === 0);
   };
   // a predicate on the objects row, wherever the root puts it
   const objectsPred = (n: TreeNode): PredicateNode | null => {

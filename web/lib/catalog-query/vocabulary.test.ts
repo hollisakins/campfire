@@ -6,7 +6,7 @@ import { legacyNodes, normalizeFilters } from './legacy';
 import { validateNode, type TreeNode } from './tree';
 import {
   appendAt, compileChoice, compileMeasurement, compileProperty, describeItem, findProperty, lineWantsFresh, measurementKeys, nodeAt,
-  propertyDef, readChoiceState, readConditions, removePaths, replaceAt, rerootConditions, setNegated, tidyConditions,
+  propertyDef, readChoiceState, readConditions, removePaths, replaceAt, rerootConditions, setNegated, tableAtPath, tidyConditions,
   type Item, type MeasurementItem, type PropertyItem, type SpectrumItem,
 } from './vocabulary';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
@@ -259,6 +259,22 @@ describe('editing by path', () => {
     const cardWhere = (figure6[5] as { where: TreeNode[] }).where;
     expect(removePaths(figure6, [[1], [5, 2], [6]])).toEqual([figure6[0], figure6[2], figure6[3], figure6[4],
       { exists: 'spectra', where: [cardWhere[0], cardWhere[1], cardWhere[3]] }, figure6[7]]);
+  });
+
+  it('knows the table a node sits in, so a replacement is written against it', () => {
+    // an object's redshift at the spectra root lives inside `exists objects`
+    const z = def('object', 'redshift');
+    const atSpectra = [compileProperty(z, { kind: 'range', min: 3, max: null }, 'spectra')!];
+    const item = readConditions(atSpectra, 'spectra').items[0];
+    expect(item.path).toEqual([0, 0]);
+    expect(tableAtPath(atSpectra, 'spectra', item.path)).toBe('objects');
+    const edited = replaceAt(atSpectra, item.path, compileProperty(z, { kind: 'range', min: 4, max: null }, tableAtPath(atSpectra, 'spectra', item.path)));
+    expect(edited).toEqual([{ exists: 'objects', where: [{ col: 'redshift', op: 'gte', v: 4 }] }]);
+    expect(validateNode(edited[0], 'spectra')).toEqual(edited[0]);
+    // inside a card, and inside an OR arm of a card
+    expect(tableAtPath(figure6, 'objects', [5, 2])).toBe('spectra');
+    expect(tableAtPath([{ exists: 'spectra', where: [{ or: [{ col: 'grating', op: 'eq', v: 'PRISM' }] }] }], 'objects', [0, 0, 0])).toBe('spectra');
+    expect(tableAtPath(figure6, 'objects', [3, 1])).toBe('objects');
   });
 
   it('keeps a one-row card (it is what the user built) and drops empty wrappers and groups', () => {

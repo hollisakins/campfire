@@ -188,6 +188,10 @@ describe('free conditions', () => {
     const twice = normalizeFilters({ ...DEFAULT_FILTERS, conditions: [{ col: 'field', op: 'in', v: ['a'] }, { col: 'field', op: 'in', v: ['b'] }] }, 'objects');
     expect(twice.fields).toEqual(['a']);
     expect(twice.conditions).toEqual([{ col: 'field', op: 'in', v: ['b'] }]);
+    // a boolean false fills its slot: a contradiction stays a contradiction
+    const contra = normalizeFilters({ ...DEFAULT_FILTERS, conditions: [{ col: 'has_photometry', op: 'eq', v: false }, { col: 'has_photometry', op: 'eq', v: true }] }, 'objects');
+    expect(contra.has_photometry).toBe(false);
+    expect(contra.conditions).toEqual([{ col: 'has_photometry', op: 'eq', v: true }]);
   });
 
   it('drops an unreadable q whole', () => {

@@ -15,8 +15,10 @@ import { Popover, isInsidePopover } from '@/components/ui/Popover';
 import { DEFAULT_FILTERS, type FilterOptions } from '@/lib/actions/filter-params';
 import type { ViewMode } from '@/lib/actions/spectra-types';
 import { defaultSortColumn } from '@/lib/actions/spectra-types';
-import { getSpectra } from '@/lib/actions/spectra';
 import type { Program } from '@/lib/types';
+import { useDrTag } from '@/lib/dr/client';
+import { filtersToURLParams } from '@/lib/utils/url-params';
+import type { CatalogQueryCountResponse } from '@/app/api/catalog-query/count/route';
 import { getAvailableLists } from '@/lib/actions/lists';
 import { rootOf } from '@/lib/catalog-query/legacy';
 import { encodeConditions, parseConditions, treeOf, type TreeNode } from '@/lib/catalog-query/tree';
@@ -97,20 +99,21 @@ export function FiltersModal({
     hideKeys: [...(hidePosition ? ['position'] : []), ...(listOptions.length === 0 ? ['tag'] : [])],
   };
 
-  // the count of the draft, debounced
+  // the count of the draft, debounced and aborted by the next edit
+  const dr = useDrTag();
   const [count, setCount] = useState<{ n: number; stale: boolean } | null>(null);
-  const countRequest = useRef(0);
   useEffect(() => {
     if (!isOpen) return;
-    const id = ++countRequest.current;
     setCount((c) => (c ? { ...c, stale: true } : null));
+    const controller = new AbortController();
     const t = setTimeout(() => {
-      getSpectra(draft, 1, 1, defaultSortColumn(viewMode), 'asc', viewMode, { includeCount: true })
-        .then((r) => { if (countRequest.current === id && !r.error && r.total >= 0) setCount({ n: r.total, stale: false }); })
+      const params = filtersToURLParams(draft, 1, 1, defaultSortColumn(viewMode), 'asc', viewMode);
+      fetchJson<CatalogQueryCountResponse>(`/api/catalog-query/count?${params.toString()}`, { signal: controller.signal, dr })
+        .then((r) => { if (r.total >= 0) setCount({ n: r.total, stale: false }); })
         .catch(() => undefined);
     }, 500);
-    return () => clearTimeout(t);
-  }, [isOpen, draft, viewMode]);
+    return () => { clearTimeout(t); controller.abort(); };
+  }, [isOpen, draft, viewMode, dr]);
 
   // the Query menu: copy, paste, SQL
   const [menuOpen, setMenuOpen] = useState(false);

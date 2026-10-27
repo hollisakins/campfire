@@ -19,10 +19,10 @@ import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
 import { CoordinateSearchChip, type CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
 import { Popover, isInsidePopover } from '@/components/ui/Popover';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
-import { describeNode, isExists, type TreeNode, type TreeRoot } from '@/lib/catalog-query/tree';
+import { describeNode, isExists, isOr, type TreeNode, type TreeRoot } from '@/lib/catalog-query/tree';
 import {
-  MEASUREMENTS, appendAt, compileChoice, compileMeasurement, compileProperty, describeItem, propertiesOf, readChoiceState, removePaths,
-  replaceAt, setNegated,
+  MEASUREMENTS, appendAt, compileChoice, compileMeasurement, compileProperty, describeItem, nodeAt, propertiesOf, readChoiceState, removePaths,
+  replaceAt, setNegated, tableAtPath,
   type AdvancedItem, type AnyOfItem, type Item, type MeasurementItem, type MeasurementKind, type Noun, type Path,
   type PropertyDef, type PropertyItem, type PropertyValue, type SpectrumItem, type ValueLabel,
 } from '@/lib/catalog-query/vocabulary';
@@ -55,6 +55,14 @@ export interface CardsContext {
 function addToLevel(nodes: TreeNode[], level: Level, node: TreeNode): TreeNode[] {
   if (level.itsObject && isExists(node) && node.exists === 'spectra') return appendAt(nodes, [], { exists: 'objects', where: [node] });
   return appendAt(nodes, level.path, node);
+}
+
+/** `path` after the node at `removed` (a sibling before it) is gone. */
+function shiftAfter(path: Path, removed: Path): Path {
+  const depth = removed.length - 1;
+  const sameParent = path.length > depth && removed.slice(0, depth).every((i, k) => path[k] === i);
+  if (!sameParent || path[depth] <= removed[depth]) return path;
+  return path.map((i, k) => (k === depth ? i - 1 : i));
 }
 
 function addManyToLevel(nodes: TreeNode[], level: Level, added: TreeNode[]): TreeNode[] {
@@ -147,17 +155,37 @@ export function PropertyChip({ def, items, level, ctx, extraCheckbox, onOpenAdva
   onOpenAdvanced?: () => void;
 }) {
   const first = items[0];
+  // a replacement is written against the table its node already sits in
+  // (an object's property at the spectra root lives inside `exists objects`)
+  const tableOf = (it: PropertyItem) => tableAtPath(ctx.nodes, ctx.root, it.path);
   const commitOne = (value: PropertyValue | null) => {
+    if (first) { ctx.onChange(replaceAt(ctx.nodes, first.path, value ? compileProperty(def, value, tableOf(first)) : null)); return; }
     const node = value ? compileProperty(def, value, level.table) : null;
-    if (first) ctx.onChange(replaceAt(ctx.nodes, first.path, node));
-    else if (node) ctx.onChange(addToLevel(ctx.nodes, level, node));
+    if (node) ctx.onChange(addToLevel(ctx.nodes, level, node));
   };
   if (def.kind === 'choice' || def.kind === 'flags') {
     const state = readChoiceState(items);
     const commitState = (next: { include?: (string | number)[]; exclude?: (string | number)[]; mode?: 'any' | 'all' }) => {
       const merged = { include: next.include ?? state.include, exclude: next.exclude ?? state.exclude, mode: next.mode ?? state.mode };
-      const nodes = compileChoice(def, merged, level.table);
-      ctx.onChange(addManyToLevel(removePaths(ctx.nodes, items.map((it) => it.path)), level, nodes));
+      if (!first) {
+        const nodes = compileChoice(def, merged, level.table);
+        const container = level.path.length ? nodeAt(ctx.nodes, level.path) : null;
+        // inside an "any of" arm several nodes are one arm, never several
+        if (container && isOr(container) && nodes.length > 1) ctx.onChange(appendAt(ctx.nodes, level.path, { and: nodes }));
+        else ctx.onChange(addManyToLevel(ctx.nodes, level, nodes));
+        return;
+      }
+      const nodes = compileChoice(def, merged, tableOf(first));
+      // the first node is replaced in place (the chip keeps its position and
+      // its container), the other old nodes go, the other new nodes follow
+      const inArm = first.path.length > 1 && (() => { const parent = nodeAt(ctx.nodes, first.path.slice(0, -1)); return parent !== undefined && isOr(parent); })();
+      const head: TreeNode | null = nodes.length === 0 ? null : nodes.length === 1 || !inArm ? nodes[0] : { and: nodes };
+      let out = replaceAt(ctx.nodes, first.path, head);
+      const others = items.slice(1).map((it) => it.path);
+      // the first path's node is gone when head is null: later siblings moved up by one
+      if (others.length) out = removePaths(out, head ? others : others.map((p) => shiftAfter(p, first.path)));
+      if (!inArm && nodes.length > 1) out = addManyToLevel(out, level, nodes.slice(1));
+      ctx.onChange(out);
     };
     const scalars = (v: unknown[]) => v.filter((x): x is string | number => typeof x === 'string' || typeof x === 'number');
     return (
@@ -167,7 +195,7 @@ export function PropertyChip({ def, items, level, ctx, extraCheckbox, onOpenAdva
         selected={scalars(state.include)}
         onChange={(sel) => commitState({ include: sel })}
         excluded={scalars(state.exclude)}
-        onExcludedChange={(ex) => commitState({ exclude: ex })}
+        onExcludedChange={(sel, ex) => commitState({ include: sel, exclude: ex })}
         mode={state.mode}
         onModeChange={def.multi || def.kind === 'flags' ? (mode) => commitState({ mode }) : undefined}
         searchable={SEARCHABLE.has(def.choices ?? '')}
