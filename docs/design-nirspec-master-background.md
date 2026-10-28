@@ -186,11 +186,33 @@ What the canonicals **cannot** supply:
 - One frame with all slits of an exposure together, and the correction arrays of a *uniform*-source
   calibration pass (jwst's de-calibration trick, §3.1, needs them).
 
-Either the assembling route adds a small extraction of those slitlets (a stage 2a variant with a
-metafile filtered to background-only slitlets, extended source type, and a product name that the
-layout can tell apart from `<root>_<nod>_<nrsN>_<source>.fits` — the bare-`.fits` bijection fallback
-requires an integer source token, so this needs its own suffix), or the derivation runs the full
-pass. §4.3 weighs them.
+**Decision (2026-10-28): stage 2a is reworked to extract the background-only slitlets too**, kept in
+a form that is trivial to clean up:
+
+- One extra `Spec2Pipeline.call` per rate file, not per slitlet: `MetaFile.filter_background_slitlets()`
+  keeps every slitlet of this `MSAMETID` with no `primary_source == 'Y'` row (jwst will name them
+  `<prog>_BKG<slitlet>`), so one run yields one `MultiSlitModel` with all of them. Steps: `srctype`
+  with `source_type = 'EXTENDED'` (uniform pathloss, surface-brightness photom), `barshadow` **on**
+  (stage 2a's source runs skip it; here it is wanted), `wavecorr` irrelevant for extended slits,
+  `bkg_subtract` / `resample_spec` / `extract_1d` skipped as now. The output is already in MJy/sr with
+  the uniform-source wavelength solution — no §1.7 conversions needed.
+- Optionally the same metafile re-admits the detached shutters `_prune_detached_shutters` dropped from
+  source slitlets, as synthetic slitlets (a fresh `slitlet_id` per contiguous group; jwst only uses the
+  id to group rows). Worth doing: these are the shutters MPT placed as background on purpose.
+- **Storage**: `products/nirspec/<obs>/bkgslits/<root>_<nod>_<nrsN>_bkgslits.fits`. A subdirectory, not
+  a suffix in the workspace root, for three reasons: `Observation.glob` and
+  `deploy.discover_spectrum_exposures` are non-recursive, so nothing that enumerates canonicals,
+  finals or rate files can ever see them; the layout needs one `nirspec_bkgslits` kind with a subdir
+  builder exactly like `nirspec_manual_mask` (`subdir=lambda s: f"nirspec/{s.obs}/manual_masks"`),
+  no change to the bare-`.fits` fallback; and cleanup is `shutil.rmtree(bkgslits/)`. They are
+  regenerable intermediates: `master-bkg` deletes the directory once the `_mbkg.fits` products are
+  written unless `[nirspec.stage2].keep_bkgslits = true`, and the per-shutter facts survive in
+  `MBKG1D` / `SHUTTERS`. They are not deployed (lifecycle `LOCAL_ONLY`, or simply never discovered).
+- Skip logic as for the canonicals: file present and stuck-shutter TOML mtime unchanged → skip.
+
+With that in place the derivation has everything in hand without a full-metafile pass: source slitlets
+from the canonicals (§1.7 conversions) plus background slitlets natively calibrated. §4.3 keeps the
+full pass as the fallback if the two-source bookkeeping proves worse than one pass.
 
 ---
 
@@ -335,7 +357,14 @@ then keeps a pixel only if **all** of:
 - `data > −3 σ_rnoise` (no deeply negative pixels).
 
 `mask_stuck_closed` adds the stuck-shutter mask (fraction of pixels below 2 σ_rnoise, prism threshold
-0.28), `get_global_background` restricts to quadrants 3–4 on NRS1 and 1–2 on NRS2, and
+0.28). `get_global_background` then keeps, when building NRS1's sky, only pixels whose slitlet sits in
+MSA quadrants 3 or 4, and for NRS2 only quadrants 1 or 2 (`np.isin(quad, [3, 4])` / `[1, 2]` on the
+per-pixel quadrant map). That is what "quadrants restricted per detector" means: the MSA's four
+quadrants project so that, for the prism, Q3/Q4 spectra land on NRS1 and Q1/Q2 on NRS2, and the
+restriction drops the stray edge pixels of a slitlet whose spectrum belongs mainly to the other
+detector. In a per-pixel formulation it is redundant — a pixel is on the detector it is on, and the
+`nexp == 1` and edge masks already remove slivers — so CAMPFIRE need not copy it; the quadrant stays
+useful only as a grouping variable for QA (does the sky agree across quadrants?). Finally
 `percentile_bins` takes percentiles 5/16/50/84/95 of the surviving pixels per bin of a standard
 wavelength grid, with `p50` the sky and `(p50 − p16)/√n` its error. There is no iteration and no
 per-shutter decision: contamination is handled by the median over a large pixel population.
@@ -358,6 +387,23 @@ calendar day of the year (366 entries, Jan 1 = 0), the components `zodi_bg`, `no
 ISM), `stray_light_bg`, `thermal_bg` and `total_bg`, in **MJy/sr** ("equivalent in-field radiance").
 Its wavelength grid is 108 points from 0.5 to 31 µm — 0.1 µm steps to 3.5 µm, 0.25–0.3 µm steps from
 3.7 to 5 µm — i.e. R ≈ 10–50 across the NIRSpec range, far below even the prism.
+
+**On spectral structure in the sky** (what is verified and what is not). Shortward of ~3 µm the
+zodiacal light is scattered sunlight, and it reproduces the solar Fraunhofer lines faithfully — CIBER
+measures the zodiacal brightness *from* the Ca II 854.2 nm line depth on that basis, noting early work
+found the equivalent widths matched the solar spectrum to < 2 % (arXiv:2104.07104, read 2026-10-28; the
+same paper notes the ZL *continuum* is reddened relative to the Sun, 1.25 ± 0.1 vs 1.5 between 854 nm
+and 1.25 µm). So the NIRSpec sky at 1–3 µm is a reddened solar spectrum, not a smooth curve, and
+longward of ~3 µm it is dominated by smooth thermal dust emission. **How deep the solar lines are at
+grating resolution is not something I could verify**: the strongest solar features in 1–2.5 µm are the
+hydrogen Paschen/Brackett lines (Paβ 1.282, Paγ 1.094, Brγ 2.166 µm) and the CO band heads near 2.3 µm,
+and a line of equivalent width ~1 Å would be a ~7 % dip in a 13 Å (R ≈ 1000) resolution element at
+1.28 µm and ~1 % at prism resolution — but I did not find a quiet-Sun Paβ equivalent width to put in
+that estimate, so treat the magnitude as unverified. It is cheap to settle empirically: stack the
+empty-shutter G140M spectra of one observation and look at 1.282 µm. For the design the consequence
+is small either way: the data-driven reference contains whatever lines the sky has, so per-shutter
+clipping is unaffected; only the comparison against the smooth JBT model has to be done at R ≈ 20, and
+a model-seeded pass 0 must not reject shutters on the solar lines (hence the coarse-binned scale fit).
 
 So JBT gives a **date- and pointing-specific absolute level and broad shape** of the sky, which is
 exactly what the plausibility check in §4.2 needs (`DATE-OBS` → day of year; `MBKGSCL` = data / model),
@@ -384,11 +430,12 @@ different natural grains:
   best available check on detector-dependent systematics; and the nods are minutes apart under the
   same MSA mask, so pooling them triples the clean-pixel statistics. The clean set is still decided
   **per exposure** (the source occupies a different shutter in each nod), the stage 1 residuals
-  (picture frame, 1/f, pedestal) differ per exposure, and the detectors have independent flats — so
-  fit, per exposure × detector, a scale (and an additive offset) against the pooled B(λ) and report
-  them (`MBKGSCL`, `MBKGOFF`); a scale far from 1 is itself a finding. Whether the pooled or the
-  per-exposure B(λ) is *subtracted* can be a config choice; start with pooled-with-per-exposure-offset
-  and let the phase-3 residual measurement decide.
+  (picture frame, 1/f, pedestal) differ per exposure, and the detectors have independent flats — so a
+  per-exposure × detector scale and additive offset against the pooled B(λ) *may* be needed.
+  Decision (2026-10-28): **not committed** — the prototype (P0) measures, for each exposure × detector,
+  the ratio and offset of its own clean-shutter sky to the pooled one; if they scatter at the level of
+  the pooled sky's own error there is nothing to fit and the product just records the diagnostic
+  (`MBKGSCL`, `MBKGOFF`); if they do not, the fit comes in then.
 - *The 2-D product* `MBKG2D` is per **rate file** (exposure × detector): it is a picture of that
   detector, built on that exposure's slit geometry, and it is what stage 2b cuts out for a canonical.
 
@@ -439,13 +486,19 @@ Per rate file, in a worker (parallel over rate files like stage 1 / 2a):
 4. **Clean-shutter selection, iterated (2–3 passes).**
    - Pass 0 reference (`master_bkg_seed`, two choices, both legitimate):
      `median` — the per-bin median across all non-`source` shutter pixels (msaexp's `p50`, §3.2),
-     after msaexp's geometric cut (in a slitlet of more than two shutters, drop pixels within
-     `min_yslit` of the source's trace); unbiased as long as fewer than half the pixels at a
+     after the geometric cut, generalised from msaexp's and applied **per pixel**: drop every pixel
+     within `source_pad` (default 5 px ≈ 0.5″, one shutter) in slit-frame y of the predicted trace of
+     *any* catalog source in the metafile that falls in that slitlet — the slitlet's own source at
+     this nod, and any second catalog source sharing the slitlet — regardless of the slitlet's
+     shutter count (msaexp exempts one- and two-shutter slitlets; CAMPFIRE should not, since a
+     one-shutter slitlet with a source in it has no empty pixels to offer). Sources *not* in the
+     metafile are what the iteration is for; unbiased as long as fewer than half the pixels at a
      wavelength are contaminated, which holds for every realistic MSA. `model` — the
      `jwst_backgrounds` total for the pointing and `DATE-OBS` (§3.3), with **one global scale fitted
      to the data** (its absolute level is not trustworthy to the few per cent that matter, see §3.3),
-     compared at the model's own resolution (bin both to R ≈ 20 for the scale fit, because the real
-     sky has solar Fraunhofer structure at grating resolution that the model lacks). The model seed
+     compared at the model's own resolution (bin both to R ≈ 20 for the scale fit; the model is a
+     smooth continuum, and the real sky shortward of ~3 µm is scattered sunlight, which carries the
+     solar Fraunhofer lines — see the note in §3.3 on how much that matters). The model seed
      has the merit of being independent of whether the "empty" shutters are empty; the median seed
      has the merit of the right spectral shape. In practice the iteration converges to the same clean
      set from either start when both are within ~20 % of the truth, which is why the choice is a
@@ -514,18 +567,18 @@ observation. Memory: a `MultiSlitModel` of a few hundred small cutouts is fine. 
 already exists for the multiprocessing race.
 
 **Assemble from the canonicals, or run a full pass?** §1.7 shows the canonicals already hold the
-source slitlets in a form two array ratios away from surface brightness, so the derivation could skip
-the full-metafile pass: load the exposure's canonicals, apply `pathloss_point / pathloss_uniform`,
+source slitlets in a form two array ratios away from surface brightness, and the stage 2a rework
+decided in §1.7 adds the background-only slitlets, so the derivation can skip the full-metafile pass: load the exposure's canonicals, apply `pathloss_point / pathloss_uniform`,
 `1 / PIXAR_SR` and a `BarShadowStep(source_type='EXTENDED')` evaluation, read uniform-source
 wavelengths from the `slit_frame` transform, paint the bounding boxes onto a coverage counter, and
 run §4.2 steps 2–4. Cost: a few seconds per canonical, no `assign_wcs`/`extract_2d`. What it loses:
-the dedicated background slitlets and the pruned detached shutters (§1.7), which then need a small
-extraction of their own, and the uniform-pass correction arrays for step 5 (the de-calibration can
-instead use the pixelwise factor of §4.4). The full pass is one code path, jwst- and msaexp-shaped,
+only the uniform-pass correction arrays for step 5 (the de-calibration can instead use the pixelwise
+factor of §4.4, or the stored `pathloss_*` arrays, the barshadow evaluation and `PIXAR_SR` in reverse). The full pass is one code path, jwst- and msaexp-shaped,
 and sees every open shutter; the assembling route is cheaper and can be prototyped today. A sensible
 order: **prototype the selection on existing canonicals** (that answers the science question with no
-pipeline change), then implement the production stage as the full pass if the background slitlets
-turn out to matter, or as the assembling route plus a background-slitlet extraction if they do not.
+pipeline change), then implement the production stage as the assembling route over canonicals plus
+the `bkgslits/` products, falling back to the full pass only if the two-source bookkeeping proves
+worse than one pass.
 
 An alternative placement — folding the clean-shutter analysis into stage 2a's existing
 `Spec2Pipeline.call` by passing the full metafile — was rejected: stage 2a's per-source metafile is
@@ -643,8 +696,8 @@ measurement on the archive.
 
 ## 6. Decisions to make
 
-0. **Grain of the 1-D sky**: pooled over the exposure group (both detectors, all nods) with
-   per-exposure scale/offset (recommended, §4.1) versus strictly per rate file.
+0. **Grain of the 1-D sky**: pooled over the exposure group (both detectors, all nods), recommended
+   (§4.1); whether a per-exposure scale/offset is needed is a P0 measurement, not a decision.
 1. **Granularity of `MBKG2D`**: full-frame image (renderable, 16 MB raw, compresses to a few MB) vs.
    per-slit `MultiSlitModel` (smaller, jwst-shaped). Recommendation: full frame; it is the only form
    that composes with any later per-source geometry and with the rate-exposure web view.
@@ -657,8 +710,9 @@ measurement on the archive.
 5. **Auto-proposed overrides**: write `["master"]` entries with an `auto` tag (recommended, vettable)
    versus only reporting in the QA PDF.
 6. **Whether phase 3 is wanted at all** before phase 2 has produced numbers.
-7. **Derivation route**: full-metafile pass versus assembling from canonicals plus a background-slitlet
-   extraction (§4.3); prototype first either way.
+7. **Derivation route**: decided — assemble from canonicals plus the stage 2a `bkgslits/` extraction
+   (§1.7, §4.3); the full pass stays as the fallback. Open: whether to re-admit pruned detached
+   shutters as synthetic slitlets, and the `source_pad` default.
 
 ## 7. Phased plan
 
@@ -676,7 +730,8 @@ measurement on the archive.
 
 ## 8. Files this would touch
 
-- `pipeline/campfire_pipeline/nirspec/master_bkg.py` (new), `stage2.py` (call site, stage 2b branch),
+- `pipeline/campfire_pipeline/nirspec/master_bkg.py` (new), `stage2.py` (background-slitlet run in
+  2a, `master-bkg` call site, stage 2b branch), `metafile.py` (`filter_background_slitlets`),
   `canonical.py` (`BKGMETH` card, later `MBSUB_*`), `observation.py` (override grammar),
   `cli.py` (`master-bkg` command), `plots.py` (QA), `data/config_default.toml`, `pipeline/CHANGELOG.md`
 - `layout/campfire_layout/products.py`, `bijection.py`, `conformance/layout_golden.json`,
