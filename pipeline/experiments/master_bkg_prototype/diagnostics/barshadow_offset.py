@@ -97,7 +97,8 @@ def flatness(ratio, f, lo=-0.5, hi=0.5, nb=20):
 
 def main():
     import os
-    paths = sorted(p for p in glob.glob(WS + f'/{ARGS.root}_*_nrs?_*.fits') if not p.endswith('_rate.fits'))
+    import re as _re
+    paths = sorted(p for p in glob.glob(WS + f'/{ARGS.root}_*_nrs?_*.fits') if _re.search(r'_nrs[12]_\d+\.fits$', p))
     infos = [P._read_info(p) for p in paths]
     sids = sorted(set(i.source_id for i in infos))[:ARGS.max_sources]
     infos = [i for i in infos if i.source_id in sids]
