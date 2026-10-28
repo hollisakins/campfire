@@ -211,6 +211,29 @@ Two ways to get there; the second is the one to build:
   to *fixed overhead + N_source slits* per rate file — a large speed-up in its own right, with the
   background slitlets as a by-product.
 
+  *Why the two slit types are calibrated differently, and why that is right.* The bar-shadow
+  correction models how the MSA bars dim a shutter that is **uniformly illuminated**: the PSF-blurred
+  shadow of the bars lowers the surface brightness as a function of position across the shutter and
+  of wavelength, and dividing by the reference restores the true sky surface brightness. A **point
+  source** is not uniform across the shutter; what the bars (and the shutter edges) take from it is
+  the fraction of its PSF that misses the aperture, which is the point-source *pathloss* correction.
+  Applying bar shadow to a point source would double-count the loss, so jwst applies bar shadow only
+  to `EXTENDED` slits and point pathloss only to `POINT` slits. The sky is extended **everywhere**,
+  including inside the source's own shutter, so every sky pixel — in a background slitlet or in an
+  empty shutter of a source slitlet — needs the uniform treatment to read as true surface
+  brightness, and that is what §1.7's conversions and the `bkgslits/` calibration both produce. The
+  consistency requirement is not "calibrate both slit types the same way"; it is "subtract the sky in
+  a frame where source and sky carry the same per-pixel factor". In the rate frame that holds
+  trivially (DN/s = source counts + sky counts), which is why `MBKG2D` is a rate-frame image and why
+  jwst's own step de-calibrates the master background with *uniform* arrays and subtracts before the
+  science slit's own (point) calibration continues. Stage 2b's §4.4 shortcut is the same statement:
+  `cal(mbkg) = F_point · mbkg_rate` and `science_cal = F_point · (source + sky)_rate`, so the difference
+  is `F_point · source_rate`. The nods work for the same reason — the other nods' cutouts carry the
+  same per-pixel `F_point` on the same pixels. Residual risk is the bar-shadow reference's own
+  accuracy (a few per cent next to the bars), mitigated by excluding bar-adjacent rows when
+  *measuring* the sky (msaexp's `bar > 0.35` cut; §4.2 step 2) — the *expansion* in step 5 still
+  fills those rows, because the sky under the source really is dimmed there.
+
   Constraints the split has to respect, each already visible in today's code:
   - jwst raises `MSAFileError` for a slitlet with more than one `primary_source == 'Y'` row
     (`assign_wcs/nirspec.py`, "more than 1 shutter with primary source"), so the duplicate-source rule
