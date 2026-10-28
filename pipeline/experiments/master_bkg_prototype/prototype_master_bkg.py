@@ -38,7 +38,7 @@ calibrated arrays are taken from its ``PRE_BKGSUB_*`` revert HDUs.
 
 Shutter geometry comes from the same transform: ``slit_frame`` y is 0 at the centre of the
 source ('x') shutter, a shutter's open area spans |y| <= 0.5 and the shutter pitch is
-1 / SLIT_YSCALE ~ 1.15, so ``k = rint(y / pitch)`` is the shutter index relative to the source and
+SLIT_YSCALE ~ 1.15 (bars at |y| = 0.575), so ``k = rint(y / pitch)`` is the shutter index relative to the source and
 ``f = y - k * pitch`` the position inside it (|f| > 0.5 is the bar).
 """
 from __future__ import annotations
@@ -166,13 +166,16 @@ def _barshadow_array(model, slit):
         return None
 
 
-def _other_source_columns(workspace, info, slitlet_id, msametid):
+def _other_source_columns(workspace, info, slitlet_id, msametid, dither_point):
     """Shutter columns of every catalog source in this slitlet, from the original metafile.
+
+    The SHUTTER_INFO table repeats the slitlet once per nod (``dither_point_index``), with the
+    source in a different shutter each time, so the rows must be restricted to this exposure's
+    dither point or the other nods' positions masquerade as other sources.
 
     Returns ``(own_column, [other columns])`` or ``(None, [])`` if the metafile is not at hand.
     """
     from astropy.io import fits
-    from campfire_pipeline.nirspec.metafile import _source_rows
     rate = os.path.join(workspace, f"{info.rate_key}_rate.fits")
     if not os.path.exists(rate):
         return None, []
@@ -182,8 +185,14 @@ def _other_source_columns(workspace, info, slitlet_id, msametid):
         with fits.open(metafile, memmap=False) as mf:
             from astropy.table import Table
             shut = Table(mf[2].data)
-        rows = shut[(shut['msa_metadata_id'] == msametid) & (shut['slitlet_id'] == slitlet_id)]
-        src = rows[_source_rows(rows)]
+        sel = (shut['msa_metadata_id'] == msametid) & (shut['slitlet_id'] == slitlet_id)
+        if 'dither_point_index' in shut.colnames and dither_point is not None:
+            sel &= shut['dither_point_index'] == dither_point
+        rows = shut[sel]
+        # A source sits in the shutter whose row says primary_source == 'Y' (what jwst's assign_wcs
+        # keys on). The slitlet's background rows can carry the same source_id, so a source_id test
+        # would mark every shutter as a source.
+        src = rows[(rows['primary_source'] == 'Y') & (rows['source_id'] > 0)]
         own = src['shutter_column'][src['source_id'] == info.source_id]
         own_col = int(own[0]) if len(own) else None
         others = sorted({int(c) for c in src['shutter_column'] if own_col is None or int(c) != own_col})
@@ -214,6 +223,8 @@ def _read_samples(args):
             if name in hdul:
                 var += np.array(hdul[name].data, dtype=float)
         msametid = int(hdul[0].header.get('MSAMETID', -1))
+        dither_point = hdul[0].header.get('PATT_NUM')
+        sci_hdr = hdul['SCI'].header
 
     model = MultiSlitModel(info.path)
     slit = model.slits[0]
@@ -223,14 +234,21 @@ def _read_samples(args):
         return info.name, [], {'no_pixar_sr': 1}
 
     # --- conversions (design §1.7) -------------------------------------------------------------
+    # Both calibrations end in MJy per pixel: POINT natively, UNIFORM after fix_units divided the
+    # MJy/sr data by PHOTMJSR (= 1 / PIXAR_SR for NIRSpec, whose photom PHOTMJ is 1). A UNIFORM
+    # canonical already carries the uniform pathloss, so only the POINT one needs the ratio.
     factor = np.full(sci.shape, 1.0 / pix_sr)
-    pl_point = np.asarray(slit.pathloss_point, dtype=float) if slit.pathloss_point is not None else np.zeros(0)
-    pl_unif = np.asarray(slit.pathloss_uniform, dtype=float) if slit.pathloss_uniform is not None else np.zeros(0)
-    if pl_point.shape == sci.shape and pl_unif.shape == sci.shape:
-        with np.errstate(divide='ignore', invalid='ignore'):
-            factor *= pl_point / pl_unif
+    pthloss = str(sci_hdr.get('PTHLOSS', 'POINT')).upper()
+    if pthloss == 'POINT':
+        pl_point = np.asarray(slit.pathloss_point, dtype=float) if slit.pathloss_point is not None else np.zeros(0)
+        pl_unif = np.asarray(slit.pathloss_uniform, dtype=float) if slit.pathloss_uniform is not None else np.zeros(0)
+        if pl_point.shape == sci.shape and pl_unif.shape == sci.shape:
+            with np.errstate(divide='ignore', invalid='ignore'):
+                factor *= pl_point / pl_unif
+        else:
+            stats['no_pathloss_arrays'] += 1
     else:
-        stats['no_pathloss_arrays'] += 1
+        stats['uniform_calibrated'] += 1
     bar = None
     if opt['barshadow']:
         bar = _barshadow_array(model, slit)
@@ -244,8 +262,11 @@ def _read_samples(args):
     if lam.shape != sci.shape:
         model.close()
         return info.name, [], {'wcs_shape_mismatch': 1}
+    # SLTYSCL is the shutter pitch in slit_frame units (~1.15: measured 1.143 on real
+    # canonicals, where the bar-shadow dips sit at +-0.575 and +-1.725). jwst's own fallback
+    # constant is the inverse (0.87), so accept either convention.
     yscale = slit.slit_yscale or SLITRATIO
-    pitch = 1.0 / yscale
+    pitch = yscale if yscale > 1 else 1.0 / yscale
     k = np.rint(ys / pitch)
     f = ys - k * pitch
     shutter_state = str(slit.shutter_state or '')
@@ -284,7 +305,7 @@ def _read_samples(args):
                 closed |= (k == kk)
         stats['closed_shutter'] += int((good & closed).sum()); good &= ~closed
     # source cut: every catalog source in the slitlet, +- pad from its trace
-    own_col, other_cols = _other_source_columns(workspace, info, slitlet_id, msametid)
+    own_col, other_cols = _other_source_columns(workspace, info, slitlet_id, msametid, dither_point)
     source_ks = [0]
     if own_col is not None:
         source_ks += [c - own_col for c in other_cols]
@@ -543,9 +564,8 @@ def main():
     # ---- pass 1: headers, coverage counters, grid --------------------------------------------
     infos = [_read_info(p) for p in files['path']]
     n_nosrc = sum(not i.srcflux for i in infos)
-    infos = [i for i in infos if i.srcflux]
     if n_nosrc:
-        print(f'skipped {n_nosrc} canonicals with SRCFLUX=F (fix_units rescaled them)')
+        print(f'{n_nosrc} canonicals carry SRCFLUX=F (UNIFORM-calibrated); kept, their empty shutters are sky too')
     coverage = defaultdict(lambda: np.zeros((2048, 2048), np.int16))
     for i in infos:
         if i.has_box:
