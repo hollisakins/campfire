@@ -510,8 +510,10 @@ def main():
     ap.add_argument('--source-pad-px', type=float, default=5.0,
                     help='pixels either side of every catalog source trace to drop (msaexp: 5)')
     ap.add_argument('--bar-min', type=float, default=0.5, help='drop pixels with barshadow below this')
-    ap.add_argument('--open-frac', type=float, default=0.4,
-                    help='keep pixels within this slit-frame distance of a shutter centre (open area = 0.5)')
+    ap.add_argument('--open-frac', type=float, default=0.2,
+                    help='keep pixels within this slit-frame distance of a shutter centre (open area = 0.5). '
+                         'The bar-shadow reference is misregistered with the data by a fraction of a row, so '
+                         'only the core |f| <= 0.2, where it is 1.0 and the data are flat, is trustworthy')
     ap.add_argument('--bin-pixels', type=float, default=2.0, help='detector pixels per wavelength bin')
     ap.add_argument('--min-pixels', type=int, default=20, help='pixels a shutter needs to count')
     ap.add_argument('--min-bins', type=int, default=10)
