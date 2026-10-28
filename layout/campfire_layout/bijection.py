@@ -144,6 +144,8 @@ def parse_relpath(relpath: str) -> ParsedKey:
         obs = seg[2]
         if len(seg) == 5 and seg[3] == "manual_masks":
             return ParsedKey("nirspec_manual_mask", Scope(obs=obs), seg[4])
+        if len(seg) == 5 and seg[3] == "bkgslits" and seg[4].endswith("_bkgslits.fits"):
+            return ParsedKey("nirspec_bkgslits", Scope(obs=obs), seg[4])
         if len(seg) == 4:
             fname = seg[3]
             return ParsedKey(_nirspec_obs_product(fname), Scope(obs=obs), fname)

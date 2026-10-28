@@ -29,6 +29,31 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+
+- **Stage 2a runs one `Spec2Pipeline` call per rate file instead of one per
+  source.** The per-source metafile edits (`MetaFile.rows_for_source`) are applied
+  to every source at once in one edited full metafile (`MetaFile.for_sources`), the
+  call runs once, and the multi-slit result is split into the same one-slit
+  canonicals (`stage2._split_spec2_result`). `Spec2Pipeline` is per slit from
+  `assign_wcs` onwards, so the per-slit arrays are unchanged (checked array-for-array
+  against the per-source loop on `ember_cosmos_p1`); only the `MSAMETFL` card now
+  names the observation's real metafile rather than a transient per-source copy.
+  A slit is routed to its source by slitlet, so a nod whose source shutter was
+  removed as stuck closed (jwst then extracts the slitlet under its background
+  name, with the uniform pathloss) stays that source's nod product with
+  `SRCFLUX = 'F'`, exactly as the per-source loop kept it.
+  Sources sharing a slitlet are extracted in successive rounds, fixed-slit sources
+  get their own round under the extended-wavelength override, and any failure of
+  the single call falls back to the per-source loop for the sources it did not
+  produce (`[nirspec.stage2].single_call = false` selects that loop outright).
+  The same call also extracts the MSA plan's background-only slitlets into
+  `products/nirspec/<obs>/bkgslits/<root>_<nrsN>_bkgslits.fits` (new layout kind
+  `nirspec_bkgslits`, a regenerable local intermediate: uniform pathloss, MJy/sr,
+  bar shadow applied as a separate step), the input of the master-background work
+  (`docs/design-nirspec-master-background.md`); `extract_bkgslits = false` turns
+  that off.
+
+### Infrastructure
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.

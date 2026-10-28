@@ -162,7 +162,7 @@ def _prefetch_crds_references(rate_files):
         'fflat', 'dflat', 'sflat',
         'camera', 'collimator', 'disperser', 'distortion',
         'fore', 'fpa', 'msa', 'ote',
-        'pathloss', 'photom',
+        'pathloss', 'photom', 'barshadow',
         'specwcs', 'wavecorr', 'wavelengthrange',
     ]
 
@@ -250,6 +250,8 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
         overwrite=overwrite,
         wavecorr_override=wavecorr_override,
         extended_refs=extended_refs,
+        single_call=stage_config.get('single_call', True),
+        extract_bkgslits=stage_config.get('extract_bkgslits', True),
     )
 
     if not obs.directories_setup:
@@ -612,6 +614,488 @@ def _run_stage2a_fixedslit(
     return source_ids_processed
 
 
+# --- Stage 2a, MSA branch: one Spec2Pipeline call per rate file ----------------
+#
+# ``Spec2Pipeline`` is per slit from assign_wcs onwards (extract_2d, srctype,
+# wavecorr, flat_field, pathloss and photom each loop over ``model.slits``; only
+# msa_flagging is exposure-wide, and it is the same in both arrangements), so one
+# call over an *edited full metafile* — every per-source edit ``filter_by_source_id``
+# makes, applied to all sources at once (``MetaFile.for_sources``) — yields the same
+# per-slit arrays as one call per source, for a single CRDS / reference-file / WCS
+# set-up instead of one per source. The result is split into the same one-slit
+# canonicals ``<root>_<nod>_<nrsN>_<source>.fits`` (built the way jwst's own
+# ``_extend_bg_slits`` builds a sub-model), and the dedicated background-only
+# slitlets of the MSA plan, which no per-source metafile ever contained, come out
+# of the same call as ``bkgslits/<root>_<nod>_<nrsN>_bkgslits.fits``, calibrated
+# as the extended sources they are (uniform pathloss, MJy/sr, bar shadow applied
+# as a separate step so the science slits are untouched) — the input of the
+# master-background work (docs/design-nirspec-master-background.md §1.7).
+#
+# What the split respects:
+#   * jwst refuses a slitlet with two ``primary_source = 'Y'`` rows, so sources
+#     sharing a slitlet are extracted in successive *rounds* (``_plan_rounds``);
+#     positional duplicates are already dropped by ``MetaFile._duplicate_source_ids``,
+#     so a second round is rare.
+#   * Output slits are routed to their source by slitlet (``_source_of_slit``), not
+#     by ``source_id``: at a nod where the source's shutter was removed as stuck
+#     closed, jwst extracts the primary-less slitlet under the background name
+#     (``source_id = slitlet_id``, uniform pathloss), and the per-source loop kept
+#     that as the source's nod product (``fix_units`` marks it ``SRCFLUX = 'F'``).
+#     Only slitlets of no source in the round are background slitlets.
+#   * The extended-wavelength photom override differs for fixed-slit sources inside
+#     MSA exposures, so with ``extend_g140m_g235m`` on they get their own round.
+#   * A source absent from the output (its slitlet projects off the detector) is
+#     the per-source ``NoDataOnDetectorError`` case → the ``_nodata`` marker.
+#   * Any other failure of the single call falls back to the per-source loop
+#     (``_run_spec2_per_source``, the pre-rework code path kept verbatim) for the
+#     sources the call did not produce, so a pathological slitlet costs time, not
+#     the rate file. ``[nirspec.stage2].single_call = false`` selects that loop
+#     outright (the bit-identity reference).
+
+_ROUND_METAFILE = '{base}_msa_r{index}.fits'
+_ROUND_PRODUCT = '{base}_spec2r{index}'
+
+
+def _rate_base(rate_file):
+    """``<root>_<nod>_<nrsN>`` — the stem every stage-2a product name starts with."""
+    return os.path.basename(rate_file).replace('_rate.fits', '')
+
+
+def _nodata_marker(prod_name):
+    return f'{prod_name}_nodata'
+
+
+def _write_nodata_marker(prod_name):
+    with open(_nodata_marker(prod_name), 'w') as f:
+        f.write('NoDataOnDetectorError\n')
+
+
+def _point_rate_at_metafile(rate_file, metafile_name):
+    with fits.open(rate_file, mode='update') as hdul:
+        hdul[0].header['MSAMETFL'] = metafile_name
+        hdul.flush()
+
+
+def _write_asn(rate_file, prod_name):
+    """One-member science association for *rate_file* under *prod_name* (cwd)."""
+    from jwst.associations import asn_from_list
+    association = [(os.path.basename(rate_file), 'science')]
+    asn = asn_from_list.asn_from_list(association, with_exptype=True, product_name=prod_name)
+    _suggested_name, serialization = asn.dump()
+    asn_file = f'{prod_name}.json'
+    with open(asn_file, 'w') as asn_out:
+        asn_out.write(serialization)
+    return asn_file
+
+
+def _stuck_ordinals(obs, root, source_id):
+    """The vetted stuck-closed shutter ordinals (1-indexed position among the
+    slitlet's sorted columns) for ``(root, source_id)``, or ``None`` when the
+    TOML has no entry. The raw TOML value is returned so the ``STKSHTRS`` card
+    reads exactly as it always has."""
+    table = obs.stuck_closed_shutters
+    stuck = table[(table['root'] == root) & (table['source_id'] == source_id)]
+    if len(stuck) == 0:
+        return None
+    return stuck['shutters'][0]
+
+
+def _remove_stuck_columns(rows, ordinals):
+    """Drop the shutter columns at the 1-indexed *ordinals* from a source's
+    edited SHUTTER_INFO rows (adapted from Anthony & Pablo's routines)."""
+    if ordinals is None or len(ordinals) == 0:
+        return rows
+    cols = np.sort(np.unique(rows['shutter_column']))
+    drop = []
+    for k in ordinals:
+        k = int(k)
+        if not 1 <= k <= len(cols):
+            raise IndexError(f'stuck shutter ordinal {k} is out of range for a '
+                             f'{len(cols)}-shutter slitlet')
+        drop.append(cols[k - 1])
+    return rows[~np.isin(rows['shutter_column'], drop)]
+
+
+def _source_cards(obs, main_metafile, source_id, stuck, extended_override):
+    """The provenance cards stage 2a stamps on one source's canonical."""
+    cards = [
+        ('STKSHFIL', os.path.basename(obs.stuck_closed_shutters_file), 'Stuck shutter file name'),
+        ('STKSHTIM', obs.stuck_closed_shutters_mtime, 'Stuck shutter file mtime'),
+        ('CFEXTWAV', extended_override is not None, 'Extended wavelength reduction applied'),
+    ]
+    # Fixed-slit sources need a different extended-wavelength photom reference
+    # than MSA sources. Detect it from the metafile and thread the status through
+    # to the product metadata so downstream stages can branch on it.
+    source_is_fixed_slit = main_metafile.is_fixed_slit(source_id)
+    cards.append(('CFFXSLT', source_is_fixed_slit, 'NIRSpec fixed-slit source'))
+    if source_is_fixed_slit:
+        cards.append(('CFFSSLIT', main_metafile.fixed_slit_name(source_id),
+                      'NIRSpec fixed-slit aperture'))
+    if stuck is not None and len(stuck) > 0:
+        cards.append(('STKSHTRS', str(stuck), 'Stuck shutters masked'))
+    else:
+        cards.append(('STKSHTRS', 'N/A', 'Stuck shutters masked'))
+    return cards
+
+
+def _spec2_steps(wavecorr_override, extended_override, fixed_slit_photom, log_name):
+    """The ``Spec2Pipeline`` step overrides stage 2a runs with."""
+    steps = {
+        'extract_1d': {'skip': True},
+        'barshadow': {'skip': True},
+        'bkg_subtract': {'skip': True},
+        'resample_spec': {'skip': True},
+    }
+
+    if wavecorr_override:
+        steps['wavecorr'] = {'override_wavecorr': wavecorr_override}
+
+    if extended_override:
+        # Fixed-slit sources require a separately-calibrated extended photom
+        # (v0014) than the MSA one resolved in extended_override (v0015); the
+        # flats / wavelengthrange overrides are identical.
+        if fixed_slit_photom:
+            from campfire_pipeline.config import get_extended_photom_path
+            photom_override = get_extended_photom_path(fixed_slit=True)
+            log(f"Using fixed-slit extended photom for {log_name}")
+        else:
+            photom_override = extended_override['photom']
+
+        steps['flat_field'] = {
+            'override_fflat': extended_override['fflat'],
+            'override_sflat': extended_override['sflat'],
+        }
+        steps['assign_wcs'] = {
+            'override_wavelengthrange': extended_override['wavelengthrange'],
+        }
+        steps['photom'] = {
+            'override_photom': photom_override,
+        }
+        log(f"Applying extended-wavelength overrides for {log_name}")
+    return steps
+
+
+def _plan_rounds(main_metafile, source_ids, split_fixed_slit=False):
+    """Group *source_ids* into the fewest ``Spec2Pipeline`` calls.
+
+    Two sources sharing a slitlet cannot be primary in the same metafile, so a
+    source joins the first round none of whose slitlets it touches. With
+    ``split_fixed_slit`` (the extended-wavelength override is active) fixed-slit
+    sources are kept in rounds of their own, since their photom override differs.
+    Returns a list of ``{'source_ids': [...], 'slitlets': set, 'fixed_slit': bool}``
+    in first-come order; normally a single round.
+    """
+    rounds = []
+    for sid in source_ids:
+        slits = set(main_metafile.slitlets_of(sid))
+        fixed = bool(split_fixed_slit and main_metafile.is_fixed_slit(sid))
+        for rnd in rounds:
+            if rnd['fixed_slit'] == fixed and not (rnd['slitlets'] & slits):
+                rnd['source_ids'].append(sid)
+                rnd['slitlets'] |= slits
+                break
+        else:
+            rounds.append({'source_ids': [sid], 'slitlets': set(slits), 'fixed_slit': fixed})
+    return rounds
+
+
+def _source_of_slit(slit, source_of_slitlet):
+    """The source (of this round) a ``Spec2Pipeline`` output slit belongs to, or
+    ``None`` for a background-only slitlet.
+
+    A MOS slit is matched by its slitlet (``slit.name``), not by ``source_id``:
+    when the shutter holding the source at this nod was removed as stuck closed,
+    the slitlet has no primary shutter left and jwst extracts it under the
+    background name (``<program>_BKG<slitlet>``, ``source_id = slitlet_id``). The
+    per-source call kept that as the source's nod product, so the split does
+    too. Fixed-slit names are not integers; those, and any slit of a slitlet
+    not in this round, go by ``source_id`` unless jwst named them background.
+    """
+    from jwst.master_background.nirspec_utils import is_background_msa_slit
+
+    try:
+        slitlet = int(slit.name)
+    except (TypeError, ValueError):
+        slitlet = None
+    if slitlet is not None and slitlet in source_of_slitlet:
+        return source_of_slitlet[slitlet]
+    if is_background_msa_slit(slit):
+        return None
+    return int(slit.source_id)
+
+
+def _split_spec2_result(cal_path, base, source_ids, cards_by_source, bkgslits_path, msametfl,
+                        slitlets_by_source):
+    """Split one multi-slit ``Spec2Pipeline`` product into the per-source
+    canonicals (``_finalize_canonical``) and the background-slitlet file.
+
+    ``slitlets_by_source`` maps each source id of this round to the slitlet ids
+    of its edited rows; a slit is the product of the source whose slitlet it is
+    (``_source_of_slit``). Returns ``(produced, missing)``: the source ids that
+    got a canonical and the ones absent from the output (their slitlet projects
+    off this detector).
+    """
+    from jwst.datamodels import MultiSlitModel
+
+    source_of_slitlet = {int(slitlet): sid
+                         for sid, slitlets in slitlets_by_source.items()
+                         for slitlet in slitlets}
+    produced, missing = [], []
+    model = MultiSlitModel(cal_path)
+    try:
+        by_source, bkg_slits = {}, []
+        for slit in model.slits:
+            sid = _source_of_slit(slit, source_of_slitlet)
+            if sid is None:
+                bkg_slits.append(slit)
+            else:
+                by_source.setdefault(sid, []).append(slit)
+
+        for sid in source_ids:
+            slits = by_source.get(sid)
+            if not slits:
+                missing.append(sid)
+                continue
+            prod_name = f'{base}_{sid}'
+            one = MultiSlitModel()
+            one.update(model, extra_fits=True)
+            one.slits.extend(slits)
+            # The per-source call let jwst's master_background_mos run and
+            # record itself SKIPPED (no background slit); here it is skipped
+            # outright, so stamp the same state (stage 3 copies S_MSBSUB).
+            one.meta.cal_step.master_background = 'SKIPPED'
+            one.save(f'{prod_name}_cal.fits')
+            one.close()
+            _finalize_canonical(prod_name, cards_by_source[sid], msametfl=msametfl)
+            produced.append(sid)
+
+        unexpected = sorted(set(by_source) - set(source_ids))
+        if unexpected:
+            log(f'{base}: ignoring {len(unexpected)} slit(s) of sources not in this '
+                f'round: {unexpected}')
+
+        if bkgslits_path is not None:
+            _write_bkgslits(model, bkg_slits, bkgslits_path, msametfl)
+    finally:
+        model.close()
+    return produced, missing
+
+
+def _write_bkgslits(parent, bkg_slits, path, msametfl):
+    """Write the background-only slitlets of one exposure as a
+    ``MultiSlitModel`` (``bkgslits/<root>_<nod>_<nrsN>_bkgslits.fits``).
+
+    jwst typed them ``EXTENDED`` (``stellarity = 0``), so they already carry the
+    uniform pathloss and the MJy/sr photom; the bar-shadow correction — skipped in
+    the main call so the ``POINT`` science slits stay exactly as before — is
+    applied here as its own step (``slit.barshadow`` keeps the array, so it can be
+    undone). An exposure with no background slitlet still gets a (slit-less)
+    file, which is what makes the skip logic treat it as done.
+    """
+    from jwst.datamodels import MultiSlitModel
+    from campfire_pipeline.nirspec import canonical as C
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    bkg_model = MultiSlitModel()
+    bkg_model.update(parent, extra_fits=True)
+    bkg_model.slits.extend(bkg_slits)
+
+    barshadow_done = False
+    if len(bkg_slits):
+        try:
+            from jwst.barshadow import BarShadowStep
+            bkg_model = BarShadowStep.call(bkg_model)
+            barshadow_done = True
+        except Exception as e:
+            log(f'Bar-shadow correction of the background slitlets failed for '
+                f'{os.path.basename(path)}; saving them uncorrected', e)
+
+    tmp = C._tmp_path(path)
+    bkg_model.save(tmp)
+    bkg_model.close()
+    with fits.open(tmp, mode='update') as hdul:
+        hdr = hdul[0].header
+        hdr['MSAMETFL'] = msametfl
+        hdr['CFNBKGSL'] = (len(bkg_slits), 'campfire: number of background-only slitlets')
+        hdr['CFBARSHA'] = (barshadow_done, 'campfire: bar shadow applied to background slitlets')
+        hdul.flush()
+    os.replace(tmp, path)
+    log(f'Wrote {len(bkg_slits)} background slitlet(s) to {os.path.basename(path)}')
+
+
+def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
+                     set_stellarity, wavecorr_override, extended_override,
+                     bkgslits_path, msametfl):
+    """One ``Spec2Pipeline`` call over an edited full metafile (cwd = workspace).
+
+    Returns ``(produced, nodata)``: source ids that got a canonical, and the ones
+    that got a ``_nodata`` marker instead.
+    """
+    from jwst.pipeline import Spec2Pipeline
+    from jwst.assign_wcs.util import NoDataOnDetectorError
+
+    base = _rate_base(rate_file)
+
+    rows_by_source, cards_by_source, all_stuck = {}, {}, []
+    for sid in rnd['source_ids']:
+        stuck = _stuck_ordinals(obs, root, sid)
+        rows = _remove_stuck_columns(main_metafile.rows_for_source(sid), stuck)
+        cards_by_source[sid] = _source_cards(obs, main_metafile, sid, stuck, extended_override)
+        if len(rows) == 0:
+            log(f'All shutters marked as stuck closed for {base}_{sid}, skipping extraction')
+            all_stuck.append(sid)
+            continue
+        rows_by_source[sid] = rows
+    wanted = [sid for sid in rnd['source_ids'] if sid not in all_stuck]
+
+    bkg_ids = main_metafile.background_slitlet_ids() if bkgslits_path is not None else []
+    if not rows_by_source and not bkg_ids:
+        if bkgslits_path is not None:
+            # Nothing to extract at all, but record that this exposure has no
+            # background slitlet so the next run does not look again.
+            from jwst.datamodels import ImageModel
+            with ImageModel(rate_file) as parent:
+                _write_bkgslits(parent, [], bkgslits_path, msametfl)
+        return [], []
+
+    metafile = main_metafile.for_sources(
+        rows_by_source, set_stellarity=set_stellarity,
+        filename=_ROUND_METAFILE.format(base=base, index=index),
+        background_slitlets=bkg_ids)
+    metafile.write(obs.workspace_dir, overwrite=True)
+    _point_rate_at_metafile(rate_file, metafile.filename)
+
+    prod_name = _ROUND_PRODUCT.format(base=base, index=index)
+    asn_file = _write_asn(rate_file, prod_name)
+    steps = _spec2_steps(wavecorr_override, extended_override, rnd['fixed_slit'], prod_name)
+    # Never let jwst's own master background run over the background slitlets
+    # we are extracting (it would subtract them from the science slits).
+    steps['master_background_mos'] = {'skip': True}
+
+    log(f'Running Spec2Pipeline for {prod_name}: {len(rows_by_source)} source slitlet(s)'
+        + (f' + {len(bkg_ids)} background slitlet(s)' if bkg_ids else ''))
+    cal_path = f'{prod_name}_cal.fits'
+    try:
+        Spec2Pipeline.call(asn_file, save_results=True, steps=steps)
+        log(f'Completed Spec2Pipeline for {prod_name}')
+    except NoDataOnDetectorError:
+        log(f'No data on detector for {prod_name}')
+        for sid in wanted:
+            _write_nodata_marker(f'{base}_{sid}')
+        return [], wanted
+    finally:
+        for stale in (asn_file, metafile.filename):
+            if os.path.exists(stale):
+                os.remove(stale)
+
+    try:
+        slitlets_by_source = {sid: set(np.unique(rows['slitlet_id']).tolist())
+                              for sid, rows in rows_by_source.items()}
+        produced, missing = _split_spec2_result(
+            cal_path, base, wanted, cards_by_source, bkgslits_path, msametfl,
+            slitlets_by_source)
+    finally:
+        if os.path.exists(cal_path):
+            os.remove(cal_path)
+    for sid in missing:
+        log(f'No data on detector for {base}_{sid}')
+        _write_nodata_marker(f'{base}_{sid}')
+    return produced, missing
+
+
+def _run_spec2_single_call(rate_file, obs, main_metafile, pending, bkgslits_path, *,
+                           root, set_stellarity, wavecorr_override, extended_override,
+                           msametfl):
+    """The single-call path: ``_plan_rounds`` then one ``_run_spec2_round`` each;
+    the background slitlets ride with the first round."""
+    base = _rate_base(rate_file)
+    rounds = _plan_rounds(main_metafile, pending,
+                          split_fixed_slit=extended_override is not None)
+    if not rounds:
+        rounds = [{'source_ids': [], 'slitlets': set(), 'fixed_slit': False}]
+    if len(rounds) > 1:
+        log(f'{base}: {len(pending)} source(s) need {len(rounds)} Spec2Pipeline calls '
+            f'(slitlets shared by several sources, or fixed-slit sources under the '
+            f'extended-wavelength override)')
+    produced = []
+    for index, rnd in enumerate(rounds, start=1):
+        got, _nodata = _run_spec2_round(
+            rate_file, obs, main_metafile, rnd, index, root=root,
+            set_stellarity=set_stellarity, wavecorr_override=wavecorr_override,
+            extended_override=extended_override,
+            bkgslits_path=bkgslits_path if index == 1 else None, msametfl=msametfl)
+        produced += got
+    return produced
+
+
+def _cleanup_round_files(base):
+    """Remove whatever an interrupted single call left in the workspace."""
+    for pattern in (_ROUND_METAFILE.format(base=base, index='*'),
+                    _ROUND_PRODUCT.format(base=base, index='*') + '.fits',
+                    _ROUND_PRODUCT.format(base=base, index='*') + '_cal.fits'):
+        for stale in glob.glob(pattern):
+            os.remove(stale)
+
+
+def _run_spec2_per_source(rate_file, obs, main_metafile, source_ids, *, root,
+                          set_stellarity, wavecorr_override, extended_override):
+    """One ``Spec2Pipeline`` call per source (cwd = workspace): the original
+    stage-2a arrangement, kept as the fallback of the single call and as the
+    reference it is checked against. Returns the source ids produced."""
+    from jwst.pipeline import Spec2Pipeline
+    from jwst.assign_wcs.util import NoDataOnDetectorError
+
+    base = _rate_base(rate_file)
+    source_ids_processed = []
+    for source_id in source_ids:
+        prod_name = f'{base}_{source_id}'
+
+        # copy the metafile to a source-specific metafile
+        # modify that source-specific meta file to only have 1 source in it
+        source_metafile = main_metafile.filter_by_source_id(
+            source_id, filename=f'{base}_msa_{source_id}.fits',
+            set_stellarity=set_stellarity)
+
+        # remove shutters that are marked as stuck closed
+        stuck = _stuck_ordinals(obs, root, source_id)
+        cards = _source_cards(obs, main_metafile, source_id, stuck, extended_override)
+        source_metafile.shutter_table = _remove_stuck_columns(
+            source_metafile.shutter_table, stuck)
+
+        # Skip extraction if all shutters are stuck closed
+        if len(source_metafile.shutter_table) == 0:
+            log(f'All shutters marked as stuck closed for {prod_name}, skipping extraction')
+            continue
+
+        source_metafile.write(obs.workspace_dir, overwrite=True)
+        _point_rate_at_metafile(rate_file, source_metafile.filename)
+
+        asn_file = _write_asn(rate_file, prod_name)
+        steps = _spec2_steps(wavecorr_override, extended_override,
+                             main_metafile.is_fixed_slit(source_id), prod_name)
+
+        log(f"Running Spec2Pipeline for {prod_name}")
+        try:
+            Spec2Pipeline.call(asn_file, save_results=True, steps=steps)
+            log(f'Completed Spec2Pipeline for {prod_name}')
+            source_ids_processed.append(source_id)
+
+        except NoDataOnDetectorError:
+            log(f'No data on detector for {prod_name}')
+            _write_nodata_marker(prod_name)
+
+        # Promote the cal product to the bare canonical file + stamp cards + CFP_CAL.
+        _finalize_canonical(prod_name, cards)
+
+        if os.path.exists(asn_file):
+            os.remove(asn_file)
+
+        if os.path.exists(source_metafile.filename):
+            os.remove(source_metafile.filename)
+
+    return source_ids_processed
+
+
 def run_stage2a_single_rate(
         rate_file,
         obs: Observation,
@@ -620,8 +1104,18 @@ def run_stage2a_single_rate(
         overwrite: bool = False,
         wavecorr_override=None,
         extended_refs=None,
+        single_call: bool = True,
+        extract_bkgslits: bool = True,
         **kwargs
     ):
+    """Stage 2a for one rate file: every source's canonical, plus the exposure's
+    background-only slitlets (``bkgslits/``) when ``extract_bkgslits``.
+
+    ``single_call`` runs one ``Spec2Pipeline`` over an edited full metafile and
+    splits the result (see the module comment above); ``False`` runs the original
+    one-call-per-source loop. Returns the source ids with a canonical (existing
+    or new).
+    """
 
     log(f'Starting stage2a for {os.path.basename(rate_file)}')
 
@@ -634,10 +1128,6 @@ def run_stage2a_single_rate(
             rate_file, obs, overwrite=overwrite,
             wavecorr_override=wavecorr_override, extended_refs=extended_refs,
         )
-
-    from jwst.pipeline import Spec2Pipeline
-    from jwst.associations import asn_from_list
-    from jwst.assign_wcs.util import NoDataOnDetectorError
 
     # Handle directory changes
     prev_cwd = os.getcwd()
@@ -665,9 +1155,8 @@ def run_stage2a_single_rate(
             hdul[0].header['OGMETFL'] = main_metafile.filename
             hdul.flush()
 
-    root = '_'.join(os.path.basename(rate_file).split('_')[:2])
-    nod = int(os.path.basename(rate_file).split('_')[2])
-    dither_point_index = fits.getheader(rate_file)['PATT_NUM']
+    base = _rate_base(rate_file)
+    root = '_'.join(base.split('_')[:2])
 
     # Resolve the extended-wavelength override for this rate file's config (if any).
     # Constant across source_ids in this exposure; used for both the provenance card
@@ -682,163 +1171,65 @@ def run_stage2a_single_rate(
             str(_ehdr.get('FILTER', '')).strip(),
         ))
 
+    common = dict(root=root, set_stellarity=set_stellarity,
+                  wavecorr_override=wavecorr_override, extended_override=extended_override)
+
     source_ids_processed = []
     try:
         source_ids_to_process = main_metafile.unique_source_ids
         if source_ids != 'all':
             source_ids_to_process = source_ids_to_process[np.isin(source_ids_to_process, source_ids)]
 
-
-        # if overwrite:
-        #     # Remove any existing per-source metafiles
-        #     metafiles = glob.glob(main_metafile.filename.replace('.fits','_*.fits'))
-        #     for metafile in metafiles:
-        #         if int(metafile.split('_')[-1].split('.')[0]) in source_ids_to_process:
-        #             try:
-        #                 os.remove(metafile)
-        #             except:
-        #                 pass
-
-
-        if len(source_ids_to_process)==0:
-            log('No source IDs to process, exiting...')
-            return []
-
+        pending = []
         for source_id in source_ids_to_process:
-            prod_name = os.path.basename(rate_file).replace('_rate.fits', f'_{source_id}')
-
-            nodata_marker = f'{prod_name}_nodata'
+            prod_name = f'{base}_{source_id}'
+            nodata_marker = _nodata_marker(prod_name)
             if (os.path.exists(f'{prod_name}.fits') or os.path.exists(nodata_marker)) and not overwrite:
                 log(f'Skipping stage2a for {prod_name}, overwrite=False')
                 source_ids_processed.append(source_id)
                 continue
-
             # Remove stale marker before re-processing
             if os.path.exists(nodata_marker):
                 os.remove(nodata_marker)
+            pending.append(source_id)
 
-            # copy the metafile to a source-specific metafile
-            # modify that source-specific meta file to only have 1 source in it
-            source_metafile = main_metafile.filter_by_source_id(source_id, filename=os.path.basename(rate_file).replace('_rate.fits',f'_msa_{source_id}.fits'), set_stellarity=set_stellarity)
-            # source_metafile.shutter_table.pprint()
+        bkgslits_path = os.path.join(obs.bkgslits_dir, f'{base}_bkgslits.fits')
+        bkg_needed = bool(extract_bkgslits and single_call
+                          and (overwrite or not os.path.exists(bkgslits_path)))
 
-            # remove shutters that are marked as stuck closed
-            # adapted from Anthony & Pablo's routines
-            cards = []
-            stuck = obs.stuck_closed_shutters[(obs.stuck_closed_shutters['root']==root)&(obs.stuck_closed_shutters['source_id']==source_id)]
-            cards.append(('STKSHFIL', os.path.basename(obs.stuck_closed_shutters_file), 'Stuck shutter file name'))
-            cards.append(('STKSHTIM', obs.stuck_closed_shutters_mtime, 'Stuck shutter file mtime'))
-            cards.append(('CFEXTWAV', extended_override is not None, 'Extended wavelength reduction applied'))
+        if not pending and not bkg_needed:
+            log('No source IDs to process, exiting...')
+            return source_ids_processed
 
-            # Fixed-slit sources need a different extended-wavelength photom
-            # reference than MSA sources (see extended_override block below). Detect
-            # it here from the metafile and thread the status through to the product
-            # metadata so downstream stages can branch on it.
-            source_is_fixed_slit = main_metafile.is_fixed_slit(source_id)
-            cards.append(('CFFXSLT', source_is_fixed_slit, 'NIRSpec fixed-slit source'))
-            if source_is_fixed_slit:
-                cards.append(('CFFSSLIT', main_metafile.fixed_slit_name(source_id),
-                              'NIRSpec fixed-slit aperture'))
-            if len(stuck) > 0:
-                cards.append(('STKSHTRS', str(stuck['shutters'][0]), 'Stuck shutters masked'))
-                for stuck_shutter in np.sort(stuck['shutters'][0])[::-1]:
-                    print(stuck_shutter)
-                    stuck_shutter_column = np.sort(np.unique(source_metafile.shutter_table['shutter_column']))[stuck_shutter-1] # get number of stuck shutter
-                    source_metafile.shutter_table = source_metafile.shutter_table[source_metafile.shutter_table['shutter_column'] != stuck_shutter_column] # remove shutter from metafile
-            else:
-                cards.append(('STKSHTRS', 'N/A', 'Stuck shutters masked'))
-
-            # Skip extraction if all shutters are stuck closed
-            if len(source_metafile.shutter_table) == 0:
-                log(f'All shutters marked as stuck closed for {prod_name}, skipping extraction')
-                continue  # Skip to next source_id in the loop
-
-            source_metafile.write(obs.workspace_dir, overwrite=True)
-
-            # update rate file header to point to the right metafile
-            with fits.open(rate_file, mode='update') as hdul:
-                hdul[0].header['MSAMETFL'] = source_metafile.filename
-                hdul.flush()
-
-            association = [(os.path.basename(rate_file), 'science')]
-            asn = asn_from_list.asn_from_list(association, with_exptype=True, product_name=prod_name)
-            suggested_name, serialization = asn.dump()
-            asn_file = f'{prod_name}.json'
-            with open(asn_file,'w') as asn_out:
-                asn_out.write(serialization)
-
-
-            steps = {
-                'extract_1d': {
-                    'skip': True,
-                },
-                'barshadow': {
-                    'skip': True,
-                },
-                'bkg_subtract': {
-                    'skip': True,
-                },
-                'resample_spec':{
-                    'skip': True,
-                },
-            }
-
-            if wavecorr_override:
-                steps['wavecorr'] = {'override_wavecorr': wavecorr_override}
-
-            if extended_override:
-                # Fixed-slit sources require a separately-calibrated extended
-                # photom (v0014) than the MSA one resolved in extended_override
-                # (v0015); the flats / wavelengthrange overrides are identical.
-                if source_is_fixed_slit:
-                    from campfire_pipeline.config import get_extended_photom_path
-                    photom_override = get_extended_photom_path(fixed_slit=True)
-                    log(f"Using fixed-slit extended photom for {prod_name}")
-                else:
-                    photom_override = extended_override['photom']
-
-                steps['flat_field'] = {
-                    'override_fflat': extended_override['fflat'],
-                    'override_sflat': extended_override['sflat'],
-                }
-                steps['assign_wcs'] = {
-                    'override_wavelengthrange': extended_override['wavelengthrange'],
-                }
-                steps['photom'] = {
-                    'override_photom': photom_override,
-                }
-                log(f"Applying extended-wavelength overrides for {prod_name}")
-
-            log(f"Running Spec2Pipeline for {prod_name}")
+        if single_call:
             try:
-                result = Spec2Pipeline.call(
-                    asn_file,
-                    save_results=True,
-                    steps=steps)
-                log(f'Completed Spec2Pipeline for {prod_name}')
-                source_ids_processed.append(source_id)
-
-            except NoDataOnDetectorError:
-                log(f'No data on detector for {prod_name}')
-                with open(nodata_marker, 'w') as f:
-                    f.write('NoDataOnDetectorError\n')
-
-            # Promote the cal product to the bare canonical file + stamp cards + CFP_CAL.
-            _finalize_canonical(prod_name, cards)
-
-            if os.path.exists(asn_file):
-                os.remove(asn_file)
-
-            if os.path.exists(source_metafile.filename):
-                os.remove(source_metafile.filename)
+                source_ids_processed += _run_spec2_single_call(
+                    rate_file, obs, main_metafile, pending,
+                    bkgslits_path if bkg_needed else None,
+                    msametfl=main_metafile.filename, **common)
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                log(f'Single-call stage2a failed for {base}; falling back to one '
+                    f'Spec2Pipeline call per source', e)
+                _cleanup_round_files(base)
+                remaining = [
+                    sid for sid in pending
+                    if not (os.path.exists(f'{base}_{sid}.fits')
+                            or os.path.exists(_nodata_marker(f'{base}_{sid}')))
+                ]
+                source_ids_processed += _run_spec2_per_source(
+                    rate_file, obs, main_metafile, remaining, **common)
+        else:
+            source_ids_processed += _run_spec2_per_source(
+                rate_file, obs, main_metafile, pending, **common)
 
     except KeyboardInterrupt:
         return source_ids_processed
 
     except Exception as e:
-        log(f"ERROR in source ID {source_id}", e)
+        log(f"ERROR in stage2a for {base}", e)
         raise
-        return source_ids_processed
 
     finally:
 
@@ -850,22 +1241,25 @@ def run_stage2a_single_rate(
                 hdul[0].header['MSAMETFL'] = main_metafile.filename
             hdul.flush()
 
-        # Cleanup any remaining ASN files
+        # Cleanup any remaining ASN files and single-call leftovers
         asn_files = glob.glob(rate_file.replace('_rate.fits','*.json'))
         for asn_file in asn_files:
             os.remove(asn_file)
+        _cleanup_round_files(base)
 
         os.chdir(prev_cwd)
 
     return source_ids_processed
 
 
-def _finalize_canonical(prod_name, cards):
+def _finalize_canonical(prod_name, cards, msametfl=None):
     """Promote Spec2's ``{prod_name}_cal.fits`` to the bare canonical
     ``{prod_name}.fits`` (issue #212): rename in place, stamp the provenance
     ``cards`` and the ``CFP_CAL`` state keyword. Must run with cwd in the
     workspace (relative paths). Returns the canonical path, or None if the cal
-    product is absent (NoDataOnDetectorError)."""
+    product is absent (NoDataOnDetectorError). ``msametfl`` (the single-call
+    path) rewrites the ``MSAMETFL`` card to the observation's real metafile,
+    instead of the transient edited copy the call ran on."""
     from campfire_pipeline.common import cfp
     from campfire_pipeline.nirspec import canonical as C
     cal_out = f'{prod_name}_cal.fits'
@@ -886,6 +1280,8 @@ def _finalize_canonical(prod_name, cards):
             hdul['PRIMARY'].header[key] = (val, comment)
         for key, (val, comment) in schema_card.items():
             hdul['PRIMARY'].header[key] = (val, comment)
+        if msametfl is not None:
+            hdul['PRIMARY'].header['MSAMETFL'] = msametfl
         hdul.flush()
     return canonical
 

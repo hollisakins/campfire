@@ -796,6 +796,29 @@ measurement on the archive.
 1. **P1a — single-call stage 2a** (§1.7): one edited full metafile per rate file, split into the
    per-source canonicals and the `bkgslits/` file; bit-identity gate against the per-source runs;
    per-source fallback on failure. Pure speed-up for everything else, PATCH / Infrastructure.
+   **Built (2026-10-28).** `MetaFile.rows_for_source` is the per-source edit both arrangements
+   share, `MetaFile.for_sources` stacks the edits into one metafile (SOURCE_INFO kept whole,
+   stellarity forced for all), `stage2._plan_rounds` keeps two sources of one slitlet (and, under
+   the extended-wavelength override, fixed-slit sources) in separate calls,
+   `stage2._split_spec2_result` builds each one-slit canonical with `MultiSlitModel().update(parent,
+   extra_fits=True)` + `slits.extend` and promotes it through the unchanged `_finalize_canonical`,
+   and `_write_bkgslits` applies `BarShadowStep` to the background model alone (the main call keeps
+   `barshadow` skipped, so the `POINT` science slits are untouched whatever the stellarity setting).
+   `[nirspec.stage2].single_call = false` selects the old loop; the single call also falls back to
+   it for the sources it did not produce. The split routes each output slit to its source **by
+   slitlet** (`_source_of_slit`), not by jwst's `source_id`: at a nod where the source's shutter was
+   removed as stuck closed, the slitlet has no primary shutter left and jwst extracts it under the
+   background name (`<program>_BKG<slitlet>`, `stellarity = 0`, uniform pathloss) — the per-source
+   loop kept that as the source's nod product (`fix_units` then marks it `SRCFLUX = 'F'`), so the
+   single call must too; only slitlets that belong to no source of the round are background
+   slitlets. (The first gate run caught this: 4 of 564 references came out as `_nodata` markers,
+   all nods of hand-flagged stuck shutters.) Gate on `ember_cosmos_p1` (prism + G395M, 564
+   reference canonicals from the per-source loop): every data array identical; headers differ only
+   in `MSAMETFL` (now the observation's real metafile, as the pointings reader already assumed),
+   `ASNTABLE` and the `CFP_CAL` timestamp. Background slitlets verified on `egs4106_p6` (15 in the
+   plan: 8 on NRS1 at G395M, 5 at prism — `EXTENDED`, `UNIFORM` pathloss, `MJy/sr`, bar shadow
+   applied with the array stored). EMBER plans have no dedicated background slitlets at all
+   (`CFNBKGSL = 0`), which is the point of §4.2's use of the source slitlets' empty shutters.
 2. **P1b — derive and store.** `run_master_bkg`, the `_mbkg.fits` product, QA PDF, layout kind, deploy
    + pull as an intermediate. Wired into `run_stage2b`, unconditional. PATCH / Infrastructure.
 3. **P2 — apply by choice.** `bkg_method`, the `"master"` override literal, `BKGMETH` provenance,
@@ -807,14 +830,18 @@ measurement on the archive.
 
 ## 8. Files this would touch
 
-- `pipeline/campfire_pipeline/nirspec/master_bkg.py` (new), `stage2.py` (single-call stage 2a with
-  the split, per-source fallback, `master-bkg` call site, stage 2b branch), `metafile.py`
-  (`edit_all_sources` — the per-slitlet edits of `filter_by_source_id` over the whole metafile, plus
-  background-only slitlets kept),
-  `canonical.py` (`BKGMETH` card, later `MBSUB_*`), `observation.py` (override grammar),
-  `cli.py` (`master-bkg` command), `plots.py` (QA), `data/config_default.toml`, `pipeline/CHANGELOG.md`
+- `pipeline/campfire_pipeline/nirspec/master_bkg.py` (new), `stage2.py` (P1a done: single-call
+  stage 2a with the split and the per-source fallback; still to come: the `master-bkg` call site and
+  the stage 2b branch), `metafile.py` (P1a done: `rows_for_source` / `for_sources` /
+  `background_slitlet_ids`), `observation.py` (P1a done: `bkgslits_dir`; later the override
+  grammar), `canonical.py` (`BKGMETH` card, later `MBSUB_*`),
+  `cli.py` (`master-bkg` command), `plots.py` (QA), `data/config_default.toml` (P1a done:
+  `single_call`, `extract_bkgslits`), `pipeline/CHANGELOG.md`,
+  `pipeline/tests/test_nirspec_stage2a_single_call.py` (P1a)
 - `layout/campfire_layout/products.py`, `bijection.py`, `conformance/layout_golden.json`,
-  `web/lib/layout.ts`
+  `web/lib/layout.ts`, `web/lib/layout-products.json` (P1a done: the `nirspec_bkgslits` kind,
+  `products/nirspec/<obs>/bkgslits/<root>_<nrsN>_bkgslits.fits`, lifecycle regenerable, never
+  cloud-backed)
 - `python/campfire/deploy/discover.py`, `deploy.py` (upload), `python/campfire/db/store.py`
 - later: `stage3.py`, `python/campfire/deploy/generate.py`, web spectrum plot, `supabase/schemas/`
 

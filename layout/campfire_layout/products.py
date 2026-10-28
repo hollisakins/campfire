@@ -160,6 +160,18 @@ _register(ProductSpec(
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
     suffix="_rate.fits", legacy_prefix=None,
 ))
+# The background-only slitlets of one exposure ('<root>_<nrsN>_bkgslits.fits'),
+# a by-product of stage 2a's single Spec2Pipeline call and the input of the
+# master-background derivation. A regenerable local intermediate (never cloud-
+# backed, never deployed) in its own subdirectory, so nothing that enumerates
+# the obs products dir (canonicals, finals, rate files) can see it and cleanup
+# is one rmtree.
+_register(ProductSpec(
+    name="nirspec_bkgslits", instrument=NS, tree="products", bucket=None,
+    lifecycle=LC.REGENERABLE, scope_keys=("obs",),
+    subdir=lambda s: f"nirspec/{s.obs}/bkgslits", suffix="_bkgslits.fits",
+    legacy_prefix=None,
+))
 # Per-object visualizations, keyed by obs (legacy keys live in their own prefixes
 # but mirror locally into the obs products dir).
 _register(ProductSpec(

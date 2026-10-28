@@ -234,6 +234,125 @@ class MetaFile:
                 return s
         return ''
 
+    def slitlets_of(self, source_id):
+        """The slitlet ids (this ``msametid``) whose rows hold *source_id*."""
+        rows = self.shutter_table[self.shutter_table['msa_metadata_id'] == self.msametid]
+        return sorted(int(s) for s in np.unique(
+            rows['slitlet_id'][_source_rows(rows, source_id)]))
+
+    def rows_for_source(self, source_id):
+        """The per-source edit of this exposure's SHUTTER_INFO rows.
+
+        Returns a *copy* of the rows (every dither point of ``msametid``) of the
+        slitlet(s) holding *source_id*, edited the way one ``Spec2Pipeline`` run
+        for that source wants them: detached background shutters pruned, the one
+        shutter holding the source marked ``primary_source = 'Y'`` and every other
+        shutter relabelled as an empty background shutter (``source_id = 0``,
+        ``background = 'Y'``, no intra-shutter position). A positionally
+        coincident twin sharing the slitlet (``_duplicate_source_ids``) becomes a
+        background row of this slitlet in the same way.
+
+        This is the row operation :meth:`filter_by_source_id` (one metafile per
+        source) and :meth:`for_sources` (one metafile for many sources) share.
+        """
+        table = self.shutter_table
+        slits = np.unique(table['slitlet_id'][_source_rows(table, source_id)])
+        condition = np.logical_and.reduce((
+            table['msa_metadata_id'] == self.msametid,
+            np.isin(table['slitlet_id'], slits)
+        ))
+
+        rows = table[condition]
+
+        if len(rows) == 0:
+            raise RuntimeError("No IDs matched in metafile!")
+
+        # Remove detached background shutters that are far from the source.
+        # Some MSA plans place a background shutter many columns away from
+        # the slitlet; the JWST pipeline interprets the full column range
+        # as one slit, producing an absurdly wide extraction.  We keep only
+        # the contiguous group of shutter columns containing the source.
+        rows = _prune_detached_shutters(rows, source_id)
+
+        is_primary = (rows['source_id'] == source_id) & (rows['estimated_source_in_shutter_x'] > 0)
+        rows['primary_source'][is_primary] = 'Y'
+        rows['primary_source'][~is_primary] = 'N'
+        rows['source_id'][~is_primary] = 0
+
+        rows['background'][rows['primary_source'] == 'Y'] = 'N'
+        rows['background'][rows['primary_source'] == 'N'] = 'Y'
+        rows['estimated_source_in_shutter_x'][rows['primary_source'] == 'N'] = np.nan
+        rows['estimated_source_in_shutter_y'][rows['primary_source'] == 'N'] = np.nan
+        return rows
+
+    def background_slitlet_ids(self):
+        """Slitlets of this ``msametid`` that hold no catalog source at all.
+
+        These are the dedicated background slitlets of the MSA plan: no row is a
+        catalog-source row (:func:`_source_rows`) and no row is marked
+        ``primary_source = 'Y'`` (jwst's own test, which also catches a slitlet
+        holding only a *virtual* source). jwst extracts them as
+        ``<prog>_BKG<slitlet>`` slits with ``stellarity = 0`` (``EXTENDED``).
+        """
+        rows = self.shutter_table[self.shutter_table['msa_metadata_id'] == self.msametid]
+        all_ids = set(int(s) for s in np.unique(rows['slitlet_id']))
+        with_source = set(int(s) for s in np.unique(rows['slitlet_id'][_source_rows(rows)]))
+        primary = rows['primary_source'] == 'Y'
+        with_primary = set(int(s) for s in np.unique(rows['slitlet_id'][primary]))
+        return sorted(all_ids - with_source - with_primary)
+
+    def background_slitlet_rows(self, slitlet_ids=None):
+        """A copy of the rows (all dither points of ``msametid``) of the
+        background-only slitlets, untouched. ``slitlet_ids`` defaults to
+        :meth:`background_slitlet_ids`."""
+        if slitlet_ids is None:
+            slitlet_ids = self.background_slitlet_ids()
+        condition = np.logical_and.reduce((
+            self.shutter_table['msa_metadata_id'] == self.msametid,
+            np.isin(self.shutter_table['slitlet_id'], list(slitlet_ids)),
+        ))
+        return self.shutter_table[condition]
+
+    def for_sources(self, rows_by_source, set_stellarity=False, filename=None,
+                    background_slitlets=()):
+        """One metafile carrying the per-source edits of many sources at once.
+
+        ``rows_by_source`` maps ``source_id`` to that source's edited rows (from
+        :meth:`rows_for_source`, possibly with stuck-closed shutters removed by
+        the caller). The slitlet sets must not overlap: jwst refuses a slitlet
+        with two ``primary_source = 'Y'`` rows, so two catalog sources sharing a
+        slitlet go into different metafiles (``stage2._plan_rounds``).
+        ``background_slitlets`` adds the untouched rows of those background-only
+        slitlets (:meth:`background_slitlet_rows`).
+
+        The SOURCE_INFO table is kept whole (jwst looks each source up by id; the
+        rows of a relabelled twin are simply unused), with ``stellarity`` forced
+        to ``set_stellarity`` for every source when it is not ``False`` — the same
+        value :meth:`filter_by_source_id` would give each source on its own.
+        """
+        from astropy.table import vstack
+
+        mf = copy(self)
+        mf.hdul = deepcopy(self.hdul)
+
+        parts = list(rows_by_source.values())
+        if len(background_slitlets):
+            parts.append(self.background_slitlet_rows(background_slitlets))
+        if not parts:
+            raise RuntimeError("for_sources: nothing to extract")
+        mf.shutter_table = parts[0] if len(parts) == 1 else vstack(
+            parts, join_type='exact', metadata_conflicts='silent')
+
+        mf.source_table = self.source_table.copy()
+        if set_stellarity is not False:
+            mf.source_table['stellarity'] = set_stellarity
+
+        if filename is None:
+            mf.filename = self.filename.replace('.fits', '_edited.fits')
+        else:
+            mf.filename = filename
+        return mf
+
     def filter_by_source_id(self,
             source_id,
             set_stellarity=False,
@@ -246,34 +365,7 @@ class MetaFile:
         mf = copy(self)
         mf.hdul = deepcopy(self.hdul)
 
-        slits = np.unique(mf.shutter_table['slitlet_id'][_source_rows(mf.shutter_table, source_id)])
-        condition = np.logical_and.reduce((
-            mf.shutter_table['msa_metadata_id'] == mf.msametid,
-            np.isin(mf.shutter_table['slitlet_id'], slits)
-        ))
-
-        mf.shutter_table = mf.shutter_table[condition]
-
-        if len(mf.shutter_table) == 0:
-            raise RuntimeError("No IDs matched in metafile!")
-
-        # Remove detached background shutters that are far from the source.
-        # Some MSA plans place a background shutter many columns away from
-        # the slitlet; the JWST pipeline interprets the full column range
-        # as one slit, producing an absurdly wide extraction.  We keep only
-        # the contiguous group of shutter columns containing the source.
-        mf.shutter_table = _prune_detached_shutters(
-            mf.shutter_table, source_id)
-
-        is_primary = (mf.shutter_table['source_id'] == source_id) & (mf.shutter_table['estimated_source_in_shutter_x'] > 0)
-        mf.shutter_table['primary_source'][is_primary] = 'Y'
-        mf.shutter_table['primary_source'][~is_primary] = 'N'
-        mf.shutter_table['source_id'][~is_primary] = 0
-
-        mf.shutter_table['background'][mf.shutter_table['primary_source'] == 'Y'] = 'N'
-        mf.shutter_table['background'][mf.shutter_table['primary_source'] == 'N'] = 'Y'
-        mf.shutter_table['estimated_source_in_shutter_x'][mf.shutter_table['primary_source'] == 'N'] = np.nan
-        mf.shutter_table['estimated_source_in_shutter_y'][mf.shutter_table['primary_source'] == 'N'] = np.nan
+        mf.shutter_table = self.rows_for_source(source_id)
 
         mf.source_table = mf.source_table[mf.source_table['source_id'] == source_id]
         if set_stellarity is not False:
