@@ -28,11 +28,16 @@ filling stage 2b's `bkg` argument.
 
 The two things that do **not** exist and carry the work:
 
-1. **A full-exposure calibrated view.** Stage 2a runs `Spec2Pipeline` once per *source* with a
-   metafile cut down to that source's slitlet, so no product today holds every open shutter of an
-   exposure in calibrated units. The derivation needs one full-metafile pass per rate file
-   (assign_wcs → extract_2d → flat → pathloss(uniform) → barshadow → photom(extended)); this is what
-   jwst's own `master_background_mos` does internally, and it is the dominant new cost (§4.3).
+1. **A surface-brightness view of every open shutter.** Stage 2a runs `Spec2Pipeline` once per
+   *source*, and across all sources the canonicals do cover every *source* slitlet — including its
+   empty nod shutters — calibrated as a point source. §1.7 shows that per-pixel surface brightness is
+   recoverable from them with two array ratios the slit already carries plus one barshadow
+   evaluation, so a prototype of the clean-shutter selection can run on today's products. What the
+   canonicals never contain are the MSA plan's dedicated background slitlets and the detached
+   background shutters stage 2a prunes. The derivation therefore either assembles from the canonicals
+   and adds a small extraction for those, or runs one full-metafile pass per rate file (assign_wcs →
+   extract_2d → flat → pathloss(uniform) → barshadow → photom(extended)), which is what both jwst's
+   `master_background_mos` and msaexp's `get_global_background` do (§4.3 weighs the two).
 2. **Clean-shutter selection.** jwst only uses slitlets the MSA plan labelled as background
    (`source_name` `*_BKG*`); the empty shutters of a nodded slitlet are, to jwst, part of the source's
    slit. Using them is the whole point here, so the selection logic (and its QA table) is ours to write
@@ -146,6 +151,46 @@ pulled with `campfire pull --intermediate` through `INTERMEDIATE_PRODUCT_TYPES`
 | per-source, per-nod reducer decisions that `pull` round-trips | `nodded_background_overrides.toml` (`nirspec_bkg_override`, `USER_STATE`) |
 | a stage that writes a TOML of auto-detections for the reducer to vet | stuck-shutter detection (`merge_stuck_shutters`, provenance tags) |
 | per-exposure product + web triage row | `nirspec_rate` / `nirspec_rate_exposures` |
+
+### 1.7 What the canonicals already give you (and what they do not)
+
+Because stage 2a runs over *every* catalog source, the union of an exposure's canonicals is the
+calibrated cutout of every source slitlet — the source shutter and its empty nod shutters alike. Per
+pixel, converting the stored point-source calibration to the surface brightness a sky model needs is
+arithmetic on arrays the slit already carries (jwst 1.20.2 source, verified):
+
+| Step | What the canonical holds | Conversion to uniform-source surface brightness |
+| --- | --- | --- |
+| photom | `MJy` per pixel (point): `conversion = photmj`; uniform would be `photmj / pixelarea_steradians` (`photom.py:762-780`) | divide by `PIXAR_SR` (in the `SCI` header) |
+| pathloss | data divided by `pathloss_point`; **both** `pathloss_point` and `pathloss_uniform` 2-D arrays are stored on every MOS slit (`pathloss.py:604-605`) | multiply by `pathloss_point / pathloss_uniform` (the `correct_nrs_fs_bkg` ratio, in the other direction) |
+| barshadow | skipped in stage 2a; jwst never applies it to `POINT` slits anyway | run `BarShadowStep(source_type='EXTENDED')` on a copy of the one-slit model to get the `barshadow` array (needs only the slit meta and WCS, which are present), then divide |
+| flat | applied; for MOS the same flat serves point and uniform (only `NRS_FIXEDSLIT` keeps `flatfield_point` / `flatfield_uniform`, `flat_field.py:424`) | nothing |
+| wavecorr | `slit.wavelength` carries the *point-source* zero-point shift of the source position, which is wrong for an extended sky | the uncorrected wavelengths are still in the WCS: wavecorr inserts a `wavecorr_frame` *after* `slit_frame` (`wavecorr.py:118-126`), so `wcs.get_transform('detector', 'slit_frame')` returns λ without the shift |
+| failed-open shutters | `msa_flagging` ran, so `MSA_FAILED_OPEN` is set in `DQ` | mask |
+| overlapping slitlets | not recorded per canonical | paint every canonical's `xstart/ystart/xsize/ysize` box onto a detector-frame counter; keep pixels covered once (msaexp's `nexp == 1`) |
+
+So a prototype of §4.2's clean-shutter selection needs no pipeline change: load an observation's
+canonicals, apply the three corrections, split by slit-frame y, and look at the per-shutter spectra.
+
+What the canonicals **cannot** supply:
+
+- **Dedicated background slitlets** of the MSA plan. `MetaFile.unique_source_ids` yields catalog
+  sources only (`_source_rows`: `source_id > 0`, or `0` with `background == 'N'`), so a slitlet with
+  no primary source is never extracted. These are the cleanest shutters available.
+- **Detached background shutters**: `_prune_detached_shutters` drops shutters more than two columns
+  from the source group so jwst does not build an absurdly wide slit — exactly the shutters a sky
+  model would like to have.
+- **Stuck-closed shutters** are removed from the per-source metafile before extraction — correct for
+  the science, and harmless here (they are rejected candidates either way), but it means the TOML's
+  state is baked into which pixels exist.
+- One frame with all slits of an exposure together, and the correction arrays of a *uniform*-source
+  calibration pass (jwst's de-calibration trick, §3.1, needs them).
+
+Either the assembling route adds a small extraction of those slitlets (a stage 2a variant with a
+metafile filtered to background-only slitlets, extended source type, and a product name that the
+layout can tell apart from `<root>_<nod>_<nrsN>_<source>.fits` — the bare-`.fits` bijection fallback
+requires an integer source token, so this needs its own suffix), or the derivation runs the full
+pass. §4.3 weighs them.
 
 ---
 
@@ -267,10 +312,40 @@ spectrum, PRISM only — and the explicit caveat that "nodded background subtrac
 for compact sources with low S/N". JADES (arXiv:2306.02465 §V.7) instead kept the nods and excluded
 background shutters that NIRCam/HST imaging showed to be contaminated.
 
+**msaexp's selection, pixel by pixel** (`NirspecCalibrated` in `slit_group.py`, read on
+2026-10-28). It is a full-frame, full-metafile method: the rate file is run through the jwst steps for
+*all* slits, and each calibrated slit is painted back onto a 2048 × 2048 detector-frame set of maps
+(`full[...]`), per pixel: `data` (× pixel area × barshadow × pathloss, i.e. surface brightness), `wave`,
+`bar` (the barshadow value), `nexp` (how many slits cover the pixel), `num_shutters` (shutters in the
+pixel's slitlet, capped at 3), `exp_index` (which slit), `yslit`, `slit` (quadrant, shutter x/y). An
+`edge_mask` already drops half a shutter (`shutter_pad = 0.5`) at both ends of each slitlet. `set_mask`
+then keeps a pixel only if **all** of:
+
+- `nexp == 1` — covered by exactly one slitlet (no overlap with another slitlet or a failed-open trace);
+- `bar > 0.35` — not under or next to an MSA bar (the barshadow model is the geometry);
+- **not** (`num_shutters > 2` **and** `|yslit| < min_yslit`) — this is the geometric source cut: in a
+  slitlet of three or more shutters, every pixel within `min_yslit` of the source's nominal trace is
+  treated as source. `yslit = y_pixel − y_trace(x)` is the cross-dispersion distance in **pixels** from
+  the trace position the slit WCS predicts for the catalog source (`utils.get_slit_coordinates`), so with
+  `min_yslit = 5` (the `get_global_background` default; `set_mask`'s own default is 3) a band of ±5 px ≈
+  ±0.5″, about one shutter, is masked and the two empty nod shutters survive. Slitlets of one or two
+  shutters get no source mask at all — they are kept whole (that is a modelling choice to be aware of,
+  not obviously right for CAMPFIRE's data);
+- not a fixed slit other than S200A1/A2/B1;
+- `data > −3 σ_rnoise` (no deeply negative pixels).
+
+`mask_stuck_closed` adds the stuck-shutter mask (fraction of pixels below 2 σ_rnoise, prism threshold
+0.28), `get_global_background` restricts to quadrants 3–4 on NRS1 and 1–2 on NRS2, and
+`percentile_bins` takes percentiles 5/16/50/84/95 of the surviving pixels per bin of a standard
+wavelength grid, with `p50` the sky and `(p50 − p16)/√n` its error. There is no iteration and no
+per-shutter decision: contamination is handled by the median over a large pixel population.
+
 What to take from it: the **median (p50) per wavelength bin over all empty-shutter pixels** as the
-robust estimator, the `num_shutters`/`|yslit|` geometric source cut, per-detector-half quadrant
-restriction as a cheap spatial-uniformity guard, a few-per-cent error floor on the sky, and the honest
-expectation that the nods win for compact faint sources on the prism.
+robust estimator, the `num_shutters`/`|yslit|` geometric source cut, `nexp == 1` as the overlap guard,
+per-detector-half quadrant restriction as a cheap spatial-uniformity guard, a few-per-cent error floor
+on the sky, and the honest expectation that the nods win for compact faint sources on the prism. What
+CAMPFIRE can add over it is the per-*shutter* verdict (§4.2 step 4), which the pixel-population median
+never produces and which is what feeds the nod-override proposals.
 
 ### 3.3 `jwst_backgrounds` (the sky model) vs. `jwst_gtvt` (the visibility tool)
 
@@ -298,15 +373,36 @@ data-driven reference with the model as a sanity bound.
 
 ### 4.1 Unit of work and the product
 
-**Unit:** one rate file = (exposure, detector). The sky is a property of the exposure, not of a
-source, so the master background is a *source-independent* intermediate like the rate file, with
-one row per (observation, exposure_root, detector) if it is ever shown on the web.
+**Two units, deliberately different.** The 1-D sky and the 2-D rate-frame product have
+different natural grains:
+
+- *The 1-D sky B(λ)* is a property of the pointing, the MSA configuration and the hour, so its natural
+  unit is the **exposure group** — all nods of one `(root, config)` on **both** detectors. Reasons:
+  for the gratings each slitlet's spectrum spans both detectors (blue half on NRS1, red on NRS2) so a
+  B(λ) over the full range needs both; for the prism, quadrants 3–4 fall on NRS1 and 1–2 on NRS2,
+  so the two detectors are two independent samples of the *same* λ range and their agreement is the
+  best available check on detector-dependent systematics; and the nods are minutes apart under the
+  same MSA mask, so pooling them triples the clean-pixel statistics. The clean set is still decided
+  **per exposure** (the source occupies a different shutter in each nod), the stage 1 residuals
+  (picture frame, 1/f, pedestal) differ per exposure, and the detectors have independent flats — so
+  fit, per exposure × detector, a scale (and an additive offset) against the pooled B(λ) and report
+  them (`MBKGSCL`, `MBKGOFF`); a scale far from 1 is itself a finding. Whether the pooled or the
+  per-exposure B(λ) is *subtracted* can be a config choice; start with pooled-with-per-exposure-offset
+  and let the phase-3 residual measurement decide.
+- *The 2-D product* `MBKG2D` is per **rate file** (exposure × detector): it is a picture of that
+  detector, built on that exposure's slit geometry, and it is what stage 2b cuts out for a canonical.
+
+So: one `_mbkg.fits` per rate file (the product the storage plane and the web already know how to
+handle), each carrying the exposure group's pooled `MBKG1D` plus this exposure's own scale/offset,
+its per-shutter table and its 2-D expansion. The sky is a property of the exposure, not of a source,
+so this stays a *source-independent* intermediate like the rate file, with one row per
+(observation, exposure_root, detector) if it is ever shown on the web.
 
 **Product:** `<root>_<nod>_<nrsN>_mbkg.fits`, written beside the rate file in `products/nirspec/<obs>/`.
 
 | HDU | Content |
 | --- | --- |
-| `PRIMARY` | provenance: `CFMBKGV` algorithm version, `MBKGNSH` clean shutters used, `MBKGNTOT` candidates, `MBKGSCL` ratio to the model sky, `MBKGMETH`, timestamps, the stuck-shutter TOML mtime (as stage 2a stamps `STKSHTIM`) |
+| `PRIMARY` | provenance: `CFMBKGV` algorithm version, `MBKGNSH` clean shutters used (this exposure / the group), `MBKGNTOT` candidates, `MBKGSCL` / `MBKGOFF` this exposure's scale and offset against the pooled sky, `MBKGMDL` ratio to the `jwst_backgrounds` level, `MBKGSEED`, timestamps, the stuck-shutter TOML mtime (as stage 2a stamps `STKSHTIM`) |
 | `MBKG1D` | table: `wavelength` (µm), `surf_bright` (MJy/sr), `surf_bright_err`, `n_shutters`, `model_surf_bright` (the `jwst_backgrounds` prediction, for QA) |
 | `SHUTTERS` | one row per candidate shutter: slitlet_id, quadrant, row, column, source_id of the slitlet, nod role (`source` / `nod_empty` / `bkg_slitlet`), scale `a_s`, χ², `clean` flag, `reason` (`source`, `stuck_closed`, `continuum_excess`, `line_excess`, `failed_open_overlap`, `too_few_pixels`) |
 | `MBKG2D` | full-frame float32 (2048 × 2048) **rate-frame** background: the de-calibrated B(λ(x, y)) on every open-shutter pixel, 0 elsewhere (compresses well; ~16 MB raw). Alternative: a `MultiSlitModel` of per-slit cutouts like jwst's `_masterbg2d`, smaller but not a picture of the exposure |
@@ -341,13 +437,23 @@ Per rate file, in a worker (parallel over rate files like stage 1 / 2a):
    wavelength grid for the disperser (the prism's dispersion varies along the slit, so bin, do not
    assume a shared pixel grid). Median or inverse-variance mean per bin; carry the pixel count.
 4. **Clean-shutter selection, iterated (2–3 passes).**
-   - Pass 0 reference: the per-bin **median across all non-`source` shutter pixels** (msaexp's
-     `p50` estimator, §3.2) — robust as long as fewer than half the shutters are contaminated, which
-     holds for every realistic MSA (two-thirds of slitlet shutters are nominally empty at any nod).
-     Apply msaexp's geometric cut first: in a slitlet of more than two shutters, exclude pixels within
-     `min_yslit` of the source position. Compare the level to the `jwst_backgrounds` prediction for the
-     pointing and `DATE-OBS` (§3.3) and warn if the ratio is far from 1: a QA check and the first guard
-     against systematic mis-calibration, not a fit input (the model's R ≈ 10–50 cannot seed a shape).
+   - Pass 0 reference (`master_bkg_seed`, two choices, both legitimate):
+     `median` — the per-bin median across all non-`source` shutter pixels (msaexp's `p50`, §3.2),
+     after msaexp's geometric cut (in a slitlet of more than two shutters, drop pixels within
+     `min_yslit` of the source's trace); unbiased as long as fewer than half the pixels at a
+     wavelength are contaminated, which holds for every realistic MSA. `model` — the
+     `jwst_backgrounds` total for the pointing and `DATE-OBS` (§3.3), with **one global scale fitted
+     to the data** (its absolute level is not trustworthy to the few per cent that matter, see §3.3),
+     compared at the model's own resolution (bin both to R ≈ 20 for the scale fit, because the real
+     sky has solar Fraunhofer structure at grating resolution that the model lacks). The model seed
+     has the merit of being independent of whether the "empty" shutters are empty; the median seed
+     has the merit of the right spectral shape. In practice the iteration converges to the same clean
+     set from either start when both are within ~20 % of the truth, which is why the choice is a
+     config knob and not a design decision. The one case neither seed settles is a *common-mode*
+     excess — every empty shutter carrying a few per cent of its own source's wings — because the
+     model's absolute uncertainty is larger than that excess; §2.3's phase-3 measurement is the only
+     arbiter there. Whichever seed is used, record the data/model ratio (`MBKGMDL`) and warn when it
+     is far from 1.
    - For each shutter fit a single scale `a_s` against the reference and form the residual spectrum
      `r_s(λ) = SB_s − a_s · B_ref`. Reject: `a_s` significantly above 1 (continuum contaminant), a
      contiguous run of bins with `r_s > k σ` (emission-line contaminant; keep the shutter but mask
@@ -355,11 +461,12 @@ Per rate file, in a worker (parallel over rate files like stage 1 / 2a):
      cross-checks the TOML), `failed_open_overlap` from `msa_flagging`, too few pixels.
    - Recompute `B_ref` as the σ-clipped inverse-variance mean over clean shutters, with its error and
      `n_shutters(λ)`. Iterate.
-   - Not recommended: "lowest N% flux level". Selecting the faintest shutters biases the sky low by
-     construction (it picks the negative noise excursions and the partially vignetted shutters);
-     clipping against a robust reference does not. Neither jwst (`combine_1d` clips values against a
-     per-wavelength median) nor msaexp (percentiles) selects by rank. Let the data set the level and
-     keep the `jwst_backgrounds` curve as the plausibility bound.
+   - Not recommended as the *selection rule*: "the lowest N % after subtracting the model". Ranking
+     shutters by residual flux and keeping the faintest biases the sky low by construction (it picks
+     the negative noise excursions and the partially vignetted shutters, and the bias grows as N
+     shrinks); clipping *both* sides against a robust reference does not. Neither jwst (`combine_1d`
+     clips values against a per-wavelength median) nor msaexp (percentiles) selects by rank. The model
+     is welcome as the seed (above); the rule should be symmetric clipping.
    - Carry an error floor of a few per cent of the sky in `surf_bright_err` (msaexp uses 3 %), so that
      downstream variance does not pretend the master background is noiseless where calibration
      systematics dominate.
@@ -405,6 +512,20 @@ calibration of ~100–200 slits (seconds each) and the inverse pass. Order of a 
 file single-threaded, parallel over rate files; well under the existing stage 2a budget for a typical
 observation. Memory: a `MultiSlitModel` of a few hundred small cutouts is fine. `_prefetch_crds_references`
 already exists for the multiprocessing race.
+
+**Assemble from the canonicals, or run a full pass?** §1.7 shows the canonicals already hold the
+source slitlets in a form two array ratios away from surface brightness, so the derivation could skip
+the full-metafile pass: load the exposure's canonicals, apply `pathloss_point / pathloss_uniform`,
+`1 / PIXAR_SR` and a `BarShadowStep(source_type='EXTENDED')` evaluation, read uniform-source
+wavelengths from the `slit_frame` transform, paint the bounding boxes onto a coverage counter, and
+run §4.2 steps 2–4. Cost: a few seconds per canonical, no `assign_wcs`/`extract_2d`. What it loses:
+the dedicated background slitlets and the pruned detached shutters (§1.7), which then need a small
+extraction of their own, and the uniform-pass correction arrays for step 5 (the de-calibration can
+instead use the pixelwise factor of §4.4). The full pass is one code path, jwst- and msaexp-shaped,
+and sees every open shutter; the assembling route is cheaper and can be prototyped today. A sensible
+order: **prototype the selection on existing canonicals** (that answers the science question with no
+pipeline change), then implement the production stage as the full pass if the background slitlets
+turn out to matter, or as the assembling route plus a background-slitlet extraction if they do not.
 
 An alternative placement — folding the clean-shutter analysis into stage 2a's existing
 `Spec2Pipeline.call` by passing the full metafile — was rejected: stage 2a's per-source metafile is
@@ -522,6 +643,8 @@ measurement on the archive.
 
 ## 6. Decisions to make
 
+0. **Grain of the 1-D sky**: pooled over the exposure group (both detectors, all nods) with
+   per-exposure scale/offset (recommended, §4.1) versus strictly per rate file.
 1. **Granularity of `MBKG2D`**: full-frame image (renderable, 16 MB raw, compresses to a few MB) vs.
    per-slit `MultiSlitModel` (smaller, jwst-shaped). Recommendation: full frame; it is the only form
    that composes with any later per-source geometry and with the rate-exposure web view.
@@ -534,9 +657,14 @@ measurement on the archive.
 5. **Auto-proposed overrides**: write `["master"]` entries with an `auto` tag (recommended, vettable)
    versus only reporting in the QA PDF.
 6. **Whether phase 3 is wanted at all** before phase 2 has produced numbers.
+7. **Derivation route**: full-metafile pass versus assembling from canonicals plus a background-slitlet
+   extraction (§4.3); prototype first either way.
 
 ## 7. Phased plan
 
+0. **P0 — prototype on existing products.** A script over one observation's canonicals (§1.7
+   conversions, §4.2 steps 2–4): do the empty shutters agree on a sky, how many are clean, does the
+   level match `jwst_backgrounds`, do NRS1 and NRS2 agree on the prism. No pipeline change.
 1. **P1 — derive and store.** `run_master_bkg`, the `_mbkg.fits` product, QA PDF, layout kind, deploy
    + pull as an intermediate. Wired into `run_stage2b`, unconditional. PATCH / Infrastructure.
 2. **P2 — apply by choice.** `bkg_method`, the `"master"` override literal, `BKGMETH` provenance,
