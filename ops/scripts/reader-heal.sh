@@ -11,7 +11,8 @@
 set -euo pipefail
 cd /srv/campfire/repo/ops
 [ -f .env ] || exit 0
-set -a; . ./.env; set +a
+# shellcheck source=lib.sh
+source /srv/campfire/repo/ops/scripts/lib.sh; load_env /srv/campfire/repo/ops/.env   # literal parse
 [ -n "${READER_PASSWORD:-}" ] || exit 0
 compose="docker compose --env-file .env -f docker-compose.yml"
 # the stored verifier changes with the password: compare to the one the pooler was given

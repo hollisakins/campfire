@@ -22,8 +22,8 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 cd "$here"
-[ -f .env ] || { echo "ops/.env missing"; exit 1; }
-set -a; . ./.env; set +a
+# shellcheck source=lib.sh
+source "$here/scripts/lib.sh"; load_env "$here/.env"     # literal parse: never source a compose .env
 root=${CAMPFIRE_DATA_ROOT:-/srv/campfire}
 compose="docker compose --env-file .env -f docker-compose.yml"
 psql_db() { $compose exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d "${POSTGRES_DB:-postgres}" "$@"; }
