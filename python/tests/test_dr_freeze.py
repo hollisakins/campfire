@@ -249,14 +249,18 @@ def _purge_env(monkeypatch, c, *, osn=True):
 
 
 def test_cli_purge(monkeypatch):
-    c = _FakeClient(rpc_data={'dr_purge_release': {'tag': 'DR-t', 'state_before': 'frozen',
+    # no archive object is only DR-t's (P4e sweep: nothing to collect), so the
+    # calls are plan -> purge
+    c = _FakeClient(rpc_data={'dr_purge_archive_plan': [],
+                              'dr_purge_release': {'tag': 'DR-t', 'state_before': 'frozen',
                                                    'deleted': {'spectra': 163, 'objects': 101, 'exports': 0}}})
     swept = _purge_env(monkeypatch, c)
     res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t', '--yes'])
     assert res.exit_code == 0, res.output
     assert 'Purged DR-t (was frozen): 163 spectra · 101 objects' in res.output
+    assert [n for n, _ in c.rpc_calls] == ['dr_purge_archive_plan', 'dr_purge_release']
     # the export files go too, after the rows (Codex on #600), then the page document's (P6b-3)
-    assert swept == [('s3', 'campfire-data', 'dr/DR-t/exports/', 1), ('s3', 'campfire-data', 'dr/DR-t/page/', 1)]
+    assert swept == [('s3', 'campfire-data', 'dr/DR-t/exports/', 2), ('s3', 'campfire-data', 'dr/DR-t/page/', 2)]
     assert 'deleted 4 export file(s) under dr/DR-t/exports/' in res.output
     assert 'deleted 4 page file(s) under dr/DR-t/page/' in res.output
     res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t'], input='n\n')
@@ -270,7 +274,10 @@ def test_cli_purge_without_osn_credentials_refuses_before_the_rows(monkeypatch):
     res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t', '--yes'])
     assert res.exit_code == 2 and 'needs OSN credentials' in res.output and '--keep-exports' in res.output
     assert c.rpc_calls == [] and swept == []
+    # the archive sweep needs the credentials too (P4e)
     res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t', '--yes', '--keep-exports'])
+    assert res.exit_code == 2 and c.rpc_calls == []
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t', '--yes', '--keep-exports', '--keep-archive'])
     assert res.exit_code == 0, res.output
     assert c.rpc_calls == [('dr_purge_release', {'p_tag': 'DR-t'})] and swept == []
 

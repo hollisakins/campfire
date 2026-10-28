@@ -415,7 +415,32 @@ presign route for login-mode deploys, `campfire/deploy/retain.py` on the direct 
 `dr archive` has not copied them yet; only then are they copied first, and a copy that drifts or
 fails refuses the batch (409 `retain_failed`). Every other overwrite proceeds as always and
 nothing else is retained. The gate is always on and has no mode or override (decision D-P2-4);
-the fix for a refused batch is finishing `campfire dr archive` or purging the release.
+the fix for a refused batch is finishing `campfire dr archive` or purging the release. An archive
+object lives while any release's manifest references it (`archive_object_references`: by
+`archive_key`, or by `storage_key` + `content_hash` for a copy the gate retained) and is
+collectable otherwise, whatever its type or age (D-P4-6 / D-P4-7). Collection is three phases,
+since no lock spans the bucket delete: `dr_archive_collect_begin` claims the rows (`archived` →
+`collecting`) under the freeze advisory lock and the release row lock after re-checking the
+references and the release state, and leaves the tag in state `purging` (publish, archive, export
+and re-freeze refuse it until `dr_purge_release` removes the tag); the caller deletes the bytes; and
+`dr_archive_collect_finish` deletes the rows, writes a 7-day tombstone per key in
+`archive_collections` and logs one `collect` event. One collector per object: the claim carries the
+run's token (`collect_claim`), a claim refreshed in the last 10 minutes refuses another run, an
+older one is taken over, and `dr_archive_collect_verify` / `_finish` act only on rows the token
+still owns (the collector re-verifies if more than a minute passed before its delete), so a run taken
+over after a stall deletes nothing it no longer holds. Nothing builds on a `collecting` row: the byte
+pass never offers it as a source or a stamp, `dr_bytes_mark` fails the member on it and on any
+outcome whose key a collection deleted after the pass fetched its page (`page_at`, the server time
+`dr_bytes_pending` hands out with the row, against the tombstone; `target_collected_at` lets the pass
+copy again instead of healing on a stale object), and the gate
+registers through `archive_register_retained` BEFORE it copies, which refuses a `collecting` row
+and otherwise makes the row referenced before the copy is in flight. Once the rows are gone the key
+is free for a fresh row. `campfire dr purge <tag>` runs the three phases over the objects only that
+unpublished release references (`dr_purge_archive_plan`, keyset-paged; `--keep-archive` skips it,
+`--local` touches no bytes), `campfire archive gc` runs them over what no release references at all
+(`archive_collectable`); both list `collecting` rows too, so an interrupted run resumes. The byte pass reuses a `CMPFRDR` stamp only from a published (or withdrawn)
+release, so an unpublished tag never reaches a published file's header. `check_archive_collect.sql`
+guards the reference rule and the phases; `check_archive_immutability.sql` the trigger.
 
 **Deploy auth (issue #250).** Two decisions, kept independent:
 

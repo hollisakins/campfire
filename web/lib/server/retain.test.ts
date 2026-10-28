@@ -42,7 +42,7 @@ function row(over: Partial<LiveRow> = {}): LiveRow {
  * unarchived release member; by default the fixture row's hash so the plan tests
  * exercise the retain path).
  */
-function fakeSupabase(rows: LiveRow[], required: string[] = [SHA_A]) {
+function fakeSupabase(rows: LiveRow[], required: string[] = [SHA_A], collecting: string[] = []) {
   const upserts: Array<{ row: Record<string, unknown>; opts: unknown }> = [];
   const rpcs: Array<{ name: string; args: unknown }> = [];
   const client = {
@@ -66,10 +66,24 @@ function fakeSupabase(rows: LiveRow[], required: string[] = [SHA_A]) {
         const asked = (args as { p_hashes: string[] }).p_hashes;
         return { data: asked.filter((h) => required.includes(h)).sort(), error: null };
       }
+      if (name === 'archive_register_retained') {
+        const row = (args as { p_row: Record<string, unknown> }).p_row;
+        if (out.bucket) out.bucketCallsAtRegister = out.bucket.sent.map((c) => c.kind);
+        if (collecting.includes(row.storage_key as string)) {
+          return { data: null, error: new Error(`archive object ${row.storage_key} is being collected (status collecting); retry`) };
+        }
+        upserts.push({ row, opts: { rpc: name } });
+        return { data: { inserted: true }, error: null };
+      }
       return { data: null, error: null };
     },
   };
-  return { client: client as never, upserts, rpcs };
+  const out: { client: never; upserts: typeof upserts; rpcs: typeof rpcs; bucket?: { sent: Array<{ kind: string }> }; bucketCallsAtRegister?: string[] } = {
+    client: client as never,
+    upserts,
+    rpcs,
+  };
+  return out;
 }
 
 /** Fake S3 client: `send(cmd)` dispatches on the command class. */
@@ -174,6 +188,7 @@ describe('executeRetain', () => {
     const d = await decision();
     const s3 = fakeS3({ [LIVE_SPEC]: { size: 1000, etag: 'e1' } });
     const sb = fakeSupabase([]);
+    sb.bucket = s3;
     const out = await executeRetain(d, { s3: s3.client, bucket: 'campfire-jwst', supabase: sb.client, actorId: 'u1', now: () => new Date('2026-10-11T00:00:00Z') });
     expect(out).toEqual({ key: LIVE_SPEC, status: 'archived', archiveKey: ARCHIVE_SPEC, copied: true });
     const copy = s3.sent.find((c) => c.kind === 'copy')!;
@@ -187,8 +202,11 @@ describe('executeRetain', () => {
       archived_from_key: LIVE_SPEC, program_slug: 'ember', spectrum_id: 'ember_egs_p1_prism_clear_15182',
       product_type: 'nirspec_spec', archived_at: '2026-10-11T00:00:00.000Z', uploaded_by: 'u1',
     });
-    expect(sb.upserts[0].opts).toMatchObject({ onConflict: 'backend,bucket,storage_key', ignoreDuplicates: true });
-    expect(sb.rpcs[0]).toMatchObject({ name: 'log_deploy_event', args: { p_action: 'archive' } });
+    expect(sb.upserts[0].opts).toMatchObject({ rpc: 'archive_register_retained' });
+    expect(sb.rpcs.map((r) => r.name)).toEqual(['archive_register_retained', 'log_deploy_event']);
+    expect(sb.rpcs[1]).toMatchObject({ name: 'log_deploy_event', args: { p_action: 'archive' } });
+    // the row went in before the copy (P4e): the bucket had seen only the live HEAD by then
+    expect(sb.bucketCallsAtRegister).toEqual(['head']);
   });
 
   it('does not copy again when the archive object already exists (dedup by hash) but still registers', async () => {
@@ -199,6 +217,21 @@ describe('executeRetain', () => {
     expect(out).toMatchObject({ status: 'archived', copied: false });
     expect(s3.sent.filter((c) => c.kind === 'copy')).toHaveLength(0);
     expect(sb.upserts).toHaveLength(1);
+  });
+
+  it('fails closed when a collection has claimed the archive key (registration refused)', async () => {
+    // the object is in the bucket (a purge is deleting it): no copy is made, the
+    // registration refuses, the gate reports an error so the deploy retries later
+    const sb = fakeSupabase([row()], [SHA_A], [ARCHIVE_SPEC]);
+    const s3 = fakeS3({ [LIVE_SPEC]: { size: 1000, etag: 'e1' }, [ARCHIVE_SPEC]: { size: 1000, etag: 'e1' } });
+    const [d] = await planRetain([{ key: LIVE_SPEC, newHash: SHA_B }], sb.client);
+    if (d.action !== 'retain') throw new Error('expected retain');
+    const out = await executeRetain(d, { s3: s3.client, bucket: 'campfire-jwst', supabase: sb.client });
+    expect(out.status).toBe('error');
+    if (out.status === 'error') expect(out.reason).toContain('being collected');
+    expect(sb.upserts).toHaveLength(0);
+    expect(sb.rpcs.map((r) => r.name)).not.toContain('log_deploy_event');
+    expect(s3.sent.filter((c) => c.kind === 'copy')).toHaveLength(0);
   });
 
   it('reports drift when the live size no longer matches the registry', async () => {
@@ -217,7 +250,9 @@ describe('executeRetain', () => {
     const sb = fakeSupabase([]);
     const out = await executeRetain(d, { s3: s3.client, bucket: 'b', supabase: sb.client });
     expect(out).toMatchObject({ status: 'drift' });
-    expect(sb.upserts).toHaveLength(0);
+    // the row went in before the copy (P4e): it stays, dangling, which is what
+    // `verify --cloud` reports when frozen bytes were lost to a write outside a deploy
+    expect(sb.upserts).toHaveLength(1);
   });
 
   it('reports drift when the live object is missing (dangling registry row)', async () => {

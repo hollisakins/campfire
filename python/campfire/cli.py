@@ -1467,41 +1467,73 @@ def _dr_osn_s3(config, *, max_pool_connections: int = 10):
 @click.argument("tag")
 @click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
 @click.option("--keep-exports", is_flag=True,
-              help="Delete the rows only, leaving the files under dr/TAG/exports/ and dr/TAG/page/ (no OSN credentials needed)")
+              help="Leave the files under dr/TAG/exports/ and dr/TAG/page/")
+@click.option("--keep-archive", is_flag=True,
+              help="Leave the archive objects only this release references (they become collectable by `campfire archive gc`)")
 @click.option("--local", is_flag=True, help="Against local Supabase")
-def dr_purge(tag, yes, keep_exports, local):
-    """Delete an UNPUBLISHED release and all its frozen rows.
+def dr_purge(tag, yes, keep_exports, keep_archive, local):
+    """Delete an UNPUBLISHED release, its files and all its frozen rows.
 
     The clean-up after a rehearsal freeze or a failed attempt. Published
-    (or withdrawn) tags are never purged. The release's export files
-    (dr/TAG/exports/ on the OSN data bucket) are deleted with it, which needs
-    OSN credentials (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml);
-    --keep-exports skips that. With --local the files are never touched: the
-    local database redirects Supabase only, so the bucket is still the shared
-    one and the same tag may be a production release. Archive bytes already copied for the tag stay
-    (dedup by hash; retention is `campfire archive gc`).
+    (or withdrawn) tags are never purged. Three things go, in this order:
+    the archive objects only this release references (its byte-pass copies,
+    its stamped FITS, the copies the deploy gate retained for its members;
+    bytes deleted, registry rows marked collected), then the frozen rows,
+    then the export and page files under dr/TAG/. The archive and the files
+    live on the OSN data bucket, so those steps need OSN credentials
+    (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml); --keep-archive and
+    --keep-exports skip them. With --local nothing in the bucket is touched:
+    the local database redirects Supabase only, so the bucket is still the
+    shared one and the same tag may be a production release. A run
+    interrupted between the deletes and the row updates is healed by running
+    it again.
     """
-    from .dr import purge_release
+    from .archive import CollectError, collect
+    from .dr import purge_archive_plan, purge_release
 
     config, sb = _dr_client(local, what="`campfire dr purge`")
     s3 = bucket = None
-    if local and not keep_exports:
+    if local and not (keep_exports and keep_archive):
         # --local redirects the database only; the object-store config is the
         # shared one, so a local purge must never delete a (possibly
-        # production) release's exports (Codex on #600)
-        click.echo(f"  --local: the export files under dr/{tag}/exports/ are left alone "
+        # production) release's bytes (Codex on #600)
+        click.echo(f"  --local: the archive objects and the files under dr/{tag}/ are left alone "
                    f"(the bucket is the shared one)")
-        keep_exports = True
-    if not keep_exports:
+        keep_exports = keep_archive = True
+    if not (keep_exports and keep_archive):
         # resolved BEFORE the rows go, so a missing credential never strands
         # the files of a purged tag (nothing would name them afterwards)
         s3, bucket = _dr_osn_s3(config)
         if s3 is None:
-            click.echo(f"✗ Deleting the export files of {tag} needs OSN credentials ({bucket}); "
-                       f"pass --keep-exports to purge the rows only.")
+            click.echo(f"✗ Deleting the archive objects and export files of {tag} needs OSN credentials "
+                       f"({bucket}); pass --keep-archive --keep-exports to purge the rows only.")
             sys.exit(2)
+    plan: list[dict] = []
+    if not keep_archive:
+        try:
+            plan = purge_archive_plan(sb, tag)
+        except Exception as e:  # noqa: BLE001 - one line, not a traceback
+            msg = getattr(e, "message", None) or str(e)
+            click.echo(f"✗ Could not plan the archive sweep of {tag}: {msg}")
+            sys.exit(1)
     if not yes:
-        click.confirm(f"Delete release {tag} and every frozen row under it?", abort=True)
+        what = f"Delete release {tag} and every frozen row under it"
+        if plan:
+            from .sync import format_size
+            size = sum(int(r.get('stored_size_bytes') or r.get('size_bytes') or 0) for r in plan)
+            what += f", and the {len(plan):,} archive object(s) ({format_size(size)}) only it references"
+        click.confirm(what + "?", abort=True)
+    if plan:
+        try:
+            collect(sb, s3, bucket, plan, tag=tag, log=click.echo)
+        except CollectError as e:
+            click.echo(f"✗ Archive sweep of {tag} stopped: {e}\n  No frozen row was touched; run the purge again.")
+            sys.exit(1)
+        except Exception as e:  # noqa: BLE001
+            msg = getattr(e, "message", None) or str(e)
+            click.echo(f"✗ Could not mark the archive objects of {tag} collected: {msg}\n"
+                       f"  Their bytes may be gone (verify --cloud reports them as dangling); run the purge again.")
+            sys.exit(1)
     try:
         result = purge_release(sb, tag)
     except Exception as e:  # noqa: BLE001 - one line, not a traceback
@@ -2002,34 +2034,28 @@ def archive_group():
 
 
 @archive_group.command(name="gc")
-@click.option("--dry-run", is_flag=True,
-              help="List what the retention window would collect; change nothing "
-                   "(the only mode until P4 lands the real collection)")
-@click.option("--older-than", "older_than", type=int, default=None, metavar="DAYS",
-              help="Retention window in days (default: the placeholder in campfire.archive)")
+@click.option("--dry-run", is_flag=True, help="List the collectable objects; change nothing")
+@click.option("--yes", is_flag=True, help="Collect without the confirmation prompt")
 @click.option("--limit", type=int, default=None,
-              help="List at most N candidate rows (the totals always cover every candidate)")
+              help="List at most N candidate rows (the totals, and a collection, always cover every candidate)")
 @click.option("--json", "as_json", is_flag=True, help="Print the report as JSON")
-@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
-def archive_gc(dry_run, older_than, limit, as_json, local):
-    """Mosaic retention: which archive copies are past the window.
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321); lists only, the bucket is the shared one")
+def archive_gc(dry_run, yes, limit, as_json, local):
+    """Collect the archive objects no data release references.
 
-    Lists archived NIRCam mosaics (never NIRSpec finals or sidecars) whose
-    archive copy is older than the window, with the bytes at rest they hold.
-    Admin-only: a non-admin's RLS view of the registry holds no archive rows,
-    so without the gate the report would read as an empty archive.
-    Collection itself -- flipping rows to `collected` (hash, size and date
-    kept; the object removed) while skipping anything a published DR
-    references -- lands with P4; until then only --dry-run is accepted.
+    The archive holds exactly the files releases reference; what no release's
+    manifest names (a purged release's leftovers, a copy retained for a member
+    later purged) is collectable, whatever its type and age. Collection
+    deletes the bytes and marks the registry rows collected (hash, size and
+    date kept). Without --dry-run the candidates are listed and, after a
+    confirmation (--yes skips it), collected; that needs OSN credentials
+    (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml). Admin-only: a non-admin's
+    RLS view of the registry holds no archive rows.
     """
     import json as _json
 
-    from .archive import DEFAULT_RETENTION_DAYS, format_gc_report, gc_candidates, gc_report
+    from .archive import CollectError, collect, format_gc_report, gc_candidates, gc_report
 
-    if not dry_run:
-        click.echo("✗ `campfire archive gc` can only --dry-run until the data-release freeze "
-                   "(P4) lands: collection must skip every object a published DR references.")
-        sys.exit(2)
     try:
         from campfire.deploy.cli import _gate_admin
         from campfire.deploy.config import load_config
@@ -2037,25 +2063,49 @@ def archive_gc(dry_run, older_than, limit, as_json, local):
     except ImportError:
         click.echo("✗ `campfire archive` needs the deploy extra: pip install campfire[deploy]")
         sys.exit(2)
-    days = DEFAULT_RETENTION_DAYS if older_than is None else older_than
+    if local and not dry_run:
+        click.echo("  --local: listing only (the bucket is the shared one)")
+        dry_run = True
     config = load_config(None, local=local)
     # Admin gate through the same client the listing uses: under RLS a
     # non-admin sees only status = 'active' rows, so the archive query would
     # succeed with nothing and read as "no candidates". Skipped for
     # service-role / --local clients (no auth.uid()), like every deploy verb.
     _gate_admin(config, what="`campfire archive gc`")
+    s3 = bucket = None
+    if not dry_run:
+        # resolved BEFORE anything is listed or confirmed
+        s3, bucket = _dr_osn_s3(config)
+        if s3 is None:
+            click.echo(f"✗ Collecting needs OSN credentials ({bucket}); pass --dry-run to list only.")
+            sys.exit(2)
     try:
         sb = get_supabase_client(config)
-        rows = gc_candidates(sb, older_than_days=days)
+        rows = gc_candidates(sb)
     except Exception as e:  # noqa: BLE001 - one line, not a traceback
         msg = getattr(e, "message", None) or str(e)
         click.echo(f"✗ Could not list archive rows: {msg}")
         sys.exit(1)
-    report = gc_report(rows, older_than_days=days, max_rows=limit)
-    if as_json:
+    report = gc_report(rows, max_rows=limit, dry_run=dry_run)
+    if as_json and dry_run:
         click.echo(_json.dumps(report, indent=2, sort_keys=True))
     else:
         click.echo(format_gc_report(report, max_rows=limit if limit is not None else 20))
+    if dry_run or not rows:
+        return
+    if not yes:
+        click.confirm(f"Delete these {len(rows):,} archive object(s) and mark their rows collected?", abort=True)
+    try:
+        totals = collect(sb, s3, bucket, rows, log=click.echo)
+    except CollectError as e:
+        click.echo(f"✗ Collection stopped: {e}\n  Rows whose bytes went are reported by `campfire verify --cloud`; run again.")
+        sys.exit(1)
+    except Exception as e:  # noqa: BLE001
+        msg = getattr(e, "message", None) or str(e)
+        click.echo(f"✗ Could not mark the rows collected: {msg}\n  Run again (a missing object deletes cleanly).")
+        sys.exit(1)
+    if as_json:
+        click.echo(_json.dumps({**report, 'dry_run': False, 'result': totals}, indent=2, sort_keys=True))
 
 
 def main():

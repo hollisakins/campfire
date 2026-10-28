@@ -967,12 +967,18 @@ GRANT EXECUTE ON FUNCTION public.handle_new_user() TO supabase_auth_admin;
 --
 -- Archive rows (root = 'archive') describe write-once objects: the content-
 -- addressed store is the thing a DR and a manifest point at, so the registry
--- must not be able to forget or rewrite one. The only permitted change is the
--- mosaic-retention transition archived -> collected (status, with
--- collected_at assigned by the trigger, never by the caller); every other
--- column is frozen (whole-row comparison, so a new column is frozen by
--- default). Deletes are refused outright. Live rows are untouched. Bypass (for a genuine mistake) means
--- disabling the trigger as postgres in a migration, on purpose, with a note.
+-- must not be able to forget or rewrite one. The permitted changes are the
+-- status transitions archived -> collecting (a collection claimed the object:
+-- dr_archive_collect_begin, P4e; nothing builds on a collecting row, its
+-- bytes are about to go) and archived -> collected (legacy; collected_at
+-- assigned by the trigger, never by the caller); every other column is frozen
+-- (whole-row comparison, so a new column is frozen by default). The only
+-- DELETE is of a collecting row by dr_archive_collect_finish, which sets the
+-- transaction-local campfire.archive_collect = on after the bytes are gone;
+-- any other delete is refused. collect_claim (the owning run) moves with the
+-- status. Live rows are untouched. Bypass (for a genuine
+-- mistake) means disabling the trigger as postgres in a migration, on purpose,
+-- with a note.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.protect_archive_rows() RETURNS trigger
 LANGUAGE plpgsql
@@ -981,7 +987,10 @@ AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
     IF OLD.root = 'archive' THEN
-      RAISE EXCEPTION 'archive registry rows are immutable: cannot delete %', OLD.storage_key
+      IF OLD.status = 'collecting' AND current_setting('campfire.archive_collect', true) = 'on' THEN
+        RETURN OLD;   -- dr_archive_collect_finish, after the bytes went
+      END IF;
+      RAISE EXCEPTION 'archive registry rows are immutable: cannot delete % (only dr_archive_collect_finish removes a collecting row)', OLD.storage_key
         USING ERRCODE = 'integrity_constraint_violation';
     END IF;
     RETURN OLD;
@@ -1003,18 +1012,18 @@ BEGIN
   IF OLD.root = 'archive' THEN
     -- The whole row is frozen except the status transition, its timestamp and
     -- the bookkeeping updated_at (bumped by the generic trigger).
-    IF (to_jsonb(NEW) - 'status' - 'collected_at' - 'updated_at')
-       IS DISTINCT FROM (to_jsonb(OLD) - 'status' - 'collected_at' - 'updated_at')
+    IF (to_jsonb(NEW) - 'status' - 'collected_at' - 'updated_at' - 'collect_claim')
+       IS DISTINCT FROM (to_jsonb(OLD) - 'status' - 'collected_at' - 'updated_at' - 'collect_claim')
     THEN
-      RAISE EXCEPTION 'archive registry rows are immutable: % may only move archived -> collected', OLD.storage_key
+      RAISE EXCEPTION 'archive registry rows are immutable: % may only move archived -> collecting / collected', OLD.storage_key
         USING ERRCODE = 'integrity_constraint_violation';
     END IF;
     IF NEW.status IS DISTINCT FROM OLD.status THEN
-      IF NOT (OLD.status = 'archived' AND NEW.status = 'collected') THEN
-        RAISE EXCEPTION 'archive registry row % status may only move archived -> collected (got % -> %)',
+      IF NOT (OLD.status = 'archived' AND NEW.status IN ('collecting', 'collected')) THEN
+        RAISE EXCEPTION 'archive registry row % status may only move archived -> collecting / collected (got % -> %)',
           OLD.storage_key, OLD.status, NEW.status USING ERRCODE = 'integrity_constraint_violation';
       END IF;
-      NEW.collected_at := now();
+      NEW.collected_at := CASE WHEN NEW.status = 'collected' THEN now() ELSE OLD.collected_at END;
     ELSIF NEW.collected_at IS DISTINCT FROM OLD.collected_at THEN
       RAISE EXCEPTION 'archive registry row %: collected_at follows the status transition', OLD.storage_key
         USING ERRCODE = 'integrity_constraint_violation';

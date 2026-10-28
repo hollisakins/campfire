@@ -18,9 +18,11 @@ semantics are the route's, kept deliberately in step:
   missing, or the conditional copy fails its ETag precondition;
 * the retained copy is a same-bucket ``CopyObject`` to
   ``archive/<sha256>/<relpath>`` guarded by ``CopySourceIfMatch`` (OSN answers
-  412 on a mismatch, measured 2026-10-11), followed by an archive registry row
-  (duplicate = someone already registered the same content) and an ``archive``
-  deploy event.
+  412 on a mismatch, measured 2026-10-11); the archive registry row goes in
+  FIRST through ``archive_register_retained`` (an existing archived row =
+  someone already registered the same content; a row a collection has claimed
+  is refused and the gate fails closed), so no collection can claim the row
+  while the copy is in flight; then an ``archive`` deploy event.
 
 The gate is always on and has no override: it archives first and refuses the
 upload set on any drift or copy failure, because the one unrecoverable event
@@ -193,6 +195,31 @@ def execute_retain(decision: RetainDecision, *, s3, bucket: str, client,
                              reason=f"live object is {head['ContentLength']} bytes, registry says {expected_size}")
     etag = (head.get('ETag') or '').strip('"')
 
+    # Register FIRST (P4e): once the row exists it is referenced by the member
+    # being retained, so no collection can claim it while the copy below is in
+    # flight; an existing archived row is the same content (ensure the object);
+    # a row a collection has claimed is refused and the gate fails closed. A
+    # crash between here and the copy leaves a row the next run heals.
+    ts = (now or datetime.now(timezone.utc)).isoformat()
+    archive_row = {
+        'backend': 'osn', 'bucket': 'data', 'storage_key': ak,
+        'root': 'archive', 'status': 'archived',
+        'content_hash': row['content_hash'],
+        'size_bytes': row.get('size_bytes'), 'stored_size_bytes': row.get('stored_size_bytes'),
+        'content_type': row.get('content_type') or 'application/octet-stream',
+        'product_type': row['product_type'], 'instrument': row.get('instrument'),
+        'observation': row.get('observation'), 'spectrum_id': row.get('spectrum_id'),
+        'program_slug': row.get('program_slug'), 'deployment_id': row.get('deployment_id'),
+        'cfpipe_version': row.get('cfpipe_version'),
+        'archived_from_key': row['storage_key'], 'archived_at': ts,
+        'archived_by_deployment': None, 'uploaded_by': actor, 'updated_at': ts,
+    }
+    try:
+        client.rpc('archive_register_retained', {'p_row': archive_row}).execute()
+    except Exception as e:  # noqa: BLE001
+        msg = getattr(e, 'message', None) or str(e)
+        return RetainOutcome(key, 'error', reason=f'registry insert failed: {msg}')
+
     copied = False
     try:
         s3.head_object(Bucket=bucket, Key=ak)
@@ -211,27 +238,6 @@ def execute_retain(decision: RetainDecision, *, s3, bucket: str, client,
             if _status_code(e) == 412:
                 return RetainOutcome(key, 'drift', reason='live object changed during retain (copy precondition failed)')
             return RetainOutcome(key, 'error', reason=f'copy failed: {e}')
-
-    ts = (now or datetime.now(timezone.utc)).isoformat()
-    archive_row = {
-        'backend': 'osn', 'bucket': 'data', 'storage_key': ak,
-        'root': 'archive', 'status': 'archived',
-        'content_hash': row['content_hash'],
-        'size_bytes': row.get('size_bytes'), 'stored_size_bytes': row.get('stored_size_bytes'),
-        'content_type': row.get('content_type') or 'application/octet-stream',
-        'product_type': row['product_type'], 'instrument': row.get('instrument'),
-        'observation': row.get('observation'), 'spectrum_id': row.get('spectrum_id'),
-        'program_slug': row.get('program_slug'), 'deployment_id': row.get('deployment_id'),
-        'cfpipe_version': row.get('cfpipe_version'),
-        'archived_from_key': row['storage_key'], 'archived_at': ts,
-        'archived_by_deployment': None, 'uploaded_by': actor, 'updated_at': ts,
-    }
-    try:
-        (client.table('storage_objects')
-         .upsert(archive_row, on_conflict='backend,bucket,storage_key', ignore_duplicates=True)
-         .execute())
-    except Exception as e:  # noqa: BLE001
-        return RetainOutcome(key, 'error', reason=f'registry insert failed: {e}')
 
     log_deploy_event(client, action='archive', actor=actor, observation=row.get('observation'),
                      affected_count=1,

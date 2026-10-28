@@ -1,76 +1,63 @@
-"""Archive tooling: the mosaic retention dry run (`campfire archive gc --dry-run`).
+"""Archive tooling: collection of unreferenced objects (`campfire archive gc`)
+and the delete-then-collect step `campfire dr purge` shares with it.
 
-P2 of the data-release plan (docs/design-data-releases-impl-plan.md §4, "gc").
-The content-addressed archive (`archive/<sha256>/<relpath>`, registry rows with
-``root = 'archive'``) is write-once; the only thing that ever leaves it is a
-NIRCam mosaic past its retention window. NIRSpec finals and sidecars are never
-collected (design §4.2), so this module refuses to even list them.
+The content-addressed archive (``archive/<sha256>/<relpath>``, registry rows
+with ``root = 'archive'``) holds exactly the files data releases reference
+(docs/design-data-releases-impl-plan.md §9a, decisions D-P4-6 / D-P4-7). An
+object is referenced by a release when its manifest names it, either as the
+byte pass's copy (``dr_manifest.archive_key``) or as a copy the deploy gate
+retained for a member (the object's ``archived_from_key`` / ``content_hash``
+match a manifest row). An object no release references is collectable; there
+is no time window and no per-type rule. A published release is never purged,
+so its objects are referenced forever.
 
-Collection is a status flip, not a delete: a collected row keeps its hash, size
-and date (``status = 'collected'``, ``collected_at``) so a manifest resolves to
-"existed, collected on <date>". The real collection lands with P4, because it
-must skip every object a published DR references (``dr_manifest``); until then
-this module is a dry run only -- it lists what the window would select and how
-many bytes at rest that is, and changes nothing.
-
-The window has no agreed number yet (the design says "time-boxed", amending
-NIRCam decision D3); ``DEFAULT_RETENTION_DAYS`` is a placeholder the CLI
-exposes as ``--older-than`` so the dry run can be read at several windows
-before one is written down.
+Collection is three phases, because nothing can hold a lock across the
+bucket delete: ``dr_archive_collect_begin`` claims the rows (``archived ->
+collecting``, owned by this run's token) under the freeze lock and the release
+row lock, re-checking the references and the release state; per batch,
+``dr_archive_collect_verify`` returns the keys this run still owns and the
+bytes of exactly those are deleted from the bucket; then
+``dr_archive_collect_finish`` deletes those collecting rows and logs one
+``collect`` deploy event. Nothing builds on a collecting row (the byte pass
+never offers it, the deploy gate's registration refuses it), so a copy that
+would vanish under the pending delete is never recorded. A run interrupted
+anywhere is finished by the next one: collecting rows are listed again, a
+delete of a missing key succeeds, and both phases count what is already done
+instead of refusing it.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Optional
+import time
+from datetime import datetime, timezone
+from typing import Callable, Optional
 
-#: Placeholder until the retention window is decided (plan §12, open).
-DEFAULT_RETENTION_DAYS = 365
+#: A verify is trusted for this long before the delete (the claim it refreshed
+#: expires after 10 minutes in SQL; a stall longer than this re-verifies).
+VERIFY_TRUST_S = 60.0
 
-#: The only product types retention may ever collect (design §4.2).
-COLLECTABLE_PRODUCT_TYPES: tuple[str, ...] = ('nircam_mosaic',)
-
-_COLUMNS = ('id, storage_key, content_hash, size_bytes, stored_size_bytes, product_type, '
-            'field, filter, observation, archived_from_key, archived_at, archived_by_deployment')
+#: archive_collectable / dr_collect_archive accept at most 2000 per call.
 _PAGE = 1000
+#: DeleteObjects takes at most 1000 keys per request.
+_DELETE_BATCH = 1000
 
 
-def gc_candidates(client, *, older_than_days: int = DEFAULT_RETENTION_DAYS,
-                  product_types: Iterable[str] = COLLECTABLE_PRODUCT_TYPES,
-                  now: Optional[datetime] = None) -> list[dict]:
-    """Archive rows the retention window would collect, oldest first.
+def gc_candidates(client, *, page: int = _PAGE) -> list[dict]:
+    """Every archive object no release references, by registry id.
 
-    ``archived`` mosaic rows (never ``collected``, never NIRSpec) whose
-    ``archived_at`` is older than *older_than_days*. Paged on ``id`` so a large
-    archive never needs one unbounded request. Always the full set: the
-    report's totals must describe everything the window selects, so any
-    display cap is applied by :func:`gc_report` (``max_rows``), never here.
-    DR membership is NOT checked here (``dr_manifest`` arrives with P4); the
-    report says so.
+    Pages ``archive_collectable`` on ``id`` so a large archive never needs one
+    unbounded request. Always the full set: the report's totals must describe
+    everything collection would take, so any display cap is applied by
+    :func:`gc_report` (``max_rows``), never here.
     """
-    types = tuple(product_types)
-    bad = [t for t in types if t not in COLLECTABLE_PRODUCT_TYPES]
-    if bad:
-        raise ValueError(f"retention never collects {', '.join(bad)}; "
-                         f"collectable: {', '.join(COLLECTABLE_PRODUCT_TYPES)}")
-    if older_than_days < 0:
-        raise ValueError('older_than_days must be >= 0')
-    cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=older_than_days)).isoformat()
-
     out: list[dict] = []
-    last_id = 0
+    after = 0
     while True:
-        q = (client.table('storage_objects').select(_COLUMNS)
-             .eq('root', 'archive').eq('status', 'archived')
-             .in_('product_type', list(types))
-             .lt('archived_at', cutoff)
-             .gt('id', last_id)
-             .order('id').limit(_PAGE))
-        rows = q.execute().data or []
+        resp = client.rpc('archive_collectable', {'p_after_id': after, 'p_limit': page}).execute()
+        rows = resp.data or []
         out.extend(rows)
-        if len(rows) < _PAGE:
+        if len(rows) < page:
             break
-        last_id = int(rows[-1]['id'])
-    out.sort(key=lambda r: (str(r.get('archived_at') or ''), int(r.get('id') or 0)))
+        after = int(rows[-1]['id'])
     return out
 
 
@@ -82,40 +69,40 @@ def at_rest_bytes(row: dict) -> int:
     return int(v)
 
 
-def gc_report(rows: list[dict], *, older_than_days: int, now: Optional[datetime] = None,
-              max_rows: Optional[int] = None) -> dict:
-    """The dry-run payload: candidates plus totals, JSON-serialisable.
+def gc_report(rows: list[dict], *, now: Optional[datetime] = None,
+              max_rows: Optional[int] = None, dry_run: bool = True) -> dict:
+    """The report payload: candidates plus totals, JSON-serialisable.
 
-    ``candidates`` / ``bytes_at_rest`` / ``by_field`` always cover every row;
-    *max_rows* caps only the per-object ``rows`` list (``rows_shown`` says how
-    many made it), so a ``--limit`` never understates what the window selects.
+    ``candidates`` / ``bytes_at_rest`` / ``by_product_type`` always cover every
+    row; *max_rows* caps only the per-object ``rows`` list (``rows_shown`` says
+    how many made it), so a ``--limit`` never understates what collection
+    would take.
     """
     now = now or datetime.now(timezone.utc)
     shown = rows if max_rows is None else rows[:max(0, max_rows)]
-    by_field: dict[str, dict[str, int]] = {}
+    by_type: dict[str, dict[str, int]] = {}
     total = 0
     for r in rows:
         b = at_rest_bytes(r)
         total += b
-        f = by_field.setdefault(str(r.get('field') or '?'), {'objects': 0, 'bytes': 0})
-        f['objects'] += 1
-        f['bytes'] += b
+        t = by_type.setdefault(str(r.get('product_type') or '?'), {'objects': 0, 'bytes': 0})
+        t['objects'] += 1
+        t['bytes'] += b
     return {
         'generated_at': now.isoformat(),
-        'dry_run': True,
-        'older_than_days': older_than_days,
-        'product_types': list(COLLECTABLE_PRODUCT_TYPES),
-        'dr_membership_checked': False,
+        'dry_run': dry_run,
+        'rule': 'archive objects no data release references',
         'candidates': len(rows),
         'bytes_at_rest': total,
-        'by_field': by_field,
+        'by_product_type': by_type,
         'rows_shown': len(shown),
         'rows': [{
             'storage_key': r.get('storage_key'),
             'content_hash': r.get('content_hash'),
             'bytes_at_rest': at_rest_bytes(r),
+            'product_type': r.get('product_type'),
             'field': r.get('field'),
-            'filter': r.get('filter'),
+            'observation': r.get('observation'),
             'archived_at': r.get('archived_at'),
             'archived_from_key': r.get('archived_from_key'),
         } for r in shown],
@@ -126,17 +113,16 @@ def format_gc_report(report: dict, *, max_rows: int = 20) -> str:
     """Readable rendering of :func:`gc_report`."""
     from .sync import format_size
 
+    head = 'Archive gc (dry run)' if report.get('dry_run') else 'Archive gc'
     lines = [
-        f"Archive gc (dry run)  window: mosaics archived more than {report['older_than_days']} day(s) ago",
-        "  Nothing is collected by this command. DR membership is not checked yet "
-        "(dr_manifest lands with P4); NIRSpec products are never collected.",
+        f"{head}  rule: {report['rule']}",
         f"  Candidates: {report['candidates']:,} object(s), "
         f"{format_size(int(report['bytes_at_rest']))} at rest",
     ]
-    if report['by_field']:
-        lines.append("  By field:")
-        for field, agg in sorted(report['by_field'].items(), key=lambda kv: -kv[1]['bytes']):
-            lines.append(f"    {field:<20} {agg['objects']:>6}  {format_size(int(agg['bytes'])):>10}")
+    if report['by_product_type']:
+        lines.append("  By product type:")
+        for kind, agg in sorted(report['by_product_type'].items(), key=lambda kv: -kv[1]['bytes']):
+            lines.append(f"    {kind:<22} {agg['objects']:>7}  {format_size(int(agg['bytes'])):>10}")
     rows = report.get('rows') or []
     if rows:
         lines.append("  Oldest first:")
@@ -147,3 +133,88 @@ def format_gc_report(report: dict, *, max_rows: int = 20) -> str:
         if hidden > 0:
             lines.append(f"    … {hidden} more (totals above include them; --limit N / --json to list more)")
     return '\n'.join(lines)
+
+
+class CollectError(RuntimeError):
+    """The bucket refused to delete some objects; nothing was marked collected for them."""
+
+
+def delete_archive_objects(s3, bucket: str, keys: list[str]) -> int:
+    """Delete *keys* from *bucket* in DeleteObjects batches; returns how many were asked.
+
+    A missing key is a success (S3 semantics), which is what makes a re-run
+    after a crash heal. Any entry the bucket reports under ``Errors`` raises
+    :class:`CollectError` before the rows are touched.
+    """
+    for k in keys:
+        if not k.startswith('archive/'):
+            raise CollectError(f"refusing to delete a non-archive key: {k}")
+    errors: list[str] = []
+    for i in range(0, len(keys), _DELETE_BATCH):
+        batch = keys[i:i + _DELETE_BATCH]
+        resp = s3.delete_objects(Bucket=bucket, Delete={'Objects': [{'Key': k} for k in batch], 'Quiet': True})
+        for e in (resp or {}).get('Errors') or []:
+            errors.append(f"{e.get('Key')}: {e.get('Code')} {e.get('Message')}".strip())
+    if errors:
+        raise CollectError("the bucket refused to delete " + ', '.join(errors[:5])
+                           + (f" and {len(errors) - 5} more" if len(errors) > 5 else ''))
+    return len(keys)
+
+
+def collect(client, s3, bucket: str, rows: list[dict], *, tag: Optional[str] = None,
+            log: Optional[Callable[[str], None]] = None) -> dict:
+    """Claim the objects of *rows*, delete them, then drop their registry rows.
+
+    *rows* come from ``archive_collectable`` (``tag`` None) or
+    ``dr_purge_archive_plan`` (``tag`` set, which lets the claim ignore that
+    tag's own references). Every row must live on OSN (the only archive
+    backend); anything else is refused before a byte moves. The claim is
+    taken for every key before any byte is deleted, so a key another release
+    came to reference since the plan stops the whole run with nothing gone.
+    """
+    import uuid
+
+    log = log or (lambda _m: None)
+    if not rows:
+        return {'claimed': 0, 'deleted': 0, 'collected': 0, 'lost': 0, 'bytes': 0}
+    foreign = [r['storage_key'] for r in rows if r.get('backend') not in (None, 'osn')]
+    if foreign:
+        raise CollectError(f"{len(foreign)} archive row(s) are not on OSN (first: {foreign[0]}); "
+                           f"the archive has one backend")
+    keys = [r['storage_key'] for r in rows]
+    # one token for the run: begin stamps it on every claimed row, verify and
+    # finish act only on rows that still carry it, so a run taken over after a
+    # stall (10 minutes without a refresh) deletes nothing it no longer owns
+    claim = str(uuid.uuid4())
+    totals = {'claimed': 0, 'deleted': 0, 'collected': 0, 'lost': 0, 'bytes': 0}
+    for i in range(0, len(keys), _PAGE):
+        resp = client.rpc('dr_archive_collect_begin',
+                          {'p_keys': keys[i:i + _PAGE], 'p_tag': tag, 'p_claim': claim}).execute()
+        data = resp.data if isinstance(resp.data, dict) else {}
+        totals['claimed'] += int(data.get('claimed') or 0)
+    log(f"  claimed {totals['claimed']:,} archive object(s) for collection")
+    for i in range(0, len(keys), _DELETE_BATCH):
+        batch = keys[i:i + _DELETE_BATCH]
+        # the verify is what fences the delete: it is only trusted while the
+        # claim it refreshed cannot have expired (10 minutes in SQL), so a
+        # process that stalled in between (a laptop asleep) verifies again
+        # before it deletes anything
+        while True:
+            verified_at = time.time()
+            resp = client.rpc('dr_archive_collect_verify', {'p_keys': batch, 'p_claim': claim}).execute()
+            held = list(resp.data or [])
+            if time.time() - verified_at <= VERIFY_TRUST_S:
+                break
+        totals['lost'] += len(batch) - len(held)
+        if not held:
+            continue
+        totals['deleted'] += delete_archive_objects(s3, bucket, held)
+        resp = client.rpc('dr_archive_collect_finish', {'p_keys': held, 'p_tag': tag, 'p_claim': claim}).execute()
+        data = resp.data if isinstance(resp.data, dict) else {}
+        totals['collected'] += int(data.get('collected') or 0)
+        totals['bytes'] += int(data.get('bytes') or 0)
+    log(f"  deleted {totals['deleted']:,} archive object(s)")
+    log(f"  removed {totals['collected']:,} registry row(s)")
+    if totals['lost']:
+        log(f"  {totals['lost']:,} object(s) were taken over by another run and left to it")
+    return totals

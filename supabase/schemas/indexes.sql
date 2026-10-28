@@ -816,6 +816,12 @@ CREATE INDEX IF NOT EXISTS idx_dr_manifest_tag_component
 -- release has frozen but not archived; the set is empty outside a freeze -> archive window.
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_unarchived_hash
     ON public.dr_manifest USING btree (content_hash) WHERE (byte_state = ANY (ARRAY['pending'::text, 'failed'::text]));
+-- archive_object_references (P4e): an archive object is looked up by the manifest's archive_key
+-- (the byte pass's copy) or by (storage_key, content_hash) (a retained copy); the PK leads with tag.
+CREATE INDEX IF NOT EXISTS idx_dr_manifest_archive_key
+    ON public.dr_manifest USING btree (archive_key) WHERE (archive_key IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_dr_manifest_storage_key_hash
+    ON public.dr_manifest USING btree (storage_key, content_hash);
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_science_hash
     ON public.dr_manifest USING btree (science_hash) WHERE (science_hash IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_spectrum

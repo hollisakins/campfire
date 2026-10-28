@@ -233,9 +233,15 @@ class Outcome:
     registry: Optional[dict] = None
     bytes_moved: int = 0
     science_hash: Optional[str] = None   # computed here for a member frozen without one
+    # the server time the pass fetched this member's page (dr_bytes_pending
+    # page_at), carried into the mark so it can refuse an outcome whose key a
+    # collection deleted after the page was handed out (P4e)
+    page_at: Optional[str] = None
 
     def as_result(self) -> dict:
         r = {'storage_key': self.storage_key, 'state': self.state}
+        if self.page_at:
+            r['page_at'] = self.page_at
         if self.archive_key:
             r['archive_key'] = self.archive_key
         if self.stamped_hash:
@@ -274,6 +280,22 @@ def _check_existing(s3, bucket: str, key: str, size: Optional[int]) -> Optional[
     return None
 
 
+def _collected_since(row: dict, head: Optional[dict]) -> bool:
+    """True when a collection deleted the member's copy target after the
+    object *head* describes was written (``target_collected_at`` from
+    dr_bytes_pending): the object is the one being deleted, not a usable copy."""
+    stone = row.get('target_collected_at')
+    lm = (head or {}).get('LastModified')
+    if not stone or lm is None:
+        return bool(stone) and head is not None and lm is None
+    from datetime import datetime
+    try:
+        at = datetime.fromisoformat(str(stone).replace('Z', '+00:00'))
+        return lm <= at
+    except (TypeError, ValueError):
+        return True
+
+
 def _registry(row: dict, **overrides) -> dict:
     reg = dict(row.get('registry') or {})
     reg.pop('retained_key', None)
@@ -310,6 +332,13 @@ def process_member(row: dict, *, tag: str, s3, bucket: str,
     """Make one member's bytes exist under archive/ and say how."""
     key = row['storage_key']
     action = plan_action(row)
+    out = _process_member(row, key, action, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
+    out.page_at = row.get('page_at')
+    return out
+
+
+def _process_member(row: dict, key: str, action: str, *, tag: str, s3, bucket: str,
+                    verify_science: bool) -> Outcome:
     try:
         if action == 'error':
             if row.get('backend') != 'osn' or row.get('bucket') != 'data':
@@ -404,6 +433,14 @@ def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
                        error=f'{int(stored):,} bytes exceeds the 5 GB CopyObject limit (UploadPartCopy not implemented)')
     reg = _registry(row, size_bytes=row.get('size_bytes'))
     existing = _head(s3, bucket, target)
+    if existing is not None and _collected_since(row, existing):
+        # a collection deleted this key after that object was written: what
+        # is there is the object being deleted (or its leftover), never a copy
+        # to build on; copy again, overwriting it (P4e)
+        existing = None
+        overwrite = True
+    else:
+        overwrite = False
     if existing is not None:
         # The archive key names the LOGICAL content; a gzipped product's stored
         # size depends on the compressor, so it is compared only for plain ones
@@ -473,8 +510,9 @@ def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
             return Outcome(key, 'failed', 'drift',
                            error=f'source {src} holds {got}, the release froze {row["content_hash"]}')
         try:
-            s3.put_object(Bucket=bucket, Key=target, Body=body, IfNoneMatch='*',
-                          ContentType=reg.get('content_type') or 'application/octet-stream')
+            put_kw = {} if overwrite else {'IfNoneMatch': '*'}
+            s3.put_object(Bucket=bucket, Key=target, Body=body,
+                          ContentType=reg.get('content_type') or 'application/octet-stream', **put_kw)
         except Exception as e:  # noqa: BLE001
             if _status_code(e) != 412:
                 raise

@@ -112,7 +112,7 @@ class _Query:
     def __init__(self, table, log, pages):
         self._log = log
         self._pages = pages
-        self.ops = {"table": table, "eq": [], "gt": None, "order": None, "limit": None, "select": None}
+        self.ops = {"table": table, "eq": [], "neq": [], "gt": None, "order": None, "limit": None, "select": None}
 
     def select(self, cols):
         self.ops["select"] = cols
@@ -120,6 +120,10 @@ class _Query:
 
     def eq(self, col, val):
         self.ops["eq"].append((col, val))
+        return self
+
+    def neq(self, col, val):
+        self.ops["neq"].append((col, val))
         return self
 
     def gt(self, col, val):
@@ -183,6 +187,8 @@ def test_registry_keys_filters_server_side():
     keys = registry.registry_keys(client, bucket="data", backend="r2")
     assert keys == ["spectra/x.fits"]
     assert client.log[0]["eq"] == [("bucket", "data"), ("backend", "r2")]
+    # collected archive rows (bytes deleted on purpose, P4e) are not danglable
+    assert client.log[0]["neq"] == [("status", "collected")]
     # no backend => only the bucket predicate
     client2 = _Client([[]])
     registry.registry_keys(client2, bucket="tiles")

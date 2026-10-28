@@ -25,6 +25,7 @@ DECLARE
   k text := 'archive/' || repeat('a', 64) || '/products/nirspec/zzz_ar_obs/zzz_ar_obs_prism_clear_1_spec.fits';
   live_k text := 'data/products/nirspec/zzz_ar_obs/zzz_ar_obs_prism_clear_1_spec.fits';
   n int; ok boolean;
+  k2 text;
 BEGIN
   -- 1. delete refused
   BEGIN
@@ -69,6 +70,41 @@ BEGIN
   EXCEPTION WHEN integrity_constraint_violation THEN ok := false; END;
   IF ok THEN RAISE EXCEPTION 'FAIL: collected row went back to archived'; END IF;
 
+  -- 4b. collection (P4e): archived -> collecting is allowed; a collecting row
+  -- is deleted only under campfire.archive_collect (dr_archive_collect_finish);
+  -- an archived row is never deleted, even under it; nothing else moves.
+  INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes, content_type, product_type, instrument, status, observation, spectrum_id, root, program_slug, archived_from_key, archived_at)
+  VALUES ('osn', 'data', 'archive/' || repeat('b', 64) || '/products/nirspec/zzz_ar_obs/zzz_b_spec.fits',
+          'sha256:' || repeat('b', 64), 1000, 'application/fits', 'nirspec_spec', 'nirspec', 'archived', 'zzz_ar_obs', 'zzz_ar_obs_prism_clear_2', 'archive', 'zzz_ar_prog',
+          'data/products/nirspec/zzz_ar_obs/zzz_b_spec.fits', now());
+  k2 := 'archive/' || repeat('b', 64) || '/products/nirspec/zzz_ar_obs/zzz_b_spec.fits';
+  BEGIN
+    DELETE FROM storage_objects WHERE storage_key = k2; ok := true;
+  EXCEPTION WHEN integrity_constraint_violation THEN ok := false; END;
+  IF ok THEN RAISE EXCEPTION 'FAIL: an archived row was deleted'; END IF;
+  PERFORM set_config('campfire.archive_collect', 'on', true);
+  BEGIN
+    DELETE FROM storage_objects WHERE storage_key = k2; ok := true;
+  EXCEPTION WHEN integrity_constraint_violation THEN ok := false; END;
+  IF ok THEN RAISE EXCEPTION 'FAIL: an archived row was deleted under campfire.archive_collect'; END IF;
+  PERFORM set_config('campfire.archive_collect', 'off', true);
+  UPDATE storage_objects SET status = 'collecting' WHERE storage_key = k2;
+  SELECT count(*) INTO n FROM storage_objects WHERE storage_key = k2 AND status = 'collecting' AND collected_at IS NULL;
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL: archived -> collecting refused or stamped collected_at'; END IF;
+  BEGIN
+    UPDATE storage_objects SET status = 'archived' WHERE storage_key = k2; ok := true;
+  EXCEPTION WHEN integrity_constraint_violation THEN ok := false; END;
+  IF ok THEN RAISE EXCEPTION 'FAIL: collecting row went back to archived'; END IF;
+  BEGIN
+    DELETE FROM storage_objects WHERE storage_key = k2; ok := true;
+  EXCEPTION WHEN integrity_constraint_violation THEN ok := false; END;
+  IF ok THEN RAISE EXCEPTION 'FAIL: a collecting row was deleted without campfire.archive_collect'; END IF;
+  PERFORM set_config('campfire.archive_collect', 'on', true);
+  DELETE FROM storage_objects WHERE storage_key = k2;
+  PERFORM set_config('campfire.archive_collect', 'off', true);
+  SELECT count(*) INTO n FROM storage_objects WHERE storage_key = k2;
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL: dr_archive_collect_finish''s delete of a collecting row refused'; END IF;
+
   -- 5. a live row cannot be flipped into an archive row in place
   BEGIN
     UPDATE storage_objects SET root = 'archive', status = 'archived', storage_key = 'archive/' || repeat('d', 64) || '/x_spec.fits' WHERE storage_key = live_k; ok := true;
@@ -95,7 +131,7 @@ BEGIN
   EXCEPTION WHEN check_violation THEN ok := false; END;
   IF ok THEN RAISE EXCEPTION 'FAIL: live row accepted with status archived'; END IF;
 
-  RAISE NOTICE 'OK: archive registry rows are immutable (no delete, no rewrite, archived -> collected only); live rows unaffected.';
+  RAISE NOTICE 'OK: archive registry rows are immutable (no rewrite; archived -> collecting / collected only; a collecting row deleted only by dr_archive_collect_finish); live rows unaffected.';
 END $$;
 
 ROLLBACK;

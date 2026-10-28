@@ -8,7 +8,8 @@
 --      (one observation), the source of the frozen bytes -- the live key while
 --      the live row still holds the frozen hash, the retained archive copy when
 --      it does not, NULL when the bytes are gone -- and the stamped object of
---      another release with the same science to reuse (D-P4-2);
+--      another PUBLISHED release with the same science to reuse (D-P4-2,
+--      D-P4-6: an unpublished release's stamp is never offered);
 --   2. dr_bytes_mark refuses malformed batches (state, archive key, stamp hash,
 --      stamping a non-FITS, an unregistered archive object, unknown members,
 --      oversized batches) without writing anything;
@@ -139,9 +140,9 @@ BEGIN
   SELECT m.backend, m.bucket, ret_key, 'archive', 'archived', m.content_hash, m.size_bytes, 'application/json',
          m.product_type, m.program_slug, m.storage_key, now()
   FROM dr_manifest m WHERE m.tag = 'DR-seed' AND m.storage_key = p.j3;
-  -- an earlier release stamped s2 from the same science
-  INSERT INTO dr_releases (tag, state, components, frozen_at)
-  VALUES ('DR-zzz-prev', 'frozen', '["nirspec"]', (SELECT frozen_at FROM dr_releases WHERE tag = 'DR-seed') - interval '1 day');
+  -- an earlier, published release stamped s2 from the same science
+  INSERT INTO dr_releases (tag, state, components, frozen_at, published_at)
+  VALUES ('DR-zzz-prev', 'published', '["nirspec"]', (SELECT frozen_at FROM dr_releases WHERE tag = 'DR-seed') - interval '1 day', now());
   INSERT INTO dr_manifest (tag, storage_key, component, program_slug, product_type, spectrum_id, backend, bucket,
                           content_hash, science_hash, size_bytes, byte_state, archive_key, stamped_hash)
   SELECT 'DR-zzz-prev', m.storage_key, m.component, m.program_slug, m.product_type, m.spectrum_id, m.backend, m.bucket,
@@ -166,10 +167,11 @@ BEGIN
   END IF;
   SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.s1;
   IF r.reuse_archive_key IS NOT NULL THEN RAISE EXCEPTION 'nothing to reuse for s1'; END IF;
-  -- another release (frozen later, its pass ran first) stamped s1: the first
-  -- release to archive a file owns its stamp, so DR-seed is offered it
-  INSERT INTO dr_releases (tag, state, components, frozen_at)
-  VALUES ('DR-zzz-later', 'frozen', '["nirspec"]', (SELECT frozen_at FROM dr_releases WHERE tag = 'DR-seed') + interval '1 day');
+  -- another release (frozen later, its pass ran first, since published)
+  -- stamped s1: the first published release to archive a file owns its
+  -- stamp, so DR-seed is offered it
+  INSERT INTO dr_releases (tag, state, components, frozen_at, published_at)
+  VALUES ('DR-zzz-later', 'published', '["nirspec"]', (SELECT frozen_at FROM dr_releases WHERE tag = 'DR-seed') + interval '1 day', now());
   INSERT INTO dr_manifest (tag, storage_key, component, program_slug, product_type, spectrum_id, backend, bucket,
                           content_hash, science_hash, size_bytes, byte_state, archive_key, stamped_hash)
   SELECT 'DR-zzz-later', m.storage_key, m.component, m.program_slug, m.product_type, m.spectrum_id, m.backend, m.bucket,
@@ -183,9 +185,21 @@ BEGIN
   SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.s1;
   IF r.reuse_archive_key IS DISTINCT FROM 'archive/' || repeat('7', 64) || '/later.fits'
      OR jsonb_array_length(r.reuse_candidates) <> 1 THEN
-    RAISE EXCEPTION 'any release''s stamp should be offered for reuse: %', to_jsonb(r);
+    RAISE EXCEPTION 'any published release''s stamp should be offered for reuse: %', to_jsonb(r);
   END IF;
-  RAISE NOTICE 'OK 1: pending (paging, prefix, live / retained / gone sources, cross-release reuse)';
+  -- an UNPUBLISHED release's stamp (a rehearsal) is never offered (D-P4-6)
+  UPDATE dr_releases SET state = 'frozen', published_at = NULL WHERE tag = 'DR-zzz-later';
+  SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.s1;
+  IF r.reuse_archive_key IS NOT NULL OR jsonb_array_length(r.reuse_candidates) <> 0 THEN
+    RAISE EXCEPTION 'an unpublished release''s stamp must not be offered: %', to_jsonb(r);
+  END IF;
+  UPDATE dr_releases SET state = 'withdrawn', published_at = now() WHERE tag = 'DR-zzz-later';
+  SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.s1;
+  IF r.reuse_archive_key IS DISTINCT FROM 'archive/' || repeat('7', 64) || '/later.fits' THEN
+    RAISE EXCEPTION 'a withdrawn release''s stamp is still offered (its bytes stay): %', to_jsonb(r);
+  END IF;
+  UPDATE dr_releases SET state = 'published' WHERE tag = 'DR-zzz-later';
+  RAISE NOTICE 'OK 1: pending (paging, prefix, live / retained / gone sources, published-only cross-release reuse)';
 
   -- ------------------------------------------------------------------ 2.
   got := pg_temp.zzz_try(format($q$SELECT pg_temp.zzz_mark('DR-seed', '[{"storage_key": %s, "state": "done"}]')$q$, to_jsonb(p.j1)));
