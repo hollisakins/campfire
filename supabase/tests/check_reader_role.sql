@@ -131,15 +131,18 @@ INSERT INTO objects (object_id, field, ra, dec, programs, observations, has_publ
   ('ZZZ-RR-PRIV',     'zzz_rr_field', 161.1, 3.1, ARRAY['zzz_rr_priv'], ARRAY['zzz_rr_obs_priv'], true,  true),
   ('ZZZ-RR-INACTIVE', 'zzz_rr_field', 161.2, 3.2, ARRAY['zzz_rr_pub'],  ARRAY['zzz_rr_obs_pub'],  true,  false),
   ('ZZZ-RR-UNPUB',    'zzz_rr_field', 161.3, 3.3, ARRAY['zzz_rr_pub'],  ARRAY['zzz_rr_obs_pub'],  false, true),
-  ('ZZZ-RR-MIXED',    'zzz_rr_field', 161.4, 3.4, ARRAY['zzz_rr_priv', 'zzz_rr_pub'], ARRAY['zzz_rr_obs_priv', 'zzz_rr_obs_pub'], true, true);
+  ('ZZZ-RR-MIXED',    'zzz_rr_field', 161.4, 3.4, ARRAY['zzz_rr_priv', 'zzz_rr_pub'], ARRAY['zzz_rr_obs_priv', 'zzz_rr_obs_pub'], true, true),
+  ('ZZZ-RR-MIXED-ALLPUB', 'zzz_rr_field', 161.5, 3.5, ARRAY['zzz_rr_pub'], ARRAY['zzz_rr_obs_pub'], true, true);
 INSERT INTO targets (target_id, field, ra, dec, program_slug, observation, object_id, has_published_spectrum)
 SELECT v.tid, 'zzz_rr_field', v.ra, 3.0, v.prog, v.obs, o.id, v.pub
 FROM (VALUES
   ('zzz-rr-t-pub',   161.0, 'zzz_rr_pub',  'zzz_rr_obs_pub',  'ZZZ-RR-PUB',   true),
   ('zzz-rr-t-priv',  161.1, 'zzz_rr_priv', 'zzz_rr_obs_priv', 'ZZZ-RR-PRIV',  true),
   ('zzz-rr-t-unpub', 161.3, 'zzz_rr_pub',  'zzz_rr_obs_pub',  'ZZZ-RR-UNPUB', false),
+  ('zzz-rr-t-pub-nospec', 161.0, 'zzz_rr_pub', 'zzz_rr_obs_pub', 'ZZZ-RR-PUB', false),
   ('zzz-rr-t-mix-pub',  161.4, 'zzz_rr_pub',  'zzz_rr_obs_pub',  'ZZZ-RR-MIXED', true),
-  ('zzz-rr-t-mix-priv', 161.4, 'zzz_rr_priv', 'zzz_rr_obs_priv', 'ZZZ-RR-MIXED', true)
+  ('zzz-rr-t-mix-priv', 161.4, 'zzz_rr_priv', 'zzz_rr_obs_priv', 'ZZZ-RR-MIXED', true),
+  ('zzz-rr-t-allpub',   161.5, 'zzz_rr_pub',  'zzz_rr_obs_pub',  'ZZZ-RR-MIXED-ALLPUB', true)
 ) AS v(tid, ra, prog, obs, oid, pub)
 JOIN objects o ON o.object_id = v.oid;
 INSERT INTO spectra (target_id, grating, fits_path, deploy_status) VALUES
@@ -148,12 +151,17 @@ INSERT INTO spectra (target_id, grating, fits_path, deploy_status) VALUES
   ('zzz-rr-t-priv',  'PRISM', '/tmp/zzz_rr_priv_spec.fits',  'published'),
   ('zzz-rr-t-unpub', 'PRISM', '/tmp/zzz_rr_unpub_spec.fits', 'draft'),
   ('zzz-rr-t-mix-pub',  'PRISM', '/tmp/zzz_rr_mix_pub_spec.fits',  'published'),
-  ('zzz-rr-t-mix-priv', 'G395M', '/tmp/zzz_rr_mix_priv_spec.fits', 'published');
+  ('zzz-rr-t-mix-priv', 'G395M', '/tmp/zzz_rr_mix_priv_spec.fits', 'published'),
+  ('zzz-rr-t-allpub',   'PRISM', '/tmp/zzz_rr_allpub_spec.fits',   'published');
+UPDATE objects SET n_targets = 7, n_spectra = 1, gratings = ARRAY['PRISM'], search_text = 'stored' WHERE object_id = 'ZZZ-RR-MIXED-ALLPUB';
 -- the stored aggregates of the mixed object, as reconcile would write them: both programs, both gratings
 UPDATE objects SET n_targets = 2, n_spectra = 2, gratings = ARRAY['G395M', 'PRISM'],
        search_text = 'ZZZ-RR-MIXED zzz-rr-t-mix-priv zzz-rr-t-mix-pub zzz_rr_priv zzz_rr_pub zzz_rr_obs_priv zzz_rr_obs_pub'
  WHERE object_id = 'ZZZ-RR-MIXED';
-UPDATE objects SET n_targets = 1, n_spectra = 1, gratings = ARRAY['PRISM'], search_text = 'ZZZ-RR-PUB zzz-rr-t-pub zzz_rr_pub zzz_rr_obs_pub'
+-- the public object has a second, public target without a published spectrum: the stored aggregates
+-- count it (build_objects counts every target), the reader's policy on targets hides it
+UPDATE objects SET n_targets = 2, n_spectra = 1, gratings = ARRAY['PRISM'],
+       search_text = 'ZZZ-RR-PUB zzz-rr-t-pub zzz-rr-t-pub-nospec zzz_rr_pub zzz_rr_obs_pub'
  WHERE object_id = 'ZZZ-RR-PUB';
 INSERT INTO line_fits (spectrum_id, target_id, grating, program_slug, observation, z_used, z_source, fit_version)
 SELECT s.id, s.target_id, s.grating, s.program_slug, s.observation, 5.0, 'inspected', 'rr'
@@ -203,21 +211,22 @@ DECLARE
     ['observations',    $q$SELECT count(*) FROM observations WHERE name LIKE 'zzz_rr_%'$q$,                          '1'],
     ['fields',          $q$SELECT count(*) FROM fields WHERE name = 'zzz_rr_field'$q$,                               '1'],
     ['nircam_images',   $q$SELECT count(*) FROM nircam_images WHERE field = 'zzz_rr_field'$q$,                       '1'],
-    ['objects',         $q$SELECT count(*) FROM objects WHERE object_id LIKE 'ZZZ-RR-%'$q$,                          '2'],
+    ['objects',         $q$SELECT count(*) FROM objects WHERE object_id LIKE 'ZZZ-RR-%'$q$,                          '3'],
     ['objects:hidden',  $q$SELECT count(*) FROM objects WHERE object_id LIKE 'ZZZ-RR-%' AND (NOT is_public OR NOT is_active OR NOT has_published_spectrum)$q$, '0'],
-    ['targets',         $q$SELECT count(*) FROM targets WHERE target_id LIKE 'zzz-rr-%'$q$,                          '2'],
-    ['spectra',         $q$SELECT count(*) FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%'$q$,                     '2'],
+    ['targets',         $q$SELECT count(*) FROM targets WHERE target_id LIKE 'zzz-rr-%'$q$,                          '3'],
+    ['spectra',         $q$SELECT count(*) FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%'$q$,                     '3'],
     ['spectra:hidden',  $q$SELECT count(*) FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%' AND (NOT is_public OR deploy_status <> 'published')$q$, '0'],
-    ['line_fits',       $q$SELECT count(*) FROM line_fits WHERE fit_version = 'rr'$q$,                               '2'],
-    ['lines',           $q$SELECT count(*) FROM lines l JOIN spectra s ON s.id = l.spectrum_id WHERE s.fits_path LIKE '/tmp/zzz_rr_%'$q$, '2'],
-    ['lines:raw',       $q$SELECT count(*) FROM lines l WHERE l.spectrum_id IN (SELECT id FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%')$q$, '2'],
-    ['catalog_matches', $q$SELECT count(*) FROM catalog_matches WHERE catalog_name = 'zzz_rr_cat'$q$,                '2'],
-    ['photometry',      $q$SELECT count(*) FROM photometry p JOIN catalog_matches m ON m.id = p.match_id WHERE m.catalog_name = 'zzz_rr_cat'$q$, '2'],
+    ['line_fits',       $q$SELECT count(*) FROM line_fits WHERE fit_version = 'rr'$q$,                               '3'],
+    ['lines',           $q$SELECT count(*) FROM lines l JOIN spectra s ON s.id = l.spectrum_id WHERE s.fits_path LIKE '/tmp/zzz_rr_%'$q$, '3'],
+    ['lines:raw',       $q$SELECT count(*) FROM lines l WHERE l.spectrum_id IN (SELECT id FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%')$q$, '3'],
+    ['catalog_matches', $q$SELECT count(*) FROM catalog_matches WHERE catalog_name = 'zzz_rr_cat'$q$,                '3'],
+    ['photometry',      $q$SELECT count(*) FROM photometry p JOIN catalog_matches m ON m.id = p.match_id WHERE m.catalog_name = 'zzz_rr_cat'$q$, '3'],
     ['objects:mixed-aggregates', $q$SELECT count(*) FROM objects WHERE object_id = 'ZZZ-RR-MIXED' AND programs = ARRAY['zzz_rr_pub'] AND observations = ARRAY['zzz_rr_obs_pub'] AND gratings = ARRAY['PRISM'] AND n_targets = 1 AND n_spectra = 1 AND search_text NOT LIKE '%priv%'$q$, '1'],
-    ['objects:public-stored', $q$SELECT count(*) FROM objects WHERE object_id = 'ZZZ-RR-PUB' AND gratings = ARRAY['PRISM'] AND n_spectra = 1 AND search_text = 'ZZZ-RR-PUB zzz-rr-t-pub zzz_rr_pub zzz_rr_obs_pub'$q$, '1'],
+    ['objects:spectrumless-target-recomputed', $q$SELECT count(*) FROM objects WHERE object_id = 'ZZZ-RR-PUB' AND gratings = ARRAY['PRISM'] AND n_targets = 1 AND n_spectra = 1 AND search_text = 'ZZZ-RR-PUB zzz-rr-t-pub zzz_rr_pub zzz_rr_obs_pub'$q$, '1'],
+    ['objects:all-visible-stored', $q$SELECT count(*) FROM objects o WHERE o.object_id = 'ZZZ-RR-MIXED-ALLPUB' AND o.n_targets = 7 AND o.search_text = 'stored'$q$, '1'],
     ['objects:star-denied', $q$SELECT count(*) FROM (SELECT * FROM public.objects) x$q$, '-1'],
     ['objects:aggregate-column-denied', $q$SELECT count(programs) FROM public.objects$q$, '-1'],
-    ['objects:id-column-allowed', $q$SELECT count(id) FROM public.objects WHERE object_id LIKE 'ZZZ-RR-%'$q$, '2']
+    ['objects:id-column-allowed', $q$SELECT count(id) FROM public.objects WHERE object_id LIKE 'ZZZ-RR-%'$q$, '3']
   ];
   i int; got int;
 BEGIN
@@ -228,8 +237,8 @@ BEGIN
     END IF;
   END LOOP;
   -- the whole fixture is visible to postgres, so the reader's counts above are selections, not absences
-  IF (SELECT count(*) FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%') <> 6
-     OR (SELECT count(*) FROM lines l JOIN spectra s ON s.id = l.spectrum_id WHERE s.fits_path LIKE '/tmp/zzz_rr_%') <> 6 THEN
+  IF (SELECT count(*) FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%') <> 7
+     OR (SELECT count(*) FROM lines l JOIN spectra s ON s.id = l.spectrum_id WHERE s.fits_path LIKE '/tmp/zzz_rr_%') <> 7 THEN
     RAISE EXCEPTION 'READER 3: fixture incomplete';
   END IF;
   RAISE NOTICE 'OK 3: live tables: public published rows only, children through their parents; objects = the reader view with scoped aggregates, the table itself column-limited';

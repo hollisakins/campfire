@@ -337,10 +337,13 @@ GRANT ALL ON TABLE public.line_fits_status TO service_role;
 -- only. They run with their owner's privileges (postgres, not under RLS), so
 -- the row predicate and the member predicates are explicit here and equal the
 -- reader_select_* policies; check_reader_role.sql compares them. As in
--- object_scoped_aggregates, an object whose members are all visible keeps its
--- stored aggregates (one probe); only a mixed object is recomputed.
+-- object_scoped_aggregates, an object whose members are all visible (every
+-- target public with a published spectrum, every spectrum public and
+-- published) keeps its stored aggregates (two probes); any other object is
+-- recomputed. security_barrier: a reader may define a temp function, so an
+-- outer predicate is never pushed below the row and member predicates.
 
-CREATE OR REPLACE VIEW "reader"."objects" AS
+CREATE OR REPLACE VIEW "reader"."objects" WITH (security_barrier = true) AS
 WITH pub AS (
   SELECT COALESCE(array_agg(p.slug), '{}'::text[]) AS slugs FROM public.programs p WHERE p.is_public
 )
@@ -371,9 +374,11 @@ CROSS JOIN LATERAL (
     WHERE s.target_id IN (SELECT target_id FROM m) AND s.is_public AND s.deploy_status = 'published'
   )
   SELECT (o.programs <@ pub.slugs
+          AND NOT EXISTS (SELECT 1 FROM public.targets t
+                          WHERE t.object_id = o.id AND (NOT t.is_public OR NOT t.has_published_spectrum))
           AND NOT EXISTS (SELECT 1 FROM public.targets t JOIN public.spectra s ON s.target_id = t.target_id
                           WHERE t.object_id = o.id
-                            AND (NOT t.is_public OR NOT s.is_public OR s.deploy_status <> 'published'))) AS use_stored,
+                            AND (NOT s.is_public OR s.deploy_status <> 'published'))) AS use_stored,
          COALESCE((SELECT array_agg(DISTINCT m.program_slug ORDER BY m.program_slug) FROM m), '{}')::text[] AS programs,
          COALESCE((SELECT array_agg(DISTINCT sp.grating ORDER BY sp.grating) FROM sp WHERE sp.grating IS NOT NULL), '{}')::text[] AS gratings,
          COALESCE((SELECT array_agg(DISTINCT m.observation ORDER BY m.observation) FROM m WHERE m.observation IS NOT NULL), '{}')::text[] AS observations,
@@ -391,7 +396,7 @@ WHERE o.is_public AND o.is_active AND o.has_published_spectrum;
 ALTER VIEW "reader"."objects" OWNER TO "postgres";
 COMMENT ON VIEW "reader"."objects" IS 'objects for the public SQL reader (campfire_reader): the public, active objects with a published spectrum, their member aggregates computed over public published members only. Same columns as public.objects.';
 
-CREATE OR REPLACE VIEW "reader"."dr_objects" AS
+CREATE OR REPLACE VIEW "reader"."dr_objects" WITH (security_barrier = true) AS
 WITH pub AS (
   SELECT COALESCE(array_agg(p.slug), '{}'::text[]) AS slugs FROM public.programs p WHERE p.is_public
 )
@@ -427,9 +432,11 @@ CROSS JOIN LATERAL (
     WHERE s.tag = o.tag AND s.target_id IN (SELECT target_id FROM m) AND s.is_public AND s.deploy_status = 'published'
   )
   SELECT (o.programs <@ pub.slugs
+          AND NOT EXISTS (SELECT 1 FROM public.dr_targets t
+                          WHERE t.tag = o.tag AND t.object_id = o.id AND (NOT t.is_public OR NOT t.has_published_spectrum))
           AND NOT EXISTS (SELECT 1 FROM public.dr_targets t JOIN public.dr_spectra s ON s.tag = t.tag AND s.target_id = t.target_id
                           WHERE t.tag = o.tag AND t.object_id = o.id
-                            AND (NOT t.is_public OR NOT s.is_public OR s.deploy_status <> 'published'))) AS use_stored,
+                            AND (NOT s.is_public OR s.deploy_status <> 'published'))) AS use_stored,
          COALESCE((SELECT array_agg(DISTINCT m.program_slug ORDER BY m.program_slug) FROM m), '{}')::text[] AS programs,
          COALESCE((SELECT array_agg(DISTINCT sp.grating ORDER BY sp.grating) FROM sp WHERE sp.grating IS NOT NULL), '{}')::text[] AS gratings,
          COALESCE((SELECT array_agg(DISTINCT m.observation ORDER BY m.observation) FROM m WHERE m.observation IS NOT NULL), '{}')::text[] AS observations,

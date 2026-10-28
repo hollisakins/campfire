@@ -3,7 +3,7 @@ SET statement_timeout = '60s';
 
 CREATE SCHEMA "reader";
 
-CREATE VIEW "reader"."dr_objects" AS  WITH pub AS (
+CREATE VIEW "reader"."dr_objects" WITH (security_barrier=true) AS  WITH pub AS (
          SELECT COALESCE(array_agg(p.slug), '{}'::text[]) AS slugs
            FROM public.programs p
           WHERE p.is_public
@@ -97,9 +97,11 @@ CREATE VIEW "reader"."dr_objects" AS  WITH pub AS (
                            FROM m)) AND s.is_public AND (s.deploy_status = 'published'::text))
                 )
          SELECT ((o.programs <@ pub.slugs) AND (NOT (EXISTS ( SELECT 1
+                   FROM public.dr_targets t
+                  WHERE ((t.tag = o.tag) AND (t.object_id = o.id) AND ((NOT t.is_public) OR (NOT t.has_published_spectrum)))))) AND (NOT (EXISTS ( SELECT 1
                    FROM (public.dr_targets t
                      JOIN public.dr_spectra s ON (((s.tag = t.tag) AND (s.target_id = t.target_id))))
-                  WHERE ((t.tag = o.tag) AND (t.object_id = o.id) AND ((NOT t.is_public) OR (NOT s.is_public) OR (s.deploy_status <> 'published'::text))))))) AS use_stored,
+                  WHERE ((t.tag = o.tag) AND (t.object_id = o.id) AND ((NOT s.is_public) OR (s.deploy_status <> 'published'::text))))))) AS use_stored,
             COALESCE(( SELECT array_agg(DISTINCT m.program_slug ORDER BY m.program_slug) AS array_agg
                    FROM m), '{}'::text[]) AS programs,
             COALESCE(( SELECT array_agg(DISTINCT sp.grating ORDER BY sp.grating) AS array_agg
@@ -124,7 +126,7 @@ CREATE VIEW "reader"."dr_objects" AS  WITH pub AS (
            FROM public.dr_releases r
           WHERE ((r.tag = o.tag) AND (r.state = 'published'::text)))));
 
-CREATE VIEW "reader"."objects" AS  WITH pub AS (
+CREATE VIEW "reader"."objects" WITH (security_barrier=true) AS  WITH pub AS (
          SELECT COALESCE(array_agg(p.slug), '{}'::text[]) AS slugs
            FROM public.programs p
           WHERE p.is_public
@@ -204,9 +206,11 @@ CREATE VIEW "reader"."objects" AS  WITH pub AS (
                            FROM m)) AND s.is_public AND (s.deploy_status = 'published'::text))
                 )
          SELECT ((o.programs <@ pub.slugs) AND (NOT (EXISTS ( SELECT 1
+                   FROM public.targets t
+                  WHERE ((t.object_id = o.id) AND ((NOT t.is_public) OR (NOT t.has_published_spectrum)))))) AND (NOT (EXISTS ( SELECT 1
                    FROM (public.targets t
                      JOIN public.spectra s ON ((s.target_id = t.target_id)))
-                  WHERE ((t.object_id = o.id) AND ((NOT t.is_public) OR (NOT s.is_public) OR (s.deploy_status <> 'published'::text))))))) AS use_stored,
+                  WHERE ((t.object_id = o.id) AND ((NOT s.is_public) OR (s.deploy_status <> 'published'::text))))))) AS use_stored,
             COALESCE(( SELECT array_agg(DISTINCT m.program_slug ORDER BY m.program_slug) AS array_agg
                    FROM m), '{}'::text[]) AS programs,
             COALESCE(( SELECT array_agg(DISTINCT sp.grating ORDER BY sp.grating) AS array_agg

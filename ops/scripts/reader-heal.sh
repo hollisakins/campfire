@@ -24,16 +24,21 @@ db_name=${POSTGRES_DB:-postgres}
 want_cfg='{statement_timeout=30s,idle_in_transaction_session_timeout=60s,lock_timeout=5s,default_transaction_read_only=on,"search_path=reader, public"}'
 have_cfg=$($compose exec -T db psql -U postgres -d "$db_name" -Atc \
   "SELECT rolconfig FROM pg_roles WHERE rolname = 'campfire_reader'" 2>/dev/null || true)
+# database-specific overrides (ALTER ROLE … IN DATABASE … SET) take precedence
+# over the role's settings and are not in rolconfig: the role may set its own
+have_db_cfg=$($compose exec -T db psql -U postgres -d "$db_name" -Atc \
+  "SELECT count(*) FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole WHERE r.rolname = 'campfire_reader' AND s.setdatabase <> 0" 2>/dev/null || echo '?')
 # the stored verifier changes with the password: compare to the one the pooler was given
 have=$($compose exec -T db psql -U postgres -d "$db_name" -Atc \
   "SELECT rolpassword FROM pg_authid WHERE rolname = 'campfire_reader'" 2>/dev/null || true)
 want=$(cat "${CAMPFIRE_DATA_ROOT:-/srv/campfire}/pgbouncer/userlist.txt" 2>/dev/null | sed -n 's/^"campfire_reader" "\(.*\)"$/\1/p' || true)
-if [ -n "$have" ] && [ "$have" = "$want" ] && [ "$have_cfg" = "$want_cfg" ]; then
+if [ -n "$have" ] && [ "$have" = "$want" ] && [ "$have_cfg" = "$want_cfg" ] && [ "$have_db_cfg" = "0" ]; then
   exit 0
 fi
 $compose exec -T db psql -v ON_ERROR_STOP=1 -q -U postgres -d "$db_name" <<SQL
 ALTER ROLE campfire_reader PASSWORD '${READER_PASSWORD}';
 ALTER ROLE campfire_reader RESET ALL;
+ALTER ROLE campfire_reader IN DATABASE ${db_name} RESET ALL;
 ALTER ROLE campfire_reader SET statement_timeout = '30s';
 ALTER ROLE campfire_reader SET idle_in_transaction_session_timeout = '60s';
 ALTER ROLE campfire_reader SET lock_timeout = '5s';
