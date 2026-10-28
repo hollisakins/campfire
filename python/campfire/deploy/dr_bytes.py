@@ -599,15 +599,21 @@ class PassReport:
 
 def fetch_pending(client, tag: str, *, after: Optional[str] = None, limit: int = 500,
                   include_failed: bool = False, prefix: Optional[str] = None) -> list[dict]:
-    resp = client.rpc('dr_bytes_pending', {
+    """One keyset page of members to archive (a read: retried on a dropped connection, #666)."""
+    resp = retry_transient(lambda: client.rpc('dr_bytes_pending', {
         'p_tag': tag, 'p_after': after, 'p_limit': limit,
         'p_include_failed': include_failed, 'p_prefix': prefix,
-    }).execute()
+    }).execute(), what='the member page')
     return list(resp.data or [])
 
 
 def mark_results(client, tag: str, results: list[dict], claim: str) -> dict:
-    resp = client.rpc('dr_bytes_mark', {'p_tag': tag, 'p_results': results, 'p_claim': claim}).execute()
+    """Record a page's outcomes. Re-sending a mark whose answer was lost is
+    harmless (the registry insert is ON CONFLICT DO NOTHING, an archived member
+    stays archived, the claim is the run's own), so it is retried too (#666)."""
+    resp = retry_transient(lambda: client.rpc('dr_bytes_mark', {'p_tag': tag, 'p_results': results,
+                                                                'p_claim': claim}).execute(),
+                           what='the outcome mark')
     return resp.data or {}
 
 
@@ -656,7 +662,8 @@ class ArchiveClaim:
 
 
 def fetch_summary(client, tag: str) -> dict:
-    return client.rpc('dr_bytes_summary', {'p_tag': tag}).execute().data or {}
+    return retry_transient(lambda: client.rpc('dr_bytes_summary', {'p_tag': tag}).execute(),
+                           what='the byte-pass summary').data or {}
 
 
 def run_byte_pass(client, s3, bucket: str, tag: str, *, workers: int = 8, page_size: int = 500,
