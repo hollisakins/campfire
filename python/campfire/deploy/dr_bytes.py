@@ -58,6 +58,8 @@ from typing import Callable, Iterable, Optional
 
 from campfire_layout import LayoutError, archive_key, parse_key
 
+from campfire.transient import retry_transient
+
 STAMPED_PRODUCT_TYPES = frozenset({'nirspec_spec', 'nirspec_lines'})
 STAMP_KEYWORD = 'CMPFRDR'
 STAMP_COMMENT = 'CAMPFIRE data release that first archived it'   # fits the card for tags up to 12 chars
@@ -332,57 +334,64 @@ def process_member(row: dict, *, tag: str, s3, bucket: str,
     """Make one member's bytes exist under archive/ and say how."""
     key = row['storage_key']
     action = plan_action(row)
-    out = _process_member(row, key, action, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
+    try:
+        # the whole member is idempotent (HEAD-verify, conditional PUT or
+        # bound copy), so a dropped connection anywhere in it is retried as a
+        # unit before it counts as a failure (#666)
+        out = retry_transient(
+            lambda: _process_member(row, key, action, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science),
+            what=f'member {key}')
+    except StampError as e:
+        out = Outcome(key, 'failed', 'error', error=f'stamp: {e}')
+    except Exception as e:  # noqa: BLE001 - one member never stops the pass
+        out = Outcome(key, 'failed', 'error', error=f'{type(e).__name__}: {e}'[:2000])
     out.page_at = row.get('page_at')
     return out
 
 
 def _process_member(row: dict, key: str, action: str, *, tag: str, s3, bucket: str,
                     verify_science: bool) -> Outcome:
-    try:
-        if action == 'error':
-            if row.get('backend') != 'osn' or row.get('bucket') != 'data':
-                return Outcome(key, 'failed', 'error',
-                               error=f"member lives on {row.get('backend')}/{row.get('bucket')}; only osn/data is archived")
-            return Outcome(key, 'failed', 'error', error='storage key does not parse as an archivable product')
-        if action == 'drift':
+    """One attempt at a member; raises on a transport or stamp error (the
+    caller classifies), returns a failed Outcome for a drift or a refusal."""
+    if action == 'error':
+        if row.get('backend') != 'osn' or row.get('bucket') != 'data':
+            return Outcome(key, 'failed', 'error',
+                           error=f"member lives on {row.get('backend')}/{row.get('bucket')}; only osn/data is archived")
+        return Outcome(key, 'failed', 'error', error='storage key does not parse as an archivable product')
+    if action == 'drift':
+        return Outcome(key, 'failed', 'drift',
+                       error='frozen bytes are gone: the live object changed (or was revoked) since '
+                             'the freeze and no archived copy of the frozen content exists')
+    if action == 'reuse-stamp':
+        # every candidate, earliest archived first: the first whose object
+        # exists is reused (the first release to archive a file owns its
+        # stamp); a registry row is not proof the object exists, so each is
+        # HEAD-checked and a missing one falls through (Codex on #601)
+        cands = row.get('reuse_candidates') or [
+            {'archive_key': row['reuse_archive_key'], 'stamped_hash': row['reuse_stamped_hash'],
+             'size_bytes': row.get('reuse_size_bytes')}]
+        problems = []
+        for c in cands:
+            problem = _check_existing(s3, bucket, c['archive_key'], c.get('size_bytes'))
+            if problem is None:
+                return Outcome(key, 'stamped', 'reuse-stamp', archive_key=c['archive_key'],
+                               stamped_hash=c['stamped_hash'])
+            problems.append(problem)
+        problem = '; '.join(problems)
+        if not row.get('source_key'):
             return Outcome(key, 'failed', 'drift',
-                           error='frozen bytes are gone: the live object changed (or was revoked) since '
-                                 'the freeze and no archived copy of the frozen content exists')
-        if action == 'reuse-stamp':
-            # every candidate, earliest archived first: the first whose object
-            # exists is reused (the first release to archive a file owns its
-            # stamp); a registry row is not proof the object exists, so each is
-            # HEAD-checked and a missing one falls through (Codex on #601)
-            cands = row.get('reuse_candidates') or [
-                {'archive_key': row['reuse_archive_key'], 'stamped_hash': row['reuse_stamped_hash'],
-                 'size_bytes': row.get('reuse_size_bytes')}]
-            problems = []
-            for c in cands:
-                problem = _check_existing(s3, bucket, c['archive_key'], c.get('size_bytes'))
-                if problem is None:
-                    return Outcome(key, 'stamped', 'reuse-stamp', archive_key=c['archive_key'],
-                                   stamped_hash=c['stamped_hash'])
-                problems.append(problem)
-            problem = '; '.join(problems)
-            if not row.get('source_key'):
-                return Outcome(key, 'failed', 'drift',
-                               error=f"stamped object to reuse {problem}, and the frozen bytes are gone")
-            # stamp afresh from the frozen bytes (a new object under this tag)
-            return _stamp_member(row, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
-        if action == 'reuse-copy':
-            problem = _check_existing(s3, bucket, row['source_key'], row.get('source_stored_size'))
-            if problem is not None:
-                return Outcome(key, 'failed', 'drift',
-                               error=f"archived copy {problem} (registry/bucket drift: run `campfire verify --cloud`)")
-            return Outcome(key, 'copied', 'reuse-copy', archive_key=row['source_key'])
-        if action == 'stamp':
-            return _stamp_member(row, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
-        return _copy_member(row, s3=s3, bucket=bucket)
-    except StampError as e:
-        return Outcome(key, 'failed', 'error', error=f'stamp: {e}')
-    except Exception as e:  # noqa: BLE001 - one member never stops the pass
-        return Outcome(key, 'failed', 'error', error=f'{type(e).__name__}: {e}'[:2000])
+                           error=f"stamped object to reuse {problem}, and the frozen bytes are gone")
+        # stamp afresh from the frozen bytes (a new object under this tag)
+        return _stamp_member(row, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
+    if action == 'reuse-copy':
+        problem = _check_existing(s3, bucket, row['source_key'], row.get('source_stored_size'))
+        if problem is not None:
+            return Outcome(key, 'failed', 'drift',
+                           error=f"archived copy {problem} (registry/bucket drift: run `campfire verify --cloud`)")
+        return Outcome(key, 'copied', 'reuse-copy', archive_key=row['source_key'])
+    if action == 'stamp':
+        return _stamp_member(row, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
+    return _copy_member(row, s3=s3, bucket=bucket)
 
 
 def _stamp_member(row: dict, *, tag: str, s3, bucket: str, verify_science: bool) -> Outcome:

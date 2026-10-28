@@ -469,7 +469,10 @@ def next_step_hint(tag: str, state: str | None, *, archive_open: int = 0, archiv
                 f"`campfire dr archive --tag {tag} --status` lists them; fix the cause and re-run "
                 f"`campfire dr archive --tag {tag} --retry-failed`.")
     if archive_open:
-        return f"Next: `campfire dr archive --tag {tag}` (or `campfire dr build --tag {tag}`, which also exports)."
+        exports = (f"; its {exports_total:,} export file(s) are built"
+                   if exports_total and not exports_remaining else '')
+        return (f"Next: `campfire dr archive --tag {tag}` ({archive_open:,} manifest file(s) still "
+                f"pending{exports}) (or `campfire dr build --tag {tag}`, which also exports).")
     if exports_total == 0 or exports_remaining:
         return f"Next: `campfire dr export --tag {tag}` (or `campfire dr build --tag {tag}`)."
     if state == 'ready':

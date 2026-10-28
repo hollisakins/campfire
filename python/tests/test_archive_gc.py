@@ -63,12 +63,18 @@ def _client(rows, *, admin=True, collected=None, begin_refuses=None):
 
 
 class FakeS3:
-    def __init__(self, objects, *, errors=None):
+    def __init__(self, objects, *, errors=None, drop_first=False):
         self.objects, self.errors, self.calls = set(objects), errors or {}, []
+        self.drop_first = drop_first
 
     def delete_objects(self, Bucket, Delete):
         keys = [o['Key'] for o in Delete['Objects']]
         self.calls.append((Bucket, keys))
+        if self.drop_first:                   # the delete ran, its answer was lost (#666)
+            self.drop_first = False
+            for k in keys:
+                self.objects.discard(k)
+            raise ConnectionResetError(54, 'Connection reset by peer')
         errs = []
         for k in keys:
             if k in self.errors:
@@ -143,6 +149,62 @@ def test_collect_claims_then_deletes_then_finishes_in_chunks_with_the_tag():
     assert len({c.params['p_claim'] for c in client.rpcs}) == 1
     assert out['lost'] == 0
     assert collect(client, s3, 'b', [], tag=None) == {'claimed': 0, 'deleted': 0, 'collected': 0, 'lost': 0, 'bytes': 0}
+
+
+def test_collect_resends_a_delete_whose_answer_was_lost_through_the_verify_gate(monkeypatch):
+    naps = []
+    monkeypatch.setattr('campfire.transient._sleep', naps.append)
+    rows = [_row(i) for i in range(1, 6)]
+    marked = []
+    client = _client(rows, collected=marked)
+    s3 = FakeS3([r['storage_key'] for r in rows], drop_first=True)
+    logs = []
+    out = collect(client, s3, 'b', rows, tag='DR-x', log=logs.append)
+    assert out['deleted'] == 5 and out['collected'] == 5 and out['lost'] == 0
+    assert len(s3.calls) == 2 and not s3.objects and naps == [1.0]
+    # the re-sent delete went through a fresh verify, not the stale key list
+    assert [c.name for c in client.rpcs] == ['dr_archive_collect_begin', 'dr_archive_collect_verify',
+                                             'dr_archive_collect_verify', 'dr_archive_collect_finish']
+    assert [p for p, _, _ in marked] == ['begin', 'finish'] and any('retrying the bucket delete' in m for m in logs)
+
+
+def test_collect_deletes_nothing_it_lost_while_a_delete_was_being_retried(monkeypatch):
+    """The claim expired during the dropped delete and another run took the keys
+    over (Codex on the follow-ups PR): the retry re-verifies and finds nothing."""
+    monkeypatch.setattr('campfire.transient._sleep', lambda s: None)
+    rows = [_row(i) for i in range(1, 4)]
+    marked = []
+    client = _client(rows, collected=marked)
+    s3 = FakeS3([r['storage_key'] for r in rows])
+    first = {'done': False}
+    real_delete = s3.delete_objects
+
+    def delete_then_takeover(Bucket, Delete):
+        if not first['done']:
+            first['done'] = True
+            for k in client.claims:                  # another collector took every key over
+                client.claims[k] = 'other-run'
+            raise ConnectionResetError(54, 'reset')
+        return real_delete(Bucket, Delete)
+    s3.delete_objects = delete_then_takeover
+    out = collect(client, s3, 'b', rows, tag='DR-x')
+    assert out['deleted'] == 0 and out['collected'] == 0 and out['lost'] == 3
+    assert s3.objects == {r['storage_key'] for r in rows}        # nothing deleted on the retry
+    assert [p for p, _, _ in marked] == ['begin']                  # and nothing finished
+
+
+def test_collect_gives_up_a_delete_that_keeps_dropping(monkeypatch):
+    monkeypatch.setattr('campfire.transient._sleep', lambda s: None)
+    rows = [_row(i) for i in range(1, 3)]
+    client = _client(rows)
+    s3 = FakeS3([r['storage_key'] for r in rows])
+
+    def dead(Bucket, Delete):
+        raise ConnectionResetError(54, 'reset')
+    s3.delete_objects = dead
+    with pytest.raises(ConnectionResetError):
+        collect(client, s3, 'b', rows, tag='DR-x')
+    assert [c.name for c in client.rpcs].count('dr_archive_collect_verify') == 3
 
 
 def test_collect_verifies_again_after_a_stall(monkeypatch):

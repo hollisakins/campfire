@@ -155,6 +155,53 @@ def _s3(**objects):
     return s3
 
 
+class _DropsOnce:
+    """An S3 client whose named operation raises a transport error on its first call."""
+
+    def __init__(self, inner, op):
+        self._inner, self._op, self.dropped = inner, op, 0
+
+    def __getattr__(self, name):
+        fn = getattr(self._inner, name)
+        if name != self._op:
+            return fn
+
+        def wrapped(*a, **kw):
+            if not self.dropped:
+                self.dropped += 1
+                raise ConnectionResetError(54, 'Connection reset by peer')
+            return fn(*a, **kw)
+        return wrapped
+
+
+def test_a_member_whose_connection_drops_is_retried(monkeypatch):
+    naps = []
+    monkeypatch.setattr('campfire.transient._sleep', naps.append)
+    body = b'{"a": 1}'
+    key = 'data/products/nirspec/abc_p1/abc_p1_123_prism_spec.json'
+    s3 = _DropsOnce(_s3(**{key: body}), 'put_object')
+    out = B.process_member(_row(key, body, product_type='spectrum_json'), tag='DR-t', s3=s3, bucket=BUCKET)
+    assert out.state == 'copied' and out.archive_key and s3.dropped == 1 and naps == [1.0]
+    assert s3.body(BUCKET, out.archive_key) == body
+
+
+def test_a_member_that_keeps_dropping_fails_after_the_last_attempt(monkeypatch):
+    monkeypatch.setattr('campfire.transient._sleep', lambda s: None)
+    body = b'{"a": 1}'
+    key = 'data/products/nirspec/abc_p1/abc_p1_123_prism_spec.json'
+    calls = []
+
+    class _Dead:
+        def __getattr__(self, name):
+            def fn(*a, **kw):
+                calls.append(name)
+                raise ConnectionResetError(54, 'reset')
+            return fn
+    out = B.process_member(_row(key, body, product_type='spectrum_json'), tag='DR-t', s3=_Dead(), bucket=BUCKET)
+    assert out.state == 'failed' and out.action == 'error' and 'ConnectionResetError' in out.error
+    assert len(calls) == 3
+
+
 def test_stamp_member_puts_conditionally_under_the_stamped_hash():
     body = _fits_bytes(4)
     s3 = _s3(**{SPEC_KEY: body})

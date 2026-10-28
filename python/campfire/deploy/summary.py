@@ -71,6 +71,63 @@ def load_summary(obs_dir: Path, obs_name: str, required: bool = True) -> Table |
     return summary
 
 
+def stale_summary_rows(summary: Table, obs_dir: Path) -> list[dict]:
+    """The summary rows whose ``file_hash`` is not the sha256 of the FITS they
+    name (issue #665).
+
+    The catalog row's ``file_hash`` / ``science_hash`` come from the summary
+    ECSV, written when ``cfpipe nirspec summary`` ran; the registry's come from
+    the bytes ``campfire push`` reads. A final reprocessed in place after the
+    summary was generated puts the two in disagreement, which only the freeze
+    used to notice (the rehearsal of 2026-10-28). Each entry: ``spec_file``,
+    ``summary_hash``, ``file_hash`` (None when the FITS is missing) and
+    ``mtime`` (ISO, None when missing). Hashes compare without the
+    ``sha256:`` prefix.
+    """
+    import hashlib
+    from datetime import datetime, timezone
+
+    def _bare(h) -> str:
+        h = '' if h is None else str(h)
+        return h.split(':', 1)[1] if h.startswith('sha256:') else h
+
+    stale: list[dict] = []
+    for row in summary:
+        name = row['spec_file'] if 'spec_file' in summary.colnames else row['fits_filename']
+        if not name:
+            continue
+        expected = _bare(row['file_hash'])
+        path = obs_dir / name
+        if not path.exists():
+            stale.append({'spec_file': name, 'summary_hash': expected, 'file_hash': None, 'mtime': None})
+            continue
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8 << 20), b''):
+                h.update(chunk)
+        got = h.hexdigest()
+        if got != expected:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(timespec='seconds')
+            stale.append({'spec_file': name, 'summary_hash': expected, 'file_hash': got, 'mtime': mtime})
+    return stale
+
+
+def format_stale_summary(obs_name: str, stale: list[dict]) -> str:
+    """The refusal message for :func:`stale_summary_rows`."""
+    lines = [f"✗ {obs_name}_summary.ecsv is stale: {len(stale)} final(s) on disk do not match the hash the "
+             f"summary records, so the catalog rows would describe bytes that are not the file's."]
+    for r in stale[:20]:
+        if r['file_hash'] is None:
+            lines.append(f"    {r['spec_file']}: missing on disk (summary {r['summary_hash'][:12]}…)")
+        else:
+            lines.append(f"    {r['spec_file']}: file {r['file_hash'][:12]}… (modified {r['mtime']}), "
+                         f"summary {r['summary_hash'][:12]}…")
+    if len(stale) > 20:
+        lines.append(f"    … and {len(stale) - 20} more")
+    lines.append(f"  Regenerate it first: cfpipe nirspec summary --obs {obs_name}")
+    return '\n'.join(lines)
+
+
 def filter_by_source_ids(summary: Table, source_ids: list[int]) -> Table:
     """Filter summary table to only rows matching the given source IDs."""
     if not source_ids:

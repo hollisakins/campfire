@@ -372,6 +372,13 @@ campfire deploy photometry --field goods-n --supersede  # catalog cross-match + 
 campfire config push --programs                          # programs.toml → cloud (config plane)
 ```
 
+The catalog rows' `file_hash` / `science_hash` come from the observation's `<obs>_summary.ecsv`, so a
+final reprocessed in place after `cfpipe nirspec summary` ran would deploy a row the freeze later refuses:
+`campfire deploy --obs X` hashes every final the summary names first and refuses a stale summary (dry run
+included; the fix is regenerating it, #665). Every request a `dr export` / `dr archive` / `dr purge` /
+`archive gc` run makes is retried on a transport error (`campfire/transient.py`, three attempts with
+backoff; an answer such as a precondition failure or a refusal is never retried, #666).
+
 Photometry is configured per field in `$CAMPFIRE_ROOT/config/photometry.toml`
 (schema and a UNICORN example: `python/campfire/deploy/photometry.example.toml`).
 Rows key on `(field, catalog_name, catalog_id)`, so a new catalog release lands
