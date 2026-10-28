@@ -73,9 +73,12 @@ def _rpc_retrying(client, name: str, params: dict, *, what: str, log=None):
 
 
 def fetch_ledger(client, tag: str) -> list[dict]:
-    resp = (client.table('dr_exports')
-            .select('tag, stream, partition, storage_key, sha256, size_bytes, rows, state, built_at, error')
-            .eq('tag', tag).order('stream').order('partition').execute())
+    """The export ledger of TAG (a read: retried on a dropped connection, #666)."""
+    resp = retry_transient(lambda: (client.table('dr_exports')
+                                    .select('tag, stream, partition, storage_key, sha256, size_bytes, rows, '
+                                            'state, built_at, error')
+                                    .eq('tag', tag).order('stream').order('partition').execute()),
+                           what='the export ledger')
     return list(resp.data or [])
 
 
@@ -194,7 +197,9 @@ def sweep_superseded(client, s3, bucket: str, tag: str) -> int:
 def run_export(client, s3, bucket: str, tag: str, *, log: Callable[[str], None] = print) -> ExportReport:
     """Seed the ledger, build every file that is not ready, report what is left."""
     report = ExportReport(tag=tag)
-    begun = _rpc(client, 'dr_export_begin', {'p_tag': tag}) or {}
+    # begin and status are idempotent (begin re-creates nothing that exists);
+    # the file marks are not retried: each is bound to a claim it took itself
+    begun = _rpc_retrying(client, 'dr_export_begin', {'p_tag': tag}, what='the export begin', log=log) or {}
     report.state = begun.get('state')
     todo = [r for r in fetch_ledger(client, tag) if r.get('state') != 'ready']
     log(f"  {len(todo)} file(s) to build")
@@ -216,7 +221,7 @@ def run_export(client, s3, bucket: str, tag: str, *, log: Callable[[str], None] 
                 report.failed.remove(f)
                 report.skipped.append({'stream': f['stream'], 'scope': f['scope'],
                                        'reason': f"built by another run after: {f['error']}"})
-    status = _rpc(client, 'dr_export_status', {'p_tag': tag}) or {}
+    status = _rpc_retrying(client, 'dr_export_status', {'p_tag': tag}, what='the export status', log=log) or {}
     report.state = status.get('state', report.state)
     report.remaining = int(status.get('remaining') or 0)
     if report.remaining == 0:

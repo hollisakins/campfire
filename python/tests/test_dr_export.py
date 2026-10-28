@@ -140,6 +140,26 @@ def test_a_dropped_connection_is_retried_before_a_file_fails(monkeypatch):
     assert naps == [1.0] and any('retrying objects/pub page' in m for m in logs)
 
 
+def test_a_dropped_status_request_after_the_uploads_is_retried(monkeypatch):
+    """The orchestration requests (begin, ledger, status) are retried too (remote Codex on #667)."""
+    naps = []
+    monkeypatch.setattr('campfire.transient._sleep', naps.append)
+    ledger = [_entry('objects', 'pub')]
+    db, s3 = _db(ledger, rows=ROWS), _s3()
+    real_status = db.rpc_handlers['dr_export_status']
+    dropped = []
+
+    def status(p):
+        if not dropped:
+            dropped.append(1)
+            import httpx
+            raise httpx.RemoteProtocolError('Server disconnected')
+        return real_status(p)
+    db.rpc_handlers['dr_export_status'] = status
+    rep = X.run_export(db, s3, BUCKET, TAG, log=lambda *_: None)
+    assert rep.failed == [] and rep.remaining == 0 and rep.state == 'exported' and naps == [1.0]
+
+
 def test_a_failing_file_is_marked_failed_and_the_run_goes_on_without_a_sweep():
     ledger = [_entry('objects', 'pub'), _entry('manifest', 'nircam/f')]
     stray = 'dr/DR-t/exports/objects/pub.dddddddddddddddd.22222222.jsonl.gz'
