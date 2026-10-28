@@ -34,4 +34,4 @@ ALTER ROLE campfire_reader SET statement_timeout = '30s';
 ALTER ROLE campfire_reader SET idle_in_transaction_session_timeout = '60s';
 ALTER ROLE campfire_reader SET lock_timeout = '5s';
 ALTER ROLE campfire_reader SET default_transaction_read_only = on;
-ALTER ROLE campfire_reader SET search_path = public;
+ALTER ROLE campfire_reader SET search_path = reader, public;

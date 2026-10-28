@@ -323,3 +323,130 @@ WHERE (o.id IS NULL OR o.is_active = true);
 REVOKE ALL ON TABLE public.line_fits_status FROM anon;
 GRANT ALL ON TABLE public.line_fits_status TO authenticated;
 GRANT ALL ON TABLE public.line_fits_status TO service_role;
+
+-- ============================================================================
+-- reader.objects / reader.dr_objects (Catalog Read Model phase 4)
+-- ============================================================================
+-- The objects tables carry aggregates over every member (programs,
+-- observations, gratings, n_targets, n_spectra, max_snr, max_exposure_time,
+-- search_text; evidence_programs and z_source_spectrum_id on the twin), private
+-- members included: the API recomputes them per caller
+-- (object_scoped_aggregates, get_objects_for_sync) and the query whitelist
+-- leaves them out. For the public SQL reader these views are the same rows
+-- and columns with the aggregates computed over the public, published members
+-- only. They run with their owner's privileges (postgres, not under RLS), so
+-- the row predicate and the member predicates are explicit here and equal the
+-- reader_select_* policies; check_reader_role.sql compares them. As in
+-- object_scoped_aggregates, an object whose members are all visible keeps its
+-- stored aggregates (one probe); only a mixed object is recomputed.
+
+CREATE OR REPLACE VIEW "reader"."objects" AS
+WITH pub AS (
+  SELECT COALESCE(array_agg(p.slug), '{}'::text[]) AS slugs FROM public.programs p WHERE p.is_public
+)
+SELECT o.id, o.object_id, o.field, o.ra, o.dec, o.created_at,
+       CASE WHEN a.use_stored THEN o.n_targets ELSE a.n_targets END AS n_targets,
+       CASE WHEN a.use_stored THEN o.n_spectra ELSE a.n_spectra END AS n_spectra,
+       CASE WHEN a.use_stored THEN o.programs ELSE a.programs END AS programs,
+       CASE WHEN a.use_stored THEN o.gratings ELSE a.gratings END AS gratings,
+       CASE WHEN a.use_stored THEN o.observations ELSE a.observations END AS observations,
+       CASE WHEN a.use_stored THEN o.max_snr ELSE a.max_snr END AS max_snr,
+       CASE WHEN a.use_stored THEN o.max_exposure_time ELSE a.max_exposure_time END AS max_exposure_time,
+       o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi, o.has_photometry, o.updated_at,
+       o.redshift_auto, o.redshift_inspected, o.redshift_quality, o.inspected_used_auto, o.redshift,
+       o.last_inspected_at, o.last_inspected_by, o.last_data_change_at, o.staleness_reason,
+       o.reviewed_spectrum_ids, o.needs_review, o.version, o.is_active, o.has_published_spectrum,
+       CASE WHEN a.use_stored THEN o.search_text ELSE a.search_text END AS search_text,
+       o.is_public
+FROM public.objects o
+CROSS JOIN pub
+CROSS JOIN LATERAL (
+  WITH m AS (
+    SELECT t.target_id, t.program_slug, t.observation
+    FROM public.targets t
+    WHERE t.object_id = o.id AND t.is_public AND t.has_published_spectrum
+  ), sp AS (
+    SELECT s.grating, s.signal_to_noise, s.exposure_time
+    FROM public.spectra s
+    WHERE s.target_id IN (SELECT target_id FROM m) AND s.is_public AND s.deploy_status = 'published'
+  )
+  SELECT (o.programs <@ pub.slugs
+          AND NOT EXISTS (SELECT 1 FROM public.targets t JOIN public.spectra s ON s.target_id = t.target_id
+                          WHERE t.object_id = o.id
+                            AND (NOT t.is_public OR NOT s.is_public OR s.deploy_status <> 'published'))) AS use_stored,
+         COALESCE((SELECT array_agg(DISTINCT m.program_slug ORDER BY m.program_slug) FROM m), '{}')::text[] AS programs,
+         COALESCE((SELECT array_agg(DISTINCT sp.grating ORDER BY sp.grating) FROM sp WHERE sp.grating IS NOT NULL), '{}')::text[] AS gratings,
+         COALESCE((SELECT array_agg(DISTINCT m.observation ORDER BY m.observation) FROM m WHERE m.observation IS NOT NULL), '{}')::text[] AS observations,
+         (SELECT count(*) FROM m)::integer AS n_targets,
+         (SELECT count(*) FROM sp)::integer AS n_spectra,
+         (SELECT max(sp.signal_to_noise) FROM sp) AS max_snr,
+         (SELECT max(sp.exposure_time) FROM sp) AS max_exposure_time,
+         concat_ws(' ', o.object_id,
+                   (SELECT string_agg(DISTINCT m.target_id, ' ') FROM m),
+                   (SELECT string_agg(DISTINCT m.program_slug, ' ') FROM m),
+                   (SELECT string_agg(DISTINCT m.observation, ' ') FROM m)) AS search_text
+) a
+WHERE o.is_public AND o.is_active AND o.has_published_spectrum;
+
+ALTER VIEW "reader"."objects" OWNER TO "postgres";
+COMMENT ON VIEW "reader"."objects" IS 'objects for the public SQL reader (campfire_reader): the public, active objects with a published spectrum, their member aggregates computed over public published members only. Same columns as public.objects.';
+
+CREATE OR REPLACE VIEW "reader"."dr_objects" AS
+WITH pub AS (
+  SELECT COALESCE(array_agg(p.slug), '{}'::text[]) AS slugs FROM public.programs p WHERE p.is_public
+)
+SELECT o.tag, o.id, o.object_id, o.field, o.ra, o.dec, o.created_at,
+       CASE WHEN a.use_stored THEN o.n_targets ELSE a.n_targets END AS n_targets,
+       CASE WHEN a.use_stored THEN o.n_spectra ELSE a.n_spectra END AS n_spectra,
+       CASE WHEN a.use_stored THEN o.programs ELSE a.programs END AS programs,
+       CASE WHEN a.use_stored THEN o.gratings ELSE a.gratings END AS gratings,
+       CASE WHEN a.use_stored THEN o.observations ELSE a.observations END AS observations,
+       CASE WHEN a.use_stored THEN o.max_snr ELSE a.max_snr END AS max_snr,
+       CASE WHEN a.use_stored THEN o.max_exposure_time ELSE a.max_exposure_time END AS max_exposure_time,
+       o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi, o.has_photometry, o.updated_at,
+       o.redshift_auto, o.redshift_inspected, o.redshift_quality, o.inspected_used_auto, o.redshift,
+       o.last_inspected_at, o.last_inspected_by, o.last_data_change_at, o.staleness_reason,
+       o.reviewed_spectrum_ids, o.needs_review, o.version, o.is_active, o.has_published_spectrum,
+       CASE WHEN a.use_stored THEN o.search_text ELSE a.search_text END AS search_text,
+       CASE WHEN a.use_stored THEN o.evidence_programs
+            ELSE ARRAY(SELECT e FROM unnest(o.evidence_programs) AS e WHERE e = ANY (a.programs) ORDER BY e) END AS evidence_programs,
+       CASE WHEN a.use_stored OR EXISTS (SELECT 1 FROM public.dr_spectra s WHERE s.tag = o.tag AND s.id = o.z_source_spectrum_id
+                                           AND s.is_public AND s.deploy_status = 'published')
+            THEN o.z_source_spectrum_id ELSE NULL END AS z_source_spectrum_id,
+       o.is_public
+FROM public.dr_objects o
+CROSS JOIN pub
+CROSS JOIN LATERAL (
+  WITH m AS (
+    SELECT t.target_id, t.program_slug, t.observation
+    FROM public.dr_targets t
+    WHERE t.tag = o.tag AND t.object_id = o.id AND t.is_public AND t.has_published_spectrum
+  ), sp AS (
+    SELECT s.grating, s.signal_to_noise, s.exposure_time
+    FROM public.dr_spectra s
+    WHERE s.tag = o.tag AND s.target_id IN (SELECT target_id FROM m) AND s.is_public AND s.deploy_status = 'published'
+  )
+  SELECT (o.programs <@ pub.slugs
+          AND NOT EXISTS (SELECT 1 FROM public.dr_targets t JOIN public.dr_spectra s ON s.tag = t.tag AND s.target_id = t.target_id
+                          WHERE t.tag = o.tag AND t.object_id = o.id
+                            AND (NOT t.is_public OR NOT s.is_public OR s.deploy_status <> 'published'))) AS use_stored,
+         COALESCE((SELECT array_agg(DISTINCT m.program_slug ORDER BY m.program_slug) FROM m), '{}')::text[] AS programs,
+         COALESCE((SELECT array_agg(DISTINCT sp.grating ORDER BY sp.grating) FROM sp WHERE sp.grating IS NOT NULL), '{}')::text[] AS gratings,
+         COALESCE((SELECT array_agg(DISTINCT m.observation ORDER BY m.observation) FROM m WHERE m.observation IS NOT NULL), '{}')::text[] AS observations,
+         (SELECT count(*) FROM m)::integer AS n_targets,
+         (SELECT count(*) FROM sp)::integer AS n_spectra,
+         (SELECT max(sp.signal_to_noise) FROM sp) AS max_snr,
+         (SELECT max(sp.exposure_time) FROM sp) AS max_exposure_time,
+         concat_ws(' ', o.object_id,
+                   (SELECT string_agg(DISTINCT m.target_id, ' ') FROM m),
+                   (SELECT string_agg(DISTINCT m.program_slug, ' ') FROM m),
+                   (SELECT string_agg(DISTINCT m.observation, ' ') FROM m)) AS search_text
+) a
+WHERE o.is_public AND o.is_active AND o.has_published_spectrum
+  AND EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = o.tag AND r.state = 'published');
+
+ALTER VIEW "reader"."dr_objects" OWNER TO "postgres";
+COMMENT ON VIEW "reader"."dr_objects" IS 'dr_objects for the public SQL reader (campfire_reader): the frozen public objects of published releases, their member aggregates computed over the frozen public published members only. Same columns as public.dr_objects.';
+
+GRANT SELECT ON TABLE "reader"."objects" TO "campfire_reader";
+GRANT SELECT ON TABLE "reader"."dr_objects" TO "campfire_reader";

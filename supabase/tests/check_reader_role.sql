@@ -35,7 +35,7 @@ BEGIN
   IF NOT r.rolcanlogin THEN RAISE EXCEPTION 'READER 1: campfire_reader cannot log in'; END IF;
   cfg := r.rolconfig;
   IF NOT ('statement_timeout=30s' = ANY (cfg) AND 'default_transaction_read_only=on' = ANY (cfg)
-          AND 'search_path=public' = ANY (cfg) AND 'idle_in_transaction_session_timeout=60s' = ANY (cfg)) THEN
+          AND 'search_path=reader, public' = ANY (cfg) AND 'idle_in_transaction_session_timeout=60s' = ANY (cfg)) THEN
     RAISE EXCEPTION 'READER 1: role settings are %, expected the timeout, read-only and search_path settings', cfg;
   END IF;
   RAISE NOTICE 'OK 1: role present, no privilege attributes, settings %', cfg;
@@ -46,15 +46,47 @@ END $$;
 -- ============================================================================
 DO $$
 DECLARE
-  allow text[] := ARRAY['programs','observations','fields','nircam_images','objects','targets','spectra',
+  -- whole-table SELECT; objects / dr_objects are granted column by column
+  -- (the member aggregates left out) and read through reader.objects /
+  -- reader.dr_objects, which carry them scoped
+  allow text[] := ARRAY['programs','observations','fields','nircam_images','targets','spectra',
                         'line_fits','lines','catalog_matches','photometry',
-                        'dr_releases','dr_objects','dr_targets','dr_spectra','dr_line_fits','dr_lines',
+                        'dr_releases','dr_targets','dr_spectra','dr_line_fits','dr_lines',
                         'dr_catalog_matches','dr_photometry','dr_nircam_images','dr_fields','dr_filter_options','dr_manifest'];
+  aggregates text[] := ARRAY['programs','observations','gratings','n_targets','n_spectra','max_snr','max_exposure_time','search_text'];
   got text[]; extra text[]; missing text[]; n int; bad text;
 BEGIN
   SELECT array_agg(DISTINCT table_name ORDER BY table_name) INTO got
   FROM information_schema.role_table_grants
   WHERE grantee = 'campfire_reader' AND privilege_type = 'SELECT' AND table_schema = 'public';
+  -- objects / dr_objects: no aggregate column, every other column
+  SELECT count(*), string_agg(table_name || '.' || column_name, ', ') INTO n, bad
+  FROM information_schema.role_column_grants
+  WHERE grantee = 'campfire_reader' AND table_schema = 'public' AND table_name IN ('objects', 'dr_objects')
+    AND (column_name = ANY (aggregates) OR column_name IN ('evidence_programs', 'z_source_spectrum_id'));
+  IF n > 0 THEN RAISE EXCEPTION 'READER 2: aggregate columns granted on the objects tables: %', bad; END IF;
+  SELECT count(*), string_agg(c.table_name || '.' || c.column_name, ', ') INTO n, bad
+  FROM information_schema.columns c
+  WHERE c.table_schema = 'public' AND c.table_name IN ('objects', 'dr_objects')
+    AND c.column_name <> ALL (aggregates) AND c.column_name NOT IN ('evidence_programs', 'z_source_spectrum_id')
+    AND NOT EXISTS (SELECT 1 FROM information_schema.role_column_grants g
+                    WHERE g.grantee = 'campfire_reader' AND g.table_schema = 'public'
+                      AND g.table_name = c.table_name AND g.column_name = c.column_name AND g.privilege_type = 'SELECT');
+  IF n > 0 THEN RAISE EXCEPTION 'READER 2: objects columns without SELECT: %', bad; END IF;
+  -- the reader views, with the tables' columns in the tables' order
+  IF NOT (has_table_privilege('campfire_reader', 'reader.objects', 'SELECT')
+          AND has_table_privilege('campfire_reader', 'reader.dr_objects', 'SELECT')) THEN
+    RAISE EXCEPTION 'READER 2: reader.objects / reader.dr_objects not granted';
+  END IF;
+  -- the same columns with the same types (order is the schema file's; the
+  -- migration chain's physical order may differ, as check_dr_parity notes)
+  IF (SELECT array_agg(column_name::text || ':' || data_type ORDER BY column_name) FROM information_schema.columns WHERE table_schema = 'reader' AND table_name = 'objects')
+     <> (SELECT array_agg(column_name::text || ':' || data_type ORDER BY column_name) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'objects')
+     OR (SELECT array_agg(column_name::text || ':' || data_type ORDER BY column_name) FROM information_schema.columns WHERE table_schema = 'reader' AND table_name = 'dr_objects')
+     <> (SELECT array_agg(column_name::text || ':' || data_type ORDER BY column_name) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'dr_objects') THEN
+    RAISE EXCEPTION 'READER 2: the reader views do not carry the tables'' columns and types';
+  END IF;
+  got := ARRAY(SELECT t FROM unnest(got) t WHERE t NOT IN ('objects', 'dr_objects'));
   SELECT array_agg(t) INTO extra FROM unnest(got) t WHERE t <> ALL (allow);
   SELECT array_agg(t) INTO missing FROM unnest(allow) t WHERE t <> ALL (COALESCE(got, '{}'));
   IF extra IS NOT NULL THEN RAISE EXCEPTION 'READER 2: SELECT granted beyond the allowlist: %', extra; END IF;
@@ -64,8 +96,8 @@ BEGIN
   WHERE grantee = 'campfire_reader' AND privilege_type <> 'SELECT';
   IF n > 0 THEN RAISE EXCEPTION 'READER 2: non-SELECT privileges: %', bad; END IF;
   SELECT count(*) INTO n FROM information_schema.role_table_grants
-  WHERE grantee = 'campfire_reader' AND table_schema <> 'public';
-  IF n > 0 THEN RAISE EXCEPTION 'READER 2: grants outside public'; END IF;
+  WHERE grantee = 'campfire_reader' AND NOT (table_schema = 'public' OR (table_schema = 'reader' AND table_name IN ('objects', 'dr_objects')));
+  IF n > 0 THEN RAISE EXCEPTION 'READER 2: grants outside public and the two reader views'; END IF;
   -- the project's functions (owned by postgres; extension functions such as
   -- pg_trgm's are PUBLIC by design and carry no data)
   SELECT count(*), string_agg(p.proname, ', ') INTO n, bad
@@ -76,12 +108,12 @@ BEGIN
   SELECT count(*) INTO n FROM information_schema.sequences s
   WHERE s.sequence_schema = 'public' AND has_sequence_privilege('campfire_reader', format('%I.%I', s.sequence_schema, s.sequence_name), 'SELECT,USAGE');
   IF n > 0 THEN RAISE EXCEPTION 'READER 2: sequence privileges'; END IF;
-  -- every allowlisted table has RLS on and a reader policy
-  SELECT count(*), string_agg(t, ', ') INTO n, bad FROM unnest(allow) t
+  -- every allowlisted table (and the two column-granted ones) has RLS on and a reader policy
+  SELECT count(*), string_agg(t, ', ') INTO n, bad FROM unnest(allow || ARRAY['objects', 'dr_objects']) t
   WHERE NOT EXISTS (SELECT 1 FROM pg_policies p WHERE p.schemaname = 'public' AND p.tablename = t AND 'campfire_reader' = ANY (p.roles))
      OR NOT (SELECT c.relrowsecurity FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace WHERE ns.nspname = 'public' AND c.relname = t);
   IF n > 0 THEN RAISE EXCEPTION 'READER 2: allowlisted tables without RLS or a reader policy: %', bad; END IF;
-  RAISE NOTICE 'OK 2: grant set = allowlist (% tables), SELECT only, no functions, no sequences, every table under RLS with a reader policy', array_length(allow, 1);
+  RAISE NOTICE 'OK 2: grant set = allowlist (% tables + objects / dr_objects by column + 2 reader views), SELECT only, no functions, no sequences, every table under RLS with a reader policy', array_length(allow, 1);
 END $$;
 
 -- ============================================================================
@@ -98,20 +130,31 @@ INSERT INTO objects (object_id, field, ra, dec, programs, observations, has_publ
   ('ZZZ-RR-PUB',      'zzz_rr_field', 161.0, 3.0, ARRAY['zzz_rr_pub'],  ARRAY['zzz_rr_obs_pub'],  true,  true),
   ('ZZZ-RR-PRIV',     'zzz_rr_field', 161.1, 3.1, ARRAY['zzz_rr_priv'], ARRAY['zzz_rr_obs_priv'], true,  true),
   ('ZZZ-RR-INACTIVE', 'zzz_rr_field', 161.2, 3.2, ARRAY['zzz_rr_pub'],  ARRAY['zzz_rr_obs_pub'],  true,  false),
-  ('ZZZ-RR-UNPUB',    'zzz_rr_field', 161.3, 3.3, ARRAY['zzz_rr_pub'],  ARRAY['zzz_rr_obs_pub'],  false, true);
+  ('ZZZ-RR-UNPUB',    'zzz_rr_field', 161.3, 3.3, ARRAY['zzz_rr_pub'],  ARRAY['zzz_rr_obs_pub'],  false, true),
+  ('ZZZ-RR-MIXED',    'zzz_rr_field', 161.4, 3.4, ARRAY['zzz_rr_priv', 'zzz_rr_pub'], ARRAY['zzz_rr_obs_priv', 'zzz_rr_obs_pub'], true, true);
 INSERT INTO targets (target_id, field, ra, dec, program_slug, observation, object_id, has_published_spectrum)
 SELECT v.tid, 'zzz_rr_field', v.ra, 3.0, v.prog, v.obs, o.id, v.pub
 FROM (VALUES
   ('zzz-rr-t-pub',   161.0, 'zzz_rr_pub',  'zzz_rr_obs_pub',  'ZZZ-RR-PUB',   true),
   ('zzz-rr-t-priv',  161.1, 'zzz_rr_priv', 'zzz_rr_obs_priv', 'ZZZ-RR-PRIV',  true),
-  ('zzz-rr-t-unpub', 161.3, 'zzz_rr_pub',  'zzz_rr_obs_pub',  'ZZZ-RR-UNPUB', false)
+  ('zzz-rr-t-unpub', 161.3, 'zzz_rr_pub',  'zzz_rr_obs_pub',  'ZZZ-RR-UNPUB', false),
+  ('zzz-rr-t-mix-pub',  161.4, 'zzz_rr_pub',  'zzz_rr_obs_pub',  'ZZZ-RR-MIXED', true),
+  ('zzz-rr-t-mix-priv', 161.4, 'zzz_rr_priv', 'zzz_rr_obs_priv', 'ZZZ-RR-MIXED', true)
 ) AS v(tid, ra, prog, obs, oid, pub)
 JOIN objects o ON o.object_id = v.oid;
 INSERT INTO spectra (target_id, grating, fits_path, deploy_status) VALUES
   ('zzz-rr-t-pub',   'PRISM', '/tmp/zzz_rr_pub_spec.fits',   'published'),
   ('zzz-rr-t-pub',   'G395M', '/tmp/zzz_rr_pub_draft.fits',  'draft'),
   ('zzz-rr-t-priv',  'PRISM', '/tmp/zzz_rr_priv_spec.fits',  'published'),
-  ('zzz-rr-t-unpub', 'PRISM', '/tmp/zzz_rr_unpub_spec.fits', 'draft');
+  ('zzz-rr-t-unpub', 'PRISM', '/tmp/zzz_rr_unpub_spec.fits', 'draft'),
+  ('zzz-rr-t-mix-pub',  'PRISM', '/tmp/zzz_rr_mix_pub_spec.fits',  'published'),
+  ('zzz-rr-t-mix-priv', 'G395M', '/tmp/zzz_rr_mix_priv_spec.fits', 'published');
+-- the stored aggregates of the mixed object, as reconcile would write them: both programs, both gratings
+UPDATE objects SET n_targets = 2, n_spectra = 2, gratings = ARRAY['G395M', 'PRISM'],
+       search_text = 'ZZZ-RR-MIXED zzz-rr-t-mix-priv zzz-rr-t-mix-pub zzz_rr_priv zzz_rr_pub zzz_rr_obs_priv zzz_rr_obs_pub'
+ WHERE object_id = 'ZZZ-RR-MIXED';
+UPDATE objects SET n_targets = 1, n_spectra = 1, gratings = ARRAY['PRISM'], search_text = 'ZZZ-RR-PUB zzz-rr-t-pub zzz_rr_pub zzz_rr_obs_pub'
+ WHERE object_id = 'ZZZ-RR-PUB';
 INSERT INTO line_fits (spectrum_id, target_id, grating, program_slug, observation, z_used, z_source, fit_version)
 SELECT s.id, s.target_id, s.grating, s.program_slug, s.observation, 5.0, 'inspected', 'rr'
 FROM spectra s WHERE s.fits_path LIKE '/tmp/zzz_rr_%';
@@ -143,6 +186,7 @@ DECLARE n int;
 BEGIN
   PERFORM set_config('request.jwt.claims', '', true);
   SET LOCAL ROLE campfire_reader;
+  SET LOCAL search_path = reader, public;     -- the role's own setting, which SET ROLE does not apply
   EXECUTE p_sql INTO n;
   RESET ROLE;
   RETURN n;
@@ -159,16 +203,21 @@ DECLARE
     ['observations',    $q$SELECT count(*) FROM observations WHERE name LIKE 'zzz_rr_%'$q$,                          '1'],
     ['fields',          $q$SELECT count(*) FROM fields WHERE name = 'zzz_rr_field'$q$,                               '1'],
     ['nircam_images',   $q$SELECT count(*) FROM nircam_images WHERE field = 'zzz_rr_field'$q$,                       '1'],
-    ['objects',         $q$SELECT count(*) FROM objects WHERE object_id LIKE 'ZZZ-RR-%'$q$,                          '1'],
+    ['objects',         $q$SELECT count(*) FROM objects WHERE object_id LIKE 'ZZZ-RR-%'$q$,                          '2'],
     ['objects:hidden',  $q$SELECT count(*) FROM objects WHERE object_id LIKE 'ZZZ-RR-%' AND (NOT is_public OR NOT is_active OR NOT has_published_spectrum)$q$, '0'],
-    ['targets',         $q$SELECT count(*) FROM targets WHERE target_id LIKE 'zzz-rr-%'$q$,                          '1'],
-    ['spectra',         $q$SELECT count(*) FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%'$q$,                     '1'],
+    ['targets',         $q$SELECT count(*) FROM targets WHERE target_id LIKE 'zzz-rr-%'$q$,                          '2'],
+    ['spectra',         $q$SELECT count(*) FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%'$q$,                     '2'],
     ['spectra:hidden',  $q$SELECT count(*) FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%' AND (NOT is_public OR deploy_status <> 'published')$q$, '0'],
-    ['line_fits',       $q$SELECT count(*) FROM line_fits WHERE fit_version = 'rr'$q$,                               '1'],
-    ['lines',           $q$SELECT count(*) FROM lines l JOIN spectra s ON s.id = l.spectrum_id WHERE s.fits_path LIKE '/tmp/zzz_rr_%'$q$, '1'],
-    ['lines:raw',       $q$SELECT count(*) FROM lines l WHERE l.spectrum_id IN (SELECT id FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%')$q$, '1'],
-    ['catalog_matches', $q$SELECT count(*) FROM catalog_matches WHERE catalog_name = 'zzz_rr_cat'$q$,                '1'],
-    ['photometry',      $q$SELECT count(*) FROM photometry p JOIN catalog_matches m ON m.id = p.match_id WHERE m.catalog_name = 'zzz_rr_cat'$q$, '1']
+    ['line_fits',       $q$SELECT count(*) FROM line_fits WHERE fit_version = 'rr'$q$,                               '2'],
+    ['lines',           $q$SELECT count(*) FROM lines l JOIN spectra s ON s.id = l.spectrum_id WHERE s.fits_path LIKE '/tmp/zzz_rr_%'$q$, '2'],
+    ['lines:raw',       $q$SELECT count(*) FROM lines l WHERE l.spectrum_id IN (SELECT id FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%')$q$, '2'],
+    ['catalog_matches', $q$SELECT count(*) FROM catalog_matches WHERE catalog_name = 'zzz_rr_cat'$q$,                '2'],
+    ['photometry',      $q$SELECT count(*) FROM photometry p JOIN catalog_matches m ON m.id = p.match_id WHERE m.catalog_name = 'zzz_rr_cat'$q$, '2'],
+    ['objects:mixed-aggregates', $q$SELECT count(*) FROM objects WHERE object_id = 'ZZZ-RR-MIXED' AND programs = ARRAY['zzz_rr_pub'] AND observations = ARRAY['zzz_rr_obs_pub'] AND gratings = ARRAY['PRISM'] AND n_targets = 1 AND n_spectra = 1 AND search_text NOT LIKE '%priv%'$q$, '1'],
+    ['objects:public-stored', $q$SELECT count(*) FROM objects WHERE object_id = 'ZZZ-RR-PUB' AND gratings = ARRAY['PRISM'] AND n_spectra = 1 AND search_text = 'ZZZ-RR-PUB zzz-rr-t-pub zzz_rr_pub zzz_rr_obs_pub'$q$, '1'],
+    ['objects:star-denied', $q$SELECT count(*) FROM (SELECT * FROM public.objects) x$q$, '-1'],
+    ['objects:aggregate-column-denied', $q$SELECT count(programs) FROM public.objects$q$, '-1'],
+    ['objects:id-column-allowed', $q$SELECT count(id) FROM public.objects WHERE object_id LIKE 'ZZZ-RR-%'$q$, '2']
   ];
   i int; got int;
 BEGIN
@@ -179,11 +228,11 @@ BEGIN
     END IF;
   END LOOP;
   -- the whole fixture is visible to postgres, so the reader's counts above are selections, not absences
-  IF (SELECT count(*) FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%') <> 4
-     OR (SELECT count(*) FROM lines l JOIN spectra s ON s.id = l.spectrum_id WHERE s.fits_path LIKE '/tmp/zzz_rr_%') <> 4 THEN
+  IF (SELECT count(*) FROM spectra WHERE fits_path LIKE '/tmp/zzz_rr_%') <> 6
+     OR (SELECT count(*) FROM lines l JOIN spectra s ON s.id = l.spectrum_id WHERE s.fits_path LIKE '/tmp/zzz_rr_%') <> 6 THEN
     RAISE EXCEPTION 'READER 3: fixture incomplete';
   END IF;
-  RAISE NOTICE 'OK 3: live tables: public published rows only, children through their parents';
+  RAISE NOTICE 'OK 3: live tables: public published rows only, children through their parents; objects = the reader view with scoped aggregates, the table itself column-limited';
 END $$;
 
 -- ============================================================================
@@ -205,8 +254,13 @@ BEGIN
   END IF;
   -- frozen rows: the reader's count equals postgres' count under the frozen public/published/active columns
   SELECT count(*) INTO want FROM dr_objects WHERE tag = tag_pub AND is_public AND is_active AND has_published_spectrum;
-  got := pg_temp.zzz_rr_count(format($q$SELECT count(*) FROM dr_objects WHERE tag = %L$q$, tag_pub));
+  got := pg_temp.zzz_rr_count(format($q$SELECT count(*) FROM dr_objects WHERE tag = %L$q$, tag_pub));   -- reader.dr_objects
   IF got <> want OR want = 0 THEN RAISE EXCEPTION 'READER 4 dr_objects: reader % vs frozen public %', got, want; END IF;
+  got := pg_temp.zzz_rr_count(format($q$SELECT count(id) FROM public.dr_objects WHERE tag = %L$q$, tag_pub));  -- the policy on the table
+  IF got <> want THEN RAISE EXCEPTION 'READER 4 public.dr_objects: reader % vs frozen public %', got, want; END IF;
+  -- no frozen aggregate names a private program
+  got := pg_temp.zzz_rr_count(format($q$SELECT count(*) FROM dr_objects o WHERE o.tag = %L AND EXISTS (SELECT 1 FROM unnest(o.programs || o.evidence_programs) p WHERE p NOT IN (SELECT slug FROM programs))$q$, tag_pub));
+  IF got <> 0 THEN RAISE EXCEPTION 'READER 4: % frozen object(s) name a program the reader cannot see', got; END IF;
   SELECT count(*) INTO want FROM dr_spectra WHERE tag = tag_pub AND is_public AND deploy_status = 'published';
   got := pg_temp.zzz_rr_count(format($q$SELECT count(*) FROM dr_spectra WHERE tag = %L$q$, tag_pub));
   IF got <> want OR want = 0 THEN RAISE EXCEPTION 'READER 4 dr_spectra: reader % vs frozen public %', got, want; END IF;
@@ -250,7 +304,7 @@ BEGIN
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
   BEGIN
-    UPDATE objects SET field = 'zzz_rr_other' WHERE object_id = 'ZZZ-RR-PUB';
+    UPDATE public.objects SET field = 'zzz_rr_other' WHERE object_id = 'ZZZ-RR-PUB';
     RAISE EXCEPTION 'READER 5: the reader could UPDATE';
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;

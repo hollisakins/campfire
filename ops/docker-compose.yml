@@ -332,7 +332,7 @@ services:
   # read-only transactions, connection limit) bound what a session can do.
   # Listens on every interface: the security group has to admit 6432 and
   # db.$WEB_HOST is a DNS-only record (Cloudflare's proxy carries no Postgres).
-  # TLS from certs/reader.pem + reader.key (self-signed by
+  # TLS from pgbouncer/reader.pem + reader.key (self-signed by
   # scripts/reader-setup.sh; clients use sslmode=require). Enabled by the
   # reader profile so a stack without a reader password runs unchanged:
   #   docker compose --profile reader up -d pgbouncer
@@ -356,7 +356,7 @@ services:
       LISTEN_PORT: 6432
       POOL_MODE: transaction
       AUTH_TYPE: scram-sha-256
-      AUTH_FILE: /etc/pgbouncer/userlist.txt
+      AUTH_FILE: /etc/pgbouncer-reader/userlist.txt
       MAX_CLIENT_CONN: ${READER_MAX_CLIENT_CONN:-200}
       DEFAULT_POOL_SIZE: ${READER_POOL_SIZE:-10}
       RESERVE_POOL_SIZE: 2
@@ -372,15 +372,16 @@ services:
       CLIENT_IDLE_TIMEOUT: 600
       QUERY_TIMEOUT: 60
       CLIENT_TLS_SSLMODE: require
-      CLIENT_TLS_KEY_FILE: /certs/reader.key
-      CLIENT_TLS_CERT_FILE: /certs/reader.pem
+      CLIENT_TLS_KEY_FILE: /etc/pgbouncer-reader/reader.key
+      CLIENT_TLS_CERT_FILE: /etc/pgbouncer-reader/reader.pem
       SERVER_TLS_SSLMODE: disable
       IGNORE_STARTUP_PARAMETERS: extra_float_digits,options
       ADMIN_USERS: ""
       STATS_USERS: ""
     volumes:
-      - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
-      - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/certs:/certs:ro
+      # one world-traversable directory of its own (userlist + certificate):
+      # certs/ is 0750 for the ops user and the container runs as its own uid
+      - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/pgbouncer:/etc/pgbouncer-reader:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U campfire_reader || exit 1"]
       interval: 10s

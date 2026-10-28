@@ -13,8 +13,8 @@
 #   3. writes the PgBouncer SCRAM userlist with that one role, from the
 #      verifier Postgres stores (pg_authid), so the pooler never sees the
 #      plaintext and no other role can authenticate at it;
-#   4. makes a self-signed certificate for the pooler when certs/reader.pem is
-#      missing (clients use sslmode=require; see the doc for verify-full);
+#   4. makes a self-signed certificate for the pooler when pgbouncer/reader.pem
+#      is missing (clients use sslmode=require; see the doc for verify-full);
 #   5. starts or restarts the pooler (compose profile "reader") and runs one
 #      query through it.
 # Needs: ops/.env, docker compose, the db container up. Run from the repo on
@@ -62,25 +62,28 @@ ALTER ROLE campfire_reader PASSWORD '${READER_PASSWORD}';
 SQL
 echo "campfire_reader password set"
 
-# 3: the pooler's userlist from the stored SCRAM verifier (never the plaintext)
-mkdir -p "$root/pgbouncer"
+# 3: the pooler's directory: userlist from the stored SCRAM verifier (never the
+# plaintext) and the certificate. The container runs as its own uid, so the
+# directory is world-traversable and the files world-readable: the userlist
+# holds a salted verifier of a public password and the key signs a
+# self-signed certificate, neither a secret. (certs/ is 0750 for the ops user
+# and stays untouched.)
+install -d -m 0755 "$root/pgbouncer"
 verifier=$(psql_db -Atc "SELECT rolpassword FROM pg_authid WHERE rolname = 'campfire_reader'")
 case "$verifier" in SCRAM-SHA-256*) ;; *) echo "expected a SCRAM verifier, got: ${verifier:0:20}"; exit 1;; esac
-umask 077
+umask 022
 printf '"campfire_reader" "%s"\n' "$verifier" > "$root/pgbouncer/userlist.txt"
+chmod 644 "$root/pgbouncer/userlist.txt"
 echo "userlist written: $root/pgbouncer/userlist.txt"
 
 # 4: a certificate for the pooler (self-signed; sslmode=require)
-mkdir -p "$root/certs"
-if [ ! -f "$root/certs/reader.pem" ] || [ ! -f "$root/certs/reader.key" ]; then
+if [ ! -f "$root/pgbouncer/reader.pem" ] || [ ! -f "$root/pgbouncer/reader.key" ]; then
   openssl req -x509 -newkey rsa:2048 -nodes -days 1095 -subj "/CN=${reader_host}" \
     -addext "subjectAltName=DNS:${reader_host}" \
-    -keyout "$root/certs/reader.key" -out "$root/certs/reader.pem" 2>/dev/null
+    -keyout "$root/pgbouncer/reader.key" -out "$root/pgbouncer/reader.pem" 2>/dev/null
   echo "self-signed certificate written for ${reader_host} (sslmode=require)"
 fi
-# PgBouncer runs as its own uid inside the container: both files must be readable there
-chmod 644 "$root/certs/reader.pem" "$root/certs/reader.key"
-chmod 644 "$root/pgbouncer/userlist.txt"
+chmod 644 "$root/pgbouncer/reader.pem" "$root/pgbouncer/reader.key"
 
 # 5: the pooler
 $compose --profile reader up -d --force-recreate pgbouncer

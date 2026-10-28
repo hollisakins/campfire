@@ -59,7 +59,7 @@ Live catalog, the rows a signed-out reader of the portal sees:
 |---|---|
 | `programs` | public programs |
 | `observations` | observations of public programs |
-| `objects` | public, active, with a published spectrum (one row per astrophysical source) |
+| `objects` | public, active, with a published spectrum (one row per astrophysical source); the member aggregates (`programs`, `observations`, `gratings`, `n_targets`, `n_spectra`, `max_snr`, `max_exposure_time`, `search_text`) count public published members only |
 | `targets` | public, with a published spectrum (one row per MSA target per observation) |
 | `spectra` | public and published (one row per reduced spectrum; `fits_path` is the storage key) |
 | `line_fits` | the fit run of each visible spectrum (provenance: `z_used`, `stale_redshift`, versions) |
@@ -77,10 +77,20 @@ Published data releases, frozen as they were at the freeze: `dr_releases`
 release's public rows are the ones public at the freeze (the frozen
 `is_public` column), so a release reads the same way forever.
 
+`objects` and `dr_objects` resolve to views in the `reader` schema (the role's
+`search_path` is `reader, public`): the same rows and columns as the tables,
+with the member aggregates computed over the public published members, since
+the tables' stored aggregates count every member, private programs included.
+The tables themselves are granted without those columns, so
+`SELECT * FROM public.objects` is refused while `SELECT * FROM objects` works;
+`public.objects.id` and the other plain columns remain readable for joins.
+On `dr_objects` the same applies to `evidence_programs` and `z_source_spectrum_id`.
+
 Nothing else: no functions, no user tables, no storage registry, no
 unpublished or private row under any query (`supabase/tests/check_reader_role.sql`
-is the guard; the policies are `reader_select_*` in `supabase/schemas/policies.sql`).
-Proprietary data stays behind the API, where the JWT is.
+is the guard; the policies are `reader_select_*` in `supabase/schemas/policies.sql`,
+the views are in `views.sql`). Proprietary data stays behind the API, where
+the JWT is.
 
 ## Columns worth knowing
 

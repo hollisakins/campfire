@@ -54,7 +54,9 @@ under its own RLS policies, with no function and no other table):
    `.env` when empty, sets it on the role, writes the PgBouncer SCRAM userlist
    (`$CAMPFIRE_DATA_ROOT/pgbouncer/userlist.txt`, that one role only, from the
    verifier in `pg_authid`), makes a self-signed certificate
-   (`certs/reader.pem` / `reader.key`) when missing, starts the pooler
+   (`pgbouncer/reader.pem` / `reader.key`; the directory is the pooler's own,
+   world-traversable, since the container runs as its own uid and `certs/` is
+   0750) when missing, starts the pooler
    (`docker compose --profile reader up -d pgbouncer`, image
    `edoburu/pgbouncer`, transaction mode, 0.0.0.0:6432) and runs one query
    through it. `rotate` changes the password, `status` reports.
@@ -65,8 +67,9 @@ under its own RLS policies, with no function and no other table):
 5. Publish the connection string the script prints (docs, the portal's docs page).
 6. Enable the password heal (the script prints the command): `campfire-reader-heal.timer`
    runs `scripts/reader-heal.sh` every 2 minutes, which re-applies `READER_PASSWORD`
-   when the stored verifier no longer matches the pooler's userlist and HUPs the
-   pooler. Why: Postgres lets any role change its own password, the read-only
+   and the role's settings when the stored verifier no longer matches the pooler's
+   userlist or the settings drifted (a role may also `ALTER ROLE … SET` its own
+   defaults), ends the role's sessions and HUPs the pooler. Why: Postgres lets any role change its own password, the read-only
    default is lifted per transaction with `SET TRANSACTION READ WRITE`, and the
    credential is public, so a holder can desync the pooler's server-side login;
    the heal bounds that to two minutes without rotating the published password.
