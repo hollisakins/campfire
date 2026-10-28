@@ -407,6 +407,16 @@ fails it until it is classified. Run `dr freeze` when `dr status` shows no activ
 unleased admin edit overlapping a freeze yields a consistent snapshot of an intermediate
 catalog, not a corrupt one.
 
+**Retain-on-supersede.** The archive (`archive/<sha256>/<relpath>` on OSN, registry rows with
+`root = 'archive'`, immutable by trigger) holds exactly the files data releases reference. Before
+a deploy overwrites a live NIRSpec final or sidecar, the gate (`web/lib/server/retain.ts` on the
+presign route for login-mode deploys, `campfire/deploy/retain.py` on the direct path) asks
+`retain_required_hashes` whether the object's current bytes belong to a frozen release whose
+`dr archive` has not copied them yet; only then are they copied first, and a copy that drifts or
+fails refuses the batch (409 `retain_failed`). Every other overwrite proceeds as always and
+nothing else is retained. The gate is always on and has no mode or override (decision D-P2-4);
+the fix for a refused batch is finishing `campfire dr archive` or purging the release.
+
 **Deploy auth (issue #250).** Two decisions, kept independent:
 
 - **Supabase auth mode** is chosen *explicitly*, never inferred from which creds are present:

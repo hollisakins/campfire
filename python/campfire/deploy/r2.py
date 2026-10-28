@@ -664,9 +664,10 @@ def upload_files_parallel(
     # than the thread pools used here, which silently serializes the excess.
     client = make_s3_client(backend_cfg, max_pool_connections=max(max_workers, 10))
 
-    # Retain-on-supersede (P2): the presign route runs this gate for login-mode
-    # deploys; direct uploads never reach it, so it runs here. Data products
-    # only — tiles and R2 are never retained.
+    # Retain-on-supersede (P2, narrowed to frozen release members by P4e): the
+    # presign route runs this gate for login-mode deploys; direct uploads never
+    # reach it, so it runs here. Data products only — tiles and R2 are never
+    # retained.
     if backend == 'osn' and bucket_id == 'data':
         from campfire.deploy.retain import retain_before_direct_upload
         from campfire.deploy.supabase import get_supabase_client

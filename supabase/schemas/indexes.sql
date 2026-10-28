@@ -812,6 +812,10 @@ CREATE INDEX IF NOT EXISTS idx_dr_manifest_tag_pending
     ON public.dr_manifest USING btree (tag, storage_key) WHERE (byte_state = ANY (ARRAY['pending'::text, 'failed'::text]));
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_tag_component
     ON public.dr_manifest USING btree (tag, component);
+-- retain_required_hashes (P4e): the deploy gate asks, per upload batch, which live hashes a
+-- release has frozen but not archived; the set is empty outside a freeze -> archive window.
+CREATE INDEX IF NOT EXISTS idx_dr_manifest_unarchived_hash
+    ON public.dr_manifest USING btree (content_hash) WHERE (byte_state = ANY (ARRAY['pending'::text, 'failed'::text]));
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_science_hash
     ON public.dr_manifest USING btree (science_hash) WHERE (science_hash IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_spectrum

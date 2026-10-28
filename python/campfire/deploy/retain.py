@@ -9,26 +9,29 @@ semantics are the route's, kept deliberately in step:
 
 * only the six retained NIRSpec finals/sidecars (decision D-P2-1);
 * skip new keys, true no-op re-uploads and provisional (etag) registry hashes;
-* **drift** when the live registry hash moved past the plan, the live object's
-  size no longer matches its row, the object is missing, or the conditional
-  copy fails its ETag precondition;
+* only objects whose current bytes a data release has frozen and not yet
+  archived (``retain_required_hashes``; decision D-P2-4, plan §9a): the
+  archive holds exactly the files releases reference, so every other overwrite
+  is ``skip-unreferenced`` and proceeds as it always did;
+* **drift** (for a referenced object) when the live registry hash moved past
+  the plan, the live object's size no longer matches its row, the object is
+  missing, or the conditional copy fails its ETag precondition;
 * the retained copy is a same-bucket ``CopyObject`` to
   ``archive/<sha256>/<relpath>`` guarded by ``CopySourceIfMatch`` (OSN answers
   412 on a mismatch, measured 2026-10-11), followed by an archive registry row
   (duplicate = someone already registered the same content) and an ``archive``
   deploy event.
 
-Modes (env ``CAMPFIRE_RETAIN_MODE``, default ``log``): ``off`` does nothing,
-``log`` prints what would be archived and lets the upload proceed (the shadow
-run), ``enforce`` archives first and refuses the upload set on any drift or
-copy failure — the one unrecoverable event in the model is a live object
-overwritten before its copy exists.
+The gate is always on and has no override: it archives first and refuses the
+upload set on any drift or copy failure, because the one unrecoverable event
+in the model is a frozen release's live object overwritten before its copy
+exists. The fix is finishing ``campfire dr archive`` (or purging the release
+that names the bytes), never overwriting them.
 """
 from __future__ import annotations
 
 from campfire.deploy.url_batches import url_batches
 
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Optional
@@ -51,16 +54,24 @@ class RetainError(RuntimeError):
     """Raised in ``enforce`` mode when a retained copy could not be guaranteed."""
 
 
-def retain_mode(env: Optional[dict] = None) -> str:
-    v = (env if env is not None else os.environ).get('CAMPFIRE_RETAIN_MODE', 'log')
-    v = (v or 'log').strip().lower()
-    return v if v in ('off', 'enforce') else 'log'
+# retain_required_hashes accepts at most 2000 hashes per call.
+_REQUIRED_CHUNK = 1000
+
+
+def required_hashes(client, hashes: list[str]) -> set[str]:
+    """The hashes a data release has frozen and not archived yet (``retain_required_hashes``)."""
+    out: set[str] = set()
+    uniq = sorted(set(hashes))
+    for i in range(0, len(uniq), _REQUIRED_CHUNK):
+        resp = client.rpc('retain_required_hashes', {'p_hashes': uniq[i:i + _REQUIRED_CHUNK]}).execute()
+        out.update(resp.data or [])
+    return out
 
 
 @dataclass(frozen=True)
 class RetainDecision:
     key: str
-    action: str                       # skip-new | skip-type | skip-unchanged | skip-provisional-hash | drift | retain
+    action: str                       # skip-new | skip-type | skip-unchanged | skip-provisional-hash | skip-unreferenced | drift | retain
     row: Optional[dict] = None
     archive_key: Optional[str] = None
     reason: Optional[str] = None
@@ -99,6 +110,16 @@ def plan_retain(tasks: Iterable, client) -> list[RetainDecision]:
                      if canonical[t.r2_key] and kind[t.r2_key] in RETAINED_PRODUCT_TYPES})
     rows = _fetch_live_rows(client, wanted) if wanted else {}
 
+    def _retainable(row, t) -> bool:
+        new = getattr(t, 'new_hash', None)
+        return (row['product_type'] in RETAINED_PRODUCT_TYPES
+                and not (new and new == row['content_hash'])
+                and str(row['content_hash'] or '').startswith('sha256:'))
+
+    ask = [rows[canonical[t.r2_key]]['content_hash'] for t in tasks
+           if canonical.get(t.r2_key) in rows and _retainable(rows[canonical[t.r2_key]], t)]
+    required = required_hashes(client, ask) if ask else set()
+
     out: list[RetainDecision] = []
     for t in tasks:
         key = t.r2_key
@@ -115,6 +136,8 @@ def plan_retain(tasks: Iterable, client) -> list[RetainDecision]:
             out.append(RetainDecision(key, 'skip-unchanged', row))
         elif not str(row['content_hash'] or '').startswith('sha256:'):
             out.append(RetainDecision(key, 'skip-provisional-hash', row))
+        elif row['content_hash'] not in required:
+            out.append(RetainDecision(key, 'skip-unreferenced', row))
         elif old and old != row['content_hash']:
             out.append(RetainDecision(key, 'drift', row,
                                       reason=f"registry hash {row['content_hash']} != planned {old}"))
@@ -219,29 +242,19 @@ def execute_retain(decision: RetainDecision, *, s3, bucket: str, client,
 
 def retain_before_direct_upload(tasks: list, *, client, s3, bucket: str,
                                 actor: Optional[str] = None,
-                                mode: Optional[str] = None,
                                 log=print) -> list[RetainOutcome]:
     """The gate the direct upload path runs before overwriting live objects.
 
-    Returns the outcomes (empty in ``off`` / ``log`` modes). Raises
-    :class:`RetainError` in ``enforce`` mode when any candidate drifted or
-    failed to copy — nothing has been uploaded at that point.
+    Returns the outcomes (one per retained object; empty when nothing in the
+    batch is a frozen, unarchived release member). Raises :class:`RetainError`
+    when any such candidate drifted or failed to copy — nothing has been
+    uploaded at that point.
     """
-    mode = mode or retain_mode()
-    if mode == 'off' or not tasks:
+    if not tasks:
         return []
     decisions = plan_retain(tasks, client)
     to_retain = [d for d in decisions if d.action == 'retain']
     drifted = [d for d in decisions if d.action == 'drift']
-    counts = summarize(decisions)
-    if mode == 'log':
-        for d in to_retain:
-            log(f"  [retain:log] would archive {d.row['storage_key']} ({d.row['content_hash']}) -> {d.archive_key}")
-        for d in drifted:
-            log(f"  [retain:log] drift on {d.key}: {d.reason}")
-        if to_retain or drifted:
-            log(f"  [retain:log] {counts}")
-        return []
     if drifted:
         raise RetainError("retain gate: registry drift on " +
                           ", ".join(f"{d.key} ({d.reason})" for d in drifted[:5]) +

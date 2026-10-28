@@ -13271,6 +13271,49 @@ GRANT EXECUTE ON FUNCTION public.dr_bytes_summary(text) TO authenticated, servic
 
 
 -- =============================================================================
+-- Retain-on-supersede: which hashes a deploy must copy before overwriting
+-- (P4e, docs/design-data-releases-impl-plan.md §9a, decision D-P2-4)
+-- =============================================================================
+-- The archive holds exactly the files that releases reference. Before a deploy
+-- overwrites a live object, the gate (web/lib/server/retain.ts on the presign
+-- route, campfire.deploy.retain on the direct path) asks here whether the
+-- object's current bytes are named by a release that has not archived them
+-- yet: a dr_manifest row with that content_hash whose byte pass has not
+-- reached it (pending, or failed because the bytes were gone last time). Such
+-- an object is copied to archive/<hash>/<relpath> first; every other overwrite
+-- proceeds as it always did, and nothing else is ever retained. A published
+-- release's members are all copied or stamped (publish requires ready), so the
+-- set is non-empty only between a freeze and the end of its dr archive.
+CREATE OR REPLACE FUNCTION public.retain_required_hashes(p_hashes text[])
+RETURNS text[]
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  PERFORM dr_require_admin();
+  IF p_hashes IS NULL OR cardinality(p_hashes) = 0 THEN
+    RETURN '{}'::text[];
+  END IF;
+  IF cardinality(p_hashes) > 2000 THEN
+    RAISE EXCEPTION 'retain_required_hashes: at most 2000 hashes per call (got %)', cardinality(p_hashes);
+  END IF;
+  RETURN COALESCE((
+    SELECT array_agg(DISTINCT m.content_hash ORDER BY m.content_hash)
+    FROM dr_manifest m
+    WHERE m.content_hash = ANY (p_hashes)
+      -- the explicit list matches idx_dr_manifest_unarchived_hash's predicate
+      AND m.byte_state IN ('pending', 'failed')
+  ), '{}'::text[]);
+END;
+$$;
+
+COMMENT ON FUNCTION public.retain_required_hashes(text[]) IS 'Retain-on-supersede (P4e, D-P2-4): of the given content hashes, those a data release has frozen (dr_manifest) and its byte pass has not archived yet (byte_state pending or failed). A deploy copies a live object with such a hash into the archive before overwriting it; every other overwrite needs no copy. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.retain_required_hashes(text[]) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.retain_required_hashes(text[]) TO authenticated, service_role;
+
+
+-- =============================================================================
 -- Data releases: publish, withdraw, diff, removal references (P4d)
 -- =============================================================================
 --   dr_publish(tag, doi, known_issues)
