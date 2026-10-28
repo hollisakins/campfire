@@ -26,6 +26,11 @@ def test_next_step_hint_walks_the_lifecycle():
     assert 'freezing' in h(TAG, 'freezing')
     assert 'dr purge DR-t' in h(TAG, 'failed')
     assert 'dr archive --tag DR-t' in h(TAG, 'frozen', archive_open=10)
+    assert '10 manifest file(s) still pending' in h(TAG, 'frozen', archive_open=10)
+    # a partial byte pass with every export built says both (the rehearsal's shape)
+    partial = h(TAG, 'copying', archive_open=357940, exports_total=133)
+    assert '357,940 manifest file(s) still pending; its 133 export file(s) are built' in partial
+    assert 'are built' not in h(TAG, 'copying', archive_open=3, exports_total=133, exports_remaining=1)
     assert '--retry-failed' in h(TAG, 'copying', archive_open=3, archive_failed=2)
     assert 'dr export --tag DR-t' in h(TAG, 'frozen')                       # archived, never exported
     assert 'dr export --tag DR-t' in h(TAG, 'exporting', exports_total=5, exports_remaining=1)

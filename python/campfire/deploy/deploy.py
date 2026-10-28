@@ -63,6 +63,8 @@ from campfire.deploy.supabase import (
 )
 from campfire.deploy.summary import (
     filter_by_source_ids,
+    format_stale_summary,
+    stale_summary_rows,
     get_field,
     get_program_slug,
     get_spec_paths,
@@ -467,6 +469,14 @@ def deploy_observation(
         total = len(summary)
         summary = filter_by_source_ids(summary, source_ids)
         print(f"Filtered {total} spectra to {len(summary)} matching {len(source_ids)} source IDs")
+
+    # The summary is the catalog's source for file_hash / science_hash; a final
+    # reprocessed in place since it was written would deploy a catalog row the
+    # freeze later refuses (#665). Checked before any work, dry run included.
+    stale = stale_summary_rows(summary, obs_dir)
+    if stale:
+        print(format_stale_summary(obs_name, stale))
+        sys.exit(1)
 
     field = get_field(summary)
     program_slug = get_program_slug(summary)

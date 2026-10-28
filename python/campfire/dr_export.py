@@ -35,6 +35,8 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from .transient import retry_transient
+
 EXPORT_STREAMS = ('objects', 'spectra', 'line_fits', 'photometry', 'manifest')
 PAGE = 2000
 
@@ -65,26 +67,36 @@ def _rpc(client, name: str, params: dict):
     return client.rpc(name, params).execute().data
 
 
+def _rpc_retrying(client, name: str, params: dict, *, what: str, log=None):
+    """An idempotent RPC (a page fetch) retried on a transient transport error (#666)."""
+    return retry_transient(lambda: _rpc(client, name, params), what=what, log=log)
+
+
 def fetch_ledger(client, tag: str) -> list[dict]:
-    resp = (client.table('dr_exports')
-            .select('tag, stream, partition, storage_key, sha256, size_bytes, rows, state, built_at, error')
-            .eq('tag', tag).order('stream').order('partition').execute())
+    """The export ledger of TAG (a read: retried on a dropped connection, #666)."""
+    resp = retry_transient(lambda: (client.table('dr_exports')
+                                    .select('tag, stream, partition, storage_key, sha256, size_bytes, rows, '
+                                            'state, built_at, error')
+                                    .eq('tag', tag).order('stream').order('partition').execute()),
+                           what='the export ledger')
     return list(resp.data or [])
 
 
-def build_file(client, tag: str, stream: str, scope: str, out_path: str, *, page: int = PAGE) -> tuple[int, str, int]:
+def build_file(client, tag: str, stream: str, scope: str, out_path: str, *, page: int = PAGE,
+               log=None) -> tuple[int, str, int]:
     """Page ``dr_export_rows`` into a gzip JSONL file at *out_path*.
-    Returns (rows, sha256 of the gzip bytes, size in bytes)."""
+    Returns (rows, sha256 of the gzip bytes, size in bytes). A page whose
+    connection drops is fetched again (the cursor makes the fetch idempotent)."""
     rows = 0
     after = None
     with open(out_path, 'wb') as raw:
         # mtime=0 and no file name in the header: the same rows give the same bytes
         with gzip.GzipFile(filename='', fileobj=raw, mode='wb', compresslevel=6, mtime=0) as gz:
             while True:
-                data = _rpc(client, 'dr_export_rows', {
+                data = _rpc_retrying(client, 'dr_export_rows', {
                     'p_tag': tag, 'p_stream': stream, 'p_partition': scope,
                     'p_after': after, 'p_limit': page,
-                }) or []
+                }, what=f'{stream}/{scope} page', log=log) or []
                 for r in data:
                     gz.write(json.dumps(r['row_json'], separators=(',', ':'), ensure_ascii=False).encode('utf-8'))
                     gz.write(b'\n')
@@ -106,7 +118,8 @@ def _named(client, tag: str, key: str) -> bool:
         return True
 
 
-def _build_one(client, s3, bucket: str, tag: str, entry: dict, report: ExportReport, tmpdir: str) -> None:
+def _build_one(client, s3, bucket: str, tag: str, entry: dict, report: ExportReport, tmpdir: str,
+               *, log=None) -> None:
     stream, scope = entry['stream'], entry['partition']
     try:
         claimed = _rpc(client, 'dr_export_mark', {
@@ -122,10 +135,13 @@ def _build_one(client, s3, bucket: str, tag: str, entry: dict, report: ExportRep
     uploaded = None
     path = os.path.join(tmpdir, 'part.jsonl.gz')
     try:
-        rows, sha, size = build_file(client, tag, stream, scope, path)
+        rows, sha, size = build_file(client, tag, stream, scope, path, log=log)
         key = content_export_key(base_key, sha, claim)
-        with open(path, 'rb') as body:
-            s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType='application/gzip')
+        def _put():
+            # a fresh handle per attempt: a dropped upload leaves the first one half-read
+            with open(path, 'rb') as body:
+                s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType='application/gzip')
+        retry_transient(_put, what=f'{stream}/{scope} upload', log=log)
         uploaded = key
         marked = _rpc(client, 'dr_export_mark', {
             'p_tag': tag, 'p_stream': stream, 'p_partition': scope, 'p_state': 'ready',
@@ -181,13 +197,15 @@ def sweep_superseded(client, s3, bucket: str, tag: str) -> int:
 def run_export(client, s3, bucket: str, tag: str, *, log: Callable[[str], None] = print) -> ExportReport:
     """Seed the ledger, build every file that is not ready, report what is left."""
     report = ExportReport(tag=tag)
-    begun = _rpc(client, 'dr_export_begin', {'p_tag': tag}) or {}
+    # begin and status are idempotent (begin re-creates nothing that exists);
+    # the file marks are not retried: each is bound to a claim it took itself
+    begun = _rpc_retrying(client, 'dr_export_begin', {'p_tag': tag}, what='the export begin', log=log) or {}
     report.state = begun.get('state')
     todo = [r for r in fetch_ledger(client, tag) if r.get('state') != 'ready']
     log(f"  {len(todo)} file(s) to build")
     with tempfile.TemporaryDirectory(prefix=f'campfire-dr-{tag}-') as tmpdir:
         for i, entry in enumerate(todo, 1):
-            _build_one(client, s3, bucket, tag, entry, report, tmpdir)
+            _build_one(client, s3, bucket, tag, entry, report, tmpdir, log=log)
             if i % 10 == 0 or i == len(todo):
                 log(f"  {i}/{len(todo)}: {len(report.built)} built, {len(report.failed)} failed, "
                     f"{len(report.skipped)} skipped")
@@ -203,7 +221,7 @@ def run_export(client, s3, bucket: str, tag: str, *, log: Callable[[str], None] 
                 report.failed.remove(f)
                 report.skipped.append({'stream': f['stream'], 'scope': f['scope'],
                                        'reason': f"built by another run after: {f['error']}"})
-    status = _rpc(client, 'dr_export_status', {'p_tag': tag}) or {}
+    status = _rpc_retrying(client, 'dr_export_status', {'p_tag': tag}, what='the export status', log=log) or {}
     report.state = status.get('state', report.state)
     report.remaining = int(status.get('remaining') or 0)
     if report.remaining == 0:

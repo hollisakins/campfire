@@ -23,13 +23,19 @@ never offers it, the deploy gate's registration refuses it), so a copy that
 would vanish under the pending delete is never recorded. A run interrupted
 anywhere is finished by the next one: collecting rows are listed again, a
 delete of a missing key succeeds, and both phases count what is already done
-instead of refusing it.
+instead of refusing it. Every request a run makes is retried on a transport
+error before it counts (``campfire.transient``, #666): the claim and the finish
+are idempotent under the run's token, and a delete re-sent after a lost answer
+finds the keys gone.
 """
 from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
 from typing import Callable, Optional
+
+from . import transient
+from .transient import retry_transient
 
 #: A verify is trusted for this long before the delete (the claim it refreshed
 #: expires after 10 minutes in SQL; a stall longer than this re-verifies).
@@ -39,6 +45,9 @@ VERIFY_TRUST_S = 60.0
 _PAGE = 1000
 #: DeleteObjects takes at most 1000 keys per request.
 _DELETE_BATCH = 1000
+#: A delete whose connection dropped is re-sent this many times in all, each
+#: time through the verify gate again.
+_DELETE_ATTEMPTS = 3
 
 
 def gc_candidates(client, *, page: int = _PAGE) -> list[dict]:
@@ -52,7 +61,8 @@ def gc_candidates(client, *, page: int = _PAGE) -> list[dict]:
     out: list[dict] = []
     after = 0
     while True:
-        resp = client.rpc('archive_collectable', {'p_after_id': after, 'p_limit': page}).execute()
+        resp = retry_transient(lambda: client.rpc('archive_collectable', {'p_after_id': after, 'p_limit': page}).execute(),
+                               what='the collectable page')
         rows = resp.data or []
         out.extend(rows)
         if len(rows) < page:
@@ -188,8 +198,10 @@ def collect(client, s3, bucket: str, rows: list[dict], *, tag: Optional[str] = N
     claim = str(uuid.uuid4())
     totals = {'claimed': 0, 'deleted': 0, 'collected': 0, 'lost': 0, 'bytes': 0}
     for i in range(0, len(keys), _PAGE):
-        resp = client.rpc('dr_archive_collect_begin',
-                          {'p_keys': keys[i:i + _PAGE], 'p_tag': tag, 'p_claim': claim}).execute()
+        page = keys[i:i + _PAGE]
+        resp = retry_transient(lambda: client.rpc('dr_archive_collect_begin',
+                                                  {'p_keys': page, 'p_tag': tag, 'p_claim': claim}).execute(),
+                               what='the collection claim', log=log)
         data = resp.data if isinstance(resp.data, dict) else {}
         totals['claimed'] += int(data.get('claimed') or 0)
     log(f"  claimed {totals['claimed']:,} archive object(s) for collection")
@@ -198,18 +210,38 @@ def collect(client, s3, bucket: str, rows: list[dict], *, tag: Optional[str] = N
         # the verify is what fences the delete: it is only trusted while the
         # claim it refreshed cannot have expired (10 minutes in SQL), so a
         # process that stalled in between (a laptop asleep) verifies again
-        # before it deletes anything
+        # before it deletes anything. A delete whose connection dropped goes
+        # back through the same gate rather than re-sending the stale key
+        # list: by the time it is re-sent another run may own the keys.
+        attempts = 0
         while True:
             verified_at = time.time()
-            resp = client.rpc('dr_archive_collect_verify', {'p_keys': batch, 'p_claim': claim}).execute()
+            resp = retry_transient(lambda: client.rpc('dr_archive_collect_verify',
+                                                      {'p_keys': batch, 'p_claim': claim}).execute(),
+                                   what='the claim verify', log=log)
             held = list(resp.data or [])
-            if time.time() - verified_at <= VERIFY_TRUST_S:
+            if time.time() - verified_at > VERIFY_TRUST_S:
+                continue
+            if not held:
                 break
+            try:
+                deleted = delete_archive_objects(s3, bucket, held)
+            except Exception as e:  # noqa: BLE001 - classified below
+                attempts += 1
+                if attempts >= _DELETE_ATTEMPTS or not transient.is_transient(e):
+                    raise
+                log(f"  retrying the bucket delete after a transient error "
+                    f"({type(e).__name__}: {str(e)[:120]}; attempt {attempts} of {_DELETE_ATTEMPTS})")
+                transient._sleep(2.0 ** (attempts - 1))
+                continue                     # a missing key deletes fine; the gate decides which
+            break
         totals['lost'] += len(batch) - len(held)
         if not held:
             continue
-        totals['deleted'] += delete_archive_objects(s3, bucket, held)
-        resp = client.rpc('dr_archive_collect_finish', {'p_keys': held, 'p_tag': tag, 'p_claim': claim}).execute()
+        totals['deleted'] += deleted
+        resp = retry_transient(lambda: client.rpc('dr_archive_collect_finish',
+                                                  {'p_keys': held, 'p_tag': tag, 'p_claim': claim}).execute(),
+                               what='the collection finish', log=log)
         data = resp.data if isinstance(resp.data, dict) else {}
         totals['collected'] += int(data.get('collected') or 0)
         totals['bytes'] += int(data.get('bytes') or 0)
