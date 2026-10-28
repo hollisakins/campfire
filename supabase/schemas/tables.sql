@@ -3185,6 +3185,7 @@ ALTER PUBLICATION "supabase_realtime" OWNER TO "postgres";
 GRANT USAGE ON SCHEMA "public" TO "postgres";
 GRANT USAGE ON SCHEMA "public" TO "anon";
 GRANT USAGE ON SCHEMA "public" TO "authenticated";
+GRANT USAGE ON SCHEMA "public" TO "campfire_reader";
 GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
@@ -3655,6 +3656,35 @@ GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "service_role";
 REVOKE ALL ON SEQUENCE "public"."object_list_shares_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "service_role";
+
+-- campfire_reader (Catalog Read Model phase 4, supabase/roles.sql): SELECT on
+-- the catalog and the published releases, under the reader_* policies in
+-- policies.sql. Nothing else is granted to it: no other table, no sequence, no
+-- function (postgres default privileges name only authenticated and
+-- service_role). check_reader_role.sql asserts this set is the whole grant.
+GRANT SELECT ON TABLE "public"."programs" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."observations" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."fields" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."nircam_images" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."objects" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."targets" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."spectra" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."line_fits" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."lines" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."catalog_matches" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."photometry" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_releases" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_objects" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_targets" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_spectra" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_line_fits" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_lines" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_catalog_matches" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_photometry" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_nircam_images" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_fields" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_filter_options" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_manifest" TO "campfire_reader";
 
 
 

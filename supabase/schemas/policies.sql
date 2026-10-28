@@ -2002,3 +2002,117 @@ DROP POLICY IF EXISTS "admin_select_dr_exports" ON dr_exports;
 CREATE POLICY "admin_select_dr_exports"
   ON dr_exports FOR SELECT TO authenticated
   USING ((SELECT public.is_admin()));
+
+-- ============================================================================
+-- campfire_reader (Catalog Read Model phase 4, docs/reader-role.md)
+-- ============================================================================
+-- A read-only Postgres login for public data: what an anonymous reader of the
+-- portal could see, as SQL. Every predicate is a stored column, never a
+-- helper function: the role has no JWT, no auth.uid() and no EXECUTE on
+-- anything, so the policies have to be self-contained. The child tables
+-- (lines, line_fits, photometry, catalog_matches and their dr_* twins) gate
+-- through the parent they reference; the parent's reader policy applies
+-- inside the EXISTS, so a child row is visible exactly when its parent is.
+-- The frozen twins use the frozen is_public / published / active columns, so
+-- a release reads as it was frozen. check_reader_role.sql is the guard.
+
+CREATE POLICY "reader_select_programs"
+  ON programs FOR SELECT TO campfire_reader
+  USING (is_public);
+
+CREATE POLICY "reader_select_observations"
+  ON observations FOR SELECT TO campfire_reader
+  USING (EXISTS (SELECT 1 FROM public.programs p WHERE p.slug = observations.program_slug AND p.is_public));
+
+CREATE POLICY "reader_select_nircam_images"
+  ON nircam_images FOR SELECT TO campfire_reader
+  USING (deploy_status = 'published');
+
+CREATE POLICY "reader_select_fields"
+  ON fields FOR SELECT TO campfire_reader
+  USING (EXISTS (SELECT 1 FROM public.nircam_images ni WHERE ni.field = fields.name AND ni.deploy_status = 'published'));
+
+CREATE POLICY "reader_select_objects"
+  ON objects FOR SELECT TO campfire_reader
+  USING (is_public AND is_active AND has_published_spectrum);
+
+CREATE POLICY "reader_select_targets"
+  ON targets FOR SELECT TO campfire_reader
+  USING (is_public AND has_published_spectrum);
+
+CREATE POLICY "reader_select_spectra"
+  ON spectra FOR SELECT TO campfire_reader
+  USING (is_public AND deploy_status = 'published');
+
+CREATE POLICY "reader_select_line_fits"
+  ON line_fits FOR SELECT TO campfire_reader
+  USING (EXISTS (SELECT 1 FROM public.spectra s WHERE s.id = line_fits.spectrum_id));
+
+CREATE POLICY "reader_select_lines"
+  ON lines FOR SELECT TO campfire_reader
+  USING (EXISTS (SELECT 1 FROM public.spectra s WHERE s.id = lines.spectrum_id));
+
+CREATE POLICY "reader_select_catalog_matches"
+  ON catalog_matches FOR SELECT TO campfire_reader
+  USING (object_id IS NOT NULL AND EXISTS (SELECT 1 FROM public.objects o WHERE o.id = catalog_matches.object_id));
+
+CREATE POLICY "reader_select_photometry"
+  ON photometry FOR SELECT TO campfire_reader
+  USING (EXISTS (SELECT 1 FROM public.catalog_matches p WHERE p.id = photometry.match_id));
+
+CREATE POLICY "reader_select_dr_releases"
+  ON dr_releases FOR SELECT TO campfire_reader
+  USING (state = 'published');
+
+CREATE POLICY "reader_select_dr_objects"
+  ON dr_objects FOR SELECT TO campfire_reader
+  USING (is_public AND is_active AND has_published_spectrum
+         AND EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_objects.tag AND r.state = 'published'));
+
+CREATE POLICY "reader_select_dr_targets"
+  ON dr_targets FOR SELECT TO campfire_reader
+  USING (is_public AND has_published_spectrum
+         AND EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_targets.tag AND r.state = 'published'));
+
+CREATE POLICY "reader_select_dr_spectra"
+  ON dr_spectra FOR SELECT TO campfire_reader
+  USING (is_public AND deploy_status = 'published'
+         AND EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_spectra.tag AND r.state = 'published'));
+
+CREATE POLICY "reader_select_dr_line_fits"
+  ON dr_line_fits FOR SELECT TO campfire_reader
+  USING (EXISTS (SELECT 1 FROM public.dr_spectra s WHERE s.tag = dr_line_fits.tag AND s.id = dr_line_fits.spectrum_id));
+
+CREATE POLICY "reader_select_dr_lines"
+  ON dr_lines FOR SELECT TO campfire_reader
+  USING (EXISTS (SELECT 1 FROM public.dr_spectra s WHERE s.tag = dr_lines.tag AND s.id = dr_lines.spectrum_id));
+
+CREATE POLICY "reader_select_dr_catalog_matches"
+  ON dr_catalog_matches FOR SELECT TO campfire_reader
+  USING (object_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM public.dr_objects o WHERE o.tag = dr_catalog_matches.tag AND o.id = dr_catalog_matches.object_id));
+
+CREATE POLICY "reader_select_dr_photometry"
+  ON dr_photometry FOR SELECT TO campfire_reader
+  USING (EXISTS (SELECT 1 FROM public.dr_catalog_matches p WHERE p.tag = dr_photometry.tag AND p.id = dr_photometry.match_id));
+
+CREATE POLICY "reader_select_dr_nircam_images"
+  ON dr_nircam_images FOR SELECT TO campfire_reader
+  USING (deploy_status = 'published'
+         AND EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_nircam_images.tag AND r.state = 'published'));
+
+CREATE POLICY "reader_select_dr_fields"
+  ON dr_fields FOR SELECT TO campfire_reader
+  USING (EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_fields.tag AND r.state = 'published')
+         AND EXISTS (SELECT 1 FROM public.dr_nircam_images ni
+                     WHERE ni.tag = dr_fields.tag AND ni.field = dr_fields.name AND ni.deploy_status = 'published'));
+
+CREATE POLICY "reader_select_dr_filter_options"
+  ON dr_filter_options FOR SELECT TO campfire_reader
+  USING (EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_filter_options.tag AND r.state = 'published'));
+
+CREATE POLICY "reader_select_dr_manifest"
+  ON dr_manifest FOR SELECT TO campfire_reader
+  USING (EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_manifest.tag AND r.state = 'published')
+         AND (program_slug IS NULL
+              OR EXISTS (SELECT 1 FROM public.programs p WHERE p.slug = dr_manifest.program_slug AND p.is_public)));

@@ -41,6 +41,33 @@ Dependencies on the old platform that this replaces, found by audit
 only ever talks to `campfire.hollisakins.com/api/v1`, so no client release is
 tied to the move.
 
+## Public read-only SQL (`campfire_reader`)
+
+`docs/reader-role.md` is the reader's side. The host side is one compose
+profile and one script, and it is the one sanctioned exception to "only Caddy
+listens publicly" (Catalog Read Model phase 4; the role sees public rows only,
+under its own RLS policies, with no function and no other table):
+
+1. The role exists once the migration chain carries `20261028193000_phase4_reader_role.sql`
+   (`deploy.sh` applies it). It has no password until step 2.
+2. `bash scripts/reader-setup.sh` (from `ops/`): generates `READER_PASSWORD` into
+   `.env` when empty, sets it on the role, writes the PgBouncer SCRAM userlist
+   (`$CAMPFIRE_DATA_ROOT/pgbouncer/userlist.txt`, that one role only, from the
+   verifier in `pg_authid`), makes a self-signed certificate
+   (`certs/reader.pem` / `reader.key`) when missing, starts the pooler
+   (`docker compose --profile reader up -d pgbouncer`, image
+   `edoburu/pgbouncer`, transaction mode, 0.0.0.0:6432) and runs one query
+   through it. `rotate` changes the password, `status` reports.
+3. Security group: admit TCP 6432 from anywhere (the password is the only
+   credential by design, the role's grants are the gate).
+4. DNS: `db.$WEB_HOST` as a DNS-only (grey cloud) A record to the VM:
+   Cloudflare's proxy carries no Postgres.
+5. Publish the connection string the script prints (docs, the portal's docs page).
+
+The pooler is off unless the profile is given, so a stack without a reader
+password runs unchanged. Changelog entries for `READER_*` go below like any
+other `.env` change.
+
 ## Sizing
 
 | | |
