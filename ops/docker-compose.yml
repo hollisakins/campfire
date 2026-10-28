@@ -360,6 +360,14 @@ services:
       MAX_CLIENT_CONN: ${READER_MAX_CLIENT_CONN:-200}
       DEFAULT_POOL_SIZE: ${READER_POOL_SIZE:-10}
       RESERVE_POOL_SIZE: 2
+      # every public client shares one backend role: DISCARD ALL after every
+      # transaction (not only in session mode), so a SET, a temp table that
+      # would shadow public.objects or a prepared statement never reaches the
+      # next reader on the same server connection (Codex on the phase 4 PR)
+      SERVER_RESET_QUERY: DISCARD ALL
+      SERVER_RESET_QUERY_ALWAYS: 1
+      MIN_POOL_SIZE: 2
+      SERVER_LIFETIME: 3600
       SERVER_IDLE_TIMEOUT: 300
       CLIENT_IDLE_TIMEOUT: 600
       QUERY_TIMEOUT: 60

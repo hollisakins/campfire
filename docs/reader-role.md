@@ -39,9 +39,17 @@ read-only transactions, 20 connections in all through a transaction-mode
 pooler (PgBouncer). Postgres has no per-query row cap; the statement timeout
 and `work_mem` bound a query instead. Page a large pull with keyset
 predicates (`WHERE id > :last ORDER BY id LIMIT 10000`), not `OFFSET`.
-Session state does not survive a transaction in a transaction-mode pooler:
-no `SET`, no temp tables, no prepared statements across statements, no
-`LISTEN`.
+Session state does not survive a transaction in a transaction-mode pooler,
+and the pooler resets the server connection after every transaction
+(`DISCARD ALL`): no `SET` that outlives a transaction, no temp tables, no
+prepared statements across statements, no `LISTEN`. Every reader shares the
+one role, so nothing you do in a session is visible to another reader.
+
+Since the credential is public, Postgres cannot stop a holder from changing
+the role's own password (`SET TRANSACTION READ WRITE` lifts the read-only
+default for that transaction). Doing so only breaks the pooler's next server
+connection; a timer on the host re-applies the published password within two
+minutes, so it is a nuisance, not a way in. Please do not.
 
 ## What the role sees
 

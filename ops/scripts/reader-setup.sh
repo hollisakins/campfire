@@ -89,3 +89,5 @@ PGPASSWORD="$READER_PASSWORD" psql "host=127.0.0.1 port=${reader_port} dbname=${
   -Atc "SELECT count(*) AS public_objects FROM objects"
 echo "pooler up on ${reader_port}; connection string:"
 echo "  postgresql://campfire_reader:${READER_PASSWORD}@${reader_host}:${reader_port}/${db_name}?sslmode=require"
+echo "Then, once, as root (the password heal, scripts/reader-heal.sh):"
+echo "  install -m 0644 systemd/campfire-reader-heal.* /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now campfire-reader-heal.timer"
