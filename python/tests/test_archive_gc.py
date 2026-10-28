@@ -93,6 +93,22 @@ def test_gc_candidates_pages_archive_collectable_on_id():
         {'p_after_id': 0, 'p_limit': 2}, {'p_after_id': 2, 'p_limit': 2}, {'p_after_id': 4, 'p_limit': 2}]
 
 
+def test_gc_candidates_refetches_a_page_whose_connection_dropped(monkeypatch):
+    monkeypatch.setattr('campfire.transient._sleep', lambda s: None)
+    rows = [_row(i) for i in range(1, 4)]
+    client = _client(rows)
+    real = client.rpc_handlers['archive_collectable']
+    dropped = []
+
+    def collectable(params):
+        if not dropped:
+            dropped.append(1)
+            raise ConnectionResetError(54, 'reset')
+        return real(params)
+    client.rpc_handlers['archive_collectable'] = collectable
+    assert [r['id'] for r in gc_candidates(client, page=2)] == [1, 2, 3]
+
+
 def test_gc_report_totals_bytes_at_rest_by_product_type():
     rows = [_row(1), _row(6, stored=400, field='egs', product_type='nirspec_spec')]
     rep = gc_report(rows, now=NOW)

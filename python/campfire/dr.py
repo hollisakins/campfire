@@ -14,6 +14,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from .transient import retry_transient
+
 
 def fetch_readiness(client) -> dict:
     """Call ``dr_readiness()`` and return the report dict.
@@ -263,7 +265,9 @@ def purge_archive_plan(client, tag: str, *, page: int = 1000) -> list[dict]:
     out: list[dict] = []
     after = 0
     while True:
-        resp = client.rpc('dr_purge_archive_plan', {'p_tag': tag, 'p_after_id': after, 'p_limit': page}).execute()
+        resp = retry_transient(lambda: client.rpc('dr_purge_archive_plan',
+                                                  {'p_tag': tag, 'p_after_id': after, 'p_limit': page}).execute(),
+                               what='the purge plan page')
         data = resp.data
         if data is None:
             data = []

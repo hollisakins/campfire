@@ -124,3 +124,22 @@ def test_purge_archive_plan_helper_pages_on_id():
     client = FakePostgrest(rpc_handlers={'dr_purge_archive_plan': lambda p: [r for r in rows if r['id'] > int(p['p_after_id'])][:int(p['p_limit'])]})
     assert D.purge_archive_plan(client, TAG, page=2) == rows
     assert [c.params['p_after_id'] for c in client.rpcs] == [0, 2, 4]
+
+
+def test_purge_plan_refetches_a_page_whose_connection_dropped(monkeypatch):
+    """The plan's keyset pages are reads: a dropped one is fetched again (#666)."""
+    from campfire import dr as D
+    from tests.fakes import FakePostgrest
+    monkeypatch.setattr('campfire.transient._sleep', lambda s: None)
+    rows = [{'id': i, 'storage_key': f'archive/{i:064x}/x', 'backend': 'osn'} for i in range(1, 4)]
+    dropped = []
+
+    def plan(params):
+        if not dropped:
+            dropped.append(1)
+            raise ConnectionResetError(54, 'reset')
+        after, limit = int(params['p_after_id']), int(params['p_limit'])
+        return [r for r in rows if r['id'] > after][:limit]
+    client = FakePostgrest(rpc_handlers={'dr_purge_archive_plan': plan})
+    assert [r['id'] for r in D.purge_archive_plan(client, 'DR-x', page=2)] == [1, 2, 3]
+    assert [c.params['p_after_id'] for c in client.rpcs] == [0, 0, 2]

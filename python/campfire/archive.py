@@ -61,7 +61,8 @@ def gc_candidates(client, *, page: int = _PAGE) -> list[dict]:
     out: list[dict] = []
     after = 0
     while True:
-        resp = client.rpc('archive_collectable', {'p_after_id': after, 'p_limit': page}).execute()
+        resp = retry_transient(lambda: client.rpc('archive_collectable', {'p_after_id': after, 'p_limit': page}).execute(),
+                               what='the collectable page')
         rows = resp.data or []
         out.extend(rows)
         if len(rows) < page:

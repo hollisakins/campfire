@@ -375,9 +375,12 @@ campfire config push --programs                          # programs.toml → clo
 The catalog rows' `file_hash` / `science_hash` come from the observation's `<obs>_summary.ecsv`, so a
 final reprocessed in place after `cfpipe nirspec summary` ran would deploy a row the freeze later refuses:
 `campfire deploy --obs X` hashes every final the summary names first and refuses a stale summary (dry run
-included; the fix is regenerating it, #665). Every request a `dr export` / `dr archive` / `dr purge` /
-`archive gc` run makes is retried on a transport error (`campfire/transient.py`, three attempts with
-backoff; an answer such as a precondition failure or a refusal is never retried, #666).
+included; the fix is regenerating it, #665). Every idempotent request a `dr export` / `dr archive` / `dr purge` /
+`archive gc` run makes (page reads, ledger reads, begin / status, the byte pass's member and its mark, the
+collection's claim / verify / delete / finish) is retried on a transport error (`campfire/transient.py`, three
+attempts with backoff; an answer such as a precondition failure or a refusal is never retried, #666). Not
+retried on purpose: a new archive claim and the export's per-file marks, each bound to a claim the call itself
+takes, so a resend after a lost answer would be refused as another run's.
 
 Photometry is configured per field in `$CAMPFIRE_ROOT/config/photometry.toml`
 (schema and a UNICORN example: `python/campfire/deploy/photometry.example.toml`).
