@@ -187,18 +187,55 @@ What the canonicals **cannot** supply:
   calibration pass (jwst's de-calibration trick, §3.1, needs them).
 
 **Decision (2026-10-28): stage 2a is reworked to extract the background-only slitlets too**, kept in
-a form that is trivial to clean up:
+a form that is trivial to clean up — and without a second `Spec2Pipeline` pass over the rate file.
+Two ways to get there; the second is the one to build:
 
-- One extra `Spec2Pipeline.call` per rate file, not per slitlet: `MetaFile.filter_background_slitlets()`
-  keeps every slitlet of this `MSAMETID` with no `primary_source == 'Y'` row (jwst will name them
-  `<prog>_BKG<slitlet>`), so one run yields one `MultiSlitModel` with all of them. Steps: `srctype`
-  with `source_type = 'EXTENDED'` (uniform pathloss, surface-brightness photom), `barshadow` **on**
-  (stage 2a's source runs skip it; here it is wanted), `wavecorr` irrelevant for extended slits,
-  `bkg_subtract` / `resample_spec` / `extract_1d` skipped as now. The output is already in MJy/sr with
-  the uniform-source wavelength solution — no §1.7 conversions needed.
-- Optionally the same metafile re-admits the detached shutters `_prune_detached_shutters` dropped from
-  source slitlets, as synthetic slitlets (a fresh `slitlet_id` per contiguous group; jwst only uses the
-  id to group rows). Worth doing: these are the shutters MPT placed as background on purpose.
+- *Minimal*: one extra `Spec2Pipeline.call` per rate file with a metafile holding only the
+  background-only slitlets. Relative to today's cost (one call per *source*, i.e. 100–200 calls per
+  rate file) it is +1 call, a per-cent-level increase — but it is still a whole call, and the heavy
+  fixed work (CRDS reference I/O, the flat-field references, `assign_wcs` set-up) is repeated.
+- **One call per rate file, split afterwards.** Every edit `filter_by_source_id` makes is a per-slitlet
+  row operation on the metafile — drop stuck-closed shutters, prune detached shutters, mark the one
+  primary shutter, relabel the rest `background = 'Y'`, set `stellarity` — and the jwst steps that
+  follow are per slit and independent of one another (`assign_wcs` builds each slitlet's WCS from its
+  own rows; `extract_2d`, `wavecorr`, `flat_field`, `pathloss`, `photom` act slit by slit;
+  `msa_flagging` is exposure-wide in both arrangements). So one **edited full metafile** carrying all
+  the per-source edits at once, plus the untouched background-only slitlets, gives one
+  `MultiSlitModel` with every source slit (`POINT`, as now) and every background slit (jwst assigns
+  background slitlets `stellarity = 0.0` → `srctype` makes them `EXTENDED`, so with `barshadow`
+  enabled in the call it is applied to the background slits and skipped for the point sources, which
+  is exactly the mix wanted). The orchestrator then splits the model: one one-slit canonical per
+  source, written through `_finalize_canonical` as today (`MultiSlitModel()` + `update(parent)` +
+  `slits.append(slit)`, the construction jwst's own `_extend_bg_slits` uses), and the background slits
+  into the `bkgslits/` file. The whole of stage 2a drops from *N_source × (fixed overhead + one slit)*
+  to *fixed overhead + N_source slits* per rate file — a large speed-up in its own right, with the
+  background slitlets as a by-product.
+
+  Constraints the split has to respect, each already visible in today's code:
+  - jwst raises `MSAFileError` for a slitlet with more than one `primary_source == 'Y'` row
+    (`assign_wcs/nirspec.py`, "more than 1 shutter with primary source"), so the duplicate-source rule
+    (`_duplicate_source_ids`: keep the lowest id) is applied while editing the metafile, and the
+    dropped twin's rows become background rows of the kept slitlet — the same canonical as today.
+  - jwst gives a background slitlet `source_id = slitlet_id`, which can collide with a real catalog
+    id; the split must key background slits on `source_name` (`*_BKG*`), never on `source_id`.
+  - `--source-ids` and `overwrite=False` become metafile filters (only the sources without a product
+    go into the edited metafile), and a `NoDataOnDetectorError` becomes "slit absent from the output"
+    → the existing `_nodata` marker.
+  - Error isolation: today one source's failure does not stop the others. The single call needs a
+    fallback that re-runs the failing rate file per source (the current code path, kept as the
+    fallback), so a pathological slitlet costs time, not the observation.
+  - The one per-*run* parameter that differs between sources is the extended-wavelength photom
+    override for fixed-slit sources inside MSA exposures (`get_extended_photom_path(fixed_slit=True)`
+    vs the MSA one). Only when `extend_g140m_g235m` is on *and* the metafile has fixed-slit sources do
+    those sources need their own call; everything else shares one.
+  - Bit-identity gate before switching: run both arrangements on one observation and diff every
+    slit array of every canonical (the same kind of check the issue #212 cutover used). The arrays
+    should match exactly; the primary headers will differ in the per-source `MSAMETFL` name and in
+    nothing that stage 3 reads.
+- Optionally the same edited metafile re-admits the detached shutters `_prune_detached_shutters`
+  dropped from source slitlets, as synthetic slitlets (a fresh `slitlet_id` per contiguous group;
+  jwst only uses the id to group rows). Worth doing: these are the shutters MPT placed as background
+  on purpose.
 - **Storage**: `products/nirspec/<obs>/bkgslits/<root>_<nod>_<nrsN>_bkgslits.fits`. A subdirectory, not
   a suffix in the workspace root, for three reasons: `Observation.glob` and
   `deploy.discover_spectrum_exposures` are non-recursive, so nothing that enumerates canonicals,
@@ -432,10 +469,13 @@ different natural grains:
   **per exposure** (the source occupies a different shutter in each nod), the stage 1 residuals
   (picture frame, 1/f, pedestal) differ per exposure, and the detectors have independent flats — so a
   per-exposure × detector scale and additive offset against the pooled B(λ) *may* be needed.
-  Decision (2026-10-28): **not committed** — the prototype (P0) measures, for each exposure × detector,
-  the ratio and offset of its own clean-shutter sky to the pooled one; if they scatter at the level of
-  the pooled sky's own error there is nothing to fit and the product just records the diagnostic
-  (`MBKGSCL`, `MBKGOFF`); if they do not, the fit comes in then.
+  Decision (2026-10-28): **not part of the design until shown necessary.** The master background is
+  derived and stored regardless; what the prototype (§7, P0 — a script over existing canonicals, run
+  before any pipeline code is written) settles is only whether the pooled sky needs per-exposure
+  correction terms. It computes, for each exposure × detector, the ratio and offset of that exposure's
+  own clean-shutter sky to the pooled one. If those scatter at the level of the pooled sky's error,
+  the terms are not fitted and the product merely records the diagnostic (`MBKGSCL`, `MBKGOFF`); if
+  they do not, the fit is added to the derivation.
 - *The 2-D product* `MBKG2D` is per **rate file** (exposure × detector): it is a picture of that
   detector, built on that exposure's slit geometry, and it is what stage 2b cuts out for a canonical.
 
@@ -558,13 +598,14 @@ choice). Config under `[nirspec.stage2]`: `master_bkg_sigma_clip`, `master_bkg_l
 `master_bkg_min_shutters`, `master_bkg_model_check` (the `jwst_backgrounds` comparison, off when the
 cache is absent), `master_bkg_plot`.
 
-Cost: one full-metafile `assign_wcs` + `extract_2d` + four calibration steps per rate file. Today
-stage 2a already runs `assign_wcs` **once per source** per rate file (each `Spec2Pipeline.call`), so
-the new pass is roughly one more source's worth of stage 2a per rate file, plus the per-slit
-calibration of ~100–200 slits (seconds each) and the inverse pass. Order of a few minutes per rate
-file single-threaded, parallel over rate files; well under the existing stage 2a budget for a typical
-observation. Memory: a `MultiSlitModel` of a few hundred small cutouts is fine. `_prefetch_crds_references`
-already exists for the multiprocessing race.
+Cost: with the single-call stage 2a of §1.7, the inputs (source canonicals and the `bkgslits/` file)
+exist before `master-bkg` starts, and the derivation itself is array work — the §1.7 conversions per
+canonical (one `BarShadowStep` evaluation each, seconds), binning, clipping, and the inverse
+expansion. Order of a minute per rate file single-threaded, parallel over rate files, and stage 2a as
+a whole gets faster, not slower. If the single-call rework is deferred, the minimal +1 call per rate
+file costs about one source's worth of today's stage 2a. Memory: a `MultiSlitModel` of a few hundred
+small cutouts is fine (~0.4 MB per slit for all arrays). `_prefetch_crds_references` already exists for
+the multiprocessing race.
 
 **Assemble from the canonicals, or run a full pass?** §1.7 shows the canonicals already hold the
 source slitlets in a form two array ratios away from surface brightness, and the stage 2a rework
@@ -716,22 +757,30 @@ measurement on the archive.
 
 ## 7. Phased plan
 
-0. **P0 — prototype on existing products.** A script over one observation's canonicals (§1.7
-   conversions, §4.2 steps 2–4): do the empty shutters agree on a sky, how many are clean, does the
-   level match `jwst_backgrounds`, do NRS1 and NRS2 agree on the prism. No pipeline change.
-1. **P1 — derive and store.** `run_master_bkg`, the `_mbkg.fits` product, QA PDF, layout kind, deploy
+0. **P0 — prototype on existing products** (the algorithm, not a go/no-go). A script over one
+   observation's canonicals (§1.7 conversions, §4.2 steps 2–4) that settles the knobs the design leaves
+   open: how many shutters are clean and why the rest are not, whether NRS1 and NRS2 agree on the
+   prism, whether exposures need their own scale/offset (§4.1), the `source_pad` default, how the
+   level compares with `jwst_backgrounds`, and whether solar lines are visible in the stacked G140M sky
+   (§3.3). No pipeline change; its findings become the defaults of P1.
+1. **P1a — single-call stage 2a** (§1.7): one edited full metafile per rate file, split into the
+   per-source canonicals and the `bkgslits/` file; bit-identity gate against the per-source runs;
+   per-source fallback on failure. Pure speed-up for everything else, PATCH / Infrastructure.
+2. **P1b — derive and store.** `run_master_bkg`, the `_mbkg.fits` product, QA PDF, layout kind, deploy
    + pull as an intermediate. Wired into `run_stage2b`, unconditional. PATCH / Infrastructure.
-2. **P2 — apply by choice.** `bkg_method`, the `"master"` override literal, `BKGMETH` provenance,
+3. **P2 — apply by choice.** `bkg_method`, the `"master"` override literal, `BKGMETH` provenance,
    auto-proposed overrides from the `SHUTTERS` table. Opt-in. Algorithm entry.
-3. **P3 — measure.** A script over an observation: per empty shutter, residual sky after nod vs.
+4. **P3 — measure.** A script over an observation: per empty shutter, residual sky after nod vs.
    master subtraction, by disperser and wavelength; decide defaults from it.
-4. **P4 (optional) — dual product.** `MBSUB_*` on the canonical, second stage 3 pass, `_spec.fits`
+5. **P4 (optional) — dual product.** `MBSUB_*` on the canonical, second stage 3 pass, `_spec.fits`
    extensions after `EXPOSURES`, web toggle.
 
 ## 8. Files this would touch
 
-- `pipeline/campfire_pipeline/nirspec/master_bkg.py` (new), `stage2.py` (background-slitlet run in
-  2a, `master-bkg` call site, stage 2b branch), `metafile.py` (`filter_background_slitlets`),
+- `pipeline/campfire_pipeline/nirspec/master_bkg.py` (new), `stage2.py` (single-call stage 2a with
+  the split, per-source fallback, `master-bkg` call site, stage 2b branch), `metafile.py`
+  (`edit_all_sources` — the per-slitlet edits of `filter_by_source_id` over the whole metafile, plus
+  background-only slitlets kept),
   `canonical.py` (`BKGMETH` card, later `MBSUB_*`), `observation.py` (override grammar),
   `cli.py` (`master-bkg` command), `plots.py` (QA), `data/config_default.toml`, `pipeline/CHANGELOG.md`
 - `layout/campfire_layout/products.py`, `bijection.py`, `conformance/layout_golden.json`,
