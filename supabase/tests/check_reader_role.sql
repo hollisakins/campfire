@@ -153,7 +153,8 @@ INSERT INTO spectra (target_id, grating, fits_path, deploy_status) VALUES
   ('zzz-rr-t-mix-pub',  'PRISM', '/tmp/zzz_rr_mix_pub_spec.fits',  'published'),
   ('zzz-rr-t-mix-priv', 'G395M', '/tmp/zzz_rr_mix_priv_spec.fits', 'published'),
   ('zzz-rr-t-allpub',   'PRISM', '/tmp/zzz_rr_allpub_spec.fits',   'published');
-UPDATE objects SET n_targets = 7, n_spectra = 1, gratings = ARRAY['PRISM'], search_text = 'stored' WHERE object_id = 'ZZZ-RR-MIXED-ALLPUB';
+-- every member visible: the stored aggregates are reused as stored (search_text marks the shortcut)
+UPDATE objects SET n_targets = 1, n_spectra = 1, gratings = ARRAY['PRISM'], search_text = 'stored' WHERE object_id = 'ZZZ-RR-MIXED-ALLPUB';
 -- the stored aggregates of the mixed object, as reconcile would write them: both programs, both gratings
 UPDATE objects SET n_targets = 2, n_spectra = 2, gratings = ARRAY['G395M', 'PRISM'],
        search_text = 'ZZZ-RR-MIXED zzz-rr-t-mix-priv zzz-rr-t-mix-pub zzz_rr_priv zzz_rr_pub zzz_rr_obs_priv zzz_rr_obs_pub'
@@ -223,7 +224,7 @@ DECLARE
     ['photometry',      $q$SELECT count(*) FROM photometry p JOIN catalog_matches m ON m.id = p.match_id WHERE m.catalog_name = 'zzz_rr_cat'$q$, '3'],
     ['objects:mixed-aggregates', $q$SELECT count(*) FROM objects WHERE object_id = 'ZZZ-RR-MIXED' AND programs = ARRAY['zzz_rr_pub'] AND observations = ARRAY['zzz_rr_obs_pub'] AND gratings = ARRAY['PRISM'] AND n_targets = 1 AND n_spectra = 1 AND search_text NOT LIKE '%priv%'$q$, '1'],
     ['objects:spectrumless-target-recomputed', $q$SELECT count(*) FROM objects WHERE object_id = 'ZZZ-RR-PUB' AND gratings = ARRAY['PRISM'] AND n_targets = 1 AND n_spectra = 1 AND search_text = 'ZZZ-RR-PUB zzz-rr-t-pub zzz_rr_pub zzz_rr_obs_pub'$q$, '1'],
-    ['objects:all-visible-stored', $q$SELECT count(*) FROM objects o WHERE o.object_id = 'ZZZ-RR-MIXED-ALLPUB' AND o.n_targets = 7 AND o.search_text = 'stored'$q$, '1'],
+    ['objects:all-visible-stored', $q$SELECT count(*) FROM objects o WHERE o.object_id = 'ZZZ-RR-MIXED-ALLPUB' AND o.n_targets = 1 AND o.search_text = 'stored'$q$, '1'],
     ['objects:star-denied', $q$SELECT count(*) FROM (SELECT * FROM public.objects) x$q$, '-1'],
     ['objects:aggregate-column-denied', $q$SELECT count(programs) FROM public.objects$q$, '-1'],
     ['objects:id-column-allowed', $q$SELECT count(id) FROM public.objects WHERE object_id LIKE 'ZZZ-RR-%'$q$, '3']
@@ -267,6 +268,26 @@ BEGIN
   IF got <> want OR want = 0 THEN RAISE EXCEPTION 'READER 4 dr_objects: reader % vs frozen public %', got, want; END IF;
   got := pg_temp.zzz_rr_count(format($q$SELECT count(id) FROM public.dr_objects WHERE tag = %L$q$, tag_pub));  -- the policy on the table
   IF got <> want THEN RAISE EXCEPTION 'READER 4 public.dr_objects: reader % vs frozen public %', got, want; END IF;
+  -- the view's aggregates describe the frozen visible members: n_spectra is the
+  -- count of the reader-visible frozen spectra of the object's visible targets,
+  -- gratings are theirs, n_targets the visible targets (a draft the freeze left
+  -- out, a private or spectrum-less member never counted)
+  got := pg_temp.zzz_rr_count(format($q$
+    SELECT count(*) FROM dr_objects o
+    WHERE o.tag = %L
+      AND (o.n_spectra <> (SELECT count(*) FROM dr_spectra s JOIN dr_targets t ON t.tag = s.tag AND t.target_id = s.target_id
+                           WHERE s.tag = o.tag AND t.object_id = o.id)
+           OR o.n_targets <> (SELECT count(*) FROM dr_targets t WHERE t.tag = o.tag AND t.object_id = o.id)
+           OR NOT (o.gratings <@ COALESCE((SELECT array_agg(DISTINCT s.grating) FROM dr_spectra s JOIN dr_targets t ON t.tag = s.tag AND t.target_id = s.target_id
+                                           WHERE s.tag = o.tag AND t.object_id = o.id), '{}'::text[])))$q$, tag_pub));
+  IF got <> 0 THEN RAISE EXCEPTION 'READER 4: % frozen object(s) whose aggregates do not describe their visible frozen members', got; END IF;
+  -- the same on the live view, over the fixture and the seed
+  got := pg_temp.zzz_rr_count($q$
+    SELECT count(*) FROM objects o
+    WHERE o.n_spectra <> (SELECT count(*) FROM spectra s JOIN targets t ON t.target_id = s.target_id WHERE t.object_id = o.id)
+       OR o.n_targets <> (SELECT count(*) FROM targets t WHERE t.object_id = o.id)
+       OR NOT (o.gratings <@ COALESCE((SELECT array_agg(DISTINCT s.grating) FROM spectra s JOIN targets t ON t.target_id = s.target_id WHERE t.object_id = o.id), '{}'::text[]))$q$);
+  IF got <> 0 THEN RAISE EXCEPTION 'READER 4: % live object(s) whose aggregates do not describe their visible members', got; END IF;
   -- no frozen aggregate names a private program
   got := pg_temp.zzz_rr_count(format($q$SELECT count(*) FROM dr_objects o WHERE o.tag = %L AND EXISTS (SELECT 1 FROM unnest(o.programs || o.evidence_programs) p WHERE p NOT IN (SELECT slug FROM programs))$q$, tag_pub));
   IF got <> 0 THEN RAISE EXCEPTION 'READER 4: % frozen object(s) name a program the reader cannot see', got; END IF;

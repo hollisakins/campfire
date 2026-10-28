@@ -436,7 +436,14 @@ CROSS JOIN LATERAL (
                           WHERE t.tag = o.tag AND t.object_id = o.id AND (NOT t.is_public OR NOT t.has_published_spectrum))
           AND NOT EXISTS (SELECT 1 FROM public.dr_targets t JOIN public.dr_spectra s ON s.tag = t.tag AND s.target_id = t.target_id
                           WHERE t.tag = o.tag AND t.object_id = o.id
-                            AND (NOT s.is_public OR s.deploy_status <> 'published'))) AS use_stored,
+                            AND (NOT s.is_public OR s.deploy_status <> 'published'))
+          -- the freeze copies the published spectra and the live aggregates as they
+          -- were: a member the freeze left out (a draft) is counted by the stored
+          -- values but is not a frozen row, so the stored counts must equal the
+          -- frozen members' (as object_scoped_aggregates requires)
+          AND o.n_spectra = (SELECT count(*) FROM public.dr_targets t JOIN public.dr_spectra s ON s.tag = t.tag AND s.target_id = t.target_id
+                             WHERE t.tag = o.tag AND t.object_id = o.id)
+          AND o.n_targets = (SELECT count(*) FROM public.dr_targets t WHERE t.tag = o.tag AND t.object_id = o.id)) AS use_stored,
          COALESCE((SELECT array_agg(DISTINCT m.program_slug ORDER BY m.program_slug) FROM m), '{}')::text[] AS programs,
          COALESCE((SELECT array_agg(DISTINCT sp.grating ORDER BY sp.grating) FROM sp WHERE sp.grating IS NOT NULL), '{}')::text[] AS gratings,
          COALESCE((SELECT array_agg(DISTINCT m.observation ORDER BY m.observation) FROM m WHERE m.observation IS NOT NULL), '{}')::text[] AS observations,

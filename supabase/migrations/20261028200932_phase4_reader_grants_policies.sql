@@ -101,7 +101,12 @@ CREATE VIEW "reader"."dr_objects" WITH (security_barrier=true) AS  WITH pub AS (
                   WHERE ((t.tag = o.tag) AND (t.object_id = o.id) AND ((NOT t.is_public) OR (NOT t.has_published_spectrum)))))) AND (NOT (EXISTS ( SELECT 1
                    FROM (public.dr_targets t
                      JOIN public.dr_spectra s ON (((s.tag = t.tag) AND (s.target_id = t.target_id))))
-                  WHERE ((t.tag = o.tag) AND (t.object_id = o.id) AND ((NOT s.is_public) OR (s.deploy_status <> 'published'::text))))))) AS use_stored,
+                  WHERE ((t.tag = o.tag) AND (t.object_id = o.id) AND ((NOT s.is_public) OR (s.deploy_status <> 'published'::text)))))) AND (o.n_spectra = ( SELECT count(*) AS count
+                   FROM (public.dr_targets t
+                     JOIN public.dr_spectra s ON (((s.tag = t.tag) AND (s.target_id = t.target_id))))
+                  WHERE ((t.tag = o.tag) AND (t.object_id = o.id)))) AND (o.n_targets = ( SELECT count(*) AS count
+                   FROM public.dr_targets t
+                  WHERE ((t.tag = o.tag) AND (t.object_id = o.id))))) AS use_stored,
             COALESCE(( SELECT array_agg(DISTINCT m.program_slug ORDER BY m.program_slug) AS array_agg
                    FROM m), '{}'::text[]) AS programs,
             COALESCE(( SELECT array_agg(DISTINCT sp.grating ORDER BY sp.grating) AS array_agg
