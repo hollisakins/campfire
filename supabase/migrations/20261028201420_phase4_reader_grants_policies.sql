@@ -261,13 +261,6 @@ CREATE POLICY "reader_select_dr_fields" ON "public"."dr_fields"
    FROM public.dr_nircam_images ni
   WHERE ((ni.tag = dr_fields.tag) AND (ni.field = dr_fields.name) AND (ni.deploy_status = 'published'::text))))));
 
-CREATE POLICY "reader_select_dr_filter_options" ON "public"."dr_filter_options"
-  FOR SELECT
-  TO "campfire_reader"
-  USING ((EXISTS ( SELECT 1
-   FROM public.dr_releases r
-  WHERE ((r.tag = dr_filter_options.tag) AND (r.state = 'published'::text)))));
-
 CREATE POLICY "reader_select_dr_line_fits" ON "public"."dr_line_fits"
   FOR SELECT
   TO "campfire_reader"
@@ -287,9 +280,10 @@ CREATE POLICY "reader_select_dr_manifest" ON "public"."dr_manifest"
   TO "campfire_reader"
   USING (((EXISTS ( SELECT 1
    FROM public.dr_releases r
-  WHERE ((r.tag = dr_manifest.tag) AND (r.state = 'published'::text)))) AND ((program_slug IS NULL) OR (EXISTS ( SELECT 1
-   FROM public.programs p
-  WHERE ((p.slug = dr_manifest.program_slug) AND p.is_public))))));
+  WHERE ((r.tag = dr_manifest.tag) AND (r.state = 'published'::text)))) AND (((spectrum_id IS NOT NULL) AND (EXISTS ( SELECT 1
+   FROM public.dr_spectra s
+  WHERE ((s.tag = dr_manifest.tag) AND (s.spectrum_id = dr_manifest.spectrum_id) AND s.is_public AND (s.deploy_status = 'published'::text))))) OR
+    ((spectrum_id IS NULL) AND (program_slug IS NULL)))));
 
 CREATE POLICY "reader_select_dr_nircam_images" ON "public"."dr_nircam_images"
   FOR SELECT
@@ -412,10 +406,6 @@ GRANT SELECT ON TABLE "public"."dr_catalog_matches" TO "campfire_reader";
 REVOKE ALL ON TABLE "public"."dr_fields" FROM "campfire_reader";
 
 GRANT SELECT ON TABLE "public"."dr_fields" TO "campfire_reader";
-
-REVOKE ALL ON TABLE "public"."dr_filter_options" FROM "campfire_reader";
-
-GRANT SELECT ON TABLE "public"."dr_filter_options" TO "campfire_reader";
 
 REVOKE ALL ON TABLE "public"."dr_line_fits" FROM "campfire_reader";
 

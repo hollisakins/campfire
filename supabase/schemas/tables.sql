@@ -3698,7 +3698,6 @@ GRANT SELECT ON TABLE "public"."dr_catalog_matches" TO "campfire_reader";
 GRANT SELECT ON TABLE "public"."dr_photometry" TO "campfire_reader";
 GRANT SELECT ON TABLE "public"."dr_nircam_images" TO "campfire_reader";
 GRANT SELECT ON TABLE "public"."dr_fields" TO "campfire_reader";
-GRANT SELECT ON TABLE "public"."dr_filter_options" TO "campfire_reader";
 GRANT SELECT ON TABLE "public"."dr_manifest" TO "campfire_reader";
 
 

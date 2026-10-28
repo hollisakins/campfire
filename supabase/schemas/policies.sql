@@ -2014,7 +2014,10 @@ CREATE POLICY "admin_select_dr_exports"
 -- through the parent they reference; the parent's reader policy applies
 -- inside the EXISTS, so a child row is visible exactly when its parent is.
 -- The frozen twins use the frozen is_public / published / active columns, so
--- a release reads as it was frozen. check_reader_role.sql is the guard.
+-- a release reads as it was frozen. dr_filter_options is not granted: its
+-- arrays (observations, fields) are built over every frozen member, private
+-- programs included, and a row-level predicate cannot scope an array.
+-- check_reader_role.sql is the guard.
 
 CREATE POLICY "reader_select_programs"
   ON programs FOR SELECT TO campfire_reader
@@ -2107,12 +2110,15 @@ CREATE POLICY "reader_select_dr_fields"
          AND EXISTS (SELECT 1 FROM public.dr_nircam_images ni
                      WHERE ni.tag = dr_fields.tag AND ni.field = dr_fields.name AND ni.deploy_status = 'published'));
 
-CREATE POLICY "reader_select_dr_filter_options"
-  ON dr_filter_options FOR SELECT TO campfire_reader
-  USING (EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_filter_options.tag AND r.state = 'published'));
-
+-- a NIRSpec member is visible exactly when its frozen spectrum is (the frozen
+-- is_public, not the live program flag, so the manifest and dr_spectra agree
+-- however a program's visibility moves after the freeze); a field product
+-- (no program) is open; a program-scoped row without a spectrum is not shown
 CREATE POLICY "reader_select_dr_manifest"
   ON dr_manifest FOR SELECT TO campfire_reader
   USING (EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_manifest.tag AND r.state = 'published')
-         AND (program_slug IS NULL
-              OR EXISTS (SELECT 1 FROM public.programs p WHERE p.slug = dr_manifest.program_slug AND p.is_public)));
+         AND ((spectrum_id IS NOT NULL
+               AND EXISTS (SELECT 1 FROM public.dr_spectra s
+                           WHERE s.tag = dr_manifest.tag AND s.spectrum_id = dr_manifest.spectrum_id
+                             AND s.is_public AND s.deploy_status = 'published'))
+              OR (spectrum_id IS NULL AND program_slug IS NULL)));

@@ -72,10 +72,12 @@ Live catalog, the rows a signed-out reader of the portal sees:
 Published data releases, frozen as they were at the freeze: `dr_releases`
 (`tag`, `state`, `doi`, `frozen_at`, `counts`) and the twins `dr_objects`,
 `dr_targets`, `dr_spectra`, `dr_line_fits`, `dr_lines`, `dr_catalog_matches`,
-`dr_photometry`, `dr_nircam_images`, `dr_fields`, `dr_filter_options`,
-`dr_manifest`, each keyed by `tag`, each with the live table's columns. A
-release's public rows are the ones public at the freeze (the frozen
-`is_public` column), so a release reads the same way forever.
+`dr_photometry`, `dr_nircam_images`, `dr_fields`, `dr_manifest`, each keyed by
+`tag`, each with the live table's columns. A release's public rows are the ones
+public at the freeze (the frozen `is_public` column), so a release reads the
+same way forever; `dr_manifest` (the release's file list: storage key, hashes,
+archive key) follows the same rule through the frozen spectrum, plus the
+field products. The portal's per-release filter options are not exposed.
 
 `objects` and `dr_objects` resolve to views in the `reader` schema (the role's
 `search_path` is `reader, public`): the same rows and columns as the tables,

@@ -52,7 +52,7 @@ DECLARE
   allow text[] := ARRAY['programs','observations','fields','nircam_images','targets','spectra',
                         'line_fits','lines','catalog_matches','photometry',
                         'dr_releases','dr_targets','dr_spectra','dr_line_fits','dr_lines',
-                        'dr_catalog_matches','dr_photometry','dr_nircam_images','dr_fields','dr_filter_options','dr_manifest'];
+                        'dr_catalog_matches','dr_photometry','dr_nircam_images','dr_fields','dr_manifest'];
   aggregates text[] := ARRAY['programs','observations','gratings','n_targets','n_spectra','max_snr','max_exposure_time','search_text'];
   got text[]; extra text[]; missing text[]; n int; bad text;
 BEGIN
@@ -252,7 +252,7 @@ DO $$
 DECLARE
   tag_pub text; want int; got int; t text;
   twins text[] := ARRAY['dr_objects','dr_targets','dr_spectra','dr_line_fits','dr_lines','dr_catalog_matches',
-                        'dr_photometry','dr_nircam_images','dr_fields','dr_filter_options','dr_manifest'];
+                        'dr_photometry','dr_nircam_images','dr_fields','dr_manifest'];
 BEGIN
   SELECT tag INTO tag_pub FROM dr_releases WHERE state = 'published' ORDER BY tag LIMIT 1;
   IF tag_pub IS NULL THEN
@@ -288,6 +288,27 @@ BEGIN
        OR o.n_targets <> (SELECT count(*) FROM targets t WHERE t.object_id = o.id)
        OR NOT (o.gratings <@ COALESCE((SELECT array_agg(DISTINCT s.grating) FROM spectra s JOIN targets t ON t.target_id = s.target_id WHERE t.object_id = o.id), '{}'::text[]))$q$);
   IF got <> 0 THEN RAISE EXCEPTION 'READER 4: % live object(s) whose aggregates do not describe their visible members', got; END IF;
+  -- the manifest follows the frozen spectrum, not the live program flag: a
+  -- NIRSpec member is visible exactly when its dr_spectra row is, a field
+  -- product always, a program-scoped row without a spectrum never
+  SELECT count(*) INTO want FROM dr_manifest m WHERE m.tag = tag_pub
+     AND ((m.spectrum_id IS NOT NULL AND EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = m.tag AND s.spectrum_id = m.spectrum_id
+                                                   AND s.is_public AND s.deploy_status = 'published'))
+          OR (m.spectrum_id IS NULL AND m.program_slug IS NULL));
+  got := pg_temp.zzz_rr_count(format($q$SELECT count(*) FROM dr_manifest WHERE tag = %L$q$, tag_pub));
+  IF got <> want OR want = 0 THEN RAISE EXCEPTION 'READER 4 dr_manifest: reader % vs frozen visible %', got, want; END IF;
+  -- hide one frozen spectrum (as a freeze of a then-private program would): its manifest rows go with it,
+  -- although its program is public live; the manifest never names a spectrum the reader cannot query
+  UPDATE dr_spectra SET is_public = false WHERE tag = tag_pub AND spectrum_id = (SELECT spectrum_id FROM dr_spectra WHERE tag = tag_pub AND is_public ORDER BY spectrum_id LIMIT 1);
+  got := pg_temp.zzz_rr_count(format($q$SELECT count(*) FROM dr_manifest m WHERE m.tag = %L AND m.spectrum_id IS NOT NULL
+                                        AND NOT EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = m.tag AND s.spectrum_id = m.spectrum_id)$q$, tag_pub));
+  IF got <> 0 THEN RAISE EXCEPTION 'READER 4 dr_manifest: % row(s) name a spectrum the reader cannot see', got; END IF;
+  got := pg_temp.zzz_rr_count(format($q$SELECT count(*) FROM dr_manifest WHERE tag = %L$q$, tag_pub));
+  IF got >= want THEN RAISE EXCEPTION 'READER 4 dr_manifest: hiding a frozen spectrum hid no manifest row (% vs %)', got, want; END IF;
+  -- dr_filter_options (arrays over every frozen member) is not the reader's
+  IF pg_temp.zzz_rr_count('SELECT count(*) FROM dr_filter_options') <> -1 THEN
+    RAISE EXCEPTION 'READER 4: dr_filter_options is readable';
+  END IF;
   -- no frozen aggregate names a private program
   got := pg_temp.zzz_rr_count(format($q$SELECT count(*) FROM dr_objects o WHERE o.tag = %L AND EXISTS (SELECT 1 FROM unnest(o.programs || o.evidence_programs) p WHERE p NOT IN (SELECT slug FROM programs))$q$, tag_pub));
   IF got <> 0 THEN RAISE EXCEPTION 'READER 4: % frozen object(s) name a program the reader cannot see', got; END IF;
@@ -318,7 +339,7 @@ BEGIN
     RAISE EXCEPTION 'READER 4: a withdrawn release is listed';
   END IF;
   UPDATE dr_releases SET state = 'published' WHERE tag = tag_pub;
-  RAISE NOTICE 'OK 4: % reads as frozen for the reader; withdrawn = invisible on all % twins', tag_pub, array_length(twins, 1);
+  RAISE NOTICE 'OK 4: % reads as frozen for the reader (manifest through the frozen spectrum, filter options withheld); withdrawn = invisible on all % twins', tag_pub, array_length(twins, 1);
 END $$;
 
 -- ============================================================================
