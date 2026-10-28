@@ -38,7 +38,11 @@ fi
 $compose exec -T db psql -v ON_ERROR_STOP=1 -q -U postgres -d "$db_name" <<SQL
 ALTER ROLE campfire_reader PASSWORD '${READER_PASSWORD}';
 ALTER ROLE campfire_reader RESET ALL;
-ALTER ROLE campfire_reader IN DATABASE ${db_name} RESET ALL;
+-- every database that carries an override, not only ours (any database name is settable)
+SELECT format('ALTER ROLE campfire_reader IN DATABASE %I RESET ALL', d.datname)
+  FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole JOIN pg_database d ON d.oid = s.setdatabase
+ WHERE r.rolname = 'campfire_reader'
+\gexec
 ALTER ROLE campfire_reader SET statement_timeout = '30s';
 ALTER ROLE campfire_reader SET idle_in_transaction_session_timeout = '60s';
 ALTER ROLE campfire_reader SET lock_timeout = '5s';
