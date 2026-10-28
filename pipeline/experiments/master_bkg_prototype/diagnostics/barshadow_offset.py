@@ -14,8 +14,18 @@ from astropy.table import Table
 from multiprocessing import Pool
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 
-WS = '/Users/hollis/campfire-data/products/nirspec/ember_egs_p1'
-SKY = Table.read('full_ember_egs_p1_v3/ember_egs_p1_sky.ecsv')
+import argparse
+_ap = argparse.ArgumentParser(description='Empty-shutter bar-profile diagnostic (design doc §9).')
+_ap.add_argument('--obs', default='ember_egs_p1', help='observation name (products/nirspec/<obs>)')
+_ap.add_argument('--root', default='jw07076020001_04101', help='exposure root <obs>_<config> whose canonicals to stack')
+_ap.add_argument('--sky', default='full_ember_egs_p1_v3/ember_egs_p1_sky.ecsv', help='<obs>_sky.ecsv from prototype_master_bkg.py')
+_ap.add_argument('--max-sources', type=int, default=90)
+_ap.add_argument('--out', default=None, help='output figure path')
+ARGS = _ap.parse_args()
+import os as _os
+WS = _os.path.join(_os.environ.get('CAMPFIRE_ROOT', _os.path.expanduser('~/campfire-data')), 'products', 'nirspec', ARGS.obs)
+SKY = Table.read(ARGS.sky)
+SKY = SKY[SKY['root'] == ARGS.root] if 'root' in SKY.colnames and ARGS.root in set(SKY['root']) else SKY
 LAM, POOL = np.array(SKY['wavelength']), np.array(SKY['surf_bright'])
 CS = np.round(np.arange(-0.05, 0.011, 0.01), 3)
 SS = (0.96, 1.0, 1.04, 1.08, 1.12)
@@ -79,9 +89,9 @@ def flatness(ratio, f, lo=-0.5, hi=0.5, nb=20):
 
 def main():
     import os
-    paths = sorted(p for p in glob.glob(WS + '/jw07076020001_04101_0000?_nrs?_*.fits') if not p.endswith('_rate.fits'))
+    paths = sorted(p for p in glob.glob(WS + f'/{ARGS.root}_*_nrs?_*.fits') if not p.endswith('_rate.fits'))
     infos = [P._read_info(p) for p in paths]
-    sids = sorted(set(i.source_id for i in infos))[:90]
+    sids = sorted(set(i.source_id for i in infos))[:ARGS.max_sources]
     infos = [i for i in infos if i.source_id in sids]
     with Pool(8) as pool:
         res = pool.map(one, infos)
@@ -100,8 +110,9 @@ def main():
     # does the source-adjacent edge excess depend on source brightness? (ratio with jwst as is, edge bin toward the source)
     flux = {}
     for s_ in np.unique(sid):
-        fn = os.path.join(WS, f'ember_egs_p1_prism_clear_{s_}_spec.fits')
-        if os.path.exists(fn):
+        cands = glob.glob(os.path.join(WS, f'{ARGS.obs}_*_{s_}_spec.fits'))
+        fn = cands[0] if cands else ''
+        if fn:
             d = fits.getdata(fn, 'SPEC1D'); w = d['wave']; m = (w > 1) & (w < 3) & np.isfinite(d['fnu']); flux[s_] = float(np.nanmedian(d['fnu'][m]))
     fl = np.array([flux.get(s_, np.nan) for s_ in sid])
     adj = (np.abs(kk) == 1)
@@ -122,8 +133,8 @@ def main():
     for key, col, lab in (((0.0, 1.0), 'tab:red', 'reference as jwst evaluates it'), (best, 'tab:green', 'reference, shifted and widened')):
         _, med_r, fc = flatness(corr[key], f, -0.6, 0.6, 24); axes[1].plot(fc, med_r, color=col, ls='--', label=lab)
     axes[1].set_ylim(0.3, 1.1); axes[1].legend(fontsize=8); axes[1].set_title('measured profile vs reference'); axes[1].set_xlabel('f')
-    fig.suptitle('ember_egs_p1 prism, empty shutters: CRDS bar-shadow reference, shift and width')
-    fig.tight_layout(); fig.savefig('barshadow_offset3.png', dpi=110); print('saved')
+    fig.suptitle(f'{ARGS.obs} {ARGS.root}, empty shutters: CRDS bar-shadow reference, shift and width')
+    fig.tight_layout(); fig.savefig(ARGS.out or f'{ARGS.obs}_{ARGS.root}_barshadow_offset3.png', dpi=110); print('saved')
 
 if __name__ == '__main__':
     main()

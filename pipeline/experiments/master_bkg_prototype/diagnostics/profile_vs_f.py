@@ -9,8 +9,19 @@ from jwst.datamodels import MultiSlitModel, dqflags
 from multiprocessing import Pool
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 
-WS = '/Users/hollis/campfire-data/products/nirspec/ember_egs_p1'
-SKY = Table.read('full_ember_egs_p1_v2/ember_egs_p1_sky.ecsv')
+import argparse
+_ap = argparse.ArgumentParser(description='Empty-shutter bar-profile diagnostic (design doc §9).')
+_ap.add_argument('--obs', default='ember_egs_p1', help='observation name (products/nirspec/<obs>)')
+_ap.add_argument('--root', default='jw07076020001_04101', help='exposure root <obs>_<config> whose canonicals to stack')
+_ap.add_argument('--sky', default='full_ember_egs_p1_v3/ember_egs_p1_sky.ecsv', help='<obs>_sky.ecsv from prototype_master_bkg.py')
+_ap.add_argument('--max-sources', type=int, default=90)
+_ap.add_argument('--out', default=None, help='output figure path')
+_ap.add_argument('--band', type=float, nargs=2, default=(1.0, 3.0), help='wavelength window [um] to stack')
+ARGS = _ap.parse_args()
+import os as _os
+WS = _os.path.join(_os.environ.get('CAMPFIRE_ROOT', _os.path.expanduser('~/campfire-data')), 'products', 'nirspec', ARGS.obs)
+SKY = Table.read(ARGS.sky)
+SKY = SKY[SKY['root'] == ARGS.root] if 'root' in SKY.colnames and ARGS.root in set(SKY['root']) else SKY
 LAM, POOL = np.array(SKY['wavelength']), np.array(SKY['surf_bright'])
 
 def one(info):
@@ -37,7 +48,7 @@ def one(info):
     for ko in ([c - own_col for c in others] if own_col is not None else []):
         good &= k != ko
     ratio_cor = sb_cor / np.interp(lam, LAM, POOL); ratio_raw = sb_raw / np.interp(lam, LAM, POOL)
-    band = good & (lam > 1.0) & (lam < 3.0)
+    band = good & (lam > ARGS.band[0]) & (lam < ARGS.band[1])
     out = []
     for kk in np.unique(k[band]):
         sel = band & (k == kk)
@@ -45,9 +56,9 @@ def one(info):
     return out
 
 def main():
-    paths = sorted(p for p in glob.glob(WS + '/jw07076020001_04101_0000?_nrs?_*.fits') if not p.endswith('_rate.fits'))
+    paths = sorted(p for p in glob.glob(WS + f'/{ARGS.root}_*_nrs?_*.fits') if not p.endswith('_rate.fits'))
     infos = [P._read_info(p) for p in paths]
-    sids = sorted(set(i.source_id for i in infos))[:70]
+    sids = sorted(set(i.source_id for i in infos))[:ARGS.max_sources]
     infos = [i for i in infos if i.source_id in sids]
     with Pool(4) as pool:
         res = pool.map(one, infos)
@@ -70,8 +81,8 @@ def main():
         ax.set_title(t, fontsize=10); ax.set_xlabel('within-shutter coordinate f  (0 = shutter centre, |f| = 0.5 = shutter edge; sign: f*sign(k))')
         for b in (-0.5, 0.5): ax.axvline(b, color='gray', lw=0.5, ls='--')
     axes[0].set_ylim(0.9, 1.5); axes[1].set_ylim(0.3, 1.2); axes[2].set_ylim(0.3, 1.05); axes[0].axhline(1, color='k', lw=0.5); axes[1].axhline(1, color='k', lw=0.5); axes[0].legend(fontsize=8)
-    fig.suptitle('ember_egs_p1 prism, empty shutters, 1-3 um, first 70 sources: row-level profile across a shutter')
-    fig.tight_layout(); fig.savefig('profile_vs_f.png', dpi=110); print('saved')
+    fig.suptitle(f'{ARGS.obs} {ARGS.root}, empty shutters, {ARGS.band[0]:g}-{ARGS.band[1]:g} um, first {ARGS.max_sources} sources: row-level profile across a shutter')
+    fig.tight_layout(); fig.savefig(ARGS.out or f'{ARGS.obs}_{ARGS.root}_profile_vs_f.png', dpi=110); print('saved')
 
 if __name__ == '__main__':
     main()
