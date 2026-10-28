@@ -52,8 +52,9 @@ stage 3 and touches the web; it is described in §4.5 as a later phase.
 
 **Measured on `ember_egs_p1` (§9):** the empty shutters agree on one sky to 0.3 %, the sky is stable
 across nods to 0.2 %, but the sky level varies shutter to shutter by ±4 % (±2.5 % by MSA quadrant,
-~2.7 % per shutter per exposure), which the nods cancel exactly and an ensemble sky cannot. That sets
-the design: an ensemble sky scaled per shutter from the nods where that shutter is empty (§9).
+~2.7 % per shutter per exposure), which the nods cancel exactly and an ensemble sky cannot. So the
+master background is the secondary product for extended sources with no clean sky in their own
+slitlet, with per-quadrant scales and a ~3 % error floor; nodding stays the archive default (§9).
 
 Expected science gain before that measurement, as arithmetic: a 3-point nod subtracts the mean of two
 other nods, so the subtracted frame carries 1.5× the background variance of a single exposure; a master
@@ -864,15 +865,28 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   noise of one exposure is ~20 % of the sky, so the floor is subdominant per pixel but reaches the
   noise of a 15-pixel extraction (3 nods × 5 rows) and dominates for broad continuum bins — this is the
   quantitative form of RUBIES' "nods do better for compact faint sources".
-- The hybrid is therefore the interesting product: the ensemble sky (0.3 % statistics, no self-
-  subtraction, no requirement on the partner nods) **scaled per shutter by what the nods measure
-  for that physical shutter** when it is empty (40 % of the per-shutter deviation is recoverable
-  that way, the quadrant term entirely). For a source whose partner nods are contaminated this still
-  beats exclusion; for a clean three-point nod of a compact source the nods remain the default.
+- Decision (2026-10-28): **no hybrid.** Scaling the ensemble sky per shutter from the nods is a third
+  method (a local background) and offers nothing over nodding where nodding works. The master
+  background exists for the case nodding cannot serve: **extended sources whose slitlet has no clean
+  sky of its own**. There the ~3 % per-shutter floor is an accepted cost, carried as an error floor on
+  the expanded background (msaexp's `(0.03 · sky)²` term is the same number), and the quadrant term
+  is removed with per-quadrant scales. This is a secondary product, not the archive default.
 - Settled knobs for P1: shutter core |f| ≤ 0.2 (no bar-shadow division for the 1-D sky), source pad
   3 px (5 px leaves only one row per adjacent shutter), per-quadrant scales on, no per-exposure terms,
   median seed (the model seed needs the same coarse-bin scaling and is 30 % off below 1 µm), rejection
   at 5 % above the ensemble catches the few real neighbours (scales > 1.2) and the distribution's tail
   alike — a per-quadrant reference will tighten it.
-- Not yet measured: the gratings (none on this machine with canonicals), the empirical bar profile
-  as a function of wavelength, and the solar-line check (§3.3).
+- **Empirical bar shadow as a by-product (proposed).** The same per-pixel samples (surface brightness
+  without the bar-shadow division, within-shutter coordinate, wavelength, shutter position in the
+  slitlet, quadrant) stacked in (f, λ) per disperser and shutter geometry are an empirical bar-shadow
+  model — what msaexp ships as `prism_{1,2,3}_bar_coeffs_wave.yaml` (a B-spline in shutter y with
+  wavelength-dependent coefficients, plus a per-slit y offset fitted from the data, `bar_dy='auto'`),
+  applied after undoing jwst's. One prism observation gives ~2 M empty-shutter pixels, enough for a
+  (f, λ) table at prism resolution; the gratings need grating canonicals. First question to settle:
+  is the jwst reference only *shifted* (a y offset of ~0.05 shutter ≈ 0.25 px, fixable inside our own
+  evaluation of the reference) or wrong in shape. Measuring it belongs in the master-background stage
+  (free); *applying* it to the science calibration is a separate Calibration change (MINOR) that
+  touches only extended-source slits (stage 2a never applies bar shadow to point sources) and the
+  master background's own 2-D expansion.
+- Not yet measured: the gratings (none on this machine with canonicals), the bar profile as a
+  function of wavelength and quadrant, and the solar-line check (§3.3).
