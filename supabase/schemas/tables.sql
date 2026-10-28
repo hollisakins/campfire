@@ -1319,8 +1319,10 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- mutable current pointers (upserted in place on redeploy); 'archive' rows
     -- describe write-once objects under archive/<sha256>/<relpath>, written by
     -- retain-on-supersede and the DR byte pass, never by a client PUT, and
-    -- protected by the protect_archive_rows trigger (no DELETE; the only UPDATE
-    -- is status archived -> collected).
+    -- protected by the protect_archive_rows trigger: the only UPDATEs are the
+    -- status transitions archived -> collecting (a collection claimed the
+    -- object, P4e) and archived -> collected (legacy), and the only DELETE is
+    -- of a collecting row by dr_archive_collect_finish, after its bytes went.
     "root" "text" NOT NULL DEFAULT 'live'::"text",
     -- Row-local program scope (the row_local_rls pattern) so an archive row can
     -- be authorized without a join to a live spectrum that may have moved on.
@@ -1334,6 +1336,11 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- Mosaic retention (design §4.2): a collected archive row keeps hash, size
     -- and date so a manifest resolves to "existed, collected on <date>".
     "collected_at" timestamp with time zone,
+    -- Collection ownership (P4e): the run that claimed a collecting row
+    -- (dr_archive_collect_begin); only that run may delete its bytes and its
+    -- row (dr_archive_collect_verify / _finish), so a run taken over after a
+    -- stall can never delete bytes a later run recreated under the same key.
+    "collect_claim" "uuid",
     "observation" "text",
     "field" "text",
     "filter" "text",
@@ -1346,13 +1353,13 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "storage_objects_backend_check" CHECK (("backend" = ANY (ARRAY['r2'::"text", 'osn'::"text"]))),
     CONSTRAINT "storage_objects_bucket_check" CHECK (("bucket" = ANY (ARRAY['data'::"text", 'tiles'::"text"]))),
-    CONSTRAINT "storage_objects_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'superseded'::"text", 'revoked'::"text", 'archived'::"text", 'collected'::"text"]))),
+    CONSTRAINT "storage_objects_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'superseded'::"text", 'revoked'::"text", 'archived'::"text", 'collecting'::"text", 'collected'::"text"]))),
     CONSTRAINT "storage_objects_root_check" CHECK (("root" = ANY (ARRAY['live'::"text", 'archive'::"text"]))),
     -- An archive row is exactly an archived or collected object under archive/;
     -- a live row never carries those statuses.
     CONSTRAINT "storage_objects_root_status_check" CHECK (
         ("root" = 'live'::"text" AND "status" <> ALL (ARRAY['archived'::"text", 'collected'::"text"]))
-        OR ("root" = 'archive'::"text" AND "status" = ANY (ARRAY['archived'::"text", 'collected'::"text"]) AND "storage_key" LIKE 'archive/%')),
+        OR ("root" = 'archive'::"text" AND "status" = ANY (ARRAY['archived'::"text", 'collecting'::"text", 'collected'::"text"]) AND "storage_key" LIKE 'archive/%')),
     CONSTRAINT "storage_objects_instrument_check" CHECK (("instrument" IS NULL OR "instrument" = ANY (ARRAY['nirspec'::"text", 'nircam'::"text"]))),
     -- content_hash is scheme-prefixed: 'sha256:<hex>' is authoritative (deploy hashes
     -- the local file; spectra backfill reuses spectra.file_hash); 'etag:<hex>' is
@@ -1564,6 +1571,22 @@ CREATE TABLE IF NOT EXISTS "public"."sync_deletions" (
 
 ALTER TABLE "public"."sync_deletions" OWNER TO "postgres";
 
+-- archive_collections (P4e): the archive keys a collection deleted and when.
+-- A tombstone, kept 7 days (dr_archive_collect_finish writes and prunes it):
+-- a byte pass that found an object under a key while a collection was
+-- deleting it, and registers after the collection finished, must not record
+-- bytes that are gone. dr_bytes_pending exposes the tombstone of a member's
+-- copy target so the pass copies again instead of healing on a stale object,
+-- and dr_bytes_mark refuses a heal whose object predates the tombstone.
+-- Service-role only, like sync_deletions.
+CREATE TABLE IF NOT EXISTS "public"."archive_collections" (
+    "storage_key" "text" NOT NULL,
+    "collected_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "archive_collections_pkey" PRIMARY KEY ("storage_key")
+);
+
+ALTER TABLE "public"."archive_collections" OWNER TO "postgres";
+
 -- =============================================================================
 -- Data releases (P4a, docs/design-data-releases.md §4.3, impl plan §6)
 -- =============================================================================
@@ -1579,6 +1602,9 @@ ALTER TABLE "public"."sync_deletions" OWNER TO "postgres";
 -- dr_releases: one row per tag; the state machine the CLI drives.
 --   draft → freezing → frozen|failed → (exporting → exported → copying →
 --   ready) → published → withdrawn. Re-freezing is allowed while unpublished.
+--   purging (P4e): `campfire dr purge` has claimed the tag's archive objects
+--   and the only way out is the purge itself (publish, archive, export and
+--   re-freeze refuse the state).
 CREATE TABLE IF NOT EXISTS "public"."dr_releases" (
     "tag" "text" NOT NULL,
     "state" "text" DEFAULT 'draft'::"text" NOT NULL,
@@ -1617,7 +1643,7 @@ CREATE TABLE IF NOT EXISTS "public"."dr_releases" (
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "dr_releases_pkey" PRIMARY KEY ("tag"),
     CONSTRAINT "dr_releases_tag_check" CHECK (("tag" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$'::"text")),
-    CONSTRAINT "dr_releases_state_check" CHECK (("state" = ANY (ARRAY['draft'::"text", 'freezing'::"text", 'frozen'::"text", 'failed'::"text", 'exporting'::"text", 'exported'::"text", 'copying'::"text", 'ready'::"text", 'published'::"text", 'withdrawn'::"text"])))
+    CONSTRAINT "dr_releases_state_check" CHECK (("state" = ANY (ARRAY['draft'::"text", 'freezing'::"text", 'frozen'::"text", 'failed'::"text", 'exporting'::"text", 'exported'::"text", 'copying'::"text", 'ready'::"text", 'purging'::"text", 'published'::"text", 'withdrawn'::"text"])))
 );
 
 ALTER TABLE "public"."dr_releases" OWNER TO "postgres";
@@ -3378,6 +3404,9 @@ GRANT ALL ON TABLE "public"."sync_snapshots" TO "service_role";
 REVOKE ALL ON TABLE "public"."sync_deletions" FROM "anon";
 REVOKE ALL ON TABLE "public"."sync_deletions" FROM "authenticated";
 GRANT ALL ON TABLE "public"."sync_deletions" TO "service_role";
+REVOKE ALL ON TABLE "public"."archive_collections" FROM "anon";
+REVOKE ALL ON TABLE "public"."archive_collections" FROM "authenticated";
+GRANT ALL ON TABLE "public"."archive_collections" TO "service_role";
 
 -- Data releases (P4a): frozen tables are read under RLS by authenticated
 -- accounts (policies.sql) and written only through the SECURITY DEFINER

@@ -31,6 +31,7 @@ def test_next_step_hint_walks_the_lifecycle():
     assert 'dr export --tag DR-t' in h(TAG, 'exporting', exports_total=5, exports_remaining=1)
     assert 'dr publish DR-t' in h(TAG, 'ready', exports_total=5)
     assert 'published' in h(TAG, 'published')
+    assert 'dr purge DR-t' in h(TAG, 'purging') and 'finishes' in h(TAG, 'purging')
 
 
 class _Steps:

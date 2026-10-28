@@ -9061,7 +9061,7 @@ BEGIN
       'live', (SELECT json_build_object('count', COUNT(*), 'bytes', COALESCE(SUM(COALESCE(stored_size_bytes, size_bytes)), 0))
                FROM storage_objects WHERE status = 'active'),
       'archive', (SELECT json_build_object('count', COUNT(*), 'bytes', COALESCE(SUM(COALESCE(stored_size_bytes, size_bytes)), 0))
-                  FROM storage_objects WHERE status = 'archived'),
+                  FROM storage_objects WHERE status IN ('archived', 'collecting')),
       'gc_pending', (SELECT json_build_object('count', COUNT(*), 'bytes', COALESCE(SUM(COALESCE(stored_size_bytes, size_bytes)), 0))
                      FROM storage_objects WHERE status IN ('superseded', 'revoked')),
       'collected', (SELECT json_build_object('count', COUNT(*), 'bytes', 0,
@@ -12190,6 +12190,8 @@ BEGIN
       RAISE EXCEPTION 'release % is %; a DR is immutable once published (make a new tag)', p_tag, r.state;
     ELSIF r.state = 'freezing' AND r.freeze_started_at > now() - interval '1 hour' THEN
       RAISE EXCEPTION 'release % is already freezing (started %)', p_tag, r.freeze_started_at;
+    ELSIF r.state = 'purging' THEN
+      RAISE EXCEPTION 'release % is being purged; finish it first (campfire dr purge %)', p_tag, p_tag;
     ELSIF r.state IN ('exporting', 'exported', 'copying', 'ready') THEN
       RAISE EXCEPTION 'release % already has exports or archive bytes (state %); purge it first (campfire dr purge %)', p_tag, r.state, p_tag;
     END IF;
@@ -12301,10 +12303,388 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_purge_release(text) IS 'Delete an UNPUBLISHED data release and all its frozen rows (P4a; `campfire dr purge`). Admin JWT or service_role claims (dr_require_admin): a bare postgres superuser session is refused; from psql, set request.jwt.claims to {"role":"service_role"} first. Refuses published / withdrawn tags and a freeze that is still running. Archive bytes already copied for the tag are left in place (dedup by hash; gc is the retention path).';
+COMMENT ON FUNCTION public.dr_purge_release(text) IS 'Delete an UNPUBLISHED data release and all its frozen rows (P4a; `campfire dr purge`). Admin JWT or service_role claims (dr_require_admin): a bare postgres superuser session is refused; from psql, set request.jwt.claims to {"role":"service_role"} first. Refuses published / withdrawn tags and a freeze that is still running. Touches no archive object: `campfire dr purge` first collects the archive objects only this tag references (dr_purge_archive_plan, dr_archive_collect_begin, the bucket delete, dr_archive_collect_finish; D-P4-6), then calls this.';
 
 REVOKE ALL ON FUNCTION public.dr_purge_release(text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_purge_release(text) TO authenticated, service_role;
+
+
+-- =============================================================================
+-- The archive is exactly the releases: references, the purge sweep, collection
+-- (P4e, docs/design-data-releases-impl-plan.md §9a, decisions D-P4-6 / D-P4-7)
+-- =============================================================================
+-- An archive object exists because a release's manifest references it, in one
+-- of two ways: the byte pass's copy (dr_manifest.archive_key = the object's
+-- key) or a retained copy made by the deploy gate before an overwrite (the
+-- object's archived_from_key / content_hash = a manifest row's storage_key /
+-- content_hash). archive_object_references lists the tags that reference an
+-- object; an object no tag references is collectable (archive_collectable,
+-- `campfire archive gc`), and `campfire dr purge` collects the objects only
+-- the purged tag references (dr_purge_archive_plan). A published release is
+-- never purged, so its objects are referenced forever; a withdrawn release
+-- keeps its manifest rows.
+--
+-- Collection is three phases, because nothing can hold a lock across the
+-- bucket delete: (1) dr_archive_collect_begin re-checks the references and the
+-- release state under the freeze lock and the release row lock, and flips the
+-- rows archived -> collecting (a claim: dr_bytes_pending never offers a
+-- collecting row as a source or a stamp, dr_bytes_mark and the deploy gate's
+-- archive_register_retained refuse to build on one, so a copy that would be
+-- lost to the pending delete is never recorded); (2) the caller deletes the
+-- bytes; (3) dr_archive_collect_finish deletes the collecting rows (the
+-- trigger allows exactly that) and logs one `collect` deploy event. Every
+-- phase is idempotent and a run interrupted anywhere is finished by the next
+-- run: the plan and archive_collectable list collecting rows too.
+
+CREATE OR REPLACE FUNCTION public.archive_object_references(
+  p_storage_key text, p_archived_from_key text, p_content_hash text)
+RETURNS text[]
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT COALESCE(array_agg(DISTINCT m.tag ORDER BY m.tag), '{}'::text[])
+  FROM dr_manifest m
+  WHERE m.archive_key = p_storage_key
+     OR (p_archived_from_key IS NOT NULL AND m.storage_key = p_archived_from_key
+         AND m.content_hash = p_content_hash);
+$$;
+
+COMMENT ON FUNCTION public.archive_object_references(text, text, text) IS 'The release tags whose manifest references an archive object (P4e): by archive_key (the byte pass''s copy) or by (storage_key, content_hash) against the object''s archived_from_key / content_hash (a retained copy). Empty = collectable. Internal to archive_collectable / dr_purge_archive_plan / dr_collect_archive.';
+
+REVOKE ALL ON FUNCTION public.archive_object_references(text, text, text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.archive_object_references(text, text, text) TO service_role;
+
+
+-- `campfire archive gc`: one keyset page of archive objects no release references.
+CREATE OR REPLACE FUNCTION public.archive_collectable(p_after_id bigint DEFAULT 0, p_limit integer DEFAULT 1000)
+RETURNS TABLE (
+  id bigint, backend text, bucket text, storage_key text, content_hash text,
+  size_bytes bigint, stored_size_bytes bigint, product_type text, field text, filter text,
+  observation text, archived_from_key text, archived_at timestamptz, status text)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  PERFORM dr_require_admin();
+  IF p_limit IS NULL OR p_limit < 1 OR p_limit > 2000 THEN
+    RAISE EXCEPTION 'archive_collectable: p_limit must be 1..2000 (got %)', p_limit;
+  END IF;
+  RETURN QUERY
+    SELECT so.id, so.backend, so.bucket, so.storage_key, so.content_hash,
+           so.size_bytes, so.stored_size_bytes, so.product_type, so.field, so.filter,
+           so.observation, so.archived_from_key, so.archived_at, so.status
+    FROM storage_objects so
+    WHERE so.root = 'archive'
+      AND so.id > COALESCE(p_after_id, 0)
+      AND (so.status = 'collecting'    -- a collection claimed it and did not finish
+           OR (so.status = 'archived'
+               AND archive_object_references(so.storage_key, so.archived_from_key, so.content_hash) = '{}'::text[]))
+    ORDER BY so.id
+    LIMIT p_limit;
+END;
+$$;
+
+COMMENT ON FUNCTION public.archive_collectable(bigint, integer) IS 'One keyset page (by id, at most 2000) of archive objects no data release''s manifest references (P4e, D-P4-7; `campfire archive gc`): a purged release''s leftovers, every product type alike, plus the collecting rows an interrupted collection left behind. There is no time window: an object lives while any release references it. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.archive_collectable(bigint, integer) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.archive_collectable(bigint, integer) TO authenticated, service_role;
+
+
+-- `campfire dr purge <tag>`, step 1: the archive objects only this tag references.
+CREATE OR REPLACE FUNCTION public.dr_purge_archive_plan(p_tag text, p_after_id bigint DEFAULT 0, p_limit integer DEFAULT 1000)
+RETURNS TABLE (
+  id bigint, backend text, bucket text, storage_key text, content_hash text,
+  size_bytes bigint, stored_size_bytes bigint, product_type text, status text)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  r dr_releases%ROWTYPE;
+BEGIN
+  PERFORM dr_require_admin();
+  IF p_limit IS NULL OR p_limit < 1 OR p_limit > 2000 THEN
+    RAISE EXCEPTION 'dr_purge_archive_plan: p_limit must be 1..2000 (got %)', p_limit;
+  END IF;
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'no release %', p_tag;
+  END IF;
+  IF r.state IN ('published', 'withdrawn') THEN
+    RAISE EXCEPTION 'release % is %; a published DR''s archive objects are never collected', p_tag, r.state;
+  END IF;
+  -- the same waits as dr_purge_release: a live archive run would still be
+  -- creating objects for this tag
+  IF r.archive_claim IS NOT NULL AND r.archive_claimed_at > now() - interval '10 minutes' THEN
+    RAISE EXCEPTION 'release % is being archived (a claim is live); wait for `campfire dr archive` to finish', p_tag;
+  END IF;
+  RETURN QUERY
+    WITH mine AS (
+      -- every archived (or half-collected) object this tag references, either way
+      SELECT so.*
+      FROM storage_objects so
+      WHERE so.root = 'archive' AND so.status IN ('archived', 'collecting')
+        AND so.id > COALESCE(p_after_id, 0)
+        AND (EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.archive_key = so.storage_key)
+             OR EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag
+                        AND m.storage_key = so.archived_from_key AND m.content_hash = so.content_hash))
+    )
+    SELECT mine.id, mine.backend, mine.bucket, mine.storage_key, mine.content_hash,
+           mine.size_bytes, mine.stored_size_bytes, mine.product_type, mine.status
+    FROM mine
+    WHERE mine.status = 'collecting'
+       OR archive_object_references(mine.storage_key, mine.archived_from_key, mine.content_hash) = ARRAY[p_tag]
+    ORDER BY mine.id
+    LIMIT p_limit;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_purge_archive_plan(text, bigint, integer) IS 'One keyset page (by id, at most 2000) of the archive objects only this UNPUBLISHED release references (P4e, D-P4-6): the byte pass''s copies and the retained copies made for its members, minus anything another release''s manifest also names, plus the collecting rows an interrupted purge left. `campfire dr purge` runs dr_archive_collect_begin, deletes the bytes, dr_archive_collect_finish, then dr_purge_release. Refuses published / withdrawn tags and waits for a live archive claim. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_purge_archive_plan(text, bigint, integer) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_purge_archive_plan(text, bigint, integer) TO authenticated, service_role;
+
+
+-- Phase 1: claim the objects (archived -> collecting) under the locks that
+-- make the reference set and the release state stable.
+CREATE OR REPLACE FUNCTION public.dr_archive_collect_begin(p_keys text[], p_tag text DEFAULT NULL, p_claim uuid DEFAULT NULL)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  k text;
+  so storage_objects%ROWTYPE;
+  r dr_releases%ROWTYPE;
+  refs text[];
+  v_claim uuid := COALESCE(p_claim, gen_random_uuid());
+  n_claimed int := 0;
+  n_already int := 0;
+  v_bytes bigint := 0;
+BEGIN
+  PERFORM dr_require_admin();
+  IF p_keys IS NULL OR cardinality(p_keys) = 0 THEN
+    RETURN jsonb_build_object('claim', v_claim, 'claimed', 0, 'already_collecting', 0, 'bytes', 0);
+  END IF;
+  IF cardinality(p_keys) > 2000 THEN
+    RAISE EXCEPTION 'dr_archive_collect_begin: at most 2000 keys per call (got %)', cardinality(p_keys);
+  END IF;
+  -- No freeze can add a manifest row (a reference) while this runs: the same
+  -- advisory lock dr_freeze_job holds for the whole freeze (begin_deploy_scope
+  -- tries it and refuses while it is held, so a deploy waits for us too).
+  PERFORM pg_advisory_xact_lock(hashtext('campfire.dr_freeze'));
+  IF p_tag IS NOT NULL THEN
+    -- ...and the tag cannot be published under us: dr_publish locks this row,
+    -- and the `purging` state it is left in refuses publish, archive, export
+    -- and re-freeze until dr_purge_release removes the tag.
+    SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'no release %', p_tag;
+    END IF;
+    IF r.state IN ('published', 'withdrawn') THEN
+      RAISE EXCEPTION 'release % is %; its archive objects are never collected', p_tag, r.state;
+    END IF;
+    IF r.state = 'freezing' AND r.freeze_started_at > now() - interval '1 hour' THEN
+      RAISE EXCEPTION 'release % is freezing (started %); wait for it to finish or fail', p_tag, r.freeze_started_at;
+    END IF;
+    IF r.state <> 'purging' THEN
+      UPDATE dr_releases SET state = 'purging', updated_at = now() WHERE tag = p_tag;
+    END IF;
+  END IF;
+  FOREACH k IN ARRAY p_keys LOOP
+    SELECT * INTO so FROM storage_objects WHERE storage_key = k AND root = 'archive' FOR UPDATE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'dr_archive_collect_begin: % is not an archive registry row', k;
+    END IF;
+    IF so.status = 'collected' THEN
+      n_already := n_already + 1;
+      CONTINUE;
+    END IF;
+    IF so.status = 'collecting' THEN
+      -- one collector per object: our own claim is refreshed; another run's
+      -- claim refreshed in the last 10 minutes belongs to a live run; an older
+      -- one is a dead run's and is taken over (the same rule as the archive
+      -- claim). The token is what fences the dead run if it ever resumes:
+      -- dr_archive_collect_verify / _finish act only on rows it still owns.
+      IF so.collect_claim IS DISTINCT FROM v_claim AND so.updated_at > now() - interval '10 minutes' THEN
+        RAISE EXCEPTION 'dr_archive_collect_begin: % is being collected by another run (claimed %); wait for it to finish, or re-run after 10 minutes',
+          k, so.updated_at;
+      END IF;
+      UPDATE storage_objects SET collect_claim = v_claim, updated_at = now() WHERE id = so.id;
+      n_already := n_already + 1;
+      CONTINUE;
+    END IF;
+    refs := archive_object_references(so.storage_key, so.archived_from_key, so.content_hash);
+    IF p_tag IS NOT NULL THEN
+      refs := array_remove(refs, p_tag);
+    END IF;
+    IF cardinality(refs) > 0 THEN
+      RAISE EXCEPTION 'dr_archive_collect_begin: % is still referenced by release(s) %', k, array_to_string(refs, ', ');
+    END IF;
+    UPDATE storage_objects SET status = 'collecting', collect_claim = v_claim, updated_at = now() WHERE id = so.id;
+    n_claimed := n_claimed + 1;
+    v_bytes := v_bytes + COALESCE(so.stored_size_bytes, so.size_bytes, 0);
+  END LOOP;
+  RETURN jsonb_build_object('claim', v_claim, 'claimed', n_claimed, 'already_collecting', n_already, 'bytes', v_bytes);
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_archive_collect_begin(text[], text, uuid) IS 'Collection phase 1 (P4e, D-P4-6 / D-P4-7): claim archive objects for deletion, archived -> collecting, owned by p_claim (generated when NULL; returned as claim), under the freeze advisory lock (no new reference can appear) and, with p_tag, the release row lock; the tag is left in state purging, which publish, archive, export and re-freeze refuse until dr_purge_release removes it (a published or withdrawn tag is refused here). Refuses a key any release other than p_tag references, and a key another run''s claim refreshed in the last 10 minutes (an older claim is a dead run''s and is taken over; the token fences that run if it resumes). The caller then verifies, deletes the bytes and calls dr_archive_collect_finish with the same claim. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_archive_collect_begin(text[], text, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_archive_collect_begin(text[], text, uuid) TO authenticated, service_role;
+
+
+-- Phase 2 gate: which of the keys this run still owns (and refresh its claim)
+-- right before the bucket delete, so a run taken over after a stall deletes
+-- nothing that is no longer its own, including a key a later run recreated.
+CREATE OR REPLACE FUNCTION public.dr_archive_collect_verify(p_keys text[], p_claim uuid)
+RETURNS text[]
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  held text[];
+BEGIN
+  PERFORM dr_require_admin();
+  IF p_keys IS NULL OR cardinality(p_keys) = 0 OR p_claim IS NULL THEN
+    RETURN '{}'::text[];
+  END IF;
+  IF cardinality(p_keys) > 2000 THEN
+    RAISE EXCEPTION 'dr_archive_collect_verify: at most 2000 keys per call (got %)', cardinality(p_keys);
+  END IF;
+  WITH mine AS (
+    UPDATE storage_objects so SET updated_at = now()
+    WHERE so.root = 'archive' AND so.status = 'collecting' AND so.collect_claim = p_claim
+      AND so.storage_key = ANY (p_keys)
+    RETURNING so.storage_key
+  )
+  SELECT COALESCE(array_agg(storage_key ORDER BY storage_key), '{}'::text[]) INTO held FROM mine;
+  RETURN held;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_archive_collect_verify(text[], uuid) IS 'Collection phase 2 gate (P4e): of the given keys, those still claimed by p_claim (status collecting, same token), with the claim refreshed. The caller deletes exactly these from the bucket and finishes them; a key another run took over, or recreated since, is not returned and is left alone. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_archive_collect_verify(text[], uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_archive_collect_verify(text[], uuid) TO authenticated, service_role;
+
+
+-- Phase 3: the bytes are gone; the collecting rows go too.
+CREATE OR REPLACE FUNCTION public.dr_archive_collect_finish(p_keys text[], p_tag text DEFAULT NULL, p_claim uuid DEFAULT NULL)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  n_deleted int := 0;
+  n_skipped int := 0;
+  v_bytes bigint := 0;
+BEGIN
+  PERFORM dr_require_admin();
+  IF p_keys IS NULL OR cardinality(p_keys) = 0 THEN
+    RETURN jsonb_build_object('collected', 0, 'not_collecting', 0, 'bytes', 0);
+  END IF;
+  IF cardinality(p_keys) > 2000 THEN
+    RAISE EXCEPTION 'dr_archive_collect_finish: at most 2000 keys per call (got %)', cardinality(p_keys);
+  END IF;
+  IF p_claim IS NULL THEN
+    RAISE EXCEPTION 'dr_archive_collect_finish: the claim dr_archive_collect_begin returned is required';
+  END IF;
+  PERFORM set_config('campfire.archive_collect', 'on', true);
+  WITH gone AS (
+    DELETE FROM storage_objects so
+    WHERE so.root = 'archive' AND so.status = 'collecting' AND so.collect_claim = p_claim
+      AND so.storage_key = ANY (p_keys)
+    RETURNING so.storage_key, COALESCE(so.stored_size_bytes, so.size_bytes, 0) AS b
+  ), stoned AS (
+    -- the tombstone: a byte pass that found the object while it was being
+    -- deleted must not register it after this (dr_bytes_pending / dr_bytes_mark)
+    INSERT INTO archive_collections (storage_key, collected_at)
+    SELECT storage_key, now() FROM gone
+    ON CONFLICT (storage_key) DO UPDATE SET collected_at = EXCLUDED.collected_at
+    RETURNING 1
+  )
+  SELECT count(*), COALESCE(sum(b), 0) INTO n_deleted, v_bytes FROM gone;
+  PERFORM set_config('campfire.archive_collect', 'off', true);
+  DELETE FROM archive_collections WHERE collected_at < now() - interval '7 days';
+  n_skipped := cardinality(p_keys) - n_deleted;
+  IF n_deleted > 0 THEN
+    INSERT INTO deploy_events (actor, action, affected_count, metadata)
+    VALUES (auth.uid(), 'collect', n_deleted,
+            jsonb_build_object('dr_tag', p_tag, 'bytes', v_bytes, 'not_collecting', n_skipped));
+  END IF;
+  RETURN jsonb_build_object('collected', n_deleted, 'not_collecting', n_skipped, 'bytes', v_bytes);
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_archive_collect_finish(text[], text, uuid) IS 'Collection phase 3 (P4e): delete the collecting registry rows of the given keys that p_claim owns (the trigger allows exactly this, under the transaction-local campfire.archive_collect) once their bytes are gone, write a 7-day tombstone per key (archive_collections) and log one `collect` deploy event (p_tag is provenance only). A key that is not a collecting archive row of this claim is skipped and counted, so a re-run after a crash, or a run taken over, is harmless. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_archive_collect_finish(text[], text, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_archive_collect_finish(text[], text, uuid) TO authenticated, service_role;
+
+
+-- The deploy gate's registration of a retained copy (web/lib/server/retain.ts,
+-- campfire.deploy.retain): insert the archive row, or accept an existing
+-- archived row for the same key (someone registered the same content), but
+-- never build on a row a collection has claimed, whose bytes are about to go.
+CREATE OR REPLACE FUNCTION public.archive_register_retained(p_row jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_key text := p_row->>'storage_key';
+  v_status text;
+  n int;
+BEGIN
+  PERFORM dr_require_admin();
+  IF v_key IS NULL OR v_key NOT LIKE 'archive/%' THEN
+    RAISE EXCEPTION 'archive_register_retained: storage_key must be an archive key (got %)', v_key;
+  END IF;
+  IF (p_row->>'content_hash') IS NULL OR (p_row->>'archived_from_key') IS NULL OR (p_row->>'product_type') IS NULL
+     OR (p_row->>'size_bytes') IS NULL THEN
+    RAISE EXCEPTION 'archive_register_retained: content_hash, archived_from_key, product_type and size_bytes are required';
+  END IF;
+  -- the existing row, if any, is locked first: a collection finishing under
+  -- us (its row delete) is waited for, and then seen as absent, never as a
+  -- row that was there a moment ago
+  SELECT so.status INTO v_status FROM storage_objects so
+   WHERE so.backend = COALESCE(p_row->>'backend', 'osn') AND so.bucket = COALESCE(p_row->>'bucket', 'data')
+     AND so.storage_key = v_key
+   FOR UPDATE;
+  IF FOUND THEN
+    IF v_status IS DISTINCT FROM 'archived' THEN
+      RAISE EXCEPTION 'archive object % is being collected (status %); retry once the collection has finished', v_key, v_status;
+    END IF;
+    RETURN jsonb_build_object('inserted', false);
+  END IF;
+  INSERT INTO storage_objects (backend, bucket, storage_key, root, status, content_hash, size_bytes, stored_size_bytes,
+                               content_type, product_type, instrument, observation, spectrum_id, program_slug,
+                               deployment_id, cfpipe_version, archived_from_key, archived_at, archived_by_deployment,
+                               uploaded_by, updated_at)
+  VALUES (COALESCE(p_row->>'backend', 'osn'), COALESCE(p_row->>'bucket', 'data'), v_key, 'archive', 'archived',
+          p_row->>'content_hash', (p_row->>'size_bytes')::bigint, (p_row->>'stored_size_bytes')::bigint,
+          COALESCE(p_row->>'content_type', 'application/octet-stream'), p_row->>'product_type',
+          p_row->>'instrument',
+          (SELECT o.name FROM observations o WHERE o.name = p_row->>'observation'),
+          p_row->>'spectrum_id', p_row->>'program_slug',
+          (SELECT d.id FROM deployments d WHERE d.id = (p_row->>'deployment_id')::integer),
+          p_row->>'cfpipe_version', p_row->>'archived_from_key', now(), NULL, auth.uid(), now())
+  ON CONFLICT (backend, bucket, storage_key) DO NOTHING;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n = 0 THEN
+    -- inserted under us between the lock probe and the insert (another gate
+    -- for the same bytes): the same content, fine
+    RETURN jsonb_build_object('inserted', false);
+  END IF;
+  RETURN jsonb_build_object('inserted', true);
+END;
+$$;
+
+COMMENT ON FUNCTION public.archive_register_retained(jsonb) IS 'Register a copy the retain-on-supersede gate is about to make (P4e): the gate registers BEFORE it copies, so a collection can never claim the row while the copy is in flight (the row is referenced by the member the gate retains). Inserts the archive row for p_row (an archive key under archive/, content_hash, archived_from_key, product_type, size_bytes and the registry metadata), or accepts an existing ARCHIVED row for the same key (the same content, registered by someone else; the gate then only ensures the object exists); a row a collection has claimed (collecting) is refused, since its bytes are about to go. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.archive_register_retained(jsonb) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.archive_register_retained(jsonb) TO authenticated, service_role;
 
 
 
@@ -12920,7 +13300,9 @@ RETURNS TABLE (
   size_bytes bigint, byte_state text,
   source_key text, source_root text, source_stored_size bigint,
   reuse_archive_key text, reuse_stamped_hash text, reuse_size_bytes bigint, reuse_candidates jsonb,
-  registry jsonb
+  registry jsonb,
+  target_collected_at timestamptz,
+  page_at timestamptz
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = public, pg_temp
@@ -12966,7 +13348,16 @@ BEGIN
            'filter', COALESCE(live.filter, ret.filter, src.filter),
            'deployment_id', COALESCE(live.deployment_id, ret.deployment_id, src.deployment_id),
            'cfpipe_version', COALESCE(live.cfpipe_version, ret.cfpipe_version, src.cfpipe_version),
-           'retained_key', ret.storage_key)
+           'retained_key', ret.storage_key),
+         -- the tombstone of the member's unstamped copy target, if a collection
+         -- deleted that key in the last 7 days: the pass copies again instead of
+         -- healing on an object that predates it (stamped targets carry the tag
+         -- in their bytes, so only this tag's own purge could have deleted one)
+         (SELECT c.collected_at FROM archive_collections c
+           WHERE c.storage_key = 'archive/' || substr(pg.content_hash, 8) || '/' || substr(pg.storage_key, 6)),
+         -- when this page was handed out (server clock): an outcome built on
+         -- it is refused by dr_bytes_mark if a collection deleted its key after
+         now()
   FROM page pg
   -- the registry row the freeze captured (its metadata survives a redeploy)
   LEFT JOIN storage_objects src ON src.id = pg.registry_id
@@ -12986,16 +13377,21 @@ BEGIN
     ORDER BY so.id
     LIMIT 1
   ) ret ON true
-  -- stamped objects any other release made from the same science (D-P4-2):
-  -- the first release to ARCHIVE a file owns its stamp, and every later pass
-  -- reuses that object. Every candidate, earliest archived first: the pass
-  -- reuses the first whose object still exists, so a missing one falls
-  -- through to the next (or to a fresh stamp).
+  -- stamped objects another release made from the same science (D-P4-2,
+  -- D-P4-6): the first PUBLISHED release to archive a file owns its stamp,
+  -- and every later pass reuses that object. Only a published (or withdrawn)
+  -- release's stamp is offered, so an unpublished tag (a rehearsal, a failed
+  -- attempt) can never reach a published file's CMPFRDR, and a purge of that
+  -- tag collects its stamped copies without anything pointing at them. Every
+  -- candidate, earliest archived first: the pass reuses the first whose
+  -- object still exists, so a missing one falls through to the next (or to a
+  -- fresh stamp).
   LEFT JOIN LATERAL (
     SELECT jsonb_agg(jsonb_build_object('archive_key', d.archive_key, 'stamped_hash', d.stamped_hash,
                                         'size_bytes', COALESCE(so.stored_size_bytes, so.size_bytes))
                      ORDER BY so.archived_at, d.tag) AS cands
     FROM dr_manifest d
+    JOIN dr_releases dr ON dr.tag = d.tag AND dr.state IN ('published', 'withdrawn')
     JOIN storage_objects so ON so.root = 'archive' AND so.status = 'archived'
                            AND so.storage_key = d.archive_key
     WHERE pg.product_type IN ('nirspec_spec', 'nirspec_lines') AND pg.science_hash IS NOT NULL
@@ -13006,7 +13402,7 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_bytes_pending(text, text, integer, boolean, text) IS 'One keyset page (by storage_key, at most 2000) of a data release''s members still to archive (P4c): pending, plus failed when asked, optionally under one key prefix; per member the source of its frozen bytes (the live key while it still holds them, else the retained archive copy, else NULL), a stamped archive object of the same science from another release to reuse, and the registry metadata for the archive row. Admin or service_role.';
+COMMENT ON FUNCTION public.dr_bytes_pending(text, text, integer, boolean, text) IS 'One keyset page (by storage_key, at most 2000) of a data release''s members still to archive (P4c): pending, plus failed when asked, optionally under one key prefix; per member the source of its frozen bytes (the live key while it still holds them, else the retained archive copy, else NULL), a stamped archive object of the same science from another PUBLISHED (or withdrawn) release to reuse (D-P4-6), the registry metadata for the archive row, the tombstone of its copy target if a collection deleted that key lately (target_collected_at, P4e) and page_at, the server time the page was handed out, which the pass carries into its outcomes so dr_bytes_mark can refuse one whose key a collection deleted after. Admin or service_role.';
 
 REVOKE ALL ON FUNCTION public.dr_bytes_pending(text, text, integer, boolean, text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_bytes_pending(text, text, integer, boolean, text) TO authenticated, service_role;
@@ -13028,6 +13424,9 @@ BEGIN
     IF r.archive_claim IS DISTINCT FROM p_claim THEN
       RAISE EXCEPTION 'the archive claim on % is not held by this run (another `campfire dr archive` took it over)', p_tag;
     END IF;
+  ELSIF r.state NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
+    -- the byte pass needs a frozen, unpublished release that no purge has claimed (P4e)
+    RAISE EXCEPTION 'release % is % (the byte pass needs a frozen, unpublished release)', p_tag, r.state;
   ELSIF r.archive_claim IS NOT NULL AND r.archive_claimed_at > now() - interval '10 minutes' THEN
     RAISE EXCEPTION 'release % is being archived by another run (claimed %, refreshed %); wait for it to finish',
       p_tag, r.archive_claim, r.archive_claimed_at;
@@ -13078,7 +13477,7 @@ DECLARE
   v_claim uuid;
   e jsonb;
   m dr_manifest%ROWTYPE;
-  v_new text; v_key text; v_hash text;
+  v_new text; v_key text; v_hash text; v_existing text;
   n_marked int := 0; n_registered int := 0; n_failed int := 0;
   n_copied int := 0; n_stamped int := 0; n_pending int := 0; n_stale int := 0;
   v_partitions text[] := '{}';
@@ -13149,6 +13548,30 @@ BEGIN
       CONTINUE;
     END IF;
 
+    -- The archive row the outcome builds on must not be one a collection has
+    -- claimed (its bytes are going), and the object the outcome names (found
+    -- or written) must not have been deleted by a collection since the pass
+    -- fetched its page (page_at, the server clock when dr_bytes_pending handed
+    -- the row out; the tombstone dr_archive_collect_finish writes): either way
+    -- the member fails with a reason and the next run, on a fresh page, copies
+    -- again (P4e). The existing row is locked first so a collection finishing
+    -- under us is waited for, then seen as absent plus its tombstone.
+    IF v_new IN ('copied', 'stamped') THEN
+      SELECT so.status INTO v_existing FROM storage_objects so
+       WHERE so.backend = m.backend AND so.bucket = m.bucket AND so.storage_key = v_key AND so.root = 'archive'
+       FOR UPDATE;
+      IF FOUND AND v_existing <> 'archived' THEN
+        v_new := 'failed';
+        e := e || jsonb_build_object('error', format('archive object %s is being collected; copy it again', v_key));
+      ELSIF NOT FOUND AND (e->>'page_at') IS NOT NULL
+            AND EXISTS (SELECT 1 FROM archive_collections c
+                         WHERE c.storage_key = v_key AND c.collected_at > (e->>'page_at')::timestamptz) THEN
+        v_new := 'failed';
+        e := e || jsonb_build_object('error', format('archive object %s was collected at %s, after this pass fetched its page; copy it again',
+                                                     v_key, (SELECT c.collected_at FROM archive_collections c WHERE c.storage_key = v_key)));
+      END IF;
+    END IF;
+
     -- A newly created archive object gets its registry row (an existing row:
     -- the same object reused, or a crash after the insert, is kept as it is;
     -- archive rows are immutable).
@@ -13179,7 +13602,7 @@ BEGIN
          SELECT 1 FROM storage_objects so
          WHERE so.backend = m.backend AND so.bucket = m.bucket AND so.storage_key = v_key
            AND so.root = 'archive' AND so.status = 'archived') THEN
-      RAISE EXCEPTION 'archive object % is not registered (pass its registry row)', v_key;
+      RAISE EXCEPTION 'archive object % is not registered as archived (pass its registry row; a collecting row is being deleted, retry later)', v_key;
     END IF;
 
     -- ...and on the live registry row a later freeze copies it from, while

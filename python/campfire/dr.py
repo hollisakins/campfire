@@ -179,7 +179,7 @@ def format_readiness(report: dict) -> str:
 # ---------------------------------------------------------------------------
 
 FREEZE_TERMINAL_STATES = frozenset({'frozen', 'failed', 'exporting', 'exported', 'copying',
-                                    'ready', 'published', 'withdrawn'})
+                                    'ready', 'purging', 'published', 'withdrawn'})
 
 
 def components_from_options(*, nirspec: bool, fields: tuple[str, ...] | list[str] = (),
@@ -253,6 +253,26 @@ def wait_for_freeze(client, tag: str, *, poll_seconds: float = 5.0, timeout_seco
         if clock() - t0 > timeout_seconds:
             raise TimeoutError(f"freeze of {tag} still running after {int(timeout_seconds)} s")
         sleep(poll_seconds)
+
+
+def purge_archive_plan(client, tag: str, *, page: int = 1000) -> list[dict]:
+    """Every archive object only *tag* references (``dr_purge_archive_plan``,
+    P4e, D-P4-6), paged on the registry id so PostgREST's row cap never
+    truncates the plan. ``campfire dr purge`` collects them before it purges
+    the frozen rows."""
+    out: list[dict] = []
+    after = 0
+    while True:
+        resp = client.rpc('dr_purge_archive_plan', {'p_tag': tag, 'p_after_id': after, 'p_limit': page}).execute()
+        data = resp.data
+        if data is None:
+            data = []
+        if not isinstance(data, list):
+            raise RuntimeError(f"dr_purge_archive_plan returned an unexpected payload: {data!r}")
+        out.extend(data)
+        if len(data) < page:
+            return out
+        after = int(data[-1]['id'])
 
 
 def purge_release(client, tag: str) -> dict:
@@ -441,6 +461,9 @@ def next_step_hint(tag: str, state: str | None, *, archive_open: int = 0, archiv
         return f"{tag} is published. (`campfire dr withdraw {tag} --reason ...` hides it again.)"
     if state == 'withdrawn':
         return f"{tag} is withdrawn; `campfire dr publish {tag}` publishes it again."
+    if state == 'purging':
+        return (f"{tag} is being purged (its archive objects are claimed); the only way out is "
+                f"`campfire dr purge {tag}` again, which finishes it.")
     if archive_failed:
         return (f"{archive_failed:,} manifest file(s) of {tag} failed to archive: "
                 f"`campfire dr archive --tag {tag} --status` lists them; fix the cause and re-run "

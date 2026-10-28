@@ -182,10 +182,13 @@ function errCode(e: unknown): string {
 
 /**
  * Make one retained copy exist: HEAD the live object (size must match the
- * row), skip the copy if the archive object already exists (dedup by hash),
- * otherwise a conditional same-bucket CopyObject (412 on ETag drift), then the
- * archive registry row (insert; a duplicate key means someone else already
- * registered the same content, which is fine) and an `archive` deploy event.
+ * row), register the archive row FIRST through `archive_register_retained`
+ * (an existing archived row means someone else already registered the same
+ * content; a row a collection has claimed is refused and the gate fails
+ * closed; once the row is there no collection can claim it), then skip the
+ * copy if the archive object already exists (dedup by hash), otherwise a
+ * conditional same-bucket CopyObject (412 on ETag drift), and an `archive`
+ * deploy event.
  */
 export async function executeRetain(
   decision: Extract<RetainDecision, { action: 'retain' }>,
@@ -208,6 +211,40 @@ export async function executeRetain(
       return { key, status: 'drift', reason: 'live object missing in the bucket (registry row dangling)' };
     }
     return { key, status: 'error', reason: `HEAD failed: ${code}` };
+  }
+
+  // Register FIRST (P4e): once the row exists it is referenced by the member
+  // being retained, so no collection can claim it while the copy below is in
+  // flight; an existing archived row is the same content (ensure the object);
+  // a row a collection has claimed is refused and the gate fails closed. A
+  // crash between here and the copy leaves a row the next run heals.
+  const now = (deps.now ?? (() => new Date()))().toISOString();
+  const archiveRow = {
+    backend: 'osn',
+    bucket: 'data',
+    storage_key: ak,
+    root: 'archive',
+    status: 'archived',
+    content_hash: row.content_hash,
+    size_bytes: row.size_bytes,
+    stored_size_bytes: row.stored_size_bytes,
+    content_type: row.content_type ?? 'application/octet-stream',
+    product_type: row.product_type,
+    instrument: row.instrument,
+    observation: row.observation,
+    spectrum_id: row.spectrum_id,
+    program_slug: row.program_slug,
+    deployment_id: row.deployment_id,
+    cfpipe_version: row.cfpipe_version,
+    archived_from_key: row.storage_key,
+    archived_at: now,
+    archived_by_deployment: null,
+    uploaded_by: deps.actorId ?? null,
+    updated_at: now,
+  };
+  {
+    const { error } = await supabase.rpc('archive_register_retained', { p_row: archiveRow });
+    if (error) return { key, status: 'error', reason: `registry insert failed: ${error.message}` };
   }
 
   let copied = false;
@@ -239,35 +276,6 @@ export async function executeRetain(
       return { key, status: 'error', reason: `copy failed: ${code}` };
     }
   }
-
-  const now = (deps.now ?? (() => new Date()))().toISOString();
-  const archiveRow = {
-    backend: 'osn',
-    bucket: 'data',
-    storage_key: ak,
-    root: 'archive',
-    status: 'archived',
-    content_hash: row.content_hash,
-    size_bytes: row.size_bytes,
-    stored_size_bytes: row.stored_size_bytes,
-    content_type: row.content_type ?? 'application/octet-stream',
-    product_type: row.product_type,
-    instrument: row.instrument,
-    observation: row.observation,
-    spectrum_id: row.spectrum_id,
-    program_slug: row.program_slug,
-    deployment_id: row.deployment_id,
-    cfpipe_version: row.cfpipe_version,
-    archived_from_key: row.storage_key,
-    archived_at: now,
-    archived_by_deployment: null,
-    uploaded_by: deps.actorId ?? null,
-    updated_at: now,
-  };
-  const { error } = await supabase
-    .from('storage_objects')
-    .upsert(archiveRow, { onConflict: 'backend,bucket,storage_key', ignoreDuplicates: true });
-  if (error) return { key, status: 'error', reason: `registry insert failed: ${error.message}` };
 
   // Audit, best effort (the function is admin/service-role gated and the route is admin).
   try {

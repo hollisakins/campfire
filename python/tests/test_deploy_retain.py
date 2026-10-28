@@ -67,9 +67,12 @@ class FakeDB:
     unarchived release member); by default the live row's hash, so the plan tests
     exercise the retain path."""
 
-    def __init__(self, rows, required=(SHA_A,)):
+    def __init__(self, rows, required=(SHA_A,), collecting=()):
         self.rows, self.upserts, self.rpcs = rows, [], []
         self.required = set(required)
+        self.collecting = set(collecting)     # archive keys a collection has claimed
+        self.s3 = None                        # set by a test to snapshot the bucket calls at registration
+        self.calls_before_register = None
 
     def table(self, name):
         return _Q(self, name)
@@ -78,6 +81,13 @@ class FakeDB:
         self.rpcs.append((name, args))
         if name == 'retain_required_hashes':
             return _Rpc(sorted(self.required & set(args['p_hashes'])))
+        if name == 'archive_register_retained':
+            if self.s3 is not None and self.calls_before_register is None:
+                self.calls_before_register = list(self.s3.calls)
+            if self.collecting and args['p_row']['storage_key'] in self.collecting:
+                raise RuntimeError(f"archive object {args['p_row']['storage_key']} is being collected (status collecting); retry")
+            self.upserts.append((args['p_row'], {'rpc': name}))
+            return _Rpc({'inserted': True})
         return _Rpc('evt')
 
 
@@ -167,8 +177,9 @@ def test_execute_copies_with_etag_precondition_and_registers():
     [(row, opts)] = db.upserts
     assert row['storage_key'] == ARCHIVE_SPEC and row['root'] == 'archive' and row['status'] == 'archived'
     assert row['archived_from_key'] == LIVE_SPEC and row['content_hash'] == SHA_A and row['uploaded_by'] == 'u1'
-    assert opts == {'on_conflict': 'backend,bucket,storage_key', 'ignore_duplicates': True}
-    assert db.rpcs[0][0] == 'log_deploy_event' and db.rpcs[0][1]['p_action'] == 'archive'
+    assert opts == {'rpc': 'archive_register_retained'}
+    assert [n for n, _ in db.rpcs] == ['archive_register_retained', 'log_deploy_event']
+    assert db.rpcs[1][1]['p_action'] == 'archive'
 
 
 def test_execute_skips_copy_when_archive_exists_but_registers():
@@ -183,10 +194,14 @@ def test_execute_skips_copy_when_archive_exists_but_registers():
     FakeS3({}),                                    # dangling row
     FakeS3({LIVE_SPEC: (1000, 'e1')}, copy412=True),  # precondition failed
 ])
-def test_execute_reports_drift_without_registering(s3):
+def test_execute_reports_drift(s3):
+    # a drift found before the registration (live HEAD) registers nothing; one
+    # found by the copy (412) leaves the row registered first (P4e: the row goes
+    # in before the copy), a dangling row `verify --cloud` reports, which is the
+    # signal that the frozen bytes were lost to a write outside a deploy
     db = FakeDB([])
     assert R.execute_retain(_decision(), s3=s3, bucket='b', client=db).status == 'drift'
-    assert db.upserts == []
+    assert len(db.upserts) == (1 if s3.copy412 else 0)
 
 
 def test_gate_archives_a_frozen_member_then_allows():
@@ -203,6 +218,28 @@ def test_gate_refuses_on_drift_and_copy_failure():
     with pytest.raises(R.RetainError, match='could not archive'):
         R.retain_before_direct_upload([_task(LIVE_SPEC, new=SHA_B)], client=FakeDB([_row()]),
                                       s3=FakeS3({LIVE_SPEC: (1000, 'e1')}, copy412=True), bucket='b')
+
+
+def test_execute_registers_before_it_copies_and_fails_closed_on_a_claimed_key():
+    # the row goes in first, so a collection can never claim it under the copy
+    s3, db = FakeS3({LIVE_SPEC: (1000, 'e1')}), FakeDB([_row()])
+    db.s3 = s3
+    [d] = R.plan_retain([_task(LIVE_SPEC, new=SHA_B)], db)
+    out = R.execute_retain(d, s3=s3, bucket='b', client=db)
+    assert out.status == 'archived' and out.copied
+    i_reg = next(i for i, (n, _) in enumerate(db.rpcs) if n == 'archive_register_retained')
+    assert db.calls_before_register == [('head', LIVE_SPEC)]       # the copy came after the registration
+    assert i_reg < len(db.rpcs) - 1
+    # the object exists in the bucket (a purge is deleting it); the registration
+    # refuses, so the gate reports an error, copies nothing and the deploy retries later
+    s3 = FakeS3({LIVE_SPEC: (1000, 'e1'), ARCHIVE_SPEC: (1000, 'e1')})
+    db = FakeDB([_row()], collecting=(ARCHIVE_SPEC,))
+    [d] = R.plan_retain([_task(LIVE_SPEC, new=SHA_B)], db)
+    out = R.execute_retain(d, s3=s3, bucket='b', client=db)
+    assert out.status == 'error' and 'being collected' in out.reason and db.upserts == []
+    assert not [c for c in s3.calls if c[0] == 'copy']
+    with pytest.raises(R.RetainError, match='could not archive'):
+        R.retain_before_direct_upload([_task(LIVE_SPEC, new=SHA_B)], client=db, s3=s3, bucket='b')
 
 
 def test_gate_touches_nothing_for_an_unreferenced_overwrite():

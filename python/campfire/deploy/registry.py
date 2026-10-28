@@ -572,7 +572,8 @@ def compute_reconcile(
 # ---------------------------------------------------------------------------
 
 def _iter_rows(client, table: str, columns: str, *, order_by: str = 'id',
-               page: int = 1000, filters: Optional[dict] = None) -> Iterator[dict]:
+               page: int = 1000, filters: Optional[dict] = None,
+               exclude: Optional[dict] = None) -> Iterator[dict]:
     """Keyset-page through a Supabase table, yielding row dicts.
 
     Range/offset pagination WITHOUT an ``ORDER BY`` is non-deterministic in
@@ -588,7 +589,8 @@ def _iter_rows(client, table: str, columns: str, *, order_by: str = 'id',
     a deep OFFSET page over the 665k-row ``storage_objects`` table cost ~2.6 s
     (the server re-reads and discards every earlier row) against ~8 ms for a
     PK seek, so a full walk went O(N²/page). ``order_by`` must be a unique
-    column; ``filters`` are ``{column: value}`` equality predicates pushed into
+    column; ``filters`` are ``{column: value}`` equality predicates and
+    ``exclude`` ``{column: value}`` inequality predicates, both pushed into
     the query so the server, not the client, does the narrowing. The cursor
     column is always fetched (it is added to ``columns`` if absent) and left
     on the yielded rows.
@@ -602,6 +604,8 @@ def _iter_rows(client, table: str, columns: str, *, order_by: str = 'id',
         q = client.table(table).select(select)
         for col, val in (filters or {}).items():
             q = q.eq(col, val)
+        for col, val in (exclude or {}).items():
+            q = q.neq(col, val)
         if last is not None:
             q = q.gt(order_by, last)
         resp = q.order(order_by).limit(page).execute()
@@ -639,14 +643,17 @@ def registry_keys(client, bucket: str = 'data', backend: str | None = None) -> l
 
     The ``bucket`` / ``backend`` predicates are pushed into the query (T2-F,
     #511) — previously every row of the registry was fetched and filtered in
-    Python — and the walk is a keyset on ``id``.
+    Python — and the walk is a keyset on ``id``. ``collected`` archive rows
+    are left out: a collected row describes an object whose bytes were
+    deleted on purpose (P4e), so its absence from the bucket is not drift.
     """
     filters: dict = {'bucket': bucket}
     if backend is not None:
         filters['backend'] = backend
     return [
         r['storage_key']
-        for r in _iter_rows(client, 'storage_objects', 'storage_key', filters=filters)
+        for r in _iter_rows(client, 'storage_objects', 'storage_key', filters=filters,
+                            exclude={'status': 'collected'})
         if r.get('storage_key')
     ]
 

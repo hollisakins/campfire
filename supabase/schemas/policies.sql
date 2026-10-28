@@ -1169,6 +1169,10 @@ ALTER TABLE sync_snapshots ENABLE ROW LEVEL SECURITY;
 -- get_sync_deletions reads under the service role).
 ALTER TABLE sync_deletions ENABLE ROW LEVEL SECURITY;
 
+-- archive_collections (P4e): written by dr_archive_collect_finish and read by
+-- dr_bytes_pending / dr_bytes_mark, all SECURITY DEFINER. No policies.
+ALTER TABLE archive_collections ENABLE ROW LEVEL SECURITY;
+
 
 -- =============================================================================
 -- deploy_scope_state (admin-only — multi-reducer concurrency, epic #210 B4)
