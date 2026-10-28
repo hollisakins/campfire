@@ -331,6 +331,8 @@ def _read_samples(args):
             continue
         idx = np.digitize(lam[sel], edges) - 1
         ok = (idx >= 0) & (idx < nb)
+        if ok.sum() < opt['min_pixels']:
+            continue
         idx, vals, v = idx[ok], sb[sel][ok], sb_var[sel][ok]
         med = np.full(nb, np.nan); err = np.full(nb, np.nan); cnt = np.zeros(nb, int)
         order = np.argsort(idx)
@@ -349,6 +351,63 @@ def _read_samples(args):
             slitlet_id=slitlet_id, quadrant=quadrant, k=int(kk), role='nod_empty',
             n_pix=int(sel.sum()), sb=med, err=err, n=cnt))
     return info.name, spectra, dict(stats)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: how many slitlet traces fall on each detector pixel of an exposure
+# ---------------------------------------------------------------------------
+
+
+def coverage_from_wcs(rate_path, cache_dir=None):
+    """Per-pixel count of slitlet footprints (every open slitlet in the metafile plus the
+    failed-open shutters) on one rate file, from the exposure WCS — the counter stage 1's
+    ``mask_slits`` builds, kept as a count instead of an OR.
+
+    Needed because a canonical-based counter only knows the sources that were run through
+    stage 2a: on G395M the traces of the other slitlets abut ours with no gap, and their light
+    then passes for sky (ember_cosmos_p1, 70 of 446 sources processed).
+    """
+    import hashlib
+    key = hashlib.sha1(os.path.abspath(rate_path).encode()).hexdigest()[:12]
+    cache = os.path.join(cache_dir, f'coverage_{os.path.basename(rate_path)[:-5]}_{key}.npy') if cache_dir else None
+    if cache and os.path.exists(cache):
+        return np.load(cache)
+    from jwst.datamodels import ImageModel
+    from jwst.assign_wcs import AssignWcsStep
+    from jwst.assign_wcs.nirspec import generate_compound_bbox, slitlets_wcs
+    from jwst.msaflagopen.msaflagopen_step import create_reference_filename_dictionary, MSAFlagOpenStep
+    from jwst.msaflagopen.msaflag_open import create_slitlets
+    from gwcs.wcs import WCS
+    from campfire_pipeline.common.wcs import boundingbox_to_indices, wcs_to_dq
+    prev = os.getcwd(); os.chdir(os.path.dirname(os.path.abspath(rate_path)))
+    try:
+        with ImageModel(os.path.basename(rate_path)) as model:
+            step = AssignWcsStep(); step.input_dir = os.getcwd()
+            processed = step.run(model)
+            source_slits = processed.meta.wcs.get_transform('gwa', 'slit_frame').slits
+            failed = create_slitlets(MSAFlagOpenStep().get_reference_file(processed, 'msaoper'))
+            refnames = create_reference_filename_dictionary(processed)
+            counter = np.zeros(model.data.shape, np.int16)
+            for slits in (source_slits, failed):
+                if not slits:
+                    continue
+                wcs = WCS(slitlets_wcs(processed, refnames, slits))
+                meta = ImageModel(); meta.meta.wcs = wcs; meta.meta.wcsinfo = processed.meta.wcsinfo
+                meta.meta.exposure.type = 'NRS_MSASPEC'
+                meta.meta.wcs.bounding_box = generate_compound_bbox(meta, slits)
+                for slit in slits:
+                    if slit.name in ('S200A1', 'S200A2', 'S400A1', 'S1600A1', 'S200B1'):
+                        continue
+                    bbox = meta.meta.wcs.bounding_box[slit.name]
+                    xmin, xmax, ymin, ymax = boundingbox_to_indices(model.data.shape, bbox)
+                    yy, xx = np.mgrid[ymin:ymax, xmin:xmax]
+                    ra, dec, lam, _ = meta.meta.wcs(xx, yy, slit.name)
+                    counter[ymin:ymax, xmin:xmax] += (wcs_to_dq((ra, dec, lam), 1) > 0)
+    finally:
+        os.chdir(prev)
+    if cache:
+        os.makedirs(cache_dir, exist_ok=True); np.save(cache, counter)
+    return counter
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +584,9 @@ def main():
     ap.add_argument('--n-iter', type=int, default=3)
     ap.add_argument('--seed', choices=['median', 'model'], default='median')
     ap.add_argument('--no-barshadow', action='store_true')
+    ap.add_argument('--coverage', choices=['wcs', 'canonicals'], default='wcs',
+                    help='overlap counter from every slitlet in the exposure WCS (default) or only from '
+                         'the processed canonicals (wrong when stage 2a ran on a subset of sources)')
     ap.add_argument('--model', action='store_true', help='compare with jwst_backgrounds (needs its cache)')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
@@ -576,16 +638,32 @@ def main():
     if n_nosrc:
         print(f'{n_nosrc} canonicals carry SRCFLUX=F (UNIFORM-calibrated); kept, their empty shutters are sky too')
     coverage = defaultdict(lambda: np.zeros((2048, 2048), np.int16))
-    for i in infos:
-        if i.has_box:
-            coverage[i.rate_key][i.ystart - 1:i.ystart - 1 + i.ysize, i.xstart - 1:i.xstart - 1 + i.xsize] += 1
+    if args.coverage == 'wcs':
+        rate_keys = sorted(set(i.rate_key for i in infos))
+        print(f'coverage counters from the exposure WCS for {len(rate_keys)} rate files ...')
+        for rk in rate_keys:
+            rate_path = os.path.join(obs.workspace_dir, f'{rk}_rate.fits')
+            if os.path.exists(rate_path):
+                coverage[rk] = coverage_from_wcs(rate_path, cache_dir=os.path.join(out, 'coverage'))
+                print(f'  {rk}: {np.sum(coverage[rk] > 1)} pixels under more than one slitlet')
+            else:
+                print(f'  {rk}: no rate file, falling back to the canonicals')
+                for i in infos:
+                    if i.rate_key == rk and i.has_box:
+                        coverage[rk][i.ystart - 1:i.ystart - 1 + i.ysize, i.xstart - 1:i.xstart - 1 + i.xsize] += 1
+    else:
+        for i in infos:
+            if i.has_box:
+                coverage[i.rate_key][i.ystart - 1:i.ystart - 1 + i.ysize, i.xstart - 1:i.xstart - 1 + i.xsize] += 1
     if not all(i.has_box for i in infos):
         print('some canonicals lack SLTSTRT*/SLTSIZE*: the overlap cut is skipped for them')
 
     from jwst.datamodels import MultiSlitModel
     grids = {}
     for fg in sorted(set(i.filter_grating for i in infos)):
-        sample = [i for i in infos if i.filter_grating == fg][:12]
+        # sample slits from BOTH detectors: for the gratings each detector covers half the range
+        sample = [i for i in infos if i.filter_grating == fg and i.detector == 'nrs1'][:6] + \
+                 [i for i in infos if i.filter_grating == fg and i.detector == 'nrs2'][:6]
         rows = []
         for i in sample:
             with MultiSlitModel(i.path) as m:

@@ -16,6 +16,7 @@ _ap.add_argument('--root', default='jw07076020001_04101', help='exposure root <o
 _ap.add_argument('--sky', default='full_ember_egs_p1_v3/ember_egs_p1_sky.ecsv', help='<obs>_sky.ecsv from prototype_master_bkg.py')
 _ap.add_argument('--max-sources', type=int, default=90)
 _ap.add_argument('--out', default=None, help='output figure path')
+_ap.add_argument('--coverage-dir', default=None, help='directory of coverage_<rate>_*.npy counters written by prototype_master_bkg.py (--coverage wcs); pixels under more than one slitlet are dropped')
 _ap.add_argument('--band', type=float, nargs=2, default=(1.0, 3.0), help='wavelength window [um] to stack')
 ARGS = _ap.parse_args()
 import os as _os
@@ -44,6 +45,13 @@ def one(info):
     kx = state.find('x'); kmin, kmax = -kx, len(state) - 1 - kx
     good = np.isfinite(sb_raw) & np.isfinite(lam) & ((dq & (dqflags.pixel['DO_NOT_USE'] | dqflags.pixel['MSA_FAILED_OPEN'])) == 0)
     good &= (k >= kmin) & (k <= kmax) & (k != 0)
+    if ARGS.coverage_dir:
+        hits = glob.glob(_os.path.join(ARGS.coverage_dir, f'coverage_{info.rate_key}_rate_*.npy'))
+        if hits:
+            cov = np.load(hits[0])
+            box = cov[info.ystart - 1:info.ystart - 1 + info.ysize, info.xstart - 1:info.xstart - 1 + info.xsize]
+            if box.shape == good.shape:
+                good &= box == 1
     own_col, others = P._other_source_columns(WS, info, slitlet_id, msametid, patt)
     for ko in ([c - own_col for c in others] if own_col is not None else []):
         good &= k != ko
