@@ -287,10 +287,14 @@ def _read_samples(args):
     stats['pixels'] += int(good.sum())
     bad_dq = (dq & (dqflags.pixel['DO_NOT_USE'] | dqflags.pixel['MSA_FAILED_OPEN'])) > 0
     stats['dq'] += int((good & bad_dq).sum()); good &= ~bad_dq
+    # Bars are excluded geometrically: the open area of a shutter is |f| <= 0.5 and a detector row
+    # samples 0.23 units, so the rows straddling a bar are over-corrected by the bar-shadow
+    # reference (measured on ember_egs_p1: +35 % spikes at every bar after the division, flat
+    # inside the shutters). Keep |f| <= open_frac, and additionally require the reference above
+    # bar_min where it exists.
+    under_bar = np.abs(f) > opt['open_frac']
     if bar is not None:
-        under_bar = ~(bar > opt['bar_min'])
-    else:
-        under_bar = np.abs(f) > 0.4            # geometric fallback without the reference
+        under_bar |= ~(bar > opt['bar_min'])
     stats['bar'] += int((good & under_bar).sum()); good &= ~under_bar
     # the slitlet's outer half-shutter padding (jwst margin) is not sky from a real open shutter
     if shutter_state:
@@ -505,7 +509,9 @@ def main():
     ap.add_argument('--processes', type=int, default=1)
     ap.add_argument('--source-pad-px', type=float, default=5.0,
                     help='pixels either side of every catalog source trace to drop (msaexp: 5)')
-    ap.add_argument('--bar-min', type=float, default=0.35, help='drop pixels with barshadow below this')
+    ap.add_argument('--bar-min', type=float, default=0.5, help='drop pixels with barshadow below this')
+    ap.add_argument('--open-frac', type=float, default=0.4,
+                    help='keep pixels within this slit-frame distance of a shutter centre (open area = 0.5)')
     ap.add_argument('--bin-pixels', type=float, default=2.0, help='detector pixels per wavelength bin')
     ap.add_argument('--min-pixels', type=int, default=20, help='pixels a shutter needs to count')
     ap.add_argument('--min-bins', type=int, default=10)
@@ -556,7 +562,8 @@ def main():
     print(f'{len(files)} canonicals, {len(np.unique(files["source_id"]))} sources, '
           f'gratings {sorted(set(files["filter_grating"]))}')
 
-    opt = dict(source_pad_px=args.source_pad_px, bar_min=args.bar_min, min_pixels=args.min_pixels,
+    opt = dict(source_pad_px=args.source_pad_px, bar_min=args.bar_min, open_frac=args.open_frac,
+               min_pixels=args.min_pixels,
                barshadow=not args.no_barshadow, min_bins=args.min_bins, clip_sigma=args.clip_sigma,
                line_sigma=args.line_sigma, line_min_bins=args.line_min_bins,
                excess_min=args.excess_min, low_min=args.low_min, n_iter=args.n_iter)
@@ -726,7 +733,9 @@ def main():
             ax.hist(a[ok & ~np.array([s.clean for s in group])], bins=40, range=(0, 2), color='tab:red', alpha=0.6, label='rejected')
             ax.set_xlabel('per-shutter scale a_s against the pooled sky'); ax.legend(fontsize=8,
                                                                                   title=pab_note or None)
-            fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
+            fig.tight_layout(); pdf.savefig(fig)
+            fig.savefig(os.path.join(out, f'{args.obs}_{fg}_{root}.png'), dpi=110)
+            plt.close(fig)
     pdf.close()
 
     Table(rows=shutter_rows).write(os.path.join(out, f'{args.obs}_shutters.ecsv'), overwrite=True)
