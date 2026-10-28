@@ -50,7 +50,12 @@ override TOML) that decides what stage 2b subtracts, and no change to the `_spec
 first phase. The dual-product variant (both subtractions in one `_spec.fits`) is possible but doubles
 stage 3 and touches the web; it is described in §4.5 as a later phase.
 
-Expected science gain, as arithmetic rather than measurement: a 3-point nod subtracts the mean of two
+**Measured on `ember_egs_p1` (§9):** the empty shutters agree on one sky to 0.3 %, the sky is stable
+across nods to 0.2 %, but the sky level varies shutter to shutter by ±4 % (±2.5 % by MSA quadrant,
+~2.7 % per shutter per exposure), which the nods cancel exactly and an ensemble sky cannot. That sets
+the design: an ensemble sky scaled per shutter from the nods where that shutter is empty (§9).
+
+Expected science gain before that measurement, as arithmetic: a 3-point nod subtracts the mean of two
 other nods, so the subtracted frame carries 1.5× the background variance of a single exposure; a master
 background built from tens of clean shutters adds ~σ²/N, so the background-limited noise drops by
 ≈ √1.5 ≈ 1.22. That matters only where the sky dominates (PRISM, and the red end of the gratings); in
@@ -811,3 +816,63 @@ measurement on the archive.
   `web/lib/layout.ts`
 - `python/campfire/deploy/discover.py`, `deploy.py` (upload), `python/campfire/db/store.py`
 - later: `stage3.py`, `python/campfire/deploy/generate.py`, web spectrum plot, `supabase/schemas/`
+
+## 9. P0 results on `ember_egs_p1` (prism, 2026-10-28)
+
+Run with `pipeline/experiments/master_bkg_prototype/prototype_master_bkg.py` (defaults: shutter
+core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215 sources, 3 nods ×
+2 detectors; figures in `docs/figures/master-bkg-prototype/`.
+
+**What the data say**
+
+- **The empty shutters agree on one sky.** 847 of 943 empty shutters (90 %) are clean; every class
+  (nod 1/2/3, adjacent or far from the source) has a median scale of 1.004–1.007 against the pooled sky
+  with 8–12 % rejected and reduced χ² ≈ 0.8. The pooled sky has 0.2–0.6 % error per bin from ~730
+  shutters. NRS1 and NRS2 agree to 1.001 ± 0.013 over the whole prism range (a ±1 % shape
+  difference over 1–1.8 µm).
+- **No per-exposure terms.** Each exposure × detector against the pooled sky: scales 0.998–1.002
+  (errors 0.0015), offsets within ±0.5 % of the sky, the offsets alternating in sign by detector.
+  The sky is stable across the three nods at the 0.2 % level; design §4.1's per-exposure
+  scale/offset is not needed for this observation.
+- **The bar-shadow reference is misregistered with the data by a fraction of a row.** Stacking
+  ~1000 empty shutters against the within-shutter coordinate (`ember_egs_p1_profile_vs_f.png`): the
+  measured profile is flat at the pooled sky for |f| ≤ 0.2 and rolls off into the bars; the reference
+  has the same shape shifted by a fraction of a row, so *dividing* by it leaves +10–35 % on one side of
+  every shutter and a few per cent deficit on the other. Which neighbour a bar row rounds into
+  depends on sub-pixel placement, which produced a spurious 8 % excess in nod 2's middle shutters in
+  the first runs (not source light: independent of source flux). Consequences: the 1-D sky needs only
+  the shutter core and no bar-shadow correction at all; the 2-D expansion for subtraction (§4.2 step 5)
+  must **not** trust the reference in the bar rows, where it is wrong by 10–35 % of the sky — the
+  measured profile from the empty shutters is the bar model to use there (the nods never see this
+  because they subtract the same pixels).
+- **`jwst_backgrounds` is a shape at the 10 % level and wrong in the blue.** One global scale gives
+  data/model = 0.976; by band the ratio is 0.70 at 0.6–1 µm, 1.08 at 1–3, 1.15 at 3–4, 1.06 at 4–5.4.
+  Good enough for the plausibility check and a pass-0 seed, not for the level.
+- **Shutter-to-shutter scatter is the systematic floor.** Per-shutter scales scatter by ±4 %
+  (16/84: 0.975/1.04) with 0.6 % measurement error, so the scatter is real sky-level variation between
+  shutters within one exposure. It decomposes as: a **quadrant term** of ±2.5 % (medians Q1 0.975,
+  Q2 1.026, Q3 0.990, Q4 1.017 — the per-quadrant scales §4.2 left for later are needed), a
+  **per-slitlet** part (the two empty shutters of one slitlet correlate at 0.53), and a **per-shutter,
+  per-exposure** remainder of ~2.7 % that is only 40 % repeatable for the same physical shutter in
+  another nod. The 10 % "rejected" are mostly the tail of this distribution, not neighbours.
+
+**What it means for the design**
+
+- The nod subtraction cancels all of this exactly, pixel for pixel. An ensemble sky expanded onto a
+  source shutter carries the quadrant term (removable), the slitlet term (partly removable from the
+  slitlet's own empty shutters) and a ~2–3 % irreducible per-shutter floor. On the prism the per-pixel
+  noise of one exposure is ~20 % of the sky, so the floor is subdominant per pixel but reaches the
+  noise of a 15-pixel extraction (3 nods × 5 rows) and dominates for broad continuum bins — this is the
+  quantitative form of RUBIES' "nods do better for compact faint sources".
+- The hybrid is therefore the interesting product: the ensemble sky (0.3 % statistics, no self-
+  subtraction, no requirement on the partner nods) **scaled per shutter by what the nods measure
+  for that physical shutter** when it is empty (40 % of the per-shutter deviation is recoverable
+  that way, the quadrant term entirely). For a source whose partner nods are contaminated this still
+  beats exclusion; for a clean three-point nod of a compact source the nods remain the default.
+- Settled knobs for P1: shutter core |f| ≤ 0.2 (no bar-shadow division for the 1-D sky), source pad
+  3 px (5 px leaves only one row per adjacent shutter), per-quadrant scales on, no per-exposure terms,
+  median seed (the model seed needs the same coarse-bin scaling and is 30 % off below 1 µm), rejection
+  at 5 % above the ensemble catches the few real neighbours (scales > 1.2) and the distribution's tail
+  alike — a per-quadrant reference will tighten it.
+- Not yet measured: the gratings (none on this machine with canonicals), the empirical bar profile
+  as a function of wavelength, and the solar-line check (§3.3).
