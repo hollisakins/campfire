@@ -907,5 +907,32 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   stacked in the pipeline's own slit-frame coordinates absorbs whatever the mapping does, which is
   the stronger argument for building it, and for turning bar shadow back on only once that table
   flattens held-out empty shutters to ~1 %.
-- Not yet measured: the gratings (none on this machine with canonicals), the bar profile as a
+- **Second field, and the first grating (`ember_cosmos_p1`, PRISM + G395M, 70 of 446 sources
+  through stage 2a; 2026-10-28).** The prism replicates `ember_egs_p1` in every number: 444 of 483
+  shutters clean (92 %), per-exposure scales 0.988–1.004, NRS1/NRS2 0.994 ± 0.013, the sky 0.18–0.4
+  MJy/sr at 1–2 µm (COSMOS is nearer the ecliptic), data/model 0.93, the same bar-row pattern
+  (edge toward the source below it 1.21, far edge 0.88, above it 0.96 / 1.05) and the same best shift
+  (−0.03 pitch = −0.16 px, rms 7.6 % → 3.0 %). Two lessons from the grating:
+  - **The overlap map must come from the whole exposure, not from the processed canonicals.** On
+    G395M, 1.58 M of the 4.2 M pixels of each detector lie under more than one slitlet footprint
+    (13 k for the prism): the 750–1400 px traces of 446 slitlets abut with no gap
+    (`ember_cosmos_p1_g395m_rate_frame.png`). A counter built from the 70 processed slitlets let the
+    other 376 slitlets' light pass for sky, and the "empty" shutters of one slitlet then differed by
+    factors of 5–10 with smooth gradients across the bars. The prototype now builds the counter with
+    `assign_wcs` over every open slitlet plus the failed-open shutters (stage 1's `mask_slits`, kept
+    as a count), cached per rate file — the production stage must do the same.
+  - **With that map the grating sky agrees with the prism sky in the same field to ~5 %** (3–3.5 µm:
+    0.190 vs 0.182 MJy/sr; 4–4.5: 0.429 vs 0.433; 4.5–5: 0.91 vs 0.86; 5–5.4: 1.40 vs 1.49), a
+    cross-check of the flat / pathloss / photom chain between dispersers. But it is a statistics
+    problem: after the overlap cut only 162 shutters survive from 70 sources, 66 clean, with 10–14 %
+    error per 2-pixel bin at 3–4 µm; the full 446 sources would give ~100 clean shutters per
+    exposure, and the grating sky is a smooth thermal continuum, so a low-order model is enough.
+  - **No registration offset is visible at G395M** (4.3–5.3 µm, 175 k pixels): best shift +0.01 pitch,
+    rms 9.0 % → 8.4 % (noise-limited), and the stacked profile divided by the reference is flat to
+    ±10 % with none of the prism's ±35 % spikes (`ember_cosmos_p1_g395m_profile_vs_f.png`). Since the
+    prism shows the same −0.15 px shift at 3.5–5 µm as at 1–2 µm, the misregistration is a property of
+    the **prism's** slit-frame mapping, not of wavelength. Bar shadow may well be fine to switch back
+    on for the gratings as it stands; for the prism it needs either the empirical table or a fix in
+    the prism WCS y zero point.
+- Not yet measured: a full-source grating observation (S/N for the bar profile), the bar profile as a
   function of wavelength and quadrant, and the solar-line check (§3.3).
