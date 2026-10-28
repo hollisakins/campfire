@@ -785,7 +785,8 @@ measurement on the archive.
    open: how many shutters are clean and why the rest are not, whether NRS1 and NRS2 agree on the
    prism, whether exposures need their own scale/offset (§4.1), the `source_pad` default, how the
    level compares with `jwst_backgrounds`, and whether solar lines are visible in the stacked G140M sky
-   (§3.3). No pipeline change; its findings become the defaults of P1.
+   (§3.3). No pipeline change; its findings become the defaults of P1. **Script:**
+   `pipeline/experiments/master_bkg_prototype/prototype_master_bkg.py` (README beside it).
 1. **P1a — single-call stage 2a** (§1.7): one edited full metafile per rate file, split into the
    per-source canonicals and the `bkgslits/` file; bit-identity gate against the per-source runs;
    per-source fallback on failure. Pure speed-up for everything else, PATCH / Infrastructure.
