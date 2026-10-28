@@ -888,5 +888,24 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   (free); *applying* it to the science calibration is a separate Calibration change (MINOR) that
   touches only extended-source slits (stage 2a never applies bar shadow to point sources) and the
   master background's own 2-D expansion.
+- **Is the reference just offset? Tested (`diagnostics/barshadow_offset.py`,
+  `ember_egs_p1_barshadow_registration.png`): no.** Evaluating the CRDS reference exactly as jwst's
+  `_calc_correction` does but at `y + dy`, a shift of −0.02 to −0.03 pitch (−0.1 to −0.15 px) halves
+  the mismatch over the open area (rms 8.0 % → 4.7 %), and that best shift is the same on both
+  detectors, in all four quadrants, at all wavelengths and for end and middle shutters — so the
+  registration part is one fixed offset. A depth change does not help, and pixel-integrating the
+  reference makes it worse (the measured edges are *sharper* than the model's). Adding a 4 % wider
+  open area brings the rms to 4.0 %, with the bar rows at ±10 % instead of ±30 %. What remains is
+  asymmetric about the source: the two sides want different shifts (−0.04 pitch for the shutters
+  below the source, −0.01 above), and in the rows next to the bars the ratio data/reference is 1.22 on
+  the source side and 0.89 on the far side of the shutter below the source, 0.98 / 1.07 above it — the
+  same for sources fainter than 0.02 µJy and between 0.02 and 0.1 µJy, so not source light (only
+  sources above 0.1 µJy add to it). The shutter profiles the pixels actually see are displaced
+  toward +y relative to the reference by an amount that differs with the side of the source, which
+  points at the slit-frame y mapping (fiducial placement or pitch) rather than at the shadow shape.
+  Consequence: a shift-and-width tweak rescues the reference only to 4 %; an empirical profile
+  stacked in the pipeline's own slit-frame coordinates absorbs whatever the mapping does, which is
+  the stronger argument for building it, and for turning bar shadow back on only once that table
+  flattens held-out empty shutters to ~1 %.
 - Not yet measured: the gratings (none on this machine with canonicals), the bar profile as a
   function of wavelength and quadrant, and the solar-line check (§3.3).
