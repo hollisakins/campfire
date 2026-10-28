@@ -1,7 +1,8 @@
-// POST /api/v1/deploy/presign — the retain-on-supersede gate (P2) around the
-// PUT presign: `log` mode never blocks, `enforce` answers 409 when a retained
-// copy cannot be made, `off` skips the registry lookup; the writable-key
-// allowlist refuses archive keys.
+// POST /api/v1/deploy/presign — the retain-on-supersede gate (P2, narrowed to
+// frozen release members by P4e) around the PUT presign: a retained copy is
+// made before signing and a copy that cannot be made answers 409 with nothing
+// signed; the legacy R2 backend skips the lookup; the writable-key allowlist
+// refuses archive keys.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
@@ -21,12 +22,10 @@ vi.mock('@/lib/supabase/service', () => ({ createServiceClient: () => ({ marker:
 
 const planRetain = vi.fn();
 const executeRetains = vi.fn();
-let mode = 'log';
 vi.mock('@/lib/server/retain', async () => {
   const actual = await vi.importActual<typeof import('@/lib/server/retain')>('@/lib/server/retain');
   return {
     ...actual,
-    retainMode: () => mode,
     planRetain: (...a: unknown[]) => planRetain(...a),
     executeRetains: (...a: unknown[]) => executeRetains(...a),
   };
@@ -44,7 +43,7 @@ function post(body: unknown) {
 beforeEach(() => {
   planRetain.mockReset();
   executeRetains.mockReset();
-  mode = 'log';
+  executeRetains.mockResolvedValue([]);
 });
 
 describe('allowlist', () => {
@@ -56,17 +55,16 @@ describe('allowlist', () => {
 });
 
 describe('retain gate', () => {
-  it('log mode: plans, logs, signs everything', async () => {
-    planRetain.mockResolvedValue([{ key: SPEC, action: 'retain', row: { storage_key: SPEC, content_hash: 'sha256:x' }, archiveKey: ARCHIVE }]);
+  it('an overwrite no frozen release needs is signed without a copy', async () => {
+    planRetain.mockResolvedValue([{ key: SPEC, action: 'skip-unreferenced', row: { storage_key: SPEC, content_hash: 'sha256:x' } }]);
     const res = await post({ bucket: 'data', backend: 'osn', uploads: [{ key: SPEC, content_type: 'application/fits' }] });
     expect(res.status).toBe(200);
     expect((await res.json()).urls[SPEC]).toBe(`https://signed/${SPEC}`);
     expect(planRetain).toHaveBeenCalledTimes(1);
-    expect(executeRetains).not.toHaveBeenCalled();
+    expect(executeRetains).toHaveBeenCalledWith([], expect.anything());
   });
 
-  it('enforce mode: archives, then signs', async () => {
-    mode = 'enforce';
+  it('archives a frozen member, then signs', async () => {
     planRetain.mockResolvedValue([{ key: SPEC, action: 'retain', row: { storage_key: SPEC }, archiveKey: ARCHIVE }]);
     executeRetains.mockResolvedValue([{ key: SPEC, status: 'archived', archiveKey: ARCHIVE, copied: true }]);
     const res = await post({ bucket: 'data', backend: 'osn', uploads: [{ key: SPEC }] });
@@ -77,8 +75,7 @@ describe('retain gate', () => {
     expect(deps.actorId).toBe('admin-1');
   });
 
-  it('enforce mode: 409 with the failed keys when a copy drifts, nothing signed', async () => {
-    mode = 'enforce';
+  it('409 with the failed keys when a copy drifts, nothing signed', async () => {
     planRetain.mockResolvedValue([
       { key: SPEC, action: 'retain', row: { storage_key: SPEC }, archiveKey: ARCHIVE },
       { key: 'data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json', action: 'drift', reason: 'registry moved', row: {} },
@@ -92,12 +89,8 @@ describe('retain gate', () => {
     expect(body.urls).toBeUndefined();
   });
 
-  it('off mode and legacy R2 backend skip the lookup', async () => {
-    mode = 'off';
-    let res = await post({ bucket: 'data', backend: 'osn', uploads: [{ key: SPEC }] });
-    expect(res.status).toBe(200);
-    mode = 'log';
-    res = await post({ bucket: 'data', backend: 'r2', uploads: [{ key: 'spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits' }] });
+  it('the legacy R2 backend skips the lookup', async () => {
+    const res = await post({ bucket: 'data', backend: 'r2', uploads: [{ key: 'spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits' }] });
     expect(res.status).toBe(200);
     expect(planRetain).not.toHaveBeenCalled();
   });

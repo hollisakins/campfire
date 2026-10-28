@@ -8,35 +8,31 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { archiveKey, parseKey, toCanonicalKey } from '@/lib/layout';
 
 /**
- * Retain-on-supersede (data releases, P2; docs/design-data-releases-impl-plan.md §4).
+ * Retain-on-supersede (data releases; docs/design-data-releases-impl-plan.md
+ * §4 for the mechanism, §9a / decision D-P2-4 for what it protects).
  *
- * Before a redeploy overwrites a live NIRSpec final or sidecar, the previous
+ * The archive holds exactly the files that releases reference. Before a
+ * redeploy overwrites a live NIRSpec final or sidecar whose current bytes a
+ * release has frozen but not yet archived (`retain_required_hashes`), those
  * bytes are copied, server side, into the content-addressed archive
  * (`archive/<sha256>/<relpath>`) and an archive registry row is inserted. The
  * live key is then overwritten as today; the archive row carries the relation
- * (`archived_from_key`). The one unrecoverable event in the model is a live
- * object overwritten before its copy exists, so in `enforce` mode a failed or
- * drifted copy refuses the PUT (409) instead of signing it.
+ * (`archived_from_key`). Every other overwrite needs no copy and gets none.
  *
- * Modes (env RETAIN_MODE, default `log`):
- *   off      no lookup, no logging (pre-P2 behaviour)
- *   log      compute the retain set and log what WOULD be archived; sign anyway
- *            (the production shadow run, plan §4 rollout rung S)
- *   enforce  copy + register before signing; 409 on drift or copy failure
+ * The gate is always on and has no override: an overwrite that would destroy
+ * a frozen release's only bytes is the one unrecoverable event in the model,
+ * so a failed or drifted copy refuses the PUT (409) instead of signing it. The
+ * fix is finishing `campfire dr archive` (or purging the release that names
+ * the bytes), never overwriting them.
  *
  * Drift means the live object changed between the client's plan and this
  * request: the registry hash no longer matches the client's `expected_old_hash`
  * (when the client sends one), the object's size no longer matches the row, or
  * the conditional copy fails its ETag precondition. Those are exactly the races
- * the design wants surfaced, never papered over.
+ * the design wants surfaced, never papered over. Drift is only judged for a
+ * referenced object; an unreferenced one is overwritten whatever the client
+ * planned against, since nothing depends on its old bytes.
  */
-
-export type RetainMode = 'off' | 'log' | 'enforce';
-
-export function retainMode(env: NodeJS.ProcessEnv = process.env): RetainMode {
-  const v = (env.RETAIN_MODE || 'log').trim().toLowerCase();
-  return v === 'off' || v === 'enforce' ? v : 'log';
-}
 
 /** Product types retained on redeploy (decision D-P2-1): the six NIRSpec
  * finals/sidecars. Mosaics are archived by the DR freeze only. */
@@ -79,14 +75,26 @@ export type RetainDecision =
   | { key: string; action: 'skip-type'; productType: string }
   | { key: string; action: 'skip-unchanged'; row: LiveRow }
   | { key: string; action: 'skip-provisional-hash'; row: LiveRow }
+  | { key: string; action: 'skip-unreferenced'; row: LiveRow }
   | { key: string; action: 'drift'; reason: string; row: LiveRow }
   | { key: string; action: 'retain'; row: LiveRow; archiveKey: string };
 
 const LOOKUP_CHUNK = 50;
+/** retain_required_hashes accepts at most 2000 hashes per call. */
+const REQUIRED_CHUNK = 1000;
+
+/** The registry rows that pass every local test; only their hashes are asked about. */
+function isRetainableRow(row: LiveRow, c: RetainCandidate): boolean {
+  if (!RETAINED_PRODUCT_TYPES.has(row.product_type)) return false;
+  if (c.newHash && c.newHash === row.content_hash) return false;
+  return row.content_hash.startsWith('sha256:');
+}
 
 /**
  * Decide, per candidate, whether a retained copy must exist before the PUT.
- * Reads the live registry rows (canonical keys, root = live, status = active).
+ * Reads the live registry rows (canonical keys, root = live, status = active),
+ * then asks `retain_required_hashes` which of their hashes a release has
+ * frozen and not archived; only those are retained (or drifted).
  */
 export async function planRetain(
   candidates: RetainCandidate[],
@@ -121,6 +129,22 @@ export async function planRetain(
     for (const r of (data ?? []) as LiveRow[]) rows.set(r.storage_key, r);
   }
 
+  const askHashes = Array.from(
+    new Set(
+      candidates.flatMap((c) => {
+        const canonical = canonicalByKey.get(c.key);
+        const row = canonical ? rows.get(canonical) : undefined;
+        return row && isRetainableRow(row, c) ? [row.content_hash] : [];
+      }),
+    ),
+  );
+  const required = new Set<string>();
+  for (let i = 0; i < askHashes.length; i += REQUIRED_CHUNK) {
+    const { data, error } = await supabase.rpc('retain_required_hashes', { p_hashes: askHashes.slice(i, i + REQUIRED_CHUNK) });
+    if (error) throw error;
+    for (const h of (data ?? []) as string[]) required.add(h);
+  }
+
   return candidates.map((c): RetainDecision => {
     const canonical = canonicalByKey.get(c.key);
     const row = canonical ? rows.get(canonical) : undefined;
@@ -128,6 +152,7 @@ export async function planRetain(
     if (!RETAINED_PRODUCT_TYPES.has(row.product_type)) return { key: c.key, action: 'skip-type', productType: row.product_type };
     if (c.newHash && c.newHash === row.content_hash) return { key: c.key, action: 'skip-unchanged', row };
     if (!row.content_hash.startsWith('sha256:')) return { key: c.key, action: 'skip-provisional-hash', row };
+    if (!required.has(row.content_hash)) return { key: c.key, action: 'skip-unreferenced', row };
     if (c.expectedOldHash && c.expectedOldHash !== row.content_hash) {
       return { key: c.key, action: 'drift', row, reason: `registry hash ${row.content_hash} != planned ${c.expectedOldHash}` };
     }

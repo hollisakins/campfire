@@ -1,12 +1,13 @@
-// Retain-on-supersede (P2): the plan and the copy step, against a fake
-// registry and a fake S3 client. The S3 semantics mirrored here (HEAD 404,
-// conditional copy 412) are the ones measured against OSN on 2026-10-11.
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+// Retain-on-supersede (P2, narrowed to frozen release members by P4e): the
+// plan against a fake registry and a fake `retain_required_hashes`, and the
+// copy step against a fake S3 client. The S3 semantics mirrored here (HEAD
+// 404, conditional copy 412) are the ones measured against OSN on 2026-10-11.
+import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 
 import { CopyObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
-import { executeRetain, planRetain, retainMode, summarizeDecisions, type LiveRow } from './retain';
+import { executeRetain, planRetain, summarizeDecisions, type LiveRow } from './retain';
 
 const SHA_A = 'sha256:' + 'a'.repeat(64);
 const SHA_B = 'sha256:' + 'b'.repeat(64);
@@ -35,8 +36,13 @@ function row(over: Partial<LiveRow> = {}): LiveRow {
   };
 }
 
-/** Minimal PostgREST fake: `.from('storage_objects').select().in().eq().eq()` → rows. */
-function fakeSupabase(rows: LiveRow[]) {
+/**
+ * Minimal PostgREST fake: `.from('storage_objects').select().in().eq().eq()` → rows;
+ * `rpc('retain_required_hashes')` → the asked hashes that are in `required` (a frozen,
+ * unarchived release member; by default the fixture row's hash so the plan tests
+ * exercise the retain path).
+ */
+function fakeSupabase(rows: LiveRow[], required: string[] = [SHA_A]) {
   const upserts: Array<{ row: Record<string, unknown>; opts: unknown }> = [];
   const rpcs: Array<{ name: string; args: unknown }> = [];
   const client = {
@@ -56,6 +62,10 @@ function fakeSupabase(rows: LiveRow[]) {
     }),
     rpc: async (name: string, args: unknown) => {
       rpcs.push({ name, args });
+      if (name === 'retain_required_hashes') {
+        const asked = (args as { p_hashes: string[] }).p_hashes;
+        return { data: asked.filter((h) => required.includes(h)).sort(), error: null };
+      }
       return { data: null, error: null };
     },
   };
@@ -88,15 +98,6 @@ function fakeS3(objects: Record<string, { size: number; etag: string }>, opts: {
   return { client: client as never, sent, objects };
 }
 
-describe('retainMode', () => {
-  it('defaults to log and accepts off/enforce', () => {
-    expect(retainMode({} as unknown as NodeJS.ProcessEnv)).toBe('log');
-    expect(retainMode({ RETAIN_MODE: 'enforce' } as unknown as NodeJS.ProcessEnv)).toBe('enforce');
-    expect(retainMode({ RETAIN_MODE: 'OFF' } as unknown as NodeJS.ProcessEnv)).toBe('off');
-    expect(retainMode({ RETAIN_MODE: 'bogus' } as unknown as NodeJS.ProcessEnv)).toBe('log');
-  });
-});
-
 describe('planRetain', () => {
   it('retains a changed live NIRSpec final, by canonical key, with the archive key of the OLD hash', async () => {
     const { client } = fakeSupabase([row()]);
@@ -127,10 +128,31 @@ describe('planRetain', () => {
     expect(summarizeDecisions(ds)).toEqual({ 'skip-new': 1, 'skip-type': 1, 'skip-unchanged': 1, 'skip-provisional-hash': 1 });
   });
 
-  it('reports drift when the registry hash moved past the plan', async () => {
-    const { client } = fakeSupabase([row({ content_hash: SHA_B })]);
+  it('reports drift when the registry hash moved past the plan (for a referenced object)', async () => {
+    const { client } = fakeSupabase([row({ content_hash: SHA_B })], [SHA_B]);
     const [d] = await planRetain([{ key: LIVE_SPEC, expectedOldHash: SHA_A }], client);
     expect(d.action).toBe('drift');
+  });
+
+  it('skips an object no frozen release still needs, whatever the client planned against', async () => {
+    const { client, rpcs } = fakeSupabase([row(), row({ id: 2, storage_key: LIVE_EXPOSURE, product_type: 'nirspec_spectrum_exposure' })], []);
+    const ds = await planRetain([{ key: LIVE_SPEC, newHash: SHA_B }, { key: LIVE_SPEC, expectedOldHash: SHA_B }, { key: LIVE_EXPOSURE }], client);
+    expect(ds.map((d) => d.action)).toEqual(['skip-unreferenced', 'skip-unreferenced', 'skip-type']);
+    // asked once, about the one retainable hash only
+    expect(rpcs).toEqual([{ name: 'retain_required_hashes', args: { p_hashes: [SHA_A] } }]);
+  });
+
+  it('asks nothing when no candidate passes the local tests', async () => {
+    const { client, rpcs } = fakeSupabase([row(), row({ id: 2, storage_key: LIVE_EXPOSURE, product_type: 'nirspec_spectrum_exposure' })]);
+    const ds = await planRetain([{ key: LIVE_SPEC, newHash: SHA_A }, { key: LIVE_EXPOSURE }], client);
+    expect(ds.map((d) => d.action)).toEqual(['skip-unchanged', 'skip-type']);
+    expect(rpcs).toEqual([]);
+  });
+
+  it('surfaces a failing lookup instead of guessing', async () => {
+    const { client } = fakeSupabase([row()]);
+    (client as unknown as { rpc: unknown }).rpc = async () => ({ data: null, error: new Error('boom') });
+    await expect(planRetain([{ key: LIVE_SPEC, newHash: SHA_B }], client)).rejects.toThrow('boom');
   });
 
   it('never considers archive rows (root filter) and tolerates unknown keys', async () => {
