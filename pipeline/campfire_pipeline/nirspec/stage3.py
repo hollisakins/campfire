@@ -446,7 +446,9 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
         every = Observation.group_files(obs.discover_files(ext='canonical', source_ids='all'))
         sci_all = _science_files(every)
         all_fg |= set(np.unique(every['filter_grating']))
-        mt = CT.map_tasks(obs.workspace_dir, list(every['path']), log=log)
+        # stuck-closed shutters pass no light: left out of the maps
+        mt = CT.map_tasks(obs.workspace_dir, list(every['path']), log=log,
+                          stuck=CT.stuck_by_root(obs.stuck_closed_shutters))
         if mt:
             log(f"Profile fit: building {len(mt)} trace maps")
             with TM.phase(f'trace_maps ({len(mt)})'):

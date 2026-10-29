@@ -127,14 +127,13 @@ def test_joint_pass1_predicts_the_member_light(unit_cal, stand_ins):
     ok_before = t_exps[0].ok.copy()
     d_before = t_exps[0].diff.copy()
     CT.apply(t_exps, P, mode='mask', kappa=1.0)               # joint light: subtracted even in mask mode
-    np.testing.assert_array_equal(t_exps[0].ok, ok_before & ~P.unmodelled[0])   # only the unpredictable dropped
-    assert P.unmodelled[0].sum() < 10
+    np.testing.assert_array_equal(t_exps[0].ok, ok_before)                       # nothing dropped
     np.testing.assert_allclose(t_exps[0].diff, d_before - P.pred[0])
 
 
 def test_excluded_member_light_is_left_out(unit_cal, stand_ins):
     """While a group is being solved, a member's light is not predicted on another
-    member (``exclude``); its pixels no spectrum can predict stay unmodelled."""
+    member (``exclude``)."""
     t_exps, _ = _source(1, 0.0, 10.0)
     c_exps, Rc = _source(2, 0.3, 5.0)
     P1 = _pass1_of(Rc, 2)
@@ -244,34 +243,53 @@ def test_merge_sparse_extension_replaces_uncalibrated_pixels():
     assert det[2] == (30.0, True) and det[3] == (40.0, True) and det[5] == (60.0, True)
 
 
-def test_member_extension_only_from_a_reliable_pass1():
-    """A joint member's light past its cutout comes from its pass 1, and only when that
-    pass 1 is reliable: an unreliable pass 1's extension holds other light (7420, 8198)."""
+def test_member_extension_masks_only_from_an_unreliable_pass1(stand_ins):
+    """A joint member's light past its cutout comes from its pass 1. From an unreliable
+    pass 1 (its extension holds other light: 7420, 8198) it only masks, as in one pass;
+    from a reliable one it is subtracted with the joint light."""
     fr = dict(origin=np.array([0, 0]), shape=np.array([2, 4]), idx=np.arange(4), img=np.ones(4), err=np.ones(4),
               cal=np.ones(4), ext=np.array([False, False, True, True]))
     P1 = CT.Pass1(sid=2, lam=np.arange(3.0), flux=np.ones(3), flux_err=np.ones(3), frames={'a': fr}, reliable=True)
     x = PJ.ext_frames(P1)
     assert set(x) == {'a'} and x['a']['idx'].tolist() == [2, 3]
     P1.reliable = False
-    assert PJ.ext_frames(P1) == {} and PJ.ext_frames(None) == {}
+    assert set(PJ.ext_frames(P1)) == {'a'} and PJ.ext_frames(None) == {}
+    # a joint Pass1 whose frames past the cutout came from an unreliable pass 1
+    t_exps, _ = _source(1, 0.0, 10.0)
+    for e in t_exps:
+        e.var = np.ones(e.y.shape)
+    c_exps, Rc = _source(2, 0.3, 5.0)
+    Pj = _pass1_of(Rc, 2)
+    for f in Pj.frames.values():
+        f['ext'] = (f['idx'] % NX) >= 120
+    Pj.joint = True
+    for mask_only in (False, True):
+        Pj.ext_mask_only = mask_only
+        P = CT.predict(t_exps, 1, {'x': None}, lambda s: Pj if s == 2 else None, '.')
+        past = np.zeros(t_exps[0].y.shape, bool)
+        past[:, 120:] = True
+        lit = past & (np.abs(P.pred[0]) + np.abs(P.pred_unreliable[0]) > 0)
+        assert lit.any()
+        if mask_only:
+            assert not P.pred[0][past].any() and P.pred_unreliable[0][lit].all()
+        else:
+            assert not P.pred_unreliable[0].any() and P.pred[0][lit].all()
 
 
-def test_extension_pixels_are_predicted_not_masked(monkeypatch):
-    """Pixels where a bright contaminant's trace runs past its nominal range are masked
-    as unmodelled, unless its pass 1 extends there (``ext`` pixels, count-rate units):
-    then its light is predicted, converted with the target's calibration."""
+def test_extension_pixels_are_predicted(monkeypatch):
+    """Pixels where a contaminant's trace runs past its nominal range are predicted from
+    its pass 1 extended there (``ext`` pixels, count-rate units), converted with the
+    target's calibration. Without an extension nothing is predicted there and nothing
+    is masked: the maps follow every trace and every pass 1 is extended."""
     t_exps, _ = _source(1, 0.0, 10.0)
     for e in t_exps:
         e.var = np.ones(e.y.shape)
     c_exps, Rc = _source(2, 0.3, 50.0)
-    beyond = np.zeros(t_exps[0].y.shape, bool)
-    beyond[:, 120:] = True
-
-    def geometry(exps, sid, maps, failed_open='flag', beyond_=None, **kw):
-        return CT.Geometry(mask=[np.ones(e.y.shape, bool) for e in exps],
-                           sources=[{2: ~beyond} for e in exps], unmodelled=[np.zeros(e.y.shape, bool) for e in exps],
-                           beyond_sources=[{2: beyond.copy()} for e in exps])
-    monkeypatch.setattr(CT, 'geometry', lambda exps, sid, maps, failed_open='flag', beyond='mask': geometry(exps, sid, maps))
+    past = np.zeros(t_exps[0].y.shape, bool)
+    past[:, 120:] = True
+    monkeypatch.setattr(CT, 'geometry', lambda exps, sid, maps: CT.Geometry(
+        mask=[np.ones(e.y.shape, bool) for e in exps], sources=[{2: np.ones(e.y.shape, bool)} for e in exps],
+        lit_from=[{2: {0, 1, 2}} for e in exps]))
     monkeypatch.setattr(CT, 'calibration', lambda e, rate_dir: np.full(e.y.shape, 2.0))   # target: 2 per rate unit
     P1 = _pass1_of(Rc, 2)
     P1.nosrc = set()
@@ -282,17 +300,19 @@ def test_extension_pixels_are_predicted_not_masked(monkeypatch):
         fr['cal'] = np.where(x, 1.0, 2.0)
         fr['img'] = np.where(x, fr['img'] / 2.0, fr['img'])
     P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
-    lit = beyond & (np.abs(np.nan_to_num(PF.frame_image(Rc, 0))) > 0)
-    assert not P.unmodelled[0][lit].any()
+    lit = past & (np.abs(np.nan_to_num(PF.frame_image(Rc, 0))) > 0)
     F = [PF.frame_image(Rc, j) for j in range(3)]
     expect = np.nan_to_num(F[0] - 0.5 * (F[1] + F[2]))
     np.testing.assert_allclose(P.pred[0][lit], expect[lit], rtol=1e-5, atol=1e-9)
-    for fr in P1.frames.values():                        # without the extension: masked
+    for fr in P1.frames.values():                        # without the extension
         keep = ~fr['ext']
         for n in ('idx', 'img', 'err', 'cal', 'ext'):
             fr[n] = fr[n][keep]
     P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
-    assert P.unmodelled[0][lit].all()
+    assert not P.pred[0][past].any()
+    ok = t_exps[0].ok.copy()
+    CT.apply(t_exps, P, mode='hybrid', kappa=1.0)
+    assert np.array_equal(t_exps[0].ok[past], ok[past])
 
 
 def test_joint_product_keeps_the_solve_shape():
@@ -361,8 +381,7 @@ def _pf_hdus(level):
     ny, nx = 6, 8
     return [fits.ImageHDU(np.ones((ny, nx)), name='PROF2D'),
             fits.ImageHDU(np.full((ny, nx), float(level)), name='CONTAM2D'),
-            fits.ImageHDU(np.full((ny, nx), 0.1 * level), name='CONTERR2D'),
-            fits.ImageHDU(np.zeros((ny, nx)), name='UNMOD2D')]
+            fits.ImageHDU(np.full((ny, nx), 0.1 * level), name='CONTERR2D')]
 
 
 def _joint_view_stub(use):
@@ -391,7 +410,7 @@ def test_deliver_keeps_both_results(tmp_path, use):
     assert 'JOINT' in names and hdr_out['PFJOINT'] == 2 and hdr_out['PFJUSE'] == use
     if use:
         assert by['CONTAM2D'].data[0, 0] == 2.0 and by['CONTAM2D_1P'].data[0, 0] == 1.0
-        assert 'UNMOD2D_1P' in names and 'CONTAM2D_J' not in names
+        assert 'CONTERR2D_1P' in names and 'CONTAM2D_J' not in names
     else:
         assert by['CONTAM2D'].data[0, 0] == 1.0 and by['CONTAM2D_J'].data[0, 0] == 2.0
         assert by['CONTERR2D_J'].data[0, 0] == pytest.approx(0.2) and 'CONTAM2D_1P' not in names

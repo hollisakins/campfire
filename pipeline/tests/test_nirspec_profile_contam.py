@@ -43,11 +43,12 @@ def _pass1_of(R, sid):
 
 @pytest.fixture
 def stand_ins(monkeypatch):
-    """Geometry: contaminant 2 lights every pixel of every nod; calibration 1 everywhere."""
-    def geometry(exps, sid, maps, failed_open='flag', beyond='mask'):
+    """Geometry: contaminant 2 lights every pixel of every nod, from every frame;
+    calibration 1 everywhere."""
+    def geometry(exps, sid, maps):
         return CT.Geometry(mask=[np.ones(e.y.shape, bool) for e in exps],
                            sources=[{2: np.ones(e.y.shape, bool)} for e in exps],
-                           unmodelled=[np.zeros(e.y.shape, bool) for e in exps])
+                           lit_from=[{2: set(range(len(exps)))} for e in exps])
     monkeypatch.setattr(CT, 'geometry', geometry)
     monkeypatch.setattr(CT, 'calibration', lambda e, rate_dir: np.ones(e.y.shape))
 
@@ -75,7 +76,7 @@ def test_prediction_respects_target_override(stand_ins):
     F = [PF.frame_image(Rc, j) for j in range(3)]
     np.testing.assert_allclose(P.pred[0], np.nan_to_num(F[0] - F[2]), atol=1e-9)
     np.testing.assert_allclose(P.pred[1], np.nan_to_num(F[1] - 0.5 * (F[0] + F[2])), atol=1e-9)
-    assert 2 in P.contributors and not P.missing
+    assert 2 in P.contributors
 
 
 def test_unreliable_contaminant_is_masked_not_subtracted(stand_ins):
@@ -89,7 +90,7 @@ def test_unreliable_contaminant_is_masked_not_subtracted(stand_ins):
     P1.reliable = False
     P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
     assert P.unreliable == {2}
-    assert np.all(P.pred[0] == 0) and not P.unmodelled[0].any()
+    assert np.all(P.pred[0] == 0)
     before = t_exps[0].diff.copy()
     CT.apply(t_exps, P, mode='hybrid', kappa=1.0)
     np.testing.assert_array_equal(t_exps[0].diff, before)
@@ -110,8 +111,7 @@ def test_mask_threshold_and_clean_fraction():
     block[rows[: len(rows) // 2], :] = True
     pred[0][block] = 3.0 * sig[block]                  # above kappa = 1 sigma
     pred[0][~block] = 0.5 * sig[~block]                # below
-    P = CT.Prediction(pred=pred, dpred=[0.1 * np.abs(p) for p in pred],
-                      unmodelled=[np.zeros(e.y.shape, bool) for e in exps])
+    P = CT.Prediction(pred=pred, dpred=[0.1 * np.abs(p) for p in pred])
     before = exps[0].diff.copy()
     clean = CT.apply(exps, P, mode='mask', kappa=1.0)
     assert not exps[0].ok[block].any() and exps[0].ok[~block & ms].all()
@@ -151,51 +151,70 @@ def test_smooth_spectrum_clips_outliers_and_averages():
     assert np.array_equal(f0, f, equal_nan=True) and not c0.any()
 
 
-def test_missing_frame_masks_instead_of_skipping(stand_ins):
-    """A contaminant whose pass 1 has no frame for an exposure that holds its light:
-    its pixels in the differences that use that exposure are unmodelled. A frame
-    absent because the contaminant is not in that exposure is no light, not missing."""
+def test_missing_pass1_or_frame_is_an_error(stand_ins):
+    """Every source the maps name has a pass 1: a contaminant without one, or without
+    the frame of an exposure whose light the maps put on the target, is an error, not
+    a pixel to mask. A frame absent because the contaminant is not in that exposure
+    (``nosrc``) is no light; one the maps put no light from is not needed."""
     t_exps, _ = _source(1, 0.0, 10.0)
     c_exps, Rc = _source(2, 0.3, 5.0)
+    with pytest.raises(CT.MissingContaminant, match='no pass 1'):
+        CT.predict(t_exps, 1, {'x': None}, lambda s: None, '.')
     P1 = _pass1_of(Rc, 2)
     key = CT.exposure_key(t_exps[2].name)
     del P1.frames[key]
     P1.nosrc = set()
-    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
-    assert all(P.unmodelled[k].all() for k in range(3)) and P.missing_frame == {2}
+    with pytest.raises(CT.MissingContaminant, match='no frame'):
+        CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
     P1.nosrc = {key}                                       # the contaminant is not in that exposure
     P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
-    assert not any(u.any() for u in P.unmodelled) and not P.missing_frame
+    assert 2 in P.contributors
+    # a contaminant modelled elsewhere (``exclude``: pass 1b, the joint solve) needs none
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: None, '.', exclude={2})
+    assert all(not p.any() for p in P.pred)
 
 
-def test_beyond_range_masked_only_for_bright_contaminants(monkeypatch):
-    """Pixels where a contaminant's trace runs past its nominal range are unmodelled
-    when that contaminant's predicted light reaches the noise on the target's cutout,
-    and left alone for a faint one (9334: faint contaminants' beyond-range blocks cost
-    it its own fit)."""
+def test_missing_frame_from_an_unlit_exposure_is_not_needed(monkeypatch):
+    """The maps put the contaminant's light on the target only from exposure 0 (its
+    source shutter in the other nods misses the target): a missing frame of exposure 2
+    is not an error, and the prediction comes from the frames there are."""
     monkeypatch.setattr(CT, 'calibration', lambda e, rate_dir: np.ones(e.y.shape))
+    monkeypatch.setattr(CT, 'geometry', lambda exps, sid, maps: CT.Geometry(
+        mask=[np.ones(e.y.shape, bool) for e in exps], sources=[{2: np.ones(e.y.shape, bool)} for e in exps],
+        lit_from=[{2: {0}} for e in exps]))
+    t_exps, _ = _source(1, 0.0, 10.0)
+    c_exps, Rc = _source(2, 0.3, 5.0)
+    P1 = _pass1_of(Rc, 2)
+    del P1.frames[CT.exposure_key(t_exps[2].name)]
+    P1.nosrc = set()
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    F = [PF.frame_image(Rc, j) for j in range(3)]
+    np.testing.assert_allclose(P.pred[0], np.nan_to_num(F[0] - 0.5 * F[1]), atol=1e-9)
+
+
+def test_pixels_without_calibration_get_no_light(monkeypatch, stand_ins):
+    """A frame pixel with no calibration on either side (the contaminant's flats stop, or
+    the detector pixel is unusable) gets no predicted light and is not masked: the
+    prediction there is zero and the fit keeps the pixel."""
     t_exps, _ = _source(1, 0.0, 10.0)
     for e in t_exps:
         e.var = np.ones(e.y.shape)
-    half = np.zeros(t_exps[0].y.shape, bool)
-    half[:, : NX // 2] = True
-
-    def geometry(exps, sid, maps, failed_open='flag', beyond='mask'):
-        return CT.Geometry(mask=[np.ones(e.y.shape, bool) for e in exps], sources=[{2: half.copy()} for e in exps],
-                           unmodelled=[np.zeros(e.y.shape, bool) for e in exps],
-                           beyond_sources=[{2: ~half} for e in exps])
-    monkeypatch.setattr(CT, 'geometry', geometry)
-    for scale, expect in ((50.0, True), (1e-4, False)):
-        c_exps, Rc = _source(2, 0.3, scale)
-        P1 = _pass1_of(Rc, 2)
-        P1.nosrc = set()
-        P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
-        assert bool(P.unmodelled[0][:, NX // 2:].all()) == expect, scale
+    c_exps, Rc = _source(2, 0.3, 5.0)
+    P1 = _pass1_of(Rc, 2)
+    blk = np.zeros(t_exps[0].y.shape, bool)
+    blk[:, :20] = True
+    for fr in P1.frames.values():
+        fr['cal'] = np.where(blk.ravel()[fr['idx']], np.nan, 1.0)
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    assert not P.pred[0][blk].any() and P.pred[0][~blk].any()
+    ok = t_exps[0].ok.copy()
+    CT.apply(t_exps, P, mode='hybrid', kappa=1.0)
+    assert np.array_equal(t_exps[0].ok[blk], ok[blk])
 
 
-def test_failed_open_is_flag_only_by_default():
+def test_failed_open_is_recorded_only():
     """Failed-open shutters: their sky cancels in the nod difference, so they are
-    recorded (flag) and not masked unless asked (``failed_open = 'mask'``)."""
+    recorded and never masked."""
     from campfire_pipeline.nirspec import trace_overlap as TO
 
     class E:
@@ -211,9 +230,7 @@ def test_failed_open_is_flag_only_by_default():
         TO.nod_contamination = lambda *a, **k: [shared]
         mp = {CT.exposure_key(e.name): None for e in exps}
         g = CT.geometry(exps, 1, mp)
-        assert g.failed_open[0][10, 5] and not g.unmodelled[0].any() and not g.mask[0].any()
-        g = CT.geometry(exps, 1, mp, failed_open='mask')
-        assert g.unmodelled[0][10, 5] and g.mask[0][10, 5]
+        assert g.failed_open[0][10, 5] and not g.mask[0].any() and not g.sources[0]
     finally:
         TO.nod_contamination = orig
 
@@ -237,8 +254,7 @@ def test_pair_flag_needs_light_in_the_extraction(stand_ins):
 def test_contam_light_ratio_scales_with_contaminant():
     t_exps, Rt = _source(1, 0.0, 10.0)
     pred = [PF.model_frame(Rt, k, applied_pathloss=False, common=True) * 2.0 for k in range(3)]
-    P = CT.Prediction(pred=[np.nan_to_num(p) for p in pred], dpred=[np.zeros(e.y.shape) for e in t_exps],
-                      unmodelled=[np.zeros(e.y.shape, bool) for e in t_exps])
+    P = CT.Prediction(pred=[np.nan_to_num(p) for p in pred], dpred=[np.zeros(e.y.shape) for e in t_exps])
     assert CT.contam_light_ratio(P, Rt, t_exps) == pytest.approx(2.0, rel=1e-6)
 
 
@@ -298,45 +314,8 @@ def test_contam2d_fraction_recovers_injected_contaminant(tmp_path):
     np.testing.assert_array_equal(fnu_err, cs['fnu_prof_err'][0])     # statistical error only
 
 
-def test_unmodelled_columns_flagged(tmp_path):
-    """Columns where other light the prediction does not hold (UNMOD2D) reaches the
-    extraction rows: listed as wavelength ranges (UNPRED), the target's light there as
-    UNPREDF, PFCONTAM leaves them out; fnu_contam keeps what is predicted there."""
-    ny, nx = 30, 100
-    rows = np.arange(ny)[:, None]
-    prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
-    prof = prof / prof[:, :1].sum()
-    sci_uJy = 10.0 * prof
-    contam = 0.1 * sci_uJy / 1e12
-    unmod = np.zeros((ny, nx))
-    unmod[14:17, 80:] = 1.0                               # past 80: unpredicted light on the trace
-    path = tmp_path / 'x_pf.fits'
-    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(prof / 1e12, name='PROF2D'), fits.ImageHDU(contam, name='CONTAM2D'),
-                  fits.ImageHDU(0.1 * contam, name='CONTERR2D'), fits.ImageHDU(unmod, name='UNMOD2D')]).writeto(path)
-    sci = sci_uJy.copy()
-    sci[:, 80:] += 5.0 * prof[:, 80:]                     # the unpredicted light is in the data
-    wave = np.linspace(1, 5, nx)
-    out = S3._profile_fit_columns(str(path), sci, np.full((ny, nx), 0.01), np.zeros((ny, nx), bool), 12, 18,
-                                  wave, rows='aperture', contam_1d='report', unmod_max=0.05)
-    c = out['columns']
-    assert np.isfinite(c['fnu_contam'][0]).all()
-    assert out['header']['PFCONTAM'] == pytest.approx(0.1, rel=1e-6)
-    assert out['header']['PFUNMODF'] == pytest.approx(0.2)
-    np.testing.assert_allclose(c['fnu_contam_err'][0][:80], 0.1, rtol=1e-6)
-    assert out['header']['CONTSTAT'] == 'partial'
-    # light-weighted share of the columns past 80 (flux 15 there, 10 before), times the weight
-    # fraction (P^2 / V on the aperture rows 13-17) on the unpredicted pixels
-    u = np.sum(prof[14:17, 0] ** 2) / np.sum(prof[13:18, 0] ** 2)
-    assert out['header']['UNPREDF'] == pytest.approx(20 * 15.0 * u / (80 * 10.0 + 20 * 15.0), rel=1e-6)
-    names = [h.name for h in out['hdus']]
-    assert names == ['PROF2D', 'CONTAM2D', 'UNPRED']        # CONTERR2D / UNMOD2D stay in the _pf.fits
-    t = out['hdus'][2].data
-    assert len(t) == 1 and t['wave_min'][0] == pytest.approx(wave[80]) and t['wave_max'][0] == pytest.approx(wave[-1])
-
-
-def test_nothing_predicted_is_nan_and_no_unpredf(tmp_path):
-    """Columns where no other light is predicted: fnu_contam is NaN there; without
-    another source on the trace UNPREDF is not written."""
+def test_nothing_predicted_is_nan(tmp_path):
+    """Columns where no other light is predicted: fnu_contam is NaN there."""
     ny, nx = 30, 100
     rows = np.arange(ny)[:, None]
     prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
@@ -351,7 +330,7 @@ def test_nothing_predicted_is_nan_and_no_unpredf(tmp_path):
                                   np.linspace(1, 5, nx))
     assert np.isnan(out['columns']['fnu_contam'][0]).all()
     assert (out['choice'], out['reason']) == ('profile', 'contam_none')
-    assert out['header']['CONTSTAT'] == 'none' and 'UNPREDF' not in out['header']
+    assert out['header']['CONTSTAT'] == 'none'
     assert [h.name for h in out['hdus']] == ['PROF2D', 'CONTAM2D']
 
 
@@ -435,20 +414,6 @@ def test_best_spectrum_error_is_statistical_only():
     np.testing.assert_array_equal(f, prof)
     with pytest.raises(ValueError):
         S3.best_spectrum('optimal', prof, err, contam, None, None)
-
-
-def test_unpredicted_ranges_merge():
-    wave = np.linspace(1.0, 2.0, 11)
-    flag = np.zeros(11, bool)
-    flag[[2, 3, 7]] = True
-    t = S3.unpredicted_ranges(wave, flag, np.linspace(0, 1, 11)).data
-    np.testing.assert_allclose(t['wave_min'], [1.2, 1.7])
-    np.testing.assert_allclose(t['wave_max'], [1.3, 1.7])
-    np.testing.assert_allclose(t['weight_max'], [0.3, 0.7])
-    m = S3._merge_ranges([t, S3.unpredicted_ranges(wave, np.r_[np.zeros(3, bool), np.ones(2, bool),
-                                                               np.zeros(6, bool)]).data]).data
-    np.testing.assert_allclose(m['wave_min'], [1.2, 1.7])
-    np.testing.assert_allclose(m['wave_max'], [1.4, 1.7])
 
 
 def test_smooth_spectrum_keeps_coherent_lines():
@@ -550,90 +515,3 @@ def test_second_round_reads_first_round_results_only(tmp_path):
     assert CT.first_round_reliable(str(tmp_path), 'b') is None
     assert CT.first_round_reliable(str(tmp_path), 'c') is None
     assert CT.first_round_reliable(str(tmp_path), 'zz') is None and CT.first_round_reliable(str(tmp_path), None) is None
-
-
-def test_unpredictable_gap_by_continuity():
-    """Mapped contaminant pixels its pass 1 does not reach (8427's blue end, no flat
-    field below ~2.88 um): bounded by its light on the nearest reached pixels of the
-    row within ncol columns; unpredictable when farther, or when that light is bright."""
-    ny, nx = 4, 100
-    sig = np.ones((ny, nx))
-    covered = np.zeros((ny, nx), bool)
-    covered[:, :40] = covered[:, 50:60] = True
-    add = np.zeros((ny, nx))
-    add[:, :40], add[:, 50:60] = 0.3, 0.5
-    gap = ~covered
-    out = CT.unpredictable_gap(gap, covered, add, sig, ncol=31)
-    assert not out[:, 40:50].any()                         # interpolated 0.3-0.5 sigma: faint
-    assert not out[:, 60:91].any() and out[:, 91:].all()   # extended 31 columns past the last reached one
-    out = CT.unpredictable_gap(gap, covered, 5 * add, sig, ncol=31)
-    assert out[:, 40:50].all()                             # bright: stays masked
-    assert CT.unpredictable_gap(gap, np.zeros((ny, nx), bool), add, sig, ncol=31)[gap].all()
-
-
-def test_gap_masked_only_where_unpredictable(stand_ins):
-    """In predict: a stretch of mapped pixels a bright contaminant's frames do not
-    reach is left alone when its light around it is below the noise
-    (``gap_columns`` > 0), and masked whole with the rule before (0)."""
-    t_exps, _ = _source(1, 0.0, 10.0)
-    for e in t_exps:
-        e.var = np.ones(e.y.shape)
-        e.var[:, 30:70] = 1e8                                # the light around the gap is far below the noise
-    c_exps, Rc = _source(2, 0.3, 50.0)                       # bright elsewhere
-    P1 = _pass1_of(Rc, 2)
-    P1.nosrc = set()
-    for fr in P1.frames.values():
-        col = fr['idx'] % NX
-        keep = (col < 45) | (col >= 55)                      # its pass 1 has no value there
-        for n in ('idx', 'img', 'err', 'cal'):
-            fr[n] = fr[n][keep]
-    gap = np.zeros(t_exps[0].y.shape, bool)
-    gap[:, 45:55] = True
-    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
-    assert not P.unmodelled[0][gap].any()
-    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.', gap_columns=0)
-    assert P.unmodelled[0][gap].all()
-
-
-def test_contaminant_pixels_without_calibration_bounded_by_continuity(stand_ins):
-    """8427 / 6723 on 5301: the contaminant's first pass-1 samples above its filter's
-    cut-on sit on pixels with no flat (its calibration NaN): judged by continuity like
-    the unreached pixels; a target pixel without calibration stays unmodelled."""
-    t_exps, _ = _source(1, 0.0, 10.0)
-    for e in t_exps:
-        e.var = np.ones(e.y.shape)
-        e.var[:, 30:70] = 1e8
-    c_exps, Rc = _source(2, 0.3, 50.0)
-    P1 = _pass1_of(Rc, 2)
-    for fr in P1.frames.values():
-        col = fr['idx'] % NX
-        fr['cal'] = np.where((col >= 48) & (col < 51), np.nan, fr['cal'])
-    blk = np.zeros(t_exps[0].y.shape, bool)
-    blk[:, 48:51] = True
-    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
-    assert not P.unmodelled[0][blk].any()
-    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.', gap_columns=0)
-    assert P.unmodelled[0][blk & (np.abs(PF.frame_image(Rc, 0)) > 0)].all()
-
-
-def test_continuity_ignores_covered_pixels_without_calibration(stand_ins):
-    """2976 on 5215: the contaminant's last columns carry no calibration (no light in the
-    prediction), and its mapped trace continues past them. Those columns must not
-    bound the gap beyond with zero light: the gap next to bright light stays masked."""
-    t_exps, _ = _source(1, 0.0, 10.0)
-    for e in t_exps:
-        e.var = np.full(e.y.shape, 1e-4)
-    c_exps, Rc = _source(2, 0.3, 50.0)
-    P1 = _pass1_of(Rc, 2)
-    P1.nosrc = set()
-    for fr in P1.frames.values():
-        col = fr['idx'] % NX
-        keep = col < 100                                       # its pass 1 stops at column 100 ...
-        for n in ('idx', 'img', 'err', 'cal'):
-            fr[n] = fr[n][keep]
-        col = fr['idx'] % NX
-        fr['cal'] = np.where(col >= 97, np.nan, fr['cal'])     # ... and its last 3 columns have no flat
-    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
-    bright = np.abs(np.nan_to_num(PF.frame_image(Rc, 0)))[:, 95] > 0.05 * np.nanmax(np.abs(PF.frame_image(Rc, 0)))
-    assert bright.any()
-    assert P.unmodelled[0][bright, 100:110].all()

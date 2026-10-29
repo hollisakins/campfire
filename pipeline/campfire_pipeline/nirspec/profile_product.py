@@ -10,14 +10,13 @@ Per product (one source, one disperser), after Spec3 has written its crf:
    source is read from the PRISM product of this run or an earlier one);
 4. scan for a same-slitlet neighbour on the residuals (``nod_scan``; ``scan_neighbours``);
 5. drizzle the chosen model per unit reported flux through the crf (``PROF2D``), the
-   predicted other-source light (``CONTAM2D``) and its uncertainty (``CONTERR2D``),
-   and the pixels whose other-source light is not predicted (``UNMOD2D``), and write
-   ``{product}_pf.fits`` with every decision in the primary header.
+   predicted other-source light (``CONTAM2D``) and its uncertainty (``CONTERR2D``), and
+   write ``{product}_pf.fits`` with every decision in the primary header.
 
 Stage 3 then extracts ``fnu_prof`` and ``fnu_contam`` from the s2d with ``PROF2D`` and
 chooses the best spectrum ``fnu`` (``stage3._profile_fit_columns``), then deletes the
-``_pf.fits``: what the ``_spec.fits`` does not keep (CONTERR2D, UNMOD2D, the
-joint-solve alternatives) is reduced to its 1-D columns and cards.
+``_pf.fits``: what the ``_spec.fits`` does not keep (CONTERR2D, the joint-solve
+alternatives) is reduced to its 1-D columns and cards.
 """
 
 import os
@@ -37,10 +36,7 @@ def stage_flags(sc):
         kappa=float(g('contam_mask_kappa', 1.0)),
         pair_ratio=float(g('contam_pair_ratio', 3.0)),
         pair_min_frac=float(g('contam_pair_min_frac', 0.3)),
-        failed_open=str(g('contam_failed_open', 'flag')).lower(),
         echo=bool(g('contam_echo', True)),
-        gap_fill=bool(g('contam_gap_fill', True)),
-        beyond=str(g('contam_beyond_range', 'mask')).lower(),
         dominance_kappa=float(g('contam_dominance_kappa', 1.0)),
         scan=bool(g('scan_neighbours', True)),
         scan_nbins=int(g('scan_nbins', 16)),
@@ -117,11 +113,8 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
             if joint is not None:
                 def pass1_for(sid):
                     return joint.pass1_of[int(sid)] if int(sid) in joint.pass1_of else one_pass(sid)
-            st = CT.pass1_settings(stage_config)
-            gap_cols = (st['smooth_prism'] if is_prism else st['smooth_grating']) if fl['gap_fill'] else 0
             P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=one_pass(source_id),
-                           pair_ratio=fl['pair_ratio'], failed_open=fl['failed_open'], beyond=fl['beyond'],
-                           echo=fl['echo'], gap_columns=gap_cols, gap_kappa=fl['kappa'],
+                           pair_ratio=fl['pair_ratio'], echo=fl['echo'],
                            keep_sources=js['enabled'] or joint is not None)
             saved = [(e.ok, e.diff) for e in exps]
             if js['enabled'] or joint is not None:
@@ -310,7 +303,6 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             write_fallback(path, e.reason)
             return _fallback_summary(product_name, source_id, is_prism, e.reason)
         exps, C, P, clean, cstate, S = A.exps, A.chain, A.prediction, A.clean, A.contam_state, A.scan
-        fl = stage_flags(stage_config)
         R = C.result
         p = R.params
         log(f"{product_name}: shape {C.shape} ({C.reason}), gate {C.snr_det:.1f}/{C.gate:.0f}, "
@@ -339,15 +331,6 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             h.header['BUNIT'] = ('MJy', 'Uncertainty of CONTAM2D (systematic), as SCI')
             hdus.append(h)
             e2d.close()
-            um = CT.unmodelled_frames(exps, P, kappa=fl['kappa'])
-            if any(a.any() for a in um.values()):
-                u2d = PF.drizzle_arrays(lambda name: um.get(name), crf)
-                h = fits.ImageHDU(np.clip(np.nan_to_num(np.asarray(u2d.data, float)), 0.0, 1.0), name='UNMOD2D')
-                u2d.close()
-            else:
-                h = fits.ImageHDU(np.zeros(hdus[0].data.shape), name='UNMOD2D')
-            h.header['BUNIT'] = ('', 'Fraction of the data with other light not in CONTAM2D')
-            hdus.append(h)
         TM.stop('drizzle', t_mark)
 
         hdr = shape_header(C, exps)
@@ -362,14 +345,10 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             hdr['PFFOPEN'] = (_v(clean['failed_open']) if clean else -999.0,
                               'Main-shutter fraction in failed-open shutters')
             hdr['PFNCONT'] = (len(P.contributors), 'Other sources predicted on the trace')
-            # not subsets of PFNCONT: a source without a usable pass 1 is counted here
-            # whether or not it adds predicted light
-            hdr['PFCMISS'] = (len(P.missing), 'Others without a pass-1 spectrum (masked)')
+            # not a subset of PFNCONT: an unreliable source is counted here whether or not
+            # its light reaches the noise
             hdr['PFCUNREL'] = (len(P.unreliable), 'Other sources, pass 1 unreliable (masked)')
-            hdr['PFCMFRM'] = (len(P.missing_frame), 'Other sources missing a pass-1 frame (masked)')
             hdr['PFCECHO'] = (len(getattr(P, 'echoed', ()) or ()), 'Unreliable ones with the target echo removed')
-            nb = sum(int((b & u).sum()) for b, u in zip(P.beyond or [], P.unmodelled))
-            hdr['PFCBEYND'] = (nb, 'Pixels lit by others past their range (masked)')
             hdr['PFPAIR'] = (int(P.pair), 'Similar-brightness contaminant on the trace')
             hdr['PFPAIRID'] = (int(P.pair_id), 'Its source id (-1: none)')
             hdr['PFPAIRR'] = (_v(P.pair_ratio), 'Its pass-1 flux / the target pass-1 flux')

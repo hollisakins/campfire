@@ -24,8 +24,18 @@ from shutter to shutter and does not. So in a given nod the contaminating part o
 slitlet is its source shutter in that nod (``nod_contamination``). Failed-open
 shutters carry no catalogue source: their sky cancels too, and they only matter
 when a sky object falls in them, which the geometry cannot tell.
+
+Each slitlet is named by the catalogue source it holds at any dither point of the
+configuration (``slitlet_sources``). In a nod pattern that moves the source out of a
+short slitlet, jwst calls the slitlet background-only at that point and gives it its
+slitlet number as source id; the map keeps the source's id there (so the source
+never meets its own slitlet as a stranger) and marks no source shutter (the slitlet
+holds only sky then, which cancels). A slitlet with no catalogue source at any point
+is sky only (``kind = 'sky'``). Shutters listed as stuck closed for the observation
+are removed from the configuration before the map is built: they pass no light.
 """
 
+import hashlib
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -38,10 +48,9 @@ OPEN_HALF = 0.5      # half-height of a shutter's open area, slit_frame units
 LIGHT_PAD = 0.25     # PSF spill beyond the open area (~1 detector row), slit_frame units
 NONE = -1
 IN_SOURCE = 1        # flag bit: the pixel is in the trace's source shutter (light a nod difference keeps)
-BEYOND_RANGE = 2     # flag bit: past the long-wavelength end of jwst's nominal range (light, no calibration)
-BEYOND_ROWS = 8      # rows added above and below the bounding box where a trace is followed past its range
-BEYOND_MAX_WAVE = 5.6   # um: followed only up to the detector's long-wavelength cut-off (G395M light seen to ~5.5)
-MAP_VERSION = '5'
+PAST_ROWS = 8        # rows added above and below the bounding box where a trace is followed past its range
+PAST_MAX_WAVE = 5.6  # um: followed only up to the detector's long-wavelength cut-off (G395M light seen to ~5.5)
+MAP_VERSION = '6'
 
 
 def open_shutter_centres(shutter_state, ymin, ymax, pitch=MSA_SLIT_PITCH, margin=MSA_SLIT_MARGIN):
@@ -59,10 +68,109 @@ def open_shutter_centres(shutter_state, ymin, ymax, pitch=MSA_SLIT_PITCH, margin
 
 
 # ---------------------------------------------------------------------------
+# The configuration: which source each slitlet holds, stuck-closed shutters
+# ---------------------------------------------------------------------------
+def _msa_tables(msa_file):
+    from astropy.table import Table
+    return Table.read(msa_file, hdu='SHUTTER_INFO'), Table.read(msa_file, hdu='SOURCE_INFO')
+
+
+def slitlet_sources(msa_file, msa_metadata_id, dither_position, catalogue_file=None):
+    """Per slitlet of a configuration: (source id, source in it at this dither point).
+
+    The source id is the catalogue source the slitlet holds at any dither point (the
+    primary source where jwst marks one, the most frequent if it changes; never a
+    duplicate entry stage 2 drops, ``MetaFile._duplicate_source_ids``, judged on
+    ``catalogue_file``, the metafile before any stuck-closed shutter was removed, as
+    stage 2 judges it), None when it holds none at any point (sky only; virtual
+    sources included: stage 2 reduces no such source). The flag is True when a shutter
+    of the slitlet holds the source at this dither point (jwst's main shutter,
+    ``background = 'N'``): a nod pattern can move the source out of a short slitlet,
+    which then holds only sky at that point."""
+    from campfire_pipeline.nirspec.metafile import MetaFile, _source_rows
+
+    shutters, sources = _msa_tables(msa_file)
+    t = shutters[shutters['msa_metadata_id'] == int(msa_metadata_id)]
+    cat = (shutters, sources) if catalogue_file is None else _msa_tables(catalogue_file)
+    dup = MetaFile(None, msa_file, int(msa_metadata_id), shutter_table=cat[0],
+                   source_table=cat[1])._duplicate_source_ids()
+    real = _source_rows(t) & ~np.isin(t['source_id'], sorted(dup))
+    here = t['dither_point_index'] == int(dither_position)
+    out = {}
+    for s in np.unique(t['slitlet_id']):
+        mine = t['slitlet_id'] == s
+        r = t[mine & real]
+        sid = None
+        if len(r):
+            prim = r[r['primary_source'] == 'Y']
+            vals, counts = np.unique((prim if len(prim) else r)['source_id'], return_counts=True)
+            sid = int(vals[np.argmax(counts)])
+        lit = bool(np.any(mine & here & (t['background'] == 'N')))
+        out[int(s)] = (sid, lit and sid is not None)
+    return out
+
+
+def drop_stuck_shutters(msa_file, msa_metadata_id, stuck, out_file=None):
+    """Remove stuck-closed shutters from a metafile's configuration (in ``out_file``,
+    default in place: only ever called on a staged copy).
+
+    stuck : {source id: [shutter numbers]}, the observation's stuck-closed list for this
+        configuration's root (``Observation.stuck_closed_shutters``). The numbers count
+        the source's slitlet shutters in column order from 1, as stage 2 counts them
+        (its per-source metafile: the source's slitlets, detached background shutters
+        pruned). Those shutters' rows go at every dither point.
+    Returns the number of rows removed."""
+    from astropy.io import fits
+    from astropy.table import Table
+    from campfire_pipeline.nirspec.metafile import _prune_detached_shutters, _source_rows
+
+    import copy
+
+    mid = int(msa_metadata_id)
+    with fits.open(msa_file) as h:
+        hdus = copy.deepcopy(h)
+    t = Table(hdus['SHUTTER_INFO'].data)
+    conf = t['msa_metadata_id'] == mid
+    drop = np.zeros(len(t), bool)
+    for sid, numbers in (stuck or {}).items():
+        slits = np.unique(t['slitlet_id'][conf & _source_rows(t, int(sid))])
+        if slits.size == 0:
+            continue
+        rows = _prune_detached_shutters(t[conf & np.isin(t['slitlet_id'], slits)], int(sid))
+        cols = np.sort(np.unique(rows['shutter_column']))
+        gone = [cols[int(n) - 1] for n in numbers if 1 <= int(n) <= cols.size]
+        drop |= conf & np.isin(t['slitlet_id'], slits) & np.isin(t['shutter_column'], gone)
+    if drop.any():
+        touched = np.unique(t['slitlet_id'][drop])
+        t = t[~drop]
+        # a dither point whose primary shutter is gone holds no named source: its other
+        # main shutters (a second catalogue source, ember_cosmos_p9 slitlet 52) become
+        # background, as jwst needs a primary for any main shutter (and the map names a
+        # slitlet by one source)
+        conf = (t['msa_metadata_id'] == mid) & np.isin(t['slitlet_id'], touched)
+        for s, d in {(int(a), int(b)) for a, b in zip(t['slitlet_id'][conf], t['dither_point_index'][conf])}:
+            g = conf & (t['slitlet_id'] == s) & (t['dither_point_index'] == d)
+            if not np.any(t['primary_source'][g] == 'Y'):
+                t['background'][g] = 'Y'
+        new = fits.BinTableHDU(t, name='SHUTTER_INFO', header=hdus['SHUTTER_INFO'].header)
+        hdus[hdus.index_of('SHUTTER_INFO')] = new
+    hdus.writeto(out_file or msa_file, overwrite=True)
+    return int(drop.sum())
+
+
+def stuck_signature(stuck):
+    """Short identity of a stuck-closed list (the map's STUCK card: a changed list rebuilds it)."""
+    if not stuck:
+        return ''
+    s = ';'.join(f"{int(k)}:{','.join(str(int(n)) for n in sorted(v))}" for k, v in sorted(stuck.items()))
+    return hashlib.sha1(s.encode()).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
 # Building: jwst WCS for every open slitlet of the configuration
 # ---------------------------------------------------------------------------
 def full_mask_model(rate_file, workdir, msa_file=None, msa_metadata_id=None, dither_position=None,
-                    return_staged=False):
+                    return_staged=False, stuck=None):
     """jwst model of one exposure with a WCS for every open slitlet of its configuration.
 
     ``rate_file`` is copied into ``workdir`` (the original is never modified). It is
@@ -71,7 +179,8 @@ def full_mask_model(rate_file, workdir, msa_file=None, msa_metadata_id=None, dit
     ``dither_position``. Slitlets keep their relative geometry with a template
     because all traces move together with the grating wheel tilt (measured: a
     template moves no trace on the detector and shifts all wavelengths alike by
-    ~12 A in G395M). ``return_staged`` also returns the files copied here."""
+    ~12 A in G395M). ``stuck`` (``drop_stuck_shutters``) is applied to the staged
+    copy of ``msa_file``. ``return_staged`` also returns the files copied here."""
     from stdatamodels.jwst import datamodels
     from jwst.assign_wcs import AssignWcsStep
 
@@ -81,9 +190,13 @@ def full_mask_model(rate_file, workdir, msa_file=None, msa_metadata_id=None, dit
     if not os.path.exists(path):
         shutil.copy(rate_file, path)
         staged.append(path)
-    if msa_file is not None and not os.path.exists(os.path.join(workdir, os.path.basename(msa_file))):
-        shutil.copy(msa_file, workdir)
-        staged.append(os.path.join(workdir, os.path.basename(msa_file)))
+    if msa_file is not None:
+        # always a fresh copy: a stuck-closed list edits it
+        msa_copy = os.path.join(workdir, os.path.basename(msa_file))
+        shutil.copy(msa_file, msa_copy)
+        staged.append(msa_copy)
+        if stuck:
+            drop_stuck_shutters(msa_copy, msa_metadata_id, stuck)
     model = datamodels.open(path)
     if msa_file is not None:
         model.meta.instrument.msa_metadata_file = os.path.basename(msa_file)
@@ -101,17 +214,17 @@ def full_mask_model(rate_file, workdir, msa_file=None, msa_metadata_id=None, dit
     return (out, staged) if return_staged else out
 
 
-def _slit_pixels(model, wcs, beyond=False):
+def _slit_pixels(model, wcs, past_range=False):
     """Detector pixels inside a slit's bounding box, with their slit-frame y and wavelength [um].
 
-    ``beyond``: also the pixels past the long-wavelength end of the bounding box, to the
-    detector edge. jwst's bounding box stops at the nominal wavelength range
-    (``wavelengthrange``), but long-pass filters do not stop the light there; the
+    ``past_range``: also the pixels past the long-wavelength end of the bounding box,
+    towards the detector edge. jwst's bounding box stops at the nominal wavelength
+    range (``wavelengthrange``), but long-pass filters do not stop the light there; the
     trace's slit-frame y is still defined (the transform extrapolates), so the trace
-    is followed towards the edge, ``BEYOND_ROWS`` rows wider for its curvature, up to
-    ``BEYOND_MAX_WAVE`` of extrapolated wavelength (the detector sees nothing beyond;
-    following PRISM traces to the edge masked most of some traces). Returns
-    (pixel index, y, wavelength, beyond flag)."""
+    is followed towards the edge, ``PAST_ROWS`` rows wider for its curvature, up to
+    ``PAST_MAX_WAVE`` of extrapolated wavelength (the detector sees nothing beyond).
+    The source's light there is predicted from its pass 1 extended in count-rate
+    units (``profile_extend``). Returns (pixel index, y, wavelength)."""
     (x0, x1), (y0, y1) = wcs.bounding_box
     ny, nx = model.data.shape[-2:]
     tr = wcs.get_transform('detector', 'slit_frame')
@@ -134,40 +247,51 @@ def _slit_pixels(model, wcs, beyond=False):
     inside = at(np.arange(xi0, xi1 + 1), ya)
     if inside is None:
         return None
-    parts = [inside + (np.zeros(inside[0].size, bool),)]
-    if beyond:
+    parts = [inside]
+    if past_range:
         # which end is red: the wavelength at the two ends of the lit columns
         px = inside[0] % nx
         lo_l = np.median(inside[2][px == px.min()])
         hi_l = np.median(inside[2][px == px.max()])
         if hi_l != lo_l:
             xb = np.arange(px.max() + 1, nx) if hi_l > lo_l else np.arange(0, px.min())
-            yb = np.arange(max(int(np.ceil(y0)) - BEYOND_ROWS, 0), min(int(np.floor(y1)) + BEYOND_ROWS, ny - 1) + 1)
+            yb = np.arange(max(int(np.ceil(y0)) - PAST_ROWS, 0), min(int(np.floor(y1)) + PAST_ROWS, ny - 1) + 1)
             out = at(xb, yb)
             if out is not None:
-                keep = out[2] <= BEYOND_MAX_WAVE
+                keep = out[2] <= PAST_MAX_WAVE
                 if keep.any():
-                    out = tuple(a[keep] for a in out)
-                    parts.append(out + (np.ones(out[0].size, bool),))
-    return tuple(np.concatenate([p[i] for p in parts]) for i in range(4))
+                    parts.append(tuple(a[keep] for a in out))
+    return tuple(np.concatenate([p[i] for p in parts]) for i in range(3))
 
 
-def _slit_record(slit, kind, centres):
-    return dict(name=str(slit.name), source_id=int(slit.source_id), kind=kind,
-                shutter_state=str(slit.shutter_state), ymin=float(slit.ymin), ymax=float(slit.ymax),
+def _slit_record(slit, kind, centres, source_id=None, lit=True):
+    return dict(name=str(slit.name), source_id=int(slit.source_id if source_id is None else source_id), kind=kind,
+                lit=bool(lit), shutter_state=str(slit.shutter_state), ymin=float(slit.ymin), ymax=float(slit.ymax),
                 quadrant=int(slit.quadrant), xcen=int(slit.xcen), ycen=int(slit.ycen),
                 src_ypos=float(getattr(slit, 'source_ypos', np.nan)),
                 centres=','.join(f'{c:.3f}' for c in centres))
 
 
-def _slitlet_traces(model):
+def _slitlet_traces(model, sources=None):
+    """Every open slitlet's trace, named by ``sources`` (``slitlet_sources``: slitlet id ->
+    (source id or None, source in it at this point)) when given, else as jwst names it."""
     from jwst.assign_wcs import nirspec
 
     for slit in model.meta.wcs.get_transform('gwa', 'slit_frame').slits:
-        px = _slit_pixels(model, nirspec.nrs_wcs_set_input(model, slit.name), beyond=True)
-        if px is not None:
-            centres = open_shutter_centres(slit.shutter_state, slit.ymin, slit.ymax)
-            yield _slit_record(slit, 'slitlet', centres), centres, px
+        px = _slit_pixels(model, nirspec.nrs_wcs_set_input(model, slit.name), past_range=True)
+        if px is None:
+            continue
+        centres = open_shutter_centres(slit.shutter_state, slit.ymin, slit.ymax)
+        sid, lit = None, True
+        if sources is not None:
+            try:
+                sid, lit = sources[int(slit.name)]
+            except (KeyError, ValueError):
+                sid, lit = int(slit.source_id), True
+        if sources is not None and sid is None:
+            yield _slit_record(slit, 'sky', centres, source_id=0, lit=False), centres, px
+        else:
+            yield _slit_record(slit, 'slitlet', centres, source_id=sid, lit=lit), centres, px
 
 
 def _failed_open_traces(model):
@@ -221,20 +345,27 @@ class TraceMap:
 
     @classmethod
     def build(cls, rate_file, workdir, msa_file=None, msa_metadata_id=None, dither_position=None,
-              failed_open=True, pad=LIGHT_PAD):
-        from astropy.table import Table
-
+              failed_open=True, pad=LIGHT_PAD, stuck=None):
+        """The map of one exposure (``full_mask_model``). With ``msa_file``, slitlets are
+        named by their source (``slitlet_sources``) and ``stuck`` (the stuck-closed
+        shutters of the configuration's root, ``drop_stuck_shutters``) is applied first."""
         model, staged = full_mask_model(rate_file, workdir, msa_file, msa_metadata_id, dither_position,
-                                        return_staged=True)
+                                        return_staged=True, stuck=stuck)
         shape = model.data.shape[-2:]
-        traces = list(_slitlet_traces(model))
+        m = model.meta
+        sources = None
+        if msa_file is not None:
+            sources = slitlet_sources(os.path.join(workdir, os.path.basename(msa_file)),
+                                      int(m.instrument.msa_metadata_id), int(m.dither.position_number),
+                                      catalogue_file=msa_file)
+        traces = list(_slitlet_traces(model, sources))
         if failed_open:
             traces += list(_failed_open_traces(model))
-        m = model.meta
         meta = dict(MAPVER=MAP_VERSION, EXPOSURE=os.path.basename(rate_file), DETECTOR=m.instrument.detector,
                     GRATING=m.instrument.grating, FILTER=m.instrument.filter,
                     MSAMETFL=m.instrument.msa_metadata_file, MSAMETID=int(m.instrument.msa_metadata_id),
-                    PATT_NUM=int(m.dither.position_number), LITPAD=pad, FAILOPEN=bool(failed_open))
+                    PATT_NUM=int(m.dither.position_number), LITPAD=pad, FAILOPEN=bool(failed_open),
+                    STUCK=stuck_signature(stuck))
         model.close()
         for f in staged:                                 # the copies made for assign_wcs; the map is all we keep
             if os.path.exists(f):
@@ -243,21 +374,24 @@ class TraceMap:
 
     @classmethod
     def from_traces(cls, traces, shape, pad=LIGHT_PAD, meta=None):
-        """Assemble a map from ``(record, open shutter centres, (pix, ys, lam[, beyond]))`` per
+        """Assemble a map from ``(record, open shutter centres, (pix, ys, lam))`` per
         trace; a trace lights the pixels within ``OPEN_HALF + pad`` of one of its open
-        shutters. ``beyond`` marks pixels past the nominal wavelength range (``BEYOND_RANGE``)."""
+        shutters, and those near its source shutter are ``IN_SOURCE`` unless the record
+        says the source is not in the slitlet at this point (``lit`` false, or a sky
+        slitlet)."""
         from astropy.table import Table
 
         ny, nx = shape
         recs, pix, idx, flg = [], [], [], []
         for i, (rec, centres, px) in enumerate(traces):
             p, y = px[0], np.asarray(px[1])
-            bey = np.asarray(px[3], bool) if len(px) > 3 else np.zeros(y.size, bool)
             near = np.min(np.abs(y[:, None] - np.asarray(centres)[None, :]), axis=1) < OPEN_HALF + pad
             src = np.abs(y) < OPEN_HALF + pad          # slit frame is centred on the source shutter
+            if not rec.get('lit', True) or rec.get('kind') == 'sky':
+                src = np.zeros(y.size, bool)
             recs.append(rec)
             pix.append(np.asarray(p, np.int64)[near])
-            flg.append((np.where(src[near], IN_SOURCE, 0) | np.where(bey[near], BEYOND_RANGE, 0)).astype(np.uint8))
+            flg.append(np.where(src[near], IN_SOURCE, 0).astype(np.uint8))
             idx.append(np.full(near.sum(), i, np.int16))
         pix, idx, flg = np.concatenate(pix), np.concatenate(idx), np.concatenate(flg)
         order = np.lexsort((idx, pix))
@@ -292,7 +426,8 @@ class TraceMap:
         from astropy.table import Table
         with fits.open(path) as h:
             meta = {k: h[0].header[k] for k in ('MAPVER', 'EXPOSURE', 'DETECTOR', 'GRATING', 'FILTER', 'MSAMETFL',
-                                                'MSAMETID', 'PATT_NUM', 'LITPAD', 'FAILOPEN') if k in h[0].header}
+                                                'MSAMETID', 'PATT_NUM', 'LITPAD', 'FAILOPEN', 'STUCK')
+                    if k in h[0].header}
             return cls(slits=Table(h['SLITS'].data), index=np.asarray(h['INDEX'].data),
                        flag=np.asarray(h['FLAG'].data), meta=meta)
 
@@ -317,26 +452,25 @@ class TraceMap:
         """Pixels of a trace in its source shutter (the light a nod subtraction keeps)."""
         return (np.asarray(flag) & IN_SOURCE) > 0
 
-    @staticmethod
-    def beyond_range(flag):
-        """Pixels of a trace past its nominal wavelength range (no source spectrum there)."""
-        return (np.asarray(flag) & BEYOND_RANGE) > 0
-
 
 def trace_map_path(cache_dir, exposure_name):
     root = os.path.basename(exposure_name).replace('_rate.fits', '').replace('.fits', '')
     return os.path.join(cache_dir, f'{root}_tracemap.fits')
 
 
-def map_is_current(path):
-    """A cached map exists and was built by this map version."""
+def map_is_current(path, stuck=None):
+    """A cached map exists, was built by this map version and, when ``stuck`` is given,
+    with that stuck-closed list (``stuck_signature``)."""
     from astropy.io import fits
     if not os.path.exists(path):
         return False
     try:
-        return str(fits.getheader(path).get('MAPVER', '')) == MAP_VERSION
+        h = fits.getheader(path)
     except OSError:
         return False
+    if str(h.get('MAPVER', '')) != MAP_VERSION:
+        return False
+    return stuck is None or str(h.get('STUCK', '')) == stuck_signature(stuck)
 
 
 def get_trace_map(rate_file, cache_dir, workdir=None, exposure_name=None, **build_kw):
@@ -344,7 +478,7 @@ def get_trace_map(rate_file, cache_dir, workdir=None, exposure_name=None, **buil
 
     ``exposure_name`` names the cache file when ``rate_file`` is a template."""
     path = trace_map_path(cache_dir, exposure_name or rate_file)
-    if map_is_current(path):
+    if map_is_current(path, stuck=build_kw.get('stuck') or {}):
         return TraceMap.read(path)
     os.makedirs(cache_dir, exist_ok=True)
     tm = TraceMap.build(rate_file, workdir or os.path.join(cache_dir, 'work'), **build_kw)
@@ -367,7 +501,6 @@ class Shared:
     iy: np.ndarray = field(repr=False)        # cutout pixels (region coordinates)
     ix: np.ndarray = field(repr=False)
     target_src: np.ndarray = field(repr=False)   # pixel is in the target's source shutter
-    beyond: np.ndarray = field(repr=False, default=None)   # the other trace is past its nominal range there
 
     @property
     def n_cols(self):
@@ -386,7 +519,8 @@ def nod_contamination(maps, source_id, region, partners=None):
     subtracted from nod k (default all others, as stage 2b). A contaminant's source
     shutter in nod k adds light to nod k's difference; its source shutter in a
     partner nod subtracts. Failed-open shutters are returned whole (their light is
-    unknown). Pixels are those the target's own trace covers."""
+    unknown); sky slitlets not at all (their sky cancels). Pixels are those the
+    target's own trace covers."""
     n = len(maps)
     if partners is None:
         partners = [[j for j in range(n) if j != k] for k in range(n)]
@@ -404,7 +538,7 @@ def nod_contamination(maps, source_id, region, partners=None):
             slits = maps[j].slits
             for r in np.unique(jidx):
                 rec = slits[int(r)]
-                if rec['kind'] == 'slitlet' and int(rec['source_id']) == source_id:
+                if rec['kind'] == 'sky' or (rec['kind'] == 'slitlet' and int(rec['source_id']) == source_id):
                     continue
                 sel = jidx == r
                 if rec['kind'] == 'slitlet':
@@ -412,13 +546,13 @@ def nod_contamination(maps, source_id, region, partners=None):
                 if not sel.any():
                     continue
                 key = jy[sel].astype(np.int64) * 100000 + jx[sel]
-                common, it, ic = np.intersect1d(t_key, key, return_indices=True)
+                common, it, _ = np.intersect1d(t_key, key, return_indices=True)
                 if common.size == 0:
                     continue
                 out.append(Shared(exposure=k, from_exposure=j, sign=1 if j == k else -1,
                                   name=str(rec['name']), source_id=int(rec['source_id']), kind=str(rec['kind']),
                                   iy=(common // 100000).astype(int), ix=(common % 100000).astype(int),
-                                  target_src=t_src[it], beyond=maps[j].beyond_range(jflg[sel][ic])))
+                                  target_src=t_src[it]))
     return out
 
 

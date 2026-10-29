@@ -312,15 +312,11 @@ def setup_member(product, workspace, groups, overrides, science, sid, stage_conf
     log = log or (lambda *a: None)
     fl = stage_flags(stage_config)
     cfg = PC.ChainConfig.from_stage_config(stage_config)
-    st = CT.pass1_settings(stage_config)
     if exps is None:
         exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science))
     maps = CT.maps_for_exposures(workspace, exps) if maps is None else maps
-    gap_cols = (st['smooth_prism'] if exps[0].grating.startswith('PRISM') else st['smooth_grating']) \
-        if fl['gap_fill'] else 0
     P = CT.predict(exps, sid, maps, pass1_for, workspace, own_pass1=pass1_for(sid), pair_ratio=fl['pair_ratio'],
-                   failed_open=fl['failed_open'], beyond=fl['beyond'], echo=fl['echo'], gap_columns=gap_cols,
-                   gap_kappa=fl['kappa'], exclude=set(members) - {int(sid)})
+                   echo=fl['echo'], exclude=set(members) - {int(sid)})
     CT.apply(exps, P, mode=fl['contam_mode'], kappa=fl['kappa'], dominance_kappa=fl['dominance_kappa'])
     shape = read_shape(workspace, product) if shape is _READ else shape_from_header(shape)
     if shape is None:
@@ -331,22 +327,24 @@ def setup_member(product, workspace, groups, overrides, science, sid, stage_conf
     m = Member(sid=int(sid), product=product, exps=exps, model=M, p=p, eoff=e, shape_src=src, params=params,
                workspace=workspace)
     m.prediction = P
-    m.ext_frames = ext_frames(pass1_for(sid))
+    own = pass1_for(sid)
+    m.ext_frames = ext_frames(own)
+    m.ext_reliable = bool(getattr(own, 'reliable', False))
     basis_frames(m)
     return m
 
 
 def ext_frames(own):
     """A member's light past its cutout (pass 1, ``profile_extend``): not among the joint
-    unknowns, it is added to the member's joint frames as pass 1 has it, but only when
-    that pass 1 is reliable. An unreliable pass 1 holds other sources' light, and so
-    does its extension (fitted on the same nod differences): the one-pass path masks
-    all of it, and so must the joint path (on 7420, 2426's extension put -1.6 sigma per
-    pixel of light that the data do not show; on 8198, 1736's put -3.5 sigma). Left
-    out, those pixels are lit past the member's range and masked as such."""
+    unknowns, it is added to the member's joint frames as pass 1 has it. From an
+    unreliable pass 1 it only masks (``JointSolution.pass1``: ``ext_mask_only``): that
+    pass 1 holds other sources' light, and so does its extension (fitted on the same
+    nod differences), and the one-pass path masks all of it too (on 7420, 2426's
+    extension put -1.6 sigma per pixel of light that the data do not show; on 8198,
+    1736's put -3.5 sigma)."""
     from campfire_pipeline.nirspec import profile_extend as PE
     out = {}
-    if own is None or not bool(getattr(own, 'reliable', False)):
+    if own is None:
         return out
     for key, fr in own.frames.items():
         x = PE.ext_part(fr)
@@ -509,6 +507,7 @@ class JointSolution:
         P1 = CT.Pass1(sid=m.sid, lam=lam, flux=self.flux[m.sid], flux_err=self.err[m.sid], frames=frames,
                       reliable=True, nosrc=nosrc)
         P1.joint, P1.why, P1.shape_src, P1.n_smooth = True, 'joint', m.shape_src, 0
+        P1.ext_mask_only = not getattr(m, 'ext_reliable', True)      # past the cutout: masks only
         return P1
 
 
@@ -942,7 +941,7 @@ def run_group(tasks, workspace, stage_config, pass1_products, redo=None, log=Non
     return out
 
 
-ALT_EXTENSIONS = ('CONTAM2D', 'CONTERR2D', 'UNMOD2D')
+ALT_EXTENSIONS = ('CONTAM2D', 'CONTERR2D')
 
 
 def deliver(path, hdr, hdus, view, log=None):
@@ -951,7 +950,7 @@ def deliver(path, hdr, hdus, view, log=None):
     hdr, hdus : the product as redone from the joint solve (PFJ* cards, JOINT table).
     path : the product's one-pass ``_pf.fits``, written before the joint phase.
     Joint result delivered: the joint product, plus the one-pass other light as
-    ``CONTAM2D_1P`` / ``CONTERR2D_1P`` / ``UNMOD2D_1P``. Otherwise: the one-pass product
+    ``CONTAM2D_1P`` / ``CONTERR2D_1P``. Otherwise: the one-pass product
     as it was, plus the PFJ* cards (PFJUSE false and why), the JOINT table and the
     joint other light as ``*_J``. Both go in the ``_pf.fits``; stage 3 extracts the
     delivered one (``fnu_prof`` / ``fnu_contam``) after its noise gate. A missing

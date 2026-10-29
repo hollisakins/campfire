@@ -43,18 +43,18 @@ Nothing is iterated: each step reads only the output of the steps before it.
   override of either source is respected), converted from C's calibration to T's
   (pre-subtraction frame over rate, per pixel and per frame), and summed. Every
   pixel of C's frame image counts (an extended C spills into its other shutters),
-  not only the source-shutter pixels the maps list.
+  not only the source-shutter pixels the maps list. Every trace is followed past its
+  nominal wavelength range, and every pass 1 with it (``profile_extend``, in
+  count-rate units). Every source the maps name has a pass 1: one without is an
+  error (``MissingContaminant``), not a pixel to mask.
 * **Use** (``contam_mode``): ``mask`` drops pixels where the predicted light exceeds
   ``kappa`` times the target's per-pixel noise; ``hybrid`` (default) subtracts the
   prediction everywhere and drops the pixels where the prediction's own uncertainty
-  exceeds ``kappa`` times the noise. Pixels whose light cannot be predicted
-  (failed-open shutters, contaminants with no pass 1, no calibration) are dropped
-  in both modes. This only changes the shape fit. The predicted light is drizzled
-  like the data (``CONTAM2D``) and extracted with the same weights as ``fnu_prof``
-  (``fnu_contam``); the pixels whose foreign light is not in the prediction are
-  drizzled too (``UNMOD2D``), and the wavelengths they reach are listed (``UNPRED``
-  table, ``UNPREDF``). Whether the best spectrum ``fnu`` has the prediction subtracted
-  is the ``contam_1d`` knob (``stage3._profile_fit_columns``).
+  exceeds ``kappa`` times the noise. Failed-open shutters are recorded only (their sky
+  cancels in a nod difference). This only changes the shape fit. The predicted light
+  is drizzled like the data (``CONTAM2D``) and extracted with the same weights as
+  ``fnu_prof`` (``fnu_contam``). Whether the best spectrum ``fnu`` has the prediction
+  subtracted is the ``contam_1d`` knob (``stage3._profile_fit_columns``).
 """
 
 import glob
@@ -69,7 +69,7 @@ from campfire_pipeline.nirspec import trace_overlap as TO
 
 MAPS_SUBDIR = 'tracemaps'
 PASS1_SUBDIR = 'pass1'
-PASS1_VERSION = '9'
+PASS1_VERSION = '10'
 MIN_EXPOSURE_PIXELS = 100  # per-exposure clean fractions only for exposures with this many main-shutter pixels
 DPRED_FLOOR = 0.1          # prediction uncertainty floor, fraction of the prediction (ASSUMED, to be measured)
 _NOD = re.compile(r'^(jw\d+_\d{5})_(\d{5})_(nrs[12])')
@@ -90,19 +90,33 @@ def nod_key(path):
 # ---------------------------------------------------------------------------
 # Phase 0: trace maps
 # ---------------------------------------------------------------------------
-def map_tasks(workspace, canonical_paths, log=None):
+def stuck_by_root(table):
+    """The observation's stuck-closed shutters (``Observation.stuck_closed_shutters``:
+    root, source_id, shutters) as {root: {source id: [shutter numbers]}}."""
+    out = {}
+    if table is None:
+        return out
+    for row in table:
+        out.setdefault(str(row['root']), {})[int(row['source_id'])] = [int(n) for n in row['shutters']]
+    return out
+
+
+def map_tasks(workspace, canonical_paths, log=None, stuck=None):
     """One task per exposure of the canonicals: (rate or template rate, cache dir,
-    full metafile, metadata id, dither position, exposure name).
+    full metafile, metadata id, dither position, exposure name, stuck-closed shutters).
 
     The full metafile (every slitlet of the configuration) is the one the rate
     file names; the canonicals name their per-source copy. An exposure without its
     own rate file uses a rate file of the same detector, disperser and filter as a
     template (``trace_overlap.full_mask_model``) and the only full metafile of its
     visit; when there is none, or several, it gets no map (its contaminants are
-    then not predicted)."""
+    then not predicted). ``stuck`` ({root: {source id: [shutter numbers]}},
+    ``stuck_by_root``): those shutters are left out of the map of every exposure of
+    the root (``jw07076009001_03101``); a map built with another list is rebuilt."""
     from astropy.io import fits
 
     log = log or (lambda *a: None)
+    stuck = stuck or {}
     cache = os.path.join(workspace, MAPS_SUBDIR)
     rates = {exposure_key(r): r for r in glob.glob(os.path.join(workspace, 'jw*_rate.fits'))}
     rate_meta = {}
@@ -118,12 +132,13 @@ def map_tasks(workspace, canonical_paths, log=None):
             continue
         seen.add(key)
         name = f'{key}_rate.fits'
-        if TO.map_is_current(TO.trace_map_path(cache, name)):
+        st = stuck.get(key[:19], {})
+        if TO.map_is_current(TO.trace_map_path(cache, name), stuck=st):
             continue
         h = fits.getheader(p)
         if key in rates:
             det, grat, filt, msa_name, msa_id, patt = rate_meta[key]
-            tasks.append((rates[key], cache, os.path.join(workspace, msa_name), int(msa_id), int(patt), name))
+            tasks.append((rates[key], cache, os.path.join(workspace, msa_name), int(msa_id), int(patt), name, st))
             continue
         want = (str(h.get('DETECTOR')).upper(), str(h.get('GRATING')).upper(), str(h.get('FILTER')).upper())
         rate = next((r for k, r in sorted(rates.items()) if rate_meta[k][:3] == want), None)
@@ -132,16 +147,16 @@ def map_tasks(workspace, canonical_paths, log=None):
         if rate is None or len(msas) != 1:
             log(f'trace map {key}: no rate template or no unique full metafile ({len(msas)}); no map')
             continue
-        tasks.append((rate, cache, msas[0], int(h['MSAMETID']), int(h['PATT_NUM']), name))
+        tasks.append((rate, cache, msas[0], int(h['MSAMETID']), int(h['PATT_NUM']), name, st))
     return tasks
 
 
-def build_map(rate, cache, msa, msa_id, patt, name):
+def build_map(rate, cache, msa, msa_id, patt, name, stuck=None):
     from campfire_pipeline.common.io import log
     work = os.path.join(cache, f'work_{name[:-10]}')
     try:
         TO.get_trace_map(rate, cache, workdir=work, exposure_name=name,
-                         msa_file=msa, msa_metadata_id=msa_id, dither_position=patt)
+                         msa_file=msa, msa_metadata_id=msa_id, dither_position=patt, stuck=stuck or {})
         try:
             os.rmdir(work)                      # the build removes its staged copies; drop the empty dir
         except OSError:
@@ -171,37 +186,23 @@ def maps_for_exposures(workspace, exps):
 class Geometry:
     """Per exposure (index into the source's exposures): pixels any other source's
     source shutter lights (``mask``), those pixels per contaminating source id
-    (``sources``, within the contaminant's nominal wavelength range), pixels whose
-    other-source light cannot be predicted (``unmodelled``: other traces past their
-    nominal range; failed-open shutters too with ``failed_open = 'mask'``), and
-    pixels of failed-open shutters (``failed_open``). Pixels of other traces past their
-    nominal range are kept per source (``beyond_sources``): whether they are
-    unmodelled depends on how bright that source is (``predict``)."""
+    (``sources``; past the contaminant's nominal wavelength range too, where its pass 1
+    is extended), the exposures whose frames put that light there (``lit_from``:
+    source id -> exposure indices, k itself or its partners), and pixels of failed-open
+    shutters (``failed_open``: recorded only, their sky is the same in every nod and
+    cancels in the difference; a sky object in one would be the only light left)."""
     mask: list
     sources: list
-    unmodelled: list
     have_maps: bool = True
     failed_open: list = None
-    beyond: list = None
-    beyond_sources: list = None
+    lit_from: list = None
 
 
-def geometry(exps, sid, maps, failed_open='flag', beyond='mask'):
-    """Other sources' pixels on a source's nod differences (see ``Geometry``).
-
-    failed_open : 'flag' (default) records failed-open shutters only: their sky is the
-        same in every nod and cancels in the difference, and a sky object in one
-        would be the only light left. 'mask' treats them as unmodelled (the
-        behaviour before 2026-10-23).
-    beyond : 'mask' (default): other traces past their nominal wavelength range are
-        recorded per source (their light is there, pass 1 has no spectrum for it;
-        ``predict`` masks them for sources bright enough to matter). 'ignore': those
-        pixels are left out, as before 2026-10-23 (maps did not have them)."""
+def geometry(exps, sid, maps):
+    """Other sources' pixels on a source's nod differences (see ``Geometry``)."""
     n = len(exps)
     out = Geometry(mask=[np.zeros(e.y.shape, bool) for e in exps], sources=[{} for _ in exps],
-                   unmodelled=[np.zeros(e.y.shape, bool) for e in exps],
-                   failed_open=[np.zeros(e.y.shape, bool) for e in exps],
-                   beyond=[np.zeros(e.y.shape, bool) for e in exps], beyond_sources=[{} for _ in exps])
+                   failed_open=[np.zeros(e.y.shape, bool) for e in exps], lit_from=[{} for _ in exps])
     for g in sorted({e.group for e in exps}):
         ks = [k for k in range(n) if exps[k].group == g]
         try:
@@ -216,22 +217,12 @@ def geometry(exps, sid, maps, failed_open='flag', beyond='mask'):
         for r in TO.nod_contamination(mlist, int(sid), region, partners):
             k = ks[r.exposure]
             if r.kind == 'slitlet':
-                bey = r.beyond if r.beyond is not None else np.zeros(r.iy.size, bool)
-                if beyond == 'ignore':
-                    r.iy, r.ix, bey = r.iy[~bey], r.ix[~bey], bey[~bey]
                 out.mask[k][r.iy, r.ix] = True
-                out.beyond[k][r.iy[bey], r.ix[bey]] = True
-                if bey.any():
-                    bp = out.beyond_sources[k].setdefault(r.source_id, np.zeros(exps[k].y.shape, bool))
-                    bp[r.iy[bey], r.ix[bey]] = True
-                if (~bey).any():
-                    px = out.sources[k].setdefault(r.source_id, np.zeros(exps[k].y.shape, bool))
-                    px[r.iy[~bey], r.ix[~bey]] = True
+                px = out.sources[k].setdefault(r.source_id, np.zeros(exps[k].y.shape, bool))
+                px[r.iy, r.ix] = True
+                out.lit_from[k].setdefault(r.source_id, set()).add(ks[r.from_exposure])
             else:
                 out.failed_open[k][r.iy, r.ix] = True
-                if failed_open == 'mask':
-                    out.mask[k][r.iy, r.ix] = True
-                    out.unmodelled[k][r.iy, r.ix] = True
     return out
 
 
@@ -315,11 +306,8 @@ def pass1_settings(stage_config):
                 lines=bool(g('contam_pass1_lines', True)),
                 guard=float(g('contam_pass1_guard', 3.0)), guard_ref=ref,
                 shape=str(g('contam_pass1_shape', 'chain')).lower(),
-                failed_open=str(g('contam_failed_open', 'flag')).lower(),
-                beyond=str(g('contam_beyond_range', 'mask')).lower(),
                 gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
-                gate_noise=str(g('gate_noise', 'mean_square')).lower(),
-                extend=bool(g('contam_pass1_extend', True)))
+                gate_noise=str(g('gate_noise', 'mean_square')).lower())
 
 
 def _signature(s):
@@ -488,14 +476,22 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
 
     st = pass1_settings(stage_config)
     cfg = PC.ChainConfig.from_stage_config(stage_config)
-    geo = geometry(exps, sid, maps, failed_open=st['failed_open'], beyond=st['beyond'])
+    geo = geometry(exps, sid, maps)
     c_plan = PF.planned_position(exps)[0]
     saved = [e.ok.copy() for e in exps]
     saved_diff = [e.diff for e in exps]
     before = sum(int((e.ok & main_shutter(e, c_plan)).sum()) for e in exps if e.use_data)
     if second:
-        pred = predict(exps, sid, maps, pass1_for, workspace, failed_open=st['failed_open'], beyond=st['beyond'])
-        apply(exps, pred, mode='hybrid', kappa=np.inf)           # subtract; mask only the unpredictable
+        # the contaminants with a reliable first-round pass 1 are subtracted; the others'
+        # pixels are masked (``pass1_for`` gives None for them)
+        others = sorted({c for s in geo.sources for c in s})
+        got = {c: pass1_for(c) for c in others}
+        skip = {c for c, P in got.items() if P is None}
+        pred = predict(exps, sid, maps, lambda c: got.get(int(c)), workspace, exclude=skip)
+        apply(exps, pred, mode='hybrid', kappa=np.inf)           # subtract, mask nothing
+        for k, e in enumerate(exps):
+            for c in skip & set(geo.sources[k]):
+                e.ok = e.ok & ~geo.sources[k][c]
     else:
         for e, m in zip(exps, geo.mask):
             e.ok = e.ok & ~m
@@ -574,13 +570,11 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
             fr.update(prof=prof.ravel()[idx].astype(np.float32), plam=e.wav.ravel()[idx].astype(np.float32))
         frames[exposure_key(e.name)] = fr
     ext = None
-    if st['extend'] and not is_prism and maps:
-        # the light past the cutouts' red end, in count-rate units (``profile_extend``)
+    if maps:
+        # the light past the cutouts' red end, in count-rate units (``profile_extend``): the
+        # maps follow every trace there
         from campfire_pipeline.nirspec import profile_extend as PE
-        try:
-            ext = PE.solve_extension(R, sid, maps, workspace, n_smooth=n_smooth, keep_lines=st['lines'])
-        except Exception:                        # noqa: BLE001 - no extension; its pixels stay unmodelled
-            ext = None
+        ext = PE.solve_extension(R, sid, maps, workspace, n_smooth=n_smooth, keep_lines=st['lines'])
         if ext is not None and ext['frames']:
             frames = PE.merge_frames(frames, ext)
             nosrc = [k for k in nosrc if k not in ext['frames']]
@@ -614,7 +608,8 @@ def first_round_reliable(workspace, name):
 def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, stage_config,
               prism_product=None, overwrite=False, pass1_products=None, second=False):
     """Pass-1 spectrum and per-exposure model frames of one source (see module doc and
-    ``compute_pass1``). Returns the output path, or None (logged) on failure.
+    ``compute_pass1``). Returns the output path, or None (logged) on a named
+    condition (``profile_fit.ProfileFitFallback``); any other exception propagates.
 
     First round (``second=False``): every pixel another source's source shutter
     lights is masked before the solve. When that leaves less than 30 % of the
@@ -642,9 +637,11 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
             f"{prism.shape}:" + ','.join(f'{k}={prism.params[k]:.4f}' for k in sorted(prism.params)))
         sig = _signature(dict(st, prism_shape=pshape))
         keys = {exposure_key(f) for g in groups for f in g}
-        n_maps = sum(os.path.exists(TO.trace_map_path(os.path.join(workspace, MAPS_SUBDIR), f'{k}_rate.fits'))
-                     for k in keys)
-        prev = _pass1_valid(out, groups, n_maps, sig)
+        mpaths = [TO.trace_map_path(os.path.join(workspace, MAPS_SUBDIR), f'{k}_rate.fits') for k in sorted(keys)]
+        mpaths = [p for p in mpaths if os.path.exists(p)]
+        # a rebuilt map (a new stuck-closed list) redoes the pass 1 that masked with it
+        prev = _pass1_valid(out, list(groups) + [mpaths], len(mpaths), sig)
+        n_maps = len(mpaths)
         if second:
             if prev is None or bool(prev['reliable']) or str(prev['round']) == '2':
                 return out
@@ -688,8 +685,10 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
         np.savez_compressed(tmp, **arrays)
         os.replace(tmp, out)
         return out
-    except Exception as e:                       # noqa: BLE001
-        log(f'{product}: pass 1 failed ({type(e).__name__}: {e})')
+    except PF.ProfileFitFallback as e:
+        # a named condition: the source has no pass 1, and a target its trace covers
+        # fails on it (``MissingContaminant``)
+        log(f'{product}: no pass 1 ({e.reason}: {e})')
         return None
 
 
@@ -757,13 +756,19 @@ def read_prism_shape(workspace, prism_product):
 # ---------------------------------------------------------------------------
 # Prediction and use
 # ---------------------------------------------------------------------------
+class MissingContaminant(RuntimeError):
+    """The trace maps put another source's light on a target, and that source has no
+    pass 1 (or no pass-1 frame of an exposure its light comes from). Every source of a
+    configuration gets a pass 1 (``stage3.run_profile_fit_phase``), so this is a bug
+    or a broken run (a failed or named-fallback pass 1, a source the maps name that
+    stage 2 did not reduce), never a condition to extract around."""
+
+
 @dataclass
 class Prediction:
     pred: list                       # per exposure: predicted other-source light in the nod difference (diff units)
     dpred: list                      # its uncertainty
-    unmodelled: list                 # per exposure: pixels whose foreign light cannot be predicted
     contributors: dict = field(default_factory=dict)   # sid -> max |pred| / sigma on the target's main shutter
-    missing: set = field(default_factory=set)          # contaminants without a pass 1
     unreliable: set = field(default_factory=set)       # contaminants whose pass 1 may hold the target's light
     pred_unreliable: list = None     # per exposure: their predicted light (masking only, never subtracted)
     pair: int = 0
@@ -773,9 +778,7 @@ class Prediction:
     have_maps: bool = True
     by_source: dict = field(default_factory=dict, repr=False)   # sid -> per exposure predicted light (pair flag)
     pair_candidates: list = field(default_factory=list)       # [(sid, pass-1 flux ratio)] within the ratio window
-    failed_open: list = None         # per exposure: pixels of failed-open shutters (flag only by default)
-    beyond: list = None              # per exposure: pixels of other traces past their nominal range (unmodelled)
-    missing_frame: set = field(default_factory=set)     # contaminants with a pass-1 frame missing (masked)
+    failed_open: list = None         # per exposure: pixels of failed-open shutters (recorded only)
     echoed: set = field(default_factory=set)            # unreliable contaminants with the target's echo removed
     dpred_joint: list = None         # per exposure: statistical uncertainty of the jointly solved light (report only)
     pred_joint: list = None          # per exposure: the jointly solved part of ``pred``
@@ -791,20 +794,6 @@ def _place_sparse(fr, origin_t, shape_t):
     tx = ix + int(fr['origin'][1]) - int(origin_t[1])
     ok = (ty >= 0) & (ty < shape_t[0]) & (tx >= 0) & (tx < shape_t[1])
     return ty, tx, ok
-
-
-def _red_end_detected(P1, n=50, snr=5.0):
-    """The pass-1 spectrum is detected over its reddest ``n`` points (integrated S/N of
-    the full-resolution solve when stored, else of the stored spectrum)."""
-    f = getattr(P1, 'flux_raw', None)
-    e = getattr(P1, 'err_raw', None)
-    if f is None or e is None:
-        f, e = P1.flux, P1.flux_err
-    ok = np.flatnonzero(np.isfinite(f) & np.isfinite(e) & (e > 0))
-    if ok.size < 5:
-        return True                                  # cannot tell: treat as bright
-    sel = ok[-n:]
-    return bool(np.sum(f[sel]) / np.sqrt(np.sum(e[sel] ** 2)) > snr)
 
 
 NBAND = 3      # stored diagonals of a pass-1 solve's normal matrix (main + 2 above; each pixel touches 2 grid points)
@@ -953,79 +942,45 @@ def echo_corrected(P1, exps, ks, own_light, cal_of):
     return out
 
 
-def unpredictable_gap(gap, covered, add, sig, ncol, kappa=1.0):
-    """Of a contaminant's mapped pixels its pass-1 frames do not reach (``gap``), those
-    whose light cannot be bounded by continuity.
-
-    A contaminant's pass 1 has no value where its own data are unusable: at the blue
-    end of G395M/F290LP its pixels below ~2.88 um carry no flat field (DQ
-    NO_FLAT_FIELD + DO_NOT_USE, the filter's cut-on), so its spectrum and frames stop
-    there while the trace maps (jwst's bounding box) continue a few columns further
-    (5301: 8427 masked 4.00-4.04 um of 5301's trace). Along a row the contaminant's
-    light changes slowly, so on each gap pixel it is taken from its predicted light on
-    the nearest reached pixels of the same row (linear between both sides, the
-    nearer side alone at an end) when one lies within ``ncol`` columns (the pass-1
-    smoothing length: the spectrum is only known to that resolution anyway). The pixel
-    is unpredictable when no reached pixel is that close (a spectrum or cutout
-    ending far short, 2976 on 5215) or when that light reaches ``kappa`` times the
-    target's noise (bright light is not extrapolated; the pixel stays masked).
-
-    Returns the unpredictable subset of ``gap``."""
-    out = np.zeros(gap.shape, bool)
-    for y in np.flatnonzero(gap.any(axis=1)):
-        xg = np.flatnonzero(gap[y])
-        xc = np.flatnonzero(covered[y] & np.isfinite(add[y]))
-        if xc.size == 0:
-            out[y, xg] = True
-            continue
-        i = np.searchsorted(xc, xg)
-        xl = np.where(i > 0, xc[np.maximum(i - 1, 0)], -10 ** 9)
-        xr = np.where(i < xc.size, xc[np.minimum(i, xc.size - 1)], 10 ** 9)
-        okl = (xg - xl) <= ncol
-        okr = (xr - xg) <= ncol
-        al = add[y, np.clip(xl, 0, gap.shape[1] - 1)]
-        ar = add[y, np.clip(xr, 0, gap.shape[1] - 1)]
-        with np.errstate(invalid='ignore', divide='ignore'):
-            t = (xg - xl) / np.maximum(xr - xl, 1)
-            est = np.where(okl & okr, al + t * (ar - al), np.where(okl, al, ar))
-            s = sig[y, xg]
-            bad = ~(okl | okr) | ~np.isfinite(s) | ~(np.abs(est) < kappa * s)
-        out[y, xg[bad]] = True
-    return out
-
-
-def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0, failed_open='flag',
-            beyond='mask', echo=True, gap_columns=31, gap_kappa=1.0, exclude=(), keep_sources=False):
+def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0, echo=True, exclude=(),
+            keep_sources=False):
     """Predicted other sources' light in each science nod difference of a target.
 
-    pass1_for : callable sid -> ``Pass1`` or None. A ``Pass1`` with ``joint = True``
-        holds a spectrum from the joint solve of an overlap group (``profile_joint``):
-        its light is subtracted and never masked (its statistical uncertainty goes to
-        ``dpred_joint``, for reporting only, without the ``DPRED_FLOOR``).
+    Every source the trace maps put on the target's trace is predicted from its pass
+    1, past its nominal wavelength range too (pass 1 is extended there in count-rate
+    units, ``profile_extend``). A frame pixel is converted with the target's calibration
+    over the contaminant's (both per unit count rate); where either has none the pixel
+    gets no light. In the stored pass-1 frames that is a detector pixel flagged
+    DO_NOT_USE in the rate file, which the target does not fit either, or one of the
+    last ~10 columns of a trace, where the contaminant's flats stop (0.1 % of a
+    contaminant's light in G395M, 0.3 % in PRISM; ember_cosmos_p14 pass 1, 2026-10-29).
+
+    pass1_for : callable sid -> ``Pass1``. A ``Pass1`` with ``joint = True`` holds a
+        spectrum from the joint solve of an overlap group (``profile_joint``): its
+        light is subtracted and never masked (its statistical uncertainty goes to
+        ``dpred_joint``, for reporting only, without the ``DPRED_FLOOR``), except its
+        light past its cutout when that comes from an unreliable pass 1
+        (``ext_mask_only``), which masks as an unreliable contaminant's does.
     own_pass1 : the target's own pass 1 (pair candidates; the echo correction).
     exclude : contaminants whose light is modelled elsewhere (the other members of
-        the target's joint-solve group, while their light is being solved for): their
-        pixels that no spectrum can predict are still unmodelled (past their range,
-        gaps), but their light is not added.
+        the target's joint-solve group while their light is being solved for, and the
+        contaminants pass 1b masks): their light is not added, except a member's
+        light past its cutout (not among the joint unknowns), from its pass 1.
     keep_sources : keep every contaminant's predicted light per exposure in
         ``by_source`` (default: only the pair candidates').
     echo : an unreliable contaminant solved over the target's pixels is predicted from
         its spectrum with the target's own light taken out (``echo_corrected``).
-    gap_columns, gap_kappa : mapped pixels of a bright contaminant that its pass-1
-        frames do not reach are unmodelled only where its light cannot be bounded by
-        continuity along the row (``unpredictable_gap``); 0 masks them all (the rule
-        before 2026-10-23).
-    A contaminant whose pass 1 lacks a frame of an exposure that holds its light
-    (the frame is neither empty nor without the source) cannot be predicted in the
-    nod differences that use that exposure: its pixels there are unmodelled."""
-    geo = geometry(exps, sid, maps, failed_open=failed_open, beyond=beyond)
+
+    Raises ``MissingContaminant`` for a contaminant (not in ``exclude``) without a
+    pass 1, or without the pass-1 frame of an exposure whose light the maps put on the
+    target (a frame the source is not in, ``Pass1.nosrc``, holds no light)."""
+    geo = geometry(exps, sid, maps)
     n = len(exps)
     pred = [np.zeros(e.y.shape) for e in exps]
     dpred = [np.zeros(e.y.shape) for e in exps]
     dpred_j = [np.zeros(e.y.shape) for e in exps]
     pred_j = [np.zeros(e.y.shape) for e in exps]
     pred_u = [np.zeros(e.y.shape) for e in exps]
-    unmod = [u.copy() for u in geo.unmodelled]
     exclude = {int(x) for x in exclude}
     joint = set()
     c_plan = PF.planned_position(exps)[0]
@@ -1047,101 +1002,59 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             own_L[k] = _placed_light(exps, k, own_pass1, cal_of)
         return own_L[k]
 
-    cache, missing, contrib, unreliable, missing_frame, by_source = {}, set(), {}, set(), set(), {}
+    cache, contrib, unreliable, by_source = {}, {}, set(), {}
     echoed = set()
-    if geo.beyond_sources is None:
-        geo.beyond_sources = [{} for _ in exps]
     for k in range(n):
         e = exps[k]
-        if not e.use_data or e.partners is None or not (geo.sources[k] or geo.beyond_sources[k]):
+        if not e.use_data or e.partners is None or not geo.sources[k]:
             continue
         sig = diff_sigma(exps, k)
         ms = main_shutter(e, c_plan) & e.ok
         terms = [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in e.partners]
-        none = np.zeros(e.y.shape, bool)
-        for csid in sorted(set(geo.sources[k]) | set(geo.beyond_sources[k])):
-            px = geo.sources[k].get(csid, none)
-            bp = geo.beyond_sources[k].get(csid, none)
+        for csid in sorted(geo.sources[k]):
             if csid not in cache:
                 P1 = pass1_for(csid)
                 if (echo and own_ok and P1 is not None and not P1.reliable and int(csid) not in exclude
                         and hasattr(P1, 'has_design') and P1.has_design()):
                     ks = [q for q in range(n) if exps[q].use_data and exps[q].partners is not None
-                          and (csid in geo.sources[q] or csid in geo.beyond_sources[q])]
+                          and csid in geo.sources[q]]
                     P1 = echo_corrected(P1, exps, ks, own_light, cal_of)
                     echoed.add(csid)
                 cache[csid] = P1
             P1 = cache[csid]
             if P1 is None:
-                missing.add(csid)
-                unmod[k] |= px | bp
-                continue
+                if int(csid) in exclude:
+                    continue
+                raise MissingContaminant(f'source {sid}: the trace maps put source {csid} on its trace in '
+                                         f'{exposure_key(e.name)}, and source {csid} has no pass 1')
             if not P1.reliable:            # its pass 1 may carry the target's light: do not hand it back
                 unreliable.add(csid)
+            lit = geo.lit_from[k].get(csid, set()) if geo.lit_from is not None else set()
             add = np.zeros(e.y.shape)
             dadd = np.zeros(e.y.shape)
             add_ext = np.zeros(e.y.shape)          # the part of ``add`` past the contaminant's cutout
             dadd_ext = np.zeros(e.y.shape)
-            reached_ext = np.zeros(e.y.shape, bool)
-            covered = np.zeros(e.y.shape, bool)
-            nocal = np.zeros(e.y.shape, bool)
-            badt = np.zeros(e.y.shape, bool)
             for j, w in terms:
                 key = exposure_key(exps[j].name)
                 fr = P1.frames.get(key)
                 if fr is None:
-                    if P1.nosrc is not None and key not in P1.nosrc:
-                        unmod[k] |= px                 # light there, but no frame to predict it from
-                        missing_frame.add(csid)
+                    if (j in lit and int(csid) not in exclude and P1.nosrc is not None
+                            and key not in P1.nosrc):
+                        raise MissingContaminant(f'source {sid}: the trace maps put the light of source {csid} '
+                                                 f'in {key} on its trace, and its pass 1 has no frame there')
                     continue
                 ty, tx, ok = _place_sparse(fr, e.origin, e.y.shape)
-                ct = cal_of(j)[ty[ok], tx[ok]]
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    conv = ct / fr['cal'][ok].astype(float)
+                    conv = cal_of(j)[ty[ok], tx[ok]] / fr['cal'][ok].astype(float)
                 good = np.isfinite(conv)
                 img = fr['img'][ok].astype(float)
-                bad = ~good & (np.abs(img) > 0)
-                if gap_columns > 0:
-                    # the contaminant's own pixel has no calibration (no flat at its filter's
-                    # cut-on): bounded by continuity below; the target's has none: unmodelled
-                    own = bad & np.isfinite(ct)
-                    nocal[ty[ok][own], tx[ok][own]] = True
-                    bad &= ~own
-                unmod[k][ty[ok][bad], tx[ok][bad]] = True
-                badt[ty[ok][bad], tx[ok][bad]] = True
-                covered[ty[ok], tx[ok]] = True
                 np.add.at(add, (ty[ok][good], tx[ok][good]), w * img[good] * conv[good])
                 np.add.at(dadd, (ty[ok][good], tx[ok][good]), abs(w) * fr['err'][ok][good].astype(float) * conv[good])
                 if 'ext' in fr:
                     xg = good & np.asarray(fr['ext'], bool)[ok]
-                    reached_ext[ty[ok][xg], tx[ok][xg]] = True
                     np.add.at(add_ext, (ty[ok][xg], tx[ok][xg]), w * img[xg] * conv[xg])
                     np.add.at(dadd_ext, (ty[ok][xg], tx[ok][xg]),
                               abs(w) * fr['err'][ok][xg].astype(float) * conv[xg])
-            # pixels whose predicted light is known: the continuity rule extrapolates from these
-            # only (a covered pixel without calibration has no light in ``add``; read as zero it
-            # would bound everything beyond it: 2976 on 5215 at 4.42-4.48 um, round 5)
-            reached = covered & ~nocal & ~badt
-            if nocal.any():
-                unmod[k] |= unpredictable_gap(nocal, reached, add, sig, gap_columns, kappa=gap_kappa)
-            # pixels with the contaminant's light but no prediction: past its nominal range, and
-            # mapped pixels its pass-1 frames do not reach (its cutout or its spectrum ends short
-            # of the range). Unmodelled when the contaminant is bright enough to matter: its
-            # predicted light reaches the noise somewhere on the target's cutout, or (no
-            # in-range overlap) its pass-1 spectrum is detected at its red end
-            with np.errstate(invalid='ignore', divide='ignore'):
-                bright = bool(np.nanmax(np.where(np.isfinite(sig), np.abs(add) / sig, 0.0)) >= 1.0)
-            if not bright and not px.any():
-                bright = _red_end_detected(P1)
-            if bright:
-                unmod[k] |= bp & ~reached_ext      # past its range: predicted where its pass 1 extends there
-                if P1.nosrc is not None and not any(exposure_key(exps[j].name) in P1.nosrc for j, _ in terms):
-                    gap = px & ~covered
-                    if gap.any() and gap_columns > 0:
-                        gap = unpredictable_gap(gap, reached, add, sig, gap_columns, kappa=gap_kappa)
-                    unmod[k] |= gap
-            if not (px.any() or (bp & reached_ext).any()):
-                continue
             if int(csid) in exclude:       # modelled elsewhere (joint solve): only its light past its cutout
                 if add_ext.any():          # (not among the joint unknowns) is predicted, from pass 1
                     if P1.reliable:
@@ -1151,6 +1064,10 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
                         pred_u[k] += add_ext
                 continue
             if getattr(P1, 'joint', False):
+                if getattr(P1, 'ext_mask_only', False) and add_ext.any():
+                    # past its cutout from an unreliable pass 1: masking only, as in one pass
+                    pred_u[k] += add_ext
+                    add, dadd = add - add_ext, dadd - dadd_ext
                 pred_j[k] += add           # jointly solved: subtracted, never masked
                 dpred_j[k] += dadd
                 joint.add(csid)
@@ -1172,11 +1089,9 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
     for k in range(n):
         dpred[k] = np.maximum(dpred[k], DPRED_FLOOR * np.abs(pred[k]))
         pred[k] = pred[k] + pred_j[k]
-    out = Prediction(pred=pred, dpred=dpred, unmodelled=unmod, contributors=contrib, missing=missing,
-                     unreliable=unreliable, pred_unreliable=pred_u, have_maps=geo.have_maps,
-                     by_source=by_source, failed_open=geo.failed_open, beyond=geo.beyond,
-                     missing_frame=missing_frame, echoed=echoed, dpred_joint=dpred_j, joint=joint,
-                     excluded=exclude, pred_joint=pred_j)
+    out = Prediction(pred=pred, dpred=dpred, contributors=contrib, unreliable=unreliable, pred_unreliable=pred_u,
+                     have_maps=geo.have_maps, by_source=by_source, failed_open=geo.failed_open, echoed=echoed,
+                     dpred_joint=dpred_j, joint=joint, excluded=exclude, pred_joint=pred_j)
     # similar-brightness pair candidates: a contaminant above the noise on the target's
     # main shutter whose pass-1 flux is within a factor pair_ratio of the target's. The
     # flag itself (``pair_flag``) also needs the contaminant's light to matter in the
@@ -1275,9 +1190,8 @@ def apply(exps, P, mode='hybrid', kappa=1.0, dominance_kappa=1.0):
 
     Returns dict(overall, per_exposure, masked) with the fraction of the target's
     main-shutter pixels kept, and ``clean_pred`` / ``clean_pred_exposure``: the
-    fraction of main-shutter pixels where the predicted other-source light (and the
-    unmodelled pixels) stays below ``dominance_kappa`` times the noise, whatever the
-    mode did with them (in hybrid mode a well-predicted contaminant is subtracted,
+    fraction of main-shutter pixels where the predicted other-source light stays below
+    ``dominance_kappa`` times the noise, whatever the mode did with it (in hybrid mode a well-predicted contaminant is subtracted,
     not masked, so ``overall`` does not say how much of the trace it covers).
     Also ``failed_open``: the fraction of main-shutter pixels in failed-open shutters.
     ``mode``: mask | hybrid (see module doc)."""
@@ -1291,12 +1205,12 @@ def apply(exps, P, mode='hybrid', kappa=1.0, dominance_kappa=1.0):
         ms = main_shutter(e, c_plan)
         b = int((e.ok & ms).sum())
         sig = diff_sigma(exps, k)
-        drop = P.unmodelled[k].copy()
+        drop = np.zeros(e.y.shape, bool)
         # jointly solved light (``profile_joint``) is subtracted in both modes, never masked
         pj = P.pred_joint[k] if getattr(P, 'pred_joint', None) is not None else 0.0
         with np.errstate(invalid='ignore'):
             tot = np.abs(P.pred[k] + (P.pred_unreliable[k] if P.pred_unreliable is not None else 0.0))
-            dirty = P.unmodelled[k] | (tot > dominance_kappa * sig)
+            dirty = tot > dominance_kappa * sig
             if P.pred_unreliable is not None:
                 drop |= np.abs(P.pred_unreliable[k]) > kappa * sig
             if mode == 'mask':
@@ -1341,28 +1255,4 @@ def live_frames(exps, P, what='pred'):
         with np.errstate(invalid='ignore', divide='ignore'):
             a = v / e.pl_applied
         out[e.name] = np.nan_to_num(a[r0:r0 + ny, c0:c0 + nx])
-    return out
-
-
-def unmodelled_frames(exps, P, kappa=1.0):
-    """Pixels per science exposure whose other-source light is not in the prediction,
-    as 0/1 on the live cutout, keyed by file name, for drizzling (``UNMOD2D``): the
-    unmodelled pixels (light past a contaminant's range, contaminants without a pass
-    1 or a pass-1 frame, no calibration) and the pixels where a contaminant whose pass
-    1 is unreliable puts more than ``kappa`` times the noise (its light is masked in
-    the shape fit, never subtracted). Failed-open shutters are not included: their
-    sky cancels in the nod difference."""
-    out = {}
-    for k, e in enumerate(exps):
-        if not e.use_data or e.partners is None:
-            continue
-        u = P.unmodelled[k].copy()
-        if P.failed_open is not None:
-            u &= ~P.failed_open[k] | (P.beyond[k] if P.beyond is not None else False)
-        if P.pred_unreliable is not None:
-            sig = diff_sigma(exps, k)
-            with np.errstate(invalid='ignore'):
-                u |= np.abs(P.pred_unreliable[k]) > kappa * sig
-        r0, c0, ny, nx = e.cutout
-        out[e.name] = u[r0:r0 + ny, c0:c0 + nx].astype(float)
     return out

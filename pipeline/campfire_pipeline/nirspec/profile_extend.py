@@ -1,14 +1,13 @@
 """
 A source's light past the long-wavelength end of its cutout, for predicting it on
-other sources (prototype, extraction v2; ``contam_pass1_extend``).
+other sources (extraction v2; every pass 1, every disperser).
 
 jwst cuts each slitlet at the end of the disperser's nominal wavelength range
-(``wavelengthrange``: G395M/F290LP 2.87-5.27 um), but the long-pass filter does not
-stop the light there: a bright source's trace continues towards the detector's
-cut-off (~5.5 um). The trace maps follow it (``trace_overlap``, ``BEYOND_RANGE``, to
-5.6 um), so the pixels where it lands on another source's trace are known, but pass 1
-had no spectrum for them and they were masked as unpredicted (2976 on 5215: 4.42-4.72
-um of 5215's trace).
+(``wavelengthrange``: G395M/F290LP 2.87-5.27 um, PRISM 0.6-5.3 um), but the light does
+not stop there: a bright source's trace continues towards the detector's cut-off
+(~5.5 um). The trace maps follow it (``trace_overlap``, to 5.6 um), so the pixels where
+it lands on another source's trace are known; this module gives pass 1 a spectrum
+there (2976 on 5215: 4.42-4.72 um of 5215's trace).
 
 There is no calibration there: the F290LP/G395M fast flats stop at 5.27-5.285 um, the
 photom response at 5.20 um. None is needed. The prediction moves a contaminant's light
@@ -41,8 +40,8 @@ from scipy.sparse.linalg import splu
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec import trace_overlap as TO
 
-EXT_ROWS = TO.BEYOND_ROWS
-EXT_MAX_WAVE = TO.BEYOND_MAX_WAVE
+EXT_ROWS = TO.PAST_ROWS
+EXT_MAX_WAVE = TO.PAST_MAX_WAVE
 DETECTOR = 2048
 MIN_PIXELS = 30
 BACK = 80            # columns inside the cutout the region starts at (G395M: ~0.14 um)
@@ -112,7 +111,7 @@ def _rate(path_rate, rows, cols):
 
 def _others_mask(exps, k_list, maps, sid, rows, cols):
     """Pixels of the canvas lit by another source's source shutter in exposure k's own
-    frame or a partner's (geometry of the trace maps, beyond-range light included)."""
+    frame or a partner's (geometry of the trace maps, light past their range included)."""
     from campfire_pipeline.nirspec import profile_contam as CT
     mask = {k: np.zeros((rows.size, cols.size), bool) for k in k_list}
     region = (int(cols[0]), int(rows[0]), int(cols.size), int(rows.size))
@@ -129,7 +128,7 @@ def _others_mask(exps, k_list, maps, sid, rows, cols):
             slits = mlist[j].slits
             for r in np.unique(jidx):
                 rec = slits[int(r)]
-                if rec['kind'] == 'slitlet' and int(rec['source_id']) == int(sid):
+                if rec['kind'] == 'sky' or (rec['kind'] == 'slitlet' and int(rec['source_id']) == int(sid)):
                     continue
                 sel = jidx == r
                 if rec['kind'] == 'slitlet':
@@ -171,14 +170,14 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
             except Exception:                        # noqa: BLE001 - no WCS, no extension for this exposure
                 continue
             with np.errstate(invalid='ignore'):
-                beyond = np.isfinite(ys) & np.isfinite(lam) & (lam > lam_max_in) & (lam <= EXT_MAX_WAVE)
+                past = np.isfinite(ys) & np.isfinite(lam) & (lam > lam_max_in) & (lam <= EXT_MAX_WAVE)
             dy = np.abs(np.gradient(np.where(np.isfinite(ys), ys, 0.0), axis=0))
             gimg = np.zeros(ys.shape)
-            if e.has_source and beyond.any():
-                yv, lv, dv = ys[beyond], lam[beyond], dy[beyond]
-                gimg[beyond] = M.throughput(p, eoff, k, lv, dv) * M.image(p, eoff, k, yv, lv, dv)
-            geo[k] = (ys, lam, gimg, beyond)
-            per_exp[k] = (rows, cols, ys, lam, gimg, beyond)
+            if e.has_source and past.any():
+                yv, lv, dv = ys[past], lam[past], dy[past]
+                gimg[past] = M.throughput(p, eoff, k, lv, dv) * M.image(p, eoff, k, yv, lv, dv)
+            geo[k] = (ys, lam, gimg, past)
+            per_exp[k] = (rows, cols, ys, lam, gimg, past)
         if not geo:
             continue
         keys = {k: CT.exposure_key(exps[k].name) for k in ks}
@@ -282,13 +281,13 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
     else:
         fs, es = flux_raw, err
     frames = {}
-    for k, (rows, cols, ys, lam, gimg, beyond) in per_exp.items():
+    for k, (rows, cols, ys, lam, gimg, past) in per_exp.items():
         if not exps[k].has_source:
             continue
         with np.errstate(invalid='ignore'):
             img = gimg * np.interp(np.nan_to_num(lam), grid, np.nan_to_num(fs), left=0.0, right=0.0)
             eim = np.abs(gimg) * np.interp(np.nan_to_num(lam), grid, np.nan_to_num(es), left=0.0, right=0.0)
-        keep = beyond & np.isfinite(img) & (np.abs(img) > 0)
+        keep = past & np.isfinite(img) & (np.abs(img) > 0)
         if keep.any():
             frames[CT.exposure_key(exps[k].name)] = dict(rows=rows, cols=cols, img=np.where(keep, img, 0.0),
                                                          err=np.where(keep, eim, 0.0), keep=keep)

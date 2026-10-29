@@ -101,21 +101,14 @@ def test_nod_contamination_signs_and_shutters():
     assert any(r.in_target_shutter().any() for r in recs if r.sign < 0)
 
 
-def test_beyond_range_pixels_are_flagged_and_unmodelled():
-    """A contaminant's trace continued past its nominal range (columns 80+) keeps its
-    pixels in the map with the BEYOND_RANGE flag; per source they are unmodelled
-    (masked for the shape fit), not attributed to the contaminant's pass 1."""
+def test_past_range_pixels_are_the_contaminants_own():
+    """A contaminant's trace continued past its nominal range (columns 80+) is part of
+    its trace like any other: the geometry attributes those pixels to it (its pass 1 is
+    extended there), with nothing set aside."""
     from campfire_pipeline.nirspec import profile_contam as CT
-    centres = [-MSA_SLIT_PITCH, 0.0, MSA_SLIT_PITCH]
-    maps = []
-    for shift in (0, 5, -5):
-        t = _trace(_rec('1', 1), 20 + shift, 6, 34, 0, NX, centres)
-        rec, cen, (p, y, l) = _trace(_rec('2', 2), 12 + shift, 0, 26, 50, NX, centres)
-        beyond = (p % NX) >= 80
-        maps.append(TO.TraceMap.from_traces([t, (rec, cen, (p, y, l, beyond))], (NY, NX)))
+    maps = _maps()
     recs = TO.nod_contamination(maps, 1, (0, 0, NX, NY))
-    assert all(np.array_equal(r.beyond, r.ix >= 80) for r in recs)
-    assert any(r.beyond.any() for r in recs) and any((~r.beyond).any() for r in recs)
+    assert any((r.ix >= 80).any() for r in recs)
 
     class E:                                    # the attributes geometry() reads
         def __init__(self, k):
@@ -127,12 +120,139 @@ def test_beyond_range_pixels_are_flagged_and_unmodelled():
     mp = {CT.exposure_key(e.name): m for e, m in zip(exps, maps)}
     g = CT.geometry(exps, 1, mp)
     for k in range(3):
-        assert not g.sources[k][2][:, 80:].any()             # never predicted from pass 1 there
-        b = g.beyond_sources[k][2]                           # kept per source; predict() decides
-        assert b[:, 80:].any() and not b[:, :80].any()
-        assert g.mask[k][:, 80:].any()
-    old = CT.geometry(exps, 1, mp, beyond='ignore')          # as before: those pixels unknown
-    assert not any(b for b in old.beyond_sources) and not old.mask[0][:, 80:].any()
+        assert g.sources[k][2][:, 80:].any()
+        assert np.array_equal(g.sources[k][2], g.mask[k])
+        assert g.lit_from[k][2] <= {0, 1, 2} and g.lit_from[k][2]
+
+
+def _maps_out_of_slit():
+    """As ``_maps``, but in the third nod the target's source sits outside its slitlet
+    (a short slitlet in a 3-point nod): the slitlet holds only sky there."""
+    centres = [-MSA_SLIT_PITCH, 0.0, MSA_SLIT_PITCH]
+    maps = []
+    for i, shift in enumerate((0, 5, -5)):
+        rec = _rec('33', 1)
+        rec['lit'] = i < 2
+        t = _trace(rec, 20 + shift, 6, 34, 0, NX, centres)
+        c = _trace(_rec('2', 2), 12 + shift, 0, 26, 50, NX, centres)
+        maps.append(TO.TraceMap.from_traces([t, c], (NY, NX)))
+    return maps
+
+
+def test_slitlet_without_its_source_keeps_its_id_and_lights_nothing():
+    """ember_cosmos_p14 slitlet 33 (source 15944): at the third dither point jwst calls
+    it background-only. The map keeps the source's id there, so the source never meets
+    its own slitlet as another source, and marks no source shutter, so no other source
+    sees light from it in that nod (its sky cancels)."""
+    maps = _maps_out_of_slit()
+    assert maps[2].rows_of(1).size == 1                                # still the target's slitlet
+    assert not TO.TraceMap.source_shutter(maps[2].flag[maps[2].index == 0]).any()
+    assert TO.TraceMap.source_shutter(maps[0].flag[maps[0].index == 0]).any()
+    recs = TO.nod_contamination(maps, 1, (0, 0, NX, NY))
+    assert recs and all(r.source_id == 2 for r in recs)
+    # seen from the other source: the target's slitlet adds light from nods 1 and 2 only
+    recs = TO.nod_contamination(maps, 2, (0, 0, NX, NY))
+    assert recs and all(r.source_id == 1 and r.from_exposure != 2 for r in recs)
+
+
+def test_sky_slitlet_is_not_a_contaminant():
+    centres = [-MSA_SLIT_PITCH, 0.0, MSA_SLIT_PITCH]
+    maps = []
+    for shift in (0, 5, -5):
+        t = _trace(_rec('1', 1), 20 + shift, 6, 34, 0, NX, centres)
+        s = _trace(_rec('7', 0, kind='sky'), 12 + shift, 0, 26, 50, NX, centres)
+        maps.append(TO.TraceMap.from_traces([t, s], (NY, NX)))
+    assert maps[0].count.max() == 2                                    # in the map ...
+    assert TO.nod_contamination(maps, 1, (0, 0, NX, NY)) == []         # ... but no light that stays
+
+
+def _msa(path, rows, sources):
+    """A metafile with SHUTTER_INFO rows (slitlet, column, dither, source, background,
+    primary) of configuration 1 and SOURCE_INFO (source, ra, dec)."""
+    from astropy.table import Table
+    from astropy.io import fits
+    t = Table(rows=[(s, 1, 1, 100, c, sid, bg, 'OPEN', np.nan, np.nan, d, pr, 'NONE')
+                    for s, c, d, sid, bg, pr in rows],
+              names=('slitlet_id', 'msa_metadata_id', 'shutter_quadrant', 'shutter_row', 'shutter_column',
+                     'source_id', 'background', 'shutter_state', 'estimated_source_in_shutter_x',
+                     'estimated_source_in_shutter_y', 'dither_point_index', 'primary_source', 'fixed_slit'))
+    src = Table(rows=sources, names=('source_id', 'ra', 'dec'))
+    sh, so = fits.table_to_hdu(t), fits.table_to_hdu(src)
+    sh.name, so.name = 'SHUTTER_INFO', 'SOURCE_INFO'
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.zeros((2, 2)), name='SCI'), sh, so]).writeto(path, overwrite=True)
+
+
+def _p14_like(tmp_path):
+    """Slitlet 33: two shutters, source 15944 in shutter 28 at dither 1, 27 at dither 2,
+    out of the slitlet at dither 3 (jwst: background-only, source id 0 in every row).
+    Slitlet 40: three shutters, source 500 in the middle one at every dither, a
+    duplicate catalogue entry 501 of it in the same slitlet. Slitlet 9: sky only."""
+    rows = [(33, 27, 1, 15944, 'Y', 'N'), (33, 28, 1, 15944, 'N', 'Y'),
+            (33, 27, 2, 15944, 'N', 'Y'), (33, 28, 2, 15944, 'Y', 'N'),
+            (33, 27, 3, 0, 'Y', 'N'), (33, 28, 3, 0, 'Y', 'N')]
+    for d in (1, 2, 3):
+        rows += [(40, 60, d, 501, 'Y', 'N'), (40, 61, d, 500, 'N', 'Y'), (40, 62, d, 0, 'Y', 'N')]
+        rows += [(9, 80, d, 0, 'Y', 'N')]
+    path = str(tmp_path / 'jw00001001001_01_msa.fits')
+    _msa(path, rows, [(15944, 150.0, 2.0), (500, 150.1, 2.1), (501, 150.1, 2.1 + 1e-6)])
+    return path
+
+
+def test_slitlet_sources_names_each_slitlet_by_its_source(tmp_path):
+    path = _p14_like(tmp_path)
+    for d, lit33 in ((1, True), (2, True), (3, False)):
+        s = TO.slitlet_sources(path, 1, d)
+        assert s[33] == (15944, lit33)
+        assert s[40] == (500, True)                       # the duplicate entry 501 is never the name
+        assert s[9] == (None, False)                      # sky only
+
+
+def test_stuck_closed_shutters_leave_the_configuration(tmp_path):
+    """Stuck-closed shutters (numbered along the source's slitlet from 1, as stage 2
+    numbers them) go at every dither point: the slitlet's source is out of it where its
+    shutter is closed, and a slitlet with every shutter closed is gone."""
+    from astropy.table import Table
+    path = _p14_like(tmp_path)
+    out = str(tmp_path / 'stuck_msa.fits')
+    n = TO.drop_stuck_shutters(path, 1, {500: [2]}, out_file=out)
+    assert n == 3                                         # column 61 at three dither points
+    t = Table.read(out, hdu='SHUTTER_INFO')
+    assert 61 not in t['shutter_column'][t['slitlet_id'] == 40]
+    s = TO.slitlet_sources(out, 1, 1, catalogue_file=path)
+    assert s[40] == (None, False)                       # its only source shutter passes no light: sky
+    n = TO.drop_stuck_shutters(path, 1, {15944: [1, 2]}, out_file=out)
+    t = Table.read(out, hdu='SHUTTER_INFO')
+    assert n == 6 and not (t['slitlet_id'] == 33).any()
+    assert TO.stuck_signature({}) == '' and TO.stuck_signature({1: [2, 1]}) == TO.stuck_signature({1: [1, 2]})
+    assert TO.stuck_signature({1: [1]}) != TO.stuck_signature({1: [2]})
+
+
+def test_stuck_primary_shutter_beside_a_second_source(tmp_path):
+    """ember_cosmos_p9 slitlet 52: a second catalogue source (877752) sits in another
+    shutter of 825646's slitlet. Where 825646's shutter is stuck closed, that dither
+    point has no primary left: its other main shutter becomes background (jwst needs a
+    primary for a main shutter), and the map has no source in the slitlet there."""
+    from astropy.table import Table
+    rows = [(52, 7, 1, 877752, 'N', 'N'), (52, 8, 1, 825646, 'N', 'Y'), (52, 9, 1, 825646, 'Y', 'N'),
+            (52, 7, 2, 825646, 'N', 'Y'), (52, 8, 2, 825646, 'Y', 'N'), (52, 9, 2, 877752, 'N', 'N')]
+    path = str(tmp_path / 'm_msa.fits')
+    _msa(path, rows, [(825646, 150.0, 2.0), (877752, 150.0, 2.01)])
+    out = str(tmp_path / 'm_stuck.fits')
+    assert TO.drop_stuck_shutters(path, 1, {825646: [2]}, out_file=out) == 2
+    t = Table.read(out, hdu='SHUTTER_INFO')
+    d1 = t[t['dither_point_index'] == 1]
+    assert list(d1['background']) == ['Y', 'Y']
+    assert TO.slitlet_sources(out, 1, 1, catalogue_file=path)[52] == (825646, False)
+    assert TO.slitlet_sources(out, 1, 2, catalogue_file=path)[52] == (825646, True)
+
+
+def test_map_is_current_follows_the_stuck_list(tmp_path):
+    m = _maps()[0]
+    m.meta = dict(MAPVER=TO.MAP_VERSION, STUCK=TO.stuck_signature({5: [1]}))
+    p = str(tmp_path / 'x_tracemap.fits')
+    m.write(p)
+    assert TO.map_is_current(p) and TO.map_is_current(p, stuck={5: [1]})
+    assert not TO.map_is_current(p, stuck={}) and not TO.map_is_current(p, stuck={5: [2]})
 
 
 def test_shared_signal_recovers_injected_light():
