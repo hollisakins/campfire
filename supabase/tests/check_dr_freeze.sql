@@ -311,6 +311,19 @@ BEGIN
      OR (r.counts->>'nirspec_programs')::int <> (SELECT count(DISTINCT program_slug) FROM dr_spectra WHERE tag = 'DR-zzz') THEN
     RAISE EXCEPTION 'by_component / nirspec_programs disagree with the frozen tables: %', r.counts;
   END IF;
+  -- the program roster (P5-3): one entry per frozen program with its public
+  -- state at the freeze, its spectra and the distinct pipeline versions
+  IF (SELECT count(*) FROM jsonb_object_keys(r.counts->'programs')) <> (SELECT count(DISTINCT program_slug) FROM dr_spectra WHERE tag = 'DR-zzz')
+     OR NOT (r.counts->'programs'->'zzz_dr_pub'->>'is_public')::boolean
+     OR (r.counts->'programs'->'zzz_dr_priv'->>'is_public')::boolean
+     OR EXISTS (SELECT 1 FROM jsonb_each(r.counts->'programs') AS p(slug, v)
+                WHERE (v->>'spectra')::int <> (SELECT count(*) FROM dr_spectra WHERE tag = 'DR-zzz' AND program_slug = p.slug)
+                   OR jsonb_array_length(v->'cfpipe_versions') <> (SELECT count(DISTINCT cfpipe_version) FROM dr_spectra
+                                                                    WHERE tag = 'DR-zzz' AND program_slug = p.slug AND cfpipe_version IS NOT NULL)
+                   OR jsonb_array_length(v->'crds_contexts') <> (SELECT count(DISTINCT crds_context) FROM dr_spectra
+                                                                  WHERE tag = 'DR-zzz' AND program_slug = p.slug AND crds_context IS NOT NULL)) THEN
+    RAISE EXCEPTION 'program roster disagrees with the frozen tables: %', r.counts->'programs';
+  END IF;
 
   -- spectra: the 5 published ones of active objects + the inactive object's
   -- published spectrum is NOT frozen (its object is inactive -> object_id NULL

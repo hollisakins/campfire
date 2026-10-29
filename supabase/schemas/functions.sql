@@ -12103,6 +12103,17 @@ BEGIN
                                            count(*) FILTER (WHERE m.product_type = 'nircam_mosaic') AS n_mosaics
                                     FROM dr_manifest m WHERE m.tag = p_tag AND m.component <> 'page' GROUP BY m.component) t),
              'nirspec_programs', (SELECT count(DISTINCT s.program_slug) FROM dr_spectra s WHERE s.tag = p_tag),
+             -- per program: its public state at the freeze (the programs the DOI
+             -- record holds), its spectra, the cfpipe versions and CRDS contexts
+             -- they were reduced with: what the citation sentence of a reader
+             -- holding proprietary programs says (`campfire cite`, P5-3)
+             'programs', (SELECT COALESCE(jsonb_object_agg(t.program_slug, jsonb_build_object(
+                                 'is_public', t.is_public, 'spectra', t.n,
+                                 'cfpipe_versions', t.versions, 'crds_contexts', t.contexts)), '{}'::jsonb)
+                          FROM (SELECT s.program_slug, bool_or(s.is_public) AS is_public, count(*) AS n,
+                                       COALESCE(jsonb_agg(DISTINCT s.cfpipe_version) FILTER (WHERE s.cfpipe_version IS NOT NULL), '[]'::jsonb) AS versions,
+                                       COALESCE(jsonb_agg(DISTINCT s.crds_context) FILTER (WHERE s.crds_context IS NOT NULL), '[]'::jsonb) AS contexts
+                                FROM dr_spectra s WHERE s.tag = p_tag GROUP BY s.program_slug) t),
              'nirspec_fields', (SELECT count(DISTINCT t.field) FROM dr_spectra s
                                 JOIN dr_targets t ON t.tag = s.tag AND t.target_id = s.target_id
                                 WHERE s.tag = p_tag)),

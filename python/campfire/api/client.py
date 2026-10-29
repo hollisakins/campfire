@@ -464,6 +464,22 @@ class APIClient:
         _handle_response_error(response, "listing data releases")
         return list(response.json().get("releases", []))
 
+    def whoami(self) -> dict:
+        """The caller (``GET /api/v1/auth/whoami``): user, admin flag and, since
+        P5-3, ``latest_dr`` (the newest published data release, or None) and
+        ``access_fingerprint`` (a hash of the caller's program set)."""
+        response = self._session.get("/auth/whoami", timeout=15)
+        _handle_response_error(response, "whoami")
+        return dict(response.json())
+
+    def release_files(self, tag: str) -> dict:
+        """The record of a data release with the export files the caller may
+        read (``GET /api/v1/dr/<tag>/files``): what ``campfire pull --dr``
+        loads and what ``campfire cite`` reads when the release is not pulled."""
+        response = self._session.get(f"/dr/{tag}/files", timeout=60)
+        _handle_response_error(response, f"release {tag}")
+        return dict(response.json())
+
     def identify_files(self, files: List[dict]) -> List[dict]:
         """What the archive knows about files by their bytes (``POST
         /api/v1/identify``, P5-2). ``files`` is a list of ``{"sha256":

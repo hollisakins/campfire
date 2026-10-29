@@ -388,3 +388,12 @@ def test_a_failed_rebuild_leaves_the_previous_store(release, tmp_path, monkeypat
     finally:
         store.close()
     assert not [p for p in (root / 'meta').iterdir() if p.name.startswith('campfire-db-')]
+
+
+def test_a_load_writes_the_citation_readme_beside_release_json(release, tmp_path):
+    load(release, tmp_path)
+    root = release_dir(tmp_path, TAG)
+    text = (root / 'README.md').read_text()
+    assert text.startswith(f'# CAMPFIRE {TAG}')
+    assert f'CAMPFIRE {TAG} (doi:10.1/x).' in text          # no roster in this fixture: the DOI alone
+    assert 'Programs held in this copy: pa, pb.' in text and f'Campfire(dr={TAG!r})' in text

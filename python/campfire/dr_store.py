@@ -481,4 +481,16 @@ def load_release(session, tag: str, *, data_dir: Optional[Path] = None,
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(meta, f, indent=2, sort_keys=True)
     os.replace(tmp, root / 'release.json')
+    try:
+        # the citation sentence at the top of the tree (design §4.6); a
+        # courtesy, never a reason to fail a load
+        from .cite import versions_from_store, write_readme
+        s = open_store(root)
+        try:
+            write_readme(root, meta, versions_of=lambda progs: versions_from_store(s, progs))
+        finally:
+            s.close()
+    except Exception as e:  # noqa: BLE001
+        if log:
+            log(f"  (README not written: {e})")
     return report

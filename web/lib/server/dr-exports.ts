@@ -142,3 +142,21 @@ export async function fetchLedger(
   if (error) throw new Error(`dr_exports lookup failed: ${error.message}`);
   return (data as DrExportLedgerRow[] | null) ?? [];
 }
+
+/**
+ * The newest published release (by `published_at`), or null: the `latest_dr`
+ * of /api/v1/auth/whoami (P5-3), which the sync tail announces.
+ */
+export async function fetchLatestPublishedRelease(
+  supabase: SupabaseClient,
+): Promise<Pick<DrReleaseRow, 'tag' | 'doi' | 'published_at'> | null> {
+  const { data, error } = await supabase
+    .from('dr_releases')
+    .select('tag, doi, published_at')
+    .eq('state', 'published')
+    .order('published_at', { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`dr_releases lookup failed: ${error.message}`);
+  return (data as Pick<DrReleaseRow, 'tag' | 'doi' | 'published_at'> | null) ?? null;
+}

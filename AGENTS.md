@@ -476,7 +476,23 @@ returns facts per file (the live spectra, the release members with `current` = t
 frozen science hash, the archive tombstones keyed by the sha256 in the archive key); `campfire/identify.py` hashes
 (whole-file sha256; the science hash through `campfire_pipeline.metadata.science_hash` when installed, never a copy
 of it), looks up the live mirror and every release store on the machine, and phrases the answer. Guard
-`check_identify.sql`; never sentence-build in SQL.
+`check_identify.sql`; never sentence-build in SQL. **P5-3:** the freeze writes a per-program roster into
+`dr_releases.counts.programs` (`{slug: {is_public, spectra, cfpipe_versions, crds_contexts}}`, the public state at the
+freeze being what the DOI record holds; `check_dr_freeze.sql` asserts it). `campfire cite TAG` / `Campfire.cite()`
+(`campfire/cite.py`) build design §4.5's sentence from the release record (`release.json` of a pulled tree, else
+`GET /dr/<tag>/files`), the programs the reader holds (the spectra stream's scopes) and that roster: public programs
+through the DOI, the others described with their pipeline versions (the pulled store's `spectra` when there is one);
+a live client answers "generate a provenance file"; `load_release` writes the sentence into `dr/<tag>/README.md`.
+`campfire provenance [--list|--obs|--program|--object] [-o FILE]` (`campfire/provenance.py`, format
+`campfire-provenance/1`) records from the local ledgers only the objects as they are now and every spectrum's file
+with the sha256 of the bytes on disk beside the registry's and the pulled releases holding them; `provenance check
+FILE [--dr TAG] [--offline]` re-hashes, asks `identify` about the recorded bytes, compares science hashes against a
+pulled release and exits 1 on a modified or unresolvable file. `/api/v1/auth/whoami` carries `latest_dr` (the newest
+published release) and `access_fingerprint` (sha256 of the admin flag + sorted accessible slugs,
+`web/lib/server/access-fingerprint.ts`), on the authenticated endpoint and not the public hour-cached
+`/api/v1/version`; the tail of `campfire sync` (`_sync_tail`) announces the release and, when the fingerprint moved
+since the last full sync (`_meta.access_fingerprint`), asks for `sync --full`, since a grant bumps no `updated_at`.
+Client 0.7.0; the floor stays 0.5.0 (D-P5-1).
 
 **Deploy auth (issue #250).** Two decisions, kept independent:
 
