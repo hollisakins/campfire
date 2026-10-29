@@ -185,34 +185,30 @@ def _other_source_columns(c, slitlet_id):
     own_col = int(own[0]) if len(own) else None
     cols = sorted(set(int(v) for v in rows['shutter_column']))
     others = sorted({int(v) for v in src['shutter_column'] if own_col is None or int(v) != own_col})
-    # the source's shutter column at every dither point of this configuration (a nod can
-    # move it out of a short slitlet: no primary row at that point, ``own_col`` None)
-    every = shut[(shut['msa_metadata_id'] == c.msametid) & (shut['slitlet_id'] == slitlet_id)
-                 & (shut['primary_source'] == 'Y') & (shut['source_id'] == c.source_id)]
-    per_dither = {}
-    if 'dither_point_index' in shut.colnames:
-        for d, col in zip(every['dither_point_index'], every['shutter_column']):
-            per_dither[int(d)] = int(col)
-    return own_col, others, cols, per_dither
+    return own_col, others, cols
 
 
-def source_column_when_out(per_dither, dither):
-    """The shutter column a source occupies at ``dither`` when the metafile lists no
-    primary shutter for it there (the nod moved it out of its slitlet), extrapolated from
-    the dither points that do list one: the pattern steps a constant integer number of
-    columns per dither point. None when fewer than two points are known or the step is
-    not constant (the position cannot be inferred)."""
-    known = sorted((int(d), int(c)) for d, c in per_dither.items() if int(d) != int(dither))
-    if len(known) < 2:
+def _source_radec(c):
+    """The catalogue position of the canonical's source from the original metafile's
+    SOURCE_INFO table, or None when it is not listed."""
+    hdr = fits.getheader(c.rate_path)
+    metafile = os.path.join(c.workspace, os.path.basename(hdr.get('OGMETFL') or hdr['MSAMETFL']))
+    from astropy.table import Table
+    t = Table.read(metafile, hdu='SOURCE_INFO')
+    r = t[t['source_id'] == c.source_id]
+    if not len(r):
         return None
-    steps = {(c2 - c1) / (d2 - d1) for (d1, c1), (d2, c2) in zip(known[:-1], known[1:])}
-    if len(steps) != 1:
-        return None
-    step = steps.pop()
-    if step != int(step):
-        return None
-    d0, c0 = known[0]
-    return int(c0 + step * (int(dither) - d0))
+    return float(r['ra'][0]), float(r['dec'][0])
+
+
+def source_slit_position(slit, ra, dec, pitch):
+    """Where a sky position falls in a slit's frame, in shutter pitches from the
+    'x' shutter's centre, through the slit WCS (``world`` -> ``slit_frame``, divided
+    by the slit's y scale as the pixel coordinates are). Exact for any source at any
+    dither point, whereas jwst's ``source_ypos`` is the planned position and is 0
+    when the metafile lists no primary shutter for the source."""
+    _, ys, _ = slit.meta.wcs.get_transform('world', 'slit_frame')(ra, dec, 2.0e-6)
+    return float(ys) / pitch
 
 
 def segment_map(j, f, state):
@@ -294,7 +290,7 @@ def pixel_samples(c, counter, source_pad_px=2.0):
     ys = np.asarray(ys, float) / pitch
     state = str(s.shutter_state)
     slitlet_id = int(s.slitlet_id or -1)
-    m.close()
+    planned = s.source_ypos is not None and abs(float(s.source_ypos)) > 0
 
     factor = np.full(sci.shape, 1.0 / pix_sr)
     if pu is not None and pp is not None and str(hs.get('PTHLOSS', 'POINT')).upper() == 'POINT':
@@ -329,21 +325,23 @@ def pixel_samples(c, counter, source_pad_px=2.0):
     # Normally 0. When the nod moved the source out of a short slitlet, jwst marks no
     # primary shutter: it names the slitlet background, writes an 'x' on the first
     # shutter with source_ypos 0, and stage 2a keeps the product under the source's id.
-    # The real source then sits in a closed shutter beyond the slitlet's end; its column
-    # is extrapolated from the other dither points so the shutter next to it is padded
-    # like any shutter next to a source, and the fake 'x' shutter is measured as sky.
+    # The real source then sits beyond the slitlet's end (or, for a secondary source,
+    # wherever the nod took it); the slit WCS places its catalogue position, so the
+    # shutter next to it is padded like any shutter next to a source and the fake 'x'
+    # shutter is measured as sky.
     src_offset = 0.0
     others, own_col, cols = [], None, []
     try:
-        own_col, others, cols, per_dither = _other_source_columns(c, slitlet_id)
+        own_col, others, cols = _other_source_columns(c, slitlet_id)
     except Exception as e:                # metafile not at hand: keep the pixels
         warnings.warn(f'{os.path.basename(c.path)}: no metafile for other sources ({e})')
-        per_dither = None
-    if per_dither is not None and own_col is None:
-        real = source_column_when_out(per_dither, c.dither)
-        if real is None or not (0 <= kx < len(cols)):
-            raise ValueError('source left its slitlet at this dither point; its position cannot be inferred')
-        src_offset = float(real - cols[kx])
+    if own_col is None and not planned:
+        radec = _source_radec(c)
+        if radec is None:
+            m.close()
+            raise ValueError('source left its slitlet at this dither point and is not in SOURCE_INFO')
+        src_offset = source_slit_position(s, *radec, pitch)
+    m.close()
     ref_col = own_col if own_col is not None else (cols[kx] if 0 <= kx < len(cols) else None)
     good &= ~(np.abs(ys - src_offset) < 0.5 + pad)
     if src_offset == 0:
@@ -671,9 +669,8 @@ def write_reference(tables, template_path, out_path, provenance):
     phdr['CFBSNOBS'] = (len(provenance.get('observations', [])), 'observations stacked')
     phdr['CFBSNPIX'] = (int(provenance.get('n_pixels', 0)), 'empty-shutter pixels in the stack')
     phdr['CFBSNSHU'] = (int(provenance.get('n_shutters', 0)), 'clean empty shutters in the stack')
-    for key in list(phdr.keys()):
-        if key == 'HISTORY':
-            del phdr['HISTORY']
+    if 'HISTORY' in phdr:
+        del phdr['HISTORY']               # removes every HISTORY card of the template
     phdr['HISTORY'] = 'Derived by campfire_pipeline/data/Generate_Barshadow_Cals.py from CAMPFIRE stage-2a'
     phdr['HISTORY'] = 'canonicals: the empty shutters of every slitlet, pixels divided by the pooled sky'
     phdr['HISTORY'] = 'measured at the shutter centres, binned per reference segment, row and column;'
