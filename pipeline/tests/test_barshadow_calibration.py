@@ -119,3 +119,14 @@ def test_write_reference_roundtrip(tmp_path):
     back = B.load_table(str(out))
     assert back['grid'].n_w == grid.n_w
     assert np.allclose(back['data1x1'], t['data1x1'], atol=1e-6)
+
+
+def test_source_column_when_out():
+    # a three-point nod stepping one column down: the source leaves a two-shutter slitlet at dither 3
+    assert B.source_column_when_out({1: 28, 2: 27}, 3) == 26
+    # out at dither 1 instead, stepping up
+    assert B.source_column_when_out({2: 27, 3: 28}, 1) == 26
+    # a single known point gives no direction; an irregular pattern no step
+    assert B.source_column_when_out({1: 28}, 3) is None
+    assert B.source_column_when_out({1: 28, 2: 27, 3: 27}, 4) is None
+    assert B.source_column_when_out({}, 2) is None

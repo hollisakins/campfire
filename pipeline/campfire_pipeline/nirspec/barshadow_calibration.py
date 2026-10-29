@@ -185,7 +185,34 @@ def _other_source_columns(c, slitlet_id):
     own_col = int(own[0]) if len(own) else None
     cols = sorted(set(int(v) for v in rows['shutter_column']))
     others = sorted({int(v) for v in src['shutter_column'] if own_col is None or int(v) != own_col})
-    return own_col, others, cols
+    # the source's shutter column at every dither point of this configuration (a nod can
+    # move it out of a short slitlet: no primary row at that point, ``own_col`` None)
+    every = shut[(shut['msa_metadata_id'] == c.msametid) & (shut['slitlet_id'] == slitlet_id)
+                 & (shut['primary_source'] == 'Y') & (shut['source_id'] == c.source_id)]
+    per_dither = {}
+    if 'dither_point_index' in shut.colnames:
+        for d, col in zip(every['dither_point_index'], every['shutter_column']):
+            per_dither[int(d)] = int(col)
+    return own_col, others, cols, per_dither
+
+
+def source_column_when_out(per_dither, dither):
+    """The shutter column a source occupies at ``dither`` when the metafile lists no
+    primary shutter for it there (the nod moved it out of its slitlet), extrapolated from
+    the dither points that do list one: the pattern steps a constant integer number of
+    columns per dither point. None when fewer than two points are known or the step is
+    not constant (the position cannot be inferred)."""
+    known = sorted((int(d), int(c)) for d, c in per_dither.items() if int(d) != int(dither))
+    if len(known) < 2:
+        return None
+    steps = {(c2 - c1) / (d2 - d1) for (d1, c1), (d2, c2) in zip(known[:-1], known[1:])}
+    if len(steps) != 1:
+        return None
+    step = steps.pop()
+    if step != int(step):
+        return None
+    d0, c0 = known[0]
+    return int(c0 + step * (int(dither) - d0))
 
 
 def segment_map(j, f, state):
@@ -298,16 +325,34 @@ def pixel_samples(c, counter, source_pad_px=2.0):
     rows_per_pitch = float(np.nanmedian(np.abs(np.diff(ys, axis=0)))) if ys.shape[0] > 1 else 1.0
     px_per_pitch = 1.0 / rows_per_pitch if rows_per_pitch > 0 else 5.0
     pad = source_pad_px / px_per_pitch
-    good &= ~((k == 0) | (np.abs(ys) < 0.5 + pad))
-    # other catalogued sources in this slitlet (their shutter column -> shutter offset)
+    # where the source is, in shutter offsets from the 'x' shutter (the slit-frame origin).
+    # Normally 0. When the nod moved the source out of a short slitlet, jwst marks no
+    # primary shutter: it names the slitlet background, writes an 'x' on the first
+    # shutter with source_ypos 0, and stage 2a keeps the product under the source's id.
+    # The real source then sits in a closed shutter beyond the slitlet's end; its column
+    # is extrapolated from the other dither points so the shutter next to it is padded
+    # like any shutter next to a source, and the fake 'x' shutter is measured as sky.
+    src_offset = 0.0
+    others, own_col, cols = [], None, []
     try:
-        own_col, others, cols = _other_source_columns(c, slitlet_id)
-        if own_col is not None:
-            for col in others:
-                ko = col - own_col
-                good &= ~(np.abs(ys - ko) < 0.5 + pad)
+        own_col, others, cols, per_dither = _other_source_columns(c, slitlet_id)
     except Exception as e:                # metafile not at hand: keep the pixels
         warnings.warn(f'{os.path.basename(c.path)}: no metafile for other sources ({e})')
+        per_dither = None
+    if per_dither is not None and own_col is None:
+        real = source_column_when_out(per_dither, c.dither)
+        if real is None or not (0 <= kx < len(cols)):
+            raise ValueError('source left its slitlet at this dither point; its position cannot be inferred')
+        src_offset = float(real - cols[kx])
+    ref_col = own_col if own_col is not None else (cols[kx] if 0 <= kx < len(cols) else None)
+    good &= ~(np.abs(ys - src_offset) < 0.5 + pad)
+    if src_offset == 0:
+        good &= k != 0
+    # other catalogued sources in this slitlet (their shutter column -> shutter offset)
+    if ref_col is not None:
+        for col in others:
+            ko = col - ref_col
+            good &= ~(np.abs(ys - ko) < 0.5 + pad)
 
     seg, yseg = segment_map(j, f, state)
     opened = np.array([ch != '0' for ch in state] + [False])

@@ -42,6 +42,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   (default off) passes the table to `BarShadowStep` for the background slitlets
   (`config.get_empirical_barshadow_path`); gratings without a table fall back to CRDS. The overlap
   counter moved to `nirspec/coverage.py` with the redward tail past the nominal cutoff (`TAIL_PX`).
+  A slitlet whose source the nod moved out (jwst then marks no primary shutter, writes an `x` on
+  the first shutter with `source_ypos` 0) is measured with the source's real column extrapolated
+  from the other dither points (`source_column_when_out`), so the fake source shutter counts as sky
+  and the shutter next to the real position is padded; a position that cannot be inferred skips the
+  canonical.
 
 ### Infrastructure
 
