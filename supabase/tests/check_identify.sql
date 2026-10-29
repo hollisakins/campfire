@@ -76,6 +76,17 @@ BEGIN
     RAISE EXCEPTION '2: a field product answers for every caller (current null), got %', r;
   END IF;
 
+  -- a live product that is not a spectrum (the seeded mosaic, by its
+  -- registry hash): answered for every caller, as the presign route would
+  r := identify_files(jsonb_build_array(jsonb_build_object('sha256', mos_hash)), ARRAY[]::text[], false)->0;
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(r->'live') l WHERE l->>'product_type' = 'nircam_mosaic' AND l->>'match' = 'file') THEN
+    RAISE EXCEPTION '2: a live mosaic is found by its registry hash, got %', r->'live';
+  END IF;
+  -- a spectrum's final is listed once, through its spectrum, not again as a product
+  r := identify_files(jsonb_build_array(jsonb_build_object('sha256', fhash)), ARRAY[prog], false)->0;
+  SELECT count(*) INTO n FROM jsonb_array_elements(r->'live');
+  IF n <> 1 THEN RAISE EXCEPTION '2: the final is listed once, got %', r->'live'; END IF;
+
   -- ------------------------------------------------------------------ 3.
   UPDATE dr_manifest SET byte_state = 'stamped', stamped_hash = 'sha256:' || repeat('a', 64),
                          archive_key = 'archive/' || repeat('a', 64) || '/' || storage_key
@@ -87,7 +98,9 @@ BEGIN
   IF jsonb_array_length(r->'live') <> 0 THEN RAISE EXCEPTION '3: stamped bytes are no live file'; END IF;
   -- the live spectrum re-reduced since the freeze
   UPDATE spectra SET science_hash = 'sha256:' || repeat('b', 64), file_hash = 'sha256:' || repeat('c', 64) WHERE id = sid;
-  UPDATE storage_objects SET updated_at = '2030-01-02T03:04:05Z' WHERE storage_key = mkey AND root = 'live';
+  -- a redeploy rewrites the registry row in place with it
+  UPDATE storage_objects SET content_hash = 'sha256:' || repeat('c', 64), updated_at = '2030-01-02T03:04:05Z'
+   WHERE storage_key = mkey AND root = 'live';
   r := identify_files(jsonb_build_array(jsonb_build_object('sha256', fhash, 'science_hash', shash)), ARRAY[prog], false)->0;
   IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(r->'releases') x
                   WHERE x->>'tag' = 'DR-seed' AND NOT (x->>'current')::boolean AND (x->>'live_deployed_at') LIKE '2030-01-02%') THEN

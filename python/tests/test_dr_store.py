@@ -115,7 +115,7 @@ def build_release():
                                 'photo_z': 2.0, 'photo_z_err_lo': 1.9, 'photo_z_err_hi': 2.1, 'has_pz': True}],
         ('manifest', 'pa'): [manifest_row(sa), manifest_row(sy, stamped=False)],
         ('manifest', 'pb'): [manifest_row(sb), manifest_row(sz)],
-        ('manifest', 'nircam/uds'): [{'storage_key': 'nircam/uds/f444w_mosaic.fits', 'component': 'nircam/uds',
+        ('manifest', 'nircam/uds'): [{'storage_key': 'data/products/nircam/uds/f444w/mosaic_nircam_f444w_uds_30mas_tile1_sci.fits.gz', 'component': 'nircam/uds',
                                       'program_slug': None, 'field': 'uds', 'product_type': 'nircam_mosaic',
                                       'spectrum_id': None, 'backend': 'osn', 'bucket': 'campfire',
                                       'content_hash': 'sha256:mosaic', 'science_hash': None, 'size_bytes': 5,
@@ -224,9 +224,12 @@ def test_loads_every_file_into_one_store_merged_by_id(release, tmp_path):
                                 ('spectra/obs_a/obs_a_prism_tX_spec.fits',)).fetchone()
         assert m['archive_key'] == 'archive/sci1/spectra/obs_a/obs_a_prism_tX_spec.fits'
         assert m['byte_state'] == 'stamped' and m['stamped_hash'] == 'sha256:stamped1'
-        mosaic = store._conn.execute("SELECT * FROM storage_objects WHERE storage_key = ?",
-                                     ('nircam/uds/f444w_mosaic.fits',)).fetchone()
-        assert mosaic['product_type'] == 'nircam_mosaic' and mosaic['field'] == 'uds' and mosaic['instrument'] == 'nircam'
+        mosaic = store._conn.execute("SELECT * FROM storage_objects WHERE product_type = 'nircam_mosaic'").fetchone()
+        assert mosaic['field'] == 'uds' and mosaic['instrument'] == 'nircam'
+        # the filter comes off the key, so a --filters selection narrows a release pull
+        assert mosaic['filter'] == 'f444w'
+        assert store.get_pending_objects(fields=['uds'], product_types=['nircam_mosaic'], filters=['f277w']) == {}
+        assert len(store.get_pending_objects(fields=['uds'], product_types=['nircam_mosaic'], filters=['F444W'])['uds']) == 1
         # photometry: one row for the object in both files, keyed by the object's name
         p = store.get_photometry_for_object('OBJ-X')
         assert p['id'] == 7 and p['photometry'] == {'f444w': {'flux': 1.0}}

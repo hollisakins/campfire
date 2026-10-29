@@ -58,6 +58,27 @@ BEGIN
        AND s.program_slug = ANY (p_program_slugs)
        AND (s.deploy_status = 'published' OR p_include_unpublished);
 
+    -- live products that are not a spectrum's final (mosaics, sidecars, ...)
+    -- by their registry hash, under the storage policy's API restatement
+    -- (filter_accessible_storage_keys: the same scope the presign route
+    -- applies); a final already listed through its spectrum is not repeated
+    IF v_sha IS NOT NULL THEN
+      SELECT v_live || COALESCE(jsonb_agg(jsonb_build_object(
+               'storage_key', so.storage_key, 'product_type', so.product_type,
+               'spectrum_id', so.spectrum_id, 'observation', so.observation, 'field', so.field,
+               'file_hash', so.content_hash, 'science_hash', so.science_hash,
+               'match', 'file', 'deployed_at', so.updated_at)
+             ORDER BY so.storage_key), '[]'::jsonb)
+        INTO v_live
+        FROM storage_objects so
+       WHERE so.root = 'live' AND so.status = 'active' AND so.content_hash = v_sha
+         AND so.storage_key IN (SELECT fk.storage_key FROM filter_accessible_storage_keys(
+               ARRAY(SELECT x.storage_key FROM storage_objects x
+                      WHERE x.root = 'live' AND x.status = 'active' AND x.content_hash = v_sha),
+               p_program_slugs, p_include_unpublished) fk)
+         AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_live) l WHERE l->>'storage_key' = so.storage_key);
+    END IF;
+
     -- release members in scope: through the frozen spectrum (program rows) or
     -- the manifest alone (field products, open to every account)
     WITH visible AS (

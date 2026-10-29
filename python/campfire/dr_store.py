@@ -257,6 +257,21 @@ def _aggregate_from_spectra(obj: dict, spectra: list[dict]) -> None:
     obj['max_exposure_time'] = max(exp) if exp else obj.get('max_exposure_time')
 
 
+def _key_scope(storage_key: str) -> dict:
+    """What the layout reads off a key: the NIRCam filter (so ``pull --dr
+    --filters`` narrows mosaics as a live pull does; the manifest carries no
+    filter column), plus observation / field as a fallback. Empty for a key
+    the layout does not know."""
+    try:
+        from campfire_layout import parse_key
+        pk = parse_key(storage_key)
+    except Exception:  # noqa: BLE001 - not a layout key: nothing to read
+        return {}
+    sc = pk.scope
+    return {'filter': getattr(sc, 'filt', None), 'observation': getattr(sc, 'obs', None),
+            'field': getattr(sc, 'field', None)}
+
+
 def _instrument_of(product_type: Optional[str]) -> Optional[str]:
     if not product_type:
         return None
@@ -336,13 +351,15 @@ def _load_into_store(store, root: Path, entries: list[dict], counts: dict) -> No
              m.get('science_hash'), m.get('size_bytes'), m.get('archive_key'), m.get('byte_state'),
              m.get('stamped_hash')))
         stamped = m.get('byte_state') == 'stamped' and m.get('stamped_hash')
+        ks = _key_scope(key)
         storage_rows.append({
             'storage_key': key, 'backend': m.get('backend'), 'bucket': m.get('bucket'),
             'content_hash': m.get('stamped_hash') if stamped else m.get('content_hash'),
             'size_bytes': m.get('size_bytes'), 'product_type': m.get('product_type'),
             'instrument': _instrument_of(m.get('product_type')), 'status': 'active',
-            'observation': obs_of_spectrum.get(m.get('spectrum_id')),
-            'field': m.get('field') or field_of_spectrum.get(m.get('spectrum_id')),
+            'observation': obs_of_spectrum.get(m.get('spectrum_id')) or ks.get('observation'),
+            'field': m.get('field') or field_of_spectrum.get(m.get('spectrum_id')) or ks.get('field'),
+            'filter': ks.get('filter'),
             'spectrum_id': m.get('spectrum_id'),
         })
     counts['manifest'] = store.upsert_storage_objects(storage_rows)
