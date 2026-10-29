@@ -171,7 +171,9 @@ def check(doc: dict, data_dir: Path, *, store=None, api=None, dr: Optional[str] 
     still the recorded ones (``local``: ok / modified / missing / not-recorded),
     what the archive says about the recorded bytes now (``archive``: a
     sentence from :func:`campfire.identify.describe`, from the server through
-    *api* or from the stores on this machine), and, with *dr*, whether that
+    *api* or from the stores on this machine; ``resolved`` is false, and a
+    problem, when nothing holds those bytes or that science any more), and,
+    with *dr*, whether that
     release holds the same science (``release``); per object, whether the
     live mirror still shows the recorded version and redshift."""
     data_dir = Path(data_dir)
@@ -193,7 +195,11 @@ def check(doc: dict, data_dir: Path, *, store=None, api=None, dr: Optional[str] 
         else:
             r['local'] = 'ok'
         sha = recorded or e.get('server_hash')
-        sci = e.get('local_science_hash') or e.get('science_hash')
+        # the registry's science hash describes the registry's bytes: reuse it
+        # only when the recorded bytes are those (or no local bytes were
+        # recorded), never for a file that differed when it was opened
+        sci = e.get('local_science_hash') or (
+            e.get('science_hash') if recorded in (None, e.get('server_hash')) else None)
         r['sha256'], r['science_hash'] = sha, sci
         results.append(r)
     asked = [r for r in results if r['sha256']]
@@ -208,7 +214,15 @@ def check(doc: dict, data_dir: Path, *, store=None, api=None, dr: Optional[str] 
             continue
         hits = local_matches(data_dir, r['sha256'], r['science_hash'])
         r['archive'] = describe(r.get('server'), hits)
-        if r['archive'].startswith('unknown'):
+        # resolved = something still holds those bytes or that science: the
+        # server's releases / live / collected facts, or, offline, a hit in a
+        # store on this machine other than a superseded download
+        server = r.get('server')
+        if server is not None:
+            r['resolved'] = any(server.get(k) for k in ('releases', 'live', 'collected'))
+        else:
+            r['resolved'] = any(h.get('match') != 'stale-download' for h in hits)
+        if not r['resolved']:
             problems += 1
         if release_rows is not None:
             m = release_rows.get(r['spectrum_id'] or '')

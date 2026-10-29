@@ -139,6 +139,52 @@ def test_check_asks_the_server_for_the_recorded_bytes(mirror):
         check(doc, mirror, dr='DR-nope')
 
 
+def test_check_never_lends_the_registry_s_science_hash_to_other_bytes(mirror):
+    # the author opened bytes that were not the registry's (recorded as such)
+    # and the pipeline was not there to hash their science: no science hash
+    # may be claimed for them, so a release holding the registry's science
+    # does not match
+    doc = _doc(mirror, objects=['OBJ-A'])
+    doc['files'][0].update({'sha256': 'sha256:' + 'c' * 64, 'local_science_hash': None})
+    asked = []
+
+    class Api:
+        def identify_files(self, files):
+            asked.extend(files)
+            return [{'releases': [], 'live': [], 'collected': []}]
+
+    res = check(doc, mirror, api=Api(), dr='DR-t')
+    assert asked == [{'sha256': 'sha256:' + 'c' * 64, 'science_hash': None}]
+    assert res['files'][0]['release'] == 'in DR-t, different science (re-reduced before the freeze)'
+    assert res['files'][0]['resolved'] is False and res['problems'] == 2   # modified on disk too
+    # bytes never on disk: the recorded hash is the registry's, its science hash stands
+    doc['files'][0].update({'sha256': None, 'local_path': None})
+    res = check(doc, mirror, api=Api())
+    assert asked[-1] == {'sha256': H_AAA, 'science_hash': 'sha256:sciA'}
+
+
+def test_check_offline_counts_a_file_no_store_holds_as_unresolved(mirror):
+    doc = _doc(mirror, objects=['OBJ-A'])
+    doc['files'][0].update({'sha256': 'sha256:' + 'c' * 64, 'local_science_hash': None, 'local_path': None})
+    res = check(doc, mirror)
+    r = res['files'][0]
+    assert r['local'] == 'missing' and r['resolved'] is False and res['problems'] == 1
+    assert r['archive'] == 'not in any store on this machine (the server was not asked)'
+    # a superseded download the mirror remembers is not a resolution either
+    store = LocalStore(mirror / 'meta' / 'campfire.db')
+    store.upsert_storage_objects([{'storage_key': 'spectra/obs_a/obs_a_prism_t1_spec.fits',
+                                   'content_hash': 'sha256:' + 'd' * 64, 'size_bytes': 3, 'product_type': 'nirspec_spec',
+                                   'status': 'active', 'observation': 'obs_a', 'spectrum_id': 'obs_a_prism_t1'}])
+    store.close()
+    doc = {'format': FORMAT, 'files': [{'spectrum_id': 'obs_a_prism_t1', 'sha256': H_AAA, 'server_hash': H_AAA,
+                                        'science_hash': 'sha256:sciA', 'local_path': None}], 'objects': []}
+    res = check(doc, mirror)
+    assert res['files'][0]['archive'].startswith('in DR-t')          # the release store still holds that science
+    doc['files'][0]['science_hash'] = None
+    res = check(doc, mirror)
+    assert res['files'][0]['archive'].startswith('a download superseded since') and res['files'][0]['resolved'] is False
+
+
 def test_load_refuses_another_format(tmp_path):
     p = tmp_path / 'x.json'
     p.write_text('{"format": "other"}')
