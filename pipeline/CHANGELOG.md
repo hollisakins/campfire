@@ -35,7 +35,8 @@ Release procedure: edit the `## Unreleased` section below, then run
   slit-frame coordinates, per reference segment (outer edges from the 1x1 image, interior bar from the
   1x3 image) and wavelength column, with the sky pooled and the shutters selected per exposure, and
   `campfire_pipeline/data/Generate_Barshadow_Cals.py` writes it in the CRDS `barshadow` layout as
-  `empirical_jwst_nirspec_barshadow_<grating>.fits` (committed with the pipeline once validated) with
+  `empirical_jwst_nirspec_barshadow_<grating>.fits` (the prism table ships, derived from the seven
+  EMBER prism pointings; the gratings follow from SPURS) with
   a QA report (`barshadow_qa`: measured segments vs CRDS vs table, per-observation consistency, the
   images, a held-out observation divided by each table, the exposure-level sky). On the prism the
   held-out residual drops from 11-18 % (CRDS) to 1-2.5 % per segment. `[nirspec.stage2].empirical_barshadow`

@@ -1054,6 +1054,24 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   effect. Exposure-to-exposure differences of that size at the sky minimum, of unknown origin yet
   (that pointing's stage 1 predates the current one), mean the master background itself has to be
   per exposure, not per group, at least below ~4 µm.
+- **The shipped prism table (2026-10-29, `campfire_pipeline/data/empirical_jwst_nirspec_barshadow_prism.fits`).**
+  Derived from all seven EMBER prism pointings (COSMOS p1/p2/p3/p5/p6, UDS p2, EGS p1; 8,474 clean
+  shutters, 11.0 M pixels, `CFBS*` provenance cards and the options in `HISTORY`). Validated first
+  with EGS p1 held out: its empty shutters divided by the six-pointing table are flat to
+  2.5 / 2.3 / 1.5 / 0.9 % rms per segment (closed→open edge, open→closed edge, bar lower, bar upper)
+  against 17.8 / 10.6 / 17.5 / 3.5 % with CRDS 0006, and the six training pointings agree with one
+  another to 0.4–0.5 % inside the shutter at 2.15–3.7 µm; the held-out and the seven-pointing tables
+  differ by < 0.005 everywhere. Numbers of the profile: half-maximum of the outer edge at
+  −0.42 / −0.40 / −0.38 pitch at 1 / 3 / 5 µm (CRDS −0.44 at every wavelength), floor beyond the outer
+  edge 0.185 (CRDS 0.42), interior bar minimum 0.41–0.45 (CRDS 0.41–0.43, but reached 0.1 pitch
+  earlier). What the held-out residual still shows is a ~5 % flank in the outermost 0.1 pitch of both
+  outer edges, the registration difference between fields. Two derivation details fixed on the way:
+  a slitlet whose source the nod moved out (jwst then names it background, puts an `x` on its first
+  shutter with `source_ypos` 0) and a secondary source that is never its slitlet's primary are now
+  placed through the slit WCS (`source_slit_position`: catalogue RA/Dec → `slit_frame`, divided by
+  the slit y scale; it agrees with jwst's planned `source_ypos` to 0.01 pitch where one exists), so
+  the shutter next to the real position is padded and the fake source shutter is measured as sky.
+  QA report: `scratch/claude/bs_prism7_all/empirical_barshadow_prism_qa.pdf` (not committed).
 - Not yet measured: the bar profile as a function of quadrant, the solar-line check (§3.3), the
   origin of the G395M NRS2 excess (resolved: the trace tails, above) and of the per-exposure 3 µm
   differences; the grating tables await the SPURS reprocessing.
