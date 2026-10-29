@@ -32,14 +32,6 @@ Release procedure: edit the `## Unreleased` section below, then run
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.
-- **`nirspec/trace_overlap.py`: per-exposure trace maps of every open slitlet (not yet
-  wired into a stage).** jwst `assign_wcs` with the full MSA metafile plus jwst
-  `msaflagopen`'s failed-open shutters give, for one exposure, which traces light each
-  detector pixel (`TraceMap`: count / index / slit-frame y / wavelength images, a table of
-  shared pixels and a slit lookup table), cached as FITS per exposure. Per-source lookups
-  return the other sources' source-shutter light on a source's trace in each nod difference
-  (added in its own nod, subtracted from partners) and measure its signal. Adds
-  `MSA_SLIT_PITCH` / `MSA_SLIT_MARGIN` to `nirspec/constants.py`. No product changes.
 - **Tests run in CI.** `.github/workflows/python.yml` runs `pipeline/tests` on PRs that
   touch `pipeline/` or `layout/` (informational until its CI runtime is known) and the
   layout golden fixture on every client change; `[tool.pytest.ini_options] testpaths =
@@ -70,24 +62,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   `bkg_nods` / `bkg_override` (`N/A` for canonicals from before this change). Additive
   output columns; no pixel values change. Motivated by a pull that wiped the local
   override files: the products carried no record of which overrides had been applied.
-- **Opt-in forward-model ("profile fit") NIRSpec extraction, `[nirspec.stage3].profile_fit`
-  (default `false`, so default products are unchanged).** `nirspec/profile_fit.py` fits one
-  true spectrum per source jointly to every nod difference, each exposure seen through its
-  own path loss and slitlet: a Gaussian galaxy along the slit (centre and width, optionally
-  linear in log wavelength) convolved with the star-measured PSF, clipped by the open
-  shutters, with the nod partners' negative images and Gaussian priors on the shape (so a
-  faint source falls back to a compact source at its planned position). The model is
-  drizzled through Spec3's own outlier-flagged frames, so it gets the data's weights and
-  masks. The fitted shape only sets the extraction weights: `_spec.fits` gains `PROF2D`, the
-  drizzled 2D profile per unit reported flux (not normalised per column, so it carries the
-  aperture and path-loss correction), and `fnu_pf`/`fnu_pf_err`/`flam_pf*`, the s2d extracted
-  with those weights on the optimal-extraction rows (main-shutter light on the point-source
-  path-loss calibration, as for `fnu`), plus `PF*` header keys; `1d` combine carries `fnu_pf`. Uses stage 2b's own background-partner rule (now
-  `stage2.nod_background_partners`), the applied path-loss type per exposure, and jwst's slit
-  bounds for the open shutters. PRISM-calibrated PSF; prototype status (issue to follow).
-  The nod-difference variance accounts for the subtracted frames, which jwst's
-  `subtract_images` does not propagate (so the standard `fnu_err` is ~20 % low for three
-  nods; not changed here).
+- **MAJOR: NIRSpec extraction v2, the profile extraction as `fnu`
+  (`[nirspec.stage3].profile_fit`, still `false` by default).** `fnu` is the best spectrum
+  (`EXTRACT`/`EXTRWHY`): the profile extraction (Gaussian galaxy x star-measured PSF fitted
+  to every nod difference, target-shutter light; `profile_fit.py`), its shape from a gated
+  chain (own fit / PRISM shape / default; `profile_chain.py`). Other slitlets' light is
+  predicted in one pass from every source's pass-1 spectrum over per-exposure trace maps
+  (`trace_overlap.py`, `profile_contam.py`), masked or subtracted for the shape fit and
+  subtracted in 1-D when above `contam_1d_min_sigma` (`profile_decontam`); a gated joint
+  solve of strongly coupled groups (`contam_joint`) is off by default. Named failures fall
+  back to `fnu_3px` (`boxcar3`); any other error fails the stage. New SPEC1D columns:
+  `fnu_opt` (the optimal extraction, formerly `fnu`), `fnu_prof`, `fnu_contam` (+ errors,
+  `flam_*`; `fnu_err` is statistical only); `PROF2D`, `CONTAM2D` and `UNPRED` extensions;
+  `PF*` / `CONTSTAT` / `UNPREDF` cards. With `profile_fit` off, `fnu` stays the optimal
+  extraction (`EXTRACT = optimal`) and `fnu_opt` is added.
 - **`resample` now writes a per-tile exposure map, `<mosaic>_exp.fits`, next to
   the split `_sci/_err/_wht`.** It is the full-resolution, per-tile member of the
   `exp` family; the field-wide `expmap_<field>_<filter>.fits` is the coarse member.
