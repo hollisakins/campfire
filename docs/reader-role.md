@@ -8,21 +8,34 @@ sees what an anonymous reader of the portal could see, and nothing else.
 ## Connecting
 
 ```
-postgresql://campfire_reader:<password>@db.campfire-jwst.org:6432/postgres?sslmode=require
+postgresql://campfire_reader@db.campfire-jwst.org/postgres
 ```
 
-The password is published with the connection string (the data is public;
-the credential only selects the role). The connection is TLS-encrypted; the
-server presents a self-signed certificate, so `sslmode=require` rather than
-`verify-full` until a publicly trusted certificate is wired to the pooler.
+No password, default port: the data is public and the role is read-only, so
+the credential is the name alone. The connection is TLS-encrypted (the pooler
+refuses plaintext; libpq's default `sslmode=prefer` negotiates it). The server
+presents a self-signed certificate, so `sslmode=verify-full` fails until a
+publicly trusted certificate is wired to the pooler; a client that insists on
+a password takes an empty one.
 
 ```bash
-psql "postgresql://campfire_reader:<password>@db.campfire-jwst.org:6432/postgres?sslmode=require"
+psql -h db.campfire-jwst.org -U campfire_reader postgres
+psql postgresql://campfire_reader@db.campfire-jwst.org/postgres
+```
+
+A `~/.pg_service.conf` entry makes it `psql service=campfire` (libpq clients,
+pandas through SQLAlchemy included, read the same file):
+
+```ini
+[campfire]
+host=db.campfire-jwst.org
+dbname=postgres
+user=campfire_reader
 ```
 
 ```python
 import pandas as pd, sqlalchemy as sa
-eng = sa.create_engine("postgresql://campfire_reader:<password>@db.campfire-jwst.org:6432/postgres?sslmode=require")
+eng = sa.create_engine("postgresql://campfire_reader@db.campfire-jwst.org/postgres")
 df = pd.read_sql("SELECT object_id, ra, dec, redshift, redshift_quality FROM objects WHERE redshift > 6", eng)
 ```
 
@@ -30,9 +43,13 @@ df = pd.read_sql("SELECT object_id, ra, dec, redshift, redshift_quality FROM obj
 import duckdb
 con = duckdb.connect()
 con.sql("INSTALL postgres; LOAD postgres;")
-con.sql("ATTACH 'dbname=postgres user=campfire_reader password=<password> host=db.campfire-jwst.org port=6432 sslmode=require' AS cf (TYPE postgres, READ_ONLY)")
+con.sql("ATTACH 'dbname=postgres user=campfire_reader host=db.campfire-jwst.org' AS cf (TYPE postgres, READ_ONLY)")
 con.sql("SELECT count(*) FROM cf.public.spectra").show()
 ```
+
+TOPCAT, DBeaver and the like take the same values as fields: host
+`db.campfire-jwst.org`, port 5432, database `postgres`, user `campfire_reader`,
+password empty.
 
 Limits, set on the role: 30 s per statement, 60 s idle in a transaction,
 read-only transactions, 20 connections in all through a transaction-mode
@@ -45,11 +62,12 @@ and the pooler resets the server connection after every transaction
 prepared statements across statements, no `LISTEN`. Every reader shares the
 one role, so nothing you do in a session is visible to another reader.
 
-Since the credential is public, Postgres cannot stop a holder from changing
-the role's own password (`SET TRANSACTION READ WRITE` lifts the read-only
-default for that transaction). Doing so only breaks the pooler's next server
-connection; a timer on the host re-applies the published password within two
-minutes, so it is a nuisance, not a way in. Please do not.
+Every reader runs as the one role, and Postgres cannot stop a role from
+changing its own password (`SET TRANSACTION READ WRITE` lifts the read-only
+default for that transaction). The password is the pooler's own login to the
+database, not yours, so doing that only breaks the pooler's next server
+connection; a timer on the host re-applies it within two minutes. A nuisance,
+not a way in. Please do not.
 
 ## What the role sees
 
@@ -141,9 +159,10 @@ API takes; the SQL it compiles to runs here unchanged.
 ## For the operator
 
 `ops/README.md`, "Public read-only SQL": the pooler is a compose profile
-(`reader`), `ops/scripts/reader-setup.sh` sets the password, writes the
-pooler's SCRAM userlist (that one role only), makes the certificate and
-starts the pooler; the security group admits 6432; `db.campfire-jwst.org` is
-a DNS-only record. The role itself comes from the migration chain
+(`reader`) with `auth_type = trust` over a one-name userlist, so readers need
+no password and no other name reaches the database; `ops/scripts/reader-setup.sh`
+sets the role's password (the pooler's own login), writes the userlist, makes
+the certificate and starts the pooler; the security group admits 5432;
+`db.campfire-jwst.org` is a DNS-only record. The role itself comes from the migration chain
 (`20261028193000_phase4_reader_role.sql`); locally `supabase/roles.sql`
 creates it for the stack and the shadow database.
