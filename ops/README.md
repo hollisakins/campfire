@@ -59,8 +59,11 @@ under its own RLS policies, with no function and no other table):
    world-traversable, since the container runs as its own uid and `certs/` is
    0750) when missing, starts the pooler
    (`docker compose --profile reader up -d pgbouncer`, image
-   `edoburu/pgbouncer`, transaction mode, `0.0.0.0:$READER_PORT`, 5432 by
-   default so the published string carries no port) and runs one query
+   `edoburu/pgbouncer`, transaction mode, `$READER_BIND:$READER_PORT`: the
+   VM's interface address, detected and written to `.env` when empty, since
+   `db` publishes `127.0.0.1:$POSTGRES_PORT` and one host port cannot carry
+   both bindings; port 5432 by default so the published string carries none)
+   and runs one query
    through it the way a reader does, without a password. `rotate` changes the
    password, `status` reports.
 3. Security group: admit TCP `$READER_PORT` (5432) from anywhere. Readers need
@@ -669,7 +672,7 @@ optional Resend domain verification.
 
 ## Changelog
 
-- 2026-10-29 — Public SQL set up: `reader-setup.sh` run (`.env` `READER_PASSWORD` generated), security group admits the reader port, `db.campfire-jwst.org` DNS-only, `campfire-reader-heal.timer` enabled. Then the no-password form: `.env` `READER_PORT` 6432 → 5432 (the published string carries no port), pooler `auth_type` scram → trust over the one-name userlist (`READER_PASSWORD` is the pooler's own login now, not published), security group rule moved to 5432.
+- 2026-10-29 — Public SQL set up: `reader-setup.sh` run (`.env` `READER_PASSWORD` generated), security group admits the reader port, `db.campfire-jwst.org` DNS-only, `campfire-reader-heal.timer` enabled. Then the no-password form: `.env` `READER_PORT` 6432 → 5432 (the published string carries no port), pooler `auth_type` scram → trust over the one-name userlist (`READER_PASSWORD` is the pooler's own login now, not published), `READER_BIND` = the VM's interface address (written by the script), security group rule moved to 5432.
 - 2026-10-25 ~20:30 UTC — **Domain move executed** (see "Domain move"): certificates swapped (`origin.*` = campfire-jwst.org, `alt.*` = hollisakins.com); `.env` `WEB_HOST`, `WEB_STAGING_HOST`, `API_HOST` → the campfire-jwst.org names, `ALT_WEB_HOST`, `ALT_WEB_STAGING_HOST`, `ALT_API_HOST` → the hollisakins.com names, `SITE_URL`, `API_EXTERNAL_URL`, `SUPABASE_PUBLIC_URL`, `MAILER_TEMPLATES_*` → new urls, `ADDITIONAL_REDIRECT_URLS` = new + old lists; `web.env` `CDN_FRONT_URL`, `S3_TILES_PUBLIC_URL_BASE`, `NEXT_PUBLIC_*` → new hosts; caddy + auth recreated; parking rule deleted; `domain-move.sql` run; `DEPLOY_NEXT_PUBLIC_*` variables → new hosts; this PR's merge rebuilt the image.
 - 2026-10-25 — `.env` `ALT_API_HOST` set (early alias: the Supabase API answers on `api.campfire-jwst.org` ahead of the flip); `certs/alt.pem`/`alt.key` = the new zone's origin certificate (`jwst.*` kept as the spare); caddy recreated with the `ALT_*` Caddyfile.
 - 2026-10-25 — **Domain move prepared** (see "Domain move"): `campfire-jwst.org` zone, DNS, TLS mode, rate limit and the parking 302 on Cloudflare; `Caddyfile` / `docker-compose.yml` gain the `ALT_*` hostname blocks (inert until `.env` sets them; `certs/alt.pem`/`alt.key` must exist — copy of `origin.*` until the window); `ops/sql/domain-move.sql`; Worker gets `download.campfire-jwst.org` and the new origins. No `.env` change yet.

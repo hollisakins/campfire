@@ -37,10 +37,23 @@ mode=${1:-setup}
 reader_host=${READER_HOST:-db.${WEB_HOST:-campfire-jwst.org}}
 reader_port=${READER_PORT:-5432}
 db_name=${POSTGRES_DB:-postgres}
+# The pooler binds the VM's interface address, not 0.0.0.0: db publishes
+# 127.0.0.1:$POSTGRES_PORT (deploy.sh, the operator's psql) and one host port
+# cannot carry both bindings. Detected once and written to .env.
+if [ -z "${READER_BIND:-}" ]; then
+  READER_BIND=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1)}' | head -n 1)
+  [ -n "$READER_BIND" ] || { echo "cannot detect the interface address; set READER_BIND in .env"; exit 1; }
+  if grep -q '^READER_BIND=' .env; then
+    sed -i "s|^READER_BIND=.*|READER_BIND=${READER_BIND}|" .env
+  else
+    printf '\nREADER_BIND=%s\n' "$READER_BIND" >> .env
+  fi
+  echo "READER_BIND=${READER_BIND} written to ops/.env"
+fi
 # the published form: no password, no port when it is the default
 port_suffix=""; [ "$reader_port" = 5432 ] || port_suffix=":${reader_port}"
 conn_string="postgresql://campfire_reader@${reader_host}${port_suffix}/${db_name}"
-reader_query() { psql "host=127.0.0.1 port=${reader_port} dbname=${db_name} user=campfire_reader sslmode=require" "$@"; }
+reader_query() { psql "host=${READER_BIND} port=${reader_port} dbname=${db_name} user=campfire_reader sslmode=require" "$@"; }
 
 if [ "$mode" = status ]; then
   psql_db -Atc "SELECT rolname, rolconfig, rolconnlimit FROM pg_roles WHERE rolname = 'campfire_reader'"
@@ -100,7 +113,7 @@ chmod 644 "$root/pgbouncer/reader.pem" "$root/pgbouncer/reader.key"
 $compose --profile reader up -d --force-recreate pgbouncer
 sleep 3
 reader_query -Atc "SELECT count(*) AS public_objects FROM objects"
-echo "pooler up on ${reader_port}; connection string to publish:"
+echo "pooler up on ${READER_BIND}:${reader_port}; connection string to publish:"
 echo "  ${conn_string}"
 echo "Then, once, as root (the password heal, scripts/reader-heal.sh):"
 echo "  install -m 0644 ${here}/systemd/campfire-reader-heal.service ${here}/systemd/campfire-reader-heal.timer /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now campfire-reader-heal.timer"

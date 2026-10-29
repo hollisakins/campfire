@@ -334,10 +334,14 @@ services:
   # the role's password (READER_PASSWORD, plaintext in the userlist: it grants
   # nothing the pooler does not already grant everyone). The role's own
   # settings (statement timeout, read-only transactions, connection limit)
-  # bound what a session can do. Listens on every interface, on the default
-  # Postgres port so the published string needs none: the security group has
-  # to admit READER_PORT and db.$WEB_HOST is a DNS-only record (Cloudflare's
-  # proxy carries no Postgres). TLS from pgbouncer/reader.pem + reader.key
+  # bound what a session can do. Listens on the default Postgres port so the
+  # published string needs none, bound to the VM's interface address
+  # (READER_BIND, detected and written to .env by scripts/reader-setup.sh):
+  # db publishes 127.0.0.1:$POSTGRES_PORT for deploy.sh and the operator, and
+  # one host port cannot be 0.0.0.0 for the pooler and 127.0.0.1 for db at
+  # once. The security group has to admit READER_PORT and db.$WEB_HOST is a
+  # DNS-only record (Cloudflare's proxy carries no Postgres).
+  # TLS from pgbouncer/reader.pem + reader.key
   # (self-signed by scripts/reader-setup.sh; the pooler refuses plaintext,
   # libpq's default sslmode=prefer negotiates it). Enabled by the
   # reader profile so a stack without a reader password runs unchanged:
@@ -352,7 +356,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "${READER_PORT:-5432}:6432"
+      - "${READER_BIND:-0.0.0.0}:${READER_PORT:-5432}:6432"
     environment:
       DB_HOST: db
       DB_PORT: 5432
