@@ -327,13 +327,19 @@ services:
 
   # Public read-only SQL (Catalog Read Model phase 4, docs/reader-role.md).
   # PgBouncer in transaction mode in front of db for the campfire_reader role
-  # only: the SCRAM userlist holds that one role, so no other credential can
-  # even authenticate here, and the role's own settings (statement timeout,
-  # read-only transactions, connection limit) bound what a session can do.
-  # Listens on every interface: the security group has to admit 6432 and
-  # db.$WEB_HOST is a DNS-only record (Cloudflare's proxy carries no Postgres).
-  # TLS from pgbouncer/reader.pem + reader.key (self-signed by
-  # scripts/reader-setup.sh; clients use sslmode=require). Enabled by the
+  # only. Clients log in without a password (auth_type trust: the data is
+  # public and the role's grants are the gate); trust still requires the
+  # client's user name to be in the userlist, which holds that one role, so no
+  # other name gets a server connection. The pooler itself logs in to db with
+  # the role's password (READER_PASSWORD, plaintext in the userlist: it grants
+  # nothing the pooler does not already grant everyone). The role's own
+  # settings (statement timeout, read-only transactions, connection limit)
+  # bound what a session can do. Listens on every interface, on the default
+  # Postgres port so the published string needs none: the security group has
+  # to admit READER_PORT and db.$WEB_HOST is a DNS-only record (Cloudflare's
+  # proxy carries no Postgres). TLS from pgbouncer/reader.pem + reader.key
+  # (self-signed by scripts/reader-setup.sh; the pooler refuses plaintext,
+  # libpq's default sslmode=prefer negotiates it). Enabled by the
   # reader profile so a stack without a reader password runs unchanged:
   #   docker compose --profile reader up -d pgbouncer
   pgbouncer:
@@ -346,7 +352,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "${READER_PORT:-6432}:6432"
+      - "${READER_PORT:-5432}:6432"
     environment:
       DB_HOST: db
       DB_PORT: 5432
@@ -355,7 +361,7 @@ services:
       DB_PASSWORD: ${READER_PASSWORD}
       LISTEN_PORT: 6432
       POOL_MODE: transaction
-      AUTH_TYPE: scram-sha-256
+      AUTH_TYPE: trust
       AUTH_FILE: /etc/pgbouncer-reader/userlist.txt
       MAX_CLIENT_CONN: ${READER_MAX_CLIENT_CONN:-200}
       DEFAULT_POOL_SIZE: ${READER_POOL_SIZE:-10}
@@ -379,12 +385,15 @@ services:
       ADMIN_USERS: ""
       STATS_USERS: ""
     volumes:
-      # one world-traversable directory of its own (userlist + certificate):
+      # one world-traversable directory of its own (userlist, the heal's
+      # verifier record, certificate):
       # certs/ is 0750 for the ops user and the container runs as its own uid
       - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/pgbouncer:/etc/pgbouncer-reader:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U campfire_reader || exit 1"]
-      interval: 10s
+      # -d: without it pg_isready asks for a database named after the user,
+      # which the pooler logs as a (nodb) login attempt on every probe
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U campfire_reader -d ${POSTGRES_DB:-postgres} || exit 1"]
+      interval: 30s
       timeout: 5s
       retries: 5
 
