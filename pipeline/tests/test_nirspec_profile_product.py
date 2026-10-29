@@ -61,8 +61,8 @@ def _groups(contam_a, contam_b, extract=('profile', 'profile'), state=('predicte
     wave = np.linspace(1.0, 2.0, 40)
     prof = dict(wavelengths=[wave, wave], fluxes=[np.full(40, 10.0), np.full(40, 10.0)],
                 errors=[np.full(40, 0.1), np.full(40, 0.1)])
-    groups = [dict(contam=c, contam_err=0.1 * np.nan_to_num(c), extract=x, reason='r', state=s, unpredf=None,
-                   unpred=None) for c, x, s in zip((contam_a, contam_b), extract, state)]
+    groups = [dict(contam=c, contam_err=0.1 * np.nan_to_num(c), extract=x, reason='r', state=s)
+              for c, x, s in zip((contam_a, contam_b), extract, state)]
     return wave, prof, groups
 
 
@@ -92,16 +92,6 @@ def test_combine_group_fallback_gives_the_boxcar():
     assert (out['choice'], out['reason']) == ('boxcar3', 'group_fallback')
 
 
-def test_combine_leaves_unpredicted_ranges_out_of_the_decision():
-    wave, prof, groups = _groups(np.full(40, 2.0), np.full(40, 2.0))
-    t = S3.unpredicted_ranges(wave, np.ones(40, bool), np.ones(40)).data       # every column unpredicted
-    groups[0]['unpred'], groups[0]['state'], groups[0]['unpredf'] = t, 'partial', 0.4
-    out = S3._combined_profile_fit(prof, groups, [1.0, 1.0], wave, np.full(40, 10.0), np.full(40, 0.05))
-    assert out['header']['PFCONSIG'] == 0.0 and out['choice'] == 'profile'
-    assert out['header']['CONTSTAT'] == 'partial' and out['header']['UNPREDF'] == pytest.approx(0.4)
-    assert [h.name for h in out['hdus']] == ['UNPRED']
-
-
 def _stage3_inputs(tmp_path, product, contam_level=0.1):
     """A minimal s2d / x1d pair (a 10 uJy source with a Gaussian profile) and its _pf.fits."""
     from astropy.table import Table
@@ -124,8 +114,7 @@ def _stage3_inputs(tmp_path, product, contam_level=0.1):
     h['PFNCONT'] = 1
     fits.HDUList([fits.PrimaryHDU(header=h), fits.ImageHDU(prof / 1e12, name='PROF2D'),
                   fits.ImageHDU(contam_level * 10.0 * prof / 1e12, name='CONTAM2D'),
-                  fits.ImageHDU(0.0 * prof, name='CONTERR2D'), fits.ImageHDU(0.0 * prof, name='UNMOD2D')]
-                 ).writeto(tmp_path / f'{product}_pf.fits')
+                  fits.ImageHDU(0.0 * prof, name='CONTERR2D')]).writeto(tmp_path / f'{product}_pf.fits')
     return wave
 
 
@@ -151,7 +140,7 @@ def test_spec_fits_columns_and_cards(tmp_path):
     np.testing.assert_allclose(d['fnu'][2:-2], 9.0, rtol=1e-5)
     np.testing.assert_allclose(d['fnu_prof'][2:-2], 10.0, rtol=1e-5)
     np.testing.assert_array_equal(d['fnu_err'], d['fnu_prof_err'])
-    assert 'UNPREDF' in hd and ext[-3:] == ['PROF2D', 'CONTAM2D', 'UNPRED']
+    assert ext[-2:] == ['PROF2D', 'CONTAM2D']
     assert not any(n.startswith(('fnu_pf', 'flam_pf', 'pf_')) for n in names)
     assert not (tmp_path / 'p_pf.fits').exists()
 

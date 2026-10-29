@@ -993,21 +993,17 @@ CONTAM_1D = ('report', 'subtract')
 def contam_1d_settings(sc):
     """The 1-D other-light knobs of ``[nirspec.stage3]`` (``_profile_fit_columns``)."""
     return dict(contam_1d=str(sc.get('contam_1d', 'subtract')).lower(),
-                contam_1d_min_sigma=float(sc.get('contam_1d_min_sigma', 3.0)),
-                unmod_max=float(sc.get('contam_unmod_max', 0.05)))
+                contam_1d_min_sigma=float(sc.get('contam_1d_min_sigma', 3.0)))
 
 
-def _contam_1d(C2D, E2D, U2D, Pm, weight_rows, V, flux, flux_err, unmod_max):
-    """Other sources' light (CONTAM2D, its uncertainty CONTERR2D, the unpredicted pixels
-    UNMOD2D) extracted with the fnu_prof weights: per column the predicted flux ``cflux``,
-    its systematic error ``cerr``, whether any light is predicted there ``predicted``,
-    the weight fraction on unpredicted light ``unmod`` and its flag (> ``unmod_max``);
-    integrated: ``contam`` (over fnu_prof), ``conmax`` (95th pct of |contam / fnu_prof|
-    at S/N > 3), ``csig`` (in units of the integrated noise) and ``unmodf`` (flagged
-    column fraction)."""
+def _contam_1d(C2D, E2D, Pm, weight_rows, V, flux, flux_err):
+    """Other sources' light (CONTAM2D, its uncertainty CONTERR2D) extracted with the
+    fnu_prof weights: per column the predicted flux ``cflux``, its systematic error
+    ``cerr`` and whether any light is predicted there ``predicted``; integrated:
+    ``contam`` (over fnu_prof), ``conmax`` (95th pct of |contam / fnu_prof| at S/N > 3)
+    and ``csig`` (in units of the integrated noise)."""
     Cu = np.where(np.isfinite(C2D), C2D * 1e12, 0.0)          # uJy, as s2d_sci
     Eu = np.where(np.isfinite(E2D), E2D * 1e12, 0.0) if E2D is not None and E2D.shape == Cu.shape else 0.0 * Cu
-    U = np.clip(np.nan_to_num(U2D), 0, 1) if U2D is not None and U2D.shape == Cu.shape else 0.0 * Cu
     with np.errstate(invalid='ignore', divide='ignore'):
         w = np.where(weight_rows & np.isfinite(V) & (V > 0), Pm / np.where(V > 0, V, 1.0), 0.0)
         wp = w * np.where(np.isfinite(Pm), Pm, 0.0)
@@ -1017,10 +1013,7 @@ def _contam_1d(C2D, E2D, U2D, Pm, weight_rows, V, flux, flux_err, unmod_max):
         predicted = okd & (np.sum(np.abs(w * Cu), axis=0) > 0)
         # systematic uncertainty of the prediction, extracted linearly (fully correlated)
         cerr = np.where(okd, np.sum(np.abs(w) * Eu, axis=0) / np.where(okd, den, 1.0), np.nan)
-        # fraction of the extraction weight on pixels whose other light is not predicted
-        unmod = np.where(okd, np.sum(np.abs(wp) * U, axis=0) / np.where(okd, np.sum(np.abs(wp), axis=0), 1.0), np.nan)
-        flag = np.isfinite(unmod) & (unmod > unmod_max)
-        ok = np.isfinite(cflux) & np.isfinite(flux) & ~flag
+        ok = np.isfinite(cflux) & np.isfinite(flux)
         tot = np.nansum(flux[ok])
         contam = float(np.nansum(cflux[ok]) / tot) if tot > 0 else -999.0
         sn = ok & (np.abs(flux) > 3 * flux_err)
@@ -1030,10 +1023,7 @@ def _contam_1d(C2D, E2D, U2D, Pm, weight_rows, V, flux, flux_err, unmod_max):
         okn = ok & np.isfinite(flux_err) & (flux_err > 0)
         ivar = 1.0 / flux_err[okn] ** 2
         csig = float(abs(np.sum(cflux[okn] * ivar)) / np.sqrt(np.sum(ivar))) if okn.any() else 0.0
-        fin = np.isfinite(flux)
-        unmodf = float(np.mean(flag[fin])) if fin.any() else 0.0
-    return dict(cflux=cflux, cerr=cerr, predicted=predicted, unmod=unmod, flag=flag, contam=contam, conmax=conmax,
-                csig=csig, unmodf=unmodf)
+    return dict(cflux=cflux, cerr=cerr, predicted=predicted, contam=contam, conmax=conmax, csig=csig)
 
 
 def _joint_inflation(JT, wave):
@@ -1060,13 +1050,12 @@ def _joint_stat(infl, flux_err):
         return np.where(np.isfinite(infl), flux_err * np.sqrt(np.clip(infl ** 2 - 1.0, 0.0, None)), 0.0)
 
 
-def _joint_noise_ratio(joint_set, onepass_set, infl, Pm, weight_rows, V, flux, flux_err, unmod_max, contam_1d,
-                       min_sigma):
+def _joint_noise_ratio(joint_set, onepass_set, infl, Pm, weight_rows, V, flux, flux_err, contam_1d, min_sigma):
     """Integrated noise of the joint result over the one-pass one (same columns): each as
     the profile extraction would be with it (other light subtracted above ``min_sigma``, its systematic
     error, and for the joint one the split's statistical cost, added)."""
     def err_of(s, joint):
-        c = _contam_1d(s[0], s[1], s[2], Pm, weight_rows, V, flux, flux_err, unmod_max)
+        c = _contam_1d(s[0], s[1], Pm, weight_rows, V, flux, flux_err)
         ce = np.where(np.isfinite(c['cerr']), c['cerr'], 0.0)
         if joint:
             ce = np.sqrt(ce ** 2 + _joint_stat(infl, flux_err) ** 2)
@@ -1097,9 +1086,8 @@ EXTRACT_REASONS = {
     'profile_fit_off': 'optimal: profile_fit is off',
 }
 # CONTSTAT: what fnu_contam holds. off: no prediction; none: nothing predicted on the
-# extraction; predicted: other light predicted; partial: some of the other light on
-# the extraction could not be predicted (UNPREDF, the UNPRED table)
-CONTAM_STATES = ('off', 'none', 'predicted', 'partial')
+# extraction; predicted: other light predicted
+CONTAM_STATES = ('off', 'none', 'predicted')
 
 
 def extraction_cards(choice, reason, contam_state):
@@ -1107,7 +1095,7 @@ def extraction_cards(choice, reason, contam_state):
     h = fits.Header()
     h['EXTRACT'] = (choice, 'Extraction in fnu (stage3.EXTRACTIONS)')
     h['EXTRWHY'] = (reason, 'Why that extraction (stage3.EXTRACT_REASONS)')
-    h['CONTSTAT'] = (contam_state, 'fnu_contam: off/none/predicted/partial')
+    h['CONTSTAT'] = (contam_state, 'fnu_contam: off/none/predicted')
     return h
 
 
@@ -1140,50 +1128,8 @@ def best_spectrum(choice, prof, prof_err, contam, box, box_err):
     raise ValueError(f'no best spectrum for extraction {choice!r}')
 
 
-def unpredicted_ranges(wave, flag, weight=None):
-    """Wavelength ranges of contiguous flagged columns, as a ``UNPRED`` table
-    (``wave_min``, ``wave_max`` in um, ``weight_max`` the largest weight fraction on
-    unpredicted light in the range): what the portal shades."""
-    flag = np.asarray(flag, bool) & np.isfinite(wave)
-    lo, hi, wmax = [], [], []
-    idx = np.flatnonzero(flag)
-    if idx.size:
-        breaks = np.flatnonzero(np.diff(idx) > 1)
-        starts = np.r_[idx[0], idx[breaks + 1]]
-        ends = np.r_[idx[breaks], idx[-1]]
-        for a, b in zip(starts, ends):
-            w = wave[a:b + 1]
-            lo.append(float(np.nanmin(w)))
-            hi.append(float(np.nanmax(w)))
-            wmax.append(float(np.nanmax(weight[a:b + 1])) if weight is not None else np.nan)
-    h = fits.BinTableHDU.from_columns([
-        fits.Column(name='wave_min', format='D', unit='um', array=np.array(lo, float)),
-        fits.Column(name='wave_max', format='D', unit='um', array=np.array(hi, float)),
-        fits.Column(name='weight_max', format='D', array=np.array(wmax, float))], name='UNPRED')
-    h.header['COMMENT'] = 'Wavelength ranges where other light on the extraction could not be predicted'
-    return h
-
-
-def _merge_ranges(tables):
-    """One ``UNPRED`` table from several (the 1-D combine): overlapping ranges joined."""
-    rows = sorted((float(a), float(b), float(c)) for t in tables
-                  for a, b, c in zip(t['wave_min'], t['wave_max'], t['weight_max']))
-    out = []
-    for a, b, c in rows:
-        if out and a <= out[-1][1]:
-            out[-1] = (out[-1][0], max(out[-1][1], b), np.nanmax([out[-1][2], c]))
-        else:
-            out.append((a, b, c))
-    h = fits.BinTableHDU.from_columns([
-        fits.Column(name='wave_min', format='D', unit='um', array=np.array([r[0] for r in out], float)),
-        fits.Column(name='wave_max', format='D', unit='um', array=np.array([r[1] for r in out], float)),
-        fits.Column(name='weight_max', format='D', array=np.array([r[2] for r in out], float))], name='UNPRED')
-    h.header['COMMENT'] = 'Wavelength ranges where other light on the extraction could not be predicted'
-    return h
-
-
 def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, rows='aperture',
-                         model_rows_frac=0.02, contam_1d='subtract', contam_1d_min_sigma=3.0, unmod_max=0.05):
+                         model_rows_frac=0.02, contam_1d='subtract', contam_1d_min_sigma=3.0):
     """Extraction of the s2d with the profile-fit 2D profile, and the choice of the best
     spectrum.
 
@@ -1197,21 +1143,18 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     ``model`` (every row where PROF2D is significant, including the negative nod
     copies; ``model_rows_extraction``).
 
-    Other sources' light (``CONTAM2D``, its uncertainty ``CONTERR2D``, the pixels it
-    cannot predict ``UNMOD2D``) is extracted with the same weights: ``fnu_contam``
-    (NaN where nothing is predicted) and ``fnu_contam_err`` (systematic).
-    ``PFCONTAM`` / ``PFCONMAX`` / ``PFCONSIG`` leave out the columns where more than
-    ``unmod_max`` of the extraction weight sits on unpredicted light; those columns'
-    wavelength ranges are the ``UNPRED`` table, and ``UNPREDF`` is the fraction of the
-    target's extracted light on unpredicted pixels. The best spectrum is chosen by
-    ``choose_extraction`` (``contam_1d``, ``contam_1d_min_sigma``).
+    Other sources' light (``CONTAM2D``, its uncertainty ``CONTERR2D``) is extracted with
+    the same weights: ``fnu_contam`` (NaN where nothing is predicted) and
+    ``fnu_contam_err`` (systematic), integrated as ``PFCONTAM`` / ``PFCONMAX`` /
+    ``PFCONSIG``. The best spectrum is chosen by ``choose_extraction`` (``contam_1d``,
+    ``contam_1d_min_sigma``).
 
     A ``_pf.fits`` without PROF2D is a named fallback (``profile_product.write_fallback``):
     the best spectrum is the 3-pixel boxcar.
 
     Returns dict(columns={name: (data, description)} of fnu_prof / fnu_contam and their
-    errors (plus the joint-solve columns), header, hdus (PROF2D, CONTAM2D, UNPRED),
-    choice, reason).
+    errors (plus the joint-solve columns), header, hdus (PROF2D, CONTAM2D), choice,
+    reason).
     """
     nan = np.full(np.shape(wave), np.nan)
     with fits.open(pf_file) as h:
@@ -1229,7 +1172,6 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         P = np.asarray(h['PROF2D'].data, float)
         C2D = np.asarray(h['CONTAM2D'].data, float) if 'CONTAM2D' in h else None
         E2D = np.asarray(h['CONTERR2D'].data, float) if 'CONTERR2D' in h else None
-        U2D = np.asarray(h['UNMOD2D'].data, float) if 'UNMOD2D' in h else None
         JT = h['JOINT'].data if 'JOINT' in h else None
         if JT is not None:
             JT = {n: np.asarray(JT[n], float) for n in ('lam', 'err', 'err_iso', 'corr', 'flag') if n in JT.names}
@@ -1239,7 +1181,7 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         alt_sfx = None if joint_use is None else ('_1P' if joint_use else '_J')
         ALT = {}
         if alt_sfx is not None:
-            for n in ('CONTAM2D', 'CONTERR2D', 'UNMOD2D'):
+            for n in ('CONTAM2D', 'CONTERR2D'):
                 if n + alt_sfx in h:
                     ALT[n] = np.asarray(h[n + alt_sfx].data, float)
     if rows not in ('aperture', 'model'):
@@ -1276,11 +1218,10 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     if (joint_use is not None and str(header.get('PFJGATE', '')).lower() == 'noise' and C2D is not None
             and ALT.get('CONTAM2D') is not None and ALT['CONTAM2D'].shape == P.shape == C2D.shape):
         # the noise gate (``profile_joint``): decided here, on the two extracted results
-        sets = {joint_use: (C2D, E2D, U2D), (not joint_use): (ALT['CONTAM2D'], ALT.get('CONTERR2D'),
-                                                              ALT.get('UNMOD2D'))}
+        sets = {joint_use: (C2D, E2D), (not joint_use): (ALT['CONTAM2D'], ALT.get('CONTERR2D'))}
         infl = _joint_inflation(JT, wave)[0] if JT is not None else None
         ratio = _joint_noise_ratio(sets[True], sets[False], infl, Pm, weight_rows, s2d_err ** 2, flux, flux_err,
-                                   unmod_max, contam_1d, contam_1d_min_sigma)
+                                   contam_1d, contam_1d_min_sigma)
         gmax = float(header.get('PFJGMAX', np.inf))
         use = bool(np.isfinite(ratio) and ratio <= gmax)
         why = (f'noise<={gmax:g}' if use else (f'noise>{gmax:g}' if np.isfinite(ratio) else 'noise_undefined'))
@@ -1289,7 +1230,7 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
                            'Noise of the joint result / the one-pass one')
         keep['PFJWHY'] = (why, 'Why the joint result is (not) delivered')
         if use != joint_use:
-            (C2D, E2D, U2D) = sets[use]
+            (C2D, E2D) = sets[use]
             joint_use = use
     hdus = []
     prof = fits.ImageHDU(P, name='PROF2D')
@@ -1302,13 +1243,11 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         keep.update(extraction_cards(choice, reason, 'off'))
         return dict(columns=columns, header=keep, hdus=hdus, choice=choice, reason=reason)
     V = s2d_err ** 2
-    main = _contam_1d(C2D, E2D, U2D, Pm, weight_rows, V, flux, flux_err, unmod_max)
-    cflux, cerr, unmod, flag, csig, predicted = (main[k] for k in ('cflux', 'cerr', 'unmod', 'flag', 'csig',
-                                                                   'predicted'))
+    main = _contam_1d(C2D, E2D, Pm, weight_rows, V, flux, flux_err)
+    cflux, cerr, csig, predicted = (main[k] for k in ('cflux', 'cerr', 'csig', 'predicted'))
     keep['PFCONTAM'] = (main['contam'], 'Predicted other light / fnu_prof, integrated')
     keep['PFCONMAX'] = (main['conmax'], '95th pct of |contam/fnu_prof| where S/N > 3')
     keep['PFCONSIG'] = (csig, 'Predicted other light / noise, integrated')
-    keep['PFUNMODF'] = (main['unmodf'], 'Column fraction with unpredicted other light')
     with np.errstate(invalid='ignore', divide='ignore'):
         if JT is not None:
             # joint solve: the other members' light was solved with this source's
@@ -1338,43 +1277,27 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         columns['joint_corr'] = (jcorr, 'Most negative correlation with a joint-solve member')
         columns['joint_infl'] = (infl, 'Joint-solve error inflation over the isolated error')
         columns['joint_flag'] = (jflag, 'Shared light: 1 split not determined, 2 shape-limited')
-    # the target's extracted light on pixels whose other light is not predicted: only where
-    # the trace maps put another source on the trace
-    others = sum(int(header.get(k, 0)) for k in ('PFNCONT', 'PFCMISS', 'PFCUNREL', 'PFCMFRM'))
-    has_unmod = bool(np.any(np.nan_to_num(unmod) > 0))
-    if others > 0 or has_unmod:
-        with np.errstate(invalid='ignore'):
-            lit = np.where(np.isfinite(flux) & np.isfinite(unmod), np.clip(flux, 0.0, None), 0.0)
-            tot = float(np.sum(lit))
-            unpredf = float(np.sum(lit * np.nan_to_num(unmod)) / tot) if tot > 0 else -999.0
-        keep['UNPREDF'] = (unpredf, 'Target light fraction on unpredicted pixels')
-        hdus_unpred = unpredicted_ranges(wave, flag, unmod)
-    else:
-        hdus_unpred = None
     choice, reason = choose_extraction(True, bool(np.any(predicted)), csig, contam_1d, contam_1d_min_sigma)
-    state = 'partial' if has_unmod else ('predicted' if np.any(predicted) else 'none')
-    keep.update(extraction_cards(choice, reason, state))
+    keep.update(extraction_cards(choice, reason, 'predicted' if np.any(predicted) else 'none'))
     c = fits.ImageHDU(C2D, name='CONTAM2D')
     c.header['BUNIT'] = ('MJy', 'Predicted other-source light, as SCI')
     hdus.append(c)
-    if hdus_unpred is not None:
-        hdus.append(hdus_unpred)
     return dict(columns=columns, header=keep, hdus=hdus, choice=choice, reason=reason)
 
 
 def _combined_profile_fit(prof, groups_pf, exposure_times, common_wave, fnu_prof, fnu_prof_err,
-                          contam_1d='subtract', contam_1d_min_sigma=3.0, unmod_max=0.05):
+                          contam_1d='subtract', contam_1d_min_sigma=3.0):
     """The profile-fit columns and cards of a 1-D combined product.
 
     prof : the groups' ``fnu_prof`` (``per_eg_data['prof']``); groups_pf : per group its
-    ``fnu_contam`` / ``fnu_contam_err``, EXTRACT / EXTRWHY / CONTSTAT / UNPREDF and UNPRED
-    table; fnu_prof / fnu_prof_err : the combined profile extraction.
+    ``fnu_contam`` / ``fnu_contam_err`` and EXTRACT / EXTRWHY / CONTSTAT; fnu_prof /
+    fnu_prof_err : the combined profile extraction.
     ``fnu_contam`` is combined with the exposure-time weights of ``fnu_prof`` (no
     clipping; a group with nothing predicted adds zero light), its error linearly (the
     predictions of the groups come from the same pass-1 spectra). The best spectrum is
-    chosen by ``choose_extraction`` on the combined spectra, with ``PFCONSIG`` recomputed
-    and the groups' UNPRED ranges left out of it; any group on a fallback makes the
-    combined product the 3-pixel boxcar (``group_fallback``)."""
+    chosen by ``choose_extraction`` on the combined spectra, with ``PFCONSIG``
+    recomputed; any group on a fallback makes the combined product the 3-pixel boxcar
+    (``group_fallback``)."""
     waves = prof['wavelengths']
     pfin = [np.isfinite(f) for f in prof['fluxes']]
 
@@ -1393,18 +1316,12 @@ def _combined_profile_fit(prof, groups_pf, exposure_times, common_wave, fnu_prof
         'fnu_contam': (np.where(predicted, contam, np.nan), '1D-combined predicted other-source flux'),
         'fnu_contam_err': (np.where(predicted, contam_err, np.nan), 'Its uncertainty (systematic)'),
     }
-    tables = [g['unpred'] for g in groups_pf if g['unpred'] is not None]
-    unpred = _merge_ranges(tables) if tables else None
-    flag = np.zeros(common_wave.shape, bool)
-    if unpred is not None:
-        for a, b in zip(unpred.data['wave_min'], unpred.data['wave_max']):
-            flag |= (common_wave >= a) & (common_wave <= b)
     keep = fits.Header()
     states = {g['state'] for g in groups_pf}
     fell = [g['reason'] for g in groups_pf if g['extract'] == 'boxcar3']
     with np.errstate(invalid='ignore', divide='ignore'):
         c0 = np.where(np.isfinite(fnu_prof), np.where(predicted, contam, 0.0), np.nan)
-        okn = np.isfinite(c0) & np.isfinite(fnu_prof_err) & (fnu_prof_err > 0) & ~flag
+        okn = np.isfinite(c0) & np.isfinite(fnu_prof_err) & (fnu_prof_err > 0)
         iv = 1.0 / fnu_prof_err[okn] ** 2
         csig = float(abs(np.sum(c0[okn] * iv)) / np.sqrt(np.sum(iv))) if okn.any() else 0.0
     if fell:
@@ -1413,17 +1330,10 @@ def _combined_profile_fit(prof, groups_pf, exposure_times, common_wave, fnu_prof
     else:
         choice, reason = choose_extraction(states != {'off'}, bool(predicted.any()), csig, contam_1d,
                                            contam_1d_min_sigma)
-    state = ('off' if states <= {'off'} else 'partial' if 'partial' in states
-             else 'predicted' if 'predicted' in states else 'none')
+    state = 'off' if states <= {'off'} else 'predicted' if 'predicted' in states else 'none'
     keep['PFCONSIG'] = (csig, 'Predicted other light / noise (1-D combined)')
-    uf = [(g['unpredf'], t) for g, t in zip(groups_pf, exposure_times) if g['unpredf'] is not None]
-    if uf:
-        good = [(float(u), t) for u, t in uf if float(u) >= 0]
-        keep['UNPREDF'] = (float(sum(u * t for u, t in good) / sum(t for _, t in good)) if good else -999.0,
-                           'Target light fraction on unpredicted pixels')
     keep.update(extraction_cards(choice, reason, state))
-    return dict(columns=columns, header=keep, hdus=[unpred] if unpred is not None else [], choice=choice,
-                reason=reason)
+    return dict(columns=columns, header=keep, hdus=[], choice=choice, reason=reason)
 
 
 def combine_per_eg_spectra(
@@ -1475,7 +1385,7 @@ def combine_per_eg_spectra(
 
     per_eg_data = {key: {'wavelengths': [], 'fluxes': [], 'errors': []} for key in extraction_cols}
     exposure_times = []
-    groups_pf = []        # per group: fnu_contam, its error, the header cards and the UNPRED table
+    groups_pf = []        # per group: fnu_contam, its error and the extraction cards
 
     for spec_file, cols in zip(per_eg_spec_files, names):
         spec_path = os.path.join(workspace_dir, spec_file)
@@ -1494,8 +1404,7 @@ def combine_per_eg_spectra(
                 groups_pf.append(dict(
                     contam=np.array(spec1d['fnu_contam'], float), contam_err=np.array(spec1d['fnu_contam_err'], float),
                     extract=str(ph.get('EXTRACT', '')), reason=str(ph.get('EXTRWHY', '')),
-                    state=str(ph.get('CONTSTAT', 'off')), unpredf=ph.get('UNPREDF'),
-                    unpred=(hdul['UNPRED'].data.copy() if 'UNPRED' in hdul else None)))
+                    state=str(ph.get('CONTSTAT', 'off'))))
 
     # --- Step 2: Stacked 2D via Spec3Pipeline on ALL canonical files ---
     run_stage3_single_source(all_cal_files, workspace_dir, product_name, source_id)

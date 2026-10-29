@@ -70,13 +70,17 @@ Release procedure: edit the `## Unreleased` section below, then run
   predicted in one pass from every source's pass-1 spectrum over per-exposure trace maps
   (`trace_overlap.py`, `profile_contam.py`), masked or subtracted for the shape fit and
   subtracted in 1-D when above `contam_1d_min_sigma` (`profile_decontam`); a gated joint
-  solve of strongly coupled groups (`contam_joint`) is off by default. Named failures fall
-  back to `fnu_3px` (`boxcar3`); any other error fails the stage. New SPEC1D columns:
-  `fnu_opt` (the optimal extraction, formerly `fnu`), `fnu_prof`, `fnu_contam` (+ errors,
-  `flam_*`; `fnu_err` is statistical only); `PROF2D`, `CONTAM2D` and `UNPRED` extensions;
-  `PF*` / `CONTSTAT` / `UNPREDF` cards. With `profile_fit` off, `fnu` stays the optimal
-  extraction (`EXTRACT = optimal`) and `fnu_opt` is added. The `_pf.fits` intermediate is
-  deleted once the `_spec.fits` is written.
+  solve of strongly coupled groups (`contam_joint`) is off by default. The maps name each
+  slitlet by its source at every dither point (a source nodded out of a short slitlet no
+  longer meets its own slitlet as a stranger) and leave out stuck-closed shutters; every
+  trace is followed past its nominal range and every pass 1 with it, in count rate
+  (`profile_extend.py`, all dispersers). A source the maps put on a trace without a pass 1
+  is an error (`MissingContaminant`). Named failures fall back to `fnu_3px` (`boxcar3`);
+  any other error fails the stage. New SPEC1D columns: `fnu_opt` (the optimal extraction,
+  formerly `fnu`), `fnu_prof`, `fnu_contam` (+ errors, `flam_*`; `fnu_err` is statistical
+  only); `PROF2D` and `CONTAM2D` extensions; `PF*` / `CONTSTAT` cards. With `profile_fit`
+  off, `fnu` stays the optimal extraction (`EXTRACT = optimal`) and `fnu_opt` is added.
+  The `_pf.fits` intermediate is deleted once the `_spec.fits` is written.
 - **`resample` now writes a per-tile exposure map, `<mosaic>_exp.fits`, next to
   the split `_sci/_err/_wht`.** It is the full-resolution, per-tile member of the
   `exp` family; the field-wide `expmap_<field>_<filter>.fits` is the coarse member.
