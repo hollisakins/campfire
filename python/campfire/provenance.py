@@ -214,12 +214,14 @@ def check(doc: dict, data_dir: Path, *, store=None, api=None, dr: Optional[str] 
             continue
         hits = local_matches(data_dir, r['sha256'], r['science_hash'])
         r['archive'] = describe(r.get('server'), hits)
-        # resolved = something still holds those bytes or that science: the
-        # server's releases / live / collected facts, or, offline, a hit in a
-        # store on this machine other than a superseded download
+        # resolved = something still holds those bytes or that science: a
+        # release member or a live row on the server (a `collected` entry is
+        # a tombstone of a copy that is gone, kept in the sentence only), or,
+        # offline, a hit in a store on this machine other than a superseded
+        # download
         server = r.get('server')
         if server is not None:
-            r['resolved'] = any(server.get(k) for k in ('releases', 'live', 'collected'))
+            r['resolved'] = bool(server.get('releases') or server.get('live'))
         else:
             r['resolved'] = any(h.get('match') != 'stale-download' for h in hits)
         if not r['resolved']:

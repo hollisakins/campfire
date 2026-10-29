@@ -135,6 +135,16 @@ def test_check_asks_the_server_for_the_recorded_bytes(mirror):
     res = check(doc, mirror, api=Api())
     assert asked == [{'sha256': H_AAA, 'science_hash': 'sha256:sciA'}]
     assert res['files'][0]['archive'] == 'in DR2026.1, superseded in live on 2026-11-03'
+    assert res['files'][0]['resolved'] is True and res['problems'] == 0
+
+    class Collected:
+        def identify_files(self, files):
+            return [{'releases': [], 'live': [], 'collected': [{'collected_at': '2027-01-05T00:00:00Z'}]}]
+
+    # a tombstone says where the bytes were, not that anything holds them
+    res = check(doc, mirror, api=Collected())
+    assert res['files'][0]['archive'] == 'archived, collected on 2027-01-05'
+    assert res['files'][0]['resolved'] is False and res['problems'] == 1
     with pytest.raises(ProvenanceError, match='not on this machine'):
         check(doc, mirror, dr='DR-nope')
 
