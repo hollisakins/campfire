@@ -426,6 +426,21 @@ def get_r_curve_path(grating):
     return str(path)
 
 
+def get_empirical_barshadow_path(grating):
+    """Path of the committed empirical bar-shadow reference for ``grating`` (``'PRISM'``,
+    ``'G140M'``…), or None when none has been derived for it.
+
+    Derived from CAMPFIRE stage-2a canonicals by
+    ``campfire_pipeline/data/Generate_Barshadow_Cals.py`` in the CRDS ``barshadow``
+    layout, so ``BarShadowStep`` takes it as ``override_barshadow``; used for the
+    background slitlets of stage 2a when ``[nirspec.stage2].empirical_barshadow`` is on,
+    and by the master background. The H gratings have no table and fall back to CRDS.
+    """
+    name = f"empirical_jwst_nirspec_barshadow_{str(grating).strip().lower()}.fits"
+    path = os.path.join(os.path.dirname(__file__), "data", name)
+    return path if os.path.exists(path) else None
+
+
 def get_extended_photom_path(fixed_slit=False):
     """Get the path to the committed extended-wavelength photom reference file.
 

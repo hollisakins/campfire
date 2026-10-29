@@ -59,6 +59,10 @@
     # extended sources (uniform pathloss, MJy/sr, bar shadow applied). Input of the
     # master-background derivation; regenerable, never deployed. Needs single_call.
     extract_bkgslits = true
+    # Use the empirical bar-shadow table (campfire_pipeline/data/empirical_jwst_nirspec_barshadow_<grating>.fits,
+    # derived from our own empty shutters by Generate_Barshadow_Cals.py) instead of the CRDS reference for the
+    # background slitlets; gratings without a table fall back to CRDS. Off until the tables are validated.
+    empirical_barshadow = false
     rectify = true
     plot_bkgsub = true
     empirical_wavecorr = false

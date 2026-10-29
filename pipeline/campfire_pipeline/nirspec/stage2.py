@@ -252,6 +252,7 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
         extended_refs=extended_refs,
         single_call=stage_config.get('single_call', True),
         extract_bkgslits=stage_config.get('extract_bkgslits', True),
+        empirical_barshadow=stage_config.get('empirical_barshadow', False),
     )
 
     if not obs.directories_setup:
@@ -825,7 +826,7 @@ def _source_of_slit(slit, source_of_slitlet):
 
 
 def _split_spec2_result(cal_path, base, source_ids, cards_by_source, bkgslits_path, msametfl,
-                        slitlets_by_source):
+                        slitlets_by_source, barshadow_override=None):
     """Split one multi-slit ``Spec2Pipeline`` product into the per-source
     canonicals (``_finalize_canonical``) and the background-slitlet file.
 
@@ -875,13 +876,13 @@ def _split_spec2_result(cal_path, base, source_ids, cards_by_source, bkgslits_pa
                 f'round: {unexpected}')
 
         if bkgslits_path is not None:
-            _write_bkgslits(model, bkg_slits, bkgslits_path, msametfl)
+            _write_bkgslits(model, bkg_slits, bkgslits_path, msametfl, barshadow_override)
     finally:
         model.close()
     return produced, missing
 
 
-def _write_bkgslits(parent, bkg_slits, path, msametfl):
+def _write_bkgslits(parent, bkg_slits, path, msametfl, barshadow_override=None):
     """Write the background-only slitlets of one exposure as a
     ``MultiSlitModel`` (``bkgslits/<root>_<nod>_<nrsN>_bkgslits.fits``).
 
@@ -904,7 +905,8 @@ def _write_bkgslits(parent, bkg_slits, path, msametfl):
     if len(bkg_slits):
         try:
             from jwst.barshadow import BarShadowStep
-            bkg_model = BarShadowStep.call(bkg_model)
+            bs_kwargs = {'override_barshadow': barshadow_override} if barshadow_override else {}
+            bkg_model = BarShadowStep.call(bkg_model, **bs_kwargs)
             barshadow_done = True
         except Exception as e:
             log(f'Bar-shadow correction of the background slitlets failed for '
@@ -918,6 +920,8 @@ def _write_bkgslits(parent, bkg_slits, path, msametfl):
         hdr['MSAMETFL'] = msametfl
         hdr['CFNBKGSL'] = (len(bkg_slits), 'campfire: number of background-only slitlets')
         hdr['CFBARSHA'] = (barshadow_done, 'campfire: bar shadow applied to background slitlets')
+        hdr['CFBSREF'] = (os.path.basename(barshadow_override) if barshadow_override else 'CRDS',
+                          'campfire: bar-shadow reference (empirical file or CRDS)')
         hdul.flush()
     os.replace(tmp, path)
     log(f'Wrote {len(bkg_slits)} background slitlet(s) to {os.path.basename(path)}')
@@ -925,7 +929,7 @@ def _write_bkgslits(parent, bkg_slits, path, msametfl):
 
 def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
                      set_stellarity, wavecorr_override, extended_override,
-                     bkgslits_path, msametfl):
+                     bkgslits_path, msametfl, barshadow_override=None):
     """One ``Spec2Pipeline`` call over an edited full metafile (cwd = workspace).
 
     Returns ``(produced, nodata)``: source ids that got a canonical, and the ones
@@ -955,7 +959,7 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
             # background slitlet so the next run does not look again.
             from jwst.datamodels import ImageModel
             with ImageModel(rate_file) as parent:
-                _write_bkgslits(parent, [], bkgslits_path, msametfl)
+                _write_bkgslits(parent, [], bkgslits_path, msametfl, barshadow_override)
         return [], []
 
     metafile = main_metafile.for_sources(
@@ -993,7 +997,7 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
                               for sid, rows in rows_by_source.items()}
         produced, missing = _split_spec2_result(
             cal_path, base, wanted, cards_by_source, bkgslits_path, msametfl,
-            slitlets_by_source)
+            slitlets_by_source, barshadow_override)
     finally:
         if os.path.exists(cal_path):
             os.remove(cal_path)
@@ -1005,7 +1009,7 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
 
 def _run_spec2_single_call(rate_file, obs, main_metafile, pending, bkgslits_path, *,
                            root, set_stellarity, wavecorr_override, extended_override,
-                           msametfl):
+                           msametfl, barshadow_override=None):
     """The single-call path: ``_plan_rounds`` then one ``_run_spec2_round`` each;
     the background slitlets ride with the first round."""
     base = _rate_base(rate_file)
@@ -1023,7 +1027,8 @@ def _run_spec2_single_call(rate_file, obs, main_metafile, pending, bkgslits_path
             rate_file, obs, main_metafile, rnd, index, root=root,
             set_stellarity=set_stellarity, wavecorr_override=wavecorr_override,
             extended_override=extended_override,
-            bkgslits_path=bkgslits_path if index == 1 else None, msametfl=msametfl)
+            bkgslits_path=bkgslits_path if index == 1 else None, msametfl=msametfl,
+            barshadow_override=barshadow_override)
         produced += got
     return produced
 
@@ -1106,6 +1111,7 @@ def run_stage2a_single_rate(
         extended_refs=None,
         single_call: bool = True,
         extract_bkgslits: bool = True,
+        empirical_barshadow: bool = False,
         **kwargs
     ):
     """Stage 2a for one rate file: every source's canonical, plus the exposure's
@@ -1174,6 +1180,19 @@ def run_stage2a_single_rate(
     common = dict(root=root, set_stellarity=set_stellarity,
                   wavecorr_override=wavecorr_override, extended_override=extended_override)
 
+    # The empirical bar-shadow table (campfire_pipeline/data, derived by
+    # Generate_Barshadow_Cals.py) replaces the CRDS reference for the background
+    # slitlets when configured and available for this grating; the science slits
+    # never get a bar-shadow correction here (POINT sources, step skipped).
+    barshadow_override = None
+    if empirical_barshadow:
+        from campfire_pipeline.config import get_empirical_barshadow_path
+        _grating = str(fits.getheader(rate_file).get('GRATING', '')).strip()
+        barshadow_override = get_empirical_barshadow_path(_grating)
+        if barshadow_override is None:
+            log(f'No empirical bar-shadow table for {_grating}; the background slitlets of '
+                f'{base} use the CRDS reference')
+
     source_ids_processed = []
     try:
         source_ids_to_process = main_metafile.unique_source_ids
@@ -1206,7 +1225,8 @@ def run_stage2a_single_rate(
                 source_ids_processed += _run_spec2_single_call(
                     rate_file, obs, main_metafile, pending,
                     bkgslits_path if bkg_needed else None,
-                    msametfl=main_metafile.filename, **common)
+                    msametfl=main_metafile.filename, barshadow_override=barshadow_override,
+                    **common)
             except KeyboardInterrupt:
                 raise
             except Exception as e:

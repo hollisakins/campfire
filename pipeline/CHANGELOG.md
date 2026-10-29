@@ -30,6 +30,21 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Infrastructure
 
+- **Empirical NIRSpec MSA bar-shadow calibration.** `campfire_pipeline.nirspec.barshadow_calibration`
+  measures the bar-shadow profile from the empty shutters of stage-2a canonicals, in the pipeline's own
+  slit-frame coordinates, per reference segment (outer edges from the 1x1 image, interior bar from the
+  1x3 image) and wavelength column, with the sky pooled and the shutters selected per exposure, and
+  `campfire_pipeline/data/Generate_Barshadow_Cals.py` writes it in the CRDS `barshadow` layout as
+  `empirical_jwst_nirspec_barshadow_<grating>.fits` (committed with the pipeline once validated) with
+  a QA report (`barshadow_qa`: measured segments vs CRDS vs table, per-observation consistency, the
+  images, a held-out observation divided by each table, the exposure-level sky). On the prism the
+  held-out residual drops from 11-18 % (CRDS) to 1-2.5 % per segment. `[nirspec.stage2].empirical_barshadow`
+  (default off) passes the table to `BarShadowStep` for the background slitlets
+  (`config.get_empirical_barshadow_path`); gratings without a table fall back to CRDS. The overlap
+  counter moved to `nirspec/coverage.py` with the redward tail past the nominal cutoff (`TAIL_PX`).
+
+### Infrastructure
+
 - **Stage 2a runs one `Spec2Pipeline` call per rate file instead of one per
   source.** The per-source metafile edits (`MetaFile.rows_for_source`) are applied
   to every source at once in one edited full metafile (`MetaFile.for_sources`), the
