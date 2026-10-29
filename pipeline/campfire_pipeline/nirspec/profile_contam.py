@@ -46,7 +46,10 @@ Nothing is iterated: each step reads only the output of the steps before it.
   not only the source-shutter pixels the maps list. Every trace is followed past its
   nominal wavelength range, and every pass 1 with it (``profile_extend``, in
   count-rate units). Every source the maps name has a pass 1: one without is an
-  error (``MissingContaminant``), not a pixel to mask.
+  error (``MissingContaminant``), not a pixel to mask. A source whose own pass 1
+  hits a named fallback (no usable pixel, too few wavelengths) gets one from its
+  stage-3 3-pixel boxcar placed with the default shape (``boxcar_pass1``), which
+  subtracts like any reliable pass 1; only a source with no stage-3 s2d has none.
 * **Use** (``contam_mode``): ``mask`` drops pixels where the predicted light exceeds
   ``kappa`` times the target's per-pixel noise; ``hybrid`` (default) subtracts the
   prediction everywhere and drops the pixels where the prediction's own uncertainty
@@ -547,6 +550,26 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
             reliable, why = False, 'guard'
     for e, ok, d in zip(exps, saved, saved_diff):
         e.ok, e.diff = ok, d
+    frames, nosrc, ext = _frames(R, exps, sid, maps, workspace, n_smooth, st['lines'],
+                                 design=solved_unmasked and src == 'solve')
+    P1 = Pass1(sid=int(sid), lam=R.lam, flux=R.flux, flux_err=R.flux_err, frames=frames, reliable=reliable,
+               nosrc=set(nosrc))
+    P1.ext = ext
+    P1.n_smooth, P1.keep_lines = (n_smooth if src != 'stage3' else 0), bool(st['lines'])
+    P1.nband = nband if src == 'solve' else None
+    P1.clean = after / before if before else 0.0
+    P1.why, P1.shape_src, P1.spec_src, P1.snr_det = why, shape_src, src, snr
+    P1.flux_raw, P1.err_raw = raw, raw_err
+    P1.rep_p95, P1.ref_p95, P1.n_lines = rep_p95, (stage3_ref if stage3_ref else np.nan), n_lines
+    P1.result = R
+    return P1
+
+
+def _frames(R, exps, sid, maps, workspace, n_smooth, keep_lines, design=False):
+    """Each exposure's pass-1 frame of the spectrum ``R`` at its shape (sparse, with the
+    exposure's pixel calibration), the frames past the cutouts (``profile_extend``) and
+    the exposures without the source. ``design``: also store the frame per unit spectrum
+    and each pixel's wavelength (``echo_corrected``). Returns (frames, nosrc, ext)."""
     frames, nosrc = {}, []
     for j, e in enumerate(exps):
         if not e.has_source:
@@ -563,7 +586,7 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
         fr = dict(origin=np.array(e.origin), shape=np.array(e.y.shape), idx=idx.astype(np.int32),
                   img=img.ravel()[idx].astype(np.float32), err=err.ravel()[idx].astype(np.float32),
                   cal=cal.ravel()[idx].astype(np.float32))
-        if solved_unmasked and src == 'solve':
+        if design:
             # the frame per unit spectrum and each pixel's wavelength: the solve's design,
             # for removing a target's own light from this spectrum (``echo_corrected``)
             prof = PF.frame_image(R, j, spectrum=np.ones(R.lam.size))
@@ -574,19 +597,68 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
         # the light past the cutouts' red end, in count-rate units (``profile_extend``): the
         # maps follow every trace there
         from campfire_pipeline.nirspec import profile_extend as PE
-        ext = PE.solve_extension(R, sid, maps, workspace, n_smooth=n_smooth, keep_lines=st['lines'])
+        ext = PE.solve_extension(R, sid, maps, workspace, n_smooth=n_smooth, keep_lines=keep_lines)
         if ext is not None and ext['frames']:
             frames = PE.merge_frames(frames, ext)
             nosrc = [k for k in nosrc if k not in ext['frames']]
-    P1 = Pass1(sid=int(sid), lam=R.lam, flux=R.flux, flux_err=R.flux_err, frames=frames, reliable=reliable,
+    return frames, nosrc, ext
+
+
+def boxcar_pass1(exps, sid, maps, workspace, is_prism, stage_config, box):
+    """Pass 1 of a source whose own pass 1 hit a named fallback
+    (``profile_fit.ProfileFitFallback``: no usable pixel, too few wavelengths): its
+    stage-3 3-pixel boxcar (``box`` = (wave [um], fnu_3px, fnu_3px_err [uJy]), from
+    ``stage3.spec3_boxcar3``), turned into a true spectrum for the default shape
+    (``profile_fit.boxcar_factor``: the part of that shape's light the three rows hold)
+    and placed on every exposure with that shape, so a target its trace crosses is
+    predicted from it like from any other pass 1.
+
+    Marked ``why = 'boxcar'`` and reliable: it subtracts. Its light was measured on the
+    source's own trace, which the failed shape fit does not touch; like a stage-3 pass 1
+    (``contam_pass1 = 'stage3'``) it is not decontaminated, and like one it is taken as
+    it is. Smoothed as a solved pass 1 is (``smooth_spectrum``), no sanity guard (its
+    reference would be the boxcar itself)."""
+    from campfire_pipeline.nirspec import profile_chain as PC
+
+    st = pass1_settings(stage_config)
+    cfg = PC.ChainConfig.from_stage_config(stage_config)
+    wave, fnu, err = (np.asarray(a, float) for a in box)
+    ok = np.isfinite(wave) & (wave > 0)
+    o = np.argsort(wave[ok])
+    lam, fnu, err = wave[ok][o], fnu[ok][o], err[ok][o]
+    keep = np.concatenate([[True], np.diff(lam) > 0])
+    lam, fnu, err = lam[keep], fnu[keep], err[keep]
+    if lam.size < 3:
+        raise PF.TooFewWavelengths(f'source {sid}: boxcar pass 1: {lam.size} wavelength samples')
+    M = PF.ProfileModel.for_placement(exps, lam, priors=cfg.priors, bounds=cfg.bounds)
+    p = PF.shape_vector(None, M.c_prior, M.priors.width_median)           # the default shape
+    R = PF.FitResult(params=dict(centre=float(p[0]), drift=float(p[1]), width=float(np.exp(p[2])),
+                                 width_change=float(p[3]), pivot=M.pivot, centre_prior=M.c_prior),
+                     eoff=np.zeros(len(exps)), lam=lam, flux=np.full(lam.size, np.nan),
+                     flux_err=np.full(lam.size, np.nan), chi2=np.nan, npix=0, nfree=0, chromatic=True, model=M)
+    R.bound_bits = 0
+    fac = PF.boxcar_factor(R, lam)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        good = np.isfinite(fac) & (fac > 0) & np.isfinite(fnu)
+        R.flux = np.where(good, fnu / 1e12 / np.maximum(fac, 1e-6), np.nan)        # uJy -> MJy, true spectrum
+        R.flux_err = np.where(good, err / 1e12 / np.maximum(fac, 1e-6), np.nan)
+    raw, raw_err = R.flux.copy(), R.flux_err.copy()
+    n_smooth = st['smooth_prism'] if is_prism else st['smooth_grating']
+    n_lines = 0
+    if n_smooth > 1:
+        R.flux, R.flux_err, _ = smooth_spectrum(R.flux, R.flux_err, n=n_smooth, keep_lines=st['lines'])
+        n_lines = int(np.sum(np.isfinite(raw) & (R.flux == raw)))
+    rep = np.abs(R.flux * PF.main_shutter_factor(R, R.lam)) * 1e12
+    rep = rep[np.isfinite(rep)]
+    frames, nosrc, ext = _frames(R, exps, sid, maps, workspace, n_smooth, st['lines'])
+    P1 = Pass1(sid=int(sid), lam=R.lam, flux=R.flux, flux_err=R.flux_err, frames=frames, reliable=True,
                nosrc=set(nosrc))
     P1.ext = ext
-    P1.n_smooth, P1.keep_lines = (n_smooth if src != 'stage3' else 0), bool(st['lines'])
-    P1.nband = nband if src == 'solve' else None
-    P1.clean = after / before if before else 0.0
-    P1.why, P1.shape_src, P1.spec_src, P1.snr_det = why, shape_src, src, snr
+    P1.n_smooth, P1.keep_lines, P1.nband, P1.clean = n_smooth, bool(st['lines']), None, np.nan
+    P1.why, P1.shape_src, P1.spec_src, P1.snr_det = 'boxcar', 'default', 'boxcar', np.nan
     P1.flux_raw, P1.err_raw = raw, raw_err
-    P1.rep_p95, P1.ref_p95, P1.n_lines = rep_p95, (stage3_ref if stage3_ref else np.nan), n_lines
+    P1.rep_p95 = float(np.percentile(rep, 95)) if rep.size > 10 else np.nan
+    P1.ref_p95, P1.n_lines = np.nan, n_lines
     P1.result = R
     return P1
 
@@ -608,8 +680,11 @@ def first_round_reliable(workspace, name):
 def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, stage_config,
               prism_product=None, overwrite=False, pass1_products=None, second=False):
     """Pass-1 spectrum and per-exposure model frames of one source (see module doc and
-    ``compute_pass1``). Returns the output path, or None (logged) on a named
-    condition (``profile_fit.ProfileFitFallback``); any other exception propagates.
+    ``compute_pass1``). Returns the output path. On a named condition
+    (``profile_fit.ProfileFitFallback``) in the first round the pass 1 is taken from
+    the source's stage-3 3-pixel boxcar (``boxcar_pass1``); without one (no s2d, or
+    the exposures cannot be loaded) it returns None, logged, with the reason in
+    ``missing_path`` for ``MissingContaminant``. Any other exception propagates.
 
     First round (``second=False``): every pixel another source's source shutter
     lights is masked before the solve. When that leaves less than 30 % of the
@@ -645,7 +720,7 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
         if second:
             if prev is None or bool(prev['reliable']) or str(prev['round']) == '2':
                 return out
-        elif prev is not None and not overwrite:
+        elif prev is not None and not overwrite and not _boxcar_stale(prev, out, workspace, product):
             return out
         exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science))
         maps = maps_for_exposures(workspace, exps)
@@ -653,6 +728,7 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
 
         def reliable_for(csid):
             return first_round_reliable(workspace, names.get(int(csid)))
+        oks = [e.ok.copy() for e in exps]
         spec3 = None
         if st['mode'] == 'stage3':
             spec = os.path.join(workspace, f'{product}_spec.fits')
@@ -663,9 +739,25 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
                     sfx = '_opt' if 'fnu_opt' in d.columns.names else ''     # the optimal extraction
                     spec3 = (np.asarray(d['wave'], float), np.asarray(d[f'fnu{sfx}'], float),
                              np.asarray(d[f'fnu{sfx}_err'], float))
-        P1 = compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shape=prism, second=second,
-                           pass1_for=reliable_for, stage3_ref=stage3_p95(workspace, product, st['guard_ref']),
-                           stage3_spec=spec3)
+        try:
+            P1 = compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shape=prism,
+                               second=second, pass1_for=reliable_for,
+                               stage3_ref=stage3_p95(workspace, product, st['guard_ref']), stage3_spec=spec3)
+        except PF.ProfileFitFallback as e:
+            if second:                   # the first-round result stays
+                raise
+            # the source's own fit cannot run, but its light still reaches the targets its
+            # trace crosses: predict it from stage 3's 3-pixel boxcar (``boxcar_pass1``)
+            from campfire_pipeline.nirspec.stage3 import spec3_boxcar3
+            box = spec3_boxcar3(workspace, product)
+            if box is None:
+                raise type(e)(f'{e}; no stage-3 s2d or spectrum to take its 3-pixel boxcar from '
+                              f'(no science exposure reached stage 3)') from e
+            for x, ok in zip(exps, oks):         # compute_pass1 stopped with others' pixels masked
+                x.ok = ok
+            P1 = boxcar_pass1(exps, sid, maps, workspace, is_prism, stage_config, box[:3])
+            log(f'{product}: pass 1 from the stage-3 3-pixel boxcar ({box[3]}), its own fell back '
+                f'({e.reason}: {e})')
         os.makedirs(os.path.dirname(out), exist_ok=True)
         arrays = dict(version=PASS1_VERSION, sig=sig, n_maps=n_maps, mode=st['mode'], sid=int(sid), lam=P1.lam,
                       flux=P1.flux, flux_err=P1.flux_err, flux_raw=P1.flux_raw, err_raw=P1.err_raw,
@@ -684,12 +776,44 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
         tmp = out + '.tmp.npz'
         np.savez_compressed(tmp, **arrays)
         os.replace(tmp, out)
+        if os.path.exists(missing_path(workspace, product)):
+            os.remove(missing_path(workspace, product))
         return out
     except PF.ProfileFitFallback as e:
-        # a named condition: the source has no pass 1, and a target its trace covers
-        # fails on it (``MissingContaminant``)
+        # a named condition and no boxcar either: the source has no pass 1, and a target
+        # its trace covers fails on it (``MissingContaminant``, which quotes this reason)
         log(f'{product}: no pass 1 ({e.reason}: {e})')
+        if not second:
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(missing_path(workspace, product), 'w') as f:
+                f.write(f'{e.reason}: {e}\n')
         return None
+
+
+def missing_path(workspace, product):
+    """Why a source has no pass 1 (written by ``run_pass1``, quoted by ``MissingContaminant``)."""
+    return os.path.join(workspace, PASS1_SUBDIR, f'{product}_pass1_missing.txt')
+
+
+def missing_reason(workspace, product):
+    """The reason ``run_pass1`` recorded for a source without a pass 1, or None."""
+    path = missing_path(workspace, product) if product else None
+    if not path or not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return f.read().strip() or None
+
+
+def _boxcar_stale(prev, out, workspace, product):
+    """A pass 1 from the 3-pixel boxcar is redone when Spec3 rewrote the s2d it was taken
+    from (or, without one, stage 3 the spectrum; ``stage3.spec3_boxcar3``)."""
+    if 'why' not in prev or str(prev['why']) != 'boxcar':
+        return False
+    t = os.path.getmtime(out)
+    srcs = [os.path.join(workspace, f'{product}{s}') for s in ('_s2d.fits', '_x1d.fits')]
+    if not all(os.path.exists(p) for p in srcs):
+        srcs = [os.path.join(workspace, f'{product}_spec.fits')]
+    return any(os.path.exists(p) and os.path.getmtime(p) > t for p in srcs)
 
 
 @dataclass
@@ -759,9 +883,10 @@ def read_prism_shape(workspace, prism_product):
 class MissingContaminant(RuntimeError):
     """The trace maps put another source's light on a target, and that source has no
     pass 1 (or no pass-1 frame of an exposure its light comes from). Every source of a
-    configuration gets a pass 1 (``stage3.run_profile_fit_phase``), so this is a bug
-    or a broken run (a failed or named-fallback pass 1, a source the maps name that
-    stage 2 did not reduce), never a condition to extract around."""
+    configuration gets a pass 1 (``stage3.run_profile_fit_phase``; from its 3-pixel
+    boxcar when its own fit falls back), so this is a bug or a broken run (a source
+    with no stage-3 s2d, e.g. every nod excluded, a source the maps name that stage 2
+    did not reduce), never a condition to extract around."""
 
 
 @dataclass
@@ -784,6 +909,7 @@ class Prediction:
     pred_joint: list = None          # per exposure: the jointly solved part of ``pred``
     joint: set = field(default_factory=set)             # contaminants whose light comes from the joint solve
     excluded: set = field(default_factory=set)          # contaminants left out of pred (modelled elsewhere)
+    boxcar: set = field(default_factory=set)            # contaminants predicted from their 3-pixel boxcar
 
 
 def _place_sparse(fr, origin_t, shape_t):
@@ -943,7 +1069,7 @@ def echo_corrected(P1, exps, ks, own_light, cal_of):
 
 
 def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0, echo=True, exclude=(),
-            keep_sources=False):
+            keep_sources=False, why_missing=None):
     """Predicted other sources' light in each science nod difference of a target.
 
     Every source the trace maps put on the target's trace is predicted from its pass
@@ -970,6 +1096,11 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
         ``by_source`` (default: only the pair candidates').
     echo : an unreliable contaminant solved over the target's pixels is predicted from
         its spectrum with the target's own light taken out (``echo_corrected``).
+    why_missing : callable sid -> why that source has no pass 1 (``missing_reason``), for
+        the error message.
+
+    A pass 1 taken from the contaminant's 3-pixel boxcar (``boxcar_pass1``) is used like
+    any reliable one; such contaminants are listed in ``Prediction.boxcar``.
 
     Raises ``MissingContaminant`` for a contaminant (not in ``exclude``) without a
     pass 1, or without the pass-1 frame of an exposure whose light the maps put on the
@@ -1003,7 +1134,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
         return own_L[k]
 
     cache, contrib, unreliable, by_source = {}, {}, set(), {}
-    echoed = set()
+    echoed, boxcar = set(), set()
     for k in range(n):
         e = exps[k]
         if not e.use_data or e.partners is None or not geo.sources[k]:
@@ -1025,10 +1156,14 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             if P1 is None:
                 if int(csid) in exclude:
                     continue
+                why = why_missing(csid) if why_missing is not None else None
                 raise MissingContaminant(f'source {sid}: the trace maps put source {csid} on its trace in '
-                                         f'{exposure_key(e.name)}, and source {csid} has no pass 1')
+                                         f'{exposure_key(e.name)}, and source {csid} has no pass 1'
+                                         + (f' ({why})' if why else ''))
             if not P1.reliable:            # its pass 1 may carry the target's light: do not hand it back
                 unreliable.add(csid)
+            if getattr(P1, 'why', '') == 'boxcar' and int(csid) not in exclude:
+                boxcar.add(csid)
             lit = geo.lit_from[k].get(csid, set()) if geo.lit_from is not None else set()
             add = np.zeros(e.y.shape)
             dadd = np.zeros(e.y.shape)
@@ -1091,7 +1226,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
         pred[k] = pred[k] + pred_j[k]
     out = Prediction(pred=pred, dpred=dpred, contributors=contrib, unreliable=unreliable, pred_unreliable=pred_u,
                      have_maps=geo.have_maps, by_source=by_source, failed_open=geo.failed_open, echoed=echoed,
-                     dpred_joint=dpred_j, joint=joint, excluded=exclude, pred_joint=pred_j)
+                     dpred_joint=dpred_j, joint=joint, excluded=exclude, pred_joint=pred_j, boxcar=boxcar)
     # similar-brightness pair candidates: a contaminant above the noise on the target's
     # main shutter whose pass-1 flux is within a factor pair_ratio of the target's. The
     # flag itself (``pair_flag``) also needs the contaminant's light to matter in the

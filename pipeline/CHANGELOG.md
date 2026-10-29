@@ -74,8 +74,10 @@ Release procedure: edit the `## Unreleased` section below, then run
   slitlet by its source at every dither point (a source nodded out of a short slitlet no
   longer meets its own slitlet as a stranger) and leave out stuck-closed shutters; every
   trace is followed past its nominal range and every pass 1 with it, in count rate
-  (`profile_extend.py`, all dispersers). A source the maps put on a trace without a pass 1
-  is an error (`MissingContaminant`). Named failures fall back to `fnu_3px` (`boxcar3`);
+  (`profile_extend.py`, all dispersers). A source whose own pass 1 hits a named fallback is
+  predicted from its stage-3 3-pixel boxcar placed with the default shape, and subtracted
+  (`PFCBOX` counts them per target); one with no stage-3 s2d that the maps put on a trace
+  is an error (`MissingContaminant`, with the reason). Named failures fall back to `fnu_3px` (`boxcar3`);
   any other error fails the stage. New SPEC1D columns: `fnu_opt` (the optimal extraction,
   formerly `fnu`), `fnu_prof`, `fnu_contam` (+ errors, `flam_*`; `fnu_err` is statistical
   only); `PROF2D` and `CONTAM2D` extensions; `PF*` / `CONTSTAT` cards. With `profile_fit`

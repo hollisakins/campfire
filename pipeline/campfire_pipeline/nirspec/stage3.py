@@ -708,6 +708,42 @@ def run_profile_fit_single_source(product_name, workspace_dir, groups, overrides
             _cleanup_spec3_intermediates(list(science), product_name)
         os.chdir(prev_cwd)
 
+
+def boxcar3(s2d_sci, s2d_err, s2d_mask, cen):
+    """The 3-pixel boxcar of an s2d (``fnu_3px``): rows cen +- 1.5, summed, no weights.
+    Returns (profile, fnu, fnu_err) in the s2d's units."""
+    profile = boxcar_profile(cen - 1.5, cen + 1.5, s2d_sci.shape[0])
+    fnu, err = extract_with_profile(profile, s2d_sci, s2d_err, mask=s2d_mask, ivw=False)
+    return profile, fnu, err
+
+
+def spec3_boxcar3(workspace_dir, product_name):
+    """(wave [um], fnu_3px, fnu_3px_err [uJy], source) of a product, as stage 3 extracts it:
+    from Spec3's ``_s2d.fits`` and ``_x1d.fits`` (the aperture centre from the x1d's
+    extraction rows, as ``opt_ext_single_source``), else the ``fnu_3px`` column of an
+    existing ``_spec.fits``. None when neither exists."""
+    s2d_file = os.path.join(workspace_dir, f'{product_name}_s2d.fits')
+    x1d_file = os.path.join(workspace_dir, f'{product_name}_x1d.fits')
+    spec_file = os.path.join(workspace_dir, f'{product_name}_spec.fits')
+    if os.path.exists(s2d_file) and os.path.exists(x1d_file):
+        with fits.open(s2d_file) as s2d, fits.open(x1d_file) as x1d:
+            sci = np.asarray(s2d['SCI'].data, float) * 1e12       # MJy -> uJy
+            err = np.asarray(s2d['ERR'].data, float) * 1e12
+            mask = s2d['WHT'].data == 0
+            h = x1d['EXTRACT1D'].header
+            cen = ((h['EXTRYSTR'] - 1) + h['EXTRYSTP']) / 2
+            wave = np.asarray(x1d['EXTRACT1D'].data['WAVELENGTH'], float)
+        _, fnu, fnu_err = boxcar3(sci, err, mask, cen)
+        return wave, fnu, fnu_err, 's2d'
+    if os.path.exists(spec_file):
+        with fits.open(spec_file) as h:
+            d = h['SPEC1D'].data
+            if 'fnu_3px' in d.columns.names:
+                return (np.asarray(d['wave'], float), np.asarray(d['fnu_3px'], float),
+                        np.asarray(d['fnu_3px_err'], float), 'spec')
+    return None
+
+
 def opt_ext_single_source(
       product_name,
       workspace_dir,
@@ -808,8 +844,7 @@ def opt_ext_single_source(
     fnu_opt, fnu_opt_err = extract_with_profile(profile_opt, s2d_sci, s2d_err, mask=s2d_mask, ivw=True)
 
     # 3 pixel boxcar, centered on the expected position of the source
-    profile_3px = boxcar_profile(cen-1.5, cen+1.5, len(collapsed))
-    fnu_3px, fnu_3px_err = extract_with_profile(profile_3px, s2d_sci, s2d_err, mask=s2d_mask, ivw=False)
+    profile_3px, fnu_3px, fnu_3px_err = boxcar3(s2d_sci, s2d_err, s2d_mask, cen)
 
     # 4 pixel boxcar, centered on the expected position of the source
     profile_4px = boxcar_profile(cen-2.0, cen+2.0, len(collapsed))

@@ -544,6 +544,27 @@ class ProfileModel:
             self.image_pix[j] = dict(y=e.y[U], lam=e.wav[U], dy=e.dy[U], pos=pos)
         for T, mask in zip(self.terms, term_masks):
             T['upos'] = self.image_pix[T['j']]['pos'][mask]
+        self._pl_curves()
+
+    @classmethod
+    def for_placement(cls, exps, grid, priors=None, bounds=None):
+        """A model that only places a given spectrum on the exposures (``frame_image``,
+        ``throughput``, ``transmission``): no pixel table and no data, so it exists for a
+        source without a usable pixel of its own (a contaminant predicted from its
+        3-pixel boxcar, ``profile_contam.boxcar_pass1``). ``grid`` is the spectrum grid."""
+        M = cls.__new__(cls)
+        M.exps, M.chromatic = exps, True
+        M.priors, M.bounds_cfg = priors or Priors(), bounds or Bounds()
+        M.c_prior, M.srcy_flag = planned_position(exps)
+        M.lam_grid = np.asarray(grid, float)
+        M.pivot = float(np.exp(np.median(np.log(M.lam_grid))))
+        M.lam_rng = (float(np.percentile(M.lam_grid, 2)), float(np.percentile(M.lam_grid, 98)))
+        M.n_eoff = len(exps) - 1
+        M.pix_masks, M.terms, M.image_pix, M.npix = [], [], {}, 0
+        M._pl_curves()
+        return M
+
+    def _pl_curves(self):
         # along-dispersion throughput per exposure: jwst point-source path loss along
         # the trace, as a function of wavelength
         self.pl_curve = []
@@ -1121,6 +1142,33 @@ def main_shutter_factor(result, lam):
         tp = M.transmission(p, eoff, k, lam, dy, width=0.0, aperture=(0,), centre=M.exps[k].src_y)
         out = out + tg / np.maximum(tp, 1e-6)
     return out / len(sci)
+
+
+def boxcar_factor(result, lam):
+    """What stage 3's 3-pixel boxcar (``fnu_3px``) measures of the source, per unit true
+    spectrum: the source's light within +- 1.5 detector rows of its planned
+    position (SRCYPOS, where Spec3 centres the extraction aperture), on jwst's
+    point-source calibration (the s2d is the frame divided by the point-source path
+    loss, so a pixel holds f S / T_point, ``throughput``). Averaged over the science
+    exposures that contain the source; a row is the exposure's median pixel height."""
+    M = result.model
+    p, eoff = _qvec(result)
+    lam = np.asarray(lam, float)
+    sci = ([i for i, e in enumerate(M.exps) if e.use_data and e.has_source]
+           or [i for i, e in enumerate(M.exps) if e.use_data] or list(range(len(M.exps))))
+    out, n = 0.0, 0
+    for k in sci:
+        e = M.exps[k]
+        dy = np.asarray(e.dy, float)
+        dy = float(np.median(dy[np.isfinite(dy)])) if np.isfinite(dy).any() else np.nan
+        if not np.isfinite(dy):
+            continue
+        d = np.full_like(lam, dy)
+        # the window as three pixel-integrated rows of height dy
+        box = sum(M.image(p, eoff, k, np.full_like(lam, e.src_y + r * dy), lam, d) for r in (-1, 0, 1))
+        tp = M.transmission(p, eoff, k, lam, d, width=0.0, centre=e.src_y)
+        out, n = out + box / np.maximum(tp, 1e-6), n + 1
+    return out / n if n else np.full(lam.shape, np.nan)
 
 
 def drizzle_frames(result, crf_path, unit=False):

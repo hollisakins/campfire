@@ -113,9 +113,17 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
             if joint is not None:
                 def pass1_for(sid):
                     return joint.pass1_of[int(sid)] if int(sid) in joint.pass1_of else one_pass(sid)
+
+            def why_missing(sid):
+                name = names.get(int(sid))
+                if name is None:
+                    # pass 1 runs for every source with a stage-3 science exposure
+                    return ('no science exposure of it reaches stage 3 in this disperser (every nod '
+                            'excluded, e.g. by a background override), so it has no s2d either')
+                return CT.missing_reason(workspace_dir, name)
             P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=one_pass(source_id),
                            pair_ratio=fl['pair_ratio'], echo=fl['echo'],
-                           keep_sources=js['enabled'] or joint is not None)
+                           keep_sources=js['enabled'] or joint is not None, why_missing=why_missing)
             saved = [(e.ok, e.diff) for e in exps]
             if js['enabled'] or joint is not None:
                 exps0 = [copy.copy(e) for e in exps]          # the data before any handling (pair metrics)
@@ -349,6 +357,8 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             # its light reaches the noise
             hdr['PFCUNREL'] = (len(P.unreliable), 'Other sources, pass 1 unreliable (masked)')
             hdr['PFCECHO'] = (len(getattr(P, 'echoed', ()) or ()), 'Unreliable ones with the target echo removed')
+            # their own pass 1 fell back: predicted from their stage-3 3-pixel boxcar (subtracted)
+            hdr['PFCBOX'] = (len(getattr(P, 'boxcar', ()) or ()), 'Other sources predicted from a 3px boxcar')
             hdr['PFPAIR'] = (int(P.pair), 'Similar-brightness contaminant on the trace')
             hdr['PFPAIRID'] = (int(P.pair_id), 'Its source id (-1: none)')
             hdr['PFPAIRR'] = (_v(P.pair_ratio), 'Its pass-1 flux / the target pass-1 flux')

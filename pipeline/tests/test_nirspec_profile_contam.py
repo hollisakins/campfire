@@ -515,3 +515,118 @@ def test_second_round_reads_first_round_results_only(tmp_path):
     assert CT.first_round_reliable(str(tmp_path), 'b') is None
     assert CT.first_round_reliable(str(tmp_path), 'c') is None
     assert CT.first_round_reliable(str(tmp_path), 'zz') is None and CT.first_round_reliable(str(tmp_path), None) is None
+
+
+# ---------------------------------------------------------------------------
+# A contaminant whose own pass 1 falls back: predicted from its 3-pixel boxcar
+# ---------------------------------------------------------------------------
+NO_SMOOTH = {'contam_pass1_smooth': 0}
+
+
+def _default_shape_source(sid, scale):
+    """A source of the default shape (prior width, at its planned position) and the
+    3-pixel boxcar stage 3 would measure of it: the calibrated frame (the frame over
+    the point-source path loss) summed over the three rows around SRCYPOS, in uJy."""
+    from campfire_pipeline.nirspec import profile_chain as PC
+    w = PC.ChainConfig.from_stage_config({}).priors.width_median
+    exps, R = _source(sid, 0.0, scale)
+    R.params.update(centre=R.params['centre_prior'], width=w)
+    r = NY // 2                                     # nod 1: SRCYPOS (0) at this row's centre
+    cal = PF.frame_image(R, 0) / exps[0].pl_point
+    box = np.nansum(cal[r - 1:r + 2], axis=0) * 1e12
+    return R, (exps[0].wav[r].copy(), box, 0.01 * np.abs(box))
+
+
+def _no_usable_pixels(sid):
+    exps, _ = _source(sid, 0.0, 1.0)
+    for e in exps:
+        e.ok = np.zeros(e.y.shape, bool)
+    return exps
+
+
+def test_boxcar_pass1_is_the_boxcar_placed_with_the_default_shape(stand_ins):
+    """A source with no usable pixel has no pass 1 of its own; its 3-pixel boxcar,
+    divided by the part of the default shape's light the three rows hold, is its true
+    spectrum, and placed with that shape it gives the frames a fit would."""
+    Rc, box = _default_shape_source(2, 5.0)
+    exps = _no_usable_pixels(2)
+    with pytest.raises(PF.NoUsablePixels):
+        PF.ProfileModel(exps)
+    P1 = CT.boxcar_pass1(exps, 2, {}, '.', True, NO_SMOOTH, box)
+    assert P1.why == 'boxcar' and P1.reliable and P1.spec_src == 'boxcar'
+    mid = (Rc.lam > 1.2) & (Rc.lam < 4.6)
+    np.testing.assert_allclose(np.interp(Rc.lam[mid], P1.lam, P1.flux), Rc.flux[mid], rtol=0.02)
+    for j, e in enumerate(exps):
+        fr = P1.frames[CT.exposure_key(e.name)]
+        truth = PF.frame_image(Rc, j).ravel()[fr['idx']]
+        inner = (e.wav.ravel()[fr['idx']] > 1.2) & (e.wav.ravel()[fr['idx']] < 4.6)   # grid ends: tilted rows
+        big = inner & (np.abs(truth) > 0.05 * np.nanmax(np.abs(truth)))
+        np.testing.assert_allclose(fr['img'][big], truth[big], rtol=0.02)
+
+
+def test_boxcar_contaminant_is_subtracted_and_counted(stand_ins):
+    """A boxcar pass 1 subtracts like a reliable one (its light was measured on its own
+    trace), and the target's prediction lists it (``PFCBOX``)."""
+    t_exps, _ = _source(1, 0.0, 10.0)
+    Rc, box = _default_shape_source(2, 5.0)
+    P1 = CT.boxcar_pass1(_no_usable_pixels(2), 2, {}, '.', True, NO_SMOOTH, box)
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    assert P.boxcar == {2} and not P.unreliable and 2 in P.contributors
+    truth = np.nan_to_num(sum(w * PF.frame_image(Rc, j) for j, w in PF.term_weights(t_exps, 0)))
+    big = (np.abs(truth) > 0.05 * np.max(np.abs(truth))) & (t_exps[0].wav > 1.2) & (t_exps[0].wav < 4.6)
+    np.testing.assert_allclose(P.pred[0][big], truth[big], rtol=0.02)
+    # a contaminant modelled elsewhere is not counted
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.', exclude={2})
+    assert not P.boxcar
+
+
+def _spec_file(path, box):
+    wave, fnu, err = box
+    cols = [fits.Column(name=n, format='D', array=a) for n, a in
+            (('wave', wave), ('fnu', fnu), ('fnu_3px', fnu), ('fnu_3px_err', err))]
+    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU.from_columns(cols, name='SPEC1D')]).writeto(path)
+
+
+def test_run_pass1_falls_back_to_the_boxcar_or_says_why_not(stand_ins, monkeypatch, tmp_path):
+    """run_pass1 on a source whose own pass 1 falls back writes a boxcar pass 1 from its
+    stage-3 spectrum; with no s2d or spectrum it writes none, and a target its trace
+    crosses fails with the reason."""
+    monkeypatch.setattr(PF, 'load_source', lambda groups, bkg_overrides=None, science=None: _no_usable_pixels(2))
+    monkeypatch.setattr(CT, 'maps_for_exposures', lambda workspace, exps: {})
+    _, box = _default_shape_source(2, 5.0)
+    ws = str(tmp_path)
+    _spec_file(tmp_path / 'obs_prism_2_spec.fits', box)
+    groups = [[str(tmp_path / 'jw00000001001_03101_00001_nrs1_2.fits')]]
+    out = CT.run_pass1('obs_prism_2', ws, groups, [None], [], 2, True, NO_SMOOTH)
+    P1 = CT.Pass1.read(out)
+    assert P1.why == 'boxcar' and P1.reliable and P1.frames
+    assert CT.missing_reason(ws, 'obs_prism_2') is None
+    # no stage-3 product at all (every nod excluded): no pass 1, and the error says why
+    assert CT.run_pass1('obs_prism_3', ws, groups, [None], [], 3, True, NO_SMOOTH) is None
+    why = CT.missing_reason(ws, 'obs_prism_3')
+    assert 'no_usable_pixels' in why and 'no stage-3 s2d' in why
+    t_exps, _ = _source(1, 0.0, 10.0)
+    with pytest.raises(CT.MissingContaminant, match='no stage-3 s2d'):          # the maps name source 2 here
+        CT.predict(t_exps, 1, {'x': None}, lambda s: None, ws,
+                   why_missing=lambda s: CT.missing_reason(ws, 'obs_prism_3'))
+
+
+def test_spec3_boxcar3_is_stage3_fnu_3px(tmp_path):
+    """The boxcar a pass 1 is taken from is stage 3's own: three s2d rows around the
+    x1d aperture centre, summed, MJy -> uJy."""
+    rng = np.random.default_rng(3)
+    sci = rng.normal(size=(12, 40))
+    wht = np.ones_like(sci)
+    wht[5, 7] = 0                                         # a masked pixel is left out
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(sci, name='SCI'), fits.ImageHDU(np.ones_like(sci), name='ERR'),
+                  fits.ImageHDU(wht, name='WHT')]).writeto(tmp_path / 'p_s2d.fits')
+    wave = np.linspace(1, 2, 40)
+    t = fits.BinTableHDU.from_columns([fits.Column(name='WAVELENGTH', format='D', array=wave)], name='EXTRACT1D')
+    t.header['EXTRYSTR'], t.header['EXTRYSTP'] = 4, 8        # rows 3..7 (0-based), centre 5.5
+    fits.HDUList([fits.PrimaryHDU(), t]).writeto(tmp_path / 'p_x1d.fits')
+    w, f, e, src = S3.spec3_boxcar3(str(tmp_path), 'p')
+    expect = np.where(wht[4:7] > 0, sci[4:7], 0.0).sum(axis=0) * 1e12
+    assert src == 's2d'
+    np.testing.assert_allclose(w, wave)
+    np.testing.assert_allclose(f, expect)
+    assert S3.spec3_boxcar3(str(tmp_path), 'none') is None
