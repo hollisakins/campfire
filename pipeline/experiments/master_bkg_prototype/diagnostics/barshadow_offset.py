@@ -21,6 +21,7 @@ _ap.add_argument('--root', default='jw07076020001_04101', help='exposure root <o
 _ap.add_argument('--sky', default='full_ember_egs_p1_v3/ember_egs_p1_sky.ecsv', help='<obs>_sky.ecsv from prototype_master_bkg.py')
 _ap.add_argument('--max-sources', type=int, default=90)
 _ap.add_argument('--out', default=None, help='output figure path')
+_ap.add_argument('--detector', choices=['nrs1', 'nrs2'], default=None, help='restrict to one detector')
 _ap.add_argument('--coverage-dir', default=None, help='directory of coverage_<rate>_*.npy counters written by prototype_master_bkg.py (--coverage wcs); pixels under more than one slitlet are dropped')
 ARGS = _ap.parse_args()
 import os as _os
@@ -102,6 +103,8 @@ def main():
     infos = [P._read_info(p) for p in paths]
     sids = sorted(set(i.source_id for i in infos))[:ARGS.max_sources]
     infos = [i for i in infos if i.source_id in sids]
+    if ARGS.detector:
+        infos = [i for i in infos if i.detector == ARGS.detector]
     with Pool(8) as pool:
         res = pool.map(one, infos)
     cat = lambda key: np.concatenate([r[key] for r in res])
@@ -142,8 +145,8 @@ def main():
     for key, col, lab in (((0.0, 1.0), 'tab:red', 'reference as jwst evaluates it'), (best, 'tab:green', 'reference, shifted and widened')):
         _, med_r, fc = flatness(corr[key], f, -0.6, 0.6, 24); axes[1].plot(fc, med_r, color=col, ls='--', label=lab)
     axes[1].set_ylim(0.3, 1.1); axes[1].legend(fontsize=8); axes[1].set_title('measured profile vs reference'); axes[1].set_xlabel('f')
-    fig.suptitle(f'{ARGS.obs} {ARGS.root}, empty shutters: CRDS bar-shadow reference, shift and width')
-    fig.tight_layout(); fig.savefig(ARGS.out or f'{ARGS.obs}_{ARGS.root}_barshadow_offset3.png', dpi=110); print('saved')
+    fig.suptitle(f'{ARGS.obs} {ARGS.root}{(" " + ARGS.detector.upper()) if ARGS.detector else ""}, empty shutters: CRDS bar-shadow reference, shift and width')
+    fig.tight_layout(); fig.savefig(ARGS.out or f'{ARGS.obs}_{ARGS.root}_barshadow_offset3{("_" + ARGS.detector) if ARGS.detector else ""}.png', dpi=110); print('saved')
 
 if __name__ == '__main__':
     main()

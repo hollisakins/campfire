@@ -557,7 +557,10 @@ Per rate file, in a worker (parallel over rate files like stage 1 / 2a):
      `median` — the per-bin median across all non-`source` shutter pixels (msaexp's `p50`, §3.2),
      after the geometric cut, generalised from msaexp's and applied **per pixel**: drop every pixel
      within `source_pad` (default 5 px ≈ 0.5″, one shutter) in slit-frame y of the predicted trace of
-     *any* catalog source in the metafile that falls in that slitlet — the slitlet's own source at
+     *any* catalog source in the metafile that falls in that slitlet, and every pixel under more than
+     one **extended** footprint (the bounding box plus the disperser's measured tail past the nominal
+     cutoff, §9; the bounding box alone let the upstream slitlets' red ends pass for sky on G395M
+     NRS2) — the slitlet's own source at
      this nod, and any second catalog source sharing the slitlet — regardless of the slitlet's
      shutter count (msaexp exempts one- and two-shutter slitlets; CAMPFIRE should not, since a
      one-shutter slitlet with a source in it has no empty pixels to offer). Sources *not* in the
@@ -601,8 +604,12 @@ Per rate file, in a worker (parallel over rate files like stage 1 / 2a):
    `np.interp` B(λ) onto the slit's wavelength array (jwst's `expand_to_2d.bkg_for_multislit` does
    exactly this per slit), then run `photom`, `barshadow`, `pathloss`, `flat_field` with
    `inverse=True, use_correction_pars=True` from the forward pass, and paint each slit's rate-frame
-   cutout into the full-frame `MBKG2D` at its `xstart/ystart`. Where slitlets overlap on the detector
-   (failed-open), flag `DO_NOT_USE`.
+   cutout into the full-frame `MBKG2D` at its `xstart/ystart`. Where footprints overlap on the
+   detector the background is the **sum** of every covering slitlet's sky, each at its own wavelength
+   and bar-shadow row — on the gratings that is 38 % of the detector, not a corner case (§9) — so the
+   painting accumulates rather than overwrites; pixels under a trace's beyond-cutoff tail (§9: ~200 px
+   redward of the nominal end at G395M, uncalibrated light) and under failed-open shutters are flagged
+   `DO_NOT_USE` unless an empirical tail profile in detector counts is added.
 6. **Write** the product (atomic sibling-tmp write, `common/io` style) and a QA PDF: the 1-D sky with
    the model curve and the per-shutter spectra coloured by clean/rejected reason; the `MBKG2D` image
    next to the rate file.
@@ -640,7 +647,7 @@ the multiprocessing race.
 source slitlets in a form two array ratios away from surface brightness, and the stage 2a rework
 decided in §1.7 adds the background-only slitlets, so the derivation can skip the full-metafile pass: load the exposure's canonicals, apply `pathloss_point / pathloss_uniform`,
 `1 / PIXAR_SR` and a `BarShadowStep(source_type='EXTENDED')` evaluation, read uniform-source
-wavelengths from the `slit_frame` transform, paint the bounding boxes onto a coverage counter, and
+wavelengths from the `slit_frame` transform, paint the extended footprints (bounding box + tail, §9) onto a coverage counter from the exposure WCS, and
 run §4.2 steps 2–4. Cost: a few seconds per canonical, no `assign_wcs`/`extract_2d`. What it loses:
 only the uniform-pass correction arrays for step 5 (the de-calibration can instead use the pixelwise
 factor of §4.4, or the stored `pathloss_*` arrays, the barshadow evaluation and `PIXAR_SR` in reverse). The full pass is one code path, jwst- and msaexp-shaped,
@@ -934,12 +941,14 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   stacked in the pipeline's own slit-frame coordinates absorbs whatever the mapping does, which is
   the stronger argument for building it, and for turning bar shadow back on only once that table
   flattens held-out empty shutters to ~1 %.
-- **Second field, and the first grating (`ember_cosmos_p1`, PRISM + G395M, 70 of 446 sources
-  through stage 2a; 2026-10-28).** The prism replicates `ember_egs_p1` in every number: 444 of 483
-  shutters clean (92 %), per-exposure scales 0.988–1.004, NRS1/NRS2 0.994 ± 0.013, the sky 0.18–0.4
-  MJy/sr at 1–2 µm (COSMOS is nearer the ecliptic), data/model 0.93, the same bar-row pattern
-  (edge toward the source below it 1.21, far edge 0.88, above it 0.96 / 1.05) and the same best shift
-  (−0.03 pitch = −0.16 px, rms 7.6 % → 3.0 %). Two lessons from the grating:
+- **Second field, and the first grating (`ember_cosmos_p1`, PRISM + G395M; first 70 of 446 sources,
+  then all 681 through the single-call stage 2a; 2026-10-28).** The prism replicates `ember_egs_p1` in
+  every number, at 3× the statistics with the full set: 1195 of 1335 shutters clean (90 %),
+  per-exposure scales within ±0.1 % of the pooled sky (errors 0.08 %), NRS1/NRS2 1.004 ± 0.009, the
+  sky 0.38 MJy/sr at 1–2 µm (COSMOS is nearer the ecliptic), data/model 0.94, the same bar-row
+  pattern (edge toward the source below it 1.18–1.24, far edge 0.88, above it 0.96 / 1.02) and the
+  same best shift (−0.02 pitch = −0.11 px, rms 6.9 % → 3.3 %; 1.9 M pixels,
+  `ember_cosmos_p1_prism_barshadow_offset.png`). Lessons from the grating:
   - **The overlap map must come from the whole exposure, not from the processed canonicals.** On
     G395M, 1.58 M of the 4.2 M pixels of each detector lie under more than one slitlet footprint
     (13 k for the prism): the 750–1400 px traces of 446 slitlets abut with no gap
@@ -948,18 +957,83 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     factors of 5–10 with smooth gradients across the bars. The prototype now builds the counter with
     `assign_wcs` over every open slitlet plus the failed-open shutters (stage 1's `mask_slits`, kept
     as a count), cached per rate file — the production stage must do the same.
-  - **With that map the grating sky agrees with the prism sky in the same field to ~5 %** (3–3.5 µm:
-    0.190 vs 0.182 MJy/sr; 4–4.5: 0.429 vs 0.433; 4.5–5: 0.91 vs 0.86; 5–5.4: 1.40 vs 1.49), a
-    cross-check of the flat / pathloss / photom chain between dispersers. But it is a statistics
-    problem: after the overlap cut only 162 shutters survive from 70 sources, 66 clean, with 10–14 %
-    error per 2-pixel bin at 3–4 µm; the full 446 sources would give ~100 clean shutters per
-    exposure, and the grating sky is a smooth thermal continuum, so a low-order model is enough.
-  - **No registration offset is visible at G395M** (4.3–5.3 µm, 175 k pixels): best shift +0.01 pitch,
-    rms 9.0 % → 8.4 % (noise-limited), and the stacked profile divided by the reference is flat to
-    ±10 % with none of the prism's ±35 % spikes (`ember_cosmos_p1_g395m_profile_vs_f.png`). Since the
-    prism shows the same −0.15 px shift at 3.5–5 µm as at 1–2 µm, the misregistration is a property of
-    the **prism's** slit-frame mapping, not of wavelength. Bar shadow may well be fine to switch back
-    on for the gratings as it stands; for the prism it needs either the empirical table or a fix in
-    the prism WCS y zero point.
-- Not yet measured: a full-source grating observation (S/N for the bar profile), the bar profile as a
-  function of wavelength and quadrant, and the solar-line check (§3.3).
+  - **The grating sky agrees with the prism sky in the same field to 2–5 %** (full set, 3–3.5 µm:
+    0.194 vs 0.186 MJy/sr; 4–4.5: 0.431 vs 0.438; 4.5–5: 0.905 vs 0.872; 5–5.4: 1.41 vs 1.49), a
+    cross-check of the flat / pathloss / photom chain between dispersers, with 2–4 % error per
+    2-pixel bin (10–14 % with 70 sources).
+  - **Only 653 of 1230 G395M shutters were clean (53 %) at first, and the rejections were not
+    noise — they were the traces past the nominal cutoff.** On NRS1 the empty shutters sat at the
+    pooled sky (median scale 1.04, 25 % rejected); on NRS2 the median was 1.21 with a second
+    population at 1.5–1.8 and 68 % rejected (`ember_cosmos_p1_g395m_sky.png`). The chain of
+    diagnostics that found the cause (`sky_scale_maps.py`, `slitlet_excess.py`, `trace_tails.py`):
+    - the excess is a **slitlet** property (within one NRS2 slitlet the six empty shutters agree to
+      ±0.07, between slitlets the spread is ±0.57), it is **in the rate-file counts** (high vs normal
+      NRS2 slitlets: 0.033 vs 0.019 DN/s at 4.6–5.0 µm with the same DN/s → MJy/sr factor, 53 vs 55),
+      it is **additive and red** (~0.26 MJy/sr at 3.2–3.5 µm rising to ~0.85 at 5 µm, flatter than the
+      thermal sky; `ember_cosmos_p1_g395m_nrs2_excess_spectrum.png`), it is **not** the field
+      position (high and normal interleave in every quadrant, `ember_cosmos_p1_g395m_as_msa_map.png`
+      and `_as_detector_map.png`), not the target's brightness, not the wings of the neighbouring
+      traces (no correlation with the pixels 2–10 px outside the footprint), and not a leftover
+      detector background (inter-trace pixels at 0.0006 DN/s on both detectors);
+    - **the trace does not stop at the nominal cutoff.** The `assign_wcs` bounding box ends at the
+      `wavelengthrange` reference's 5.27 µm, but in the trace rows past that end the NRS2 rate image
+      still reads 0.015 DN/s at the end, 0.011 at +100 px, 0.006 at +150 and reaches the background
+      only ~200 px further (`ember_cosmos_p1_g395m_trace_tails.png`, top): ~0.3 µm of light beyond
+      the cutoff, decaying with the detector's response, that no bounding box, flat, pathloss or
+      photom covers. G395M spectra disperse redward and the NRS2 half is where every slitlet's red
+      end lies, so the tails of the upstream slitlets land in the downstream slitlets' "empty"
+      shutters with the overlap map none the wiser — on NRS2 half of the empty-shutter pixels sit
+      within 200 px redward of another trace's nominal end, on NRS1 almost none;
+    - **and the shutter scale tracks it**: against the fraction of the shutter under another
+      trace's tail (nominal end + 170–200 px), NRS2 shutters go from a median 1.03–1.10 with none
+      above 1.4 (fraction < 0.5) to 1.42–1.48 with half above 1.4 (fraction > 0.5), Spearman 0.63;
+      NRS1 shows the same split at 2 % vs 35 % above 1.4 (`ember_cosmos_p1_g395m_trace_tails.png`,
+      bottom). It is the same light the nod subtraction removes by construction (the tails nod
+      along with everything else), which is why nothing downstream ever noticed.
+    - **With the counter extended 200 px redward** (`prototype_master_bkg.py --coverage-tail-px
+      200`): 707 of 837 G395M shutters clean (84 %; 393 shutters lose all their pixels to the
+      tails), NRS2 scales 0.96 / 1.01 / 1.08 (16 / 50 / 84) with 2 % above 1.4 (was 1.01 / 1.21 /
+      1.65, 34 %), NRS1 0.96 / 1.04 / 1.19, no slitlet with a median above 1.4 on either detector
+      (`ember_cosmos_p1_g395m_sky_tailaware.png`, `ember_cosmos_p1_g395m_as_msa_map_tailaware.png`),
+      and the grating sky still matches the prism sky in the same field: 3–3.5 µm 0.192 vs 0.186
+      MJy/sr, 4–4.5 0.415 vs 0.438, 4.5–5 0.878 vs 0.872, 5–5.4 1.43 vs 1.49 (1–5 %). What is left:
+      the NRS1 exposures sit 2–4 % above the pooled sky with 1 % errors while NRS2's sit at 0–1 %
+      (NRS1/NRS2 1.026), i.e. either a residual of the tail (it is at the 1 % level beyond 200 px
+      over many pixels) or a detector-to-detector calibration difference — to be separated with a
+      longer extension and a per-detector pooled sky. The prism, whose spectrum ends at the detector
+      edge, is unaffected by the extension (1187 of 1315 clean).
+    - **What this means for the design (§4.2).** Overlapping spectra are the stress test of a master
+      background, and on the gratings they are the normal case, not the exception: 38 % of each
+      G395M detector is under more than one nominal footprint, and the tails add ~200 px per trace
+      to that. Three consequences: (i) the empirical sky must be drawn only from pixels under exactly
+      one *extended* footprint (nominal bounding box plus the tail, measured per disperser as the
+      distance at which the trace rows reach the inter-trace level, ~200 px at G395M, nothing at the
+      prism), and stage 1's `mask_slits` — the same bounding boxes — should carry the same extension
+      so the detector-background model is not fitted on the tails; (ii) in a science slit's pixels
+      under more than one footprint the background is the **sum** of every covering slitlet's sky,
+      each at its own wavelength and its own bar-shadow row, so the model must be assembled per pixel
+      from the overlapping slit WCSs, not as one spectrum per slit — the nod subtraction gets this for
+      free because every contribution nods together, the master background does not; (iii) the
+      tail's light has no wavelength, flat, pathloss or photom (the references stop at the cutoff),
+      so a pixel under a tail can be modelled only in detector counts from the empirical tail
+      profile, or flagged — for the clean-shutter selection and for the science slits alike. The
+      bounding-box-only overlap map that the first prototype used, and that jwst's own
+      `master_background_mos` relies on through its background-slit selection, is not enough on
+      the gratings.
+  - **No registration offset at G395M; the reference is ~4 % too wide at the red end.** With the
+    bounding-box overlap map the full set (1.36 M pixels) had shown a systematic ±10 % shape error at
+    4.3–5.3 µm (centre high, edges low) that the 70-source run could not resolve; with the tail-aware
+    map it is mostly gone — it was the tails' light, which carries the *upstream* slitlet's bar
+    pattern. What remains (0.96 M pixels, `ember_cosmos_p1_g395m_barshadow_offset.png`,
+    `ember_cosmos_p1_g395m_profile_vs_f.png`): best shift +0.01 pitch (+0.05 px), i.e. none, and a
+    width stretch of 0.96 (rms 9.3 % → 7.3 %); the stacked profile divided by the reference is flat
+    to ±3 % for |f| < 0.3 and falls to 0.95 at |f| = 0.4, both at 4.3–5.3 µm and at 3–4.3 µm — the
+    measured open width is ~4 % narrower than the reference's flat top, with no side dependence
+    (k < 0 and k > 0 both prefer +0.01 / 0.96). Since the prism shows the same −0.1 px shift at
+    3.5–5 µm as at 1–2 µm, the misregistration is a property of the **prism's** slit-frame mapping,
+    not of wavelength. So the CRDS bar shadow is usable as it stands on G395M at the 3–5 % level
+    (a 0.96 width stretch would bring it to ~2 %), while the prism needs the shift (or a fix in the
+    prism WCS y zero point) before it is good to better than 7 %; the ~1 % goal needs the empirical
+    table on both.
+- Not yet measured: the bar profile as a function of quadrant, the solar-line check (§3.3), and the
+  origin of the G395M NRS2 excess.

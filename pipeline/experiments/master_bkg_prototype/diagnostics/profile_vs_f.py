@@ -16,6 +16,7 @@ _ap.add_argument('--root', default='jw07076020001_04101', help='exposure root <o
 _ap.add_argument('--sky', default='full_ember_egs_p1_v3/ember_egs_p1_sky.ecsv', help='<obs>_sky.ecsv from prototype_master_bkg.py')
 _ap.add_argument('--max-sources', type=int, default=90)
 _ap.add_argument('--out', default=None, help='output figure path')
+_ap.add_argument('--detector', choices=['nrs1', 'nrs2'], default=None, help='restrict to one detector')
 _ap.add_argument('--coverage-dir', default=None, help='directory of coverage_<rate>_*.npy counters written by prototype_master_bkg.py (--coverage wcs); pixels under more than one slitlet are dropped')
 _ap.add_argument('--band', type=float, nargs=2, default=(1.0, 3.0), help='wavelength window [um] to stack')
 ARGS = _ap.parse_args()
@@ -69,6 +70,8 @@ def main():
     infos = [P._read_info(p) for p in paths]
     sids = sorted(set(i.source_id for i in infos))[:ARGS.max_sources]
     infos = [i for i in infos if i.source_id in sids]
+    if ARGS.detector:
+        infos = [i for i in infos if i.detector == ARGS.detector]
     with Pool(4) as pool:
         res = pool.map(one, infos)
     fbins = np.linspace(-0.6, 0.6, 25); fc = 0.5 * (fbins[1:] + fbins[:-1])
@@ -90,8 +93,8 @@ def main():
         ax.set_title(t, fontsize=10); ax.set_xlabel('within-shutter coordinate f  (0 = shutter centre, |f| = 0.5 = shutter edge; sign: f*sign(k))')
         for b in (-0.5, 0.5): ax.axvline(b, color='gray', lw=0.5, ls='--')
     axes[0].set_ylim(0.9, 1.5); axes[1].set_ylim(0.3, 1.2); axes[2].set_ylim(0.3, 1.05); axes[0].axhline(1, color='k', lw=0.5); axes[1].axhline(1, color='k', lw=0.5); axes[0].legend(fontsize=8)
-    fig.suptitle(f'{ARGS.obs} {ARGS.root}, empty shutters, {ARGS.band[0]:g}-{ARGS.band[1]:g} um, first {ARGS.max_sources} sources: row-level profile across a shutter')
-    fig.tight_layout(); fig.savefig(ARGS.out or f'{ARGS.obs}_{ARGS.root}_profile_vs_f.png', dpi=110); print('saved')
+    fig.suptitle(f'{ARGS.obs} {ARGS.root}{(" " + ARGS.detector.upper()) if ARGS.detector else ""}, empty shutters, {ARGS.band[0]:g}-{ARGS.band[1]:g} um, first {ARGS.max_sources} sources: row-level profile across a shutter')
+    fig.tight_layout(); fig.savefig(ARGS.out or f'{ARGS.obs}_{ARGS.root}_profile_vs_f{("_" + ARGS.detector) if ARGS.detector else ""}.png', dpi=110); print('saved')
 
 if __name__ == '__main__':
     main()

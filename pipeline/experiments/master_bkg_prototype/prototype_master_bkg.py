@@ -358,7 +358,7 @@ def _read_samples(args):
 # ---------------------------------------------------------------------------
 
 
-def coverage_from_wcs(rate_path, cache_dir=None):
+def coverage_from_wcs(rate_path, cache_dir=None, tail_px=0):
     """Per-pixel count of slitlet footprints (every open slitlet in the metafile plus the
     failed-open shutters) on one rate file, from the exposure WCS — the counter stage 1's
     ``mask_slits`` builds, kept as a count instead of an OR.
@@ -366,10 +366,17 @@ def coverage_from_wcs(rate_path, cache_dir=None):
     Needed because a canonical-based counter only knows the sources that were run through
     stage 2a: on G395M the traces of the other slitlets abut ours with no gap, and their light
     then passes for sky (ember_cosmos_p1, 70 of 446 sources processed).
+
+    ``tail_px`` extends every footprint redward (+x) by that many pixels: the WCS bounding
+    box stops at the filter's nominal cutoff, but the detector keeps receiving the trace
+    beyond it (G395M: ~0.015 DN/s at the nominal 5.27 um end, reaching the background only
+    ~200 px further; design doc §9), and that light landed in the "empty" shutters of the
+    slitlets downstream, unflagged.
     """
     import hashlib
     key = hashlib.sha1(os.path.abspath(rate_path).encode()).hexdigest()[:12]
-    cache = os.path.join(cache_dir, f'coverage_{os.path.basename(rate_path)[:-5]}_{key}.npy') if cache_dir else None
+    tag = f'_tail{int(tail_px)}' if tail_px else ''
+    cache = os.path.join(cache_dir, f'coverage_{os.path.basename(rate_path)[:-5]}_{key}{tag}.npy') if cache_dir else None
     if cache and os.path.exists(cache):
         return np.load(cache)
     from jwst.datamodels import ImageModel
@@ -402,7 +409,17 @@ def coverage_from_wcs(rate_path, cache_dir=None):
                     xmin, xmax, ymin, ymax = boundingbox_to_indices(model.data.shape, bbox)
                     yy, xx = np.mgrid[ymin:ymax, xmin:xmax]
                     ra, dec, lam, _ = meta.meta.wcs(xx, yy, slit.name)
-                    counter[ymin:ymax, xmin:xmax] += (wcs_to_dq((ra, dec, lam), 1) > 0)
+                    foot = wcs_to_dq((ra, dec, lam), 1) > 0
+                    counter[ymin:ymax, xmin:xmax] += foot
+                    if tail_px:
+                        # the trace continues past the nominal red end: count the footprint
+                        # shifted right by 1..tail_px (union), beyond the footprint itself
+                        ext = np.zeros((foot.shape[0], foot.shape[1] + tail_px), bool)
+                        for dx in range(1, tail_px + 1):
+                            ext[:, dx:dx + foot.shape[1]] |= foot
+                        ext[:, :foot.shape[1]] &= ~foot
+                        xe = min(xmin + ext.shape[1], counter.shape[1])
+                        counter[ymin:ymax, xmin:xe] += ext[:, :xe - xmin]
     finally:
         os.chdir(prev)
     if cache:
@@ -587,6 +604,8 @@ def main():
     ap.add_argument('--coverage', choices=['wcs', 'canonicals'], default='wcs',
                     help='overlap counter from every slitlet in the exposure WCS (default) or only from '
                          'the processed canonicals (wrong when stage 2a ran on a subset of sources)')
+    ap.add_argument('--coverage-tail-px', type=int, default=0,
+                    help='extend every footprint redward by this many pixels in the WCS counter (the trace past the nominal cutoff; ~200 for G395M)')
     ap.add_argument('--model', action='store_true', help='compare with jwst_backgrounds (needs its cache)')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
@@ -644,7 +663,8 @@ def main():
         for rk in rate_keys:
             rate_path = os.path.join(obs.workspace_dir, f'{rk}_rate.fits')
             if os.path.exists(rate_path):
-                coverage[rk] = coverage_from_wcs(rate_path, cache_dir=os.path.join(out, 'coverage'))
+                coverage[rk] = coverage_from_wcs(rate_path, cache_dir=os.path.join(out, 'coverage'),
+                                                 tail_px=args.coverage_tail_px)
                 print(f'  {rk}: {np.sum(coverage[rk] > 1)} pixels under more than one slitlet')
             else:
                 print(f'  {rk}: no rate file, falling back to the canonicals')
