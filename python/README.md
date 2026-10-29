@@ -114,6 +114,24 @@ cfpipe nirspec linefit --obs ember_uds_p4   # pipeline: fits at the inspected re
 campfire deploy lines --obs ember_uds_p4    # line_fits rows (+ _lines.fits on OSN)
 ```
 
+### 2c. Pull a data release
+
+```bash
+campfire dr list                                  # the releases you may read
+campfire pull --dr DR2026.1                       # the release's catalog into dr/DR2026.1/, then a listing
+campfire pull --dr DR2026.1 --obs ember_uds_p4    # its frozen bytes for a selection (--program / --field / --all)
+campfire identify spectra/*.fits                  # what each file is: "in DR2026.1, still current", ...
+```
+
+A release pull never touches the live tree or the live mirror: the catalog
+goes to `dr/<tag>/meta/campfire.db` (built from the release's export files,
+verified against the server's hashes) and the bytes, the archived copies the
+release names, to `dr/<tag>/products/`, verified against the release manifest
+and resumable at file granularity. `campfire identify` hashes a file (whole-file
+sha256, plus the science hash when the pipeline is installed), looks the hashes
+up in every store on this machine and then on the server under your program
+scope, and answers in one line per file; `--offline` skips the server.
+
 ### 3. Check status
 
 ```bash

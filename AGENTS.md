@@ -466,7 +466,17 @@ as the live stream keys it, manifest rows mirrored into `storage_objects` with `
 the bytes a reader gets (the stamped copy when there is one). `Campfire(dr=tag)` opens that store with no
 session at all (`_NoRemote` fails every live branch closed with `DRModeError`), serves the metadata getters
 from the store, stamps `meta["channel"]` (`"dr"` + `meta["release"]`, or `"live"`) on every table, and
-defaults `query_lines(exclude_stale=True)`. `campfire pull --dr`, `dr list` and `identify` are P5-2.
+defaults `query_lines(exclude_stale=True)`. **P5-2:** `campfire pull --dr TAG` (`_pull_release` in `cli.py`) loads the
+store then runs `download_objects(..., dr=TAG)`, whose presign carries `?dr=TAG` (the release's archived copies) and
+whose verification uses the store's `content_hash`; `--intermediate` / `--stale` are refused. `GET /api/v1/dr`
+(`fetchVisibleReleases`: published, every state past its freeze for admins) backs `campfire dr list`;
+`POST /api/v1/identify` backs `campfire identify FILE...` through `identify_files(p_files, p_program_slugs,
+p_include_unpublished)`, a SECURITY DEFINER RPC with explicit scope (the bearer routes carry no `auth.uid()`) that
+returns facts per file (the live spectra, the release members with `current` = the live spectrum still carries the
+frozen science hash, the archive tombstones keyed by the sha256 in the archive key); `campfire/identify.py` hashes
+(whole-file sha256; the science hash through `campfire_pipeline.metadata.science_hash` when installed, never a copy
+of it), looks up the live mirror and every release store on the machine, and phrases the answer. Guard
+`check_identify.sql`; never sentence-build in SQL.
 
 **Deploy auth (issue #250).** Two decisions, kept independent:
 

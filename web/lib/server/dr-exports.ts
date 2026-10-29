@@ -107,6 +107,27 @@ export async function fetchRelease(
   return (data as DrReleaseRow | null) ?? null;
 }
 
+/**
+ * The releases a caller may read, newest frozen first (GET /api/v1/dr,
+ * `campfire dr list`): published ones; every state to admins (the shadow run).
+ */
+export async function fetchVisibleReleases(
+  supabase: SupabaseClient,
+  isAdmin: boolean,
+): Promise<DrReleaseRow[]> {
+  let query = supabase
+    .from('dr_releases')
+    .select(
+      'tag, state, components, dr_format_version, counts, frozen_at, published_at, withdrawn_at, doi, notes, known_issues',
+    )
+    .order('frozen_at', { ascending: false, nullsFirst: false })
+    .order('tag');
+  if (!isAdmin) query = query.eq('state', 'published');
+  const { data, error } = await query;
+  if (error) throw new Error(`dr_releases listing failed: ${error.message}`);
+  return ((data as DrReleaseRow[] | null) ?? []).filter((r) => releaseVisible(r, isAdmin));
+}
+
 /** The export ledger of a tag. */
 export async function fetchLedger(
   supabase: SupabaseClient,

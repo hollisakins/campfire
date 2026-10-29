@@ -14247,6 +14247,162 @@ REVOKE ALL ON FUNCTION public.set_spectra_deploy_status(p_spectrum_db_ids intege
 REVOKE ALL ON FUNCTION public.spectra_matching_line_filter(p_line text, p_snr_min double precision, p_snr_max double precision, p_include_stale boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.sync_photometry_to_objects(p_field text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.sync_snapshot_begin(p_format_version integer) FROM PUBLIC, anon;
+-- =============================================================================
+-- identify_files (P5-2, docs/design-data-releases.md §4.6 "Any file is
+-- identifiable by its bytes")
+-- =============================================================================
+-- `campfire identify FILE...`: for each file's whole-file sha256 (and science
+-- hash when the caller could compute one), everything the archive knows about
+-- those bytes, under an EXPLICIT scope (the bearer routes run as the service
+-- role, which carries no auth.uid()): p_program_slugs is the caller's
+-- accessible_program_slugs(), p_include_unpublished its admin flag (drafts,
+-- and releases in any state past their freeze, as on /api/v1/dr/<tag>/files).
+--
+-- Per input (in input order), a jsonb object:
+--   live      the live spectra whose file_hash is the sha256 or whose
+--             science_hash is the science hash (match: file | science), each
+--             with the live registry row's deployed_at (the bytes' last write)
+--   releases  the release members matching by the frozen file_hash (the live
+--             bytes at the freeze), the stamped archive bytes (stamped_hash),
+--             the manifest's content_hash, or the science hash; `current` says
+--             whether the live spectrum (same spectra.id) still carries the
+--             frozen science hash, `live_deployed_at` when its bytes last
+--             changed; field products (mosaics, no program) are open to every
+--             account, as the manifest files are
+--   collected the archive tombstones whose key carries the sha256 (archive
+--             keys are archive/<sha256 hex>/<relpath>): the bytes were
+--             archived once and collected on that date
+-- The client phrases the answer (campfire/identify.py); nothing here is a
+-- sentence. Hashes are 'sha256:<64 hex>' strings; anything else matches
+-- nothing (never an error: a reader hands over whatever it hashed).
+-- Service role ONLY: the scope is whatever the caller passes, so an
+-- authenticated PostgREST caller could name any program and the admin flag
+-- (local Codex on the P5-2 PR); the bearer route is the one caller and it
+-- passes the principal's own scope.
+CREATE OR REPLACE FUNCTION public.identify_files(
+  p_files jsonb,
+  p_program_slugs text[],
+  p_include_unpublished boolean DEFAULT false
+)
+RETURNS jsonb
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  f jsonb;
+  v_sha text;
+  v_sci text;
+  v_hex text;
+  v_out jsonb := '[]'::jsonb;
+  v_live jsonb;
+  v_rel jsonb;
+  v_col jsonb;
+BEGIN
+  IF p_files IS NULL OR jsonb_typeof(p_files) <> 'array' THEN
+    RAISE EXCEPTION 'p_files must be a JSON array' USING ERRCODE = '22023';
+  END IF;
+  IF jsonb_array_length(p_files) > 200 THEN
+    RAISE EXCEPTION 'at most 200 files per call' USING ERRCODE = '22023';
+  END IF;
+
+  FOR f IN SELECT * FROM jsonb_array_elements(p_files) LOOP
+    v_sha := NULLIF(f->>'sha256', '');
+    v_sci := NULLIF(f->>'science_hash', '');
+    IF v_sha IS NOT NULL AND v_sha !~ '^sha256:[0-9a-f]{64}$' THEN v_sha := NULL; END IF;
+    IF v_sci IS NOT NULL AND v_sci !~ '^sha256:[0-9a-f]{64}$' THEN v_sci := NULL; END IF;
+    v_hex := substr(v_sha, 8);
+
+    -- live spectra in scope
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+             'spectrum_id', s.spectrum_id, 'id', s.id, 'observation', s.observation,
+             'program_slug', s.program_slug,
+             -- the registry's (canonical) key of the final; fits_path is the legacy scheme
+             'storage_key', COALESCE(so.storage_key, s.fits_path),
+             'deploy_status', s.deploy_status,
+             'file_hash', s.file_hash, 'science_hash', s.science_hash,
+             'match', CASE WHEN v_sha IS NOT NULL AND s.file_hash = v_sha THEN 'file' ELSE 'science' END,
+             'deployed_at', so.updated_at)
+           ORDER BY s.spectrum_id), '[]'::jsonb)
+      INTO v_live
+      FROM spectra s
+      LEFT JOIN LATERAL (SELECT so.storage_key, so.updated_at FROM storage_objects so
+                          WHERE so.spectrum_id = s.spectrum_id AND so.product_type = 'nirspec_spec'
+                            AND so.root = 'live' ORDER BY so.updated_at DESC LIMIT 1) so ON true
+     WHERE ((v_sha IS NOT NULL AND s.file_hash = v_sha) OR (v_sci IS NOT NULL AND s.science_hash = v_sci))
+       AND s.program_slug = ANY (p_program_slugs)
+       AND (s.deploy_status = 'published' OR p_include_unpublished);
+
+    -- release members in scope: through the frozen spectrum (program rows) or
+    -- the manifest alone (field products, open to every account)
+    WITH visible AS (
+      SELECT r.tag, r.state, r.published_at
+        FROM dr_releases r
+       WHERE r.state = 'published'
+          OR (p_include_unpublished AND r.state NOT IN ('draft', 'freezing', 'failed'))
+    ),
+    hits AS (
+      SELECT v.tag, v.state, v.published_at,
+             m.storage_key, m.program_slug, m.product_type, m.spectrum_id AS spectrum_name,
+             m.archive_key, m.byte_state, m.stamped_hash, m.content_hash, m.science_hash,
+             ds.id AS spectrum_db_id, ds.science_hash AS frozen_science_hash, ds.file_hash AS frozen_file_hash,
+             CASE WHEN v_sha IS NOT NULL AND m.stamped_hash = v_sha THEN 'stamped'
+                  WHEN v_sha IS NOT NULL AND (m.content_hash = v_sha OR ds.file_hash = v_sha) THEN 'file'
+                  ELSE 'science' END AS match
+        FROM visible v
+        JOIN dr_manifest m ON m.tag = v.tag
+        -- the frozen spectrum row describes the spectrum FILE only: its
+        -- sidecars (JSON, zfit, line fit) share the spectrum_id but are other
+        -- bytes, matched by their own manifest hashes (local Codex)
+        LEFT JOIN dr_spectra ds ON ds.tag = m.tag AND ds.spectrum_id = m.spectrum_id
+                                AND m.product_type = 'nirspec_spec'
+       WHERE ((v_sha IS NOT NULL AND (m.stamped_hash = v_sha OR m.content_hash = v_sha OR ds.file_hash = v_sha))
+              OR (v_sci IS NOT NULL AND (m.science_hash = v_sci OR ds.science_hash = v_sci)))
+         AND (m.program_slug IS NULL OR m.program_slug = ANY (p_program_slugs))
+    )
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+             'tag', h.tag, 'state', h.state, 'published_at', h.published_at,
+             'storage_key', h.storage_key, 'program_slug', h.program_slug,
+             'product_type', h.product_type, 'spectrum_id', h.spectrum_name,
+             'archive_key', h.archive_key, 'byte_state', h.byte_state,
+             'stamped_hash', h.stamped_hash, 'content_hash', h.content_hash,
+             'science_hash', COALESCE(h.frozen_science_hash, h.science_hash),
+             'match', h.match,
+             -- current: the live spectrum still carries the frozen science
+             -- hash; when either side has none (rows that predate it), the
+             -- whole-file hash decides, as dr_diff does (local Codex)
+             'current', CASE WHEN h.spectrum_db_id IS NULL THEN NULL
+                             ELSE EXISTS (SELECT 1 FROM spectra ls
+                                           WHERE ls.id = h.spectrum_db_id
+                                             AND ls.deploy_status = 'published'
+                                             AND COALESCE(ls.science_hash = h.frozen_science_hash,
+                                                          ls.file_hash = h.frozen_file_hash)) END,
+             'live_deployed_at', (SELECT so.updated_at FROM storage_objects so
+                                   WHERE so.storage_key = h.storage_key AND so.root = 'live' LIMIT 1))
+           ORDER BY h.tag, h.storage_key), '[]'::jsonb)
+      INTO v_rel
+      FROM hits h;
+
+    -- tombstones of archived copies of these bytes
+    SELECT COALESCE(jsonb_agg(jsonb_build_object('storage_key', c.storage_key, 'collected_at', c.collected_at)
+                              ORDER BY c.collected_at DESC), '[]'::jsonb)
+      INTO v_col
+      FROM archive_collections c
+     WHERE v_hex IS NOT NULL AND c.storage_key LIKE 'archive/' || v_hex || '/%';
+
+    v_out := v_out || jsonb_build_array(jsonb_build_object(
+      'sha256', v_sha, 'science_hash', v_sci,
+      'live', v_live, 'releases', v_rel, 'collected', v_col));
+  END LOOP;
+  RETURN v_out;
+END;
+$$;
+
+COMMENT ON FUNCTION public.identify_files(jsonb, text[], boolean) IS 'What the archive knows about files by their bytes (P5-2, campfire identify): per input {sha256, science_hash}, the live spectra, the release members (with current = the live spectrum still carries the frozen science hash) and the archive tombstones matching, under the caller''s explicit program scope (p_include_unpublished = admin: drafts and every release past its freeze). The client phrases the answer.';
+
+REVOKE ALL ON FUNCTION public.identify_files(jsonb, text[], boolean) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.identify_files(jsonb, text[], boolean) TO service_role;
+
+
 REVOKE ALL ON FUNCTION public.update_api_key_last_used(key_hash_input text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.validate_api_key(key_hash_input text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.validate_refresh_token(p_token_hash text) FROM PUBLIC, anon;
