@@ -3,9 +3,11 @@
 One DOI per data release; proprietary programs are described, not cited. The
 sentence a reader puts in a paper is built from the release record (the files
 route's answer, kept as ``release.json`` in a pulled release), the programs the
-reader holds in it, and the roster the freeze wrote into ``counts.programs``
-(``{slug: {is_public, spectra, cfpipe_versions, crds_contexts}}``: the public
-state at the freeze is what the DOI record holds)::
+reader holds in it, and the roster the release routes answer per caller in
+``programs`` (``dr_program_roster``: ``{slug: {is_public, spectra,
+cfpipe_versions, crds_contexts}}`` for the programs public at the freeze, the
+set the DOI record holds, plus the reader's own proprietary ones; never stored
+on the release row, which every account reads whole)::
 
     CAMPFIRE DR2026.1 (doi:10.5281/zenodo.123456), plus programs ember and
     zenith reduced with cfpipe 0.7.0 and CRDS context jwst_1535.pmap as in
@@ -25,10 +27,9 @@ LIVE_SENTENCE = "live: generate a provenance file (campfire provenance) and cite
 
 
 def roster(release: dict) -> dict:
-    """The per-program roster of a release record, ``{}`` for a release
-    frozen before the freeze wrote one."""
-    counts = release.get('counts') or {}
-    r = counts.get('programs') if isinstance(counts, dict) else None
+    """The per-program roster of a release record as this reader was
+    answered it (``programs``), ``{}`` when the record carries none."""
+    r = release.get('programs')
     return dict(r) if isinstance(r, dict) else {}
 
 

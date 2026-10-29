@@ -160,3 +160,30 @@ export async function fetchLatestPublishedRelease(
   if (error) throw new Error(`dr_releases lookup failed: ${error.message}`);
   return (data as Pick<DrReleaseRow, 'tag' | 'doi' | 'published_at'> | null) ?? null;
 }
+
+/** One program's entry in a release's roster (dr_program_roster). */
+export interface DrProgramRosterEntry {
+  is_public: boolean;
+  spectra: number;
+  cfpipe_versions: string[];
+  crds_contexts: string[];
+}
+
+/**
+ * The per-program roster of a release as THIS caller may see it (P5-3,
+ * `campfire cite`): every program public at the freeze plus the caller's own
+ * among the proprietary ones. Computed by `dr_program_roster` per call and
+ * never stored on `dr_releases`, which every account reads whole.
+ */
+export async function fetchProgramRoster(
+  supabase: SupabaseClient,
+  tag: string,
+  accessibleSlugs: readonly string[],
+): Promise<Record<string, DrProgramRosterEntry>> {
+  const { data, error } = await supabase.rpc('dr_program_roster', {
+    p_tag: tag,
+    p_program_slugs: [...accessibleSlugs],
+  });
+  if (error) throw new Error(`dr_program_roster failed: ${error.message}`);
+  return (data as Record<string, DrProgramRosterEntry> | null) ?? {};
+}

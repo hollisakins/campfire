@@ -12103,17 +12103,6 @@ BEGIN
                                            count(*) FILTER (WHERE m.product_type = 'nircam_mosaic') AS n_mosaics
                                     FROM dr_manifest m WHERE m.tag = p_tag AND m.component <> 'page' GROUP BY m.component) t),
              'nirspec_programs', (SELECT count(DISTINCT s.program_slug) FROM dr_spectra s WHERE s.tag = p_tag),
-             -- per program: its public state at the freeze (the programs the DOI
-             -- record holds), its spectra, the cfpipe versions and CRDS contexts
-             -- they were reduced with: what the citation sentence of a reader
-             -- holding proprietary programs says (`campfire cite`, P5-3)
-             'programs', (SELECT COALESCE(jsonb_object_agg(t.program_slug, jsonb_build_object(
-                                 'is_public', t.is_public, 'spectra', t.n,
-                                 'cfpipe_versions', t.versions, 'crds_contexts', t.contexts)), '{}'::jsonb)
-                          FROM (SELECT s.program_slug, bool_or(s.is_public) AS is_public, count(*) AS n,
-                                       COALESCE(jsonb_agg(DISTINCT s.cfpipe_version) FILTER (WHERE s.cfpipe_version IS NOT NULL), '[]'::jsonb) AS versions,
-                                       COALESCE(jsonb_agg(DISTINCT s.crds_context) FILTER (WHERE s.crds_context IS NOT NULL), '[]'::jsonb) AS contexts
-                                FROM dr_spectra s WHERE s.tag = p_tag GROUP BY s.program_slug) t),
              'nirspec_fields', (SELECT count(DISTINCT t.field) FROM dr_spectra s
                                 JOIN dr_targets t ON t.tag = s.tag AND t.target_id = s.target_id
                                 WHERE s.tag = p_tag)),
@@ -14437,6 +14426,38 @@ COMMENT ON FUNCTION public.identify_files(jsonb, text[], boolean) IS 'What the a
 
 REVOKE ALL ON FUNCTION public.identify_files(jsonb, text[], boolean) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.identify_files(jsonb, text[], boolean) TO service_role;
+
+-- dr_program_roster(tag, slugs): the per-program roster of a frozen release as
+-- ONE caller may see it (P5-3, `campfire cite`): every program public at the
+-- freeze (the set the DOI record holds) plus the caller's own among the
+-- proprietary ones, each with its spectra and the distinct cfpipe versions /
+-- CRDS contexts they were reduced with. Computed per call, never stored on the
+-- release row: dr_releases is read whole by every account and by
+-- campfire_reader, so a stored roster would list private programs to everyone
+-- (Codex on #672). SECURITY DEFINER with explicit scope, service_role only,
+-- like identify_files: the bearer routes pass the principal's slugs.
+CREATE OR REPLACE FUNCTION public.dr_program_roster(p_tag text, p_program_slugs text[])
+RETURNS jsonb
+LANGUAGE sql
+STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COALESCE(jsonb_object_agg(t.program_slug, jsonb_build_object(
+           'is_public', t.is_public, 'spectra', t.n,
+           'cfpipe_versions', t.versions, 'crds_contexts', t.contexts)), '{}'::jsonb)
+  FROM (SELECT s.program_slug, bool_or(s.is_public) AS is_public, count(*) AS n,
+               COALESCE(jsonb_agg(DISTINCT s.cfpipe_version) FILTER (WHERE s.cfpipe_version IS NOT NULL), '[]'::jsonb) AS versions,
+               COALESCE(jsonb_agg(DISTINCT s.crds_context) FILTER (WHERE s.crds_context IS NOT NULL), '[]'::jsonb) AS contexts
+        FROM dr_spectra s
+        WHERE s.tag = p_tag
+        GROUP BY s.program_slug
+        HAVING bool_or(s.is_public) OR s.program_slug = ANY (COALESCE(p_program_slugs, '{}'::text[]))) t;
+$$;
+
+COMMENT ON FUNCTION public.dr_program_roster(text, text[]) IS 'The per-program roster of a frozen release as one caller may see it (P5-3, campfire cite): programs public at the freeze plus the caller''s own among the proprietary ones, each with spectra, cfpipe_versions and crds_contexts. Computed per call; never stored on dr_releases, which every account reads whole.';
+
+REVOKE ALL ON FUNCTION public.dr_program_roster(text, text[]) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.dr_program_roster(text, text[]) TO service_role;
 
 
 REVOKE ALL ON FUNCTION public.update_api_key_last_used(key_hash_input text) FROM PUBLIC, anon;

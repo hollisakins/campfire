@@ -20,18 +20,18 @@ ROSTER = {
 
 
 def release(*held, doi='10.5281/zenodo.1', with_roster=True):
-    counts = {'spectra': 4}
-    if with_roster:
-        counts['programs'] = ROSTER
     files = [{'stream': s, 'scope': p} for p in held for s in ('objects', 'spectra', 'manifest')]
     files.append({'stream': 'manifest', 'scope': 'nircam/uds'})
-    return {'tag': TAG, 'state': 'published', 'doi': doi, 'counts': counts, 'files': files,
-            'frozen_at': '2026-10-01T00:00:00Z', 'published_at': '2026-10-05T00:00:00Z'}
+    rec = {'tag': TAG, 'state': 'published', 'doi': doi, 'counts': {'spectra': 4}, 'files': files,
+           'frozen_at': '2026-10-01T00:00:00Z', 'published_at': '2026-10-05T00:00:00Z'}
+    if with_roster:   # what the routes answer this reader: public programs + their own
+        rec['programs'] = {k: v for k, v in ROSTER.items() if v['is_public'] or k in held}
+    return rec
 
 
 def test_the_reader_s_programs_are_the_spectra_stream_s_scopes():
     assert reader_programs(release('pub', 'ember')) == ['ember', 'pub']
-    assert roster(release())['ember']['is_public'] is False
+    assert roster(release('ember'))['ember']['is_public'] is False and 'ember' not in roster(release())
     assert roster({'tag': TAG}) == {}
 
 
@@ -53,7 +53,7 @@ def test_a_selection_is_intersected_with_what_the_reader_holds():
     # zenith is not held: it cannot be cited through this reader's copy
     assert cite_sentence(release('pub', 'ember'), ['zenith', 'ember']).endswith('plus program ember reduced with cfpipe 0.7.0 and CRDS context jwst_1535.pmap as in that release.')
     # no files list (the record alone): the selection stands
-    bare = {'tag': TAG, 'doi': 'd', 'counts': {'programs': ROSTER}}
+    bare = {'tag': TAG, 'doi': 'd', 'programs': ROSTER}
     assert 'programs ember and zenith' in cite_sentence(bare, ['ember', 'zenith'])
 
 
@@ -66,7 +66,7 @@ def test_the_store_s_versions_win_over_the_roster_s():
 
 def test_without_a_doi_or_a_roster():
     assert cite_sentence({'tag': 'DR-x'}) == 'CAMPFIRE DR-x (unpublished: no DOI yet).'
-    # a release frozen before the roster: nothing to describe, the DOI stands
+    # a record without a roster: nothing to describe, the DOI stands
     assert cite_sentence(release('pub', 'ember', with_roster=False)) == 'CAMPFIRE DR2026.1 (doi:10.5281/zenodo.1).'
 
 

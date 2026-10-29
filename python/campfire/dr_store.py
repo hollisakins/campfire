@@ -472,7 +472,7 @@ def load_release(session, tag: str, *, data_dir: Optional[Path] = None,
         report.counts = dict((read_release_json(root) or {}).get('counts_loaded') or {})
 
     meta = {k: info.get(k) for k in ('tag', 'state', 'format_version', 'components', 'counts', 'frozen_at',
-                                     'published_at', 'doi', 'notes', 'known_issues', 'complete')}
+                                     'published_at', 'doi', 'notes', 'known_issues', 'complete', 'programs')}
     meta['loaded_at'] = datetime.now(timezone.utc).isoformat()
     meta['schema_version'] = SCHEMA_VERSION
     meta['counts_loaded'] = report.counts

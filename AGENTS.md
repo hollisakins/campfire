@@ -476,11 +476,13 @@ returns facts per file (the live spectra, the release members with `current` = t
 frozen science hash, the archive tombstones keyed by the sha256 in the archive key); `campfire/identify.py` hashes
 (whole-file sha256; the science hash through `campfire_pipeline.metadata.science_hash` when installed, never a copy
 of it), looks up the live mirror and every release store on the machine, and phrases the answer. Guard
-`check_identify.sql`; never sentence-build in SQL. **P5-3:** the freeze writes a per-program roster into
-`dr_releases.counts.programs` (`{slug: {is_public, spectra, cfpipe_versions, crds_contexts}}`, the public state at the
-freeze being what the DOI record holds; `check_dr_freeze.sql` asserts it). `campfire cite TAG` / `Campfire.cite()`
-(`campfire/cite.py`) build design §4.5's sentence from the release record (`release.json` of a pulled tree, else
-`GET /dr/<tag>/files`), the programs the reader holds (the spectra stream's scopes) and that roster: public programs
+`check_identify.sql`; never sentence-build in SQL. **P5-3:** `dr_program_roster(p_tag, p_program_slugs)` (SECURITY DEFINER,
+service-role only) answers a release's per-program roster as one caller may see it (`{slug: {is_public, spectra,
+cfpipe_versions, crds_contexts}}`: the programs public at the freeze, the set the DOI record holds, plus the caller's own);
+`GET /api/v1/dr` and `/dr/<tag>/files` attach it as `programs` under the principal's slugs. Never store it on `dr_releases`,
+which every account and `campfire_reader` read whole (`check_dr_freeze.sql` asserts both). `campfire cite TAG` /
+`Campfire.cite()` (`campfire/cite.py`) build design §4.5's sentence from the release record (`release.json` of a pulled tree,
+else `GET /dr/<tag>/files`), the programs the reader holds (the spectra stream's scopes) and that roster: public programs
 through the DOI, the others described with their pipeline versions (the pulled store's `spectra` when there is one);
 a live client answers "generate a provenance file"; `load_release` writes the sentence into `dr/<tag>/README.md`.
 `campfire provenance [--list|--obs|--program|--object] [-o FILE]` (`campfire/provenance.py`, format

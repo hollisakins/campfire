@@ -233,9 +233,12 @@ knows about a file's bytes (`campfire identify`, `identify_files`).
 
 ## Citation and provenance files (P5-3)
 
-The freeze writes a per-program roster into `dr_releases.counts.programs`:
-`{slug: {is_public, spectra, cfpipe_versions, crds_contexts}}`, the public state
-at the freeze being what the DOI record holds. `campfire cite TAG` /
+`GET /api/v1/dr` and `/dr/<tag>/files` answer a per-program roster as `programs`:
+`{slug: {is_public, spectra, cfpipe_versions, crds_contexts}}` for the programs
+public at the freeze (the set the DOI record holds) plus the caller's own, from
+`dr_program_roster(tag, slugs)` under the principal's program set. It is computed
+per call and never stored on the release row, which every account and the public
+reader role read whole. `campfire cite TAG` /
 `Campfire(dr=TAG).cite()` (`campfire/cite.py`) build the sentence of design §4.5
 from the release record, the programs the reader holds (the `spectra` stream's
 scopes of the files route's answer) and that roster: public programs are cited

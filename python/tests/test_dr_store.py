@@ -149,7 +149,11 @@ class FakeRelease:
         payload = {'tag': TAG, 'state': self.state, 'format_version': self.format_version,
                    'components': ['nirspec', 'nircam/uds'], 'counts': {'spectra': 4}, 'frozen_at': 'f',
                    'published_at': 'p', 'doi': '10.1/x', 'notes': None, 'known_issues': None,
-                   'complete': True, 'files': [dict(e) for e in self.entries]}
+                   'complete': True, 'programs': {'pa': {'is_public': True, 'spectra': 2, 'cfpipe_versions': ['1.0.0'],
+                                                         'crds_contexts': ['jwst_1234.pmap']},
+                                                  'pb': {'is_public': False, 'spectra': 2, 'cfpipe_versions': ['1.0.0'],
+                                                         'crds_contexts': ['jwst_1234.pmap']}},
+                   'files': [dict(e) for e in self.entries]}
 
         class R:
             status_code = 200
@@ -395,5 +399,7 @@ def test_a_load_writes_the_citation_readme_beside_release_json(release, tmp_path
     root = release_dir(tmp_path, TAG)
     text = (root / 'README.md').read_text()
     assert text.startswith(f'# CAMPFIRE {TAG}')
-    assert f'CAMPFIRE {TAG} (doi:10.1/x).' in text          # no roster in this fixture: the DOI alone
+    assert (f'CAMPFIRE {TAG} (doi:10.1/x), plus program pb reduced with cfpipe 1.0.0 and CRDS context '
+            f'jwst_1234.pmap as in that release.') in text
+    assert (read_release_json(root) or {})['programs']['pb']['is_public'] is False
     assert 'Programs held in this copy: pa, pb.' in text and f'Campfire(dr={TAG!r})' in text
