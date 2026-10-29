@@ -32,6 +32,9 @@ BEGIN
     INTO prog, sid, sname, fhash
     FROM dr_spectra ds JOIN spectra s ON s.id = ds.id
    WHERE ds.tag = 'DR-seed' AND ds.file_hash ~ '^sha256:[0-9a-f]{64}$' AND s.deploy_status = 'published'
+     -- no dependents, so the row's id can move below (a removed-and-redeployed observation)
+     AND NOT EXISTS (SELECT 1 FROM line_fits lf WHERE lf.spectrum_id = s.id)
+     AND NOT EXISTS (SELECT 1 FROM lines l WHERE l.spectrum_id = s.id)
    ORDER BY ds.id LIMIT 1;
   IF sid IS NULL THEN RAISE EXCEPTION 'seed: no DR-seed member with a file hash and a published live spectrum'; END IF;
   shash := 'sha256:' || repeat('5', 64);
@@ -130,6 +133,14 @@ BEGIN
   END IF;
   UPDATE spectra SET science_hash = shash, file_hash = fhash WHERE id = sid;
   UPDATE dr_spectra SET science_hash = shash WHERE tag = 'DR-seed' AND id = sid;
+  -- the observation removed and redeployed with the same science: a new
+  -- numeric id, the same spectrum name, still current
+  UPDATE spectra SET id = 900000000 WHERE id = sid;
+  r := identify_files(jsonb_build_array(jsonb_build_object('science_hash', shash)), ARRAY[prog], false)->0;
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(r->'releases') x WHERE x->>'tag' = 'DR-seed' AND (x->>'current')::boolean) THEN
+    RAISE EXCEPTION '3: a redeployed spectrum (new id, same name and science) is current, got %', r->'releases';
+  END IF;
+  UPDATE spectra SET id = sid WHERE id = 900000000;
 
   -- ------------------------------------------------------------------ 4.
   UPDATE dr_releases SET state = 'withdrawn', withdrawn_at = now() WHERE tag = 'DR-seed';

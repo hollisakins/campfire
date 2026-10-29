@@ -45,6 +45,10 @@ def stores(tmp_path):
     live.upsert_storage_objects([{'storage_key': 'spectra/obs/obs_prism_t1_spec.fits', 'content_hash': A,
                                   'product_type': 'nirspec_spec', 'status': 'active', 'observation': 'obs',
                                   'spectrum_id': 'obs_prism_t1'}])
+    # the bytes downloaded earlier, superseded on the server since (a sync
+    # moved content_hash and kept local_file_hash)
+    live.mark_object_synced('spectra/obs/obs_prism_t1_spec.fits', 'nirspec/obs/obs_prism_t1_spec.fits',
+                            'sha256:' + 'd' * 64, 10, 1.0)
     live.close()
     dr = tmp_path / 'dr' / 'DR-t' / 'meta'
     dr.mkdir(parents=True)
@@ -68,6 +72,10 @@ def test_local_matches_read_the_live_mirror_and_every_release_store(stores):
     assert {(h['source'], h['match']) for h in hits} == {('live', 'science'), ('dr', 'stamped')}
     assert next(h for h in hits if h['source'] == 'dr')['tag'] == 'DR-t'
     assert local_matches(stores, 'sha256:' + 'f' * 64, None) == []
+    # the superseded download is told apart from a live match
+    stale = local_matches(stores, 'sha256:' + 'd' * 64, None)
+    assert [(h['source'], h['match']) for h in stale] == [('live', 'stale-download')]
+    assert describe(None, stale).startswith('a download superseded since')
 
 
 def test_a_store_of_another_schema_or_a_missing_table_answers_nothing(tmp_path):

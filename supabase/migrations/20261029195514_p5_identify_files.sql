@@ -116,10 +116,12 @@ BEGIN
              'match', h.match,
              -- current: the live spectrum still carries the frozen science
              -- hash; when either side has none (rows that predate it), the
-             -- whole-file hash decides, as dr_diff does (local Codex)
+             -- whole-file hash decides, as dr_diff does (local Codex). Keyed
+             -- on the frozen spectrum NAME, as dr_diff is: an observation
+             -- removed and redeployed gets new numeric ids (remote Codex)
              'current', CASE WHEN h.spectrum_db_id IS NULL THEN NULL
                              ELSE EXISTS (SELECT 1 FROM spectra ls
-                                           WHERE ls.id = h.spectrum_db_id
+                                           WHERE ls.spectrum_id = h.spectrum_name
                                              AND ls.deploy_status = 'published'
                                              AND COALESCE(ls.science_hash = h.frozen_science_hash,
                                                           ls.file_hash = h.frozen_file_hash)) END,

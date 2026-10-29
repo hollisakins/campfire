@@ -103,9 +103,14 @@ def local_matches(data_dir: Path, sha256: str, science_hash: Optional[str]) -> l
     hits: list[dict] = []
     live = Path(data_dir) / 'meta' / 'campfire.db'
     if live.exists():
-        for r in _rows(live, "SELECT storage_key, spectrum_id, observation, field, product_type, local_path "
-                             "FROM storage_objects WHERE content_hash = ? OR local_file_hash = ?", (sha256, sha256)):
-            hits.append({'source': 'live', 'match': 'file', **r})
+        # content_hash is the server's current bytes; local_file_hash is what
+        # was downloaded, kept after a sync learned of newer bytes, so a file
+        # matching only that is a superseded download, not a live match
+        for r in _rows(live, "SELECT storage_key, spectrum_id, observation, field, product_type, local_path, "
+                             "CASE WHEN content_hash = ? THEN 'file' ELSE 'stale-download' END AS match "
+                             "FROM storage_objects WHERE content_hash = ? OR local_file_hash = ?",
+                       (sha256, sha256, sha256)):
+            hits.append({'source': 'live', **r})
         if science_hash:
             for r in _rows(live, "SELECT spectrum_id, observation, program_slug FROM spectra WHERE science_hash = ?",
                            (science_hash,)):
@@ -151,8 +156,10 @@ def describe(server: Optional[dict], local: Iterable[dict] = ()) -> str:
         tags = sorted({h['tag'] for h in local if h.get('source') == 'dr'}, key=_tag_key, reverse=True)
         if tags:
             return f"in {' and '.join(tags)} (local store; the server was not asked)"
-        if any(h.get('source') == 'live' for h in local):
+        if any(h.get('source') == 'live' and h.get('match') != 'stale-download' for h in local):
             return "in the live catalog (local mirror; the server was not asked)"
+        if any(h.get('match') == 'stale-download' for h in local):
+            return "a download superseded since (the local mirror knows newer bytes; the server was not asked)"
         return "not in any store on this machine (the server was not asked)"
 
     releases = server.get('releases') or []

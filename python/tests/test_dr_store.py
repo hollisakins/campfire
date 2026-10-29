@@ -328,6 +328,24 @@ def test_a_schema_bump_rebuilds_without_fetching_and_keeps_what_is_on_disk(relea
         store.close()
 
 
+def test_a_store_built_by_an_older_loader_is_rebuilt_without_fetching(release, tmp_path):
+    load(release, tmp_path)
+    root = tmp_path / 'dr' / TAG
+    store = open_store(root)
+    store.set_meta('release_loader', '1')
+    store._conn.execute("UPDATE storage_objects SET filter = NULL")
+    store.commit()
+    store.close()
+    release.fetches.clear()
+    rep = load(release, tmp_path)
+    assert release.fetches == [] and rep.rebuilt is True
+    store = open_store(root)
+    try:
+        assert store._conn.execute("SELECT filter FROM storage_objects WHERE product_type = 'nircam_mosaic'").fetchone()[0] == 'f444w'
+    finally:
+        store.close()
+
+
 def test_an_unknown_format_version_is_refused_before_anything_is_written(tmp_path):
     release = FakeRelease(build_release(), format_version=2)
     with pytest.raises(DRLoadError, match='format version 2'):

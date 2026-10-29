@@ -12,8 +12,9 @@ A release the reader pulled lives under ``$CAMPFIRE_ROOT/dr/<tag>/``::
 ``GET /api/v1/dr/<tag>/files`` (docs/dr-format-v1.md), verifies each against
 the sha256 / size / row count the route gave, keeps it, and loads the set into
 the store. The store is derived from the kept files and nothing else: it is
-rebuilt from them whenever the file set changes or the client's schema moved
-(``SchemaMismatchError``), and the live mirror's purge, tombstone and
+rebuilt from them whenever the file set changes, the client's schema moved
+(``SchemaMismatchError``) or the loader learned to derive more from the files
+(``LOADER_VERSION``), and the live mirror's purge, tombstone and
 schema-mismatch-delete logic never touch it. The one piece of state that is
 not derived, which products are on disk (``storage_objects.local_*``), is
 carried across a rebuild.
@@ -53,6 +54,10 @@ from .exceptions import DRLoadError
 
 DR_DIRNAME = 'dr'
 FORMAT_VERSIONS = (1,)
+# Bump when the loader derives something new from the kept files (a store
+# built by an older loader is rebuilt from them, like on a SCHEMA_VERSION
+# bump): 2 = storage_objects.filter / observation / field off the key.
+LOADER_VERSION = 2
 STREAMS = ('objects', 'spectra', 'line_fits', 'photometry', 'manifest')
 _KEY_SAFE = re.compile(r'^[A-Za-z0-9._-]+$')
 _TAG_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
@@ -433,7 +438,8 @@ def load_release(session, tag: str, *, data_dir: Optional[Path] = None,
         except SchemaMismatchError:
             store = None
         else:
-            if store.get_meta('release_files') != signature or store.get_meta('release_tag') != tag:
+            if (store.get_meta('release_files') != signature or store.get_meta('release_tag') != tag
+                    or store.get_meta('release_loader') != str(LOADER_VERSION)):
                 store.close()
                 store = None
     if store is None:
@@ -451,6 +457,7 @@ def load_release(session, tag: str, *, data_dir: Optional[Path] = None,
                                          r.get('local_file_size'), r.get('local_file_mtime'))
             fresh.set_meta('release_tag', tag)
             fresh.set_meta('release_files', signature)
+            fresh.set_meta('release_loader', str(LOADER_VERSION))
             fresh.set_meta('release_loaded_at', datetime.now(timezone.utc).isoformat())
             fresh.close()
             for suffix in ('', '-wal', '-shm'):
