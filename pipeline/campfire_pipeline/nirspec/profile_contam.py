@@ -1,6 +1,6 @@
 """
 Other sources' light in a source's nod differences, predicted in one pass (prototype,
-extraction v2). Supersedes the iterative ``contam_fit`` prototype.
+extraction v2).
 
 Other slitlets of the MSA configuration disperse onto a source's trace
 (``trace_overlap``). Their light is predicted from a quick first-pass spectrum of
