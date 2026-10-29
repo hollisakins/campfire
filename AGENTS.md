@@ -453,6 +453,21 @@ unpublished release references (`dr_purge_archive_plan`, keyset-paged; `--keep-a
 release, so an unpublished tag never reaches a published file's header. `check_archive_collect.sql`
 guards the reference rule and the phases; `check_archive_immutability.sql` the trigger.
 
+**The release store (P5-1).** A pulled release lives under `$CAMPFIRE_ROOT/dr/<tag>/`: the export
+files as fetched (`exports/<stream>/<scope>.jsonl.gz`, verified against the files route's sha256 / size),
+`meta/campfire.db` (a `LocalStore` over the live mirror's DDL plus a release-only `release_manifest` table
+holding the manifest rows whole: archive key, byte state, stamped hash), `release.json` and `products/`.
+`campfire.dr_store.load_release(session, tag)` builds it: the store is derived from the kept files, so it is
+rebuilt from them whenever the file set or `SCHEMA_VERSION` changes (the `storage_objects.local_*` download
+state is carried over), and the live mirror's purge / tombstone / schema-mismatch-delete logic never touches
+it. Merging follows `docs/dr-format-v1.md`: objects deduplicated by id across the reader's program files
+(`programs` unioned, the aggregates recomputed over the spectra held), photometry keyed by the object's name
+as the live stream keys it, manifest rows mirrored into `storage_objects` with `content_hash` = the hash of
+the bytes a reader gets (the stamped copy when there is one). `Campfire(dr=tag)` opens that store with no
+session at all (`_NoRemote` fails every live branch closed with `DRModeError`), serves the metadata getters
+from the store, stamps `meta["channel"]` (`"dr"` + `meta["release"]`, or `"live"`) on every table, and
+defaults `query_lines(exclude_stale=True)`. `campfire pull --dr`, `dr list` and `identify` are P5-2.
+
 **Deploy auth (issue #250).** Two decisions, kept independent:
 
 - **Supabase auth mode** is chosen *explicitly*, never inferred from which creds are present:
