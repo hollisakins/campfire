@@ -274,6 +274,33 @@ if result['stale_count'] > 0:
     cf.download(stale_only=True)
 ```
 
+### Data releases
+
+A data release is a frozen, citable snapshot of the published catalog
+(`docs/design-data-releases.md`). Once pulled (`campfire pull --dr DR2026.1`,
+which lands the release under `$CAMPFIRE_ROOT/dr/DR2026.1/`), a client opened on
+it reads that store and nothing else: no login, no network, no silent fallback to
+the live catalog. Anything only the live service answers (`remote=True`, a
+predicate tree `q=`, `sync()`, `download()`, cutouts) raises `DRModeError`.
+
+```python
+from campfire import Campfire
+dr = Campfire(dr="DR2026.1")
+dr.release["doi"], dr.release["frozen_at"]
+t = dr.query_objects(redshift_range=(5, 7))
+t.meta["channel"], t.meta["release"]        # "dr", "DR2026.1" (a live table says "live")
+dr.query_lines()                             # stale fits dropped by default on a release
+dr.open_spectrum("rubies_uds3_prism_12345")  # from dr/DR2026.1/products/, never the API
+```
+
+Objects in several of your programs are merged into one row with the aggregates
+(`n_spectra`, `gratings`, …) recomputed over the spectra the release holds for
+you; `file_hash` is the hash of the file the release hands out (the stamped
+archive copy when there is one). `campfire.dr_store.load_release(session, tag)`
+is the loader `pull --dr` runs: it keeps the export files, verifies them against
+the server's hashes, and rebuilds the store from them when the file set or the
+client's schema changed.
+
 ### Plotting
 
 ```python

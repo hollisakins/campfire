@@ -12,7 +12,7 @@ from astropy.table import Table
 
 from .api.client import APIClient
 from .api.session import APISession
-from .exceptions import DownloadError, NotFoundError, ValidationError
+from .exceptions import DownloadError, DRModeError, NotFoundError, ValidationError
 from .flags import (
     DQFlags,
     FlagQuery,
@@ -32,6 +32,21 @@ def _safe_cache_path(cache_dir: Path, filename: str, key: str) -> Path:
     if not str(dest).startswith(str(cache_dir.resolve())):
         raise ValueError(f"Invalid key produces unsafe cache path: {key!r}")
     return dest
+
+
+class _NoRemote:
+    """What ``Campfire(dr=...)`` holds in place of the API client: every
+    remote branch of the client reaches it and fails closed with the reason
+    (docs/design-data-releases.md §4.7: a release never falls back to live)."""
+
+    def __init__(self, tag: str):
+        self._tag = tag
+
+    def __getattr__(self, name):
+        raise DRModeError(
+            f"Campfire(dr={self._tag!r}) reads the release from its local store and "
+            f"never queries the live service ({name} would). Open Campfire() for live data."
+        )
 
 
 class Campfire:
@@ -59,6 +74,14 @@ class Campfire:
         to ``$CAMPFIRE_ROOT`` or ``~/campfire``.
     auto_refresh : bool, optional
         If True (default), automatically refresh OAuth tokens on expiry.
+    dr : str, optional
+        A data-release tag (``"DR2026.1"``). The client then reads that
+        release's local store under ``<data_dir>/dr/<tag>/`` (pulled with
+        ``campfire pull --dr``) and nothing else: no credentials are needed,
+        and anything only the live service answers (a remote query, ``sync``,
+        ``download``, cutouts) raises :class:`~campfire.DRModeError` instead
+        of silently falling back. Tables carry ``meta["channel"] == "dr"`` and
+        ``meta["release"]``; ``query_lines`` drops stale fits by default.
 
     Examples
     --------
@@ -69,16 +92,29 @@ class Campfire:
     """
 
     DEFAULT_BASE_URL = "https://campfire-jwst.org/api/v1"
+    # class defaults so a client built without __init__ (tests) is a live one
+    _dr: Optional[str] = None
+    _release: Optional[dict] = None
 
     def __init__(
         self,
         base_url: Optional[str] = None,
         data_dir: Optional[Union[str, Path]] = None,
         auto_refresh: bool = True,
+        dr: Optional[str] = None,
     ):
-        self._api_session = APISession(base_url=base_url, auto_refresh=auto_refresh)
-        self._api = APIClient(self._api_session)
-        self.base_url = self._api_session.base_url
+        self._dr: Optional[str] = dr or None
+        self._release: Optional[dict] = None
+        if self._dr:
+            # a release is read offline: no session, no credentials, no live route
+            self._api_session = None
+            self._api = _NoRemote(self._dr)
+            from .api.session import resolve_base_url
+            self.base_url = resolve_base_url(base_url)
+        else:
+            self._api_session = APISession(base_url=base_url, auto_refresh=auto_refresh)
+            self._api = APIClient(self._api_session)
+            self.base_url = self._api_session.base_url
 
         self._local = None
         self._products_dir: Optional[Path] = None
@@ -86,7 +122,36 @@ class Campfire:
         self._local_logged = False
         self._api_download_count = 0
 
-        self._open_local_catalog(data_dir)
+        if self._dr:
+            self._open_release(data_dir)
+        else:
+            self._open_local_catalog(data_dir)
+
+    def _open_release(self, data_dir: Optional[Union[str, Path]]) -> None:
+        """Open the release store under ``<data_dir>/dr/<tag>/`` or fail closed."""
+        from .config import resolve_data_dir
+        from .db.store import LocalStore, SchemaMismatchError
+        from .dr_store import read_release_json, release_dir
+
+        resolved = Path(data_dir).expanduser() if data_dir else resolve_data_dir()
+        root = release_dir(resolved, self._dr)
+        db_path = root / "meta" / "campfire.db"
+        if not db_path.exists():
+            raise DRModeError(
+                f"release {self._dr} is not on this machine ({db_path} is missing); "
+                f"run `campfire pull --dr {self._dr}` first."
+            )
+        try:
+            self._local = LocalStore(db_path)
+        except SchemaMismatchError as exc:
+            raise DRModeError(
+                f"the local store of release {self._dr} has schema v{exc.found_version}, this "
+                f"client expects v{exc.expected_version}; run `campfire pull --dr {self._dr}` "
+                f"to rebuild it from the kept export files."
+            ) from exc
+        self._products_dir = root / "products"
+        self._meta_dir = root / "meta"
+        self._release = read_release_json(root) or {"tag": self._dr}
 
     def _open_local_catalog(self, data_dir: Optional[Union[str, Path]]) -> None:
         """Attempt to open the local SQLite catalog; warn if it can't be used.
@@ -176,6 +241,36 @@ class Campfire:
             return self._local.get_last_synced_at()
         return None
 
+    @property
+    def dr(self) -> Optional[str]:
+        """The data-release tag this client reads, or ``None`` on live."""
+        return self._dr
+
+    @property
+    def release(self) -> Optional[dict]:
+        """The release's record (tag, state, DOI, counts, frozen_at, the files
+        loaded; ``release.json`` of the local store), or ``None`` on live."""
+        return dict(self._release) if self._release else None
+
+    def _require_live(self, what: str) -> None:
+        """Imaging is a live product (cutouts are rendered from the live
+        mosaics, never frozen), and the cutout cache under the data root is
+        shared with live clients: a release client refuses before reading it."""
+        if self._dr:
+            raise DRModeError(
+                f"{what} are live products, not part of release {self._dr}; "
+                f"open Campfire() for them."
+            )
+
+    def _stamp(self, table: Table) -> Table:
+        """Every table says which channel answered it."""
+        if self._dr:
+            table.meta["channel"] = "dr"
+            table.meta["release"] = self._dr
+        else:
+            table.meta["channel"] = "live"
+        return table
+
     # -------------------------------------------------------------------------
     # Sync / download
     # -------------------------------------------------------------------------
@@ -188,6 +283,11 @@ class Campfire:
         """
         from .sync import sync_metadata
 
+        if self._dr:
+            raise DRModeError(
+                f"a release is frozen: nothing to sync. `campfire pull --dr {self._dr}` "
+                f"refreshes its local store; Campfire() syncs the live catalog."
+            )
         if self._meta_dir is None:
             from .config import ensure_data_dir, resolve_data_dir
             resolved = self._resolve_data_dir(None)
@@ -228,6 +328,11 @@ class Campfire:
         from .sync import download_objects
         from .db.store import FINAL_PRODUCT_TYPES
 
+        if self._dr:
+            raise DRModeError(
+                f"the bytes of a release are pulled with `campfire pull --dr {self._dr}` "
+                f"(verified against the release manifest), not downloaded here."
+            )
         if self._local is None:
             raise ValidationError("No local catalog. Run cf.sync() first.")
 
@@ -412,7 +517,7 @@ class Campfire:
         table = Table() if len(objects) == 0 else Table(rows=objects)
         if pagination:
             table.meta["pagination"] = pagination
-        return table
+        return self._stamp(table)
 
     def iter_objects(self, **filters) -> Iterator[dict]:
         """Iterate over all matching objects with automatic pagination."""
@@ -597,7 +702,7 @@ class Campfire:
         table = Table() if len(spectra) == 0 else Table(rows=spectra)
         if pagination:
             table.meta["pagination"] = pagination
-        return table
+        return self._stamp(table)
 
     def iter_spectra(self, **filters) -> Iterator[dict]:
         """Iterate over all matching spectra with automatic pagination."""
@@ -625,7 +730,7 @@ class Campfire:
         target_ids: Optional[List[str]] = None,
         object_ids: Optional[List[str]] = None,
         min_quality: Optional[int] = None,
-        exclude_stale: bool = False,
+        exclude_stale: Optional[bool] = None,
         wide: bool = True,
     ) -> Table:
         """Query the emission-line catalog (local catalog only; run ``sync()`` first).
@@ -640,9 +745,12 @@ class Campfire:
         min_quality : int, optional
             Keep fits whose inspected quality is at least this (2 tentative,
             3 probable, 4 secure). The pipeline default already fits only >= 3.
-        exclude_stale : bool
+        exclude_stale : bool, optional
             Drop fits whose inspected redshift or spectrum has changed since
-            the fit (``stale_redshift`` / ``stale_spectrum``).
+            the fit (``stale_redshift`` / ``stale_spectrum``). Default ``False``
+            on live, ``True`` on a release (``Campfire(dr=...)``): a release's
+            stale flags are frozen with it, so a stale fit there is one the
+            release itself calls superseded.
         wide : bool
             ``True`` (default): one column per line and quantity
             (``f_Halpha``, ``e_Halpha``, ``ew_Halpha``, ``ewe_Halpha``,
@@ -663,6 +771,8 @@ class Campfire:
                 "The emission-line catalog is served from the local catalog. "
                 "Run cf.sync() (or `campfire sync`) first."
             )
+        if exclude_stale is None:
+            exclude_stale = bool(self._dr)
         if gratings:
             gratings = [g.upper() for g in gratings]
         records = self._local.query_line_fits(
@@ -683,7 +793,7 @@ class Campfire:
             columns = list(LINE_FIT_EXPORT_COLUMNS) + ["lines"]
         table = Table(rows=rows, names=columns) if rows else Table(names=columns)
         table.meta["n_spectra"] = len(rows)
-        return table
+        return self._stamp(table)
 
     def get_spectrum(self, spectrum_id: str) -> Optional[dict]:
         """Return a single spectrum row by spectrum_id."""
@@ -702,23 +812,34 @@ class Campfire:
     # Metadata
     # -------------------------------------------------------------------------
     def get_metadata(self) -> dict:
+        """The catalog's metadata (programs, fields, gratings, observations);
+        on a release, its record plus what the local store holds."""
+        if self._dr:
+            meta = self.release or {}
+            meta.update({
+                "programs": [{"slug": p} for p in self._local.get_distinct_values("program_slug")],
+                "fields": self._local.get_distinct_values("field"),
+                "gratings": self._local.get_distinct_values("grating"),
+                "observations": self._local.get_distinct_values("observation"),
+            })
+            return meta
         return self._api.get_metadata()
 
     def get_programs(self) -> Table:
-        metadata = self._api.get_metadata()
+        metadata = self.get_metadata()
         programs = metadata.get("programs", [])
         if len(programs) == 0:
-            return Table()
-        return Table(rows=programs)
+            return self._stamp(Table())
+        return self._stamp(Table(rows=programs))
 
     def get_fields(self) -> List[str]:
-        return self._api.get_metadata().get("fields", [])
+        return self.get_metadata().get("fields", [])
 
     def get_gratings(self) -> List[str]:
-        return self._api.get_metadata().get("gratings", [])
+        return self.get_metadata().get("gratings", [])
 
     def get_observations(self) -> List[str]:
-        return self._api.get_metadata().get("observations", [])
+        return self.get_metadata().get("observations", [])
 
     def get_tags(self) -> Table:
         if self._local is not None:
@@ -726,8 +847,8 @@ class Campfire:
         else:
             rows = self._api.fetch_tags()
         if not rows:
-            return Table()
-        return Table(rows=rows)
+            return self._stamp(Table())
+        return self._stamp(Table(rows=rows))
 
     # -------------------------------------------------------------------------
     # Spectrum data (for plotting)
@@ -764,6 +885,13 @@ class Campfire:
                     return SpectrumData.from_fits(
                         str(full_path), spectrum_id=spectrum_id, grating=grating,
                     )
+
+        if self._dr:
+            raise DRModeError(
+                f"spectrum {spectrum_id} of release {self._dr} is not on this machine; "
+                f"run `campfire pull --dr {self._dr}` (the release's bytes are never "
+                f"fetched one at a time from the live service)."
+            )
 
         self._api_download_count += 1
         if self._api_download_count == 3:
@@ -857,6 +985,7 @@ class Campfire:
         filename = f"{object_id}_fov{fov_str}{size_tag}.png"
 
         from .config import resolve_data_dir
+        self._require_live("cutouts and shutter maps")
         cutouts = resolve_data_dir() / "cutouts"
 
         dest = _safe_cache_path(cutouts, filename, object_id)
@@ -934,6 +1063,7 @@ class Campfire:
         )
 
         from .config import resolve_data_dir
+        self._require_live("cutouts and shutter maps")
         cutouts = resolve_data_dir() / "cutouts"
 
         dest = _safe_cache_path(cutouts, filename, field)
@@ -1044,6 +1174,7 @@ class Campfire:
         )
 
         from .config import resolve_data_dir
+        self._require_live("cutouts and shutter maps")
         cutouts = resolve_data_dir() / "cutouts"
 
         dest = _safe_cache_path(cutouts, filename, field)
@@ -1079,6 +1210,7 @@ class Campfire:
 
         fov_str = format(fov, "g")
         filename = f"{object_id}_fov{fov_str}_shutters.json"
+        self._require_live("cutouts and shutter maps")
         cutouts = resolve_data_dir() / "cutouts"
         dest = _safe_cache_path(cutouts, filename, object_id)
 
@@ -1134,6 +1266,7 @@ class Campfire:
         fov_str = format(fov, "g")
         filename = f"{object_id}_fov{fov_str}_shutters.reg"
 
+        self._require_live("cutouts and shutter maps")
         if output is not None:
             dest = Path(output)
         else:

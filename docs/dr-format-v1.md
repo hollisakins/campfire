@@ -176,3 +176,45 @@ dr export` rebuilds exactly those; a release is published only from `ready`, so
 a reader of a published release always sees manifest files that carry the
 archive keys. The files route's `complete`
 flag is false while any file is pending.
+
+## Local store (the reader's side, P5-1)
+
+`campfire pull --dr <tag>` (`campfire.dr_store.load_release`) lands a release under
+`$CAMPFIRE_ROOT/dr/<tag>/`:
+
+```
+release.json                       the files route's answer + loaded_at, schema_version, the files
+exports/<stream>/<scope>.jsonl.gz  the export files as fetched (scope named by the key rule above)
+meta/campfire.db                   a LocalStore (the live mirror's DDL) + release_manifest
+products/<relpath>                 the bytes, placed by the layout contract from the live storage_key
+```
+
+A file already on disk that verifies (sha256 + size from the files route) is kept;
+one that does not is fetched again. The store is derived from the kept files and
+nothing else: it is rebuilt from them whenever the set of files changes (a program
+granted or lost) or the client's `SCHEMA_VERSION` moved, with the
+`storage_objects.local_*` columns (what is on disk) carried across. The live
+mirror's purge, tombstone and schema-mismatch-delete logic never touch a release
+store. A release of a format version the client does not know is refused before
+anything is written.
+
+Merging a stream's files into one table:
+
+- **objects**: one row per `id`; `programs` / `evidence_programs` /
+  `reviewed_spectrum_ids` unioned, `z_source_spectrum_id` the non-null copy; the
+  six scoped aggregates plus `member_target_ids` recomputed over the `spectra` rows
+  held (the reader holds every published spectrum of its programs, so the result
+  describes exactly its view of the release).
+- **spectra**, **line_fits**: one row per id; a fit takes the `field` of its
+  spectrum.
+- **photometry**: one row per `id`, keyed by the object's name (the live stream's
+  key), `programs` dropped.
+- **manifest**: kept whole in `release_manifest` (archive key, byte state, stamped
+  hash, for the byte pull), and mirrored into `storage_objects` so the live-shaped
+  code (`get_spectrum`, `find_local_path`) resolves a spectrum's file: there
+  `content_hash` is the hash of the bytes a reader of the release gets, the
+  `stamped_hash` of a stamped member, the live `content_hash` otherwise.
+
+`Campfire(dr=tag)` reads this store and nothing else (design §4.7: it fails
+closed, `DRModeError`, on every live branch).
+
