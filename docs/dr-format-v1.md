@@ -218,3 +218,14 @@ Merging a stream's files into one table:
 `Campfire(dr=tag)` reads this store and nothing else (design §4.7: it fails
 closed, `DRModeError`, on every live branch).
 
+The bytes (`campfire pull --dr <tag> --obs ... | --program ... | --field ... | --all`,
+P5-2) go through the same download engine as a live pull, planned from the
+release store's `storage_objects`, presigned with `?dr=<tag>` (the storage
+presign route answers with the release's archived copies, members the release
+does not hold archived omitted), verified against the hash the store carries
+(the stamped bytes' hash for a stamped member) and recorded on the release
+store, so an interrupted pull resumes at file granularity. The live tree and
+the live mirror are never touched. `GET /api/v1/dr` lists the releases a caller
+may read (`campfire dr list`); `POST /api/v1/identify` answers what the archive
+knows about a file's bytes (`campfire identify`, `identify_files`).
+

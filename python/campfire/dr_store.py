@@ -12,8 +12,9 @@ A release the reader pulled lives under ``$CAMPFIRE_ROOT/dr/<tag>/``::
 ``GET /api/v1/dr/<tag>/files`` (docs/dr-format-v1.md), verifies each against
 the sha256 / size / row count the route gave, keeps it, and loads the set into
 the store. The store is derived from the kept files and nothing else: it is
-rebuilt from them whenever the file set changes or the client's schema moved
-(``SchemaMismatchError``), and the live mirror's purge, tombstone and
+rebuilt from them whenever the file set changes, the client's schema moved
+(``SchemaMismatchError``) or the loader learned to derive more from the files
+(``LOADER_VERSION``), and the live mirror's purge, tombstone and
 schema-mismatch-delete logic never touch it. The one piece of state that is
 not derived, which products are on disk (``storage_objects.local_*``), is
 carried across a rebuild.
@@ -53,6 +54,10 @@ from .exceptions import DRLoadError
 
 DR_DIRNAME = 'dr'
 FORMAT_VERSIONS = (1,)
+# Bump when the loader derives something new from the kept files (a store
+# built by an older loader is rebuilt from them, like on a SCHEMA_VERSION
+# bump): 2 = storage_objects.filter / observation / field off the key.
+LOADER_VERSION = 2
 STREAMS = ('objects', 'spectra', 'line_fits', 'photometry', 'manifest')
 _KEY_SAFE = re.compile(r'^[A-Za-z0-9._-]+$')
 _TAG_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
@@ -257,6 +262,21 @@ def _aggregate_from_spectra(obj: dict, spectra: list[dict]) -> None:
     obj['max_exposure_time'] = max(exp) if exp else obj.get('max_exposure_time')
 
 
+def _key_scope(storage_key: str) -> dict:
+    """What the layout reads off a key: the NIRCam filter (so ``pull --dr
+    --filters`` narrows mosaics as a live pull does; the manifest carries no
+    filter column), plus observation / field as a fallback. Empty for a key
+    the layout does not know."""
+    try:
+        from campfire_layout import parse_key
+        pk = parse_key(storage_key)
+    except Exception:  # noqa: BLE001 - not a layout key: nothing to read
+        return {}
+    sc = pk.scope
+    return {'filter': getattr(sc, 'filt', None), 'observation': getattr(sc, 'obs', None),
+            'field': getattr(sc, 'field', None)}
+
+
 def _instrument_of(product_type: Optional[str]) -> Optional[str]:
     if not product_type:
         return None
@@ -336,13 +356,15 @@ def _load_into_store(store, root: Path, entries: list[dict], counts: dict) -> No
              m.get('science_hash'), m.get('size_bytes'), m.get('archive_key'), m.get('byte_state'),
              m.get('stamped_hash')))
         stamped = m.get('byte_state') == 'stamped' and m.get('stamped_hash')
+        ks = _key_scope(key)
         storage_rows.append({
             'storage_key': key, 'backend': m.get('backend'), 'bucket': m.get('bucket'),
             'content_hash': m.get('stamped_hash') if stamped else m.get('content_hash'),
             'size_bytes': m.get('size_bytes'), 'product_type': m.get('product_type'),
             'instrument': _instrument_of(m.get('product_type')), 'status': 'active',
-            'observation': obs_of_spectrum.get(m.get('spectrum_id')),
-            'field': m.get('field') or field_of_spectrum.get(m.get('spectrum_id')),
+            'observation': obs_of_spectrum.get(m.get('spectrum_id')) or ks.get('observation'),
+            'field': m.get('field') or field_of_spectrum.get(m.get('spectrum_id')) or ks.get('field'),
+            'filter': ks.get('filter'),
             'spectrum_id': m.get('spectrum_id'),
         })
     counts['manifest'] = store.upsert_storage_objects(storage_rows)
@@ -416,7 +438,8 @@ def load_release(session, tag: str, *, data_dir: Optional[Path] = None,
         except SchemaMismatchError:
             store = None
         else:
-            if store.get_meta('release_files') != signature or store.get_meta('release_tag') != tag:
+            if (store.get_meta('release_files') != signature or store.get_meta('release_tag') != tag
+                    or store.get_meta('release_loader') != str(LOADER_VERSION)):
                 store.close()
                 store = None
     if store is None:
@@ -434,6 +457,7 @@ def load_release(session, tag: str, *, data_dir: Optional[Path] = None,
                                          r.get('local_file_size'), r.get('local_file_mtime'))
             fresh.set_meta('release_tag', tag)
             fresh.set_meta('release_files', signature)
+            fresh.set_meta('release_loader', str(LOADER_VERSION))
             fresh.set_meta('release_loaded_at', datetime.now(timezone.utc).isoformat())
             fresh.close()
             for suffix in ('', '-wal', '-shm'):

@@ -437,21 +437,46 @@ class APIClient:
             row_filter=row_filter,
         )
 
-    def presign_keys(self, keys: List[str]) -> Dict[str, str]:
+    def presign_keys(self, keys: List[str], dr: Optional[str] = None) -> Dict[str, str]:
         """Get signed download URLs for storage keys the caller may access.
 
         Returns ``{key: url}``; keys the server declines to authorize are simply
-        absent from the result. Batches of up to 200 keys per request.
+        absent from the result. Batches of up to 200 keys per request. With
+        ``dr=<tag>`` the urls are the release's archived copies of those keys
+        (``?dr=`` on the presign route, P6c-2); a member the release does not
+        hold archived is absent like an unauthorized key.
         """
         urls: Dict[str, str] = {}
+        path = "/storage/presign" + (f"?dr={dr}" if dr else "")
         for start in range(0, len(keys), 200):
             batch = keys[start:start + 200]
             response = self._session.post(
-                "/storage/presign", json={"keys": batch}, timeout=60
+                path, json={"keys": batch}, timeout=60
             )
             _handle_response_error(response, "presigning storage keys")
             urls.update(response.json().get("urls", {}))
         return urls
+
+    def list_releases(self) -> List[dict]:
+        """The data releases the caller may read (``GET /api/v1/dr``, P5-2):
+        published ones, every state past its freeze for admins."""
+        response = self._session.get("/dr", timeout=30)
+        _handle_response_error(response, "listing data releases")
+        return list(response.json().get("releases", []))
+
+    def identify_files(self, files: List[dict]) -> List[dict]:
+        """What the archive knows about files by their bytes (``POST
+        /api/v1/identify``, P5-2). ``files`` is a list of ``{"sha256":
+        "sha256:<hex>", "science_hash": "sha256:<hex>" | None}``; one result
+        per input, in order, each with ``live``, ``releases`` and ``collected``
+        lists (see ``identify_files`` in the schema). Batches of 200."""
+        results: List[dict] = []
+        for start in range(0, len(files), 200):
+            batch = files[start:start + 200]
+            response = self._session.post("/identify", json={"files": batch}, timeout=60)
+            _handle_response_error(response, "identifying files")
+            results.extend(response.json().get("results", []))
+        return results
 
     def get_storage_budget(self) -> Optional[dict]:
         """Fetch the global storage budget (admin-only). Returns None if forbidden."""

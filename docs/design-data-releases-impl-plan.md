@@ -2092,3 +2092,20 @@ the hash of the bytes the reader gets (stamped copy when stamped); the manifest 
 release-only `release_manifest` table instead of widening the live mirror's schema (no forced resync);
 objects' aggregates recomputed from the spectra held rather than max over the per-program copies.
 
+### 2026-10-29 PR B merged; PR C (P5-2) built
+
+PR B merged as #670 (c1bb9137). PR C, branch `claude/p5-dr-pull`: `campfire pull --dr TAG` (`_pull_release`:
+load_release, the release store's observation summary when nothing is selected, `verify_local_objects` +
+`get_pending_objects` + `download_objects(dr=TAG)` into `dr/TAG/products/`; `--intermediate` / `--stale` refused),
+`APIClient.presign_keys(dr=)` → `/storage/presign?dr=TAG`, `list_releases()` → `GET /api/v1/dr`
+(`fetchVisibleReleases`), `identify_files()` → `POST /api/v1/identify`; `identify_files` RPC (migration
+`20261029190524`), `campfire/identify.py` (hash_file, local_matches over the live mirror + every `dr/*/meta`
+store read-only, `describe` phrasing, `identify_paths`), `campfire identify FILE... [--offline] [--json]`,
+`campfire dr list`. Tests: `test_identify.py`, `test_pull_release.py`, two vitest route tests,
+`check_identify.sql` (5 sections on DR-seed: scope, field products open, stamped bytes, superseded member with
+the live date, withdrawn / draft visibility by the admin flag, tombstones, malformed hashes, the 200 cap).
+Decisions: the science hash is never copied into the client (the pipeline's module when installed, else sha256
+only, as the plan said); the RPC returns facts and the client phrases them; `content_hash` of the release
+store already being the archived bytes' hash is what lets the live download engine verify a release pull
+unchanged; a `dr` parameter on `/api/v1/dr` and `/api/v1/identify` is a 400 (releases are part of the answer).
+
