@@ -1035,5 +1035,25 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     (a 0.96 width stretch would bring it to ~2 %), while the prism needs the shift (or a fix in the
     prism WCS y zero point) before it is good to better than 7 %; the ~1 % goal needs the empirical
     table on both.
-- Not yet measured: the bar profile as a function of quadrant, the solar-line check (§3.3), and the
-  origin of the G395M NRS2 excess.
+- **The empirical bar-shadow table, first derivation (prism, 2026-10-29;
+  `nirspec/barshadow_calibration.py`, `data/Generate_Barshadow_Cals.py`).** Every empty-shutter
+  pixel's surface brightness over its own exposure's centre-pixel sky, binned per reference segment
+  (jwst's own decomposition: outer edges → `DATA1X1`, interior bar → `DATA1X3`), slit-frame row and
+  wavelength column, written back in the CRDS layout so `BarShadowStep` takes it as an override. On
+  COSMOS p1 + UDS p2 (3.3 M pixels, 2500 clean shutters) with EGS p1 held out, the held-out empty
+  shutters divided by the table are flat to 2.4 / 2.5 / 1.4 / 0.7 % rms per segment, against
+  17.8 / 10.7 / 17.4 / 3.5 % with the CRDS reference; the residual that is left is a ~2 % flank
+  structure at the outer bars, consistent with the field-to-field spread of the registration
+  (EGS −0.16 px, COSMOS −0.11 px). The measured profile also narrows with wavelength (open region
+  ±0.45 pitch at 1 µm, ±0.38 at 5 µm) and its floor beyond the outer edge is 0.3, not 0.44.
+  Two lessons on the way: a source pad of 5 detector rows removes the adjacent shutters' centres
+  entirely (the default is now 2 rows, 0.4 pitch); and **the sky must be pooled per exposure** —
+  UDS p2's second nod sits 18 % above its first and third at the 3 µm sky minimum and nowhere else
+  (0.203 vs 0.172 MJy/sr), which a per-run sky turned into a spurious 6 % top-vs-bottom shutter
+  asymmetry through the nod geometry. The P0 "nod-2 middle-shutter excess" on EGS was the same
+  effect. Exposure-to-exposure differences of that size at the sky minimum, of unknown origin yet
+  (that pointing's stage 1 predates the current one), mean the master background itself has to be
+  per exposure, not per group, at least below ~4 µm.
+- Not yet measured: the bar profile as a function of quadrant, the solar-line check (§3.3), the
+  origin of the G395M NRS2 excess (resolved: the trace tails, above) and of the per-exposure 3 µm
+  differences; the grating tables await the SPURS reprocessing.
