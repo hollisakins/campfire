@@ -478,3 +478,94 @@ def test_profile_fit_columns_extract_the_delivered_result(tmp_path, use):
     np.testing.assert_allclose(best, 10.0 - (1.0 if use else 3.0), rtol=1e-6)
     np.testing.assert_array_equal(best_err, raw_err)
     assert 'joint_infl' in c and not any(k.startswith('fnu_pf') for k in c)
+
+
+# ---------------------------------------------------------------------------
+# --source-ids runs: groups over every source, only the requested products written
+# ---------------------------------------------------------------------------
+class _Chain:
+    """The parts of a ``ChainResult`` the one-pass shape cards need."""
+    def __init__(self, seed):
+        rng = np.random.default_rng(seed)
+        c, d, w, dw, piv = rng.normal(size=5) / 7.0
+        self.result = type('R', (), {})()
+        self.result.eoff = rng.normal(size=4) / 300.0
+        self.p = dict(centre=c, drift=d, width=abs(w) + 0.1, width_change=dw, pivot=3.0 + piv, centre_prior=c / 3)
+
+    def header_cards(self):
+        p = self.p
+        return {'PFSHAPE': ('own', 'Shape used'), 'PFCEN': (p['centre'], 'c'), 'PFCENPR': (p['centre_prior'], 'p'),
+                'PFDRIFT': (p['drift'], 'd'), 'PFWIDTH': (p['width'], 'w'), 'PFDWIDTH': (p['width_change'], 'dw'),
+                'PFPIVOT': (p['pivot'], 'pivot')}
+
+
+@pytest.mark.parametrize('seed', range(5))
+def test_in_memory_shape_matches_the_written_one(tmp_path, seed):
+    """A source outside the run enters a joint solve with its shape cards as text
+    (``one_pass_metrics``); a source of the run with the cards read from its _pf.fits.
+    Both give the same numbers to the last bit, so a member's shape does not depend on
+    whether its product was written in this run."""
+    from campfire_pipeline.nirspec import profile_product as PP
+    C = _Chain(seed)
+    exps = [type('E', (), {'name': f'jw0000{k}_nrs1.fits'})() for k in range(4)]
+    hdr = PP.shape_header(C, exps)
+    fits.HDUList([fits.PrimaryHDU(header=hdr)]).writeto(tmp_path / 'p_pf.fits')
+    a = PJ.read_shape(str(tmp_path), 'p')
+    b = PJ.shape_from_header(hdr.tostring())
+    assert a[0] == b[0] and a[2] == b[2]
+    np.testing.assert_array_equal(a[1], b[1])
+
+
+class _Obs:
+    def __init__(self, path):
+        self.workspace_dir = str(path)
+        self.name = 'obs'
+
+
+# pair metrics of five sources: 1 and 2 light each other strongly; 4 lights 3 (3 the
+# only receiver); 2 lights 5 a little; nothing on 5 otherwise
+_PAIRS = {1: {2: dict(sig=50.0, frac=0.8)}, 2: {1: dict(sig=40.0, frac=0.5)}, 3: {4: dict(sig=30.0, frac=1.0)},
+          4: {}, 5: {2: dict(sig=2.0, frac=0.01)}}
+
+
+def _task(sid):
+    return (f'obs_g395m_{sid}', 'ws', [[f'g{sid}']], [None], [f's{sid}'], sid, {}, False, '', {}, False)
+
+
+def _joint_run(tmp_path, monkeypatch, requested):
+    calls = []
+
+    def fake_run_group(tasks, workspace, stage_config, pass1_products, redo=None, log=None, shapes=None):
+        calls.append(dict(members=[t[5] for t in tasks], tasks=tasks, redo=set(redo), shapes=dict(shapes or {})))
+        return [dict(source_id=s, product=f'obs_g395m_{s}', joint=[t[5] for t in tasks]) for s in sorted(redo)]
+    monkeypatch.setattr(PJ, 'run_group', fake_run_group)
+
+    def metrics(*task):
+        return dict(source_id=task[5], pairs=_PAIRS[task[5]], shape=f'cards {task[5]}')
+    js = PJ.joint_settings({'contam_joint': True})
+    all_tasks = {s: _task(s) for s in _PAIRS}
+    tasks = [all_tasks[s] for s in requested]
+    results = [dict(source_id=s, pairs=_PAIRS[s], product=f'obs_g395m_{s}') for s in requested]
+    out = S3._joint_phase(_Obs(tmp_path), 'g395m', tasks, results, {}, {}, js, 1, False,
+                          all_tasks=all_tasks, metrics=metrics)
+    return calls, out
+
+
+def test_source_ids_run_finds_the_full_run_groups(tmp_path, monkeypatch):
+    """A run of one source solves the same group, with the same member tasks, as a full
+    run; the other members enter with their in-memory shape and are never redone."""
+    full, full_out = _joint_run(tmp_path, monkeypatch, [1, 2, 3, 4, 5])
+    assert [c['members'] for c in full] == [[1, 2], [3, 4]]
+    assert [c['redo'] for c in full] == [{1, 2}, {3}] and all(c['shapes'] == {} for c in full)
+    one, one_out = _joint_run(tmp_path, monkeypatch, [1])
+    assert len(one) == 1 and one[0]['members'] == [1, 2] and one[0]['redo'] == {1}
+    assert one[0]['tasks'] == full[0]['tasks']
+    assert one[0]['shapes'] == {2: 'cards 2'}
+    assert [r['source_id'] for r in one_out] == [1] and one_out[0]['joint'] == [1, 2]
+    # a source that only lights others is solved with them in a full run but has no
+    # product to redo: its own run solves nothing
+    four, four_out = _joint_run(tmp_path, monkeypatch, [4])
+    assert four == [] and four_out == [dict(source_id=4, pairs={}, product='obs_g395m_4')]
+    # a source in no group
+    five, _ = _joint_run(tmp_path, monkeypatch, [5])
+    assert five == []

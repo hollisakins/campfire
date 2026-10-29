@@ -458,6 +458,7 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     for fg in order:
         is_prism = fg == prism_fg
         pass1_products = {}
+        all_tasks = {}       # every source of the disperser, as run_product arguments (joint-solve groups)
         if contam:
             sub = sci_all[sci_all['filter_grating'] == fg]
             every_fg = every[every['filter_grating'] == fg]
@@ -469,6 +470,9 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                 pass1_products[int(sid)] = t['product_name']
                 p1.append((t['product_name'], obs.workspace_dir, t['groups'], t['overrides'], t['science'],
                            int(sid), is_prism, stage_config, prism_product, bool(overwrite and int(sid) in run_sids)))
+                all_tasks[int(sid)] = (t['product_name'], obs.workspace_dir, t['groups'], t['overrides'],
+                                       t['science'], int(sid), stage_config, is_prism, prism_product,
+                                       pass1_products, False)
             log(f"Profile fit: pass 1 for {len(p1)} {fg} sources")
             with TM.phase(f'pass1 {fg} ({len(p1)})'):
                 dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True)
@@ -489,7 +493,7 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
         if joint:
             with TM.phase(f'joint {fg}'):
                 res = _joint_phase(obs, fg, tasks, res, stage_config, pass1_products, js, n_processes,
-                                   cleanup_crfs)
+                                   cleanup_crfs, all_tasks=all_tasks)
         results += res
     log_fallbacks(results)
     if fl['scan']:
@@ -508,24 +512,49 @@ def log_fallbacks(results):
     return n
 
 
-def _joint_phase(obs, fg, tasks, results, stage_config, pass1_products, js, n_processes, cleanup_crfs):
+def _joint_phase(obs, fg, tasks, results, stage_config, pass1_products, js, n_processes, cleanup_crfs,
+                 all_tasks=None, metrics=None):
     """Joint solve of the strongly coupled overlap groups of one disperser
-    (``contam_joint``, ``profile_joint``), after its one-pass products: groups from the
-    products' pair metrics, one joint solve per group, the members' products redone.
-    Returns the results with the members' one-pass summaries replaced."""
+    (``contam_joint``, ``profile_joint``), after its one-pass products. Returns the
+    results with the redone members' one-pass summaries replaced.
+
+    Groups are formed from the coupling of every source of the disperser
+    (``all_tasks``: sid -> ``run_product`` arguments), not only the products of this
+    run, so a ``--source-ids`` run finds the same groups as a full run. The pair
+    metrics of the products of this run come from their results; those of every other
+    source are computed in memory (``profile_product.one_pass_metrics``; nothing of
+    theirs is written), together with the one-pass shape they enter a joint solve
+    with. Only the groups with a source of this run are solved, and only this run's
+    receivers are redone: another source's product is never rewritten.
+
+    metrics : replaces ``one_pass_metrics`` (tests)."""
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec import profile_joint as PJ
+    from campfire_pipeline.nirspec.profile_product import one_pass_metrics
 
     pairs = {int(r['source_id']): (r.get('pairs') or {}) for r in results}
     by_sid = {int(t[5]): t for t in tasks}
-    groups = PJ.select_groups(pairs, set(by_sid), min_sigma=js['min_sigma'], min_frac=js['min_frac'],
+    requested = set(by_sid)
+    members = {**(all_tasks or {}), **by_sid}
+    others = [t for sid, t in sorted(members.items()) if sid not in requested]
+    shapes = {}
+    if others:
+        log(f"Profile fit: pair metrics of {len(others)} {fg} sources not in this run (in memory)")
+        for m in dispatch(metrics or one_pass_metrics, others, n_processes=n_processes, use_starmap=True) or []:
+            pairs[int(m['source_id'])] = m['pairs'] or {}
+            shapes[int(m['source_id'])] = m['shape']
+    groups = PJ.select_groups(pairs, set(members), min_sigma=js['min_sigma'], min_frac=js['min_frac'],
                               max_members=js['max_members'])
-    redo = [PJ.receivers(pairs, g, min_sigma=js['min_sigma'], min_frac=js['min_frac']) for g in groups]
+    # a group whose receivers are all outside this run would change no product of it
+    redo = [PJ.receivers(pairs, g, min_sigma=js['min_sigma'], min_frac=js['min_frac']) & requested
+            for g in groups]
+    groups, redo = [g for g, r in zip(groups, redo) if r], [r for r in redo if r]
     log(f"Profile fit: {len(groups)} {fg} joint-solve groups "
         f"({sum(len(g) for g in groups)} sources, sizes {sorted(len(g) for g in groups)}; "
         f"{sum(len(r) for r in redo)} products redone)")
     if groups:
-        gtasks = [([by_sid[s] for s in g], obs.workspace_dir, stage_config, pass1_products, r)
+        gtasks = [([members[s] for s in g], obs.workspace_dir, stage_config, pass1_products, r, None,
+                   {s: shapes[s] for s in g if s in shapes})
                   for g, r in zip(groups, redo)]
         redone = {}
         for out in dispatch(PJ.run_group, gtasks, n_processes=n_processes, use_starmap=True) or []:

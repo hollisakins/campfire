@@ -145,7 +145,7 @@ def select_groups(pairs, products, min_sigma=10.0, min_frac=0.3, max_members=6):
     """Overlap groups from per-product pair metrics.
 
     pairs : {target sid: {contaminant sid: pair_metrics entry}}; products : the source
-        ids whose products this run makes (only they can be members).
+        ids that can be members (every source of the disperser, ``stage3._joint_phase``).
     A pair is strongly coupled when the contaminant's light in the target's spectrum
     is at least ``min_sigma`` times the noise of the target's integrated flux AND at
     least ``min_frac`` of the target's own light in size (negative light, from a
@@ -202,6 +202,24 @@ def receivers(pairs, group, min_sigma=10.0, min_frac=0.3):
 # ---------------------------------------------------------------------------
 # Members
 # ---------------------------------------------------------------------------
+def shape_from_header(h):
+    """(params dict at its pivot, per-exposure offsets, shape source) from a header with
+    the one-pass shape cards (``profile_product.shape_header``), or None. A header given
+    as text (``Header.tostring``) is parsed first."""
+    from astropy.io import fits
+    if h is None:
+        return None
+    if isinstance(h, str):
+        h = fits.Header.fromstring(h)
+    if 'PFCEN' not in h:
+        return None
+    params = dict(centre=float(h['PFCEN']), drift=float(h['PFDRIFT']), width=float(h['PFWIDTH']),
+                  width_change=float(h['PFDWIDTH']), pivot=float(h['PFPIVOT']), centre_prior=float(h['PFCENPR']))
+    n = int(h.get('PFNEXP', 0))
+    eoff = np.array([float(h.get(f'PFOFF{k}', 0.0)) for k in range(n)])
+    return params, eoff, str(h.get('PFSHAPE', ''))
+
+
 def read_shape(workspace, product):
     """The one-pass chain shape of a product from its ``_pf.fits`` (this run) or
     ``_spec.fits``: (params dict at its pivot, per-exposure offsets, shape source)."""
@@ -210,14 +228,9 @@ def read_shape(workspace, product):
         path = os.path.join(workspace, f'{product}{s}')
         if not os.path.exists(path):
             continue
-        h = fits.getheader(path)
-        if 'PFCEN' not in h:
-            continue
-        params = dict(centre=float(h['PFCEN']), drift=float(h['PFDRIFT']), width=float(h['PFWIDTH']),
-                      width_change=float(h['PFDWIDTH']), pivot=float(h['PFPIVOT']), centre_prior=float(h['PFCENPR']))
-        n = int(h.get('PFNEXP', 0))
-        eoff = np.array([float(h.get(f'PFOFF{k}', 0.0)) for k in range(n)])
-        return params, eoff, str(h.get('PFSHAPE', ''))
+        out = shape_from_header(fits.getheader(path))
+        if out is not None:
+            return out
     return None
 
 
@@ -280,13 +293,19 @@ def basis_frames(member):
     return out
 
 
+_READ = object()
+
+
 def setup_member(product, workspace, groups, overrides, science, sid, stage_config, members, pass1_for,
-                 maps=None, exps=None, log=None):
+                 maps=None, exps=None, log=None, shape=_READ):
     """Load one member, subtract (or mask) the predicted light of every non-member as
     the one-pass final step does, and fix its shape to its one-pass chain shape.
 
     pass1_for : sid -> one-pass ``Pass1`` (the non-members' predictions, the
-        member's own pass 1 for the echo correction of unreliable non-members)."""
+        member's own pass 1 for the echo correction of unreliable non-members).
+    shape : the one-pass shape cards (text, ``profile_product.one_pass_metrics``) of a
+        member whose product this run does not write; None when it has none. By
+        default read from the member's ``_pf.fits`` / ``_spec.fits``."""
     from campfire_pipeline.nirspec import profile_chain as PC
     from campfire_pipeline.nirspec.profile_product import stage_flags
 
@@ -303,7 +322,7 @@ def setup_member(product, workspace, groups, overrides, science, sid, stage_conf
                    failed_open=fl['failed_open'], beyond=fl['beyond'], echo=fl['echo'], gap_columns=gap_cols,
                    gap_kappa=fl['kappa'], exclude=set(members) - {int(sid)})
     CT.apply(exps, P, mode=fl['contam_mode'], kappa=fl['kappa'], dominance_kappa=fl['dominance_kappa'])
-    shape = read_shape(workspace, product)
+    shape = read_shape(workspace, product) if shape is _READ else shape_from_header(shape)
     if shape is None:
         raise ValueError(f'{product}: no one-pass shape (_pf.fits / _spec.fits) for the joint solve')
     params, eoff, src = shape
@@ -865,13 +884,15 @@ def joint_flags(corr, err, sens, degenerate=0.9, nwin=31):
     return f
 
 
-def run_group(tasks, workspace, stage_config, pass1_products, redo=None, log=None):
+def run_group(tasks, workspace, stage_config, pass1_products, redo=None, log=None, shapes=None):
     """Joint solve of one group and its members' products.
 
     tasks : the members' ``run_product`` argument tuples (product_name, workspace_dir,
         groups, overrides, science, source_id, stage_config, is_prism, prism_product,
         pass1_products, cleanup_crfs).
     redo : the members whose products are redone (``receivers``; default all).
+    shapes : sid -> one-pass shape cards (text, or None) of the members whose product
+        this run does not write; the others' are read from their ``_pf.fits``.
     Returns the redone members' ``run_product`` summaries (None for a member whose
     product failed). A failed joint solve leaves the one-pass products as they are."""
     from campfire_pipeline.common.io import log as _log
@@ -891,7 +912,9 @@ def run_group(tasks, workspace, stage_config, pass1_products, redo=None, log=Non
     TM.reset()
     try:
         with TM.step('joint_setup'):
-            members = [setup_member(t[0], workspace, t[2], t[3], t[4], int(t[5]), stage_config, sids, pass1_for)
+            shapes = shapes or {}
+            members = [setup_member(t[0], workspace, t[2], t[3], t[4], int(t[5]), stage_config, sids, pass1_for,
+                                    **({'shape': shapes[int(t[5])]} if int(t[5]) in shapes else {}))
                        for t in tasks]
         with TM.step('joint_solve'):
             sols = solve_group(members, clip=js['clip'], smooth=js['smooth'], sens=js['sens'])

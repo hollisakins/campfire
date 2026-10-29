@@ -241,6 +241,34 @@ def shape_header(C, exps):
     return hdr
 
 
+def one_pass_metrics(product_name, workspace_dir, groups, overrides, science, source_id, stage_config,
+                     is_prism, prism_product='', pass1_products=None, cleanup_crfs=False):
+    """Pair metrics and one-pass shape of a source whose product this run does not
+    write (joint-solve groups of a ``--source-ids`` run, ``stage3._joint_phase``).
+
+    The same analysis as ``run_product`` without the neighbour scan (neither depends
+    on it), in memory: nothing is written. Takes ``run_product``'s arguments.
+    Returns dict(source_id, pairs, shape): ``shape`` is the shape cards as text, exactly
+    as ``run_product`` would write them to the ``_pf.fits`` header, so a joint solve
+    reads the same numbers either way; ``pairs`` and ``shape`` are None on a named
+    fallback."""
+    from campfire_pipeline.common.io import log
+    from campfire_pipeline.nirspec import profile_fit as PF
+
+    prev_cwd = os.getcwd()
+    os.chdir(workspace_dir)
+    try:
+        A = analyse_product(workspace_dir, groups, overrides, science, source_id,
+                            dict(stage_config, scan_neighbours=False), is_prism, prism_product=prism_product,
+                            pass1_products=pass1_products, log=lambda m: log(f'{product_name} (metrics): {m}'))
+    except PF.ProfileFitFallback as e:
+        log(f'{product_name} (metrics): no one-pass result ({e.reason})')
+        return dict(source_id=int(source_id), pairs=None, shape=None)
+    finally:
+        os.chdir(prev_cwd)
+    return dict(source_id=int(source_id), pairs=A.pairs or {}, shape=shape_header(A.chain, A.exps).tostring())
+
+
 def run_product(product_name, workspace_dir, groups, overrides, science, source_id, stage_config,
                 is_prism, prism_product='', pass1_products=None, cleanup_crfs=True, joint=None):
     """Build ``{product_name}_pf.fits``. Returns a dict summary (for the driver).
