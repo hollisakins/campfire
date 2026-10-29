@@ -130,7 +130,7 @@ def plot_zfit_results(zfit_file, spec_file=None):
 
     # Load observed spectrum
     from astropy import table
-    tab = table.Table.read(spec_file, hdu=1)
+    tab = table.Table.read(spec_file, hdu='SPEC1D')
     wav = np.asarray(tab['wave'].value, dtype='float64')
     fnu = np.asarray(tab['fnu'].value, dtype='float64')
     fnu_err = np.asarray(tab['fnu_err'].value, dtype='float64')
@@ -1092,7 +1092,7 @@ def plot_linefit_results(lines_file, spec_file=None, output_file=None):
     cxs = prod['complexes']
 
     from astropy import table
-    tab = table.Table.read(spec_file, hdu=1)
+    tab = table.Table.read(spec_file, hdu='SPEC1D')
     wav = np.asarray(tab['wave'], dtype='float64')
     flam = np.asarray(tab['flam'], dtype='float64')
     flam_err = np.asarray(tab['flam_err'], dtype='float64')

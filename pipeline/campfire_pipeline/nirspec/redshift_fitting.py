@@ -257,7 +257,7 @@ def _load_and_prepare_spectrum(spec_file):
 
     Returns (wav, flux, err, mask) or raises on failure.
     """
-    tab = table.Table.read(spec_file, hdu=1)
+    tab = table.Table.read(spec_file, hdu='SPEC1D')
     wav = np.asarray(tab['wave'].value, dtype='float32')
     flux = np.asarray(tab['fnu'].value, dtype='float32')
     err = np.asarray(tab['fnu_err'].value, dtype='float32')

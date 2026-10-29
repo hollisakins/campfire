@@ -25,7 +25,7 @@ _V3IDL_Y_ANGLE_DEG = 138.5
 
 def get_source_pos(spec_file):
     """Extract median source RA/Dec from HDU 7 exposure table."""
-    exp = Table.read(spec_file, hdu=7)
+    exp = Table.read(spec_file, hdu='EXPOSURES')
     ra = np.median(exp['source_ra'][exp['source_ra'] != 0])
     dec = np.median(exp['source_dec'][exp['source_dec'] != 0])
     return ra, dec
@@ -38,7 +38,7 @@ def get_exposure_table(spec_file):
     For multi-shutter slitlets with both NRS1 and NRS2 rows, keeps only NRS2
     to avoid double-counting.
     """
-    exp = Table.read(spec_file, hdu=7)
+    exp = Table.read(spec_file, hdu='EXPOSURES')
     if 'SHUTTER-SLITLET' not in exp['nod_type'][0]:
         raise NotImplementedError(f"Only N-SHUTTER-SLITLET types supported, got {exp['nod_type'][0]}")
 
@@ -166,7 +166,7 @@ def compute_fixed_slit_apertures(spec_file, corrected_pos=None):
         per-slit ``aperture_width_arcsec`` / ``aperture_height_arcsec``.
         ``shutter_idx`` is 0 and ``shutter_state`` is ``'source'`` for every row.
     """
-    exp = Table.read(spec_file, hdu=7)
+    exp = Table.read(spec_file, hdu='EXPOSURES')
 
     if corrected_pos is not None:
         source_ra, source_dec = corrected_pos

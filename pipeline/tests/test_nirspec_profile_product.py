@@ -140,7 +140,7 @@ def test_spec_fits_columns_and_cards(tmp_path):
     np.testing.assert_allclose(d['fnu'][2:-2], 9.0, rtol=1e-5)
     np.testing.assert_allclose(d['fnu_prof'][2:-2], 10.0, rtol=1e-5)
     np.testing.assert_array_equal(d['fnu_err'], d['fnu_prof_err'])
-    assert ext[-2:] == ['PROF2D', 'CONTAM2D']
+    assert ext == ['SPEC1D', 'SCI', 'ERR', 'WAVELENGTH', 'WHT', 'PROF2D', 'CONTAM2D', 'PROF1D', 'EXPOSURES']
     assert not any(n.startswith(('fnu_pf', 'flam_pf', 'pf_')) for n in names)
     assert not (tmp_path / 'p_pf.fits').exists()
 

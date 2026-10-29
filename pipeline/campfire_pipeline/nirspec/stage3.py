@@ -944,7 +944,7 @@ def opt_ext_single_source(
     exp = s2d['EXPOSURES']
 
 
-    spec = fits.HDUList(hdus=[primary, spec1d, sci, err, wav, wht, prof1d, exp] + pf_hdus)
+    spec = fits.HDUList(hdus=[primary, spec1d, sci, err, wav, wht] + pf_hdus + [prof1d, exp])
     spec.writeto(out_filename, overwrite=True)
     # every product's profile fit (joint solve, cross-disperser scan) finished before
     # extraction began; later runs read the shape cards from the _spec.fits
@@ -1602,7 +1602,7 @@ def combine_per_eg_spectra(
 
     out_filename = os.path.join(workspace_dir, f'{product_name}_spec.fits')
     # the groups' PROF2D / CONTAM2D are on their own s2d grids, not the stacked one: not carried
-    spec = fits.HDUList(hdus=[primary, spec1d_hdu, sci_hdu, err_hdu, wav_hdu, wht_hdu, prof1d_hdu, exp_hdu] + pf_hdus)
+    spec = fits.HDUList(hdus=[primary, spec1d_hdu, sci_hdu, err_hdu, wav_hdu, wht_hdu] + pf_hdus + [prof1d_hdu, exp_hdu])
     spec.writeto(out_filename, overwrite=True)
     log(f"Stage3 (1D combine): wrote {out_filename}")
 

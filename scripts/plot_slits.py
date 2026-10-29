@@ -231,15 +231,15 @@ def make_nircam_rgb_cutout(field, tile, coord, cutout_width=3*u.arcsec):
 
 
 def get_source_pos(spec_file):
-    exp = Table.read(spec_file, hdu=7)
+    exp = Table.read(spec_file, hdu='EXPOSURES')
     return np.median(exp['source_ra'][exp['source_ra']!=0]), np.median(exp['source_dec'][exp['source_dec']!=0])
 
 def get_exposure_table(spec_file):
-    exp = Table.read(spec_file, hdu=7)
+    exp = Table.read(spec_file, hdu='EXPOSURES')
     if 'SHUTTER-SLITLET' not in exp['nod_type'][0]:
         raise NotImplementedError(f"Only N-SHUTTER-SLITLET types supported, got {exp['nod_type'][0]}")
 
-    exp = Table.read(spec_file, hdu=7)
+    exp = Table.read(spec_file, hdu='EXPOSURES')
     roots = ['_'.join(f.split('_')[:2]) for f in exp['filename']]
     nrs1_files = [f for f in exp['filename'] if 'nrs1' in f]
     nrs2_files = [f for f in exp['filename'] if 'nrs2' in f]

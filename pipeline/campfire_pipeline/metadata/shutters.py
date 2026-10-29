@@ -26,7 +26,7 @@ from campfire_pipeline.nirspec.slits import (
 def _is_fixed_slit(spec_file):
     """True if the spec file's EXPOSURES HDU marks it as a fixed-slit source."""
     try:
-        exp = Table.read(spec_file, hdu=7)
+        exp = Table.read(spec_file, hdu='EXPOSURES')
         return 'fixed_slit' in exp.colnames and bool(exp['fixed_slit'][0])
     except Exception:
         return False

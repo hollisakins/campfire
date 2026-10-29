@@ -303,7 +303,7 @@ class SpectrumData:
             if len(hdul) < 2:
                 raise ValueError(f"FITS file has no data extensions: {fits_path}")
 
-            data = hdul[1].data
+            data = hdul["SPEC1D"].data if "SPEC1D" in hdul else hdul[1].data
 
             if hasattr(data, "columns"):
                 col_names = [c.name.lower() for c in data.columns]

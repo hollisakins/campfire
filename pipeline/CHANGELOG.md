@@ -80,7 +80,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   is an error (`MissingContaminant`, with the reason). Named failures fall back to `fnu_3px` (`boxcar3`);
   any other error fails the stage. New SPEC1D columns: `fnu_opt` (the optimal extraction,
   formerly `fnu`), `fnu_prof`, `fnu_contam` (+ errors, `flam_*`; `fnu_err` is statistical
-  only); `PROF2D` and `CONTAM2D` extensions; `PF*` / `CONTSTAT` cards. With `profile_fit`
+  only); `PROF2D` and `CONTAM2D` extensions, placed after `WHT` beside the 2-D data (readers now find every spec.fits extension by name); `PF*` / `CONTSTAT` cards. With `profile_fit`
   off, `fnu` stays the optimal extraction (`EXTRACT = optimal`) and `fnu_opt` is added.
   The `_pf.fits` intermediate is deleted once the `_spec.fits` is written.
 - **`resample` now writes a per-tile exposure map, `<mosaic>_exp.fits`, next to
