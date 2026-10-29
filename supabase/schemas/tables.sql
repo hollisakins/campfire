@@ -56,6 +56,15 @@ SET default_table_access_method = "heap";
 -- Tables
 -- ---------------------------------------------------------------------------
 
+-- The reader schema (Catalog Read Model phase 4): views with the names and
+-- columns of objects / dr_objects whose member aggregates (programs,
+-- observations, gratings, counts, maxima, search_text, evidence) are computed
+-- over the public, published members only. campfire_reader's search_path is
+-- `reader, public`, so `objects` resolves to reader.objects; the table itself
+-- is granted column by column without the aggregate columns (views.sql).
+CREATE SCHEMA IF NOT EXISTS "reader";
+ALTER SCHEMA "reader" OWNER TO "postgres";
+
 CREATE TABLE IF NOT EXISTS "public"."access_codes" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "code" "text" NOT NULL,
@@ -3185,6 +3194,8 @@ ALTER PUBLICATION "supabase_realtime" OWNER TO "postgres";
 GRANT USAGE ON SCHEMA "public" TO "postgres";
 GRANT USAGE ON SCHEMA "public" TO "anon";
 GRANT USAGE ON SCHEMA "public" TO "authenticated";
+GRANT USAGE ON SCHEMA "public" TO "campfire_reader";
+GRANT USAGE ON SCHEMA "reader" TO "campfire_reader";
 GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
@@ -3655,6 +3666,39 @@ GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "service_role";
 REVOKE ALL ON SEQUENCE "public"."object_list_shares_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "service_role";
+
+-- campfire_reader (Catalog Read Model phase 4, supabase/roles.sql): SELECT on
+-- the catalog and the published releases, under the reader_* policies in
+-- policies.sql. Nothing else is granted to it: no other table, no sequence, no
+-- function (postgres default privileges name only authenticated and
+-- service_role). check_reader_role.sql asserts this set is the whole grant.
+GRANT SELECT ON TABLE "public"."programs" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."observations" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."fields" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."nircam_images" TO "campfire_reader";
+-- objects / dr_objects: every column except the member aggregates, which
+-- count hidden members (programs, observations, gratings, n_targets, n_spectra,
+-- max_snr, max_exposure_time, search_text; evidence_programs and
+-- z_source_spectrum_id on the twin). reader.objects / reader.dr_objects carry
+-- them scoped; the policies of the child tables need only the id columns here.
+GRANT SELECT ("id", "object_id", "field", "ra", "dec", "created_at", "photo_z", "photo_z_err_lo", "photo_z_err_hi", "has_photometry", "updated_at", "redshift_auto", "redshift_inspected", "redshift_quality", "inspected_used_auto", "redshift", "last_inspected_at", "last_inspected_by", "last_data_change_at", "staleness_reason", "reviewed_spectrum_ids", "needs_review", "version", "is_active", "has_published_spectrum", "is_public") ON TABLE "public"."objects" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."targets" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."spectra" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."line_fits" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."lines" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."catalog_matches" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."photometry" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_releases" TO "campfire_reader";
+GRANT SELECT ("tag", "id", "object_id", "field", "ra", "dec", "created_at", "photo_z", "photo_z_err_lo", "photo_z_err_hi", "has_photometry", "updated_at", "redshift_auto", "redshift_inspected", "redshift_quality", "inspected_used_auto", "redshift", "last_inspected_at", "last_inspected_by", "last_data_change_at", "staleness_reason", "reviewed_spectrum_ids", "needs_review", "version", "is_active", "has_published_spectrum", "is_public") ON TABLE "public"."dr_objects" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_targets" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_spectra" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_line_fits" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_lines" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_catalog_matches" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_photometry" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_nircam_images" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_fields" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_manifest" TO "campfire_reader";
 
 
 

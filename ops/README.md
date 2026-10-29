@@ -41,6 +41,52 @@ Dependencies on the old platform that this replaces, found by audit
 only ever talks to `campfire.hollisakins.com/api/v1`, so no client release is
 tied to the move.
 
+## Public read-only SQL (`campfire_reader`)
+
+`docs/reader-role.md` is the reader's side. The host side is one compose
+profile and one script, and it is the one sanctioned exception to "only Caddy
+listens publicly" (Catalog Read Model phase 4; the role sees public rows only,
+under its own RLS policies, with no function and no other table):
+
+1. The role exists once the migration chain carries `20261028193000_phase4_reader_role.sql`
+   (`deploy.sh` applies it). It has no password until step 2.
+2. `bash scripts/reader-setup.sh` (from `ops/`): generates `READER_PASSWORD` into
+   `.env` when empty, sets it on the role, writes the PgBouncer SCRAM userlist
+   (`$CAMPFIRE_DATA_ROOT/pgbouncer/userlist.txt`, that one role only, from the
+   verifier in `pg_authid`), makes a self-signed certificate
+   (`pgbouncer/reader.pem` / `reader.key`; the directory is the pooler's own,
+   world-traversable, since the container runs as its own uid and `certs/` is
+   0750) when missing, starts the pooler
+   (`docker compose --profile reader up -d pgbouncer`, image
+   `edoburu/pgbouncer`, transaction mode, 0.0.0.0:6432) and runs one query
+   through it. `rotate` changes the password, `status` reports.
+3. Security group: admit TCP 6432 from anywhere (the password is the only
+   credential by design, the role's grants are the gate).
+4. DNS: `db.$WEB_HOST` as a DNS-only (grey cloud) A record to the VM:
+   Cloudflare's proxy carries no Postgres.
+5. Publish the connection string the script prints (docs, the portal's docs page).
+6. Enable the password heal (the script prints the command): `campfire-reader-heal.timer`
+   runs `scripts/reader-heal.sh` every 2 minutes, which re-applies `READER_PASSWORD`
+   and the role's settings when the stored verifier no longer matches the pooler's
+   userlist or the settings drifted (a role may also `ALTER ROLE … SET` its own
+   defaults), ends the role's sessions and HUPs the pooler. Why: Postgres lets any role change its own password, the read-only
+   default is lifted per transaction with `SET TRANSACTION READ WRITE`, and the
+   credential is public, so a holder can desync the pooler's server-side login;
+   the heal bounds that to two minutes without rotating the published password.
+   The pooler also runs `DISCARD ALL` after every transaction
+   (`SERVER_RESET_QUERY_ALWAYS`), so no session state crosses readers.
+
+   The stronger fix, when wanted: make the pooler→db hop independent of the
+   password with a `pg_hba.conf` line scoped to the compose network and that
+   one role (`host postgres campfire_reader <docker subnet> trust`, or a client
+   certificate with `hostssl … cert`). The supabase image owns its `pg_hba.conf`
+   (`/etc/postgresql/pg_hba.conf` in the container), so that means a mounted
+   copy and a restore-check; not done in the first cut.
+
+The pooler is off unless the profile is given, so a stack without a reader
+password runs unchanged. Changelog entries for `READER_*` go below like any
+other `.env` change.
+
 ## Sizing
 
 | | |

@@ -34,7 +34,9 @@ Containers: `campfire-db`, `campfire-kong`, `campfire-auth`, `campfire-rest`,
   `deploy.sh` applies them. Ad-hoc DDL on this host is a last resort and must
   be mirrored into the schema files the same day.
 - The security group (Jetstream2) is the firewall. Do not add `ufw` rules or
-  publish container ports on `0.0.0.0`; only Caddy listens publicly.
+  publish container ports on `0.0.0.0`; only Caddy listens publicly, plus the
+  `pgbouncer` service of the `reader` profile on 6432 (README, "Public
+  read-only SQL"): the `campfire_reader` login, public rows only.
 - Read-only investigation is always fine: logs, `psql`, `EXPLAIN`, `docker stats`.
 
 ## Common commands
