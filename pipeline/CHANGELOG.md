@@ -63,7 +63,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   output columns; no pixel values change. Motivated by a pull that wiped the local
   override files: the products carried no record of which overrides had been applied.
 - **MAJOR: NIRSpec extraction v2, the profile extraction as `fnu`
-  (`[nirspec.stage3].profile_fit`, still `false` by default).** `fnu` is the best spectrum
+  (`[nirspec.stage3].profile_fit`, now on by default).** `fnu` is the best spectrum
   (`EXTRACT`/`EXTRWHY`): the profile extraction (Gaussian galaxy x star-measured PSF fitted
   to every nod difference, target-shutter light; `profile_fit.py`), its shape from a gated
   chain (own fit / PRISM shape / default; `profile_chain.py`). Other slitlets' light is
@@ -75,7 +75,8 @@ Release procedure: edit the `## Unreleased` section below, then run
   `fnu_opt` (the optimal extraction, formerly `fnu`), `fnu_prof`, `fnu_contam` (+ errors,
   `flam_*`; `fnu_err` is statistical only); `PROF2D`, `CONTAM2D` and `UNPRED` extensions;
   `PF*` / `CONTSTAT` / `UNPREDF` cards. With `profile_fit` off, `fnu` stays the optimal
-  extraction (`EXTRACT = optimal`) and `fnu_opt` is added.
+  extraction (`EXTRACT = optimal`) and `fnu_opt` is added. The `_pf.fits` intermediate is
+  deleted once the `_spec.fits` is written.
 - **`resample` now writes a per-tile exposure map, `<mosaic>_exp.fits`, next to
   the split `_sci/_err/_wht`.** It is the full-resolution, per-tile member of the
   `exp` family; the field-wide `expmap_<field>_<filter>.fits` is the coarse member.

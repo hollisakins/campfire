@@ -79,8 +79,7 @@
     sigma_clip_maxiters = 5
     # Forward-model ("profile fit") extraction (nirspec/profile_fit.py): fnu_prof, fnu_contam,
     # and the best spectrum fnu chosen from them (EXTRACT); fnu_opt keeps the optimal extraction.
-    # combine_method = "2d" only.
-    profile_fit = false
+    profile_fit = true
     profile_fit_chromatic = true    # centre and width vary linearly with log wavelength
     # --- extraction v2 prototype (nirspec/profile_chain.py, profile_contam.py, nod_scan.py) ---
     # Shape of the extraction profile: "gated" (own fit above the detection gate, else the

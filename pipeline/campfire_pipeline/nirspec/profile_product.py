@@ -15,9 +15,9 @@ Per product (one source, one disperser), after Spec3 has written its crf:
    ``{product}_pf.fits`` with every decision in the primary header.
 
 Stage 3 then extracts ``fnu_prof`` and ``fnu_contam`` from the s2d with ``PROF2D`` and
-chooses the best spectrum ``fnu`` (``stage3._profile_fit_columns``). The ``_pf.fits``
-stays in the workspace: it holds what the ``_spec.fits`` does not (CONTERR2D, UNMOD2D,
-the joint-solve alternatives).
+chooses the best spectrum ``fnu`` (``stage3._profile_fit_columns``), then deletes the
+``_pf.fits``: what the ``_spec.fits`` does not keep (CONTERR2D, UNMOD2D, the
+joint-solve alternatives) is reduced to its 1-D columns and cards.
 """
 
 import os

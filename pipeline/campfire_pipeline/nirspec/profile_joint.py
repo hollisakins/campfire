@@ -953,7 +953,7 @@ def deliver(path, hdr, hdus, view, log=None):
     Joint result delivered: the joint product, plus the one-pass other light as
     ``CONTAM2D_1P`` / ``CONTERR2D_1P`` / ``UNMOD2D_1P``. Otherwise: the one-pass product
     as it was, plus the PFJ* cards (PFJUSE false and why), the JOINT table and the
-    joint other light as ``*_J``. Both stay in the ``_pf.fits``; stage 3 extracts the
+    joint other light as ``*_J``. Both go in the ``_pf.fits``; stage 3 extracts the
     delivered one (``fnu_prof`` / ``fnu_contam``) after its noise gate. A missing
     one-pass product: the joint one is delivered (PFJWHY says so).
     Returns (header, hdus)."""

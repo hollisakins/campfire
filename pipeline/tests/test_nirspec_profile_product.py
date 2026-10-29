@@ -137,7 +137,7 @@ def _cols(sfx):
 
 def test_spec_fits_columns_and_cards(tmp_path):
     """The SPEC1D column set and the extraction cards of a profile-fit product; the
-    _pf.fits stays in the workspace with what the _spec.fits does not carry."""
+    _pf.fits is deleted once the _spec.fits is written."""
     _stage3_inputs(tmp_path, 'p')
     S3.opt_ext_single_source('p', str(tmp_path), profile_fit=True)
     with fits.open(tmp_path / 'p_spec.fits') as h:
@@ -153,7 +153,7 @@ def test_spec_fits_columns_and_cards(tmp_path):
     np.testing.assert_array_equal(d['fnu_err'], d['fnu_prof_err'])
     assert 'UNPREDF' in hd and ext[-3:] == ['PROF2D', 'CONTAM2D', 'UNPRED']
     assert not any(n.startswith(('fnu_pf', 'flam_pf', 'pf_')) for n in names)
-    assert (tmp_path / 'p_pf.fits').exists()
+    assert not (tmp_path / 'p_pf.fits').exists()
 
 
 def test_spec_fits_fallback_and_profile_fit_off(tmp_path):
@@ -165,6 +165,7 @@ def test_spec_fits_fallback_and_profile_fit_off(tmp_path):
         assert 'fnu_prof' in h['SPEC1D'].columns.names
     assert (hd['EXTRACT'], hd['EXTRWHY']) == ('boxcar3', 'no_crf')
     np.testing.assert_array_equal(d['fnu'], d['fnu_3px'])
+    assert not (tmp_path / 'q_pf.fits').exists()          # the reason is EXTRWHY in the _spec.fits
     np.testing.assert_array_equal(d['fnu_err'], d['fnu_3px_err'])
     S3.opt_ext_single_source('q', str(tmp_path), profile_fit=False)
     with fits.open(tmp_path / 'q_spec.fits') as h:

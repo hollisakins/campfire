@@ -907,10 +907,12 @@ def opt_ext_single_source(
     exp = s2d['EXPOSURES']
 
 
-    # the _pf.fits stays in the workspace: CONTERR2D, UNMOD2D and the joint-solve
-    # alternatives live only there
     spec = fits.HDUList(hdus=[primary, spec1d, sci, err, wav, wht, prof1d, exp] + pf_hdus)
     spec.writeto(out_filename, overwrite=True)
+    # every product's profile fit (joint solve, cross-disperser scan) finished before
+    # extraction began; later runs read the shape cards from the _spec.fits
+    if profile_fit and os.path.exists(pf_file):
+        os.remove(pf_file)
 
 
     if plot_optext:
