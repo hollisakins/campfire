@@ -40,7 +40,7 @@ Identifiability: the joint covariance gives, per wavelength of each member, its
 error against its error with the others' spectra known (the inflation), and its
 most negative correlation with any other member's spectrum point. Where that
 correlation is near -1 the split of the shared light is not determined by the data;
-those wavelengths are flagged (``pf_joint_flag``), not guessed.
+those wavelengths are flagged (``joint_flag``), not guessed.
 """
 
 import os
@@ -783,7 +783,7 @@ class JointView:
                          'Same shift / the integrated flux'),
             'PFJNPIX': (int(s.npix), 'Pixels in the joint solve'),
             'PFJSEC': (_f(s.seconds), 'Joint solve time [s]'),
-            'PFJUSE': (bool(self.use), 'fnu_pf is the joint result (F: the one-pass one)'),
+            'PFJUSE': (bool(self.use), 'fnu_prof is the joint result (F: one-pass)'),
             'PFJGATE': (self.gate, 'Gate quantity on the joint result (off: none)'),
             'PFJGVAL': (_f(self.gate_value), 'Its value for this product'),
             'PFJGMAX': (_f(self.gate_max), 'Joint result delivered when the value <= this'),
@@ -838,7 +838,7 @@ FLAG_DEGENERATE = 1     # the split of the shared light is not determined by the
 FLAG_SHAPE = 2          # the split depends on the others' shapes more than the noise allows
 
 # per-product gate quantities. 'noise' (the default, ``contam_joint_gate``): the integrated
-# noise of the receiver's joint fnu_pf over its one-pass fnu_pf, decided at the extraction
+# noise of the receiver's joint result over its one-pass one, decided at the extraction
 # (``stage3._joint_noise_ratio``) where both are known. The others (``JointView.quantities``),
 # decided here, were the candidates checked against PRISM (round 6):
 #   sensf  how far the product's integrated flux moves for a typical shape error of the
@@ -930,8 +930,8 @@ def deliver(path, hdr, hdus, view, log=None):
     Joint result delivered: the joint product, plus the one-pass other light as
     ``CONTAM2D_1P`` / ``CONTERR2D_1P`` / ``UNMOD2D_1P``. Otherwise: the one-pass product
     as it was, plus the PFJ* cards (PFJUSE false and why), the JOINT table and the
-    joint other light as ``*_J``. Either way stage 3 extracts both results
-    (``fnu_pf_joint``, ``fnu_pf_onepass``); ``fnu_pf`` is the delivered one. A missing
+    joint other light as ``*_J``. Both stay in the ``_pf.fits``; stage 3 extracts the
+    delivered one (``fnu_prof`` / ``fnu_contam``) after its noise gate. A missing
     one-pass product: the joint one is delivered (PFJWHY says so).
     Returns (header, hdus)."""
     from astropy.io import fits

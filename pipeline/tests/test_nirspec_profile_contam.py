@@ -276,28 +276,32 @@ def test_contam2d_fraction_recovers_injected_contaminant(tmp_path):
     out = S3._profile_fit_columns(str(path), sci_uJy.copy(), err, np.zeros((ny, nx), bool), 12, 18,
                                   np.linspace(1, 5, nx), rows='aperture', contam_1d='report')
     c = out['columns']
-    np.testing.assert_allclose(c['fnu_pf'][0], 10.0, rtol=1e-6)
-    np.testing.assert_allclose(c['fnu_pf_contam'][0], 1.0, rtol=1e-6)
-    np.testing.assert_allclose(c['fnu_pf_dec'][0], 9.0, rtol=1e-6)
+    np.testing.assert_allclose(c['fnu_prof'][0], 10.0, rtol=1e-6)
+    np.testing.assert_allclose(c['fnu_contam'][0], 1.0, rtol=1e-6)
     assert out['header']['PFCONTAM'] == pytest.approx(0.1, rel=1e-6)
-    assert out['header']['PFROWS'] == 'aperture' and out['header']['PFC1D'] == 'reported'
+    assert out['header']['PFROWS'] == 'aperture'
+    assert (out['choice'], out['reason']) == ('profile', 'contam_report')
+    assert out['header']['EXTRACT'] == 'profile' and out['header']['CONTSTAT'] == 'predicted'
     assert [h.name for h in out['hdus']] == ['PROF2D', 'CONTAM2D']
     m = S3._profile_fit_columns(str(path), sci_uJy.copy(), err, np.zeros((ny, nx), bool), 12, 18,
                                 np.linspace(1, 5, nx), rows='model', contam_1d='report')
-    np.testing.assert_allclose(m['columns']['fnu_pf'][0], 10.0, rtol=1e-6)
-    np.testing.assert_allclose(m['columns']['fnu_pfa'][0], 10.0, rtol=1e-6)
-    # subtract (default): fnu_pf is the decontaminated flux, the extracted one is kept
+    np.testing.assert_allclose(m['columns']['fnu_prof'][0], 10.0, rtol=1e-6)
+    # subtract (default): the best spectrum is the decontaminated flux
     s = S3._profile_fit_columns(str(path), sci_uJy.copy(), err, np.zeros((ny, nx), bool), 12, 18,
                                 np.linspace(1, 5, nx), rows='aperture')
-    np.testing.assert_allclose(s['columns']['fnu_pf'][0], 9.0, rtol=1e-6)
-    np.testing.assert_allclose(s['columns']['fnu_pf_raw'][0], 10.0, rtol=1e-6)
-    assert s['header']['PFC1D'] == 'subtracted' and s['header']['PFCONSIG'] > 1
+    assert (s['choice'], s['reason']) == ('profile_decontam', 'contam_significant') and s['header']['PFCONSIG'] > 3
+    cs = s['columns']
+    fnu, fnu_err = S3.best_spectrum(s['choice'], cs['fnu_prof'][0], cs['fnu_prof_err'][0], cs['fnu_contam'][0],
+                                    None, None)
+    np.testing.assert_allclose(fnu, 9.0, rtol=1e-6)
+    np.testing.assert_allclose(cs['fnu_prof'][0], 10.0, rtol=1e-6)
+    np.testing.assert_array_equal(fnu_err, cs['fnu_prof_err'][0])     # statistical error only
 
 
 def test_unmodelled_columns_flagged(tmp_path):
     """Columns where other light the prediction does not hold (UNMOD2D) reaches the
-    extraction rows: fnu_pf_contam is NaN there, pf_unmod says how much of the weight,
-    and PFCONTAM leaves them out."""
+    extraction rows: listed as wavelength ranges (UNPRED), the target's light there as
+    UNPREDF, PFCONTAM leaves them out; fnu_contam keeps what is predicted there."""
     ny, nx = 30, 100
     rows = np.arange(ny)[:, None]
     prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
@@ -311,15 +315,140 @@ def test_unmodelled_columns_flagged(tmp_path):
                   fits.ImageHDU(0.1 * contam, name='CONTERR2D'), fits.ImageHDU(unmod, name='UNMOD2D')]).writeto(path)
     sci = sci_uJy.copy()
     sci[:, 80:] += 5.0 * prof[:, 80:]                     # the unpredicted light is in the data
+    wave = np.linspace(1, 5, nx)
     out = S3._profile_fit_columns(str(path), sci, np.full((ny, nx), 0.01), np.zeros((ny, nx), bool), 12, 18,
-                                  np.linspace(1, 5, nx), rows='aperture', contam_1d='report', unmod_max=0.05)
+                                  wave, rows='aperture', contam_1d='report', unmod_max=0.05)
     c = out['columns']
-    assert np.isnan(c['fnu_pf_contam'][0][80:]).all() and np.isfinite(c['fnu_pf_contam'][0][:80]).all()
-    assert (c['pf_unmod'][0][80:] > 0.5).all() and (c['pf_unmod'][0][:80] == 0).all()
+    assert np.isfinite(c['fnu_contam'][0]).all()
     assert out['header']['PFCONTAM'] == pytest.approx(0.1, rel=1e-6)
     assert out['header']['PFUNMODF'] == pytest.approx(0.2)
-    np.testing.assert_allclose(c['fnu_pf_contam_err'][0][:80], 0.1, rtol=1e-6)
-    assert [h.name for h in out['hdus']] == ['PROF2D', 'CONTAM2D', 'CONTERR2D', 'UNMOD2D']
+    np.testing.assert_allclose(c['fnu_contam_err'][0][:80], 0.1, rtol=1e-6)
+    assert out['header']['CONTSTAT'] == 'partial'
+    # light-weighted share of the columns past 80 (flux 15 there, 10 before), times the weight
+    # fraction (P^2 / V on the aperture rows 13-17) on the unpredicted pixels
+    u = np.sum(prof[14:17, 0] ** 2) / np.sum(prof[13:18, 0] ** 2)
+    assert out['header']['UNPREDF'] == pytest.approx(20 * 15.0 * u / (80 * 10.0 + 20 * 15.0), rel=1e-6)
+    names = [h.name for h in out['hdus']]
+    assert names == ['PROF2D', 'CONTAM2D', 'UNPRED']        # CONTERR2D / UNMOD2D stay in the _pf.fits
+    t = out['hdus'][2].data
+    assert len(t) == 1 and t['wave_min'][0] == pytest.approx(wave[80]) and t['wave_max'][0] == pytest.approx(wave[-1])
+
+
+def test_nothing_predicted_is_nan_and_no_unpredf(tmp_path):
+    """Columns where no other light is predicted: fnu_contam is NaN there; without
+    another source on the trace UNPREDF is not written."""
+    ny, nx = 30, 100
+    rows = np.arange(ny)[:, None]
+    prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
+    prof = prof / prof[:, :1].sum()
+    contam = np.zeros((ny, nx))
+    path = tmp_path / 'x_pf.fits'
+    hdr = fits.Header()
+    hdr['PFNCONT'] = 0
+    fits.HDUList([fits.PrimaryHDU(header=hdr), fits.ImageHDU(prof / 1e12, name='PROF2D'),
+                  fits.ImageHDU(contam, name='CONTAM2D')]).writeto(path)
+    out = S3._profile_fit_columns(str(path), 10.0 * prof, np.full((ny, nx), 0.01), np.zeros((ny, nx), bool), 12, 18,
+                                  np.linspace(1, 5, nx))
+    assert np.isnan(out['columns']['fnu_contam'][0]).all()
+    assert (out['choice'], out['reason']) == ('profile', 'contam_none')
+    assert out['header']['CONTSTAT'] == 'none' and 'UNPREDF' not in out['header']
+    assert [h.name for h in out['hdus']] == ['PROF2D', 'CONTAM2D']
+
+
+def test_insignificant_prediction_is_not_subtracted(tmp_path):
+    ny, nx = 30, 100
+    rows = np.arange(ny)[:, None]
+    prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
+    prof = prof / prof[:, :1].sum()
+    contam = np.zeros((ny, nx))
+    contam[:, 50] = 1e-4 * prof[:, 50] / 1e12               # far below the integrated noise
+    path = tmp_path / 'x_pf.fits'
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(prof / 1e12, name='PROF2D'),
+                  fits.ImageHDU(contam, name='CONTAM2D')]).writeto(path)
+    out = S3._profile_fit_columns(str(path), 10.0 * prof, np.full((ny, nx), 0.01), np.zeros((ny, nx), bool), 12, 18,
+                                  np.linspace(1, 5, nx))
+    assert (out['choice'], out['reason']) == ('profile', 'contam_insignificant')
+    assert out['header']['PFCONSIG'] < 3
+    c = out['columns']['fnu_contam'][0]
+    assert np.isfinite(c[50]) and np.isnan(np.delete(c, 50)).all()
+
+
+def test_no_prediction_is_contam_off(tmp_path):
+    ny, nx = 30, 100
+    rows = np.arange(ny)[:, None]
+    prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
+    prof = prof / prof[:, :1].sum()
+    path = tmp_path / 'x_pf.fits'
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(prof / 1e12, name='PROF2D')]).writeto(path)
+    out = S3._profile_fit_columns(str(path), 10.0 * prof, np.full((ny, nx), 0.01), np.zeros((ny, nx), bool), 12, 18,
+                                  np.linspace(1, 5, nx))
+    assert (out['choice'], out['reason']) == ('profile', 'contam_off') and out['header']['CONTSTAT'] == 'off'
+    assert np.isnan(out['columns']['fnu_contam'][0]).all()
+
+
+def test_fallback_pf_file_gives_the_boxcar(tmp_path):
+    """A ``_pf.fits`` holding only a fallback reason: the best spectrum is the 3-pixel
+    boxcar, the reason is carried, fnu_prof / fnu_contam are NaN."""
+    from campfire_pipeline.nirspec import profile_product as PP
+    nx = 50
+    path = tmp_path / 'x_pf.fits'
+    PP.write_fallback(str(path), 'no_usable_pixels')
+    out = S3._profile_fit_columns(str(path), np.zeros((30, nx)), np.ones((30, nx)), np.zeros((30, nx), bool),
+                                  12, 18, np.linspace(1, 5, nx))
+    assert (out['choice'], out['reason']) == ('boxcar3', 'no_usable_pixels')
+    assert out['header']['EXTRACT'] == 'boxcar3' and out['header']['EXTRWHY'] == 'no_usable_pixels'
+    assert out['hdus'] == []
+    assert np.isnan(out['columns']['fnu_prof'][0]).all() and np.isnan(out['columns']['fnu_contam'][0]).all()
+    box, box_err = np.arange(nx, dtype=float), np.ones(nx)
+    f, e = S3.best_spectrum(out['choice'], out['columns']['fnu_prof'][0], out['columns']['fnu_prof_err'][0],
+                            out['columns']['fnu_contam'][0], box, box_err)
+    assert f is box and e is box_err
+
+
+def test_profile_shape_mismatch_raises(tmp_path):
+    path = tmp_path / 'x_pf.fits'
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.ones((20, 40)), name='PROF2D')]).writeto(path)
+    with pytest.raises(ValueError, match='does not match'):
+        S3._profile_fit_columns(str(path), np.zeros((30, 50)), np.ones((30, 50)), np.zeros((30, 50), bool),
+                                12, 18, np.linspace(1, 5, 50))
+
+
+@pytest.mark.parametrize('have,pred,csig,mode,expect', [
+    (False, False, 0.0, 'subtract', ('profile', 'contam_off')),
+    (True, False, 0.0, 'subtract', ('profile', 'contam_none')),
+    (True, True, 10.0, 'report', ('profile', 'contam_report')),
+    (True, True, 3.5, 'subtract', ('profile_decontam', 'contam_significant')),
+    (True, True, 3.0, 'subtract', ('profile', 'contam_insignificant')),
+])
+def test_choose_extraction(have, pred, csig, mode, expect):
+    assert S3.choose_extraction(have, pred, csig, mode, 3.0) == expect
+    assert expect[0] in S3.EXTRACTIONS and expect[1] in S3.EXTRACT_REASONS
+
+
+def test_best_spectrum_error_is_statistical_only():
+    prof, err = np.array([10.0, 10.0, np.nan]), np.array([1.0, 1.0, 1.0])
+    contam = np.array([2.0, np.nan, 2.0])
+    f, e = S3.best_spectrum('profile_decontam', prof, err, contam, None, None)
+    np.testing.assert_array_equal(f, [8.0, 10.0, np.nan])       # nothing predicted: nothing subtracted
+    np.testing.assert_array_equal(e, err)
+    f, e = S3.best_spectrum('profile', prof, err, contam, None, None)
+    np.testing.assert_array_equal(f, prof)
+    with pytest.raises(ValueError):
+        S3.best_spectrum('optimal', prof, err, contam, None, None)
+
+
+def test_unpredicted_ranges_merge():
+    wave = np.linspace(1.0, 2.0, 11)
+    flag = np.zeros(11, bool)
+    flag[[2, 3, 7]] = True
+    t = S3.unpredicted_ranges(wave, flag, np.linspace(0, 1, 11)).data
+    np.testing.assert_allclose(t['wave_min'], [1.2, 1.7])
+    np.testing.assert_allclose(t['wave_max'], [1.3, 1.7])
+    np.testing.assert_allclose(t['weight_max'], [0.3, 0.7])
+    m = S3._merge_ranges([t, S3.unpredicted_ranges(wave, np.r_[np.zeros(3, bool), np.ones(2, bool),
+                                                               np.zeros(6, bool)]).data]).data
+    np.testing.assert_allclose(m['wave_min'], [1.2, 1.7])
+    np.testing.assert_allclose(m['wave_max'], [1.4, 1.7])
 
 
 def test_smooth_spectrum_keeps_coherent_lines():

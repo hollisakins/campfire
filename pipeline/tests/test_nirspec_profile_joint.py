@@ -188,8 +188,9 @@ def test_pair_metrics_scale_with_the_contaminant(stand_ins):
 
 def test_profile_fit_columns_joint_error_and_flag(tmp_path):
     """A product of a joint-solve group: the statistical cost of solving the shared light
-    (error inflation) enters fnu_pf_contam_err, and wavelengths where the split is not
-    determined (correlation below -PFJDEGT) are flagged."""
+    (error inflation) enters fnu_contam_err, never the best spectrum's error, and
+    wavelengths where the split is not determined (correlation below -PFJDEGT) are
+    flagged. The JOINT table stays in the _pf.fits."""
     ny, nx = 30, 100
     rows = np.arange(ny)[:, None]
     prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
@@ -209,19 +210,21 @@ def test_profile_fit_columns_joint_error_and_flag(tmp_path):
     h0 = fits.PrimaryHDU()
     h0.header['PFJDEGT'] = 0.9
     path = tmp_path / 'x_pf.fits'
-    fits.HDUList([h0, fits.ImageHDU(prof / 1e12, name='PROF2D'), fits.ImageHDU(0.0 * prof, name='CONTAM2D'),
+    fits.HDUList([h0, fits.ImageHDU(prof / 1e12, name='PROF2D'), fits.ImageHDU(1e-3 * prof / 1e12, name='CONTAM2D'),
                   fits.ImageHDU(0.0 * prof, name='CONTERR2D'), jt]).writeto(path)
     err = np.full((ny, nx), 0.01)
     out = S3._profile_fit_columns(str(path), sci, err, np.zeros((ny, nx), bool), 12, 18, wave,
                                   rows='aperture', contam_1d='report')
     c = out['columns']
-    np.testing.assert_allclose(c['pf_joint_infl'][0], 2.0)
-    np.testing.assert_allclose(c['fnu_pf_contam_err'][0], c['fnu_pf_err'][0] * np.sqrt(3.0), rtol=1e-6)
-    np.testing.assert_allclose(c['fnu_pf_dec_err'][0], 2.0 * c['fnu_pf_err'][0], rtol=1e-6)
-    flag = c['pf_joint_flag'][0]
+    np.testing.assert_allclose(c['joint_infl'][0], 2.0)
+    np.testing.assert_allclose(c['fnu_contam_err'][0], c['fnu_prof_err'][0] * np.sqrt(3.0), rtol=1e-6)
+    _, best_err = S3.best_spectrum('profile_decontam', c['fnu_prof'][0], c['fnu_prof_err'][0], c['fnu_contam'][0],
+                                   None, None)
+    np.testing.assert_array_equal(best_err, c['fnu_prof_err'][0])
+    flag = c['joint_flag'][0]
     assert (flag[wave > 4.05] == PJ.FLAG_DEGENERATE).all()
     assert (flag[wave < 3.15] == PJ.FLAG_SHAPE).all() and not flag[(wave > 3.25) & (wave < 3.95)].any()
-    assert 'JOINT' in [h.name for h in out['hdus']]
+    assert [h.name for h in out['hdus']] == ['PROF2D', 'CONTAM2D']
 
 
 # ---------------------------------------------------------------------------
@@ -401,8 +404,8 @@ def test_deliver_keeps_both_results(tmp_path, use):
 @pytest.mark.parametrize('joint_err,expect', [(0.0, True), (5.0, False)])
 def test_noise_gate_at_extraction(tmp_path, joint_err, expect):
     """The 'noise' gate: the joint result is delivered when its integrated noise is at
-    most PFJGMAX times the one-pass result's; else fnu_pf is the one-pass result and the
-    joint other light moves to *_J."""
+    most PFJGMAX times the one-pass result's; else fnu_contam is the one-pass result's
+    other light. Both alternatives stay in the _pf.fits only."""
     ny, nx = 30, 100
     rows = np.arange(ny)[:, None]
     prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
@@ -428,20 +431,18 @@ def test_noise_gate_at_extraction(tmp_path, joint_err, expect):
     out = S3._profile_fit_columns(str(path), sci, err, np.zeros((ny, nx), bool), 12, 18, wave,
                                   rows='aperture', contam_1d='subtract', contam_1d_min_sigma=3.0)
     c, hd = out['columns'], out['header']
-    raw = c['fnu_pf_raw'][0]
     assert bool(hd['PFJUSE']) is expect and hd['PFJWHY'] == ('noise<=1.75' if expect else 'noise>1.75')
     assert (hd['PFJGVAL'] <= 1.75) is expect
-    np.testing.assert_allclose(c['fnu_pf'][0], raw - (1.0 if expect else 3.0), rtol=1e-6)
-    np.testing.assert_allclose(c['fnu_pf_joint'][0], raw - 1.0, rtol=1e-6)
-    np.testing.assert_allclose(c['fnu_pf_onepass'][0], raw - 3.0, rtol=1e-6)
-    names = [x.name for x in out['hdus']]
-    assert ('CONTAM2D_1P' in names) is expect and ('CONTAM2D_J' in names) is (not expect)
+    np.testing.assert_allclose(c['fnu_prof'][0], 10.0, rtol=1e-6)
+    np.testing.assert_allclose(c['fnu_contam'][0], 1.0 if expect else 3.0, rtol=1e-6)
+    assert out['choice'] == 'profile_decontam'
+    assert [x.name for x in out['hdus']] == ['PROF2D', 'CONTAM2D']
 
 
 @pytest.mark.parametrize('use', [True, False])
-def test_profile_fit_columns_extract_both_results(tmp_path, use):
-    """Stage 3 extracts the delivered result as fnu_pf and both as fnu_pf_joint /
-    fnu_pf_onepass; the joint error inflation goes only with the joint result."""
+def test_profile_fit_columns_extract_the_delivered_result(tmp_path, use):
+    """Stage 3 extracts the delivered result as fnu_contam; the joint error inflation
+    goes into fnu_contam_err only with the joint result, never into the profile error."""
     ny, nx = 30, 100
     rows = np.arange(ny)[:, None]
     prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
@@ -469,11 +470,11 @@ def test_profile_fit_columns_extract_both_results(tmp_path, use):
     out = S3._profile_fit_columns(str(path), sci, err, np.zeros((ny, nx), bool), 12, 18, wave,
                                   rows='aperture', contam_1d='subtract', contam_1d_min_sigma=3.0)
     c = out['columns']
-    raw, raw_err = c['fnu_pf_raw'][0], c['fnu_pf_raw_err'][0]
-    np.testing.assert_allclose(c['fnu_pf_joint'][0], raw - 1.0, rtol=1e-6)
-    np.testing.assert_allclose(c['fnu_pf_onepass'][0], raw - 3.0, rtol=1e-6)
-    np.testing.assert_allclose(c['fnu_pf'][0], raw - (1.0 if use else 3.0), rtol=1e-6)
-    np.testing.assert_allclose(c['fnu_pf_joint_err'][0], 2.0 * raw_err, rtol=1e-6)        # inflation 2
-    np.testing.assert_allclose(c['fnu_pf_onepass_err'][0], raw_err, rtol=1e-6)
-    np.testing.assert_allclose(c['fnu_pf_err'][0], (2.0 if use else 1.0) * raw_err, rtol=1e-6)
-    assert 'CONTAM2D' + sfx in [h.name for h in out['hdus']] and 'pf_joint_infl' in c
+    raw_err = c['fnu_prof_err'][0]
+    np.testing.assert_allclose(c['fnu_contam'][0], 1.0 if use else 3.0, rtol=1e-6)
+    np.testing.assert_allclose(c['fnu_contam_err'][0], np.sqrt(3.0) * raw_err if use else 0.0 * raw_err,
+                               rtol=1e-6, atol=1e-12)                    # inflation 2: sqrt(2^2 - 1)
+    best, best_err = S3.best_spectrum(out['choice'], c['fnu_prof'][0], raw_err, c['fnu_contam'][0], None, None)
+    np.testing.assert_allclose(best, 10.0 - (1.0 if use else 3.0), rtol=1e-6)
+    np.testing.assert_array_equal(best_err, raw_err)
+    assert 'joint_infl' in c and not any(k.startswith('fnu_pf') for k in c)

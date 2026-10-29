@@ -53,6 +53,31 @@ REF_APERTURE = (-1, 0, 1)
 FIT_MARGIN = 0.2
 DO_NOT_USE = 1
 
+
+# ---------------------------------------------------------------------------
+# Named conditions under which a product keeps the 3-pixel boxcar
+# ---------------------------------------------------------------------------
+class ProfileFitFallback(ValueError):
+    """A known condition under which the profile fit cannot run for a product. The
+    product's best spectrum is then the 3-pixel boxcar, with ``reason`` in the header
+    (``EXTRWHY``). Every other exception is a failure of the stage."""
+    reason = 'fallback'
+
+
+class NotBackgroundSubtracted(ProfileFitFallback):
+    """Old-layout observation: the canonical files hold the unsubtracted frames."""
+    reason = 'not_bkg_subtracted'
+
+
+class NoUsablePixels(ProfileFitFallback):
+    """No usable pixel in the target's open shutters."""
+    reason = 'no_usable_pixels'
+
+
+class TooFewWavelengths(ProfileFitFallback):
+    """Too few wavelength samples on the source row for a spectrum grid."""
+    reason = 'too_few_wavelengths'
+
 # Cross-dispersion PSF (PRISM): core sigma in native rows and wing fraction per
 # detector, wing sigma = PSF_K * core. Lower quartile of per-star core widths from
 # 135 calibration-field stars (programs 12497, 6642), joint wing fraction.
@@ -243,7 +268,7 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0):
     exps = []
     for f, m, s, part, has_src in zip(cal_files, models, slits, partners, srcflux):
         if part is not None and 'COMPLETE' not in str(m.meta.cal_step.bkg_subtract).upper():
-            raise ValueError(f'profile fit: {f} is not background-subtracted (stage 2b has not run on it)')
+            raise NotBackgroundSubtracted(f'profile fit: {f} is not background-subtracted (stage 2b has not run on it)')
         ny, nx = s.data.shape
         yy, xx = np.mgrid[:ny, :nx]
         _, ys, _ = s.meta.wcs.get_transform('detector', 'slit_frame')(xx, yy)
@@ -438,7 +463,7 @@ class ProfileModel:
     def _build_pixels(self):
         rows = fit_pixel_masks(self.exps)
         if sum(int(m.sum()) for _, m in rows) == 0:
-            raise ValueError('profile fit: no usable pixels')
+            raise NoUsablePixels('profile fit: no usable pixels')
         self.pix_masks = rows
         d, v, e_idx, lam = [], [], [], []
         for k, m in rows:
@@ -481,7 +506,7 @@ class ProfileModel:
             lams.append(lam[np.isfinite(lam)])
         g = np.unique(np.concatenate(lams))
         if g.size < 3:
-            raise ValueError('profile fit: too few wavelength samples')
+            raise TooFewWavelengths('profile fit: too few wavelength samples')
         step = np.median(np.diff(g))
         keep = [g[0]]
         for x in g[1:]:

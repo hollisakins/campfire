@@ -14,7 +14,10 @@ Per product (one source, one disperser), after Spec3 has written its crf:
    and the pixels whose other-source light is not predicted (``UNMOD2D``), and write
    ``{product}_pf.fits`` with every decision in the primary header.
 
-Stage 3 then extracts ``fnu_pf`` from the s2d with ``PROF2D`` (``stage3._profile_fit_columns``).
+Stage 3 then extracts ``fnu_prof`` and ``fnu_contam`` from the s2d with ``PROF2D`` and
+chooses the best spectrum ``fnu`` (``stage3._profile_fit_columns``). The ``_pf.fits``
+stays in the workspace: it holds what the ``_spec.fits`` does not (CONTERR2D, UNMOD2D,
+the joint-solve alternatives).
 """
 
 import os
@@ -208,11 +211,45 @@ def read_scan(workspace_dir, product):
     return None
 
 
+FALLBACK_NO_CRF = 'no_crf'      # Spec3 wrote no crf for the source (nothing to drizzle the model through)
+
+
+def write_fallback(path, reason):
+    """A ``_pf.fits`` holding only the fallback decision: the product keeps the 3-pixel
+    boxcar as its best spectrum (``stage3._profile_fit_columns``)."""
+    from astropy.io import fits
+    from campfire_pipeline.nirspec.stage3 import extraction_cards
+    fits.HDUList([fits.PrimaryHDU(header=extraction_cards('boxcar3', reason, 'off'))]).writeto(path, overwrite=True)
+
+
+def _fallback_summary(product_name, source_id, is_prism, reason):
+    return dict(product=product_name, source_id=int(source_id), shape=None, reason=None, is_prism=bool(is_prism),
+                pairs=None, joint=None, joint_use=None, scan=None, fallback=reason)
+
+
+def shape_header(C, exps):
+    """The one-pass shape cards of a product's ``_pf.fits`` (the chain's cards, the
+    per-exposure pointing offsets and their count), in the order ``run_product``
+    writes them. ``profile_joint.read_shape`` reads them back."""
+    from astropy.io import fits
+    hdr = fits.Header()
+    for k, v in C.header_cards().items():
+        hdr[k] = v
+    for k, (e, o) in enumerate(zip(exps, C.result.eoff)):
+        hdr[f'PFOFF{k}'] = (float(o), f'Pointing offset {e.name[:31]}')
+    hdr['PFNEXP'] = (len(exps), 'Exposures in the model (incl. partners)')
+    return hdr
+
+
 def run_product(product_name, workspace_dir, groups, overrides, science, source_id, stage_config,
                 is_prism, prism_product='', pass1_products=None, cleanup_crfs=True, joint=None):
-    """Build ``{product_name}_pf.fits``. Returns a dict summary (for the driver), or
-    None when the profile fit could not run. A failure is logged and leaves the
-    standard products untouched.
+    """Build ``{product_name}_pf.fits``. Returns a dict summary (for the driver).
+
+    Named conditions (``FALLBACK_NO_CRF`` and the ``profile_fit.ProfileFitFallback``
+    subclasses: an old-layout observation, no usable pixel, too few wavelengths) write
+    a ``_pf.fits`` that holds only the reason; the product's best spectrum is then the
+    3-pixel boxcar and the summary's ``fallback`` names the reason. Any other
+    exception propagates: the stage fails.
 
     pass1_products : {source id: pass-1 product name} of the configuration (contamination).
     joint : ``profile_joint.JointView`` of the product's joint-solve group (the
@@ -229,14 +266,21 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
     os.chdir(workspace_dir)
     if joint is None:
         TM.reset()
+    path = os.path.join(workspace_dir, f'{product_name}_pf.fits')
     try:
         crf = f'{product_name}_s{source_id:09d}_crf.fits'
         if not os.path.exists(crf):
-            log(f"{product_name}: no Spec3 crf ({crf}); skipping profile fit")
-            return None
-        A = analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
-                            prism_product=prism_product, pass1_products=pass1_products,
-                            log=lambda m: log(f'{product_name}: {m}'), joint=joint)
+            log(f"{product_name}: no Spec3 crf ({crf}); 3-pixel boxcar")
+            write_fallback(path, FALLBACK_NO_CRF)
+            return _fallback_summary(product_name, source_id, is_prism, FALLBACK_NO_CRF)
+        try:
+            A = analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
+                                prism_product=prism_product, pass1_products=pass1_products,
+                                log=lambda m: log(f'{product_name}: {m}'), joint=joint)
+        except PF.ProfileFitFallback as e:
+            log(f"{product_name}: {e}; 3-pixel boxcar ({e.reason})")
+            write_fallback(path, e.reason)
+            return _fallback_summary(product_name, source_id, is_prism, e.reason)
         exps, C, P, clean, cstate, S = A.exps, A.chain, A.prediction, A.clean, A.contam_state, A.scan
         fl = stage_flags(stage_config)
         R = C.result
@@ -278,12 +322,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             hdus.append(h)
         TM.stop('drizzle', t_mark)
 
-        hdr = fits.Header()
-        for k, v in C.header_cards().items():
-            hdr[k] = v
-        for k, (e, o) in enumerate(zip(exps, R.eoff)):
-            hdr[f'PFOFF{k}'] = (float(o), f'Pointing offset {e.name[:31]}')
-        hdr['PFNEXP'] = (len(exps), 'Exposures in the model (incl. subtracted partners)')
+        hdr = shape_header(C, exps)
         hdr['PFNSRCF'] = (int(sum(not e.has_source for e in exps)), 'Exposures without the source (SRCFLUX=F)')
         hdr['PFCMODE'] = (cstate, 'Other-slitlet light: off/mask/hybrid/no_maps/..._undone')
         if P is not None:
@@ -295,9 +334,11 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             hdr['PFFOPEN'] = (_v(clean['failed_open']) if clean else -999.0,
                               'Main-shutter fraction in failed-open shutters')
             hdr['PFNCONT'] = (len(P.contributors), 'Other sources predicted on the trace')
-            hdr['PFCMISS'] = (len(P.missing), 'Of those, without a pass-1 spectrum (masked)')
-            hdr['PFCUNREL'] = (len(P.unreliable), 'Of those, pass 1 not decontaminated (masked)')
-            hdr['PFCMFRM'] = (len(P.missing_frame), 'Of those, a pass-1 frame missing (masked)')
+            # not subsets of PFNCONT: a source without a usable pass 1 is counted here
+            # whether or not it adds predicted light
+            hdr['PFCMISS'] = (len(P.missing), 'Others without a pass-1 spectrum (masked)')
+            hdr['PFCUNREL'] = (len(P.unreliable), 'Other sources, pass 1 unreliable (masked)')
+            hdr['PFCMFRM'] = (len(P.missing_frame), 'Other sources missing a pass-1 frame (masked)')
             hdr['PFCECHO'] = (len(getattr(P, 'echoed', ()) or ()), 'Unreliable ones with the target echo removed')
             nb = sum(int((b & u).sum()) for b, u in zip(P.beyond or [], P.unmodelled))
             hdr['PFCBEYND'] = (nb, 'Pixels lit by others past their range (masked)')
@@ -320,7 +361,6 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             hdus.append(joint.table())
             log(f"{product_name}: joint solve with {joint.group}, shape {C.shape} after it "
                 f"(centre {hdr.get('PFJDCEN', -999):+.3f}, ln width {hdr.get('PFJDLW', -999):+.3f} vs the solve's)")
-        path = os.path.join(workspace_dir, f'{product_name}_pf.fits')
         t_mark = TM.start()
         if joint is not None:
             from campfire_pipeline.nirspec import profile_joint as PJ
@@ -336,12 +376,8 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
                     joint_use=(bool(joint.use) if joint is not None else None),
                     scan=(None if S is None else dict(detected=S.detected, candidate=S.candidate, delta=S.delta,
                                                       dchi2=S.dchi2, proposals=S.proposals,
-                                                      unresolved=S.unresolved, xdisp=S.xdisp)))
-    except Exception as e:                       # noqa: BLE001
-        import traceback
-        log(f"{product_name}: profile fit failed ({type(e).__name__}: {e}); standard extraction only")
-        log(traceback.format_exc()[-1500:])
-        return None
+                                                      unresolved=S.unresolved, xdisp=S.xdisp)),
+                    fallback=None)
     finally:
         if cleanup_crfs:
             _cleanup_spec3_intermediates(list(science), product_name)

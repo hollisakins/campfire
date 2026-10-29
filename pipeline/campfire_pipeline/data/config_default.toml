@@ -77,8 +77,9 @@
     sigma_clip_low = 3.0
     sigma_clip_high = 3.0
     sigma_clip_maxiters = 5
-    # Forward-model ("profile fit") extraction, added next to the standard optimal
-    # extraction as fnu_pf* columns (nirspec/profile_fit.py). combine_method = "2d" only.
+    # Forward-model ("profile fit") extraction (nirspec/profile_fit.py): fnu_prof, fnu_contam,
+    # and the best spectrum fnu chosen from them (EXTRACT); fnu_opt keeps the optimal extraction.
+    # combine_method = "2d" only.
     profile_fit = false
     profile_fit_chromatic = true    # centre and width vary linearly with log wavelength
     # --- extraction v2 prototype (nirspec/profile_chain.py, profile_contam.py, nod_scan.py) ---
@@ -88,8 +89,8 @@
     profile_fit_shape = "gated"
     profile_fit_prism_transfer = true        # gratings may take the PRISM shape
     profile_fit_prism_mode = "unless_better" # "unless_better" | "always"
-    profile_fit_rows = "aperture"            # fnu_pf rows: "aperture" | "model" (all significant
-                                             # PROF2D rows incl. negative nod copies); both written
+    profile_fit_rows = "aperture"            # fnu_prof rows: "aperture" | "model" (all significant
+                                             # PROF2D rows incl. negative nod copies)
     profile_fit_model_rows_frac = 0.02       # "model" rows: |PROF2D| >= this x column max
     # Detection S/N gate for the own fit (noise scale = clipped mean square of the residuals).
     # Round-3 realistic-mix injections (2026-10-23): PRISM own fit unbiased (|bias| < 0.5 %) from
@@ -158,12 +159,12 @@
     contam_dominance_min_clean = 0.5         # pixels: less clean main shutter than this
     contam_pair_ratio = 3.0                  # similar-brightness pair flag within 1/r..r
     contam_pair_min_frac = 0.3               # and the contaminant's light >= this x the target's in its extraction
-    contam_1d = "subtract"                   # fnu_pf: "subtract" the predicted other light (extracted flux kept
-                                             # as fnu_pf_raw) | "report" (fnu_pf as extracted; fnu_pf_dec beside it)
+    contam_1d = "subtract"                   # fnu: "subtract" the predicted other light (fnu_prof - fnu_contam,
+                                             # EXTRACT = profile_decontam) | "report" (fnu = fnu_prof)
     contam_1d_min_sigma = 3.0                # subtract only when the prediction exceeds this x the integrated noise
                                              # (vs PRISM: helps above 3, neutral at 1-3; round 3)
     contam_unmod_max = 0.05                  # columns with more extraction weight on unpredicted other light are
-                                             # flagged (pf_unmod) and left out of fnu_pf_contam / PFCONTAM
+                                             # listed (UNPRED table) and left out of PFCONTAM / PFCONSIG
     contam_pass1_extend = true               # gratings: pass 1 also fits each source's light past its cutout's
                                              # red end (count rate, no calibration; profile_extend), so it is
                                              # predicted on other traces instead of masked
@@ -176,16 +177,16 @@
     contam_joint_min_frac = 0.3              # spectrum is >= this x its integrated noise AND >= this x its light
     contam_joint_max_members = 6             # larger groups: the weakest pairs stay on the one-pass path
     contam_joint_smooth = 0.0                # second-difference prior on the other members (0: none)
-    contam_joint_degenerate = 0.9            # correlation below minus this: split not determined (pf_joint_flag 1)
+    contam_joint_degenerate = 0.9            # correlation below minus this: split not determined (joint_flag 1)
     contam_joint_sens_centre = 0.02          # typical shape error of the others for the shape-limited flag
-    contam_joint_sens_log_width = 0.1        # (pf_joint_flag 2, PFJSENS)
+    contam_joint_sens_log_width = 0.1        # (joint_flag 2, PFJSENS)
     contam_joint_clip = 5.0
     contam_joint_refit = false               # true: the receivers' shape chain reruns on the jointly subtracted
                                              # data (moved 7420 by +0.18 in centre); false: the solve's shape
     contam_joint_gate = "noise"              # per receiver: deliver the joint result only when this quantity is
     contam_joint_gate_max = 2.0              # <= the max, else the one-pass one (PFJUSE, PFJGVAL, PFJWHY; both
-                                             # kept as fnu_pf_joint / fnu_pf_onepass). "noise": integrated noise of
-                                             # the joint fnu_pf / the one-pass fnu_pf, decided at the extraction
+                                             # kept in the _pf.fits). "noise": integrated noise of the joint
+                                             # fnu_prof / the one-pass fnu_prof, decided at the extraction
                                              # (vs PRISM, p14+p9: every joint improvement <= 1.80, rejects 4 of 19
                                              # degraded products; round 6). "off": always the joint result.
                                              # Also sensf | sens | fshape | cdeg | infl (profile_joint)

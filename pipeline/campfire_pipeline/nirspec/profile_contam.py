@@ -50,11 +50,11 @@ Nothing is iterated: each step reads only the output of the steps before it.
   exceeds ``kappa`` times the noise. Pixels whose light cannot be predicted
   (failed-open shutters, contaminants with no pass 1, no calibration) are dropped
   in both modes. This only changes the shape fit. The predicted light is drizzled
-  like the data (``CONTAM2D``) and extracted with the same weights as ``fnu_pf``
-  (``fnu_pf_contam``); the pixels whose foreign light is not in the prediction are
-  drizzled too (``UNMOD2D``), and the 1-D columns they reach are flagged
-  (``pf_unmod``). Whether ``fnu_pf`` itself has the prediction subtracted is the
-  ``contam_1d`` knob (``stage3._profile_fit_columns``).
+  like the data (``CONTAM2D``) and extracted with the same weights as ``fnu_prof``
+  (``fnu_contam``); the pixels whose foreign light is not in the prediction are
+  drizzled too (``UNMOD2D``), and the wavelengths they reach are listed (``UNPRED``
+  table, ``UNPREDF``). Whether the best spectrum ``fnu`` has the prediction subtracted
+  is the ``contam_1d`` knob (``stage3._profile_fit_columns``).
 """
 
 import glob
@@ -425,9 +425,9 @@ def stage3_p95(workspace, product, ref='stage3'):
     """95th percentile of |flux| [uJy] of the source's standard stage-3 spectrum, the
     pass-1 guard's reference, or None.
 
-    ref : 'stage3' the optimal extraction ``fnu`` (``_spec.fits``, else Spec3's
-        ``_x1d.fits``); when the optimal extraction fell back to a boxcar
-        (``CMPFROPT``) that ``fnu`` holds a fraction of the flux and a correct pass 1
+    ref : 'stage3' the optimal extraction ``fnu_opt`` (``fnu`` in products written before
+        extraction v2; ``_spec.fits``, else Spec3's ``_x1d.fits``); when the optimal
+        extraction fell back to a boxcar (``CMPFROPT``) that spectrum holds a fraction of the flux and a correct pass 1
         reads as several times brighter;
       'boxcar_skip' as 'stage3', but None (no guard) for a boxcar fallback;
       'box3' the 3-pixel boxcar ``fnu_3px`` (same aperture for every product);
@@ -439,7 +439,8 @@ def stage3_p95(workspace, product, ref='stage3'):
         if os.path.exists(spec):
             with fits.open(spec) as h:
                 d = h['SPEC1D'].data
-                opt = _p95(d['fnu'])
+                # fnu_opt: the optimal extraction (fnu is the best spectrum since extraction v2)
+                opt = _p95(d['fnu_opt'] if 'fnu_opt' in d.columns.names else d['fnu'])
                 box = _p95(d['fnu_3px']) if 'fnu_3px' in d.columns.names else None
                 boxcar = 'box' in str(h[0].header.get('CMPFROPT', '')).lower()
         elif os.path.exists(x1d):
@@ -662,7 +663,9 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
                 from astropy.io import fits
                 with fits.open(spec) as h:
                     d = h['SPEC1D'].data
-                    spec3 = (np.asarray(d['wave'], float), np.asarray(d['fnu'], float), np.asarray(d['fnu_err'], float))
+                    sfx = '_opt' if 'fnu_opt' in d.columns.names else ''     # the optimal extraction
+                    spec3 = (np.asarray(d['wave'], float), np.asarray(d[f'fnu{sfx}'], float),
+                             np.asarray(d[f'fnu{sfx}_err'], float))
         P1 = compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shape=prism, second=second,
                            pass1_for=reliable_for, stage3_ref=stage3_p95(workspace, product, st['guard_ref']),
                            stage3_spec=spec3)
