@@ -71,6 +71,45 @@ def test_build_tables_reproduces_a_known_profile():
     assert np.allclose(d3[rows > 0.01][:, 5], d3[rows < -0.01][::-1][: (rows > 0.01).sum()][:, 5], atol=1e-6)
 
 
+def test_build_tables_margin_rows_follow_the_collapsed_profile():
+    """Beyond the outer shutter edge a cutout has one or two pixel rows, too few per
+    wavelength column, so those rows must take the wavelength-collapsed decline, not a
+    constant floor."""
+    grid = B.Grid(w0=1e-6, dw=0.05e-6, n_w=21, y0=-1.0, dy=0.002, n_y=1001)
+    decline = lambda y: np.where(np.abs(y) > 0.5, 0.2 * np.exp(-(np.abs(y) - 0.5) / 0.05), _trapezoid(y))
+    total = _synthetic_cells(grid, decline, n=200)
+    # the margin rows: 2 samples per column (40 in the collapse), below n_min=20 per column
+    si = B.SEGMENTS.index('edge_lower')
+    for bi, yc in enumerate(B.Y_CENTRES):
+        if yc < -0.55:
+            total[si, bi, :, :] *= 2 / 200
+    t = B.build_tables(total, grid, smooth_cols=0, n_min=20)
+    rows = grid.rows
+    far = rows < -0.7
+    assert np.nanmax(t['data1x1'][far, 10]) < 0.03          # follows the decline, not a 0.2 floor
+    near = (rows > -0.6) & (rows < -0.56)
+    assert np.allclose(t['data1x1'][near, 10], decline(rows[near]), atol=0.03)
+
+
+def test_profile_selection_admits_the_margin_on_the_shutter_it_borders():
+    """A margin pixel's own shutter is the closed neighbour (never clean); it enters the
+    cells on the open shutter beside it. Pixels of an unclean shutter and its margin stay out."""
+    state = '11x'                      # shutters j = 0, 1, 2 (kx = 2): k = j - 2
+    #           margin below | shutter 0 | shutter 1 | margin above (beyond the source shutter)
+    j = np.array([-1, -1, 0, 0, 1, 1, 3])
+    k = j - 2
+    f = np.array([0.4, -0.3, -0.4, 0.2, -0.4, 0.3, -0.4])
+    seg, yseg = B.segment_map(j, f, state)
+    p = dict(k=k, j=j, seg=seg, state=state)
+    col = np.zeros(j.size, int)
+    ok = B.profile_selection(p, col, clean_k={-2, -1})
+    assert ok.tolist() == [True, True, True, True, True, True, False]
+    ok = B.profile_selection(p, col, clean_k={-1})
+    assert ok.tolist() == [False, False, False, False, True, True, False]
+    # the margin below the slitlet measures the lower outer edge, below its shutter's rows
+    assert seg[0] == B.SEGMENTS.index('edge_lower') and yseg[0] == pytest.approx(-0.6)
+
+
 def test_evaluate_table_reads_the_right_rows():
     grid = B.Grid(w0=1e-6, dw=0.05e-6, n_w=21, y0=-1.0, dy=0.002, n_y=1001)
     d1 = np.tile(np.linspace(0, 1, grid.n_y)[:, None], (1, grid.n_w))     # value == (row+1)/2

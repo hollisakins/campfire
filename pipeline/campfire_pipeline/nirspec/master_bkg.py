@@ -164,9 +164,10 @@ def inputs_stamp(canonicals):
     return max((os.path.getmtime(p) for p in paths), default=0.0)
 
 
-def product_current(path, rate_path, canonicals, stuck_mtime, bs_name=None):
+def product_current(path, rate_path, canonicals, stuck_mtime, bs_name=None, bs_stamp=None):
     """True when ``path`` was derived from these inputs by this algorithm (and, when
-    ``bs_name`` is given, with that bar-shadow table in the 2-D expansion)."""
+    ``bs_name`` / ``bs_stamp`` are given, with that bar-shadow table, of that
+    derivation date, in the 2-D expansion)."""
     if not os.path.exists(path):
         return False
     try:
@@ -179,7 +180,8 @@ def product_current(path, rate_path, canonicals, stuck_mtime, bs_name=None):
             and abs(float(hdr.get('MBKGSTK', -1)) - float(stuck_mtime or 0)) < 1e-3
             and abs(float(hdr.get('MBKGINMT', -1)) - inputs_stamp(canonicals)) < 1e-3
             and int(hdr.get('MBKGNIN', -1)) == len(canonicals)
-            and (bs_name is None or str(hdr.get('MBKGBSRF')) == bs_name))
+            and (bs_name is None or str(hdr.get('MBKGBSRF')) == bs_name)
+            and (bs_stamp is None or str(hdr.get('MBKGBSDT')) == bs_stamp))
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +451,16 @@ def _barshadow_reference(grating, example_path):
     if p is None:
         p = B.crds_barshadow_path(example_path)
     return os.path.basename(p), p
+
+
+def barshadow_stamp(path):
+    """What identifies a table's content for the skip key: its derivation date
+    (``CFBSDATE``, an empirical table) or ``USEAFTER`` (CRDS), else the file's mtime."""
+    try:
+        hdr = fits.getheader(path)
+        return str(hdr.get('CFBSDATE') or hdr.get('USEAFTER') or os.path.getmtime(path))
+    except Exception:
+        return str(os.path.getmtime(path)) if os.path.exists(path) else ''
 
 
 def resolve_barshadow_table(bs_ref, slit_path):
@@ -855,8 +867,9 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         out = product_path(obs, base)
         # a new bar-shadow table for the grating makes the product stale too
         if cans[0].grating not in bs_name_of:
-            bs_name_of[cans[0].grating] = _barshadow_reference(cans[0].grating, cans[0].path)[0]
-        if not overwrite and product_current(out, rate, cans, stuck_mtime, bs_name_of[cans[0].grating]):
+            name, bs_path = _barshadow_reference(cans[0].grating, cans[0].path)
+            bs_name_of[cans[0].grating] = (name, barshadow_stamp(bs_path))
+        if not overwrite and product_current(out, rate, cans, stuck_mtime, *bs_name_of[cans[0].grating]):
             log(f'master background: {base}: current, skipped')
             continue
         todo[base] = (rate, cans)
@@ -971,6 +984,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             'MBKGMDL': (mscale, 'data / jwst_backgrounds, one scale'),
             'MBKGEFLR': (float(opt['error_floor']), 'error floor (fraction of sky)'),
             'MBKGBSRF': (bs_of[key][0], 'bar-shadow table of the 2-D expansion'),
+            'MBKGBSDT': (barshadow_stamp(bs_of[key][1]), 'that table: derivation date / USEAFTER'),
             'MBKGBINP': (float(opt['bin_pixels']), 'detector pixels per bin'),
             'MBKGCORE': (float(opt['core_frac']), '|f| of the shutter core measured'),
             'MBKGSPAD': (float(opt['source_pad_px']), 'source pad [px]'),

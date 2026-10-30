@@ -403,7 +403,7 @@ def pixel_samples(c, counter, source_pad_px=2.0):
 
     seg, yseg, is_open = g['seg'], g['yseg'], g['is_open']
     sel = good
-    return dict(lam=lam[sel], y=ys[sel], k=k[sel].astype(int), f=f[sel], sb=sb[sel], var=var[sel],
+    return dict(lam=lam[sel], y=ys[sel], k=k[sel].astype(int), j=j[sel], f=f[sel], sb=sb[sel], var=var[sel],
                 seg=seg[sel], yseg=yseg[sel], centre=(np.abs(f[sel]) < CENTRE_FRAC) & is_open[sel],
                 is_open=is_open[sel], state=state, slitlet_id=g['slitlet_id'], quadrant=g['quadrant'],
                 pitch=pitch, x0=x0, y0=y0, shape=sci.shape, n_pix=int(sel.sum()))
@@ -475,6 +475,21 @@ def pool_sky(shutters, grid, reject_frac=0.10, n_iter=3, min_shutters=5):
 # Pass 2: the profile cells
 # ---------------------------------------------------------------------------
 
+def profile_selection(p, col, clean_k):
+    """Which samples of ``pixel_samples`` enter the profile cells: on the reference grid,
+    measuring a segment, and in a clean shutter. A pixel in the margin beyond the outer
+    shutters (``j`` of -1 or ``n_sh``) sits in a closed shutter, which has no centre
+    spectrum and so is never clean; it is admitted on the open shutter it borders, whose
+    outer-edge profile it measures.
+    """
+    kk = np.asarray(p['k'], int).copy()
+    j = np.asarray(p['j'], int)
+    n_sh = len(p['state'])
+    kk[j == -1] += 1
+    kk[j == n_sh] -= 1
+    return (col >= 0) & (np.asarray(p['seg']) >= 0) & np.isin(kk, list(clean_k))
+
+
 def _worker_profile(args):
     c, counter_path, grid, pad, sky, clean_k, table = args
     counter = np.load(counter_path) if counter_path else None
@@ -483,7 +498,7 @@ def _worker_profile(args):
     except Exception as e:
         return c.key, None, f'{type(e).__name__}: {e}'
     col = grid.column_of(p['lam'])
-    ok = (col >= 0) & (p['seg'] >= 0) & np.isin(p['k'], list(clean_k))
+    ok = profile_selection(p, col, clean_k)
     if ok.sum() == 0:
         return c.key, None, None
     lam_cols = grid.wavelengths_um
@@ -581,14 +596,19 @@ def cell_stats(acc, n_min=20):
 # Tables
 # ---------------------------------------------------------------------------
 
-def _fill_and_smooth(prof, var, smooth_cols, floor_rows=None):
+def _fill_and_smooth(prof, var, smooth_cols, floor_rows=None, collapsed=None):
     """Fill the unmeasured cells of one segment's (y, wavelength) array and smooth it.
 
     Inside each column, gaps between measured rows are interpolated; rows outside the
     measured range stay empty. Across wavelength, each row's empty columns are
     interpolated from the measured ones (held at the ends). Rows never measured at any
-    wavelength take the floor: the median of the measured cells beyond the bar
-    (``floor_rows``), or the lowest measured value. Then a Gaussian along wavelength.
+    wavelength take the wavelength-collapsed profile (``collapsed``, the same rows
+    measured over every column at once: the rows beyond the outer shutter edge, which a
+    cutout covers with one or two pixel rows at most, are too sparse per column but
+    well measured together; a row the collapse does not reach either takes the last
+    collapsed value outward from the measured range), else the floor: the median of
+    the measured cells beyond the bar (``floor_rows``), or the lowest measured value.
+    Then a Gaussian along wavelength.
     """
     from scipy import ndimage
     out = prof.copy(); vout = var.copy()
@@ -609,12 +629,26 @@ def _fill_and_smooth(prof, var, smooth_cols, floor_rows=None):
     else:
         floor = np.nanmin(out) if np.isfinite(out).any() else 0.4
     never = ~np.isfinite(out).any(axis=1)
-    out[never] = floor; vout[never] = np.nanmax(vout) if np.isfinite(vout).any() else 0.0
+    fill = np.full(out.shape[0], floor)
+    if collapsed is not None and np.isfinite(collapsed).any():
+        c = np.asarray(collapsed, float).copy()
+        measured_rows = np.flatnonzero(~never)
+        if measured_rows.size:
+            # outward from the measured range, hold the last collapsed value
+            lo, hi = measured_rows[0], measured_rows[-1]
+            fin = np.flatnonzero(np.isfinite(c))
+            below = fin[fin < lo]; above = fin[fin > hi]
+            if below.size:
+                c[:below[0]] = c[below[0]]
+            if above.size:
+                c[above[-1] + 1:] = c[above[-1]]
+        fill = np.where(np.isfinite(c), c, floor)
+    out[never] = fill[never, None]; vout[never] = np.nanmax(vout) if np.isfinite(vout).any() else 0.0
     out[~np.isfinite(out)] = floor; vout[~np.isfinite(vout)] = 0.0
     if smooth_cols and smooth_cols > 0:
         out = ndimage.gaussian_filter1d(out, smooth_cols, axis=1, mode='nearest')
         vout = ndimage.gaussian_filter1d(vout, smooth_cols, axis=1, mode='nearest') / max(1.0, smooth_cols)
-    return np.clip(out, 0.05, 1.5), vout
+    return np.clip(out, 0.0, 1.5), vout
 
 
 def build_tables(total, grid, smooth_cols=2.0, n_min=20):
@@ -628,9 +662,13 @@ def build_tables(total, grid, smooth_cols=2.0, n_min=20):
     filled, vfilled = {}, {}
     beyond = {'edge_lower': Y_CENTRES < -0.55, 'edge_upper': Y_CENTRES > 0.55,
               'bar_lower': np.abs(Y_CENTRES + 0.5) < 0.05, 'bar_upper': np.abs(Y_CENTRES + 0.5) < 0.05}
+    # the wavelength-collapsed profile per segment (sum over the columns), for the rows
+    # no single column measures: the margin beyond the outer shutters
+    coll = total.sum(axis=2)                      # (seg, ybin, 3)
+    cmean, _ = cell_stats(coll, n_min)
     for name in SEGMENTS:
         filled[name], vfilled[name] = _fill_and_smooth(mean[seg_i[name]], var[seg_i[name]], smooth_cols,
-                                                       floor_rows=beyond[name])
+                                                       floor_rows=beyond[name], collapsed=cmean[seg_i[name]])
 
     def onto_rows(prof, vprof, lo, hi):
         """Interpolate a coarse-bin profile onto the rows in [lo, hi], from the bins of

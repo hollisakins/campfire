@@ -77,7 +77,7 @@ def qa_report(res, out_pdf):
                 ax.errorbar(Y_CENTRES[sel], prof[sel], yerr=err[sel], fmt='.', ms=3, color='k', label='measured (SB / sky)')
                 ax.plot(Y_CENTRES[sel], _table_curve(crds, si, lam_mid)[sel], 'r-', lw=1.2, label=f'CRDS {os.path.basename(res["template"])}')
                 ax.plot(Y_CENTRES[sel], _table_curve(new, si, lam_mid)[sel], 'g-', lw=1.2, label='empirical table')
-                ax.set_ylim(0.3, 1.15); ax.axhline(1, color='gray', lw=0.5)
+                ax.set_ylim(0.0, 1.15); ax.axhline(1, color="gray", lw=0.5)
                 for b in (-0.5, 0.5): ax.axvline(b, color='gray', lw=0.5, ls=':')
                 if bi == 0: ax.set_title(f'{name}\n{SEGMENT_DOC[name].split("(")[0].strip()}', fontsize=9)
                 if si == 0: ax.set_ylabel(f'{blab}\nshadow (1 = open centre)')
@@ -100,7 +100,7 @@ def qa_report(res, out_pdf):
             if len(curves) > 1:
                 dev = np.nanmedian(np.nanstd(curves, axis=0)[np.abs(Y_CENTRES[sel]) < 0.45])
                 spreads.append(f'{name}: {dev:.3f}')
-            ax.set_ylim(0.3, 1.15); ax.set_title(name, fontsize=10); ax.axhline(1, color='gray', lw=0.5)
+            ax.set_ylim(0.0, 1.15); ax.set_title(name, fontsize=10); ax.axhline(1, color='gray', lw=0.5)
             for b in (-0.5, 0.5): ax.axvline(b, color='gray', lw=0.5, ls=':')
             ax.set_xlabel('row [pitch]')
             if si == 0: ax.set_ylabel(f'shadow, {blab}'); ax.legend(fontsize=7)

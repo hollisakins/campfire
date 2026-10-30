@@ -54,7 +54,8 @@ Release procedure: edit the `## Unreleased` section below, then run
   default (`mask_bits`), and `slitlet_scale_on` is the opt-in per-slitlet rescaling from the slit's own
   clean shutters. Each slitlet is painted once (two sources of one slitlet share a cutout) and each
   physical shutter is selected once; margin rows count only where no open shutter was painted. Products skip when their inputs are
-  unchanged (the bar-shadow table of the expansion counts as an input, `MBKGBSRF`). Nothing is subtracted yet (P2). `barshadow_calibration.pixel_samples` now reads any
+  unchanged (the bar-shadow table of the expansion counts as an input: its name `MBKGBSRF` and its
+  derivation date `MBKGBSDT`). Nothing is subtracted yet (P2). `barshadow_calibration.pixel_samples` now reads any
   slit of a multi-slit file and skips the source cut for a background slitlet (`slit_geometry` is
   the shared WCS-to-shutter mapping); `coverage` gained the cache-path helpers.
 - **Empirical NIRSpec MSA bar-shadow calibration.** `campfire_pipeline.nirspec.barshadow_calibration`
@@ -68,7 +69,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   images, a held-out observation divided by each table, the exposure-level sky). With one field held
   out, the residual inside the shutters drops from 11-18 % (CRDS) to 1-2.5 % per segment on the prism,
   from 11-13 % to 0.6-1.4 % on G140M, from 8-19 % to 1-4 % on G235M and from 11-23 % to 1.3-2.6 % on
-  G395M (the CRDS interior-bar profile is 0.1 pitch too wide on the gratings). `[nirspec.stage2].empirical_barshadow`
+  G395M (the CRDS interior-bar profile is 0.1 pitch too wide on the gratings). The rows beyond the
+  outer shutter edge, which a cutout covers with one or two pixel rows, are now measured: the
+  profile pass admits a margin pixel on the open shutter it borders (its own shutter is the closed
+  neighbour, never in the clean set, so every margin pixel used to be dropped), and rows too sparse
+  for any single wavelength column are filled from the wavelength-collapsed profile instead of a
+  constant floor. The light there falls from 0.15 of the open level at 0.53 pitch to 0.02 beyond
+  0.65 on every disperser, and the constant (0.18-0.25) had painted the margin rows two to ten
+  times too bright. The prism and G140M tables now follow the data there to 0.01-0.02; G235M and
+  G395M still sit 0.05-0.15 high beyond the edge (light bluewards of neighbouring traces' cutouts,
+  which no footprint covers yet) and are to be re-derived once the footprints carry a blue cutoff. `[nirspec.stage2].empirical_barshadow`
   (default off) passes the table to `BarShadowStep` for the background slitlets
   (`config.get_empirical_barshadow_path`); gratings without a table fall back to CRDS. The overlap
   counter moved to `nirspec/coverage.py` with the redward tail past the nominal cutoff (`TAIL_PX`).

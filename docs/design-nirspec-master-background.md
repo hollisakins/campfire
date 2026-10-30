@@ -1097,6 +1097,63 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   (not committed). GOODS-N, EGS and A2744 got their 36 master-background products each from
   `cfpipe nirspec master-bkg` with these tables in the expansion (69–180 clean of 58–211 shutters per
   exposure × detector; scale vs pool 0.97–1.02; data/model 0.99–1.09).
+- **The margin rows beyond the outer shutters were painted too bright (found 2026-10-30, fixed in
+  the derivation).** With the empirical tables in the expansion, `(rate − MBKG2D) / MBKG2D` over the
+  DQ-clean covered pixels had a median of −4 to −6 % on the deep SPURS fields and −1 % on COSMOS p1,
+  while the pixels at the shutter centres agreed to 1–3 %. Splitting by the painted level showed the
+  whole deficit in the pixels painted below a quarter of the local open level, and the painted
+  own-slitlet sky against the rate as a function of the within-shutter coordinate (empty shutters
+  not next to the source, pixels painted by one slitlet, DQ clean; `scratch/claude/mbkg_p1/
+  residual_vs_f_clean.png`) showed why: inside the shutter the table and the data agree to 1–3 %
+  on the prism, G140M, G235M and G395M alike, but beyond the edge (|f| > 0.5 pitch, the one or two
+  pixel rows jwst's cutout adds past the outer shutters) the tables held a constant 0.18–0.25 of
+  the open level where the light actually falls to 0.15 at 0.53 pitch, 0.08 at 0.58, 0.04 at 0.63
+  and 0.02 beyond, the same decline on every disperser. The painter then clamped that constant out
+  to the cutout edge. The constant was the derivation's fill for rows it never measured, and it
+  never measured them because the profile pass admitted a pixel only when its own shutter was in
+  the clean set: a margin pixel's shutter is the closed neighbour, which has no centre spectrum and
+  so is never clean, and every margin pixel was dropped before the cells. Two changes in the
+  derivation: the selection admits a margin pixel on the open shutter it borders
+  (`profile_selection`), and in `build_tables` a row too sparse for any single wavelength column
+  (the margin is one or two pixel rows per cutout) takes the wavelength-collapsed profile (the same
+  rows summed over all columns), held at the last collapsed value outward; the clip floor is 0. The
+  first rebuild carried only the second change and left the tables unchanged, which is how the
+  first was found. The four tables were
+  rebuilt and every master-background product refreshed (the product's skip key now carries the
+  table's derivation date, `MBKGBSDT`, beside its name). Outcome, measured the same way on the
+  refreshed products (the painted own-slitlet sky against the rate at 0.53 / 0.58 / 0.63 / 0.68 /
+  0.73 pitch, table vs the data): prism and G140M now follow the data to 0.01–0.02 of the open level
+  (G140M table 0.15 / 0.08 / 0.05 / 0.04 / 0.03, data 0.14 / 0.07 / 0.04 / 0.03 / 0.02); G235M is
+  halved but still high (table 0.23 / 0.16 / 0.12 / 0.10 / 0.10, data 0.17 / 0.08 / 0.04 / 0.03 /
+  0.02); G395M is not improved (GOODS-S table 0.27 / 0.21 / 0.19 / 0.20 / 0.19, data 0.18 / 0.09 /
+  0.06 / 0.04 / 0.01; COSMOS p1 table 0.31 / 0.27 / 0.24 / 0.24 / 0.23, data 0.22 / 0.15 / 0.15 /
+  0.09 / 0.07), and its table's margin level falls with wavelength (0.20 at 2.9–3.7 µm, 0.12 at
+  3.7–4.5, 0.05 at 4.5–5.3). The likely cause is light the coverage counter does not know about:
+  the sky runs 40–80 px bluewards of every cutout's first column on G235M and G395M (still 50 % of
+  the in-band level 21 and 46 px before it, none on G140M and the prism), so the margin cells of a
+  slitlet whose neighbour starts nearby carry that neighbour's light. The derivation selects on the
+  counter (one footprint per pixel), so once the footprints carry a blue cutoff the contaminated
+  pixels drop out by construction; the G235M and G395M tables are to be re-derived then. The effect
+  on an extraction is confined to the outermost rows of a cutout (≈15 % of the sky level there),
+  but it is what a sky-subtracted 2-D cutout shows first: a dark band along its edges.
+- **The edges along the dispersion direction (2026-10-30).** The painter paints a slitlet only
+  where its cutout's wavelength is finite, the calibrated range (plus the empirical extension where
+  one exists); the sky light does not stop there. Rate along the trace, normalised to the in-band
+  level just inside the cutout, median over the cutouts of one exposure (`scratch/claude/bs_v3/
+  trace_ends.py`): on G140M and G235M NRS2 (GOODS-S) every painted trace stops at x ≈ 1793 where
+  the extended range ends and the sky continues to the detector edge at ≈70 % of the in-band
+  level; on G395M NRS1 the cutouts whose 5.27 µm end lands on the detector still carry 40–50 % of
+  the in-band light 240 px past it (the 200 px tail flag ends first); on the prism the light is
+  below 10 % 19 px past the cutout end. At the blue end the filter cut-on is gradual on G235M (50 %
+  at 21 px before the cutout, 10 % at 39) and G395M (50 % at 46 px, 25 % at 80) and sharp on G140M
+  and the prism, and the painting starts 13–45 columns inside the cutout because jwst's bounding
+  box is wider than its finite-wavelength region. Inside the science cutouts the unpainted share is
+  5–7 % on COSMOS p1 G395M and 23–33 % on the prism and the SPURS gratings, mostly the bounding-box
+  corners outside the tilted trace (no slit light there) and the past-range stretches above. Hollis
+  ruled (via the extraction-v2 session) that nothing is masked: the sky is to be painted past both
+  ends out to a measured cutoff per disperser and filter, in count-rate units (no flat or photom
+  there), as sky(λ) × bar shadow from the empty shutters' own pixels, with the wavelength from the
+  slit WCS evaluated outside its bounding box. Planned on extraction-v2 with the shared geometry.
 - Not yet measured: the bar profile as a function of quadrant, the solar-line check (§3.3), the
   origin of the G395M NRS2 excess (resolved: the trace tails, above) and of the per-exposure 3 µm
   differences; the grating tables await the SPURS reprocessing.
