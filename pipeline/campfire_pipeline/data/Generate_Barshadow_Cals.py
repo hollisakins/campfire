@@ -26,7 +26,6 @@ def main():
     ap.add_argument('--held-out', default=None, help='derive without this observation and test on it')
     ap.add_argument('--processes', type=int, default=4)
     ap.add_argument('--source-pad-px', type=float, default=2.0, help='rows excluded beyond the source shutter edges (5+ leaves only the shutters two away)')
-    ap.add_argument('--tail-px', type=int, default=None, help='footprint extension past the cutoff (default: coverage.TAIL_PX)')
     ap.add_argument('--smooth-cols', type=float, default=2.0, help='Gaussian smoothing along wavelength, in columns')
     ap.add_argument('--n-min', type=int, default=20, help='pixels a (segment, row, column) cell needs')
     ap.add_argument('--out-dir', default=os.path.dirname(os.path.abspath(__file__)))
@@ -48,7 +47,7 @@ def main():
         version = 'unknown'
 
     res = B.derive(args.obs, args.grating.upper(), paths['products_dir'], cache_dir, filter_name=args.filter,
-                   source_pad_px=args.source_pad_px, tail_px=args.tail_px, processes=args.processes,
+                   source_pad_px=args.source_pad_px, processes=args.processes,
                    smooth_cols=args.smooth_cols, n_min=args.n_min, held_out=args.held_out)
     res['provenance']['version'] = version
     name = f'empirical_jwst_nirspec_barshadow_{args.grating.lower()}.fits'

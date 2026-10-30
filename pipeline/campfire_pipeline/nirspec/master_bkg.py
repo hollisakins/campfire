@@ -10,12 +10,18 @@ One product per rate file, ``<root>_<nod>_<nrsN>_mbkg.fits`` beside it:
 * ``SHUTTERS`` — one row per empty shutter that was offered: where it is (slitlet,
   quadrant, shutter offset from the slitlet's source, the slit it came from), its scale
   against the sky, χ², the longest line-like run, ``clean`` and the ``reason``;
+* ``MBKG1DR`` — the same sky in count-rate units (DN/s at the open-shutter centre, no
+  flat or photometric calibration), measured from the clean shutters' core pixels over
+  their whole footprints, so it reaches past the calibrated range to the disperser's
+  wavelength cutoffs (``coverage.WAVELENGTH_CUTOFFS``);
 * ``MBKG2D`` / ``MBKG2DN`` / ``MBKG2DDQ`` — the sky painted back onto the detector in the
   rate frame (DN/s), every covering slitlet's sky summed where footprints overlap (on the
-  gratings 38 % of the detector lies under more than one trace, §9), the number of slits
-  painted per pixel, and flags: 1 nothing covers the pixel, 2 a covering trace was not
-  painted (its source was not processed, or a failed-open shutter), 4 a trace's
-  beyond-cutoff tail.
+  gratings 38 % of the detector lies under more than one trace, §9): inside the
+  calibrated range through each slit's own calibration, past it (the columns before a
+  cutout's first calibrated column and beyond its last, out to the cutoffs) as
+  ``MBKG1DR`` times the bar shadow; the number of slits painted per pixel; and flags:
+  1 nothing covers the pixel, 2 a covering trace was not painted (its source was not
+  processed, or a failed-open shutter).
 
 The inputs are what stage 2a already produced: the per-source canonicals (their empty
 shutters) and the background-only slitlets of the ``bkgslits/`` file. Pixels are read
@@ -53,9 +59,10 @@ from astropy.table import Table
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.nirspec import barshadow_calibration as B
-from campfire_pipeline.nirspec.coverage import coverage_from_wcs, tail_px_for, default_cache_dir, cache_path
+from campfire_pipeline.nirspec.coverage import (coverage_from_wcs, cutoffs_for, default_cache_dir, cache_path,
+                                                 slit_geometry_extended)
 
-ALGORITHM_VERSION = '1.0'
+ALGORITHM_VERSION = '1.1'     # 1.1: the sky is painted past the calibrated range (2026-10-30)
 _PREFIX = 'master_bkg_'
 DEFAULTS = dict(
     master_bkg_source_pad_px=3.0,     # rows beyond the source shutter's edges dropped (§9: 3 px)
@@ -79,7 +86,7 @@ DEFAULTS = dict(
 REASONS = ('clean', 'too_few_bins', 'low_throughput', 'continuum_excess', 'line_excess')
 DQ_UNCOVERED = 1          # no slitlet footprint on the pixel
 DQ_UNPAINTED = 2          # a footprint covers the pixel but no slit was painted for it
-DQ_TAIL = 4               # a trace's beyond-cutoff tail lands here
+DQ_TAIL = 4               # retired (products before 2026-10-30 flagged a trace's unpainted tail; tails are painted now)
 
 
 def options(stage_config):
@@ -486,6 +493,7 @@ def load_product(path, with_2d=False):
                    qscales={q: header_float(hdr, f'MBKGQ{q}') for q in (1, 2, 3, 4)},
                    floor=header_float(hdr, 'MBKGEFLR', 0.0), bs_ref=str(hdr.get('MBKGBSRF', 'CRDS')),
                    shutters=Table(h['SHUTTERS'].data) if 'SHUTTERS' in h else None,
+                   rate_sky=Table(h['MBKG1DR'].data) if 'MBKG1DR' in h else None,
                    mbkg2d=None, dq2d=None, n2d=None, rate=None)
     if with_2d:
         _load_2d(out)
@@ -570,7 +578,7 @@ def sky_on_geometry(prod, frame, g, table):
                 units=frame['bunit'], quadrant=g['quadrant'], shape=frame['sci'].shape, open=g['is_open'])
 
 
-def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=DQ_UNPAINTED | DQ_TAIL,
+def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0,
                  slitlet_scale_on=False):
     """The master background on one slit's cutout, in that slit's own frame and units.
 
@@ -585,14 +593,19 @@ def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=DQ
     ``mode='total'`` (default) is the painted ``MBKG2D`` on the cutout through the
     pixelwise factor: every slitlet whose trace crosses the pixel, which on the gratings
     is several (``dq`` and ``n_cover`` cutouts say where a covering trace is missing);
-    ``own_sky`` carries the slit's own slitlet alone. ``mode='own'`` returns only the
-    slit's own slitlet (the painter's input; also the fallback when the product has no
-    ``MBKG2D`` or the rate file is not beside it). NaN where the product has no
-    wavelength coverage, the pixel lies beyond the slitlet, nothing covers it, or the
-    pixel carries one of ``mask_bits`` (default: a covering trace not painted, or a
-    tail). ``slitlet_scale_on`` rescales the slit's own contribution by the median scale
-    of its own clean empty shutters (``slitlet_scale``), the per-slitlet term of §9;
-    off by default, a design choice rather than a correction.
+    ``own_sky`` carries the slit's own slitlet alone, ``sky_rate`` the painted total in
+    count-rate units (DN/s, the ``MBKG2D`` cutout itself) and ``rate`` the rate cutout.
+    ``sky`` has the slit's units only where the slit is calibrated (``SCI`` finite); past
+    the calibrated range -- the columns before the first calibrated column and beyond
+    the last, where the sky is painted in count-rate units with no flat or photometric
+    calibration -- ``sky`` is NaN and ``sky_rate`` is what there is. ``mode='own'``
+    returns only the slit's own slitlet (the painter's input; also the fallback when the
+    product has no ``MBKG2D`` or the rate file is not beside it). Nothing is masked by
+    default: ``mask_bits`` (``DQ_UNPAINTED``: a covering trace that was not painted) is
+    opt-in, and pixels nothing covers are NaN. ``slitlet_scale_on`` rescales the slit's
+    own contribution by the median scale of its own clean empty shutters
+    (``slitlet_scale``), the per-slitlet term of §9; off by default, a design choice
+    rather than a correction.
     """
     from jwst.datamodels import MultiSlitModel
     prod = load_product(product) if isinstance(product, str) else product
@@ -637,15 +650,18 @@ def slitlet_scale(prod, slit_name):
     return float(np.median(v)) if v.size else 1.0
 
 
-def sky_total_on_cutout(prod, own, frame, mask_bits=DQ_UNPAINTED | DQ_TAIL, own_scale=1.0):
+def sky_total_on_cutout(prod, own, frame, mask_bits=0, own_scale=1.0):
     """What a consumer subtracts: the painted total (every covering slitlet's sky,
     ``MBKG2D``) on the slit's cutout, in the slit's frame through the pixelwise factor.
     ``own`` is ``sky_on_geometry`` output for the slit. Pixels carrying any of
-    ``mask_bits`` (default: a covering trace not painted, or a tail -- the total is
-    incomplete there by construction) and pixels nothing covers are NaN. ``own_scale``
+    ``mask_bits`` (opt-in; ``DQ_UNPAINTED`` where a covering trace was not painted, the
+    total being incomplete there) and pixels nothing covers are NaN. ``own_scale``
     rescales the slit's own contribution (``total + own * (s - 1)``), the per-slitlet
     term from its own empty shutters. Returns the dict with ``sky``, ``var``, ``dq``
-    (the ``MBKG2DDQ`` cutout), ``n_cover`` and ``own_sky`` (the slit's own slitlet)."""
+    (the ``MBKG2DDQ`` cutout), ``n_cover``, ``own_sky`` (the slit's own slitlet),
+    ``sky_rate`` (the painted total in DN/s, finite past the calibrated range too),
+    ``rate`` (the rate cutout) and ``calibrated`` (where the slit's ``SCI`` is finite,
+    the only place ``sky`` has the slit's units)."""
     ny, nx = own['shape']
     box = (slice(frame['y0'], frame['y0'] + ny), slice(frame['x0'], frame['x0'] + nx))
     mb = prod['mbkg2d'][box]; dq = prod['dq2d'][box]; rate_box = prod['rate'][box]
@@ -657,23 +673,173 @@ def sky_total_on_cutout(prod, own, frame, mask_bits=DQ_UNPAINTED | DQ_TAIL, own_
     if own_scale != 1.0:
         add = np.where(np.isfinite(own_sky), own_sky * (own_scale - 1.0), 0.0)
         total = total + add
-    total[(dq & (DQ_UNCOVERED | int(mask_bits))) > 0] = np.nan
+    masked = (dq & (DQ_UNCOVERED | int(mask_bits))) > 0
+    total[masked] = np.nan
+    sky_rate = np.where(masked, np.nan, mb.astype(float))
     with np.errstate(invalid='ignore', divide='ignore'):
         ratio = np.where(np.isfinite(own_sky) & (own_sky > 0), total / own_sky, np.nan)
     var = np.where(np.isfinite(ratio), own['var'] * ratio ** 2, (prod['floor'] * total) ** 2)
     var[~np.isfinite(total)] = np.nan
-    return dict(own, sky=total, var=var, dq=dq, own_sky=own_sky, n_cover=prod['n2d'][box] if prod.get('n2d') is not None else None)
+    return dict(own, sky=total, var=var, dq=dq, own_sky=own_sky, sky_rate=sky_rate, rate=rate_box.astype(float),
+                calibrated=np.isfinite(frame['sci']), n_cover=prod['n2d'][box] if prod.get('n2d') is not None else None)
+
+
+def rate_sky_edges(centres, lam_lo, lam_hi):
+    """Bin edges of the rate-unit sky: the ``MBKG1D`` grid (midpoints of its centres),
+    continued at each end with that end's bin width until it covers ``[lam_lo, lam_hi]``."""
+    c = np.asarray(centres, float)
+    edges = np.concatenate([[c[0] - 0.5 * (c[1] - c[0])], 0.5 * (c[1:] + c[:-1]), [c[-1] + 0.5 * (c[-1] - c[-2])]])
+    lo_step = max(edges[1] - edges[0], 1e-6); hi_step = max(edges[-1] - edges[-2], 1e-6)
+    n_lo = int(np.ceil(max(edges[0] - lam_lo, 0.0) / lo_step)); n_hi = int(np.ceil(max(lam_hi - edges[-1], 0.0) / hi_step))
+    return np.concatenate([edges[0] - lo_step * np.arange(n_lo, 0, -1), edges, edges[-1] + hi_step * np.arange(1, n_hi + 1)])
+
+
+def _geometries(c):
+    """A canonical's cutout geometry and its extended geometry, plus the slit's quadrant."""
+    from jwst.datamodels import MultiSlitModel
+    m = MultiSlitModel(c.path)
+    try:
+        s = m.slits[int(c.extver) - 1]
+        g = B.slit_geometry(s)
+        gx = slit_geometry_extended(s)
+    finally:
+        m.close()
+    return g, gx
+
+
+def _rate_samples(c, gx, rate, rvar, rate_ok, clean, core_frac):
+    """One slitlet's clean shutters' core pixels in rate units over its extended footprint:
+    ``{(slitlet_id, k): (lam, rate, var)}``."""
+    blk = (slice(gx['row_lo'], gx['row_lo'] + gx['footprint'].shape[0]), slice(0, rate.shape[1]))
+    core = gx['footprint'] & gx['is_open'] & (np.abs(gx['f']) <= core_frac) & rate_ok[blk]
+    out = {}
+    if not core.any():
+        return out
+    sid = gx['slitlet_id']
+    for kk in np.unique(gx['k'][core]):
+        if (sid, int(kk)) not in clean:
+            continue
+        sel = core & (gx['k'] == kk)
+        out[(sid, int(kk))] = (gx['lam'][sel], rate[blk][sel], rvar[blk][sel])
+    return out
+
+
+def _rate_frame(rate_path, counter_path):
+    """The rate frame, its variance and the pixels the rate-unit sky may use (finite,
+    DQ-clean, one footprint on the coverage counter)."""
+    from jwst.datamodels import dqflags
+    with fits.open(rate_path, memmap=False) as h:
+        rate = np.array(h['SCI'].data, float)
+        rerr = np.array(h['ERR'].data, float) if 'ERR' in h else np.full(rate.shape, np.nan)
+        rdq = np.array(h['DQ'].data) if 'DQ' in h else np.zeros(rate.shape, np.uint32)
+    counter = np.load(counter_path) if counter_path and os.path.exists(counter_path) else None
+    bad = dqflags.pixel['DO_NOT_USE'] | dqflags.pixel['MSA_FAILED_OPEN']
+    rate_ok = np.isfinite(rate) & ((rdq & bad) == 0)
+    if counter is not None:
+        rate_ok &= counter == 1
+    rvar = np.where(np.isfinite(rerr) & (rerr > 0), rerr ** 2, np.nan)
+    return rate, rvar, rate_ok, counter
+
+
+def _clean_shutters(prod):
+    """``{(slitlet_id, k)}`` of the product's clean empty shutters."""
+    clean = set()
+    sh = prod.get('shutters')
+    if sh is not None and len(sh):
+        for sid, k, cl in zip(sh['slitlet_id'], sh['k'], sh['clean']):
+            if bool(cl):
+                clean.add((int(sid), int(k)))
+    return clean
+
+
+def _worker_rate_samples(args):
+    """Pass 2a for one rate file: the clean shutters' spectra in count-rate units on the
+    disperser's extended grid, one ``ShutterSpectrum`` per shutter (``sb`` in DN/s)."""
+    rate_path, product, canonicals, counter_path, edges, opt = args
+    prod = load_product(product)
+    rate, rvar, rate_ok, _ = _rate_frame(rate_path, counter_path)
+    clean = _clean_shutters(prod)
+    core_frac = float(opt.get('core_frac', 0.2))
+    samples, seen, failures = defaultdict(list), set(), []
+    for c in canonicals:
+        try:
+            _, gx = _geometries(c)
+        except Exception as e:
+            failures.append((c.key, f'{type(e).__name__}: {e}')); continue
+        key = (gx['name'], gx['quadrant'])
+        if key in seen:
+            continue
+        seen.add(key)
+        for k, v in _rate_samples(c, gx, rate, rvar, rate_ok, clean, core_frac).items():
+            samples[k].append(v)
+    specs = []
+    for (sid, kk), parts in samples.items():
+        lam = np.concatenate([p[0] for p in parts]); v = np.concatenate([p[1] for p in parts]); var = np.concatenate([p[2] for p in parts])
+        if lam.size < opt.get('min_pixels', 20):
+            continue
+        var = np.where(np.isfinite(var), var, np.nanmedian(var) if np.isfinite(var).any() else 1.0)
+        sb, err, n = bin_spectrum(lam, v, var, edges)
+        specs.append(ShutterSpectrum(rate_base=rate_base_of(rate_path), source_id=0, slitlet_id=sid, quadrant=0,
+                                     k=kk, n_pix=int(lam.size), sb=sb, err=err, n=n))
+    return rate_path, specs, failures
+
+
+def rate_sky_for(base, specs_of, clip_sigma, min_shutters=3, min_overlap=10):
+    """The rate-unit sky of one rate file ``base`` (``<root>_<nod>_<det>``) on the
+    disperser's extended grid, with its fallbacks bin by bin: the exposure's own clean
+    shutters (source 1); the exposure group's pool on the same detector (2); the other
+    detector's pool scaled by the median ratio over the bins both have (3: the same sky
+    through a different detector response); the nearest filled bin held outward (4).
+    ``specs_of`` maps every rate base of the group to its spectra. Returns
+    ``(sb, err, n_shutters, source)`` or None when nothing at all was measured."""
+    root, nod, det = base.rsplit('_', 2)
+    other = 'nrs2' if det == 'nrs1' else 'nrs1'
+    own = combine(specs_of.get(base, []), clip_sigma)
+    same = combine([s for b, sp in specs_of.items() if b.endswith(det) for s in sp], clip_sigma)
+    oth = combine([s for b, sp in specs_of.items() if b.endswith(other) for s in sp], clip_sigma)
+    ref = own if own is not None else same
+    if ref is None and oth is None:
+        return None
+    nb = len((ref if ref is not None else oth)[0])
+    sb = np.full(nb, np.nan); err = np.full(nb, np.nan); n = np.zeros(nb, int); src = np.zeros(nb, np.int16)
+    for level, cand in ((1, own), (2, same)):
+        if cand is None:
+            continue
+        take = ~np.isfinite(sb) & np.isfinite(cand[0]) & (cand[2] >= min_shutters)
+        sb[take] = cand[0][take]; err[take] = cand[1][take]; n[take] = cand[2][take]; src[take] = level
+    if oth is not None:
+        both = np.isfinite(sb) & np.isfinite(oth[0]) & (oth[2] >= min_shutters) & (oth[0] > 0)
+        if both.sum() >= min_overlap:
+            scale = float(np.median(sb[both] / oth[0][both]))
+            take = ~np.isfinite(sb) & np.isfinite(oth[0]) & (oth[2] >= min_shutters)
+            sb[take] = scale * oth[0][take]; err[take] = scale * oth[1][take]; n[take] = oth[2][take]; src[take] = 3
+    fin = np.isfinite(sb)
+    if fin.any() and not fin.all():
+        idx = np.arange(nb)
+        sb[~fin] = np.interp(idx[~fin], idx[fin], sb[fin]); err[~fin] = np.interp(idx[~fin], idx[fin], err[fin]); src[~fin] = 4
+    return sb, err, n, src
 
 
 def _worker_paint(args):
-    """Pass 2 for one rate file: every input slit's sky in its own frame, then back to
-    the rate frame through the pixelwise factor ``rate / SCI`` (exact wherever the
-    calibration is a product of per-pixel factors, §4.4), summed on the detector."""
-    rate_path, product, canonicals, bs_path, counter_path, counter_notail_path = args
+    """Pass 2b for one rate file: every input slit's sky painted on the detector.
+
+    Inside the calibrated range (where the cutout's ``SCI`` is finite) each slit's sky is
+    evaluated in its own frame and brought back to the rate frame through the pixelwise
+    factor ``rate / SCI`` (exact wherever the calibration is a product of per-pixel
+    factors, §4.4). Past it, over the rest of the slitlet's footprint (the extended
+    geometry cut to the disperser's wavelength cutoffs: the columns before the cutout's
+    first calibrated column and beyond its last, and the columns jwst's bounding box
+    leaves outside the calibrated range), the sky is painted in count-rate units with no
+    flat or photometric calibration: the exposure's rate-unit sky at the open-shutter
+    centre ``rate_sky`` (``rate_sky_for``) times the bar shadow at the pixel's
+    slit-frame row. Both are summed where footprints overlap; each slitlet is painted
+    once (two sources of one slitlet get cutouts a pixel apart).
+    """
+    rate_path, product, canonicals, bs_path, counter_path, centres, rate_sky, opt = args
     table = B.load_table(bs_path)
     prod = load_product(product)
-    with fits.open(rate_path, memmap=False) as h:
-        rate = np.array(h['SCI'].data, float)
+    rate, _, _, counter = _rate_frame(rate_path, counter_path)
+    core_frac = float(opt.get('core_frac', 0.2))
     # Two layers. A pixel inside an open shutter of several slitlets (traces crossing on
     # the gratings) receives every one's sky, so those are summed. A slit's margin and
     # closed-shutter rows (the half pitch beyond its outer shutters, which jwst's cutout
@@ -685,45 +851,93 @@ def _worker_paint(args):
     mb_margin = np.zeros(rate.shape, np.float32)
     cover = np.zeros(rate.shape, np.int16)
     cover_margin = np.zeros(rate.shape, np.int16)
-    n_painted, failures = 0, []
-    painted_boxes = set()
+    n_painted, n_ext, failures = 0, 0, []
+    painted = set()
+    check = []                          # (lam, in-range painted value) on core pixels, for the continuity check
+    rs_fin = rate_sky is not None and np.isfinite(rate_sky[0]).any()
+    floor_bs = float(np.nanmin(table['data1x1']))
+
+    def paint(block, val, is_open):
+        ok = np.isfinite(val)
+        op = ok & is_open
+        mb_open[block][op] += val[op].astype(np.float32)
+        cover[block][op] += 1
+        marg = ok & ~is_open
+        mb_margin[block][marg] += val[marg].astype(np.float32)
+        cover_margin[block][marg] += 1
+        return ok
+
     for c in canonicals:
         try:
-            r = sky_for_slit(prod, c.path, c.extver, table, mode='own')
+            frame = read_slit_frame(c.path, c.extver)
+            g, gx = _geometries(c)
         except Exception as e:
             failures.append((c.key, f'{type(e).__name__}: {e}')); continue
+        key = (gx['name'], gx['quadrant'])
+        if key in painted:
+            continue                      # a second source of the same slitlet: the same sky
+        painted.add(key)
+        r = sky_on_geometry(prod, frame, g, table)
         ny, nx = r['shape']
-        key = (r['y0'], r['x0'], ny, nx)
-        if key in painted_boxes:
-            continue                      # a second source of the same slitlet: same cutout, same sky
-        painted_boxes.add(key)
-        box = (slice(r['y0'], r['y0'] + ny), slice(r['x0'], r['x0'] + nx))
+        y0, x0 = r['y0'], r['x0']
+        box = (slice(y0, y0 + ny), slice(x0, x0 + nx))
         rbox = rate[box]
         if rbox.shape != r['shape']:
             continue
         with np.errstate(invalid='ignore', divide='ignore'):
             val = r['sky'] / pixelwise_factor(r['sci'], rbox)
-        ok = np.isfinite(val)
-        is_open = ok & r['open']
-        mb_open[box][is_open] += val[is_open].astype(np.float32)
-        cover[box][is_open] += 1
-        marg = ok & ~r['open']
-        mb_margin[box][marg] += val[marg].astype(np.float32)
-        cover_margin[box][marg] += 1
+        ok = paint(box, val, r['open'])
         n_painted += 1
+        ccore = ok & r['open'] & (np.abs(g['f']) <= core_frac)
+        if ccore.any():
+            check.append((g['lam'][ccore], val[ccore]))
+        if not rs_fin:
+            continue
+        # the extension: the footprint this slit has not painted, in count-rate units
+        foot = gx['footprint']
+        done = np.zeros(foot.shape, bool)
+        r_a = y0 - gx['row_lo']
+        if r_a < 0 or r_a + ny > foot.shape[0]:
+            continue
+        done[r_a:r_a + ny, x0:x0 + nx] = ok
+        todo = foot & ~done
+        if not todo.any():
+            continue
+        lam = gx['lam']
+        fin = np.isfinite(rate_sky[0])
+        sb = np.interp(lam, centres[fin], rate_sky[0][fin], left=np.nan, right=np.nan)
+        q = prod['qscales'].get(int(gx.get('quadrant', 0)), np.nan)
+        if np.isfinite(q) and q > 0:
+            sb = sb * q
+        bs = np.full(lam.shape, np.nan)
+        inside = gx['seg'] >= 0
+        if inside.any():
+            bs[inside] = B.evaluate_table(table, gx['seg'][inside], gx['yseg'][inside], lam[inside])
+        closed = ~inside & (gx['j'] >= 0) & (gx['j'] < len(gx['state']))
+        bs[closed] = floor_bs
+        valx = np.where(todo, sb * bs, np.nan)
+        blk = (slice(gx['row_lo'], gx['row_lo'] + foot.shape[0]), slice(0, rate.shape[1]))
+        n_ext += int(paint(blk, valx, gx['is_open']).sum())
+
+    ratio = np.nan
+    if check and rs_fin:
+        fin = np.isfinite(rate_sky[0])
+        lam_c = np.concatenate([p[0] for p in check]); v_c = np.concatenate([p[1] for p in check])
+        model = np.interp(lam_c, centres[fin], rate_sky[0][fin], left=np.nan, right=np.nan)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            rr = v_c / model
+        rr = rr[np.isfinite(rr) & (model > 0)]
+        ratio = float(np.median(rr)) if rr.size else np.nan
+
     with np.errstate(invalid='ignore', divide='ignore'):
         margin_only = (cover == 0) & (cover_margin > 0)
         mb = np.where(cover > 0, mb_open, np.where(margin_only, mb_margin / np.maximum(cover_margin, 1), 0)).astype(np.float32)
     cover = np.where(cover > 0, cover, np.where(margin_only, 1, 0)).astype(np.int16)
     dq = np.zeros(rate.shape, np.uint8)
     dq[cover == 0] |= DQ_UNCOVERED
-    if counter_notail_path and os.path.exists(counter_notail_path):
-        n_foot = np.load(counter_notail_path)
-        dq[(n_foot > cover) & (n_foot > 0)] |= DQ_UNPAINTED
-        if counter_path and os.path.exists(counter_path):
-            tail = np.load(counter_path) - n_foot
-            dq[tail > 0] |= DQ_TAIL
-    return rate_path, mb, dq, np.clip(cover, 0, 255).astype(np.uint8), n_painted, failures
+    if counter is not None:
+        dq[(counter > cover) & (counter > 0)] |= DQ_UNPAINTED
+    return rate_path, mb, dq, np.clip(cover, 0, 255).astype(np.uint8), n_painted, failures, n_ext, ratio
 
 
 def _finite_cards(cards):
@@ -812,7 +1026,15 @@ def plot_product(path, out_pdf, obs_name=''):
             ax.plot(lam, t['model_surf_bright'], color='tab:blue', ls='--', lw=1, label=f"jwst_backgrounds x {header_float(hdr, 'MBKGMDL'):.2f}")
         ax.set_ylabel('sky surface brightness [MJy/sr]'); ax.set_title(f'{obs_name} {base}: master background')
         hi = np.nanpercentile(t['surf_bright'], 99) if np.isfinite(t['surf_bright']).any() else 1
-        ax.set_ylim(0, 2 * hi); ax.legend(fontsize=8)
+        ax.set_ylim(0, 2 * hi); ax.legend(fontsize=8, loc='upper left')
+        if prod.get('rate_sky') is not None:
+            tr = prod['rate_sky']
+            ax2 = ax.twinx()
+            ax2.plot(tr['wavelength'], tr['rate'], color='tab:red', lw=0.8,
+                     label=f"rate-unit sky, {hdr.get('MBKGCBLU')}-{hdr.get('MBKGCRED')} um (in-range painted / this: {header_float(hdr, 'MBKGRRAT'):.3f})")
+            ax2.set_ylabel('DN/s at the open-shutter centre', color='tab:red')
+            rhi = np.nanpercentile(tr['rate'], 99) if np.isfinite(tr['rate']).any() else 1
+            ax2.set_ylim(0, 2 * rhi); ax2.legend(fontsize=8, loc='upper right')
         ax = axes[1]
         with np.errstate(invalid='ignore', divide='ignore'):
             ax.plot(lam, t['surf_bright'] / t['pool_surf_bright'], color='k', lw=0.8, label='this / pool')
@@ -891,7 +1113,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         from campfire_pipeline.nirspec.extended_wavelength import build_extended_reference_files
         extended_refs = build_extended_reference_files(obs.rate_files) or {}
     cache_dir = default_cache_dir()
-    counters, counters_notail = {}, {}
+    counters, cutoffs_of = {}, {}
     for base in sorted(sample):
         rate = os.path.join(obs.workspace_dir, f'{base}_rate.fits')
         if not os.path.exists(rate):
@@ -899,12 +1121,10 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         c0 = sample[base][0]
         ext = extended_refs.get((c0.detector.upper(), c0.grating, c0.filter))
         wr = ext.get('wavelengthrange') if ext else None
-        tail = tail_px_for(c0.grating)
-        coverage_from_wcs(rate, cache_dir=cache_dir, tail_px=tail, wavelengthrange_override=wr)
-        counters[rate] = cache_path(rate, cache_dir, tail, wr)
-        if tail:
-            coverage_from_wcs(rate, cache_dir=cache_dir, tail_px=0, wavelengthrange_override=wr)
-        counters_notail[rate] = cache_path(rate, cache_dir, 0, wr)
+        cutoffs = cutoffs_for(c0.grating, c0.filter)
+        cutoffs_of[rate] = cutoffs
+        coverage_from_wcs(rate, cache_dir=cache_dir, cutoffs=cutoffs, wavelengthrange_override=wr)
+        counters[rate] = cache_path(rate, cache_dir, cutoffs, wr)
     log(f'master background: {len(counters)} coverage counters')
 
     dispersers = sorted({(c.grating, c.filter) for c in canonicals})
@@ -1000,21 +1220,82 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         log(f'master background: {base}: {n_clean}/{len(spectra)} shutters clean ({src}); '
             f'scale vs pool {a:.4f}, offset/sky {cards["MBKGOFFR"][0]:+.4f}; data/model {mscale:.3f}')
         if opt['write_2d']:
-            paint_args.append((rate, out, cans, bs_of[key][1], counters.get(rate), counters_notail.get(rate)))
+            paint_args.append(((rate, out, cans, bs_of[key][1], counters.get(rate), opt), key))
 
     if paint_args:
         from multiprocessing import Pool
+        # pass 2a: the clean shutters in count-rate units on the disperser's extended grid
+        # (the MBKG1D grid continued to the cutoffs), over every rate file of the groups,
+        # so each exposure's rate-unit sky has the group pool and the other detector to
+        # fall back on where its own shutters reach no further (an NRS1 red end lies on
+        # NRS2 for most slitlets)
+        ext_edges = {}
+        for key in dispersers:
+            c_ = 0.5 * (edges_of[key][1:] + edges_of[key][:-1])
+            blue, red = cutoffs_for(*key)
+            ext_edges[key] = rate_sky_edges(c_, blue if blue is not None else c_[0], red if red is not None else 1.5 * c_[-1])
+        sample_args = []
+        for base in sorted(sample):
+            rate = os.path.join(obs.workspace_dir, f'{base}_rate.fits')
+            prod_path = product_path(obs, base)
+            if not os.path.exists(rate) or not os.path.exists(prod_path):
+                continue
+            key = (sample[base][0].grating, sample[base][0].filter)
+            sample_args.append((rate, prod_path, sample[base], counters.get(rate), ext_edges[key], opt))
+        specs_of = {}
+        if n_processes > 1:
+            with Pool(min(n_processes, len(sample_args))) as pool:
+                for rate, specs, fails in pool.imap_unordered(_worker_rate_samples, sample_args):
+                    specs_of[rate_base_of(rate)] = specs
+        else:
+            for a in sample_args:
+                rate, specs, fails = _worker_rate_samples(a)
+                specs_of[rate_base_of(rate)] = specs
+        rate_skies = {}
+        for base in specs_of:
+            grp = base.rsplit('_', 2)[0]
+            in_group = {b: sp for b, sp in specs_of.items() if b.rsplit('_', 2)[0] == grp}
+            rate_skies[base] = rate_sky_for(base, in_group, opt['clip_sigma'])
+        paint_args = [(rate, out, cans, bs_path, counter, 0.5 * (ext_edges[key][1:] + ext_edges[key][:-1]),
+                       rate_skies.get(rate_base_of(rate)), o)
+                      for (rate, out, cans, bs_path, counter, o), key in paint_args]
+
         def _finish(res):
-            rate, mb, dq, cover, n_painted, fails = res
-            out = product_path(obs, rate_base_of(rate))
+            rate, mb, dq, cover, n_painted, fails, n_ext, ratio = res
+            base = rate_base_of(rate)
+            out = product_path(obs, base)
+            rate_sky = rate_skies.get(base)
+            grp = base.rsplit('_', 2)[0]
+            key = (sample[base][0].grating, sample[base][0].filter)
+            centres_ext = 0.5 * (ext_edges[key][1:] + ext_edges[key][:-1])
             with fits.open(out, memmap=False) as h:
                 hdul = fits.HDUList([x.copy() for x in h])
+            blue, red = cutoffs_of.get(rate, (None, None))
             hdul[0].header['MBKGN2D'] = (n_painted, 'slits painted into MBKG2D')
-            hdul[0].header['MBKGDQ1'] = ('1 uncovered, 2 covering trace unpainted, 4 tail', 'MBKG2DDQ bits')
+            hdul[0].header['MBKGNEXT'] = (int(n_ext), 'pixels painted past the calibrated range')
+            hdul[0].header['MBKGCBLU'] = (float(blue) if blue is not None else 'edge', 'footprint blue cutoff [um]')
+            hdul[0].header['MBKGCRED'] = (float(red) if red is not None else 'edge', 'footprint red cutoff [um]')
+            if np.isfinite(ratio):
+                hdul[0].header['MBKGRRAT'] = (float(ratio), 'in-range painted / rate-unit sky, median')
+            hdul[0].header['MBKGDQ1'] = ('1 uncovered, 2 covering trace unpainted', 'MBKG2DDQ bits')
+            if rate_sky is not None:
+                tr = Table()
+                tr['wavelength'] = np.asarray(centres_ext, np.float64); tr['wavelength'].unit = 'um'
+                tr['rate'] = np.asarray(rate_sky[0], np.float32); tr['rate'].unit = 'count/s'
+                tr['rate_err'] = np.asarray(rate_sky[1], np.float32); tr['rate_err'].unit = 'count/s'
+                tr['n_shutters'] = np.asarray(rate_sky[2], np.int32)
+                tr['source'] = np.asarray(rate_sky[3], np.int16)
+                hdu = fits.BinTableHDU(tr, name='MBKG1DR')
+                hdu.header['SOURCE'] = ('1 own shutters, 2 group pool same detector, 3 other detector scaled, 4 held', 'the source column')
+                hdul.append(hdu)
+                srcs = np.bincount(np.asarray(rate_sky[3], int), minlength=5)
+                hdul[0].header['MBKGRSRC'] = (f'own {srcs[1]} pool {srcs[2]} other {srcs[3]} held {srcs[4]}', 'MBKG1DR bins by source')
             hdul.append(fits.ImageHDU(mb, name='MBKG2D')); hdul[-1].header['BUNIT'] = 'DN/s'
             hdul.append(fits.ImageHDU(cover, name='MBKG2DN'))
             hdul.append(fits.ImageHDU(dq, name='MBKG2DDQ'))
             atomic_save(hdul, out)
+            log(f'master background: {rate_base_of(rate)}: {n_painted} slits painted, {n_ext} pixels past the calibrated range'
+                + (f', in-range / rate-unit sky {ratio:.3f}' if np.isfinite(ratio) else ''))
             if fails:
                 log(f'master background: {rate_base_of(rate)}: {len(fails)} slit(s) not painted, e.g. {fails[0]}')
         if n_processes > 1:

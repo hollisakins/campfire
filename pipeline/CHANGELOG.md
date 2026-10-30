@@ -50,9 +50,30 @@ Release procedure: edit the `## Unreleased` section below, then run
   the cutout, brought into the slit's frame through the pixelwise `SCI / rate` factor (on the gratings
   a pixel carries several slitlets' sky; the slit's own slitlet alone, evaluated with the bar shadow
   from the empirical table where one exists and CRDS otherwise, is `own_sky` and `mode='own'`), with
-  the 3 % error floor in the variance; pixels under an unpainted covering trace or a tail are NaN by
-  default (`mask_bits`), and `slitlet_scale_on` is the opt-in per-slitlet rescaling from the slit's own
-  clean shutters. Each slitlet is painted once (two sources of one slitlet share a cutout) and each
+  the 3 % error floor in the variance; nothing is masked by default (`mask_bits` is opt-in, flagging a
+  covering trace that was not painted), and `slitlet_scale_on` is the opt-in per-slitlet rescaling
+  from the slit's own clean shutters. **The sky is painted past the calibrated range (algorithm 1.1,
+  2026-10-30).** The painter used to stop where a cutout's wavelength or calibration ends, while the
+  sky light runs on: on G140M and G235M NRS2 every trace stopped at a fixed detector column (1593 to
+  1824) with the sky continuing to the detector edge at full strength, on G395M the filter cut-on
+  lets 50 % through 0.05 µm before the cutout, and jwst's bounding box starts 13 to 45 columns before
+  the calibration does. `coverage.slit_geometry_extended` / `slitlet_geometry_extended` now evaluate
+  a slitlet's `detector -> slit_frame` transform over a row block around its cutout and every detector
+  column (the transform is finite across the whole detector; jwst's bounding box only clips `wcs(x,
+  y)`), returning the same dict for a stage-2a cutout and for a slitlet of the rate file's MSA
+  configuration; the footprint is that geometry cut to per-disperser wavelength cutoffs measured from
+  the empty shutters where the light falls below 2 % of the in-band level (`WAVELENGTH_CUTOFFS`: prism
+  0.55 to 5.6 µm, G140M/F100LP 0.96 to the detector edge, G235M/F170LP 1.55 to 5.05, G395M/F290LP 2.60
+  to 5.7). `coverage_from_wcs` counts those footprints (cache tag `_v2`, no `tail_px`; the 200 px
+  G395M tail and the derivation's `--tail-px` are gone). The painter paints the footprint past each
+  slit's calibrated columns in count-rate units with no flat or photometric calibration: the
+  exposure's own rate-unit sky at the open-shutter centre (`MBKG1DR`, DN/s, measured from the clean
+  shutters' core pixels over their whole footprints on the `MBKG1D` grid continued to the cutoffs)
+  times the bar shadow; `MBKGNEXT` counts those pixels, `MBKGRRAT` the median ratio of the in-range
+  painted values to the rate-unit sky on the same pixels, `MBKGCBLU` / `MBKGCRED` the cutoffs. The
+  `DQ_TAIL` bit is retired (never set). `sky_for_slit` returns `sky_rate` (the painted DN/s cutout,
+  finite past the calibrated range too), `rate` and `calibrated` beside `sky`, which has the slit's
+  units only where its `SCI` is finite. Each slitlet is painted once (two sources of one slitlet share a cutout) and each
   physical shutter is selected once; margin rows count only where no open shutter was painted. Products skip when their inputs are
   unchanged (the bar-shadow table of the expansion counts as an input: its name `MBKGBSRF` and its
   derivation date `MBKGBSDT`). Nothing is subtracted yet (P2). `barshadow_calibration.pixel_samples` now reads any
