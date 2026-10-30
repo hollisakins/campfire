@@ -164,8 +164,9 @@ def inputs_stamp(canonicals):
     return max((os.path.getmtime(p) for p in paths), default=0.0)
 
 
-def product_current(path, rate_path, canonicals, stuck_mtime):
-    """True when ``path`` was derived from these inputs by this algorithm."""
+def product_current(path, rate_path, canonicals, stuck_mtime, bs_name=None):
+    """True when ``path`` was derived from these inputs by this algorithm (and, when
+    ``bs_name`` is given, with that bar-shadow table in the 2-D expansion)."""
     if not os.path.exists(path):
         return False
     try:
@@ -177,7 +178,8 @@ def product_current(path, rate_path, canonicals, stuck_mtime):
             and str(hdr.get('MBKGBKDT')) == str(rate_hdr.get('CFBKGDT'))
             and abs(float(hdr.get('MBKGSTK', -1)) - float(stuck_mtime or 0)) < 1e-3
             and abs(float(hdr.get('MBKGINMT', -1)) - inputs_stamp(canonicals)) < 1e-3
-            and int(hdr.get('MBKGNIN', -1)) == len(canonicals))
+            and int(hdr.get('MBKGNIN', -1)) == len(canonicals)
+            and (bs_name is None or str(hdr.get('MBKGBSRF')) == bs_name))
 
 
 # ---------------------------------------------------------------------------
@@ -843,7 +845,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         version = 'unknown'
     inputs = discover_inputs(obs)
     stuck_mtime = obs.stuck_closed_shutters_mtime or 0.0
-    todo = {}
+    todo, bs_name_of = {}, {}
     for rate in obs.rate_files:
         base = rate_base_of(rate)
         cans = inputs.get(base, [])
@@ -851,7 +853,10 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             log(f'master background: {base}: no stage-2a inputs, skipped')
             continue
         out = product_path(obs, base)
-        if not overwrite and product_current(out, rate, cans, stuck_mtime):
+        # a new bar-shadow table for the grating makes the product stale too
+        if cans[0].grating not in bs_name_of:
+            bs_name_of[cans[0].grating] = _barshadow_reference(cans[0].grating, cans[0].path)[0]
+        if not overwrite and product_current(out, rate, cans, stuck_mtime, bs_name_of[cans[0].grating]):
             log(f'master background: {base}: current, skipped')
             continue
         todo[base] = (rate, cans)

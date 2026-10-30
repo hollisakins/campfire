@@ -1072,6 +1072,31 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   the slit y scale; it agrees with jwst's planned `source_ypos` to 0.01 pitch where one exists), so
   the shutter next to the real position is padded and the fake source shutter is measured as sky.
   QA report: `scratch/claude/bs_prism7_all/empirical_barshadow_prism_qa.pdf` (not committed).
+- **The shipped grating tables (2026-10-30, `empirical_jwst_nirspec_barshadow_{g140m,g235m,g395m}.fits`).**
+  Derived from the four SPURS fields (GOODS-S, GOODS-N, EGS, A2744; one G140M/F100LP group of
+  three or four exposures per field, one G235M/F170LP and one G395M/F290LP exposure group each):
+  G140M from 14.1 M pixels, G235M from 3.1 M, G395M from 5.7 M. G140M and G235M were measured with
+  the footprints extended to the detector edge (`--tail-px 2048`): past the filter's nominal red end
+  the trace carries first-order light at the extended wavelengths, so the empty shutters there are
+  sky and have to be masked as covered; G395M keeps the 200-px tail. Validated with GOODS-S held out,
+  rms from 1 inside the shutters per segment (closed→open edge, open→closed edge, bar lower, bar
+  upper), empirical vs CRDS: G140M 0.7 / 1.4 / 1.1 / 0.6 % vs 10.6 / 12.7 / 13.4 / 1.6 %; G235M
+  4.2 / 3.7 / 2.1 / 1.2 % vs 14.5 / 7.8 / 18.7 / 2.2 %; G395M 2.6 / 1.3 / 1.9 / 1.7 % vs
+  14.2 / 11.5 / 22.9 / 2.7 %. The three training fields agree with one another inside the shutter
+  to 0.4 % (G140M), 0.7–1.2 % (G235M) and 0.6–1.0 % (G395M). The profile itself: the CRDS interior
+  bar is off by 0.05–0.1 pitch in opposite senses, since the gratings carry different references:
+  on G140M and G235M (CRDS 0003 / 0005) the CRDS bar is too wide (half-maximum at −0.68 pitch against
+  −0.62 measured), on G395M (CRDS 0008) the CRDS open region is too wide (it keeps the full level to
+  −0.75 and is still at 0.55 at −0.5, where the measured profile has reached its 0.45 floor; this is
+  the −17 % painted-sky residual of the P1b run above). On G395M the outer edges narrow with
+  wavelength as on the prism (CRDS keeps one width), and at every grating the floor beyond the outer
+  edge is below 0.3, not 0.45. G235M's held-out residual is the largest because it has the fewest shutters
+  (1115 clean in the three training fields) and GOODS-S's outermost 0.1 pitch sits 5–10 % below the
+  training fields at the lower edge and above at the upper edge, the field-to-field registration
+  spread already seen on the prism. QA reports and held-out runs in `scratch/claude/bs_gratings/`
+  (not committed). GOODS-N, EGS and A2744 got their 36 master-background products each from
+  `cfpipe nirspec master-bkg` with these tables in the expansion (69–180 clean of 58–211 shutters per
+  exposure × detector; scale vs pool 0.97–1.02; data/model 0.99–1.09).
 - Not yet measured: the bar profile as a function of quadrant, the solar-line check (§3.3), the
   origin of the G395M NRS2 excess (resolved: the trace tails, above) and of the per-exposure 3 µm
   differences; the grating tables await the SPURS reprocessing.
@@ -1106,10 +1131,11 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     degenerate at this noise; the pool-fallback threshold is not reached); data/model 1.07–1.13. On
     NRS1 the clean shutters' scales are bimodal (peaks near 0.95 and 1.15, `05101_00002_nrs1`), not
     explained by the quadrant scales (0.985 / 1.008) — to be checked against the tail length (§9 above)
-    and the per-slitlet term once the SPURS G395M products exist. The CRDS bar-shadow table is in the
-    expansion (no empirical G395M table yet) and `(rate − MBKG2D) / MBKG2D` has median −17 % over the
+    and the per-slitlet term once the SPURS G395M products exist. The CRDS bar-shadow table was in the
+    expansion for this run (no empirical G395M table yet) and `(rate − MBKG2D) / MBKG2D` had median −17 % over the
     covered pixels, consistent with the CRDS profile's too-wide open area over-predicting the sky in
-    the bar rows (the empirical G395M table from SPURS replaces it).
+    the bar rows (the empirical G395M table from SPURS, below, replaces it; a product's skip key
+    includes the table name, so the next stage-2a run refreshes these).
   - **The consumer gets the painted total, not the slit's own slitlet (found by the extraction-v2
     first pass, 2026-10-29).** On G395M a canonical's cutout carries the sky of every slitlet whose
     trace crosses it (38 % of the detector, §9 above): a source with no signal divided by its own
