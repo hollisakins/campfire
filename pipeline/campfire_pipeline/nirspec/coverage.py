@@ -29,25 +29,39 @@ TAIL_PX = {
 }
 
 
+def default_cache_dir():
+    """Where the counters are cached: ``$CAMPFIRE_ROOT/cache/coverage``."""
+    root = os.environ.get('CAMPFIRE_ROOT') or os.path.expanduser('~/campfire-data')
+    return os.path.join(root, 'cache', 'coverage')
+
+
+def cache_path(rate_path, cache_dir, tail_px=0, wavelengthrange_override=None):
+    """The cache file ``coverage_from_wcs`` writes for ``rate_path``."""
+    key = hashlib.sha1(os.path.abspath(rate_path).encode()).hexdigest()[:12]
+    tag = f'_tail{int(tail_px)}' if tail_px else ''
+    if wavelengthrange_override:
+        tag += '_wr' + hashlib.sha1(os.path.basename(wavelengthrange_override).encode()).hexdigest()[:8]
+    return os.path.join(cache_dir, f'coverage_{os.path.basename(rate_path)[:-5]}_{key}{tag}.npy')
+
+
 def tail_px_for(grating):
     """The redward footprint extension for a grating name (``'G395M'``, ``'PRISM'``…)."""
     return TAIL_PX.get(str(grating).upper(), 0)
 
 
-def coverage_from_wcs(rate_path, cache_dir=None, tail_px=0):
+def coverage_from_wcs(rate_path, cache_dir=None, tail_px=0, wavelengthrange_override=None):
     """Count of slitlet footprints per pixel of ``rate_path`` (int16, detector shape).
 
     Every open slitlet in the metafile the rate file points at, plus the failed-open
     shutters of the ``msaoper`` reference; fixed slits are skipped (always masked
     elsewhere). Each footprint is also counted over the ``tail_px`` pixels redward of
-    its nominal end. Cached as ``coverage_<rate>_<hash>[_tail<N>].npy`` under
-    ``cache_dir``, keyed on the rate file's absolute path.
+    its nominal end. ``wavelengthrange_override`` is the extended ``wavelengthrange``
+    reference of the extended-wavelength reduction, so the footprints end where that
+    reduction's calibration ends. Cached as ``coverage_<rate>_<hash>[_tail<N>][_wr<hash>].npy``
+    under ``cache_dir``, keyed on the rate file's absolute path.
     """
     tail_px = int(tail_px)
-    key = hashlib.sha1(os.path.abspath(rate_path).encode()).hexdigest()[:12]
-    tag = f'_tail{tail_px}' if tail_px else ''
-    cache = (os.path.join(cache_dir, f'coverage_{os.path.basename(rate_path)[:-5]}_{key}{tag}.npy')
-             if cache_dir else None)
+    cache = cache_path(rate_path, cache_dir, tail_px, wavelengthrange_override) if cache_dir else None
     if cache and os.path.exists(cache):
         return np.load(cache)
 
@@ -65,6 +79,8 @@ def coverage_from_wcs(rate_path, cache_dir=None, tail_px=0):
         with ImageModel(os.path.basename(rate_path)) as model:
             step = AssignWcsStep()
             step.input_dir = os.getcwd()
+            if wavelengthrange_override:
+                step.override_wavelengthrange = wavelengthrange_override
             processed = step.run(model)
             source_slits = processed.meta.wcs.get_transform('gwa', 'slit_frame').slits
             failed = create_slitlets(MSAFlagOpenStep().get_reference_file(processed, 'msaoper'))

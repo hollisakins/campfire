@@ -138,6 +138,23 @@
       "compressed_suffixes": []
     },
     {
+      "name": "nirspec_mbkg",
+      "instrument": "nirspec",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "obs"
+      ],
+      "subdir": "nirspec/{obs}",
+      "filename": null,
+      "suffix": "_mbkg.fits",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
       "name": "nirspec_bkgslits",
       "instrument": "nirspec",
       "tree": "products",
@@ -669,6 +686,10 @@
       [
         "_rate.fits",
         "nirspec_rate"
+      ],
+      [
+        "_mbkg.fits",
+        "nirspec_mbkg"
       ],
       [
         "_lines.fits",

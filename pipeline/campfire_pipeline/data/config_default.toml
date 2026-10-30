@@ -66,6 +66,34 @@
     rectify = true
     plot_bkgsub = true
     empirical_wavecorr = false
+    # Master background (docs/design-nirspec-master-background.md §4): the sky of each
+    # exposure x detector from its empty shutters, written as <root>_<nod>_<nrsN>_mbkg.fits
+    # at the end of stage 2a (always; these knobs set how, never whether). The 1-D sky
+    # comes from the shutter core |f| <= master_bkg_core_frac with master_bkg_bin_pixels
+    # detector pixels per bin; a shutter is rejected when its scale against the sky is
+    # above 1 + master_bkg_excess_min or below 1 - master_bkg_low_min (both at 3 sigma),
+    # or when master_bkg_line_min_bins consecutive bins exceed master_bkg_line_sigma.
+    # Below master_bkg_min_shutters clean shutters the exposure takes its group's pooled
+    # sky. master_bkg_error_floor is the fractional systematic sky_for_slit adds in
+    # quadrature; master_bkg_model_check compares with jwst_backgrounds when installed;
+    # master_bkg_write_2d paints the sky back onto the detector (MBKG2D, 16 MB per file).
+    master_bkg_source_pad_px = 3.0
+    master_bkg_core_frac = 0.2
+    master_bkg_bin_pixels = 2.0
+    master_bkg_min_pixels = 20
+    master_bkg_min_bins = 10
+    master_bkg_clip_sigma = 3.0
+    master_bkg_line_sigma = 4.0
+    master_bkg_line_min_bins = 3
+    master_bkg_excess_min = 0.05
+    master_bkg_low_min = 0.30
+    master_bkg_n_iter = 3
+    master_bkg_min_shutters = 5
+    master_bkg_error_floor = 0.03
+    master_bkg_quadrant_scales = true
+    master_bkg_model_check = true
+    master_bkg_write_2d = true
+    master_bkg_plot = true
     # Extend G140M/F100LP and G235M/F170LP past their nominal red cutoff, using the
     # next-redder grating's calibration: a committed extended photom reference plus
     # extended fflat/sflat/wavelengthrange generated on the fly. Opt-in per observation

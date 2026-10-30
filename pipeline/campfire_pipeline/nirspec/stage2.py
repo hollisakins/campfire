@@ -377,6 +377,13 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     # regenerates its canonicals), so all files end up stamped.
     dispatch(stamp_exp_group_single, list(files), n_processes=n_processes)
 
+    # The master background, last: the sky of every exposure x detector from the empty
+    # shutters of the canonicals and the background slitlets written above. Once per
+    # top-level run (the stuck-shutter re-run returns here with the final canonicals).
+    if not _skip_stuck_detection:
+        from campfire_pipeline.nirspec.master_bkg import run_master_bkg
+        run_master_bkg(obs, stage_config, n_processes=n_processes, overwrite=overwrite, plot=plot)
+
 
 def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
                 n_processes=1, data_dir=None, products_dir=None):

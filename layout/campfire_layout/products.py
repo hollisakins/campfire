@@ -160,6 +160,15 @@ _register(ProductSpec(
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
     suffix="_rate.fits", legacy_prefix=None,
 ))
+# The master background of one exposure x detector ('<root>_<nod>_<nrsN>_mbkg.fits'):
+# the sky from the empty shutters (MBKG1D), the shutter table and the rate-frame
+# 2-D expansion. Source-independent like the rate file, beside it, cloud-backed as
+# an intermediate (campfire pull --intermediate).
+_register(ProductSpec(
+    name="nirspec_mbkg", instrument=NS, tree="products", bucket="data",
+    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
+    suffix="_mbkg.fits", legacy_prefix=None,
+))
 # The background-only slitlets of one exposure ('<root>_<nrsN>_bkgslits.fits'),
 # a by-product of stage 2a's single Spec2Pipeline call and the input of the
 # master-background derivation. A regenerable local intermediate (never cloud-

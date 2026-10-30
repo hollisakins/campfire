@@ -136,6 +136,21 @@ def stage2a(config, obs, source_ids, processes, overwrite):
         _run_stage2a(obs_obj, stage_config, source_ids=sids, n_processes=processes, overwrite=overwrite, cfg=cfg)
 
 
+@main.command('master-bkg')
+@common_options
+@processing_options
+def master_bkg(config, obs, source_ids, processes, overwrite):
+    """Derive the master background (<root>_<nod>_<nrsN>_mbkg.fits) of every exposure
+    from the stage-2a canonicals and background slitlets. Runs at the end of stage 2a
+    too; this re-runs it alone (--overwrite to redo current products)."""
+    from campfire_pipeline.nirspec.master_bkg import run_master_bkg
+
+    for obs_name in obs:
+        cfg, obs_obj, paths = _setup(config, obs_name)
+        stage_config = get_stage_config('stage2', cfg, obs_obj)
+        run_master_bkg(obs_obj, stage_config, n_processes=processes, overwrite=overwrite)
+
+
 @main.command()
 @common_options
 @processing_options
