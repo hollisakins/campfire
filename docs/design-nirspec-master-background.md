@@ -16,6 +16,39 @@ shutter, an extended source that fills its slitlet, or a bright neighbour in the
 
 ---
 
+## Decisions since this study (2026-10-29)
+
+This document came into the extraction v2 branch by merge. The decisions below were taken after it
+was written, while combining the two branches. Where the body says otherwise, these win.
+
+1. **Placement.** The master background is the last sub-step of stage 2a, called once at its end.
+   It is not a sub-stage at the top of stage 2b (§4.3).
+2. **Grain.** The 1-D sky is derived per exposure × detector. The sky pooled over the exposure
+   group is the fallback when an exposure has too few clean shutters (§4.1 pooled first).
+3. **Units.** `MBKG1D` is stored as surface brightness (MJy/sr). Nothing downstream sees that unit:
+   `master_bkg.sky_for_slit(mbkg, slit)` returns the sky in the slit's own units, and the
+   master-background-subtracted spectrum ends in the same units as the nodded one.
+4. **No sky-difference term in the nodded products.** The master background is ~3–5 % noisier than
+   the nodded background, so it is never used to correct the nodded spectra. Each exposure's sky
+   difference against the pool is recorded in header cards (`MBKGSCL`, `MBKGOFF`) and a QA plot.
+5. **The master-background spectrum is a secondary product,** written as extra extensions of the
+   same `_spec.fits`, intended archive-wide. It comes from the extraction v2 fit, not from
+   `MBSUB_*` arrays and a second stage 3 pass (§4.5 is superseded). `_spec.fits` readers find
+   extensions by name, so the new extensions need not follow `EXPOSURES`.
+6. **Bar shadow.** Science frames are never divided by a bar shadow. The measured blank-sky bar
+   shadow calibrates the shutter edges and after-shutter blur of the extraction's forward model,
+   and multiplies the sky model. The measured table is used where one exists, CRDS otherwise.
+7. **First pass.** Every source is extracted once from master-background-subtracted frames (3-pixel
+   boxcar). Those spectra feed the contamination prediction and the shape of the final nodded
+   profile extraction. The joint contamination solve stays off.
+8. **Extended wavelengths.** With `[nirspec.stage2].extend_g140m_g235m` on, the region out to
+   5.3 µm is calibrated light, and the master background covers it.
+9. **Shared geometry.** `coverage.py` is the base of one shutter-geometry module shared with the
+   extraction's trace maps: failed-open shutters painted, tails on every disperser, cached per rate
+   file.
+
+---
+
 ## 0. Summary
 
 **Feasible, and most of the pieces exist.** The pipeline already (a) finds the footprint of every open
