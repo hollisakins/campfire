@@ -297,10 +297,10 @@ def jackknife_step(exposure_file, field, step_config, overwrite=False,
                             gdq_cal[0, g][m] |= _JUMP
 
                 jump.groupdq = gdq_cal
-                # Match production ramp_fit exactly (detector1.py config;
-                # suppress_one_group is the shared default).
+                # Match production ramp_fit exactly (detector1.py config).
                 rate_cal_model, _ = RampFitStep.call(
-                    jump, algorithm='OLS_C', maximum_cores='none')
+                    jump, algorithm='OLS_C', maximum_cores='none',
+                    suppress_one_group=False)
                 rate_cal = np.asarray(rate_cal_model.data, dtype=np.float64)
                 del rate_cal_model
 
