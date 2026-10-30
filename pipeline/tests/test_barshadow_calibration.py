@@ -38,20 +38,20 @@ def _trapezoid(y, half_open=0.3, floor=0.45):
     return np.clip(1 - (a - half_open) / (0.5 - half_open) * (1 - floor), floor, 1.0)
 
 
-def _synthetic_cells(grid, profile_fn, n=200):
-    """Accumulated (seg, ybin, col, 3) cells sampled from a known profile."""
-    total = np.zeros((len(B.SEGMENTS), len(B.Y_CENTRES), grid.n_w, 3))
+def _synthetic_cells(grid, profile_fn, n=200, sigma=0.02, n_of=None):
+    """Histogram cells (seg, ybin, col, N_HIST) sampled from a known profile; ``n_of(yc)``
+    overrides the samples per column of a row."""
+    total = np.zeros((len(B.SEGMENTS), len(B.Y_CENTRES), grid.n_w, B.N_HIST), np.int32)
     rng = np.random.default_rng(1)
+    cols = np.arange(grid.n_w)
     for si, name in enumerate(B.SEGMENTS):
         lo, hi = {'edge_lower': (-1, 0), 'edge_upper': (0, 1), 'bar_lower': (-1, -0.5), 'bar_upper': (-0.5, 0)}[name]
         for bi, yc in enumerate(B.Y_CENTRES):
             if not (lo <= yc <= hi):
                 continue
-            val = profile_fn(yc)
-            samples = val + rng.normal(0, 0.02, size=(n, grid.n_w))
-            total[si, bi, :, 0] = samples.sum(axis=0)
-            total[si, bi, :, 1] = (samples ** 2).sum(axis=0)
-            total[si, bi, :, 2] = n
+            m = n_of(yc) if n_of is not None else n
+            samples = profile_fn(yc) + rng.normal(0, sigma, size=(m, grid.n_w))
+            np.add.at(total[si, bi], (np.broadcast_to(cols, samples.shape), B.hist_slot(samples)), 1)
     return total
 
 
@@ -77,18 +77,31 @@ def test_build_tables_margin_rows_follow_the_collapsed_profile():
     constant floor."""
     grid = B.Grid(w0=1e-6, dw=0.05e-6, n_w=21, y0=-1.0, dy=0.002, n_y=1001)
     decline = lambda y: np.where(np.abs(y) > 0.5, 0.2 * np.exp(-(np.abs(y) - 0.5) / 0.05), _trapezoid(y))
-    total = _synthetic_cells(grid, decline, n=200)
-    # the margin rows: 2 samples per column (40 in the collapse), below n_min=20 per column
-    si = B.SEGMENTS.index('edge_lower')
-    for bi, yc in enumerate(B.Y_CENTRES):
-        if yc < -0.55:
-            total[si, bi, :, :] *= 2 / 200
+    # the margin rows: 2 samples per column (42 in the collapse), below n_min=20 per column
+    total = _synthetic_cells(grid, decline, n=200, n_of=lambda yc: 2 if yc < -0.55 else 200)
     t = B.build_tables(total, grid, smooth_cols=0, n_min=20)
     rows = grid.rows
     far = rows < -0.7
     assert np.nanmax(t['data1x1'][far, 10]) < 0.03          # follows the decline, not a 0.2 floor
     near = (rows > -0.6) & (rows < -0.56)
     assert np.allclose(t['data1x1'][near, 10], decline(rows[near]), atol=0.03)
+
+
+def test_cell_median_is_unbiased_where_the_noise_exceeds_the_value():
+    """Beyond the outer shutter edge the true ratio is a few per cent and a faint-sky pixel
+    scatters by ~0.5 of the sky: a mean clipped to (-0.5, 2.5) comes out near 0.2, the
+    histogram median at the true value. Outliers far outside the range count for the rank."""
+    rng = np.random.default_rng(3)
+    x = 0.04 + rng.normal(0, 0.5, 20000)
+    x[:200] = 50.0                                   # cosmic rays: overflow
+    acc = np.zeros(B.N_HIST, np.int64)
+    np.add.at(acc, B.hist_slot(x), 1)
+    med, var = B.cell_stats(acc[None, :], n_min=20)
+    clipped = x[(x > -0.5) & (x < 2.5)].mean()
+    assert clipped > 0.15                            # the old statistic's bias
+    assert med[0] == pytest.approx(0.04 + 0.5 * 0.0125, abs=0.015)   # 1 % in overflow moves the median by 0.0125 sigma
+    assert np.sqrt(var[0]) == pytest.approx(np.sqrt(np.pi / 2) * 0.5 / np.sqrt(20000), rel=0.1)
+    assert B.cell_counts(acc[None, :])[0] == 20000
 
 
 def test_profile_selection_admits_the_margin_on_the_shutter_it_borders():

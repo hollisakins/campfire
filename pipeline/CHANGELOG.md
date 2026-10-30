@@ -97,9 +97,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   for any single wavelength column are filled from the wavelength-collapsed profile instead of a
   constant floor. The light there falls from 0.15 of the open level at 0.53 pitch to 0.02 beyond
   0.65 on every disperser, and the constant (0.18-0.25) had painted the margin rows two to ten
-  times too bright. The prism and G140M tables now follow the data there to 0.01-0.02; G235M and
-  G395M still sit 0.05-0.15 high beyond the edge (light bluewards of neighbouring traces' cutouts,
-  which no footprint covers yet) and are to be re-derived once the footprints carry a blue cutoff. `[nirspec.stage2].empirical_barshadow`
+  times too bright. Each profile cell is the median of a histogram of SB / sky, not a mean
+  clipped to (-0.5, 2.5): where the per-pixel noise is comparable to the value (beyond the edge,
+  faint sky) the clip kept the positive tail only and lifted G235M / G395M margins to 0.09-0.13 and
+  the faint-sky G395M bar minimum by 0.09. All four tables now reach 0.03 at 0.6-0.7 pitch and
+  0.01-0.02 beyond. `[nirspec.stage2].empirical_barshadow`
   (default off) passes the table to `BarShadowStep` for the background slitlets
   (`config.get_empirical_barshadow_path`); gratings without a table fall back to CRDS. The overlap
   counter moved to `nirspec/coverage.py` with the redward tail past the nominal cutoff (`TAIL_PX`).

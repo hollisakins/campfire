@@ -1128,14 +1128,25 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   0.02); G395M is not improved (GOODS-S table 0.27 / 0.21 / 0.19 / 0.20 / 0.19, data 0.18 / 0.09 /
   0.06 / 0.04 / 0.01; COSMOS p1 table 0.31 / 0.27 / 0.24 / 0.24 / 0.23, data 0.22 / 0.15 / 0.15 /
   0.09 / 0.07), and its table's margin level falls with wavelength (0.20 at 2.9–3.7 µm, 0.12 at
-  3.7–4.5, 0.05 at 4.5–5.3). The likely cause is light the coverage counter does not know about:
-  the sky runs 40–80 px bluewards of every cutout's first column on G235M and G395M (still 50 % of
-  the in-band level 21 and 46 px before it, none on G140M and the prism), so the margin cells of a
-  slitlet whose neighbour starts nearby carry that neighbour's light. The derivation selects on the
-  counter (one footprint per pixel), so once the footprints carry a blue cutoff the contaminated
-  pixels drop out by construction; the G235M and G395M tables are to be re-derived then. The effect
-  on an extraction is confined to the outermost rows of a cutout (≈15 % of the sky level there),
-  but it is what a sky-subtracted 2-D cutout shows first: a dark band along its edges.
+  3.7–4.5, 0.05 at 4.5–5.3). The first suspect was light the coverage counter did not know
+  about (the sky runs 40–80 px bluewards of every cutout's first column on G235M and G395M), but
+  re-deriving on the extended footprints, which carry the blue cutoff, left the margin rows
+  unchanged to 0.01. The cause was the cell statistic. The derivation took the mean of SB / sky
+  over a cell after dropping pixels outside (-0.5, 2.5). Beyond the edge the true ratio is ~0.04,
+  and where the sky is faint (G395M below 3.7 µm, G235M) one pixel scatters by about half the sky,
+  so the window cut the negative tail and kept the positive one: on GOODS-S G395M the clipped mean
+  of the margin pixels is 0.205 / 0.100 / 0.049 in the three bands (the table had 0.22 / 0.11 /
+  0.05), the median 0.042 / 0.042 / 0.048. The wavelength trend was the bias, not the instrument.
+  Each cell now keeps a histogram of the ratio and takes its median; pixels beyond the histogram's
+  range land in under- and overflow slots that count for the rank (2026-10-30). The re-derived
+  tables agree on every disperser: 0.026–0.033 of the open level at 0.6–0.7 pitch and
+  0.007–0.018 beyond (the committed G235M / G395M tables had 0.09–0.13 there). The same bias had
+  lifted the interior-bar minimum where the sky is faint (G395M 2.9–3.7 µm: 0.50 before, 0.41 now).
+  On the refreshed products (same measurement, 0.53 / 0.58 / 0.63 / 0.68 / 0.73 pitch, table vs
+  data): GOODS-S G140M 0.15 / 0.07 / 0.04 / 0.03 / 0.02 vs 0.14 / 0.07 / 0.04 / 0.03 / 0.02, G235M
+  0.16 / 0.08 / 0.04 / 0.03 / 0.02 vs the same, G395M 0.15 / 0.08 / 0.04 / 0.03 / 0.02 vs 0.16 /
+  0.08 / 0.05 / 0.03 / 0.02; COSMOS p1 G395M (not in the derivation set) 0.15 / 0.08 / 0.04 / 0.03
+  / 0.01 vs 0.17 / 0.11 / 0.09 / 0.03 / 0.04, now 0.02-0.05 low where it was 0.09-0.18 high.
 - **The edges along the dispersion direction (2026-10-30).** The painter paints a slitlet only
   where its cutout's wavelength is finite, the calibrated range (plus the empirical extension where
   one exists); the sky light does not stop there. Rate along the trace, normalised to the in-band

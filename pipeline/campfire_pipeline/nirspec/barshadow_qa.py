@@ -128,10 +128,7 @@ def qa_report(res, out_pdf):
                 ax = axes[si]; lo, hi = _segment_rows(name); sel = (Y_CENTRES >= lo) & (Y_CENTRES <= hi) & (np.abs(Y_CENTRES) < 0.6) & (np.abs(Y_CENTRES + 1) > 0.0)
                 out = {}
                 for lab, acc, col in (('CRDS', h['crds'], 'r'), ('empirical', h['new'], 'g')):
-                    n = acc[si, :, 2]
-                    with np.errstate(invalid='ignore', divide='ignore'):
-                        m = acc[si, :, 0] / n
-                    m[n < 20] = np.nan
+                    m, _ = cell_stats(acc[si], n_min=20)
                     ax.plot(Y_CENTRES[sel], m[sel], color=col, lw=1.3, label=f'divided by the {lab} table')
                     inside = sel & (np.abs(Y_CENTRES - np.rint(Y_CENTRES)) < 0.5)
                     out[lab] = np.sqrt(np.nanmean((m[inside] - 1) ** 2))
