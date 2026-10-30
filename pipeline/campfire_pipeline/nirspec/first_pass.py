@@ -40,6 +40,49 @@ FIRST_PASS_VERSION = '1'
 SPEC_SRC = 'master'
 
 
+def master_sky(workspace, pool_on_gratings=True):
+    """``sky_for`` from the master background (``master_bkg.sky_for_slit``): each
+    canonical's sky from its exposure's ``{workspace}/<root>_<nod>_<nrsN>_mbkg.fits``.
+
+    ``pool_on_gratings``: on a grating the exposure's own 1-D sky is replaced by the
+    exposure-group pool (``pool_surf_bright``) brought to the exposure's level with the
+    product's own fit, ``MBKGSCL * pool + MBKGOFF``. Unsmoothed and binned at 2 pixels, a
+    single exposure's grating sky carries 10-20 % noise per bin (80-140 clean shutters,
+    few photons); the pool is the usable curve there until the product settles how it
+    smooths (an open decision). A sky excess over part of the range only (UDS p2,
+    2.6-3.4 um) is not followed by the scaled pool. The PRISM uses the exposure's own
+    sky."""
+    from astropy.io import fits
+    from campfire_pipeline.nirspec import master_bkg as MB
+
+    cache = {}
+
+    def product(key, canonical):
+        if key not in cache:
+            path = os.path.join(workspace, f'{key}_mbkg.fits')
+            if not os.path.exists(path):
+                raise FileNotFoundError(f'first pass: no master background {path}')
+            prod = MB.load_product(path)
+            if pool_on_gratings and str(prod['header'].get('MBKGGRAT', '')).upper() != 'PRISM':
+                a = MB.header_float(prod['header'], 'MBKGSCL')
+                b = MB.header_float(prod['header'], 'MBKGOFF')
+                if not (np.isfinite(a) and np.isfinite(b)):
+                    a, b = 1.0, 0.0                 # no fit: the pool stands in as it is
+                with fits.open(path, memmap=False) as h:
+                    t = h['MBKG1D'].data
+                    prod['surf_bright'] = a * np.array(t['pool_surf_bright'], float) + b
+                    prod['surf_bright_err'] = abs(a) * np.array(t['pool_surf_bright_err'], float)
+            cache[key] = (prod, MB.resolve_barshadow_table(prod['bs_ref'], canonical))
+        return cache[key]
+
+    def sky_for(path, slit):
+        prod, table = product(CT.exposure_key(path), path)
+        d = MB.sky_for_slit(prod, path, table=table)
+        return d['sky'], d['var']
+
+    return sky_for
+
+
 def load_group_sky(cal_files, sky_for, bkg_overrides=None, science=None, group=0):
     """Exposures of one stage-2b background group as single frames with the sky removed.
 
