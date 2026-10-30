@@ -211,6 +211,7 @@ class Exposure:
     origin: tuple = None           # (ystart, xstart) of the common frame on the detector, 1-based like jwst
     has_source: bool = True        # the source is in this frame (SRCFLUX != F)
     pa_v3: float = np.nan          # telescope roll [deg]
+    nod_partners: list = None      # a single frame (``partners == []``, ``first_pass``): its nodded partners
 
     @property
     def dy(self):
@@ -482,16 +483,23 @@ class ProfileModel:
         (N/(N-1))**2 * s2 gives exactly the frame-level chi2 (the sky profiled out),
         hence the correct spectrum and its errors; s2 is the mean frame variance
         of the set. Degrees of freedom are counted as (N-1)/N per pixel
-        (``dof_weight``)."""
+        (``dof_weight``).
+
+        An exposure with no partners (an empty list: a single frame with the sky
+        subtracted some other way, ``first_pass``) is its own frame: its variance as
+        given, one independent value per pixel."""
         e = self.exps[k]
         n = len(e.partners)
+        if n == 0:
+            return e.var
         s2 = (e.var + sum(self.exps[j].var for j in e.partners)) / (n + 1)
         return ((n + 1) / n) ** 2 * s2
 
     def dof_weight(self):
-        """Independent values per fitted pixel, (N-1)/N for a set of N nods."""
+        """Independent values per fitted pixel, (N-1)/N for a set of N nods, 1 for a
+        frame with no partners."""
         n = np.array([len(self.exps[k].partners) for k in self.pix['e']])
-        return n / (n + 1.0)
+        return np.where(n == 0, 1.0, n / (n + 1.0))
 
     def _grid(self):
         """Spectrum grid: native sampling at the source row of the first fitted

@@ -189,7 +189,7 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
         omask, have = _others_mask(exps, ks, maps, sid, rows, cols) if mask_others else ({k: 0 for k in ks}, True)
         for k in ks:
             e = exps[k]
-            if not e.use_data or e.partners is None or k not in rates or k not in geo:
+            if not e.use_data or not e.partners or k not in rates or k not in geo:
                 continue
             terms = [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in e.partners]
             if any(j not in rates or j not in geo for j, _ in terms):

@@ -258,6 +258,8 @@ def diff_sigma(exps, k):
     """Per-pixel noise of exposure k's nod difference (the profile fit's weighting)."""
     e = exps[k]
     n = len(e.partners)
+    if n == 0:                            # a single frame (``first_pass``)
+        return np.sqrt(e.var)
     s2 = (e.var + sum(exps[j].var for j in e.partners)) / (n + 1)
     return np.sqrt(((n + 1) / n) ** 2 * s2)
 
@@ -758,24 +760,7 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
             P1 = boxcar_pass1(exps, sid, maps, workspace, is_prism, stage_config, box[:3])
             log(f'{product}: pass 1 from the stage-3 3-pixel boxcar ({box[3]}), its own fell back '
                 f'({e.reason}: {e})')
-        os.makedirs(os.path.dirname(out), exist_ok=True)
-        arrays = dict(version=PASS1_VERSION, sig=sig, n_maps=n_maps, mode=st['mode'], sid=int(sid), lam=P1.lam,
-                      flux=P1.flux, flux_err=P1.flux_err, flux_raw=P1.flux_raw, err_raw=P1.err_raw,
-                      snr_det=P1.snr_det, shape_src=P1.shape_src, spec_src=P1.spec_src, reliable=P1.reliable,
-                      why=P1.why, round='2' if second else '1', clean=P1.clean, rep_p95=P1.rep_p95,
-                      ref_p95=P1.ref_p95, n_lines=P1.n_lines, n_smooth=P1.n_smooth, keep_lines=P1.keep_lines,
-                      keys=np.array(sorted(P1.frames)), nosrc=np.array(sorted(P1.nosrc)))
-        if getattr(P1, 'nband', None) is not None:
-            arrays['nband'] = P1.nband
-        if getattr(P1, 'ext', None) is not None:          # the spectrum past the cutouts, count-rate units
-            arrays.update(ext_lam=P1.ext['lam'], ext_flux=P1.ext['flux'], ext_err=P1.ext['err'],
-                          ext_raw=P1.ext['flux_raw'])
-        for key, fr in P1.frames.items():
-            for name, v in fr.items():
-                arrays[f'{key}__{name}'] = v
-        tmp = out + '.tmp.npz'
-        np.savez_compressed(tmp, **arrays)
-        os.replace(tmp, out)
+        write_pass1(out, P1, sig, n_maps, st['mode'], '2' if second else '1')
         if os.path.exists(missing_path(workspace, product)):
             os.remove(missing_path(workspace, product))
         return out
@@ -788,6 +773,28 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
             with open(missing_path(workspace, product), 'w') as f:
                 f.write(f'{e.reason}: {e}\n')
         return None
+
+
+def write_pass1(out, P1, sig, n_maps, mode, round_):
+    """Write a ``Pass1`` (with the attributes ``compute_pass1`` adds) atomically."""
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    arrays = dict(version=PASS1_VERSION, sig=sig, n_maps=n_maps, mode=mode, sid=int(P1.sid), lam=P1.lam,
+                  flux=P1.flux, flux_err=P1.flux_err, flux_raw=P1.flux_raw, err_raw=P1.err_raw,
+                  snr_det=P1.snr_det, shape_src=P1.shape_src, spec_src=P1.spec_src, reliable=P1.reliable,
+                  why=P1.why, round=round_, clean=P1.clean, rep_p95=P1.rep_p95,
+                  ref_p95=P1.ref_p95, n_lines=P1.n_lines, n_smooth=P1.n_smooth, keep_lines=P1.keep_lines,
+                  keys=np.array(sorted(P1.frames)), nosrc=np.array(sorted(P1.nosrc)))
+    if getattr(P1, 'nband', None) is not None:
+        arrays['nband'] = P1.nband
+    if getattr(P1, 'ext', None) is not None:          # the spectrum past the cutouts, count-rate units
+        arrays.update(ext_lam=P1.ext['lam'], ext_flux=P1.ext['flux'], ext_err=P1.ext['err'],
+                      ext_raw=P1.ext['flux_raw'])
+    for key, fr in P1.frames.items():
+        for name, v in fr.items():
+            arrays[f'{key}__{name}'] = v
+    tmp = out + '.tmp.npz'
+    np.savez_compressed(tmp, **arrays)
+    os.replace(tmp, out)
 
 
 def missing_path(workspace, product):
