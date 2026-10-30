@@ -54,7 +54,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   default (`mask_bits`), and `slitlet_scale_on` is the opt-in per-slitlet rescaling from the slit's own
   clean shutters. Each slitlet is painted once (two sources of one slitlet share a cutout) and each
   physical shutter is selected once; margin rows count only where no open shutter was painted. Products skip when their inputs are
-  unchanged. Nothing is subtracted yet (P2). `barshadow_calibration.pixel_samples` now reads any
+  unchanged (the bar-shadow table of the expansion counts as an input, `MBKGBSRF`). Nothing is subtracted yet (P2). `barshadow_calibration.pixel_samples` now reads any
   slit of a multi-slit file and skips the source cut for a background slitlet (`slit_geometry` is
   the shared WCS-to-shutter mapping); `coverage` gained the cache-path helpers.
 - **Empirical NIRSpec MSA bar-shadow calibration.** `campfire_pipeline.nirspec.barshadow_calibration`
@@ -62,11 +62,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   slit-frame coordinates, per reference segment (outer edges from the 1x1 image, interior bar from the
   1x3 image) and wavelength column, with the sky pooled and the shutters selected per exposure, and
   `campfire_pipeline/data/Generate_Barshadow_Cals.py` writes it in the CRDS `barshadow` layout as
-  `empirical_jwst_nirspec_barshadow_<grating>.fits` (the prism table ships, derived from the seven
-  EMBER prism pointings; the gratings follow from SPURS) with
+  `empirical_jwst_nirspec_barshadow_<grating>.fits` (four tables ship: PRISM from the seven EMBER
+  prism pointings, G140M / G235M / G395M from the four SPURS fields) with
   a QA report (`barshadow_qa`: measured segments vs CRDS vs table, per-observation consistency, the
-  images, a held-out observation divided by each table, the exposure-level sky). On the prism the
-  held-out residual drops from 11-18 % (CRDS) to 1-2.5 % per segment. `[nirspec.stage2].empirical_barshadow`
+  images, a held-out observation divided by each table, the exposure-level sky). With one field held
+  out, the residual inside the shutters drops from 11-18 % (CRDS) to 1-2.5 % per segment on the prism,
+  from 11-13 % to 0.6-1.4 % on G140M, from 8-19 % to 1-4 % on G235M and from 11-23 % to 1.3-2.6 % on
+  G395M (the CRDS interior-bar profile is 0.1 pitch too wide on the gratings). `[nirspec.stage2].empirical_barshadow`
   (default off) passes the table to `BarShadowStep` for the background slitlets
   (`config.get_empirical_barshadow_path`); gratings without a table fall back to CRDS. The overlap
   counter moved to `nirspec/coverage.py` with the redward tail past the nominal cutoff (`TAIL_PX`).
