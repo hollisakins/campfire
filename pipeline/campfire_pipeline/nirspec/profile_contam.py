@@ -596,7 +596,7 @@ def _frames(R, exps, sid, maps, workspace, n_smooth, keep_lines, design=False):
         frames[exposure_key(e.name)] = fr
     ext = None
     if maps:
-        # the light past the cutouts' red end, in count-rate units (``profile_extend``): the
+        # the light past both ends of the cutouts, in count-rate units (``profile_extend``): the
         # maps follow every trace there
         from campfire_pipeline.nirspec import profile_extend as PE
         ext = PE.solve_extension(R, sid, maps, workspace, n_smooth=n_smooth, keep_lines=keep_lines)

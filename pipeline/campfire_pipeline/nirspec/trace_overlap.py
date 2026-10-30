@@ -49,8 +49,7 @@ LIGHT_PAD = 0.25     # PSF spill beyond the open area (~1 detector row), slit_fr
 NONE = -1
 IN_SOURCE = 1        # flag bit: the pixel is in the trace's source shutter (light a nod difference keeps)
 PAST_ROWS = 8        # rows added above and below the bounding box where a trace is followed past its range
-PAST_MAX_WAVE = 5.6  # um: followed only up to the detector's long-wavelength cut-off (G395M light seen to ~5.5)
-MAP_VERSION = '6'
+MAP_VERSION = '7'
 
 
 def open_shutter_centres(shutter_state, ymin, ymax, pitch=MSA_SLIT_PITCH, margin=MSA_SLIT_MARGIN):
@@ -217,14 +216,16 @@ def full_mask_model(rate_file, workdir, msa_file=None, msa_metadata_id=None, dit
 def _slit_pixels(model, wcs, past_range=False):
     """Detector pixels inside a slit's bounding box, with their slit-frame y and wavelength [um].
 
-    ``past_range``: also the pixels past the long-wavelength end of the bounding box,
-    towards the detector edge. jwst's bounding box stops at the nominal wavelength
-    range (``wavelengthrange``), but long-pass filters do not stop the light there; the
-    trace's slit-frame y is still defined (the transform extrapolates), so the trace
-    is followed towards the edge, ``PAST_ROWS`` rows wider for its curvature, up to
-    ``PAST_MAX_WAVE`` of extrapolated wavelength (the detector sees nothing beyond).
-    The source's light there is predicted from its pass 1 extended in count-rate
-    units (``profile_extend``). Returns (pixel index, y, wavelength)."""
+    ``past_range``: also the pixels past both ends of the bounding box. jwst's bounding
+    box stops at the calibrated wavelength range, but the light does not stop there, at
+    the blue end (the filter cut-on is gradual) or the red end; the trace's slit-frame y
+    is still defined (the transform extrapolates), so the trace is followed over every
+    column, ``PAST_ROWS`` rows wider for its curvature, out to the disperser's
+    ``coverage.WAVELENGTH_CUTOFFS`` (the footprint the master background paints, from
+    ``coverage.geometry_on_block``). The source's light there is predicted from its
+    pass 1 extended in count-rate units (``profile_extend``). Returns (pixel index, y,
+    wavelength)."""
+    from campfire_pipeline.nirspec import coverage as CV
     (x0, x1), (y0, y1) = wcs.bounding_box
     ny, nx = model.data.shape[-2:]
     tr = wcs.get_transform('detector', 'slit_frame')
@@ -249,18 +250,17 @@ def _slit_pixels(model, wcs, past_range=False):
         return None
     parts = [inside]
     if past_range:
-        # which end is red: the wavelength at the two ends of the lit columns
+        try:
+            cutoffs = CV.cutoffs_for(model.meta.instrument.grating, model.meta.instrument.filter)
+        except Exception:                                    # noqa: BLE001 - no disperser: no cutoff
+            cutoffs = (None, None)
+        g = CV.geometry_on_block(tr, 0, 0, int(np.ceil(y0)) - PAST_ROWS, int(np.floor(y1)) + PAST_ROWS + 1,
+                                 '', 1.0, cutoffs, ncols=nx, nrows=ny, with_segments=False)
         px = inside[0] % nx
-        lo_l = np.median(inside[2][px == px.min()])
-        hi_l = np.median(inside[2][px == px.max()])
-        if hi_l != lo_l:
-            xb = np.arange(px.max() + 1, nx) if hi_l > lo_l else np.arange(0, px.min())
-            yb = np.arange(max(int(np.ceil(y0)) - PAST_ROWS, 0), min(int(np.floor(y1)) + PAST_ROWS, ny - 1) + 1)
-            out = at(xb, yb)
-            if out is not None:
-                keep = out[2] <= PAST_MAX_WAVE
-                if keep.any():
-                    parts.append(tuple(a[keep] for a in out))
+        yb, xb = np.meshgrid(g['rows'], g['cols'], indexing='ij')
+        keep = g['footprint'] & ((xb < px.min()) | (xb > px.max()))
+        if keep.any():
+            parts.append(((yb[keep] * nx + xb[keep]).astype(np.int64), g['ys'][keep], g['lam'][keep]))
     return tuple(np.concatenate([p[i] for p in parts]) for i in range(3))
 
 

@@ -1,13 +1,14 @@
 """
-A source's light past the long-wavelength end of its cutout, for predicting it on
-other sources (extraction v2; every pass 1, every disperser).
+A source's light past both ends of its cutout, for predicting it on other sources
+(extraction v2; every pass 1, every disperser).
 
-jwst cuts each slitlet at the end of the disperser's nominal wavelength range
+jwst cuts each slitlet at the ends of the disperser's calibrated wavelength range
 (``wavelengthrange``: G395M/F290LP 2.87-5.27 um, PRISM 0.6-5.3 um), but the light does
-not stop there: a bright source's trace continues towards the detector's cut-off
-(~5.5 um). The trace maps follow it (``trace_overlap``, to 5.6 um), so the pixels where
-it lands on another source's trace are known; this module gives pass 1 a spectrum
-there (2976 on 5215: 4.42-4.72 um of 5215's trace).
+not stop there, at either end: the filter cut-on is gradual (G395M: 50 % of the in-band
+light 46 columns before the cutout) and a bright source's trace continues towards the
+detector's cut-off at the red end. The trace maps follow it (``trace_overlap``), so
+the pixels where it lands on another source's trace are known; this module gives pass
+1 a spectrum there (2976 on 5215: 4.42-4.72 um of 5215's trace).
 
 There is no calibration there: the F290LP/G395M fast flats stop at 5.27-5.285 um, the
 photom response at 5.20 um. None is needed. The prediction moves a contaminant's light
@@ -15,9 +16,10 @@ onto the target's pixels and converts it with the target's own calibration of th
 pixels (``profile_contam.predict``: target calibration over the contaminant's). So past
 its cutout the contaminant's light is fitted directly in detector units (count rate):
 
-* pixels: the source's slitlet past its cutout's red end, the cutout's rows plus
-  ``EXT_ROWS`` above and below (the trace curves), up to ``EXT_MAX_WAVE`` of
-  extrapolated wavelength, on the detector; each exposure's own slit WCS (jwst's
+* pixels: the source's slitlet past either end of the wavelengths its pass-1 spectrum
+  has, the cutout's rows plus ``EXT_ROWS`` above and below (the trace curves), out to
+  the disperser's ``coverage.WAVELENGTH_CUTOFFS`` (the footprint the master background
+  paints, ``coverage.geometry_on_block``); each exposure's own slit WCS (jwst's
   transform extrapolates past the bounding box) gives the slit position and the
   wavelength of every pixel;
 * data: the nod differences of the count-rate files with the source's own partners;
@@ -25,7 +27,7 @@ its cutout the contaminant's light is fitted directly in detector units (count r
 * model: the source's fixed pass-1 shape (its cross-dispersion image and along-slit
   throughput, the path loss held at its last value), times a spectrum on the native
   wavelength grid past the cutout, in count-rate units;
-* the spectrum is clipped and smoothed like the pass-1 spectrum.
+* each end is solved, clipped and smoothed on its own, like the pass-1 spectrum.
 
 The result is added to the source's pass-1 frames with calibration 1 (rate units),
 flagged ``ext``. Nothing else changes.
@@ -41,37 +43,39 @@ from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec import trace_overlap as TO
 
 EXT_ROWS = TO.PAST_ROWS
-EXT_MAX_WAVE = TO.PAST_MAX_WAVE
 DETECTOR = 2048
 MIN_PIXELS = 30
-BACK = 80            # columns inside the cutout the region starts at (G395M: ~0.14 um)
 
 
 def _wcs_on(path, rows, cols):
-    """Slit position and wavelength [um] of exposure ``path``'s slit at detector rows /
-    columns (0-based), from its own cutout WCS (extrapolated past its bounding box), and
-    the cutout's (ystart, xstart, ny, nx)."""
+    """Slit position, wavelength [um] and footprint (the slit transform is defined and
+    the wavelength is within the disperser's ``coverage.WAVELENGTH_CUTOFFS``) of exposure
+    ``path``'s slit at detector rows / columns (0-based), from its own cutout WCS
+    (extrapolated past its bounding box), and the cutout's (ystart, xstart, ny, nx)."""
     from jwst.datamodels import MultiSlitModel
+    from campfire_pipeline.nirspec import coverage as CV
     with MultiSlitModel(path) as m:
         s = m.slits[0]
         tr = s.meta.wcs.get_transform('detector', 'slit_frame')
-        Y, X = np.meshgrid(rows - (s.ystart - 1), cols - (s.xstart - 1), indexing='ij')
-        _, ys, lam = tr(X.astype(float), Y.astype(float))
+        try:
+            cutoffs = CV.cutoffs_for(m.meta.instrument.grating, m.meta.instrument.filter)
+        except Exception:                                    # noqa: BLE001 - no disperser: no cutoff
+            cutoffs = (None, None)
+        g = CV.geometry_on_block(tr, int(s.xstart) - 1, int(s.ystart) - 1, int(rows[0]), int(rows[-1]) + 1,
+                                 '', 1.0, cutoffs, ncols=DETECTOR, nrows=DETECTOR, with_segments=False)
         box = (int(s.ystart), int(s.xstart), int(s.data.shape[0]), int(s.data.shape[1]))
-    lam = np.asarray(lam, float)
-    if np.nanmax(np.abs(lam)) < 1e-3:
-        lam = lam * 1e6
-    return np.asarray(ys, float), lam, box
+    r = np.asarray(rows) - g['row_lo']
+    c = np.asarray(cols)
+    pick = np.ix_(r, c)
+    return g['ys'][pick], g['lam'][pick], g['footprint'][pick], box
 
 
 def canvas(exps):
-    """The detector region past the red end of a source's cutouts, per background group:
-    {group: dict(rows, cols)} (0-based detector indices), or {} when no group has one.
+    """The detector region around a source's cutouts, per background group: {group:
+    dict(rows, cols)} (0-based detector indices), or {} when no group has one.
 
-    The red end is the side of the cutout where the wavelength grows; the region runs
-    from the column after the cutout's last one to the detector edge, rows widened by
-    ``EXT_ROWS``; columns whose wavelength exceeds ``EXT_MAX_WAVE`` in every row and
-    exposure are dropped later."""
+    Every column of the detector, the cutout's rows widened by ``EXT_ROWS``; which
+    pixels lie past either end is decided per exposure from its wavelengths."""
     out = {}
     for g in sorted({e.group for e in exps}):
         ks = [k for k, e in enumerate(exps) if e.group == g and e.path]
@@ -79,18 +83,10 @@ def canvas(exps):
             continue
         e = exps[ks[0]]
         r0, c0, ny, nx = e.cutout
-        y0, x0 = int(e.origin[0]) - 1 + r0, int(e.origin[1]) - 1 + c0          # 0-based detector corner
-        mid = ny // 2
-        red_right = np.nanmedian(e.wav[r0 + mid, c0 + nx - 5:c0 + nx]) > np.nanmedian(e.wav[r0 + mid, c0:c0 + 5])
-        # from BACK columns inside the cutout (its last samples carry no flat field: the pass-1
-        # spectrum stops short of the cutout's end) to the detector edge
-        if red_right:
-            cols = np.arange(max(x0 + nx - BACK, 0), DETECTOR)
-        else:
-            cols = np.arange(0, min(x0 + BACK, DETECTOR))
+        y0 = int(e.origin[0]) - 1 + r0                                         # 0-based detector row
         rows = np.arange(max(y0 - EXT_ROWS, 0), min(y0 + ny + EXT_ROWS, DETECTOR))
-        if cols.size and rows.size:
-            out[g] = dict(rows=rows, cols=np.sort(cols), red_right=bool(red_right))
+        if rows.size:
+            out[g] = dict(rows=rows, cols=np.arange(DETECTOR))
     return out
 
 
@@ -138,21 +134,25 @@ def _others_mask(exps, k_list, maps, sid, rows, cols):
 
 
 def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=5.0, n_clip=2, mask_others=True):
-    """Spectrum past the cutouts' red end, in count-rate units, at the fixed shape of
+    """Spectrum past both ends of the cutouts, in count-rate units, at the fixed shape of
     ``R`` (a pass-1 ``FitResult``; its model carries the exposures), and the frames it
     puts on each exposure. Returns None when there is no such region or too few pixels.
 
+    Each end (shorter than the shortest wavelength the pass-1 spectrum has, longer than
+    the longest) is solved on its own; ``lam`` / ``flux`` / ``err`` / ``flux_raw`` hold
+    the blue end's grid then the red end's.
+
     Returns dict(lam, flux, err, flux_raw, frames={exposure key: dict(rows, cols, img,
-    err)}, npix, nmask)."""
+    err, keep)}, npix, nmask)."""
     from campfire_pipeline.nirspec import profile_contam as CT
-    from campfire_pipeline.nirspec.profile_contam import smooth_spectrum
 
     M = R.model
     exps = M.exps
     p, eoff = PF._qvec(R)
-    # past the last wavelength the pass-1 spectrum has (in the cutout's last columns the data
-    # have no flat field, F290LP/G395M above ~5.25 um)
+    # past the wavelengths the pass-1 spectrum has (in the cutout's first and last columns
+    # the data have no flat field, F290LP/G395M above ~5.25 um)
     fin = np.isfinite(R.flux) & (R.flux != 0)
+    lam_min_in = float(R.lam[fin].min()) if fin.any() else np.nanmin([np.nanmin(e.wav) for e in exps])
     lam_max_in = float(R.lam[fin].max()) if fin.any() else np.nanmax([np.nanmax(e.wav) for e in exps])
     regions = canvas(exps)
     if not regions:
@@ -166,11 +166,11 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
         for k in ks:
             e = exps[k]
             try:
-                ys, lam, _ = _wcs_on(e.path, rows, cols)
+                ys, lam, foot, _ = _wcs_on(e.path, rows, cols)
             except Exception:                        # noqa: BLE001 - no WCS, no extension for this exposure
                 continue
             with np.errstate(invalid='ignore'):
-                past = np.isfinite(ys) & np.isfinite(lam) & (lam > lam_max_in) & (lam <= EXT_MAX_WAVE)
+                past = foot & ((lam > lam_max_in) | (lam < lam_min_in))
             dy = np.abs(np.gradient(np.where(np.isfinite(ys), ys, 0.0), axis=0))
             gimg = np.zeros(ys.shape)
             if e.has_source and past.any():
@@ -208,13 +208,49 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
             blocks.append((k, D, V, ok, [(w, geo[j][2], geo[j][1]) for j, w in terms]))
     if not blocks:
         return None
-    # spectrum grid: native sampling at the source row of the first science exposure's canvas
+    # the source row of the first science exposure's canvas: each end's native wavelength grid
     k0 = blocks[0][0]
-    ys0, lam0 = per_exp[k0][2], per_exp[k0][3]
+    ys0, lam0, past0 = per_exp[k0][2], per_exp[k0][3], per_exp[k0][5]
     yy = np.where(np.isfinite(ys0), ys0, np.inf)
     r = np.argmin(np.abs(yy - exps[k0].src_y), axis=0)
-    lrow = lam0[r, np.arange(lam0.shape[1])]
-    lrow = np.sort(lrow[np.isfinite(lrow) & (lrow > lam_max_in) & (lrow <= EXT_MAX_WAVE)])
+    cc = np.arange(lam0.shape[1])
+    lrow_all = np.where(past0[r, cc], lam0[r, cc], np.nan)
+    ends = []
+    for lo, hi in ((-np.inf, lam_min_in), (lam_max_in, np.inf)):
+        with np.errstate(invalid='ignore'):
+            lrow = np.sort(lrow_all[np.isfinite(lrow_all) & (lrow_all > lo) & (lrow_all < hi)])
+        out = _solve_end(blocks, lrow, n_smooth, keep_lines, clip, n_clip)
+        if out is not None:
+            ends.append(out)
+    if not ends:
+        return None
+    frames = {}
+    for k, (rows, cols, ys, lam, gimg, past) in per_exp.items():
+        if not exps[k].has_source:
+            continue
+        img = np.zeros(lam.shape)
+        eim = np.zeros(lam.shape)
+        for x in ends:
+            grid, fs, es = x['lam'], x['flux'], x['err']
+            with np.errstate(invalid='ignore'):
+                on = past & (lam >= grid[0]) & (lam <= grid[-1])
+                img += np.where(on, gimg * np.interp(np.nan_to_num(lam), grid, np.nan_to_num(fs)), 0.0)
+                eim += np.where(on, np.abs(gimg) * np.interp(np.nan_to_num(lam), grid, np.nan_to_num(es)), 0.0)
+        keep = past & np.isfinite(img) & (np.abs(img) > 0)
+        if keep.any():
+            frames[CT.exposure_key(exps[k].name)] = dict(rows=rows, cols=cols, img=np.where(keep, img, 0.0),
+                                                         err=np.where(keep, eim, 0.0), keep=keep)
+    cat = lambda n: np.concatenate([x[n] for x in ends])                     # noqa: E731
+    return dict(lam=cat('lam'), flux=cat('flux'), err=cat('err'), flux_raw=cat('flux_raw'), frames=frames,
+                npix=int(sum(x['npix'] for x in ends)), nmask=int(sum(x['nmask'] for x in ends)))
+
+
+def _solve_end(blocks, lrow, n_smooth, keep_lines, clip, n_clip):
+    """One end's spectrum on the native grid ``lrow`` (sorted wavelengths along the
+    source row): the design over the ``blocks`` pixels whose wavelength falls on the grid,
+    solved with ``clip``-sigma clipping and smoothed. None when there are too few pixels."""
+    from campfire_pipeline.nirspec.profile_contam import smooth_spectrum
+
     if lrow.size < 5:
         return None
     step = np.median(np.diff(lrow))
@@ -223,11 +259,13 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
         if x - grid[-1] > 0.5 * step:
             grid.append(x)
     grid = np.array(grid)
-    # design
+    if grid.size < 2:
+        return None
     rows_, cols_, vals_, d_, v_ = [], [], [], [], []
     nrow = 0
     for k, D, V, ok, terms in blocks:
-        idx = np.flatnonzero(ok.ravel())
+        own = terms[0][2].ravel()
+        idx = np.flatnonzero(ok.ravel() & (own >= grid[0]) & (own <= grid[-1]))
         if idx.size == 0:
             continue
         rr = nrow + np.arange(idx.size)
@@ -280,19 +318,7 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
         fs, es, _ = smooth_spectrum(flux_raw, err, n=n_smooth, keep_lines=keep_lines)
     else:
         fs, es = flux_raw, err
-    frames = {}
-    for k, (rows, cols, ys, lam, gimg, past) in per_exp.items():
-        if not exps[k].has_source:
-            continue
-        with np.errstate(invalid='ignore'):
-            img = gimg * np.interp(np.nan_to_num(lam), grid, np.nan_to_num(fs), left=0.0, right=0.0)
-            eim = np.abs(gimg) * np.interp(np.nan_to_num(lam), grid, np.nan_to_num(es), left=0.0, right=0.0)
-        keep = past & np.isfinite(img) & (np.abs(img) > 0)
-        if keep.any():
-            frames[CT.exposure_key(exps[k].name)] = dict(rows=rows, cols=cols, img=np.where(keep, img, 0.0),
-                                                         err=np.where(keep, eim, 0.0), keep=keep)
-    return dict(lam=grid, flux=fs, err=es, flux_raw=flux_raw, frames=frames, npix=int(use.sum()),
-                nmask=int(nrow - use.sum()))
+    return dict(lam=grid, flux=fs, err=es, flux_raw=flux_raw, npix=int(use.sum()), nmask=int(nrow - use.sum()))
 
 
 def ext_part(fr):

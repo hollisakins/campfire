@@ -17,10 +17,10 @@ calibrated truth.
 The output is an ordinary pass-1 file (``profile_contam.pass1_path``), so the
 prediction of other light on the final nodded fit reads it unchanged: the frames
 are the source's own light (``profile_fit.frame_image``), which does not depend on
-how the sky was removed. Its light past the cutouts (``profile_extend``) is still
-solved on the nod differences of the rate files (the master background flags
-those pixels), so each exposure keeps its nodded partner list in
-``Exposure.nod_partners``.
+how the sky was removed. Its light past both ends of the cutouts (``profile_extend``)
+is solved on the nod differences of the rate files, in count-rate units (the
+source moves between nods, the sky cancels), so each exposure keeps its nodded
+partner list in ``Exposure.nod_partners``.
 
 Not yet here (merge plan section 2.5): the sky-template nuisance term per exposure
 and shutter, the native 3-row boxcar (sanity reference and fallback), the wiring
