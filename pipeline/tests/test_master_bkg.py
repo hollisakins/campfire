@@ -186,12 +186,13 @@ def test_sky_total_on_cutout_sums_every_covering_trace():
     dq = np.zeros((40, 30), np.uint8); dq[20, 10] = M.DQ_UNCOVERED; dq[21, 11] = M.DQ_UNPAINTED
     n2d = np.zeros((40, 30), np.uint8); n2d[20:23, 10:15] = 3; n2d[23:26, 10:15] = 1
     prod.update(mbkg2d=mb, dq2d=dq, n2d=n2d, rate=rate, path='unused')
-    r = M.sky_total_on_cutout(prod, own, frame)
+    r = M.sky_total_on_cutout(prod, own, frame, mask_bits=0)
     F = 2.0 / 0.05                                   # sci / rate: the calibration factor
     assert np.allclose(r['sky'][1:3, 1:], 3 * 0.05 * F)         # three traces' sky, in the slit's units
     assert np.allclose(r['sky'][3:, :], 0.05 * F)
-    assert np.isnan(r['sky'][0, 0]) and np.isfinite(r['sky'][1, 1])   # uncovered -> NaN; unpainted stays, flagged
+    assert np.isnan(r['sky'][0, 0]) and np.isfinite(r['sky'][1, 1])   # uncovered -> NaN; unpainted kept when unmasked
     assert r['dq'][1, 1] == M.DQ_UNPAINTED and r['n_cover'][0, 1] == 3
+    assert np.isnan(M.sky_total_on_cutout(prod, own, frame)['sky'][1, 1])   # masked by default
     assert np.allclose(r['own_sky'], own_sky)
     # the variance scales with the total (the floor is a fraction of what is subtracted)
     assert np.allclose(r['var'][1, 1] / r['var'][3, 1], 9.0)
@@ -201,3 +202,27 @@ def test_pixelwise_factor_fills_flagged_pixels_from_the_column():
     sci = np.array([[2.0, 4.0], [2.0, 0.0], [2.0, 4.0]]); rate = np.array([[1.0, 1.0], [0.0, 1.0], [1.0, 1.0]])
     F = M.pixelwise_factor(sci, rate)
     assert np.allclose(F, [[2, 4], [2, 4], [2, 4]])
+
+
+def test_total_masks_unpainted_and_tail_pixels_and_scales_the_own_part():
+    g = _synthetic_geometry(nrow=6, ncol=5); table = _flat_table(0.8); prod = _product(q2=1.0)
+    frame = dict(sci=np.full((6, 5), 2.0), bunit='MJy', pix_sr=5e-13, pthloss='UNIFORM', pu=None, pp=None, bar=None, x0=0, y0=0)
+    own = M.sky_on_geometry(prod, frame, g, table)
+    rate = np.full((6, 5), 0.05); mb = np.full((6, 5), 0.10)             # own + one other trace
+    dq = np.zeros((6, 5), np.uint8); dq[0, 0] = M.DQ_UNPAINTED; dq[0, 1] = M.DQ_TAIL
+    prod.update(mbkg2d=mb, dq2d=dq, n2d=np.full((6, 5), 2, np.uint8), rate=rate, path='unused')
+    r = M.sky_total_on_cutout(prod, own, frame)
+    assert np.isnan(r['sky'][0, 0]) and np.isnan(r['sky'][0, 1]) and np.isfinite(r['sky'][1, 1])
+    r2 = M.sky_total_on_cutout(prod, own, frame, mask_bits=0)
+    assert np.isfinite(r2['sky'][0, 0])
+    # the own part rescaled by 0.9 lowers the total by 0.1 x own, not 0.1 x total
+    r3 = M.sky_total_on_cutout(prod, own, frame, own_scale=0.9)
+    assert np.allclose(r3['sky'][1, 1], r['sky'][1, 1] - 0.1 * own['sky'][1, 1])
+
+
+def test_slitlet_scale_reads_the_slits_clean_shutters():
+    from astropy.table import Table
+    t = Table({'slit': ['5', '5', '5', 'BKG77'], 'clean': [True, True, False, True], 'scale': [0.9, 0.94, 1.5, 1.2]})
+    assert M.slitlet_scale({'shutters': t}, '5') == pytest.approx(0.92)
+    assert M.slitlet_scale({'shutters': t}, 'BKG77') == pytest.approx(1.2)
+    assert M.slitlet_scale({'shutters': t}, '6') == 1.0

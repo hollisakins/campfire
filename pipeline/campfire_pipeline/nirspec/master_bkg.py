@@ -273,21 +273,25 @@ def shutter_spectra(canonicals, counters, edges_of, opt, processes):
     from multiprocessing import Pool
     args = [(c, counters.get(c.rate_path), edges_of[(c.grating, c.filter)], opt) for c in canonicals]
     by_rate, failures = defaultdict(list), []
+    seen = set()          # (rate_base, slitlet, shutter): two sources of one slitlet offer the same shutters
+
+    def take(key, out, err):
+        if err:
+            failures.append((key, err)); return
+        for s in out:
+            tag = (s.rate_base, s.slitlet_id, s.k)
+            if tag in seen:
+                continue
+            seen.add(tag)
+            by_rate[s.rate_base].append(s)
+
     if processes > 1:
         with Pool(processes) as pool:
-            results = pool.imap_unordered(_worker_samples, args, chunksize=4)
-            for key, out, err in results:
-                if err:
-                    failures.append((key, err)); continue
-                for s in out:
-                    by_rate[s.rate_base].append(s)
+            for key, out, err in pool.imap_unordered(_worker_samples, args, chunksize=4):
+                take(key, out, err)
     else:
         for a in args:
-            key, out, err = _worker_samples(a)
-            if err:
-                failures.append((key, err)); continue
-            for s in out:
-                by_rate[s.rate_base].append(s)
+            take(*_worker_samples(a))
     return by_rate, failures
 
 
@@ -549,10 +553,11 @@ def sky_on_geometry(prod, frame, g, table):
     sky = sb_through * f
     var = ((err * bs) ** 2 + (prod['floor'] * sb_through) ** 2) * (np.asarray(f) ** 2)
     return dict(sky=sky, var=var, sb=sb_through, bs=bs, lam=lam, sci=frame['sci'], x0=frame['x0'], y0=frame['y0'],
-                units=frame['bunit'], quadrant=g['quadrant'], shape=frame['sci'].shape)
+                units=frame['bunit'], quadrant=g['quadrant'], shape=frame['sci'].shape, open=g['is_open'])
 
 
-def sky_for_slit(product, path, extver=1, table=None, mode='total'):
+def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=DQ_UNPAINTED | DQ_TAIL,
+                 slitlet_scale_on=False):
     """The master background on one slit's cutout, in that slit's own frame and units.
 
     ``product`` is a ``_mbkg.fits`` path or ``load_product`` output (pass the same dict
@@ -569,7 +574,11 @@ def sky_for_slit(product, path, extver=1, table=None, mode='total'):
     ``own_sky`` carries the slit's own slitlet alone. ``mode='own'`` returns only the
     slit's own slitlet (the painter's input; also the fallback when the product has no
     ``MBKG2D`` or the rate file is not beside it). NaN where the product has no
-    wavelength coverage, the pixel lies beyond the slitlet, or nothing covers it.
+    wavelength coverage, the pixel lies beyond the slitlet, nothing covers it, or the
+    pixel carries one of ``mask_bits`` (default: a covering trace not painted, or a
+    tail). ``slitlet_scale_on`` rescales the slit's own contribution by the median scale
+    of its own clean empty shutters (``slitlet_scale``), the per-slitlet term of §9;
+    off by default, a design choice rather than a correction.
     """
     from jwst.datamodels import MultiSlitModel
     prod = load_product(product) if isinstance(product, str) else product
@@ -582,7 +591,11 @@ def sky_for_slit(product, path, extver=1, table=None, mode='total'):
     own = sky_on_geometry(prod, frame, g, table)
     if mode == 'own' or not _load_2d(prod):
         return own
-    return sky_total_on_cutout(prod, own, frame)
+    scale = 1.0
+    if slitlet_scale_on:
+        name = os.path.basename(path)[:-5].split('_')[-1] if int(extver) == 1 else f'BKG{g["slitlet_id"]}'
+        scale = slitlet_scale(prod, name)
+    return sky_total_on_cutout(prod, own, frame, mask_bits=mask_bits, own_scale=scale)
 
 
 def pixelwise_factor(sci, rate_box):
@@ -598,12 +611,27 @@ def pixelwise_factor(sci, rate_box):
     return np.where(np.isfinite(F), F, colmed[None, :])
 
 
-def sky_total_on_cutout(prod, own, frame):
+def slitlet_scale(prod, slit_name):
+    """The median scale of a slit's own clean empty shutters against the exposure's sky
+    (the per-slitlet term of §9), from the ``SHUTTERS`` table; 1 when it has none."""
+    t = prod.get('shutters')
+    if t is None or len(t) == 0:
+        return 1.0
+    sel = (np.char.strip(t['slit'].astype(str)) == str(slit_name)) & np.asarray(t['clean'], bool)
+    v = np.asarray(t['scale'], float)[sel]
+    v = v[np.isfinite(v)]
+    return float(np.median(v)) if v.size else 1.0
+
+
+def sky_total_on_cutout(prod, own, frame, mask_bits=DQ_UNPAINTED | DQ_TAIL, own_scale=1.0):
     """What a consumer subtracts: the painted total (every covering slitlet's sky,
     ``MBKG2D``) on the slit's cutout, in the slit's frame through the pixelwise factor.
-    ``own`` is ``sky_on_geometry`` output for the slit. Returns the dict with ``sky``,
-    ``var``, ``dq`` (the ``MBKG2DDQ`` cutout) and ``own_sky`` (the slit's own slitlet
-    alone); NaN where no footprint covers the pixel."""
+    ``own`` is ``sky_on_geometry`` output for the slit. Pixels carrying any of
+    ``mask_bits`` (default: a covering trace not painted, or a tail -- the total is
+    incomplete there by construction) and pixels nothing covers are NaN. ``own_scale``
+    rescales the slit's own contribution (``total + own * (s - 1)``), the per-slitlet
+    term from its own empty shutters. Returns the dict with ``sky``, ``var``, ``dq``
+    (the ``MBKG2DDQ`` cutout), ``n_cover`` and ``own_sky`` (the slit's own slitlet)."""
     ny, nx = own['shape']
     box = (slice(frame['y0'], frame['y0'] + ny), slice(frame['x0'], frame['x0'] + nx))
     mb = prod['mbkg2d'][box]; dq = prod['dq2d'][box]; rate_box = prod['rate'][box]
@@ -611,8 +639,11 @@ def sky_total_on_cutout(prod, own, frame):
         raise ValueError('cutout does not fit the detector frame')
     F = pixelwise_factor(frame['sci'], rate_box)
     total = mb * F
-    total[(dq & DQ_UNCOVERED) > 0] = np.nan
     own_sky = own['sky']
+    if own_scale != 1.0:
+        add = np.where(np.isfinite(own_sky), own_sky * (own_scale - 1.0), 0.0)
+        total = total + add
+    total[(dq & (DQ_UNCOVERED | int(mask_bits))) > 0] = np.nan
     with np.errstate(invalid='ignore', divide='ignore'):
         ratio = np.where(np.isfinite(own_sky) & (own_sky > 0), total / own_sky, np.nan)
     var = np.where(np.isfinite(ratio), own['var'] * ratio ** 2, (prod['floor'] * total) ** 2)
@@ -629,15 +660,29 @@ def _worker_paint(args):
     prod = load_product(product)
     with fits.open(rate_path, memmap=False) as h:
         rate = np.array(h['SCI'].data, float)
-    mb = np.zeros(rate.shape, np.float32)
+    # Two layers. A pixel inside an open shutter of several slitlets (traces crossing on
+    # the gratings) receives every one's sky, so those are summed. A slit's margin and
+    # closed-shutter rows (the half pitch beyond its outer shutters, which jwst's cutout
+    # includes) carry only the closed-shutter leak -- unless they are the open shutter
+    # of the slitlet next to it in the same MSA column, in which case the light there is
+    # that neighbour's sky and the margin model must not be added to it. So margin
+    # pixels count only where no open shutter was painted.
+    mb_open = np.zeros(rate.shape, np.float32)
+    mb_margin = np.zeros(rate.shape, np.float32)
     cover = np.zeros(rate.shape, np.int16)
+    cover_margin = np.zeros(rate.shape, np.int16)
     n_painted, failures = 0, []
+    painted_boxes = set()
     for c in canonicals:
         try:
             r = sky_for_slit(prod, c.path, c.extver, table, mode='own')
         except Exception as e:
             failures.append((c.key, f'{type(e).__name__}: {e}')); continue
         ny, nx = r['shape']
+        key = (r['y0'], r['x0'], ny, nx)
+        if key in painted_boxes:
+            continue                      # a second source of the same slitlet: same cutout, same sky
+        painted_boxes.add(key)
         box = (slice(r['y0'], r['y0'] + ny), slice(r['x0'], r['x0'] + nx))
         rbox = rate[box]
         if rbox.shape != r['shape']:
@@ -645,9 +690,17 @@ def _worker_paint(args):
         with np.errstate(invalid='ignore', divide='ignore'):
             val = r['sky'] / pixelwise_factor(r['sci'], rbox)
         ok = np.isfinite(val)
-        mb[box][ok] += val[ok].astype(np.float32)
-        cover[box][ok] += 1
+        is_open = ok & r['open']
+        mb_open[box][is_open] += val[is_open].astype(np.float32)
+        cover[box][is_open] += 1
+        marg = ok & ~r['open']
+        mb_margin[box][marg] += val[marg].astype(np.float32)
+        cover_margin[box][marg] += 1
         n_painted += 1
+    with np.errstate(invalid='ignore', divide='ignore'):
+        margin_only = (cover == 0) & (cover_margin > 0)
+        mb = np.where(cover > 0, mb_open, np.where(margin_only, mb_margin / np.maximum(cover_margin, 1), 0)).astype(np.float32)
+    cover = np.where(cover > 0, cover, np.where(margin_only, 1, 0)).astype(np.int16)
     dq = np.zeros(rate.shape, np.uint8)
     dq[cover == 0] |= DQ_UNCOVERED
     if counter_notail_path and os.path.exists(counter_notail_path):
