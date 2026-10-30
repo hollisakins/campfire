@@ -30,6 +30,26 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Infrastructure
 
+- **NIRSpec master background (design P1b).** `campfire_pipeline.nirspec.master_bkg` derives,
+  at the end of stage 2a (and as `cfpipe nirspec master-bkg`), the sky of every exposure x detector
+  from the empty shutters of its canonicals and the background slitlets of its `bkgslits/` file:
+  `<root>_<nod>_<nrsN>_mbkg.fits` beside the rate file (new layout kind `nirspec_mbkg`, cloud-backed
+  intermediate) with `MBKG1D` (MJy/sr at the shutter centre, per-bin error and shutter count, the
+  exposure group's pooled sky and the `jwst_backgrounds` prediction), `SHUTTERS` (every shutter
+  offered, with its scale, chi2, line run, clean flag and reason) and `MBKG2D` / `MBKG2DDQ` (the sky
+  painted back onto the detector in DN/s through the exact per-pixel calibration factor, summed where
+  footprints overlap, flagged under tails and where nothing covers). The selection is the symmetric
+  scale-and-reject iteration of design §4.2 with the P0-settled defaults (`[nirspec.stage2]
+  master_bkg_*`: shutter core |f| <= 0.2, 2-pixel bins, 3 px source pad, 5 % excess / 30 % deficit
+  rejection, 4-sigma line runs); per-quadrant scales and the scale/offset against the pool are recorded
+  in the header, never applied; an exposure with fewer than `master_bkg_min_shutters` clean shutters
+  takes the pool (`MBKGSRC`). `master_bkg.sky_for_slit` is the consumer's entry point: the product on
+  one slit's cutout in that slit's own units (MJy per pixel for any canonical, point or extended;
+  MJy/sr for a background slitlet), bar shadow from the empirical table where one exists and CRDS
+  otherwise, with the 3 % error floor in the variance. Products skip when their inputs are
+  unchanged. Nothing is subtracted yet (P2). `barshadow_calibration.pixel_samples` now reads any
+  slit of a multi-slit file and skips the source cut for a background slitlet (`slit_geometry` is
+  the shared WCS-to-shutter mapping); `coverage` gained the cache-path helpers.
 - **Empirical NIRSpec MSA bar-shadow calibration.** `campfire_pipeline.nirspec.barshadow_calibration`
   measures the bar-shadow profile from the empty shutters of stage-2a canonicals, in the pipeline's own
   slit-frame coordinates, per reference segment (outer edges from the 1x1 image, interior bar from the

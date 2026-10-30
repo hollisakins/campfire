@@ -57,7 +57,7 @@ from datetime import datetime, timezone
 import numpy as np
 from astropy.io import fits
 
-from campfire_pipeline.nirspec.coverage import coverage_from_wcs, tail_px_for
+from campfire_pipeline.nirspec.coverage import coverage_from_wcs, tail_px_for, cache_path
 
 CENTRE_FRAC = 0.15          # |f| below which a pixel is "shutter centre" (shadow == 1)
 Y_BIN = 0.02                # accumulation bin in shutter pitches (~0.1 px)
@@ -80,6 +80,9 @@ CANONICAL_RE = re.compile(r'^(jw\d+_\d+)_(\d+)_(nrs[12])_(\d+)\.fits$')
 
 @dataclass
 class Canonical:
+    """One slit of one exposure: a stage-2a canonical (``source_id > 0``, one slit per
+    file) or a background-only slitlet of the ``bkgslits/`` file (``source_id =
+    -slitlet_id``, slit ``extver`` of the file)."""
     path: str
     obs: str
     workspace: str
@@ -91,6 +94,7 @@ class Canonical:
     filter: str
     msametid: int
     dither: int
+    extver: int = 1                  # slit number in a multi-slit file (the bkgslits file)
     key: tuple = field(init=False)
 
     def __post_init__(self):
@@ -100,9 +104,18 @@ class Canonical:
     def rate_path(self):
         return os.path.join(self.workspace, f'{self.root}_{self.nod}_{self.detector}_rate.fits')
 
+    @property
+    def rate_base(self):
+        return f'{self.root}_{self.nod}_{self.detector}'
+
+    @property
+    def is_background(self):
+        return self.source_id <= 0
+
 
 def discover(obs_name, grating, products_dir, filter_name=None):
-    """The stage-2a canonicals of one observation for one grating (and filter)."""
+    """The stage-2a canonicals of one observation for one grating (and filter);
+    ``grating=None`` takes every disperser."""
     workspace = os.path.join(products_dir, 'nirspec', obs_name)
     out = []
     for name in sorted(os.listdir(workspace)):
@@ -111,7 +124,7 @@ def discover(obs_name, grating, products_dir, filter_name=None):
             continue
         path = os.path.join(workspace, name)
         hdr = fits.getheader(path)
-        if str(hdr.get('GRATING', '')).upper() != grating.upper():
+        if grating and str(hdr.get('GRATING', '')).upper() != grating.upper():
             continue
         if filter_name and str(hdr.get('FILTER', '')).upper() != filter_name.upper():
             continue
@@ -251,45 +264,82 @@ def segment_map(j, f, state):
 
 
 
-def pixel_samples(c, counter, source_pad_px=2.0):
-    """Every usable pixel of one canonical.
+def slit_geometry(s):
+    """Slit-frame coordinates of every pixel of one slit's cutout, from its WCS.
 
-    Returns a dict of flat arrays: ``lam`` (µm), ``y`` (slit-frame, pitches), ``k``
-    (shutter offset from the source shutter), ``f`` (within-shutter coordinate),
-    ``sb`` and ``var`` (uniform calibration, no bar-shadow division), ``seg`` (index into
-    ``SEGMENTS``, -1 for pixels that measure no segment), ``yseg`` (the pixel's row in
-    that segment's reference frame), ``centre`` (|f| < CENTRE_FRAC), plus ``state`` and
-    ``n_pix``.
+    Returns a dict: ``ys`` (slit-frame y in shutter pitches from the 'x' shutter's
+    centre), ``lam`` (µm), ``k`` (shutter offset, ``ys`` rounded), ``f``
+    (within-shutter coordinate, ``ys - k``), ``j`` (index into the shutter-state
+    string; outside ``[0, n)`` in the cutout's margin), ``is_open`` (``j`` names an
+    open shutter), ``seg`` / ``yseg`` (``segment_map``), ``pitch``, ``state``, ``kx``
+    (the 'x' shutter's index), ``slitlet_id`` and ``quadrant``.
     """
-    from jwst.datamodels import MultiSlitModel, dqflags
     from gwcs import wcstools
-
-    with fits.open(c.path, memmap=False) as h:
-        # stage 2b overwrites SCI with the nod-subtracted frame and keeps the originals
-        pre = 'PRE_BKGSUB_SCI' in h
-        sci = np.array(h['PRE_BKGSUB_SCI' if pre else 'SCI'].data, float)
-        err = np.array(h['PRE_BKGSUB_ERR' if (pre and 'PRE_BKGSUB_ERR' in h) else 'ERR'].data, float)
-        dq = np.array(h['PRE_BKGSUB_DQ' if (pre and 'PRE_BKGSUB_DQ' in h) else 'DQ'].data)
-        hs = h['SCI'].header
-        ph = h[0].header
-        pix_sr = float(hs['PIXAR_SR'])
-        pu = np.array(h['PATHLOSS_UN'].data, float) if 'PATHLOSS_UN' in h else None
-        pp = np.array(h['PATHLOSS_PS'].data, float) if 'PATHLOSS_PS' in h else None
-        bar_applied = str(ph.get('S_BARSHA', '')).upper() == 'COMPLETE'
-        bar = np.array(h['BARSHADOW'].data, float) if (bar_applied and 'BARSHADOW' in h) else None
-        x0, y0 = int(hs['SLTSTRT1']) - 1, int(hs['SLTSTRT2']) - 1
-
-    m = MultiSlitModel(c.path)
-    s = m.slits[0]
     x, y = wcstools.grid_from_bounding_box(s.meta.wcs.bounding_box, step=(1, 1))
     xs, ys, lam = s.meta.wcs.get_transform('detector', 'slit_frame')(x, y)
     lam = np.asarray(lam, float)
     if np.nanmedian(lam) < 1e-3:
         lam = lam * 1e6
-    pitch = s.slit_yscale if s.slit_yscale > 1 else 1 / s.slit_yscale
+    yscale = float(s.slit_yscale or 1.15)
+    pitch = yscale if yscale > 1 else 1 / yscale
     ys = np.asarray(ys, float) / pitch
-    state = str(s.shutter_state)
-    slitlet_id = int(s.slitlet_id or -1)
+    state = str(s.shutter_state or '')
+    kx = max(state.find('x'), 0)
+    n_sh = len(state)
+    with np.errstate(invalid='ignore'):
+        k = np.rint(ys)
+        f = ys - k
+        j = np.where(np.isfinite(k), kx + k, -10 ** 6).astype(int)
+    seg, yseg = segment_map(j, f, state)
+    opened = np.array([ch != '0' for ch in state] + [False])
+    is_open = (j >= 0) & (j < n_sh) & opened[np.clip(j, 0, n_sh)]
+    return dict(ys=ys, lam=lam, k=k, f=f, j=j, is_open=is_open, seg=seg, yseg=yseg, pitch=pitch,
+                state=state, kx=kx, slitlet_id=int(s.slitlet_id or -1), quadrant=int(s.quadrant or 0))
+
+
+def _hdu(h, name, ver):
+    try:
+        return h[name, ver]
+    except KeyError:
+        return None
+
+
+def pixel_samples(c, counter, source_pad_px=2.0):
+    """Every usable pixel of one slit (a canonical, or one background slitlet).
+
+    Returns a dict of flat arrays: ``lam`` (µm), ``y`` (slit-frame, pitches), ``k``
+    (shutter offset from the source shutter), ``f`` (within-shutter coordinate),
+    ``sb`` and ``var`` (uniform calibration, no bar-shadow division), ``seg`` (index into
+    ``SEGMENTS``, -1 for pixels that measure no segment), ``yseg`` (the pixel's row in
+    that segment's reference frame), ``centre`` (|f| < CENTRE_FRAC), ``is_open``, plus
+    ``state``, ``slitlet_id``, ``quadrant``, ``pitch``, ``x0`` / ``y0`` / ``shape`` (the
+    cutout on the detector) and ``n_pix``.
+    """
+    from jwst.datamodels import MultiSlitModel, dqflags
+
+    v = int(c.extver)
+    with fits.open(c.path, memmap=False) as h:
+        # stage 2b overwrites SCI with the nod-subtracted frame and keeps the originals
+        pre = _hdu(h, 'PRE_BKGSUB_SCI', v) is not None
+        sci = np.array(h['PRE_BKGSUB_SCI' if pre else 'SCI', v].data, float)
+        e = _hdu(h, 'PRE_BKGSUB_ERR', v) if pre else None
+        err = np.array((e if e is not None else h['ERR', v]).data, float)
+        d = _hdu(h, 'PRE_BKGSUB_DQ', v) if pre else None
+        dq = np.array((d if d is not None else h['DQ', v]).data)
+        hs = h['SCI', v].header
+        ph = h[0].header
+        pix_sr = float(hs['PIXAR_SR'])
+        pu = _hdu(h, 'PATHLOSS_UN', v); pu = np.array(pu.data, float) if pu is not None else None
+        pp = _hdu(h, 'PATHLOSS_PS', v); pp = np.array(pp.data, float) if pp is not None else None
+        bar_applied = str(ph.get('S_BARSHA', '')).upper() == 'COMPLETE'
+        bar = _hdu(h, 'BARSHADOW', v) if bar_applied else None
+        bar = np.array(bar.data, float) if bar is not None else None
+        x0, y0 = int(hs['SLTSTRT1']) - 1, int(hs['SLTSTRT2']) - 1
+
+    m = MultiSlitModel(c.path)
+    s = m.slits[v - 1]
+    g = slit_geometry(s)
+    ys, lam, k, f, j, state, pitch = g['ys'], g['lam'], g['k'], g['f'], g['j'], g['state'], g['pitch']
     planned = s.source_ypos is not None and abs(float(s.source_ypos)) > 0
 
     factor = np.full(sci.shape, 1.0 / pix_sr)
@@ -300,11 +350,8 @@ def pixel_samples(c, counter, source_pad_px=2.0):
     sb = sci * factor
     var = (err * factor) ** 2
 
-    k = np.rint(ys)
-    f = ys - k
-    kx = state.find('x')
+    kx = g['kx']
     n_sh = len(state)
-    j = (kx + k).astype(int)              # shutter index in the state string (may be out of range)
 
     good = np.isfinite(sb) & np.isfinite(lam) & np.isfinite(ys) & (var > 0)
     good &= (dq & (dqflags.pixel['DO_NOT_USE'] | dqflags.pixel['MSA_FAILED_OPEN'])) == 0
@@ -328,38 +375,38 @@ def pixel_samples(c, counter, source_pad_px=2.0):
     # The real source then sits beyond the slitlet's end (or, for a secondary source,
     # wherever the nod took it); the slit WCS places its catalogue position, so the
     # shutter next to it is padded like any shutter next to a source and the fake 'x'
-    # shutter is measured as sky.
+    # shutter is measured as sky. A background slitlet (``source_id <= 0``) has no
+    # source to cut.
     src_offset = 0.0
-    others, own_col, cols = [], None, []
-    try:
-        own_col, others, cols = _other_source_columns(c, slitlet_id)
-    except Exception as e:                # metafile not at hand: keep the pixels
-        warnings.warn(f'{os.path.basename(c.path)}: no metafile for other sources ({e})')
-    if own_col is None and not planned:
-        radec = _source_radec(c)
-        if radec is None:
-            m.close()
-            raise ValueError('source left its slitlet at this dither point and is not in SOURCE_INFO')
-        src_offset = source_slit_position(s, *radec, pitch)
+    if not c.is_background:
+        others, own_col, cols = [], None, []
+        try:
+            own_col, others, cols = _other_source_columns(c, g['slitlet_id'])
+        except Exception as e:                # metafile not at hand: keep the pixels
+            warnings.warn(f'{os.path.basename(c.path)}: no metafile for other sources ({e})')
+        if own_col is None and not planned:
+            radec = _source_radec(c)
+            if radec is None:
+                m.close()
+                raise ValueError('source left its slitlet at this dither point and is not in SOURCE_INFO')
+            src_offset = source_slit_position(s, *radec, pitch)
+        ref_col = own_col if own_col is not None else (cols[kx] if 0 <= kx < len(cols) else None)
+        good &= ~(np.abs(ys - src_offset) < 0.5 + pad)
+        if src_offset == 0:
+            good &= k != 0
+        # other catalogued sources in this slitlet (their shutter column -> shutter offset)
+        if ref_col is not None:
+            for col in others:
+                ko = col - ref_col
+                good &= ~(np.abs(ys - ko) < 0.5 + pad)
     m.close()
-    ref_col = own_col if own_col is not None else (cols[kx] if 0 <= kx < len(cols) else None)
-    good &= ~(np.abs(ys - src_offset) < 0.5 + pad)
-    if src_offset == 0:
-        good &= k != 0
-    # other catalogued sources in this slitlet (their shutter column -> shutter offset)
-    if ref_col is not None:
-        for col in others:
-            ko = col - ref_col
-            good &= ~(np.abs(ys - ko) < 0.5 + pad)
 
-    seg, yseg = segment_map(j, f, state)
-    opened = np.array([ch != '0' for ch in state] + [False])
-    is_open = (j >= 0) & (j < n_sh) & opened[np.clip(j, 0, n_sh)]
-
+    seg, yseg, is_open = g['seg'], g['yseg'], g['is_open']
     sel = good
     return dict(lam=lam[sel], y=ys[sel], k=k[sel].astype(int), f=f[sel], sb=sb[sel], var=var[sel],
                 seg=seg[sel], yseg=yseg[sel], centre=(np.abs(f[sel]) < CENTRE_FRAC) & is_open[sel],
-                state=state, n_pix=int(sel.sum()))
+                is_open=is_open[sel], state=state, slitlet_id=g['slitlet_id'], quadrant=g['quadrant'],
+                pitch=pitch, x0=x0, y0=y0, shape=sci.shape, n_pix=int(sel.sum()))
 
 
 # ---------------------------------------------------------------------------
@@ -717,10 +764,7 @@ def derive(obs_names, grating, products_dir, cache_dir, filter_name=None, source
     for rate in sorted({c.rate_path for c in canonicals}):
         if os.path.exists(rate):
             coverage_from_wcs(rate, cache_dir=cache_dir, tail_px=tail)      # build the cache
-            import hashlib
-            key = hashlib.sha1(os.path.abspath(rate).encode()).hexdigest()[:12]
-            tag = f'_tail{tail}' if tail else ''
-            counters[rate] = os.path.join(cache_dir, f'coverage_{os.path.basename(rate)[:-5]}_{key}{tag}.npy')
+            counters[rate] = cache_path(rate, cache_dir, tail)
     log(f'{len(counters)} overlap counters')
 
     train = [c for c in canonicals if c.obs != held_out]

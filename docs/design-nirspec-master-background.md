@@ -1075,3 +1075,39 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
 - Not yet measured: the bar profile as a function of quadrant, the solar-line check (§3.3), the
   origin of the G395M NRS2 excess (resolved: the trace tails, above) and of the per-exposure 3 µm
   differences; the grating tables await the SPURS reprocessing.
+- **P1b built (2026-10-29): `master_bkg.py`, first products on `ember_cosmos_p1`.** The derivation
+  is the module `campfire_pipeline/nirspec/master_bkg.py`, called at the end of `run_stage2a` and as
+  `cfpipe nirspec master-bkg`; the product is `<root>_<nod>_<nrsN>_mbkg.fits` beside the rate file
+  (layout kind `nirspec_mbkg`; `MBKG1D`, `SHUTTERS`, `MBKG2D`, `MBKG2DDQ` as §4.1, 20 MB each with the
+  full-frame expansion). Two departures from §4.1 as written, both decided with Hollis on 2026-10-29:
+  the 1-D sky is measured **per exposure × detector** (ember_uds_p2's second exposure sits 14 % above
+  its neighbours at 3 µm, so pooling the group would be wrong there), with the exposure group's pooled
+  sky stored beside it as the fallback below `master_bkg_min_shutters` clean shutters (`MBKGSRC`), and
+  the scale/offset against the pool and the per-quadrant scales are **recorded, never applied**
+  (`MBKGSCL`/`MBKGOFF`, `MBKGQ1`–`4`; the quadrant scale is applied by the consumer helper). The
+  inputs are the stage-2a canonicals (their empty shutters, through `barshadow_calibration.pixel_samples`)
+  and the background slitlets of the `bkgslits/` file (EMBER plans have none). Settled knobs from P0
+  are the defaults (`[nirspec.stage2] master_bkg_*`). `master_bkg.sky_for_slit(product, path, extver)`
+  is the consumer's entry point: the sky on a slit's cutout in the slit's own units (MJy per pixel for
+  any canonical, the uniform/point pathloss ratio applied only to a POINT one; MJy/sr for a background
+  slitlet), bar shadow from the empirical table where one exists and CRDS otherwise, with the 3 % floor
+  in the variance; the pure part `sky_on_geometry` is unit-tested for all three cases. First run (12
+  rate files, 2886 input slits, 2 workers: 16 min sampling and selection, 10 min painting):
+  - Prism (6 exposures × detectors): 178–200 of 191–218 shutters clean (91–93 %); each exposure's sky
+    within 0.2–0.4 % in scale and ±0.7 % in offset of the group pool, flat in wavelength (the panel of
+    `<base>_mbkg_qa.pdf`); data / `jwst_backgrounds` 0.92–0.93; quadrant scales 0.98–1.02 (NRS1: Q3
+    0.988, Q4 1.020). Over the covered pixels of the rate frame, `(rate − MBKG2D) / MBKG2D` has median
+    −2 to −3 % with a robust scatter of 20 % per pixel (the empirical prism bar-shadow table is in the
+    expansion): the painted sky sits a few per cent above the rate pixel by pixel, which is what
+    P3's per-shutter measurement is for.
+  - G395M (6): 81–137 of 87–164 clean (85–94 %); 2-pixel bins carry 10–20 % noise per exposure ×
+    detector (the pool is the usable curve for a single exposure here, and `MBKG1D` is not smoothed);
+    the per-exposure scale against the pool scatters 0.993–1.070 with offsets to −4 % (the two are
+    degenerate at this noise; the pool-fallback threshold is not reached); data/model 1.07–1.13. On
+    NRS1 the clean shutters' scales are bimodal (peaks near 0.95 and 1.15, `05101_00002_nrs1`), not
+    explained by the quadrant scales (0.985 / 1.008) — to be checked against the tail length (§9 above)
+    and the per-slitlet term once the SPURS G395M products exist. The CRDS bar-shadow table is in the
+    expansion (no empirical G395M table yet) and `(rate − MBKG2D) / MBKG2D` has median −17 % over the
+    covered pixels, consistent with the CRDS profile's too-wide open area over-predicting the sky in
+    the bar rows (the empirical G395M table from SPURS replaces it).
+  - Not yet: subtraction (P2), deploy/pull of the kind (registered only), a compressed `MBKG2D`.

@@ -40,7 +40,8 @@ def main():
     cfg = load_config(None)
     setup_environment(cfg)
     paths = resolve_paths(cfg)
-    cache_dir = os.path.join(os.environ.get('CAMPFIRE_ROOT', os.path.expanduser('~/campfire-data')), 'cache', 'coverage')
+    from campfire_pipeline.nirspec.coverage import default_cache_dir
+    cache_dir = default_cache_dir()
     try:
         from campfire_pipeline import __version__ as version
     except Exception:
