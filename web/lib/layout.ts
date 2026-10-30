@@ -304,6 +304,7 @@ export function parseRelpath(relpath: string): ParsedKey {
   if (tree === 'products' && seg.length >= 4 && seg[1] === 'nirspec') {
     const obs = seg[2];
     if (seg.length === 5 && seg[3] === 'manual_masks') return live({ productType: 'nirspec_manual_mask', scope: { obs }, filename: seg[4] });
+    if (seg.length === 5 && seg[3] === 'bkgslits' && seg[4].endsWith('_bkgslits.fits')) return live({ productType: 'nirspec_bkgslits', scope: { obs }, filename: seg[4] });
     if (seg.length === 4) return live({ productType: nirspecObsProduct(seg[3]), scope: { obs }, filename: seg[3] });
   }
   if (tree === 'products' && seg.length >= 4 && seg[1] === 'nircam') {

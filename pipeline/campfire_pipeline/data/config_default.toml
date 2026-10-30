@@ -48,6 +48,21 @@
 
 [nirspec.stage2]
     set_stellarity = 1.0
+    # One Spec2Pipeline call per rate file over an edited full metafile, split into
+    # the per-source canonicals afterwards (same per-slit arrays as one call per
+    # source, for one CRDS/WCS set-up instead of one per source). false runs the
+    # original one-call-per-source loop, which is also the fallback when the
+    # single call fails.
+    single_call = true
+    # Also extract the MSA plan's background-only slitlets (no catalog source) into
+    # products/nirspec/<obs>/bkgslits/<root>_<nrsN>_bkgslits.fits, calibrated as
+    # extended sources (uniform pathloss, MJy/sr, bar shadow applied). Input of the
+    # master-background derivation; regenerable, never deployed. Needs single_call.
+    extract_bkgslits = true
+    # Use the empirical bar-shadow table (campfire_pipeline/data/empirical_jwst_nirspec_barshadow_<grating>.fits,
+    # derived from our own empty shutters by Generate_Barshadow_Cals.py) instead of the CRDS reference for the
+    # background slitlets; gratings without a table fall back to CRDS. Off until the tables are validated.
+    empirical_barshadow = false
     rectify = true
     plot_bkgsub = true
     empirical_wavecorr = false

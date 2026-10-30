@@ -200,6 +200,7 @@ class Observation:
     stage_overrides: dict = field(default_factory=dict)
     config_groups: dict = field(default_factory=dict)
     manual_masks: dict = field(default_factory=dict)
+    bkgslits_dir: str = None
 
     directories_setup: bool = False
 
@@ -293,6 +294,9 @@ class Observation:
         root = os.path.dirname(os.path.abspath(product_dir))
         self.workspace_dir = str(dir_for('nirspec_spec', scope, root=root))
         self.reference_dir = str(layout_reference_dir('nirspec', scope, root=root))
+        # Background-only slitlets extracted by stage 2a (one file per rate file),
+        # in a subdirectory so nothing that enumerates the workspace sees them.
+        self.bkgslits_dir = str(dir_for('nirspec_bkgslits', scope, root=root))
 
         # Create workspace directory
         if os.path.exists(self.workspace_dir) and overwrite:

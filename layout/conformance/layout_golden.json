@@ -279,6 +279,18 @@
       "tree_class": "user-state"
     },
     {
+      "product_type": "nirspec_bkgslits",
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
+      "filename": "jw07076020001_04101_00003_nrs1_bkgslits.fits",
+      "relpath": "products/nirspec/ember_egs_p1/bkgslits/jw07076020001_04101_00003_nrs1_bkgslits.fits",
+      "key_legacy": null,
+      "key_canonical": null,
+      "bucket": null,
+      "tree_class": "regenerable"
+    },
+    {
       "product_type": "nirspec_stuck_shutters",
       "scope": {
         "obs": "ember_egs_p1"
@@ -670,6 +682,7 @@
     "dr/2026.1/products/nirspec/ember_egs_p1/x_spec.fits",
     "dr/DR2026.1/reference/nirspec/ember_egs_p1/redshifts.toml",
     "dr/DR2026.1/products/nirspec/ember_egs_p1/manual_masks/x.reg",
+    "dr/DR2026.1/products/nirspec/ember_egs_p1/bkgslits/x_bkgslits.fits",
     "dr/DR2026.1/products/nirspec/ember_egs_p1/ember_egs_p1_summary.ecsv",
     "dr/DR2026.1/tiles/cosmos/f444w/3/4/5.png"
   ],
@@ -685,6 +698,7 @@
     "tile",
     "photometry_pz",
     "summary",
-    "nirspec_manual_mask"
+    "nirspec_manual_mask",
+    "nirspec_bkgslits"
   ]
 }

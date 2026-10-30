@@ -29,6 +29,52 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+
+- **Empirical NIRSpec MSA bar-shadow calibration.** `campfire_pipeline.nirspec.barshadow_calibration`
+  measures the bar-shadow profile from the empty shutters of stage-2a canonicals, in the pipeline's own
+  slit-frame coordinates, per reference segment (outer edges from the 1x1 image, interior bar from the
+  1x3 image) and wavelength column, with the sky pooled and the shutters selected per exposure, and
+  `campfire_pipeline/data/Generate_Barshadow_Cals.py` writes it in the CRDS `barshadow` layout as
+  `empirical_jwst_nirspec_barshadow_<grating>.fits` (the prism table ships, derived from the seven
+  EMBER prism pointings; the gratings follow from SPURS) with
+  a QA report (`barshadow_qa`: measured segments vs CRDS vs table, per-observation consistency, the
+  images, a held-out observation divided by each table, the exposure-level sky). On the prism the
+  held-out residual drops from 11-18 % (CRDS) to 1-2.5 % per segment. `[nirspec.stage2].empirical_barshadow`
+  (default off) passes the table to `BarShadowStep` for the background slitlets
+  (`config.get_empirical_barshadow_path`); gratings without a table fall back to CRDS. The overlap
+  counter moved to `nirspec/coverage.py` with the redward tail past the nominal cutoff (`TAIL_PX`).
+  A slitlet whose source the nod moved out (jwst then marks no primary shutter, writes an `x` on
+  the first shutter with `source_ypos` 0) is measured with the source's catalogue position placed
+  through the slit WCS (`source_slit_position`), so the fake source shutter counts as sky and the
+  shutter next to the real position is padded; the same placement serves a secondary source that
+  is never the slitlet's primary.
+
+### Infrastructure
+
+- **Stage 2a runs one `Spec2Pipeline` call per rate file instead of one per
+  source.** The per-source metafile edits (`MetaFile.rows_for_source`) are applied
+  to every source at once in one edited full metafile (`MetaFile.for_sources`), the
+  call runs once, and the multi-slit result is split into the same one-slit
+  canonicals (`stage2._split_spec2_result`). `Spec2Pipeline` is per slit from
+  `assign_wcs` onwards, so the per-slit arrays are unchanged (checked array-for-array
+  against the per-source loop on `ember_cosmos_p1`); only the `MSAMETFL` card now
+  names the observation's real metafile rather than a transient per-source copy.
+  A slit is routed to its source by slitlet, so a nod whose source shutter was
+  removed as stuck closed (jwst then extracts the slitlet under its background
+  name, with the uniform pathloss) stays that source's nod product with
+  `SRCFLUX = 'F'`, exactly as the per-source loop kept it.
+  Sources sharing a slitlet are extracted in successive rounds, fixed-slit sources
+  get their own round under the extended-wavelength override, and any failure of
+  the single call falls back to the per-source loop for the sources it did not
+  produce (`[nirspec.stage2].single_call = false` selects that loop outright).
+  The same call also extracts the MSA plan's background-only slitlets into
+  `products/nirspec/<obs>/bkgslits/<root>_<nrsN>_bkgslits.fits` (new layout kind
+  `nirspec_bkgslits`, a regenerable local intermediate: uniform pathloss, MJy/sr,
+  bar shadow applied as a separate step), the input of the master-background work
+  (`docs/design-nirspec-master-background.md`); `extract_bkgslits = false` turns
+  that off.
+
+### Infrastructure
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.
