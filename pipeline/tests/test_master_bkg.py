@@ -167,3 +167,37 @@ def test_sky_on_geometry_units_point_and_extended_canonicals_and_background_slit
     g_out = dict(g, lam=np.full(shape, 7.0))
     r = M.sky_on_geometry(prod, extended, g_out, table)
     assert np.all(np.isnan(r['sky']))
+
+
+def test_sky_total_on_cutout_sums_every_covering_trace():
+    """On the gratings a pixel carries the sky of every slitlet whose trace crosses it:
+    the consumer gets the painted total through the exact pixelwise factor, with NaN
+    where nothing covers the pixel and the slit's own slitlet kept for reference."""
+    g = _synthetic_geometry(nrow=6, ncol=5); table = _flat_table(0.8); prod = _product(q2=1.0)
+    pix_sr = 5e-13
+    frame = dict(sci=np.full((6, 5), 2.0), bunit='MJy', pix_sr=pix_sr, pthloss='UNIFORM', pu=None, pp=None, bar=None, x0=10, y0=20)
+    own = M.sky_on_geometry(prod, frame, g, table)
+    own_sky = 0.4 * 0.8 * pix_sr
+    assert np.allclose(own['sky'], own_sky)
+    # the detector: rate = 0.05 DN/s everywhere; the painted sky says 3 traces (own + 2 others) on
+    # the lower rows and the own trace alone on the upper rows; one pixel uncovered, one unpainted
+    rate = np.full((40, 30), 0.05)
+    mb = np.zeros((40, 30)); mb[20:23, 10:15] = 3 * 0.05; mb[23:26, 10:15] = 0.05
+    dq = np.zeros((40, 30), np.uint8); dq[20, 10] = M.DQ_UNCOVERED; dq[21, 11] = M.DQ_UNPAINTED
+    n2d = np.zeros((40, 30), np.uint8); n2d[20:23, 10:15] = 3; n2d[23:26, 10:15] = 1
+    prod.update(mbkg2d=mb, dq2d=dq, n2d=n2d, rate=rate, path='unused')
+    r = M.sky_total_on_cutout(prod, own, frame)
+    F = 2.0 / 0.05                                   # sci / rate: the calibration factor
+    assert np.allclose(r['sky'][1:3, 1:], 3 * 0.05 * F)         # three traces' sky, in the slit's units
+    assert np.allclose(r['sky'][3:, :], 0.05 * F)
+    assert np.isnan(r['sky'][0, 0]) and np.isfinite(r['sky'][1, 1])   # uncovered -> NaN; unpainted stays, flagged
+    assert r['dq'][1, 1] == M.DQ_UNPAINTED and r['n_cover'][0, 1] == 3
+    assert np.allclose(r['own_sky'], own_sky)
+    # the variance scales with the total (the floor is a fraction of what is subtracted)
+    assert np.allclose(r['var'][1, 1] / r['var'][3, 1], 9.0)
+
+
+def test_pixelwise_factor_fills_flagged_pixels_from_the_column():
+    sci = np.array([[2.0, 4.0], [2.0, 0.0], [2.0, 4.0]]); rate = np.array([[1.0, 1.0], [0.0, 1.0], [1.0, 1.0]])
+    F = M.pixelwise_factor(sci, rate)
+    assert np.allclose(F, [[2, 4], [2, 4], [2, 4]])

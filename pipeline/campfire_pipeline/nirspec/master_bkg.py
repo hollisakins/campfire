@@ -10,9 +10,12 @@ One product per rate file, ``<root>_<nod>_<nrsN>_mbkg.fits`` beside it:
 * ``SHUTTERS`` — one row per empty shutter that was offered: where it is (slitlet,
   quadrant, shutter offset from the slitlet's source, the slit it came from), its scale
   against the sky, χ², the longest line-like run, ``clean`` and the ``reason``;
-* ``MBKG2D`` / ``MBKG2DDQ`` — the sky painted back onto the detector in the rate frame
-  (DN/s), every covering slitlet's sky summed where footprints overlap, ``DO_NOT_USE``
-  (1) where nothing covers the pixel or a trace's beyond-cutoff tail does.
+* ``MBKG2D`` / ``MBKG2DN`` / ``MBKG2DDQ`` — the sky painted back onto the detector in the
+  rate frame (DN/s), every covering slitlet's sky summed where footprints overlap (on the
+  gratings 38 % of the detector lies under more than one trace, §9), the number of slits
+  painted per pixel, and flags: 1 nothing covers the pixel, 2 a covering trace was not
+  painted (its source was not processed, or a failed-open shutter), 4 a trace's
+  beyond-cutoff tail.
 
 The inputs are what stage 2a already produced: the per-source canonicals (their empty
 shutters) and the background-only slitlets of the ``bkgslits/`` file. Pixels are read
@@ -29,10 +32,14 @@ exposure has too few clean shutters (``MBKGSRC``). Per-quadrant scales against t
 global sky are recorded as ``MBKGQ1``..``MBKGQ4`` (the ±2.5 % quadrant term of §9) and
 applied by ``sky_for_slit``.
 
-``sky_for_slit`` is the consumer's entry point: the product's sky evaluated on one
-slit's cutout, in that slit's own frame and units (the bar shadow from the empirical
-table or CRDS, the pathloss ratio for a point-source canonical, the pixel area for
-MJy per pixel), with its variance including the ``MBKGEFLR`` error floor.
+``sky_for_slit`` is the consumer's entry point: the sky on one slit's cutout, in that
+slit's own frame and units. The slit's own slitlet is evaluated analytically (the bar
+shadow from the empirical table or CRDS, the pathloss ratio for a point-source
+canonical, the pixel area for MJy per pixel) and is what the painter uses; what a
+consumer subtracts is the painted total on the cutout, every covering slitlet's sky,
+brought into the slit's frame through the exact per-pixel calibration factor
+``SCI / rate`` (every step after ``extract_2d`` is multiplicative per pixel, §4.4),
+with its variance including the ``MBKGEFLR`` error floor.
 """
 import os
 import warnings
@@ -70,6 +77,9 @@ DEFAULTS = dict(
     master_bkg_plot=True,
 )
 REASONS = ('clean', 'too_few_bins', 'low_throughput', 'continuum_excess', 'line_excess')
+DQ_UNCOVERED = 1          # no slitlet footprint on the pixel
+DQ_UNPAINTED = 2          # a footprint covers the pixel but no slit was painted for it
+DQ_TAIL = 4               # a trace's beyond-cutoff tail lands here
 
 
 def options(stage_config):
@@ -445,8 +455,10 @@ def resolve_barshadow_table(bs_ref, slit_path):
     return B.load_table(path)
 
 
-def load_product(path):
-    """The 1-D content of a ``_mbkg.fits`` as the dict ``sky_for_slit`` takes."""
+def load_product(path, with_2d=False):
+    """The content of a ``_mbkg.fits`` as the dict ``sky_for_slit`` takes. The 2-D arrays
+    (``mbkg2d``, ``dq2d``, ``n2d``) and the exposure's rate frame (``rate``) are read with
+    ``with_2d`` or on first use by ``sky_for_slit``, and kept in the dict."""
     with fits.open(path, memmap=False) as h:
         hdr = h[0].header
         t = Table(h['MBKG1D'].data)
@@ -455,8 +467,28 @@ def load_product(path):
                    n_shutters=np.array(t['n_shutters'], int),
                    qscales={q: header_float(hdr, f'MBKGQ{q}') for q in (1, 2, 3, 4)},
                    floor=header_float(hdr, 'MBKGEFLR', 0.0), bs_ref=str(hdr.get('MBKGBSRF', 'CRDS')),
-                   shutters=Table(h['SHUTTERS'].data) if 'SHUTTERS' in h else None)
+                   shutters=Table(h['SHUTTERS'].data) if 'SHUTTERS' in h else None,
+                   mbkg2d=None, dq2d=None, n2d=None, rate=None)
+    if with_2d:
+        _load_2d(out)
     return out
+
+
+def _load_2d(prod):
+    """Read the 2-D arrays and the rate frame into ``prod``; False when the product has
+    no ``MBKG2D``."""
+    if prod.get('mbkg2d') is not None:
+        return True
+    with fits.open(prod['path'], memmap=False) as h:
+        if 'MBKG2D' not in h:
+            return False
+        prod['mbkg2d'] = np.array(h['MBKG2D'].data, float)
+        prod['dq2d'] = np.array(h['MBKG2DDQ'].data) if 'MBKG2DDQ' in h else np.zeros(prod['mbkg2d'].shape, np.uint8)
+        prod['n2d'] = np.array(h['MBKG2DN'].data) if 'MBKG2DN' in h else None
+    rate_path = os.path.join(os.path.dirname(os.path.abspath(prod['path'])), str(prod['header'].get('MBKGRATE', '')))
+    if os.path.exists(rate_path):
+        prod['rate'] = np.array(fits.getdata(rate_path), float)
+    return prod['rate'] is not None
 
 
 def frame_factor(bunit, pix_sr, pthloss, pu, pp, bar):
@@ -520,16 +552,24 @@ def sky_on_geometry(prod, frame, g, table):
                 units=frame['bunit'], quadrant=g['quadrant'], shape=frame['sci'].shape)
 
 
-def sky_for_slit(product, path, extver=1, table=None):
+def sky_for_slit(product, path, extver=1, table=None, mode='total'):
     """The master background on one slit's cutout, in that slit's own frame and units.
 
-    ``product`` is a ``_mbkg.fits`` path or ``load_product`` output; ``path`` a
-    canonical (or the ``bkgslits`` file with ``extver``). Returns ``sky`` and ``var``
-    in the slit's ``SCI`` units (what a consumer subtracts: MJy per pixel for a
-    canonical, point or extended, exactly as ``fix_units`` left it), ``sb`` (MJy/sr
-    through the shutters), ``bs`` (the bar shadow evaluated), ``lam``, the slit's
-    pre-subtraction ``sci`` and its detector corner ``x0`` / ``y0``. NaN where the
-    product has no wavelength coverage or the pixel lies beyond the slitlet.
+    ``product`` is a ``_mbkg.fits`` path or ``load_product`` output (pass the same dict
+    for every slit of one exposure: the 2-D arrays and the rate frame are read once
+    into it); ``path`` a canonical (or the ``bkgslits`` file with ``extver``). Returns
+    ``sky`` and ``var`` in the slit's ``SCI`` units (what a consumer subtracts: MJy per
+    pixel for a canonical, point or extended, exactly as ``fix_units`` left it), ``sb``
+    (MJy/sr through the slit's own shutters), ``bs`` (the bar shadow evaluated), ``lam``,
+    the slit's pre-subtraction ``sci`` and its detector corner ``x0`` / ``y0``.
+
+    ``mode='total'`` (default) is the painted ``MBKG2D`` on the cutout through the
+    pixelwise factor: every slitlet whose trace crosses the pixel, which on the gratings
+    is several (``dq`` and ``n_cover`` cutouts say where a covering trace is missing);
+    ``own_sky`` carries the slit's own slitlet alone. ``mode='own'`` returns only the
+    slit's own slitlet (the painter's input; also the fallback when the product has no
+    ``MBKG2D`` or the rate file is not beside it). NaN where the product has no
+    wavelength coverage, the pixel lies beyond the slitlet, or nothing covers it.
     """
     from jwst.datamodels import MultiSlitModel
     prod = load_product(product) if isinstance(product, str) else product
@@ -539,7 +579,45 @@ def sky_for_slit(product, path, extver=1, table=None):
     m.close()
     if table is None:
         table = resolve_barshadow_table(prod['bs_ref'], path)
-    return sky_on_geometry(prod, frame, g, table)
+    own = sky_on_geometry(prod, frame, g, table)
+    if mode == 'own' or not _load_2d(prod):
+        return own
+    return sky_total_on_cutout(prod, own, frame)
+
+
+def pixelwise_factor(sci, rate_box):
+    """``sci / rate`` on a cutout: the exact factor from the rate frame to the slit's
+    calibrated frame, since every step after ``extract_2d`` multiplies per pixel. A
+    flagged or zero pixel takes its column's median (the calibration is smooth)."""
+    with np.errstate(invalid='ignore', divide='ignore'):
+        F = sci / rate_box
+    F[~np.isfinite(F) | (rate_box == 0) | (sci == 0)] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        colmed = np.nanmedian(F, axis=0)
+    return np.where(np.isfinite(F), F, colmed[None, :])
+
+
+def sky_total_on_cutout(prod, own, frame):
+    """What a consumer subtracts: the painted total (every covering slitlet's sky,
+    ``MBKG2D``) on the slit's cutout, in the slit's frame through the pixelwise factor.
+    ``own`` is ``sky_on_geometry`` output for the slit. Returns the dict with ``sky``,
+    ``var``, ``dq`` (the ``MBKG2DDQ`` cutout) and ``own_sky`` (the slit's own slitlet
+    alone); NaN where no footprint covers the pixel."""
+    ny, nx = own['shape']
+    box = (slice(frame['y0'], frame['y0'] + ny), slice(frame['x0'], frame['x0'] + nx))
+    mb = prod['mbkg2d'][box]; dq = prod['dq2d'][box]; rate_box = prod['rate'][box]
+    if mb.shape != own['shape']:
+        raise ValueError('cutout does not fit the detector frame')
+    F = pixelwise_factor(frame['sci'], rate_box)
+    total = mb * F
+    total[(dq & DQ_UNCOVERED) > 0] = np.nan
+    own_sky = own['sky']
+    with np.errstate(invalid='ignore', divide='ignore'):
+        ratio = np.where(np.isfinite(own_sky) & (own_sky > 0), total / own_sky, np.nan)
+    var = np.where(np.isfinite(ratio), own['var'] * ratio ** 2, (prod['floor'] * total) ** 2)
+    var[~np.isfinite(total)] = np.nan
+    return dict(own, sky=total, var=var, dq=dq, own_sky=own_sky, n_cover=prod['n2d'][box] if prod.get('n2d') is not None else None)
 
 
 def _worker_paint(args):
@@ -556,7 +634,7 @@ def _worker_paint(args):
     n_painted, failures = 0, []
     for c in canonicals:
         try:
-            r = sky_for_slit(prod, c.path, c.extver, table)
+            r = sky_for_slit(prod, c.path, c.extver, table, mode='own')
         except Exception as e:
             failures.append((c.key, f'{type(e).__name__}: {e}')); continue
         ny, nx = r['shape']
@@ -565,24 +643,20 @@ def _worker_paint(args):
         if rbox.shape != r['shape']:
             continue
         with np.errstate(invalid='ignore', divide='ignore'):
-            F = rbox / r['sci']
-        F[~np.isfinite(F) | (r['sci'] == 0)] = np.nan
-        # a flagged or zero pixel takes its column's median factor (the calibration is smooth)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', RuntimeWarning)
-            colmed = np.nanmedian(F, axis=0)
-        F = np.where(np.isfinite(F), F, colmed[None, :])
-        val = r['sky'] * F
+            val = r['sky'] / pixelwise_factor(r['sci'], rbox)
         ok = np.isfinite(val)
         mb[box][ok] += val[ok].astype(np.float32)
         cover[box][ok] += 1
         n_painted += 1
     dq = np.zeros(rate.shape, np.uint8)
-    dq[cover == 0] = 1
-    if counter_path and counter_notail_path and os.path.exists(counter_path) and os.path.exists(counter_notail_path):
-        tail = np.load(counter_path) - np.load(counter_notail_path)
-        dq[tail > 0] = 1
-    return rate_path, mb, dq, n_painted, failures
+    dq[cover == 0] |= DQ_UNCOVERED
+    if counter_notail_path and os.path.exists(counter_notail_path):
+        n_foot = np.load(counter_notail_path)
+        dq[(n_foot > cover) & (n_foot > 0)] |= DQ_UNPAINTED
+        if counter_path and os.path.exists(counter_path):
+            tail = np.load(counter_path) - n_foot
+            dq[tail > 0] |= DQ_TAIL
+    return rate_path, mb, dq, np.clip(cover, 0, 255).astype(np.uint8), n_painted, failures
 
 
 def _finite_cards(cards):
@@ -608,7 +682,7 @@ def header_float(hdr, key, default=np.nan):
         return default
 
 
-def write_product(path, hdr_cards, grid_centres, sky, pool, model, shutters, mb2d=None, dq2d=None, history=()):
+def write_product(path, hdr_cards, grid_centres, sky, pool, model, shutters, mb2d=None, dq2d=None, history=(), n2d=None):
     phdr = fits.Header()
     for k, v in _finite_cards(hdr_cards).items():
         phdr[k] = v
@@ -639,6 +713,8 @@ def write_product(path, hdr_cards, grid_centres, sky, pool, model, shutters, mb2
     if mb2d is not None:
         hdus.append(fits.ImageHDU(np.asarray(mb2d, np.float32), name='MBKG2D'))
         hdus[-1].header['BUNIT'] = 'DN/s'
+        if n2d is not None:
+            hdus.append(fits.ImageHDU(np.asarray(n2d, np.uint8), name='MBKG2DN'))
         hdus.append(fits.ImageHDU(np.asarray(dq2d, np.uint8), name='MBKG2DDQ'))
     atomic_save(fits.HDUList(hdus), path)
     return path
@@ -693,7 +769,7 @@ def plot_product(path, out_pdf, obs_name=''):
             fin = mb2d[np.isfinite(mb2d) & (mb2d > 0)]
             vmax = np.percentile(fin, 99) if fin.size else 1
             ax.imshow(mb2d, origin='lower', cmap='gray', vmin=0, vmax=vmax, interpolation='nearest')
-            ax.set_title(f'{base} MBKG2D (rate frame, DN/s, 0-{vmax:.3g}); painted slits: {hdr.get("MBKGN2D")}')
+            ax.set_title(f'{base} MBKG2D (rate frame, DN/s, 0-{vmax:.3g}); painted slits: {hdr.get("MBKGN2D")}', fontsize=9)
             fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
     return out_pdf
 
@@ -857,12 +933,14 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
     if paint_args:
         from multiprocessing import Pool
         def _finish(res):
-            rate, mb, dq, n_painted, fails = res
+            rate, mb, dq, cover, n_painted, fails = res
             out = product_path(obs, rate_base_of(rate))
             with fits.open(out, memmap=False) as h:
                 hdul = fits.HDUList([x.copy() for x in h])
             hdul[0].header['MBKGN2D'] = (n_painted, 'slits painted into MBKG2D')
+            hdul[0].header['MBKGDQ1'] = ('1 uncovered, 2 covering trace unpainted, 4 tail', 'MBKG2DDQ bits')
             hdul.append(fits.ImageHDU(mb, name='MBKG2D')); hdul[-1].header['BUNIT'] = 'DN/s'
+            hdul.append(fits.ImageHDU(cover, name='MBKG2DN'))
             hdul.append(fits.ImageHDU(dq, name='MBKG2DDQ'))
             atomic_save(hdul, out)
             if fails:

@@ -36,17 +36,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   `<root>_<nod>_<nrsN>_mbkg.fits` beside the rate file (new layout kind `nirspec_mbkg`, cloud-backed
   intermediate) with `MBKG1D` (MJy/sr at the shutter centre, per-bin error and shutter count, the
   exposure group's pooled sky and the `jwst_backgrounds` prediction), `SHUTTERS` (every shutter
-  offered, with its scale, chi2, line run, clean flag and reason) and `MBKG2D` / `MBKG2DDQ` (the sky
-  painted back onto the detector in DN/s through the exact per-pixel calibration factor, summed where
-  footprints overlap, flagged under tails and where nothing covers). The selection is the symmetric
+  offered, with its scale, chi2, line run, clean flag and reason) and `MBKG2D` / `MBKG2DN` / `MBKG2DDQ`
+  (the sky painted back onto the detector in DN/s through the exact per-pixel calibration factor,
+  summed where footprints overlap, the number of slits painted per pixel, and flags: 1 nothing covers,
+  2 a covering trace not painted, 4 a tail). The selection is the symmetric
   scale-and-reject iteration of design §4.2 with the P0-settled defaults (`[nirspec.stage2]
   master_bkg_*`: shutter core |f| <= 0.2, 2-pixel bins, 3 px source pad, 5 % excess / 30 % deficit
   rejection, 4-sigma line runs); per-quadrant scales and the scale/offset against the pool are recorded
   in the header, never applied; an exposure with fewer than `master_bkg_min_shutters` clean shutters
-  takes the pool (`MBKGSRC`). `master_bkg.sky_for_slit` is the consumer's entry point: the product on
+  takes the pool (`MBKGSRC`). `master_bkg.sky_for_slit` is the consumer's entry point: the sky on
   one slit's cutout in that slit's own units (MJy per pixel for any canonical, point or extended;
-  MJy/sr for a background slitlet), bar shadow from the empirical table where one exists and CRDS
-  otherwise, with the 3 % error floor in the variance. Products skip when their inputs are
+  MJy/sr for a background slitlet): by default the painted total of every slitlet whose trace crosses
+  the cutout, brought into the slit's frame through the pixelwise `SCI / rate` factor (on the gratings
+  a pixel carries several slitlets' sky; the slit's own slitlet alone, evaluated with the bar shadow
+  from the empirical table where one exists and CRDS otherwise, is `own_sky` and `mode='own'`), with
+  the 3 % error floor in the variance. Products skip when their inputs are
   unchanged. Nothing is subtracted yet (P2). `barshadow_calibration.pixel_samples` now reads any
   slit of a multi-slit file and skips the source cut for a background slitlet (`slit_geometry` is
   the shared WCS-to-shutter mapping); `coverage` gained the cache-path helpers.
