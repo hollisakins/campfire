@@ -814,9 +814,13 @@ def sync_cmd(full: bool, no_snapshot: bool, base_url: Optional[str],
 @click.option("--dr", "dr_tag", default=None, metavar="TAG",
               help="Pull a data release: its catalog into dr/TAG/meta and its archived "
                    "bytes into dr/TAG/products (never the live tree)")
+@click.option("--provenance", "provenance_file", default=None, metavar="FILE",
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              help="Fetch the bytes a provenance file records: into the live tree while live "
+                   "still carries them, else from the release holding them (into dr/TAG/products)")
 def download(obs_filter, program_filter, field_filter, grating_filter, filter_filter,
              stale, include_intermediate, download_all, workers, yes, dry_run,
-             no_annotations, base_url, dr_tag):
+             no_annotations, base_url, dr_tag, provenance_file):
     """Pull cloud data products into the local tree (alias: download).
 
     The cloud→local half of the storage plane. Requires a prior 'campfire sync'
@@ -849,7 +853,17 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
       campfire pull --stale
       campfire pull --all
       campfire pull --dr DR2026.1 --obs ember_uds_p4   (a data release, frozen bytes)
+      campfire pull --provenance paper.campfire.json   (the bytes a provenance file records)
     """
+    if provenance_file:
+        selection = (obs_filter, program_filter, field_filter, grating_filter, filter_filter,
+                     stale, include_intermediate, download_all, dr_tag)
+        if any(selection):
+            click.echo("✗ --provenance takes its selection from the file; it combines with no other "
+                       "selection flag (nor --dr, --stale, --intermediate, --all).", err=True)
+            sys.exit(2)
+        _pull_provenance(provenance_file, yes, dry_run, base_url)
+        return
     if dr_tag:
         _pull_release(dr_tag, obs_filter, program_filter, field_filter, grating_filter, filter_filter,
                       stale, include_intermediate, download_all, workers, yes, dry_run, base_url)
@@ -1275,6 +1289,92 @@ def _pull_release(tag, obs_filter, program_filter, field_filter, grating_filter,
             click.echo(f"  Files skipped: {stats['unauthorized']} (not archived by the release, or not yours)")
     finally:
         store.close()
+
+
+def _pull_provenance(file, yes, dry_run, base_url):
+    """`campfire pull --provenance FILE` (design §4.8): the bytes a provenance
+    file records, from wherever still holds them. The server is asked what it
+    knows about each recorded hash (identify); a file live still carries
+    exactly lands in the live tree, one a release holds lands in that
+    release's tree after its catalog is loaded, and a file nothing holds is
+    reported (exit 1). A destination holding other bytes is set aside under
+    .superseded/ first."""
+    import json as _json
+
+    from .config import resolve_data_dir
+    from .dr_store import load_release
+    from .provenance import ProvenanceError, load, pull
+
+    try:
+        doc = load(file)
+    except (ProvenanceError, ValueError) as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(2)
+    if not doc.get("files"):
+        click.echo("Nothing to fetch: the file records no spectra.")
+        return
+    base_url = base_url or resolve_base_url()
+    try:
+        api_session = APISession(base_url=base_url)
+        api = APIClient(api_session)
+    except AuthenticationError as e:
+        click.echo(f"✗ {e}")
+        sys.exit(1)
+    data_dir = resolve_data_dir()
+
+    def _loader(tag):
+        click.echo(f"Loading release {tag}...")
+        load_release(api_session, tag, data_dir=data_dir, log=click.echo)
+
+    def _show(result):
+        names = [p.get("spectrum_id") or p.get("storage_key") or "?" for p in result["files"]]
+        width = min(max((len(n) for n in names), default=1), 50)
+        for name, p in zip(names, result["files"]):
+            if p["source"] is None:
+                click.echo(f"{name:<{width}}  unresolved: {p['reason']}")
+                continue
+            where = "live" if p["source"] == "live" else p["tag"]
+            line = f"{name:<{width}}  {where}, {p['match']}  →  {Path(p['dest']).relative_to(data_dir)}  [{p['status']}]"
+            if p.get("set_aside"):
+                line += f"  (previous bytes kept at {Path(p['set_aside']).relative_to(data_dir)})"
+            if p.get("error"):
+                line += f"  {p['error']}"
+            click.echo(line)
+
+    result = pull(doc, data_dir, api=api, dry_run=True)
+    _show(result)
+    s = result["summary"]
+    todo = s["to-fetch"]
+    if s["unresolved"]:
+        click.echo(f"\n{s['unresolved']} file(s) resolve nowhere you can see: not in live, not in a release "
+                   f"(bytes not kept).")
+    if dry_run:
+        click.echo(f"\nDry run: would fetch {todo} file(s) ({s['present']} already on disk).")
+        sys.exit(1 if result["problems"] else 0)
+    if todo and not yes and not click.confirm(f"\nFetch {todo} file(s)?", default=True):
+        return
+    if any(p["source"] for p in result["files"]):
+        # the real run, whenever anything resolved: fetch, load the catalog of
+        # every release drawn on, and record present files on their store
+        # (a rebuilt mirror or a copied tree learns of them here)
+        click.echo()
+        api_session._ensure_valid_token()
+        result = pull(doc, data_dir, api=api, release_loader=_loader, log=click.echo)
+        s = result["summary"]
+        for name, p in zip([p.get("spectrum_id") or p.get("storage_key") or "?" for p in result["files"]],
+                           result["files"]):
+            if p["status"] in ("refused", "failed"):
+                click.echo(f"  {name}: {p['status']}" + (f": {p['error']}" if p.get("error") else ""))
+            if p.get("set_aside"):
+                click.echo(f"  {name}: previous bytes kept at {Path(p['set_aside']).relative_to(data_dir)}")
+    click.echo(f"\n{'✓' if not result['problems'] else '✗'} {s['fetched']} file(s) fetched, {s['present']} already on disk"
+               + (f", {s['refused']} refused by the server" if s["refused"] else "")
+               + (f", {s['failed']} failed (run the same pull again)" if s["failed"] else "")
+               + (f", {s['unresolved']} unresolved" if s["unresolved"] else "")
+               + (f", {s['catalog_not_loaded']} in a release whose catalog did not load (run again)"
+                  if s.get("catalog_not_loaded") else "") + ".")
+    if result["problems"]:
+        sys.exit(1)
 
 
 # Back-compat alias: `campfire download` ≡ `campfire pull`.

@@ -489,7 +489,10 @@ a live client answers "generate a provenance file"; `load_release` writes the se
 `campfire-provenance/1`) records from the local ledgers only the objects as they are now and every spectrum's file
 with the sha256 of the bytes on disk beside the registry's and the pulled releases holding them; `provenance check
 FILE [--dr TAG] [--offline]` re-hashes, asks `identify` about the recorded bytes, compares science hashes against a
-pulled release and exits 1 on a modified or unresolvable file. `/api/v1/auth/whoami` carries `latest_dr` (the newest
+pulled release and exits 1 on a modified or unresolvable file; `campfire pull --provenance FILE` (`provenance.plan_pull` /
+`pull`) asks `identify` where each recorded hash still lives and fetches it, live-exact into the live tree, else the newest
+release's archived copy into `dr/<tag>/products/` (its catalog loaded first; exact bytes before a same-science stamped copy),
+setting other bytes at the destination aside under `.superseded/` and exiting 1 on anything unresolved. `/api/v1/auth/whoami` carries `latest_dr` (the newest
 published release) and `access_fingerprint` (sha256 of the admin flag + sorted accessible slugs,
 `web/lib/server/access-fingerprint.ts`), on the authenticated endpoint and not the public hour-cached
 `/api/v1/version`; the tail of `campfire sync` (`_sync_tail`) announces the release and, when the fingerprint moved
