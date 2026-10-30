@@ -45,10 +45,10 @@ def master_sky(workspace):
     canonical's sky from its exposure's ``{workspace}/<root>_<nod>_<nrsN>_mbkg.fits``.
 
     The sky is the painted total on the cutout (every slitlet whose trace crosses a
-    pixel; on the gratings several), in the slit's units. Pixels a footprint covers
-    but no slit was painted for (``MBKG2DDQ`` bit 2: an unprocessed source, a
-    failed-open shutter) get NaN, so the loader drops them: the total is incomplete
-    there by construction. One ``load_product`` dict per exposure, shared by its slits.
+    pixel; on the gratings several), in the slit's units. No masking here: the sky is
+    used wherever ``sky_for_slit`` returns it finite (the master background paints every
+    footprint past both ends of the calibrated range). One ``load_product`` dict per
+    exposure, shared by its slits.
 
     No per-slitlet rescaling: the sky is the exposure's master background as painted."""
     from campfire_pipeline.nirspec import master_bkg as MB
@@ -67,11 +67,7 @@ def master_sky(workspace):
     def sky_for(path, slit):
         prod, table = product(CT.exposure_key(path), path)
         d = MB.sky_for_slit(prod, path, table=table)
-        sky, var = np.array(d['sky'], float), np.array(d['var'], float)
-        if d.get('dq') is not None:
-            bad = (np.asarray(d['dq']) & MB.DQ_UNPAINTED) > 0
-            sky[bad], var[bad] = np.nan, np.nan
-        return sky, var
+        return np.array(d['sky'], float), np.array(d['var'], float)
 
     return sky_for
 
