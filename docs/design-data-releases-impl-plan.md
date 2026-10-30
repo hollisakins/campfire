@@ -2109,3 +2109,24 @@ only, as the plan said); the RPC returns facts and the client phrases them; `con
 store already being the archived bytes' hash is what lets the live download engine verify a release pull
 unchanged; a `dr` parameter on `/api/v1/dr` and `/api/v1/identify` is a 400 (releases are part of the answer).
 
+
+### 2026-10-29 PR D (P5-3: `cite`, `provenance`, the sync tail, client 0.7.0) built
+
+Branch `claude/p5-cite-provenance`, PR #672. `dr_program_roster(tag, slugs)` (SECURITY DEFINER, service-role only;
+migration `20261029220413`) answers a release's per-program roster per caller (`is_public` at the freeze, spectra, distinct
+`cfpipe_versions` / `crds_contexts`; the public programs plus the caller's own), attached as `programs` by `/api/v1/dr` and
+`/dr/<tag>/files` and kept in `release.json`: what `cite` needs offline and what the P6 cite block will read. A first cut
+stored it in `counts.programs`; remote Codex (P1) pointed out that `dr_releases` is read whole by every account and by
+`campfire_reader`, so a stored roster lists private programs to everyone — hence the per-call function
+(`check_dr_freeze.sql` asserts both the scope and that the row carries no roster). `campfire/cite.py` (`cite_sentence`,
+`reader_programs`, `roster`, `versions_from_store`, `write_readme`), `campfire cite TAG [--program|--obs] [--json]`
+(pulled tree first, else `APIClient.release_files`), `Campfire.cite()` (live → "generate a provenance file"),
+`load_release` writes `dr/<tag>/README.md`. `campfire/provenance.py` (`build`, `check`, `load`; format
+`campfire-provenance/1`), `campfire provenance [--list|--obs|--program|--object] [-o]` and `provenance check FILE
+[--dr TAG] [--offline] [--json]`. `/api/v1/auth/whoami` now resolves the principal through `authenticateApiRequest`
+and answers `latest_dr` + `access_fingerprint` (`web/lib/server/access-fingerprint.ts`, `fetchLatestPublishedRelease`),
+`APIClient.whoami()`, `_sync_tail` at the end of `campfire sync` (`_meta.latest_dr_seen`, `_meta.access_fingerprint`
+kept at the last full sync), `campfire whoami` prints the latest release. Client 0.7.0 (`_version.py`,
+`pyproject.toml`, `/api/v1/version` latest; floor unchanged, D-P5-1). Decisions: the fingerprint covers the admin flag
+and the sorted accessible slugs only (fields follow programs); `pull --provenance` (design §4.8) is left for later; the README is
+a courtesy (a failure to write it never fails a load).

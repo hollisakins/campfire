@@ -21,8 +21,10 @@ vi.mock('@/lib/api-auth', () => ({ authenticateApiRequest: (req: NextRequest) =>
 vi.mock('@/lib/supabase/service', () => ({ createServiceClient: () => ({}) }));
 
 const fetchVisibleReleases = vi.fn<(sb: unknown, isAdmin: boolean) => Promise<unknown[]>>();
+const fetchProgramRoster = vi.fn<(sb: unknown, tag: string, slugs: readonly string[]) => Promise<unknown>>();
 vi.mock('@/lib/server/dr-exports', () => ({
   fetchVisibleReleases: (sb: unknown, isAdmin: boolean) => fetchVisibleReleases(sb, isAdmin),
+  fetchProgramRoster: (sb: unknown, tag: string, slugs: readonly string[]) => fetchProgramRoster(sb, tag, slugs),
 }));
 
 import { GET } from './route';
@@ -43,6 +45,8 @@ beforeEach(() => {
   authenticate.mockClear();
   fetchVisibleReleases.mockReset();
   fetchVisibleReleases.mockResolvedValue([ROW]);
+  fetchProgramRoster.mockReset();
+  fetchProgramRoster.mockResolvedValue({ pa: { is_public: false, spectra: 3, cfpipe_versions: ['0.7.0'], crds_contexts: [] } });
   admin = false;
 });
 
@@ -69,7 +73,10 @@ describe('GET /api/v1/dr', () => {
       tag: 'DR2026.1', state: 'published', format_version: 1, components: ['nirspec'],
       counts: { spectra: 81420 }, frozen_at: '2026-10-01T00:00:00Z', published_at: '2026-10-05T00:00:00Z',
       withdrawn_at: null, doi: '10.1/x', notes: null, known_issues: null,
+      programs: { pa: { is_public: false, spectra: 3, cfpipe_versions: ['0.7.0'], crds_contexts: [] } },
     }]);
+    // the roster is asked under the caller's own program set, per release
+    expect(fetchProgramRoster).toHaveBeenCalledWith(expect.anything(), 'DR2026.1', ['pa']);
   });
 
   it('asks for every state when the caller is an admin', async () => {

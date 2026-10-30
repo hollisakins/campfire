@@ -312,6 +312,43 @@ BEGIN
     RAISE EXCEPTION 'by_component / nirspec_programs disagree with the frozen tables: %', r.counts;
   END IF;
 
+  -- the per-program roster (P5-3) is never stored on the row (every account and
+  -- campfire_reader read dr_releases whole): dr_program_roster answers per caller,
+  -- the public programs for everyone plus the caller's own proprietary ones
+  IF r.counts ? 'programs' THEN RAISE EXCEPTION 'the program roster must not be stored on dr_releases'; END IF;
+  -- (the nirspec component freezes the seed's published programs too: the
+  -- roster without grants is every public program and no private one)
+  IF NOT (public.dr_program_roster('DR-zzz', '{}') ? 'zzz_dr_pub')
+     OR public.dr_program_roster('DR-zzz', '{}') ? 'zzz_dr_priv'
+     OR EXISTS (SELECT 1 FROM jsonb_each(public.dr_program_roster('DR-zzz', '{}')) AS e(slug, v)
+                WHERE NOT (v->>'is_public')::boolean) THEN
+    RAISE EXCEPTION 'roster without grants should hold the public programs only: %', public.dr_program_roster('DR-zzz', '{}');
+  END IF;
+  IF NOT (public.dr_program_roster('DR-zzz', '{zzz_dr_priv}') ? 'zzz_dr_priv')
+     OR EXISTS (SELECT 1 FROM jsonb_each(public.dr_program_roster('DR-zzz', '{zzz_dr_priv}')) AS e(slug, v)
+                WHERE NOT (v->>'is_public')::boolean AND e.slug <> 'zzz_dr_priv') THEN
+    RAISE EXCEPTION 'roster with the grant should add that program only: %', public.dr_program_roster('DR-zzz', '{zzz_dr_priv}');
+  END IF;
+  IF (SELECT count(*) FROM jsonb_object_keys(public.dr_program_roster('DR-zzz', '{zzz_dr_priv}')))
+       <> (SELECT count(DISTINCT program_slug) FROM dr_spectra WHERE tag = 'DR-zzz' AND (is_public OR program_slug = 'zzz_dr_priv')) THEN
+    RAISE EXCEPTION 'roster size disagrees with the frozen tables';
+  END IF;
+  IF (public.dr_program_roster('DR-zzz', '{zzz_dr_priv}')->'zzz_dr_priv'->>'spectra')::int
+       <> (SELECT count(*) FROM dr_spectra WHERE tag = 'DR-zzz' AND program_slug = 'zzz_dr_priv')
+     OR (public.dr_program_roster('DR-zzz', '{zzz_dr_priv}')->'zzz_dr_priv'->>'is_public')::boolean
+     OR NOT (public.dr_program_roster('DR-zzz', '{}')->'zzz_dr_pub'->>'is_public')::boolean
+     OR jsonb_array_length(public.dr_program_roster('DR-zzz', '{}')->'zzz_dr_pub'->'cfpipe_versions')
+       <> (SELECT count(DISTINCT cfpipe_version) FROM dr_spectra WHERE tag = 'DR-zzz' AND program_slug = 'zzz_dr_pub' AND cfpipe_version IS NOT NULL)
+     OR jsonb_array_length(public.dr_program_roster('DR-zzz', '{}')->'zzz_dr_pub'->'crds_contexts')
+       <> (SELECT count(DISTINCT crds_context) FROM dr_spectra WHERE tag = 'DR-zzz' AND program_slug = 'zzz_dr_pub' AND crds_context IS NOT NULL) THEN
+    RAISE EXCEPTION 'roster entries disagree with the frozen tables: %', public.dr_program_roster('DR-zzz', '{zzz_dr_priv}');
+  END IF;
+  IF has_function_privilege('authenticated', 'public.dr_program_roster(text, text[])', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.dr_program_roster(text, text[])', 'EXECUTE')
+     OR NOT has_function_privilege('service_role', 'public.dr_program_roster(text, text[])', 'EXECUTE') THEN
+    RAISE EXCEPTION 'dr_program_roster must be executable by service_role only';
+  END IF;
+
   -- spectra: the 5 published ones of active objects + the inactive object's
   -- published spectrum is NOT frozen (its object is inactive -> object_id NULL
   -- but the spectrum itself is published: it IS frozen, with object_id NULL).

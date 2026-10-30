@@ -184,6 +184,7 @@ flag is false while any file is pending.
 
 ```
 release.json                       the files route's answer + loaded_at, schema_version, the files
+README.md                          the citation sentence and the facts behind it (rewritten on every load)
 exports/<stream>/<scope>.jsonl.gz  the export files as fetched (scope named by the key rule above)
 meta/campfire.db                   a LocalStore (the live mirror's DDL) + release_manifest
 products/<relpath>                 the bytes, placed by the layout contract from the live storage_key
@@ -229,3 +230,41 @@ the live mirror are never touched. `GET /api/v1/dr` lists the releases a caller
 may read (`campfire dr list`); `POST /api/v1/identify` answers what the archive
 knows about a file's bytes (`campfire identify`, `identify_files`).
 
+
+## Citation and provenance files (P5-3)
+
+`GET /api/v1/dr` and `/dr/<tag>/files` answer a per-program roster as `programs`:
+`{slug: {is_public, spectra, cfpipe_versions, crds_contexts}}` for the programs
+public at the freeze (the set the DOI record holds) plus the caller's own, from
+`dr_program_roster(tag, slugs)` under the principal's program set. It is computed
+per call and never stored on the release row, which every account and the public
+reader role read whole. `campfire cite TAG` /
+`Campfire(dr=TAG).cite()` (`campfire/cite.py`) build the sentence of design §4.5
+from the release record, the programs the reader holds (the `spectra` stream's
+scopes of the files route's answer) and that roster: public programs are cited
+through the DOI, the others described with the pipeline versions they were
+reduced with (exact from the pulled store's `spectra`, else the roster's union).
+A live client answers "generate a provenance file".
+
+A provenance file (`campfire provenance`, `campfire/provenance.py`, format
+`campfire-provenance/1`) is JSON:
+
+```
+format, created_at, client_version, base_url, channel ("live"), latest_dr, last_synced_at,
+selection: {lists, observations, programs, objects},
+objects: [{object_id, version, redshift, redshift_auto, redshift_inspected, redshift_quality,
+           field, programs, last_inspected_at, last_data_change_at}],
+files:   [{storage_key, spectrum_id, object_id, observation, program_slug, field, grating,
+           cfpipe_version, crds_context, reduced_at, server_hash, science_hash, size_bytes,
+           local_path, sha256, local_science_hash, in_releases}],
+summary: {objects, files, files_on_disk}
+```
+
+`sha256` is the hash of the bytes on the author's disk at writing time (null when
+the file is not there), `server_hash` the registry's; `in_releases` the pulled
+releases on that machine holding those bytes or that science. Nothing is sent
+anywhere. `campfire provenance check FILE [--dr TAG] [--offline]` re-hashes the
+files (`ok` / `modified` / `missing` / `not-recorded`), asks `identify` about the
+recorded bytes (the archive's sentence per file), compares the science hashes
+against a pulled release's `release_manifest`, and reports objects whose version
+or redshift moved in the live mirror.

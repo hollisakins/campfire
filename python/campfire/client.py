@@ -5,7 +5,7 @@ import logging
 import os
 import warnings
 from pathlib import Path
-from typing import Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Iterable, Iterator, List, Optional, Sequence, Tuple, Union
 
 import requests
 from astropy.table import Table
@@ -261,6 +261,21 @@ class Campfire:
                 f"{what} are live products, not part of release {self._dr}; "
                 f"open Campfire() for them."
             )
+
+    def cite(self, programs: Optional[Iterable[str]] = None) -> str:
+        """The citation sentence for the release this client reads (design
+        §4.5): the DOI, plus the proprietary programs among *programs*
+        (default: every program held in the release) described with the
+        pipeline versions they were reduced with. On live there is nothing to
+        cite yet: generate a provenance file (``campfire provenance``)."""
+        from .cite import LIVE_SENTENCE, cite_sentence, versions_from_store
+
+        if not self._dr:
+            return LIVE_SENTENCE
+        release = self._release or {"tag": self._dr}
+        store = self._local
+        versions_of = (lambda progs: versions_from_store(store, progs)) if store is not None else None
+        return cite_sentence(release, programs, versions_of=versions_of)
 
     def _stamp(self, table: Table) -> Table:
         """Every table says which channel answered it."""

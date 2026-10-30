@@ -177,6 +177,37 @@ def _check_client_version(base_url: str) -> None:
         pass  # Never block sync for a version check failure
 
 
+_ACCESS_META = "access_fingerprint"      # the caller's program set at the last full sync
+_LATEST_DR_META = "latest_dr_seen"       # the newest published release the tail announced
+
+
+def _sync_tail(api, store, *, full: bool, say=click.echo) -> None:
+    """The tail of ``campfire sync`` (P5-3, design §4.6): the newest published
+    data release, and whether the caller's program set moved since the last
+    full sync (an incremental sync keys on ``updated_at``, which a grant or a
+    revocation never bumps). Reads ``/auth/whoami``; never raises."""
+    try:
+        me = api.whoami()
+    except Exception:  # noqa: BLE001 - a notice, never a reason to fail a sync
+        return
+    latest = me.get("latest_dr") or {}
+    tag = latest.get("tag")
+    if tag:
+        if store.get_meta(_LATEST_DR_META) != tag:
+            say(f"\n  {tag} published {str(latest.get('published_at') or '')[:10]}; you are on live. "
+                f"`campfire pull --dr {tag}` fetches the release.")
+            store.set_meta(_LATEST_DR_META, tag)
+        else:
+            say(f"  Latest data release: {tag}; you are on live.")
+    fingerprint = me.get("access_fingerprint")
+    if fingerprint:
+        seen = store.get_meta(_ACCESS_META)
+        if full or seen is None:
+            store.set_meta(_ACCESS_META, fingerprint)
+        elif seen != fingerprint:
+            say("\n⚠ Your program access changed since the last full sync. Run: campfire sync --full")
+
+
 @click.group()
 @click.version_option(version=__version__, prog_name="campfire")
 def cli():
@@ -430,29 +461,34 @@ def whoami(base_url: Optional[str]):
         click.echo("Invalid credentials. Run: campfire login")
         sys.exit(1)
 
+    shown_email = False
     if loaded.is_api_key():
         click.echo("Authentication: API key")
         if loaded.api_key:
             click.echo(f"Key prefix: {loaded.api_key[:20]}...")
-
-        try:
-            response = requests.get(
-                f"{base_url}/auth/whoami",
-                headers={"Authorization": f"Bearer {loaded.api_key}"},
-                timeout=10,
-            )
-            if response.status_code == 200:
-                data = response.json()
-                click.echo(f"Email: {data.get('email', 'unknown')}")
-        except requests.RequestException:
-            pass
-
     elif loaded.is_oauth():
         click.echo("Authentication: OAuth (device flow)")
         if loaded.user_email:
             click.echo(f"Email: {loaded.user_email}")
+            shown_email = True
         if loaded.expires_at:
             click.echo(f"Token expires: {loaded.expires_at}")
+
+    try:
+        me = APIClient(APISession(base_url=base_url)).whoami()
+    except Exception as e:  # noqa: BLE001 - offline or expired: the credential facts above still stand
+        click.echo(f"(server not reached: {e})")
+        return
+    if not shown_email and me.get("email"):
+        click.echo(f"Email: {me['email']}")
+    if me.get("is_admin"):
+        click.echo("Admin: yes")
+    latest = me.get("latest_dr")
+    if latest and latest.get("tag"):
+        click.echo(f"Latest data release: {latest['tag']} "
+                   f"(published {str(latest.get('published_at') or '')[:10]})")
+    else:
+        click.echo("Latest data release: none published yet")
 
 
 def format_budget_lines(budget: dict) -> list[str]:
@@ -742,6 +778,8 @@ def sync_cmd(full: bool, no_snapshot: bool, base_url: Optional[str],
 
         # Check for client updates (non-blocking)
         _check_client_version(base_url)
+        # The newest data release; a changed program set (non-blocking)
+        _sync_tail(api, store, full=not is_incremental)
     except Exception as e:
         click.echo(f"✗ Sync failed: {e}", err=True)
         sys.exit(1)
@@ -1280,6 +1318,189 @@ def identify(files, offline, as_json, base_url):
             continue
         what = subject(r)
         click.echo(f"{r.path.name:<{width}}  {r.sentence}" + (f"  [{what}]" if what else ""))
+
+
+@cli.command(name="cite")
+@click.argument("tag")
+@click.option("--program", "programs", multiple=True, metavar="SLUG",
+              help="Cite the release as read through these programs only")
+@click.option("--obs", "observations", multiple=True, metavar="NAME",
+              help="... through the programs of these observations (needs the pulled release)")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable: tag, DOI, programs, the sentence")
+@click.option("--base-url", default=None, help="API base URL")
+def cite(tag, programs, observations, as_json, base_url):
+    """The citation sentence for data release TAG (P5-3).
+
+    One DOI per release; proprietary programs are described, not cited:
+    "CAMPFIRE DR2026.1 (doi:...), plus programs ember and zenith reduced with
+    cfpipe 0.7.0 and CRDS context jwst_1535.pmap as in that release." Read
+    from the pulled release under dr/TAG/ when there is one (no network),
+    else from the server. Work from live has no citation yet: write a
+    provenance file (campfire provenance).
+    """
+    import json as _json
+
+    from .cite import cite_sentence, reader_programs, versions_from_store
+    from .config import resolve_data_dir
+    from .dr_store import open_store, read_release_json, release_dir
+    from .exceptions import CampfireError
+
+    try:
+        root = release_dir(resolve_data_dir(), tag)
+    except ValueError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(2)
+    release = read_release_json(root)
+    if release is None:
+        try:
+            api = APIClient(APISession(base_url=base_url or resolve_base_url()))
+            release = api.release_files(tag)
+        except CampfireError as e:
+            click.echo(f"✗ release {tag} is not on this machine and the server did not answer: {e}", err=True)
+            sys.exit(1)
+    chosen = set(programs)
+    sentence = None
+    if (root / "meta" / "campfire.db").exists():
+        store = open_store(root)
+        try:
+            for obs in observations:
+                progs = {s["program_slug"] for s in store.query_spectra(observations=[obs], limit=None)
+                         if s.get("program_slug")}
+                if not progs:
+                    click.echo(f"✗ Observation '{obs}' is not in release {tag} (or not in your programs).", err=True)
+                    sys.exit(1)
+                chosen |= progs
+            selection = sorted(chosen) if chosen else None
+            sentence = cite_sentence(release, selection, versions_of=lambda progs: versions_from_store(store, progs))
+        finally:
+            store.close()
+    elif observations:
+        click.echo(f"✗ --obs needs the pulled release (campfire pull --dr {tag}); select with --program.", err=True)
+        sys.exit(2)
+    selection = sorted(chosen) if chosen else None
+    if sentence is None:
+        sentence = cite_sentence(release, selection)
+    if as_json:
+        click.echo(_json.dumps({"tag": release.get("tag", tag), "doi": release.get("doi"),
+                                "programs": selection or reader_programs(release), "sentence": sentence}, indent=2))
+    else:
+        click.echo(sentence)
+
+
+@cli.group(name="provenance", invoke_without_command=True)
+@click.option("--list", "lists", multiple=True, metavar="SLUG", help="The objects of this list")
+@click.option("--obs", "observations", multiple=True, metavar="NAME", help="The objects of this observation")
+@click.option("--program", "programs", multiple=True, metavar="SLUG", help="The objects of this program")
+@click.option("--object", "objects", multiple=True, metavar="NAME", help="One object by name")
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path), default=None,
+              help="Write the file here (default: stdout)")
+@click.pass_context
+def provenance_group(ctx, lists, observations, programs, objects, output):
+    """Write a provenance file for work done from live (P5-3).
+
+    paper.campfire.json records the objects of a selection as they are now
+    (version, redshift, quality) and every spectrum's file with the sha256 of
+    the bytes on this machine beside the registry's, the pipeline version,
+    and the data releases on this machine already holding it. Built from the
+    local ledgers only; never sent anywhere. `campfire provenance check`
+    re-reads one later.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    import json as _json
+
+    from .config import resolve_data_dir
+    from .provenance import ProvenanceError, build
+
+    data_dir = resolve_data_dir()
+    db = data_dir / "meta" / "campfire.db"
+    if not db.exists():
+        click.echo("✗ No local catalog; run `campfire sync` first.", err=True)
+        sys.exit(1)
+    from .db.store import LocalStore
+    store = LocalStore(db)
+    try:
+        doc = build(store, data_dir, lists=lists, observations=observations, programs=programs, objects=objects,
+                    base_url=resolve_base_url(), latest_dr=store.get_meta(_LATEST_DR_META),
+                    log=lambda m: click.echo(m, err=True))
+    except ProvenanceError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(2)
+    finally:
+        store.close()
+    text = _json.dumps(doc, indent=2)
+    if output:
+        output.write_text(text + "\n", encoding="utf-8")
+        s = doc["summary"]
+        click.echo(f"✓ {output}: {s['objects']} object(s), {s['files']} file(s) ({s['files_on_disk']} on disk)")
+    else:
+        click.echo(text)
+
+
+@provenance_group.command(name="check")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--dr", "dr_tag", default=None, metavar="TAG",
+              help="Also say whether this pulled release holds each file's science")
+@click.option("--offline", is_flag=True, help="Only the stores on this machine; do not ask the server")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable")
+@click.option("--base-url", default=None, help="API base URL")
+def provenance_check(file, dr_tag, offline, as_json, base_url):
+    """Re-read a provenance FILE: are the files still those bytes, what does
+    the archive say about them now, and (with --dr) does that release hold
+    the same science. Exit 1 when a file was modified or no longer resolves."""
+    import json as _json
+
+    from .config import resolve_data_dir
+    from .db.store import LocalStore, SchemaMismatchError
+    from .provenance import ProvenanceError, check, load
+
+    try:
+        doc = load(file)
+    except (ProvenanceError, ValueError) as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(2)
+    data_dir = resolve_data_dir()
+    api = None
+    if not offline:
+        try:
+            api = APIClient(APISession(base_url=base_url or resolve_base_url()))
+        except AuthenticationError as e:
+            click.echo(f"  (not asking the server: {e})", err=True)
+    store = None
+    db = data_dir / "meta" / "campfire.db"
+    if db.exists():
+        try:
+            store = LocalStore(db)
+        except SchemaMismatchError:
+            store = None
+    try:
+        result = check(doc, data_dir, store=store, api=api, dr=dr_tag)
+    except ProvenanceError as e:
+        click.echo(f"✗ {e}", err=True)
+        sys.exit(1)
+    finally:
+        if store is not None:
+            store.close()
+    if as_json:
+        click.echo(_json.dumps(result, indent=2, default=str))
+    else:
+        names = [r.get("spectrum_id") or r.get("storage_key") or "?" for r in result["files"]]
+        width = min(max((len(n) for n in names), default=1), 50)
+        for name, r in zip(names, result["files"]):
+            line = f"{name:<{width}}  local: {r['local']:<12} archive: {r['archive']}"
+            if "release" in r:
+                line += f"  |  {r['release']}"
+            click.echo(line)
+        for o in result["objects"]:
+            if o["state"] != "unchanged":
+                click.echo(f"  object {o['object_id']}: {o['state']}")
+        s = result["summary"]
+        click.echo(f"\n{s['files']} file(s): {s['ok']} unchanged on disk, {s['modified']} modified, "
+                   f"{s['missing']} not on disk; {len(result['objects']) - s['objects_changed']} object(s) "
+                   f"unchanged, {s['objects_changed']} changed.")
+    if result["problems"]:
+        click.echo(f"⚠ {result['problems']} file(s) no longer resolve as recorded.", err=True)
+        sys.exit(1)
 
 
 def _maybe_pull_redshifts(obs_names, config) -> None:

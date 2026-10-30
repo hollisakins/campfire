@@ -94,7 +94,7 @@ campfire login --api-key    # Paste an API key (for headless systems)
 campfire sync               # Pulls full object/spectra metadata (~seconds)
 ```
 
-This downloads the complete catalog into a local SQLite database and exports `objects.csv` + `spectra.csv`. No FITS files are downloaded. Safe to run often — refreshes inspection results, redshifts, and flags. After the first run a sync is incremental: only rows changed since the last sync are fetched, and rows removed on the server (regrouped objects, revoked spectra) are deleted locally. The file index covers the final products the client can download; `campfire pull --intermediate` indexes the intermediates of its selection on demand. `campfire sync --full` re-walks everything.
+This downloads the complete catalog into a local SQLite database and exports `objects.csv` + `spectra.csv`. No FITS files are downloaded. Safe to run often — refreshes inspection results, redshifts, and flags. After the first run a sync is incremental: only rows changed since the last sync are fetched, and rows removed on the server (regrouped objects, revoked spectra) are deleted locally. The file index covers the final products the client can download; `campfire pull --intermediate` indexes the intermediates of its selection on demand. `campfire sync --full` re-walks everything. The tail of a sync names the newest published data release (`DR2026.1 published 2026-11-01; you are on live`) and, when your program access changed since your last full sync, asks for `campfire sync --full` (an incremental sync keys on what changed on the server, and a grant changes nothing there).
 
 ### 2. Download spectra
 
@@ -121,6 +121,7 @@ campfire dr list                                  # the releases you may read
 campfire pull --dr DR2026.1                       # the release's catalog into dr/DR2026.1/, then a listing
 campfire pull --dr DR2026.1 --obs ember_uds_p4    # its frozen bytes for a selection (--program / --field / --all)
 campfire identify spectra/*.fits                  # what each file is: "in DR2026.1, still current", ...
+campfire cite DR2026.1 [--obs X | --program P]    # the citation sentence for the release as you read it
 ```
 
 A release pull never touches the live tree or the live mirror: the catalog
@@ -131,6 +132,30 @@ and resumable at file granularity. `campfire identify` hashes a file (whole-file
 sha256, plus the science hash when the pipeline is installed), looks the hashes
 up in every store on this machine and then on the server under your program
 scope, and answers in one line per file; `--offline` skips the server.
+
+`campfire cite TAG` prints the sentence to put in a paper: the release's DOI,
+plus the proprietary programs among those you hold (or `--program` / `--obs`
+select) described with the pipeline version and CRDS context they were
+reduced with, as the release records them; public programs are covered by
+the DOI. It reads the pulled release when there is one (no network) and the
+server otherwise; every pulled release carries the same sentence in
+`dr/<tag>/README.md`.
+
+### 2d. Record what you used from live
+
+```bash
+campfire provenance --obs ember_uds_p4 -o paper.campfire.json     # or --list SLUG, --program P, --object NAME
+campfire provenance check paper.campfire.json [--dr DR2026.1] [--offline]
+```
+
+Work from live has no citation until a release freezes it. A provenance file
+records, from the local ledgers only, the objects of a selection as they are
+now (version, redshift, quality) and every spectrum's file with the sha256 of
+the bytes on your disk beside the registry's, the pipeline version, and the
+releases on this machine already holding it. `check` re-hashes the files,
+asks the archive what it knows about the recorded bytes (`identify`), and with
+`--dr` says whether that pulled release holds the same science for each file.
+It exits 1 when a file was modified or no longer resolves.
 
 ### 3. Check status
 
@@ -305,6 +330,7 @@ predicate tree `q=`, `sync()`, `download()`, cutouts) raises `DRModeError`.
 from campfire import Campfire
 dr = Campfire(dr="DR2026.1")
 dr.release["doi"], dr.release["frozen_at"]
+dr.cite()                                    # "CAMPFIRE DR2026.1 (doi:...), plus program ember reduced with ..."
 t = dr.query_objects(redshift_range=(5, 7))
 t.meta["channel"], t.meta["release"]        # "dr", "DR2026.1" (a live table says "live")
 dr.query_lines()                             # stale fits dropped by default on a release
