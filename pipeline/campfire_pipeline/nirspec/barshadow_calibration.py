@@ -30,7 +30,8 @@ takes it as an override with no code change:
    scale-and-reject selection of shutters. No bar-shadow model enters here, which is
    what makes the derivation independent of the reference it replaces.
 3. **The profile.** For every pixel of a clean shutter, ``SB / sky(λ)`` accumulated in
-   cells of (segment, y, wavelength column). Four segments are measured: the lower outer
+   cells of (segment, y, wavelength column), as a histogram per cell whose median is the
+   cell's value (a clipped mean is biased where the noise is comparable to the value). Four segments are measured: the lower outer
    edge (closed → open, the reference's ``first`` / ``closed_open`` piece, ``DATA1X1``
    rows -1..0), the upper outer edge (open → closed, ``last`` / ``open_closed``,
    ``DATA1X1`` rows 0..1), and the two halves of an interior bar between open shutters
@@ -63,7 +64,16 @@ CENTRE_FRAC = 0.15          # |f| below which a pixel is "shutter centre" (shado
 Y_BIN = 0.02                # accumulation bin in shutter pitches (~0.1 px)
 Y_EDGES = np.round(np.arange(-1.0, 1.0 + Y_BIN / 2, Y_BIN), 4)
 Y_CENTRES = 0.5 * (Y_EDGES[1:] + Y_EDGES[:-1])
-RATIO_RANGE = (-0.5, 2.5)      # pixels outside this ratio to the sky are outliers
+# Each cell keeps the histogram of SB / sky over its pixels, and the cell value is the
+# median. A clipped mean is biased wherever the per-pixel noise is comparable to the
+# value: beyond the outer shutter edge the true ratio is ~0.04, a faint-sky pixel there
+# scatters by ~0.5, and a window of (-0.5, 2.5) dropped the negative tail but kept the
+# positive one, so the margin rows came out at 0.1-0.2 (2026-10-30). Pixels outside the
+# histogram's range land in the under- and overflow slots and still count for the rank.
+RATIO_RANGE = (-1.5, 3.5)
+RATIO_BIN = 0.025
+HIST_EDGES = np.round(np.arange(RATIO_RANGE[0], RATIO_RANGE[1] + RATIO_BIN / 2, RATIO_BIN), 4)
+N_HIST = len(HIST_EDGES) + 1      # underflow, the bins, overflow
 SEGMENTS = ('edge_lower', 'edge_upper', 'bar_lower', 'bar_upper')
 SEGMENT_DOC = {
     'edge_lower': 'closed -> open outer edge (reference first / closed_open: DATA1X1 rows -1..0)',
@@ -505,24 +515,22 @@ def _worker_profile(args):
     sky_at = np.interp(p['lam'][ok], lam_cols, sky)
     ratio = p['sb'][ok] / sky_at
     seg = p['seg'][ok]; yb = np.digitize(p['yseg'][ok], Y_EDGES) - 1; cc = col[ok]
-    # a pixel far outside the physical range of the profile is a cosmic ray, a hot pixel
-    # or a faint-sky outlier; dropping it keeps the cell means from being pulled
-    ok2 = (yb >= 0) & (yb < len(Y_CENTRES)) & np.isfinite(ratio) & (ratio > RATIO_RANGE[0]) & (ratio < RATIO_RANGE[1])
-    acc = np.zeros((len(SEGMENTS), len(Y_CENTRES), grid.n_w, 3))        # sum, sumsq, n
-    np.add.at(acc, (seg[ok2], yb[ok2], cc[ok2], 0), ratio[ok2])
-    np.add.at(acc, (seg[ok2], yb[ok2], cc[ok2], 1), ratio[ok2] ** 2)
-    np.add.at(acc, (seg[ok2], yb[ok2], cc[ok2], 2), 1)
+    # cosmic rays, hot pixels and faint-sky noise go into the histogram's under- and
+    # overflow slots, which count for the median's rank without pulling it
+    ok2 = (yb >= 0) & (yb < len(Y_CENTRES)) & np.isfinite(ratio)
+    # one flat index into the (segment, y, column, histogram slot) accumulator per pixel;
+    # the parent adds them up (a dense accumulator per cutout would be ~33 MB to send back)
+    acc = np.ravel_multi_index((seg[ok2], yb[ok2], cc[ok2], hist_slot(ratio[ok2])),
+                               (len(SEGMENTS), len(Y_CENTRES), grid.n_w, N_HIST))
     # the "corrected" stack against a table, for the held-out check: ratio / table(yseg, lam)
     corr = None
     if table is not None:
         t = evaluate_table(table, seg[ok2], p['yseg'][ok][ok2], p['lam'][ok][ok2])
         with np.errstate(invalid='ignore', divide='ignore'):
             r2 = ratio[ok2] / t
-        corr = np.zeros((len(SEGMENTS), len(Y_CENTRES), 3))
         fin = np.isfinite(r2)
-        np.add.at(corr, (seg[ok2][fin], yb[ok2][fin], 0), r2[fin])
-        np.add.at(corr, (seg[ok2][fin], yb[ok2][fin], 1), r2[fin] ** 2)
-        np.add.at(corr, (seg[ok2][fin], yb[ok2][fin], 2), 1)
+        corr = np.ravel_multi_index((seg[ok2][fin], yb[ok2][fin], hist_slot(r2[fin])),
+                                    (len(SEGMENTS), len(Y_CENTRES), N_HIST))
     return c.key, (acc, corr), None
 
 
@@ -561,9 +569,11 @@ def accumulate_profiles(canonicals, counters, grid, pad, sky, scales, processes,
         return sky.get((c.obs, c.root, c.nod), sky.get(c.obs))
     args = [(c, counters.get(c.rate_path), grid, pad, sky_for(c), clean_by_canonical.get(c.key, set()), table)
             for c in canonicals if clean_by_canonical.get(c.key) and sky_for(c) is not None]
-    total = np.zeros((len(SEGMENTS), len(Y_CENTRES), grid.n_w, 3))
+    shape = (len(SEGMENTS), len(Y_CENTRES), grid.n_w, N_HIST)
+    cshape = (len(SEGMENTS), len(Y_CENTRES), N_HIST)
+    total = np.zeros(shape, np.int32)
     per_obs = {}
-    corr_total = np.zeros((len(SEGMENTS), len(Y_CENTRES), 3)) if table is not None else None
+    corr_total = np.zeros(cshape, np.int32) if table is not None else None
     corr_obs = {}
     failures = []
     with Pool(processes) as pool:
@@ -573,23 +583,63 @@ def accumulate_profiles(canonicals, counters, grid, pad, sky, scales, processes,
             if out is None:
                 continue
             acc, corr = out
-            total += acc
-            per_obs[key[0]] = per_obs.get(key[0], 0) + acc
+            np.add.at(total.reshape(-1), acc, 1)
+            if key[0] not in per_obs:
+                per_obs[key[0]] = np.zeros(shape, np.int32)
+            np.add.at(per_obs[key[0]].reshape(-1), acc, 1)
             if corr is not None:
-                corr_total += corr
-                corr_obs[key[0]] = corr_obs.get(key[0], 0) + corr
+                np.add.at(corr_total.reshape(-1), corr, 1)
+                if key[0] not in corr_obs:
+                    corr_obs[key[0]] = np.zeros(cshape, np.int32)
+                np.add.at(corr_obs[key[0]].reshape(-1), corr, 1)
     return total, per_obs, corr_total, corr_obs, failures
 
 
-def cell_stats(acc, n_min=20):
-    """Mean and variance-of-the-mean per cell from (sum, sumsq, n); NaN below n_min."""
-    n = acc[..., 2]
+def hist_slot(ratio):
+    """The histogram slot of each ratio: 0 below ``RATIO_RANGE``, ``N_HIST - 1`` at or
+    above it, the bin otherwise."""
+    return np.searchsorted(HIST_EDGES, ratio, side='right').astype(np.int64)
+
+
+def cell_counts(acc):
+    """Pixels per cell of a histogram accumulator (the last axis is the histogram)."""
+    return np.asarray(acc).sum(axis=-1)
+
+
+def cell_quantile(acc, q):
+    """The ``q`` quantile per cell of a histogram accumulator, linear inside the bin; NaN
+    where the cell is empty or the quantile falls in the under- or overflow slot."""
+    acc = np.asarray(acc)
+    cum = np.cumsum(acc, axis=-1, dtype=np.int64)
+    n = cum[..., -1]
+    target = q * n
+    k = np.clip((cum < target[..., None]).sum(axis=-1), 0, N_HIST - 1)   # the slot holding it
+    before = np.take_along_axis(cum, np.clip(k - 1, 0, None)[..., None], axis=-1)[..., 0]
+    before = np.where(k > 0, before, 0)
+    inside = np.take_along_axis(acc, k[..., None], axis=-1)[..., 0].astype(float)
+    lo = HIST_EDGES[np.clip(k - 1, 0, len(HIST_EDGES) - 1)]
     with np.errstate(invalid='ignore', divide='ignore'):
-        mean = acc[..., 0] / n
-        var = (acc[..., 1] / n - mean ** 2) / n
-    bad = n < n_min
-    mean[bad] = np.nan; var[bad] = np.nan
-    return mean, np.clip(var, 0, None)
+        val = lo + np.clip((target - before) / inside, 0.0, 1.0) * RATIO_BIN
+    return np.where((k == 0) | (k == N_HIST - 1) | (n == 0), np.nan, val)
+
+
+def cell_stats(acc, n_min=20):
+    """Median and variance of the median per cell of a histogram accumulator; NaN below
+    ``n_min`` pixels. The spread is the interquartile range (sigma = IQR / 1.349) and the
+    variance of the median (pi / 2) sigma^2 / n."""
+    n = cell_counts(acc).astype(float)
+    med = cell_quantile(acc, 0.5)
+    q25, q75 = cell_quantile(acc, 0.25), cell_quantile(acc, 0.75)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        var = 0.5 * np.pi * ((q75 - q25) / 1.349) ** 2 / n
+    bad = (n < n_min) | ~np.isfinite(med)
+    # a quartile in the under- or overflow slot: the spread exceeds the histogram, which
+    # makes the cell as uncertain as the range allows
+    wide = ~bad & ~np.isfinite(var)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        var = np.where(wide, 0.5 * np.pi * ((RATIO_RANGE[1] - RATIO_RANGE[0]) / 1.349) ** 2 / n, var)
+    med = np.where(bad, np.nan, med); var = np.where(bad, np.nan, var)
+    return med, np.clip(var, 0, None)
 
 
 # ---------------------------------------------------------------------------
@@ -709,7 +759,7 @@ def build_tables(total, grid, smooth_cols=2.0, n_min=20):
     for arr in (v1, v3):
         arr[np.isnan(arr)] = np.nanmax(arr) if np.isfinite(np.nanmax(arr)) else 0.0
     return dict(data1x1=d1, var1x1=v1, data1x3=d3, var1x3=v3, measured=mean, measured_var=var,
-                filled=filled, n_cells=total[..., 2])
+                filled=filled, n_cells=cell_counts(total))
 
 
 def load_table(path):
@@ -823,7 +873,7 @@ def derive(obs_names, grating, products_dir, cache_dir, filter_name=None, source
     total, per_obs, _, _, fails = accumulate_profiles(train, counters, grid, source_pad_px, skies, scales, processes)
     if fails:
         log(f'{len(fails)} canonicals failed in pass 2, e.g. {fails[0]}')
-    n_pixels = int(total[..., 2].sum())
+    n_pixels = int(total.sum())
     log(f'pass 2: {n_pixels} pixels in the profile cells')
     tables = build_tables(total, grid, smooth_cols=smooth_cols, n_min=n_min)
 
