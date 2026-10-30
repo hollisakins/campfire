@@ -40,7 +40,7 @@ FIRST_PASS_VERSION = '1'
 SPEC_SRC = 'master'
 
 
-def master_sky(workspace, slitlet_scale=False):
+def master_sky(workspace):
     """``sky_for`` from the master background (``master_bkg.sky_for_slit``): each
     canonical's sky from its exposure's ``{workspace}/<root>_<nod>_<nrsN>_mbkg.fits``.
 
@@ -50,9 +50,7 @@ def master_sky(workspace, slitlet_scale=False):
     failed-open shutter) get NaN, so the loader drops them: the total is incomplete
     there by construction. One ``load_product`` dict per exposure, shared by its slits.
 
-    ``slitlet_scale``: rescale the slit's own slitlet's share of the sky by the median
-    scale of its own clean empty shutters (``master_bkg.slitlet_scale``; the other
-    traces' share untouched). Off: whether to use it is an open decision."""
+    No per-slitlet rescaling: the sky is the exposure's master background as painted."""
     from campfire_pipeline.nirspec import master_bkg as MB
 
     cache = {}
@@ -68,7 +66,7 @@ def master_sky(workspace, slitlet_scale=False):
 
     def sky_for(path, slit):
         prod, table = product(CT.exposure_key(path), path)
-        d = MB.sky_for_slit(prod, path, table=table, slitlet_scale_on=slitlet_scale)
+        d = MB.sky_for_slit(prod, path, table=table)
         sky, var = np.array(d['sky'], float), np.array(d['var'], float)
         if d.get('dq') is not None:
             bad = (np.asarray(d['dq']) & MB.DQ_UNPAINTED) > 0
