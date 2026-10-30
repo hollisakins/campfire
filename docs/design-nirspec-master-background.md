@@ -1133,5 +1133,9 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     term is available as an opt-in (`sky_for_slit(..., slitlet_scale_on=True)`: the slit's own
     contribution rescaled by the median scale of its own clean empty shutters from `SHUTTERS`); off by
     default, since whether to use it is a design choice (§9: no hybrid with the nods; this uses only
-    the slitlet's own empty shutters).
+    the slitlet's own empty shutters). With (a) and (b) the painted sky against the rate frame over
+    the covered pixels moved from −2 to −3 % to −1 % on the prism and from −17 % to −6 % on G395M.
+    (e) On G395M NRS2 a large share of slits lie inside other traces' beyond-cutoff tails (631564,
+    632747, 924889 of `ember_cosmos_p1` are 40–100 % masked), so the master background serves only
+    the slits that are not, until an empirical tail profile in detector counts is added (§4.2 step 5).
   - Not yet: subtraction (P2), deploy/pull of the kind (registered only), a compressed `MBKG2D`.
