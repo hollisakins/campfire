@@ -1153,7 +1153,47 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   ruled (via the extraction-v2 session) that nothing is masked: the sky is to be painted past both
   ends out to a measured cutoff per disperser and filter, in count-rate units (no flat or photom
   there), as sky(λ) × bar shadow from the empty shutters' own pixels, with the wavelength from the
-  slit WCS evaluated outside its bounding box. Planned on extraction-v2 with the shared geometry.
+  slit WCS evaluated outside its bounding box.
+- **Painting past the calibrated range (algorithm 1.1, 2026-10-30).** Built as ruled, split with
+  the extraction-v2 session: this side owns the footprint (`coverage.py`) and the painting, that
+  side the consumer and the contamination fit past a neighbour's range (which consumes the same
+  geometry function). *Geometry:* `coverage.slit_geometry_extended` (a stage-2a `SlitModel`) and
+  `slitlet_geometry_extended` (a slitlet of the rate file's MSA configuration, through
+  `nrs_wcs_set_input`) evaluate `detector -> slit_frame` over a row block around the cutout
+  (±12 rows: the trace drifts ~6 rows over the extension) and every detector column, and return
+  one dict for both routes (`ys` in pitches, `lam`, `k`, `f`, `j`, `is_open`, `seg` / `yseg`,
+  `finite`, `footprint`). Two facts set the shape: the slit WCS works in the cutout's own pixel
+  frame (subtract `SLTSTRT1 − 1` / `SLTSTRT2 − 1`, or everything is NaN), and the transform is
+  finite across the whole detector width (it matches the full-frame `assign_wcs` route to 0.0 µm
+  and 0.0 pitch, and is NaN only outside jwst's slit extent in y, its `ymin` / `ymax` pads), so
+  the transform bounds nothing along the dispersion and the footprint has to be cut where the
+  light ends. *Cutoffs:* measured from the empty shutters' core pixels in the rate frames (own
+  trace only, one exposure per detector, the rate normalised to the in-band level next to the
+  end, median over the cutouts, `scratch/claude/bs_v3/cutoffs.png`), as the wavelength past the
+  calibrated end where the light is below 2 % of the in-band level, rounded outward:
+  PRISM 0.55 / 5.6 µm (below 10 % 0.19 µm past 5.31); G140M/F100LP 0.96 / the detector edge
+  (the cut-on is sharp at 0.97; on NRS2 the calibration ends at fixed detector columns, 1593 to
+  1824, wavelengths 2.0 to 3.2 µm, and the first-order sky runs on at full strength);
+  G235M/F170LP 1.55 / 5.05 (10 % at 1.62, 2 % at 1.55; the red end falls from 4.56 to 2 % at
+  4.99); G395M/F290LP 2.60 / 5.7 (50 % at 2.83, 10 % at 2.74, 2 % by 2.63; from 5.20 to 10 % at
+  5.51 and ~2 % by 5.65). `WAVELENGTH_CUTOFFS` in `coverage.py`; `coverage_from_wcs` counts the
+  extended footprints (cache tag `_v2`), the G395M 200 px tail and the derivation's `--tail-px`
+  are gone, and the one-footprint-per-pixel selection of the shutter spectra and of the bar-shadow
+  derivation now excludes a neighbour's past-range light by construction. *Painting:* pass 2a
+  measures each exposure × detector's sky in count-rate units, `MBKG1DR` (DN/s at the open-shutter
+  centre: the clean shutters' core pixels over their whole footprints, binned on the `MBKG1D` grid
+  continued to the cutoffs, combined as the MJy/sr sky is), with fallbacks bin by bin where the
+  exposure's own shutters reach no further (an NRS1 red end lies on NRS2 for most slitlets): the
+  group pool on the same detector, then the other detector scaled by the median ratio over the
+  bins both have, then the nearest filled bin held (`source` column, `MBKGRSRC`); pass 2b paints
+  each slitlet once (two sources of one slitlet get cutouts a pixel apart, which the cutout-key
+  dedup of 2f898100 painted twice: 13.6 k prism pixels at −50 %), inside the calibrated columns
+  as before and past them as `MBKG1DR` × bar shadow, under the same open / margin rule.
+  `MBKGRRAT` is the median ratio of the in-range painted values to the rate-unit sky on the same
+  core pixels: 0.988 to 1.007 on the twelve p1 products, so the two join at the per-cent level.
+  Nothing is masked: `DQ_TAIL` is retired, `sky_for_slit`'s `mask_bits` defaults to 0 and it
+  returns `sky_rate` (the painted DN/s cutout, finite past the calibrated range), `rate` and
+  `calibrated` beside `sky`, which has the slit's units only where its `SCI` is finite.
 - Not yet measured: the bar profile as a function of quadrant, the solar-line check (§3.3), the
   origin of the G395M NRS2 excess (resolved: the trace tails, above) and of the per-exposure 3 µm
   differences; the grating tables await the SPURS reprocessing.

@@ -23,7 +23,7 @@ takes it as an override with no code change:
    wavelength from the ``slit_frame`` transform, and which of the reference's segments
    it measures. Excluded: the source shutter and a pad around it, any other catalogued
    source's shutter in the slitlet, DQ-flagged pixels, and pixels under more than one
-   slitlet footprint on the tail-aware overlap counter (``coverage.coverage_from_wcs``).
+   slitlet footprint on the overlap counter (``coverage.coverage_from_wcs``).
 2. **The sky.** The spectrum of every empty shutter from its centre pixels alone
    (``|f| < 0.15``, where the shadow is 1 by the reference's own convention), pooled per
    disperser into a median sky on the reference's wavelength columns, with the usual
@@ -57,7 +57,7 @@ from datetime import datetime, timezone
 import numpy as np
 from astropy.io import fits
 
-from campfire_pipeline.nirspec.coverage import coverage_from_wcs, tail_px_for, cache_path
+from campfire_pipeline.nirspec.coverage import coverage_from_wcs, cache_path, cutoffs_for
 
 CENTRE_FRAC = 0.15          # |f| below which a pixel is "shutter centre" (shadow == 1)
 Y_BIN = 0.02                # accumulation bin in shutter pitches (~0.1 px)
@@ -778,14 +778,13 @@ def write_reference(tables, template_path, out_path, provenance):
 # ---------------------------------------------------------------------------
 
 def derive(obs_names, grating, products_dir, cache_dir, filter_name=None, source_pad_px=2.0,
-           tail_px=None, processes=4, smooth_cols=2.0, n_min=20, held_out=None, log=print):
+           processes=4, smooth_cols=2.0, n_min=20, held_out=None, log=print):
     """Run the derivation for one grating over several observations.
 
     Returns a dict with the tables, the sky, the per-observation cells, the CRDS
     template path, the provenance, and (if ``held_out``) the held-out stacks against
     the CRDS table and against the new one.
     """
-    tail = tail_px_for(grating) if tail_px is None else int(tail_px)
     canonicals = []
     for obs in obs_names:
         found = discover(obs, grating, products_dir, filter_name)
@@ -795,14 +794,15 @@ def derive(obs_names, grating, products_dir, cache_dir, filter_name=None, source
         raise SystemExit('no canonicals found')
     template = crds_barshadow_path(canonicals[0].path)
     grid = reference_grid(template)
+    cutoffs = cutoffs_for(grating, filter_name or canonicals[0].filter)
     log(f'template {os.path.basename(template)}: {grid.n_w} columns {grid.wavelengths_um[0]:.3f}-{grid.wavelengths_um[-1]:.3f} um, '
-        f'{grid.n_y} rows; footprint tail {tail} px')
+        f'{grid.n_y} rows; footprint cutoffs {cutoffs} um')
 
     counters = {}
     for rate in sorted({c.rate_path for c in canonicals}):
         if os.path.exists(rate):
-            coverage_from_wcs(rate, cache_dir=cache_dir, tail_px=tail)      # build the cache
-            counters[rate] = cache_path(rate, cache_dir, tail)
+            coverage_from_wcs(rate, cache_dir=cache_dir, cutoffs=cutoffs)      # build the cache
+            counters[rate] = cache_path(rate, cache_dir, cutoffs)
     log(f'{len(counters)} overlap counters')
 
     train = [c for c in canonicals if c.obs != held_out]
@@ -831,7 +831,7 @@ def derive(obs_names, grating, products_dir, cache_dir, filter_name=None, source
                   template=template, canonicals=canonicals, total=total,
                   provenance=dict(observations=sorted({c.obs for c in train}), n_pixels=n_pixels, n_shutters=n_clean,
                                   options=dict(grating=grating, filter=filter_name or 'any', source_pad_px=source_pad_px,
-                                               tail_px=tail, smooth_cols=smooth_cols, n_min=n_min, held_out=held_out or 'none')))
+                                               cutoffs_um=f'{cutoffs[0]}-{cutoffs[1]}', smooth_cols=smooth_cols, n_min=n_min, held_out=held_out or 'none')))
     if test:
         # the held-out observation: its own sky and selection, its pixels against both tables
         sh_t, _ = centre_spectra(test, counters, grid, source_pad_px, processes)

@@ -192,7 +192,7 @@ def test_sky_total_on_cutout_sums_every_covering_trace():
     assert np.allclose(r['sky'][3:, :], 0.05 * F)
     assert np.isnan(r['sky'][0, 0]) and np.isfinite(r['sky'][1, 1])   # uncovered -> NaN; unpainted kept when unmasked
     assert r['dq'][1, 1] == M.DQ_UNPAINTED and r['n_cover'][0, 1] == 3
-    assert np.isnan(M.sky_total_on_cutout(prod, own, frame)['sky'][1, 1])   # masked by default
+    assert np.isnan(M.sky_total_on_cutout(prod, own, frame, mask_bits=M.DQ_UNPAINTED)['sky'][1, 1])   # masked on request
     assert np.allclose(r['own_sky'], own_sky)
     # the variance scales with the total (the floor is a fraction of what is subtracted)
     assert np.allclose(r['var'][1, 1] / r['var'][3, 1], 9.0)
@@ -204,20 +204,55 @@ def test_pixelwise_factor_fills_flagged_pixels_from_the_column():
     assert np.allclose(F, [[2, 4], [2, 4], [2, 4]])
 
 
-def test_total_masks_unpainted_and_tail_pixels_and_scales_the_own_part():
+def test_total_masks_nothing_by_default_and_carries_the_rate_unit_sky():
+    """Nothing is masked unless asked (Hollis, 2026-10-30): an unpainted covering trace
+    is only a flag; the retired tail bit masks nothing. Past the calibrated columns
+    ``sky`` has no units to be in (NaN) while ``sky_rate`` carries the painted DN/s."""
     g = _synthetic_geometry(nrow=6, ncol=5); table = _flat_table(0.8); prod = _product(q2=1.0)
-    frame = dict(sci=np.full((6, 5), 2.0), bunit='MJy', pix_sr=5e-13, pthloss='UNIFORM', pu=None, pp=None, bar=None, x0=0, y0=0)
+    sci = np.full((6, 5), 2.0); sci[:, 0] = np.nan                        # the first column is not calibrated
+    frame = dict(sci=sci, bunit='MJy', pix_sr=5e-13, pthloss='UNIFORM', pu=None, pp=None, bar=None, x0=0, y0=0)
     own = M.sky_on_geometry(prod, frame, g, table)
     rate = np.full((6, 5), 0.05); mb = np.full((6, 5), 0.10)             # own + one other trace
-    dq = np.zeros((6, 5), np.uint8); dq[0, 0] = M.DQ_UNPAINTED; dq[0, 1] = M.DQ_TAIL
+    dq = np.zeros((6, 5), np.uint8); dq[0, 1] = M.DQ_UNPAINTED; dq[0, 2] = M.DQ_TAIL
     prod.update(mbkg2d=mb, dq2d=dq, n2d=np.full((6, 5), 2, np.uint8), rate=rate, path='unused')
     r = M.sky_total_on_cutout(prod, own, frame)
-    assert np.isnan(r['sky'][0, 0]) and np.isnan(r['sky'][0, 1]) and np.isfinite(r['sky'][1, 1])
-    r2 = M.sky_total_on_cutout(prod, own, frame, mask_bits=0)
-    assert np.isfinite(r2['sky'][0, 0])
+    assert np.isfinite(r['sky'][0, 1]) and np.isfinite(r['sky'][0, 2]) and np.isfinite(r['sky'][1, 1])
+    assert np.isnan(r['sky'][:, 0]).all() and np.allclose(r['sky_rate'][:, 0], 0.10)     # uncalibrated: rate units only
+    assert np.allclose(r['rate'], 0.05) and not r['calibrated'][:, 0].any() and r['calibrated'][:, 1:].all()
+    r2 = M.sky_total_on_cutout(prod, own, frame, mask_bits=M.DQ_UNPAINTED)
+    assert np.isnan(r2['sky'][0, 1]) and np.isnan(r2['sky_rate'][0, 1]) and np.isfinite(r2['sky'][0, 2])
     # the own part rescaled by 0.9 lowers the total by 0.1 x own, not 0.1 x total
     r3 = M.sky_total_on_cutout(prod, own, frame, own_scale=0.9)
     assert np.allclose(r3['sky'][1, 1], r['sky'][1, 1] - 0.1 * own['sky'][1, 1])
+
+
+def test_rate_sky_falls_back_to_the_pool_then_the_other_detector_then_holds():
+    """Bin by bin: the exposure's own shutters, else the same detector's group pool, else
+    the other detector scaled over the bins both have, else the nearest filled bin."""
+    nb = 8
+    def spec(base, sb, k):
+        sb = np.asarray(sb, float)
+        return M.ShutterSpectrum(rate_base=base, source_id=0, slitlet_id=1, quadrant=1, k=k, n_pix=100,
+                                 sb=sb, err=np.where(np.isfinite(sb), 0.01, np.nan), n=np.where(np.isfinite(sb), 10, 0))
+    nan = np.nan
+    own = [spec('r_00001_nrs1', [1, 1, 1, 1, nan, nan, nan, nan], k) for k in (1, 2, 3)]          # bins 0-3
+    pool = [spec('r_00002_nrs1', [1, 1, 1, 1, 2, nan, nan, nan], k) for k in (1, 2, 3)]          # bin 4 too
+    other = [spec('r_00001_nrs2', [nan, nan, 0.5, 0.5, 1.0, 1.5, 1.5, nan], k) for k in (1, 2, 3)]   # half the response
+    specs_of = {'r_00001_nrs1': own, 'r_00002_nrs1': pool, 'r_00001_nrs2': other}
+    sb, err, n, src = M.rate_sky_for('r_00001_nrs1', specs_of, clip_sigma=3.0, min_overlap=3)
+    assert src.tolist() == [1, 1, 1, 1, 2, 3, 3, 4]
+    assert np.allclose(sb[:4], 1.0) and sb[4] == 2.0
+    assert np.allclose(sb[5:7], 3.0)                 # the other detector x the overlap scale (1 / 0.5 = 2)
+    assert sb[7] == 3.0                              # held outward
+    assert M.rate_sky_for('r_00003_nrs2', {}, 3.0) is None
+
+
+def test_rate_sky_edges_extend_the_grid_with_the_end_steps():
+    centres = np.array([1.0, 1.1, 1.2, 1.3])
+    e = M.rate_sky_edges(centres, 0.72, 1.56)
+    assert np.allclose(np.diff(e), 0.1)
+    assert e[0] <= 0.72 < e[1] and e[-2] < 1.56 <= e[-1]
+    assert np.allclose(M.rate_sky_edges(centres, 1.0, 1.3), [0.95, 1.05, 1.15, 1.25, 1.35])
 
 
 def test_slitlet_scale_reads_the_slits_clean_shutters():
