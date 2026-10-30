@@ -50,7 +50,10 @@ Release procedure: edit the `## Unreleased` section below, then run
   the cutout, brought into the slit's frame through the pixelwise `SCI / rate` factor (on the gratings
   a pixel carries several slitlets' sky; the slit's own slitlet alone, evaluated with the bar shadow
   from the empirical table where one exists and CRDS otherwise, is `own_sky` and `mode='own'`), with
-  the 3 % error floor in the variance. Products skip when their inputs are
+  the 3 % error floor in the variance; pixels under an unpainted covering trace or a tail are NaN by
+  default (`mask_bits`), and `slitlet_scale_on` is the opt-in per-slitlet rescaling from the slit's own
+  clean shutters. Each slitlet is painted once (two sources of one slitlet share a cutout) and each
+  physical shutter is selected once; margin rows count only where no open shutter was painted. Products skip when their inputs are
   unchanged. Nothing is subtracted yet (P2). `barshadow_calibration.pixel_samples` now reads any
   slit of a multi-slit file and skips the source cut for a background slitlet (`slit_geometry` is
   the shared WCS-to-shutter mapping); `coverage` gained the cache-path helpers.

@@ -1119,4 +1119,19 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     of per-pixel factors), with the slit's own slitlet kept as `own_sky`; `MBKG2DN` counts the slits
     painted per pixel and `MBKG2DDQ` flags a covering trace that was never painted (bit 2: an
     unprocessed source or a failed-open shutter), so a consumer knows where the total is incomplete.
+  - **Painting rules learnt from the first pass (2026-10-29).** (a) Two sources of one slitlet have
+    two canonicals with the same cutout; painting both doubled the sky of 7 of 112 slitlets in a prism
+    exposure (source 950038 came out at exactly 2× its own sky). Each slitlet is painted once, and each
+    physical shutter enters the selection once. (b) jwst's cutout includes the half pitch beyond the
+    outer shutters; when the next slitlet in the MSA column is open, those margin pixels *are* its
+    open shutter, so the margin model (the closed-shutter floor) must not be added to it: open-shutter
+    skies are summed where traces cross, margins count only where no open shutter was painted.
+    (c) The consumer masks, by default, the pixels where the total is incomplete by construction: a
+    covering trace that was never painted (bit 2) and a trace's beyond-cutoff tail (bit 4). On G395M
+    NRS1 the slits of 631564 and 632747 sit under five to six other traces with 74–100 % of their
+    pixels in those traces' tails, so they are masked rather than mis-subtracted. (d) The per-slitlet
+    term is available as an opt-in (`sky_for_slit(..., slitlet_scale_on=True)`: the slit's own
+    contribution rescaled by the median scale of its own clean empty shutters from `SHUTTERS`); off by
+    default, since whether to use it is a design choice (§9: no hybrid with the nods; this uses only
+    the slitlet's own empty shutters).
   - Not yet: subtraction (P2), deploy/pull of the kind (registered only), a compressed `MBKG2D`.
