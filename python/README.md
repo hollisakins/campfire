@@ -146,6 +146,7 @@ server otherwise; every pulled release carries the same sentence in
 ```bash
 campfire provenance --obs ember_uds_p4 -o paper.campfire.json     # or --list SLUG, --program P, --object NAME
 campfire provenance check paper.campfire.json [--dr DR2026.1] [--offline]
+campfire pull --provenance paper.campfire.json                     # the recorded bytes, from wherever still holds them
 ```
 
 Work from live has no citation until a release freezes it. A provenance file
@@ -155,7 +156,13 @@ the bytes on your disk beside the registry's, the pipeline version, and the
 releases on this machine already holding it. `check` re-hashes the files,
 asks the archive what it knows about the recorded bytes (`identify`), and with
 `--dr` says whether that pulled release holds the same science for each file.
-It exits 1 when a file was modified or no longer resolves.
+It exits 1 when a file was modified or no longer resolves. `pull --provenance`
+fetches the recorded bytes back: into the live tree while live still carries
+exactly those bytes, otherwise from the release holding them (into
+`dr/<tag>/products/`, after loading that release's catalog), preferring exact
+bytes over the same science under a stamp; a file on disk with other bytes is
+set aside under `.superseded/` first, and a file nothing holds any more is
+reported (exit 1).
 
 ### 3. Check status
 

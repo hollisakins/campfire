@@ -2130,3 +2130,16 @@ kept at the last full sync), `campfire whoami` prints the latest release. Client
 `pyproject.toml`, `/api/v1/version` latest; floor unchanged, D-P5-1). Decisions: the fingerprint covers the admin flag
 and the sorted accessible slugs only (fields follow programs); `pull --provenance` (design §4.8) is left for later; the README is
 a courtesy (a failure to write it never fails a load).
+
+### 2026-10-30 `pull --provenance` (design §4.8), the last P5 verb
+
+`campfire pull --provenance FILE` (`provenance.plan_pull` / `provenance.pull`, `_pull_provenance` in `cli.py`). The plan asks
+`identify_files` about every recorded hash and picks, per file: the live key while it carries exactly those bytes (live tree);
+else the newest release whose archived copy is exactly those bytes; else the newest release whose copy is the same science
+(a stamped copy, or a no-op re-reduction); else live when its bytes are the same science; else unresolved with `describe()`'s
+sentence. Release copies land in `dr/<tag>/products/` after `load_release` (so the tree reads as a pulled release and the store
+records the download); live copies in the live tree, recorded on the mirror. A destination already holding the expected bytes is
+kept; one holding other bytes moves to `.superseded/<name>.<12 hex>` first (the §4.8 rule, applied here rather than to
+`pull --stale`, which still overwrites). Verification is the engine's (`_download_and_verify_key` against the planned hash).
+`--dry-run` plans only; the command combines with no other selection flag; exit 1 when a file is unresolved, refused by the
+presign or failed. Nothing server-side changed.
