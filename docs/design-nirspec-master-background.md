@@ -1110,4 +1110,13 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     expansion (no empirical G395M table yet) and `(rate − MBKG2D) / MBKG2D` has median −17 % over the
     covered pixels, consistent with the CRDS profile's too-wide open area over-predicting the sky in
     the bar rows (the empirical G395M table from SPURS replaces it).
+  - **The consumer gets the painted total, not the slit's own slitlet (found by the extraction-v2
+    first pass, 2026-10-29).** On G395M a canonical's cutout carries the sky of every slitlet whose
+    trace crosses it (38 % of the detector, §9 above): a source with no signal divided by its own
+    slitlet's sky gave 3.4–8.9, rising along the slit, while the rate frame divided by `MBKG2D` on
+    the same pixels was 0.85–1.05. So `sky_for_slit` now returns `MBKG2D` on the cutout through the
+    pixelwise `SCI / rate` factor (§4.4's second method, exact wherever the calibration is a product
+    of per-pixel factors), with the slit's own slitlet kept as `own_sky`; `MBKG2DN` counts the slits
+    painted per pixel and `MBKG2DDQ` flags a covering trace that was never painted (bit 2: an
+    unprocessed source or a failed-open shutter), so a consumer knows where the total is incomplete.
   - Not yet: subtraction (P2), deploy/pull of the kind (registered only), a compressed `MBKG2D`.
