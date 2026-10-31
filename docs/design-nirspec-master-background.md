@@ -1,6 +1,26 @@
 # Design: NIRSpec master background — feasibility study
 
-**Status:** feasibility study / proposal, not scheduled. Nothing in this document is implemented.
+**Status (2026-10-30):** P1b is built (`master_bkg.py`, `coverage.py`, the empirical bar-shadow tables;
+§9), and the stuck-shutter list is keyed by physical shutter (`stuck_list.py`). §0–§8 are the original
+2026-10-28 study and are kept as written; where later decisions supersede them they are listed below.
+The shared record for the redesign of the NIRSpec stages around this work (master background, stuck
+shutters, first pass, joint contamination solve, extraction) is
+[design-nirspec-pipeline-v2.md](design-nirspec-pipeline-v2.md), maintained on the extraction-v2
+branch; this document keeps the master background's own derivations and measurements.
+
+**Decisions since the study (2026-10-29 / 30, Hollis):** no bar-shadow division of the science frames;
+the master background is the last sub-step of stage 2a; no masking; the sky is painted past both ends
+of the calibrated range in count-rate units; no per-slitlet sky scale; grating-sky smoothing only as an
+experiment. Then on 2026-10-30: the master background splits into **step 1** before stage 2a (from
+the rate files alone: the shared `assign_wcs` geometry, the count-rate sky `MBKG1DR` and its quadrant
+scales, and the per-shutter sky-template fit `shutter_fit.py`, which writes the `auto` stuck-shutter
+entries) and **step 2** at the end of stage 2a (the calibrated sky `MBKG1D`, reselected in calibrated
+units, and the painting, reusing step 1's count-rate sky); the template fit replaces the `low_frac`
+stuck-shutter detector for every disperser; stuck shutters are keyed by physical shutter
+(`[<root>.shutters] "q<q>r<row>c<col>" = {origin = manual|web|auto, stuck}`) in the TOML, the web
+review and the database; the masked first pass gives way to a local joint solve (the extraction-v2
+side). Numbers in §9 measured before b0c08026 (the median bar-shadow cells), notably the +2–3 %
+off-centre painted-sky residual and the G395M blue-extension offset, predate the re-derived tables.
 **Sources:** the pipeline code on this branch; jwst 1.20.2 (the pinned version) read from the wheel; msaexp `main`, `jwst_backgrounds` and `jwst_gtvt` read from GitHub on 2026-10-28; jwst readthedocs; RUBIES / JADES papers as cited inline.
 **Date:** 2026-10-28
 **Context:** the NIRSpec stage 2b nodded (leapfrog) background subtraction in

@@ -24,7 +24,6 @@ the trailing tag giving the origin (``hand`` or no tag -> ``manual``). At equal 
 a physical entry beats a legacy one.
 """
 
-import math
 import os
 import re
 from dataclasses import dataclass
@@ -279,6 +278,43 @@ def _inline(entry_dict):
     return t
 
 
+def _open_root(path, root, obs_name):
+    """The TOML at ``path`` as a tomlkit document (a new one with the header when the
+    file is absent or empty), with ``[<root>.shutters]`` present: ``(old_text, doc, st)``."""
+    import tomlkit
+    old = open(path).read() if os.path.exists(path) else ''
+    doc = tomlkit.parse(old) if old.strip() else tomlkit.parse(HEADER.format(obs=obs_name))
+    if root not in doc:
+        doc.add(root, tomlkit.table(is_super_table=True))
+    if SHUTTERS not in doc[root]:
+        doc[root].add(SHUTTERS, tomlkit.table())
+    return old, doc, doc[root][SHUTTERS]
+
+
+def _save_root(path, root, old, doc, what):
+    """Drop what ``_open_root`` added if it stayed empty, then write only when the text
+    changed (the file's mtime is stage 2a's skip key). Returns True when written."""
+    import tomlkit
+    rt = doc[root]
+    if len(rt[SHUTTERS]) == 0:
+        del rt[SHUTTERS]
+    if len(rt) == 0:
+        del doc[root]
+    text = tomlkit.dumps(doc)
+    if text == old:
+        return False
+    tmp = f'{path}.tmp'
+    with open(tmp, 'w') as f:
+        f.write(text)
+    os.replace(tmp, path)
+    log(f'stuck shutters: wrote {what} for {root} to {path}')
+    return True
+
+
+def _amplitude(a):
+    return round(float(a), 3) if a is not None and np.isfinite(a) else None
+
+
 def write_auto(path, root, calls, metafiles=None, obs_name=''):
     """Merge one root's fit calls into the TOML as ``auto`` entries; returns True when
     the file changed (it is not rewritten otherwise: its mtime is stage 2a's skip key).
@@ -290,22 +326,12 @@ def write_auto(path, root, calls, metafiles=None, obs_name=''):
     to ``stuck = false`` so it outranks that entry. Manual and web entries and shutters
     the calls do not cover are left alone. Comments and layout are kept (tomlkit).
     """
-    import tomlkit
-    old = open(path).read() if os.path.exists(path) else ''
-    doc = tomlkit.parse(old) if old.strip() else tomlkit.parse(HEADER.format(obs=obs_name))
+    old, doc, st = _open_root(path, root, obs_name)
     physical, legacy = read_file(path) if old.strip() else ({}, {})
     legacy_keys = {}
     if legacy.get(root):
-        resolved_legacy = resolve({}, {root: legacy[root]}, metafiles or {})
-        legacy_keys = resolved_legacy.get(root, {})
+        legacy_keys = resolve({}, {root: legacy[root]}, metafiles or {}).get(root, {})
     phys = physical.get(root, {})
-
-    if root not in doc:
-        doc.add(root, tomlkit.table(is_super_table=True))
-    rt = doc[root]
-    if SHUTTERS not in rt:
-        rt.add(SHUTTERS, tomlkit.table())
-    st = rt[SHUTTERS]
 
     for key, call in sorted(calls.items()):
         skey = shutter_key(*key)
@@ -313,28 +339,37 @@ def write_auto(path, root, calls, metafiles=None, obs_name=''):
         decided = (cur is not None and cur.origin != 'auto') or (key in legacy_keys and legacy_keys[key].origin != 'auto')
         if decided:
             continue
-        a = call.get('a', math.nan)
-        a = round(float(a), 3) if a is not None and np.isfinite(a) else None
+        a = _amplitude(call.get('a'))
         if call.get('stuck'):
-            new = {'origin': 'auto', 'stuck': True, 'a': a}
-            if cur is None or cur.origin != 'auto' or cur.stuck is not True or cur.a != a:
-                st[skey] = _inline(new)
+            if cur is None or cur.stuck is not True or cur.a != a:
+                st[skey] = _inline({'origin': 'auto', 'stuck': True, 'a': a})
         elif key in legacy_keys and legacy_keys[key].origin == 'auto':
             if cur is None or cur.stuck is not False:
                 st[skey] = _inline({'origin': 'auto', 'stuck': False, 'a': a, 'note': 'open; outranks a legacy auto entry'})
         elif cur is not None:
             del st[skey]
+    return _save_root(path, root, old, doc, 'auto calls')
 
-    if len(st) == 0:
-        del rt[SHUTTERS]
-    if len(rt) == 0:
-        del doc[root]
-    text = tomlkit.dumps(doc)
-    if text == old:
-        return False
-    tmp = f'{path}.tmp'
-    with open(tmp, 'w') as f:
-        f.write(text)
-    os.replace(tmp, path)
-    log(f'stuck shutters: wrote auto calls for {root} to {path}')
-    return True
+
+def write_origin(path, root, entries, origin, obs_name=''):
+    """Make one root's entries of ``origin`` (``web`` or ``auto``; manual entries are
+    only ever edited by hand) exactly ``entries``, ``{(q, r, c): Entry}`` (its
+    ``origin`` is ignored): set or update each, remove that origin's entries that are
+    not in it, and leave a shutter alone where a higher origin already has an entry.
+    Same tomlkit merge as ``write_auto``; returns True when the file changed."""
+    if origin not in ORIGINS or origin == 'manual':
+        raise ValueError(f'write_origin writes web or auto entries, not {origin!r}')
+    rank = {o: i for i, o in enumerate(ORIGINS)}
+    old, doc, st = _open_root(path, root, obs_name)
+    phys = (read_file(path)[0] if old.strip() else {}).get(root, {})
+    for key, e in sorted(entries.items()):
+        cur = phys.get(key)
+        if cur is not None and rank[cur.origin] < rank[origin]:
+            continue
+        new = Entry(origin=origin, stuck=bool(e.stuck), a=_amplitude(e.a), note=e.note or '')
+        if cur != new:
+            st[shutter_key(*key)] = _inline({'origin': new.origin, 'stuck': new.stuck, 'a': new.a, 'note': new.note})
+    for key, cur in phys.items():
+        if cur.origin == origin and key not in entries:
+            del st[shutter_key(*key)]
+    return _save_root(path, root, old, doc, f'{origin} entries')

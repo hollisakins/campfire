@@ -158,3 +158,21 @@ def test_the_legacy_writer_carries_the_physical_table_through(tmp_path):
     phys, legacy = S.read_file(path)
     assert phys[ROOT] == {(1, 100, 41): S.Entry('auto', True, 0.04)}
     assert legacy[ROOT] == {1001: ([2], 'auto'), 1002: ([1], 'manual')}
+
+
+def test_write_origin_replaces_one_origin_and_respects_higher_ones(tmp_path):
+    path = _write(tmp_path / 's.toml', f'''[{ROOT}.shutters]
+    "q1r100c20" = {{origin = "manual", stuck = false}}  # vetted open
+    "q1r100c21" = {{origin = "web", stuck = true}}
+    "q1r100c22" = {{origin = "auto", stuck = true, a = 0.05}}
+''')
+    web = {(1, 100, 20): S.Entry('web'), (1, 100, 22): S.Entry('web', note='seen in nods')}
+    assert S.write_origin(path, ROOT, web, 'web') is True
+    phys = S.read_file(path)[0][ROOT]
+    assert phys[(1, 100, 20)] == S.Entry('manual', False)            # manual untouched
+    assert (1, 100, 21) not in phys                                 # web entry gone from the set
+    assert phys[(1, 100, 22)] == S.Entry('web', True, None, 'seen in nods')   # web outranks auto
+    assert '# vetted open' in open(path).read()
+    assert S.write_origin(path, ROOT, web, 'web') is False
+    with pytest.raises(ValueError):
+        S.write_origin(path, ROOT, web, 'manual')
