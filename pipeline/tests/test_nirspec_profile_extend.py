@@ -34,6 +34,14 @@ def test_solve_end_uses_only_pixels_on_its_own_grid():
     assert blue['lam'].max() < 2.9 and red['lam'].min() > 5.2
 
 
+def test_solve_end_shorter_than_the_smoothing_window():
+    from campfire_pipeline.nirspec import profile_extend as PE
+    lam = np.tile(np.linspace(5.3, 5.34, 17), (8, 1))
+    out = PE._solve_end([_block(lam, lambda x: np.full_like(x, 3.0))], np.sort(lam[0]), 31, True, 5.0, 2)
+    assert out is not None and out['flux'].size == 17
+    assert np.allclose(out['flux'][np.isfinite(out['flux'])], 3.0, rtol=1e-3)
+
+
 def test_solve_end_too_few_pixels():
     from campfire_pipeline.nirspec import profile_extend as PE
     lam = np.tile(np.linspace(5.3, 5.31, 3), (2, 1))

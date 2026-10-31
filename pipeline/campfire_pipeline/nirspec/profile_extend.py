@@ -314,8 +314,10 @@ def _solve_end(blocks, lrow, n_smooth, keep_lines, clip, n_clip):
     E[np.arange(gi.size), np.arange(gi.size)] = 1.0
     err[gi] = np.sqrt(np.abs(np.diag(lu.solve(E))))
     flux_raw = np.where(good, f, np.nan)
-    if n_smooth and n_smooth > 1:
-        fs, es, _ = smooth_spectrum(flux_raw, err, n=n_smooth, keep_lines=keep_lines)
+    # an end shorter than the smoothing window is smoothed over its own length (odd)
+    n_eff = min(int(n_smooth or 0), grid.size - (1 - grid.size % 2))
+    if n_eff > 1:
+        fs, es, _ = smooth_spectrum(flux_raw, err, n=n_eff, keep_lines=keep_lines)
     else:
         fs, es = flux_raw, err
     return dict(lam=grid, flux=fs, err=es, flux_raw=flux_raw, npix=int(use.sum()), nmask=int(nrow - use.sum()))
