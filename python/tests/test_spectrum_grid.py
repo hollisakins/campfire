@@ -113,3 +113,35 @@ def test_partition_existing_row_skips_null_render_columns():
     assert "grating" not in update
     assert "image_width" not in update
     assert update["storage_key"] == rec["storage_key"]  # non-null render kept
+
+
+def test_build_records_carry_msa_shutters(tmp_path):
+    p = tmp_path / "jw07076020001_04101_00001_nrs1_117757.fits"
+    p.write_bytes(b"\x00")
+    keys = ["q2r195c63", "q2r195c64", "q2r195c65"]
+    recs = build_spectrum_exposure_records(
+        [p], observation="ember_egs_p1", scope=Scope(obs="ember_egs_p1"),
+        shutter_map={("jw07076020001_04101", 117757): keys})
+    assert recs[0]["msa_shutters"] == keys
+    # no metafile next to the stub: the column stays NULL, never raises
+    recs = build_spectrum_exposure_records(
+        [p], observation="ember_egs_p1", scope=Scope(obs="ember_egs_p1"))
+    assert recs[0]["msa_shutters"] is None
+
+
+def test_partition_existing_row_refreshes_msa_shutters_when_known():
+    key = {("ember_egs_p1", "jw07076020001_04101", "00001", "nrs1", 117757)}
+    _, upd = partition_spectrum_records([_record(msa_shutters=["q1r2c3"])], existing_keys=key, now="T")
+    assert upd[0]["msa_shutters"] == ["q1r2c3"]
+    _, upd = partition_spectrum_records([_record(msa_shutters=None)], existing_keys=key, now="T")
+    assert "msa_shutters" not in upd[0]
+
+
+def test_slitlet_shutter_keys_sorted_by_column_and_distinct():
+    pytest.importorskip("campfire_pipeline.nirspec.stuck_list")
+    from campfire.deploy.spectrum_grid import slitlet_shutter_keys
+    # three dither points of a 3-shutter slitlet: the same physical shutters repeat
+    rows = {"shutter_quadrant": [2, 2, 2] * 3,
+            "shutter_row": [195, 195, 195] * 3,
+            "shutter_column": [65, 63, 64] * 3}
+    assert slitlet_shutter_keys(rows) == ["q2r195c63", "q2r195c64", "q2r195c65"]

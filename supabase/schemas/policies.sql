@@ -1142,6 +1142,36 @@ CREATE POLICY "admin_update_nirspec_source_review"
 
 
 -- =============================================================================
+-- nirspec_stuck_shutters (admin-only — physical stuck-shutter list)
+-- =============================================================================
+-- Same shape as nirspec_source_review, plus DELETE: clearing a web mark on the
+-- nods review removes its row (no row = the pipeline's own auto call decides).
+
+ALTER TABLE nirspec_stuck_shutters ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "admin_select_nirspec_stuck_shutters" ON nirspec_stuck_shutters;
+CREATE POLICY "admin_select_nirspec_stuck_shutters"
+  ON nirspec_stuck_shutters FOR SELECT TO authenticated
+  USING ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_insert_nirspec_stuck_shutters" ON nirspec_stuck_shutters;
+CREATE POLICY "admin_insert_nirspec_stuck_shutters"
+  ON nirspec_stuck_shutters FOR INSERT TO authenticated
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_update_nirspec_stuck_shutters" ON nirspec_stuck_shutters;
+CREATE POLICY "admin_update_nirspec_stuck_shutters"
+  ON nirspec_stuck_shutters FOR UPDATE TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_delete_nirspec_stuck_shutters" ON nirspec_stuck_shutters;
+CREATE POLICY "admin_delete_nirspec_stuck_shutters"
+  ON nirspec_stuck_shutters FOR DELETE TO authenticated
+  USING ((SELECT public.is_admin()));
+
+
+-- =============================================================================
 -- deploy_events (admin-only — lifecycle audit log, epic #210 B2/B3)
 -- =============================================================================
 -- Append-only audit log, written only by the lifecycle RPCs (SECURITY DEFINER,

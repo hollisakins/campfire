@@ -43,6 +43,7 @@ UPDATE public.nircam_exposures SET notes = NULL WHERE notes IS NOT NULL;
 UPDATE public.nirspec_rate_exposures SET notes = NULL WHERE notes IS NOT NULL;
 UPDATE public.spectrum_exposures SET notes = NULL WHERE notes IS NOT NULL;
 UPDATE public.nirspec_source_review SET notes = NULL WHERE notes IS NOT NULL;
+UPDATE public.nirspec_stuck_shutters SET note = NULL WHERE note IS NOT NULL;
 
 -- 4. The three fixed test accounts from seed.sql (admin / user / viewer),
 --    with the same password (password123) and the auth.identities rows
@@ -80,6 +81,7 @@ BEGIN
        + (SELECT count(*) FROM public.nirspec_rate_exposures WHERE notes IS NOT NULL)
        + (SELECT count(*) FROM public.spectrum_exposures WHERE notes IS NOT NULL)
        + (SELECT count(*) FROM public.nirspec_source_review WHERE notes IS NOT NULL)
+       + (SELECT count(*) FROM public.nirspec_stuck_shutters WHERE note IS NOT NULL)
     INTO n;
   IF n > 0 THEN RAISE EXCEPTION 'scrub: % free-text values survived', n; END IF;
   SELECT count(*) INTO n FROM auth.users u

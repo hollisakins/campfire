@@ -1314,7 +1314,8 @@ def nirspec():
     `cfpipe nirspec linefit`; `pull-rate-masks` materializes the web-drawn rate-file masks
     (nirspec_rate_exposures.mask_regions) to reference/nirspec/<obs>/masks/*.reg;
     `pull-stuck-shutters` / `pull-bkg-overrides` materialize the nods-view flags
-    (nirspec_source_review) to reference/nirspec/<obs>/stuck_closed_shutters.toml and
+    (nirspec_stuck_shutters / nirspec_source_review) to
+    reference/nirspec/<obs>/stuck_closed_shutters.toml and
     nodded_background_overrides.toml. The pipeline reads all three before stage 2.
     """
     pass
@@ -1374,11 +1375,11 @@ def nirspec_pull_rate_masks(ctx, config_path, obs, dry_run, local):
               help='Use local Supabase (127.0.0.1:54321).')
 @click.pass_context
 def nirspec_pull_stuck_shutters(ctx, config_path, obs, dry_run, local):
-    """Merge nirspec_source_review.stuck_shutters into stuck_closed_shutters.toml.
+    """Mirror the web rows of nirspec_stuck_shutters into stuck_closed_shutters.toml.
 
-    Authority merge hand > web > auto: preserves hand entries, refreshes web entries
-    from the DB (dropping ones the DB no longer flags), and leaves auto-detected
-    entries to fill gaps. The pipeline reads the TOML before stage 2.
+    Each root's web entries ([<root>.shutters], physical keys) become exactly the
+    DB's; manual and auto entries are never touched (manual > web > auto). An empty
+    DB never clears local web entries. The pipeline reads the TOML before stage 2.
     """
     from campfire.deploy.nirspec_flags import pull_stuck_shutters
     config = load_config(config_path, local=_resolve_local(ctx, local))

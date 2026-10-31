@@ -3,23 +3,33 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card } from '@/components/ui/Card';
 import { Loader2, ArrowLeft } from 'lucide-react';
-import { getNirspecNodGrid, getNirspecSourceReviews, saveSourceReview } from '@/lib/actions/nirspec-nods';
+import {
+  getNirspecNodGrid, getNirspecSourceReviews, saveBkgOverrides, setWebStuckShutters,
+} from '@/lib/actions/nirspec-nods';
 import {
   buildNodGrid, decodeSource, NOD_DETECTORS,
-  nodKey, toggleStuckOrdinal, normalizeBkgOverrides,
+  nodKey, normalizeBkgOverrides,
 } from '@/lib/nirspec-nods';
+import {
+  nextWebMark, slitletOrdinals, stuckOrdinals, type StuckShutterMark,
+} from '@/lib/nirspec-shutters';
+import { fetchJson } from '@/lib/fetch-json';
 import { zscaleLimits, type StretchMode, type ColormapName } from '@/lib/fits';
-import type { SpectrumExposure } from '@/lib/types';
+import type { SpectrumExposure, NirspecStuckShutter } from '@/lib/types';
+import type { StuckShuttersResponse } from '@/app/api/admin/nirspec/stuck-shutters/route';
 import NodCell from '@/components/nirspec/NodCell';
 
-// Per-(exposure_root) editable review state, held in memory with optimistic updates.
+// Per-(exposure_root) background overrides, held in memory with optimistic updates.
 interface ReviewState {
-  stuck_shutters: number[];
   bkg_overrides: Record<string, number[]>;
 }
-const EMPTY_REVIEW: ReviewState = { stuck_shutters: [], bkg_overrides: {} };
+const EMPTY_REVIEW: ReviewState = { bkg_overrides: {} };
+
+type Marks = Map<string, StuckShutterMark>;
+const NO_MARKS: Marks = new Map();
 
 /** exposure_root shared by a nod-grid row's ≤2 detector cells (nrs1/nrs2 of one nod). */
 function rowRoot(row: { cells: Record<string, SpectrumExposure | null> }): string | null {
@@ -97,7 +107,7 @@ function NodGridInner() {
     if (arrays.length > 0) setRange(sharedRange(arrays));
   }, [settledIds, dataById, expectedIds]);
 
-  // --- Editable flags (P6): nirspec_source_review, keyed by exposure_root ---
+  // --- Background overrides (P6): nirspec_source_review, keyed by exposure_root ---
   const [reviews, setReviews] = useState<Map<string, ReviewState>>(new Map());
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -109,15 +119,78 @@ function NodGridInner() {
       if (res.error) { setSaveError(res.error); return; }
       const m = new Map<string, ReviewState>();
       for (const r of res.reviews) {
-        m.set(r.exposure_root, {
-          stuck_shutters: r.stuck_shutters ?? [],
-          bkg_overrides: r.bkg_overrides ?? {},
-        });
+        m.set(r.exposure_root, { bkg_overrides: r.bkg_overrides ?? {} });
       }
       setReviews(m);
     });
     return () => { cancelled = true; };
   }, [decoded?.observation, decoded?.sourceId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // --- Stuck shutters: nirspec_stuck_shutters, physical keys per exposure_root ---
+  // The source's slitlet per root (deploy-populated from the metafile).
+  const rootShutters = useMemo(() => {
+    const m = new Map<string, string[] | null>();
+    for (const r of rows) {
+      if (!m.get(r.exposure_root)) m.set(r.exposure_root, r.msa_shutters?.length ? r.msa_shutters : null);
+    }
+    return m;
+  }, [rows]);
+  const roots = useMemo(() => [...rootShutters.keys()].sort(), [rootShutters]);
+
+  const queryClient = useQueryClient();
+  const stuckKey = useMemo(
+    () => ['nirspec-stuck-shutters', decoded?.observation ?? '', roots.join(',')] as const,
+    [decoded?.observation, roots]);
+  const stuckQuery = useQuery({
+    queryKey: stuckKey,
+    queryFn: ({ signal }) => fetchJson<StuckShuttersResponse>(
+      `/api/admin/nirspec/stuck-shutters?observation=${encodeURIComponent(decoded!.observation)}`
+      + `&roots=${encodeURIComponent(roots.join(','))}`, { signal }),
+    enabled: !!decoded && roots.length > 0,
+  });
+
+  const marks = useMemo(() => {
+    const m = new Map<string, Marks>();
+    for (const r of stuckQuery.data?.rows ?? []) {
+      const per = m.get(r.exposure_root) ?? new Map();
+      per.set(r.shutter, { origin: r.origin, stuck: r.stuck });
+      m.set(r.exposure_root, per);
+    }
+    return m;
+  }, [stuckQuery.data]);
+
+  // Optimistic write of one root's web marks; the query is refetched afterwards.
+  const setMark = useCallback((root: string, keys: string[], stuck: boolean | null) => {
+    if (!decoded || keys.length === 0) return;
+    queryClient.setQueryData<StuckShuttersResponse>(stuckKey, (prev) => {
+      const kept = (prev?.rows ?? []).filter((r) => !(r.exposure_root === root && keys.includes(r.shutter)));
+      if (stuck === null) return { rows: kept };
+      const now = new Date().toISOString();
+      const added: NirspecStuckShutter[] = keys.map((shutter) => ({
+        id: -1, observation: decoded.observation, exposure_root: root, shutter, origin: 'web', stuck,
+        note: null, created_at: now, updated_at: now, updated_by: null,
+      }));
+      return { rows: [...kept, ...added] };
+    });
+    setWebStuckShutters(decoded.observation, root, keys, stuck).then((res) => {
+      if (res.error) setSaveError(res.error);
+      queryClient.invalidateQueries({ queryKey: stuckKey });
+    });
+  }, [decoded?.observation, queryClient, stuckKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A click on a cutout's shutter band: the ordinal's physical shutter(s) of that root.
+  const handleToggleShutter = useCallback((root: string, ordinal: number) => {
+    const keys = slitletOrdinals(rootShutters.get(root) ?? []).get(ordinal) ?? [];
+    if (keys.length === 0) { setSaveError(`${root}: no shutter map (redeploy)`); return; }
+    const rm = marks.get(root) ?? NO_MARKS;
+    if (keys.some((k) => rm.get(k)?.origin === 'manual')) { setSaveError(`${keys.join(', ')} set locally (manual)`); return; }
+    setMark(root, keys, keys.every((k) => rm.get(k)?.stuck) ? null : true);
+  }, [rootShutters, marks, setMark]);
+
+  const handleCycleShutter = useCallback((root: string, key: string) => {
+    const next = nextWebMark((marks.get(root) ?? NO_MARKS).get(key));
+    if (next !== undefined) setMark(root, [key], next);
+  }, [marks, setMark]);
 
   // Candidate background nods for the whole source: distinct nod sequence numbers.
   const availableNods = useMemo(() => {
@@ -126,21 +199,15 @@ function NodGridInner() {
     return [...s].sort((a, b) => Number(a) - Number(b));
   }, [rows]);
 
-  // Optimistic save: update local state immediately, persist both flag channels.
+  // Optimistic save of a root's background overrides.
   const persist = useCallback((root: string, next: ReviewState) => {
     if (!decoded) return;
     setReviews((prev) => new Map(prev).set(root, next));
-    saveSourceReview(
+    saveBkgOverrides(
       decoded.observation, root, decoded.sourceId,
-      next.stuck_shutters.length ? next.stuck_shutters : null,
       normalizeBkgOverrides(next.bkg_overrides),
     ).then((res) => { if (res.error) setSaveError(res.error); });
   }, [decoded?.observation, decoded?.sourceId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleToggleShutter = useCallback((root: string, ordinal: number) => {
-    const cur = reviews.get(root) ?? EMPTY_REVIEW;
-    persist(root, { ...cur, stuck_shutters: toggleStuckOrdinal(cur.stuck_shutters, ordinal) });
-  }, [reviews, persist]);
 
   const handleBkgChange = useCallback((root: string, nk: string, list: number[] | null) => {
     const cur = reviews.get(root) ?? EMPTY_REVIEW;
@@ -194,6 +261,22 @@ function NodGridInner() {
         </div>
       )}
 
+      {roots.length > 0 && (
+        <Card className="p-3 mb-3">
+          <div className="flex flex-col gap-1 text-xs">
+            {roots.map((root) => (
+              <SlitletShutters
+                key={root}
+                root={root}
+                shutters={rootShutters.get(root) ?? null}
+                marks={marks.get(root) ?? NO_MARKS}
+                onCycle={(key) => handleCycleShutter(root, key)}
+              />
+            ))}
+          </div>
+        </Card>
+      )}
+
       {grid.length === 0 ? (
         <p className="text-text-secondary text-sm">No spectrum-exposure rows for this source.</p>
       ) : (
@@ -228,7 +311,7 @@ function NodGridInner() {
                         bkgsub={bkgsub}
                         onData={onData}
                         onSettled={onSettled}
-                        stuckList={review.stuck_shutters}
+                        stuckList={root ? stuckOrdinals(rootShutters.get(root) ?? [], marks.get(root) ?? NO_MARKS) : []}
                         onToggleShutter={(ordinal) => { if (root) handleToggleShutter(root, ordinal); }}
                       />
                     </div>
@@ -247,6 +330,47 @@ function NodGridInner() {
           </div>
         </Card>
       )}
+    </div>
+  );
+}
+
+/**
+ * One exposure root's slitlet as physical shutters, in ordinal order (column
+ * ascending). A click cycles the web mark: none → stuck → not stuck → none. Manual
+ * marks (set in the local TOML, pushed on deploy) show dashed and are read-only.
+ */
+function SlitletShutters({
+  root, shutters, marks, onCycle,
+}: {
+  root: string;
+  shutters: string[] | null;
+  marks: Marks;
+  onCycle: (key: string) => void;
+}) {
+  const ordinals = shutters ? [...slitletOrdinals(shutters).entries()] : [];
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="w-44 font-mono text-text-secondary">{root}</span>
+      {!shutters && <span className="text-text-tertiary">no shutter map</span>}
+      {ordinals.flatMap(([ordinal, keys]) => keys.map((key) => {
+        const m = marks.get(key);
+        const manual = m?.origin === 'manual';
+        const tone = !m ? 'border-border text-text-secondary'
+          : m.stuck ? 'bg-red-500/20 border-red-500 text-red-600 dark:text-red-400'
+            : 'border-emerald-500 text-emerald-600 dark:text-emerald-400';
+        const state = !m ? '' : m.stuck ? ' stuck' : ' not stuck';
+        return (
+          <button
+            key={key}
+            onClick={() => onCycle(key)}
+            disabled={manual}
+            className={`px-1.5 py-0.5 rounded border font-mono ${tone} ${manual ? 'border-dashed cursor-not-allowed' : ''}`}
+            title={`${ordinal}: ${key}${state}${manual ? ' (manual)' : m ? ' (web)' : ''}`}
+          >
+            {key}
+          </button>
+        );
+      }))}
     </div>
   );
 }

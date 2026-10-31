@@ -105,3 +105,64 @@ export function shutterOverlayRegions(input: ShutterOverlayInput): ShutterOverla
     return { ...region, ordinal, stuck: stuckSet.has(ordinal) };
   });
 }
+
+// ---------------------------------------------------------------------------
+// Physical shutters (nirspec_stuck_shutters). A shutter is keyed per exposure root
+// (MSA configuration) by "q<quadrant>r<row>c<column>", the metafile's
+// shutter_quadrant / shutter_row / shutter_column — the same key as
+// campfire_pipeline.nirspec.stuck_list and the table's CHECK.
+// ---------------------------------------------------------------------------
+
+export const SHUTTER_KEY_RE = /^q([1-4])r(\d+)c(\d+)$/;
+
+export interface ShutterKey { q: number; r: number; c: number }
+
+export function parseShutterKey(key: string): ShutterKey | null {
+  const m = SHUTTER_KEY_RE.exec(key);
+  return m ? { q: Number(m[1]), r: Number(m[2]), c: Number(m[3]) } : null;
+}
+
+/**
+ * The legacy ordinal frame of a source's slitlet: ordinal k (1-indexed) is the k-th
+ * distinct shutter column in ascending order (stuck_list.source_columns), mapped to
+ * every physical key at that column. `keys` is spectrum_exposures.msa_shutters.
+ */
+export function slitletOrdinals(keys: string[]): Map<number, string[]> {
+  const byCol = new Map<number, string[]>();
+  for (const key of keys) {
+    const p = parseShutterKey(key);
+    if (!p) continue;
+    const list = byCol.get(p.c) ?? [];
+    list.push(key);
+    byCol.set(p.c, list);
+  }
+  const out = new Map<number, string[]>();
+  [...byCol.keys()].sort((a, b) => a - b).forEach((c, i) => out.set(i + 1, byCol.get(c)!));
+  return out;
+}
+
+/** The web's view of one row of nirspec_stuck_shutters (auto calls are never in the DB). */
+export interface StuckShutterMark {
+  origin: 'manual' | 'web';
+  stuck: boolean;
+}
+
+/** The ordinals (overlay frame) of a slitlet whose shutters are marked stuck. */
+export function stuckOrdinals(keys: string[], marks: Map<string, StuckShutterMark>): number[] {
+  const out: number[] = [];
+  for (const [ordinal, ks] of slitletOrdinals(keys)) {
+    if (ks.some((k) => marks.get(k)?.stuck)) out.push(ordinal);
+  }
+  return out;
+}
+
+/**
+ * The web cycle for one shutter: no row → stuck → not stuck (a veto of the
+ * pipeline's own call) → no row. `null` = delete the web row. A manual row is set
+ * locally and never changed from the web: `undefined`.
+ */
+export function nextWebMark(cur: StuckShutterMark | undefined): boolean | null | undefined {
+  if (cur?.origin === 'manual') return undefined;
+  if (!cur) return true;
+  return cur.stuck ? false : null;
+}

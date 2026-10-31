@@ -1,41 +1,41 @@
-"""NIRSpec flag pull-back: DB nirspec_source_review → reference/nirspec/<obs>/ TOMLs.
+"""NIRSpec review flags: DB <-> reference/nirspec/<obs>/ TOMLs.
 
-The cloud→local half of the NIRSpec nods review loop (design §4.3/§7, P7). Reads the
-web-editable ``nirspec_source_review`` table (one row per
-``(observation, exposure_root, source_id)``) and materializes its two jsonb flag
-channels into the two local TOMLs that pipeline stage 2 already consumes:
+The cloud<->local halves of the NIRSpec nods review loop (design §4.3/§7, P7):
 
-- ``stuck_shutters``  ([1,2,3]) → ``reference/nirspec/<obs>/stuck_closed_shutters.toml``
-- ``bkg_overrides``   ({"3":[1]}) → ``reference/nirspec/<obs>/nodded_background_overrides.toml``
+- **Stuck shutters** live in ``nirspec_stuck_shutters``, one row per
+  ``(observation, exposure_root, physical shutter "q<quadrant>r<row>c<column>")`` with
+  ``origin`` manual or web, and locally in the ``[<root>.shutters]`` tables of
+  ``reference/nirspec/<obs>/stuck_closed_shutters.toml`` (read and written only through
+  ``campfire_pipeline.nirspec.stuck_list``; precedence manual > web > auto, ``stuck =
+  false`` vetoes an auto call). The pull makes each root's local ``web`` entries
+  exactly the DB's web rows (``stuck_list.write_origin``: a shutter the file already has
+  as manual is left alone, manual and auto entries are never touched, comments and layout
+  are kept). The push sends the local manual entries (physical ones and legacy
+  ``sid = [ordinals]  # hand`` ones mapped through the root's metafile) as ``manual``
+  rows; auto calls stay local, the pipeline regenerates them.
+- **Background overrides** (``nirspec_source_review.bkg_overrides``, ``{"3":[1]}``) ->
+  ``reference/nirspec/<obs>/nodded_background_overrides.toml``, a local-first merge: the
+  pull never removes or changes a local entry, it adds DB entries for (root, source)
+  keys the file does not have and keeps (and reports) local entries that differ from
+  the DB. Local entries reach the DB on deploy. A full overwrite here once wiped every
+  hand-set override.
 
-The P6 jsonb shapes were stored to mirror these TOMLs 1:1, so the DB→TOML mapping is
-``toml[exposure_root][str(source_id)] = <jsonb>`` with no transform.
-
-Two behaviors (design §4.3):
-
-- **Background overrides — local-first merge.** The bkg TOML is hand-edited locally as
-  well as set on the web, so the pull never removes or changes a local entry: it adds
-  DB entries for (root, source) keys the file does not have, and keeps (and reports)
-  local entries that differ from the DB. Local entries reach the DB on deploy
-  (``annotation_push``). A full overwrite here once wiped every hand-set override.
-- **Stuck shutters — authority merge, hand > web > auto.** The stuck TOML is written by
-  three sources (hand edits, this pull = "web", and the pipeline auto-detector). Because
-  hand and web are both manual identification, the pull *merges* rather than overwrites,
-  reading the ``# hand`` / ``# web`` / ``# auto`` provenance tags back out of the existing
-  file (``stuck_shutters.load_stuck_shutters_tagged``) so a re-pull preserves hand entries,
-  refreshes web entries from the DB (keeping, and reporting, ones the DB no longer flags:
-  a pull never deletes local config), and lets auto fill gaps. The shared pipeline writer (``write_stuck_shutters_toml``) emits the tags, so
-  the file the pull writes and the file the pipeline auto-detector writes are byte-compatible.
-
-Both writes are atomic (tmp + rename). These flags are DB-resident and never registered
-in ``storage_objects``.
+Writes are atomic (tmp + rename). These flags are DB-resident and never registered in
+``storage_objects``.
 """
 from __future__ import annotations
 
+import shutil
+import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from campfire.deploy.nircam_masks import _utcnow_iso
 from campfire.deploy.supabase import get_supabase_client
+
+STUCK_TABLE = 'nirspec_stuck_shutters'
+STUCK_CONFLICT = 'observation,exposure_root,shutter'
+STUCK_FILE = 'stuck_closed_shutters.toml'
 
 
 def _ref_dir(obs):
@@ -46,132 +46,252 @@ def _ref_dir(obs):
     return reference_dir('nirspec', Scope(obs=obs), root=_resolve_campfire_root())
 
 
+def _obs_dir(obs):
+    """products/nirspec/<obs>/ (where the rate files and metafiles are); may not exist."""
+    from campfire_layout import Scope, dir_for
+    from campfire.deploy.nircam import _resolve_campfire_root
+    return dir_for('nirspec_spec', Scope(obs=obs), root=_resolve_campfire_root())
+
+
 # ---------------------------------------------------------------------------
-# Stuck shutters — authority merge (hand > web > auto)
+# Stuck shutters (physical keys, nirspec_stuck_shutters)
 # ---------------------------------------------------------------------------
 
-def merge_pulled_stuck_shutters(existing_tagged, db_web):
-    """Resolve the stuck-shutter authority merge for the pull.
+def _stuck_obs(obs, stuck_file=None, obs_dir=None):
+    """The minimal observation ``stuck_list.load_obs`` / ``root_metafiles`` read: the
+    TOML path, the rate files (each root's first one names its original metafile) and
+    the directory a relative metafile name resolves against."""
+    from campfire.deploy.discover import discover_rate_files
+    obs_dir = Path(obs_dir) if obs_dir is not None else _obs_dir(obs)
+    rates = [str(p) for p in discover_rate_files(obs_dir)] if obs_dir.is_dir() else []
+    return SimpleNamespace(
+        name=obs,
+        stuck_closed_shutters_file=str(stuck_file or (_ref_dir(obs) / STUCK_FILE)),
+        rate_files=rates, workspace_dir=str(obs_dir))
 
-    Pure function (no DB / no I/O) so the ranking rules are unit-testable.
 
-    Parameters
-    ----------
-    existing_tagged : dict
-        ``{(root, source_id_str): ([shutters], tag)}`` from
-        ``load_stuck_shutters_tagged`` (tag ∈ {'hand','web','auto'}).
-    db_web : dict
-        ``{(root, source_id_str): [shutters]}`` — the web tier from the DB
-        (empty lists already filtered out by the caller).
+def fetch_stuck_rows(sb, obs, page=1000):
+    """Every ``nirspec_stuck_shutters`` row of ``obs``, paged in the unique key's order
+    (an observation holds a few hundred rows at most)."""
+    rows, start = [], 0
+    while True:
+        r = (sb.table(STUCK_TABLE)
+             .select('exposure_root, shutter, origin, stuck, note')
+             .eq('observation', obs).order('exposure_root').order('shutter')
+             .range(start, start + page - 1)
+             .execute()).data or []
+        rows += r
+        if len(r) < page:
+            return rows
+        start += page
 
-    Returns
-    -------
-    data : dict
-        ``{root: {source_id_str: [shutters]}}`` ready for ``write_stuck_shutters_toml``.
-    provenance : dict
-        ``{(root, source_id_str): tag}`` — the tag to emit per surviving entry.
-    stats : dict
-        Counts: ``hand``, ``auto``, ``web``, ``hand_protected``, ``web_kept``.
 
-    Rules (net realized ranking hand > web > auto):
-      1. every hand entry is kept, never overwritten;
-      2. auto entries are kept unless a hand entry holds the key;
-      3. web (DB) overlays auto and prior web, but a hand entry protects its key;
-      4. a prior web entry absent from the DB (and not hand-held) is kept: a pull
-         never deletes local config. Clear it locally to remove it.
-    """
-    merged = {}       # (root, sid_str) -> [shutters]
-    provenance = {}   # (root, sid_str) -> tag
-    stats = {'hand': 0, 'auto': 0, 'web': 0, 'hand_protected': 0, 'web_kept': 0}
-
-    hand_keys = {k for k, (_sh, tag) in existing_tagged.items() if tag == 'hand'}
-
-    # 1. hand entries — always retained
-    for k, (sh, tag) in existing_tagged.items():
-        if tag == 'hand':
-            merged[k] = sh
-            provenance[k] = 'hand'
-            stats['hand'] += 1
-
-    # 2. auto entries — retained unless a hand entry holds the key
-    for k, (sh, tag) in existing_tagged.items():
-        if tag == 'auto' and k not in hand_keys:
-            merged[k] = sh
-            provenance[k] = 'auto'
-            stats['auto'] += 1
-
-    # 3. web (DB) overlay — wins over auto/prior-web, yields to hand
-    for k, shutters in db_web.items():
-        if k in hand_keys:
-            stats['hand_protected'] += 1
+def db_entries(rows, origin):
+    """``{root: {(q, r, c): Entry}}`` of the DB rows of one origin."""
+    from campfire_pipeline.nirspec import stuck_list
+    out = {}
+    for row in rows:
+        if row['origin'] != origin:
             continue
-        merged[k] = shutters
-        provenance[k] = 'web'
-        stats['web'] += 1
-
-    # 4. prior web entries the DB no longer flags — kept (a pull never deletes local config)
-    for k, (sh, tag) in existing_tagged.items():
-        if tag == 'web' and k not in db_web and k not in hand_keys:
-            merged[k] = sh
-            provenance[k] = 'web'
-            stats['web_kept'] += 1
-
-    data = {}
-    for (root, sid_str), shutters in merged.items():
-        data.setdefault(root, {})[sid_str] = shutters
-    return data, provenance, stats
+        out.setdefault(row['exposure_root'], {})[stuck_list.parse_key(row['shutter'])] = stuck_list.Entry(
+            origin=origin, stuck=bool(row['stuck']), note=row.get('note') or '')
+    return out
 
 
-def pull_stuck_shutters(obs, config, dry_run=False):
-    """Merge nirspec_source_review.stuck_shutters (web tier) into the local TOML.
+def plan_stuck_push(local_manual, db_rows):
+    """Rows to upsert so the DB carries every local manual entry. Pure, for unit tests.
 
-    Authority merge hand > web > auto; atomic write; reuses the pipeline's
-    tag-emitting ``write_stuck_shutters_toml`` so the file stays byte-compatible
-    with what the auto-detector writes.
+    ``local_manual`` is ``{root: {(q, r, c): Entry}}`` (manual entries only);
+    ``db_rows`` the observation's current rows. A local entry is sent when the DB has
+    no row for the shutter, a web row (manual outranks web), or a manual row with a
+    different ``stuck``. Nothing is ever deleted. Returns ``(rows, stale)``:
+    ``stale`` lists the DB manual rows no local entry has any more (reported, kept)."""
+    from campfire_pipeline.nirspec import stuck_list
+    db = {(r['exposure_root'], r['shutter']): r for r in db_rows}
+    rows, sent = [], set()
+    for root in sorted(local_manual):
+        for key, e in sorted(local_manual[root].items()):
+            skey = stuck_list.shutter_key(*key)
+            sent.add((root, skey))
+            cur = db.get((root, skey))
+            want = {'exposure_root': root, 'shutter': skey, 'origin': 'manual',
+                    'stuck': bool(e.stuck), 'note': e.note or None}
+            if cur is not None and cur['origin'] == 'manual' and bool(cur['stuck']) == want['stuck']:
+                continue  # a note-only difference is not worth a write
+            rows.append(want)
+    stale = sorted((r['exposure_root'], r['shutter']) for r in db_rows
+                   if r['origin'] == 'manual' and (r['exposure_root'], r['shutter']) not in sent)
+    return rows, stale
+
+
+def local_manual_entries(obs, stuck_file=None, obs_dir=None):
+    """The local manual entries ``{root: {(q, r, c): Entry}}``: physical manual entries
+    plus legacy ``# hand`` (or untagged) entries mapped through each root's metafile
+    (``stuck_list.load_obs``; a legacy entry whose metafile is missing is logged and
+    left out)."""
+    from campfire_pipeline.nirspec import stuck_list
+    resolved = stuck_list.load_obs(_stuck_obs(obs, stuck_file, obs_dir))
+    out = {}
+    for root, entries in resolved.items():
+        manual = {k: e for k, e in entries.items() if e.origin == 'manual'}
+        if manual:
+            out[root] = manual
+    return out
+
+
+def push_stuck_shutters(sb, obs, dry_run=False, stuck_file=None, obs_dir=None):
+    """Push the local manual stuck-shutter entries of ``obs`` to ``nirspec_stuck_shutters``
+    (upsert on the physical key, origin ``manual``). Web rows are the web's; auto calls
+    stay local. Returns the number of rows sent."""
+    stuck_file = Path(stuck_file or (_ref_dir(obs) / STUCK_FILE))
+    if not stuck_file.exists():
+        return 0
+    local = local_manual_entries(obs, stuck_file, obs_dir)
+    if not local:
+        return 0
+    rows, stale = plan_stuck_push(local, fetch_stuck_rows(sb, obs))
+    for row in rows:
+        row['observation'] = obs
+    if rows and not dry_run:
+        for i in range(0, len(rows), 500):
+            sb.table(STUCK_TABLE).upsert(rows[i:i + 500], on_conflict=STUCK_CONFLICT).execute()
+    n_local = sum(len(v) for v in local.values())
+    print(f"  {'Would push' if dry_run else 'Pushed'} {len(rows)} manual stuck shutter"
+          f"{'' if len(rows) == 1 else 's'} to {STUCK_TABLE} ({n_local - len(rows)} already in the DB)")
+    if stale:
+        print(f"  {len(stale)} manual row(s) in the DB have no local entry (kept): "
+              + ', '.join(f'{r} {k}' for r, k in stale[:10]) + (' ...' if len(stale) > 10 else ''))
+    return len(rows)
+
+
+def apply_web_pull(path, obs, db_web, local_web_roots, *, allow_empty=False):
+    """Make each root's local ``web`` entries the DB's (``stuck_list.write_origin``).
+
+    ``db_web`` is ``{root: {(q, r, c): Entry}}``; ``local_web_roots`` the roots whose
+    file already has physical web entries (so a root the web has cleared is cleared
+    locally too). An empty ``db_web`` while the file has web entries changes nothing
+    unless ``allow_empty``: a pull from an empty or wrong database must not wipe local
+    config. Returns ``(changed_roots, skipped_empty)``."""
+    from campfire_pipeline.nirspec import stuck_list
+    if not db_web and local_web_roots and not allow_empty:
+        return [], True
+    changed = []
+    for root in sorted(set(db_web) | set(local_web_roots)):
+        if stuck_list.write_origin(str(path), root, db_web.get(root, {}), 'web', obs_name=obs):
+            changed.append(root)
+    return changed, False
+
+
+def pull_stuck_shutters(obs, config, dry_run=False, stuck_file=None):
+    """Mirror the DB's web stuck-shutter rows into the local TOML's ``web`` entries.
+
+    Manual and auto entries are never touched, and a shutter the file has as manual
+    keeps it (manual > web). DB manual rows missing from the file (pushed from another
+    machine) are reported, not written: manual entries are edited by hand only.
     """
     from campfire.deploy import require_pipeline
-    require_pipeline("Pulling stuck shutters (byte-compatible TOML writer)")
-    from campfire_pipeline.nirspec.stuck_shutters import (
-        load_stuck_shutters_tagged, write_stuck_shutters_toml,
-    )
+    require_pipeline("Pulling stuck shutters (stuck_list writer)")
+    from campfire_pipeline.nirspec import stuck_list
 
-    stuck_file = _ref_dir(obs) / 'stuck_closed_shutters.toml'
-
-    client = get_supabase_client(config)
-    resp = (client.table('nirspec_source_review')
-            .select('exposure_root, source_id, stuck_shutters')
-            .eq('observation', obs)
-            .not_.is_('stuck_shutters', 'null')
-            .execute())
-    rows = resp.data or []
-
-    db_web = {}
-    n_empty = 0
-    for row in rows:
-        shutters = row.get('stuck_shutters') or []
-        if not shutters:
-            n_empty += 1
-            continue
-        db_web[(row['exposure_root'], str(row['source_id']))] = list(shutters)
-
-    existing_tagged = load_stuck_shutters_tagged(str(stuck_file))
-    data, provenance, stats = merge_pulled_stuck_shutters(existing_tagged, db_web)
+    stuck_file = Path(stuck_file or (_ref_dir(obs) / STUCK_FILE))
+    rows = fetch_stuck_rows(get_supabase_client(config), obs)
+    db_web = db_entries(rows, 'web')
+    physical, legacy = stuck_list.read_file(str(stuck_file))
+    local_web_roots = {root for root, ent in physical.items() if any(e.origin == 'web' for e in ent.values())}
+    n_legacy_web = sum(1 for ent in legacy.values() for _o, origin in ent.values() if origin == 'web')
+    resolved = (stuck_list.load_obs(_stuck_obs(obs, stuck_file)) if legacy
+                else stuck_list.resolve(physical, {}, {}))
+    missing_manual = [(r['exposure_root'], r['shutter']) for r in rows if r['origin'] == 'manual'
+                      and getattr(resolved.get(r['exposure_root'], {}).get(stuck_list.parse_key(r['shutter'])),
+                                  'origin', None) != 'manual']
 
     print(f"Observation: {obs}")
-    print(f"DB web stuck-shutter entries: {len(db_web)} ({n_empty} empty skipped)")
-    print(f"Merged: {stats['hand']} hand, {stats['web']} web, {stats['auto']} auto"
-          f" — {stats['hand_protected']} web overlays blocked by hand,"
-          f" {stats['web_kept']} web entries kept that the DB no longer has")
+    print(f"DB stuck-shutter rows: {sum(len(v) for v in db_web.values())} web, "
+          f"{len(rows) - sum(len(v) for v in db_web.values())} manual")
 
+    target = stuck_file
+    tmpdir = None
     if dry_run:
-        print(f"\nDry run — would write {stuck_file}")
-        return
+        tmpdir = tempfile.mkdtemp(prefix='stuck_pull_')
+        target = Path(tmpdir) / STUCK_FILE
+        if stuck_file.exists():
+            shutil.copyfile(stuck_file, target)
+    else:
+        stuck_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        changed, skipped = apply_web_pull(target, obs, db_web, local_web_roots)
+    finally:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
-    stuck_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp = str(stuck_file) + '.tmp'
-    write_stuck_shutters_toml(data, tmp, obs, provenance=provenance)
-    Path(tmp).replace(stuck_file)
-    print(f"\nWrote {stuck_file}")
+    if skipped:
+        print(f"  kept the local web entries of {len(local_web_roots)} root(s): the DB has no web rows "
+              f"for {obs} (a pull never wipes local config from an empty database)")
+    elif changed:
+        print(f"  {'Would update' if dry_run else 'Updated'} the web entries of {len(changed)} root(s) "
+              f"in {stuck_file}")
+    else:
+        print(f"  {stuck_file.name}: web entries already match the DB")
+    if n_legacy_web:
+        print(f"  {n_legacy_web} legacy web entr{'y' if n_legacy_web == 1 else 'ies'} (sid = [ordinals]  # web) "
+              f"still apply; remove them once the DB holds their physical rows")
+    if missing_manual:
+        print(f"  {len(missing_manual)} manual row(s) in the DB are not manual in the local file (not written): "
+              + ', '.join(f'{r} {k}' for r, k in missing_manual[:10]) + (' ...' if len(missing_manual) > 10 else ''))
+
+
+def stuck_snapshot(stuck_file, obs, obs_dir=None):
+    """The deploy-time snapshot of the stuck list for ``deployments.stuck_shutters``:
+    the resolved physical entries, in the TOML's own shape
+    ``{root: {"shutters": {"q2r195c64": {"origin", "stuck", "a"?, "note"?}}}}``, plus,
+    verbatim under ``{root: {sid: [ordinals]}}``, the legacy entries of roots whose
+    metafile could not be found (so nothing in the file is lost)."""
+    from campfire_pipeline.nirspec import stuck_list
+    physical, legacy = stuck_list.read_file(str(stuck_file))
+    sobs = _stuck_obs(obs, stuck_file, obs_dir)
+    metafiles = stuck_list.root_metafiles(sobs, roots=set(legacy)) if legacy else {}
+    resolved = stuck_list.resolve(physical, legacy, metafiles)
+    out = {}
+    for root in sorted(resolved):
+        table = {}
+        for key in sorted(resolved[root], key=lambda k: (k[2], k[1], k[0])):
+            e = resolved[root][key]
+            entry = {'origin': e.origin, 'stuck': e.stuck}
+            if e.a is not None:
+                entry['a'] = e.a
+            if e.note:
+                entry['note'] = e.note
+            table[stuck_list.shutter_key(*key)] = entry
+        if table:
+            out.setdefault(root, {})[stuck_list.SHUTTERS] = table
+    for root, entries in legacy.items():
+        if root in metafiles:
+            continue
+        for sid, (ordinals, _origin) in entries.items():
+            out.setdefault(root, {})[str(sid)] = list(ordinals)
+    return out
+
+
+def stuck_snapshot_to_toml(snapshot, obs_name):
+    """Render a ``deployments.stuck_shutters`` snapshot as a stuck_closed_shutters.toml
+    the pipeline reads: ``[<root>.shutters]`` inline tables for physical entries and
+    ``sid = [ordinals]`` lines for legacy ones (pre-physical snapshots are all legacy;
+    their provenance tags were not kept, so they read back as manual)."""
+    import tomlkit
+    from campfire_pipeline.nirspec.stuck_list import HEADER, SHUTTERS, _inline
+    doc = tomlkit.parse(HEADER.format(obs=obs_name))
+    for root in sorted(snapshot):
+        table = snapshot[root] or {}
+        rt = tomlkit.table(is_super_table=SHUTTERS in table and len(table) == 1)
+        for key in sorted((k for k in table if k != SHUTTERS), key=lambda k: int(k)):
+            rt[key] = [int(o) for o in table[key]]
+        if SHUTTERS in table:
+            st = tomlkit.table()
+            for skey, entry in table[SHUTTERS].items():
+                st[skey] = _inline(entry)
+            rt.add(SHUTTERS, st)
+        doc.add(root, rt)
+    return tomlkit.dumps(doc)
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +438,7 @@ def pull_bkg_overrides(obs, config, dry_run=False):
 
 
 # ---------------------------------------------------------------------------
-# Push: local TOMLs -> nirspec_source_review (on deploy)
+# Push: local TOMLs -> DB (on deploy)
 # ---------------------------------------------------------------------------
 
 def _fetch_review_rows(sb, obs, column):
@@ -350,24 +470,18 @@ def plan_review_push(local, db, column):
 
 
 def push_review_flags(sb, obs, dry_run=False):
-    """Push the local background overrides and hand/web stuck shutters of ``obs`` to
+    """Push the local review config of ``obs`` on deploy: background overrides to
     ``nirspec_source_review`` (upsert on (observation, exposure_root, source_id),
-    touching only the pushed column, so web notes and the other flag survive).
-    Auto-detected stuck shutters stay local: the pipeline regenerates them."""
-    from campfire_pipeline.nirspec.stuck_shutters import load_stuck_shutters_tagged
-
+    touching only that column, so web notes survive) and manual stuck shutters to
+    ``nirspec_stuck_shutters`` (``push_stuck_shutters``). Auto-detected stuck shutters
+    stay local: the pipeline regenerates them."""
     ref = _ref_dir(obs)
     bkg_local = {(root, sid): nodmap
                  for root, tab in read_bkg_overrides(ref / 'nodded_background_overrides.toml').items()
                  for sid, nodmap in tab.items()}
-    stuck_local = {k: list(sh) for k, (sh, tag) in
-                   load_stuck_shutters_tagged(str(ref / 'stuck_closed_shutters.toml')).items()
-                   if tag in ('hand', 'web')}
     n = 0
-    for column, local in (('bkg_overrides', bkg_local), ('stuck_shutters', stuck_local)):
-        if not local:
-            continue
-        rows = plan_review_push(local, _fetch_review_rows(sb, obs, column), column)
+    if bkg_local:
+        rows = plan_review_push(bkg_local, _fetch_review_rows(sb, obs, 'bkg_overrides'), 'bkg_overrides')
         for row in rows:
             row['observation'] = obs
         if rows and not dry_run:
@@ -375,8 +489,9 @@ def push_review_flags(sb, obs, dry_run=False):
                 (sb.table('nirspec_source_review')
                  .upsert(rows[i:i + 500], on_conflict='observation,exposure_root,source_id')
                  .execute())
-        print(f"  {'Would push' if dry_run else 'Pushed'} {len(rows)} local {column} "
+        print(f"  {'Would push' if dry_run else 'Pushed'} {len(rows)} local bkg_overrides "
               f"entr{'y' if len(rows) == 1 else 'ies'} to nirspec_source_review "
-              f"({len(local) - len(rows)} already in the DB)")
+              f"({len(bkg_local) - len(rows)} already in the DB)")
         n += len(rows)
+    n += push_stuck_shutters(sb, obs, dry_run=dry_run)
     return n

@@ -1,5 +1,42 @@
 import { describe, it, expect } from 'vitest';
-import { computeShutterRegions, shutterOverlayRegions } from './nirspec-shutters';
+import {
+  computeShutterRegions, shutterOverlayRegions,
+  parseShutterKey, slitletOrdinals, stuckOrdinals, nextWebMark, type StuckShutterMark,
+} from './nirspec-shutters';
+
+describe('physical shutter keys', () => {
+  it('parses the stuck_list key and rejects anything else', () => {
+    expect(parseShutterKey('q2r195c64')).toEqual({ q: 2, r: 195, c: 64 });
+    for (const bad of ['q5r1c1', 'q0r1c1', 'Q2r195c64', 'q2r195', 'q2r195c64 ', '']) {
+      expect(parseShutterKey(bad)).toBeNull();
+    }
+  });
+
+  it('numbers the slitlet by ascending column (the legacy ordinal frame)', () => {
+    const m = slitletOrdinals(['q2r195c65', 'q2r195c63', 'q2r195c64']);
+    expect([...m.entries()]).toEqual([[1, ['q2r195c63']], [2, ['q2r195c64']], [3, ['q2r195c65']]]);
+    // numeric, not lexicographic: c9 before c10
+    expect(slitletOrdinals(['q1r5c10', 'q1r5c9']).get(1)).toEqual(['q1r5c9']);
+  });
+
+  it('maps marks onto overlay ordinals; a not-stuck veto is not stuck', () => {
+    const keys = ['q2r195c63', 'q2r195c64', 'q2r195c65'];
+    const marks = new Map<string, StuckShutterMark>([
+      ['q2r195c63', { origin: 'web', stuck: true }],
+      ['q2r195c64', { origin: 'web', stuck: false }],
+      ['q2r195c65', { origin: 'manual', stuck: true }],
+      ['q3r1c1', { origin: 'web', stuck: true }],   // another source's shutter
+    ]);
+    expect(stuckOrdinals(keys, marks)).toEqual([1, 3]);
+  });
+
+  it('cycles web marks none → stuck → not stuck → none; manual is read-only', () => {
+    expect(nextWebMark(undefined)).toBe(true);
+    expect(nextWebMark({ origin: 'web', stuck: true })).toBe(false);
+    expect(nextWebMark({ origin: 'web', stuck: false })).toBeNull();
+    expect(nextWebMark({ origin: 'manual', stuck: true })).toBeUndefined();
+  });
+});
 
 // Oracle values computed directly from the pipeline's _compute_shutter_regions
 // (stuck_shutters.py) — the web port must match the *_nods.pdf geometry exactly.

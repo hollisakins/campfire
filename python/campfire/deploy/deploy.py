@@ -87,16 +87,29 @@ def _load_config_snapshot(obs_dir: Path, obs_name: str) -> dict | None:
         return None
 
 
-def _load_stuck_shutters(reference_obs_dir: Path) -> dict | None:
-    """Load the stuck closed shutters TOML, if it exists.
+def _load_stuck_shutters(reference_obs_dir: Path, obs_name: str | None = None,
+                         obs_dir: Path | None = None) -> dict | None:
+    """The stuck closed shutter list for the ``deployments.stuck_shutters`` snapshot,
+    if the TOML exists.
 
-    Issue #212 (PR-4): the reducer-decision TOML moved to
-    ``reference/nirspec/<obs>/stuck_closed_shutters.toml`` (was
-    ``products/<obs>/_<obs>_stuck_closed_shutters.toml``).
+    Issue #212 (PR-4): the reducer-decision TOML lives at
+    ``reference/nirspec/<obs>/stuck_closed_shutters.toml``. The snapshot is the
+    resolved physical list in the TOML's own shape
+    (``nirspec_flags.stuck_snapshot``: ``{root: {"shutters": {"q2r195c64": {origin,
+    stuck, ...}}}}``, legacy entries mapped through the metafiles), so it records
+    what the reduction applied and the provenance the ``# hand|web|auto`` comments
+    carried; without the pipeline package (or on a parse failure of that path) it
+    falls back to the raw file.
     """
     shutters_path = reference_obs_dir / "stuck_closed_shutters.toml"
     if not shutters_path.exists():
         return None
+    if obs_name:
+        try:
+            from campfire.deploy.nirspec_flags import stuck_snapshot
+            return stuck_snapshot(shutters_path, obs_name, obs_dir)
+        except Exception as e:  # noqa: BLE001 - the snapshot is provenance, never a deploy blocker
+            print(f"  stuck-shutter snapshot: resolving failed ({type(e).__name__}: {e}); storing the raw file")
     try:
         import tomllib
         with open(shutters_path, 'rb') as f:
@@ -694,7 +707,7 @@ def deploy_observation(
         jwst_version=summary.meta.get('jwst_version'),
         crds_context=summary.meta.get('crds_context'),
         config_snapshot=_load_config_snapshot(obs_dir, obs_name),
-        stuck_shutters=_load_stuck_shutters(resolve_reference_obs_dir(obs_name)),
+        stuck_shutters=_load_stuck_shutters(resolve_reference_obs_dir(obs_name), obs_name, obs_dir),
         # Real reduction time (earliest CMPFRTIM across products), not the
         # summary-build wall-clock — so re-running `summary` on unchanged
         # pixels no longer advances reduced_at.
@@ -1484,10 +1497,17 @@ def fetch_config(
     # 2. Stuck shutters. Issue #212 (PR-4): the pipeline reads this from
     # reference/nirspec/<obs>/stuck_closed_shutters.toml; reconstitute under that
     # bare basename (obs-prefixed here so a flat output dir stays unambiguous).
+    # Written in the stuck_list format ([<root>.shutters] inline tables; legacy
+    # ``sid = [ordinals]`` entries kept as they were snapshotted).
     if dep_data.get('stuck_shutters'):
         shutters_path = out / f"{obs_name}_stuck_closed_shutters.toml"
+        try:
+            from campfire.deploy.nirspec_flags import stuck_snapshot_to_toml
+            text = stuck_snapshot_to_toml(dep_data['stuck_shutters'], obs_name)
+        except ImportError:
+            text = toml.dumps(dep_data['stuck_shutters'])
         with open(shutters_path, 'w') as f:
-            toml.dump(dep_data['stuck_shutters'], f)
+            f.write(text)
         files_written.append(shutters_path)
 
     # 3. Observations.toml fragment

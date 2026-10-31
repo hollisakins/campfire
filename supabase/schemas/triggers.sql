@@ -258,6 +258,22 @@ END;
 $$;
 
 
+-- 5a. stamp_nirspec_stuck_shutter
+--     nirspec_stuck_shutters bookkeeping: updated_at on every write, and
+--     updated_by = the writing user (a service-role write, which carries no
+--     auth.uid(), keeps the value it sent).
+CREATE OR REPLACE FUNCTION public.stamp_nirspec_stuck_shutter() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    NEW.updated_by = COALESCE(auth.uid(), NEW.updated_by);
+    RETURN NEW;
+END;
+$$;
+
+
 -- 5b. enforce_spectra_dq_user_update_scope
 --     Mirrors enforce_object_user_update_scope for the spectra table.
 --     Non-admin users authenticated under `update_spectra_dq_by_access`
@@ -764,6 +780,11 @@ CREATE TRIGGER sync_photometry_object_trigger
   BEFORE INSERT OR UPDATE OF match_id, object_id ON public.photometry
   FOR EACH ROW EXECUTE FUNCTION public.sync_photometry_object();
 
+DROP TRIGGER IF EXISTS stamp_nirspec_stuck_shutter_trigger ON public.nirspec_stuck_shutters;
+CREATE TRIGGER stamp_nirspec_stuck_shutter_trigger
+  BEFORE INSERT OR UPDATE ON public.nirspec_stuck_shutters
+  FOR EACH ROW EXECUTE FUNCTION public.stamp_nirspec_stuck_shutter();
+
 DROP TRIGGER IF EXISTS bump_spectra_updated_at_trigger ON public.spectra;
 CREATE TRIGGER bump_spectra_updated_at_trigger
   BEFORE UPDATE OF
@@ -943,6 +964,7 @@ CREATE TRIGGER journal_sync_deletions_trigger
 -- ===========================================================================
 REVOKE ALL ON FUNCTION public.bump_object_version() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.bump_spectra_updated_at() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.stamp_nirspec_stuck_shutter() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.enforce_object_user_update_scope() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.enforce_profile_role_update_scope() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.enforce_spectra_dq_user_update_scope() FROM PUBLIC, anon;

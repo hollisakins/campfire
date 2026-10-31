@@ -533,11 +533,31 @@ export interface SpectrumExposure {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  // The source's slitlet as physical shutters "q<quadrant>r<row>c<column>" sorted by
+  // (column, row); deploy-populated from the metafile, null on older rows.
+  msa_shutters: string[] | null;
+}
+
+// One stuck-closed physical MSA shutter (nirspec_stuck_shutters), per exposure root.
+// origin 'manual' is pushed from the local TOML on deploy; the web writes 'web' only.
+// stuck=false vetoes the pipeline's own (auto) call.
+export interface NirspecStuckShutter {
+  id: number;
+  observation: string;
+  exposure_root: string;
+  shutter: string;
+  origin: 'manual' | 'web';
+  stuck: boolean;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 // Source-scoped editable review flags for the NIRSpec nods loop (P6). One row per
 // (observation, exposure_root, source_id). Both jsonb channels mirror the local
-// reference/nirspec/<obs>/ TOMLs 1:1: stuck_shutters is an ordinal list [1,2,3];
+// reference/nirspec/<obs>/ TOMLs 1:1: stuck_shutters is a legacy ordinal list [1,2,3]
+// (superseded by nirspec_stuck_shutters; no longer written by the web);
 // bkg_overrides is {nod: [bkg nods]} keyed by exposure-sequence number (e.g. {"3":[1]}).
 export interface NirspecSourceReview {
   id: number;

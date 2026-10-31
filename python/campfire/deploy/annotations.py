@@ -11,7 +11,10 @@ tracking. The files are local configuration too (hand-edited as well as pulled),
 so every materializer is local-first (``local_first``): a pull creates what is
 missing and never overwrites or deletes a local file or entry; a local entry
 that disagrees with the DB is kept and reported. Local config reaches the DB on
-deploy (``nirspec_flags.push_review_flags``).
+deploy (``nirspec_flags.push_review_flags``). The one exception is the ``web``
+entries of the stuck-shutter list, which mirror the DB's web rows (a mark cleared
+on the web is cleared locally; an empty DB clears nothing); manual entries there
+are local-first like everything else.
 """
 
 from __future__ import annotations
@@ -21,7 +24,8 @@ def pull_observation_annotations(obs_name: str, config: dict, *, dry_run: bool =
     """Materialize a NIRSpec observation's review annotations to reference/.
 
     Rate masks (``masks/*.reg``), stuck shutters
-    (``stuck_closed_shutters.toml``, hand > web > auto merge), and nodded
+    (``stuck_closed_shutters.toml``: the web entries mirror the DB, manual > web >
+    auto), and nodded
     background overrides (``nodded_background_overrides.toml``).
     """
     from campfire.deploy.nirspec_masks import pull_rate_masks

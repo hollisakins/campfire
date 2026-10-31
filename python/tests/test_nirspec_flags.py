@@ -1,18 +1,20 @@
-"""Unit tests for the P7 NIRSpec flag pull-back (design §4.3/§7).
+"""Unit tests for the NIRSpec flag round trip (design §4.3/§7).
 
-The pure serialization + authority-merge logic runs here (no DB). The cross-package
-provenance round-trip through the pipeline writer/reader is guarded by importorskip so
-it runs in CI (where campfire_pipeline is installed) and skips in the deploy-only dev
-container. The full DB SELECT → file write runs live against local Supabase in CI.
+The pure serialization / merge / plan logic runs here (no DB; FakePostgrest where a
+client is needed). The stuck-shutter half goes through
+``campfire_pipeline.nirspec.stuck_list`` and is guarded by importorskip, so it runs
+where the pipeline is installed and skips in the deploy-only dev container.
 """
+import pytest
 import toml
 
 from campfire.deploy.nirspec_flags import (
     merge_pulled_bkg_overrides,
     read_bkg_overrides,
-    merge_pulled_stuck_shutters,
     _serialize_bkg_overrides,
 )
+
+from .fakes import FakePostgrest
 
 
 # ---------------------------------------------------------------------------
@@ -48,96 +50,138 @@ def test_serialize_bkg_overrides_multi_nod_sorted():
 
 
 # ---------------------------------------------------------------------------
-# stuck-shutter authority merge (hand > web > auto)
+# stuck shutters: physical keys, nirspec_stuck_shutters <-> [<root>.shutters]
 # ---------------------------------------------------------------------------
 
-def test_merge_hand_protects_web():
-    existing = {("r", "1"): ([5], "hand")}
-    db_web = {("r", "1"): [2, 3]}
-    data, prov, stats = merge_pulled_stuck_shutters(existing, db_web)
-    # hand entry survives untouched; web overlay blocked
-    assert data["r"]["1"] == [5]
-    assert prov[("r", "1")] == "hand"
-    assert stats["hand_protected"] == 1
-    assert stats["web"] == 0
+ROOT = "jw09999001001_03101"
+ROOT2 = "jw09999001001_05101"
+
+LOCAL = f"""\
+# my notes
+[{ROOT}.shutters]
+"q2r195c64" = {{origin = "manual", stuck = true}}
+"q2r195c65" = {{origin = "web", stuck = true}}
+"q2r300c149" = {{origin = "manual", stuck = false, note = "blue stub"}}
+"q3r10c5" = {{origin = "auto", stuck = true, a = 0.061}}
+"""
 
 
-def test_merge_web_overlays_auto():
-    existing = {("r", "1"): ([9], "auto")}
-    db_web = {("r", "1"): [2]}
-    data, prov, stats = merge_pulled_stuck_shutters(existing, db_web)
-    assert data["r"]["1"] == [2]
-    assert prov[("r", "1")] == "web"
-    assert stats["web"] == 1
+@pytest.fixture
+def stuck_list():
+    return pytest.importorskip("campfire_pipeline.nirspec.stuck_list")
 
 
-def test_merge_web_kept_when_absent_from_db():
-    # A prior web entry the DB no longer flags is kept: a pull never deletes local config.
-    existing = {("r", "1"): ([2], "web")}
-    db_web = {}
-    data, prov, stats = merge_pulled_stuck_shutters(existing, db_web)
-    assert data["r"]["1"] == [2] and prov[("r", "1")] == "web"
-    assert stats["web_kept"] == 1
+def _row(root, shutter, origin, stuck=True, note=None, id=None):
+    return {"id": id, "observation": "obs", "exposure_root": root, "shutter": shutter,
+            "origin": origin, "stuck": stuck, "note": note}
 
 
-def test_merge_hand_and_auto_retained_when_absent_from_db():
-    existing = {("r", "1"): ([5], "hand"), ("r", "2"): ([7], "auto")}
-    db_web = {}
-    data, prov, stats = merge_pulled_stuck_shutters(existing, db_web)
-    assert data["r"]["1"] == [5] and prov[("r", "1")] == "hand"
-    assert data["r"]["2"] == [7] and prov[("r", "2")] == "auto"
+def test_plan_stuck_push_manual_rows_only_never_deletes(stuck_list):
+    from campfire.deploy.nirspec_flags import plan_stuck_push
+    E = stuck_list.Entry
+    local = {ROOT: {(2, 195, 64): E("manual"), (2, 300, 149): E("manual", stuck=False, note="blue stub"),
+                    (1, 4, 7): E("manual")}}
+    db = [_row(ROOT, "q2r195c64", "manual", note="backfill"),        # same (note aside): not resent
+          _row(ROOT, "q2r300c149", "web", stuck=True),               # web row: manual outranks it
+          _row(ROOT, "q4r1c1", "manual"),                            # no local entry: kept, reported
+          _row(ROOT, "q4r1c2", "web")]                               # web: none of the push's business
+    rows, stale = plan_stuck_push(local, db)
+    assert rows == [
+        {"exposure_root": ROOT, "shutter": "q1r4c7", "origin": "manual", "stuck": True, "note": None},
+        {"exposure_root": ROOT, "shutter": "q2r300c149", "origin": "manual", "stuck": False, "note": "blue stub"},
+    ]
+    assert stale == [(ROOT, "q4r1c1")]
+    # idempotent once applied
+    applied = db[:1] + [dict(r, observation="obs") for r in rows] + db[2:]
+    assert plan_stuck_push(local, applied)[0] == []
 
 
-def test_merge_untagged_legacy_treated_as_hand():
-    # load_stuck_shutters_tagged classifies untagged entries as hand (never dropped).
-    existing = {("r", "1"): ([4], "hand")}  # what the loader returns for an untagged line
-    db_web = {("r", "1"): [1]}
-    data, prov, stats = merge_pulled_stuck_shutters(existing, db_web)
-    assert data["r"]["1"] == [4]  # hand wins
-    assert stats["hand_protected"] == 1
+def test_push_stuck_shutters_sends_manual_never_auto_or_web(stuck_list, tmp_path):
+    from campfire.deploy.nirspec_flags import push_stuck_shutters
+    f = tmp_path / "stuck_closed_shutters.toml"
+    f.write_text(LOCAL)
+    sb = FakePostgrest({"nirspec_stuck_shutters": []})
+    n = push_stuck_shutters(sb, "obs", stuck_file=f, obs_dir=tmp_path)
+    assert n == 2
+    got = {(r["shutter"], r["origin"], r["stuck"]) for r in sb.rows("nirspec_stuck_shutters")}
+    assert got == {("q2r195c64", "manual", True), ("q2r300c149", "manual", False)}
+    assert all(r["observation"] == "obs" for r in sb.rows("nirspec_stuck_shutters"))
+    # rerun: nothing to send
+    assert push_stuck_shutters(sb, "obs", stuck_file=f, obs_dir=tmp_path) == 0
 
 
-def test_merge_fresh_web_entry_added():
-    data, prov, stats = merge_pulled_stuck_shutters({}, {("r", "3"): [1, 2]})
-    assert data["r"]["3"] == [1, 2]
-    assert prov[("r", "3")] == "web"
-    assert stats["web"] == 1
+def test_apply_web_pull_mirrors_web_entries_only(stuck_list, tmp_path):
+    from campfire.deploy.nirspec_flags import apply_web_pull
+    E = stuck_list.Entry
+    f = tmp_path / "stuck_closed_shutters.toml"
+    f.write_text(LOCAL)
+    db_web = {ROOT: {(2, 195, 64): E("web"),                 # manual locally: left alone
+                     (2, 10, 3): E("web", stuck=False)},     # new veto
+              ROOT2: {(1, 1, 1): E("web")}}                  # new root
+    changed, skipped = apply_web_pull(f, "obs", db_web, {ROOT})
+    assert not skipped and changed == [ROOT, ROOT2]
+    phys, _ = stuck_list.read_file(str(f))
+    assert phys[ROOT][(2, 195, 64)] == E("manual")                         # manual kept
+    assert (2, 195, 65) not in phys[ROOT]                                  # cleared on the web
+    assert phys[ROOT][(2, 10, 3)] == E("web", stuck=False)
+    assert phys[ROOT][(3, 10, 5)].origin == "auto"                         # auto untouched
+    assert phys[ROOT2] == {(1, 1, 1): E("web")}
+    assert f.read_text().startswith("# my notes")                          # comments kept
+    # idempotent
+    assert apply_web_pull(f, "obs", db_web, {ROOT, ROOT2}) == ([], False)
 
 
-# ---------------------------------------------------------------------------
-# Cross-package provenance round-trip (needs the pipeline writer/reader)
-# ---------------------------------------------------------------------------
+def test_apply_web_pull_empty_db_never_wipes(stuck_list, tmp_path):
+    from campfire.deploy.nirspec_flags import apply_web_pull
+    f = tmp_path / "stuck_closed_shutters.toml"
+    f.write_text(LOCAL)
+    assert apply_web_pull(f, "obs", {}, {ROOT}) == ([], True)
+    assert f.read_text() == LOCAL
 
-def test_provenance_roundtrip_through_pipeline(tmp_path):
-    ss = __import__("pytest").importorskip("campfire_pipeline.nirspec.stuck_shutters")
 
-    path = str(tmp_path / "stuck_closed_shutters.toml")
-    data = {"r": {"1": [5], "2": [3], "3": [1]}}
-    provenance = {("r", "1"): "hand", ("r", "2"): "web", ("r", "3"): "auto"}
-    ss.write_stuck_shutters_toml(data, path, "obs", provenance=provenance)
+def test_pull_stuck_shutters_end_to_end(stuck_list, monkeypatch, tmp_path, capsys):
+    import campfire.deploy.nirspec_flags as nf
+    f = tmp_path / "stuck_closed_shutters.toml"
+    f.write_text(LOCAL)
+    monkeypatch.setattr(nf, "_ref_dir", lambda obs: tmp_path)
+    sb = FakePostgrest({"nirspec_stuck_shutters": [
+        _row(ROOT, "q2r195c65", "web", id=1), _row(ROOT, "q1r2c3", "web", stuck=False, id=2),
+        _row(ROOT, "q4r9c9", "manual", id=3)]})
+    monkeypatch.setattr(nf, "get_supabase_client", lambda config: sb)
 
-    # tags survive a raw re-read
-    tagged = ss.load_stuck_shutters_tagged(path)
-    assert tagged[("r", "1")] == ([5], "hand")
-    assert tagged[("r", "2")] == ([3], "web")
-    assert tagged[("r", "3")] == ([1], "auto")
+    nf.pull_stuck_shutters("obs", config={}, dry_run=True)
+    assert f.read_text() == LOCAL                                          # dry run: untouched
+    nf.pull_stuck_shutters("obs", config={})
+    phys, _ = stuck_list.read_file(str(f))
+    assert phys[ROOT][(1, 2, 3)] == stuck_list.Entry("web", stuck=False)
+    assert phys[ROOT][(2, 195, 65)] == stuck_list.Entry("web")
+    out = capsys.readouterr().out
+    assert "q4r9c9" in out                                                 # DB manual not local: reported
+    assert sb.upserts == [] and sb.deletes == []                           # a pull never writes the DB
 
-    # ...and a subsequent auto-detect rewrite preserves the hand/web tags while
-    # tagging a freshly-detected entry `auto` (the anti-collapse guarantee).
-    existing_plain = {r: {s: sh for s, (sh, _t) in
-                          {k[1]: v for k, v in tagged.items() if k[0] == r}.items()}
-                      for r in {k[0] for k in tagged}}
-    detected = {"r": {4: [2]}}
-    merged, updated = ss.merge_stuck_shutters(existing_plain, detected)
-    prov2 = {k: t for k, (_sh, t) in tagged.items()}
-    for (root, sid) in updated:
-        prov2[(root, str(sid))] = "auto"
-    ss.write_stuck_shutters_toml(merged, path, "obs", provenance=prov2)
 
-    tagged2 = ss.load_stuck_shutters_tagged(path)
-    assert tagged2[("r", "1")][1] == "hand"
-    assert tagged2[("r", "2")][1] == "web"
-    assert tagged2[("r", "4")] == ([2], "auto")
+def test_stuck_snapshot_roundtrip(stuck_list, tmp_path):
+    from campfire.deploy.nirspec_flags import stuck_snapshot, stuck_snapshot_to_toml
+    f = tmp_path / "stuck_closed_shutters.toml"
+    # a legacy entry of a root without a metafile is kept verbatim
+    f.write_text(LOCAL + f"\n[{ROOT2}]\n    1234 = [1, 3]  # hand\n")
+    snap = stuck_snapshot(f, "obs", obs_dir=tmp_path)
+    assert snap[ROOT]["shutters"]["q3r10c5"] == {"origin": "auto", "stuck": True, "a": 0.061}
+    assert snap[ROOT]["shutters"]["q2r300c149"] == {"origin": "manual", "stuck": False, "note": "blue stub"}
+    assert snap[ROOT2] == {"1234": [1, 3]}
+    out = tmp_path / "out.toml"
+    out.write_text(stuck_snapshot_to_toml(snap, "obs"))
+    phys, legacy = stuck_list.read_file(str(out))
+    phys0, _ = stuck_list.read_file(str(f))
+    assert phys == phys0
+    assert legacy == {ROOT2: {1234: ([1, 3], "manual")}}
+
+
+def test_stuck_snapshot_to_toml_reads_pre_physical_snapshots(stuck_list, tmp_path):
+    from campfire.deploy.nirspec_flags import stuck_snapshot_to_toml
+    out = tmp_path / "old.toml"
+    out.write_text(stuck_snapshot_to_toml({ROOT: {"12": [2], "7": [1, 3]}}, "obs"))
+    assert stuck_list.read_file(str(out)) == ({}, {ROOT: {7: ([1, 3], "manual"), 12: ([2], "manual")}})
 
 
 # ---------------------------------------------------------------------------

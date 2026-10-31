@@ -1083,7 +1083,8 @@ CREATE TABLE IF NOT EXISTS "public"."spectrum_exposures" (
     "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
     "notes" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "msa_shutters" "text"[]
 );
 
 
@@ -1108,6 +1109,8 @@ ALTER SEQUENCE "public"."spectrum_exposures_id_seq" OWNED BY "public"."spectrum_
 COMMENT ON TABLE "public"."spectrum_exposures" IS 'NIRSpec nods-renderer grid (review loop P4). One row per canonical per-source spectrum-exposure (observation, exposure_root, nod, detector, source_id); deploy-populated, admin-only. exp_group is the pipeline CFEXPGRP grouping. Revived+revised from the epic-#210-B2 scaffold (dropped the spectra FK; re-keyed to observations.name).';
 
 COMMENT ON COLUMN "public"."spectrum_exposures"."exposure_root" IS 'Pipeline 2-token root (e.g. jw07076020001_04101), with the exposure token broken out as `nod`. NB: DIFFERENT semantics from nirspec_rate_exposures.exposure_root (3 tokens, detector-stripped) — deliberate, matching observation.group_files and the nods grid key.';
+
+COMMENT ON COLUMN "public"."spectrum_exposures"."msa_shutters" IS 'Physical shutters "q<quadrant>r<row>c<column>" of the source''s slitlet in this exposure root (every dither point of its MSA configuration), from the original metafile''s SHUTTER_INFO as stage 2a edits it for the source (MetaFile.rows_for_source); sorted by (column, row), so the k-th distinct column is the legacy stuck-shutter ordinal k. Deploy-populated; NULL for rows deployed before the column or when no metafile was found.';
 
 COMMENT ON COLUMN "public"."spectrum_exposures"."exp_group" IS 'Pipeline-computed exposure-group id (subpixel-dither), read from the canonical FITS CFEXPGRP header card. One value per group, spanning nods+detectors; a render/grouping attribute, NOT part of the unique key. Nullable (files predating the P4 stamp).';
 
@@ -1156,6 +1159,61 @@ ALTER SEQUENCE "public"."nirspec_source_review_id_seq" OWNED BY "public"."nirspe
 
 
 COMMENT ON TABLE "public"."nirspec_source_review" IS 'Editable flag channel for the NIRSpec nods review loop (P6). One row per (observation, exposure_root, source_id); admin-only, web-editable, NOT deployed. stuck_shutters/bkg_overrides jsonb mirror the reference/nirspec/<obs>/ TOMLs 1:1 for the P7 pull-back.';
+
+
+-- nirspec_stuck_shutters: the stuck-closed shutter list keyed by PHYSICAL MSA
+-- shutter (2026-10-30). One row per (observation, exposure_root, shutter):
+-- exposure_root is the 2-token root (MSA configuration, jw07076001001_05101; same
+-- semantics as nirspec_source_review.exposure_root) and shutter the metafile's
+-- "q{shutter_quadrant}r{shutter_row}c{shutter_column}". Mirrors the
+-- [<root>.shutters] tables of reference/nirspec/<obs>/stuck_closed_shutters.toml
+-- (campfire_pipeline.nirspec.stuck_list) for the manual and web origins only:
+-- auto calls stay local (the pipeline regenerates them). stuck = false is a veto
+-- of an auto call. Supersedes nirspec_source_review.stuck_shutters (per-source
+-- ordinal lists), which stays until the backfill
+-- (scripts/backfill_stuck_shutters_physical.py) is run and checked.
+-- Admin-only (RLS), web-editable (origin 'web'); deploy pushes local manual entries.
+CREATE TABLE IF NOT EXISTS "public"."nirspec_stuck_shutters" (
+    "id" integer NOT NULL,
+    "observation" "text" NOT NULL,
+    "exposure_root" "text" NOT NULL,
+    "shutter" "text" NOT NULL,
+    "origin" "text" NOT NULL,
+    "stuck" boolean NOT NULL,
+    "note" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_by" "uuid",
+    CONSTRAINT "nirspec_stuck_shutters_shutter_check" CHECK (("shutter" ~ '^q[1-4]r[0-9]+c[0-9]+$'::"text")),
+    CONSTRAINT "nirspec_stuck_shutters_origin_check" CHECK (("origin" = ANY (ARRAY['manual'::"text", 'web'::"text"])))
+);
+
+
+ALTER TABLE "public"."nirspec_stuck_shutters" OWNER TO "postgres";
+
+
+CREATE SEQUENCE IF NOT EXISTS "public"."nirspec_stuck_shutters_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."nirspec_stuck_shutters_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."nirspec_stuck_shutters_id_seq" OWNED BY "public"."nirspec_stuck_shutters"."id";
+
+
+COMMENT ON TABLE "public"."nirspec_stuck_shutters" IS 'Stuck-closed NIRSpec MSA shutters, one row per (observation, exposure_root, physical shutter "q<quadrant>r<row>c<column>"). origin manual (pushed from the local stuck_closed_shutters.toml on deploy) or web (the nods review); auto calls stay local. stuck=false vetoes an auto call. Precedence manual > web > auto. Admin-only; supersedes nirspec_source_review.stuck_shutters.';
+
+COMMENT ON COLUMN "public"."nirspec_stuck_shutters"."exposure_root" IS 'Pipeline 2-token root = one MSA configuration (e.g. jw07076001001_05101); same semantics as nirspec_source_review.exposure_root. A stuck shutter never carries over to another root.';
+
+COMMENT ON COLUMN "public"."nirspec_stuck_shutters"."shutter" IS 'Physical shutter key q{shutter_quadrant}r{shutter_row}c{shutter_column} from the MSA metafile SHUTTER_INFO (unpadded).';
+
+COMMENT ON COLUMN "public"."nirspec_stuck_shutters"."updated_by" IS 'auth.uid() of the last writer (stamped by trigger); NULL for service-role writes.';
 
 
 -- storage_objects: the keystone shadow index of every object in cloud storage
@@ -2524,6 +2582,8 @@ ALTER TABLE ONLY "public"."spectrum_exposures" ALTER COLUMN "id" SET DEFAULT "ne
 
 ALTER TABLE ONLY "public"."nirspec_source_review" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nirspec_source_review_id_seq"'::"regclass");
 
+ALTER TABLE ONLY "public"."nirspec_stuck_shutters" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nirspec_stuck_shutters_id_seq"'::"regclass");
+
 
 
 ALTER TABLE ONLY "public"."storage_objects" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."storage_objects_id_seq"'::"regclass");
@@ -2697,6 +2757,12 @@ ALTER TABLE ONLY "public"."nirspec_source_review"
 
 ALTER TABLE ONLY "public"."nirspec_source_review"
     ADD CONSTRAINT "nirspec_source_review_unique" UNIQUE ("observation", "exposure_root", "source_id");
+
+ALTER TABLE ONLY "public"."nirspec_stuck_shutters"
+    ADD CONSTRAINT "nirspec_stuck_shutters_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "public"."nirspec_stuck_shutters"
+    ADD CONSTRAINT "nirspec_stuck_shutters_unique" UNIQUE ("observation", "exposure_root", "shutter");
 
 ALTER TABLE ONLY "public"."deploy_events"
     ADD CONSTRAINT "deploy_events_pkey" PRIMARY KEY ("id");
@@ -3363,6 +3429,11 @@ REVOKE ALL ON TABLE "public"."nirspec_source_review" FROM "anon";
 GRANT ALL ON TABLE "public"."nirspec_source_review" TO "authenticated";
 GRANT ALL ON TABLE "public"."nirspec_source_review" TO "service_role";
 
+-- nirspec_stuck_shutters is admin-only (RLS); not granted to anon.
+REVOKE ALL ON TABLE "public"."nirspec_stuck_shutters" FROM "anon";
+GRANT ALL ON TABLE "public"."nirspec_stuck_shutters" TO "authenticated";
+GRANT ALL ON TABLE "public"."nirspec_stuck_shutters" TO "service_role";
+
 
 -- deploy_events is an admin/internal audit log (RLS admin-only); not granted to anon.
 REVOKE ALL ON TABLE "public"."deploy_events" FROM "anon";
@@ -3584,6 +3655,10 @@ GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "service_role";
 REVOKE ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" TO "service_role";
+
+REVOKE ALL ON SEQUENCE "public"."nirspec_stuck_shutters_id_seq" FROM "anon";
+GRANT ALL ON SEQUENCE "public"."nirspec_stuck_shutters_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."nirspec_stuck_shutters_id_seq" TO "service_role";
 
 
 REVOKE ALL ON SEQUENCE "public"."storage_objects_id_seq" FROM "anon";

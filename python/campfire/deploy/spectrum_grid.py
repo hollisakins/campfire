@@ -81,13 +81,62 @@ def read_spectrum_metadata(path: Path) -> tuple[int | None, str | None, int | No
         return None, None, None, None
 
 
+def slitlet_shutter_keys(rows) -> list[str]:
+    """The physical shutter keys ``q<quadrant>r<row>c<column>`` of a source's
+    SHUTTER_INFO rows (``MetaFile.rows_for_source``: every dither point), distinct,
+    sorted by (column, row, quadrant): the k-th distinct column is the legacy
+    stuck-shutter ordinal k (``stuck_list.source_columns``)."""
+    from campfire_pipeline.nirspec import stuck_list
+    keys = sorted(set(stuck_list.row_keys(rows)), key=lambda k: (k[2], k[1], k[0]))
+    return [stuck_list.shutter_key(*k) for k in keys]
+
+
+def slitlet_shutter_map(obs_dir: Path, pairs) -> dict[tuple[str, int], list[str]]:
+    """``{(exposure_root, source_id): [shutter keys]}`` for the given pairs, read from
+    each root's original metafile (``stuck_list.root_metafiles``: the first rate file's
+    ``OGMETFL`` / ``MSAMETFL``, ``MSAMETID``). Pairs whose root has no metafile, or
+    whose source the metafile does not hold, are left out; without the pipeline
+    package the map is empty (the column stays NULL)."""
+    from types import SimpleNamespace
+    try:
+        from campfire_pipeline.nirspec import stuck_list
+    except ImportError:
+        return {}
+    from campfire.deploy.discover import discover_rate_files
+
+    pairs = set(pairs)
+    roots = {root for root, _ in pairs}
+    if not roots:
+        return {}
+    rates = [str(p) for p in discover_rate_files(Path(obs_dir))]
+    metafiles = stuck_list.root_metafiles(
+        SimpleNamespace(rate_files=rates, workspace_dir=str(obs_dir)), roots=roots)
+    out = {}
+    for root, sid in sorted(pairs):
+        mf = metafiles.get(root)
+        if mf is None:
+            continue
+        try:
+            out[(root, sid)] = slitlet_shutter_keys(mf.rows_for_source(int(sid)))
+        except (RuntimeError, KeyError, ValueError):
+            continue
+    return out
+
+
 def build_spectrum_exposure_records(
     exposure_files: list[Path], *, observation: str, scope: Scope,
+    shutter_map: dict[tuple[str, int], list[str]] | None = None,
 ) -> list[dict]:
-    """One grid record per canonical file (pre-partition; identity + render columns)."""
+    """One grid record per canonical file (pre-partition; identity + render columns).
+
+    ``msa_shutters`` is the source's slitlet in physical shutter keys
+    (``slitlet_shutter_map``, computed from the files' directory unless given)."""
+    parsed = [(path, parse_spectrum_exposure_filename(path.name)) for path in exposure_files]
+    if shutter_map is None:
+        shutter_map = (slitlet_shutter_map(exposure_files[0].parent, {(p[0], p[3]) for _, p in parsed})
+                       if exposure_files else {})
     records = []
-    for path in exposure_files:
-        exposure_root, nod, detector, source_id = parse_spectrum_exposure_filename(path.name)
+    for path, (exposure_root, nod, detector, source_id) in parsed:
         exp_group, grating, width, height = read_spectrum_metadata(path)
         records.append({
             "observation": observation,
@@ -103,13 +152,14 @@ def build_spectrum_exposure_records(
             "storage_key": storage_key(
                 "nirspec_spectrum_exposure", scope, path.name, scheme=KeyScheme.CANONICAL),
             "stage": "cal",
+            "msa_shutters": shutter_map.get((exposure_root, source_id)),
         })
     return records
 
 
 # Columns deploy owns on a re-register (everything else is web-owned triage).
 _IDENTITY_COLS = ("observation", "exposure_root", "nod", "detector", "source_id", "filename", "stage")
-_RENDER_COLS = ("exp_group", "grating", "image_width", "image_height", "storage_key")
+_RENDER_COLS = ("exp_group", "grating", "image_width", "image_height", "storage_key", "msa_shutters")
 
 
 def partition_spectrum_records(
