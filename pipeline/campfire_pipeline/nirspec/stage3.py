@@ -1027,7 +1027,7 @@ CONTAM_1D = ('report', 'subtract')
 
 def contam_1d_settings(sc):
     """The 1-D other-light knobs of ``[nirspec.stage3]`` (``_profile_fit_columns``)."""
-    return dict(contam_1d=str(sc.get('contam_1d', 'subtract')).lower(),
+    return dict(contam_1d=str(sc.get('contam_1d', 'report')).lower(),
                 contam_1d_min_sigma=float(sc.get('contam_1d_min_sigma', 3.0)))
 
 
@@ -1134,7 +1134,7 @@ def extraction_cards(choice, reason, contam_state):
     return h
 
 
-def choose_extraction(have_contam, any_predicted, csig, contam_1d='subtract', min_sigma=3.0):
+def choose_extraction(have_contam, any_predicted, csig, contam_1d='report', min_sigma=3.0):
     """(EXTRACT, EXTRWHY) of a product whose profile fit ran: the profile extraction with
     the predicted other light subtracted when the prediction exceeds ``min_sigma`` times
     the noise of the integrated flux (``PFCONSIG``) and ``contam_1d`` is 'subtract',
@@ -1164,7 +1164,7 @@ def best_spectrum(choice, prof, prof_err, contam, box, box_err):
 
 
 def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, rows='aperture',
-                         model_rows_frac=0.02, contam_1d='subtract', contam_1d_min_sigma=3.0):
+                         model_rows_frac=0.02, contam_1d='report', contam_1d_min_sigma=3.0):
     """Extraction of the s2d with the profile-fit 2D profile, and the choice of the best
     spectrum.
 
@@ -1321,7 +1321,7 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
 
 
 def _combined_profile_fit(prof, groups_pf, exposure_times, common_wave, fnu_prof, fnu_prof_err,
-                          contam_1d='subtract', contam_1d_min_sigma=3.0):
+                          contam_1d='report', contam_1d_min_sigma=3.0):
     """The profile-fit columns and cards of a 1-D combined product.
 
     prof : the groups' ``fnu_prof`` (``per_eg_data['prof']``); groups_pf : per group its

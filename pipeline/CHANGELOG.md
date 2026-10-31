@@ -195,7 +195,8 @@ Release procedure: edit the `## Unreleased` section below, then run
   chain (own fit / PRISM shape / default; `profile_chain.py`). Other slitlets' light is
   predicted in one pass from every source's pass-1 spectrum over per-exposure trace maps
   (`trace_overlap.py`, `profile_contam.py`), masked or subtracted for the shape fit and
-  subtracted in 1-D when above `contam_1d_min_sigma` (`profile_decontam`); a gated joint
+  reported in 1-D as `fnu_contam`; `fnu` is not contamination-subtracted by default
+  (`contam_1d = "report"`; `"subtract"` opts in above `contam_1d_min_sigma`); a gated joint
   solve of strongly coupled groups (`contam_joint`) is off by default. The maps name each
   slitlet by its source at every dither point (a source nodded out of a short slitlet no
   longer meets its own slitlet as a stranger) and leave out stuck-closed shutters; every

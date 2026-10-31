@@ -302,9 +302,9 @@ def test_contam2d_fraction_recovers_injected_contaminant(tmp_path):
     m = S3._profile_fit_columns(str(path), sci_uJy.copy(), err, np.zeros((ny, nx), bool), 12, 18,
                                 np.linspace(1, 5, nx), rows='model', contam_1d='report')
     np.testing.assert_allclose(m['columns']['fnu_prof'][0], 10.0, rtol=1e-6)
-    # subtract (default): the best spectrum is the decontaminated flux
+    # subtract (opt-in): the best spectrum is the decontaminated flux
     s = S3._profile_fit_columns(str(path), sci_uJy.copy(), err, np.zeros((ny, nx), bool), 12, 18,
-                                np.linspace(1, 5, nx), rows='aperture')
+                                np.linspace(1, 5, nx), rows='aperture', contam_1d='subtract')
     assert (s['choice'], s['reason']) == ('profile_decontam', 'contam_significant') and s['header']['PFCONSIG'] > 3
     cs = s['columns']
     fnu, fnu_err = S3.best_spectrum(s['choice'], cs['fnu_prof'][0], cs['fnu_prof_err'][0], cs['fnu_contam'][0],
@@ -345,7 +345,7 @@ def test_insignificant_prediction_is_not_subtracted(tmp_path):
     fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(prof / 1e12, name='PROF2D'),
                   fits.ImageHDU(contam, name='CONTAM2D')]).writeto(path)
     out = S3._profile_fit_columns(str(path), 10.0 * prof, np.full((ny, nx), 0.01), np.zeros((ny, nx), bool), 12, 18,
-                                  np.linspace(1, 5, nx))
+                                  np.linspace(1, 5, nx), contam_1d='subtract')
     assert (out['choice'], out['reason']) == ('profile', 'contam_insignificant')
     assert out['header']['PFCONSIG'] < 3
     c = out['columns']['fnu_contam'][0]

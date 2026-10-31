@@ -200,8 +200,8 @@
     contam_dominance_min_clean = 0.5         # pixels: less clean main shutter than this
     contam_pair_ratio = 3.0                  # similar-brightness pair flag within 1/r..r
     contam_pair_min_frac = 0.3               # and the contaminant's light >= this x the target's in its extraction
-    contam_1d = "subtract"                   # fnu: "subtract" the predicted other light (fnu_prof - fnu_contam,
-                                             # EXTRACT = profile_decontam) | "report" (fnu = fnu_prof)
+    contam_1d = "report"                     # fnu: "report" (fnu = fnu_prof; users subtract fnu_contam themselves,
+                                             # 2026-10-30) | "subtract" (fnu_prof - fnu_contam, EXTRACT = profile_decontam)
     contam_1d_min_sigma = 3.0                # subtract only when the prediction exceeds this x the integrated noise
                                              # (vs PRISM: helps above 3, neutral at 1-3; round 3)
     # Joint solve of strongly coupled overlap groups (prototype, profile_joint; off by default)
