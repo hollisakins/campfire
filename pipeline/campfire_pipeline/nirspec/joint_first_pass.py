@@ -162,6 +162,7 @@ class MemberCache:
         self.is_prism = is_prism
         self.size = size
         self._m = OrderedDict()
+        self._shape = {}                        # sid -> (shape, label, eoff): kept when a member is evicted
 
     def get(self, sid):
         sid = int(sid)
@@ -181,13 +182,16 @@ class MemberCache:
                                   science=set(t['science']))
         cfg = self.cfg
         M = PF.ProfileModel(exps, chromatic=True, priors=cfg.priors, bounds=cfg.bounds)
-        prism = (CT.read_prism_shape(self.workspace, t['prism_product'])
-                 if (not self.is_prism and t.get('prism_product')) else None)
-        shape, src = shape_for(exps, M, cfg, self.is_prism, prism)
-        R = PF.fit_fixed(model=M, shape=shape, fit_eoff=True)
+        if sid not in self._shape:
+            prism = (CT.read_prism_shape(self.workspace, t['prism_product'])
+                     if (not self.is_prism and t.get('prism_product')) else None)
+            shape, src = shape_for(exps, M, cfg, self.is_prism, prism)
+            R = PF.fit_fixed(model=M, shape=shape, fit_eoff=True)
+            self._shape[sid] = (shape, src, np.asarray(R.eoff, float))
+        shape, src, eoff = self._shape[sid]
         m = PJ.Member(sid=sid, product=t['product'], exps=exps, model=M,
                       p=PF.shape_vector(shape, M.c_prior, M.priors.width_median),
-                      eoff=np.asarray(R.eoff, float), shape_src=src, workspace=self.workspace)
+                      eoff=eoff.copy(), shape_src=src, workspace=self.workspace)
         m.cal = {j: CT.calibration(e, self.workspace) for j, e in enumerate(exps)}
         PJ.basis_frames(m)
         return m
@@ -320,14 +324,23 @@ def signature(stage_config, ids):
     return CT._signature(dict(st, joint=JOINT_PASS_VERSION, members=','.join(str(s) for s in ids)))
 
 
-def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=0.9):
+def _paths(workspace, product, pass1_dir):
+    """(pass-1 file, missing-reason file) of a product; under ``pass1_dir`` when given
+    (validation runs that must not touch the workspace)."""
+    if pass1_dir:
+        return (os.path.join(pass1_dir, f'{product}_pass1.npz'),
+                os.path.join(pass1_dir, f'{product}_pass1_missing.txt'))
+    return CT.pass1_path(workspace, product), CT.missing_path(workspace, product)
+
+
+def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=0.9, pass1_dir=None):
     """Solve one target's neighbourhood ``ids`` (target first) and write its pass-1 file.
     Returns the path, or None (logged) when the target cannot be loaded."""
     from campfire_pipeline.common.io import log
     from campfire_pipeline.nirspec import trace_overlap as TO
 
     t = cache.tasks[int(sid)]
-    out = CT.pass1_path(cache.workspace, t['product'])
+    out, missing = _paths(cache.workspace, t['product'], pass1_dir)
     groups = t['groups']
     keys = {CT.exposure_key(f) for g in groups for f in g}
     mpaths = [TO.trace_map_path(os.path.join(cache.workspace, CT.MAPS_SUBDIR), f'{k}_rate.fits') for k in sorted(keys)]
@@ -340,19 +353,19 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
     except PF.ProfileFitFallback as e:
         log(f"{t['product']}: no joint first pass ({e.reason}: {e})")
         os.makedirs(os.path.dirname(out), exist_ok=True)
-        with open(CT.missing_path(cache.workspace, t['product']), 'w') as f:
+        with open(missing, 'w') as f:
             f.write(f'{e.reason}: {e}\n')
         return None
     sol = solve_target(members, degenerate=degenerate)
     P1 = pass1_of(members[0], sol, {k: maps[k] for k in keys if k in maps}, stage_config)
     CT.write_pass1(out, P1, sig, len(mpaths), SPEC_SRC, '1')
-    if os.path.exists(CT.missing_path(cache.workspace, t['product'])):
-        os.remove(CT.missing_path(cache.workspace, t['product']))
+    if os.path.exists(missing):
+        os.remove(missing)
     return out
 
 
 def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_keys=None, overwrite=False,
-              depth=2, cap=25, degenerate=0.9):
+              depth=2, cap=25, degenerate=0.9, pass1_dir=None):
     """One worker's share of a disperser: the joint first pass of ``targets`` (in
     coupling order), with one member cache. Returns the written paths."""
     from campfire_pipeline.nirspec import first_pass as FP
@@ -368,12 +381,13 @@ def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_k
     out = []
     for sid in targets:
         ids = [s for s in neighbourhood(coupled, sid, depth=depth, cap=cap) if s in tasks]
-        out.append(run_target(sid, ids, cache, maps, stage_config, overwrite=overwrite, degenerate=degenerate))
+        out.append(run_target(sid, ids, cache, maps, stage_config, overwrite=overwrite, degenerate=degenerate,
+                              pass1_dir=pass1_dir))
     return out
 
 
 def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False, depth=2, cap=25,
-        degenerate=0.9):
+        degenerate=0.9, pass1_dir=None):
     """The joint first pass of every source of one disperser.
 
     tasks : {sid: dict(product, groups, overrides, science, prism_product)} for every
@@ -393,7 +407,7 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
     nb = max(1, int(n_processes))
     size = int(np.ceil(len(order) / nb))
     batches = [order[i:i + size] for i in range(0, len(order), size)]
-    args = [(b, tasks, workspace, stage_config, is_prism, coupled, keys, overwrite, depth, cap, degenerate)
-            for b in batches]
+    args = [(b, tasks, workspace, stage_config, is_prism, coupled, keys, overwrite, depth, cap, degenerate,
+             pass1_dir) for b in batches]
     res = dispatch(run_batch, args, n_processes=n_processes, use_starmap=True) or []
     return [p for r in res for p in (r or [])]
