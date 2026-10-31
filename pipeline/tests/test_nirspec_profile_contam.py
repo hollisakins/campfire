@@ -334,6 +334,31 @@ def test_nothing_predicted_is_nan(tmp_path):
     assert [h.name for h in out['hdus']] == ['PROF2D', 'CONTAM2D']
 
 
+def test_not_separable_wavelengths_are_nan(tmp_path):
+    """The source's joint pass 1 says its light cannot be told apart from a neighbour's
+    (NOTSEP): fnu_contam is NaN there, never a number."""
+    ny, nx = 30, 100
+    rows = np.arange(ny)[:, None]
+    prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
+    prof = prof / prof[:, :1].sum()
+    wave = np.linspace(1, 5, nx)
+    lam = np.linspace(0.9, 5.1, 400)
+    ns = (lam > 2.0) & (lam < 3.0)
+    tab = fits.BinTableHDU.from_columns([fits.Column(name='lam', format='D', array=lam),
+                                         fits.Column(name='notsep', format='L', array=ns)], name='NOTSEP')
+    path = tmp_path / 'x_pf.fits'
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(prof / 1e12, name='PROF2D'),
+                  fits.ImageHDU(0.1 * 10.0 * prof / 1e12, name='CONTAM2D'), tab]).writeto(path)
+    out = S3._profile_fit_columns(str(path), 10.0 * prof, np.full((ny, nx), 0.01), np.zeros((ny, nx), bool), 12, 18,
+                                  wave)
+    c = out['columns']['fnu_contam'][0]
+    inside = (wave > 2.02) & (wave < 2.98)
+    outside = (wave < 1.98) | (wave > 3.02)
+    assert np.isnan(c[inside]).all()
+    np.testing.assert_allclose(c[outside], 1.0, rtol=1e-6)
+    assert out['header']['PFNOTSEP'] == pytest.approx(inside.mean(), abs=0.02)
+
+
 def test_insignificant_prediction_is_not_subtracted(tmp_path):
     ny, nx = 30, 100
     rows = np.arange(ny)[:, None]

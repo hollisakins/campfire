@@ -464,7 +464,7 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
         if contam:
             sub = sci_all[sci_all['filter_grating'] == fg]
             every_fg = every[every['filter_grating'] == fg]
-            p1 = []
+            p1, jtasks = [], {}
             for sid in np.unique(sub['source_id']):
                 tf = sub[sub['source_id'] == sid]
                 t = _profile_fit_task(obs, every_fg, tf, f"{obs.name}_{fg}_{sid}", sid)
@@ -472,16 +472,27 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                 pass1_products[int(sid)] = t['product_name']
                 p1.append((t['product_name'], obs.workspace_dir, t['groups'], t['overrides'], t['science'],
                            int(sid), is_prism, stage_config, prism_product, bool(overwrite and int(sid) in run_sids)))
+                jtasks[int(sid)] = dict(product=t['product_name'], groups=t['groups'], overrides=t['overrides'],
+                                        science=t['science'], prism_product=prism_product)
                 all_tasks[int(sid)] = (t['product_name'], obs.workspace_dir, t['groups'], t['overrides'],
                                        t['science'], int(sid), stage_config, is_prism, prism_product,
                                        pass1_products, False)
-            log(f"Profile fit: pass 1 for {len(p1)} {fg} sources")
-            with TM.phase(f'pass1 {fg} ({len(p1)})'):
-                dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True)
-            # second round for the sources whose trace others cover (see profile_contam.run_pass1)
-            with TM.phase(f'pass1b {fg} ({len(p1)})'):
-                dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True,
-                         pass1_products=pass1_products, second=True)
+            if CT.pass1_settings(stage_config)['mode'] == 'joint':
+                # every source solved with its neighbours on single frames minus the master
+                # background (joint_first_pass); replaces the masked pass and its second round
+                from campfire_pipeline.nirspec import joint_first_pass as JF
+                log(f"Profile fit: joint pass 1 for {len(jtasks)} {fg} sources")
+                with TM.phase(f'pass1 joint {fg} ({len(jtasks)})'):
+                    JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
+                           overwrite={s for s in jtasks if s in run_sids} if overwrite else False)
+            else:
+                log(f"Profile fit: pass 1 for {len(p1)} {fg} sources")
+                with TM.phase(f'pass1 {fg} ({len(p1)})'):
+                    dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True)
+                # second round for the sources whose trace others cover (see profile_contam.run_pass1)
+                with TM.phase(f'pass1b {fg} ({len(p1)})'):
+                    dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True,
+                             pass1_products=pass1_products, second=True)
         joint = contam and js['enabled']
         tasks = []
         for t in by_fg[fg]:
@@ -1150,6 +1161,27 @@ def choose_extraction(have_contam, any_predicted, csig, contam_1d='report', min_
     return 'profile', 'contam_insignificant'
 
 
+def _notsep_on(NS, wave):
+    """The source's not-separable wavelengths (``NOTSEP``: (lam, notsep) of its joint pass
+    1) on the extraction's ``wave``, nearest pass-1 point; False outside its range or
+    without one."""
+    wave = np.asarray(wave, float)
+    out = np.zeros(wave.shape, bool)
+    if NS is None:
+        return out
+    lam, ns = NS
+    ok = np.isfinite(lam)
+    if ok.sum() < 2:
+        return out
+    o = np.argsort(lam[ok])
+    lw, nw = lam[ok][o], ns[ok][o]
+    i = np.clip(np.searchsorted(lw, wave), 1, lw.size - 1)
+    near = np.where(np.abs(wave - lw[i - 1]) < np.abs(wave - lw[i]), i - 1, i)
+    inside = np.isfinite(wave) & (wave >= lw[0]) & (wave <= lw[-1])
+    out[inside] = nw[near[inside]]
+    return out
+
+
 def best_spectrum(choice, prof, prof_err, contam, box, box_err):
     """The best spectrum ``fnu`` and its error for an extraction choice. The error is
     the statistical one only: the prediction's uncertainty is ``fnu_contam_err``."""
@@ -1208,6 +1240,9 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         C2D = np.asarray(h['CONTAM2D'].data, float) if 'CONTAM2D' in h else None
         E2D = np.asarray(h['CONTERR2D'].data, float) if 'CONTERR2D' in h else None
         JT = h['JOINT'].data if 'JOINT' in h else None
+        NS = h['NOTSEP'].data if 'NOTSEP' in h else None
+        if NS is not None:
+            NS = (np.asarray(NS['lam'], float), np.asarray(NS['notsep'], bool))
         if JT is not None:
             JT = {n: np.asarray(JT[n], float) for n in ('lam', 'err', 'err_iso', 'corr', 'flag') if n in JT.names}
         # joint-solve receivers carry the result that was not delivered (``profile_joint.deliver``):
@@ -1305,8 +1340,14 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
                 near = np.where(np.abs(wave - jw[i - 1]) < np.abs(wave - jw[i]), i - 1, i)
                 jflag = np.where(np.isfinite(wave) & (wave >= jw[0]) & (wave <= jw[-1]),
                                  JT['flag'][jok][o][near], 0).astype(np.int16)
+    notsep = _notsep_on(NS, wave)
+    if NS is not None:
+        keep['PFNOTSEP'] = (float(notsep[np.isfinite(flux)].mean()) if np.isfinite(flux).any() else 0.0,
+                            'Fraction of fnu_prof where other light is not separable')
+    predicted = predicted & ~notsep
     columns['fnu_contam'] = (np.where(predicted, cflux, np.nan),
-                             'Predicted other-source flux in the fnu_prof extraction (NaN: none predicted)')
+                             'Predicted other-source flux in the fnu_prof extraction '
+                             '(NaN: none predicted, or not separable)')
     columns['fnu_contam_err'] = (np.where(predicted, cerr, np.nan), 'Its uncertainty (systematic)')
     if JT is not None:
         columns['joint_corr'] = (jcorr, 'Most negative correlation with a joint-solve member')

@@ -223,6 +223,24 @@ def write_fallback(path, reason):
     fits.HDUList([fits.PrimaryHDU(header=extraction_cards('boxcar3', reason, 'off'))]).writeto(path, overwrite=True)
 
 
+def _own_notsep(workspace_dir, pass1_products, source_id):
+    """``NOTSEP`` table of the source's own joint pass 1 (``joint_first_pass``): its
+    wavelengths and whether its light there cannot be told apart from a neighbour's.
+    Stage 3 sets ``fnu_contam`` to NaN there. None for any other pass 1."""
+    from astropy.io import fits
+    from campfire_pipeline.nirspec import profile_contam as CT
+    name = (pass1_products or {}).get(int(source_id))
+    path = CT.pass1_path(workspace_dir, name) if name else None
+    if not path or not os.path.exists(path):
+        return None
+    z = np.load(path)
+    if 'nosep' not in z:
+        return None
+    return fits.BinTableHDU.from_columns(
+        [fits.Column(name='lam', format='D', unit='um', array=np.asarray(z['lam'], float)),
+         fits.Column(name='notsep', format='L', array=np.asarray(z['nosep'], bool))], name='NOTSEP')
+
+
 def _fallback_summary(product_name, source_id, is_prism, reason):
     return dict(product=product_name, source_id=int(source_id), shape=None, reason=None, is_prism=bool(is_prism),
                 pairs=None, joint=None, joint_use=None, scan=None, fallback=reason)
@@ -339,6 +357,9 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             h.header['BUNIT'] = ('MJy', 'Uncertainty of CONTAM2D (systematic), as SCI')
             hdus.append(h)
             e2d.close()
+            ns = _own_notsep(workspace_dir, pass1_products, source_id)
+            if ns is not None:
+                hdus.append(ns)
         TM.stop('drizzle', t_mark)
 
         hdr = shape_header(C, exps)

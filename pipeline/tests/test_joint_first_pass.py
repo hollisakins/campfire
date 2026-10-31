@@ -101,3 +101,56 @@ def test_solve_target_flags_only_the_inseparable_wavelengths(monkeypatch):
     sep = slice(n // 2, n)
     assert np.allclose(sol['flux'][sep], 1.0, atol=5 * np.nanmax(sol['err'][sep]))
     assert np.all(sol['err'][: n // 2] > 3 * sol['err'][sep].max())     # inseparable: large errors
+
+
+class _Cache:
+    """A member cache whose source 2 cannot be built and whose source 9 (the target of
+    the boxcar test) cannot either."""
+
+    def __init__(self, tmp_path, bad):
+        f = tmp_path / 'a_nrs1_cal.fits'
+        f.write_text('x')
+        self.workspace = str(tmp_path)
+        self.is_prism = False
+        self.bad = set(bad)
+        self.tasks = {s: dict(product=f'p_{s}', groups=[[str(f)]], overrides=None, science=[f.name],
+                              prism_product='') for s in (1, 2, 3, 9)}
+
+    def get(self, sid):
+        if sid in self.bad:
+            raise JF.PF.NoUsablePixels(f'source {sid}')
+        return sid
+
+    def prism_sig(self, sid):
+        return 'none'
+
+
+def _stub_write(monkeypatch, written):
+    monkeypatch.setattr(JF.CT, 'write_pass1', lambda out, P1, *a: written.append((out, P1)))
+
+
+def test_run_target_leaves_out_a_neighbour_that_cannot_be_built(tmp_path, monkeypatch):
+    solved, written = [], []
+    monkeypatch.setattr(JF, 'solve_target', lambda members, degenerate: solved.append(members) or {})
+    monkeypatch.setattr(JF, 'pass1_of', lambda target, sol, maps, sc: ('joint', target))
+    _stub_write(monkeypatch, written)
+    out = JF.run_target(1, [1, 2, 3], _Cache(tmp_path, bad=[2]), {}, {}, pass1_dir=str(tmp_path / 'p1'))
+    assert solved == [[1, 3]]
+    assert out.endswith('p_1_pass1.npz') and written[0][1] == ('joint', 1)
+
+
+def test_run_target_takes_the_boxcar_when_the_target_cannot_be_built(tmp_path, monkeypatch):
+    written = []
+    monkeypatch.setattr(JF, '_boxcar', lambda sid, t, cache, maps, sc, err: (('boxcar', sid), 's2d'))
+    _stub_write(monkeypatch, written)
+    out = JF.run_target(9, [9, 1], _Cache(tmp_path, bad=[9]), {}, {}, pass1_dir=str(tmp_path / 'p1'))
+    assert out.endswith('p_9_pass1.npz') and written[0][1] == ('boxcar', 9)
+
+
+def test_run_target_without_a_boxcar_writes_the_reason(tmp_path, monkeypatch):
+    def no_box(sid, t, cache, maps, sc, err):
+        raise type(err)(f'{err}; no boxcar') from err
+    monkeypatch.setattr(JF, '_boxcar', no_box)
+    out = JF.run_target(9, [9], _Cache(tmp_path, bad=[9]), {}, {}, pass1_dir=str(tmp_path / 'p1'))
+    assert out is None
+    assert 'no_usable_pixels' in (tmp_path / 'p1' / 'p_9_pass1_missing.txt').read_text()

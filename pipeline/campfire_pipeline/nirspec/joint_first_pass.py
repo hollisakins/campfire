@@ -184,17 +184,38 @@ class MemberCache:
         self.size = size
         self._m = OrderedDict()
         self._shape = {}                        # sid -> (shape, label, eoff): kept when a member is evicted
+        self._failed = {}                       # sid -> the ProfileFitFallback its build raised
+        self._prism = {}                        # sid -> PRISM shape string (signature)
 
     def get(self, sid):
+        """The member of ``sid``; raises the ``ProfileFitFallback`` its build raised (once
+        per worker)."""
         sid = int(sid)
+        if sid in self._failed:
+            raise self._failed[sid]
         if sid in self._m:
             self._m.move_to_end(sid)
             return self._m[sid]
-        m = self._build(sid)
+        try:
+            m = self._build(sid)
+        except PF.ProfileFitFallback as e:
+            self._failed[sid] = e
+            raise
         self._m[sid] = m
         while len(self._m) > self.size:
             self._m.popitem(last=False)
         return m
+
+    def prism_sig(self, sid):
+        """The PRISM shape a grating member takes, as a string: a PRISM rerun that changes
+        it invalidates the pass 1 of every neighbourhood it is in."""
+        sid = int(sid)
+        if sid not in self._prism:
+            pp = self.tasks[sid].get('prism_product')
+            ps = CT.read_prism_shape(self.workspace, pp) if (not self.is_prism and pp) else None
+            self._prism[sid] = 'none' if ps is None else (
+                f"{ps.shape}:" + ','.join(f'{k}={ps.params[k]:.4f}' for k in sorted(ps.params)))
+        return self._prism[sid]
 
     def _build(self, sid):
         from campfire_pipeline.nirspec import first_pass as FP
@@ -338,11 +359,15 @@ def pass1_of(target, sol, maps, stage_config):
     return P1
 
 
-def signature(stage_config, ids):
+def signature(stage_config, ids, prism=None):
     """The cache signature of a joint pass-1 file: the pass-1 settings, this module's
-    version and the neighbourhood's members."""
+    version, the neighbourhood's members and the PRISM shapes they take (``prism``, one
+    string per member)."""
     st = CT.pass1_settings(stage_config)
-    return CT._signature(dict(st, joint=JOINT_PASS_VERSION, members=','.join(str(s) for s in ids)))
+    s = dict(st, joint=JOINT_PASS_VERSION, members=','.join(str(s) for s in ids))
+    if prism:
+        s['prism'] = ';'.join(prism)
+    return CT._signature(s)
 
 
 def _paths(workspace, product, pass1_dir):
@@ -354,9 +379,28 @@ def _paths(workspace, product, pass1_dir):
     return CT.pass1_path(workspace, product), CT.missing_path(workspace, product)
 
 
+def _boxcar(sid, t, cache, maps, stage_config, err):
+    """Pass 1 of a target whose own member cannot be built (a named fallback): its
+    stage-3 3-pixel boxcar (``profile_contam.boxcar_pass1``), as the masked first pass
+    does, so the targets its trace crosses are still predicted. Raises ``err`` when there
+    is no boxcar either."""
+    from campfire_pipeline.nirspec.stage3 import spec3_boxcar3
+    box = spec3_boxcar3(cache.workspace, t['product'])
+    if box is None:
+        raise type(err)(f'{err}; no stage-3 s2d or spectrum to take its 3-pixel boxcar from '
+                        f'(no science exposure reached stage 3)') from err
+    exps = PF.load_source(t['groups'], bkg_overrides=t['overrides'], science=set(t['science']))
+    return CT.boxcar_pass1(exps, sid, maps, cache.workspace, cache.is_prism, stage_config, box[:3]), box[3]
+
+
 def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=0.9, pass1_dir=None):
     """Solve one target's neighbourhood ``ids`` (target first) and write its pass-1 file.
-    Returns the path, or None (logged) when the target cannot be loaded."""
+
+    A neighbour whose member cannot be built (``ProfileFitFallback``) is left out of the
+    solve, logged; its light then stays in the target's spectrum where they share pixels.
+    When the target's own member cannot be built its pass 1 is its stage-3 3-pixel
+    boxcar (``_boxcar``). Returns the path, or None (logged, reason in the missing file)
+    when there is no boxcar either."""
     from campfire_pipeline.common.io import log
     from campfire_pipeline.nirspec import trace_overlap as TO
 
@@ -366,19 +410,38 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
     keys = {CT.exposure_key(f) for g in groups for f in g}
     mpaths = [TO.trace_map_path(os.path.join(cache.workspace, CT.MAPS_SUBDIR), f'{k}_rate.fits') for k in sorted(keys)]
     mpaths = [p for p in mpaths if os.path.exists(p)]
-    sig = signature(stage_config, ids)
-    if not overwrite and CT._pass1_valid(out, list(groups) + [mpaths], len(mpaths), sig) is not None:
+    sig = signature(stage_config, ids, [cache.prism_sig(s) for s in ids])
+    # a rebuilt master background (the sky every member is fitted on) redoes it too
+    mbkg = [p for p in (os.path.join(cache.workspace, f'{k}_mbkg.fits') for k in sorted(keys)) if os.path.exists(p)]
+    prev = None if overwrite else CT._pass1_valid(out, list(groups) + [mpaths, mbkg], len(mpaths), sig)
+    if prev is not None and not CT._boxcar_stale(prev, out, cache.workspace, t['product']):
         return out
+    tmaps = {k: maps[k] for k in keys if k in maps}
     try:
-        members = [cache.get(s) for s in ids]
+        try:
+            target = cache.get(sid)
+        except PF.ProfileFitFallback as e:
+            P1, src = _boxcar(sid, t, cache, tmaps, stage_config, e)
+            log(f"{t['product']}: pass 1 from the stage-3 3-pixel boxcar ({src}), its own fell back "
+                f"({e.reason}: {e})")
+            CT.write_pass1(out, P1, sig, len(mpaths), SPEC_SRC, '1')
+            if os.path.exists(missing):
+                os.remove(missing)
+            return out
     except PF.ProfileFitFallback as e:
-        log(f"{t['product']}: no joint first pass ({e.reason}: {e})")
+        log(f"{t['product']}: no pass 1 ({e.reason}: {e})")
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(missing, 'w') as f:
             f.write(f'{e.reason}: {e}\n')
         return None
+    members = [target]
+    for s in ids[1:]:
+        try:
+            members.append(cache.get(s))
+        except PF.ProfileFitFallback as e:
+            log(f"{t['product']}: neighbour {s} left out of the joint solve ({e.reason})")
     sol = solve_target(members, degenerate=degenerate)
-    P1 = pass1_of(members[0], sol, {k: maps[k] for k in keys if k in maps}, stage_config)
+    P1 = pass1_of(target, sol, tmaps, stage_config)
     CT.write_pass1(out, P1, sig, len(mpaths), SPEC_SRC, '1')
     if os.path.exists(missing):
         os.remove(missing)
@@ -402,7 +465,8 @@ def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_k
     out = []
     for sid in targets:
         ids = [s for s in neighbourhood(coupled, sid, depth=depth, cap=cap) if s in tasks]
-        out.append(run_target(sid, ids, cache, maps, stage_config, overwrite=overwrite, degenerate=degenerate,
+        ow = overwrite if isinstance(overwrite, bool) else int(sid) in overwrite
+        out.append(run_target(sid, ids, cache, maps, stage_config, overwrite=ow, degenerate=degenerate,
                               pass1_dir=pass1_dir))
     return out
 
@@ -412,7 +476,9 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
     """The joint first pass of every source of one disperser.
 
     tasks : {sid: dict(product, groups, overrides, science, prism_product)} for every
-    source of the disperser (its light reaches the others). Returns the written paths."""
+    source of the disperser (its light reaches the others). overwrite : bool, or the set
+    of source ids whose pass 1 is redone whatever its cache says (the others are redone
+    only when stale). Returns the written paths."""
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec import trace_overlap as TO
 
