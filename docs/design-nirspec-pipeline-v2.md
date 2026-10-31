@@ -746,8 +746,21 @@ extraction 1 min. Figure `extraction-v2/e2e_compare/e2e_vs_prism.png`, numbers
      the full range, not just the calibrated one". The past-cutout unknowns (count-rate
      units) go into the joint solve, so overlapping extensions are separated like the rest.
 
+  Built (5829e460, `JOINT_PASS_VERSION` 2): past the wavelengths a member's fit pixels have,
+  its light is a second set of unknowns per end (count rate, native grid, blue then red),
+  fitted on the single frames' rate minus `MBKG2D` on the pixels its own trace lights,
+  together with every member (`design_full`): every member's extension light on the cutout
+  rows (times the receiving pixel's calibration) and every member's in-range light on the
+  extension rows (over the giving member's calibration). A datum already in a cutout is used
+  once. The unknowns are scaled to unit diagonal before the solve; with an absolute ridge
+  set by the in-range columns the count-rate columns (about 20 orders smaller on the
+  diagonal) were pinned to zero. Check on 635314 (`extraction-v2/e2e_ext_fix/635314_pred.png`):
+  the predicted light on its main shutter now follows the data from 4.25 to 4.55 µm, where
+  it stopped at 4.25 µm; what remains is 635314's own light (about 0.25e-10 MJy summed).
+  Four targets with their neighbourhoods: 6.4 min in one process.
+
 **Open (extraction session).**
-- Past-cutout light in the joint solve (cause 2 above); then rerun stage 3 on p1.
+- Stage 3 on p1 with the full-range solve (running), then redo the PRISM comparison.
 - Build steps 1-11 above. Done: 1-7 (module), the stage 3 wiring and step 8 (0a746f33):
   `contam_pass1 = "joint"` is the default, `"fixed"` keeps the masked pass. A neighbour that
   cannot be built is left out of the solve; a target that cannot be built takes its stage-3
