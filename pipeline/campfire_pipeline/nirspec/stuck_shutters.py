@@ -487,6 +487,15 @@ def load_stuck_shutters_tagged(filepath):
     return result
 
 
+def _inline_toml(value):
+    """``{'origin': 'auto', 'stuck': True, 'a': 0.06}`` -> ``{origin = "auto", stuck = true, a = 0.06}``."""
+    import toml
+    parts = []
+    for k, v in value.items():
+        parts.append(f'{k} = {toml.dumps({"v": v}).split("=", 1)[1].strip()}')
+    return '{' + ', '.join(parts) + '}'
+
+
 def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None,
                               provenance=None):
     """Write the stuck shutters TOML file.
@@ -524,7 +533,7 @@ def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None,
 
     for root in sorted(data.keys()):
         lines.append(f'[{root}]')
-        for sid_str in sorted(data[root].keys(), key=int):
+        for sid_str in sorted((k for k in data[root].keys() if k != 'shutters'), key=int):
             shutters = data[root][sid_str]
             shutter_list = '[' + ', '.join(str(s) for s in shutters) + ']'
             sid_int = int(sid_str)
@@ -538,6 +547,13 @@ def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None,
             else:
                 lines.append(f'    {sid_str} = {shutter_list}')
         lines.append('')
+        # the physical-shutter table (``stuck_list``) is carried through untouched
+        physical = data[root].get('shutters') or {}
+        if physical:
+            lines.append(f'[{root}.shutters]')
+            for key in sorted(physical):
+                lines.append(f'    "{key}" = {_inline_toml(physical[key])}')
+            lines.append('')
 
     with open(filepath, 'w') as f:
         f.write('\n'.join(lines))

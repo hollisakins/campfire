@@ -12,6 +12,7 @@ dependencies = [
     "pandas<3",  # jhat 0.3.6 still calls pd.read_csv(delim_whitespace=...); remove when jhat upstream fixes
     "matplotlib>=3.9",
     "toml>=0.10",
+    "tomlkit>=0.11",  # nirspec/stuck_list.py: the auto writer keeps hand comments
     "click>=8.0",
     "tqdm>=4.65",
     "requests>=2.28",  # common/query.py (MAST queries), cli.py

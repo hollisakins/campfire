@@ -157,17 +157,18 @@ def test_plan_rounds_splits_fixed_slit_sources_only_when_asked(tmp_path, monkeyp
     assert [(r['source_ids'], r['fixed_slit']) for r in rounds] == [([1001], False), ([1002], True)]
 
 
-def test_remove_stuck_columns_is_ordinal_based(tmp_path):
+def test_drop_stuck_removes_physical_shutters_and_reports_ordinals(tmp_path):
     mf = _metafile(tmp_path)
-    rows = mf.rows_for_source(1001)          # columns 20, 21, 22
-    out = stage2._remove_stuck_columns(rows, [1, 3])
+    rows = mf.rows_for_source(1001)          # q1 r100, columns 20, 21, 22
+    out, ordinals, keys = stage2._drop_stuck(rows, {(1, 100, 20), (1, 100, 22), (1, 100, 41)})
     assert sorted(set(out['shutter_column'])) == [21]
-    assert stage2._remove_stuck_columns(rows, None) is rows
-    assert len(stage2._remove_stuck_columns(rows, [])) == len(rows)
-    with pytest.raises(IndexError):
-        stage2._remove_stuck_columns(rows, [4])
+    assert ordinals == [1, 3]
+    assert keys == ['q1r100c20', 'q1r100c22']
+    same, ordinals, keys = stage2._drop_stuck(rows, set())
+    assert same is rows and ordinals is None and keys == []
     # all stuck -> empty, which the caller treats as "skip extraction"
-    assert len(stage2._remove_stuck_columns(rows, [1, 2, 3])) == 0
+    out, _, _ = stage2._drop_stuck(rows, {(1, 100, c) for c in (20, 21, 22)})
+    assert len(out) == 0
 
 
 def _slit(name, source_id, source_name, value, stellarity=1.0):
