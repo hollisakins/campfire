@@ -73,7 +73,7 @@ leaves other sources' light in many spectra. The redesign does four things:
 | Pass-1 contamination mask | Replaced (user, 2026-10-30): it is circular on G395M | extraction session | 3.9 |
 | Joint linear solve of local neighbourhoods | Decided (user, 2026-10-30); Prototyped (`joint_scope/`, `joint_real2/`, `joint_sim/`); old group solve Built but off | extraction session | 3.9 |
 | Contamination past the calibrated range fitted in count-rate units | Decided (user, 2026-10-30); Built in part (`profile_extend.py`, e3af87b0) | extraction session | 3.9 |
-| `fnu` not contamination-subtracted; `fnu_contam` separate, NaN where inseparable | Decided (user, 2026-10-30); code still subtracts (see 9) | extraction session | 4 |
+| `fnu` not contamination-subtracted; `fnu_contam` separate, NaN where inseparable | Decided (user, 2026-10-30); Built (af58617f: `contam_1d = "report"` default, `"subtract"` opt-in) | extraction session | 4 |
 | Column set `fnu`, `fnu_opt`, `fnu_3px/4px/5px`, `fnu_prof`, `fnu_contam` | Decided (user, 2026-10-29); Built (686eedaf) | extraction session | 4 |
 | `_pf.fits` deleted; `PROF2D` + `CONTAM2D` kept in `spec.fits` | Decided (user, 2026-10-29); Built (4ca99b5a, 2916c182) | extraction session | 4 |
 | "Unpredicted light" removed | Decided (user, 2026-10-29); Built (dbe63ef0, bca17510) | extraction session | 3.9 |
