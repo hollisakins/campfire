@@ -759,8 +759,32 @@ extraction 1 min. Figure `extraction-v2/e2e_compare/e2e_vs_prism.png`, numbers
   it stopped at 4.25 µm; what remains is 635314's own light (about 0.25e-10 MJy summed).
   Four targets with their neighbourhoods: 6.4 min in one process.
 
+**Result: stage 3 on p1 with the full-range solve (2026-10-31, 5829e460, 6 workers).**
+Figure `extraction-v2/e2e_compare/e2e_fullrange_vs_prism.png`, numbers `compare.json`
+(calibrated-range run kept as `compare_calrange.json`). G395M joint pass 32.0 min (was 24.1;
+CPU +34 %), PRISM unchanged; no fallbacks. Every G395M source now has both extension ends.
+- `fnu_prof - fnu_contam` against PRISM: median rms 1.05 → 0.96σ, 90th percentile 1.53 →
+  1.36σ; of 131 sources with at least 50 compared points in both runs, 110 closer to PRISM.
+  635314 4.46 → 1.09, 632334 3.99 → 1.32.
+- Not separable: more than 90 % of the spectrum in 25 sources (was 4); 15 sources dropped by
+  more than 25 points, 6 rose. 630448, 632617, 635047 and 919635 lost their prediction (now
+  94-100 % not separable; they matched PRISM at 0.54-1.23σ before).
+- Cause, 919635: it and 918842 sit on the same detector rows, slitlets 178 columns (0.32 µm)
+  apart, so their traces share pixels over most of their length. The chain was pinned by each
+  source's columns that no one else lights (918842's blue end, 919635's red end); each
+  source's free unknowns past its cutout now cover the other's, and the split is ambiguous.
+  The blue unknowns reach 2.60 µm, but the count-rate sky (`MBKG1DR`) shows no light below
+  2.72 µm (7 % at 2.725, 46 % at 2.80, 74 % at 2.875) and none above 5.60 µm (33 % at 5.45,
+  10 % at 5.50, 3 % at 5.55). Unknowns where the instrument passes no light are free to
+  absorb anything.
+- 632334: `fnu_contam` negative above 4.5 µm (about -0.3 µJy), the subtracted spectrum above
+  PRISM there. To check after the fix below.
+
 **Open (extraction session).**
-- Stage 3 on p1 with the full-range solve (running), then redo the PRISM comparison.
+- Proposed: end each extension grid where the exposure's count-rate sky falls below a few
+  percent of its level at the cutout end (measured, per exposure, from `MBKG1DR`), so no
+  unknown sits where no light reaches. G395M/F290LP: 2.72-5.57 µm instead of 2.60-5.70
+  (about 140 fewer unknowns per source). Awaiting the user.
 - Build steps 1-11 above. Done: 1-7 (module), the stage 3 wiring and step 8 (0a746f33):
   `contam_pass1 = "joint"` is the default, `"fixed"` keeps the masked pass. A neighbour that
   cannot be built is left out of the solve; a target that cannot be built takes its stage-3

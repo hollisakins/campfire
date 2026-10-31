@@ -534,6 +534,7 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
     flux = np.full(m0, np.nan)
     err = np.full(m0, np.nan)
     corr = np.full(m0, np.nan)
+    partner = np.full(m0, -1)                           # global column of the most negative correlation
     if tcol.size:
         g_n = gi.size
         X = np.zeros((g_n, tcol.size))
@@ -559,7 +560,10 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
         if cand.size:
             with np.errstate(invalid='ignore', divide='ignore'):
                 c = X[cand] / np.sqrt(np.abs(cii)[None, :] * np.abs(cjj[cand])[:, None])
-            cmin = np.nanmin(np.where(np.isfinite(c), c, 0.0), axis=0)
+            c = np.where(np.isfinite(c), c, 0.0)
+            cmin = c.min(axis=0)
+            pcol = gi[cand[np.argmin(c, axis=0)]]          # the other unknown each one is closest to
+            partner[gi[tcol]] = pcol
         cols = gi[tcol]                                   # global columns of the target
         flux[cols] = f[cols]
         err[cols] = s[tcol] * np.sqrt(np.abs(cii))       # X, cii, cjj are of the scaled unknowns
@@ -571,8 +575,14 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
     for g, a in ((gb, n_in), (gr, n_in + gb.size)):
         sl = slice(a, a + g.size)
         ext.append(dict(lam=g, flux=flux[sl], err=err[sl], nosep=nosep[sl]))
+    # which member, and which part of it (in range or past its cutout), each target point is
+    # closest to: the source of a not-separable flag
+    pc = partner[:n_in]
+    by_sid = np.where(pc >= 0, np.array([m.sid for m in members])[blocks[np.maximum(pc, 0)]], -1)
+    by_ext = np.where(pc >= 0, parts[np.maximum(pc, 0)] % 2 == 1, False)
     return dict(lam=members[0].model.lam_grid, flux=flux[:n_in], err=err[:n_in], nosep=nosep[:n_in],
-                corr=corr[:n_in], ext=ext, npix=int(use.sum()), nclip=int((~use & np.isfinite(d)).sum()))
+                corr=corr[:n_in], ext=ext, npix=int(use.sum()), nclip=int((~use & np.isfinite(d)).sum()),
+                nosep_sid=by_sid, nosep_ext=by_ext)
 
 
 # ---------------------------------------------------------------------------

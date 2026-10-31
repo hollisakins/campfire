@@ -62,7 +62,8 @@ class _Model:
 class _Member:
     def __init__(self, n):
         self.model = _Model(n)
-        self.ext = dict(n=0, grids=[np.zeros(0), np.zeros(0)], lo=3.0, model={}, rows=None)
+        self.sid = 0
+        self.ext =dict(n=0, grids=[np.zeros(0), np.zeros(0)], lo=3.0, model={}, rows=None)
 
 
 def test_solve_target_flags_only_the_inseparable_wavelengths(monkeypatch):
