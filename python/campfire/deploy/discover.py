@@ -6,7 +6,10 @@ by globbing the observation products directory.
 """
 
 import json
+import re
 from pathlib import Path
+
+_CANONICAL = re.compile(r'_nrs[12]_-?\d+\.fits$')    # ..._nrs1_117757.fits
 
 
 def discover_spectrum_exposures(obs_dir: Path) -> list[Path]:
@@ -23,11 +26,16 @@ def discover_spectrum_exposures(obs_dir: Path) -> list[Path]:
     see discover_rate_files): they too match ``*_nrs[12]_*.fits`` but are a
     separate product (``nirspec_rate``), so without this guard a rate file would be
     double-discovered here and mis-registered as a spectrum-exposure.
+
+    Only names whose last token is the source id count: other per-detector products
+    in the directory (the master background ``{root}_{nod}_{nrsN}_mbkg.fits``, its
+    count-rate step ``_mbkgr.fits``, ...) also match ``*_nrs[12]_*.fits``.
     """
     return sorted(
         p for p in obs_dir.glob('*_nrs[12]_*.fits')
         if not p.name.endswith('_spec.fits')
         and not p.name.endswith('_rate.fits')
+        and _CANONICAL.search(p.name)
     )
 
 
