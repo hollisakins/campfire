@@ -83,6 +83,7 @@ leaves other sources' light in many spectra. The redesign does four things:
 | Master-background spectrum as a secondary product, archive-wide | Decided in principle (user, 2026-10-29); not built | extraction session | 4 |
 | Per-source runs give the same products as full runs | Decided (user, 2026-10-29); Built (a7094d9e) | extraction session | 3.9 |
 | Stage 1 detector-background mask extended past the calibrated range | Open (recommended in the merge plan) | MB session | 3.1 |
+| Speed up stage 2's per-source work: the rectification after stage 2a and the nodded subtraction in stage 2b | Goal (user, 2026-10-31); not started; profile first | extraction session | 5 (V30) |
 
 ---
 
@@ -792,7 +793,7 @@ a fix or needs another field or disperser), **To make**.
 | V27 | Injection tests | recovered vs injected flux, bias and scatter against S/N | bias within about 1 % | To make (earlier results lost in the wipe) | none |
 | V28 | Shape tests on bright sources | 5-pixel boxcar shape test; stars against the PSF table | shape within about 1 % | To make (earlier results lost) | none |
 | V29 | Master-background spectrum vs nodded spectrum | the secondary spectrum against `fnu` for sources with clean nods | agree within the expected 3-5 % extra noise | To make | none |
-| V30 | Runtime per exposure | wall time per phase (step 1, 2a, step 2, maps, first pass, joint, final) | no step adds an hour per exposure | To make (pieces timed: MB about 26 min per pointing at 2 workers; stuck fit about 1 min per frame; joint 0.02-0.08 s per neighbourhood) | `profile_timing` phases |
+| V30 | Runtime per exposure | wall time per phase (step 1, 2a, step 2, maps, first pass, joint, final) | no step adds an hour per exposure | In progress. End-to-end p1 run (2026-10-31, isolated root `scratch/claude/e2e_p1`, 6 workers, 12 rate files, 2,886 cutouts): step 1 1 min; stage 2a `Spec2Pipeline` 24 min; `fix_units` 7 s; rectification of every cutout (`resample_single_exposure`) 25 min; plots 1 min; step 2 9 min; stage 2b about 60 min for 962 groups (about 22 s per group per worker); stage 3 pending. The rectification and stage 2b are the two largest pieces and neither is new in v2 | `scratch/claude/e2e_p1/run.log` |
 
 ---
 
@@ -821,6 +822,7 @@ a fix or needs another field or disperser), **To make**.
 | Forward-model shutter edge vs measured bar shadow | extraction session | |
 | Stage 1 footprint past the calibrated range | MB session | user |
 | Runtime baseline on one full observation | both | |
+| Speed up stage 2's per-source work (user goal, 2026-10-31). First profile one stage-2b group and one rectification: in stage 2b the log line "Inverting the pathloss" only marks the start of a group, which also subtracts the nods, reapplies the pathloss and rectifies again, so the slow part is not yet known. Candidate fixes once measured: rectify once instead of in both 2a and 2b, invert the pathloss arithmetically from the stored correction instead of a `PathLossStep` call, and batch per exposure instead of per source | extraction session | |
 | Rebuild the extraction report as final documentation (main text = what ships; appendices = explored and rejected) | extraction session | |
 
 ---
