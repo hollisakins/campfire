@@ -741,7 +741,8 @@ a fix or needs another field or disperser), **To make**.
 | Item | Owner | Waiting on |
 |---|---|---|
 | Approve the step 1 / step 2 interface (3.4 A, B, D, E) | MB session | user |
-| Approve the stuck-list loader and auto writer (3.5) | MB session | user |
+| Stuck-list loader and auto writer (3.5): approved in substance (user, 2026-10-30); Built on loving-bell (`stuck_list.py`, 75b654b0; `write_origin`, f4343bc2) | MB session | |
+| Deploy's own TOML writers (`python/campfire/deploy/nirspec_flags.py:138`, `deploy.py:97`, `deploy.py:1485`) still write the legacy stuck format and would drop `[<root>.shutters]`; route them through `stuck_list` | extraction session | |
 | One-off command converting legacy stuck entries to physical keys | MB session | |
 | Verdict on the G395M stuck review packet; thresholds | extraction session | user |
 | Stuck fit on G140M and G235M | extraction session | |
@@ -753,7 +754,6 @@ a fix or needs another field or disperser), **To make**.
 | Full-field separability count (477 p1 G395M sources) | extraction session | |
 | Same-row inseparability cause | extraction session | |
 | Wire the first pass into stage 3 | extraction session | |
-| Make `fnu` unsubtracted by default (code still subtracts) | extraction session | |
 | Master-background spectrum extensions | extraction session | |
 | Default galaxy width 0.15 vs 0.21 | user | |
 | Forward-model shutter edge vs measured bar shadow | extraction session | |
