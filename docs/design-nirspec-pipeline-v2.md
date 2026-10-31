@@ -833,6 +833,41 @@ main-shutter factor, all three scored against PRISM with the same error (`fnu_pr
   fixed and no local background term, so a residual in the master sky is taken up as source
   light. Not adopted. The same offset is in every neighbour's pass 1 and so in every
   `fnu_contam`; to look into.
+- Correction to the 632334 explanation above: the product fit works on nod differences
+  (`profile_fit.load_group`, stage-2b partners); only the joint pass uses single frames. Its
+  negative prediction is real nod-difference light: 666343 and 633605 contribute -1 to -10 %
+  in the nod difference and nothing in the frame alone (negative images from the partner
+  nods); 630784's +49 to +68 % in its frames is +13 to +22 % after the partners
+  (`e2e_contam_sign.py`).
+
+**The master-sky floor (2026-10-31).** In the joint pass's frames the slitlet's other open
+shutters read +0.47 to +0.88 of the source shutter's median pixel for 629743 and 924455
+(`e2e_sky_resid.py`). The master-background session's measurement on the same products
+(`~/campfire-data/scratch/claude/sky_resid/`): G395M single frames sit +2 to +6 % above the
+painted sky across the whole shutter (NRS1 +5 to +7 %, NRS2 +2.4 to +4.8 %; PRISM +1 %),
+roughly additive (+0.0003 to +0.0005 DN/s, so largest as a fraction in the blue), plus a
+per-shutter spread (16/84: -3 / +17 % NRS1, -5 / +9 % NRS2) that repeats on the same
+shutter in other nods. A nod difference subtracts the same pixels and cancels both. Cause in
+part the inverse-variance shutter combine (bright shutters down-weighted); a further +3-4 %
+not yet traced. Their fix (a level-unbiased combine) waits on the user.
+
+**Test: the joint solve on nod differences (2026-10-31).** `e2e_joint_nod.py`: members built
+from the product's own nod differences (`profile_joint.design` already has the +1 / -1/n
+partner terms), same fixed shapes, same neighbourhoods, calibrated range only. 16 targets,
+rms against PRISM with `fnu_prof_err` (common) and with the solve's own error (own):
+
+  | Targets | nod, common | nod, own | master sky, common | `fnu_prof` |
+  |---|---|---|---|---|
+  | 7 faint isolated (629743, 924455, 921026, 880007, 925780, 629350, 629639) | 1.12-2.33 | 0.86-1.14 | 3.58-7.28 | 1.06-1.51 |
+  | 3 with a bright neighbour (632334, 635314, 632748) | 2.02-4.19 | 1.51-3.31 | 1.96-4.10 | 2.13-13.9 |
+  | 925236 | 1.73 | 1.12 | 2.31 | 1.33 |
+  | 5 same-row pairs (884662, 630448, 632617, 635047, 919635) | 7.8-16.2 | 0.91-1.14 | 7.7-15.4 | 1.28-2.78 |
+
+  On nod differences the faint-source offset is gone and the errors are honest (own rms
+  about 1). Where a bright neighbour lights the target the errors are still too small
+  (1.5-3.3): the fixed shapes. The same-row pairs stay 78-84 % not separable on nod
+  differences too, with honest errors; `fnu_prof` is close to PRISM there only because
+  their neighbour is faint in the target's aperture, which the data alone cannot show.
 
 **Open (extraction session).**
 - Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
