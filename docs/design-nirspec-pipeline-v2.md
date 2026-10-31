@@ -701,7 +701,13 @@ this run, so the 'prism' source is untested on the full field.
   once PRISM has been run through the v2 extraction.
 
 **Open (extraction session).**
-- Build steps 1-11 above (done: 1-7 as a module; 8-9 and the stage 3 wiring to do).
+- Build steps 1-11 above. Done: 1-7 (module), the stage 3 wiring and step 8 (0a746f33):
+  `contam_pass1 = "joint"` is the default, `"fixed"` keeps the masked pass. A neighbour that
+  cannot be built is left out of the solve; a target that cannot be built takes its stage-3
+  3-pixel boxcar. The cached pass 1 is redone when a member's PRISM shape or the master
+  background changes. `fnu_contam` is NaN at the target's not-separable wavelengths
+  (`NOTSEP` table in the `_pf.fits`, `PFNOTSEP` = the fraction). To do: step 9 (remove the
+  old pieces) after the end-to-end run on p1.
 - Run with PRISM shapes once a v2 PRISM extraction of p1 exists.
 - What makes a same-row pair inseparable (suspected: trace offset relative to overlap length).
 - Rerun the real-data check on p1 once the stuck shutters are fixed.
