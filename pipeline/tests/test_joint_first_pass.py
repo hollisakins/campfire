@@ -22,6 +22,38 @@ def test_target_order_walks_the_coupling():
     assert order.index(2) == order.index(1) + 1 and order.index(8) == order.index(7) + 1
 
 
+def _builds(coupled, order, depth, window):
+    from collections import OrderedDict
+    lru, n = OrderedDict(), 0
+    for s in order:
+        for t in JF.neighbourhood(coupled, s, depth=depth):
+            if t in lru:
+                lru.move_to_end(t)
+                continue
+            n += 1
+            lru[t] = None
+            if len(lru) > window:
+                lru.popitem(last=False)
+    return n
+
+
+def test_target_order_keeps_neighbourhoods_in_the_cache():
+    """A 20 x 20 grid of sources lit by their right and lower neighbours: the order
+    rebuilds few members more than once with a cache far smaller than the grid."""
+    k = 20
+    sid = lambda i, j: i * k + j                                            # noqa: E731
+    coupled = {sid(i, j): {} for i in range(k) for j in range(k)}
+    for i in range(k):
+        for j in range(k):
+            if j + 1 < k:
+                coupled[sid(i, j)][sid(i, j + 1)] = 500
+            if i + 1 < k:
+                coupled[sid(i, j)][sid(i + 1, j)] = 500
+    order = JF.target_order(coupled, depth=1, window=30)
+    assert sorted(order) == sorted(coupled)
+    assert _builds(coupled, order, 1, 30) < 2.0 * len(coupled)
+
+
 class _Model:
     def __init__(self, n):
         self.lam_grid = np.linspace(3.0, 5.0, n)

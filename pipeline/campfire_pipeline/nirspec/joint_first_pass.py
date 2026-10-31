@@ -108,22 +108,43 @@ def neighbourhood(coupled, sid, depth=2, cap=25, min_px=100):
     return chosen
 
 
-def target_order(coupled):
-    """Sources ordered so that neighbourhoods follow one another through the coupling
-    (breadth-first per connected group): a worker's member cache is reused."""
-    seen, order = set(), []
-    for start in sorted(coupled):
-        if start in seen:
-            continue
-        queue = [start]
-        seen.add(start)
-        while queue:
-            s = queue.pop(0)
-            order.append(s)
-            for t in sorted(coupled.get(s, {}), key=lambda t: -coupled[s][t]):
-                if t in coupled and t not in seen:
-                    seen.add(t)
-                    queue.append(t)
+def target_order(coupled, depth=2, cap=25, window=60):
+    """Sources ordered so that a worker's member cache is reused: the next target is the
+    unvisited source whose neighbourhood shares the most members with the last ``window``
+    members used (ties by source id; a fresh start at the lowest id when none shares one).
+    A breadth-first walk does not do this: its last sources lie on a ring far apart, and
+    on ember_cosmos_p1 G395M they rebuilt 23 of 25 members per target."""
+    nbh = {s: neighbourhood(coupled, s, depth=depth, cap=cap) for s in coupled}
+    inv = {}
+    for s, ids in nbh.items():
+        for t in ids:
+            inv.setdefault(t, []).append(s)
+    left = set(coupled)
+    score = {}                                  # unvisited source -> members it shares with recent
+    recent = OrderedDict()
+    order = []
+
+    def _bump(m, d):
+        for s in inv.get(m, ()):
+            if s in left:
+                score[s] = score.get(s, 0) + d
+                if score[s] <= 0:
+                    del score[s]
+
+    while left:
+        nxt = (min(score, key=lambda s: (-score[s], s)) if score else min(left))
+        order.append(nxt)
+        left.discard(nxt)
+        score.pop(nxt, None)
+        for t in nbh[nxt]:
+            if t in recent:
+                recent.move_to_end(t)
+                continue
+            recent[t] = None
+            _bump(t, 1)
+            if len(recent) > window:
+                old, _ = recent.popitem(last=False)
+                _bump(old, -1)
     return order
 
 
@@ -403,7 +424,7 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
         if TO.map_is_current(p):
             maps[k] = TO.TraceMap.read(p)
     coupled = coupling(files, maps)
-    order = target_order(coupled)
+    order = target_order(coupled, depth=depth, cap=cap)
     nb = max(1, int(n_processes))
     size = int(np.ceil(len(order) / nb))
     batches = [order[i:i + size] for i in range(0, len(order), size)]
