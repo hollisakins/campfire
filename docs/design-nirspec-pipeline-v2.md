@@ -694,12 +694,15 @@ this run, so the 'prism' source is untested on the full field.
   none; 142 have some; 93 have more than 25 %.
 - Runtime: 15 s per source per worker where members were reused (about 10 s solve, 5 s per
   member build). The breadth-first order made one worker's last 53 sources take 98 s each,
-  and the run 2 h. With the greedy order the expected time is about 30 min for the disperser
-  on 4 workers, not yet re-measured.
+  and the run 2 h. With the greedy order (f139f690) the whole disperser took 33.5 min on 4
+  workers, same results.
+- PRISM shapes: 156 of the sources have a PRISM product, but the production PRISM files are
+  v0.2 and carry no `PFSHAPE` card, so none was used. The 'prism' shape source is tested only
+  once PRISM has been run through the v2 extraction.
 
 **Open (extraction session).**
 - Build steps 1-11 above (done: 1-7 as a module; 8-9 and the stage 3 wiring to do).
-- Re-measure the full run with the greedy order and with PRISM shapes passed.
+- Run with PRISM shapes once a v2 PRISM extraction of p1 exists.
 - What makes a same-row pair inseparable (suspected: trace offset relative to overlap length).
 - Rerun the real-data check on p1 once the stuck shutters are fixed.
 - A faint target next to a bright neighbour with a wrong shape is the main risk; measured only
