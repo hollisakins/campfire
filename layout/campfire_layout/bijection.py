@@ -52,6 +52,7 @@ class ParsedKey:
 _NIRSPEC_OBS_SUFFIXES = (
     ("_spec.fits", "nirspec_spec"),
     ("_rate.fits", "nirspec_rate"),  # must precede the bare-'.fits' fallback below
+    ("_mbkgr.fits", "nirspec_mbkgr"),  # ditto
     ("_mbkg.fits", "nirspec_mbkg"),  # ditto
     ("_lines.fits", "nirspec_lines"),  # ditto
     ("_lines.json", "nirspec_lines_json"),
