@@ -303,12 +303,23 @@ def _save_root(path, root, old, doc, what):
     text = tomlkit.dumps(doc)
     if text == old:
         return False
+    # a table header gets a blank line above it (tomlkit appends new tables flush)
+    text = re.sub(r'(?m)(?<=[^\n])\n(?=\[[^\]\n]+\][ \t]*$)', '\n\n', text)
     tmp = f'{path}.tmp'
     with open(tmp, 'w') as f:
         f.write(text)
     os.replace(tmp, path)
     log(f'stuck shutters: wrote {what} for {root} to {path}')
     return True
+
+
+def _put(table, key, value):
+    """Set ``"key" = value`` with the key quoted, as the file's examples write it."""
+    from tomlkit.items import KeyType, SingleKey
+    if key in table:
+        table[key] = value
+    else:
+        table.add(SingleKey(key, KeyType.Basic), value)
 
 
 def _amplitude(a):
@@ -342,10 +353,10 @@ def write_auto(path, root, calls, metafiles=None, obs_name=''):
         a = _amplitude(call.get('a'))
         if call.get('stuck'):
             if cur is None or cur.stuck is not True or cur.a != a:
-                st[skey] = _inline({'origin': 'auto', 'stuck': True, 'a': a})
+                _put(st, skey, _inline({'origin': 'auto', 'stuck': True, 'a': a}))
         elif key in legacy_keys and legacy_keys[key].origin == 'auto':
             if cur is None or cur.stuck is not False:
-                st[skey] = _inline({'origin': 'auto', 'stuck': False, 'a': a, 'note': 'open; outranks a legacy auto entry'})
+                _put(st, skey, _inline({'origin': 'auto', 'stuck': False, 'a': a, 'note': 'open; outranks a legacy auto entry'}))
         elif cur is not None:
             del st[skey]
     return _save_root(path, root, old, doc, 'auto calls')
@@ -368,7 +379,7 @@ def write_origin(path, root, entries, origin, obs_name=''):
             continue
         new = Entry(origin=origin, stuck=bool(e.stuck), a=_amplitude(e.a), note=e.note or '')
         if cur != new:
-            st[shutter_key(*key)] = _inline({'origin': new.origin, 'stuck': new.stuck, 'a': new.a, 'note': new.note})
+            _put(st, shutter_key(*key), _inline({'origin': new.origin, 'stuck': new.stuck, 'a': new.a, 'note': new.note}))
     for key, cur in phys.items():
         if cur.origin == origin and key not in entries:
             del st[shutter_key(*key)]
