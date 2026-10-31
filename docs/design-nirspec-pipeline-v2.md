@@ -808,6 +808,32 @@ quadrature, so a noisy prediction enlarges its own error bar and looks closer to
   -4 to -25 % of the target's own light is added back. No frame here is a nod difference
   (master sky only), so there is no physical negative image.
 
+**Test: the target's own joint-solve spectrum as its answer (2026-10-31).** Proposed after
+the correction above: report T's spectrum from its own joint solve (with that solve's error
+and not-separable flags) instead of `fnu_prof - fnu_contam`. Explainer with a simulated pair
+(`extraction-v2/e2e_compare/explain_joint_vs_subtract.png`, script
+`explain_joint_vs_subtract.py`): when the neighbour's spectrum comes from the same solve,
+the two answers are identical (least squares: T solved with C held at its solved value is
+T's joint value); only the error differs, and where the profiles are nearly the same the
+subtracted answer is off by up to ~9x its stated error. On p1 (`e2e_joint_vs_prism.py`,
+`e2e_joint_summary.py`, figure `joint_vs_prism.png`), the saved pass-1 spectrum times the
+main-shutter factor, all three scored against PRISM with the same error (`fnu_prof_err`):
+
+  | G395M, 156 sources | median rms | 90th percentile |
+  |---|---|---|
+  | `fnu_prof` (neighbour light left in) | 1.44 | 2.93 |
+  | `fnu_prof - fnu_contam` | 1.56 | 3.99 |
+  | target's joint-solve spectrum | 2.22 | 7.38 |
+
+  The joint spectrum is closer to PRISM in 24 of 156. It is worse even where nothing is
+  inseparable (117 sources: 1.88 against 1.40), and with its own error it scores 1.31, so
+  that error is too small as well. Faint isolated sources (629743, 924455) show why: their
+  joint spectrum sits about 0.15-0.2 µJy above PRISM and `fnu_prof` across the band, and is
+  noisier. The joint pass fits single frames of rate minus `MBKG2D` with the shape held
+  fixed and no local background term, so a residual in the master sky is taken up as source
+  light. Not adopted. The same offset is in every neighbour's pass 1 and so in every
+  `fnu_contam`; to look into.
+
 **Open (extraction session).**
 - Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
   below a few percent of its level at the cutout end. The user (2026-10-31): "I'm hesitant
