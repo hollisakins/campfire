@@ -677,16 +677,29 @@ with chain shapes and no gate.
 9. *Retired*: the pass-1 mask, pass 1b, the echo correction, pass-1 smoothing and the gated
    group solve (`contam_joint`). Kept behind `contam_pass1 = "fixed"` until validation is done,
    then removed.
-10. *Performance*: neighbourhoods are processed grouped by coupled component, so one worker
-    reuses loaded members; a source's files are read once per worker.
+10. *Performance*: each worker keeps its 60 most recent members. Targets are ordered greedily:
+    the next target is the unvisited source whose neighbourhood shares the most members with
+    those (f139f690). A breadth-first order ended on far-apart sources and rebuilt 23 of 25
+    members per target there; greedy needs 596 member builds for 477 sources instead of 1,366.
 11. *Validation*: p1 G395M, every source with a PRISM spectrum against PRISM (joint vs fitted
     alone vs the masked pass), the not-separable fraction over all 477 sources, runtime per
     exposure; tests on synthetic data (a stuck neighbour, a same-row pair, a line in the
     overlap).
 
+**Result: full p1 G395M run (2026-10-31, module 693beb9e + 57ca68ed, 4 workers).** All 477
+sources got a joint pass 1; none failed (one crash on short extension ends, fixed in
+57ca68ed, then resumed). Shapes: 33 own fit, 444 default; the PRISM shape was not passed in
+this run, so the 'prism' source is untested on the full field.
+- Not separable: median 0 % of a source's wavelengths, mean 12.7 %. 335 of 477 sources have
+  none; 142 have some; 93 have more than 25 %.
+- Runtime: 15 s per source per worker where members were reused (about 10 s solve, 5 s per
+  member build). The breadth-first order made one worker's last 53 sources take 98 s each,
+  and the run 2 h. With the greedy order the expected time is about 30 min for the disperser
+  on 4 workers, not yet re-measured.
+
 **Open (extraction session).**
-- Build steps 1-11 above.
-- Full-field separability count over all 477 p1 G395M sources.
+- Build steps 1-11 above (done: 1-7 as a module; 8-9 and the stage 3 wiring to do).
+- Re-measure the full run with the greedy order and with PRISM shapes passed.
 - What makes a same-row pair inseparable (suspected: trace offset relative to overlap length).
 - Rerun the real-data check on p1 once the stuck shutters are fixed.
 - A faint target next to a bright neighbour with a wrong shape is the main risk; measured only
