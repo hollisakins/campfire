@@ -742,7 +742,11 @@ a fix or needs another field or disperser), **To make**.
 |---|---|---|
 | Approve the step 1 / step 2 interface (3.4 A, B, D, E) | MB session | user |
 | Stuck-list loader and auto writer (3.5): approved in substance (user, 2026-10-30); Built on loving-bell (`stuck_list.py`, 75b654b0; `write_origin`, f4343bc2) | MB session | |
-| Deploy's own TOML writers (`python/campfire/deploy/nirspec_flags.py:138`, `deploy.py:97`, `deploy.py:1485`) still write the legacy stuck format and would drop `[<root>.shutters]`; route them through `stuck_list` | extraction session | |
+| Physical-key stuck list in the database (`nirspec_stuck_shutters`, migration 20261031011741), web nods review, deploy push/pull, physical deployment snapshot, deploy TOML writers routed through `stuck_list`: Built (36cf3b5e) | extraction session | |
+| `spectrum_exposures.msa_shutters` (the web's source of physical shutter labels; NULL until a root is redeployed) | extraction session | user approval |
+| Pull now clears a local web entry when its web mark is cleared (was: a pull never deletes local config; kept when the DB has no web rows for the observation) | extraction session | user approval |
+| Run `scripts/backfill_stuck_shutters_physical.py` after the migration is live (dry run first) | user | migration |
+| `nirspec_mbkg` product type missing from the `storage_objects` CHECK (`test_registry` fails) | MB session | |
 | One-off command converting legacy stuck entries to physical keys | MB session | |
 | Verdict on the G395M stuck review packet; thresholds | extraction session | user |
 | Stuck fit on G140M and G235M | extraction session | |
