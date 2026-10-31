@@ -701,15 +701,45 @@ this run, so the 'prism' source is untested on the full field.
   v0.2 and carry no `PFSHAPE` card, so none was used. The 'prism' shape source is tested only
   once PRISM has been run through the v2 extraction.
 
+**Result: end-to-end p1 run (2026-10-31, 311cace0, isolated root `scratch/claude/e2e_p1`, 6
+workers).** Stage 2a with master-background steps 1 and 2, stage 2b, stage 3 with the joint
+first pass; PRISM reprocessed first, so G395M took the PRISM shapes. 3 h 14 min in all; no
+errors; no source fell back to the boxcar. Stage 3: spec3 15 min, trace maps 1 min, PRISM
+joint pass 3.6 min and products 5 min, G395M joint pass 24 min and products 25.5 min, final
+extraction 1 min. Figure `extraction-v2/e2e_compare/e2e_vs_prism.png`, numbers
+`extraction-v2/e2e_compare/compare.json` (script `e2e_compare.py`).
+- Shapes for the 156 G395M sources with a PRISM spectrum: 112 took the PRISM shape, 4 their
+  own fit, 40 the default (their PRISM fit was below the gate too).
+- Against PRISM (G395M averaged onto the PRISM grid, 2.9-5.2 µm, rms deviation in σ):
+
+  | G395M spectrum | median rms | 90th percentile | median bias |
+  |---|---|---|---|
+  | old v0.2 `fnu` | 1.40 | 3.89 | -0.11 |
+  | new `fnu` (nothing subtracted) | 1.44 | 3.21 | -0.15 |
+  | new `fnu_prof - fnu_contam` (142 with a prediction) | 1.05 | 1.53 | -0.01 |
+
+  With the neighbour light taken off, 126 of 142 sources are closer to PRISM than v0.2. `fnu`
+  alone is about as close as v0.2, as expected, since it keeps the neighbour light by design.
+- 632748 and 925236 (the earlier shape discrepancy): both now take the PRISM shape;
+  subtracted rms 0.86 and 0.84 (v0.2: 2.39 and 1.35). 632748's `fnu_contam` is a neighbour's
+  emission-line spectrum (4.3 and 4.75 µm) that `fnu` carries as spurious lines.
+- Remaining worst cases: 635314 (rms 17 → 4.5): the neighbour outshines the target by
+  about 8×, and `fnu_contam` stops at 4.25 µm, so 4.25-4.5 µm keeps the neighbour's light;
+  920424 (7.7): matches PRISM by eye, and the rms comes from its strong lines at different
+  resolution.
+- PRISM predicts no neighbour light in any product (`fnu_contam` NaN everywhere): 191 of 204
+  have no coupled neighbour, and the 13 with one get no prediction. To check.
+
 **Open (extraction session).**
+- Why PRISM gets no prediction for its 13 coupled sources; why 635314's prediction stops at
+  4.25 µm.
 - Build steps 1-11 above. Done: 1-7 (module), the stage 3 wiring and step 8 (0a746f33):
   `contam_pass1 = "joint"` is the default, `"fixed"` keeps the masked pass. A neighbour that
   cannot be built is left out of the solve; a target that cannot be built takes its stage-3
   3-pixel boxcar. The cached pass 1 is redone when a member's PRISM shape or the master
   background changes. `fnu_contam` is NaN at the target's not-separable wavelengths
-  (`NOTSEP` table in the `_pf.fits`, `PFNOTSEP` = the fraction). To do: step 9 (remove the
-  old pieces) after the end-to-end run on p1.
-- Run with PRISM shapes once a v2 PRISM extraction of p1 exists.
+  (`NOTSEP` table in the `_pf.fits`, `PFNOTSEP` = the fraction). End-to-end run done (above).
+  To do: step 9 (remove the old pieces), after the two checks above.
 - What makes a same-row pair inseparable (suspected: trace offset relative to overlap length).
 - Rerun the real-data check on p1 once the stuck shutters are fixed.
 - A faint target next to a bright neighbour with a wrong shape is the main risk; measured only
