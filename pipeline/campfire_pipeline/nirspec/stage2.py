@@ -15,6 +15,17 @@ from campfire_pipeline.nirspec.metafile import MetaFile
 from campfire_pipeline.nirspec.observation import Observation
 
 
+def _stuck_entries(obs):
+    """The observation's resolved stuck list ({root: {(q, r, c): Entry}}) for the nods
+    plots' shutter labels; {} when it cannot be read."""
+    try:
+        from campfire_pipeline.nirspec.stuck_list import load_obs
+        return load_obs(obs)
+    except Exception as e:                                   # noqa: BLE001 - labels only
+        log(f'nods plots: stuck list not read for labels ({type(e).__name__}: {e})')
+        return {}
+
+
 def _stuck_table_to_dict(table):
     """Convert a stuck_closed_shutters Table to nested dict.
 
@@ -311,7 +322,7 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
         stuck_dict = _stuck_table_to_dict(obs.stuck_closed_shutters)
         plot_inputs = [files[files['source_id'] == sid] for sid in source_ids_processed]
         dispatch(plot_stage2a_results, plot_inputs, n_processes=n_processes,
-                 stuck_shutters=stuck_dict)
+                 stuck_shutters=stuck_dict, stuck_entries=_stuck_entries(obs))
 
     # --- Stuck shutter auto-detection ---
     if detect_enabled:
@@ -497,6 +508,7 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
                 n_processes=n_processes,
                 use_starmap=True,
                 stuck_shutters=stuck_dict,
+                stuck_entries=_stuck_entries(obs),
             )
 
 

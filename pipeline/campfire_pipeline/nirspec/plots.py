@@ -197,8 +197,61 @@ def plot_zfit_results(zfit_file, spec_file=None):
     return plot_file
 
 
-def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list, stkshtrs='N/A'):
-    """Draw shutter boundary lines and ordinal labels on an s2d image axis.
+def _source_shutters(canonical, source_id):
+    """The physical shutters of a source's slitlet, as stage 2a counts them: ``(q, r,
+    [columns])`` with legacy ordinal k at ``columns[k - 1]``, from the original metafile
+    of the canonical's exposure (the rate file's ``OGMETFL`` / ``MSAMETFL``). None when
+    the metafile cannot be read."""
+    from copy import deepcopy
+    from campfire_pipeline.nirspec.metafile import MetaFile
+    from campfire_pipeline.nirspec.stuck_list import source_columns
+    try:
+        ws = os.path.dirname(canonical)
+        key = '_'.join(os.path.basename(canonical).split('_')[:4])
+        hdr = fits.getheader(os.path.join(ws, f'{key}_rate.fits'))
+        name = os.path.basename(hdr.get('OGMETFL') or hdr['MSAMETFL'])
+        with fits.open(os.path.join(ws, name)) as h:
+            rows = MetaFile(deepcopy(h), name, int(hdr['MSAMETID'])).rows_for_source(int(source_id))
+        return int(rows['shutter_quadrant'][0]), int(rows['shutter_row'][0]), [int(c) for c in source_columns(rows)]
+    except Exception:                                        # noqa: BLE001 - labels are optional
+        return None
+
+
+def _shutter_label(ordinal, phys, entries, calls):
+    """(text, colour, weight) of one shutter's label: the physical column, the fitted
+    amplitude and call when known, and a stuck entry's origin (m / w / a)."""
+    key = None
+    if phys is not None and 1 <= ordinal <= len(phys[2]):
+        key = (phys[0], phys[1], phys[2][ordinal - 1])
+    text = f'c{key[2]}' if key else str(ordinal)
+    colour, weight = '0.5', 'normal'
+    call = (calls or {}).get(key) if key else None
+    if call is not None:
+        text += f" {call['a']:.2f}"
+        if call.get('note'):
+            colour = 'darkorange'
+    entry = (entries or {}).get(key) if key else None
+    if entry is not None:
+        text += f' {"*" if entry.stuck else "open"}[{entry.origin[0]}]'
+        if entry.stuck:
+            colour, weight = 'red', 'bold'
+    elif call is not None and call.get('stuck'):
+        colour, weight = 'red', 'bold'
+        text += ' *fit'
+    return text, colour, weight
+
+
+def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list, stkshtrs='N/A', phys=None, entries=None,
+                             calls=None):
+    """Draw shutter boundary lines and shutter labels on an s2d image axis.
+
+    Each shutter is labelled with its physical MSA column (``phys``: quadrant, row and
+    the slitlet's columns, ``_source_shutters``; quadrant and row once in the corner),
+    the stuck-shutter fit's amplitude when ``calls`` ({(q, r, c): call_shutters dict})
+    has it, and, for a shutter in the stuck list ``entries`` ({(q, r, c): Entry}), '*'
+    (stuck) or 'open' (veto) with the entry's origin: [m]anual, [w]eb, [a]uto. Stuck in
+    red; a fit call with a note (review, guard) in orange. Without ``phys`` the labels
+    are the legacy 1-indexed ordinals.
 
     Handles both pre-reprocessing (stuck shutters still in SHUTSTA as '0')
     and post-reprocessing (stuck shutters removed from metafile) geometry.
@@ -254,24 +307,34 @@ def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list, stkshtrs='N/A'):
         boundary = regions[k][0] - 0.5
         ax.axhline(boundary, color='gray', linestyle='--', linewidth=0.4, alpha=0.6)
 
-    # Ordinal labels at shutter midpoints
+    # Shutter labels at shutter midpoints
     for k, (row_start, row_end) in enumerate(regions):
         ordinal = ordinals[k]
         y_mid = (row_start + row_end) / 2 - 0.5
-
-        if ordinal in stuck_list:
-            color = 'red'
-            label = f'{ordinal}*'
-            fontweight = 'bold'
+        if phys is not None or entries or calls:
+            label, color, fontweight = _shutter_label(ordinal, phys, entries, calls)
+            if ordinal in stuck_list and color != 'red':
+                color, fontweight, label = 'red', 'bold', label + ' *'
+        elif ordinal in stuck_list:
+            color, label, fontweight = 'red', f'{ordinal}*', 'bold'
         else:
-            color = '0.5'
-            label = str(ordinal)
-            fontweight = 'normal'
+            color, label, fontweight = '0.5', str(ordinal), 'normal'
 
         ax.text(0.98, y_mid, label,
                 transform=ax.get_yaxis_transform(),
                 ha='right', va='center', fontsize=5, color=color,
                 fontweight=fontweight)
+    if phys is not None:
+        corner = f'q{phys[0]} r{phys[1]}'
+        listed = [f'c{c}[{entries[(phys[0], phys[1], c)].origin[0]}]' for c in phys[2]
+                  if entries and (phys[0], phys[1], c) in entries and entries[(phys[0], phys[1], c)].stuck]
+        fitted = [f'c{c}' for c in phys[2] if calls and (calls.get((phys[0], phys[1], c)) or {}).get('stuck')]
+        if listed:
+            corner += '  stuck: ' + ' '.join(listed)          # also those stage 2a cut out of the image
+        if fitted:
+            corner += '  fit stuck: ' + ' '.join(fitted)
+        ax.text(0.01, 0.97, corner, transform=ax.transAxes, ha='left', va='top', fontsize=5,
+                color='red' if (listed or fitted) else '0.4')
 
 
 def _has_extension(path, name):
@@ -283,11 +346,18 @@ def _has_extension(path, name):
         return False
 
 
-def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
+def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None, stuck_entries=None, shutter_calls=None):
     """
     Plot rectified s2d cutouts for visual inspection of a single source.
     Groups by root, combining multiple exp_groups (subpixel dither groups)
     into one plot with labeled rows.
+
+    Every shutter is labelled with its physical MSA position (``q r`` in the corner,
+    the column per shutter), so a stuck shutter can be entered by hand in the stuck
+    list (``"q2r195c64" = {origin = "manual", stuck = true}``). ``stuck_entries``
+    ({root: {(q, r, c): stuck_list.Entry}}) marks listed shutters with their origin;
+    ``shutter_calls`` ({root: {(q, r, c): shutter_fit.call_shutters dict}}) adds the
+    fitted amplitude and the fit's call.
 
     Issue #212: the rectified views are cached as ``S2D_*`` (calibrated) and
     ``S2D_BKGSUB_*`` (background-subtracted) HDUs on the bare canonical file,
@@ -332,19 +402,27 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
         if Nnods == 0:
             continue
 
-        # Look up stuck shutters for this root/source
+        # Stuck shutters and physical shutter labels for this root/source
         stuck_list = []
         shutsta = ''
         stkshtrs = 'N/A'
+        phys = None
+        entries = (stuck_entries or {}).get(root, {})
+        calls = (shutter_calls or {}).get(root, {})
         if stuck_shutters:
-            stuck_list = stuck_shutters.get(root, {}).get(int(source_id), [])
-        if stuck_list:
-            for _, n1, n2 in plot_rows:
-                s2d = n1 or n2
-                if s2d:
-                    shutsta = fits.getheader(s2d, extname='SCI').get('SHUTSTA', '')
-                    stkshtrs = fits.getheader(s2d, ext=0).get('STKSHTRS', 'N/A')
-                    break
+            stuck_list = list(stuck_shutters.get(root, {}).get(int(source_id), []))
+        for _, n1, n2 in plot_rows:
+            s2d = n1 or n2
+            if s2d:
+                shutsta = fits.getheader(s2d, extname='SCI').get('SHUTSTA', '')
+                stkshtrs = fits.getheader(s2d, ext=0).get('STKSHTRS', 'N/A')
+                phys = _source_shutters(s2d, source_id)
+                break
+        if phys is not None and entries:
+            stuck_list = sorted(set(stuck_list) | {k + 1 for k, c in enumerate(phys[2])
+                                                   if (phys[0], phys[1], c) in entries
+                                                   and entries[(phys[0], phys[1], c)].stuck})
+        annotate = dict(phys=phys, entries=entries, calls=calls)
 
         # Shared ZScale normalization across all nods,
         # masking DQ>0 pixels and >10-sigma outliers
@@ -398,8 +476,8 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
                 if nrs1_s2d:
                     nrs1 = fits.getdata(nrs1_s2d, extname=sci_ext)
                     ax[i,0].imshow(nrs1, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
-                    if stuck_list and shutsta:
-                        _annotate_stuck_shutters(ax[i,0], nrs1.shape[0], shutsta, stuck_list, stkshtrs)
+                    if shutsta:
+                        _annotate_stuck_shutters(ax[i,0], nrs1.shape[0], shutsta, stuck_list, stkshtrs, **annotate)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(nrs1, axis=1)
@@ -408,8 +486,8 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
                 if nrs2_s2d:
                     nrs2 = fits.getdata(nrs2_s2d, extname=sci_ext)
                     ax[i,2].imshow(nrs2, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
-                    if stuck_list and shutsta:
-                        _annotate_stuck_shutters(ax[i,2], nrs2.shape[0], shutsta, stuck_list, stkshtrs)
+                    if shutsta:
+                        _annotate_stuck_shutters(ax[i,2], nrs2.shape[0], shutsta, stuck_list, stkshtrs, **annotate)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(nrs2, axis=1)
@@ -457,8 +535,8 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None):
                 if s2d_file:
                     data = fits.getdata(s2d_file, extname=sci_ext)
                     ax[i,0].imshow(data, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
-                    if stuck_list and shutsta:
-                        _annotate_stuck_shutters(ax[i,0], data.shape[0], shutsta, stuck_list, stkshtrs)
+                    if shutsta:
+                        _annotate_stuck_shutters(ax[i,0], data.shape[0], shutsta, stuck_list, stkshtrs, **annotate)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(data, axis=1)

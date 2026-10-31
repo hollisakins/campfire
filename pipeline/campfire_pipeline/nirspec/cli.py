@@ -370,8 +370,10 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
             ))
             plot_inputs = [files[files['source_id'] == sid]
                            for sid in affected_sids]
+            from campfire_pipeline.nirspec.stage2 import _stuck_entries
             dispatch(plot_stage2a_results, plot_inputs,
-                     n_processes=processes, stuck_shutters=stuck_dict)
+                     n_processes=processes, stuck_shutters=stuck_dict,
+                     stuck_entries=_stuck_entries(obs_obj))
 
             # Print affected source IDs for easy copy-paste
             log(f'\nAffected source IDs ({len(affected_sids)}): '
