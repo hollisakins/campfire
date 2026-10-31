@@ -20,7 +20,8 @@ stuck-shutter detector for every disperser; stuck shutters are keyed by physical
 (`[<root>.shutters] "q<q>r<row>c<col>" = {origin = manual|web|auto, stuck}`) in the TOML, the web
 review and the database; the masked first pass gives way to a local joint solve (the extraction-v2
 side). Numbers in §9 measured before b0c08026 (the median bar-shadow cells), notably the +2–3 %
-off-centre painted-sky residual and the G395M blue-extension offset, predate the re-derived tables.
+off-centre painted-sky residual and the G395M blue-extension offset, predate the re-derived tables;
+the in-shutter offset itself is explained and fixed in 1.3 (§9, last entry).
 **Sources:** the pipeline code on this branch; jwst 1.20.2 (the pinned version) read from the wheel; msaexp `main`, `jwst_backgrounds` and `jwst_gtvt` read from GitHub on 2026-10-28; jwst readthedocs; RUBIES / JADES papers as cited inline.
 **Date:** 2026-10-28
 **Context:** the NIRSpec stage 2b nodded (leapfrog) background subtraction in
@@ -1326,3 +1327,36 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     632747, 924889 of `ember_cosmos_p1` are 40–100 % masked), so the master background serves only
     the slits that are not, until an empirical tail profile in detector counts is added (§4.2 step 5).
   - Not yet: subtraction (P2), deploy/pull of the kind (registered only), a compressed `MBKG2D`.
+- **The painted sky was low (found 2026-10-31 by the extraction-v2 first pass, fixed in 1.3).** On
+  `ember_cosmos_p1` single G395M frames minus the master sky left a positive residual over the
+  whole shutter (flat in the within-shutter coordinate, so not the old centre-vs-bars shape).
+  Proof, with the pipeline's own functions on the 1.2 products (MBKG1D rebuilt to 1e-8, every clean
+  flag identical; scripts and `proof.png` in `scratch/claude/sky_resid/`): the sky built from a
+  random half of the clean shutters and measured on the other half (20 halvings) leaves
+  Σ(pixel − sky)/Σsky = +2.6 % on G395M (+1.3 to +3.3 per rate file) and +1.1 % on PRISM. The paint
+  step is exact (the slit's own sky converted back to count rate equals `MBKG2D` to 1e-9 on open pixels),
+  so the bias is in the 1-D sky, and it has two causes:
+  (1) **Inverse-variance shutter weights.** A shutter's value in a 2-pixel bin is one or two pixels,
+  so its error is the propagated one, from `VAR_POISSON`, which jwst derives from each pixel's own
+  measured slope: a pixel that came out low reports a small variance. Ranked by reported variance
+  against pixels at the same wavelength, the lowest decile of clean sky pixels reads −22 % on G395M
+  (−8 % on PRISM), so 1/err² weights pull the sky low: 2.0 points on G395M, 0.2 on PRISM.
+  (2) **The bar shadow applied twice.** The 1-D sky was measured over the core |f| ≤ 0.2, where the
+  empirical table is already 0.97–0.99 (normalised to 1 over |f| < 0.15; core mean 0.993), and the
+  painting multiplies by the table again: 0.9 points on both dispersers.
+  With equal weights (each shutter takes the bin's median error, for the clip and the weight) and
+  every core pixel divided by the table (`core_to_centre`; `MBKG1D` / `MBKG1DR` are now the sky at
+  the open-shutter centre, as §4.1 always defined them), the held-out residual is −0.3 % (G395M)
+  and +0.1 % (PRISM). Both steps changed (`CFMBKGV` 1.3, `CFMB1VER` 1.1). Rerun on the same p1 inputs
+  (`scratch/claude/sky_resid/v13/before_after.png`): on clean empty shutters, every usable pixel,
+  G395M +3.4 % → +0.4 % (NRS1 +1.6 %, NRS2 −0.7 %; on the sky's own pixels NRS1 nod 1 +3.65 → +0.7 %,
+  the NRS1 rest is the near-source and next-to-other-source pixels the sky leaves out), PRISM
+  +1.0 % → +0.2 %; `MBKG1D` rises 2–4 % on G395M and 0.5–2 % on PRISM; stuck calls unchanged (15 /
+  21); clean counts within a few shutters. In bins with one or two shutters (G395M NRS2 below
+  3.3 µm, NRS1 above 4.8 µm) the new and old skies differ by up to ±30 %: the noise of those bins,
+  not the fix (grating sky smoothing, still open, would address it).
+  Two more things learnt on the way. A nod difference cancels all of this (the common offset and
+  the per-shutter spread, which repeats across nods), which is why the nodded extraction never saw
+  it. And on G395M, JUMP_DET-flagged sky pixels read 5–12 points below unflagged ones in four of six
+  rate files (not on PRISM), so a residual over DQ = 0 pixels alone reads high; the sky and every
+  extraction use both, consistently.

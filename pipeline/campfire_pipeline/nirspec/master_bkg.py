@@ -27,8 +27,12 @@ The inputs are what stage 2a already produced: the per-source canonicals (their 
 shutters) and the background-only slitlets of the ``bkgslits/`` file. Pixels are read
 through ``barshadow_calibration.pixel_samples`` (uniform calibration, the source and
 every catalogued neighbour padded away, DQ, one footprint only on the tail-aware
-coverage counter); only the shutter core |f| ≤ ``core_frac`` enters the 1-D sky, so no
-bar-shadow model touches the measurement (§9). Selection is the symmetric
+coverage counter); only the shutter core |f| ≤ ``core_frac`` enters the 1-D sky, each pixel
+divided by the bar-shadow table there (``core_to_centre``: the table is 1 over |f| < 0.15 and
+0.97-0.99 at the core's edge, and the painting multiplies by it, so the sky is held at the
+open-shutter centre). Shutters are combined with equal weights (``combine``: a pixel's
+variance follows its own measured value, so inverse-variance weights pull the sky low).
+Selection is the symmetric
 scale-and-reject iteration of §4.2 step 4 against the per-bin median seed. The sky is
 measured per exposure × detector — the grain the data demand (ember_uds_p2's second
 exposure sits 14 % above the others at 3 µm) — and compared with the pooled sky of its
@@ -62,7 +66,8 @@ from campfire_pipeline.nirspec import barshadow_calibration as B
 from campfire_pipeline.nirspec.coverage import (coverage_from_wcs, cutoffs_for, default_cache_dir, cache_path,
                                                  slit_geometry_extended)
 
-ALGORITHM_VERSION = '1.2'     # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31)
+ALGORITHM_VERSION = '1.3'     # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
+#                               1.3: equal shutter weights, sky divided to the open-shutter centre (2026-10-31)
 _PREFIX = 'master_bkg_'
 DEFAULTS = dict(
     master_bkg_source_pad_px=3.0,     # rows beyond the source shutter's edges dropped (§9: 3 px)
@@ -272,20 +277,39 @@ def bin_spectrum(lam, sb, var, edges):
     return med, err, cnt
 
 
+def core_to_centre(table, seg, yseg, lam):
+    """The bar shadow at core pixels, by which their surface brightness is divided to give
+    the sky at the open-shutter centre, the level the table is normalised to (1 over
+    |f| < ``CENTRE_FRAC``). The core reaches |f| = ``core_frac`` where the shadow is
+    already 0.97-0.99, and the painting multiplies by the table, so a sky measured on the
+    undivided core would carry that shadow twice (§9, 2026-10-31). NaN where the pixel
+    measures no segment."""
+    bs = np.full(np.shape(lam), np.nan)
+    inside = np.asarray(seg) >= 0
+    if inside.any():
+        bs[inside] = B.evaluate_table(table, np.asarray(seg)[inside], np.asarray(yseg)[inside], np.asarray(lam)[inside])
+    bs[~(bs > 0)] = np.nan
+    return bs
+
+
 def _worker_samples(args):
-    c, counter_path, edges, opt = args
+    c, counter_path, edges, opt, bs_path = args
     counter = np.load(counter_path) if counter_path else None
     try:
         p = B.pixel_samples(c, counter, opt['source_pad_px'])
     except Exception as e:
         return c.key, [], f'{type(e).__name__}: {e}'
     core = p['is_open'] & (np.abs(p['f']) <= opt['core_frac'])
+    bs = np.full(p['lam'].shape, np.nan)
+    if core.any():
+        bs[core] = core_to_centre(B.load_table(bs_path), p['seg'][core], p['yseg'][core], p['lam'][core])
+    core &= np.isfinite(bs)
     out = []
     for kk in np.unique(p['k'][core]):
         sel = core & (p['k'] == kk)
         if sel.sum() < opt['min_pixels']:
             continue
-        sb, err, n = bin_spectrum(p['lam'][sel], p['sb'][sel], p['var'][sel], edges)
+        sb, err, n = bin_spectrum(p['lam'][sel], p['sb'][sel] / bs[sel], p['var'][sel] / bs[sel] ** 2, edges)
         if np.isfinite(sb).sum() < opt['min_bins']:
             continue
         out.append(ShutterSpectrum(rate_base=c.rate_base, source_id=c.source_id, slitlet_id=p['slitlet_id'],
@@ -293,10 +317,12 @@ def _worker_samples(args):
     return c.key, out, None
 
 
-def shutter_spectra(canonicals, counters, edges_of, opt, processes):
-    """Pass 1 over every slit: the empty shutters' spectra, grouped by rate file."""
+def shutter_spectra(canonicals, counters, edges_of, opt, processes, bs_paths):
+    """Pass 1 over every slit: the empty shutters' spectra at the open-shutter centre
+    (``bs_paths``: the bar-shadow table per ``(grating, filter)``), grouped by rate file."""
     from multiprocessing import Pool
-    args = [(c, counters.get(c.rate_path), edges_of[(c.grating, c.filter)], opt) for c in canonicals]
+    args = [(c, counters.get(c.rate_path), edges_of[(c.grating, c.filter)], opt, bs_paths[(c.grating, c.filter)])
+            for c in canonicals]
     by_rate, failures = defaultdict(list), []
     seen = set()          # (rate_base, slitlet, shutter): two sources of one slitlet offer the same shutters
 
@@ -325,10 +351,23 @@ def shutter_spectra(canonicals, counters, edges_of, opt, processes):
 # ---------------------------------------------------------------------------
 
 def combine(spectra, clip_sigma):
-    """Sigma-clipped inverse-variance mean over shutters per bin -> (sb, err, n_shutters)."""
+    """Sigma-clipped mean over shutters per bin, every shutter weighted equally ->
+    (sb, err, n_shutters).
+
+    Equal weights on purpose: a shutter's error in a bin comes from its one or two
+    pixels' variances, which jwst derives from each pixel's own measured slope, so a
+    pixel that fluctuated low reports a small variance and inverse-variance weights
+    favour the shutters that came out low (G395M sky 2 % low on held-out shutters, PRISM
+    0.2 %; §9, 2026-10-31). Each shutter takes the bin's median error, for the clip and
+    the weight alike; the error is that of the mean, median error / sqrt(n)."""
     if not spectra:
         return None
     S = np.array([s.sb for s in spectra], float); E = np.array([s.err for s in spectra], float)
+    ok = np.isfinite(S) & np.isfinite(E) & (E > 0)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        e_bin = np.nanmedian(np.where(ok, E, np.nan), axis=0)
+    E = np.where(ok, e_bin[None, :], np.nan)
     with np.errstate(invalid='ignore', divide='ignore'):
         W = 1.0 / E ** 2
     W[~np.isfinite(S) | ~np.isfinite(W)] = 0
@@ -843,9 +882,9 @@ def _worker_paint(args):
             val = r['sky'] / pixelwise_factor(r['sci'], rbox)
         ok = paint(box, val, r['open'])
         n_painted += 1
-        ccore = ok & r['open'] & (np.abs(g['f']) <= core_frac)
+        ccore = ok & r['open'] & (np.abs(g['f']) <= core_frac) & (r['bs'] > 0)
         if ccore.any():
-            check.append((g['lam'][ccore], val[ccore]))
+            check.append((g['lam'][ccore], val[ccore] / r['bs'][ccore]))     # both at the open-shutter centre
         if not rs_fin:
             continue
         # the extension: the footprint this slit has not painted, in count-rate units
@@ -1093,7 +1132,8 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         log(f'master background: {key[0]}/{key[1]}: {len(edges_of[key]) - 1} bins '
             f'{edges_of[key][0]:.3f}-{edges_of[key][-1]:.3f} um, bar shadow {bs_of[key][0]}')
 
-    by_rate, failures = shutter_spectra(canonicals, counters, edges_of, opt, n_processes)
+    by_rate, failures = shutter_spectra(canonicals, counters, edges_of, opt, n_processes,
+                                       {k: v[1] for k, v in bs_of.items()})
     if failures:
         log(f'master background: {len(failures)} input slit(s) gave no shutters, e.g. {failures[0]}')
 
@@ -1215,7 +1255,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             hdul[0].header['MBKGCBLU'] = (float(blue) if blue is not None else 'edge', 'footprint blue cutoff [um]')
             hdul[0].header['MBKGCRED'] = (float(red) if red is not None else 'edge', 'footprint red cutoff [um]')
             if np.isfinite(ratio):
-                hdul[0].header['MBKGRRAT'] = (float(ratio), 'in-range painted / rate-unit sky, median')
+                hdul[0].header['MBKGRRAT'] = (float(ratio), 'in-range painted / rate-unit sky, core, median')
             hdul[0].header['MBKGDQ1'] = ('1 uncovered, 2 covering trace unpainted', 'MBKG2DDQ bits')
             hdul[0].header['MBKGRDT'] = (step1_date.get(base, 'None'), 'step-1 product (_mbkgr) derivation date')
             if rate_sky is not None:

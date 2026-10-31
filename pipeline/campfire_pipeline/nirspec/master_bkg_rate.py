@@ -10,7 +10,9 @@ Per exposure group (one root: obs / visit / config), over every rate file:
 2. **Rate-unit sky.** The empty shutters of every slitlet (no catalogued source at this
    dither point, ``source_pad_px`` rows beyond a source shutter left out, the shutter core
    ``|f| <= core_frac``, pixels under one footprint only, not a known stuck shutter) are
-   binned in count rate on the disperser's grid continued to its wavelength cutoffs;
+   divided by the bar shadow there (the sky at the open-shutter centre,
+   ``master_bkg.core_to_centre``) and binned in count rate on the disperser's grid
+   continued to its wavelength cutoffs;
    ``master_bkg.select_clean`` rejects lines, excess and low throughput with the
    ``rate_*`` thresholds (no flat field in count rate: shutters scatter by ~7 % grey);
    the clean ones give the exposure's sky (``MBKG1DR``) with the group pool and the
@@ -45,7 +47,7 @@ from campfire_pipeline.nirspec import stuck_list as S
 from campfire_pipeline.nirspec.coverage import (cache_path, cutoffs_for, default_cache_dir,
                                                  rate_geometry)
 
-STEP1_VERSION = '1.0'
+STEP1_VERSION = '1.1'          # 1.1: equal shutter weights, sky divided to the open-shutter centre
 N_GRID_SLITLETS = 6          # slitlets per detector whose central rows set the wavelength grid
 
 
@@ -140,9 +142,11 @@ def _worker_samples(args):
     shutter: ``(rate, [(judged, sky)], {(slitlet_id, k): (q, row, col)}, error)``: the
     spectrum of the core less the source pad (judged by the selection) and of the whole
     core (combined into the sky once judged clean), as the calibrated pass does."""
-    rate, cache_dir, cutoffs, wr, edges, stuck, opt = args
+    rate, cache_dir, cutoffs, wr, edges, stuck, opt, bs_path = args
+    from campfire_pipeline.nirspec import barshadow_calibration as B
     try:
         geo = rate_geometry(rate, cache_dir, cutoffs, wr)
+        table = B.load_table(bs_path)
         info = _shutter_rows(rate)
         counter = cache_path(rate, cache_dir, cutoffs, wr)
         frame, rvar, rate_ok, _ = M._rate_frame(rate, counter)
@@ -151,7 +155,7 @@ def _worker_samples(args):
     flat, fvar, ok = frame.ravel(), rvar.ravel(), rate_ok.ravel()
     base = M.rate_base_of(rate)
     specs, keys = [], {}
-    for b in geo.blocks(kind='msa', with_segments=False):
+    for b in geo.blocks(kind='msa', with_segments=True):
         if not b['name'].isdigit():
             continue
         sid_slit = int(b['name'])
@@ -168,6 +172,12 @@ def _worker_samples(args):
                     src_j.add(int(r['shutter_column']) - c0)
             row = int(mr['shutter_row'][0])
         core = b['is_open'] & (np.abs(b['f']) <= opt['core_frac']) & ok[b['pix']]
+        # each core pixel divided by the bar shadow there: the sky at the open-shutter centre,
+        # the level the table is normalised to and the painting multiplies by it
+        bs = np.full(core.shape, np.nan)
+        if core.any():
+            bs[core] = M.core_to_centre(table, b['seg'][core], b['yseg'][core], b['lam'][core])
+        core &= np.isfinite(bs)
         judged = core.copy()            # the pixels the selection judges: the core less a source pad
         if src_j:
             pad = float(opt['source_pad_px']) / _px_per_pitch(b, geo.shape[1])
@@ -191,7 +201,7 @@ def _worker_samples(args):
             spec = {}
             for tag, sel in (('judged', sel_j), ('sky', core & (b['j'] == jj))):
                 pix = b['pix'][sel]
-                sb, err, n = M.bin_spectrum(b['lam'][sel], flat[pix], fvar[pix], edges)
+                sb, err, n = M.bin_spectrum(b['lam'][sel], flat[pix] / bs[sel], fvar[pix] / bs[sel] ** 2, edges)
                 spec[tag] = M.ShutterSpectrum(rate_base=base, source_id=source_id, slitlet_id=sid_slit,
                                               quadrant=int(b['quadrant']), k=jj - b['kx'], n_pix=int(sel.sum()),
                                               sb=sb, err=err, n=n)
@@ -410,7 +420,8 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
 
     # 2. the empty shutters in count rate
     sample_args = [(it['rate'], cache_dir, it['cutoffs'], it['wr'], edges_of[it['key']],
-                    S.stuck_set({r: {k: e for k, e in resolved.get(r, {}).items() if e.origin != 'auto'}}, r), opt)
+                    S.stuck_set({r: {k: e for k, e in resolved.get(r, {}).items() if e.origin != 'auto'}}, r), opt,
+                    it['bs_path'])
                    for r, items in todo.items() for it in items if it['rate'] not in failed and it['key'] in edges_of]
     specs_of, keys_of = {}, {}
     for rate, specs, keys, err in _map(_worker_samples, sample_args):

@@ -30,6 +30,20 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec master background 1.3: the sky is no longer painted low.** Two biases in the
+  1-D sky (both steps), found on `ember_cosmos_p1` where the painted G395M sky sat +2.6 %
+  below held-out empty shutters (PRISM +1.1 %): (1) shutters were combined with
+  inverse-variance weights, but a shutter's error in a bin comes from one or two pixels whose
+  variance jwst derives from each pixel's own measured slope, so the shutters that fluctuated
+  low got the weight (2.0 points on G395M, 0.2 on PRISM); `master_bkg.combine` now weights
+  shutters equally (each takes the bin's median error, for the clip and the weight). (2) The
+  1-D sky was measured over the core `|f| <= 0.2`, where the bar-shadow table is already
+  0.97-0.99 (it is normalised to 1 over `|f| < 0.15`), and the painting multiplied by the
+  table again (0.9 points on both); every core pixel is now divided by the table first
+  (`master_bkg.core_to_centre`), so `MBKG1D` / `MBKG1DR` are the sky at the open-shutter
+  centre, as documented. On held-out shutters the two fixes leave -0.3 % (G395M) and +0.1 %
+  (PRISM). `CFMBKGV` 1.3, step 1 `CFMB1VER` 1.1 (products regenerate); `MBKGRRAT` compares
+  the two skies at the open-shutter centre.
 - **NIRSpec master background in two steps; stuck shutters from a sky-template fit.**
   Step 1 (`nirspec/master_bkg_rate.py`) runs at the start of stage 2a from the rate files
   alone: one `assign_wcs` per rate file gives every commanded slitlet's footprint

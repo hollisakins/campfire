@@ -261,3 +261,31 @@ def test_slitlet_scale_reads_the_slits_clean_shutters():
     assert M.slitlet_scale({'shutters': t}, '5') == pytest.approx(0.92)
     assert M.slitlet_scale({'shutters': t}, 'BKG77') == pytest.approx(1.2)
     assert M.slitlet_scale({'shutters': t}, '6') == 1.0
+
+
+def test_combine_weights_shutters_equally_when_errors_follow_their_own_values():
+    # each shutter's error grows with its own noisy value, as a pixel variance from its own
+    # slope does: inverse-variance weights would pull the mean low, equal weights must not
+    rng = np.random.default_rng(7)
+    spectra = []
+    for i in range(400):
+        v = 1.0 + rng.normal(0, 0.3, 20)
+        s = _shutter(v, sid=i)
+        s.err = 0.05 + 0.25 * np.clip(v, 0.05, None)
+        spectra.append(s)
+    sb, err, n = M.combine(spectra, clip_sigma=5.0)
+    S = np.array([s.sb for s in spectra]); W = 1 / np.array([s.err for s in spectra]) ** 2
+    weighted = np.sum(W * S, 0) / np.sum(W, 0)
+    assert np.all(np.abs(sb - S.mean(0)) < 0.01)                 # the plain mean of the shutters
+    assert np.median(1 - weighted) > 0.03                         # what 1/err^2 would have given
+    assert np.all(n == 400) and np.allclose(err, np.median(np.array([s.err for s in spectra]), 0) / 20)
+
+
+def test_core_to_centre_reads_the_table_and_leaves_unmeasured_pixels_nan():
+    from types import SimpleNamespace
+    table = dict(data1x1=np.full((10, 5), 0.9), data1x3=np.linspace(0.97, 1.0, 10)[:, None] * np.ones((10, 5)),
+                 grid=SimpleNamespace(y0=0.0, dy=1.0, w0=1e-6, dw=1e-6))
+    seg = np.array([2, 2, -1, 0]); yseg = np.array([0.0, 9.0, 3.0, 4.0]); lam = np.array([1.0, 2.0, 2.0, 3.0])
+    bs = M.core_to_centre(table, seg, yseg, lam)
+    assert np.isclose(bs[0], 0.97) and np.isclose(bs[1], 1.0) and np.isnan(bs[2])
+    assert np.isclose(bs[3], 0.9)                                 # an outer-edge pixel reads DATA1X1
