@@ -780,11 +780,38 @@ CPU +34 %), PRISM unchanged; no fallbacks. Every G395M source now has both exten
 - 632334: `fnu_contam` negative above 4.5 µm (about -0.3 µJy), the subtracted spectrum above
   PRISM there. To check after the fix below.
 
+**Correction: the PRISM comparison above flattered the subtraction (2026-10-31).** The rms of
+`fnu_prof - fnu_contam` was computed with `fnu_prof_err` and `fnu_contam_err` added in
+quadrature, so a noisy prediction enlarges its own error bar and looks closer to PRISM. With
+`fnu_prof_err` alone (script `e2e_compare_noinflate.py`), on the same 131 sources:
+
+  | G395M spectrum (full-range run) | median rms | 90th percentile |
+  |---|---|---|
+  | `fnu_prof`, nothing subtracted | 1.43 | 3.43 |
+  | `fnu_prof - fnu_contam`, error incl. the prediction's | 0.98 | 1.37 |
+  | `fnu_prof - fnu_contam`, the spectrum's error only | 1.59 | 4.34 |
+
+  Subtracting helps in 52 of 131. The prediction's error exceeds the spectrum's own in 87
+  of 131 (median ratio 1.59; above 3 in 29). Where it is smaller (44 sources) subtraction
+  helps a little (median 1.38 → 1.32). The earlier calibrated-range numbers (1.05, and the
+  1.05 → 0.96 step) carry the same inflation; that run's spectra were overwritten, so they
+  cannot be recomputed.
+- Why the prediction is noisy, 884662: 78 % of it is not separable from 950032 (the same
+  pair geometry as 919635 / 918842). In 950032's own solve its spectrum is then poorly
+  determined (median error 2.6e-12, about ten times its other neighbours'), and that
+  spectrum, moved onto 884662's trace, is most of `fnu_contam` (pixel-to-pixel scatter
+  1.0 µJy against `fnu_prof_err` 0.11). A target's prediction is taken from each neighbour's
+  separate solve, so the anti-correlated split between the two lands in full in the target.
+- Why 632334's prediction goes negative: nothing in the solve keeps a neighbour's light
+  positive. Its red end is mostly 666343 and 633605, faint neighbours whose spectra are
+  consistent with zero (median |f|/err 0.85 and 0.95); where their solved light is negative,
+  -4 to -25 % of the target's own light is added back. No frame here is a nod difference
+  (master sky only), so there is no physical negative image.
+
 **Open (extraction session).**
-- Proposed: end each extension grid where the exposure's count-rate sky falls below a few
-  percent of its level at the cutout end (measured, per exposure, from `MBKG1DR`), so no
-  unknown sits where no light reaches. G395M/F290LP: 2.72-5.57 µm instead of 2.60-5.70
-  (about 140 fewer unknowns per source). Awaiting the user.
+- Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
+  below a few percent of its level at the cutout end. The user (2026-10-31): "I'm hesitant
+  about reducing the cutoff, since real sources can be much brighter than the sky."
 - Build steps 1-11 above. Done: 1-7 (module), the stage 3 wiring and step 8 (0a746f33):
   `contam_pass1 = "joint"` is the default, `"fixed"` keeps the masked pass. A neighbour that
   cannot be built is left out of the solve; a target that cannot be built takes its stage-3
