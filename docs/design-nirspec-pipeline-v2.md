@@ -727,12 +727,26 @@ extraction 1 min. Figure `extraction-v2/e2e_compare/e2e_vs_prism.png`, numbers
   about 8×, and `fnu_contam` stops at 4.25 µm, so 4.25-4.5 µm keeps the neighbour's light;
   920424 (7.7): matches PRISM by eye, and the rms comes from its strong lines at different
   resolution.
-- PRISM predicts no neighbour light in any product (`fnu_contam` NaN everywhere): 191 of 204
-  have no coupled neighbour, and the 13 with one get no prediction. To check.
+- PRISM: no other target's trace lands on any PRISM target (`PFNCONT = 0` in all 204), so
+  `fnu_contam` is NaN throughout, as expected for PRISM. The 13 sources with `PFNBR = 1` are
+  same-slitlet candidates from the nod scan (a second object inside the target's own
+  slitlet); that light is flagged, not modelled, and is not in `fnu_contam`.
+- Why 635314's prediction stops at 4.25 µm (2026-10-31). Its neighbours 632748, 631983 and
+  630932 light its main shutter out to 4.76, 4.50 and 4.12 µm, but their pass-1 frames have
+  no light past their own cutouts (neighbour wavelengths above 5.20 µm). Two causes in
+  `profile_extend.solve_extension`:
+  1. The wavelength grid of both ends came from the first exposure's row only. For a
+     spectrum across the detector gap that is NRS1, which has no red end, so the red end was
+     never solved: none of the 230 G395M sources on both detectors had one. Fixed (grid from
+     the first exposure that reaches each end).
+  2. Each source's light past its cutout is solved alone, with every pixel another source's
+     shutter lights masked. That is the masked first pass the joint solve replaced in range,
+     and it fails the same way in crowded rows: 87 % of 632748's NRS2 band is masked and no
+     pixel past 5.20 µm survives. Fix proposed: put the past-cutout unknowns (count-rate
+     units) into the joint solve, so overlapping extensions are separated like the rest.
 
 **Open (extraction session).**
-- Why PRISM gets no prediction for its 13 coupled sources; why 635314's prediction stops at
-  4.25 µm.
+- Past-cutout light in the joint solve (cause 2 above); then rerun stage 3 on p1.
 - Build steps 1-11 above. Done: 1-7 (module), the stage 3 wiring and step 8 (0a746f33):
   `contam_pass1 = "joint"` is the default, `"fixed"` keeps the masked pass. A neighbour that
   cannot be built is left out of the solve; a target that cannot be built takes its stage-3

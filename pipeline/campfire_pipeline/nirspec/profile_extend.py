@@ -208,17 +208,28 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
             blocks.append((k, D, V, ok, [(w, geo[j][2], geo[j][1]) for j, w in terms]))
     if not blocks:
         return None
-    # the source row of the first science exposure's canvas: each end's native wavelength grid
-    k0 = blocks[0][0]
-    ys0, lam0, past0 = per_exp[k0][2], per_exp[k0][3], per_exp[k0][5]
-    yy = np.where(np.isfinite(ys0), ys0, np.inf)
-    r = np.argmin(np.abs(yy - exps[k0].src_y), axis=0)
-    cc = np.arange(lam0.shape[1])
-    lrow_all = np.where(past0[r, cc], lam0[r, cc], np.nan)
+    # each end's native wavelength grid: the source row of the first science exposure whose
+    # canvas reaches that end (a spectrum across the detector gap has its blue end on NRS1
+    # and its red end on NRS2; one exposure's row alone left the red end without a grid)
+    def source_row(k):
+        ys, lam, past = per_exp[k][2], per_exp[k][3], per_exp[k][5]
+        yy = np.where(np.isfinite(ys), ys, np.inf)
+        r = np.argmin(np.abs(yy - exps[k].src_y), axis=0)
+        cc = np.arange(lam.shape[1])
+        return np.where(past[r, cc], lam[r, cc], np.nan)
+
+    rows_by_k = {}
     ends = []
     for lo, hi in ((-np.inf, lam_min_in), (lam_max_in, np.inf)):
-        with np.errstate(invalid='ignore'):
-            lrow = np.sort(lrow_all[np.isfinite(lrow_all) & (lrow_all > lo) & (lrow_all < hi)])
+        lrow = np.array([])
+        for k in dict.fromkeys(b[0] for b in blocks):
+            if k not in rows_by_k:
+                rows_by_k[k] = source_row(k)
+            la = rows_by_k[k]
+            with np.errstate(invalid='ignore'):
+                lrow = np.sort(la[np.isfinite(la) & (la > lo) & (la < hi)])
+            if lrow.size >= 5:
+                break
         out = _solve_end(blocks, lrow, n_smooth, keep_lines, clip, n_clip)
         if out is not None:
             ends.append(out)
