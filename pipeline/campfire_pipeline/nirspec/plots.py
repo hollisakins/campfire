@@ -217,6 +217,11 @@ def _source_shutters(canonical, source_id):
         return None
 
 
+# shutter label colours: dark enough to read on the white label box
+LABEL_PLAIN, LABEL_STUCK, LABEL_REVIEW = '0.2', '#b91c1c', '#c2410c'
+LABEL_BOX = dict(boxstyle='round,pad=0.15', facecolor='white', edgecolor='none', alpha=0.85)
+
+
 def _shutter_label(ordinal, phys, entries, calls):
     """(text, colour, weight) of one shutter's label: the physical column, the fitted
     amplitude and call when known, and a stuck entry's origin (m / w / a)."""
@@ -224,19 +229,19 @@ def _shutter_label(ordinal, phys, entries, calls):
     if phys is not None and 1 <= ordinal <= len(phys[2]):
         key = (phys[0], phys[1], phys[2][ordinal - 1])
     text = f'c{key[2]}' if key else str(ordinal)
-    colour, weight = '0.5', 'normal'
+    colour, weight = LABEL_PLAIN, 'normal'
     call = (calls or {}).get(key) if key else None
     if call is not None:
         text += f" {call['a']:.2f}"
         if call.get('note'):
-            colour = 'darkorange'
+            colour = LABEL_REVIEW
     entry = (entries or {}).get(key) if key else None
     if entry is not None:
         text += f' {"*" if entry.stuck else "open"}[{entry.origin[0]}]'
         if entry.stuck:
-            colour, weight = 'red', 'bold'
+            colour, weight = LABEL_STUCK, 'bold'
     elif call is not None and call.get('stuck'):
-        colour, weight = 'red', 'bold'
+        colour, weight = LABEL_STUCK, 'bold'
         text += ' *fit'
     return text, colour, weight
 
@@ -313,17 +318,17 @@ def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list, stkshtrs='N/A', ph
         y_mid = (row_start + row_end) / 2 - 0.5
         if phys is not None or entries or calls:
             label, color, fontweight = _shutter_label(ordinal, phys, entries, calls)
-            if ordinal in stuck_list and color != 'red':
-                color, fontweight, label = 'red', 'bold', label + ' *'
+            if ordinal in stuck_list and color != LABEL_STUCK:
+                color, fontweight, label = LABEL_STUCK, 'bold', label + ' *'
         elif ordinal in stuck_list:
-            color, label, fontweight = 'red', f'{ordinal}*', 'bold'
+            color, label, fontweight = LABEL_STUCK, f'{ordinal}*', 'bold'
         else:
-            color, label, fontweight = '0.5', str(ordinal), 'normal'
+            color, label, fontweight = LABEL_PLAIN, str(ordinal), 'normal'
 
         ax.text(0.98, y_mid, label,
                 transform=ax.get_yaxis_transform(),
                 ha='right', va='center', fontsize=5, color=color,
-                fontweight=fontweight)
+                fontweight=fontweight, bbox=LABEL_BOX)
     if phys is not None:
         corner = f'q{phys[0]} r{phys[1]}'
         listed = [f'c{c}[{entries[(phys[0], phys[1], c)].origin[0]}]' for c in phys[2]
@@ -334,7 +339,7 @@ def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list, stkshtrs='N/A', ph
         if fitted:
             corner += '  fit stuck: ' + ' '.join(fitted)
         ax.text(0.01, 0.97, corner, transform=ax.transAxes, ha='left', va='top', fontsize=5,
-                color='red' if (listed or fitted) else '0.4')
+                color=LABEL_STUCK if (listed or fitted) else LABEL_PLAIN, bbox=LABEL_BOX)
 
 
 def _has_extension(path, name):
