@@ -647,9 +647,45 @@ Existing code: `nirspec/profile_joint.py` (group solve, `joint_flags`, correlati
 count-rate units). The target is a per-source neighbourhood solve on first-pass single frames
 with chain shapes and no gate.
 
+**Implementation plan (extraction session, 2026-10-30).** Per disperser, inside
+`stage3.run_profile_fit_phase`, replacing pass 1 and pass 1b:
+1. *Trace maps*: unchanged (version 7, both ends, stuck shutters left out).
+2. *Single frames*: each source's exposures minus the master sky (`first_pass.load_source_sky`),
+   in calibrated units; each exposure's conversion between sources is its calibrated frame over
+   the count rate.
+3. *Shapes*: the chain, once per source: the PRISM shape of the same source when the PRISM
+   product took its own fit (PRISM runs first); else the source's own fit on its single frames
+   above the grating gate; else the default shape. Per-exposure pointing offsets fitted at that
+   shape. Recorded per source (`shape_src`).
+4. *Neighbourhood*: the source plus every source whose source shutter lights its fit region
+   (trace maps), and their direct neighbours (two steps, capped at 25; one step decided the
+   target's covariance, two keep the members' own neighbours modelled).
+5. *Solve*: one weighted linear fit of all members' spectra at full resolution, 5σ clipping
+   twice, no mask, no smoothing (`profile_joint.design`). Only the target's spectrum is kept;
+   each source is the target of its own neighbourhood.
+6. *Errors and flags*: the target's columns of the inverse normal matrix (one sparse solve per
+   target wavelength, about 1,200), giving its marginal errors and its covariance with every
+   member; the members' variances only for the columns it correlates with. A wavelength whose
+   most negative correlation with another member is below -0.9 is "not separable" and stored
+   in the pass-1 file.
+7. *Pass-1 file*: the same format the prediction reads (`write_pass1`), `why = 'joint'`,
+   reliable, frames from the target's own spectrum, plus the not-separable mask. The light past
+   the calibrated range is solved as now (`profile_extend`, count-rate units).
+8. *Final products*: the prediction of other light (`predict`) reads the neighbours' joint
+   pass 1 and needs no echo correction (a joint spectrum holds no target light). `fnu_contam` is
+   NaN at the target's not-separable wavelengths. `fnu` stays unsubtracted.
+9. *Retired*: the pass-1 mask, pass 1b, the echo correction, pass-1 smoothing and the gated
+   group solve (`contam_joint`). Kept behind `contam_pass1 = "fixed"` until validation is done,
+   then removed.
+10. *Performance*: neighbourhoods are processed grouped by coupled component, so one worker
+    reuses loaded members; a source's files are read once per worker.
+11. *Validation*: p1 G395M, every source with a PRISM spectrum against PRISM (joint vs fitted
+    alone vs the masked pass), the not-separable fraction over all 477 sources, runtime per
+    exposure; tests on synthetic data (a stuck neighbour, a same-row pair, a line in the
+    overlap).
+
 **Open (extraction session).**
-- Write the plan, then the code: neighbourhood per source from the trace maps, chain shapes,
-  NaN flags, covariance limited to what the flags need.
+- Build steps 1-11 above.
 - Full-field separability count over all 477 p1 G395M sources.
 - What makes a same-row pair inseparable (suspected: trace offset relative to overlap length).
 - Rerun the real-data check on p1 once the stuck shutters are fixed.
