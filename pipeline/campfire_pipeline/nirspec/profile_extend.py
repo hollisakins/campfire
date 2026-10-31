@@ -154,30 +154,14 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
     fin = np.isfinite(R.flux) & (R.flux != 0)
     lam_min_in = float(R.lam[fin].min()) if fin.any() else np.nanmin([np.nanmin(e.wav) for e in exps])
     lam_max_in = float(R.lam[fin].max()) if fin.any() else np.nanmax([np.nanmax(e.wav) for e in exps])
-    regions = canvas(exps)
+    regions, per_exp = past_geometry(M, p, eoff, lam_min_in, lam_max_in)
     if not regions:
         return None
     blocks = []          # per science exposure: (k, rows, cols, D, V, ok, terms -> (w, g, lam))
-    per_exp = {}         # exposure index -> (rows, cols, y, lam, g) for frames
     for g, reg in regions.items():
         rows, cols = reg['rows'], reg['cols']
         ks = [k for k, e in enumerate(exps) if e.group == g]
-        geo = {}
-        for k in ks:
-            e = exps[k]
-            try:
-                ys, lam, foot, _ = _wcs_on(e.path, rows, cols)
-            except Exception:                        # noqa: BLE001 - no WCS, no extension for this exposure
-                continue
-            with np.errstate(invalid='ignore'):
-                past = foot & ((lam > lam_max_in) | (lam < lam_min_in))
-            dy = np.abs(np.gradient(np.where(np.isfinite(ys), ys, 0.0), axis=0))
-            gimg = np.zeros(ys.shape)
-            if e.has_source and past.any():
-                yv, lv, dv = ys[past], lam[past], dy[past]
-                gimg[past] = M.throughput(p, eoff, k, lv, dv) * M.image(p, eoff, k, yv, lv, dv)
-            geo[k] = (ys, lam, gimg, past)
-            per_exp[k] = (rows, cols, ys, lam, gimg, past)
+        geo = {k: per_exp[k][2:] for k in ks if k in per_exp}       # (ys, lam, gimg, past)
         if not geo:
             continue
         keys = {k: CT.exposure_key(exps[k].name) for k in ks}
@@ -208,9 +192,52 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
             blocks.append((k, D, V, ok, [(w, geo[j][2], geo[j][1]) for j, w in terms]))
     if not blocks:
         return None
-    # each end's native wavelength grid: the source row of the first science exposure whose
-    # canvas reaches that end (a spectrum across the detector gap has its blue end on NRS1
-    # and its red end on NRS2; one exposure's row alone left the red end without a grid)
+    ends = []
+    for lrow in end_rows(per_exp, exps, [b[0] for b in blocks], lam_min_in, lam_max_in):
+        out = _solve_end(blocks, lrow, n_smooth, keep_lines, clip, n_clip)
+        if out is not None:
+            ends.append(out)
+    if not ends:
+        return None
+    cat = lambda n: np.concatenate([x[n] for x in ends])                     # noqa: E731
+    return dict(lam=cat('lam'), flux=cat('flux'), err=cat('err'), flux_raw=cat('flux_raw'),
+                frames=frames_of(per_exp, exps, ends),
+                npix=int(sum(x['npix'] for x in ends)), nmask=int(sum(x['nmask'] for x in ends)))
+
+
+def past_geometry(M, p, eoff, lam_min_in, lam_max_in):
+    """Where a source's light lies past the wavelengths ``lam_min_in``-``lam_max_in``, at
+    the fixed shape ``(p, eoff)`` of model M: the canvas per background group
+    (``canvas``) and per exposure index ``(rows, cols, ys, lam, gimg, past)`` on it,
+    ``gimg`` the source's frame per unit count-rate spectrum (zero in a frame without the
+    source), ``past`` the footprint pixels outside that range. Exposures without a WCS
+    are left out."""
+    exps = M.exps
+    regions = canvas(exps)
+    per_exp = {}
+    for g, reg in regions.items():
+        rows, cols = reg['rows'], reg['cols']
+        for k in [k for k, e in enumerate(exps) if e.group == g]:
+            e = exps[k]
+            try:
+                ys, lam, foot, _ = _wcs_on(e.path, rows, cols)
+            except Exception:                        # noqa: BLE001 - no WCS, no extension for this exposure
+                continue
+            with np.errstate(invalid='ignore'):
+                past = foot & ((lam > lam_max_in) | (lam < lam_min_in))
+            dy = np.abs(np.gradient(np.where(np.isfinite(ys), ys, 0.0), axis=0))
+            gimg = np.zeros(ys.shape)
+            if e.has_source and past.any():
+                yv, lv, dv = ys[past], lam[past], dy[past]
+                gimg[past] = M.throughput(p, eoff, k, lv, dv) * M.image(p, eoff, k, yv, lv, dv)
+            per_exp[k] = (rows, cols, ys, lam, gimg, past)
+    return regions, per_exp
+
+
+def end_rows(per_exp, exps, ks, lam_min_in, lam_max_in):
+    """The blue end's and the red end's native wavelengths (sorted; possibly empty): the
+    source row of the first exposure in ``ks`` whose canvas reaches that end (a spectrum
+    across the detector gap has its blue end on NRS1 and its red end on NRS2)."""
     def source_row(k):
         ys, lam, past = per_exp[k][2], per_exp[k][3], per_exp[k][5]
         yy = np.where(np.isfinite(ys), ys, np.inf)
@@ -218,11 +245,10 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
         cc = np.arange(lam.shape[1])
         return np.where(past[r, cc], lam[r, cc], np.nan)
 
-    rows_by_k = {}
-    ends = []
+    rows_by_k, out = {}, []
     for lo, hi in ((-np.inf, lam_min_in), (lam_max_in, np.inf)):
         lrow = np.array([])
-        for k in dict.fromkeys(b[0] for b in blocks):
+        for k in dict.fromkeys(k for k in ks if k in per_exp):
             if k not in rows_by_k:
                 rows_by_k[k] = source_row(k)
             la = rows_by_k[k]
@@ -230,38 +256,13 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
                 lrow = np.sort(la[np.isfinite(la) & (la > lo) & (la < hi)])
             if lrow.size >= 5:
                 break
-        out = _solve_end(blocks, lrow, n_smooth, keep_lines, clip, n_clip)
-        if out is not None:
-            ends.append(out)
-    if not ends:
-        return None
-    frames = {}
-    for k, (rows, cols, ys, lam, gimg, past) in per_exp.items():
-        if not exps[k].has_source:
-            continue
-        img = np.zeros(lam.shape)
-        eim = np.zeros(lam.shape)
-        for x in ends:
-            grid, fs, es = x['lam'], x['flux'], x['err']
-            with np.errstate(invalid='ignore'):
-                on = past & (lam >= grid[0]) & (lam <= grid[-1])
-                img += np.where(on, gimg * np.interp(np.nan_to_num(lam), grid, np.nan_to_num(fs)), 0.0)
-                eim += np.where(on, np.abs(gimg) * np.interp(np.nan_to_num(lam), grid, np.nan_to_num(es)), 0.0)
-        keep = past & np.isfinite(img) & (np.abs(img) > 0)
-        if keep.any():
-            frames[CT.exposure_key(exps[k].name)] = dict(rows=rows, cols=cols, img=np.where(keep, img, 0.0),
-                                                         err=np.where(keep, eim, 0.0), keep=keep)
-    cat = lambda n: np.concatenate([x[n] for x in ends])                     # noqa: E731
-    return dict(lam=cat('lam'), flux=cat('flux'), err=cat('err'), flux_raw=cat('flux_raw'), frames=frames,
-                npix=int(sum(x['npix'] for x in ends)), nmask=int(sum(x['nmask'] for x in ends)))
+        out.append(lrow)
+    return out
 
 
-def _solve_end(blocks, lrow, n_smooth, keep_lines, clip, n_clip):
-    """One end's spectrum on the native grid ``lrow`` (sorted wavelengths along the
-    source row): the design over the ``blocks`` pixels whose wavelength falls on the grid,
-    solved with ``clip``-sigma clipping and smoothed. None when there are too few pixels."""
-    from campfire_pipeline.nirspec.profile_contam import smooth_spectrum
-
+def native_grid(lrow):
+    """The native grid of one end from its source-row wavelengths: points closer than
+    half a step merged. None when there are fewer than 5 wavelengths or 2 points."""
     if lrow.size < 5:
         return None
     step = np.median(np.diff(lrow))
@@ -270,7 +271,42 @@ def _solve_end(blocks, lrow, n_smooth, keep_lines, clip, n_clip):
         if x - grid[-1] > 0.5 * step:
             grid.append(x)
     grid = np.array(grid)
-    if grid.size < 2:
+    return grid if grid.size >= 2 else None
+
+
+def frames_of(per_exp, exps, ends):
+    """The frames the ends' spectra (dicts with ``lam``, ``flux``, ``err``) put on each
+    exposure holding the source: {exposure key: dict(rows, cols, img, err, keep)}."""
+    from campfire_pipeline.nirspec import profile_contam as CT
+    frames = {}
+    for k, (rows, cols, ys, lam, gimg, past) in per_exp.items():
+        if not exps[k].has_source:
+            continue
+        img = np.zeros(lam.shape)
+        eim = np.zeros(lam.shape)
+        for x in ends:
+            grid, fs, es = x['lam'], x['flux'], x['err']
+            if grid.size < 2:
+                continue
+            with np.errstate(invalid='ignore'):
+                on = past & (lam >= grid[0]) & (lam <= grid[-1])
+                img += np.where(on, gimg * np.interp(np.nan_to_num(lam), grid, np.nan_to_num(fs)), 0.0)
+                eim += np.where(on, np.abs(gimg) * np.interp(np.nan_to_num(lam), grid, np.nan_to_num(es)), 0.0)
+        keep = past & np.isfinite(img) & (np.abs(img) > 0)
+        if keep.any():
+            frames[CT.exposure_key(exps[k].name)] = dict(rows=rows, cols=cols, img=np.where(keep, img, 0.0),
+                                                         err=np.where(keep, eim, 0.0), keep=keep)
+    return frames
+
+
+def _solve_end(blocks, lrow, n_smooth, keep_lines, clip, n_clip):
+    """One end's spectrum on the native grid ``lrow`` (sorted wavelengths along the
+    source row): the design over the ``blocks`` pixels whose wavelength falls on the grid,
+    solved with ``clip``-sigma clipping and smoothed. None when there are too few pixels."""
+    from campfire_pipeline.nirspec.profile_contam import smooth_spectrum
+
+    grid = native_grid(lrow)
+    if grid is None:
         return None
     rows_, cols_, vals_, d_, v_ = [], [], [], [], []
     nrow = 0

@@ -28,8 +28,14 @@ Per disperser (``run``):
    wavelengths it cannot be told apart from another member (correlation below
    ``-degenerate``), ``nosep``;
 6. a pass-1 file in the format the contamination prediction reads (``why = 'joint'``),
-   with the not-separable mask; the light past the calibrated range is solved as for
-   every pass 1 (``profile_extend``, count-rate units, nod differences).
+   with the not-separable mask.
+
+The solve covers each member's whole trace, not only its calibrated range (user,
+2026-10-31): past the wavelengths a member's fit pixels have, its light is a second set of
+unknowns per end in count-rate units (``profile_extend`` geometry), fitted on the rate
+files minus the painted master background (``MBKG2D``) together with everything else
+(``design_full``). A member's light past its cutout that lands on a neighbour's trace is
+then separated like the rest instead of being masked out.
 """
 
 import os
@@ -43,7 +49,7 @@ from campfire_pipeline.nirspec import profile_contam as CT
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec import profile_joint as PJ
 
-JOINT_PASS_VERSION = '1'
+JOINT_PASS_VERSION = '2'          # 2: the light past the cutouts is among the joint unknowns
 SPEC_SRC = 'joint'
 CHUNK = 512
 
@@ -236,7 +242,237 @@ class MemberCache:
                       eoff=eoff.copy(), shape_src=src, workspace=self.workspace)
         m.cal = {j: CT.calibration(e, self.workspace) for j, e in enumerate(exps)}
         PJ.basis_frames(m)
+        ext_setup(m, self.workspace)
         return m
+
+
+# ---------------------------------------------------------------------------
+# The light past the cutouts
+# ---------------------------------------------------------------------------
+def _rate_minus_sky(workspace, key, rows, cols):
+    """(data, variance, bad) of one single frame on a detector band, count-rate units:
+    the rate minus the painted master background. Bad: DO_NOT_USE in the rate, a
+    pixel the master background did not paint, or no value."""
+    from astropy.io import fits
+    from campfire_pipeline.nirspec import profile_extend as PE
+    rp, mp = os.path.join(workspace, f'{key}_rate.fits'), os.path.join(workspace, f'{key}_mbkg.fits')
+    if not (os.path.exists(rp) and os.path.exists(mp)):
+        return None
+    sci, var, bad = PE._rate(rp, rows, cols)
+    sl = (slice(rows[0], rows[-1] + 1), slice(cols[0], cols[-1] + 1))
+    with fits.open(mp) as h:
+        if 'MBKG2D' not in h:
+            return None
+        sky = np.asarray(h['MBKG2D'].data[sl], float)
+        if 'MBKG2DDQ' in h:
+            bad = bad | (np.asarray(h['MBKG2DDQ'].data[sl]) != 0)
+    d = sci - sky
+    bad = bad | ~np.isfinite(d) | ~np.isfinite(var) | (var <= 0)
+    return d, var, bad
+
+
+def ext_setup(m, workspace):
+    """A member's light past the wavelengths its fit pixels have (``m.ext``): one grid
+    per end (``profile_extend.end_rows``), its frames per unit count-rate spectrum on the
+    detector there (sparse, single frames), and the data there, the rate minus the
+    painted sky of each science frame, on the pixels its own trace lights. Nothing past
+    the cutout (``n = 0``) when it has no such pixels."""
+    from campfire_pipeline.nirspec import profile_extend as PE
+    M, exps = m.model, m.exps
+    lam_in = np.asarray(M.pix['lam'], float)
+    lo, hi = float(np.nanmin(lam_in)), float(np.nanmax(lam_in))
+    m.ext = dict(lo=lo, hi=hi, grids=[np.zeros(0), np.zeros(0)], n=0, model={}, rows=None)
+    _, per_exp = PE.past_geometry(M, m.p, m.eoff, lo, hi)
+    if not per_exp:
+        return m.ext
+    order = [k for k, e in enumerate(exps) if e.use_data] + [k for k, e in enumerate(exps) if not e.use_data]
+    grids = [PE.native_grid(r) for r in PE.end_rows(per_exp, exps, order, lo, hi)]
+    grids = [g if g is not None else np.zeros(0) for g in grids]
+    m.ext['grids'], m.ext['n'] = grids, int(sum(g.size for g in grids))
+    if not m.ext['n']:
+        return m.ext
+    rk, rdet, rd, rv = [], [], [], []
+    for k, (rows, cols, ys, lam, gimg, past) in per_exp.items():
+        on = past & np.isfinite(gimg) & (gimg != 0) & _on_grids(lam, lo, grids)
+        if not on.any():
+            continue
+        iy, ix = np.nonzero(on)
+        det = (rows[iy].astype(np.int64) + 1) * 100000 + (cols[ix] + 1)
+        o = np.argsort(det)
+        key = CT.exposure_key(exps[k].name)
+        m.ext['model'][key] = dict(rows=rows, cols=cols, iy=iy[o], ix=ix[o], det=det[o],
+                                   lam=lam[on][o], g=gimg[on][o])
+        if not exps[k].use_data:
+            continue
+        data = _rate_minus_sky(workspace, key, rows, cols)
+        if data is None:
+            continue
+        d, v, bad = data
+        keep = ~bad[iy, ix]
+        rk.append(np.full(int(keep.sum()), k))
+        rdet.append(det[keep])
+        rd.append(d[iy, ix][keep])
+        rv.append(v[iy, ix][keep])
+    if rk:
+        m.ext['rows'] = dict(k=np.concatenate(rk), det=np.concatenate(rdet), d=np.concatenate(rd),
+                             v=np.concatenate(rv))
+    return m.ext
+
+
+def _on_grids(lam, lo, grids):
+    """Wavelengths inside the blue grid (below ``lo``) or the red one (above)."""
+    gb, gr = grids
+    with np.errstate(invalid='ignore'):
+        blue = (lam < lo) & (gb.size >= 2) & (lam >= (gb[0] if gb.size else np.inf)) & (lam <= (gb[-1] if gb.size else -np.inf))
+        red = (lam >= lo) & (gr.size >= 2) & (lam >= (gr[0] if gr.size else np.inf)) & (lam <= (gr[-1] if gr.size else -np.inf))
+    return blue | red
+
+
+def _ext_cols(m, lam):
+    """Columns (relative to the member's first extension unknown) and weights of linear
+    interpolation in its end grids at wavelengths ``lam``: (ok, i, t), column i takes
+    1 - t and i + 1 takes t."""
+    gb, gr = m.ext['grids']
+    ok = _on_grids(lam, m.ext['lo'], m.ext['grids'])
+    i = np.zeros(lam.size, int)
+    t = np.zeros(lam.size)
+    for g, base, sel in ((gb, 0, ok & (lam < m.ext['lo'])), (gr, gb.size, ok & (lam >= m.ext['lo']))):
+        if not sel.any():
+            continue
+        j = np.clip(np.searchsorted(g, lam[sel]) - 1, 0, g.size - 2)
+        t[sel] = np.clip((lam[sel] - g[j]) / (g[j + 1] - g[j]), 0.0, 1.0)
+        i[sel] = base + j
+    return ok, i, t
+
+
+def _lookup(model, det):
+    """Positions of detector keys ``det`` in a member's sorted extension pixels: (found, pos)."""
+    pos = np.clip(np.searchsorted(model['det'], det), 0, max(model['det'].size - 1, 0))
+    found = model['det'].size > 0
+    return (model['det'][pos] == det) if found else np.zeros(det.size, bool), pos
+
+
+def design_full(members):
+    """The joint design over each member's whole trace: ``profile_joint.design`` (the
+    cutout pixels and the in-range spectra), plus every member's extension unknowns
+    (count rate) on those pixels (converted with the receiving pixel's calibration), and
+    rows for each member's pixels past its cutout (single frames, count rate) that no
+    cutout already holds, with every member's in-range light (converted back with the
+    giving member's calibration) and extension light on them.
+
+    Column layout per member: its in-range grid (``col0``), then its blue and red end
+    grids (``xcol0``). Single frames only (the first pass; no partners). Returns (A, d,
+    v, n_cut) with ``n_cut`` the number of cutout rows."""
+    tags = {}
+    cut_keys = [PJ._pixel_keys(m, tags)[3] for m in members]
+    PJ.owned_pixels(members)
+    A0, d0, v0 = PJ.design(members)
+    old0 = [c.col0 for c in members]
+    col = 0
+    newcol = np.zeros(A0.shape[1], int)
+    for c, o in zip(members, old0):
+        n = c.model.lam_grid.size
+        newcol[o:o + n] = col + np.arange(n)
+        c.col0, c.xcol0 = col, col + n
+        col = c.xcol0 + c.ext['n']
+    A0 = A0.tocoo()
+    rows, cols, vals = [A0.row], [newcol[A0.col]], [A0.data]
+
+    def add_ext_light(r, det, key, conv_of):
+        """Every member's extension light at detector pixels ``det`` (rows ``r``) of frame
+        ``key``; ``conv_of(sel)`` converts count rate to the row's units."""
+        for c in members:
+            mod = c.ext['model'].get(key) if c.ext['n'] else None
+            if mod is None:
+                continue
+            found, pos = _lookup(mod, det)
+            if not found.any():
+                continue
+            conv = conv_of(found)
+            ok, i, t = _ext_cols(c, mod['lam'][pos[found]])
+            ok &= np.isfinite(conv)
+            if not ok.any():
+                continue
+            rr = r[found][ok]
+            val = mod['g'][pos[found]][ok] * conv[ok]
+            rows.extend([rr, rr])
+            cols.extend([c.xcol0 + i[ok], c.xcol0 + i[ok] + 1])
+            vals.extend([val * (1 - t[ok]), val * t[ok]])
+
+    # the members' extension light on the cutout pixels (each member's owned rows)
+    row0 = 0
+    for s in members:
+        own = s.owned
+        loc = np.cumsum(own) - 1
+        for k in np.unique(s.pix_k[own]):
+            sel = own & (s.pix_k == k)
+            iy, ix, r = s.pix_iy[sel], s.pix_ix[sel], row0 + loc[sel]
+            e = s.model.exps[k]
+            det = (iy + int(e.origin[0])).astype(np.int64) * 100000 + (ix + int(e.origin[1]))
+            cal = s.calibration(k)[iy, ix]
+            add_ext_light(r, det, CT.exposure_key(e.name), lambda f, cal=cal: cal[f])
+        row0 += int(own.sum())
+    n_cut = row0
+
+    # rows past the cutouts: once per datum, never one a cutout holds
+    claimed = np.unique(np.concatenate(cut_keys)) if cut_keys else np.zeros(0, np.int64)
+    d, v = [d0], [v0]
+    for s in members:
+        R = s.ext.get('rows') if s.ext['n'] else None
+        if R is None:
+            continue
+        names = [CT.exposure_key(s.exps[k].name) for k in R['k']]
+        tid = np.array([tags.setdefault(nm + '|', len(tags)) for nm in names], np.int64)
+        keys = tid * 10 ** 10 + R['det']
+        own = ~np.isin(keys, claimed)
+        _, first = np.unique(keys, return_index=True)
+        once = np.zeros(keys.size, bool)
+        once[first] = True
+        own &= once
+        claimed = np.union1d(claimed, keys[own])
+        if not own.any():
+            continue
+        kk, det = R['k'][own], R['det'][own]
+        r_all = row0 + np.arange(int(own.sum()))
+        d.append(R['d'][own])
+        v.append(R['v'][own])
+        dy, dx = np.divmod(det, 100000)                     # 1-based detector row, column
+        for k in np.unique(kk):
+            sk = kk == k
+            key = CT.exposure_key(s.exps[k].name)
+            r = r_all[sk]
+            # in-range light of every member, from its calibrated units to count rate
+            for c in members:
+                b = c.basis.get(key)
+                if b is None:
+                    continue
+                cy = dy[sk] - int(b['origin'][0])
+                cx = dx[sk] - int(b['origin'][1])
+                ny, nx = b['prof'].shape
+                ins = (cy >= 0) & (cy < ny) & (cx >= 0) & (cx < nx)
+                if not ins.any():
+                    continue
+                prof = b['prof'][cy[ins], cx[ins]]
+                lam = b['plam'][cy[ins], cx[ins]]
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    conv = 1.0 / b['cal'][cy[ins], cx[ins]]
+                g = c.model.lam_grid
+                ok = (np.isfinite(prof) & (prof != 0) & np.isfinite(lam) & (lam >= g[0]) & (lam <= g[-1])
+                      & np.isfinite(conv))
+                if not ok.any():
+                    continue
+                lam = lam[ok]
+                i = np.clip(np.searchsorted(g, lam) - 1, 0, g.size - 2)
+                t = np.clip((lam - g[i]) / (g[i + 1] - g[i]), 0.0, 1.0)
+                val = conv[ok] * prof[ok]
+                rr = r[ins][ok]
+                rows.extend([rr, rr])
+                cols.extend([c.col0 + i, c.col0 + i + 1])
+                vals.extend([val * (1 - t), val * t])
+            add_ext_light(r, det[sk], key, lambda f, n=int(sk.sum()): np.ones(int(f.sum())))
+        row0 += int(own.sum())
+    A = sp.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(row0, col))
+    return A, np.concatenate(d), np.concatenate(v), n_cut
 
 
 # ---------------------------------------------------------------------------
@@ -250,32 +486,41 @@ def _normal(A, d, v, use):
 
 def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
     """Joint fit of ``members`` (the target first; ``owned_pixels`` makes it own all its
-    pixels). Returns dict(lam, flux, err, nosep, corr, npix, nclip) of the target, NaN
-    where its spectrum is not constrained.
+    pixels) over their whole traces (``design_full``). Returns dict(lam, flux, err,
+    nosep, corr, npix, nclip) of the target, NaN where its spectrum is not constrained,
+    and ``ext``: its light past its fitted wavelengths, dict(lam, flux, err, nosep) per
+    end grid (blue, red), in count-rate units.
 
     Errors: the target's columns of the inverse normal matrix (marginal, the other
     members free). nosep: wavelengths whose most negative correlation with a point of
     another member's spectrum is below ``-degenerate``; the other member's variance is
     computed only where the bound ``1 / N_jj`` already allows such a correlation."""
-    PJ.owned_pixels(members)
-    A, d, v = PJ.design(members)
-    blocks = np.concatenate([np.full(m.model.lam_grid.size, i) for i, m in enumerate(members)])
+    A, d, v, _ = design_full(members)
+    blocks = np.concatenate([np.full(m.model.lam_grid.size + m.ext['n'], i) for i, m in enumerate(members)])
+    # the in-range and the past-cutout unknowns are in different units (calibrated, count
+    # rate): which columns the data constrain is judged within each part
+    parts = np.concatenate([np.r_[np.full(m.model.lam_grid.size, 2 * i), np.full(m.ext['n'], 2 * i + 1)]
+                            for i, m in enumerate(members)])
     n = A.shape[1]
     use = np.isfinite(d) & np.isfinite(v) & (v > 0)
     for it in range(n_clip + 1):
         N, b = _normal(A, d, v, use)
         diag = N.diagonal()
         good = np.zeros(n, bool)
-        for i in range(len(members)):
-            sel = blocks == i
+        for i in np.unique(parts):
+            sel = parts == i
             dpos = diag[sel][diag[sel] > 0]
             if dpos.size:
                 good[sel] = diag[sel] > 1e-3 * np.median(dpos)
         gi = np.flatnonzero(good)
-        Ng = (N[gi][:, gi] + sp.identity(gi.size, format='csc') * 1e-9 * np.median(diag[good])).tocsc()
+        # solved for the unknowns scaled to unit diagonal, so the tiny ridge is relative to
+        # each column's own constraint (the two parts' diagonals differ by ~20 orders)
+        s = 1.0 / np.sqrt(diag[gi])
+        S = sp.diags(s)
+        Ng = (S @ N[gi][:, gi] @ S + sp.identity(gi.size, format='csc') * 1e-9).tocsc()
         lu = splu(Ng)
         f = np.zeros(n)
-        f[gi] = lu.solve(b[gi])
+        f[gi] = s * lu.solve(s * b[gi])
         if it == n_clip:
             break
         with np.errstate(invalid='ignore', divide='ignore'):
@@ -285,7 +530,7 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
             break
         use = new
     tcol = np.flatnonzero(blocks[gi] == 0)              # target columns, in gi indexing
-    m0 = members[0].model.lam_grid.size
+    m0 = members[0].model.lam_grid.size + members[0].ext['n']
     flux = np.full(m0, np.nan)
     err = np.full(m0, np.nan)
     corr = np.full(m0, np.nan)
@@ -317,11 +562,17 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
             cmin = np.nanmin(np.where(np.isfinite(c), c, 0.0), axis=0)
         cols = gi[tcol]                                   # global columns of the target
         flux[cols] = f[cols]
-        err[cols] = np.sqrt(np.abs(cii))
+        err[cols] = s[tcol] * np.sqrt(np.abs(cii))       # X, cii, cjj are of the scaled unknowns
         corr[cols] = cmin
     nosep = np.isfinite(corr) & (corr < -degenerate)
-    return dict(lam=members[0].model.lam_grid, flux=flux, err=err, nosep=nosep, corr=corr,
-                npix=int(use.sum()), nclip=int((~use & np.isfinite(d)).sum()))
+    n_in = members[0].model.lam_grid.size
+    gb, gr = members[0].ext['grids']
+    ext = []
+    for g, a in ((gb, n_in), (gr, n_in + gb.size)):
+        sl = slice(a, a + g.size)
+        ext.append(dict(lam=g, flux=flux[sl], err=err[sl], nosep=nosep[sl]))
+    return dict(lam=members[0].model.lam_grid, flux=flux[:n_in], err=err[:n_in], nosep=nosep[:n_in],
+                corr=corr[:n_in], ext=ext, npix=int(use.sum()), nclip=int((~use & np.isfinite(d)).sum()))
 
 
 # ---------------------------------------------------------------------------
@@ -329,22 +580,20 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
 # ---------------------------------------------------------------------------
 def pass1_of(target, sol, maps, stage_config):
     """A ``profile_contam.Pass1`` of the target from its joint solution: frames from its
-    own spectrum (never smoothed), the light past the calibrated range as every pass 1
-    has it, and the not-separable mask."""
+    own spectrum (never smoothed), the light past its fitted wavelengths from the joint
+    solution too (count rate, merged as ``ext`` pixels, ``ext_frames``), and the
+    not-separable mask."""
+    from campfire_pipeline.nirspec import profile_extend as PE
     st = CT.pass1_settings(stage_config)
     M, exps = target.model, target.exps
     R = PJ.fixed_result(M, target.p, target.eoff, flux=np.nan_to_num(sol['flux']),
                         flux_err=np.nan_to_num(sol['err']))
     R.flux = sol['flux']
-    is_prism = 'PRISM' in exps[0].grating
-    n_smooth = st['smooth_prism'] if is_prism else st['smooth_grating']
-    for e in exps:                                       # the light past the cutouts: nod differences
-        e.partners = list(e.nod_partners or [])
-    try:
-        frames, nosrc, ext = CT._frames(R, exps, target.sid, maps, target.workspace, n_smooth, st['lines'])
-    finally:
-        for e in exps:
-            e.partners = []
+    frames, nosrc, _ = CT._frames(R, exps, target.sid, None, target.workspace, 0, st['lines'])
+    ext = ext_frames(target, sol.get('ext'))
+    if ext is not None:
+        frames = PE.merge_frames(frames, ext)
+        nosrc = [k for k in nosrc if k not in ext['frames']]
     P1 = CT.Pass1(sid=int(target.sid), lam=sol['lam'], flux=sol['flux'], flux_err=sol['err'], frames=frames,
                   reliable=True, nosrc=set(nosrc))
     P1.ext, P1.nband, P1.nosep = ext, None, sol['nosep']
@@ -357,6 +606,38 @@ def pass1_of(target, sol, maps, stage_config):
     P1.rep_p95 = float(np.percentile(rep, 95)) if rep.size > 10 else np.nan
     P1.ref_p95, P1.n_lines = np.nan, 0
     return P1
+
+
+def ext_frames(target, ends):
+    """The target's light past its fitted wavelengths as ``profile_extend.merge_frames``
+    takes it: dict(lam, flux, err, flux_raw, frames, npix, nmask) with the frames on
+    each exposure's extension canvas, or None when it has none."""
+    if not ends or not target.ext['n'] or not any(np.isfinite(x['flux']).any() for x in ends):
+        return None
+    frames = {}
+    for key, mod in target.ext['model'].items():
+        rows, cols = mod['rows'], mod['cols']
+        img = np.zeros((rows.size, cols.size))
+        err = np.zeros((rows.size, cols.size))
+        for x in ends:
+            g = x['lam']
+            if g.size < 2:
+                continue
+            with np.errstate(invalid='ignore'):
+                on = (mod['lam'] >= g[0]) & (mod['lam'] <= g[-1]) & ((mod['lam'] < target.ext['lo']) == (g[-1] < target.ext['lo']))
+            f = np.interp(mod['lam'][on], g, np.nan_to_num(x['flux']))
+            e = np.interp(mod['lam'][on], g, np.nan_to_num(x['err']))
+            img[mod['iy'][on], mod['ix'][on]] += mod['g'][on] * f
+            err[mod['iy'][on], mod['ix'][on]] += np.abs(mod['g'][on]) * e
+        keep = np.isfinite(img) & (img != 0)
+        if keep.any():
+            frames[key] = dict(rows=rows, cols=cols, img=np.where(keep, img, 0.0), err=np.where(keep, err, 0.0),
+                               keep=keep)
+    if not frames:
+        return None
+    cat = lambda n: np.concatenate([np.asarray(x[n], float) for x in ends])     # noqa: E731
+    return dict(lam=cat('lam'), flux=cat('flux'), err=cat('err'), flux_raw=cat('flux'), frames=frames,
+                npix=0, nmask=0)
 
 
 def signature(stage_config, ids, prism=None):

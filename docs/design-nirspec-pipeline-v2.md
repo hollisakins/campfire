@@ -742,8 +742,9 @@ extraction 1 min. Figure `extraction-v2/e2e_compare/e2e_vs_prism.png`, numbers
   2. Each source's light past its cutout is solved alone, with every pixel another source's
      shutter lights masked. That is the masked first pass the joint solve replaced in range,
      and it fails the same way in crowded rows: 87 % of 632748's NRS2 band is masked and no
-     pixel past 5.20 µm survives. Fix proposed: put the past-cutout unknowns (count-rate
-     units) into the joint solve, so overlapping extensions are separated like the rest.
+     pixel past 5.20 µm survives. Decided (user, 2026-10-31): "the joint solve needs to do
+     the full range, not just the calibrated one". The past-cutout unknowns (count-rate
+     units) go into the joint solve, so overlapping extensions are separated like the rest.
 
 **Open (extraction session).**
 - Past-cutout light in the joint solve (cause 2 above); then rerun stage 3 on p1.

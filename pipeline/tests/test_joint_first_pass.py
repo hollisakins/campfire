@@ -62,6 +62,7 @@ class _Model:
 class _Member:
     def __init__(self, n):
         self.model = _Model(n)
+        self.ext = dict(n=0, grids=[np.zeros(0), np.zeros(0)], lo=3.0, model={}, rows=None)
 
 
 def test_solve_target_flags_only_the_inseparable_wavelengths(monkeypatch):
@@ -93,14 +94,50 @@ def test_solve_target_flags_only_the_inseparable_wavelengths(monkeypatch):
     v = np.full(r, 0.01)
     d = A @ np.r_[np.ones(n), 2 * np.ones(n)] + rng.normal(0, 0.1, r)
     members = [_Member(n), _Member(n)]
-    monkeypatch.setattr(JF.PJ, 'owned_pixels', lambda ms: None)
-    monkeypatch.setattr(JF.PJ, 'design', lambda ms: (A, d, v))
+    monkeypatch.setattr(JF, 'design_full', lambda ms: (A, d, v, r))
     sol = JF.solve_target(members, n_clip=0)
     assert sol['nosep'][: n // 2].all()
     assert not sol['nosep'][n // 2:].any()
     sep = slice(n // 2, n)
     assert np.allclose(sol['flux'][sep], 1.0, atol=5 * np.nanmax(sol['err'][sep]))
     assert np.all(sol['err'][: n // 2] > 3 * sol['err'][sep].max())     # inseparable: large errors
+
+
+def test_solve_target_recovers_unknowns_of_very_different_scales(monkeypatch):
+    """A target with in-range unknowns in calibrated units (design ~1e10) and past-cutout
+    unknowns in count rate (design ~1): both are recovered (an absolute ridge set by the
+    in-range columns used to pin the count-rate ones to zero)."""
+    rng = np.random.default_rng(1)
+    n_in, n_ext = 30, 10
+    m = _Member(n_in)
+    m.ext = dict(n=n_ext, grids=[np.zeros(0), np.linspace(5.2, 5.7, n_ext)], lo=3.0, model={}, rows=None)
+    rows, cols, vals = [], [], []
+    r = 0
+    for i in range(n_in + n_ext):
+        scale = 1e10 if i < n_in else 1.0
+        for _ in range(8):
+            rows.append(r)
+            cols.append(i)
+            vals.append(scale)
+            r += 1
+    A = sp.csr_matrix((vals, (rows, cols)), shape=(r, n_in + n_ext))
+    truth = np.r_[np.full(n_in, 3e-12), np.full(n_ext, 0.05)]
+    v = np.r_[np.full(8 * n_in, 1e-4), np.full(8 * n_ext, 1e-4)]
+    d = A @ truth + rng.normal(0, 1e-2, r)
+    monkeypatch.setattr(JF, 'design_full', lambda ms: (A, d, v, 8 * n_in))
+    sol = JF.solve_target([m], n_clip=0)
+    assert np.allclose(sol['flux'], 3e-12, rtol=0.01)
+    red = sol['ext'][1]
+    assert np.allclose(red['flux'], 0.05, atol=5 * red['err'].max())
+    assert np.all(red['err'] < 0.01)
+
+
+def test_ext_columns_pick_the_end_by_wavelength():
+    m = _Member(5)
+    m.ext = dict(n=6, grids=[np.array([2.6, 2.7, 2.8]), np.array([5.2, 5.3, 5.4])], lo=2.88)
+    ok, i, t = JF._ext_cols(m, np.array([2.65, 5.35, 4.0, 5.5]))
+    assert ok.tolist() == [True, True, False, False]
+    assert i[:2].tolist() == [0, 4] and np.allclose(t[:2], 0.5)
 
 
 class _Cache:
