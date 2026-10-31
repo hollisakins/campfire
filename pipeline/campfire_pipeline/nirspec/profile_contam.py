@@ -231,7 +231,9 @@ def geometry(exps, sid, maps):
 
 def calibration(e, rate_dir):
     """Per-pixel calibration of exposure e on its common frame: the calibrated frame
-    (path loss removed) over the rate, NaN where either is unusable or missing."""
+    (path loss removed) over the rate, NaN where either is unusable or missing. The
+    calibrated frame is ``PRE_BKGSUB_SCI`` once stage 2b has run, else the live SCI of
+    a canonical stage 2b has not touched (the first pass on single frames)."""
     from astropy.io import fits
 
     cal = np.full(e.y.shape, np.nan)
@@ -241,9 +243,12 @@ def calibration(e, rate_dir):
         return cal
     rate = fits.getdata(rate_path, 'SCI')
     with fits.open(e.path) as h:
-        if 'PRE_BKGSUB_SCI' not in h:
+        if 'PRE_BKGSUB_SCI' in h:
+            pre = np.asarray(h['PRE_BKGSUB_SCI'].data, float)
+        elif 'COMPLETE' not in str(h[0].header.get('S_BKDSUB', '')).upper():
+            pre = np.asarray(h['SCI'].data, float)
+        else:
             return cal
-        pre = np.asarray(h['PRE_BKGSUB_SCI'].data, float)
     r0, c0, ny, nx = e.cutout
     ys, xs = e.origin[0] + r0, e.origin[1] + c0
     raw = rate[ys - 1:ys - 1 + ny, xs - 1:xs - 1 + nx]
@@ -786,6 +791,8 @@ def write_pass1(out, P1, sig, n_maps, mode, round_):
                   keys=np.array(sorted(P1.frames)), nosrc=np.array(sorted(P1.nosrc)))
     if getattr(P1, 'nband', None) is not None:
         arrays['nband'] = P1.nband
+    if getattr(P1, 'nosep', None) is not None:         # joint first pass: wavelengths not separable
+        arrays['nosep'] = np.asarray(P1.nosep, bool)
     if getattr(P1, 'ext', None) is not None:          # the spectrum past the cutouts, count-rate units
         arrays.update(ext_lam=P1.ext['lam'], ext_flux=P1.ext['flux'], ext_err=P1.ext['err'],
                       ext_raw=P1.ext['flux_raw'])
@@ -856,6 +863,7 @@ class Pass1:
         P.keep_lines = bool(z['keep_lines']) if 'keep_lines' in z else True
         P.round = str(z['round']) if 'round' in z else '1'
         P.nband = z['nband'] if 'nband' in z else None
+        P.nosep = z['nosep'] if 'nosep' in z else None
         P.ext = (dict(lam=z['ext_lam'], flux=z['ext_flux'], err=z['ext_err'], flux_raw=z['ext_raw'])
                  if 'ext_lam' in z else None)
         return P
