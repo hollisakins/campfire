@@ -26,6 +26,13 @@ def _stuck_entries(obs):
         return {}
 
 
+def _shutter_calls(obs, files):
+    """Step 1's stuck-shutter calls of every root in ``files`` for the nods plots'
+    shutter labels ({root: {(q, r, c): call}}); {} for a root without a step-1 product."""
+    from campfire_pipeline.nirspec.master_bkg_rate import read_calls
+    return {root: read_calls(obs.workspace_dir, root) for root in sorted(set(files['root']))}
+
+
 def _stuck_table_to_dict(table):
     """Convert a stuck_closed_shutters Table to nested dict.
 
@@ -216,7 +223,7 @@ def _prefetch_crds_references(rate_files):
 
 def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
                 n_processes=1, plot=True, data_dir=None, products_dir=None,
-                _skip_stuck_detection=False, cfg=None):
+                cfg=None):
     """Orchestrate stage 2a: WCS assignment + unit fixing + optional resampling/plotting.
 
     Parameters
@@ -245,8 +252,6 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
 
     # Build extended-wavelength reference overrides if enabled. Done serially here,
     # before the parallel dispatch, so the cache writes never race across workers.
-    # (This block re-runs on the stuck-shutter self-recursion below; the build is
-    # cache-skipped, so that is cheap and the kwargs are reconstructed, not forwarded.)
     extended_refs = None
     if stage_config.get('extend_g140m_g235m'):
         from campfire_pipeline.nirspec.extended_wavelength import (
@@ -292,6 +297,14 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
     if n_processes > 1 and obs.rate_files:
         _prefetch_crds_references(obs.rate_files)
 
+    # Master background step 1, before the canonicals: the count-rate sky and the
+    # stuck-shutter fit from the rate files alone. Its calls join the stuck list as auto
+    # entries, and the sources (and background slitlets) whose shutters changed state
+    # are re-run even when their canonicals exist.
+    from campfire_pipeline.nirspec.master_bkg_rate import run_before_stage2a
+    rerun_sids, rerun_roots = run_before_stage2a(obs, stage_config, n_processes=n_processes, overwrite=overwrite)
+    kwargs.update(rerun_source_ids=frozenset(rerun_sids), rerun_roots=frozenset(rerun_roots))
+
     # Run Spec2Pipeline on each rate file
     results = dispatch(
         run_stage2a_single_rate,
@@ -311,89 +324,25 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
 
     dispatch(fix_units, list(files), n_processes=n_processes)
 
-    # Resample to s2d if plotting or stuck shutter detection needs it
-    detect_enabled = (stage_config.get('detect_stuck_shutters', False)
-                      and not _skip_stuck_detection)
-    if plot or detect_enabled:
+    # Resample to s2d for the nods plots
+    if plot:
         dispatch(resample_single_exposure, list(files), n_processes=n_processes,
                 overwrite=overwrite)
-
-    if plot:
         stuck_dict = _stuck_table_to_dict(obs.stuck_closed_shutters)
         plot_inputs = [files[files['source_id'] == sid] for sid in source_ids_processed]
         dispatch(plot_stage2a_results, plot_inputs, n_processes=n_processes,
-                 stuck_shutters=stuck_dict, stuck_entries=_stuck_entries(obs))
-
-    # --- Stuck shutter auto-detection ---
-    if detect_enabled:
-        from campfire_pipeline.nirspec.stuck_shutters import (
-            detect_stuck_shutters, merge_stuck_shutters,
-            write_stuck_shutters_toml, load_stuck_shutters_tagged,
-            _get_n_shutters,
-        )
-        from campfire_pipeline.nirspec.plots import plot_stuck_shutter_diagnostics
-        import toml as _toml
-
-        detected = detect_stuck_shutters(obs, files, stage_config,
-                                        n_processes=n_processes)
-
-        if detected:
-            # Merge with existing TOML entries, preserving each entry's
-            # provenance tag (hand/web/auto) through the rewrite so a later
-            # `pull-stuck-shutters` authority merge still tells web from hand.
-            prior_tags = load_stuck_shutters_tagged(obs.stuck_closed_shutters_file)
-            existing = _toml.load(obs.stuck_closed_shutters_file)
-            merged, updated = merge_stuck_shutters(existing, detected)
-            provenance = {k: tag for k, (_sh, tag) in prior_tags.items()}
-            for (root, sid) in updated:
-                provenance[(root, str(sid))] = 'auto'
-            write_stuck_shutters_toml(
-                merged, obs.stuck_closed_shutters_file, obs.name,
-                provenance=provenance,
-            )
-
-            # Generate diagnostic plots
-            if plot:
-                for root, sources in detected.items():
-                    for sid, stuck_list in sources.items():
-                        root_files = files[(files['root'] == root) &
-                                           (files['source_id'] == sid)]
-                        n_shut = _get_n_shutters(root_files)
-                        plot_stuck_shutter_diagnostics(
-                            files, sid, root, obs.workspace_dir,
-                            n_shut, stuck_list, stage_config,
-                        )
-
-            # Re-run stage2a for affected sources with detection disabled
-            affected_sids = list(set(
-                sid for src in detected.values() for sid in src.keys()
-            ))
-            log(f'Re-running stage2a for {len(affected_sids)} source(s) '
-                f'with detected stuck shutters: {affected_sids}')
-
-            run_stage2a(
-                obs, stage_config,
-                source_ids=affected_sids,
-                overwrite=True,
-                n_processes=n_processes,
-                plot=plot,
-                data_dir=data_dir,
-                products_dir=products_dir,
-                _skip_stuck_detection=True,
-            )
+                 stuck_shutters=stuck_dict, stuck_entries=_stuck_entries(obs),
+                 shutter_calls=_shutter_calls(obs, files))
 
     # Stamp the pipeline-computed exp_group (CFEXPGRP) on each canonical's primary
-    # header (§4.2) so deploy populates the nods grid with the exact grouping. Runs
-    # on every run_stage2a invocation (incl. the stuck-shutter re-run above, which
-    # regenerates its canonicals), so all files end up stamped.
+    # header (§4.2) so deploy populates the nods grid with the exact grouping.
     dispatch(stamp_exp_group_single, list(files), n_processes=n_processes)
 
-    # The master background, last: the sky of every exposure x detector from the empty
-    # shutters of the canonicals and the background slitlets written above. Once per
-    # top-level run (the stuck-shutter re-run returns here with the final canonicals).
-    if not _skip_stuck_detection:
-        from campfire_pipeline.nirspec.master_bkg import run_master_bkg
-        run_master_bkg(obs, stage_config, n_processes=n_processes, overwrite=overwrite, plot=plot)
+    # The master background step 2, last: the calibrated sky of every exposure x
+    # detector from the empty shutters of the canonicals and the background slitlets
+    # written above, painted with step 1's count-rate sky.
+    from campfire_pipeline.nirspec.master_bkg import run_master_bkg
+    run_master_bkg(obs, stage_config, n_processes=n_processes, overwrite=overwrite, plot=plot)
 
 
 def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
@@ -1138,6 +1087,8 @@ def run_stage2a_single_rate(
         single_call: bool = True,
         extract_bkgslits: bool = True,
         empirical_barshadow: bool = False,
+        rerun_source_ids=frozenset(),
+        rerun_roots=frozenset(),
         **kwargs
     ):
     """Stage 2a for one rate file: every source's canonical, plus the exposure's
@@ -1230,7 +1181,8 @@ def run_stage2a_single_rate(
         for source_id in source_ids_to_process:
             prod_name = f'{base}_{source_id}'
             nodata_marker = _nodata_marker(prod_name)
-            if (os.path.exists(f'{prod_name}.fits') or os.path.exists(nodata_marker)) and not overwrite:
+            if ((os.path.exists(f'{prod_name}.fits') or os.path.exists(nodata_marker)) and not overwrite
+                    and source_id not in rerun_source_ids):
                 log(f'Skipping stage2a for {prod_name}, overwrite=False')
                 source_ids_processed.append(source_id)
                 continue
@@ -1241,7 +1193,7 @@ def run_stage2a_single_rate(
 
         bkgslits_path = os.path.join(obs.bkgslits_dir, f'{base}_bkgslits.fits')
         bkg_needed = bool(extract_bkgslits and single_call
-                          and (overwrite or not os.path.exists(bkgslits_path)))
+                          and (overwrite or not os.path.exists(bkgslits_path) or root in rerun_roots))
 
         if not pending and not bkg_needed:
             log('No source IDs to process, exiting...')

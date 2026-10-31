@@ -30,6 +30,31 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec master background in two steps; stuck shutters from a sky-template fit.**
+  Step 1 (`nirspec/master_bkg_rate.py`) runs at the start of stage 2a from the rate files
+  alone: one `assign_wcs` per rate file gives every commanded slitlet's footprint
+  (`coverage.rate_geometry`, a compact cache beside the coverage counter, which now comes
+  from the same pass and is identical to the old one); the empty shutters of every
+  slitlet give the count-rate sky `MBKG1DR` and its quadrant scales (judged on the core
+  less the source pad with the wider `master_bkg_rate_*` thresholds, measured over the
+  whole core, as the calibrated pass); `shutter_fit.fit_shutters` fits every
+  commanded-open shutter's sky template in each rate frame and `call_shutters` calls a
+  shutter stuck per exposure root (`master_bkg_stuck_*`); the stuck shutters leave the sky
+  and are merged into the stuck list as `auto` entries, and stage 2a re-runs the sources
+  and background slitlets whose shutters changed state. New product
+  `<root>_<nod>_<nrsN>_mbkgr.fits` (layout kind `nirspec_mbkgr`, cloud-backed):
+  `MBKG1DR`, `MBKGQSR`, `MBKGSHR`, `SHUTAMP`, `CALLS`. Step 2 (`master_bkg.run_master_bkg`,
+  end of stage 2a, `ALGORITHM_VERSION` 1.2) reselects its clean shutters in calibrated
+  units as before and paints past the calibrated range with step 1's sky and quadrant
+  scales (its own count-rate pass is gone; `MBKG1DR` in `_mbkg.fits` is a copy;
+  `MBKGRDT` stamps the step-1 product). The `low_frac` detector and the stage 2a
+  self-recursion are gone for every disperser; `cfpipe nirspec detect-stuck` runs step 1;
+  `detect_stuck_shutters_grating` and the `stuck_shutter_low_frac_threshold*` keys are
+  retired. On ember_cosmos_p1: the calls are the 15 hand-vetted PRISM shutters and the
+  21 G395M shutters of the fit study; the step-1 sky agrees with the previous one to 1 %
+  on the prism and within ±2–5 % (41-bin running median) on G395M; `MBKGRRAT` 0.984–1.000
+  (was 0.987–1.007).
+
 - **NIRSpec stuck-closed shutters are keyed by physical MSA shutter.** The list
   `reference/nirspec/<obs>/stuck_closed_shutters.toml` takes a `[<root>.shutters]` table keyed
   `"q<quadrant>r<row>c<column>"` (the metafile's `shutter_quadrant` / `shutter_row` /

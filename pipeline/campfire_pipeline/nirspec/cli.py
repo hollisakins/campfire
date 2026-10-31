@@ -140,14 +140,20 @@ def stage2a(config, obs, source_ids, processes, overwrite):
 @common_options
 @processing_options
 def master_bkg(config, obs, source_ids, processes, overwrite):
-    """Derive the master background (<root>_<nod>_<nrsN>_mbkg.fits) of every exposure
-    from the stage-2a canonicals and background slitlets. Runs at the end of stage 2a
-    too; this re-runs it alone (--overwrite to redo current products)."""
+    """Derive the master background of every exposure: step 1 from the rate files
+    (<root>_<nod>_<nrsN>_mbkgr.fits: the count-rate sky and the stuck-shutter fit), then
+    step 2 from the stage-2a canonicals and background slitlets (_mbkg.fits: the
+    calibrated sky and its painting). Both run within stage 2a too; this re-runs them
+    alone (--overwrite to redo current products). Step 1's stuck calls are stored but
+    not merged into the stuck list here (that is stage 2a's or detect-stuck's job, since
+    the canonicals would need a re-run)."""
     from campfire_pipeline.nirspec.master_bkg import run_master_bkg
+    from campfire_pipeline.nirspec.master_bkg_rate import run_step1
 
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
         stage_config = get_stage_config('stage2', cfg, obs_obj)
+        run_step1(obs_obj, stage_config, n_processes=processes, overwrite=overwrite, write_calls=False)
         run_master_bkg(obs_obj, stage_config, n_processes=processes, overwrite=overwrite)
 
 
@@ -250,139 +256,38 @@ def linefit(config, obs, source_ids, processes, overwrite, allow_auto, gratings)
 @common_options
 @click.option('--processes', '-p', default=1, type=int,
               help='Number of parallel processes.')
-@click.option('--source-ids', multiple=True, type=str, default=None,
-              cls=_VariadicOption, callback=_parse_source_ids,
-              help='Source IDs to analyze (default: all).')
 @click.option('--overwrite', is_flag=True,
-              help='Replace existing TOML with fresh detection results.')
-def detect_stuck(config, obs, processes, source_ids, overwrite):
-    """Run stuck shutter detection on existing s2d files.
+              help='Redo master-background step 1 even where its products are current.')
+def detect_stuck(config, obs, processes, overwrite):
+    """Find stuck-closed shutters: master-background step 1 on the rate files.
 
-    Detects stuck shutters, writes results to the observation's TOML file,
-    and generates diagnostic plots.  Does NOT re-run stage2a — use this to
-    inspect results before re-running downstream stages manually.
-
-    Typical workflow for an already-completed observation:
+    Fits every commanded-open shutter's sky in each rate frame (nirspec/shutter_fit.py),
+    calls a shutter stuck from all nods and both detectors of its exposure root, stores
+    the fit and the calls in <rate>_mbkgr.fits and merges the stuck calls into the
+    observation's stuck list as auto entries (manual and web entries win). Stage 2a runs
+    this itself; use this to inspect the calls before re-running it:
 
     \b
-      1. cfpipe nirspec detect-stuck --obs my_obs -p 4
-      2. Inspect plots in workspace/stuck_shutters/ and edit TOML if needed
+      1. cfpipe nirspec detect-stuck --obs my_obs -p 6
+      2. Inspect reference/nirspec/<obs>/stuck_closed_shutters.toml (and the nods plots)
       3. cfpipe nirspec run --obs my_obs --stage2a --stage2b --stage3 \\
-             --source-ids <affected IDs> --overwrite -p 4
+             --source-ids <affected IDs> --overwrite -p 6
     """
-    import numpy as np
-    import toml as _toml
-    from astropy.io import fits
-    from campfire_pipeline.common.parallel import dispatch
-    from campfire_pipeline.nirspec.stage2 import resample_single_exposure
-    from campfire_pipeline.nirspec.stuck_shutters import (
-        detect_stuck_shutters, merge_stuck_shutters,
-        write_stuck_shutters_toml, load_stuck_shutters_tagged,
-        _get_n_shutters,
-    )
-    from campfire_pipeline.nirspec.plots import plot_stuck_shutter_diagnostics
+    from campfire_pipeline.nirspec.master_bkg_rate import run_before_stage2a
 
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
         stage_config = get_stage_config('stage2', cfg, obs_obj)
-
-        # Force detection enabled (the user explicitly asked for it)
-        stage_config['detect_stuck_shutters'] = True
-
-        sids = _resolve_source_ids(source_ids)
-        files = obs_obj.discover_files(ext='canonical', source_ids=sids)
-        files = Observation.group_files(files)
-        log(f'Found {len(files)} canonical files for {obs_name}')
-
-        # Guard: detect-stuck must run on calibrated (pre-stage2b) canonicals.
-        # resample_single_exposure caches the un-bkgsub S2D_SCI view from the
-        # canonical's *live* slit SCI, which stage2b overwrites in place with the
-        # background-subtracted frame. Running after stage2b would resample
-        # bkgsub'd data and mislabel it S2D_SCI, corrupting stuck-shutter
-        # detection. CFP_BKG carries a timestamp once a nod is actually
-        # subtracted; the skipped:/excluded: markers leave the live SCI calibrated.
-        def _is_subtracted(path):
-            v = fits.getheader(path).get('CFP_BKG')
-            return bool(v) and not str(v).startswith(('skipped', 'excluded'))
-        subtracted = [f['path'] for f in files if _is_subtracted(f['path'])]
-        if subtracted:
-            log(f'ERROR: {len(subtracted)} canonical(s) for {obs_name} are already '
-                f'background-subtracted (CFP_BKG set); detect-stuck must run BEFORE '
-                f'stage2b. Re-run stage2a to restore the calibrated frame '
-                f'(cfpipe nirspec run --obs {obs_name} --stage2a --overwrite), '
-                f'then re-run detect-stuck.')
+        stage_config['detect_stuck_shutters'] = True          # the user asked for the calls
+        sids, roots = run_before_stage2a(obs_obj, stage_config, n_processes=processes, overwrite=overwrite)
+        if not sids:
+            log(f'{obs_name}: no shutter changed stuck state')
             continue
-
-        # Ensure s2d files exist (skips if already present)
-        dispatch(resample_single_exposure, list(files), n_processes=processes)
-
-        detected = detect_stuck_shutters(obs_obj, files, stage_config,
-                                         n_processes=processes)
-
-        if detected:
-            if overwrite:
-                # Write fresh detection results, replacing existing TOML — every
-                # entry is auto-detected, so tag them all `# auto`.
-                data = {r: {str(s): sh for s, sh in srcs.items()}
-                        for r, srcs in detected.items()}
-                provenance = {(r, str(s)): 'auto'
-                              for r, sources in detected.items()
-                              for s in sources.keys()}
-                write_stuck_shutters_toml(
-                    data, obs_obj.stuck_closed_shutters_file, obs_obj.name,
-                    provenance=provenance,
-                )
-            else:
-                # Merge with existing TOML entries (manual entries preserved),
-                # carrying each entry's provenance tag (hand/web/auto) through the
-                # rewrite so a later pull-stuck-shutters merge still tells them apart.
-                prior_tags = load_stuck_shutters_tagged(obs_obj.stuck_closed_shutters_file)
-                existing = _toml.load(obs_obj.stuck_closed_shutters_file)
-                merged, updated = merge_stuck_shutters(existing, detected)
-                provenance = {k: tag for k, (_sh, tag) in prior_tags.items()}
-                for (root, sid) in updated:
-                    provenance[(root, str(sid))] = 'auto'
-                write_stuck_shutters_toml(
-                    merged, obs_obj.stuck_closed_shutters_file, obs_obj.name,
-                    provenance=provenance,
-                )
-
-            # Generate diagnostic plots
-            for root, sources in detected.items():
-                for sid, stuck_list in sources.items():
-                    root_files = files[(files['root'] == root) &
-                                       (files['source_id'] == sid)]
-                    n_shut = _get_n_shutters(root_files)
-                    plot_stuck_shutter_diagnostics(
-                        files, sid, root, obs_obj.workspace_dir,
-                        n_shut, stuck_list, stage_config,
-                    )
-
-            # Regenerate nods plots with stuck shutter annotations
-            from campfire_pipeline.nirspec.plots import plot_stage2a_results
-            stuck_dict = {}
-            for row in obs_obj.stuck_closed_shutters:
-                r = row['root']
-                sid = int(row['source_id'])
-                stuck_dict.setdefault(r, {})[sid] = list(row['shutters'])
-            affected_sids = sorted(set(
-                sid for src in detected.values() for sid in src.keys()
-            ))
-            plot_inputs = [files[files['source_id'] == sid]
-                           for sid in affected_sids]
-            from campfire_pipeline.nirspec.stage2 import _stuck_entries
-            dispatch(plot_stage2a_results, plot_inputs,
-                     n_processes=processes, stuck_shutters=stuck_dict,
-                     stuck_entries=_stuck_entries(obs_obj))
-
-            # Print affected source IDs for easy copy-paste
-            log(f'\nAffected source IDs ({len(affected_sids)}): '
-                f'{" ".join(str(s) for s in affected_sids)}')
-            log(f'\nTo re-run downstream stages:')
-            log(f'  cfpipe nirspec run --obs {obs_name} '
-                f'--stage2a --stage2b --stage3 '
-                f'--source-ids {" ".join(str(s) for s in affected_sids)} '
-                f'--overwrite -p {processes}')
+        affected = ' '.join(str(s) for s in sorted(sids))
+        log(f'\nAffected source IDs ({len(sids)}): {affected}')
+        log('\nTo re-run downstream stages:')
+        log(f'  cfpipe nirspec run --obs {obs_name} --stage2a --stage2b --stage3 '
+            f'--source-ids {affected} --overwrite -p {processes}')
 
 
 # ---------------------------------------------------------------------------

@@ -62,7 +62,7 @@ from campfire_pipeline.nirspec import barshadow_calibration as B
 from campfire_pipeline.nirspec.coverage import (coverage_from_wcs, cutoffs_for, default_cache_dir, cache_path,
                                                  slit_geometry_extended)
 
-ALGORITHM_VERSION = '1.1'     # 1.1: the sky is painted past the calibrated range (2026-10-30)
+ALGORITHM_VERSION = '1.2'     # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31)
 _PREFIX = 'master_bkg_'
 DEFAULTS = dict(
     master_bkg_source_pad_px=3.0,     # rows beyond the source shutter's edges dropped (§9: 3 px)
@@ -77,6 +77,11 @@ DEFAULTS = dict(
     master_bkg_low_min=0.30,          # reject a shutter fainter than the sky by this (and 3 sigma)
     master_bkg_n_iter=3,
     master_bkg_min_shutters=5,        # below this the exposure takes the group's pooled sky
+    master_bkg_rate_excess_min=0.15,  # step 1 (count rate, no flat: ~7 % grey per slitlet): excess threshold
+    master_bkg_rate_low_min=0.30,     # step 1: low-throughput threshold
+    master_bkg_stuck_a_cut=0.3,       # step 1 stuck call: median sky amplitude below this
+    master_bkg_stuck_min_n=2,         # ... from at least this many measurements (nods x detectors)
+    master_bkg_stuck_guard=0.5,       # ... and the two detectors' medians within this
     master_bkg_error_floor=0.03,      # fraction of the sky added in quadrature downstream
     master_bkg_quadrant_scales=True,
     master_bkg_model_check=True,      # compare with jwst_backgrounds when installed
@@ -171,10 +176,11 @@ def inputs_stamp(canonicals):
     return max((os.path.getmtime(p) for p in paths), default=0.0)
 
 
-def product_current(path, rate_path, canonicals, stuck_mtime, bs_name=None, bs_stamp=None):
+def product_current(path, rate_path, canonicals, stuck_mtime, bs_name=None, bs_stamp=None, step1_path=None):
     """True when ``path`` was derived from these inputs by this algorithm (and, when
     ``bs_name`` / ``bs_stamp`` are given, with that bar-shadow table, of that
-    derivation date, in the 2-D expansion)."""
+    derivation date, in the 2-D expansion; when ``step1_path`` is given, from that
+    step-1 product as it is now)."""
     if not os.path.exists(path):
         return False
     try:
@@ -188,7 +194,15 @@ def product_current(path, rate_path, canonicals, stuck_mtime, bs_name=None, bs_s
             and abs(float(hdr.get('MBKGINMT', -1)) - inputs_stamp(canonicals)) < 1e-3
             and int(hdr.get('MBKGNIN', -1)) == len(canonicals)
             and (bs_name is None or str(hdr.get('MBKGBSRF')) == bs_name)
-            and (bs_stamp is None or str(hdr.get('MBKGBSDT')) == bs_stamp))
+            and (bs_stamp is None or str(hdr.get('MBKGBSDT')) == bs_stamp)
+            and (step1_path is None or str(hdr.get('MBKGRDT')) == _step1_date(step1_path)))
+
+
+def _step1_date(path):
+    try:
+        return str(fits.getheader(path).get('MBKGDATE'))
+    except Exception:
+        return 'None'
 
 
 # ---------------------------------------------------------------------------
@@ -707,23 +721,6 @@ def _geometries(c):
     return g, gx
 
 
-def _rate_samples(c, gx, rate, rvar, rate_ok, clean, core_frac):
-    """One slitlet's clean shutters' core pixels in rate units over its extended footprint:
-    ``{(slitlet_id, k): (lam, rate, var)}``."""
-    blk = (slice(gx['row_lo'], gx['row_lo'] + gx['footprint'].shape[0]), slice(0, rate.shape[1]))
-    core = gx['footprint'] & gx['is_open'] & (np.abs(gx['f']) <= core_frac) & rate_ok[blk]
-    out = {}
-    if not core.any():
-        return out
-    sid = gx['slitlet_id']
-    for kk in np.unique(gx['k'][core]):
-        if (sid, int(kk)) not in clean:
-            continue
-        sel = core & (gx['k'] == kk)
-        out[(sid, int(kk))] = (gx['lam'][sel], rate[blk][sel], rvar[blk][sel])
-    return out
-
-
 def _rate_frame(rate_path, counter_path):
     """The rate frame, its variance and the pixels the rate-unit sky may use (finite,
     DQ-clean, one footprint on the coverage counter)."""
@@ -739,49 +736,6 @@ def _rate_frame(rate_path, counter_path):
         rate_ok &= counter == 1
     rvar = np.where(np.isfinite(rerr) & (rerr > 0), rerr ** 2, np.nan)
     return rate, rvar, rate_ok, counter
-
-
-def _clean_shutters(prod):
-    """``{(slitlet_id, k)}`` of the product's clean empty shutters."""
-    clean = set()
-    sh = prod.get('shutters')
-    if sh is not None and len(sh):
-        for sid, k, cl in zip(sh['slitlet_id'], sh['k'], sh['clean']):
-            if bool(cl):
-                clean.add((int(sid), int(k)))
-    return clean
-
-
-def _worker_rate_samples(args):
-    """Pass 2a for one rate file: the clean shutters' spectra in count-rate units on the
-    disperser's extended grid, one ``ShutterSpectrum`` per shutter (``sb`` in DN/s)."""
-    rate_path, product, canonicals, counter_path, edges, opt = args
-    prod = load_product(product)
-    rate, rvar, rate_ok, _ = _rate_frame(rate_path, counter_path)
-    clean = _clean_shutters(prod)
-    core_frac = float(opt.get('core_frac', 0.2))
-    samples, seen, failures = defaultdict(list), set(), []
-    for c in canonicals:
-        try:
-            _, gx = _geometries(c)
-        except Exception as e:
-            failures.append((c.key, f'{type(e).__name__}: {e}')); continue
-        key = (gx['name'], gx['quadrant'])
-        if key in seen:
-            continue
-        seen.add(key)
-        for k, v in _rate_samples(c, gx, rate, rvar, rate_ok, clean, core_frac).items():
-            samples[k].append(v)
-    specs = []
-    for (sid, kk), parts in samples.items():
-        lam = np.concatenate([p[0] for p in parts]); v = np.concatenate([p[1] for p in parts]); var = np.concatenate([p[2] for p in parts])
-        if lam.size < opt.get('min_pixels', 20):
-            continue
-        var = np.where(np.isfinite(var), var, np.nanmedian(var) if np.isfinite(var).any() else 1.0)
-        sb, err, n = bin_spectrum(lam, v, var, edges)
-        specs.append(ShutterSpectrum(rate_base=rate_base_of(rate_path), source_id=0, slitlet_id=sid, quadrant=0,
-                                     k=kk, n_pix=int(lam.size), sb=sb, err=err, n=n))
-    return rate_path, specs, failures
 
 
 def rate_sky_for(base, specs_of, clip_sigma, min_shutters=3, min_overlap=10):
@@ -831,11 +785,12 @@ def _worker_paint(args):
     first calibrated column and beyond its last, and the columns jwst's bounding box
     leaves outside the calibrated range), the sky is painted in count-rate units with no
     flat or photometric calibration: the exposure's rate-unit sky at the open-shutter
-    centre ``rate_sky`` (``rate_sky_for``) times the bar shadow at the pixel's
+    centre ``rate_sky`` and its quadrant scales ``rate_q`` (step 1, ``master_bkg_rate``)
+    times the bar shadow at the pixel's
     slit-frame row. Both are summed where footprints overlap; each slitlet is painted
     once (two sources of one slitlet get cutouts a pixel apart).
     """
-    rate_path, product, canonicals, bs_path, counter_path, centres, rate_sky, opt = args
+    rate_path, product, canonicals, bs_path, counter_path, centres, rate_sky, opt, rate_q = args
     table = B.load_table(bs_path)
     prod = load_product(product)
     rate, _, _, counter = _rate_frame(rate_path, counter_path)
@@ -854,7 +809,7 @@ def _worker_paint(args):
     n_painted, n_ext, failures = 0, 0, []
     painted = set()
     check = []                          # (lam, in-range painted value) on core pixels, for the continuity check
-    rs_fin = rate_sky is not None and np.isfinite(rate_sky[0]).any()
+    rs_fin = rate_sky is not None and centres is not None and np.isfinite(rate_sky[0]).any()
     floor_bs = float(np.nanmin(table['data1x1']))
 
     def paint(block, val, is_open):
@@ -906,7 +861,7 @@ def _worker_paint(args):
         lam = gx['lam']
         fin = np.isfinite(rate_sky[0])
         sb = np.interp(lam, centres[fin], rate_sky[0][fin], left=np.nan, right=np.nan)
-        q = prod['qscales'].get(int(gx.get('quadrant', 0)), np.nan)
+        q = rate_q.get(int(gx.get('quadrant', 0)), np.nan)          # step 1's, in count rate
         if np.isfinite(q) and q > 0:
             sb = sb * q
         bs = np.full(lam.shape, np.nan)
@@ -1091,7 +1046,9 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         if cans[0].grating not in bs_name_of:
             name, bs_path = _barshadow_reference(cans[0].grating, cans[0].path)
             bs_name_of[cans[0].grating] = (name, barshadow_stamp(bs_path))
-        if not overwrite and product_current(out, rate, cans, stuck_mtime, *bs_name_of[cans[0].grating]):
+        from campfire_pipeline.nirspec.master_bkg_rate import product_path as step1_path
+        if not overwrite and product_current(out, rate, cans, stuck_mtime, *bs_name_of[cans[0].grating],
+                                             step1_path=step1_path(obs, base)):
             log(f'master background: {base}: current, skipped')
             continue
         todo[base] = (rate, cans)
@@ -1224,40 +1181,24 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
 
     if paint_args:
         from multiprocessing import Pool
-        # pass 2a: the clean shutters in count-rate units on the disperser's extended grid
-        # (the MBKG1D grid continued to the cutoffs), over every rate file of the groups,
-        # so each exposure's rate-unit sky has the group pool and the other detector to
-        # fall back on where its own shutters reach no further (an NRS1 red end lies on
-        # NRS2 for most slitlets)
-        ext_edges = {}
-        for key in dispersers:
-            c_ = 0.5 * (edges_of[key][1:] + edges_of[key][:-1])
-            blue, red = cutoffs_for(*key)
-            ext_edges[key] = rate_sky_edges(c_, blue if blue is not None else c_[0], red if red is not None else 1.5 * c_[-1])
-        sample_args = []
-        for base in sorted(sample):
-            rate = os.path.join(obs.workspace_dir, f'{base}_rate.fits')
-            prod_path = product_path(obs, base)
-            if not os.path.exists(rate) or not os.path.exists(prod_path):
+        # the count-rate sky and its quadrant scales come from step 1 (master_bkg_rate,
+        # before stage 2a, from the rate files alone); without its product a rate file is
+        # painted in the calibrated range only
+        from campfire_pipeline.nirspec import master_bkg_rate as R
+        rate_skies, rate_q, centres_of, step1_date = {}, {}, {}, {}
+        for (rate, out, cans, bs_path, counter, o), key in paint_args:
+            base = rate_base_of(rate)
+            p1 = R.product_path(obs, base)
+            if not os.path.exists(p1):
+                log(f'master background: {base}: no step-1 product, painted in the calibrated range only')
                 continue
-            key = (sample[base][0].grating, sample[base][0].filter)
-            sample_args.append((rate, prod_path, sample[base], counters.get(rate), ext_edges[key], opt))
-        specs_of = {}
-        if n_processes > 1:
-            with Pool(min(n_processes, len(sample_args))) as pool:
-                for rate, specs, fails in pool.imap_unordered(_worker_rate_samples, sample_args):
-                    specs_of[rate_base_of(rate)] = specs
-        else:
-            for a in sample_args:
-                rate, specs, fails = _worker_rate_samples(a)
-                specs_of[rate_base_of(rate)] = specs
-        rate_skies = {}
-        for base in specs_of:
-            grp = base.rsplit('_', 2)[0]
-            in_group = {b: sp for b, sp in specs_of.items() if b.rsplit('_', 2)[0] == grp}
-            rate_skies[base] = rate_sky_for(base, in_group, opt['clip_sigma'])
-        paint_args = [(rate, out, cans, bs_path, counter, 0.5 * (ext_edges[key][1:] + ext_edges[key][:-1]),
-                       rate_skies.get(rate_base_of(rate)), o)
+            sky_t, q = R.read_rate_sky(p1)
+            centres_of[base] = np.asarray(sky_t['wavelength'], float)
+            rate_skies[base] = tuple(np.asarray(sky_t[c]) for c in ('rate', 'rate_err', 'n_shutters', 'source'))
+            rate_q[base] = q
+            step1_date[base] = str(fits.getheader(p1).get('MBKGDATE'))
+        paint_args = [(rate, out, cans, bs_path, counter, centres_of.get(rate_base_of(rate)),
+                       rate_skies.get(rate_base_of(rate)), o, rate_q.get(rate_base_of(rate), {}))
                       for (rate, out, cans, bs_path, counter, o), key in paint_args]
 
         def _finish(res):
@@ -1265,9 +1206,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             base = rate_base_of(rate)
             out = product_path(obs, base)
             rate_sky = rate_skies.get(base)
-            grp = base.rsplit('_', 2)[0]
-            key = (sample[base][0].grating, sample[base][0].filter)
-            centres_ext = 0.5 * (ext_edges[key][1:] + ext_edges[key][:-1])
+            centres_ext = centres_of.get(base)
             with fits.open(out, memmap=False) as h:
                 hdul = fits.HDUList([x.copy() for x in h])
             blue, red = cutoffs_of.get(rate, (None, None))
@@ -1278,6 +1217,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             if np.isfinite(ratio):
                 hdul[0].header['MBKGRRAT'] = (float(ratio), 'in-range painted / rate-unit sky, median')
             hdul[0].header['MBKGDQ1'] = ('1 uncovered, 2 covering trace unpainted', 'MBKG2DDQ bits')
+            hdul[0].header['MBKGRDT'] = (step1_date.get(base, 'None'), 'step-1 product (_mbkgr) derivation date')
             if rate_sky is not None:
                 tr = Table()
                 tr['wavelength'] = np.asarray(centres_ext, np.float64); tr['wavelength'].unit = 'um'
@@ -1285,7 +1225,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
                 tr['rate_err'] = np.asarray(rate_sky[1], np.float32); tr['rate_err'].unit = 'count/s'
                 tr['n_shutters'] = np.asarray(rate_sky[2], np.int32)
                 tr['source'] = np.asarray(rate_sky[3], np.int16)
-                hdu = fits.BinTableHDU(tr, name='MBKG1DR')
+                hdu = fits.BinTableHDU(tr, name='MBKG1DR')        # a copy of step 1's, for the readers of this product
                 hdu.header['SOURCE'] = ('1 own shutters, 2 group pool same detector, 3 other detector scaled, 4 held', 'the source column')
                 hdul.append(hdu)
                 srcs = np.bincount(np.asarray(rate_sky[3], int), minlength=5)

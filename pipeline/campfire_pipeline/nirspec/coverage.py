@@ -187,34 +187,31 @@ def add_block(frame, g, values=None):
 
 
 # ---------------------------------------------------------------------------
-# The counter
+# One rate file's slitlets: the geometry cache and the counter
 # ---------------------------------------------------------------------------
 
-def coverage_from_wcs(rate_path, cache_dir=None, cutoffs=None, wavelengthrange_override=None):
-    """Count of slitlet footprints per pixel of ``rate_path`` (int16, detector shape).
+GEOMETRY_VERSION = 1
+FIXED_SLITS = ('S200A1', 'S200A2', 'S400A1', 'S1600A1', 'S200B1')
 
-    Every open slitlet in the metafile the rate file points at, plus the failed-open
-    shutters of the ``msaoper`` reference; fixed slits are skipped (always masked
-    elsewhere). Each footprint is the slitlet's extended geometry cut to ``cutoffs``
-    (default: the disperser's ``WAVELENGTH_CUTOFFS``). ``wavelengthrange_override`` is the
-    extended ``wavelengthrange`` reference of the extended-wavelength reduction, so the
-    slit transforms' wavelength domain matches that reduction's. Cached as
-    ``coverage_<rate>_<hash>_v2[_cut<hash>][_wr<hash>].npy`` under ``cache_dir``.
-    """
-    from astropy.io import fits
-    if cutoffs is None:
-        ph = fits.getheader(rate_path)
-        cutoffs = cutoffs_for(ph.get('GRATING', ''), ph.get('FILTER', ''))
-    cache = cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override) if cache_dir else None
-    if cache and os.path.exists(cache):
-        return np.load(cache)
 
-    from jwst.datamodels import ImageModel
+def geometry_cache_path(rate_path, cache_dir, cutoffs=None, wavelengthrange_override=None):
+    """The ``RateGeometry`` cache of ``rate_path``, keyed like the counter's."""
+    p = cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override)
+    head, tail = os.path.split(p)
+    return os.path.join(head, 'geometry' + tail[len('coverage'):-len('.npy')] + f'_g{GEOMETRY_VERSION}.npz')
+
+
+def _assign_wcs(rate_path, wavelengthrange_override=None):
+    """``assign_wcs`` on the rate file in memory with the metafile its header names (the
+    original one, so every commanded-open shutter is present), plus the failed-open
+    shutters of the ``msaoper`` reference on a WCS of their own:
+    ``[(holder, slits, kind), ...]`` with kind ``'msa'`` / ``'failed'``."""
+    from gwcs.wcs import WCS
     from jwst.assign_wcs import AssignWcsStep
     from jwst.assign_wcs.nirspec import generate_compound_bbox, slitlets_wcs
-    from jwst.msaflagopen.msaflagopen_step import create_reference_filename_dictionary, MSAFlagOpenStep
+    from jwst.datamodels import ImageModel
     from jwst.msaflagopen.msaflag_open import create_slitlets
-    from gwcs.wcs import WCS
+    from jwst.msaflagopen.msaflagopen_step import MSAFlagOpenStep, create_reference_filename_dictionary
 
     prev = os.getcwd()
     os.chdir(os.path.dirname(os.path.abspath(rate_path)))
@@ -225,27 +222,133 @@ def coverage_from_wcs(rate_path, cache_dir=None, cutoffs=None, wavelengthrange_o
             if wavelengthrange_override:
                 step.override_wavelengthrange = wavelengthrange_override
             processed = step.run(model)
-            source_slits = processed.meta.wcs.get_transform('gwa', 'slit_frame').slits
-            failed = create_slitlets(MSAFlagOpenStep().get_reference_file(processed, 'msaoper'))
-            refnames = create_reference_filename_dictionary(processed)
-            counter = np.zeros(model.data.shape, np.int16)
-            for slits, holder in ((source_slits, processed), (failed, None)):
-                if not slits:
-                    continue
-                if holder is None:
-                    holder = ImageModel()
-                    holder.meta.wcs = WCS(slitlets_wcs(processed, refnames, slits))
-                    holder.meta.wcsinfo = processed.meta.wcsinfo
-                    holder.meta.exposure.type = 'NRS_MSASPEC'
-                    holder.meta.wcs.bounding_box = generate_compound_bbox(holder, slits)
-                for slit in slits:
-                    if str(slit.name) in ('S200A1', 'S200A2', 'S400A1', 'S1600A1', 'S200B1'):
-                        continue
-                    g = slitlet_geometry_extended(holder, slit, cutoffs, nrows=counter.shape[0], ncols=counter.shape[1], with_segments=False)
-                    add_block(counter, g)
+        out = [(processed, list(processed.meta.wcs.get_transform('gwa', 'slit_frame').slits), 'msa')]
+        failed = create_slitlets(MSAFlagOpenStep().get_reference_file(processed, 'msaoper'))
+        if failed:
+            holder = ImageModel()
+            holder.meta.wcs = WCS(slitlets_wcs(processed, create_reference_filename_dictionary(processed), failed))
+            holder.meta.wcsinfo = processed.meta.wcsinfo
+            holder.meta.exposure.type = 'NRS_MSASPEC'
+            holder.meta.wcs.bounding_box = generate_compound_bbox(holder, failed)
+            out.append((holder, list(failed), 'failed'))
     finally:
         os.chdir(prev)
-    if cache:
-        os.makedirs(cache_dir, exist_ok=True)
-        np.save(cache, counter)
-    return counter
+    return out
+
+
+class RateGeometry:
+    """Every slitlet footprint of one rate file, compactly: the footprint pixels of each
+    slitlet (flat detector index), their wavelength and slit-frame ``ys``, and per slitlet
+    its kind (``msa`` / ``failed``), name, quadrant, ``ycen``, source id and shutter state.
+    ``j``, ``f``, ``is_open`` and the bar-shadow segment follow from ``ys`` and the state
+    (``blocks``). One ``assign_wcs`` per rate file feeds the coverage counter, the
+    master background's rate-unit sky and the stuck-shutter fit."""
+
+    def __init__(self, pix, lam, ys, offsets, meta, shape):
+        self.pix, self.lam, self.ys = pix, lam, ys
+        self.offsets, self.meta, self.shape = offsets, meta, tuple(shape)
+
+    @classmethod
+    def from_rate(cls, rate_path, cutoffs=None, wavelengthrange_override=None):
+        from astropy.io import fits
+        h = fits.getheader(rate_path)
+        if cutoffs is None:
+            cutoffs = cutoffs_for(h.get('GRATING', ''), h.get('FILTER', ''))
+        shape = fits.getheader(rate_path, 'SCI')
+        shape = (int(shape['NAXIS2']), int(shape['NAXIS1']))
+        pix, lam, ys, meta = [], [], [], []
+        for holder, slits, kind in _assign_wcs(rate_path, wavelengthrange_override):
+            for rec in slits:
+                if str(rec.name) in FIXED_SLITS:
+                    continue
+                try:
+                    g = slitlet_geometry_extended(holder, rec, cutoffs, nrows=shape[0], ncols=shape[1], with_segments=False)
+                except Exception:                     # noqa: BLE001 - a slitlet off the detector
+                    continue
+                foot = g['footprint']
+                if not foot.any():
+                    continue
+                rr, cc = np.nonzero(foot)
+                pix.append(((rr + g['row_lo']) * shape[1] + cc).astype(np.int32))
+                lam.append(g['lam'][foot].astype(np.float32)); ys.append(g['ys'][foot].astype(np.float32))
+                meta.append(dict(kind=kind, name=str(rec.name), quadrant=int(rec.quadrant), ycen=float(rec.ycen),
+                                 source_id=int(rec.source_id or 0), state=str(rec.shutter_state or '')))
+        offsets = np.cumsum([0] + [p.size for p in pix]).astype(np.int64)
+        cat = lambda xs, dt: np.concatenate(xs) if xs else np.zeros(0, dt)        # noqa: E731
+        return cls(cat(pix, np.int32), cat(lam, np.float32), cat(ys, np.float32), offsets, meta, shape)
+
+    def save(self, path):
+        import json
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp.npz'
+        np.savez(tmp, pix=self.pix, lam=self.lam, ys=self.ys, offsets=self.offsets,
+                 shape=np.array(self.shape), meta=np.array(json.dumps(self.meta)))
+        os.replace(tmp, path)
+
+    @classmethod
+    def load(cls, path):
+        import json
+        with np.load(path) as z:
+            return cls(z['pix'], z['lam'], z['ys'], z['offsets'], json.loads(str(z['meta'])), tuple(z['shape']))
+
+    def counter(self):
+        """Footprints per pixel (int16, detector shape): what ``coverage_from_wcs`` returns."""
+        return np.bincount(self.pix, minlength=self.shape[0] * self.shape[1]).astype(np.int16).reshape(self.shape)
+
+    def blocks(self, kind=None, with_segments=True):
+        """Per slitlet: its meta plus flat arrays over its footprint pixels: ``pix``,
+        ``lam``, ``ys``, ``k``, ``f``, ``j`` (index into ``state``), ``is_open`` and, with
+        ``with_segments``, ``seg`` / ``yseg`` (as ``geometry_on_block``)."""
+        from campfire_pipeline.nirspec.barshadow_calibration import segment_map
+        for i, m in enumerate(self.meta):
+            if kind is not None and m['kind'] != kind:
+                continue
+            sl = slice(self.offsets[i], self.offsets[i + 1])
+            ys = self.ys[sl].astype(float)
+            state = m['state']; kx = max(state.find('x'), 0); n_sh = len(state)
+            k = np.rint(ys); f = ys - k; j = (kx + k).astype(int)
+            opened = np.array([ch != '0' for ch in state] + [False])
+            b = dict(m, pix=self.pix[sl].astype(np.int64), lam=self.lam[sl].astype(float), ys=ys, k=k, f=f, j=j,
+                     is_open=(j >= 0) & (j < n_sh) & opened[np.clip(j, 0, n_sh)], kx=kx)
+            if with_segments:
+                b['seg'], b['yseg'] = segment_map(j, f, state)
+            yield b
+
+
+def rate_geometry(rate_path, cache_dir=None, cutoffs=None, wavelengthrange_override=None):
+    """The ``RateGeometry`` of ``rate_path``, from its cache under ``cache_dir`` when there
+    is one (built and written otherwise, with the coverage counter beside it)."""
+    from astropy.io import fits
+    if cutoffs is None:
+        ph = fits.getheader(rate_path)
+        cutoffs = cutoffs_for(ph.get('GRATING', ''), ph.get('FILTER', ''))
+    path = geometry_cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override) if cache_dir else None
+    if path and os.path.exists(path):
+        return RateGeometry.load(path)
+    geo = RateGeometry.from_rate(rate_path, cutoffs, wavelengthrange_override)
+    if path:
+        geo.save(path)
+        np.save(cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override), geo.counter())
+    return geo
+
+
+def coverage_from_wcs(rate_path, cache_dir=None, cutoffs=None, wavelengthrange_override=None):
+    """Count of slitlet footprints per pixel of ``rate_path`` (int16, detector shape).
+
+    Every open slitlet in the metafile the rate file points at, plus the failed-open
+    shutters of the ``msaoper`` reference; fixed slits are skipped (always masked
+    elsewhere). Each footprint is the slitlet's extended geometry cut to ``cutoffs``
+    (default: the disperser's ``WAVELENGTH_CUTOFFS``). ``wavelengthrange_override`` is the
+    extended ``wavelengthrange`` reference of the extended-wavelength reduction, so the
+    slit transforms' wavelength domain matches that reduction's. Cached as
+    ``coverage_<rate>_<hash>_v2[_cut<hash>][_wr<hash>].npy`` under ``cache_dir``, from the
+    same pass as the ``rate_geometry`` cache.
+    """
+    from astropy.io import fits
+    if cutoffs is None:
+        ph = fits.getheader(rate_path)
+        cutoffs = cutoffs_for(ph.get('GRATING', ''), ph.get('FILTER', ''))
+    cache = cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override) if cache_dir else None
+    if cache and os.path.exists(cache):
+        return np.load(cache)
+    return rate_geometry(rate_path, cache_dir, cutoffs, wavelengthrange_override).counter()

@@ -89,6 +89,13 @@
     master_bkg_low_min = 0.30
     master_bkg_n_iter = 3
     master_bkg_min_shutters = 5
+    # step 1 (count rate, before stage 2a): no flat field, so slitlets scatter ~7 % grey
+    # and the selection's thresholds are wider; the stuck call is per exposure root
+    master_bkg_rate_excess_min = 0.15
+    master_bkg_rate_low_min = 0.30
+    master_bkg_stuck_a_cut = 0.3                       # median sky amplitude below this ...
+    master_bkg_stuck_min_n = 2                         # ... from this many nods x detectors ...
+    master_bkg_stuck_guard = 0.5                       # ... with the two detectors' medians this close
     master_bkg_error_floor = 0.03
     master_bkg_quadrant_scales = true
     master_bkg_model_check = true
@@ -103,11 +110,12 @@
     # subtracted as background before stage 2 can recover it.
     extend_g140m_g235m = false
 
-    # Stuck shutter auto-detection
-    detect_stuck_shutters = true                        # master enable/disable
-    stuck_shutter_low_frac_threshold = 0.5              # threshold for PRISM
-    detect_stuck_shutters_grating = false                # enable for grating data (opt-in)
-    stuck_shutter_low_frac_threshold_grating = 0.9      # threshold for gratings (higher due to fainter backgrounds)
+    # Stuck-closed shutters: master-background step 1 (before stage 2a) fits every
+    # commanded-open shutter's sky in each rate frame (nirspec/shutter_fit.py), calls the
+    # stuck ones per exposure root (master_bkg_stuck_* above) and merges them into the
+    # observation's stuck list as auto entries, every disperser. false: the calls are still
+    # made and stored (<rate>_mbkgr.fits CALLS) but not written to the list.
+    detect_stuck_shutters = true
 
 [nirspec.stage3]
     method = "nodded"
