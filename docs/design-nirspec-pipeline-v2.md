@@ -64,7 +64,9 @@ leaves other sources' light in many spectra. The redesign does four things:
 | Smoothing the per-exposure grating sky | Open: trial only, not approved (user, 2026-10-30) | MB session | 3.3 |
 | Stuck-closed shutters by a per-shutter template fit, all dispersers | Decided (user, 2026-10-30); fit module Built (8ae424bf on `claude/stuck-shutter-fit`, matches the prototype to 1e-7 on p1 G395M, same 21 calls); not wired into step 1 yet | MB + extraction | 3.5 |
 | Stuck list keyed by physical shutter everywhere, table-form entries, origins manual / web / auto | Decided (user, 2026-10-30), incl. the ownership split; loader and writer details Proposed | MB + extraction | 3.5 |
-| nods.pdf prints each shutter's physical label and the fit's call | Decided (user, 2026-10-30); not built | extraction session | 3.5 |
+| Deploy pull mirrors the web: a mark cleared on the web clears the local web entry (manual and auto never touched; kept when the DB has no web rows for the observation) | Decided (user, 2026-10-30); Built (36cf3b5e) | extraction session | 3.5 |
+| `spectrum_exposures.msa_shutters`, filled by deploy and by the backfill for older rows | Decided (user, 2026-10-30); Built (36cf3b5e, backfill extended) | extraction session | 3.5 |
+| nods.pdf prints each shutter's physical label and the fit's call | Decided (user, 2026-10-30); Built (93cb2aea, ffa50361); the fit's calls appear once step 1 writes them | extraction session | 3.5 |
 | Trace maps (version 7) followed past both ends of the calibrated range | Built (1d946bb3, e3af87b0) | extraction session | 3.6 |
 | Forward-model profile extraction on by default | Decided (user, 2026-10-29); Built (4ca99b5a) | extraction session | 3.7 |
 | Shape chain: own fit above the gate, else PRISM shape, else default | Decided (user, 2026-10-22/23); Built (49d0fe83 and earlier) | extraction session | 3.7 |
@@ -743,9 +745,7 @@ a fix or needs another field or disperser), **To make**.
 | Approve the step 1 / step 2 interface (3.4 A, B, D, E) | MB session | user |
 | Stuck-list loader and auto writer (3.5): approved in substance (user, 2026-10-30); Built on loving-bell (`stuck_list.py`, 75b654b0; `write_origin`, f4343bc2) | MB session | |
 | Physical-key stuck list in the database (`nirspec_stuck_shutters`, migration 20261031011741), web nods review, deploy push/pull, physical deployment snapshot, deploy TOML writers routed through `stuck_list`: Built (36cf3b5e) | extraction session | |
-| `spectrum_exposures.msa_shutters` (the web's source of physical shutter labels; NULL until a root is redeployed) | extraction session | user approval |
-| Pull now clears a local web entry when its web mark is cleared (was: a pull never deletes local config; kept when the DB has no web rows for the observation) | extraction session | user approval |
-| Run `scripts/backfill_stuck_shutters_physical.py` after the migration is live (dry run first) | user | migration |
+| Run `scripts/backfill_stuck_shutters_physical.py` after the migration is live (dry run first): it writes the physical stuck rows and fills `spectrum_exposures.msa_shutters` for rows deployed before the column (approved by the user, 2026-10-30) | user | migration |
 | `nirspec_mbkg` product type missing from the `storage_objects` CHECK (`test_registry` fails) | MB session | |
 | One-off command converting legacy stuck entries to physical keys | MB session | |
 | Verdict on the G395M stuck review packet; thresholds | extraction session | user |

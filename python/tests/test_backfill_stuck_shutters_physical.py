@@ -93,6 +93,14 @@ def test_rerun_inserts_nothing_and_never_overwrites():
     assert [(d[0], d[1]) for d in again.existing_diff] == [(ROOT, 'q2r100c10')]
 
 
+def test_shutter_maps_fill_known_pairs_and_report_the_rest():
+    mod = _load()
+    smap = {(ROOT, 1): ['q2r100c10', 'q2r100c11'], (ROOT, 3): []}
+    updates, missing = mod.plan_shutter_maps({(ROOT, 1), (ROOT, 3), (ROOT, 9)}, smap)
+    assert updates == {(ROOT, 1): ['q2r100c10', 'q2r100c11']}
+    assert missing == [(ROOT, 3), (ROOT, 9)]          # an empty map is not written either
+
+
 @pytest.mark.parametrize('q,r,c,key', [(2, 195, 64, 'q2r195c64'), (1, 1, 1, 'q1r1c1')])
 def test_shutter_key_matches_the_db_check(q, r, c, key):
     import re

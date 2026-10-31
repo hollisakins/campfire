@@ -23,12 +23,19 @@ OGMETFL, else MSAMETFL, and MSAMETID), with
   differs), so a rerun changes nothing and never overwrites a later web edit. The
   old column is not touched.
 
-Dry run by default (prints the plan); ``--apply`` writes. Needs the products
-(rate files + metafiles) and reference TOMLs of the observations locally, and the
-pipeline package (``campfire_pipeline``) importable.
+It also fills ``spectrum_exposures.msa_shutters`` (the source's slitlet in physical
+shutter keys, which the web nods review labels its shutters with) for rows deployed
+before the column existed, with the same function deploy uses
+(``campfire.deploy.spectrum_grid.slitlet_shutter_map``). Only NULL values are
+filled; a pair whose root has no local metafile is reported and left NULL.
+
+Dry run by default (prints the plan); ``--apply`` writes. ``--part stuck`` /
+``--part shutters`` runs one half only. Needs the products (rate files +
+metafiles) and reference TOMLs of the observations locally, and the pipeline
+package (``campfire_pipeline``) importable.
 
 Usage:
-    CAMPFIRE_DEPLOY_MODE=service-role python scripts/backfill_stuck_shutters_physical.py [--obs NAME ...] [--apply]
+    CAMPFIRE_DEPLOY_MODE=service-role python scripts/backfill_stuck_shutters_physical.py [--obs NAME ...] [--part stuck|shutters] [--apply]
     # against the local stack:
     CAMPFIRE_LOCAL_SUPABASE_URL=http://127.0.0.1:<port> python scripts/backfill_stuck_shutters_physical.py --local
 """
@@ -181,6 +188,66 @@ def observation_context(obs, roots):
     return to_physical, coverage, manual_keys, '; '.join(problems) or None
 
 
+def plan_shutter_maps(pairs, shutter_map) -> tuple[dict, list]:
+    """``({(root, sid): [keys]}, [(root, sid) without a map])`` for the
+    ``spectrum_exposures`` pairs whose ``msa_shutters`` is NULL (pure)."""
+    updates, missing = {}, []
+    for pair in sorted(pairs):
+        keys = shutter_map.get(pair)
+        if keys:
+            updates[pair] = list(keys)
+        else:
+            missing.append(pair)
+    return updates, missing
+
+
+def fetch_unmapped_pairs(sb, obs_names) -> dict[str, set]:
+    """``{observation: {(exposure_root, source_id)}}`` of spectrum_exposures rows whose
+    ``msa_shutters`` is NULL."""
+    out: dict[str, set] = {}
+    offset = 0
+    while True:
+        q = (sb.table('spectrum_exposures')
+             .select('id, observation, exposure_root, source_id')
+             .is_('msa_shutters', 'null').order('id').range(offset, offset + PAGE - 1))
+        if obs_names:
+            q = q.in_('observation', list(obs_names))
+        page = q.execute().data or []
+        for r in page:
+            out.setdefault(r['observation'], set()).add((r['exposure_root'], int(r['source_id'])))
+        if len(page) < PAGE:
+            break
+        offset += PAGE
+    return out
+
+
+def backfill_shutter_maps(sb, obs_names, apply: bool) -> tuple[int, int]:
+    """Fill NULL ``spectrum_exposures.msa_shutters``; returns (pairs filled, pairs left)."""
+    from campfire_layout import Scope, dir_for
+    from campfire.deploy.spectrum_grid import slitlet_shutter_map
+
+    by_obs = fetch_unmapped_pairs(sb, obs_names)
+    print(f"\n{sum(len(v) for v in by_obs.values())} (root, source) pair(s) with msa_shutters NULL "
+          f"in {len(by_obs)} observation(s)")
+    filled = left = 0
+    for obs in sorted(by_obs):
+        obs_dir = Path(dir_for('nirspec_spec', Scope(obs=obs)))
+        smap = slitlet_shutter_map(obs_dir, by_obs[obs]) if obs_dir.is_dir() else {}
+        updates, missing = plan_shutter_maps(by_obs[obs], smap)
+        print(f"{obs}: {'fill' if apply else 'would fill'} {len(updates)} pair(s); "
+              f"no local metafile / source for {len(missing)}")
+        for root, sid in missing:
+            print(f"  NO MAP {root} source {sid}")
+        if apply:
+            for (root, sid), keys in updates.items():
+                (sb.table('spectrum_exposures').update({'msa_shutters': keys})
+                 .eq('observation', obs).eq('exposure_root', root).eq('source_id', sid)
+                 .is_('msa_shutters', 'null').execute())
+        filled += len(updates)
+        left += len(missing)
+    return filled, left
+
+
 def report(obs, plan: Plan, apply: bool) -> None:
     oc = plan.origin_counts()
     print(f"{obs}: {'insert' if apply else 'would insert'} {len(plan.rows)} "
@@ -200,6 +267,8 @@ def main() -> int:
     ap.add_argument('--obs', action='append', help='only this observation (repeatable)')
     ap.add_argument('--apply', action='store_true', help='write the rows (default: dry run)')
     ap.add_argument('--local', action='store_true', help='the local Supabase stack')
+    ap.add_argument('--part', choices=('stuck', 'shutters', 'both'), default='both',
+                    help='stuck: the stuck-shutter rows; shutters: spectrum_exposures.msa_shutters')
     args = ap.parse_args()
 
     from campfire.deploy.config import load_config
@@ -209,8 +278,16 @@ def main() -> int:
     config = load_config(local=args.local, service_role=not args.local)
     sb = get_supabase_client(config)
 
+    if args.part in ('shutters', 'both'):
+        filled, left = backfill_shutter_maps(sb, args.obs, args.apply)
+        print(f"{'Filled' if args.apply else 'Would fill'} msa_shutters for {filled} pair(s); left NULL {left}")
+        if args.part == 'shutters':
+            if not args.apply:
+                print("(dry run: nothing written; rerun with --apply)")
+            return 0
+
     by_obs = fetch_review_rows(sb, args.obs)
-    print(f"{sum(len(v) for v in by_obs.values())} nirspec_source_review rows with stuck_shutters "
+    print(f"\n{sum(len(v) for v in by_obs.values())} nirspec_source_review rows with stuck_shutters "
           f"in {len(by_obs)} observation(s)")
 
     totals = {'rows': 0, 'manual': 0, 'web': 0, 'same': 0, 'diff': 0, 'conflicts': 0, 'skipped': 0}
