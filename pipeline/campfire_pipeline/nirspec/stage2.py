@@ -700,35 +700,28 @@ def _write_asn(rate_file, prod_name):
     return asn_file
 
 
-def _stuck_ordinals(obs, root, source_id):
-    """The vetted stuck-closed shutter ordinals (1-indexed position among the
-    slitlet's sorted columns) for ``(root, source_id)``, or ``None`` when the
-    TOML has no entry. The raw TOML value is returned so the ``STKSHTRS`` card
-    reads exactly as it always has."""
-    table = obs.stuck_closed_shutters
-    stuck = table[(table['root'] == root) & (table['source_id'] == source_id)]
-    if len(stuck) == 0:
-        return None
-    return stuck['shutters'][0]
+def _stuck_shutters(obs, root, main_metafile):
+    """The physical shutters ``(quadrant, row, column)`` of *root* that are stuck
+    closed, from the observation's list (``stuck_list``; legacy ordinal entries
+    mapped through *main_metafile*)."""
+    from campfire_pipeline.nirspec import stuck_list
+    return stuck_list.stuck_set(
+        stuck_list.load_root(obs.stuck_closed_shutters_file, root, main_metafile), root)
 
 
-def _remove_stuck_columns(rows, ordinals):
-    """Drop the shutter columns at the 1-indexed *ordinals* from a source's
-    edited SHUTTER_INFO rows (adapted from Anthony & Pablo's routines)."""
-    if ordinals is None or len(ordinals) == 0:
-        return rows
-    cols = np.sort(np.unique(rows['shutter_column']))
-    drop = []
-    for k in ordinals:
-        k = int(k)
-        if not 1 <= k <= len(cols):
-            raise IndexError(f'stuck shutter ordinal {k} is out of range for a '
-                             f'{len(cols)}-shutter slitlet')
-        drop.append(cols[k - 1])
-    return rows[~np.isin(rows['shutter_column'], drop)]
+def _drop_stuck(rows, stuck):
+    """A source's edited SHUTTER_INFO rows without its stuck shutters, plus what the
+    cards record: the legacy ordinals (1-indexed among the source's sorted columns,
+    ``None`` when nothing was removed) and the removed physical shutters."""
+    from campfire_pipeline.nirspec import stuck_list
+    ordinals = stuck_list.source_ordinals(rows, stuck) if stuck else []
+    if not ordinals:
+        return rows, None, []
+    keys = sorted({k for k in stuck_list.row_keys(rows) if k in stuck})
+    return stuck_list.remove_stuck(rows, stuck), ordinals, [stuck_list.shutter_key(*k) for k in keys]
 
 
-def _source_cards(obs, main_metafile, source_id, stuck, extended_override):
+def _source_cards(obs, main_metafile, source_id, stuck, extended_override, stuck_keys=()):
     """The provenance cards stage 2a stamps on one source's canonical."""
     cards = [
         ('STKSHFIL', os.path.basename(obs.stuck_closed_shutters_file), 'Stuck shutter file name'),
@@ -747,6 +740,8 @@ def _source_cards(obs, main_metafile, source_id, stuck, extended_override):
         cards.append(('STKSHTRS', str(stuck), 'Stuck shutters masked'))
     else:
         cards.append(('STKSHTRS', 'N/A', 'Stuck shutters masked'))
+    cards.append(('STKSHPHY', ' '.join(stuck_keys) if len(stuck_keys) else 'N/A',
+                  'Stuck shutters masked (q r c)'))
     return cards
 
 
@@ -940,7 +935,7 @@ def _write_bkgslits(parent, bkg_slits, path, msametfl, barshadow_override=None):
 
 def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
                      set_stellarity, wavecorr_override, extended_override,
-                     bkgslits_path, msametfl, barshadow_override=None):
+                     bkgslits_path, msametfl, barshadow_override=None, stuck=frozenset()):
     """One ``Spec2Pipeline`` call over an edited full metafile (cwd = workspace).
 
     Returns ``(produced, nodata)``: source ids that got a canonical, and the ones
@@ -953,9 +948,8 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
 
     rows_by_source, cards_by_source, all_stuck = {}, {}, []
     for sid in rnd['source_ids']:
-        stuck = _stuck_ordinals(obs, root, sid)
-        rows = _remove_stuck_columns(main_metafile.rows_for_source(sid), stuck)
-        cards_by_source[sid] = _source_cards(obs, main_metafile, sid, stuck, extended_override)
+        rows, ordinals, keys = _drop_stuck(main_metafile.rows_for_source(sid), stuck)
+        cards_by_source[sid] = _source_cards(obs, main_metafile, sid, ordinals, extended_override, keys)
         if len(rows) == 0:
             log(f'All shutters marked as stuck closed for {base}_{sid}, skipping extraction')
             all_stuck.append(sid)
@@ -977,6 +971,15 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
         rows_by_source, set_stellarity=set_stellarity,
         filename=_ROUND_METAFILE.format(base=base, index=index),
         background_slitlets=bkg_ids)
+    if stuck and len(bkg_ids):
+        # the background-only slitlets lose their stuck shutters too (the sources'
+        # rows were edited above; removing again is a no-op for them)
+        from campfire_pipeline.nirspec import stuck_list
+        n0 = len(metafile.shutter_table)
+        metafile.shutter_table = stuck_list.remove_stuck(metafile.shutter_table, stuck)
+        if len(metafile.shutter_table) < n0:
+            log(f'{base}: removed {n0 - len(metafile.shutter_table)} stuck-shutter row(s) '
+                f'from the background slitlets')
     metafile.write(obs.workspace_dir, overwrite=True)
     _point_rate_at_metafile(rate_file, metafile.filename)
 
@@ -1020,7 +1023,7 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
 
 def _run_spec2_single_call(rate_file, obs, main_metafile, pending, bkgslits_path, *,
                            root, set_stellarity, wavecorr_override, extended_override,
-                           msametfl, barshadow_override=None):
+                           msametfl, barshadow_override=None, stuck=frozenset()):
     """The single-call path: ``_plan_rounds`` then one ``_run_spec2_round`` each;
     the background slitlets ride with the first round."""
     base = _rate_base(rate_file)
@@ -1039,7 +1042,7 @@ def _run_spec2_single_call(rate_file, obs, main_metafile, pending, bkgslits_path
             set_stellarity=set_stellarity, wavecorr_override=wavecorr_override,
             extended_override=extended_override,
             bkgslits_path=bkgslits_path if index == 1 else None, msametfl=msametfl,
-            barshadow_override=barshadow_override)
+            barshadow_override=barshadow_override, stuck=stuck)
         produced += got
     return produced
 
@@ -1054,7 +1057,8 @@ def _cleanup_round_files(base):
 
 
 def _run_spec2_per_source(rate_file, obs, main_metafile, source_ids, *, root,
-                          set_stellarity, wavecorr_override, extended_override):
+                          set_stellarity, wavecorr_override, extended_override,
+                          stuck=frozenset()):
     """One ``Spec2Pipeline`` call per source (cwd = workspace): the original
     stage-2a arrangement, kept as the fallback of the single call and as the
     reference it is checked against. Returns the source ids produced."""
@@ -1073,10 +1077,9 @@ def _run_spec2_per_source(rate_file, obs, main_metafile, source_ids, *, root,
             set_stellarity=set_stellarity)
 
         # remove shutters that are marked as stuck closed
-        stuck = _stuck_ordinals(obs, root, source_id)
-        cards = _source_cards(obs, main_metafile, source_id, stuck, extended_override)
-        source_metafile.shutter_table = _remove_stuck_columns(
+        source_metafile.shutter_table, ordinals, keys = _drop_stuck(
             source_metafile.shutter_table, stuck)
+        cards = _source_cards(obs, main_metafile, source_id, ordinals, extended_override, keys)
 
         # Skip extraction if all shutters are stuck closed
         if len(source_metafile.shutter_table) == 0:
@@ -1189,7 +1192,8 @@ def run_stage2a_single_rate(
         ))
 
     common = dict(root=root, set_stellarity=set_stellarity,
-                  wavecorr_override=wavecorr_override, extended_override=extended_override)
+                  wavecorr_override=wavecorr_override, extended_override=extended_override,
+                  stuck=_stuck_shutters(obs, root, main_metafile))
 
     # The empirical bar-shadow table (campfire_pipeline/data, derived by
     # Generate_Barshadow_Cals.py) replaces the CRDS reference for the background

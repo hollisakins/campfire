@@ -437,43 +437,23 @@ class Observation:
 
     @property
     def stuck_closed_shutters(self):
+        """The resolved stuck-closed shutter list as the legacy ``(root, source_id,
+        shutters)`` table (1-indexed ordinals among each source's slitlet columns),
+        which the nods plots read. The file itself is keyed by physical shutter
+        (``stuck_list``); a blank one is created when absent."""
+        from campfire_pipeline.nirspec import stuck_list
 
-        file = os.path.join(self.stuck_closed_shutters_file)
+        file = self.stuck_closed_shutters_file
         if not os.path.exists(file):
             log(f'No stuck closed shutter file found, creating blank {file}')
+            os.makedirs(os.path.dirname(file), exist_ok=True)
             with open(file, 'w') as f:
-                docstring = dedent(f"""
-                # vetted stuck closed shutter list for {self.name}
-                # format is a table for each "root" file name, which
-                # consists of obs/visit/config, e.g. "jw06368001001_03101"
-                # the list of stuck closed shutters for a source ID should
-                # be given as a key-value pair in the table; for example:
-                # [jw06368001001_03101]
-                #     12345 = [1,2,3]
-                """)
-                f.write(docstring)
+                f.write(stuck_list.HEADER.format(obs=self.name))
 
-        data = toml.load(file)
-
-        # Build lists for each column
-        roots = []
-        source_ids = []
-        shutters = []
-
-        for root in data:
-            for entry in data[root]:
-                roots.append(root)
-                source_ids.append(int(entry))
-                shutters.append(list(data[root][entry]))
-
-        # Create table from columns
-        tab = Table({
-            'root': roots,
-            'source_id': source_ids,
-            'shutters': shutters
-        })
-
-        return tab
+        physical, legacy = stuck_list.read_file(file)
+        metafiles = stuck_list.root_metafiles(self, roots=set(physical) | set(legacy))
+        resolved = stuck_list.resolve(physical, legacy, metafiles)
+        return stuck_list.as_source_table(resolved, metafiles)
 
     @property
     def bkg_overrides(self):

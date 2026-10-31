@@ -28,6 +28,24 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+
+- **NIRSpec stuck-closed shutters are keyed by physical MSA shutter.** The list
+  `reference/nirspec/<obs>/stuck_closed_shutters.toml` takes a `[<root>.shutters]` table keyed
+  `"q<quadrant>r<row>c<column>"` (the metafile's `shutter_quadrant` / `shutter_row` /
+  `shutter_column`), each entry `{origin = "manual" | "web" | "auto", stuck = true | false}` with
+  an optional fit amplitude `a` and `note`; precedence manual > web > auto, and `stuck = false`
+  vetoes a lower-origin call. Legacy `<source_id> = [ordinals]  # tag` entries are still read,
+  mapped through the root's metafile onto the same columns stage 2a always removed (`hand` or no
+  tag -> manual); on ember_cosmos_p1 the 15 PRISM entries map to the vetted shutters exactly and
+  the rebuilt per-source table equals the file. New `campfire_pipeline.nirspec.stuck_list`
+  (parser, resolver, `remove_stuck`, and `write_auto`, a tomlkit merge of the template fit's calls
+  that keeps hand comments and leaves the file untouched when nothing changes, since its mtime is
+  stage 2a's skip key). Stage 2a removes the stuck shutters' rows by physical shutter, now also
+  from the **background-only slitlets** (output change wherever one holds a stuck shutter), and
+  stamps `STKSHPHY` (the removed shutters) beside `STKSHTRS` (unchanged: the ordinals). The
+  legacy writer carries the physical table through. New dependency `tomlkit`.
+
 ### Infrastructure
 
 - **NIRSpec master background (design P1b).** `campfire_pipeline.nirspec.master_bkg` derives,
