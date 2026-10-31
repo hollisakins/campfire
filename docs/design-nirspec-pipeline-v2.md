@@ -62,7 +62,7 @@ leaves other sources' light in many spectra. The redesign does four things:
 | Per-slitlet sky scale off permanently | Decided (user, 2026-10-30); Built (1bd8d7c6) | both | 3.3 |
 | Sky painted past both ends of the calibrated range, nothing masked | Decided (user, 2026-10-30); Built (65c1d825, 5b8d6851) | MB session | 3.3 |
 | Smoothing the per-exposure grating sky | Open: trial only, not approved (user, 2026-10-30) | MB session | 3.3 |
-| Stuck-closed shutters by a per-shutter template fit, all dispersers | Decided (user, 2026-10-30); Prototyped (`stuck_shutters/`) | MB + extraction | 3.5 |
+| Stuck-closed shutters by a per-shutter template fit, all dispersers | Decided (user, 2026-10-30); fit module Built (8ae424bf on `claude/stuck-shutter-fit`, matches the prototype to 1e-7 on p1 G395M, same 21 calls); not wired into step 1 yet | MB + extraction | 3.5 |
 | Stuck list keyed by physical shutter everywhere, table-form entries, origins manual / web / auto | Decided (user, 2026-10-30), incl. the ownership split; loader and writer details Proposed | MB + extraction | 3.5 |
 | nods.pdf prints each shutter's physical label and the fit's call | Decided (user, 2026-10-30); not built | extraction session | 3.5 |
 | Trace maps (version 7) followed past both ends of the calibrated range | Built (1d946bb3, e3af87b0) | extraction session | 3.6 |
