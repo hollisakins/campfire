@@ -1024,6 +1024,33 @@ decided by the profiles.
   the -0.1 shift compensates instead: 632334's per-nod offsets sit at their limit (0, +0.1,
   +0.1; limit 0.1, prior 0.015). A common shift of -0.1 is what puts nods 2 and 3 back near
   the PRISM centre. Open: why the nods disagree.
+- Why the model has per-nod shifts at all: added with the first profile fit (f4f62e0b) for
+  pointing errors between nods (prior 0.015 from stars, cap 0.1). The headers say the nods
+  land where commanded: 632334's achieved steps 0.5295" and 0.5289" against 0.5290" (about
+  0.001 slit units). The user (2026-11-01): "The nod offsets are a part of our modeling? why?"
+- Census, every p1 source, the shifts as the joint pass fits them (`MemberCache._build`,
+  alone on the source's nod differences; `e2e_eoff_census.py`): PRISM (204, mostly
+  isolated) median 0.009, 90th percentile 0.023, 2 at the cap, as the stars. G395M (477,
+  nearly all with overlapping traces) median 0.008, 90th 0.065, 59 at the cap (12 %),
+  rising with crowding (8 / 11 / 18 % by tercile). The same source in the same visit:
+  632334 PRISM [0, +0.006, -0.005], G395M [0, +0.1, +0.1]. In G395M the shifts absorb
+  neighbours' light, then stay fixed in the joint solve.
+- Re-solved with the shifts at zero (`e2e_line_eoff.py`; χ² of the target's main-shutter
+  pixels):
+
+  | target, window | shifts | χ² | neighbour's share of the data | target line flux |
+  |---|---|---|---|---|
+  | 632334, 4.012-4.026 µm (89 px) | as fitted | 507 | 629668 23 % | 3.4e-14 |
+  | | target's zero | 72 | 629668 -1 % | 5.1e-14 |
+  | | all zero | 73 | 629668 -3 % | 5.1e-14 |
+  | 629668, 5.035-5.055 µm (116 px) | as fitted | 490 | 632334 79 % | 1.5e-13 (false line) |
+  | | target's zero | 510 | 632334 78 % | 1.2e-13 |
+  | | all zero | 75 | 632334 127 % | -0.3e-13 (no line) |
+
+  Continuum windows improve too (632334 4.3-4.9 µm: 2936 → 2894, 4441 px; 629668
+  4.6-4.95 µm: 1434 → 1390, 2409 px). 629668 needs its neighbour's shifts zeroed too: they
+  are fixed per member, so one bad member spoils every solve it is in. With every shift at
+  zero the line goes to the source PRISM gives it, in both solves, with no other change.
 
 **Open (extraction session).**
 - Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
