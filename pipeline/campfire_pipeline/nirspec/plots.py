@@ -351,6 +351,32 @@ def _has_extension(path, name):
         return False
 
 
+def _no_source_scales(paths):
+    """{canonical path: factor} for the frames of one source and detector that do not
+    hold the source (``SRCFLUX = F``): jwst calibrates those as extended (uniform path
+    loss) and the others as a point source, so a plot of all nods shows them about 3-4x
+    fainter. The factor (median uniform path loss of the frame over the median
+    point-source path loss of the frames that hold the source) puts them on the
+    others' calibration, for display only. Stage 3 never combines those frames."""
+    present, absent = [], []
+    for p in paths:
+        if p:
+            (absent if str(fits.getheader(p).get('SRCFLUX', 'T')).strip().upper() == 'F' else present).append(p)
+    if not absent or not present:
+        return {p: np.nan for p in absent}
+
+    def med(p, ext):
+        try:
+            a = np.asarray(fits.getdata(p, ext), float)
+        except KeyError:
+            return np.nan
+        a = a[np.isfinite(a) & (a > 0)]
+        return float(np.median(a)) if a.size else np.nan
+
+    ps = np.nanmedian([med(p, 'PATHLOSS_PS') for p in present])
+    return {p: med(p, 'PATHLOSS_UN') / ps for p in absent}
+
+
 def _override_text(ax, why):
     """The reason an override chose a nod's background, in the corner of its image."""
     ax.text(0.005, 0.96, f'override: {why}', transform=ax.transAxes, fontsize=5, fontname='monospace',
@@ -386,6 +412,8 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None, stuck_e
     against, and a nod whose partners an override chose says why (hand, a catalogued
     neighbour in the slitlet with its light over the sky, or the neighbour scan);
     ``notes`` ({source id: text}) adds a line under the title (the scan's findings).
+    A frame that does not hold the source (``SRCFLUX = F``) is drawn on the others'
+    point-source calibration and labelled as not combined (``_no_source_scales``).
 
     Issue #212: the rectified views are cached as ``S2D_*`` (calibrated) and
     ``S2D_BKGSUB_*`` (background-subtracted) HDUs on the bare canonical file,
@@ -452,13 +480,32 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None, stuck_e
                                                    and entries[(phys[0], phys[1], c)].stuck})
         annotate = dict(phys=phys, entries=entries, calls=calls)
 
+        # frames that do not hold the source are calibrated as extended by jwst: shown
+        # on the point-source calibration of the others (``_no_source_scales``)
+        scales = {}
+        for d in (1, 2):
+            scales.update(_no_source_scales([r[d] for r in plot_rows]))
+
+        def _read(path):
+            a = fits.getdata(path, extname=sci_ext).astype(float)
+            f = scales.get(path)
+            return a * f if f is not None and np.isfinite(f) else a
+
+        def _no_source_text(ax, path):
+            if path in scales:
+                f = scales[path]
+                ax.text(0.995, 0.04, 'source not in the slitlet: not combined'
+                        + (f'; shown x{f:.2f} (point-source calibration)' if np.isfinite(f) else ''),
+                        transform=ax.transAxes, fontsize=5, fontname='monospace', ha='right', va='bottom',
+                        color='#b91c1c', bbox=dict(facecolor='w', alpha=0.75, edgecolor='none', pad=1))
+
         # Shared ZScale normalization across all nods,
         # masking DQ>0 pixels and >10-sigma outliers
         data_all = []
         for _, n1, n2 in plot_rows:
             for s2d_file in [n1, n2]:
                 if s2d_file:
-                    d = fits.getdata(s2d_file, extname=sci_ext)
+                    d = _read(s2d_file)
                     try:
                         dq = fits.getdata(s2d_file, extname=dq_ext)
                         good = np.isfinite(d) & (dq == 0)
@@ -509,20 +556,22 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None, stuck_e
 
             for i, (label, nrs1_s2d, nrs2_s2d) in enumerate(plot_rows):
                 if nrs1_s2d:
-                    nrs1 = fits.getdata(nrs1_s2d, extname=sci_ext)
+                    nrs1 = _read(nrs1_s2d)
                     ax[i,0].imshow(nrs1, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
                     if shutsta:
                         _annotate_stuck_shutters(ax[i,0], nrs1.shape[0], shutsta, stuck_list, stkshtrs, **annotate)
+                    _no_source_text(ax[i,0], nrs1_s2d)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(nrs1, axis=1)
                     ax[i,1].step(prof, np.arange(nrs1.shape[0])-0.5, where='pre', linewidth=1, color='k')
 
                 if nrs2_s2d:
-                    nrs2 = fits.getdata(nrs2_s2d, extname=sci_ext)
+                    nrs2 = _read(nrs2_s2d)
                     ax[i,2].imshow(nrs2, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
                     if shutsta:
                         _annotate_stuck_shutters(ax[i,2], nrs2.shape[0], shutsta, stuck_list, stkshtrs, **annotate)
+                    _no_source_text(ax[i,2], nrs2_s2d)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(nrs2, axis=1)
@@ -571,10 +620,11 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None, stuck_e
             for i, (label, nrs1_s2d, nrs2_s2d) in enumerate(plot_rows):
                 s2d_file = nrs1_s2d if det == 'nrs1' else nrs2_s2d
                 if s2d_file:
-                    data = fits.getdata(s2d_file, extname=sci_ext)
+                    data = _read(s2d_file)
                     ax[i,0].imshow(data, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
                     if shutsta:
                         _annotate_stuck_shutters(ax[i,0], data.shape[0], shutsta, stuck_list, stkshtrs, **annotate)
+                    _no_source_text(ax[i,0], s2d_file)
                     with warnings.catch_warnings():
                         warnings.simplefilter('ignore')
                         prof = np.nanmedian(data, axis=1)

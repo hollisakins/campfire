@@ -1213,10 +1213,36 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   lists one source per shutter per dither, so a shutter two sources share shows only one.
   None was withheld for other-slitlet pixels.
 - Open: the threshold (0.02 against 0.05 / 0.1, where the census puts the clear cases);
-  the missing partner variance in the shipped errors (a stage 2b change: write the
-  propagated variance, with the profile fit reading the frame's own from
-  `PRE_BKGSUB_VAR_*`); shared shutters in `SHUTTER_INFO` (positions from `SOURCE_INFO`
-  RA/Dec instead).
+  shared shutters in `SHUTTER_INFO` (positions from `SOURCE_INFO` RA/Dec instead).
+- Follow-up (user, 2026-11-01: noted, not now): the shipped errors leave out the partner
+  frames' noise (stage 2b change: write the propagated variance, with the profile fit
+  reading the frame's own from `PRE_BKGSUB_VAR_*`).
+- Frames without the source (`SRCFLUX = F`) are calibrated by jwst as extended (uniform
+  path loss) and the others as a point source, so in a plot of all nods they sit 3-4x
+  lower (950038 PRISM: 3.77 against a path-loss ratio of 3.73). `fix_units` makes the
+  units agree; it does not touch the path loss. Nothing downstream is affected: stage 2b
+  removes each frame's own path-loss correction before subtracting, and stage 3 never
+  combines these frames (`stage3.py` `srcflux` filter and `_science_files`, since the
+  package's first commit, 24a9dd92). The bkgsub plots now draw them on the others'
+  point-source calibration (median uniform over point-source path loss) and label them
+  "source not in the slitlet: not combined".
+- PRISM check (`e2e_slitlet_removed.py`, `e2e_slitlet/prism_removed.png`): in the
+  target's shutter, the light an override removed against the neighbour's own PRISM
+  spectrum, one fitted scale. 950038 (both nods), 925591, 879928, 924216: the removed
+  light has the neighbour's spectrum, scale 0.16-0.26 (half the neighbour times the share
+  of its light in its shutter). 925591 nod 3 loses two negative lines (-0.22 µJy at 3.4
+  and 4.5 µm: 925550's lines); small dips remain (the neighbour 0.92 slit units away in
+  the kept frame). 923334: nothing removed. It sits at its shutter's edge (y 0.04); the
+  dropped frame puts 923362 in its shutter 0.67 away, the kept one across the bar 0.48
+  away (`e2e_shutter_light.py` confirms where the light is). Same shutter is the wrong
+  test: by position (`e2e_slitlet_distance.py`: column x pitch + y - 0.5 from
+  `SHUTTER_INFO`), pairs one nod step apart often put the neighbour 0.5-0.65 slit units
+  from the target in both partners (633676 / 667731, 923334, 880045, 950310 / 950331,
+  885305 / 885945, 924889 / 949820), where no partner choice helps; and pairs about one
+  nod step apart with neither near a bar (629432 / 629466 0.01, 668601 / 668614 0.02,
+  629451 / 629452 0.02, 921026 / 921027 0.09) land exactly on the target, the cases
+  overrides are for. Proposed next: decide by position (a partner is dirty when it
+  puts the neighbour within R of the target; both dirty: keep the partners and flag).
 
 **Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
