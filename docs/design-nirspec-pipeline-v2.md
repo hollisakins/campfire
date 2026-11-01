@@ -1292,6 +1292,15 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   validity keys on it) until those keys move to the rate files. The stored map's
   `rows_of` counts a second catalogued source of a slitlet as the slitlet's own, so the
   joint model no longer models same-slitlet neighbours (they are the overrides' job).
+  Isolated p1 root after step 1 (`e2e_rate_maps.py`, `e2e_rate_maps_diff.py`,
+  `e2e_rate_maps_stuck.py`): the stored map, stuck shutters removed, against the jwst-built
+  `tracemaps/` of PRISM nod 1 NRS1: the failed-open shutters are named differently
+  (`failed_open_12` against `failed_open_q3_156_163`, same pixels); 6922 slitlet
+  (pixel, slitlet) pairs are lit only in the old map, nearly all from four 3-shutter
+  slitlets (117, 138, 105, 102) whose middle (source) shutter is on the stuck list: the old
+  build kept lighting it (its shutter state still `1x1`), the stored map removes it. So the
+  switch also fixes stuck source shutters in the contamination model. The rest are edge
+  pixels (tens to ~140 per slitlet).
 
 **Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
