@@ -1071,7 +1071,34 @@ decided by the profiles.
   0.97 → 0.09 µJy). The loss is at 2.9-3.6 µm: a negative nod image of 925403 (centre +0.49,
   at its shutter's edge; its shifts were at the cap in every nod) predicted at about -0.2 µJy
   against a target of 0.17, partly offset by 630784 and 629668; removing it overshoots PRISM
-  by about 2x. Open.
+  by about 2x. Open. Cause found (in memory): 925403's light past its cutout (5.20-5.70 µm,
+  279 count-rate unknowns, all landing in 632334's cutout and constrained only by its
+  pixels; 71 % solved negative) carries the negative light, and trades with 632334
+  (correlation -0.86 to -0.92). Tying 925403's in-range spectrum to its PRISM (+0.10 µJy,
+  was -0.9) does not change 632334; removing those past-cutout unknowns does (632334 0.7-1.0x
+  PRISM; Δχ² +424 for 279 unknowns). The user (2026-11-01) was not concerned by 632334's.
+
+**629668's negative contamination (2026-11-01).** The user: "i was worried about 629668".
+- About -4 µJy across 4.4-5.2 µm against a PRISM spectrum of ~0.1. It is the negative nod
+  image of 630784 (G395M ~5.3 µJy, 50x brighter): 630784's 2.9-4.8 µm lands on 629668's
+  4.4-5.2 µm (another MSA column), and in the nod 2 frame its source shutter covers all of
+  629668's nod-1 main shutter, in the nod 1 frame all of its nod-3 one (trace maps;
+  `e2e_partner_light.py`). Nod 2's difference is clean. 63 % of the constraint on those
+  630784 unknowns comes from 629668's pixels.
+- The model predicts that image to ~10 %: 629668's joint spectrum ~0.4 µJy above PRISM;
+  630784 centre ±0.04 swings 629668 from on PRISM to 0.9 above, while χ² prefers the fitted
+  centre. Reaching PRISM by subtraction needs ~2-3 % on 630784's light in that shutter.
+- Avoiding the image instead: nods 1 and 3 rebuilt in memory against their clean partner
+  only (nod 1 - nod 3, nod 3 - nod 2) from PRE_BKGSUB_SCI (rebuild reproduces stage 2b to
+  < 0.2σ; `e2e_clean_partner_make.py`, copies in scratch). 630784's light on the main
+  shutter -2.25e-9 → +0.54e-9 (edge overlap only); χ² 3178 → 2149 (5617 px); joint error
+  1.46 → 1.28 µJy. 629668 stays ~0.45 µJy above PRISM: the image was not the cause.
+- That excess follows 632334 (compact, line + continuum, same shutter at another spot):
+  632334 centre -0.03 → 629668 at 0.2-0.35 µJy and its false 5.05 µm line gone (χ² 2146),
+  +0.03 → 0.6-0.85 and the line doubled (χ² 2211); -0.013 (632334's free G395M centre) →
+  the lowest χ² (2141.5), line halved, still ~0.35 above PRISM. Width does not matter.
+  A 0.1 µJy source under a brighter one in the same shutter depends on that one's centre
+  at the 0.01 level, which the data barely constrain.
 
 **Open (extraction session).**
 - Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
