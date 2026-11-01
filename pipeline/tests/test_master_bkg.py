@@ -302,3 +302,69 @@ def test_load_2d_needs_the_rate_file_beside_the_product(tmp_path):
     fits.PrimaryHDU(np.full((3, 3), 0.5, np.float32)).writeto(tmp_path / 'r_00001_nrs1_rate.fits')
     prod = M.load_product(path)
     assert M._load_2d(prod) and np.allclose(prod['rate'], 0.5) and prod['mbkg2d'].shape == (3, 3)
+
+
+def _exposure(rng, n, level, noise, nb=80, bump=None):
+    out = []
+    for i in range(n):
+        sb = level * (1 + rng.normal(0, noise, nb)) * (1 + rng.normal(0, 0.02))      # pixel noise + per-shutter spread
+        if bump is not None:
+            sb[bump[0]:bump[1]] *= bump[2]
+        out.append(_shutter(sb, err=noise, sid=i))
+    return out
+
+
+def test_pool_check_accepts_a_consistent_exposure_and_catches_a_local_excess():
+    rng = np.random.default_rng(11)
+    opt = M.options({})
+    centres = np.linspace(3.0, 5.0, 80)
+    pool = M.combine(_exposure(rng, 300, 1.0, 0.2), 3.0)
+    ok = M.pool_check(_exposure(rng, 60, 1.0, 0.2), pool, centres, opt)
+    assert ok['differs'] is False and ok['verdict'] == 'consistent' and ok['n_bands'] == 8
+    # +18 % in one tenth of the range (ember_uds_p2 nod 2 at the 3 um sky minimum)
+    bad = M.pool_check(_exposure(rng, 60, 1.0, 0.2, bump=(20, 28, 1.18)), pool, centres, opt)
+    assert bad['differs'] is True and 0.08 < bad['dev'] < 0.2 and bad['lam_lo'] <= centres[24] <= bad['lam_hi']
+    assert bad['verdict'].startswith('differs')
+
+
+def test_pool_check_needs_both_the_tolerance_and_the_significance():
+    rng = np.random.default_rng(12)
+    opt = M.options({})
+    centres = np.linspace(1.0, 5.0, 80)
+    # many quiet shutters 0.6 % high: significant, but under the 2 % tolerance (the prism case)
+    pool = M.combine(_exposure(rng, 600, 1.0, 0.01), 3.0)
+    tiny = M.pool_check(_exposure(rng, 200, 1.006, 0.01), pool, centres, opt)
+    assert tiny['nsig'] > 3 and tiny['differs'] is False
+    # shutters 4 % high whose own errors are large: over the tolerance, not significant (a
+    # grating exposure); their scatter is zero here, so only the error floor keeps them in
+    pool = (np.ones(80), np.full(80, 0.01), np.full(80, 300))
+    noisy = M.pool_check([_shutter(np.full(80, 1.04), err=0.6, sid=i) for i in range(8)], pool, centres, opt)
+    assert noisy['differs'] is False and noisy['dev'] > 0.03 and noisy['nsig'] < 3
+    # fewer than min_shutters in every band: untested, and the caller paints the pool
+    assert M.pool_check(_exposure(rng, 4, 1.04, 0.3), pool, centres, opt)['differs'] is None
+    assert M.pool_check([], pool, centres, opt)['differs'] is None
+
+
+def test_rate_sky_takes_the_pool_first_when_asked():
+    a = [_shutter(np.full(10, 1.10), sid=i, rate='r_00001_nrs1') for i in range(3)]
+    b = [_shutter(np.full(10, 1.00), sid=10 + i, rate='r_00002_nrs1') for i in range(6)]
+    specs_of = {'r_00001_nrs1': a, 'r_00002_nrs1': b}
+    own = M.rate_sky_for('r_00001_nrs1', specs_of, 3.0)
+    pooled = M.rate_sky_for('r_00001_nrs1', specs_of, 3.0, pool_first=True)
+    assert np.allclose(own[0], 1.10) and np.all(own[3] == 1)
+    assert np.allclose(pooled[0], M.combine(a + b, 3.0)[0]) and np.all(pooled[3] == 2)
+
+
+def test_pool_members_drops_the_discrepant_exposure_and_keeps_the_rest_together():
+    # ember_uds_p2: nod 2 is +18 % over part of the range; against a pool that holds it, nods 1
+    # and 3 look low too. The iteration drops nod 2 and leaves nods 1 and 3 pooled.
+    rng = np.random.default_rng(21)
+    opt = M.options({})
+    centres = np.linspace(1.0, 5.0, 80)
+    clean_of = {'r_00001_nrs1': _exposure(rng, 150, 1.0, 0.03),
+                'r_00002_nrs1': _exposure(rng, 150, 1.0, 0.03, bump=(30, 60, 1.18)),
+                'r_00003_nrs1': _exposure(rng, 150, 1.0, 0.03)}
+    members, checks = M.pool_members(clean_of, centres, opt)
+    assert members == {'r_00001_nrs1', 'r_00003_nrs1'}
+    assert checks['r_00002_nrs1']['differs'] is True and checks['r_00002_nrs1']['dev'] > 0.1
+    assert all(checks[b]['verdict'] == 'consistent' for b in members)

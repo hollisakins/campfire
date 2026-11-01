@@ -46,6 +46,10 @@ was written, while combining the two branches. Where the body says otherwise, th
    It is not a sub-stage at the top of stage 2b (§4.3).
 2. **Grain.** The 1-D sky is derived per exposure × detector. The sky pooled over the exposure
    group is the fallback when an exposure has too few clean shutters (§4.1 pooled first).
+   *Revised 2026-10-31 (1.4): pool unless different.* Every exposure is still measured, but
+   one consistent with the other exposures of its group is painted with the group's pool
+   (5-8x its shutters; a single G395M exposure × detector has 1-5 shutters per bin at the ends
+   of its range); one that differs keeps its own sky (§9, last entry).
 3. **Units.** `MBKG1D` is stored as surface brightness (MJy/sr). Nothing downstream sees that unit:
    `master_bkg.sky_for_slit(mbkg, slit)` returns the sky in the slit's own units, and the
    master-background-subtracted spectrum ends in the same units as the nodded one.
@@ -1360,3 +1364,25 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   it. And on G395M, JUMP_DET-flagged sky pixels read 5–12 points below unflagged ones in four of six
   rate files (not on PRISM), so a residual over DQ = 0 pixels alone reads high; the sky and every
   extraction use both, consistently.
+- **Pool unless different (1.4, decided 2026-10-31).** Measured per exposure, a G395M sky is noisy:
+  on `ember_cosmos_p1` each exposure × detector has 68-125 clean shutters against the group's 557,
+  one to five per 2-pixel bin at the ends of the range, and its 1-D sky scatters by 7-35 % per bin;
+  yet every exposure there agrees with the pool (scales 0.986-1.038 at 1-2 sigma, PRISM 0.997-1.002).
+  The per-exposure grain was chosen for ember_uds_p2, whose nod 2 sits 18 % above nods 1 and 3 at
+  the 3 µm sky minimum. So each exposure is now tested against the pooled sky of the others
+  (`pool_check`): 8 wavelength bands, in each the median of the exposure's shutter ratios to the
+  pool with the error of that median from their scatter (floored at their propagated errors; a
+  plain mean let one shutter with a wild band ratio flag a p1 G395M exposure at "+66 %" where
+  the spectra agree), differing when off by more than 2 % and 3 sigma (the first keeps PRISM's
+  0.3 % differences, formally 3 sigma, pooled; the second keeps noisy grating bands from
+  counting). Membership is iterative (`pool_members`): with nod 2 in the reference, UDS p2's nods
+  1 and 3 read -6 % and were flagged too; dropping the worst member and testing again leaves them
+  pooled. On synthetic exposures the test flags 2.8 % of consistent noisy ones (8 bands at 3
+  sigma) and every local +18 % excess; a false flag only paints the exposure's own sky, the
+  1.3 behaviour. Results (`scratch/claude/sky_resid/v14/pool_unless_different.png`): p1 all
+  pooled in step 2, G395M 1-D sky noise 7-35 % → 3-5 % per bin, PRISM 1.5 → 1.3 %; UDS p2 PRISM nod 2
+  out on both detectors (+17-18 %, 31-44 sigma) and nod 3 NRS2 out at -2.1 % (just over the
+  tolerance), UDS p2 G395M all pooled. Steps 1 and 2 decide independently (count rate per
+  detector, calibrated over the group) and disagree on 4 of 24 files, all at 2-4 % in the
+  extension bands; the in-range painted / rate-unit sky ratio there is 0.995-1.011, within the
+  0.984-1.014 of the files where they agree, so no step appears at the calibrated edge.

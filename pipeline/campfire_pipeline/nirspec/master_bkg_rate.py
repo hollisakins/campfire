@@ -15,9 +15,11 @@ Per exposure group (one root: obs / visit / config), over every rate file:
    continued to its wavelength cutoffs;
    ``master_bkg.select_clean`` rejects lines, excess and low throughput with the
    ``rate_*`` thresholds (no flat field in count rate: shutters scatter by ~7 % grey);
-   the clean ones give the exposure's sky (``MBKG1DR``) with the group pool and the
-   other detector as fallbacks (``master_bkg.rate_sky_for``), and the quadrant scales in
-   count rate (``MBKGQSR``).
+   the clean ones give the sky (``MBKG1DR``): the same detector's pool over the group
+   unless this exposure's shutters differ from the other exposures' (``master_bkg.pool_check``;
+   ``MBKGPSRC``, ``MBKGPDEC`` ...; the exposure's own sky kept as ``rate_exposure``), with
+   the other detector and the nearest bin as fallbacks (``master_bkg.rate_sky_for``), and
+   the quadrant scales in count rate (``MBKGQSR``).
 3. **Stuck shutters.** ``shutter_fit.fit_shutters`` on every rate file with that sky, and
    ``call_shutters`` over the root; the stuck calls leave the clean set and the sky is
    combined again; the calls are merged into the observation's stuck list as ``auto``
@@ -47,7 +49,7 @@ from campfire_pipeline.nirspec import stuck_list as S
 from campfire_pipeline.nirspec.coverage import (cache_path, cutoffs_for, default_cache_dir,
                                                  rate_geometry)
 
-STEP1_VERSION = '1.1'          # 1.1: equal shutter weights, sky divided to the open-shutter centre
+STEP1_VERSION = '1.2'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different
 N_GRID_SLITLETS = 6          # slitlets per detector whose central rows set the wavelength grid
 
 
@@ -251,26 +253,48 @@ def _select(pairs, opt):
 
 
 def _skies(clean_of, centres, opt):
-    """Per rate file of a group: ``(sky (sb, err, n, source), {q: (scale, n)})`` from the
-    clean shutters ``clean_of[base]``."""
+    """Per rate file of a group: ``dict(rs, qs, own, src, check, members)`` from the clean
+    shutters ``clean_of[base]``. ``rs`` is the sky painted: the pool of the same detector's
+    exposures that are consistent with each other (``M.pool_members``) for a member, else
+    the exposure's own; ``own`` is the exposure's own sky either way; ``qs`` the quadrant
+    scales against ``rs``."""
+    members, checks = set(), {}
+    for det in sorted({b.rsplit('_', 2)[2] for b in clean_of}):
+        of_det = {b: sp for b, sp in clean_of.items() if b.endswith(det)}
+        if opt['prefer_pool']:
+            m, c = M.pool_members(of_det, centres[next(iter(of_det))], opt)
+            members |= m; checks.update(c)
     out = {}
     for base in clean_of:
-        rs = M.rate_sky_for(base, clean_of, opt['clip_sigma'])
-        if rs is None:
-            out[base] = (None, {})
+        det = base.rsplit('_', 2)[2]
+        own = M.rate_sky_for(base, clean_of, opt['clip_sigma'])
+        check = checks.get(base, M.pool_check([], None, centres[base], opt))
+        mem = sorted(b for b in members if b.endswith(det))
+        if own is None:
+            out[base] = dict(rs=None, qs={}, own=None, src='none', check=check, members=mem)
             continue
+        src = 'pool' if (base in members and len(mem) > 1) else 'exposure'
+        if src == 'pool':
+            # the same detector's pool over the members; the other detector stays a fallback
+            pool_of = {b: sp for b, sp in clean_of.items() if b in members or not b.endswith(det)}
+            rs = M.rate_sky_for(base, pool_of, opt['clip_sigma'], pool_first=True)
+        else:
+            rs = own
         qs = M.quadrant_scales(clean_of[base], (rs[0], rs[1]), opt) if clean_of[base] else {}
-        out[base] = (rs, qs)
+        out[base] = dict(rs=rs, qs=qs, own=own, src=src, check=check, members=mem)
     return out
 
 
-def _sky_table(centres, rs):
+def _sky_table(centres, rs, own=None):
     t = Table()
     t['wavelength'] = np.asarray(centres, np.float64); t['wavelength'].unit = 'um'
     t['rate'] = np.asarray(rs[0], np.float32); t['rate'].unit = 'count/s'
     t['rate_err'] = np.asarray(rs[1], np.float32); t['rate_err'].unit = 'count/s'
     t['n_shutters'] = np.asarray(rs[2], np.int32)
     t['source'] = np.asarray(rs[3], np.int16)
+    if own is not None:                  # the exposure's own sky, whichever MBKGPSRC chose
+        t['rate_exposure'] = np.asarray(own[0], np.float32); t['rate_exposure'].unit = 'count/s'
+        t['rate_exposure_err'] = np.asarray(own[1], np.float32); t['rate_exposure_err'].unit = 'count/s'
     return t
 
 
@@ -440,9 +464,9 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
         skies = _skies(clean_of, centres, opt)
 
         # 3. the fit, the calls, then the sky without the stuck shutters
-        fit_args = [(it['rate'], cache_dir, it['cutoffs'], it['wr'], _sky_table(centres[it['base']], skies[it['base']][0]),
-                     {q: v[0] for q, v in skies[it['base']][1].items()}, it['bs_path'])
-                    for it in items if skies[it['base']][0] is not None]
+        fit_args = [(it['rate'], cache_dir, it['cutoffs'], it['wr'], _sky_table(centres[it['base']], skies[it['base']]['rs']),
+                     {q: v[0] for q, v in skies[it['base']]['qs'].items()}, it['bs_path'])
+                    for it in items if skies[it['base']]['rs'] is not None]
         fits_of = {}
         for rate, t, err in _map(_worker_fit, fit_args):
             if err:
@@ -467,19 +491,20 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
                         names=('q', 'row', 'col', 'stuck', 'a', 'n', 'note'),
                         dtype=(np.int16, np.int16, np.int16, bool, np.float32, np.int16, 'U48')) if calls else None
         for it in items:
-            rs, qs = skies[it['base']]
+            sk = skies[it['base']]
+            rs, qs = sk['rs'], sk['qs']
             if rs is None:
                 log(f'master background step 1: {it["base"]}: no sky'); continue
             out = product_path(obs, it['base'])
             _write(out, it, centres[it['base']], rs, qs, specs_of[it['base']], keys_of[it['base']],
-                   fits_of.get(it['base']), calls_t, opt)
+                   fits_of.get(it['base']), calls_t, opt, sky=sk)
             written.append(out)
         if calls and write_calls:
             S.write_auto(stuck_path, root, calls, metafiles, obs_name=obs.name)
     return written
 
 
-def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt):
+def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt, sky=None):
     srcs = np.bincount(np.asarray(rs[3], int), minlength=5)
     cards = dict(it['cards'])
     cards.update({
@@ -493,6 +518,21 @@ def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt):
         'MBKGMINN': (int(opt['stuck_min_n']), 'stuck call: measurements needed'),
         'MBKGGARD': (float(opt['stuck_guard']), 'stuck call: detector agreement'),
     })
+    if sky is not None:
+        chk = sky['check']
+        cards.update({
+            'MBKGPSRC': (sky['src'], 'MBKG1DR: pool (consistent), exposure (differs)'),
+            'MBKGPDEC': (chk['verdict'], 'vs the pool of the other members, worst band'),
+            'MBKGPMEM': (' '.join(str(int(b.rsplit('_', 2)[1])) for b in sky['members']) or 'none',
+                         'pool members (nods, this detector)'),
+            'MBKGPDEV': (chk['dev'], 'that band: mean shutter / pool - 1'),
+            'MBKGPSIG': (chk['nsig'], 'that band: significance [sigma]'),
+            'MBKGPLO': (chk['lam_lo'], 'that band: from [um]'),
+            'MBKGPHI': (chk['lam_hi'], 'that band: to [um]'),
+            'MBKGPNB': (chk['n_bands'], 'bands tested'),
+            'MBKGPTOL': (float(opt['pool_tol']), 'a band differs above this fraction'),
+            'MBKGPNSG': (float(opt['pool_nsigma']), '... and above this many sigma'),
+        })
     if fit is not None:
         for k in ('chi2_sky', 'chi2_all', 'const_sky', 'const_all'):
             v = fit.meta.get(k)
@@ -503,7 +543,7 @@ def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt):
         hdr[k] = v
     hdr['MBKGSRC1'] = ('1 own shutters, 2 group pool same detector, 3 other detector scaled, 4 held', 'MBKG1DR source column')
     hdus = [fits.PrimaryHDU(header=hdr)]
-    hdus.append(fits.BinTableHDU(_sky_table(centres, rs), name='MBKG1DR'))
+    hdus.append(fits.BinTableHDU(_sky_table(centres, rs, own=sky['own'] if sky else None), name='MBKG1DR'))
     qt = Table(rows=[(q, v[0], v[1]) for q, v in sorted(qs.items())], names=('quadrant', 'scale', 'n_shutters'),
                dtype=(np.int16, np.float32, np.int32)) if qs else Table(names=('quadrant', 'scale', 'n_shutters'),
                                                                         dtype=(np.int16, np.float32, np.int32))

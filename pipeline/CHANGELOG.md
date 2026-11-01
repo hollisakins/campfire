@@ -30,6 +30,24 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec master background 1.4: the group's pooled sky is painted unless an exposure
+  differs.** Each exposure × detector's clean shutters are tested against the pooled sky of
+  the other exposures of its group (`master_bkg.pool_check`): in each of 8 wavelength bands
+  the median of the shutters' ratios to the pool, with its error from their scatter (floored
+  at their propagated errors, at least `min_shutters` per band); a band differs when it is off
+  by more than `master_bkg_pool_tol` (2 %) and `master_bkg_pool_nsigma` (3) sigma. While any
+  member differs, the one with the largest deviation leaves the pool and the rest are tested
+  again (`pool_members`), so one discrepant exposure does not make the others look discrepant.
+  Members are painted with the pool of the members; the others keep their own sky. Step 2
+  pools every exposure of the group (calibrated), step 1 the same detector's exposures (count
+  rate), each deciding on its own. Provenance: `MBKGSRC` / `MBKGPSRC` (pool, exposure, group),
+  `MBKGPDEC` (the verdict and worst band), `MBKGPDEV` / `MBKGPSIG` / `MBKGPLO` / `MBKGPHI` /
+  `MBKGPNB`, `MBKGPMEM` (the members), `MBKGPTOL` / `MBKGPNSG`, and the exposure's own sky kept
+  as `MBKG1D.exposure_surf_bright` / `MBKG1DR.rate_exposure` whatever was painted. On
+  `ember_cosmos_p1` every exposure pools and the G395M 1-D sky noise per 2-px bin falls from
+  7-35 % to 3-5 %; on `ember_uds_p2` PRISM nod 2 (+17-18 % at 2.8-3.5 um, 31-44 sigma) leaves the
+  pool on both detectors while nods 1 and 3 stay. `master_bkg_prefer_pool = false` restores the
+  per-exposure sky. `CFMBKGV` 1.4, `CFMB1VER` 1.2.
 - **NIRSpec master background 1.3: the sky is no longer painted low.** Two biases in the
   1-D sky (both steps), found on `ember_cosmos_p1` where the painted G395M sky sat +2.6 %
   below held-out empty shutters (PRISM +1.1 %): (1) shutters were combined with

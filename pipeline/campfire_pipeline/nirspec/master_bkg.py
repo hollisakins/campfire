@@ -34,11 +34,16 @@ open-shutter centre). Shutters are combined with equal weights (``combine``: a p
 variance follows its own measured value, so inverse-variance weights pull the sky low).
 Selection is the symmetric
 scale-and-reject iteration of §4.2 step 4 against the per-bin median seed. The sky is
-measured per exposure × detector — the grain the data demand (ember_uds_p2's second
-exposure sits 14 % above the others at 3 µm) — and compared with the pooled sky of its
-exposure group (every nod, both detectors): the scale and offset against the pool are
-recorded (``MBKGSCL``, ``MBKGOFF``), never applied, and the pool stands in when an
-exposure has too few clean shutters (``MBKGSRC``). Per-quadrant scales against the
+measured per exposure × detector and tested against the pooled sky of the other exposures
+of its group (every nod, both detectors; ``pool_check``, band by band, with the
+shutter-to-shutter scatter as the error): an exposure consistent with them is painted with
+the group's pool, which has several times its shutters and so a fraction of its noise (a
+G395M exposure × detector has one to five shutters per bin at the ends of its range); one
+that differs (ember_uds_p2's second nod sits 18 % above the others at the 3 µm sky
+minimum) keeps its own sky. The decision, the worst band and the thresholds are in the
+header (``MBKGSRC``: pool / exposure / group when too few clean shutters; ``MBKGPDEC`` ...),
+the exposure's own sky is kept in ``MBKG1D`` either way (``exposure_surf_bright``), and the
+scale and offset against the pool are recorded (``MBKGSCL``, ``MBKGOFF``). Per-quadrant scales against the
 global sky are recorded as ``MBKGQ1``..``MBKGQ4`` (the ±2.5 % quadrant term of §9) and
 applied by ``sky_for_slit``.
 
@@ -66,8 +71,9 @@ from campfire_pipeline.nirspec import barshadow_calibration as B
 from campfire_pipeline.nirspec.coverage import (coverage_from_wcs, cutoffs_for, default_cache_dir, cache_path,
                                                  slit_geometry_extended)
 
-ALGORITHM_VERSION = '1.3'     # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
+ALGORITHM_VERSION = '1.4'     # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
 #                               1.3: equal shutter weights, sky divided to the open-shutter centre (2026-10-31)
+#                               1.4: the group pool painted unless the exposure differs (pool_check) (2026-10-31)
 _PREFIX = 'master_bkg_'
 DEFAULTS = dict(
     master_bkg_source_pad_px=3.0,     # rows beyond the source shutter's edges dropped (§9: 3 px)
@@ -82,6 +88,10 @@ DEFAULTS = dict(
     master_bkg_low_min=0.30,          # reject a shutter fainter than the sky by this (and 3 sigma)
     master_bkg_n_iter=3,
     master_bkg_min_shutters=5,        # below this the exposure takes the group's pooled sky
+    master_bkg_prefer_pool=True,      # paint the group's pooled sky unless this exposure's differs (pool_check)
+    master_bkg_pool_tol=0.02,         # ... a band differs when off by more than this fraction
+    master_bkg_pool_nsigma=3.0,       # ... and by more than this many sigma (shutter-to-shutter scatter)
+    master_bkg_pool_bands=8,          # ... wavelength bands tested
     master_bkg_rate_excess_min=0.15,  # step 1 (count rate, no flat: ~7 % grey per slitlet): excess threshold
     master_bkg_rate_low_min=0.30,     # step 1: low-throughput threshold
     master_bkg_stuck_a_cut=0.3,       # step 1 stuck call: median sky amplitude below this
@@ -478,6 +488,97 @@ def scale_offset(sky, pool):
     return float(coef[0]), float(np.sqrt(cov[0, 0])), float(coef[1]), float(np.sqrt(cov[1, 1])), int(m.sum())
 
 
+def pool_check(clean, pool, centres, opt):
+    """Is this exposure's sky consistent with the pooled sky of the other exposures?
+
+    ``clean`` are the exposure's clean shutters, ``pool`` the ``combine`` of every other
+    exposure of the group (leave-one-out, so the exposure is not part of its own
+    reference). The finite bins are cut into ``pool_bands`` contiguous bands of equal
+    size; in each band every shutter gives the ratio of its summed values to the pool's
+    over the bins it covers (at least three), and the band's deviation is the median ratio
+    minus one with the error of that median (from the shutters' MAD, so the real
+    shutter-to-shutter spread is in it, floored at their propagated errors; a band needs
+    ``min_shutters`` shutters). A band differs when it is off by more than
+    ``pool_tol`` and by more than ``pool_nsigma`` sigma: the first keeps a 0.3 % prism
+    difference that is formally 3 sigma from counting, the second keeps a noisy grating band
+    from counting. Bands are what catch a local difference (ember_uds_p2 nod 2: +18 % at the
+    3 um sky minimum and nowhere else, §9) that one overall scale would dilute.
+
+    Returns ``dict(differs, dev, nsig, lam_lo, lam_hi, n_bands, verdict)``: the band with the
+    largest |deviation| among those that differ, else among all tested; ``differs`` is None
+    when no band could be tested (fewer than ``min_shutters`` shutters in every band)."""
+    out = dict(differs=None, dev=np.nan, nsig=np.nan, lam_lo=np.nan, lam_hi=np.nan, n_bands=0, verdict='untested')
+    if pool is None or not clean:
+        return out
+    P = np.asarray(pool[0], float)
+    S = np.array([s.sb for s in clean], float)
+    E = np.array([s.err for s in clean], float)
+    fin = np.flatnonzero(np.isfinite(P) & (P > 0) & np.isfinite(S).any(axis=0))
+    if fin.size < 3:
+        return out
+    tested = []
+    for chunk in np.array_split(fin, max(1, int(opt['pool_bands']))):
+        r, er = [], []
+        for row, erow in zip(S[:, chunk], E[:, chunk]):
+            ok = np.isfinite(row) & np.isfinite(erow)
+            if ok.sum() >= 3:
+                tot = np.sum(P[chunk][ok])
+                r.append(np.sum(row[ok]) / tot); er.append(np.sqrt(np.sum(erow[ok] ** 2)) / tot)
+        if len(r) < int(opt['min_shutters']):
+            continue
+        r, er = np.asarray(r), np.asarray(er)
+        med = float(np.median(r))
+        dev = med - 1
+        # the median of the shutters (one shutter with a wild band ratio must not decide)
+        # with its error from their scatter, never below what their own errors imply (a
+        # handful of shutters can scatter little by chance)
+        spread = max(1.4826 * float(np.median(np.abs(r - med))), float(np.sqrt(np.mean(er ** 2))))
+        err = 1.2533 * spread / np.sqrt(r.size)
+        nsig = abs(dev) / err if err > 0 else np.inf
+        tested.append((abs(dev) > opt['pool_tol'] and nsig > opt['pool_nsigma'], dev, nsig,
+                       float(centres[chunk[0]]), float(centres[chunk[-1]])))
+    if not tested:
+        return out
+    flagged = [t for t in tested if t[0]]
+    worst = max(flagged or tested, key=lambda t: abs(t[1]))
+    differs = bool(flagged)
+    out.update(differs=differs, dev=worst[1], nsig=worst[2], lam_lo=worst[3], lam_hi=worst[4], n_bands=len(tested),
+               verdict=(f'differs {worst[3]:.2f}-{worst[4]:.2f} um {100 * worst[1]:+.1f} % ({worst[2]:.1f} sig)' if differs
+                        else 'consistent'))
+    return out
+
+
+def pool_members(clean_of, centres, opt):
+    """Which exposures form the pool: ``(members, checks)`` over ``clean_of`` (rate base ->
+    its clean shutters, one grid). Every member is tested against the pool of the other
+    members (``pool_check``); while any differs, the one with the largest deviation leaves
+    and the rest are tested again, so one discrepant exposure cannot make the others look
+    discrepant through their reference (ember_uds_p2: nod 2 +18 % at 3 um put nods 1 and 3
+    at -6 % against a pool that held it). ``checks[base]`` is each member's last test and,
+    for an exposure that left, its test against the final pool."""
+    members = {b for b, sp in clean_of.items() if sp}
+    checks = {b: pool_check([], None, centres, opt) for b in clean_of}
+
+    def against(b, pool_of):
+        others = [s for o in pool_of if o != b for s in clean_of[o]]
+        return pool_check(clean_of[b], combine(others, opt['clip_sigma']) if others else None, centres, opt)
+
+    while len(members) > 1:
+        for b in members:
+            checks[b] = against(b, members)
+        bad = [b for b in members if checks[b]['differs'] is True]
+        if not bad:
+            break
+        members.discard(max(bad, key=lambda b: abs(checks[b]['dev'])))
+    for b in clean_of:
+        if b not in members and clean_of[b]:
+            checks[b] = against(b, members)
+    if len(members) == 1:
+        (b,) = members
+        checks[b] = dict(checks[b], verdict='alone in the pool')
+    return members, checks
+
+
 def model_sky(lam_um, sb, ra, dec, date_obs):
     """``jwst_backgrounds`` total background for the pointing and date, and the one
     global scale that fits it to ``sb`` at R ~ 20 (§3.3: a shape, not a level)."""
@@ -784,13 +885,15 @@ def _rate_frame(rate_path, counter_path):
     return rate, rvar, rate_ok, counter
 
 
-def rate_sky_for(base, specs_of, clip_sigma, min_shutters=3, min_overlap=10):
+def rate_sky_for(base, specs_of, clip_sigma, min_shutters=3, min_overlap=10, pool_first=False):
     """The rate-unit sky of one rate file ``base`` (``<root>_<nod>_<det>``) on the
     disperser's extended grid, with its fallbacks bin by bin: the exposure's own clean
     shutters (source 1); the exposure group's pool on the same detector (2); the other
     detector's pool scaled by the median ratio over the bins both have (3: the same sky
     through a different detector response); the nearest filled bin held outward (4).
-    ``specs_of`` maps every rate base of the group to its spectra. Returns
+    ``specs_of`` maps every rate base of the group to its spectra. With ``pool_first`` (the
+    exposure is consistent with the pool, ``pool_check``) the pool comes first and the
+    exposure's own shutters fill only the bins the pool lacks. Returns
     ``(sb, err, n_shutters, source)`` or None when nothing at all was measured."""
     root, nod, det = base.rsplit('_', 2)
     other = 'nrs2' if det == 'nrs1' else 'nrs1'
@@ -802,7 +905,7 @@ def rate_sky_for(base, specs_of, clip_sigma, min_shutters=3, min_overlap=10):
         return None
     nb = len((ref if ref is not None else oth)[0])
     sb = np.full(nb, np.nan); err = np.full(nb, np.nan); n = np.zeros(nb, int); src = np.zeros(nb, np.int16)
-    for level, cand in ((1, own), (2, same)):
+    for level, cand in (((2, same), (1, own)) if pool_first else ((1, own), (2, same))):
         if cand is None:
             continue
         take = ~np.isfinite(sb) & np.isfinite(cand[0]) & (cand[2] >= min_shutters)
@@ -964,7 +1067,8 @@ def header_float(hdr, key, default=np.nan):
         return default
 
 
-def write_product(path, hdr_cards, grid_centres, sky, pool, model, shutters, mb2d=None, dq2d=None, history=(), n2d=None):
+def write_product(path, hdr_cards, grid_centres, sky, pool, model, shutters, mb2d=None, dq2d=None, history=(), n2d=None,
+                  own=None):
     phdr = fits.Header()
     for k, v in _finite_cards(hdr_cards).items():
         phdr[k] = v
@@ -978,6 +1082,11 @@ def write_product(path, hdr_cards, grid_centres, sky, pool, model, shutters, mb2
     t['pool_surf_bright'] = np.asarray(pool[0] if pool is not None else np.full(len(grid_centres), np.nan), np.float32)
     t['pool_surf_bright_err'] = np.asarray(pool[1] if pool is not None else np.full(len(grid_centres), np.nan), np.float32)
     t['model_surf_bright'] = np.asarray(model if model is not None else np.full(len(grid_centres), np.nan), np.float32)
+    # this exposure's own sky, whichever MBKGSRC chose to paint
+    nanv = np.full(len(grid_centres), np.nan)
+    t['exposure_surf_bright'] = np.asarray(own[0] if own is not None else nanv, np.float32)
+    t['exposure_surf_bright_err'] = np.asarray(own[1] if own is not None else nanv, np.float32)
+    t['exposure_n_shutters'] = np.asarray(own[2] if own is not None else np.zeros(len(grid_centres)), np.int32)
     sh = Table()
     sh['slit'] = [s.slit for s in shutters] or np.zeros(0, dtype='U16')
     sh['source_id'] = np.array([s.source_id for s in shutters], np.int64)
@@ -1022,7 +1131,10 @@ def plot_product(path, out_pdf, obs_name=''):
         fig, axes = plt.subplots(3, 1, figsize=(10, 11))
         ax = axes[0]
         ax.plot(lam, t['pool_surf_bright'], color='tab:orange', lw=1.0, label=f"exposure group pool (scale {header_float(hdr, 'MBKGSCL'):.3f}, offset/sky {header_float(hdr, 'MBKGOFFR'):+.3f})")
-        ax.plot(lam, t['surf_bright'], color='k', lw=1.2, label=f"this exposure x detector: {hdr.get('MBKGNSH')} clean of {hdr.get('MBKGNTOT')} shutters ({hdr.get('MBKGSRC')})")
+        own = t['exposure_surf_bright'] if 'exposure_surf_bright' in t.colnames else t['surf_bright']
+        ax.plot(lam, own, color='k', lw=1.2, label=f"this exposure x detector: {hdr.get('MBKGNSH')} clean of {hdr.get('MBKGNTOT')} shutters")
+        ax.plot(lam, t['surf_bright'], color='tab:green', lw=0.8,
+                label=f"painted ({hdr.get('MBKGSRC')}: {hdr.get('MBKGPDEC', '')})")
         if np.isfinite(t['model_surf_bright']).any():
             ax.plot(lam, t['model_surf_bright'], color='tab:blue', ls='--', lw=1, label=f"jwst_backgrounds x {header_float(hdr, 'MBKGMDL'):.2f}")
         ax.set_ylabel('sky surface brightness [MJy/sr]'); ax.set_title(f'{obs_name} {base}: master background')
@@ -1038,7 +1150,10 @@ def plot_product(path, out_pdf, obs_name=''):
             ax2.set_ylim(0, 2 * rhi); ax2.legend(fontsize=8, loc='upper right')
         ax = axes[1]
         with np.errstate(invalid='ignore', divide='ignore'):
-            ax.plot(lam, t['surf_bright'] / t['pool_surf_bright'], color='k', lw=0.8, label='this / pool')
+            ax.plot(lam, own / t['pool_surf_bright'], color='k', lw=0.8, label='this exposure / pool')
+        if np.isfinite(header_float(hdr, 'MBKGPLO')):
+            ax.axvspan(header_float(hdr, 'MBKGPLO'), header_float(hdr, 'MBKGPHI'), color='tab:red', alpha=0.1,
+                       label=f"worst band {100 * header_float(hdr, 'MBKGPDEV'):+.1f} % ({header_float(hdr, 'MBKGPSIG'):.1f} sigma)")
         for q in (1, 2, 3, 4):
             a = header_float(hdr, f'MBKGQ{q}')
             if np.isfinite(a):
@@ -1152,10 +1267,20 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         sky = select_clean(spectra, median_seed(spectra), opt)
         skies[base] = sky
         shutters_of[base] = spectra
-    pools = {}
+    # the group's pool: every exposure's clean shutters, or with prefer_pool those of the
+    # exposures consistent with each other (pool_members); the others keep their own sky
+    pools, checks, in_pool = {}, {}, set()
     for grp in groups:
-        members = [s for base, sp in shutters_of.items() if base.rsplit('_', 2)[0] == grp for s in sp if s.clean]
-        pools[grp] = combine(members, opt['clip_sigma']) if members else None
+        clean_of = {base: [s for s in sp if s.clean] for base, sp in shutters_of.items() if base.rsplit('_', 2)[0] == grp}
+        if opt['prefer_pool'] and clean_of:
+            key0 = next(c for c in canonicals if c.rate_base in clean_of)
+            e = edges_of[(key0.grating, key0.filter)]
+            members, chk = pool_members(clean_of, 0.5 * (e[1:] + e[:-1]), opt)
+            checks.update(chk); in_pool |= members
+        else:
+            members = set(clean_of)
+        pooled = [s for b in members for s in clean_of[b]]
+        pools[grp] = combine(pooled, opt['clip_sigma']) if pooled else None
 
     # 2-D expansion, parallel over rate files, after the 1-D products are written
     written, paint_args = [], []
@@ -1163,17 +1288,21 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         key = (cans[0].grating, cans[0].filter)
         edges = edges_of[key]; centres = 0.5 * (edges[1:] + edges[:-1])
         spectra = shutters_of.get(base, by_rate.get(base, []))
-        sky = skies.get(base)
+        own = skies.get(base)             # this exposure's own sky, always recorded
+        sky = own
         grp = base.rsplit('_', 2)[0]
         pool = pools.get(grp)
         n_clean = sum(1 for s in spectra if s.clean)
         src = 'exposure'
+        check = checks.get(base, pool_check([], None, centres, opt))
         if (sky is None or n_clean < opt['min_shutters']) and pool is not None:
             sky, src = pool, 'group'
+        elif sky is not None and pool is not None and base in in_pool:
+            sky, src = pool, 'pool'          # consistent with the other members (pool_members)
         if sky is None:
             log(f'master background: {base}: no clean shutters and no pool; no product')
             continue
-        a, ae, b, be, nfit = scale_offset(sky, pool) if (pool is not None and src == 'exposure') else (np.nan,) * 4 + (0,)
+        a, ae, b, be, nfit = scale_offset(own, pool) if (pool is not None and own is not None) else (np.nan,) * 4 + (0,)
         qsc = quadrant_scales(spectra, sky, opt) if opt['quadrant_scales'] else {q: (np.nan, 0) for q in (1, 2, 3, 4)}
         model, mscale = None, np.nan
         if opt['model_check']:
@@ -1199,7 +1328,17 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             'MBKGNSH': (n_clean, 'clean shutters in this exposure x detector'),
             'MBKGNGRP': (sum(1 for sp in shutters_of.values() for s in sp if s.clean and s.rate_base.rsplit('_', 2)[0] == grp),
                          'clean shutters in the group pool'),
-            'MBKGSRC': (src, 'MBKG1D: this exposure, or the group pool'),
+            'MBKGSRC': (src, 'MBKG1D: pool (consistent), exposure (differs), group (few)'),
+            'MBKGPDEC': (check['verdict'], 'vs the pool of the other members, worst band'),
+            'MBKGPMEM': (' '.join(sorted(f"{int(b.rsplit('_', 2)[1])}/{b.rsplit('_', 2)[2][-1]}" for b in in_pool
+                                         if b.rsplit('_', 2)[0] == grp)) or 'none', 'pool members (nod/detector)'),
+            'MBKGPDEV': (check['dev'], 'that band: mean shutter / pool - 1'),
+            'MBKGPSIG': (check['nsig'], 'that band: significance [sigma]'),
+            'MBKGPLO': (check['lam_lo'], 'that band: from [um]'),
+            'MBKGPHI': (check['lam_hi'], 'that band: to [um]'),
+            'MBKGPNB': (check['n_bands'], 'bands tested'),
+            'MBKGPTOL': (float(opt['pool_tol']), 'a band differs above this fraction'),
+            'MBKGPNSG': (float(opt['pool_nsigma']), '... and above this many sigma'),
             'MBKGSCL': (a, 'this sky / group pool, recorded only'),
             'MBKGSCLE': (ae, 'its error'),
             'MBKGOFF': (b, 'offset vs group pool [MJy/sr], recorded'),
@@ -1219,7 +1358,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
                 'stage-2a canonicals and the background slitlets of this exposure;',
                 'see docs/design-nirspec-master-background.md section 4.']
         out = product_path(obs, base)
-        write_product(out, cards, centres, sky, pool, model, spectra, history=hist)
+        write_product(out, cards, centres, sky, pool, model, spectra, history=hist, own=own)
         written.append(out)
         log(f'master background: {base}: {n_clean}/{len(spectra)} shutters clean ({src}); '
             f'scale vs pool {a:.4f}, offset/sky {cards["MBKGOFFR"][0]:+.4f}; data/model {mscale:.3f}')
