@@ -97,23 +97,65 @@ def test_select_judges_the_padded_spectrum_and_returns_the_whole_core_one():
     assert np.allclose(out[1].sb, base * 1.01)                       # the sky keeps the whole-core values
 
 
-def test_read_calls_reads_the_first_product_of_the_root(tmp_path):
+def test_read_calls_reads_the_first_rate_file_of_the_root_that_holds_any(tmp_path):
     calls = Table(rows=[(2, 195, 64, True, -0.01, 6, ''), (2, 195, 65, False, 1.02, 6, '')],
                   names=('q', 'row', 'col', 'stuck', 'a', 'n', 'note'),
                   dtype=(np.int16, np.int16, np.int16, bool, np.float32, np.int16, 'U48'))
-    hdus = fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU(calls, name='CALLS')])
-    hdus.writeto(tmp_path / 'jw07076001001_05101_00001_nrs2_mbkgr.fits')
+    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU(name='CALLS')]).writeto(
+        tmp_path / 'jw07076001001_05101_00001_nrs1_rate.fits')                  # empty: no calls yet
+    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU(calls, name='CALLS')]).writeto(
+        tmp_path / 'jw07076001001_05101_00001_nrs2_rate.fits')
     got = R.read_calls(str(tmp_path), 'jw07076001001_05101')
     assert got[(2, 195, 64)]['stuck'] and abs(got[(2, 195, 64)]['a'] + 0.01) < 1e-6
     assert not got[(2, 195, 65)]['stuck'] and got[(2, 195, 65)]['n'] == 6
     assert R.read_calls(str(tmp_path), 'jw07076001001_03101') == {}
 
 
-def test_product_current_compares_every_input_card(tmp_path):
-    path = str(tmp_path / 'p_mbkgr.fits')
+def test_product_current_reads_the_cards_of_the_rate_files_mbkg1dr(tmp_path):
+    path = str(tmp_path / 'x_rate.fits')
     cards = {'CFMB1VER': ('1.0', ''), 'MBKGDEC': ('abc', '')}
     assert not R.product_current(path, cards)
-    h = fits.Header(); h['CFMB1VER'] = '1.0'; h['MBKGDEC'] = 'abc'
-    fits.PrimaryHDU(header=h).writeto(path)
+    fits.PrimaryHDU().writeto(path)
+    assert not R.product_current(path, cards)                            # a rate file step 1 has not written into
+    t = fits.BinTableHDU(Table({'wavelength': [1.0]}), name='MBKG1DR')
+    t.header['CFMB1VER'] = '1.0'; t.header['MBKGDEC'] = 'abc'
+    R.write_into_rate(path, [t])
     assert R.product_current(path, cards)
     assert not R.product_current(path, dict(cards, MBKGDEC=('xyz', '')))
+
+
+def _step1_hdus(value):
+    t = fits.BinTableHDU(Table({'wavelength': [1.0, 2.0], 'rate': [value, value]}), name='MBKG1DR')
+    t.header['MBKGDATE'] = str(value)
+    return [t, fits.BinTableHDU(Table({'quadrant': [1], 'scale': [1.0]}), name='MBKGQSR'),
+            fits.BinTableHDU(Table({'k': [0]}), name='MBKGSHR'), fits.BinTableHDU(name='SHUTAMP'),
+            fits.BinTableHDU(name='CALLS')]
+
+
+def test_write_into_rate_survives_a_jwst_save_and_a_rewrite(tmp_path):
+    """The step-1 tables in a rate file: a jwst save records them in its ASDF tree, a
+    rewrite with the same names keeps that tree valid, and the mask path's
+    _drop_extra_fits removes them cleanly."""
+    from jwst.datamodels import ImageModel
+    from campfire_pipeline.nirspec.masks import _drop_extra_fits
+    path = str(tmp_path / 'jw_rate.fits')
+    m = ImageModel(np.ones((8, 8), np.float32)); m.save(path); m.close()
+    R.write_into_rate(path, _step1_hdus(1.0))
+    with ImageModel(path) as m:                      # what stage 1 / masks do to a rate file
+        m.save(path)
+    R.write_into_rate(path, _step1_hdus(2.0))        # step 1 again, after the save
+    with ImageModel(path) as m:
+        assert np.all(m.data == 1)
+    with fits.open(path) as h:
+        assert [x.name for x in h].count('MBKG1DR') == 1
+        assert all(n in h for n in R.STEP1_EXTENSIONS)
+        assert h['MBKG1DR'].data['rate'][0] == 2.0 and h['CALLS'].header['NAXIS2'] == 0
+    assert R.step1_header(path)['MBKGDATE'] == '2.0'
+    sky, q = R.read_rate_sky(path)
+    assert np.all(sky['rate'] == 2.0) and q == {1: 1.0}
+    with ImageModel(path) as m:
+        _drop_extra_fits(m, R.STEP1_EXTENSIONS)
+        m.save(path)
+    with ImageModel(path) as m:
+        assert np.all(m.data == 1)
+    assert R.step1_header(path) is None

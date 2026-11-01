@@ -285,7 +285,9 @@ def restore_pre_bkgsub(rate_file: str) -> None:
 
     After restore the rate file is in its pre-bkgsub state: ``CFBKGSUB`` is
     cleared, the ``CFBKG`` / ``CFBKGMASK`` extensions are dropped (they
-    correspond to a bkgsub that no longer holds), and any stale
+    correspond to a bkgsub that no longer holds), so are the master-background
+    step-1 tables (``master_bkg_rate.STEP1_EXTENSIONS``, measured on the frame
+    being undone; step 1 runs again before stage 2a), and any stale
     ``CFMASK*`` sentinels are stripped so the re-apply can re-stamp from
     scratch.
 
@@ -338,7 +340,8 @@ def restore_pre_bkgsub(rate_file: str) -> None:
         #   reverse:  data += bkg;        var_rnoise /= var_rescale
         model.data = model.data + bkg
         model.var_rnoise = model.var_rnoise / float(var_rescale)
-        _drop_extra_fits(model, ("CFBKG", "CFBKGMASK", "CFDQMASK"))
+        from campfire_pipeline.nirspec.master_bkg_rate import STEP1_EXTENSIONS
+        _drop_extra_fits(model, ("CFBKG", "CFBKGMASK", "CFDQMASK") + STEP1_EXTENSIONS)
         model.save(rate_file)
 
 

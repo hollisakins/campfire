@@ -28,8 +28,8 @@ def discover_spectrum_exposures(obs_dir: Path) -> list[Path]:
     double-discovered here and mis-registered as a spectrum-exposure.
 
     Only names whose last token is the source id count: other per-detector products
-    in the directory (the master background ``{root}_{nod}_{nrsN}_mbkg.fits``, its
-    count-rate step ``_mbkgr.fits``, ...) also match ``*_nrs[12]_*.fits``.
+    in the directory (the master background ``{root}_{nod}_{nrsN}_mbkg.fits``, ...)
+    also match ``*_nrs[12]_*.fits``.
     """
     return sorted(
         p for p in obs_dir.glob('*_nrs[12]_*.fits')

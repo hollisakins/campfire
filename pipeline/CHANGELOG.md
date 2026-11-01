@@ -30,6 +30,21 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec master background 1.5: step 1's tables live in the rate file; `_mbkg.fits`
+  compressed.** Step 1 (`master_bkg_rate`) writes `MBKG1DR` (with the step's cards in its
+  header), `MBKGQSR`, `MBKGSHR`, `SHUTAMP` and `CALLS` into `<base>_rate.fits` itself, after
+  the jwst extensions (as stage 1 does with `CFBKG`); `<base>_mbkgr.fits` and its layout kind
+  `nirspec_mbkgr` are retired. All five tables are written every time, empty when there is
+  nothing to hold, so a jwst save of the rate file (which records them in its ASDF tree) never
+  finds one missing; `masks.restore_pre_bkgsub` drops them with the detector background, and
+  step 1 runs again. Step 2 reads them from the rate file, no longer keeps a copy of
+  `MBKG1DR` (`load_product` reads it from the rate file via `MBKGRATE`), and writes
+  `MBKG2D` / `MBKG2DN` / `MBKG2DDQ` compressed losslessly (GZIP_2 / RICE_1): 25 MB -> 2.8 MB
+  on PRISM, 7.8-8.3 MB on G395M (more pixels painted past the calibrated range), arrays
+  identical. Shutters seen through two sources' cutouts of one slitlet are now taken from the
+  lower source id instead of whichever worker finished first, so step 2 repeats exactly. On
+  `ember_cosmos_p1` G395M is bit-identical to 1.4 and PRISM within 0.1 % (that choice).
+  `CFMBKGV` 1.5, `CFMB1VER` 1.3; a 1.4 workspace re-runs both steps.
 - **NIRSpec master background 1.4: the group's pooled sky is painted unless an exposure
   differs.** Each exposure × detector's clean shutters are tested against the pooled sky of
   the other exposures of its group (`master_bkg.pool_check`): in each of 8 wavelength bands

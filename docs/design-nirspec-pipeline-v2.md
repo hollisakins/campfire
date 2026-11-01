@@ -56,9 +56,10 @@ leaves other sources' light in many spectra. The redesign does four things:
 | Empirical bar-shadow tables, PRISM + G140M/G235M/G395M | Built (7ab786bf, 47d19c46, fea58a6e, b0c08026); not signed off by the user | MB session | 3.2 |
 | No bar-shadow division of science frames | Decided (user, 2026-10-29) | both | 3.2 |
 | Master background, calibrated sky + painting (`_mbkg.fits`) | Built (0d9dd3c7, 53b1c5af, 2f898100, 65c1d825) | MB session | 3.3 |
-| Master background split into step 1 (before 2a) and step 2 (end of 2a) | Decided (user, 2026-10-30); not built | MB session | 3.3, 3.4 |
+| Master background split into step 1 (before 2a) and step 2 (end of 2a) | Decided (user, 2026-10-30); Built (master background 1.2+) | MB session | 3.3, 3.4 |
 | Step 2 reselects clean shutters in calibrated units | Decided (user, 2026-10-30) | MB session | 3.3 |
-| Interface between step 1 and step 2 (`_mbkgr.fits`) | Proposed (MB session, 2026-10-30) | MB session | 3.4 |
+| Step 1's tables inside the rate file, `_mbkgr.fits` retired; `_mbkg.fits` the only extra per-exposure file, compressed | Decided (user, 2026-11-01); Built (master background 1.5) | MB session | 3.4 |
+| One trace map per exposure, built in step 1 from every commanded shutter, stored in the rate file, stuck shutters removed when read; replaces the coverage counter and the stage-3 trace-map cache | Decided (user, 2026-11-01); not built (MB session writes the builder in `trace_overlap.py`, extraction session moves the readers) | both | 3.4 |
 | Per-slitlet sky scale off permanently | Decided (user, 2026-10-30); Built (1bd8d7c6) | both | 3.3 |
 | Sky painted past both ends of the calibrated range, nothing masked | Decided (user, 2026-10-30); Built (65c1d825, 5b8d6851) | MB session | 3.3 |
 | Smoothing the per-exposure grating sky | Open: trial only, not approved (user, 2026-10-30) | MB session | 3.3 |
@@ -101,9 +102,8 @@ what the branch does now where it differs.
    bar-shadow table. Does one `assign_wcs` pass per rate file, shared with the overlap counter.
    Measures the count-rate sky (`MBKG1DR`) from empty shutters lit by one slitlet only, and
    count-rate quadrant scales. Fits every commanded-open shutter's sky template to find
-   stuck-closed shutters. Writes `<base>_mbkgr.fits` and auto entries in the stuck-shutter list.
-   Today: does not exist; `MBKG1DR` is computed inside the single master-background step at the
-   end of stage 2a, and stuck shutters come from the old `low_frac` detector inside stage 2a.
+   stuck-closed shutters. Writes its tables into the rate file itself (`MBKG1DR`, `MBKGQSR`,
+   `MBKGSHR`, `SHUTAMP`, `CALLS`; since 1.5) and auto entries in the stuck-shutter list.
 3. **Stage 2a (calibration).** Reads the rate files and the stuck list (already including step
    1's calls). One `Spec2Pipeline` call per rate file. Writes one canonical cutout per source
    (`<root>_<nod>_<nrsN>_<sid>.fits`, point-source calibration, MJy) and the MSA plan's
@@ -263,7 +263,9 @@ correct the nodded spectra.
 `nirspec/coverage.py` (`slit_geometry_extended`, `slitlet_geometry_extended`,
 `coverage_from_wcs`, `WAVELENGTH_CUTOFFS`), called at `stage2.py:384`. Config
 `[nirspec.stage2] master_bkg_*`. Product `<root>_<nod>_<nrsN>_mbkg.fits` (layout kind
-`nirspec_mbkg`, about 20 MB): `MBKG1D`, `MBKG1DR`, `SHUTTERS`, `MBKG2D`, `MBKG2DN`, `MBKG2DDQ`.
+`nirspec_mbkg`; since 1.5 the 2-D extensions are compressed losslessly, 2.8 MB on PRISM and
+about 8 MB on G395M): `MBKG1D`, `SHUTTERS`, `MBKG2D`, `MBKG2DN`, `MBKG2DDQ`. The count-rate
+table `MBKG1DR` is read from the rate file (`load_product` follows `MBKGRATE`).
 `sky_for_slit(product, path, extver=1, table=None, mode='total')` is the stable consumer
 interface; it returns `sky`, `var`, `sky_rate`, `rate`, `calibrated`, `own_sky`.
 
@@ -274,7 +276,7 @@ interface; it returns `sky`, `var`, `sky_rate`, `rate`, `calibrated`, `own_sky`.
 - The G395M blue extension (+7 % at the filter cut-on) (MB session).
 - Bimodal clean-shutter scales on G395M NRS1 (0.95 / 1.15), unexplained (MB session).
 - Grating sky smoothing, trial only (MB session; user decides).
-- Compressed `MBKG2D`; deploy/pull of the kind (MB session).
+- Deploy/pull of `_mbkg.fits` next to the rate file (MB session; decided 2026-11-01, not built).
 - Stuck shutters not in any list painted sky where no light arrives on p1 G395M; fixed by
   section 3.5 once built.
 
@@ -291,13 +293,20 @@ stuck-shutter template fit. Step 2 at the end of stage 2a: calibrated sky (`MBKG
 painting (`MBKG2D`), reusing step 1's geometry and stuck list, reselecting its clean shutters in
 calibrated units.
 
-**Proposed interface** (MB session, 2026-10-30; not yet approved by the user).
+**Interface** (built; file structure decided by the user 2026-11-01: as few file types as
+possible, the calibrated part kept out of the rate file because stage 2a reads the rate file
+before step 2 runs).
 
-A. Step 1 writes one product per rate file, `<base>_mbkgr.fits`, next to `<base>_mbkg.fits`.
-- `PRIMARY`: the version, and the cards its skip key uses: the rate file's `CFBKGDT`, the
-  metafile name and id, the msaoper reference, the bar-shadow stamp `MBKGBSDT`, the cutoffs, the
-  stuck-list file time, and the decision thresholds.
-- `MBKG1DR`: the count-rate sky. It moves here from `_mbkg.fits`, unchanged.
+A. Step 1 writes its tables into `<base>_rate.fits`, after the jwst extensions, as stage 1 does
+with `CFBKG` (`master_bkg_rate.write_into_rate`, atomic by copy). All five are written every
+time, empty when there is nothing to hold, because a jwst save of the rate file records them in
+its ASDF tree and a later rewrite must find every name it recorded (tested:
+`test_write_into_rate_survives_a_jwst_save_and_a_rewrite`). `masks.restore_pre_bkgsub` drops
+them with the detector background. `<base>_mbkgr.fits` (1.2-1.4) is retired.
+- `MBKG1DR`: the count-rate sky. Its header holds the step's cards: the version, and the cards
+  its skip key uses: the rate file's `CFBKGDT`, the metafile name and id, the bar-shadow stamp
+  `MBKGBSDT`, the cutoffs, the hash of the manual / web stuck entries, and the decision
+  thresholds.
 - `MBKGQSR`: count-rate quadrant scales. Step 2 uses these past the calibrated range.
 - `MBKGSHR`: the count-rate shutter selection, with the same columns as today's `SHUTTERS`.
 - `SHUTAMP`: one row per commanded-open shutter: `q`, `row`, `col`, `slitlet_id`, `j`,
@@ -310,10 +319,10 @@ A. Step 1 writes one product per rate file, `<base>_mbkgr.fits`, next to `<base>
   counter, step 1 and step 2 all evaluate geometry from it. If that proves slow, a compact
   per-slitlet cache is the fallback.
 
-B. Step 2 reads `MBKG1DR` and `MBKGQSR` from `_mbkgr.fits`. It sees the stuck state only
+B. Step 2 reads `MBKG1DR` and `MBKGQSR` from the rate file. It sees the stuck state only
 through the canonicals' shutter state, because stage 2a has applied the list. It reselects its
 clean shutters in calibrated units, then writes `MBKG1D`, the painting and QA as now. Its skip
-key adds the `_mbkgr` stamp (date and a hash of `CALLS`). `SHUTAMP` lives in step 1 only; step
+key adds step 1's derivation date (`MBKGRDT`). `SHUTAMP` lives in step 1 only; step
 2 copies two count cards.
 
 C. How the stuck list reaches stage 2a. **Decided (user, 2026-10-30): physical-shutter keys
@@ -912,8 +921,8 @@ rms against PRISM with `fnu_prof_err` (common) and with the solve's own error (o
   the calibrated range everything stays in count-rate units; extraction stays within the
   calibrated range (user, 2026-10-29 and 2026-10-30).
 
-**Per-exposure products.** `<base>_rate.fits` (stage 1); `<base>_mbkgr.fits` (step 1,
-proposed); `<base>_mbkg.fits` (step 2); canonicals per source; `bkgslits/` (local,
+**Per-exposure products.** `<base>_rate.fits` (stage 1, with master background step 1's
+tables, and the trace map once built); `<base>_mbkg.fits` (step 2); canonicals per source; `bkgslits/` (local,
 regenerable); trace maps (cache).
 
 **Open.** The extension names and columns of the master-background spectrum (extraction

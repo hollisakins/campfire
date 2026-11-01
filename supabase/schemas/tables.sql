@@ -1436,7 +1436,7 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
         'nirspec_spec'::"text", 'spectrum_json'::"text", 'spectrum_1d_json'::"text", 'zfit'::"text",
         'nirspec_lines'::"text", 'nirspec_lines_json'::"text", 'nirspec_redshifts'::"text",
-        'nirspec_spectrum_exposure'::"text", 'nirspec_rate'::"text", 'nirspec_mbkg'::"text", 'nirspec_mbkgr'::"text",
+        'nirspec_spectrum_exposure'::"text", 'nirspec_rate'::"text", 'nirspec_mbkg'::"text",
         'rgb'::"text", 'sed'::"text",
         'nircam_exposure'::"text", 'nircam_exposure_preview'::"text",
         'nircam_exposure_full'::"text", 'nircam_mosaic'::"text", 'nircam_rgb'::"text",

@@ -161,22 +161,14 @@ _register(ProductSpec(
     suffix="_rate.fits", legacy_prefix=None,
 ))
 # The master background of one exposure x detector ('<root>_<nod>_<nrsN>_mbkg.fits'):
-# the sky from the empty shutters (MBKG1D), the shutter table and the rate-frame
-# 2-D expansion. Source-independent like the rate file, beside it, cloud-backed as
+# the calibrated master background from the empty shutters (MBKG1D), the shutter table
+# and the 2-D master background on the detector. (Step 1's count-rate tables live in
+# the rate file itself.) Source-independent like the rate file, beside it, cloud-backed as
 # an intermediate (campfire pull --intermediate).
 _register(ProductSpec(
     name="nirspec_mbkg", instrument=NS, tree="products", bucket="data",
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
     suffix="_mbkg.fits", legacy_prefix=None,
-))
-# Master-background step 1 of one exposure x detector ('<root>_<nod>_<nrsN>_mbkgr.fits'),
-# derived from the rate file alone before stage 2a: the count-rate sky (MBKG1DR), its
-# quadrant scales, the shutter selection, the stuck-shutter fit (SHUTAMP) and the
-# exposure root's calls (CALLS). Beside the rate file, cloud-backed like nirspec_mbkg.
-_register(ProductSpec(
-    name="nirspec_mbkgr", instrument=NS, tree="products", bucket="data",
-    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
-    suffix="_mbkgr.fits", legacy_prefix=None,
 ))
 # The background-only slitlets of one exposure ('<root>_<nrsN>_bkgslits.fits'),
 # a by-product of stage 2a's single Spec2Pipeline call and the input of the

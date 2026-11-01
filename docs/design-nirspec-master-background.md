@@ -1386,3 +1386,17 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   detector, calibrated over the group) and disagree on 4 of 24 files, all at 2-4 % in the
   extension bands; the in-range painted / rate-unit sky ratio there is 0.995-1.011, within the
   0.984-1.014 of the files where they agree, so no step appears at the calibrated edge.
+- **2026-11-01, master background 1.5: where the products live.** Hollis decided the file
+  structure: as few file types as possible. Step 1's tables (`MBKG1DR`, `MBKGQSR`, `MBKGSHR`,
+  `SHUTAMP`, `CALLS`) go into the rate file and `_mbkgr.fits` is retired; the calibrated
+  `_mbkg.fits` stays separate, because stage 2a reads the rate file before step 2 runs. A jwst
+  save of a rate file records the extra tables in its ASDF tree; rewriting them under the same
+  names keeps the file readable, and `masks._drop_extra_fits` removes them cleanly (tested on a
+  production rate file and in `test_write_into_rate_survives_a_jwst_save_and_a_rewrite`).
+  `_mbkg.fits` loses its copy of `MBKG1DR` and is compressed losslessly: 25 MB -> 2.8 MB on
+  PRISM, 7.8-8.3 MB on G395M, arrays identical. Shared shutters are taken from the lower source
+  id, so step 2 repeats exactly. On `ember_cosmos_p1` (scratch `mbkg_ship/v15/`): G395M
+  bit-identical to 1.4, PRISM within 0.1 %, stuck calls, pool decisions and `sky_for_slit`
+  unchanged. Next (agreed with the extraction session): one trace map per exposure, built in
+  step 1 from every commanded shutter and stored in the rate file, replacing the coverage
+  counter cache and the stage-3 `tracemaps/` cache; stuck shutters removed when it is read.

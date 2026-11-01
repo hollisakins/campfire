@@ -25,17 +25,21 @@ Per exposure group (one root: obs / visit / config), over every rate file:
    combined again; the calls are merged into the observation's stuck list as ``auto``
    entries (``stuck_list.write_auto``) before stage 2a builds its canonicals.
 
-Writes ``<rate base>_mbkgr.fits`` beside each rate file: ``MBKG1DR``, ``MBKGQSR``,
-``MBKGSHR`` (every shutter offered, with its selection), ``SHUTAMP`` (the fit) and
-``CALLS`` (the root's calls, the same in every file of the root). Step 2
-(``master_bkg.run_master_bkg``, end of stage 2a) reads ``MBKG1DR`` and ``MBKGQSR`` from
-it. Design: docs/design-nirspec-master-background.md (status block) and
+Writes its tables into the rate file itself, as extensions after the jwst ones (the
+rate file carries its detector background ``CFBKG`` the same way): ``MBKG1DR`` (whose
+header holds the step's cards), ``MBKGQSR``, ``MBKGSHR`` (every shutter offered, with its
+selection), ``SHUTAMP`` (the fit) and ``CALLS`` (the root's calls, the same in every file
+of the root). All five are written every time, empty when there is nothing to hold, so a
+jwst save of the rate file (which records them in its ASDF tree) never finds one missing.
+Step 2 (``master_bkg.run_master_bkg``, end of stage 2a) reads ``MBKG1DR`` and ``MBKGQSR``
+from it. Design: docs/design-nirspec-master-background.md (status block) and
 docs/design-nirspec-pipeline-v2.md.
 """
 
 import hashlib
 import json
 import os
+import shutil
 import warnings
 from datetime import datetime, timezone
 
@@ -43,22 +47,54 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from campfire_pipeline.common.io import log, atomic_save
+from campfire_pipeline.common.io import log
 from campfire_pipeline.nirspec import master_bkg as M
 from campfire_pipeline.nirspec import stuck_list as S
 from campfire_pipeline.nirspec.coverage import (cache_path, cutoffs_for, default_cache_dir,
                                                  rate_geometry)
 
-STEP1_VERSION = '1.2'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different
+STEP1_VERSION = '1.3'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different;
+#                                1.3: the tables written into the rate file (no _mbkgr.fits)
 N_GRID_SLITLETS = 6          # slitlets per detector whose central rows set the wavelength grid
 
 
+STEP1_EXTENSIONS = ('MBKG1DR', 'MBKGQSR', 'MBKGSHR', 'SHUTAMP', 'CALLS')
+
+
 def product_path(obs, rate_base):
-    return os.path.join(obs.workspace_dir, f'{rate_base}_mbkgr.fits')
+    """The file that holds step 1's tables: the rate file."""
+    return os.path.join(obs.workspace_dir, f'{rate_base}_rate.fits')
 
 
-def _workspace_product(workspace, rate_base):
-    return os.path.join(workspace, f'{rate_base}_mbkgr.fits')
+def step1_header(path):
+    """The step's cards (the ``MBKG1DR`` header) of a rate file; None when step 1 has not
+    written into it."""
+    try:
+        with fits.open(path, memmap=False) as h:
+            return h['MBKG1DR'].header.copy() if 'MBKG1DR' in h else None
+    except (OSError, KeyError):
+        return None
+
+
+def write_into_rate(rate, hdus):
+    """Replace the step-1 extensions of ``rate`` with ``hdus``, atomically: the edit is
+    made on a copy that then replaces the file (a symlinked rate file becomes a local copy,
+    so a scratch run never writes into the file it links to)."""
+    base, ext = os.path.splitext(rate)
+    tmp = f'{base}.tmp{ext}'
+    try:
+        shutil.copyfile(rate, tmp)
+        with fits.open(tmp, mode='update', memmap=False) as h:
+            for name in STEP1_EXTENSIONS:
+                while name in h:
+                    del h[name]
+            for hdu in hdus:
+                h.append(hdu)
+        os.replace(tmp, rate)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +102,7 @@ def _workspace_product(workspace, rate_base):
 # ---------------------------------------------------------------------------
 
 def read_rate_sky(path):
-    """``(MBKG1DR table, {quadrant: scale})`` of a step-1 product."""
+    """``(MBKG1DR table, {quadrant: scale})`` of a rate file step 1 has written into."""
     with fits.open(path, memmap=False) as h:
         sky = Table(h['MBKG1DR'].data)
         q = {int(r['quadrant']): float(r['scale']) for r in h['MBKGQSR'].data} if 'MBKGQSR' in h else {}
@@ -75,12 +111,12 @@ def read_rate_sky(path):
 
 def read_calls(workspace, root):
     """The root's stuck-shutter calls, ``{(q, row, col): {stuck, a, n, note}}``, from
-    the first of its step-1 products; ``{}`` when there is none."""
+    the first of its rate files that holds any; ``{}`` when there is none."""
     import glob
-    for path in sorted(glob.glob(os.path.join(workspace, f'{root}_*_mbkgr.fits'))):
+    for path in sorted(glob.glob(os.path.join(workspace, f'{root}_*_rate.fits'))):
         try:
             with fits.open(path, memmap=False) as h:
-                if 'CALLS' not in h:
+                if 'CALLS' not in h or not h['CALLS'].header.get('NAXIS2', 0):
                     continue
                 return {(int(r['q']), int(r['row']), int(r['col'])):
                         dict(stuck=bool(r['stuck']), a=float(r['a']), n=int(r['n']), note=str(r['note']).strip())
@@ -324,11 +360,8 @@ def _inputs_cards(rate, bs_path, cutoffs, decided):
 
 
 def product_current(path, cards):
-    if not os.path.exists(path):
-        return False
-    try:
-        hdr = fits.getheader(path)
-    except OSError:
+    hdr = step1_header(path) if os.path.exists(path) else None
+    if hdr is None:
         return False
     return all(str(hdr.get(k)) == str(v[0]) for k, v in cards.items())
 
@@ -538,12 +571,11 @@ def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt, sky=None):
             v = fit.meta.get(k)
             if v is not None and np.isfinite(v):
                 cards[f'FIT{k.upper().replace("_", "")[:5]}'] = (float(v), f'shutter fit {k}')
-    hdr = fits.Header()
+    hdus = [fits.BinTableHDU(_sky_table(centres, rs, own=sky['own'] if sky else None), name='MBKG1DR')]
+    hdr = hdus[0].header
     for k, v in M._finite_cards(cards).items():
         hdr[k] = v
     hdr['MBKGSRC1'] = ('1 own shutters, 2 group pool same detector, 3 other detector scaled, 4 held', 'MBKG1DR source column')
-    hdus = [fits.PrimaryHDU(header=hdr)]
-    hdus.append(fits.BinTableHDU(_sky_table(centres, rs, own=sky['own'] if sky else None), name='MBKG1DR'))
     qt = Table(rows=[(q, v[0], v[1]) for q, v in sorted(qs.items())], names=('quadrant', 'scale', 'n_shutters'),
                dtype=(np.int16, np.float32, np.int32)) if qs else Table(names=('quadrant', 'scale', 'n_shutters'),
                                                                         dtype=(np.int16, np.float32, np.int32))
@@ -567,8 +599,9 @@ def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt, sky=None):
     if fit is not None:
         ft = Table(fit, copy=True); ft.meta.clear()
         hdus.append(fits.BinTableHDU(ft, name='SHUTAMP'))
-    if calls_t is not None:
-        hdus.append(fits.BinTableHDU(calls_t, name='CALLS'))
+    else:
+        hdus.append(fits.BinTableHDU(name='SHUTAMP'))
+    hdus.append(fits.BinTableHDU(calls_t if calls_t is not None else None, name='CALLS'))
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        atomic_save(fits.HDUList(hdus), path)
+        write_into_rate(path, hdus)

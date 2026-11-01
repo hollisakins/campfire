@@ -125,7 +125,7 @@
     # commanded-open shutter's sky in each rate frame (nirspec/shutter_fit.py), calls the
     # stuck ones per exposure root (master_bkg_stuck_* above) and merges them into the
     # observation's stuck list as auto entries, every disperser. false: the calls are still
-    # made and stored (<rate>_mbkgr.fits CALLS) but not written to the list.
+    # made and stored (the rate file's CALLS table) but not written to the list.
     detect_stuck_shutters = true
 
 [nirspec.stage3]

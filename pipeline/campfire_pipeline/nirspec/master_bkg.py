@@ -71,9 +71,11 @@ from campfire_pipeline.nirspec import barshadow_calibration as B
 from campfire_pipeline.nirspec.coverage import (coverage_from_wcs, cutoffs_for, default_cache_dir, cache_path,
                                                  slit_geometry_extended)
 
-ALGORITHM_VERSION = '1.4'     # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
+ALGORITHM_VERSION = '1.5'     # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
 #                               1.3: equal shutter weights, sky divided to the open-shutter centre (2026-10-31)
 #                               1.4: the group pool painted unless the exposure differs (pool_check) (2026-10-31)
+#                               1.5: step-1 tables read from the rate file, no MBKG1DR copy, 2-D extensions
+#                                    compressed losslessly, shared shutters taken from the lowest source id (2026-11-01)
 _PREFIX = 'master_bkg_'
 DEFAULTS = dict(
     master_bkg_source_pad_px=3.0,     # rows beyond the source shutter's edges dropped (§9: 3 px)
@@ -214,10 +216,9 @@ def product_current(path, rate_path, canonicals, stuck_mtime, bs_name=None, bs_s
 
 
 def _step1_date(path):
-    try:
-        return str(fits.getheader(path).get('MBKGDATE'))
-    except Exception:
-        return 'None'
+    from campfire_pipeline.nirspec.master_bkg_rate import step1_header
+    hdr = step1_header(path)
+    return str(hdr.get('MBKGDATE')) if hdr is not None else 'None'
 
 
 # ---------------------------------------------------------------------------
@@ -333,18 +334,12 @@ def shutter_spectra(canonicals, counters, edges_of, opt, processes, bs_paths):
     from multiprocessing import Pool
     args = [(c, counters.get(c.rate_path), edges_of[(c.grating, c.filter)], opt, bs_paths[(c.grating, c.filter)])
             for c in canonicals]
-    by_rate, failures = defaultdict(list), []
-    seen = set()          # (rate_base, slitlet, shutter): two sources of one slitlet offer the same shutters
+    found, failures = [], []
 
     def take(key, out, err):
         if err:
             failures.append((key, err)); return
-        for s in out:
-            tag = (s.rate_base, s.slitlet_id, s.k)
-            if tag in seen:
-                continue
-            seen.add(tag)
-            by_rate[s.rate_base].append(s)
+        found.extend(out)
 
     if processes > 1:
         with Pool(processes) as pool:
@@ -353,6 +348,15 @@ def shutter_spectra(canonicals, counters, edges_of, opt, processes, bs_paths):
     else:
         for a in args:
             take(*_worker_samples(a))
+    # two sources of one slitlet offer the same shutters, from cutouts that can differ by a
+    # pixel: keep the lowest source id's, so the choice does not depend on which worker
+    # finished first
+    by_rate, seen = defaultdict(list), set()
+    for s in sorted(found, key=lambda s: (s.rate_base, s.slitlet_id, s.k, s.source_id)):
+        tag = (s.rate_base, s.slitlet_id, s.k)
+        if tag not in seen:
+            seen.add(tag)
+            by_rate[s.rate_base].append(s)
     return by_rate, failures
 
 
@@ -649,6 +653,12 @@ def load_product(path, with_2d=False):
                    shutters=Table(h['SHUTTERS'].data) if 'SHUTTERS' in h else None,
                    rate_sky=Table(h['MBKG1DR'].data) if 'MBKG1DR' in h else None,
                    mbkg2d=None, dq2d=None, n2d=None, rate=None)
+    if out['rate_sky'] is None:                # since 1.5 it lives in the rate file only (step 1)
+        rate_path = os.path.join(os.path.dirname(os.path.abspath(path)), str(hdr.get('MBKGRATE', '')))
+        if os.path.isfile(rate_path):
+            with fits.open(rate_path, memmap=False) as h:
+                if 'MBKG1DR' in h:
+                    out['rate_sky'] = Table(h['MBKG1DR'].data)
     if with_2d:
         _load_2d(out)
     return out
@@ -1375,14 +1385,15 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         for (rate, out, cans, bs_path, counter, o), key in paint_args:
             base = rate_base_of(rate)
             p1 = R.product_path(obs, base)
-            if not os.path.exists(p1):
-                log(f'master background: {base}: no step-1 product, painted in the calibrated range only')
+            h1 = R.step1_header(p1)
+            if h1 is None:
+                log(f'master background: {base}: no step-1 tables in the rate file, painted in the calibrated range only')
                 continue
             sky_t, q = R.read_rate_sky(p1)
             centres_of[base] = np.asarray(sky_t['wavelength'], float)
             rate_skies[base] = tuple(np.asarray(sky_t[c]) for c in ('rate', 'rate_err', 'n_shutters', 'source'))
             rate_q[base] = q
-            step1_date[base] = str(fits.getheader(p1).get('MBKGDATE'))
+            step1_date[base] = str(h1.get('MBKGDATE'))
         paint_args = [(rate, out, cans, bs_path, counter, centres_of.get(rate_base_of(rate)),
                        rate_skies.get(rate_base_of(rate)), o, rate_q.get(rate_base_of(rate), {}))
                       for (rate, out, cans, bs_path, counter, o), key in paint_args]
@@ -1403,22 +1414,15 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             if np.isfinite(ratio):
                 hdul[0].header['MBKGRRAT'] = (float(ratio), 'in-range painted / rate-unit sky, core, median')
             hdul[0].header['MBKGDQ1'] = ('1 uncovered, 2 covering trace unpainted', 'MBKG2DDQ bits')
-            hdul[0].header['MBKGRDT'] = (step1_date.get(base, 'None'), 'step-1 product (_mbkgr) derivation date')
-            if rate_sky is not None:
-                tr = Table()
-                tr['wavelength'] = np.asarray(centres_ext, np.float64); tr['wavelength'].unit = 'um'
-                tr['rate'] = np.asarray(rate_sky[0], np.float32); tr['rate'].unit = 'count/s'
-                tr['rate_err'] = np.asarray(rate_sky[1], np.float32); tr['rate_err'].unit = 'count/s'
-                tr['n_shutters'] = np.asarray(rate_sky[2], np.int32)
-                tr['source'] = np.asarray(rate_sky[3], np.int16)
-                hdu = fits.BinTableHDU(tr, name='MBKG1DR')        # a copy of step 1's, for the readers of this product
-                hdu.header['SOURCE'] = ('1 own shutters, 2 group pool same detector, 3 other detector scaled, 4 held', 'the source column')
-                hdul.append(hdu)
+            hdul[0].header['MBKGRDT'] = (step1_date.get(base, 'None'), 'step-1 tables (in the rate file) derivation date')
+            if rate_sky is not None:                    # the table itself stays in the rate file (load_product reads it there)
                 srcs = np.bincount(np.asarray(rate_sky[3], int), minlength=5)
                 hdul[0].header['MBKGRSRC'] = (f'own {srcs[1]} pool {srcs[2]} other {srcs[3]} held {srcs[4]}', 'MBKG1DR bins by source')
-            hdul.append(fits.ImageHDU(mb, name='MBKG2D')); hdul[-1].header['BUNIT'] = 'DN/s'
-            hdul.append(fits.ImageHDU(cover, name='MBKG2DN'))
-            hdul.append(fits.ImageHDU(dq, name='MBKG2DDQ'))
+            # lossless compression: 25 MB -> ~3 MB, the arrays read back bit-identical
+            hdul.append(fits.CompImageHDU(mb, name='MBKG2D', compression_type='GZIP_2', quantize_level=0))
+            hdul[-1].header['BUNIT'] = 'DN/s'
+            hdul.append(fits.CompImageHDU(cover, name='MBKG2DN', compression_type='RICE_1'))
+            hdul.append(fits.CompImageHDU(dq, name='MBKG2DDQ', compression_type='RICE_1'))
             atomic_save(hdul, out)
             log(f'master background: {rate_base_of(rate)}: {n_painted} slits painted, {n_ext} pixels past the calibrated range'
                 + (f', in-range / rate-unit sky {ratio:.3f}' if np.isfinite(ratio) else ''))
