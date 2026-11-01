@@ -1014,7 +1014,16 @@ decided by the profiles.
   (χ² 2936 at 0, 2877 at -0.1, 2903 at -0.15), so the PRISM centre is off in G395M for the
   whole source, not only at the line.
 - The user (2026-11-01): "When the model adopts prism shapes, does it also adopt prism
-  centering? that may not be accurate." Yes, and here it is off by about 0.1 slit units.
+  centering? that may not be accurate." Yes: the offset from the planned position.
+- Correction, same day: the PRISM centre is not the problem. PRISM (03101) and G395M (05101)
+  have the same pointing (RA_REF / DEC_REF within 0.0005", roll within 1e-4 deg, the same
+  dither offsets) and the same planned positions (SRCYPOS 0.030, 0.037, 0.023), so the
+  carried offset means the same thing. Over test 1's free G395M fits (113, not on a bound),
+  G395M minus PRISM centre is +0.006 median with 0.05 scatter, no trend with detector,
+  row, planned position or crowding; 632334's own G395M fit is within 0.013 of PRISM. What
+  the -0.1 shift compensates instead: 632334's per-nod offsets sit at their limit (0, +0.1,
+  +0.1; limit 0.1, prior 0.015). A common shift of -0.1 is what puts nods 2 and 3 back near
+  the PRISM centre. Open: why the nods disagree.
 
 **Open (extraction session).**
 - Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
