@@ -10,28 +10,38 @@ Per exposure group (one root: obs / visit / config), over every rate file:
 2. **Rate-unit sky.** The empty shutters of every slitlet (no catalogued source at this
    dither point, ``source_pad_px`` rows beyond a source shutter left out, the shutter core
    ``|f| <= core_frac``, pixels under one footprint only, not a known stuck shutter) are
-   binned in count rate on the disperser's grid continued to its wavelength cutoffs;
+   divided by the bar shadow there (the sky at the open-shutter centre,
+   ``master_bkg.core_to_centre``) and binned in count rate on the disperser's grid
+   continued to its wavelength cutoffs;
    ``master_bkg.select_clean`` rejects lines, excess and low throughput with the
    ``rate_*`` thresholds (no flat field in count rate: shutters scatter by ~7 % grey);
-   the clean ones give the exposure's sky (``MBKG1DR``) with the group pool and the
-   other detector as fallbacks (``master_bkg.rate_sky_for``), and the quadrant scales in
-   count rate (``MBKGQSR``).
+   the clean ones give the sky (``MBKG1DR``): the same detector's pool over the group
+   unless this exposure's shutters differ from the other exposures' (``master_bkg.pool_check``;
+   ``MBKGPSRC``, ``MBKGPDEC`` ...; the exposure's own sky kept as ``rate_exposure``), with
+   the other detector and the nearest bin as fallbacks (``master_bkg.rate_sky_for``), and
+   the quadrant scales in count rate (``MBKGQSR``).
 3. **Stuck shutters.** ``shutter_fit.fit_shutters`` on every rate file with that sky, and
    ``call_shutters`` over the root; the stuck calls leave the clean set and the sky is
    combined again; the calls are merged into the observation's stuck list as ``auto``
    entries (``stuck_list.write_auto``) before stage 2a builds its canonicals.
 
-Writes ``<rate base>_mbkgr.fits`` beside each rate file: ``MBKG1DR``, ``MBKGQSR``,
-``MBKGSHR`` (every shutter offered, with its selection), ``SHUTAMP`` (the fit) and
-``CALLS`` (the root's calls, the same in every file of the root). Step 2
-(``master_bkg.run_master_bkg``, end of stage 2a) reads ``MBKG1DR`` and ``MBKGQSR`` from
-it. Design: docs/design-nirspec-master-background.md (status block) and
+Writes its tables into the rate file itself, as extensions after the jwst ones (the
+rate file carries its detector background ``CFBKG`` the same way): ``MBKG1DR`` (whose
+header holds the step's cards), ``MBKGQSR``, ``MBKGSHR`` (every shutter offered, with its
+selection), ``SHUTAMP`` (the fit) and ``CALLS`` (the root's calls, the same in every file
+of the root). All five are written every time, empty when there is nothing to hold, so a
+jwst save of the rate file (which records them in its ASDF tree) never finds one missing.
+With them goes the exposure's trace map (``trace_overlap.ShutterMap``: ``TMSH1``, ``TMSH2``,
+``TMFLAG``, ``TMSLITS``, ``TMSHUT``), built from the same geometry over every commanded shutter,
+so the stuck list applies when it is read (``trace_overlap.trace_map_from_rate``). Step 2
+(``master_bkg.run_master_bkg``, end of stage 2a) reads ``MBKG1DR`` and ``MBKGQSR`` from it. Design: docs/design-nirspec-master-background.md (status block) and
 docs/design-nirspec-pipeline-v2.md.
 """
 
 import hashlib
 import json
 import os
+import shutil
 import warnings
 from datetime import datetime, timezone
 
@@ -39,22 +49,56 @@ import numpy as np
 from astropy.io import fits
 from astropy.table import Table
 
-from campfire_pipeline.common.io import log, atomic_save
+from campfire_pipeline.common.io import log
 from campfire_pipeline.nirspec import master_bkg as M
 from campfire_pipeline.nirspec import stuck_list as S
+from campfire_pipeline.nirspec import trace_overlap as TO
 from campfire_pipeline.nirspec.coverage import (cache_path, cutoffs_for, default_cache_dir,
                                                  rate_geometry)
 
-STEP1_VERSION = '1.0'
+STEP1_VERSION = '1.4'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different;
+#                                1.3: the tables written into the rate file (no _mbkgr.fits);
+#                                1.4: the trace map (TM* extensions) written with them
 N_GRID_SLITLETS = 6          # slitlets per detector whose central rows set the wavelength grid
 
 
+STEP1_EXTENSIONS = ('MBKG1DR', 'MBKGQSR', 'MBKGSHR', 'SHUTAMP', 'CALLS') + TO.SHUTTER_MAP_EXTENSIONS
+
+
 def product_path(obs, rate_base):
-    return os.path.join(obs.workspace_dir, f'{rate_base}_mbkgr.fits')
+    """The file that holds step 1's tables: the rate file."""
+    return os.path.join(obs.workspace_dir, f'{rate_base}_rate.fits')
 
 
-def _workspace_product(workspace, rate_base):
-    return os.path.join(workspace, f'{rate_base}_mbkgr.fits')
+def step1_header(path):
+    """The step's cards (the ``MBKG1DR`` header) of a rate file; None when step 1 has not
+    written into it."""
+    try:
+        with fits.open(path, memmap=False) as h:
+            return h['MBKG1DR'].header.copy() if 'MBKG1DR' in h else None
+    except (OSError, KeyError):
+        return None
+
+
+def write_into_rate(rate, hdus):
+    """Replace the step-1 extensions of ``rate`` with ``hdus``, atomically: the edit is
+    made on a copy that then replaces the file (a symlinked rate file becomes a local copy,
+    so a scratch run never writes into the file it links to)."""
+    base, ext = os.path.splitext(rate)
+    tmp = f'{base}.tmp{ext}'
+    try:
+        shutil.copyfile(rate, tmp)
+        with fits.open(tmp, mode='update', memmap=False) as h:
+            for name in STEP1_EXTENSIONS:
+                while name in h:
+                    del h[name]
+            for hdu in hdus:
+                h.append(hdu)
+        os.replace(tmp, rate)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +106,7 @@ def _workspace_product(workspace, rate_base):
 # ---------------------------------------------------------------------------
 
 def read_rate_sky(path):
-    """``(MBKG1DR table, {quadrant: scale})`` of a step-1 product."""
+    """``(MBKG1DR table, {quadrant: scale})`` of a rate file step 1 has written into."""
     with fits.open(path, memmap=False) as h:
         sky = Table(h['MBKG1DR'].data)
         q = {int(r['quadrant']): float(r['scale']) for r in h['MBKGQSR'].data} if 'MBKGQSR' in h else {}
@@ -71,12 +115,12 @@ def read_rate_sky(path):
 
 def read_calls(workspace, root):
     """The root's stuck-shutter calls, ``{(q, row, col): {stuck, a, n, note}}``, from
-    the first of its step-1 products; ``{}`` when there is none."""
+    the first of its rate files that holds any; ``{}`` when there is none."""
     import glob
-    for path in sorted(glob.glob(os.path.join(workspace, f'{root}_*_mbkgr.fits'))):
+    for path in sorted(glob.glob(os.path.join(workspace, f'{root}_*_rate.fits'))):
         try:
             with fits.open(path, memmap=False) as h:
-                if 'CALLS' not in h:
+                if 'CALLS' not in h or not h['CALLS'].header.get('NAXIS2', 0):
                     continue
                 return {(int(r['q']), int(r['row']), int(r['col'])):
                         dict(stuck=bool(r['stuck']), a=float(r['a']), n=int(r['n']), note=str(r['note']).strip())
@@ -140,9 +184,11 @@ def _worker_samples(args):
     shutter: ``(rate, [(judged, sky)], {(slitlet_id, k): (q, row, col)}, error)``: the
     spectrum of the core less the source pad (judged by the selection) and of the whole
     core (combined into the sky once judged clean), as the calibrated pass does."""
-    rate, cache_dir, cutoffs, wr, edges, stuck, opt = args
+    rate, cache_dir, cutoffs, wr, edges, stuck, opt, bs_path = args
+    from campfire_pipeline.nirspec import barshadow_calibration as B
     try:
         geo = rate_geometry(rate, cache_dir, cutoffs, wr)
+        table = B.load_table(bs_path)
         info = _shutter_rows(rate)
         counter = cache_path(rate, cache_dir, cutoffs, wr)
         frame, rvar, rate_ok, _ = M._rate_frame(rate, counter)
@@ -151,7 +197,7 @@ def _worker_samples(args):
     flat, fvar, ok = frame.ravel(), rvar.ravel(), rate_ok.ravel()
     base = M.rate_base_of(rate)
     specs, keys = [], {}
-    for b in geo.blocks(kind='msa', with_segments=False):
+    for b in geo.blocks(kind='msa', with_segments=True):
         if not b['name'].isdigit():
             continue
         sid_slit = int(b['name'])
@@ -168,6 +214,12 @@ def _worker_samples(args):
                     src_j.add(int(r['shutter_column']) - c0)
             row = int(mr['shutter_row'][0])
         core = b['is_open'] & (np.abs(b['f']) <= opt['core_frac']) & ok[b['pix']]
+        # each core pixel divided by the bar shadow there: the sky at the open-shutter centre,
+        # the level the table is normalised to and the painting multiplies by it
+        bs = np.full(core.shape, np.nan)
+        if core.any():
+            bs[core] = M.core_to_centre(table, b['seg'][core], b['yseg'][core], b['lam'][core])
+        core &= np.isfinite(bs)
         judged = core.copy()            # the pixels the selection judges: the core less a source pad
         if src_j:
             pad = float(opt['source_pad_px']) / _px_per_pitch(b, geo.shape[1])
@@ -191,7 +243,7 @@ def _worker_samples(args):
             spec = {}
             for tag, sel in (('judged', sel_j), ('sky', core & (b['j'] == jj))):
                 pix = b['pix'][sel]
-                sb, err, n = M.bin_spectrum(b['lam'][sel], flat[pix], fvar[pix], edges)
+                sb, err, n = M.bin_spectrum(b['lam'][sel], flat[pix] / bs[sel], fvar[pix] / bs[sel] ** 2, edges)
                 spec[tag] = M.ShutterSpectrum(rate_base=base, source_id=source_id, slitlet_id=sid_slit,
                                               quadrant=int(b['quadrant']), k=jj - b['kx'], n_pix=int(sel.sum()),
                                               sb=sb, err=err, n=n)
@@ -241,26 +293,48 @@ def _select(pairs, opt):
 
 
 def _skies(clean_of, centres, opt):
-    """Per rate file of a group: ``(sky (sb, err, n, source), {q: (scale, n)})`` from the
-    clean shutters ``clean_of[base]``."""
+    """Per rate file of a group: ``dict(rs, qs, own, src, check, members)`` from the clean
+    shutters ``clean_of[base]``. ``rs`` is the sky painted: the pool of the same detector's
+    exposures that are consistent with each other (``M.pool_members``) for a member, else
+    the exposure's own; ``own`` is the exposure's own sky either way; ``qs`` the quadrant
+    scales against ``rs``."""
+    members, checks = set(), {}
+    for det in sorted({b.rsplit('_', 2)[2] for b in clean_of}):
+        of_det = {b: sp for b, sp in clean_of.items() if b.endswith(det)}
+        if opt['prefer_pool']:
+            m, c = M.pool_members(of_det, centres[next(iter(of_det))], opt)
+            members |= m; checks.update(c)
     out = {}
     for base in clean_of:
-        rs = M.rate_sky_for(base, clean_of, opt['clip_sigma'])
-        if rs is None:
-            out[base] = (None, {})
+        det = base.rsplit('_', 2)[2]
+        own = M.rate_sky_for(base, clean_of, opt['clip_sigma'])
+        check = checks.get(base, M.pool_check([], None, centres[base], opt))
+        mem = sorted(b for b in members if b.endswith(det))
+        if own is None:
+            out[base] = dict(rs=None, qs={}, own=None, src='none', check=check, members=mem)
             continue
+        src = 'pool' if (base in members and len(mem) > 1) else 'exposure'
+        if src == 'pool':
+            # the same detector's pool over the members; the other detector stays a fallback
+            pool_of = {b: sp for b, sp in clean_of.items() if b in members or not b.endswith(det)}
+            rs = M.rate_sky_for(base, pool_of, opt['clip_sigma'], pool_first=True)
+        else:
+            rs = own
         qs = M.quadrant_scales(clean_of[base], (rs[0], rs[1]), opt) if clean_of[base] else {}
-        out[base] = (rs, qs)
+        out[base] = dict(rs=rs, qs=qs, own=own, src=src, check=check, members=mem)
     return out
 
 
-def _sky_table(centres, rs):
+def _sky_table(centres, rs, own=None):
     t = Table()
     t['wavelength'] = np.asarray(centres, np.float64); t['wavelength'].unit = 'um'
     t['rate'] = np.asarray(rs[0], np.float32); t['rate'].unit = 'count/s'
     t['rate_err'] = np.asarray(rs[1], np.float32); t['rate_err'].unit = 'count/s'
     t['n_shutters'] = np.asarray(rs[2], np.int32)
     t['source'] = np.asarray(rs[3], np.int16)
+    if own is not None:                  # the exposure's own sky, whichever MBKGPSRC chose
+        t['rate_exposure'] = np.asarray(own[0], np.float32); t['rate_exposure'].unit = 'count/s'
+        t['rate_exposure_err'] = np.asarray(own[1], np.float32); t['rate_exposure_err'].unit = 'count/s'
     return t
 
 
@@ -286,15 +360,13 @@ def _inputs_cards(rate, bs_path, cutoffs, decided):
         'MBKGBSDT': (M.barshadow_stamp(bs_path), 'that table: derivation date / USEAFTER'),
         'MBKGCUT': (json.dumps(list(cutoffs)), 'footprint wavelength cutoffs [um]'),
         'MBKGDEC': (decided, 'hash of the manual/web stuck entries of the root'),
+        'MBKGTMV': (TO.SHUTTER_MAP_VERSION, 'trace map (TM* extensions) version'),
     }
 
 
 def product_current(path, cards):
-    if not os.path.exists(path):
-        return False
-    try:
-        hdr = fits.getheader(path)
-    except OSError:
+    hdr = step1_header(path) if os.path.exists(path) else None
+    if hdr is None:
         return False
     return all(str(hdr.get(k)) == str(v[0]) for k, v in cards.items())
 
@@ -410,7 +482,8 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
 
     # 2. the empty shutters in count rate
     sample_args = [(it['rate'], cache_dir, it['cutoffs'], it['wr'], edges_of[it['key']],
-                    S.stuck_set({r: {k: e for k, e in resolved.get(r, {}).items() if e.origin != 'auto'}}, r), opt)
+                    S.stuck_set({r: {k: e for k, e in resolved.get(r, {}).items() if e.origin != 'auto'}}, r), opt,
+                    it['bs_path'])
                    for r, items in todo.items() for it in items if it['rate'] not in failed and it['key'] in edges_of]
     specs_of, keys_of = {}, {}
     for rate, specs, keys, err in _map(_worker_samples, sample_args):
@@ -429,9 +502,9 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
         skies = _skies(clean_of, centres, opt)
 
         # 3. the fit, the calls, then the sky without the stuck shutters
-        fit_args = [(it['rate'], cache_dir, it['cutoffs'], it['wr'], _sky_table(centres[it['base']], skies[it['base']][0]),
-                     {q: v[0] for q, v in skies[it['base']][1].items()}, it['bs_path'])
-                    for it in items if skies[it['base']][0] is not None]
+        fit_args = [(it['rate'], cache_dir, it['cutoffs'], it['wr'], _sky_table(centres[it['base']], skies[it['base']]['rs']),
+                     {q: v[0] for q, v in skies[it['base']]['qs'].items()}, it['bs_path'])
+                    for it in items if skies[it['base']]['rs'] is not None]
         fits_of = {}
         for rate, t, err in _map(_worker_fit, fit_args):
             if err:
@@ -456,19 +529,31 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
                         names=('q', 'row', 'col', 'stuck', 'a', 'n', 'note'),
                         dtype=(np.int16, np.int16, np.int16, bool, np.float32, np.int16, 'U48')) if calls else None
         for it in items:
-            rs, qs = skies[it['base']]
+            sk = skies[it['base']]
+            rs, qs = sk['rs'], sk['qs']
             if rs is None:
                 log(f'master background step 1: {it["base"]}: no sky'); continue
             out = product_path(obs, it['base'])
             _write(out, it, centres[it['base']], rs, qs, specs_of[it['base']], keys_of[it['base']],
-                   fits_of.get(it['base']), calls_t, opt)
+                   fits_of.get(it['base']), calls_t, opt, sky=sk, trace_map=_trace_map_hdus(it, cache_dir))
             written.append(out)
         if calls and write_calls:
             S.write_auto(stuck_path, root, calls, metafiles, obs_name=obs.name)
     return written
 
 
-def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt):
+def _trace_map_hdus(it, cache_dir):
+    """The rate file's trace map (``trace_overlap.ShutterMap``, every commanded shutter) from
+    the geometry this step already built; empty extensions when it cannot be made."""
+    try:
+        geo = rate_geometry(it['rate'], cache_dir, it['cutoffs'], it['wr'])
+        return TO.ShutterMap.from_rate(it['rate'], geo).hdus()
+    except Exception as e:                                   # noqa: BLE001 - no map is not a failed step
+        log(f'master background step 1: {it["base"]}: no trace map ({type(e).__name__}: {e})')
+        return TO.ShutterMap.empty_hdus()
+
+
+def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt, sky=None, trace_map=None):
     srcs = np.bincount(np.asarray(rs[3], int), minlength=5)
     cards = dict(it['cards'])
     cards.update({
@@ -482,17 +567,31 @@ def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt):
         'MBKGMINN': (int(opt['stuck_min_n']), 'stuck call: measurements needed'),
         'MBKGGARD': (float(opt['stuck_guard']), 'stuck call: detector agreement'),
     })
+    if sky is not None:
+        chk = sky['check']
+        cards.update({
+            'MBKGPSRC': (sky['src'], 'MBKG1DR: pool (consistent), exposure (differs)'),
+            'MBKGPDEC': (chk['verdict'], 'vs the pool of the other members, worst band'),
+            'MBKGPMEM': (' '.join(str(int(b.rsplit('_', 2)[1])) for b in sky['members']) or 'none',
+                         'pool members (nods, this detector)'),
+            'MBKGPDEV': (chk['dev'], 'that band: mean shutter / pool - 1'),
+            'MBKGPSIG': (chk['nsig'], 'that band: significance [sigma]'),
+            'MBKGPLO': (chk['lam_lo'], 'that band: from [um]'),
+            'MBKGPHI': (chk['lam_hi'], 'that band: to [um]'),
+            'MBKGPNB': (chk['n_bands'], 'bands tested'),
+            'MBKGPTOL': (float(opt['pool_tol']), 'a band differs above this fraction'),
+            'MBKGPNSG': (float(opt['pool_nsigma']), '... and above this many sigma'),
+        })
     if fit is not None:
         for k in ('chi2_sky', 'chi2_all', 'const_sky', 'const_all'):
             v = fit.meta.get(k)
             if v is not None and np.isfinite(v):
                 cards[f'FIT{k.upper().replace("_", "")[:5]}'] = (float(v), f'shutter fit {k}')
-    hdr = fits.Header()
+    hdus = [fits.BinTableHDU(_sky_table(centres, rs, own=sky['own'] if sky else None), name='MBKG1DR')]
+    hdr = hdus[0].header
     for k, v in M._finite_cards(cards).items():
         hdr[k] = v
     hdr['MBKGSRC1'] = ('1 own shutters, 2 group pool same detector, 3 other detector scaled, 4 held', 'MBKG1DR source column')
-    hdus = [fits.PrimaryHDU(header=hdr)]
-    hdus.append(fits.BinTableHDU(_sky_table(centres, rs), name='MBKG1DR'))
     qt = Table(rows=[(q, v[0], v[1]) for q, v in sorted(qs.items())], names=('quadrant', 'scale', 'n_shutters'),
                dtype=(np.int16, np.float32, np.int32)) if qs else Table(names=('quadrant', 'scale', 'n_shutters'),
                                                                         dtype=(np.int16, np.float32, np.int32))
@@ -516,8 +615,10 @@ def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt):
     if fit is not None:
         ft = Table(fit, copy=True); ft.meta.clear()
         hdus.append(fits.BinTableHDU(ft, name='SHUTAMP'))
-    if calls_t is not None:
-        hdus.append(fits.BinTableHDU(calls_t, name='CALLS'))
+    else:
+        hdus.append(fits.BinTableHDU(name='SHUTAMP'))
+    hdus.append(fits.BinTableHDU(calls_t if calls_t is not None else None, name='CALLS'))
+    hdus += trace_map if trace_map is not None else TO.ShutterMap.empty_hdus()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        atomic_save(fits.HDUList(hdus), path)
+        write_into_rate(path, hdus)

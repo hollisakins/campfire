@@ -261,3 +261,110 @@ def test_slitlet_scale_reads_the_slits_clean_shutters():
     assert M.slitlet_scale({'shutters': t}, '5') == pytest.approx(0.92)
     assert M.slitlet_scale({'shutters': t}, 'BKG77') == pytest.approx(1.2)
     assert M.slitlet_scale({'shutters': t}, '6') == 1.0
+
+
+def test_combine_weights_shutters_equally_when_errors_follow_their_own_values():
+    # each shutter's error grows with its own noisy value, as a pixel variance from its own
+    # slope does: inverse-variance weights would pull the mean low, equal weights must not
+    rng = np.random.default_rng(7)
+    spectra = []
+    for i in range(400):
+        v = 1.0 + rng.normal(0, 0.3, 20)
+        s = _shutter(v, sid=i)
+        s.err = 0.05 + 0.25 * np.clip(v, 0.05, None)
+        spectra.append(s)
+    sb, err, n = M.combine(spectra, clip_sigma=5.0)
+    S = np.array([s.sb for s in spectra]); W = 1 / np.array([s.err for s in spectra]) ** 2
+    weighted = np.sum(W * S, 0) / np.sum(W, 0)
+    assert np.all(np.abs(sb - S.mean(0)) < 0.01)                 # the plain mean of the shutters
+    assert np.median(1 - weighted) > 0.03                         # what 1/err^2 would have given
+    assert np.all(n == 400) and np.allclose(err, np.median(np.array([s.err for s in spectra]), 0) / 20)
+
+
+def test_core_to_centre_reads_the_table_and_leaves_unmeasured_pixels_nan():
+    from types import SimpleNamespace
+    table = dict(data1x1=np.full((10, 5), 0.9), data1x3=np.linspace(0.97, 1.0, 10)[:, None] * np.ones((10, 5)),
+                 grid=SimpleNamespace(y0=0.0, dy=1.0, w0=1e-6, dw=1e-6))
+    seg = np.array([2, 2, -1, 0]); yseg = np.array([0.0, 9.0, 3.0, 4.0]); lam = np.array([1.0, 2.0, 2.0, 3.0])
+    bs = M.core_to_centre(table, seg, yseg, lam)
+    assert np.isclose(bs[0], 0.97) and np.isclose(bs[1], 1.0) and np.isnan(bs[2])
+    assert np.isclose(bs[3], 0.9)                                 # an outer-edge pixel reads DATA1X1
+
+
+def test_load_2d_needs_the_rate_file_beside_the_product(tmp_path):
+    # without the rate file sky_for_slit cannot form the painted total and falls back to
+    # the slit's own slitlet (with a warning); with it, the 2-D arrays and the rate load
+    sky = (np.ones(4), np.full(4, 0.1), np.full(4, 3))
+    path = str(tmp_path / 'r_00001_nrs1_mbkg.fits')
+    M.write_product(path, {'MBKGRATE': ('r_00001_nrs1_rate.fits', '')}, np.linspace(1, 2, 4), sky, None, None, [],
+                    mb2d=np.ones((3, 3)), dq2d=np.zeros((3, 3)), n2d=np.ones((3, 3)))
+    assert not M._load_2d(M.load_product(path))
+    fits.PrimaryHDU(np.full((3, 3), 0.5, np.float32)).writeto(tmp_path / 'r_00001_nrs1_rate.fits')
+    prod = M.load_product(path)
+    assert M._load_2d(prod) and np.allclose(prod['rate'], 0.5) and prod['mbkg2d'].shape == (3, 3)
+
+
+def _exposure(rng, n, level, noise, nb=80, bump=None):
+    out = []
+    for i in range(n):
+        sb = level * (1 + rng.normal(0, noise, nb)) * (1 + rng.normal(0, 0.02))      # pixel noise + per-shutter spread
+        if bump is not None:
+            sb[bump[0]:bump[1]] *= bump[2]
+        out.append(_shutter(sb, err=noise, sid=i))
+    return out
+
+
+def test_pool_check_accepts_a_consistent_exposure_and_catches_a_local_excess():
+    rng = np.random.default_rng(11)
+    opt = M.options({})
+    centres = np.linspace(3.0, 5.0, 80)
+    pool = M.combine(_exposure(rng, 300, 1.0, 0.2), 3.0)
+    ok = M.pool_check(_exposure(rng, 60, 1.0, 0.2), pool, centres, opt)
+    assert ok['differs'] is False and ok['verdict'] == 'consistent' and ok['n_bands'] == 8
+    # +18 % in one tenth of the range (ember_uds_p2 nod 2 at the 3 um sky minimum)
+    bad = M.pool_check(_exposure(rng, 60, 1.0, 0.2, bump=(20, 28, 1.18)), pool, centres, opt)
+    assert bad['differs'] is True and 0.08 < bad['dev'] < 0.2 and bad['lam_lo'] <= centres[24] <= bad['lam_hi']
+    assert bad['verdict'].startswith('differs')
+
+
+def test_pool_check_needs_both_the_tolerance_and_the_significance():
+    rng = np.random.default_rng(12)
+    opt = M.options({})
+    centres = np.linspace(1.0, 5.0, 80)
+    # many quiet shutters 0.6 % high: significant, but under the 2 % tolerance (the prism case)
+    pool = M.combine(_exposure(rng, 600, 1.0, 0.01), 3.0)
+    tiny = M.pool_check(_exposure(rng, 200, 1.006, 0.01), pool, centres, opt)
+    assert tiny['nsig'] > 3 and tiny['differs'] is False
+    # shutters 4 % high whose own errors are large: over the tolerance, not significant (a
+    # grating exposure); their scatter is zero here, so only the error floor keeps them in
+    pool = (np.ones(80), np.full(80, 0.01), np.full(80, 300))
+    noisy = M.pool_check([_shutter(np.full(80, 1.04), err=0.6, sid=i) for i in range(8)], pool, centres, opt)
+    assert noisy['differs'] is False and noisy['dev'] > 0.03 and noisy['nsig'] < 3
+    # fewer than min_shutters in every band: untested, and the caller paints the pool
+    assert M.pool_check(_exposure(rng, 4, 1.04, 0.3), pool, centres, opt)['differs'] is None
+    assert M.pool_check([], pool, centres, opt)['differs'] is None
+
+
+def test_rate_sky_takes_the_pool_first_when_asked():
+    a = [_shutter(np.full(10, 1.10), sid=i, rate='r_00001_nrs1') for i in range(3)]
+    b = [_shutter(np.full(10, 1.00), sid=10 + i, rate='r_00002_nrs1') for i in range(6)]
+    specs_of = {'r_00001_nrs1': a, 'r_00002_nrs1': b}
+    own = M.rate_sky_for('r_00001_nrs1', specs_of, 3.0)
+    pooled = M.rate_sky_for('r_00001_nrs1', specs_of, 3.0, pool_first=True)
+    assert np.allclose(own[0], 1.10) and np.all(own[3] == 1)
+    assert np.allclose(pooled[0], M.combine(a + b, 3.0)[0]) and np.all(pooled[3] == 2)
+
+
+def test_pool_members_drops_the_discrepant_exposure_and_keeps_the_rest_together():
+    # ember_uds_p2: nod 2 is +18 % over part of the range; against a pool that holds it, nods 1
+    # and 3 look low too. The iteration drops nod 2 and leaves nods 1 and 3 pooled.
+    rng = np.random.default_rng(21)
+    opt = M.options({})
+    centres = np.linspace(1.0, 5.0, 80)
+    clean_of = {'r_00001_nrs1': _exposure(rng, 150, 1.0, 0.03),
+                'r_00002_nrs1': _exposure(rng, 150, 1.0, 0.03, bump=(30, 60, 1.18)),
+                'r_00003_nrs1': _exposure(rng, 150, 1.0, 0.03)}
+    members, checks = M.pool_members(clean_of, centres, opt)
+    assert members == {'r_00001_nrs1', 'r_00003_nrs1'}
+    assert checks['r_00002_nrs1']['differs'] is True and checks['r_00002_nrs1']['dev'] > 0.1
+    assert all(checks[b]['verdict'] == 'consistent' for b in members)

@@ -96,6 +96,17 @@
     master_bkg_low_min = 0.30
     master_bkg_n_iter = 3
     master_bkg_min_shutters = 5
+    # Pool unless different: each exposure x detector is painted with the pooled sky of its
+    # exposure group (step 2: every exposure; step 1, in count rate: the same detector),
+    # unless its own clean shutters differ from the pool of the other exposures in one of
+    # master_bkg_pool_bands wavelength bands by more than master_bkg_pool_tol AND
+    # master_bkg_pool_nsigma sigma (shutter-to-shutter scatter); then it keeps its own sky.
+    # The decision and the worst band are recorded (MBKGSRC / MBKGPSRC, MBKGPDEC ...), and
+    # the exposure's own sky is kept in the product either way.
+    master_bkg_prefer_pool = true
+    master_bkg_pool_tol = 0.02
+    master_bkg_pool_nsigma = 3.0
+    master_bkg_pool_bands = 8
     # step 1 (count rate, before stage 2a): no flat field, so slitlets scatter ~7 % grey
     # and the selection's thresholds are wider; the stuck call is per exposure root
     master_bkg_rate_excess_min = 0.15
@@ -121,7 +132,7 @@
     # commanded-open shutter's sky in each rate frame (nirspec/shutter_fit.py), calls the
     # stuck ones per exposure root (master_bkg_stuck_* above) and merges them into the
     # observation's stuck list as auto entries, every disperser. false: the calls are still
-    # made and stored (<rate>_mbkgr.fits CALLS) but not written to the list.
+    # made and stored (the rate file's CALLS table) but not written to the list.
     detect_stuck_shutters = true
 
 [nirspec.stage3]

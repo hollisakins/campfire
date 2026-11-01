@@ -141,7 +141,7 @@ def stage2a(config, obs, source_ids, processes, overwrite):
 @processing_options
 def master_bkg(config, obs, source_ids, processes, overwrite):
     """Derive the master background of every exposure: step 1 from the rate files
-    (<root>_<nod>_<nrsN>_mbkgr.fits: the count-rate sky and the stuck-shutter fit), then
+    (tables written into each rate file: the count-rate sky and the stuck-shutter fit), then
     step 2 from the stage-2a canonicals and background slitlets (_mbkg.fits: the
     calibrated sky and its painting). Both run within stage 2a too; this re-runs them
     alone (--overwrite to redo current products). Step 1's stuck calls are stored but
@@ -263,7 +263,7 @@ def detect_stuck(config, obs, processes, overwrite):
 
     Fits every commanded-open shutter's sky in each rate frame (nirspec/shutter_fit.py),
     calls a shutter stuck from all nods and both detectors of its exposure root, stores
-    the fit and the calls in <rate>_mbkgr.fits and merges the stuck calls into the
+    the fit and the calls in the rate files (SHUTAMP, CALLS) and merges the stuck calls into the
     observation's stuck list as auto entries (manual and web entries win). Stage 2a runs
     this itself; use this to inspect the calls before re-running it:
 

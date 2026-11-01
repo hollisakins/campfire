@@ -31,7 +31,6 @@ def test_discover_spectrum_exposures_excludes_finals(tmp_path):
     _touch(tmp_path, "jw07076020001_04101_00001_nrs2_rate.fits")
     # master-background products: per detector, not per source
     _touch(tmp_path, "jw07076020001_04101_00001_nrs1_mbkg.fits")
-    _touch(tmp_path, "jw07076020001_04101_00001_nrs2_mbkgr.fits")
 
     found = discover_spectrum_exposures(tmp_path)
     names = sorted(p.name for p in found)

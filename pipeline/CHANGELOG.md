@@ -30,6 +30,75 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec master background 1.5: step 1's tables live in the rate file; `_mbkg.fits`
+  compressed.** Step 1 (`master_bkg_rate`) writes `MBKG1DR` (with the step's cards in its
+  header), `MBKGQSR`, `MBKGSHR`, `SHUTAMP` and `CALLS` into `<base>_rate.fits` itself, after
+  the jwst extensions (as stage 1 does with `CFBKG`); `<base>_mbkgr.fits` and its layout kind
+  `nirspec_mbkgr` are retired. All five tables are written every time, empty when there is
+  nothing to hold, so a jwst save of the rate file (which records them in its ASDF tree) never
+  finds one missing; `masks.restore_pre_bkgsub` drops them with the detector background, and
+  step 1 runs again. Step 2 reads them from the rate file, no longer keeps a copy of
+  `MBKG1DR` (`load_product` reads it from the rate file via `MBKGRATE`), and writes
+  `MBKG2D` / `MBKG2DN` / `MBKG2DDQ` compressed losslessly (GZIP_2 / RICE_1): 25 MB -> 2.8 MB
+  on PRISM, 7.8-8.3 MB on G395M (more pixels painted past the calibrated range), arrays
+  identical. Shutters seen through two sources' cutouts of one slitlet are now taken from the
+  lower source id instead of whichever worker finished first, so step 2 repeats exactly. On
+  `ember_cosmos_p1` G395M is bit-identical to 1.4 and PRISM within 0.1 % (that choice).
+  `CFMBKGV` 1.5, `CFMB1VER` 1.3; a 1.4 workspace re-runs both steps.
+- **NIRSpec trace map built once, in master background step 1, and stored in the rate file.**
+  `trace_overlap.ShutterMap` derives the map of which slitlets light each detector pixel from
+  the geometry step 1 already builds (`coverage.RateGeometry`: one `assign_wcs` on the original
+  metafile plus the failed-open shutters, past the calibrated range to the cutoffs) instead of a
+  second `assign_wcs` pass, over every commanded shutter: per pixel one layer per slitlet with
+  its nearest open shutter within `OPEN_HALF + LIGHT_PAD`, a second one within reach, and a new
+  `CORE` bit (inside the open area, unpadded); a shutter table with the physical key, the
+  SHUTTER_INFO source and flags at this dither point, and every catalogue source the shutter
+  holds at any dither point. Written into the rate file as `TMSH1` / `TMSH2` / `TMFLAG` /
+  `TMSLITS` / `TMSHUT` (0.7 MB PRISM, 2.3-2.6 MB G395M, compressed). `trace_map_from_rate(rate,
+  stuck)` gives the `TraceMap` the consumers read with the stuck-closed shutters removed on read
+  (their light gone, `IN_SOURCE` cleared where the source shutter is stuck, a slitlet whose
+  source-holding shutters are all stuck becomes `sky`), so editing the stuck list never rebuilds
+  it; `TraceMap.rows_of` also finds a slitlet through any catalogue source its shutters hold
+  (a second source shares its slitlet as its own). On `ember_cosmos_p1` it agrees with the
+  stage-3 `tracemaps/` maps on 99.7 % of (pixel, slitlet) pairs with the same layer depth (7-8
+  on G395M); the rest are pixels 0.750-0.78 slit units from a shutter centre, one row at the
+  padded edge. The consumers still read `tracemaps/` until the extraction session switches
+  them. `CFMB1VER` 1.4.
+- **NIRSpec master background 1.4: the group's pooled sky is painted unless an exposure
+  differs.** Each exposure × detector's clean shutters are tested against the pooled sky of
+  the other exposures of its group (`master_bkg.pool_check`): in each of 8 wavelength bands
+  the median of the shutters' ratios to the pool, with its error from their scatter (floored
+  at their propagated errors, at least `min_shutters` per band); a band differs when it is off
+  by more than `master_bkg_pool_tol` (2 %) and `master_bkg_pool_nsigma` (3) sigma. While any
+  member differs, the one with the largest deviation leaves the pool and the rest are tested
+  again (`pool_members`), so one discrepant exposure does not make the others look discrepant.
+  Members are painted with the pool of the members; the others keep their own sky. Step 2
+  pools every exposure of the group (calibrated), step 1 the same detector's exposures (count
+  rate), each deciding on its own. Provenance: `MBKGSRC` / `MBKGPSRC` (pool, exposure, group),
+  `MBKGPDEC` (the verdict and worst band), `MBKGPDEV` / `MBKGPSIG` / `MBKGPLO` / `MBKGPHI` /
+  `MBKGPNB`, `MBKGPMEM` (the members), `MBKGPTOL` / `MBKGPNSG`, and the exposure's own sky kept
+  as `MBKG1D.exposure_surf_bright` / `MBKG1DR.rate_exposure` whatever was painted. On
+  `ember_cosmos_p1` every exposure pools and the G395M 1-D sky noise per 2-px bin falls from
+  7-35 % to 3-5 %; on `ember_uds_p2` PRISM nod 2 (+17-18 % at 2.8-3.5 um, 31-44 sigma) leaves the
+  pool on both detectors while nods 1 and 3 stay. `master_bkg_prefer_pool = false` restores the
+  per-exposure sky. `CFMBKGV` 1.4, `CFMB1VER` 1.2.
+- **NIRSpec master background 1.3: the sky is no longer painted low.** Two biases in the
+  1-D sky (both steps), found on `ember_cosmos_p1` where the painted G395M sky sat +2.6 %
+  below held-out empty shutters (PRISM +1.1 %): (1) shutters were combined with
+  inverse-variance weights, but a shutter's error in a bin comes from one or two pixels whose
+  variance jwst derives from each pixel's own measured slope, so the shutters that fluctuated
+  low got the weight (2.0 points on G395M, 0.2 on PRISM); `master_bkg.combine` now weights
+  shutters equally (each takes the bin's median error, for the clip and the weight). (2) The
+  1-D sky was measured over the core `|f| <= 0.2`, where the bar-shadow table is already
+  0.97-0.99 (it is normalised to 1 over `|f| < 0.15`), and the painting multiplied by the
+  table again (0.9 points on both); every core pixel is now divided by the table first
+  (`master_bkg.core_to_centre`), so `MBKG1D` / `MBKG1DR` are the sky at the open-shutter
+  centre, as documented. On held-out shutters the two fixes leave -0.3 % (G395M) and +0.1 %
+  (PRISM). `CFMBKGV` 1.3, step 1 `CFMB1VER` 1.1 (products regenerate); `MBKGRRAT` compares
+  the two skies at the open-shutter centre.
+  `sky_for_slit` now warns when it falls back to the slit's own slitlet because the product
+  has no `MBKG2D` or no rate file beside it (that fallback was silent, and on G395M the own
+  slitlet is a third to a half of the painted total).
 - **NIRSpec master background in two steps; stuck shutters from a sky-template fit.**
   Step 1 (`nirspec/master_bkg_rate.py`) runs at the start of stage 2a from the rate files
   alone: one `assign_wcs` per rate file gives every commanded slitlet's footprint

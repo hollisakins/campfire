@@ -20,7 +20,8 @@ stuck-shutter detector for every disperser; stuck shutters are keyed by physical
 (`[<root>.shutters] "q<q>r<row>c<col>" = {origin = manual|web|auto, stuck}`) in the TOML, the web
 review and the database; the masked first pass gives way to a local joint solve (the extraction-v2
 side). Numbers in §9 measured before b0c08026 (the median bar-shadow cells), notably the +2–3 %
-off-centre painted-sky residual and the G395M blue-extension offset, predate the re-derived tables.
+off-centre painted-sky residual and the G395M blue-extension offset, predate the re-derived tables;
+the in-shutter offset itself is explained and fixed in 1.3 (§9, last entry).
 **Sources:** the pipeline code on this branch; jwst 1.20.2 (the pinned version) read from the wheel; msaexp `main`, `jwst_backgrounds` and `jwst_gtvt` read from GitHub on 2026-10-28; jwst readthedocs; RUBIES / JADES papers as cited inline.
 **Date:** 2026-10-28
 **Context:** the NIRSpec stage 2b nodded (leapfrog) background subtraction in
@@ -45,6 +46,10 @@ was written, while combining the two branches. Where the body says otherwise, th
    It is not a sub-stage at the top of stage 2b (§4.3).
 2. **Grain.** The 1-D sky is derived per exposure × detector. The sky pooled over the exposure
    group is the fallback when an exposure has too few clean shutters (§4.1 pooled first).
+   *Revised 2026-10-31 (1.4): pool unless different.* Every exposure is still measured, but
+   one consistent with the other exposures of its group is painted with the group's pool
+   (5-8x its shutters; a single G395M exposure × detector has 1-5 shutters per bin at the ends
+   of its range); one that differs keeps its own sky (§9, last entry).
 3. **Units.** `MBKG1D` is stored as surface brightness (MJy/sr). Nothing downstream sees that unit:
    `master_bkg.sky_for_slit(mbkg, slit)` returns the sky in the slit's own units, and the
    master-background-subtracted spectrum ends in the same units as the nodded one.
@@ -1326,3 +1331,85 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     632747, 924889 of `ember_cosmos_p1` are 40–100 % masked), so the master background serves only
     the slits that are not, until an empirical tail profile in detector counts is added (§4.2 step 5).
   - Not yet: subtraction (P2), deploy/pull of the kind (registered only), a compressed `MBKG2D`.
+- **The painted sky was low (found 2026-10-31 by the extraction-v2 first pass, fixed in 1.3).** On
+  `ember_cosmos_p1` single G395M frames minus the master sky left a positive residual over the
+  whole shutter (flat in the within-shutter coordinate, so not the old centre-vs-bars shape).
+  Proof, with the pipeline's own functions on the 1.2 products (MBKG1D rebuilt to 1e-8, every clean
+  flag identical; scripts and `proof.png` in `scratch/claude/sky_resid/`): the sky built from a
+  random half of the clean shutters and measured on the other half (20 halvings) leaves
+  Σ(pixel − sky)/Σsky = +2.6 % on G395M (+1.3 to +3.3 per rate file) and +1.1 % on PRISM. The paint
+  step is exact (the slit's own sky converted back to count rate equals `MBKG2D` to 1e-9 on open pixels),
+  so the bias is in the 1-D sky, and it has two causes:
+  (1) **Inverse-variance shutter weights.** A shutter's value in a 2-pixel bin is one or two pixels,
+  so its error is the propagated one, from `VAR_POISSON`, which jwst derives from each pixel's own
+  measured slope: a pixel that came out low reports a small variance. Ranked by reported variance
+  against pixels at the same wavelength, the lowest decile of clean sky pixels reads −22 % on G395M
+  (−8 % on PRISM), so 1/err² weights pull the sky low: 2.0 points on G395M, 0.2 on PRISM.
+  (2) **The bar shadow applied twice.** The 1-D sky was measured over the core |f| ≤ 0.2, where the
+  empirical table is already 0.97–0.99 (normalised to 1 over |f| < 0.15; core mean 0.993), and the
+  painting multiplies by the table again: 0.9 points on both dispersers.
+  With equal weights (each shutter takes the bin's median error, for the clip and the weight) and
+  every core pixel divided by the table (`core_to_centre`; `MBKG1D` / `MBKG1DR` are now the sky at
+  the open-shutter centre, as §4.1 always defined them), the held-out residual is −0.3 % (G395M)
+  and +0.1 % (PRISM). Both steps changed (`CFMBKGV` 1.3, `CFMB1VER` 1.1). Rerun on the same p1 inputs
+  (`scratch/claude/sky_resid/v13/before_after.png`): on clean empty shutters, every usable pixel,
+  G395M +3.4 % → +0.4 % (NRS1 +1.6 %, NRS2 −0.7 %; on the sky's own pixels NRS1 nod 1 +3.65 → +0.7 %,
+  the NRS1 rest is the near-source and next-to-other-source pixels the sky leaves out), PRISM
+  +1.0 % → +0.2 %; `MBKG1D` rises 2–4 % on G395M and 0.5–2 % on PRISM; stuck calls unchanged (15 /
+  21); clean counts within a few shutters. In bins with one or two shutters (G395M NRS2 below
+  3.3 µm, NRS1 above 4.8 µm) the new and old skies differ by up to ±30 %: the noise of those bins,
+  not the fix (grating sky smoothing, still open, would address it).
+  Two more things learnt on the way. A nod difference cancels all of this (the common offset and
+  the per-shutter spread, which repeats across nods), which is why the nodded extraction never saw
+  it. And on G395M, JUMP_DET-flagged sky pixels read 5–12 points below unflagged ones in four of six
+  rate files (not on PRISM), so a residual over DQ = 0 pixels alone reads high; the sky and every
+  extraction use both, consistently.
+- **Pool unless different (1.4, decided 2026-10-31).** Measured per exposure, a G395M sky is noisy:
+  on `ember_cosmos_p1` each exposure × detector has 68-125 clean shutters against the group's 557,
+  one to five per 2-pixel bin at the ends of the range, and its 1-D sky scatters by 7-35 % per bin;
+  yet every exposure there agrees with the pool (scales 0.986-1.038 at 1-2 sigma, PRISM 0.997-1.002).
+  The per-exposure grain was chosen for ember_uds_p2, whose nod 2 sits 18 % above nods 1 and 3 at
+  the 3 µm sky minimum. So each exposure is now tested against the pooled sky of the others
+  (`pool_check`): 8 wavelength bands, in each the median of the exposure's shutter ratios to the
+  pool with the error of that median from their scatter (floored at their propagated errors; a
+  plain mean let one shutter with a wild band ratio flag a p1 G395M exposure at "+66 %" where
+  the spectra agree), differing when off by more than 2 % and 3 sigma (the first keeps PRISM's
+  0.3 % differences, formally 3 sigma, pooled; the second keeps noisy grating bands from
+  counting). Membership is iterative (`pool_members`): with nod 2 in the reference, UDS p2's nods
+  1 and 3 read -6 % and were flagged too; dropping the worst member and testing again leaves them
+  pooled. On synthetic exposures the test flags 2.8 % of consistent noisy ones (8 bands at 3
+  sigma) and every local +18 % excess; a false flag only paints the exposure's own sky, the
+  1.3 behaviour. Results (`scratch/claude/sky_resid/v14/pool_unless_different.png`): p1 all
+  pooled in step 2, G395M 1-D sky noise 7-35 % → 3-5 % per bin, PRISM 1.5 → 1.3 %; UDS p2 PRISM nod 2
+  out on both detectors (+17-18 %, 31-44 sigma) and nod 3 NRS2 out at -2.1 % (just over the
+  tolerance), UDS p2 G395M all pooled. Steps 1 and 2 decide independently (count rate per
+  detector, calibrated over the group) and disagree on 4 of 24 files, all at 2-4 % in the
+  extension bands; the in-range painted / rate-unit sky ratio there is 0.995-1.011, within the
+  0.984-1.014 of the files where they agree, so no step appears at the calibrated edge.
+- **2026-11-01, master background 1.5: where the products live.** Hollis decided the file
+  structure: as few file types as possible. Step 1's tables (`MBKG1DR`, `MBKGQSR`, `MBKGSHR`,
+  `SHUTAMP`, `CALLS`) go into the rate file and `_mbkgr.fits` is retired; the calibrated
+  `_mbkg.fits` stays separate, because stage 2a reads the rate file before step 2 runs. A jwst
+  save of a rate file records the extra tables in its ASDF tree; rewriting them under the same
+  names keeps the file readable, and `masks._drop_extra_fits` removes them cleanly (tested on a
+  production rate file and in `test_write_into_rate_survives_a_jwst_save_and_a_rewrite`).
+  `_mbkg.fits` loses its copy of `MBKG1DR` and is compressed losslessly: 25 MB -> 2.8 MB on
+  PRISM, 7.8-8.3 MB on G395M, arrays identical. Shared shutters are taken from the lower source
+  id, so step 2 repeats exactly. On `ember_cosmos_p1` (scratch `mbkg_ship/v15/`): G395M
+  bit-identical to 1.4, PRISM within 0.1 %, stuck calls, pool decisions and `sky_for_slit`
+  unchanged. Next (agreed with the extraction session): one trace map per exposure, built in
+  step 1 from every commanded shutter and stored in the rate file, replacing the coverage
+  counter cache and the stage-3 `tracemaps/` cache; stuck shutters removed when it is read.
+- **2026-11-01, the coverage counter stays.** With the trace map built in step 1 (`trace_overlap.ShutterMap`),
+  the question was whether the master background could count traces per pixel from it (light within
+  `OPEN_HALF + LIGHT_PAD` = 0.75 slit units of an open shutter centre) instead of the coverage counter
+  (each slitlet's whole jwst extent: closed shutters and the 1.05-unit margins included). PRISM: no
+  measured pixel changes. G395M (`ember_cosmos_p1`, six rate files): 27-38 % more empty-shutter core
+  pixels admitted, none lost, and those pixels read high against the already-admitted pixels of the
+  same shutter at the same wavelength: median ratio 1.033 ± 0.004 (35,154 pixels); 1.030 under one
+  other slitlet's extent, 1.081 under two; 1.040 ± 0.006 when the other slitlet's nearest open
+  shutter is 0.75-0.9 slit units away, 1.028 ± 0.006 at 0.9-1.1. A neighbour's light carries on at
+  the few-per-cent level 0.25-0.6 slit units past its open edge, beyond the map's pad (the bar-shadow
+  tables' fall-off past an outer shutter says the same). Admitting them would bias the G395M master
+  background about 1 % high, so the counter (same geometry pass, no second `assign_wcs`) stays.
+  Script: `scratch/claude/mbkg_ship/tracemap/extra_pixels_clean.py`.
