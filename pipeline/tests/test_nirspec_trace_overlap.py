@@ -264,3 +264,119 @@ def test_shared_signal_recovers_injected_light():
     data[r.iy, r.ix] -= 0.5                                     # a subtracted contaminant leaves a dip
     val, err, n = TO.shared_signal(data, np.ones((NY, NX)), r)
     assert n == r.iy.size and abs(val - 0.5) < 4 * err
+
+
+# ---------------------------------------------------------------------------
+# The stored map (ShutterMap): built from a rate file's geometry, stuck shutters removed on read
+# ---------------------------------------------------------------------------
+def _rate_geometry(slits, shape=(60, 80)):
+    """A ``coverage.RateGeometry`` of slitlets ``(row0, state, name)`` whose traces run along
+    x at detector row ``row0`` (the source shutter's centre), 4 rows per shutter pitch."""
+    from campfire_pipeline.nirspec import coverage as C
+
+    def transform(row0):
+        def tr(x, y):
+            x = np.asarray(x, float); y = np.asarray(y, float)
+            ys = (y - row0) / 4.0 * MSA_SLIT_PITCH
+            inside = (ys >= -4.0) & (ys <= 4.0)
+            return np.where(inside, x, np.nan), np.where(inside, ys, np.nan), np.where(inside, (1.0 + 0.001 * x) * 1e-6, np.nan)
+        return tr
+
+    pix, lam, ys, meta = [], [], [], []
+    for row0, state, name in slits:
+        g = C.geometry_on_block(transform(row0), 0, 0, row0 - 16, row0 + 16, state, MSA_SLIT_PITCH,
+                                ncols=shape[1], nrows=shape[0], with_segments=False)
+        rr, cc = np.nonzero(g['footprint'])
+        pix.append(((rr + g['row_lo']) * shape[1] + cc).astype(np.int32))
+        lam.append(g['lam'][g['footprint']].astype(np.float32)); ys.append(g['ys'][g['footprint']].astype(np.float32))
+        meta.append(dict(kind='msa', name=str(name), quadrant=2, ycen=float(row0), source_id=1000 + name, state=state))
+    return C.RateGeometry(np.concatenate(pix), np.concatenate(lam), np.concatenate(ys),
+                          np.cumsum([0] + [p.size for p in pix]), meta, shape)
+
+
+def _shutter_info(rows):
+    """SHUTTER_INFO rows ``(dither, slitlet, column, source, background, primary)``, metadata id 1, MSA row 100."""
+    from astropy.table import Table
+    return Table(rows=[(1, d, s, 2, 100 + s, c, src, bg, pr) for d, s, c, src, bg, pr in rows],
+                 names=('msa_metadata_id', 'dither_point_index', 'slitlet_id', 'shutter_quadrant', 'shutter_row',
+                        'shutter_column', 'source_id', 'background', 'primary_source'))
+
+
+def _two_slitlets():
+    """Slitlet 7 ('1x1', source 1007 in its middle shutter, a second source 2001 in its first
+    shutter at dither 2) and slitlet 8 ('11x', source 1008) two rows below, so they overlap."""
+    geo = _rate_geometry(((20, '1x1', 7), (22, '11x', 8)))
+    rows = []
+    for d in (1, 2):
+        rows += [(d, 7, 10, 2001 if d == 2 else 1007, 'N' if d == 2 else 'Y', 'N'),
+                 (d, 7, 11, 1007, 'N', 'Y'), (d, 7, 12, 1007, 'Y', 'N'),
+                 (d, 8, 30, 1008, 'Y', 'N'), (d, 8, 31, 1008, 'Y', 'N'), (d, 8, 32, 1008, 'N', 'Y')]
+    sm = TO.ShutterMap.from_geometry(geo, _shutter_info(rows), 1, 1, sources={7: (1007, True), 8: (1008, True)})
+    return geo, sm
+
+
+def _direct(geo, name, centres_j, pad=TO.LIGHT_PAD, half=None):
+    """Pixels of slitlet ``name`` within ``half`` (default OPEN_HALF + pad) slit units of the
+    given shutters' centres, from the geometry itself."""
+    half = TO.OPEN_HALF + pad if half is None else half
+    for b in geo.blocks(with_segments=False):
+        if b['name'] == str(name):
+            c = np.asarray(centres_j, float) - b['kx']
+            near = np.min(np.abs(b['ys'][:, None] - c[None, :]), axis=1) * MSA_SLIT_PITCH < half
+            return set(b['pix'][near].tolist())
+
+
+def _pixels(tm, name, bit=None):
+    i = list(np.asarray(tm.slits['name']).astype(str)).index(str(name))
+    sel = tm.index == i
+    if bit is not None:
+        sel &= (tm.flag & bit) > 0
+    l, y, x = np.nonzero(sel)
+    return set((y * tm.index.shape[2] + x).tolist())
+
+
+def test_shutter_map_lights_the_padded_open_shutters_and_flags_the_unpadded_core():
+    geo, sm = _two_slitlets()
+    tm = sm.trace_map()
+    assert _pixels(tm, 7) == _direct(geo, 7, [0, 1, 2]) and _pixels(tm, 8) == _direct(geo, 8, [0, 1, 2])
+    assert _pixels(tm, 7, TO.IN_SOURCE) == _direct(geo, 7, [1])          # the 'x' shutter, padded
+    assert _pixels(tm, 8, TO.IN_SOURCE) == _direct(geo, 8, [2])
+    assert _pixels(tm, 7, TO.CORE) == _direct(geo, 7, [0, 1, 2], half=TO.OPEN_HALF)
+    assert tm.count.max() == 2 and tm.index.shape[0] == 2                 # the traces overlap
+    sh = sm.shutters
+    assert list(sh['col'][sh['slit'] == 0]) == [10, 11, 12] and list(sh['is_source'][sh['slit'] == 0]) == [False, True, False]
+
+
+def test_shutter_map_removes_stuck_shutters_on_read():
+    geo, sm = _two_slitlets()
+    tm = sm.trace_map(stuck={(2, 107, 11)})                              # slitlet 7's source shutter
+    assert _pixels(tm, 7) == _direct(geo, 7, [0, 2])                    # its light is gone, the others' stays
+    assert not _pixels(tm, 7, TO.IN_SOURCE)
+    i7 = list(tm.slits['name']).index('7')
+    assert tm.slits['kind'][i7] == 'sky' and tm.slits['source_id'][i7] == 0 and not tm.slits['lit'][i7]
+    assert _pixels(tm, 8, TO.IN_SOURCE) == _direct(geo, 8, [2])         # the other slitlet untouched
+    tm = sm.trace_map(stuck={(2, 107, 12)})                              # a sky shutter: source still named and lit
+    i7 = list(tm.slits['name']).index('7')
+    assert tm.slits['kind'][i7] == 'slitlet' and tm.slits['lit'][i7] and _pixels(tm, 7) == _direct(geo, 7, [0, 1])
+
+
+def test_rows_of_finds_a_second_source_in_any_shutter_of_the_slitlet():
+    _, sm = _two_slitlets()
+    tm = sm.trace_map()
+    i7 = list(tm.slits['name']).index('7')
+    assert list(tm.rows_of(1007)) == [i7] and list(tm.rows_of(2001)) == [i7]
+    assert list(sm.trace_map(stuck={(2, 107, 10)}).rows_of(2001)) == []   # its shutter stuck: no longer there
+
+
+def test_shutter_map_round_trips_through_the_rate_file(tmp_path):
+    from astropy.io import fits
+    _, sm = _two_slitlets()
+    path = str(tmp_path / 'x_rate.fits')
+    fits.HDUList([fits.PrimaryHDU()] + sm.hdus()).writeto(path)
+    back = TO.trace_map_from_rate(path, stuck={(2, 108, 32)})
+    ref = sm.trace_map(stuck={(2, 108, 32)})
+    assert np.array_equal(back.index, ref.index) and np.array_equal(back.flag, ref.flag)
+    assert list(back.slits['kind']) == list(ref.slits['kind'])
+    empty = str(tmp_path / 'y_rate.fits')
+    fits.HDUList([fits.PrimaryHDU()] + TO.ShutterMap.empty_hdus()).writeto(empty)
+    assert TO.trace_map_from_rate(empty) is None

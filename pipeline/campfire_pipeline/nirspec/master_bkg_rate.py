@@ -31,8 +31,10 @@ header holds the step's cards), ``MBKGQSR``, ``MBKGSHR`` (every shutter offered,
 selection), ``SHUTAMP`` (the fit) and ``CALLS`` (the root's calls, the same in every file
 of the root). All five are written every time, empty when there is nothing to hold, so a
 jwst save of the rate file (which records them in its ASDF tree) never finds one missing.
-Step 2 (``master_bkg.run_master_bkg``, end of stage 2a) reads ``MBKG1DR`` and ``MBKGQSR``
-from it. Design: docs/design-nirspec-master-background.md (status block) and
+With them goes the exposure's trace map (``trace_overlap.ShutterMap``: ``TMSH1``, ``TMSH2``,
+``TMFLAG``, ``TMSLITS``, ``TMSHUT``), built from the same geometry over every commanded shutter,
+so the stuck list applies when it is read (``trace_overlap.trace_map_from_rate``). Step 2
+(``master_bkg.run_master_bkg``, end of stage 2a) reads ``MBKG1DR`` and ``MBKGQSR`` from it. Design: docs/design-nirspec-master-background.md (status block) and
 docs/design-nirspec-pipeline-v2.md.
 """
 
@@ -50,15 +52,17 @@ from astropy.table import Table
 from campfire_pipeline.common.io import log
 from campfire_pipeline.nirspec import master_bkg as M
 from campfire_pipeline.nirspec import stuck_list as S
+from campfire_pipeline.nirspec import trace_overlap as TO
 from campfire_pipeline.nirspec.coverage import (cache_path, cutoffs_for, default_cache_dir,
                                                  rate_geometry)
 
-STEP1_VERSION = '1.3'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different;
-#                                1.3: the tables written into the rate file (no _mbkgr.fits)
+STEP1_VERSION = '1.4'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different;
+#                                1.3: the tables written into the rate file (no _mbkgr.fits);
+#                                1.4: the trace map (TM* extensions) written with them
 N_GRID_SLITLETS = 6          # slitlets per detector whose central rows set the wavelength grid
 
 
-STEP1_EXTENSIONS = ('MBKG1DR', 'MBKGQSR', 'MBKGSHR', 'SHUTAMP', 'CALLS')
+STEP1_EXTENSIONS = ('MBKG1DR', 'MBKGQSR', 'MBKGSHR', 'SHUTAMP', 'CALLS') + TO.SHUTTER_MAP_EXTENSIONS
 
 
 def product_path(obs, rate_base):
@@ -356,6 +360,7 @@ def _inputs_cards(rate, bs_path, cutoffs, decided):
         'MBKGBSDT': (M.barshadow_stamp(bs_path), 'that table: derivation date / USEAFTER'),
         'MBKGCUT': (json.dumps(list(cutoffs)), 'footprint wavelength cutoffs [um]'),
         'MBKGDEC': (decided, 'hash of the manual/web stuck entries of the root'),
+        'MBKGTMV': (TO.SHUTTER_MAP_VERSION, 'trace map (TM* extensions) version'),
     }
 
 
@@ -530,14 +535,25 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
                 log(f'master background step 1: {it["base"]}: no sky'); continue
             out = product_path(obs, it['base'])
             _write(out, it, centres[it['base']], rs, qs, specs_of[it['base']], keys_of[it['base']],
-                   fits_of.get(it['base']), calls_t, opt, sky=sk)
+                   fits_of.get(it['base']), calls_t, opt, sky=sk, trace_map=_trace_map_hdus(it, cache_dir))
             written.append(out)
         if calls and write_calls:
             S.write_auto(stuck_path, root, calls, metafiles, obs_name=obs.name)
     return written
 
 
-def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt, sky=None):
+def _trace_map_hdus(it, cache_dir):
+    """The rate file's trace map (``trace_overlap.ShutterMap``, every commanded shutter) from
+    the geometry this step already built; empty extensions when it cannot be made."""
+    try:
+        geo = rate_geometry(it['rate'], cache_dir, it['cutoffs'], it['wr'])
+        return TO.ShutterMap.from_rate(it['rate'], geo).hdus()
+    except Exception as e:                                   # noqa: BLE001 - no map is not a failed step
+        log(f'master background step 1: {it["base"]}: no trace map ({type(e).__name__}: {e})')
+        return TO.ShutterMap.empty_hdus()
+
+
+def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt, sky=None, trace_map=None):
     srcs = np.bincount(np.asarray(rs[3], int), minlength=5)
     cards = dict(it['cards'])
     cards.update({
@@ -602,6 +618,7 @@ def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt, sky=None):
     else:
         hdus.append(fits.BinTableHDU(name='SHUTAMP'))
     hdus.append(fits.BinTableHDU(calls_t if calls_t is not None else None, name='CALLS'))
+    hdus += trace_map if trace_map is not None else TO.ShutterMap.empty_hdus()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         write_into_rate(path, hdus)

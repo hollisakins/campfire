@@ -45,6 +45,25 @@ Release procedure: edit the `## Unreleased` section below, then run
   lower source id instead of whichever worker finished first, so step 2 repeats exactly. On
   `ember_cosmos_p1` G395M is bit-identical to 1.4 and PRISM within 0.1 % (that choice).
   `CFMBKGV` 1.5, `CFMB1VER` 1.3; a 1.4 workspace re-runs both steps.
+- **NIRSpec trace map built once, in master background step 1, and stored in the rate file.**
+  `trace_overlap.ShutterMap` derives the map of which slitlets light each detector pixel from
+  the geometry step 1 already builds (`coverage.RateGeometry`: one `assign_wcs` on the original
+  metafile plus the failed-open shutters, past the calibrated range to the cutoffs) instead of a
+  second `assign_wcs` pass, over every commanded shutter: per pixel one layer per slitlet with
+  its nearest open shutter within `OPEN_HALF + LIGHT_PAD`, a second one within reach, and a new
+  `CORE` bit (inside the open area, unpadded); a shutter table with the physical key, the
+  SHUTTER_INFO source and flags at this dither point, and every catalogue source the shutter
+  holds at any dither point. Written into the rate file as `TMSH1` / `TMSH2` / `TMFLAG` /
+  `TMSLITS` / `TMSHUT` (0.7 MB PRISM, 2.3-2.6 MB G395M, compressed). `trace_map_from_rate(rate,
+  stuck)` gives the `TraceMap` the consumers read with the stuck-closed shutters removed on read
+  (their light gone, `IN_SOURCE` cleared where the source shutter is stuck, a slitlet whose
+  source-holding shutters are all stuck becomes `sky`), so editing the stuck list never rebuilds
+  it; `TraceMap.rows_of` also finds a slitlet through any catalogue source its shutters hold
+  (a second source shares its slitlet as its own). On `ember_cosmos_p1` it agrees with the
+  stage-3 `tracemaps/` maps on 99.7 % of (pixel, slitlet) pairs with the same layer depth (7-8
+  on G395M); the rest are pixels 0.750-0.78 slit units from a shutter centre, one row at the
+  padded edge. The consumers still read `tracemaps/` until the extraction session switches
+  them. `CFMB1VER` 1.4.
 - **NIRSpec master background 1.4: the group's pooled sky is painted unless an exposure
   differs.** Each exposure × detector's clean shutters are tested against the pooled sky of
   the other exposures of its group (`master_bkg.pool_check`): in each of 8 wavelength bands

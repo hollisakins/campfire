@@ -124,12 +124,23 @@ def test_product_current_reads_the_cards_of_the_rate_files_mbkg1dr(tmp_path):
     assert not R.product_current(path, dict(cards, MBKGDEC=('xyz', '')))
 
 
-def _step1_hdus(value):
+def _step1_hdus(value, trace_map=False):
+    """The step's extensions: tables, and the trace map (a real compressed one, or empty)."""
+    from campfire_pipeline.nirspec import trace_overlap as TO
     t = fits.BinTableHDU(Table({'wavelength': [1.0, 2.0], 'rate': [value, value]}), name='MBKG1DR')
     t.header['MBKGDATE'] = str(value)
-    return [t, fits.BinTableHDU(Table({'quadrant': [1], 'scale': [1.0]}), name='MBKGQSR'),
+    hdus = [t, fits.BinTableHDU(Table({'quadrant': [1], 'scale': [1.0]}), name='MBKGQSR'),
             fits.BinTableHDU(Table({'k': [0]}), name='MBKGSHR'), fits.BinTableHDU(name='SHUTAMP'),
             fits.BinTableHDU(name='CALLS')]
+    if not trace_map:
+        return hdus + TO.ShutterMap.empty_hdus()
+    sh = np.full((2, 8, 8), -1, np.int16); sh[0, 2:5] = 0
+    sm = TO.ShutterMap(slits=Table({'name': ['7'], 'source_id': [1007], 'kind': ['slitlet'], 'lit': [True]}),
+                       shutters=Table({'slit': [0], 'j': [0], 'q': [2], 'row': [100], 'col': [10], 'source_id': [1007],
+                                       'background': ['N'], 'primary': ['Y'], 'is_source': [True],
+                                       'holds_source': [True], 'sources': ['1007']}),
+                       sh1=sh, sh2=np.full_like(sh, -1), flag=np.zeros(sh.shape, np.uint8), meta={'SHMAPVER': '1'})
+    return hdus + sm.hdus()
 
 
 def test_write_into_rate_survives_a_jwst_save_and_a_rewrite(tmp_path):
@@ -140,17 +151,19 @@ def test_write_into_rate_survives_a_jwst_save_and_a_rewrite(tmp_path):
     from campfire_pipeline.nirspec.masks import _drop_extra_fits
     path = str(tmp_path / 'jw_rate.fits')
     m = ImageModel(np.ones((8, 8), np.float32)); m.save(path); m.close()
-    R.write_into_rate(path, _step1_hdus(1.0))
+    R.write_into_rate(path, _step1_hdus(1.0, trace_map=True))
     with ImageModel(path) as m:                      # what stage 1 / masks do to a rate file
         m.save(path)
-    R.write_into_rate(path, _step1_hdus(2.0))        # step 1 again, after the save
+    from campfire_pipeline.nirspec import trace_overlap as TO
+    assert TO.trace_map_from_rate(path).count.sum() == 24                # the compressed map survives the save
+    R.write_into_rate(path, _step1_hdus(2.0))        # step 1 again, after the save (an empty map this time)
     with ImageModel(path) as m:
         assert np.all(m.data == 1)
     with fits.open(path) as h:
         assert [x.name for x in h].count('MBKG1DR') == 1
         assert all(n in h for n in R.STEP1_EXTENSIONS)
         assert h['MBKG1DR'].data['rate'][0] == 2.0 and h['CALLS'].header['NAXIS2'] == 0
-    assert R.step1_header(path)['MBKGDATE'] == '2.0'
+    assert R.step1_header(path)['MBKGDATE'] == '2.0' and TO.trace_map_from_rate(path) is None
     sky, q = R.read_rate_sky(path)
     assert np.all(sky['rate'] == 2.0) and q == {1: 1.0}
     with ImageModel(path) as m:

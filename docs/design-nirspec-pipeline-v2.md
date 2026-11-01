@@ -59,7 +59,7 @@ leaves other sources' light in many spectra. The redesign does four things:
 | Master background split into step 1 (before 2a) and step 2 (end of 2a) | Decided (user, 2026-10-30); Built (master background 1.2+) | MB session | 3.3, 3.4 |
 | Step 2 reselects clean shutters in calibrated units | Decided (user, 2026-10-30) | MB session | 3.3 |
 | Step 1's tables inside the rate file, `_mbkgr.fits` retired; `_mbkg.fits` the only extra per-exposure file, compressed | Decided (user, 2026-11-01); Built (master background 1.5) | MB session | 3.4 |
-| One trace map per exposure, built in step 1 from every commanded shutter, stored in the rate file, stuck shutters removed when read; replaces the coverage counter and the stage-3 trace-map cache | Decided (user, 2026-11-01); not built (MB session writes the builder in `trace_overlap.py`, extraction session moves the readers) | both | 3.4 |
+| One trace map per exposure, built in step 1 from every commanded shutter, stored in the rate file, stuck shutters removed when read; replaces the coverage counter and the stage-3 trace-map cache | Decided (user, 2026-11-01); builder Built (`trace_overlap.ShutterMap`, step 1 1.4; 99.7 % of pixel-slitlet pairs as `tracemaps/` on p1); readers not switched (extraction session); coverage counter not yet derived from it (MB session: measure the change in the empty-shutter selection first) | both | 3.4 |
 | Per-slitlet sky scale off permanently | Decided (user, 2026-10-30); Built (1bd8d7c6) | both | 3.3 |
 | Sky painted past both ends of the calibrated range, nothing masked | Decided (user, 2026-10-30); Built (65c1d825, 5b8d6851) | MB session | 3.3 |
 | Smoothing the per-exposure grating sky | Open: trial only, not approved (user, 2026-10-30) | MB session | 3.3 |
