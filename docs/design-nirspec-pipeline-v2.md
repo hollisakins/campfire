@@ -1051,6 +1051,27 @@ decided by the profiles.
   4.6-4.95 µm: 1434 → 1390, 2409 px). 629668 needs its neighbour's shifts zeroed too: they
   are fixed per member, so one bad member spoils every solve it is in. With every shift at
   zero the line goes to the source PRISM gives it, in both solves, with no other change.
+- **Decision (user, 2026-11-01: "Yes, go ahead"):** no per-exposure pointing offsets in any
+  fit (profile fit, shape chain, joint pass); they stay in the interfaces as zeros.
+  `default_fit_offsets`, `prior_offset_sigma`, `bound_offset` removed; FIT_VERSION 2,
+  PASS1_VERSION 11, JOINT_PASS_VERSION 4. Given up: ~1.5 % less bias of the default shape on
+  isolated injections.
+- p1 stage 3 rerun (12 workers, no errors, no fallbacks), against PRISM with `fnu_prof_err`
+  only, 138 sources scored in both versions (`e2e_v4_compare.py`):
+
+  | G395M | before (shifts fitted) median / 90th | after median / 90th | after better in |
+  |---|---|---|---|
+  | light left in (`fnu_prof`) | 1.42 / 3.47 | 1.41 / 3.22 | 83 |
+  | neighbours' light removed | 1.49 / 2.53 | 1.47 / 2.47 | 85 |
+
+  No source worse by more than 0.5; 4-5 better by more. 629668 5.72 → 2.50 (its false
+  5.05 µm line gone), 632554 6.35 → 3.45 (scored over fewer wavelengths: more of it is
+  now not separable), 924438 7.03 → 4.50, 635314 2.52 → 1.62, 629743 2.02 → 1.59.
+- 632334 2.65 → 2.76 although its line is now right (predicted neighbour light at 4.02 µm
+  0.97 → 0.09 µJy). The loss is at 2.9-3.6 µm: a negative nod image of 925403 (centre +0.49,
+  at its shutter's edge; its shifts were at the cap in every nod) predicted at about -0.2 µJy
+  against a target of 0.17, partly offset by 630784 and 629668; removing it overshoots PRISM
+  by about 2x. Open.
 
 **Open (extraction session).**
 - Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
