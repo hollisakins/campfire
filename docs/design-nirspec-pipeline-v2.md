@@ -1122,7 +1122,21 @@ informational columns saying where the master-background spectrum is likely bett
 nod override is not a switch to master background: it only says "don't use this shutter
 in this nod as background for this source", so the product stays nodded.
 
-**Automatic nod-partner overrides: prototype (2026-11-01).** The user asked to build them
+**Decision: the two methods have separate jobs (user, 2026-11-01).** "The overrides are
+*only* for neighbors in the same slitlet. Contamination from overlapping slitlets is
+handled via the joint model, left to users to subtract and evaluate themselves."
+Dropping a nod from the background for a neighbour in the slitlet is standard and
+reliable, so it goes into the default product; joint modelling of overlapping spectra is
+tricky, so it stays an extra column (`fnu_contam`), never in `fnu`. The prototype below
+targets the other-slitlet case and is superseded; the order of the same-slitlet analysis
+relative to the joint solve is open (other slitlets' light must not read as a same-slitlet
+neighbour). Catalogued same-slitlet pairs exist in the MSA metadata (`SHUTTER_INFO`: a
+slitlet whose shutters list more than one real source): p1 34 of 442 G395M slitlets, 14
+of 190 PRISM (`extraction-v2/msa_same_slitlet.py`). Six of the prototype's worst cases
+are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
+668641/668623, 664977/629472).
+
+**Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
 `campfire_pipeline/nirspec/partner_choice.py` (prototype; tests
 `tests/test_nirspec_partner_choice.py`). Per source and nod, both detectors:
