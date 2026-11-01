@@ -59,7 +59,7 @@ leaves other sources' light in many spectra. The redesign does four things:
 | Master background split into step 1 (before 2a) and step 2 (end of 2a) | Decided (user, 2026-10-30); Built (master background 1.2+) | MB session | 3.3, 3.4 |
 | Step 2 reselects clean shutters in calibrated units | Decided (user, 2026-10-30) | MB session | 3.3 |
 | Step 1's tables inside the rate file, `_mbkgr.fits` retired; `_mbkg.fits` the only extra per-exposure file, compressed | Decided (user, 2026-11-01); Built (master background 1.5) | MB session | 3.4 |
-| One trace map per exposure, built in step 1 from every commanded shutter, stored in the rate file, stuck shutters removed when read; replaces the coverage counter and the stage-3 trace-map cache | Decided (user, 2026-11-01); builder Built (`trace_overlap.ShutterMap`, step 1 1.4; 99.7 % of pixel-slitlet pairs as `tracemaps/` on p1); readers not switched (extraction session). The master background keeps its coverage counter (each slitlet's whole extent, from the same step-1 geometry pass): counting from the padded map admits 27-38 % more G395M empty-shutter pixels that read 3.3 ± 0.4 % high, a neighbour's light past `LIGHT_PAD` (MB study §9, 2026-11-01) | both | 3.4 |
+| One trace map per exposure, built in step 1 from every commanded shutter, stored in the rate file, stuck shutters removed when read; replaces the coverage counter and the stage-3 trace-map cache | Decided (user, 2026-11-01); builder Built (`trace_overlap.ShutterMap`, step 1 1.4; 99.7 % of pixel-slitlet pairs as `tracemaps/` on p1); stage 3 reads it (ecaf2f22, after the merge into extraction-v2, user 2026-11-01), `tracemaps/` kept as its working copy. The master background keeps its coverage counter (each slitlet's whole extent, from the same step-1 geometry pass): counting from the padded map admits 27-38 % more G395M empty-shutter pixels that read 3.3 ± 0.4 % high, a neighbour's light past `LIGHT_PAD` (MB study §9, 2026-11-01) | both | 3.4 |
 | Per-slitlet sky scale off permanently | Decided (user, 2026-10-30); Built (1bd8d7c6) | both | 3.3 |
 | Sky painted past both ends of the calibrated range, nothing masked | Decided (user, 2026-10-30); Built (65c1d825, 5b8d6851) | MB session | 3.3 |
 | Smoothing the per-exposure grating sky | Open: trial only, not approved (user, 2026-10-30) | MB session | 3.3 |
@@ -1221,8 +1221,8 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   949820) it names a dirty partner the catalogue does not, for one nod each: `SHUTTER_INFO`
   lists one source per shutter per dither, so a shutter two sources share shows only one.
   None was withheld for other-slitlet pixels.
-- Open: the threshold (0.02 against 0.05 / 0.1, where the census puts the clear cases);
-  shared shutters in `SHUTTER_INFO` (positions from `SOURCE_INFO` RA/Dec instead).
+- Open: the threshold (0.02 against 0.05 / 0.1, where the census puts the clear cases).
+  Shared shutters in `SHUTTER_INFO`: answered by the positions from `SOURCE_INFO` (below).
 - Follow-up (user, 2026-11-01: noted, not now): the shipped errors leave out the partner
   frames' noise (stage 2b change: write the propagated variance, with the profile fit
   reading the frame's own from `PRE_BKGSUB_VAR_*`).
@@ -1260,6 +1260,38 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   from the joint model's support, small next to its ~10 % accuracy on images. It also
   argues for the position rule: a neighbour just across a bar still reaches the target.
   (`~/campfire-data/scratch/claude/mbkg_ship/tracemap/extra_pixels_clean.py`)
+- **Position rule (user, 2026-11-01: "yes, i think that's fine"; "the full SOURCE_INFO table
+  is worth using").** Built (3795e228). `SkyToMsa`: a quadratic map from sky offsets
+  (`SOURCE_INFO` RA/Dec) to MSA shutter coordinates (`row + x - 0.5`, `column + y - 0.5`),
+  fitted per configuration and quadrant to the plan's own placements with one offset per
+  dither point (`msa_source_info_fit.py`): on p1 it reproduces them to 0.001-0.003
+  shutter (an affine map leaves 0.08). The fit also shows the plan's `y` is in pitch
+  units, so the position along the slitlet is `(column + y - 0.5) x 1.15` slit units (the
+  formula above was off by up to 0.075). Every `SOURCE_INFO` source within 0.75 row
+  pitch of the slitlet's row and 0.75 slit units of one of its open shutters, at any
+  dither, is a neighbour (a source the fit cannot place falls back to its `SHUTTER_INFO`
+  listing). A partner is dirty when it puts a neighbour within
+  `slitlet_neighbour_max_distance` (0.75 slit units) of the target's position in the
+  nod; dropped as before (brightness threshold, another partner remains). When every
+  partner is dirty the nod keeps its partners and `BKGWHY` says `no clean partner:
+  neighbour <id> at <frac> of sky` (written on a nod with no override too; the bkgsub
+  plots show it). The neighbour's brightness is measured over one shutter height around
+  its position, in a frame that holds the target and puts the neighbour at least 1 slit
+  unit from it (inside an open shutter preferred, then the farthest).
+- p1 census by position (`e2e_position_census.py`, no brightness): PRISM 14 targets with
+  a neighbour within reach, 21 nods with a dirty partner, 4 with none clean; G395M 39, 57,
+  11. `SOURCE_INFO` holds 526 sources, all but one in some shutter, so on p1 it adds
+  positions rather than sources: one pair `SHUTTER_INFO` does not list in the slitlet
+  (880414 / 879626, 0.10 slit units). 923747 nod 2 is now `no clean partner` (923748 at
+  0.39 in partner 1 and 0.75 in partner 3), where the shutter rule dropped partner 1 and
+  removed the -2 µJy line image.
+- Merged `claude/mbkg-ship` (master background 1.3-1.5, the stored trace map) into
+  `claude/extraction-v2` (user, 2026-11-01). Stage 3 takes each exposure's map from its
+  rate file where step 1 stored one (ecaf2f22; stuck physical shutters removed on read),
+  else builds it with jwst as before; `tracemaps/` stays as the working copy (pass-1
+  validity keys on it) until those keys move to the rate files. The stored map's
+  `rows_of` counts a second catalogued source of a slitlet as the slitlet's own, so the
+  joint model no longer models same-slitlet neighbours (they are the overrides' job).
 
 **Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
@@ -1438,7 +1470,7 @@ a fix or needs another field or disperser), **To make**.
 | Runtime baseline on one full observation | both | |
 | Speed up stage 2's per-source work (user goal, 2026-10-31). First profile one stage-2b group and one rectification: in stage 2b the log line "Inverting the pathloss" only marks the start of a group, which also subtracts the nods, reapplies the pathloss and rectifies again, so the slow part is not yet known. Candidate fixes once measured: rectify once instead of in both 2a and 2b, invert the pathloss arithmetically from the stored correction instead of a `PathLossStep` call, and batch per exposure instead of per source | extraction session | |
 | Rebuild the extraction report as final documentation (main text = what ships; appendices = explored and rejected) | extraction session | |
-| Automatic nod-partner overrides (3.9, prototype `partner_choice.py`): check the excess against the named neighbour's own light; then where they run (inside stage 2b, or a file applied on the next run) and the threshold | extraction session | user |
+| Same-slitlet overrides by position (3.9, `slitlet_neighbours.py`, built in stage 2b): the threshold (0.02), the nods with no clean partner (keep both, or keep the partner that puts the neighbour farther, e.g. 923747), the p1 rerun and PRISM check | extraction session | user |
 | Informational "master background likely better" columns (archive products, 3.9) | extraction session | user |
 
 ---
