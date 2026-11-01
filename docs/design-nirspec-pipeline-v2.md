@@ -1173,6 +1173,50 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   The neighbours are as bright as the targets. With three nods a kept neighbour puts half
   its light, negative, on the target's shutter, so one at X of the sky biases the target
   by X/2 of the sky; the faintest tenth of the targets are at about 0.01 of the sky.
+- Threshold 0.02 (proposed; the user: "keep going", 2026-11-01). Built into stage 2b
+  (cde23368): `slitlet_neighbour_min_sky = 0.02`; brightness is the larger of the two
+  detectors', so a nod gets one choice; hand overrides win, then the catalogued
+  neighbours, then the scan's file (where both change a nod, the partners both keep).
+  `BKGWHY` records the reason (copied to `EXPOSURES.bkg_why`). The bkgsub plots label each
+  nod `nod - [partners]` and write the reason on an overridden nod; the scan's findings
+  (applied or proposed, with Delta, the statistic and the PRISM cross-check, now in each
+  proposal's comment) go under the title. The scan now refits the target at its chosen
+  shape on the nod differences as stage 2b made them, leaving out every pixel another
+  slitlet's source shutter lights in any frame of the difference (trace maps), instead of
+  using the joint model's subtraction; above `scan_max_masked` (0.3) of such pixels it
+  reports only. `partner_choice` removed.
+- p1 rerun in the isolated root (stage 2b for the 73 sources in shared slitlets, 12
+  workers, no errors): 97 source x disperser pairs share a slitlet, 65 got overrides on 92
+  nods (as the census). The main-shutter light per nod before and after
+  (`e2e_slitlet_fig.py`, `e2e_slitlet/main_shutter_before_after.png`): 923747's nods 1-2
+  lose a -2 µJy dip at 5.05 µm (923748's line); 950038 (PRISM) loses a -0.01 to -0.025 µJy
+  continuum offset; 880017's nod 2 moves up but stays ~-0.3 µJy; 634547 (neighbour at
+  0.024 of sky) barely changes. Nod agreement does not measure this (the same neighbour
+  usually biases two nods alike): median chi2/dof 1.83 → 1.82 over 61 groups
+  (`e2e_slitlet_nodcheck.py`).
+- Stage 3 for the same 73 sources (12 workers, no errors; G395M joint pass 20 min). The
+  shipped spectra (`fnu_prof`, light left in) against PRISM, both dispersers rerun
+  (`e2e_slitlet_spectra.py`), 19 G395M sources with PRISM: rms 1.42 → 1.55, worse in all
+  19 (none by more than 0.5). The stated error did not change (after/before median 1.000)
+  while the point-to-point scatter over it grew 1.00 → 1.10 over the 50 changed G395M
+  spectra: `fnu_prof_err` comes from the resampled image's `ERR`, which comes from the
+  canonicals' variance, and jwst's background step does not add the subtracted frames'
+  variance. So every nodded spectrum's error leaves out its partners' noise (about 20 %
+  low with three nods), and a dropped partner's extra noise does not show. With each
+  "after" error scaled by its measured scatter growth (both dispersers): 1.42 → 1.38,
+  better in 8, worse in 11; |median offset| 0.20 → 0.27. At 0.02 the gain is within the
+  noise on average; clear where the neighbour is bright (923747's line image).
+- The scan on clean pixels (proposals, report only): 6 of the rerun sources. It finds
+  923747's catalogued neighbour from the data and proposes the same partners as the
+  catalogue (Delta -1.70). In the slitlets with three catalogued sources (924889, 924937,
+  949820) it names a dirty partner the catalogue does not, for one nod each: `SHUTTER_INFO`
+  lists one source per shutter per dither, so a shutter two sources share shows only one.
+  None was withheld for other-slitlet pixels.
+- Open: the threshold (0.02 against 0.05 / 0.1, where the census puts the clear cases);
+  the missing partner variance in the shipped errors (a stage 2b change: write the
+  propagated variance, with the profile fit reading the frame's own from
+  `PRE_BKGSUB_VAR_*`); shared shutters in `SHUTTER_INFO` (positions from `SOURCE_INFO`
+  RA/Dec instead).
 
 **Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
