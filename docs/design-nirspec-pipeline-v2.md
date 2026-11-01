@@ -964,6 +964,40 @@ PRISM (`fnu_prof_err` for all), and the shape fitted alone against the PRISM sha
   repeats between nods, which only the nod difference removes. Production p1 was regenerated
   with 1.3 and then 1.4 by the MB session (user approval); the e2e_p1 root keeps 1.2.
 
+**Built: the joint pass on nod differences (2026-10-31, 8792506e, 45db22af).** Decided by the
+user after the tests above ("yes, build it"). `JOINT_PASS_VERSION` 3: members on their nod
+differences (`profile_fit.load_source`), the light past the cutouts on nod differences of
+the rate files (`_rate_nod_diff`), the partner terms (+1, -1/n) in every part of
+`design_full`; each target's solve writes the other members' light on its own pixels
+(`_jointlight.npz`, pixels above 1 % of the noise, about 1.5 MB per G395M source) and the
+product takes its neighbourhood's light from there (`add_joint_light`; `predict` leaves those
+members out, `exclude_ext`). The master sky is no longer used by the extraction.
+`contam_joint_cache` sets the members per worker (44 MB each; a solve adds about 2.6 GB at
+its peak, so 18 workers with 60 members do not fit in 64 GB).
+
+**Result: stage 3 on p1 (2026-10-31, 12 workers, cache 25).** 57 min, no errors, no fallback
+(spec3 8.4 min, PRISM joint 1.5 + products 3.0, G395M joint 27.5 + products 15.7, extraction
+0.7). Against PRISM with `fnu_prof_err` alone (`e2e_compare_noinflate.py`), against the
+full-range run on master-sky frames:
+
+  | G395M | median rms | 90th percentile |
+  |---|---|---|
+  | `fnu_prof`, nothing subtracted (both runs) | 1.41-1.43 | 3.43 |
+  | `fnu_prof - fnu_contam`, master-sky joint pass (131) | 1.59 | 4.34 |
+  | `fnu_prof - fnu_contam`, nod-difference joint pass (141) | 1.50 | 2.60 |
+
+- Subtracting now cuts the worst cases (90th percentile 3.43 → 2.60): 635314 14.1 → 2.5
+  (the neighbours' light past their cutouts removed across 4.25-4.5 µm too), 629668 11.6 →
+  5.7 (a neighbour's negative image of -4 µJy removed). It helps in 60 of 141, and the
+  median is 0.09 above leaving the light in: for faint targets with faint neighbours it
+  adds their noise (629743 1.68 → 2.02).
+- 632334 1.90 → 2.65: the predicted light has a bump at its own 4.02 µm line, so part of
+  the target's line is taken as a neighbour's (not flagged: its not-separable fraction is
+  0). 629668: the removed spectrum's 5.05 µm line is twice the light-left-in one.
+- `fnu_contam_err` is now the conditional error (others held), a lower bound: prediction
+  error / spectrum error median 0.07, so the inflated score no longer flatters.
+- Not separable: over 90 % in 31 of 477 G395M sources, over 50 % in 72, none in 358.
+
 **Open (extraction session).**
 - Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
   below a few percent of its level at the cutout end. The user (2026-10-31): "I'm hesitant
