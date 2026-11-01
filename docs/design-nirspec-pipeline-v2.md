@@ -847,9 +847,17 @@ shutters read +0.47 to +0.88 of the source shutter's median pixel for 629743 and
 painted sky across the whole shutter (NRS1 +5 to +7 %, NRS2 +2.4 to +4.8 %; PRISM +1 %),
 roughly additive (+0.0003 to +0.0005 DN/s, so largest as a fraction in the blue), plus a
 per-shutter spread (16/84: -3 / +17 % NRS1, -5 / +9 % NRS2) that repeats on the same
-shutter in other nods. A nod difference subtracts the same pixels and cancels both. Cause in
-part the inverse-variance shutter combine (bright shutters down-weighted); a further +3-4 %
-not yet traced. Their fix (a level-unbiased combine) waits on the user.
+shutter in other nods. A nod difference subtracts the same pixels and cancels both.
+Corrected by the master-background session the same day: on held-out clean shutters the
+painted sky is +2.6 % low on G395M (+1.3 to +3.3 per rate file) and +1.1 % on PRISM; the
++5-6 % above came from the pixel selection (JUMP_DET-flagged sky pixels left out, pixels
+near sources kept). Two causes, proven by building the sky from half the clean shutters
+and measuring it on the other half: the inverse-variance shutter weights (about 2 points on
+G395M, 0.2 on PRISM; the per-pixel variance comes from the pixel's own slope, so a pixel
+that fluctuated low gets more weight) and the bar shadow applied twice (about 0.9 points
+on both). With both fixed the held-out residual is -0.3 % (G395M) and +0.1 % (PRISM).
+The per-shutter spread is real and remains. Their fix waits on the user
+(`~/campfire-data/scratch/claude/sky_resid/proof.png`).
 
 **Test: the joint solve on nod differences (2026-10-31).** `e2e_joint_nod.py`: members built
 from the product's own nod differences (`profile_joint.design` already has the +1 / -1/n
@@ -868,6 +876,72 @@ rms against PRISM with `fnu_prof_err` (common) and with the solve's own error (o
   (1.5-3.3): the fixed shapes. The same-row pairs stay 78-84 % not separable on nod
   differences too, with honest errors; `fnu_prof` is close to PRISM there only because
   their neighbour is faint in the target's aperture, which the data alone cannot show.
+
+**Test 1: where to measure a G395M shape (2026-10-31).** The question (user): whether the
+master-sky single frames, with no negative nod copies, are the better place to measure
+shapes where traces overlap. How each source's shape is chosen today (`shape_for`, once,
+then held during the solve): the PRISM shape when the same source's PRISM product fitted
+its own; else its own fit on its master-sky frames, alone (others' light left in), above the
+grating gate; else the default. p1 G395M: 342 default, 116 PRISM, 19 own; the products
+agree for 458 of 477, and 78 product shapes are the default because masking removed too
+many pixels.
+
+Method (`e2e_shape_test.py`, `e2e_shape_tdef_summary.py`, figure `shape_test_tdef.png`): for
+the 116 sources with a PRISM shape (PRISM traces do not overlap, so it is the reference),
+the joint solve of the neighbourhood on nod differences with the target started from the
+default shape, then the target's shape fitted (a) alone on master-sky frames, as today;
+(b) on master-sky frames minus the other members' solved light and a leftover sky per
+exposure and wavelength bin (median of the slitlet more than 1.2 shutter from the source);
+(c) on nod differences minus the other members' solved light, and (c2) once more after
+re-solving at (c)'s shape. A first version started the target at its PRISM shape; its
+(b)/(c) agreed with PRISM to 0.002 in crowded sources because the neighbours' solved light
+already assumed that shape (circular, discarded).
+
+  | | a (today) | b | c | c2 | default shape |
+  |---|---|---|---|---|---|
+  | fits ending on a bound | 94 / 116 | 67 / 116 | 3 / 116 | 8 / 116 | |
+  | median abs. centre error [shutter] | 0.009* | 0.036 | 0.035 | 0.035 | 0.039 |
+  | median abs. width error [shutter] | 0.056* | 0.055 | 0.037 | 0.041 | 0.055 |
+
+  (*) over the 22 fits not on a bound, mostly the brightest. Above the gate (38 sources), (c)
+  gives 0.033 / 0.027 against the default's 0.038 / 0.055.
+
+- Master-sky frames do not support a shape fit: alone, 81 % of fits end on a bound (the
+  width runs to its 0.6 limit, the sky floor read as a wide source); removing the others'
+  light and a per-exposure leftover sky still leaves 58 %, from the per-shutter sky spread.
+- Nod differences with the others' modelled light removed fit nearly every source (3
+  failures) and halve the width error above the gate. The centre barely improves on the
+  default; part of that may be the reference, since PRISM is a different MSA configuration
+  and the offset from the planned position need not carry over. A second round does not
+  help.
+
+**Test 2: do refitted shapes improve the joint spectra (2026-10-31).** `e2e_shape_round.py`,
+`e2e_shape_round_summary.py`. The joint solve on nod differences (calibrated range only) for
+the 156 G395M targets with PRISM, with today's shapes (round 0) and with 18 bright non-PRISM
+sources' shapes from test 1 (c) (not on a bound, above the gate; 630784 among them). Median
+rms against PRISM, `fnu_prof_err` for all (with the solve's own error in brackets):
+
+  | Targets | `fnu_prof` | round 0 | round 1 |
+  |---|---|---|---|
+  | all 156 | 1.44 | 1.60 (1.02) | 1.60 (1.02) |
+  | 120 with nothing inseparable | 1.40 | 1.47 (1.02) | 1.47 (1.02) |
+  | 18 inseparable over > 50 % | 1.49 | 7.18 (0.97) | 7.20 (0.97) |
+
+- The joint errors are honest throughout (own-error rms 1.02). Where everything is
+  separable the joint spectrum is within 0.07 of `fnu_prof`, which keeps the neighbours'
+  light.
+- Refitted shapes change little: closer to PRISM in 43 of 114 affected targets. 632334
+  improves (3.03 → 2.49; its bright neighbour 630784 refitted); 925855 worsens (3.44 → 6.40)
+  because 885086's refitted centre (-0.09 shutter) makes the pair less separable (20 → 59 %).
+- 635314 and 632748 (own-error rms 3.3, 1.5) do not change: their bright neighbour 632748
+  keeps its PRISM shape. This test has no unknowns past the cutouts, and 635314's
+  neighbours light it from past theirs (4.25-4.76 µm), so the full-range solve is needed to
+  judge them.
+- Master background 1.3 (`claude/mbkg-v13`, b004a711, products in
+  `~/campfire-data/scratch/claude/sky_resid/v13/products`): through `sky_for_slit` with
+  `first_pass.master_sky` pointed at that folder, the sky on 629810's slits is about 40 % of
+  1.2's (1.45e-13 vs 3.61e-13; the frame 3.6-3.8e-13), against the +2-4 % the MB session
+  measured in count rate. Asked the MB session (2026-10-31); the 1.3 check is on hold.
 
 **Open (extraction session).**
 - Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
