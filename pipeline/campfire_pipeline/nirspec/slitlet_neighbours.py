@@ -28,7 +28,7 @@ import numpy as np
 from .constants import MSA_SLIT_PITCH
 
 OPEN_HALF = 0.5
-MIN_SKY_FRAC = 0.05          # default threshold: the neighbour's light / the sky in its shutter
+MIN_SKY_FRAC = 0.02          # default threshold: the neighbour's light / the sky in its shutter
 
 
 @dataclass
@@ -177,33 +177,50 @@ def decide(root, target, neighbours, nod_dither, partners, min_sky_frac=MIN_SKY_
     return out
 
 
-def source_decisions(cal_files, source_id, mbkg_dir, msa_dir, min_sky_frac=MIN_SKY_FRAC, products=None, layouts=None):
-    """The decisions of one source's background group (canonicals of one root and
-    detector, before or after stage 2b: the frames before subtraction are read from
-    ``PRE_BKGSUB_SCI`` when present). Returns (list of ``NodDecision``, [Neighbour], the
-    target's own light over the sky in its shutter, NaN when not measured)."""
+@dataclass
+class Group:
+    """One background group (a root and detector) of a source, measured."""
+    root: str
+    target: dict                 # dither -> Placement
+    neighbours: list             # [Neighbour], brightness filled where measurable
+    nod_dither: dict             # nod -> dither point
+    partners: dict               # nod -> nods subtracted by default
+    target_frac: float = np.nan  # the target's own light over the sky in its shutter
+
+
+def layout_for(cal_file, msa_dir, layouts):
+    """The shared-slitlet layout of a canonical's MSA configuration (cached in ``layouts``)."""
     from astropy.io import fits
     from astropy.table import Table
+    h = fits.getheader(cal_file)
+    key = (os.path.join(msa_dir, str(h['MSAMETFL'])), int(h['MSAMETID']))
+    if key not in layouts:
+        layouts[key] = slitlet_layout(Table.read(key[0], hdu='SHUTTER_INFO'), key[1])
+    return layouts[key]
+
+
+def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, layouts=None):
+    """``Group`` of one source's background group (canonicals of one root and detector,
+    before or after stage 2b: the frames before subtraction are read from
+    ``PRE_BKGSUB_SCI`` when present), or None when the source shares no slitlet. The
+    neighbours are measured only when one of them falls in a partner frame."""
+    from astropy.io import fits
     from jwst.datamodels import MultiSlitModel
     from . import master_bkg as MB
     from . import profile_contam as CT
 
     products = {} if products is None else products
     layouts = {} if layouts is None else layouts
-    heads = [fits.getheader(f) for f in cal_files]
-    msa_file = os.path.join(msa_dir, str(heads[0]['MSAMETFL']))
-    key = (msa_file, int(heads[0]['MSAMETID']))
-    if key not in layouts:
-        layouts[key] = slitlet_layout(Table.read(msa_file, hdu='SHUTTER_INFO'), key[1])
-    target, neighbours = neighbours_of(layouts[key], source_id)
+    target, neighbours = neighbours_of(layout_for(cal_files[0], msa_dir, layouts), source_id)
     if target is None:
-        return [], [], np.nan
+        return None
+    heads = [fits.getheader(f) for f in cal_files]
     nods = [int(os.path.basename(f).split('_')[2]) for f in cal_files]
-    nod_dither = {n: int(h['PATT_NUM']) for n, h in zip(nods, heads)}
-    partners = {n: [m for m in nods if m != n] for n in nods}
-    if not dirty_partners(target, neighbours, nod_dither, partners):
-        return decide('_'.join(os.path.basename(cal_files[0]).split('_')[:2]), target, neighbours, nod_dither,
-                      partners, min_sky_frac), neighbours, np.nan
+    g = Group(root='_'.join(os.path.basename(cal_files[0]).split('_')[:2]), target=target, neighbours=neighbours,
+              nod_dither={n: int(h['PATT_NUM']) for n, h in zip(nods, heads)},
+              partners={n: [m for m in nods if m != n] for n in nods})
+    if not dirty_partners(target, neighbours, g.nod_dither, g.partners):
+        return g
     frames = {}
     for f, h, n in zip(cal_files, heads, nods):
         ek = CT.exposure_key(f)
@@ -218,11 +235,87 @@ def source_decisions(cal_files, source_id, mbkg_dir, msa_dir, min_sky_frac=MIN_S
         yy, xx = np.mgrid[:sl.data.shape[0], :sl.data.shape[1]]
         _, ys, _ = sl.meta.wcs.get_transform('detector', 'slit_frame')(xx, yy)
         m.close()
-        frames[nod_dither[n]] = (np.asarray(s['sci'], float), np.asarray(s['sky'], float), np.asarray(ys, float),
-                                 str(h.get('SRCFLUX', 'T')).strip().upper() != 'F')
+        frames[g.nod_dither[n]] = (np.asarray(s['sci'], float), np.asarray(s['sky'], float), np.asarray(ys, float),
+                                   str(h.get('SRCFLUX', 'T')).strip().upper() != 'F')
     for nb in neighbours:
         measure(nb, target, frames)
-    own = [light_over_sky(sci, sky, ys, 0.0)[0] for sci, sky, ys, has in frames.values() if has]
-    target_frac = float(np.nanmedian(own)) if own else np.nan
-    root = '_'.join(os.path.basename(cal_files[0]).split('_')[:2])
-    return decide(root, target, neighbours, nod_dither, partners, min_sky_frac), neighbours, target_frac
+    own = [v for v in (light_over_sky(sci, sky, ys, 0.0)[0] for sci, sky, ys, has in frames.values() if has)
+           if np.isfinite(v)]
+    g.target_frac = float(np.median(own)) if own else np.nan
+    return g
+
+
+def source_decisions(cal_files, source_id, mbkg_dir, msa_dir, min_sky_frac=MIN_SKY_FRAC, products=None, layouts=None):
+    """The decisions of one background group alone: (list of ``NodDecision``,
+    [Neighbour], the target's own light over the sky), or ([], [], NaN)."""
+    g = measure_group(cal_files, source_id, mbkg_dir, msa_dir, products, layouts)
+    if g is None:
+        return [], [], np.nan
+    return decide(g.root, g.target, g.neighbours, g.nod_dither, g.partners, min_sky_frac), g.neighbours, g.target_frac
+
+
+def combine(groups):
+    """One root's detector groups as one: each neighbour's brightness the larger of the
+    detectors' (a detector that could not measure it does not count), the nods and
+    partners of the group with the most nods. None when no group is given."""
+    groups = [g for g in groups if g is not None]
+    if not groups:
+        return None
+    base = max(groups, key=lambda g: len(g.nod_dither))
+    nbs = []
+    for n in base.neighbours:
+        same = [x for g in groups for x in g.neighbours if x.source_id == n.source_id]
+        fr = [x.sky_frac for x in same if np.isfinite(x.sky_frac)]
+        hi = [x.sky_frac_hi for x in same if np.isfinite(x.sky_frac_hi)]
+        nbs.append(Neighbour(n.source_id, n.where, max(fr) if fr else np.nan, max(hi) if hi else np.nan,
+                             next((x.measured_in for x in same if x.measured_in), '')))
+    tf = [g.target_frac for g in groups if np.isfinite(g.target_frac)]
+    return Group(root=base.root, target=base.target, neighbours=nbs, nod_dither=base.nod_dither,
+                 partners=base.partners, target_frac=max(tf) if tf else np.nan)
+
+
+def layer(effective, scan_nods, slitlet):
+    """One source's overrides in one root, layered: a hand entry wins, then the
+    catalogued neighbours, then the neighbour scan's file. ``effective`` {nod (str):
+    nods} is the hand file over the scan's (``Observation.effective_bkg_overrides``),
+    ``scan_nods`` the nods of it that came from the scan, ``slitlet`` {nod (str):
+    (nods, reason)} from ``root_overrides``. Where the scan also changed a nod the
+    catalogue changed, the partners both keep are used (the catalogue's if none).
+    Returns (overrides {nod: nods}, automatic nods {nod}, reasons {nod: str})."""
+    out, auto, why = {}, set(), {}
+    for nod in sorted(set(effective) | set(slitlet), key=int):
+        if nod in effective and nod not in scan_nods:
+            out[nod], why[nod] = list(effective[nod]), 'hand'
+        elif nod in slitlet:
+            keep, reason = slitlet[nod]
+            if nod in effective:
+                both = [j for j in keep if j in effective[nod]]
+                keep, reason = (both, reason + '; scan') if both else (keep, reason)
+            out[nod], why[nod] = list(keep), reason
+            auto.add(nod)
+        else:
+            out[nod], why[nod] = list(effective[nod]), 'scan'
+            auto.add(nod)
+    return out, auto, why
+
+
+def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC):
+    """The overrides of one source in one exposure root, over its detector groups
+    (lists of canonical paths): (root, {nod (str): (kept nods, reason)} for the nods
+    whose partners change, [the nods with a bright neighbour in every partner, as
+    'root:nod'], the combined ``Group`` or None). The reason names the neighbours and
+    their light over the sky, e.g. ``'slitlet 634547 at 0.031 of sky'``."""
+    products, layouts = {}, {}
+    g = combine([measure_group(files, source_id, workspace, workspace, products, layouts) for files in groups])
+    if g is None:
+        return None, {}, [], None
+    frac = {n.source_id: n.sky_frac for n in g.neighbours}
+    out, unresolved = {}, []
+    for d in decide(g.root, g.target, g.neighbours, g.nod_dither, g.partners, min_sky_frac):
+        if d.why == 'dropped':
+            ids = sorted({i for j in set(d.partners) - set(d.keep) for i in d.dirty[j]})
+            out[str(d.nod)] = (d.keep, 'slitlet ' + ','.join(
+                f'{i} at {frac[i]:.3f}' if np.isfinite(frac[i]) else f'{i} unmeasured' for i in ids) + ' of sky')
+        elif d.why == 'no clean partner':
+            unresolved.append(f'{g.root}:{d.nod}')
+    return g.root, out, unresolved, g

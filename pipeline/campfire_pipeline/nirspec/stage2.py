@@ -394,6 +394,7 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
 
     # Build task list by iterating over bkg_groups
     tasks = []
+    pending = []
     effective, from_auto = obs.effective_bkg_overrides()
     for bg in np.unique(files['bkg_group']):
         bg_files = files[files['bkg_group'] == bg]
@@ -417,15 +418,22 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
             log(f'ID{source_id}: bkgsub products exist for {root}_*_{detector}_{source_id}, skipping (overwrite=False)')
             continue
 
-        # hand overrides, layered over the automatic ones of stage 3's neighbour scan
-        # (nodded_background_overrides_auto.toml, present only with scan_action = "auto_override")
-        bkg_overrides = effective.get(root)
-        if bkg_overrides is not None:
-            bkg_overrides = bkg_overrides.get(str(source_id))
-        auto_nods = sorted(from_auto.get((root, str(source_id)), set()))
+        pending.append((bg, bg_files, source_id, root, detector))
+
+    # catalogued neighbours in a source's own slitlet: a partner that puts one on the
+    # source's main shutter is dropped when the neighbour is bright enough
+    # (slitlet_neighbours); hand overrides win, the neighbour scan's file yields
+    from campfire_pipeline.nirspec import slitlet_neighbours as SN
+    slitlet = slitlet_overrides(obs, pending, stage_config.get('slitlet_neighbour_min_sky', SN.MIN_SKY_FRAC),
+                                n_processes)
+    for bg, bg_files, source_id, root, detector in pending:
+        hand_scan = (effective.get(root) or {}).get(str(source_id)) or {}
+        scan_nods = from_auto.get((root, str(source_id)), set())
+        bkg_overrides, auto_nods, reasons = SN.layer(hand_scan, scan_nods, slitlet.get((root, int(source_id)), {}))
+        bkg_overrides = bkg_overrides or None
 
         log(f'ID{source_id}: Running stage2b for bkg_group {bg} ({root}_{detector})')
-        tasks.append((list(bg_files['name']), obs.workspace_dir, bkg_overrides, auto_nods))
+        tasks.append((list(bg_files['name']), obs.workspace_dir, bkg_overrides, sorted(auto_nods), reasons))
 
     # Execute
     dispatch(
@@ -458,6 +466,7 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
                 use_starmap=True,
                 stuck_shutters=stuck_dict,
                 stuck_entries=_stuck_entries(obs),
+                notes=scan_notes(obs),
             )
 
 
@@ -1516,11 +1525,73 @@ def nod_background_partners(cal_files, bkg_overrides=None):
     return out
 
 
+def scan_notes(obs):
+    """The neighbour scan's findings per source, for the bkgsub plots: {source id: text}
+    from the automatic file (applied) and the proposed file (report only), each entry
+    with the nods it would keep and its comment (offset, statistic, PRISM cross-check)."""
+    import re
+    out = {}
+    for path, state in ((obs.auto_bkg_override_file, 'applied'), (obs.proposed_bkg_override_file, 'proposed')):
+        if not os.path.exists(path):
+            continue
+        root = None
+        for line in open(path):
+            m = re.match(r'^\[(\S+)\]', line.strip())
+            if m:
+                root = m.group(1)
+                continue
+            m = re.match(r'^\s*(\d+)\s*=\s*\{(.*)\}\s*(?:#\s*(.*))?$', line)
+            if m and root:
+                text = f'scan ({state}) {root[-5:]}: {m.group(2).strip()}' + (f'  {m.group(3).strip()}' if m.group(3) else '')
+                sid = int(m.group(1))
+                out[sid] = f'{out[sid]}; {text}' if sid in out else text
+    return out
+
+
+def slitlet_overrides(obs, pending, min_sky_frac, n_processes=1):
+    """Overrides for catalogued neighbours in a source's own slitlet, for the background
+    groups stage 2b is about to run (``pending``: (bkg group, files, source id, root,
+    detector)): {(root, source id): {nod (str): (kept nods, reason)}}. Only sources whose
+    MSA configuration lists another catalogued source in their slitlet are measured; a
+    nod whose every partner holds a bright neighbour keeps its partners and is logged."""
+    from astropy.table import Table
+    from campfire_pipeline.common.parallel import dispatch
+    from campfire_pipeline.nirspec import slitlet_neighbours as SN
+
+    groups, layouts = {}, {}
+    for _, bg_files, source_id, root, _ in pending:
+        groups.setdefault((root, int(source_id)), []).append(list(bg_files['path']))
+    shared = {}
+    for (root, sid), gs in groups.items():
+        if root not in shared:
+            h = fits.getheader(gs[0][0])
+            key = (os.path.join(obs.workspace_dir, str(h['MSAMETFL'])), int(h['MSAMETID']))
+            if key not in layouts:
+                layouts[key] = SN.slitlet_layout(Table.read(key[0], hdu='SHUTTER_INFO'), key[1])
+            shared[root] = {s for srcs in layouts[key].values() for s in srcs}
+    todo = [(gs, sid, obs.workspace_dir, min_sky_frac) for (root, sid), gs in groups.items() if sid in shared[root]]
+    if not todo:
+        return {}
+    res = dispatch(SN.root_overrides, todo, n_processes=n_processes, use_starmap=True)
+    out = {}
+    for (gs, sid, _, _), (root, nods, unresolved, _) in zip(todo, res):
+        if nods:
+            out[(root, sid)] = nods
+            for nod, (keep, why) in nods.items():
+                log(f'ID{sid}: {root} nod {nod}: background nods {keep} ({why})')
+        for u in unresolved:
+            log(f'ID{sid}: {u}: a bright neighbour of the slitlet is in every partner; partners kept')
+    log(f'Same-slitlet neighbours: {len(todo)} sources share a slitlet, {len(out)} get overrides '
+        f'({sum(len(v) for v in out.values())} nods)')
+    return out
+
+
 def run_stage2b_single_slitlet(
         cal_files: List,
         workspace_dir: str,
         bkg_overrides,
-        auto_nods=(),           # nods (str) whose override came from the automatic file
+        auto_nods=(),           # nods (str) whose override was chosen automatically
+        reasons=None,           # {nod (str): why the override} (BKGWHY)
         rectify: bool = False, # whether to produce rectified (i.e., s2d) products as well
     ):
     # this function shouldn't be doing any file discovery!
@@ -1599,8 +1670,9 @@ def run_stage2b_single_slitlet(
                     log(f'{os.path.basename(cal_files[i])}: Override empty for nod {_nod_number(cal_files[i])}, excluding nod from science combination')
                     # Canonical stays calibrated; mark it excluded for stage3.
                     header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG='excluded:override')
-                    header_updates.update(C.bkg_nods_cards([], overridden=True,
-                                                           auto=str(_nod_number(cal_files[i])) in set(auto_nods or ())))
+                    nod = str(_nod_number(cal_files[i]))
+                    header_updates.update(C.bkg_nods_cards([], overridden=True, auto=nod in set(auto_nods or ()),
+                                                           why=(reasons or {}).get(nod, 'hand')))
                     C.append_extras(cal_files[i], header_updates=header_updates)
                     continue
                 if overridden:
@@ -1638,8 +1710,9 @@ def run_stage2b_single_slitlet(
                 # cache the rectified view as S2D_BKGSUB_*, stamp CFP_BKG/CFP_S2D.
                 extras = C.make_prefixed_hdus(pre_arrays[i], C.PRE_BKGSUB_PREFIX)
                 header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG=None)
-                header_updates.update(C.bkg_nods_cards(bkg_nods, overridden=overridden,
-                                                       auto=str(_nod_number(cal_files[i])) in set(auto_nods or ())))
+                nod = str(_nod_number(cal_files[i]))
+                header_updates.update(C.bkg_nods_cards(bkg_nods, overridden=overridden, auto=nod in set(auto_nods or ()),
+                                                       why=(reasons or {}).get(nod, 'hand')))
                 if rectify:
                     resampled = result.copy()
                     resampled = pixel_replace.call(resampled)

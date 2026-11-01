@@ -59,6 +59,35 @@ def stage_flags(sc):
     )
 
 
+def scan_input(exps, chain_result, maps, source_id):
+    """The same-slitlet scan's data, independent of the joint model: the nod differences
+    as stage 2b made them (nothing subtracted or masked for other slitlets' light), less
+    every pixel that another slitlet's source shutter lights in any frame of the
+    difference (trace maps, ``profile_contam.geometry``), with the target refitted there
+    at the chain's chosen shape. Returns (FitResult, share of the fitted pixels kept)."""
+    import copy
+    from campfire_pipeline.nirspec import profile_contam as CT
+    from campfire_pipeline.nirspec import profile_fit as PF
+
+    ex = [copy.copy(e) for e in exps]
+    n0 = sum(int(m.sum()) for _, m in PF.fit_pixel_masks(ex))
+    if maps:
+        for e, m in zip(ex, CT.geometry(ex, source_id, maps).mask):
+            e.ok = e.ok & ~m
+    n1 = sum(int(m.sum()) for _, m in PF.fit_pixel_masks(ex))
+    share = n1 / n0 if n0 else 0.0
+    if n1 < MIN_FIT_PIXELS:
+        return None, share
+    M0 = chain_result.model
+    M = PF.ProfileModel(ex, chromatic=M0.chromatic, priors=M0.priors, bounds=M0.bounds_cfg, c_prior=M0.c_prior,
+                        grid=M0.lam_grid)
+    M.pivot = M0.pivot                       # the chain's shape is defined at its own pivot
+    p = chain_result.params
+    shape = dict(centre_offset=p['centre'] - M0.c_prior, drift=p['drift'], width=p['width'],
+                 width_change=p['width_change'])
+    return PF.fit_fixed(model=M, shape=shape), share
+
+
 @dataclass
 class Analysis:
     """Everything one product's profile fit decided (for the writer and for diagnostics)."""
@@ -98,6 +127,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
     if exps is None:
         with TM.step('load'):
             exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science))
+    raw = [copy.copy(e) for e in exps]      # as stage 2b made them: the same-slitlet scan's data
     P, clean, cstate, exps0 = None, None, 'off', None
     t_mark = TM.start()
     if fl['contam'] and cfg.shape != 'free':
@@ -176,15 +206,21 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
     S = None
     t_mark = TM.start()
     if fl['scan']:
-        S = NS.run(C.result, nbins=fl['scan_nbins'], width=fl['scan_width'], dchi2_min=fl['scan_dchi2'],
+        # the scan never sees other slitlets' light: their pixels are left out, not modelled
+        with TM.step('scan_input'):
+            if maps is None:
+                maps = CT.maps_for_exposures(workspace_dir, exps)
+            R_scan, share = scan_input(raw, C.result, maps, source_id)
+        S = NS.run(R_scan if R_scan is not None else C.result, nbins=fl['scan_nbins'], width=fl['scan_width'],
+                   dchi2_min=fl['scan_dchi2'],
                    min_snr=fl['scan_min_snr'], drop_frac=fl['scan_drop_frac'], null_ratio=fl['scan_null_ratio'],
                    noise=fl['scan_noise'], close=fl['scan_close'], close_rule=fl['scan_close_rule'],
                    gain_rule=fl['scan_gain_rule'], flag_dchi2=fl['scan_flag_dchi2'],
                    flag_low=fl['scan_flag_dchi2_low'], flag_null_ratio=fl['scan_flag_null_ratio'])
-        # residuals of a target dominated by other slitlets' light are not a same-slitlet
-        # neighbour's signature (seen on 5215): report, do not propose
-        if clean is not None and clean['masked'] > fl['scan_max_masked']:
-            S.suppress(f"other-slitlet light, masked {clean['masked']:.2f}")
+        # too few pixels free of other slitlets' light to tell a same-slitlet neighbour
+        # (seen on 5215): report, do not propose
+        if R_scan is None or 1.0 - share > fl['scan_max_masked']:
+            S.suppress(f"other slitlets light {1.0 - share:.2f} of the pixels")
         elif (C.bound_bits & PF.BOUND_BITS['width']) or C.result.params['width'] >= 0.99 * cfg.bounds.width_max:
             # the target's width is on its bound: extended or two-component; its
             # residuals read as a neighbour next to it (13113)

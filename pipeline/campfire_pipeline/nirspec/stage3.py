@@ -316,8 +316,10 @@ def run_stage3_single_source(
         # ('N/A' for canonicals written before stage 2b recorded them).
         exposures['bkg_nods'] = [str(hdr.get('BKGNODS', 'N/A')) for hdr in hdrs0]
         exposures['bkg_override'] = [str(hdr['BKGOVR']) if 'BKGOVR' in hdr else 'N/A' for hdr in hdrs0]
-        # whether the nods came from the automatic (neighbour-scan) override file
+        # whether the nods were chosen automatically (a catalogued neighbour in the slitlet,
+        # or the neighbour scan's file), and why
         exposures['bkg_auto'] = [str(hdr['BKGAUTO']) if 'BKGAUTO' in hdr else 'N/A' for hdr in hdrs0]
+        exposures['bkg_why'] = [str(hdr.get('BKGWHY', '')) for hdr in hdrs0]
         hdrs1 = [fits.getheader(cal_file,ext=1) for cal_file in cal_files]
         # Fixed-slit cal products omit the MSA-only SHUTSTA shutter state and the
         # slit-level SRCRA/SRCDEC (the latter come from the MSA source catalog);
@@ -660,6 +662,7 @@ def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol
         xd = _prism_xdisp(obs, r, results, xdisp_tol) if xdisp_tol >= 0 else 'single'
         if xd != 'single':
             _update_prism_scan_cards(obs, r, xd)
+            s['xdisp'] = xd                              # recorded with the proposal (and the bkgsub plot)
         if s.get('detected') and s.get('proposals') and xd == 'disagree':
             log(f"{r['product']}: neighbour proposals withheld (grating scan disagrees)")
             s['proposals'] = {}
@@ -674,7 +677,7 @@ def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol
         s = r.get('scan') or {}
         if not s.get('detected'):
             continue
-        note = f"Delta={s['delta']:+.2f} dchi2={s['dchi2']:.0f} {date.today().isoformat()}"
+        note = f"Delta={s['delta']:+.2f} dchi2={s['dchi2']:.0f} prism={s.get('xdisp', 'single')} {date.today().isoformat()}"
         if s.get('unresolved'):
             note += f" unresolved={','.join(s['unresolved'])}"
         for root, nods in s['proposals'].items():

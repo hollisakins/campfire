@@ -65,6 +65,13 @@
     empirical_barshadow = false
     rectify = true
     plot_bkgsub = true
+    # Stage 2b: a background partner that puts another catalogued source of the slitlet
+    # (MSA metadata) on a source's main shutter is dropped when that neighbour's light in
+    # its own shutter is at least this fraction of the sky there (frame before subtraction
+    # against the master background, median over the spectrum) and another partner
+    # remains. With three nods a kept neighbour biases the source by half that, negative.
+    # A hand override of the same nod wins. A very large value keeps every partner.
+    slitlet_neighbour_min_sky = 0.02
     empirical_wavecorr = false
     # Master background (docs/design-nirspec-master-background.md §4): the sky of each
     # exposure x detector from its empty shutters, written as <root>_<nod>_<nrsN>_mbkg.fits
@@ -237,7 +244,11 @@
                                              # (vs PRISM, p14+p9: every joint improvement <= 1.80, rejects 4 of 19
                                              # degraded products; round 6). "off": always the joint result.
                                              # Also sensf | sens | fshape | cdeg | infl (profile_joint)
-    # Same-slitlet neighbour scan on the residuals
+    # Same-slitlet neighbour scan on the residuals: the target refitted at its chosen shape
+    # on the nod differences as stage 2b made them, leaving out (not modelling) every pixel
+    # another slitlet's source shutter lights in any frame of the difference (trace maps),
+    # so the scan never depends on the joint model. Catalogued neighbours are stage 2b's
+    # (slitlet_neighbour_min_sky); the scan finds the uncatalogued ones.
     scan_neighbours = true
     scan_action = "report_only"              # "report_only" (proposed file) | "auto_override"
                                              # (auto file, applied by stage 2b on its next run)
@@ -255,7 +266,8 @@
     scan_xdisp_tol = 0.2                     # PRISM and grating scans must agree on Delta within this (< 0: off)
     scan_min_snr = 5.0
     scan_drop_frac = 0.2                     # partner dropped when it puts > this x the target's light on its rows
-    scan_max_masked = 0.3                    # no proposals when contamination masking dropped more of the trace
+    scan_max_masked = 0.3                    # no proposals when other slitlets light more than this share of the
+                                             # fitted pixels (reported only)
 
 [nirspec.redshift_fitting]
     save_models = false

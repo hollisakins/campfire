@@ -179,18 +179,21 @@ def make_prefixed_hdus(arrays, prefix, slit_extver=1):
 BKG_NODS_CARDS = ('BKGNODS', 'BKGOVR')
 
 
-def bkg_nods_cards(nods, overridden, auto=False):
+def bkg_nods_cards(nods, overridden, auto=False, why=''):
     """Header cards recording which nods stage 2b subtracted as background.
 
     ``BKGNODS`` is the comma-separated nod (exposure) numbers, or ``excluded`` when
     an empty override dropped this nod; ``BKGOVR`` says whether a
-    nodded-background override chose them, ``BKGAUTO`` whether that override came
-    from the automatic file of stage 3's neighbour scan. Stage 3 copies them into
-    the ``EXPOSURES`` table, so the background choice is recorded in every product."""
+    nodded-background override chose them, ``BKGAUTO`` whether that override was
+    chosen automatically (a catalogued neighbour in the slitlet, or stage 3's
+    neighbour scan), ``BKGWHY`` why (``hand``, ``scan``, or the catalogued
+    neighbours and their light over the sky). Stage 3 copies them into the
+    ``EXPOSURES`` table, so the background choice is recorded in every product."""
     value = ','.join(str(int(n)) for n in nods) if nods else 'excluded'
     return {'BKGNODS': (value, 'nods subtracted as background (stage 2b)'),
             'BKGOVR': (bool(overridden), 'background nods set by an override'),
-            'BKGAUTO': (bool(auto and overridden), 'override from the neighbour scan (auto file)')}
+            'BKGAUTO': (bool(auto and overridden), 'override chosen automatically'),
+            'BKGWHY': (str(why)[:68] if overridden else '', 'why the override (hand/scan/slitlet neighbour)')}
 
 
 def save_canonical(model, path, extra_hdus=None, header_updates=None,

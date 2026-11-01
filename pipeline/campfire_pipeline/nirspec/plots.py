@@ -351,7 +351,25 @@ def _has_extension(path, name):
         return False
 
 
-def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None, stuck_entries=None, shutter_calls=None):
+def _override_text(ax, why):
+    """The reason an override chose a nod's background, in the corner of its image."""
+    ax.text(0.005, 0.96, f'override: {why}', transform=ax.transAxes, fontsize=5, fontname='monospace',
+            va='top', ha='left', color='k', bbox=dict(facecolor='w', alpha=0.75, edgecolor='none', pad=1))
+
+
+def _bkg_note(path):
+    """(' - [partners]', reason) of a canonical after stage 2b: the nods it was
+    subtracted against (``BKGNODS``) and, when an override chose them, why (``BKGWHY``)."""
+    if not path:
+        return '', ''
+    h = fits.getheader(path)
+    nods = str(h.get('BKGNODS', '')).strip()
+    why = str(h.get('BKGWHY', '')).strip() if h.get('BKGOVR') else ''
+    return (f' - [{nods}]' if nods and nods != 'N/A' else ''), why
+
+
+def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None, stuck_entries=None, shutter_calls=None,
+                         notes=None):
     """
     Plot rectified s2d cutouts for visual inspection of a single source.
     Groups by root, combining multiple exp_groups (subpixel dither groups)
@@ -363,6 +381,11 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None, stuck_e
     ({root: {(q, r, c): stuck_list.Entry}}) marks listed shutters with their origin;
     ``shutter_calls`` ({root: {(q, r, c): shutter_fit.call_shutters dict}}) adds the
     fitted amplitude and the fit's call.
+
+    In the 'bkgsub' plots each nod's label carries the nods it was subtracted
+    against, and a nod whose partners an override chose says why (hand, a catalogued
+    neighbour in the slitlet with its light over the sky, or the neighbour scan);
+    ``notes`` ({source id: text}) adds a line under the title (the scan's findings).
 
     Issue #212: the rectified views are cached as ``S2D_*`` (calibrated) and
     ``S2D_BKGSUB_*`` (background-subtracted) HDUs on the bare canonical file,
@@ -452,6 +475,13 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None, stuck_e
         norm = ImageNormalize(data_concat, interval=ZScaleInterval())
 
         title = files_to_glob(list(root_files['name']))
+        note = (notes or {}).get(int(source_id), '')
+        if note:
+            title = f'{title}\n{note}'
+        bkg = {}
+        if plot_suffix == 'bkgsub':
+            for label, n1, n2 in plot_rows:
+                bkg[label] = _bkg_note(n1 or n2)
         log(f'Plotting {root}_{source_id}')
 
         if has_both:
@@ -507,8 +537,11 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None, stuck_e
                 if i==0:
                     ax[i,0].set_title('nrs1', fontname='monospace')
                     ax[i,2].set_title('nrs2', fontname='monospace')
-                ax[i,3].set_ylabel(label, fontname='monospace')
+                suffix, why = bkg.get(label, ('', ''))
+                ax[i,3].set_ylabel(f'{label}{suffix}', fontname='monospace')
                 ax[i,3].yaxis.set_label_position("right")
+                if why:
+                    _override_text(ax[i,0], why)
 
             for i in range(Nnods-1):
                 for j in range(4):
@@ -549,8 +582,11 @@ def plot_stage2a_results(files, plot_suffix='nods', stuck_shutters=None, stuck_e
 
                 ax[i,1].tick_params(labelleft=False)
                 ax[i,1].set_ylim(*ax[i,0].get_ylim())
-                ax[i,1].set_ylabel(label, fontname='monospace')
+                suffix, why = bkg.get(label, ('', ''))
+                ax[i,1].set_ylabel(f'{label}{suffix}', fontname='monospace')
                 ax[i,1].yaxis.set_label_position("right")
+                if why:
+                    _override_text(ax[i,0], why)
 
             for i in range(Nnods-1):
                 ax[i,0].tick_params(labelbottom=False)
