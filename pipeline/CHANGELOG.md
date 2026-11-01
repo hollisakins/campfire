@@ -44,6 +44,9 @@ Release procedure: edit the `## Unreleased` section below, then run
   centre, as documented. On held-out shutters the two fixes leave -0.3 % (G395M) and +0.1 %
   (PRISM). `CFMBKGV` 1.3, step 1 `CFMB1VER` 1.1 (products regenerate); `MBKGRRAT` compares
   the two skies at the open-shutter centre.
+  `sky_for_slit` now warns when it falls back to the slit's own slitlet because the product
+  has no `MBKG2D` or no rate file beside it (that fallback was silent, and on G395M the own
+  slitlet is a third to a half of the painted total).
 - **NIRSpec master background in two steps; stuck shutters from a sky-template fit.**
   Step 1 (`nirspec/master_bkg_rate.py`) runs at the start of stage 2a from the rate files
   alone: one `assign_wcs` per rate file gives every commanded slitlet's footprint

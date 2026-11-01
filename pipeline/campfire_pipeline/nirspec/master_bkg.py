@@ -669,7 +669,14 @@ def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0,
     if table is None:
         table = resolve_barshadow_table(prod['bs_ref'], path)
     own = sky_on_geometry(prod, frame, g, table)
-    if mode == 'own' or not _load_2d(prod):
+    if mode == 'own':
+        return own
+    if not _load_2d(prod):
+        # on the gratings the own slitlet is a fraction of what the cutout carries (a third
+        # to a half where traces cross), so a silent fallback reads as a sky far too low
+        warnings.warn(f'sky_for_slit: {os.path.basename(prod["path"])} has no MBKG2D or no rate file '
+                      f'{prod["header"].get("MBKGRATE")} beside it; returning the slit\'s own slitlet only '
+                      f'(mode="own"), not the painted total', RuntimeWarning, stacklevel=2)
         return own
     scale = 1.0
     if slitlet_scale_on:

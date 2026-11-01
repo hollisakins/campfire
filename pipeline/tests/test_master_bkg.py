@@ -289,3 +289,16 @@ def test_core_to_centre_reads_the_table_and_leaves_unmeasured_pixels_nan():
     bs = M.core_to_centre(table, seg, yseg, lam)
     assert np.isclose(bs[0], 0.97) and np.isclose(bs[1], 1.0) and np.isnan(bs[2])
     assert np.isclose(bs[3], 0.9)                                 # an outer-edge pixel reads DATA1X1
+
+
+def test_load_2d_needs_the_rate_file_beside_the_product(tmp_path):
+    # without the rate file sky_for_slit cannot form the painted total and falls back to
+    # the slit's own slitlet (with a warning); with it, the 2-D arrays and the rate load
+    sky = (np.ones(4), np.full(4, 0.1), np.full(4, 3))
+    path = str(tmp_path / 'r_00001_nrs1_mbkg.fits')
+    M.write_product(path, {'MBKGRATE': ('r_00001_nrs1_rate.fits', '')}, np.linspace(1, 2, 4), sky, None, None, [],
+                    mb2d=np.ones((3, 3)), dq2d=np.zeros((3, 3)), n2d=np.ones((3, 3)))
+    assert not M._load_2d(M.load_product(path))
+    fits.PrimaryHDU(np.full((3, 3), 0.5, np.float32)).writeto(tmp_path / 'r_00001_nrs1_rate.fits')
+    prod = M.load_product(path)
+    assert M._load_2d(prod) and np.allclose(prod['rate'], 0.5) and prod['mbkg2d'].shape == (3, 3)
