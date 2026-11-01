@@ -7146,6 +7146,38 @@ $$;
 REVOKE ALL ON FUNCTION public.get_observation_stats(text[], boolean) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
 
+-- =============================================================================
+-- get_program_mbkg
+-- =============================================================================
+-- The master background of every exposure x detector of a program's
+-- observations (metadata program page). nirspec_rate_exposures is admin-only
+-- under RLS (it carries the review state), so this SECURITY DEFINER reader hands
+-- program viewers the master-background columns and nothing else, scoped like
+-- every other catalog read: the program must be in accessible_program_slugs(),
+-- and a share link sees only the observation it was minted for.
+CREATE OR REPLACE FUNCTION public.get_program_mbkg(p_program_slug text)
+RETURNS TABLE(
+  observation text, exposure_root text, detector text, grating text,
+  mbkg_source text, mbkg_rate_source text, mbkg_test text, mbkg_exposures text[],
+  mbkg_n_empty_shutters integer, mbkg_version text, has_product boolean
+)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT r.observation, r.exposure_root, r.detector, r.grating,
+         r.mbkg_source, r.mbkg_rate_source, r.mbkg_test, r.mbkg_exposures,
+         r.mbkg_n_empty_shutters, r.mbkg_version, r.mbkg_storage_key IS NOT NULL
+  FROM public.nirspec_rate_exposures r
+  JOIN public.observations o ON o.name = r.observation
+  WHERE o.program_slug = p_program_slug
+    AND p_program_slug = ANY(public.accessible_program_slugs())
+    AND (NOT public.is_link_account() OR r.observation = public.link_observation())
+    AND (r.mbkg_source IS NOT NULL OR r.mbkg_rate_source IS NOT NULL)
+  ORDER BY r.observation, r.exposure_root, r.detector;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_program_mbkg(text) TO authenticated;
+
 
 -- =============================================================================
 -- get_observations_overview
@@ -14196,6 +14228,7 @@ REVOKE ALL ON FUNCTION public.get_objects_for_sync(p_program_slugs text[], p_use
 REVOKE ALL ON FUNCTION public.get_objects_near(p_ra double precision, p_dec double precision, p_radius_degrees double precision, p_program_slugs text[], p_limit integer, p_exclude_object_id text, p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_observation_manifest(p_obs_name text, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_observation_stats(p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_program_mbkg(p_program_slug text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_observations_overview(p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_photometry_for_sync(p_program_slugs text[], p_updated_since timestamp with time zone, p_limit integer, p_include_unpublished boolean, p_include_counts boolean, p_after_id integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_program_stats() FROM PUBLIC, anon;

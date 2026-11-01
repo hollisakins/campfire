@@ -28,12 +28,13 @@ SCHEMA_VERSION = 12  # 12: line_fits / catalog_matches table names (Catalog Read
 
 
 # Product-type classes the client download engine understands. Finals are the
-# default download set; --intermediate adds the canonical spectrum-exposures.
+# default download set; --intermediate adds the canonical spectrum-exposures
+# and the master backgrounds.
 # Both are layout-mirrored (have a local relpath), so the same engine places
 # them. Widen these tuples as more product types become client-fetchable.
 FINAL_PRODUCT_TYPES = ("nirspec_spec", "nircam_mosaic")
 INTERMEDIATE_PRODUCT_TYPES = (
-    "nirspec_spectrum_exposure", "nircam_exposure", "nircam_expmap",
+    "nirspec_spectrum_exposure", "nirspec_mbkg", "nircam_exposure", "nircam_expmap",
 )
 DOWNLOADABLE_PRODUCT_TYPES = FINAL_PRODUCT_TYPES + INTERMEDIATE_PRODUCT_TYPES
 

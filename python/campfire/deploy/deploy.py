@@ -21,6 +21,7 @@ from campfire.deploy.config import load_observations, load_programs, resolve_fie
 from campfire.deploy.discover import (
     discover_pointings_ecsv,
     discover_rate_files,
+    discover_mbkg_files,
     discover_shutters_ecsv,
     discover_spectrum_exposures,
     discover_slits_json,
@@ -257,6 +258,7 @@ def _deploy_intermediates_only(
     # spectrum-exposures exist yet, so this path must handle rate-only deploys (see
     # the guard below).
     rate_files = discover_rate_files(obs_dir)
+    mbkg_files = discover_mbkg_files(obs_dir)
     obs_cfg = load_observations().get(obs_name, {})
     field = obs_cfg.get('field', '')
     program_slug = obs_cfg.get('program', '')
@@ -281,6 +283,7 @@ def _deploy_intermediates_only(
     print(f"  Program: {program_slug}")
     print(f"  Canonical spectrum-exposures: {len(exposure_files)}")
     print(f"  Detector rate files: {len(rate_files)}")
+    print(f"  Master backgrounds: {len(mbkg_files)}")
 
     if not exposure_files and not rate_files:
         print("No canonical spectrum-exposures, rate files, or finals — nothing to deploy.")
@@ -335,6 +338,10 @@ def _deploy_intermediates_only(
         UploadTask(p, storage_key('nirspec_rate', scope, p.name,
                                   scheme=KeyScheme.CANONICAL), 'application/fits')
         for p in rate_files
+    ] + [
+        UploadTask(p, storage_key('nirspec_mbkg', scope, p.name,
+                                  scheme=KeyScheme.CANONICAL), 'application/fits')
+        for p in mbkg_files
     ]
     # Best-effort provenance from the first exposure header (Phase 3): the
     # intermediates carry whatever cards the reduction stamped. Absent → NULL.
@@ -807,6 +814,15 @@ def deploy_observation(
                     'application/fits'))
             if rate_files:
                 print(f"  + {len(rate_files)} detector rate files")
+            # The master background of each rate file (<root>_<nrsN>_mbkg.fits, end of
+            # stage 2a): per-detector like the rate file, so never source-filtered.
+            mbkg_files = discover_mbkg_files(obs_dir)
+            for mbkg_path in mbkg_files:
+                upload_tasks.append(UploadTask(
+                    mbkg_path, storage_key('nirspec_mbkg', scope, mbkg_path.name, scheme=KeyScheme.CANONICAL),
+                    'application/fits'))
+            if mbkg_files:
+                print(f"  + {len(mbkg_files)} master backgrounds")
 
             # Push plan (storage unification): dedup the OSN-bound products
             # against the server registry — pipeline-written FITS that a prior

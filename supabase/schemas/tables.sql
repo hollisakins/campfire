@@ -1031,11 +1031,31 @@ CREATE TABLE IF NOT EXISTS "public"."nirspec_rate_exposures" (
     "mask_regions" "jsonb",
     "notes" "text",
     "created_at" timestamp with time zone NOT NULL DEFAULT "now"(),
-    "updated_at" timestamp with time zone NOT NULL DEFAULT "now"()
+    "updated_at" timestamp with time zone NOT NULL DEFAULT "now"(),
+    "mbkg_storage_key" "text",
+    "mbkg_source" "text",
+    "mbkg_rate_source" "text",
+    "mbkg_test" "text",
+    "mbkg_exposures" "text"[],
+    "mbkg_n_empty_shutters" integer,
+    "mbkg_version" "text"
 );
 
 
 ALTER TABLE "public"."nirspec_rate_exposures" OWNER TO "postgres";
+
+
+-- The master background of the exposure x detector (deploy-owned, read from the
+-- <root>_<nrsN>_mbkg.fits beside the rate file and the step-1 tables in the rate
+-- file; docs/design-nirspec-master-background.md). Program viewers read these
+-- columns, and only these, through get_observation_mbkg().
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_storage_key" IS 'Canonical key of the exposure''s master background (<root>_<nrsN>_mbkg.fits, product nirspec_mbkg).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_source" IS 'Which master background the exposure uses: combined (over the exposures that agree) or exposure (its own empty shutters, when it differs from the others).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_rate_source" IS 'The same choice for the count-rate master background derived from the rate file (master background step 1).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_test" IS 'Outcome of the test against the other exposures: consistent, differs <band> <deviation> (<significance>), or too few empty shutters.';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_exposures" IS 'Exposures (nod/detector) combined into the master background.';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_n_empty_shutters" IS 'Empty shutters of this exposure x detector that passed (MBKGNSH).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_version" IS 'Master-background algorithm version (CFMBKGV).';
 
 
 CREATE SEQUENCE IF NOT EXISTS "public"."nirspec_rate_exposures_id_seq"
@@ -2745,6 +2765,12 @@ ALTER TABLE ONLY "public"."nirspec_rate_exposures"
 
 ALTER TABLE ONLY "public"."nirspec_rate_exposures"
     ADD CONSTRAINT "nirspec_rate_exposures_unique" UNIQUE ("observation", "exposure_root", "detector");
+
+ALTER TABLE ONLY "public"."nirspec_rate_exposures"
+    ADD CONSTRAINT "nirspec_rate_exposures_mbkg_source_check" CHECK (("mbkg_source" = ANY (ARRAY['combined'::"text", 'exposure'::"text"])));
+
+ALTER TABLE ONLY "public"."nirspec_rate_exposures"
+    ADD CONSTRAINT "nirspec_rate_exposures_mbkg_rate_source_check" CHECK (("mbkg_rate_source" = ANY (ARRAY['combined'::"text", 'exposure'::"text"])));
 
 ALTER TABLE ONLY "public"."spectrum_exposures"
     ADD CONSTRAINT "spectrum_exposures_pkey" PRIMARY KEY ("id");

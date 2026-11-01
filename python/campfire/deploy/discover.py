@@ -53,6 +53,13 @@ def discover_rate_files(obs_dir: Path) -> list[Path]:
     return sorted(obs_dir.glob('*_nrs[12]_rate.fits'))
 
 
+def discover_mbkg_files(obs_dir: Path) -> list[Path]:
+    """Find the NIRSpec master-background products (``{root}_{nrsN}_mbkg.fits``),
+    one per rate file, written at the end of stage 2a beside it. Source-independent
+    like the rate files, so never filtered by source id."""
+    return sorted(obs_dir.glob('*_nrs[12]_mbkg.fits'))
+
+
 def discover_slits_json(obs_dir: Path, obs_name: str) -> Path | None:
     """Find the slit geometry JSON file, or None if absent."""
     slits_path = obs_dir / f'{obs_name}_slits.json'

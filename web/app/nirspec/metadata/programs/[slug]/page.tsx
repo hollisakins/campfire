@@ -9,11 +9,13 @@ import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { MarkdownRenderer } from '@/components/docs';
-import { useProgramDetailQuery } from '@/lib/hooks/useProgramsQuery';
+import { useProgramDetailQuery, useProgramMbkgQuery } from '@/lib/hooks/useProgramsQuery';
 import { LogIn, Telescope, ExternalLink, ArrowRight, AlertCircle, ChevronRight, ChevronDown, Download } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { pointingsToCsv, pointingsToDs9, flattenPointings, downloadBlob } from '@/lib/pointings';
 import { ProvenanceCell } from '@/components/metadata/ProvenanceCell';
+import { MasterBackgroundSubtable } from '@/components/metadata/MasterBackgroundSubtable';
+import type { ExposureMbkg } from '@/app/api/metadata/programs/[slug]/mbkg/route';
 import type { Pointing } from '@/lib/types';
 
 // Editorial content registry — add imports as markdown files are authored
@@ -41,6 +43,16 @@ export default function ProgramDetailPage() {
   const observations = data?.observations ?? [];
   const error = data?.error ?? null;
   const loading = isLoading;
+  const { data: mbkgData } = useProgramMbkgQuery(programSlug, !authLoading && !!user && !!program);
+  const mbkgByObs = React.useMemo(() => {
+    const m = new Map<string, ExposureMbkg[]>();
+    for (const e of mbkgData?.exposures ?? []) {
+      const list = m.get(e.observation);
+      if (list) list.push(e);
+      else m.set(e.observation, [e]);
+    }
+    return m;
+  }, [mbkgData]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const toggleExpanded = (obsName: string) => {
@@ -263,6 +275,8 @@ export default function ProgramDetailPage() {
                 <tbody>
                   {observations.map((obs) => {
                     const hasPointings = obs.pointings != null && obs.pointings.length > 0;
+                    const mbkg = mbkgByObs.get(obs.observation) ?? [];
+                    const hasDetails = hasPointings || mbkg.length > 0;
                     const isExpanded = expanded.has(obs.observation);
                     return (
                       <React.Fragment key={obs.observation}>
@@ -271,11 +285,11 @@ export default function ProgramDetailPage() {
                           className="border-b border-border last:border-b-0 hover:bg-card-hover transition-colors"
                         >
                           <td className="px-2 py-3 text-center">
-                            {hasPointings ? (
+                            {hasDetails ? (
                               <button
                                 onClick={() => toggleExpanded(obs.observation)}
                                 className="text-text-secondary hover:text-primary transition-colors"
-                                title={isExpanded ? 'Collapse pointings' : 'Show pointings'}
+                                title={isExpanded ? 'Collapse' : 'Show pointings and master background'}
                               >
                                 {isExpanded ? (
                                   <ChevronDown className="w-4 h-4" />
@@ -318,15 +332,18 @@ export default function ProgramDetailPage() {
                             </Link>
                           </td>
                         </tr>
-                        {isExpanded && hasPointings && (
+                        {isExpanded && hasDetails && (
                           <tr className="border-b border-border bg-surface-2">
-                            <td colSpan={9} className="px-4 py-3">
-                              <PointingsSubtable
-                                obsName={obs.observation}
-                                pointings={obs.pointings!}
-                                onDownloadCsv={() => downloadObsCsv(obs.observation, obs.pointings!)}
-                                onDownloadDs9={() => downloadObsDs9(obs.observation, obs.pointings!)}
-                              />
+                            <td colSpan={9} className="px-4 py-3 space-y-4">
+                              {hasPointings && (
+                                <PointingsSubtable
+                                  obsName={obs.observation}
+                                  pointings={obs.pointings!}
+                                  onDownloadCsv={() => downloadObsCsv(obs.observation, obs.pointings!)}
+                                  onDownloadDs9={() => downloadObsDs9(obs.observation, obs.pointings!)}
+                                />
+                              )}
+                              {mbkg.length > 0 && <MasterBackgroundSubtable exposures={mbkg} />}
                             </td>
                           </tr>
                         )}

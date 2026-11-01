@@ -108,3 +108,78 @@ def test_partition_existing_row_skips_null_render_columns():
     assert "image_width" not in update
     assert "image_height" not in update
     assert update["storage_key"] == rec["storage_key"]  # non-null render kept
+
+
+def _write_rate(path, rate_source="pool"):
+    import numpy as np
+    from astropy.io import fits
+    from astropy.table import Table
+    t = fits.BinTableHDU(Table({"wavelength": np.arange(3.0)}), name="MBKG1DR")
+    t.header["MBKGPSRC"] = rate_source
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.zeros((4, 5), np.float32), name="SCI"), t]
+                 ).writeto(path)
+
+
+def _write_mbkg(path, **cards):
+    from astropy.io import fits
+    h = fits.Header()
+    for k, v in cards.items():
+        h[k] = v
+    fits.HDUList([fits.PrimaryHDU(header=h)]).writeto(path)
+
+
+def test_records_carry_the_master_background(tmp_path):
+    rate = tmp_path / "jw07076020001_04101_00001_nrs1_rate.fits"
+    _write_rate(rate, "pool")
+    _write_mbkg(tmp_path / "jw07076020001_04101_00001_nrs1_mbkg.fits",
+                CFMBKGV="1.5", MBKGSRC="pool", MBKGPDEC="consistent",
+                MBKGPMEM="1/1 1/2 2/1", MBKGNSH=164)
+    (r,) = build_rate_exposure_records([rate], observation="ember_egs_p1",
+                                       scope=Scope(obs="ember_egs_p1"))
+    assert r["mbkg_storage_key"] == (
+        "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00001_nrs1_mbkg.fits")
+    assert r["mbkg_source"] == "combined"
+    assert r["mbkg_rate_source"] == "combined"
+    assert r["mbkg_test"] == "consistent"
+    assert r["mbkg_exposures"] == ["1/1", "1/2", "2/1"]
+    assert r["mbkg_n_empty_shutters"] == 164
+    assert r["mbkg_version"] == "1.5"
+    assert (r["grating"], r["image_width"], r["image_height"]) == (None, 5, 4)
+
+
+def test_master_background_labels(tmp_path):
+    # an exposure that differs from the others keeps its own; one with too few empty
+    # shutters of its own takes the combined one, and the test says why
+    rate1 = tmp_path / "jw07076020001_04101_00001_nrs1_rate.fits"
+    rate2 = tmp_path / "jw07076020001_04101_00002_nrs1_rate.fits"
+    _write_rate(rate1, "exposure")
+    _write_rate(rate2, "pool")
+    _write_mbkg(tmp_path / "jw07076020001_04101_00001_nrs1_mbkg.fits", MBKGSRC="exposure",
+                MBKGPDEC="differs 3.10-3.40 um +4.2 % (5.1 sig)", MBKGPMEM="none")
+    _write_mbkg(tmp_path / "jw07076020001_04101_00002_nrs1_mbkg.fits", MBKGSRC="group",
+                MBKGPDEC="consistent", MBKGPMEM="1/1")
+    r1, r2 = build_rate_exposure_records([rate1, rate2], observation="o", scope=Scope(obs="o"))
+    assert (r1["mbkg_source"], r1["mbkg_rate_source"]) == ("exposure", "exposure")
+    assert r1["mbkg_test"].startswith("differs") and r1["mbkg_exposures"] == []
+    assert (r2["mbkg_source"], r2["mbkg_test"]) == ("combined", "too few empty shutters")
+
+
+def test_without_a_master_background_the_columns_are_left_out(tmp_path):
+    rate = tmp_path / "jw07076020001_04101_00001_nrs1_rate.fits"
+    _write_rate(rate, "pool")
+    (r,) = build_rate_exposure_records([rate], observation="o", scope=Scope(obs="o"))
+    assert "mbkg_storage_key" not in r and "mbkg_source" not in r
+    assert r["mbkg_rate_source"] == "combined"         # step 1's tables are in the rate file
+    # and a re-deploy's update never writes absent master-background columns
+    _, (upd,) = partition_rate_records([r], existing_keys={("o", r["exposure_root"], "nrs1")},
+                                       now="T")
+    assert "mbkg_storage_key" not in upd and upd["mbkg_rate_source"] == "combined"
+
+
+def test_update_carries_the_master_background(tmp_path):
+    rec = _record(mbkg_storage_key="k", mbkg_source="combined", mbkg_n_empty_shutters=3)
+    _, (upd,) = partition_rate_records(
+        [rec], existing_keys={(rec["observation"], rec["exposure_root"], rec["detector"])}, now="T")
+    assert upd["mbkg_storage_key"] == "k" and upd["mbkg_source"] == "combined"
+    assert upd["mbkg_n_empty_shutters"] == 3
+    assert "review_status" not in upd

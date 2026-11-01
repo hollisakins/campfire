@@ -22,6 +22,15 @@ review and the database; the masked first pass gives way to a local joint solve 
 side). Numbers in §9 measured before b0c08026 (the median bar-shadow cells), notably the +2–3 %
 off-centre painted-sky residual and the G395M blue-extension offset, predate the re-derived tables;
 the in-shutter offset itself is explained and fixed in 1.3 (§9, last entry).
+
+**Shipping (2026-11-01, Hollis):** step 1's tables and the trace map live in `<base>_rate.fits`;
+`<base>_mbkg.fits` (lossless-compressed) is the one extra product (`nirspec_mbkg`). `campfire push` /
+`deploy` upload it beside the rate file, `campfire pull --intermediate` fetches it, and it is readable by
+the program's members like the rate file (not part of data releases). Deploy writes the master-background
+columns of `nirspec_rate_exposures` (`mbkg_storage_key`, `mbkg_source` and `mbkg_rate_source` as
+combined | exposure, `mbkg_test`, `mbkg_exposures`, `mbkg_n_empty_shutters`, `mbkg_version`); program
+viewers read them through `get_program_mbkg()` on the metadata program page, and the admin rate review
+draws the rate, the 2-D master background or their difference.
 **Sources:** the pipeline code on this branch; jwst 1.20.2 (the pinned version) read from the wheel; msaexp `main`, `jwst_backgrounds` and `jwst_gtvt` read from GitHub on 2026-10-28; jwst readthedocs; RUBIES / JADES papers as cited inline.
 **Date:** 2026-10-28
 **Context:** the NIRSpec stage 2b nodded (leapfrog) background subtraction in

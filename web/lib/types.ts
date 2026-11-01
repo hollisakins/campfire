@@ -503,6 +503,15 @@ export interface NirspecRateExposure {
   image_height: number | null;
   storage_key: string | null;     // canonical nirspec_rate key for the FITS proxy
   stage: string;
+  // Master background of this exposure x detector (deploy-owned; null before one
+  // is derived). mbkg_storage_key is the canonical nirspec_mbkg key.
+  mbkg_storage_key: string | null;
+  mbkg_source: 'combined' | 'exposure' | null;       // what MBKG1D / MBKG2D hold
+  mbkg_rate_source: 'combined' | 'exposure' | null;  // the count-rate version (step 1)
+  mbkg_test: string | null;                          // this exposure vs the others
+  mbkg_exposures: string[] | null;                   // combined members, 'nod/detector'
+  mbkg_n_empty_shutters: number | null;
+  mbkg_version: string | null;
   review_status: 'pending' | 'approved' | 'excluded';
   mask_regions: MaskRegionsPayload | null;
   notes: string | null;

@@ -361,12 +361,15 @@ def push_observation(
     """Push a NIRSpec observation's tree products to OSN (bytes only).
 
     Covers the pipeline-written products: stage-3 finals, canonical
-    spectrum-exposure intermediates, and detector rate files. Deploy-generated
+    spectrum-exposure intermediates, detector rate files and their master
+    backgrounds. Deploy-generated
     derivatives (spectrum JSON, zfit JSON, thumbnails) are NOT pushed — they
     are cheap, regenerated at deploy time, and belong to the publication step.
     """
     from campfire.deploy.deploy import resolve_obs_dir, _filter_exposures_by_source_ids
-    from campfire.deploy.discover import discover_rate_files, discover_spectrum_exposures
+    from campfire.deploy.discover import (
+        discover_mbkg_files, discover_rate_files, discover_spectrum_exposures,
+    )
     from campfire.deploy.summary import filter_by_source_ids, get_spec_paths, load_summary
     from campfire.deploy.supabase import get_supabase_client, get_user_id_from_token
 
@@ -399,6 +402,12 @@ def push_observation(
     for p in discover_rate_files(obs_dir):
         tasks.append(UploadTask(
             p, storage_key('nirspec_rate', scope, p.name,
+                           scheme=KeyScheme.CANONICAL),
+            'application/fits'))
+    # The master background of each rate file (also per-detector, never filtered).
+    for p in discover_mbkg_files(obs_dir):
+        tasks.append(UploadTask(
+            p, storage_key('nirspec_mbkg', scope, p.name,
                            scheme=KeyScheme.CANONICAL),
             'application/fits'))
 
