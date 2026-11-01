@@ -137,13 +137,13 @@ def test_gate_mean_square_scale_counts_the_tails():
 # ---------------------------------------------------------------------------
 def test_config_knobs_reach_priors_and_bounds():
     cfg = _cfg(prior_centre_sigma=0.05, prior_width_log_sigma=0.4, bound_centre=0.2, bound_width_max=0.5,
-               bound_offset=0.05, profile_fit_prism_mode='always', gate_snr_prism=12.0)
+               profile_fit_prism_mode='always', gate_snr_prism=12.0)
     assert cfg.priors.centre_sigma == 0.05 and cfg.priors.width_log_sigma == 0.4
     assert cfg.prism_mode == 'always' and cfg.gate_prism == 12.0
     M = PF.ProfileModel(T._exposures(src_y=0.1), priors=cfg.priors, bounds=cfg.bounds)
     lo, hi = M.bounds()
     assert lo[0] == pytest.approx(0.1 - 0.2) and hi[0] == pytest.approx(0.1 + 0.2)
-    assert hi[2] == pytest.approx(np.log(0.5)) and hi[-1] == pytest.approx(0.05)
+    assert hi[2] == pytest.approx(np.log(0.5)) and lo.size == 4
     with pytest.raises(ValueError):
         PC.ChainConfig.from_stage_config(dict(profile_fit_shape='nope'))
 
@@ -151,11 +151,11 @@ def test_config_knobs_reach_priors_and_bounds():
 def test_bound_hits_bitmask():
     M = PF.ProfileModel(T._exposures(src_y=0.0), bounds=PF.Bounds(centre=0.3, width_max=0.6))
     lo, hi = M.bounds()
-    q = np.array([hi[0], 0.0, np.log(0.2), 0.0, 0.0, 0.0])
+    q = np.array([hi[0], 0.0, np.log(0.2), 0.0])
     assert M.bound_hits(q) == PF.BOUND_BITS['centre']
-    q = np.array([0.0, 0.0, hi[2], 0.0, 0.0, lo[-1]])
-    assert M.bound_hits(q) == PF.BOUND_BITS['width'] | PF.BOUND_BITS['offset']
-    q = np.array([0.0, 0.0, lo[2], 0.0, 0.0, 0.0])         # point-source floor is not a hit
+    q = np.array([0.0, 0.0, hi[2], lo[3]])
+    assert M.bound_hits(q) == PF.BOUND_BITS['width'] | PF.BOUND_BITS['width_change']
+    q = np.array([0.0, 0.0, lo[2], 0.0])                   # point-source floor is not a hit
     assert M.bound_hits(q) == 0
 
 
@@ -182,16 +182,18 @@ def test_prism_transfer_uses_grating_shutters():
     assert np.nanmax(np.abs(img[closed])) < 1e-3 * np.nanmax(img)
 
 
-def test_fit_fixed_with_offsets_reports_data_chi2_only():
+def test_fits_take_no_pointing_offsets():
+    """Every fit holds the per-exposure pointing offsets at zero (they took neighbours'
+    light in crowded data), and fit_fixed's chi2 is the data chi2 only."""
     exps = T._exposures()
-    _fill(exps, dict(width=0.15), 50.0, eoff=np.array([0.0, 0.02, -0.02]))
+    _fill(exps, dict(width=0.15), 50.0)
     M = PF.ProfileModel(exps)
     a = PF.fit_fixed(model=M)
-    b = PF.fit_fixed(model=M, fit_eoff=True)
-    assert b.chi2 < a.chi2
-    assert b.eoff[1] == pytest.approx(0.02, abs=0.01) and b.eoff[2] == pytest.approx(-0.02, abs=0.01)
-    p, e = PF._qvec(b)
-    assert M.chi2_at(p, e, b.use) == pytest.approx(b.chi2, rel=1e-6)
+    assert np.all(a.eoff == 0) and a.eoff.size == len(exps)
+    p, e = PF._qvec(a)
+    assert M.chi2_at(p, e, a.use) == pytest.approx(a.chi2, rel=1e-6)
+    b = PF.fit(exps, model=M)
+    assert np.all(b.eoff == 0) and b.eoff.size == len(exps) and len(M.param_names()) == 4
 
 
 # ---------------------------------------------------------------------------

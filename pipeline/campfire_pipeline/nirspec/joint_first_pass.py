@@ -61,9 +61,10 @@ from campfire_pipeline.nirspec import profile_contam as CT
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec import profile_joint as PJ
 
-JOINT_PASS_VERSION = '3'          # 2: the light past the cutouts is among the joint unknowns
+JOINT_PASS_VERSION = '4'          # 2: the light past the cutouts is among the joint unknowns
 #                                   3: nod differences instead of the master sky; the neighbours'
 #                                      light on the target's pixels is written beside its pass 1
+#                                   4: no per-exposure pointing offsets fitted (they took neighbours' light)
 JOINT_LIGHT_VERSION = '1'
 SPEC_SRC = 'joint'
 CHUNK = 512
@@ -246,7 +247,7 @@ class MemberCache:
             prism = (CT.read_prism_shape(self.workspace, t['prism_product'])
                      if (not self.is_prism and t.get('prism_product')) else None)
             shape, src = shape_for(exps, M, cfg, self.is_prism, prism)
-            R = PF.fit_fixed(model=M, shape=shape, fit_eoff=True)
+            R = PF.fit_fixed(model=M, shape=shape)
             self._shape[sid] = (shape, src, np.asarray(R.eoff, float))
         shape, src, eoff = self._shape[sid]
         m = PJ.Member(sid=sid, product=t['product'], exps=exps, model=M,

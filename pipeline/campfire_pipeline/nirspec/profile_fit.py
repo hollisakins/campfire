@@ -359,7 +359,6 @@ class Priors:
     width_median: float = 0.15        # galaxy Gaussian sigma, slit units (bright-galaxy population)
     width_log_sigma: float = 0.7      # natural-log scatter of the width prior
     width_change_sigma: float = 0.05  # width change per octave, slit units
-    offset_sigma: float = 0.015       # per-exposure pointing offset (stars: median 0.01, 95 % < 0.02)
 
 
 @dataclass
@@ -370,11 +369,11 @@ class Bounds:
     drift: float = 0.5                # per octave
     width_max: float = 1.5
     width_change: float = 0.4         # per octave
-    offset: float = 0.3               # per-exposure pointing offset
 
 
-# bit of each shape parameter in a bound-hit mask (header PFBOUND)
-BOUND_BITS = dict(centre=1, width=2, drift=4, width_change=8, offset=16)
+# bit of each shape parameter in a bound-hit mask (header PFBOUND; 16 was the per-exposure
+# pointing offsets, no longer fitted)
+BOUND_BITS = dict(centre=1, width=2, drift=4, width_change=8)
 
 
 @dataclass
@@ -442,7 +441,6 @@ class ProfileModel:
         self.pivot = float(np.exp(np.median(np.log(lam))))
         self.lam_rng = (float(np.percentile(lam, 2)), float(np.percentile(lam, 98)))
         self._interp_tables()
-        self.n_eoff = len(exps) - 1
 
     # -- pixels --------------------------------------------------------------
     def _terms(self, k, mask):
@@ -567,7 +565,6 @@ class ProfileModel:
         M.lam_grid = np.asarray(grid, float)
         M.pivot = float(np.exp(np.median(np.log(M.lam_grid))))
         M.lam_rng = (float(np.percentile(M.lam_grid, 2)), float(np.percentile(M.lam_grid, 98)))
-        M.n_eoff = len(exps) - 1
         M.pix_masks, M.terms, M.image_pix, M.npix = [], [], {}, 0
         M._pl_curves()
         return M
@@ -591,11 +588,15 @@ class ProfileModel:
 
     # -- shape ---------------------------------------------------------------
     def unpack(self, q):
+        """(shape vector, per-exposure pointing offsets) of fit parameters ``q``. The
+        offsets are zero: the nods land where commanded (headers: within ~0.001 slit
+        units), and a fitted offset absorbed overlapping neighbours' light instead (G395M,
+        2026-11-01). They stay in the interfaces as an all-zero vector."""
         if self.chromatic:
-            c0, dc, lnw, dw = q[:4]; eo = q[4:]
+            c0, dc, lnw, dw = q[:4]
         else:
-            c0, lnw = q[:2]; dc = dw = 0.0; eo = q[2:]
-        return np.array([c0, dc, lnw, dw]), np.concatenate([[0.0], eo])
+            c0, lnw = q[:2]; dc = dw = 0.0
+        return np.array([c0, dc, lnw, dw]), np.zeros(len(self.exps))
 
     def _x(self, lam):
         lo, hi = np.log2(self.lam_rng[0] / self.pivot), np.log2(self.lam_rng[1] / self.pivot)
@@ -697,7 +698,6 @@ class ProfileModel:
                (p[2] - np.log(pr.width_median)) / pr.width_log_sigma]
         if self.chromatic:
             pri += [p[1] / pr.drift_sigma, p[3] / pr.width_change_sigma]
-        pri += list(eoff[1:] / pr.offset_sigma)
         return np.concatenate([r, pri])
 
     def bounds(self):
@@ -707,11 +707,10 @@ class ProfileModel:
             hi = [c + B.centre, B.drift, np.log(B.width_max), B.width_change]
         else:
             lo, hi = [c - B.centre, np.log(W_FLOOR)], [c + B.centre, np.log(B.width_max)]
-        return np.array(lo + [-B.offset] * self.n_eoff), np.array(hi + [B.offset] * self.n_eoff)
+        return np.array(lo), np.array(hi)
 
     def param_names(self):
-        base = ['centre', 'drift', 'width', 'width_change'] if self.chromatic else ['centre', 'width']
-        return base + ['offset'] * self.n_eoff
+        return ['centre', 'drift', 'width', 'width_change'] if self.chromatic else ['centre', 'width']
 
     def bound_hits(self, q, rtol=1e-3):
         """Bitmask (``BOUND_BITS``) of the parameters that ended on a bound. The lower
@@ -739,7 +738,7 @@ class ProfileModel:
     def start(self):
         best = None
         for p in self.start_grid():
-            q = (list(p) if self.chromatic else [p[0], p[2]]) + [0.0] * self.n_eoff
+            q = list(p) if self.chromatic else [p[0], p[2]]
             s = float(np.sum(self.residuals(np.array(q)) ** 2))
             if best is None or s < best[0]:
                 best = (s, np.array(q))
@@ -811,7 +810,7 @@ def fit_partial(exps=None, free=('width',), base=None, clip=5.0, n_clip=2, model
     """Own fit of some of the shape parameters, the others held at a fixed shape.
 
     free : names among 'centre', 'drift', 'width', 'width_change' that are fitted (with
-        their priors); the per-exposure pointing offsets are always fitted.
+        their priors).
     base : dict(centre_offset, drift, width, width_change) of the held parameters
         (``shape_vector``); default the default shape.
     For an intermediate detection S/N, where a full own fit follows the noise: the
@@ -825,8 +824,8 @@ def fit_partial(exps=None, free=('width',), base=None, clip=5.0, n_clip=2, model
         M = ProfileModel(exps, chromatic=chromatic, priors=priors, grid=grid, bounds=bounds)
     if not M.chromatic:
         raise ValueError('fit_partial needs the chromatic model (four shape parameters)')
-    q0 = np.concatenate([shape_vector(base, M.c_prior, M.priors.width_median), np.zeros(M.n_eoff)])
-    sel = [names.index(n) for n in free] + list(range(4, 4 + M.n_eoff))
+    q0 = shape_vector(base, M.c_prior, M.priors.width_median)
+    sel = [names.index(n) for n in free]
     lo, hi = M.bounds()
 
     def full(x):
@@ -888,15 +887,14 @@ def shape_vector(shape, c_prior, width_default):
     return np.array([c_prior + q['centre_offset'], q['drift'], np.log(max(q['width'], W_FLOOR)), q['width_change']])
 
 
-def fit_fixed(exps=None, shape=None, eoff=None, fit_eoff=False, clip=5.0, n_clip=2, model=None,
+def fit_fixed(exps=None, shape=None, eoff=None, clip=5.0, n_clip=2, model=None,
               use=None, chromatic=True, priors=None, grid=None, bounds=None):
     """Spectrum at a fixed shape: a linear solve.
 
     shape : dict(centre_offset, drift, width, width_change) at this model's pivot; the
         default is the default shape (star PSF x the prior median width at the planned
         position, no chromatic terms).
-    fit_eoff : also fit the per-exposure pointing offsets (with their prior), so a
-        transferred shape is compared with the free fit on equal terms.
+    eoff : per-exposure pointing offsets, held (default zero, as every fit now takes them).
     use : a fixed pixel mask (no clipping); otherwise ``n_clip`` rounds of clipping at
         ``clip`` sigma.
     The returned chi2 is the data chi2 only (no prior terms)."""
@@ -907,18 +905,6 @@ def fit_fixed(exps=None, shape=None, eoff=None, fit_eoff=False, clip=5.0, n_clip
     e = np.zeros(len(M.exps)) if eoff is None else np.asarray(eoff, float).copy()
     nit = 0 if use is not None else n_clip
     for it in range(nit + 1):
-        if fit_eoff and M.n_eoff > 0:
-            sig = M.priors.offset_sigma
-            B = M.bounds_cfg.offset
-
-            def res(x):
-                ee = np.concatenate([[0.0], x])
-                f, _, _, A = M.solve(p, ee)
-                r = np.where(M.use, (M.pix['d'] - A @ f) / np.sqrt(M.pix['v']), 0.0)
-                return np.concatenate([r, x / sig])
-            sol = least_squares(res, np.clip(e[1:], -B + 1e-6, B - 1e-6), bounds=(-B, B), x_scale='jac',
-                                ftol=1e-5, xtol=1e-5, gtol=1e-5)
-            e = np.concatenate([[0.0], sol.x])
         if it == nit:
             break
         f, _, _, A = M.solve(p, e)
@@ -935,7 +921,7 @@ def fit_fixed(exps=None, shape=None, eoff=None, fit_eoff=False, clip=5.0, n_clip
                   pivot=M.pivot, centre_prior=M.c_prior)
     R = FitResult(params=params, eoff=e, lam=M.lam_grid, flux=np.where(good, f, np.nan),
                   flux_err=np.where(good, np.sqrt(np.abs(np.diag(cov))), np.nan), chi2=chi2,
-                  npix=int(round(n_eff)), nfree=int(good.sum()) + (M.n_eoff if fit_eoff else 0),
+                  npix=int(round(n_eff)), nfree=int(good.sum()),
                   chromatic=True, model=M)
     R.bound_bits = 0
     R.use = M.use.copy()
@@ -1211,7 +1197,7 @@ def drizzle_arrays(frame_of, crf_path):
     return out
 
 
-FIT_VERSION = '1'
+FIT_VERSION = '2'                     # 2: no per-exposure pointing offsets fitted
 
 
 def run_single_source(product_name, workspace_dir, groups, bkg_overrides, science,

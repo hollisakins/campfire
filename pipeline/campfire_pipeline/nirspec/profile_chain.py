@@ -15,8 +15,7 @@ which shape builds the extraction profile:
    position. Only when the PRISM product took its own shape and the two were taken
    at the same telescope roll.
 3. **default**: the star-measured PSF times a Gaussian of the prior median width (or
-   ``default_shape_width``) at the planned position, with the pointing offsets fitted
-   (``default_fit_offsets``). Optionally, between ``gate_partial_snr_*`` and the gate,
+   ``default_shape_width``) at the planned position. Optionally, between ``gate_partial_snr_*`` and the gate,
    an own fit of the width (or centre) only (``profile_fit_partial``).
 
 Every candidate that runs is compared on the same pixels (a pixel is kept when any
@@ -66,7 +65,6 @@ class ChainConfig:
     dominance_apply: str = 'mask_only'   # always | mask_only (only when contam_mode = mask) | flag (PFDOMIN only)
     contam_mode: str = 'hybrid'
     default_width: float = None          # width of the default shape (None: the prior median width)
-    default_fit_offsets: bool = True     # the default shape also fits the per-exposure pointing offsets
     partial_fit: str = 'off'             # below the gate: off | width | centre (own fit of that parameter only)
     gate_partial_prism: float = 25.0     # ... from these gates up
     gate_partial_grating: float = 30.0
@@ -90,12 +88,10 @@ class ChainConfig:
             drift_sigma=float(g('prior_drift_sigma', 0.03)),
             width_median=float(g('prior_width_median', 0.15)),
             width_log_sigma=float(g('prior_width_log_sigma', 0.6)),
-            width_change_sigma=float(g('prior_width_change_sigma', 0.04)),
-            offset_sigma=float(g('prior_offset_sigma', 0.015)))
+            width_change_sigma=float(g('prior_width_change_sigma', 0.04)))
         bounds = PF.Bounds(
             centre=float(g('bound_centre', 0.3)), drift=float(g('bound_drift', 0.3)),
-            width_max=float(g('bound_width_max', 0.6)), width_change=float(g('bound_width_change', 0.3)),
-            offset=float(g('bound_offset', 0.1)))
+            width_max=float(g('bound_width_max', 0.6)), width_change=float(g('bound_width_change', 0.3)))
         dom = str(g('contam_dominance', 'light')).lower()
         if dom not in ('light', 'pixels', 'off'):
             raise ValueError(f"contam_dominance must be 'light', 'pixels' or 'off', got {dom!r}")
@@ -121,7 +117,7 @@ class ChainConfig:
                    dominance_min_clean=float(g('contam_dominance_min_clean', 0.5)),
                    dominance_apply=dapply, contam_mode=str(g('contam_mode', 'hybrid')).lower(),
                    default_width=(None if dwidth is None else float(dwidth)),
-                   default_fit_offsets=bool(g('default_fit_offsets', True)), partial_fit=partial,
+                   partial_fit=partial,
                    gate_partial_prism=float(g('gate_partial_snr_prism', 25.0)),
                    gate_partial_grating=float(g('gate_partial_snr_grating', 30.0)))
 
@@ -180,7 +176,7 @@ class ChainResult:
             'PFCHI2P': (_f(self.chi2.get('prism', np.nan)), 'chi2, PRISM shape, common pixels'),
             'PFCHI2O': (_f(self.chi2.get('own', np.nan)), 'chi2, own fit, common pixels'),
             'PFNPIXC': (int(self.npix_common), 'Independent pixels behind the chi2 values'),
-            'PFBOUND': (int(self.bound_bits), 'Own fit on a bound: 1 cen 2 wid 4 drift 8 dwid 16 off'),
+            'PFBOUND': (int(self.bound_bits), 'Own fit on a bound: 1 cen 2 wid 4 drift 8 dwid'),
             'PFSRCY': (int(self.srcy_flag), 'SRCYPOS: 0 ok, 1 placeholder ignored, 2 disagree'),
             'PFSHDIS': (int(self.shdis), 'PRISM and own grating shapes disagree'),
             'PFPRISM': (self.prism_product[:68], 'PRISM product the shape came from'),
@@ -248,7 +244,7 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
     snr, det = PF.detection_snr(M, scale=cfg.gate_noise)
     gate = cfg.gate_prism if is_prism else cfg.gate_grating
     with TM.step('chain_fixed'):
-        cands = {'default': PF.fit_fixed(model=M, shape=cfg.default_shape(), fit_eoff=cfg.default_fit_offsets)}
+        cands = {'default': PF.fit_fixed(model=M, shape=cfg.default_shape())}
     if cfg.shape == 'fixed':
         R = cands['default']
         return ChainResult(result=R, shape='default', chain='fixed', reason='fixed', snr_det=snr, gate=gate,
@@ -269,7 +265,7 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
         else:
             xshape = PF.map_shape(prism.params, M.pivot)
             with TM.step('chain_fixed'):
-                cands['prism'] = PF.fit_fixed(model=M, shape=xshape, fit_eoff=True)
+                cands['prism'] = PF.fit_fixed(model=M, shape=xshape)
             transfer = 'used'
 
     # do other sources dominate the trace?

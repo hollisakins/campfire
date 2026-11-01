@@ -125,7 +125,7 @@ def test_one_disperser_per_fit(monkeypatch):
 # ---------------------------------------------------------------------------
 def test_recovers_shape_and_spectrum_at_high_snr():
     exps = _exposures()
-    _inject(exps, TRUTH, [0.0, 0.005, -0.005], flux_scale=200.0, noise=1.0)
+    _inject(exps, TRUTH, [0.0, 0.0, 0.0], flux_scale=200.0, noise=1.0)   # the nods land where commanded
     R = PF.fit(exps, chromatic=True)
     assert abs(R.params['centre'] - TRUTH['centre']) < 0.02
     assert abs(R.params['width'] - TRUTH['width']) < 0.02

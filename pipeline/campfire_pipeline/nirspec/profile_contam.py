@@ -72,7 +72,7 @@ from campfire_pipeline.nirspec import trace_overlap as TO
 
 MAPS_SUBDIR = 'tracemaps'
 PASS1_SUBDIR = 'pass1'
-PASS1_VERSION = '10'
+PASS1_VERSION = '11'
 MIN_EXPOSURE_PIXELS = 100  # per-exposure clean fractions only for exposures with this many main-shutter pixels
 DPRED_FLOOR = 0.1          # prediction uncertainty floor, fraction of the prediction (ASSUMED, to be measured)
 _NOD = re.compile(r'^(jw\d+_\d{5})_(\d{5})_(nrs[12])')

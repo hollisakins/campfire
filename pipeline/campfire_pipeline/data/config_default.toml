@@ -151,9 +151,10 @@
     gate_noise = "mean_square"               # "mean_square" | "mad" (the gate before 2026-10-23)
     # Default shape (below the gate, no PRISM shape): star PSF x a Gaussian of this width at the
     # planned position. 0.15 (the prior median) reads ~5 % low on the population; 0.21 is unbiased
-    # on it but costs 6-8 % in noise-only S/N. Pointing offsets fitted (no S/N cost, ~1.5 % less bias).
+    # on it but costs 6-8 % in noise-only S/N. No per-exposure pointing offsets are fitted (any
+    # shape): the nods land where commanded, and in crowded G395M a fitted offset took
+    # neighbours' light (2026-11-01; it had bought ~1.5 % less bias on isolated injections).
     default_shape_width = 0.15
-    default_fit_offsets = true
     # Own fit of the width only between gate_partial_snr_* and the gate, products without a PRISM
     # shape ("off" | "width" | "centre"). G395M 30-70: bias -5 % -> 0 at 1-2.5 % noise-only S/N.
     profile_fit_partial = "off"
@@ -172,12 +173,10 @@
     prior_width_log_sigma = 0.6
     prior_drift_sigma = 0.03
     prior_width_change_sigma = 0.04
-    prior_offset_sigma = 0.015               # star-calibrated
     bound_centre = 0.3                       # +- around the planned position
     bound_width_max = 0.6
     bound_drift = 0.3
     bound_width_change = 0.3
-    bound_offset = 0.1
     srcypos_tolerance = 0.05
     # Other slitlets' light (trace maps + one-pass prediction from pass-1 spectra)
     contam_predict = true
