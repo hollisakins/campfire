@@ -450,7 +450,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
         all_fg |= set(np.unique(every['filter_grating']))
         # stuck-closed shutters pass no light: left out of the maps
         mt = CT.map_tasks(obs.workspace_dir, list(every['path']), log=log,
-                          stuck=CT.stuck_by_root(obs.stuck_closed_shutters))
+                          stuck=CT.stuck_by_root(obs.stuck_closed_shutters),
+                          stuck_keys=CT.stuck_keys_by_root(obs))
         if mt:
             log(f"Profile fit: building {len(mt)} trace maps")
             with TM.phase(f'trace_maps ({len(mt)})'):

@@ -104,9 +104,22 @@ def stuck_by_root(table):
     return out
 
 
-def map_tasks(workspace, canonical_paths, log=None, stuck=None):
+def stuck_keys_by_root(obs):
+    """The observation's stuck-closed physical shutters, {root: {(q, row, col)}}
+    (``stuck_list``; what a map read from a rate file leaves out)."""
+    from campfire_pipeline.nirspec import stuck_list
+    resolved = stuck_list.load_obs(obs)
+    return {root: stuck_list.stuck_set(resolved, root) for root in resolved}
+
+
+def map_tasks(workspace, canonical_paths, log=None, stuck=None, stuck_keys=None):
     """One task per exposure of the canonicals: (rate or template rate, cache dir,
     full metafile, metadata id, dither position, exposure name, stuck-closed shutters).
+
+    An exposure whose rate file holds the map master background step 1 stored there
+    (``TO.ShutterMap``) takes it from there (``build_map`` with the root's stuck physical
+    shutters, ``stuck_keys``: {root: {(q, row, col)}}, ``stuck_keys_by_root``), with no
+    jwst run; its cached copy is redone when the rate file is newer.
 
     The full metafile (every slitlet of the configuration) is the one the rate
     file names; the canonicals name their per-source copy. An exposure without its
@@ -136,9 +149,13 @@ def map_tasks(workspace, canonical_paths, log=None, stuck=None):
         seen.add(key)
         name = f'{key}_rate.fits'
         st = stuck.get(key[:19], {})
-        if TO.map_is_current(TO.trace_map_path(cache, name), stuck=st):
+        stored = key in rates and TO.ShutterMap.present(rates[key])
+        if TO.map_is_current(TO.trace_map_path(cache, name), stuck=st, rate_file=rates[key] if stored else None):
             continue
         h = fits.getheader(p)
+        if stored:
+            tasks.append((rates[key], cache, None, None, None, name, st, sorted((stuck_keys or {}).get(key[:19], ()))))
+            continue
         if key in rates:
             det, grat, filt, msa_name, msa_id, patt = rate_meta[key]
             tasks.append((rates[key], cache, os.path.join(workspace, msa_name), int(msa_id), int(patt), name, st))
@@ -154,8 +171,21 @@ def map_tasks(workspace, canonical_paths, log=None, stuck=None):
     return tasks
 
 
-def build_map(rate, cache, msa, msa_id, patt, name, stuck=None):
+def build_map(rate, cache, msa, msa_id, patt, name, stuck=None, stuck_keys=None):
+    """Write one exposure's map to the cache: the map master background step 1 stored in
+    its rate file, with ``stuck_keys`` (the root's stuck physical shutters) removed, when
+    ``stuck_keys`` is given; else built with jwst (``TO.get_trace_map``)."""
     from campfire_pipeline.common.io import log
+    if stuck_keys is not None:
+        try:
+            tm = TO.trace_map_from_rate(rate, {tuple(int(v) for v in k) for k in stuck_keys})
+            os.makedirs(cache, exist_ok=True)
+            tm.meta.update(MAPVER=TO.MAP_VERSION, STUCK=TO.stuck_signature(stuck), MAPSRC='rate')
+            tm.write(TO.trace_map_path(cache, name))
+            return name
+        except Exception as e:                   # noqa: BLE001 - as below
+            log(f'trace map {name}: not read from the rate file ({type(e).__name__}: {e})')
+            return None
     work = os.path.join(cache, f'work_{name[:-10]}')
     try:
         TO.get_trace_map(rate, cache, workdir=work, exposure_name=name,

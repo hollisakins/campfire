@@ -426,7 +426,7 @@ class TraceMap:
         from astropy.table import Table
         with fits.open(path) as h:
             meta = {k: h[0].header[k] for k in ('MAPVER', 'EXPOSURE', 'DETECTOR', 'GRATING', 'FILTER', 'MSAMETFL',
-                                                'MSAMETID', 'PATT_NUM', 'LITPAD', 'FAILOPEN', 'STUCK')
+                                                'MSAMETID', 'PATT_NUM', 'LITPAD', 'FAILOPEN', 'STUCK', 'MAPSRC')
                     if k in h[0].header}
             return cls(slits=Table(h['SLITS'].data), index=np.asarray(h['INDEX'].data),
                        flag=np.asarray(h['FLAG'].data), meta=meta)
@@ -465,9 +465,11 @@ def trace_map_path(cache_dir, exposure_name):
     return os.path.join(cache_dir, f'{root}_tracemap.fits')
 
 
-def map_is_current(path, stuck=None):
+def map_is_current(path, stuck=None, rate_file=None):
     """A cached map exists, was built by this map version and, when ``stuck`` is given,
-    with that stuck-closed list (``stuck_signature``)."""
+    with that stuck-closed list (``stuck_signature``). With ``rate_file`` (one holding a
+    stored map, ``ShutterMap.present``) the cached map must be a copy of it
+    (``MAPSRC = 'rate'``) written after the rate file was."""
     from astropy.io import fits
     if not os.path.exists(path):
         return False
@@ -476,6 +478,8 @@ def map_is_current(path, stuck=None):
     except OSError:
         return False
     if str(h.get('MAPVER', '')) != MAP_VERSION:
+        return False
+    if rate_file is not None and (h.get('MAPSRC') != 'rate' or os.path.getmtime(path) < os.path.getmtime(rate_file)):
         return False
     return stuck is None or str(h.get('STUCK', '')) == stuck_signature(stuck)
 
@@ -659,6 +663,16 @@ class ShutterMap:
         from astropy.io import fits
         return [fits.ImageHDU(name='TMSH1'), fits.ImageHDU(name='TMSH2'), fits.ImageHDU(name='TMFLAG'),
                 fits.BinTableHDU(name='TMSLITS'), fits.BinTableHDU(name='TMSHUT')]
+
+    @staticmethod
+    def present(rate_file):
+        """``rate_file`` holds a stored map (headers only)."""
+        from astropy.io import fits
+        try:
+            with fits.open(rate_file, memmap=False) as h:
+                return 'TMSLITS' in h and bool(h['TMSLITS'].header.get('NAXIS2', 0))
+        except OSError:
+            return False
 
     @classmethod
     def read(cls, rate_file):

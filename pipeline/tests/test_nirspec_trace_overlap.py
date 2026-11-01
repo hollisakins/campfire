@@ -380,3 +380,26 @@ def test_shutter_map_round_trips_through_the_rate_file(tmp_path):
     empty = str(tmp_path / 'y_rate.fits')
     fits.HDUList([fits.PrimaryHDU()] + TO.ShutterMap.empty_hdus()).writeto(empty)
     assert TO.trace_map_from_rate(empty) is None
+
+
+def test_stage3_cache_takes_the_map_stored_in_the_rate_file(tmp_path):
+    import os
+    from astropy.io import fits
+    from campfire_pipeline.nirspec import profile_contam as CT
+    _, sm = _two_slitlets()
+    rate = str(tmp_path / 'jw07076001001_03101_00001_nrs1_rate.fits')
+    fits.HDUList([fits.PrimaryHDU()] + sm.hdus()).writeto(rate)
+    assert TO.ShutterMap.present(rate)
+    cache = str(tmp_path / CT.MAPS_SUBDIR)
+    name = os.path.basename(rate)
+    st = {1007: [2]}
+    assert CT.build_map(rate, cache, None, None, None, name, st, [(2, 107, 11)]) == name
+    path = TO.trace_map_path(cache, name)
+    back = TO.TraceMap.read(path)
+    ref = sm.trace_map(stuck={(2, 107, 11)})
+    assert np.array_equal(back.index, ref.index) and np.array_equal(back.flag, ref.flag)
+    assert back.meta['MAPSRC'] == 'rate' and list(back.rows_of(2001)) == list(ref.rows_of(2001))
+    assert TO.map_is_current(path, stuck=st, rate_file=rate)
+    assert not TO.map_is_current(path, stuck={1007: [1]}, rate_file=rate)     # another stuck list
+    os.utime(rate, (os.path.getmtime(path) + 10,) * 2)                        # step 1 rewrote the rate file
+    assert not TO.map_is_current(path, stuck=st, rate_file=rate)
