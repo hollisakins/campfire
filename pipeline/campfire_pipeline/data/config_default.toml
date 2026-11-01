@@ -183,10 +183,11 @@
     contam_predict = true
     contam_mode = "hybrid"                   # "hybrid" (subtract, mask where uncertain) | "mask"
     contam_pass1 = "joint"                   # pass-1 spectra: "joint" (each source solved with its neighbours on
-                                             # single frames minus the master background, nothing masked or
-                                             # smoothed; needs the _mbkg products) | "fixed" (masked fixed-shape
-                                             # solve and its second round; retired after validation) | "stage3"
-                                             # (existing stage-3 fnu of each source)
+                                             # its nod differences, nothing masked or smoothed) | "fixed"
+                                             # (masked fixed-shape solve and its second round; retired after
+                                             # validation) | "stage3" (existing stage-3 fnu of each source)
+    contam_joint_cache = 60                  # joint pass: members kept per worker (about 45 MB each on G395M;
+                                             # a solve adds about 2.6 GB at its peak). Lower it to run more workers
     contam_pass1_smooth_prism = 7.5          # pass-1 spectra: outliers clipped, then a running mean over this many
     contam_pass1_smooth_grating = 15.0       # resolution elements (2 pixels each; 0: off). contam_pass1_smooth
                                              # (grid points, both dispersers) overrides when set

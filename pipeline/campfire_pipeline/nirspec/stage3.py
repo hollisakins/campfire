@@ -484,7 +484,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                 log(f"Profile fit: joint pass 1 for {len(jtasks)} {fg} sources")
                 with TM.phase(f'pass1 joint {fg} ({len(jtasks)})'):
                     JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
-                           overwrite={s for s in jtasks if s in run_sids} if overwrite else False)
+                           overwrite={s for s in jtasks if s in run_sids} if overwrite else False,
+                           cache_size=int(stage_config.get('contam_joint_cache', 60)))
             else:
                 log(f"Profile fit: pass 1 for {len(p1)} {fg} sources")
                 with TM.phase(f'pass1 {fg} ({len(p1)})'):

@@ -908,10 +908,11 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
 
 
 def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_keys=None, overwrite=False,
-              depth=2, cap=25, degenerate=0.9, pass1_dir=None):
+              depth=2, cap=25, degenerate=0.9, pass1_dir=None, cache_size=60):
     """One worker's share of a disperser: the joint first pass of ``targets`` (in
-    coupling order), with one member cache. Returns the written paths."""
-    cache = MemberCache(tasks, workspace, stage_config, is_prism)
+    coupling order), with one member cache of ``cache_size`` members. Returns the
+    written paths."""
+    cache = MemberCache(tasks, workspace, stage_config, is_prism, size=cache_size)
     keys = maps_keys or sorted({CT.exposure_key(f) for t in tasks.values() for g in t['groups'] for f in g})
     from campfire_pipeline.nirspec import trace_overlap as TO
     maps = {}
@@ -929,7 +930,7 @@ def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_k
 
 
 def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False, depth=2, cap=25,
-        degenerate=0.9, pass1_dir=None):
+        degenerate=0.9, pass1_dir=None, cache_size=60):
     """The joint first pass of every source of one disperser.
 
     tasks : {sid: dict(product, groups, overrides, science, prism_product)} for every
@@ -952,6 +953,6 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
     size = int(np.ceil(len(order) / nb))
     batches = [order[i:i + size] for i in range(0, len(order), size)]
     args = [(b, tasks, workspace, stage_config, is_prism, coupled, keys, overwrite, depth, cap, degenerate,
-             pass1_dir) for b in batches]
+             pass1_dir, cache_size) for b in batches]
     res = dispatch(run_batch, args, n_processes=n_processes, use_starmap=True) or []
     return [p for r in res for p in (r or [])]
