@@ -1322,7 +1322,27 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   known missing partner noise), 1.48 → 1.56 with the errors scaled (better in 9, worse in
   7). Largest changes: 925404 6.03 → 2.04 and 925403 3.64 → 2.78 (a pair 0.19 slit units
   apart); 924186 1.44 → 1.86, 629432 1.51 → 1.81, 921027 1.24 → 1.44 worse. On average
-  neutral, as with the shutter rule; clear where the neighbour is bright.
+  neutral, as with the shutter rule; clear where the neighbour is bright. Before / after
+  pages of every affected source (`e2e_final_before_after.py`,
+  `e2e_slitlet/final_before_after.pdf`, 51 pages) sent to the user.
+- User review (2026-11-01): a neighbour too close to the target to measure (within 1 slit
+  unit in every frame) keeps counting as bright ("I'd be concerned if it was <0.5 or so");
+  the threshold stays at 0.02 ("depends a bit on how well the background level is
+  constrained"). 666336: the negative trace in its G395M spectrum before came from other
+  slitlets (879755, 664830, 634324 put 60-89 % of their pixels on its source shutter from
+  exposures 1 and 3); the override, triggered by its unmeasured same-slitlet neighbour
+  666345, happened to pick the sky exposures that put little of that light there. The user
+  is fine with it (light on the detector, and it helps). No ordering conflict: stage 3's
+  joint model reads the sky exposures stage 2b used. Measuring the neighbour's brightness
+  only on pixels no other slitlet lights was offered and not taken up.
+- A / B trial for exposures whose two sky exposures both put a bright neighbour near the
+  source (`slitlet_neighbour_no_clean`, 2c346df2): A keeps both (flagged, the default), B
+  keeps only the one that puts it farther when at least 0.2 slit units farther. B used one
+  sky exposure for 11 exposures in 10 sources; 8 stayed as A. Against PRISM (5 G395M
+  sources) B is worse in all 5: rms 1.35 → 1.59 with the stated errors, 1.35 → 1.39 with
+  them scaled for the extra noise (`e2e_slitlet/final_a_vs_b.pdf`, `e2e_farther_run.sh`).
+  With the neighbour near the source in both, one sky exposure costs more noise than the
+  bias it removes. Recommendation: keep A.
 
 **Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
