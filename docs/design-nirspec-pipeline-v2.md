@@ -1100,15 +1100,19 @@ decided by the profiles.
   A 0.1 µJy source under a brighter one in the same shutter depends on that one's centre
   at the 0.01 level, which the data barely constrain.
 - Correction (2026-11-01): the geometry is not "several sources in one slitlet". 629668,
-  630784 and 632334 are three slitlets in MSA columns 343, 251 and 122. A G395M spectrum
-  crosses both detectors, so slitlets in the same MSA row put their spectra on the same
-  detector rows, shifted along the detector (where 629668 is at 5.0 µm, 630784 is at
+  630784 and 632334 are three slitlets in MSA shutter rows 343, 251 and 122 (a slitlet
+  keeps one shutter row, the dispersion direction, and runs along shutter columns; the
+  trace maps' `xcen` is the row). A G395M spectrum crosses both detectors, so slitlets on
+  the same shutter columns put their spectra on the same detector rows, shifted along
+  the detector (where 629668 is at 5.0 µm, 630784 is at
   ~4.55 and 632334 at ~3.95). 632334 sits in 629668's rows in every nod and nods with it:
   real overlap, kept whole by any nod difference, only the model removes it. 630784 sits
-  one row higher: in frame 2 it is in 629668's nod-1 row, in frame 1 in its nod-3 row, so
-  nods 1 and 3 subtract half its spectrum (a negative image) and nod 2 is clean. Figure
+  one shutter column further along: in frame 2 it is on the column of 629668's nod-1
+  shutter, in frame 1 on its nod-3 one, so nods 1 and 3 subtract half its spectrum (a
+  negative image) and nod 2 is clean. Figure
   `extraction-v2/e2e_compare/geometry_629668.png` (`e2e_geometry_fig.py`; listing
-  `e2e_geometry_dump.py`).
+  `e2e_geometry_dump.py`; its axis labels use the trace maps' names, row and column
+  swapped against the MSA metadata).
 - The clean-partner copies (`e2e_clean_partner_make.py`) also changed the variance
   arrays. The canonical variance is the frame's own (the fit adds the partners' from
   `BKGNODS`, `diff_variance`), so those copies over-stated the changed nods' variance and
@@ -1135,6 +1139,40 @@ slitlet whose shutters list more than one real source): p1 34 of 442 G395M slitl
 of 190 PRISM (`extraction-v2/msa_same_slitlet.py`). Six of the prototype's worst cases
 are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
 668641/668623, 664977/629472).
+
+**Same-slitlet overrides: decisions and prototype (2026-11-01).**
+- User: drop a partner only when the neighbour is bright enough, "if the source is above X
+  percent of the sky, maybe?" (not always). The residual scan (uncatalogued neighbours)
+  works on pixels that no other slitlet's trace covers (trace maps), with no dependence on
+  the joint model; its reporting uses the PRISM cross-check; the overrides and the scan's
+  findings are shown in the background-subtraction plots (`<root>_<sid>_bkgsub.pdf`).
+- `campfire_pipeline/nirspec/slitlet_neighbours.py` (prototype; tests
+  `tests/test_nirspec_slitlet_neighbours.py`): from `SHUTTER_INFO`, the open shutter of
+  every catalogued source of a shared slitlet at every dither point; a partner frame is
+  dirty for a nod when it puts another catalogued source on the column of the target's
+  main shutter in that nod (`PATT_NUM` gives each exposure's dither point). The
+  neighbour's brightness: its light over the sky in its own shutter, from the target's
+  frame before subtraction against the master sky (`sky_for_slit`), in 20-column bins,
+  median over the spectrum, in the frame where it is farthest from the target. A dirty
+  partner is dropped at or above the threshold (unmeasured counts as bright) when another
+  partner remains; otherwise the nod is reported.
+- p1 census (`e2e_slitlet_census.py`, `e2e_slitlet_summary.py`, `e2e_slitlet/census.json`).
+  Every dirty nod has a clean partner left (with three nods, the neighbour falls in one
+  partner frame per nod).
+
+  | | sources in shared slitlets | with a neighbour in a partner frame (nods) | neighbour light / sky, 10/50/90 % | targets' own light / sky, 10/50/90 % |
+  |---|---|---|---|---|
+  | PRISM | 28 | 22 (30) | 0.012 / 0.025 / 0.057 | 0.012 / 0.024 / 0.061 |
+  | G395M | 70 | 61 (86) | 0.010 / 0.064 / 0.304 | 0.011 / 0.057 / 0.169 |
+
+  | threshold (of the sky) | 0 | 0.01 | 0.02 | 0.05 | 0.10 |
+  |---|---|---|---|---|---|
+  | PRISM nods dropping a partner (of 30) | 29 | 28 | 21 | 6 | 0 |
+  | G395M nods dropping a partner (of 86) | 83 | 78 | 71 | 55 | 25 |
+
+  The neighbours are as bright as the targets. With three nods a kept neighbour puts half
+  its light, negative, on the target's shutter, so one at X of the sky biases the target
+  by X/2 of the sky; the faintest tenth of the targets are at about 0.01 of the sky.
 
 **Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
