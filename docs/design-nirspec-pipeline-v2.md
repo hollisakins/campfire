@@ -941,7 +941,28 @@ rms against PRISM, `fnu_prof_err` for all (with the solve's own error in bracket
   `~/campfire-data/scratch/claude/sky_resid/v13/products`): through `sky_for_slit` with
   `first_pass.master_sky` pointed at that folder, the sky on 629810's slits is about 40 % of
   1.2's (1.45e-13 vs 3.61e-13; the frame 3.6-3.8e-13), against the +2-4 % the MB session
-  measured in count rate. Asked the MB session (2026-10-31); the 1.3 check is on hold.
+  measured in count rate. Cause: that folder had no rate files, and `sky_for_slit` fell back
+  silently to the slit's own slitlet (fixed by the MB session: rate files linked, and a
+  warning in 09187922). With them 1.3 gives 1.02-1.05 x the 1.2 sky, as intended.
+
+**Master background 1.2 / 1.3 / 1.4 on single frames (2026-10-31).** `e2e_v13_check.py`,
+`e2e_v13_summary.py`. The 53 isolated G395M sources of test 1 (others' light above 1 sigma
+on < 1 % of the pixels, so only the sky is tested): the spectrum at the PRISM shape against
+PRISM (`fnu_prof_err` for all), and the shape fitted alone against the PRISM shape.
+
+  | Data | spectrum, median rms | 90th pct | shape fits on a bound |
+  |---|---|---|---|
+  | single frames - 1.2 sky | 1.87 | 3.57 | 46 / 53 |
+  | single frames - 1.3 sky (equal weights, bar shadow once) | 1.96 | 3.21 | 45 / 53 |
+  | single frames - 1.4 sky (pooled over exposures) | 1.68 | 4.39 | 44 / 53 |
+  | nod differences | 1.39 | 1.74 | |
+  | `fnu_prof` (product) | 1.38 | 1.72 | |
+
+  No master-sky version brings single frames to the nod differences for faint spectra, and
+  shape fits on single frames fail for most sources with every version (with the leftover
+  sky per exposure removed too: 39-41 of 53). What remains is the per-shutter sky that
+  repeats between nods, which only the nod difference removes. Production p1 was regenerated
+  with 1.3 and then 1.4 by the MB session (user approval); the e2e_p1 root keeps 1.2.
 
 **Open (extraction session).**
 - Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
