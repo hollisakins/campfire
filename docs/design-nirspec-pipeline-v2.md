@@ -1099,6 +1099,80 @@ decided by the profiles.
   the lowest χ² (2141.5), line halved, still ~0.35 above PRISM. Width does not matter.
   A 0.1 µJy source under a brighter one in the same shutter depends on that one's centre
   at the 0.01 level, which the data barely constrain.
+- Correction (2026-11-01): the geometry is not "several sources in one slitlet". 629668,
+  630784 and 632334 are three slitlets in MSA columns 343, 251 and 122. A G395M spectrum
+  crosses both detectors, so slitlets in the same MSA row put their spectra on the same
+  detector rows, shifted along the detector (where 629668 is at 5.0 µm, 630784 is at
+  ~4.55 and 632334 at ~3.95). 632334 sits in 629668's rows in every nod and nods with it:
+  real overlap, kept whole by any nod difference, only the model removes it. 630784 sits
+  one row higher: in frame 2 it is in 629668's nod-1 row, in frame 1 in its nod-3 row, so
+  nods 1 and 3 subtract half its spectrum (a negative image) and nod 2 is clean. Figure
+  `extraction-v2/e2e_compare/geometry_629668.png` (`e2e_geometry_fig.py`; listing
+  `e2e_geometry_dump.py`).
+- The clean-partner copies (`e2e_clean_partner_make.py`) also changed the variance
+  arrays. The canonical variance is the frame's own (the fit adds the partners' from
+  `BKGNODS`, `diff_variance`), so those copies over-stated the changed nods' variance and
+  the error quoted above (1.46 → 1.28 µJy) is not reliable. The χ² comparison is.
+
+**Archive products (user, 2026-11-01).** Choosing the background per exposure or per
+source would ship different products within one reduction; this is an archive decision.
+Agreed: nodded spectra for every source as the preferred product, master-background
+spectra for every source as the secondary product (as decided 2026-10-29), plus
+informational columns saying where the master-background spectrum is likely better. A
+nod override is not a switch to master background: it only says "don't use this shutter
+in this nod as background for this source", so the product stays nodded.
+
+**Automatic nod-partner overrides: prototype (2026-11-01).** The user asked to build them
+from estimated light, the light estimated from the master-background products.
+`campfire_pipeline/nirspec/partner_choice.py` (prototype; tests
+`tests/test_nirspec_partner_choice.py`). Per source and nod, both detectors:
+- Each partner frame's light beyond its master sky (`sky_for_slit`) on the source's
+  main-shutter pixels of that nod, binned along the trace (20 columns); the trace maps
+  say where another catalogued source's shutter covers at least half the main shutter
+  in that frame.
+- A partner's contamination per bin is its light above both the least-lit partner's and
+  the nod's own frame's, never negative. The per-shutter floor of the master sky is the
+  same shutter in every frame and cancels; light the own frame carries too (in the
+  target's row in its own frame as well) is light the subtraction should remove.
+- Dropped when the expected squared error of the nod difference falls (bias from the
+  partners' contamination plus their noise, both partners against the kept one), summed
+  over the bins where that partner's frame has another source in the row, leaving out the
+  10 % of bins with the largest gains (a feature in a bin or two is masked, not paid for
+  with a partner). One partner always remains. Output in the hand-override format.
+- What each step fixed, on the p1 G395M sources (477, 1431 nods with two or more
+  partners): v1 (least-lit partner only, any partner's flagged bins) changed 556 nods,
+  driven by single-bin spikes fixed on the detector but brighter in one exposure
+  (666978, 922323); v2 (own flagged bins, trimmed) 261 nods, but dropped partners that
+  carry the same light as the own frame (885945: frames 1 and 2 +30-40 µJy on every
+  nod's shutter, frame 3 not); v3 (own frame compared too) 130 nods, 98 sources.
+  629668 gets nod 1 against nod 3 only and nod 3 against nod 2 only, the hand choice.
+- Figures: `extraction-v2/e2e_auto/partner_light_<sid>.png` (`e2e_auto_fig.py`), each
+  frame's light on the main shutter per nod against wavelength.
+
+Tests (copies with the chosen partners in scratch, `e2e_auto_make.py`; only `SCI` and
+`BKGNODS` change):
+- Nod agreement (`e2e_auto_nodcheck.py`): χ² of the nods' main-shutter light about their
+  mean per bin; light every nod shares (the target, sources that nod with it) cancels,
+  negative images do not. 98 sources: median 3.49 → 2.76 (median bin 2.86 → 2.38),
+  better in 74, worse by more than 2x in 14. Large gains where the image was strong
+  (630802 324 → 3.4, 633426 91 → 2.5, 629668 84 → 3.5); large losses in 885945, 664977,
+  668641, 634547, 950331, 921026, 880045.
+- Against PRISM (`e2e_auto_test.py`, the 20 changed sources with a PRISM spectrum, same
+  error for both):
+
+  | spectrum | better | worse | notable |
+  |---|---|---|---|
+  | target alone, other light left in (what `fnu` is) | 13 | 5 | 629466 2.26 → 1.19, 922707 1.78 → 1.17, 884902 2.77 → 2.16, 629668 3.51 → 2.89; 634547 0.97 → 4.47, 921026 0.92 → 3.77 |
+  | joint solve | 0 | 20 | median 1.01 → 1.06 (the noise of the dropped partner; the joint model already removes these images) |
+
+- Two failure kinds remain. (a) Light shared by the own frame and one partner but
+  modelled as the partner's contamination when the own frame also holds the target
+  (it cannot be told from the target's light on the same pixels). (b) Partner light
+  that is not a source: 880045's frame 3 swings -2 to +3.5 µJy about the master sky
+  on its nod 1 and 2 shutters while frames 1 and 2 are flat (634547 is dropped for the
+  same neighbour, 631816). A check that the excess has the named neighbour's spectrum
+  (its own master-background light, at the wavelengths that land there) would separate
+  both from real images.
 
 **Open (extraction session).**
 - Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
@@ -1225,6 +1299,8 @@ a fix or needs another field or disperser), **To make**.
 | Runtime baseline on one full observation | both | |
 | Speed up stage 2's per-source work (user goal, 2026-10-31). First profile one stage-2b group and one rectification: in stage 2b the log line "Inverting the pathloss" only marks the start of a group, which also subtracts the nods, reapplies the pathloss and rectifies again, so the slow part is not yet known. Candidate fixes once measured: rectify once instead of in both 2a and 2b, invert the pathloss arithmetically from the stored correction instead of a `PathLossStep` call, and batch per exposure instead of per source | extraction session | |
 | Rebuild the extraction report as final documentation (main text = what ships; appendices = explored and rejected) | extraction session | |
+| Automatic nod-partner overrides (3.9, prototype `partner_choice.py`): check the excess against the named neighbour's own light; then where they run (inside stage 2b, or a file applied on the next run) and the threshold | extraction session | user |
+| Informational "master background likely better" columns (archive products, 3.9) | extraction session | user |
 
 ---
 
