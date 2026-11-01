@@ -251,13 +251,21 @@ def measure(neighbour, slit, frames):
     return neighbour
 
 
-def decide(root, slit, neighbours, nod_dither, partners, min_sky_frac=MIN_SKY_FRAC, max_distance=MAX_DISTANCE):
+FARTHER_MARGIN = 0.2         # 'farther': the farthest partner must put the neighbour this much farther, slit units
+
+
+def decide(root, slit, neighbours, nod_dither, partners, min_sky_frac=MIN_SKY_FRAC, max_distance=MAX_DISTANCE,
+           no_clean='keep'):
     """``NodDecision`` per nod. A partner is dropped when it puts on the target a
     neighbour at or above ``min_sky_frac`` (or one whose brightness could not be
-    measured) and a partner remains; when none would, the nod keeps its partners
-    (``no clean partner``)."""
+    measured) and a partner remains. When none would: with ``no_clean = 'keep'`` the nod
+    keeps its partners (``no clean partner``); with ``'farther'`` it keeps the one partner
+    that puts the nearest bright neighbour farthest from the target, provided that is
+    ``FARTHER_MARGIN`` farther than with any other partner (``farther``), else it keeps
+    them all."""
     bright = {n.source_id for n in neighbours if not (n.sky_frac < min_sky_frac)}   # NaN counts as bright
     dirty = dirty_partners(slit, neighbours, nod_dither, partners, max_distance)
+    by_id = {n.source_id: n for n in neighbours}
     out = []
     for nod in sorted(partners):
         parts = sorted(partners[nod])
@@ -269,6 +277,12 @@ def decide(root, slit, neighbours, nod_dither, partners, min_sky_frac=MIN_SKY_FR
             why = 'faint'
         elif bad and not keep:
             keep, why = parts, 'no clean partner'
+            if no_clean == 'farther':
+                t = slit.target_u[nod_dither[nod]]
+                near = {j: min(abs(by_id[i].where[nod_dither[j]] - t) for i in d[j] if i in bright) for j in bad}
+                order = sorted(near, key=near.get, reverse=True)
+                if len(order) > 1 and near[order[0]] - near[order[1]] >= FARTHER_MARGIN:
+                    keep, why = [order[0]], 'farther'
         elif bad:
             why = 'dropped'
         out.append(NodDecision(root=root, nod=nod, partners=parts, keep=keep, dirty=d, why=why))
@@ -405,7 +419,8 @@ def _names(ids, frac):
                                    for i in ids) + ' of sky'
 
 
-def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_distance=MAX_DISTANCE):
+def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_distance=MAX_DISTANCE,
+                   no_clean='keep'):
     """The overrides of one source in one exposure root, over its detector groups
     (lists of canonical paths): (root, {nod (str): (kept nods, reason)} for the nods
     whose partners change, {nod (str): flag} for the nods with a bright neighbour from
@@ -419,9 +434,10 @@ def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_
         return None, {}, {}, None
     frac = {n.source_id: n.sky_frac for n in g.neighbours}
     out, flags = {}, {}
-    for d in decide(g.root, g.slit, g.neighbours, g.nod_dither, g.partners, min_sky_frac, max_distance):
-        if d.why == 'dropped':
-            out[str(d.nod)] = (d.keep, _names(sorted({i for j in set(d.partners) - set(d.keep) for i in d.dirty[j]}), frac))
+    for d in decide(g.root, g.slit, g.neighbours, g.nod_dither, g.partners, min_sky_frac, max_distance, no_clean):
+        if d.why in ('dropped', 'farther'):
+            out[str(d.nod)] = (d.keep, _names(sorted({i for j in set(d.partners) - set(d.keep) for i in d.dirty[j]}), frac)
+                               + ('; farther partner' if d.why == 'farther' else ''))
         elif d.why == 'no clean partner':
             flags[str(d.nod)] = 'no clean partner: ' + _names(sorted({i for ids in d.dirty.values() for i in ids
                                                                       if not (frac[i] < min_sky_frac)}), frac)

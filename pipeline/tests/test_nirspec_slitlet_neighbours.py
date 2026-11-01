@@ -53,6 +53,15 @@ def test_threshold_and_the_flag_without_a_clean_partner():
     assert dec[1].keep == [2, 3] and dec[1].why == 'faint'
     dec = {d.nod: d for d in SN.decide('r', sl, nbs, NOD_DITHER, PARTNERS, 0.02, max_distance=0.8)}
     assert dec[2].keep == [1, 3] and dec[2].why == 'no clean partner'
+    # partner 1 puts the neighbour 0.37 from the target, partner 3 0.76: keep only 3
+    dec = {d.nod: d for d in SN.decide('r', sl, nbs, NOD_DITHER, PARTNERS, 0.02, 0.8, no_clean='farther')}
+    assert dec[2].keep == [3] and dec[2].why == 'farther'
+    SN.FARTHER_MARGIN, old = 0.5, SN.FARTHER_MARGIN                 # too close a call: keep both
+    try:
+        dec = {d.nod: d for d in SN.decide('r', sl, nbs, NOD_DITHER, PARTNERS, 0.02, 0.8, no_clean='farther')}
+        assert dec[2].keep == [1, 3] and dec[2].why == 'no clean partner'
+    finally:
+        SN.FARTHER_MARGIN = old
 
 
 def test_unmeasured_neighbour_counts_as_bright():
