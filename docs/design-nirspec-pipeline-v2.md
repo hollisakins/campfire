@@ -1301,6 +1301,28 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   build kept lighting it (its shutter state still `1x1`), the stored map removes it. So the
   switch also fixes stuck source shutters in the contamination model. The rest are edge
   pixels (tens to ~140 per slitlet).
+- p1 rerun with the position rule and the stored maps (isolated root, stage 2b + 3 for the
+  74 sources with a neighbour within reach, 12 workers, no errors, no boxcar fallbacks;
+  `e2e_position_run.sh`): 98 source x disperser pairs measured, 55 with overrides on 67
+  nods (the shutter rule: 92), 19 nods flagged `no clean partner` (among them 923747 nod 2
+  and 950038 nod 2, both dispersers, which the shutter rule fixed). Stage 3's 12 maps came
+  from the rate files in 5 s.
+- PRISM check (`e2e_position_removed.py`, `e2e_slitlet/position_prism_removed.png` and
+  `_nrs2.png`), 15 overridden PRISM nods: in 8 the removed light has the neighbour's own
+  spectrum (scale 0.21-0.44): 668002 nod 3 loses a -0.2 µJy line at 3.75 µm (634072's)
+  and 879903 nod 2 one at 2.85 µm (879928's), both new with the position rule; 925591's
+  3.4 / 4.5 µm lines, 950038 nod 1, 879928, 924186, 924216, 629466 as before. In 7 nothing
+  measurable is removed (923334, 923362 nods 1 and 3, 925550, 634522 nods 1 and 2, 667731):
+  the dropped partner held little of the neighbour's light, so they only cost noise.
+  634522's neighbour 634547 measures 0.284 of the sky yet removes nothing; its brightness
+  measure is suspect (not followed up).
+- G395M against PRISM (`e2e_slitlet_spectra.py`, against the products before any override;
+  this also includes the stored maps' change to the joint model): 16 sources, rms 1.48 →
+  1.59 with the stated errors (better in 3; scatter over the stated error 0.98 → 1.08, the
+  known missing partner noise), 1.48 → 1.56 with the errors scaled (better in 9, worse in
+  7). Largest changes: 925404 6.03 → 2.04 and 925403 3.64 → 2.78 (a pair 0.19 slit units
+  apart); 924186 1.44 → 1.86, 629432 1.51 → 1.81, 921027 1.24 → 1.44 worse. On average
+  neutral, as with the shutter rule; clear where the neighbour is bright.
 
 **Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
