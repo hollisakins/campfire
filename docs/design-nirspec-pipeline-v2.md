@@ -1243,6 +1243,14 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   629451 / 629452 0.02, 921026 / 921027 0.09) land exactly on the target, the cases
   overrides are for. Proposed next: decide by position (a partner is dirty when it
   puts the neighbour within R of the target; both dirty: keep the partners and flag).
+- Master-background session's measurement (2026-11-01, p1 G395M, count rate): empty-shutter
+  pixels 0.25-0.6 slit units beyond another slitlet's padded footprint (LIGHT_PAD 0.25)
+  read 1.033 ± 0.004 of the sky in the same shutter (1.08 under two such slitlets): light
+  from an open shutter reaches a few per cent beyond what the trace map marks as lit. The
+  sky part cancels in nod differences; a neighbour source's own wings there are missing
+  from the joint model's support, small next to its ~10 % accuracy on images. It also
+  argues for the position rule: a neighbour just across a bar still reaches the target.
+  (`~/campfire-data/scratch/claude/mbkg_ship/tracemap/extra_pixels_clean.py`)
 
 **Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
