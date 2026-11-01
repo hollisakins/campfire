@@ -1084,7 +1084,7 @@ def echo_corrected(P1, exps, ks, own_light, cal_of):
 
 
 def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0, echo=True, exclude=(),
-            keep_sources=False, why_missing=None):
+            keep_sources=False, why_missing=None, exclude_ext=False):
     """Predicted other sources' light in each science nod difference of a target.
 
     Every source the trace maps put on the target's trace is predicted from its pass
@@ -1107,6 +1107,8 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
         the target's joint-solve group while their light is being solved for, and the
         contaminants pass 1b masks): their light is not added, except a member's
         light past its cutout (not among the joint unknowns), from its pass 1.
+    exclude_ext : leave the ``exclude`` sources out entirely, their light past their
+        cutouts too (the joint first pass solves for it; ``joint_first_pass.add_joint_light``).
     keep_sources : keep every contaminant's predicted light per exposure in
         ``by_source`` (default: only the pair candidates').
     echo : an unreliable contaminant solved over the target's pixels is predicted from
@@ -1158,6 +1160,8 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
         ms = main_shutter(e, c_plan) & e.ok
         terms = [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in e.partners]
         for csid in sorted(geo.sources[k]):
+            if exclude_ext and int(csid) in exclude:
+                continue
             if csid not in cache:
                 P1 = pass1_for(csid)
                 if (echo and own_ok and P1 is not None and not P1.reliable and int(csid) not in exclude

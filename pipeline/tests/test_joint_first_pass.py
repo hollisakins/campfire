@@ -141,6 +141,105 @@ def test_ext_columns_pick_the_end_by_wavelength():
     assert i[:2].tolist() == [0, 4] and np.allclose(t[:2], 0.5)
 
 
+def test_terms_are_the_exposure_and_its_partners():
+    class E:
+        def __init__(self, p):
+            self.partners = p
+    exps = [E([1, 2]), E([0, 2]), E([])]
+    assert JF._terms(exps, 0) == [(0, 1.0), (1, -0.5), (2, -0.5)]
+    assert JF._terms(exps, 2) == [(2, 1.0)]
+
+
+def test_rate_nod_diff_subtracts_the_partners_mean(tmp_path):
+    from astropy.io import fits
+    vals = {'a': 5.0, 'b': 1.0, 'c': 3.0}
+    for k, v in vals.items():
+        dq = np.zeros((4, 6), np.uint32)
+        if k == 'c':
+            dq[1, 2] = 1                                   # DO_NOT_USE in a partner
+        fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.full((4, 6), v, np.float32), name='SCI'),
+                      fits.ImageHDU(np.full((4, 6), 0.1, np.float32), name='VAR_POISSON'),
+                      fits.ImageHDU(np.full((4, 6), 0.1, np.float32), name='VAR_RNOISE'),
+                      fits.ImageHDU(dq, name='DQ')]).writeto(tmp_path / f'{k}_rate.fits')
+    d, v, bad = JF._rate_nod_diff(str(tmp_path), 'a', ['b', 'c'], np.arange(4), np.arange(6))
+    assert np.allclose(d, 5.0 - 2.0)
+    assert np.allclose(v, 0.2 + 2 * 0.2 / 4)
+    assert bad[1, 2] and bad.sum() == 1
+    assert JF._rate_nod_diff(str(tmp_path), 'a', [], np.arange(4), np.arange(6)) is None
+
+
+def test_others_light_on_target_is_their_columns_times_their_spectra():
+    t, c = _Member(3), _Member(2)
+    t.sid, c.sid = 1, 2
+    t.owned = np.ones(4, bool)
+    t.col0, t.xcol0 = 0, 3
+    c.col0, c.xcol0 = 3, 5
+    A = sp.csr_matrix(np.array([[1, 0, 0, 0.5, 0], [0, 1, 0, 0, 0], [0, 0, 1, 0, 2.0], [0, 0, 0, 1, 1],
+                                [0, 0, 0, 1, 0]]))
+    f = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    gi = np.arange(5)
+    s = np.full(5, 0.1)
+    out = JF._others_on_target([t, c], A, f, gi, s)
+    assert len(out) == 1 and out[0]['sid'] == 2
+    assert out[0]['rows'].tolist() == [0, 2, 3]                 # rows 0-3 are the target's; row 1 has none of c
+    assert np.allclose(out[0]['val'], [2.0, 10.0, 9.0])
+    assert np.allclose(out[0]['err'], [0.05, 0.2, 0.2])
+
+
+class _Exp:
+    def __init__(self, name, partners, use_data=True):
+        self.name = name
+        self.partners = partners
+        self.use_data = use_data
+        self.origin = (10, 20)
+        self.y = np.zeros((5, 8))
+        self.ok = np.ones((5, 8), bool)
+
+
+class _Target:
+    def __init__(self, exps):
+        self.sid = 7
+        self.exps = exps
+        self.pix_k = np.array([0, 0, 1, 1])
+        self.pix_iy = np.array([1, 2, 1, 3])
+        self.pix_ix = np.array([4, 4, 5, 6])
+
+
+def _exps():
+    return [_Exp('jw00001001001_01101_00001_nrs1_cal.fits', [1]), _Exp('jw00001001001_01101_00002_nrs1_cal.fits', [0])]
+
+
+def test_joint_light_round_trip_and_placement(tmp_path, monkeypatch):
+    exps = _exps()
+    t = _Target(exps)
+    others = [dict(sid=3, rows=np.array([0, 2]), val=np.array([1.5, -0.5]), err=np.array([0.1, 0.2])),
+              dict(sid=4, rows=np.array([3]), val=np.array([2.0]), err=np.array([0.3]))]
+    path = str(tmp_path / 'p_jointlight.npz')
+    JF.write_joint_light(path, t, others, 'sigA')
+    assert JF.read_joint_light(path, 'sigB') is None
+    jl = JF.read_joint_light(path, 'sigA')
+    monkeypatch.setattr(JF.PF, 'planned_position', lambda exps: (0.0, 0))
+    monkeypatch.setattr(JF.CT, 'main_shutter', lambda e, c: np.ones(e.y.shape, bool))
+    monkeypatch.setattr(JF.CT, 'diff_sigma', lambda exps, k: np.ones(exps[k].y.shape))
+    P = JF.CT.Prediction(pred=[np.zeros((5, 8)) for _ in exps], dpred=[np.zeros((5, 8)) for _ in exps])
+    JF.add_joint_light(P, exps, jl)
+    assert P.pred[0][1, 4] == 1.5 and P.pred[1][1, 5] == -0.5 and P.pred[1][3, 6] == 2.0
+    assert np.allclose(P.pred[0], P.pred_joint[0]) and np.isclose(P.dpred_joint[1][3, 6], 0.3)
+    assert P.joint == {3, 4} and np.isclose(P.contributors[3], 1.5) and np.isclose(P.contributors[4], 2.0)
+
+
+def test_joint_light_refuses_other_nod_differences(tmp_path):
+    exps = _exps()
+    path = str(tmp_path / 'p_jointlight.npz')
+    JF.write_joint_light(path, _Target(exps), [], 's')
+    other = _exps()
+    other[0].partners = []
+    P = JF.CT.Prediction(pred=[np.zeros((5, 8)) for _ in other], dpred=[np.zeros((5, 8)) for _ in other])
+    import pytest
+    with pytest.raises(ValueError):
+        JF.add_joint_light(P, other, JF.read_joint_light(path))
+
+
 class _Cache:
     """A member cache whose source 2 cannot be built and whose source 9 (the target of
     the boxcar test) cannot either."""
@@ -165,6 +264,7 @@ class _Cache:
 
 def _stub_write(monkeypatch, written):
     monkeypatch.setattr(JF.CT, 'write_pass1', lambda out, P1, *a: written.append((out, P1)))
+    monkeypatch.setattr(JF, 'write_joint_light', lambda path, target, others, sig: None)
 
 
 def test_run_target_leaves_out_a_neighbour_that_cannot_be_built(tmp_path, monkeypatch):

@@ -16,26 +16,38 @@ Per disperser (``run``):
    which other sources' cutouts, from the canonical headers and the maps alone;
 2. per source a neighbourhood (``neighbourhood``): the source, its neighbours and theirs
    (two steps, at most ``cap`` sources, strongest first);
-3. per member, once per worker (``MemberCache``): the single exposures minus the master
-   sky (``first_pass.load_source_sky``), the shape of the chain (the PRISM shape of the
-   same source when the PRISM product took its own fit, else its own fit above the
-   grating gate, else the default shape; ``shape_for``), the per-exposure pointing
-   offsets at that shape, and its frames per unit spectrum (``profile_joint``);
+3. per member, once per worker (``MemberCache``): its nod differences, the data of its
+   final profile fit (``profile_fit.load_source``: each exposure minus the mean of the
+   frames stage 2b subtracted), the shape of the chain (the PRISM shape of the same
+   source when the PRISM product took its own fit, else its own fit above the grating
+   gate, else the default shape; ``shape_for``), the per-exposure pointing offsets at
+   that shape, and its frames per unit spectrum (``profile_joint``);
 4. one weighted least-squares fit of every member's spectrum at full resolution,
-   clipped at ``clip`` sigma twice (``solve_target``); only the target's spectrum is
-   kept, each source being the target of its own neighbourhood;
+   clipped at ``clip`` sigma twice (``solve_target``); each source is the target of its
+   own neighbourhood;
 5. the target's errors from its columns of the inverse normal matrix, and the
    wavelengths it cannot be told apart from another member (correlation below
    ``-degenerate``), ``nosep``;
 6. a pass-1 file in the format the contamination prediction reads (``why = 'joint'``),
-   with the not-separable mask.
+   with the not-separable mask, and beside it the other members' light on the target's
+   own pixels from this same solve (``write_joint_light``). The target's product takes
+   its neighbours' light from there (``add_joint_light``), not from each neighbour's own
+   neighbourhood solve, whose split between two hard-to-separate sources differs.
+
+Nod differences, not single frames minus the master sky: a nod difference subtracts the
+same pixels, so the sky cancels exactly, including the part that differs from shutter to
+shutter and repeats between nods. On p1 G395M the master sky left about +2.6 % of the sky
+in single frames and a per-shutter spread; faint sources came out 0.15-0.2 µJy high and
+their shape fits failed (docs/design-nirspec-pipeline-v2.md, 2026-10-31). Each source's
+light enters its own difference (+1) and its partners' (-1/n), so other sources' negative
+images are modelled like the rest.
 
 The solve covers each member's whole trace, not only its calibrated range (user,
 2026-10-31): past the wavelengths a member's fit pixels have, its light is a second set of
-unknowns per end in count-rate units (``profile_extend`` geometry), fitted on the rate
-files minus the painted master background (``MBKG2D``) together with everything else
-(``design_full``). A member's light past its cutout that lands on a neighbour's trace is
-then separated like the rest instead of being masked out.
+unknowns per end in count-rate units (``profile_extend`` geometry), fitted on the nod
+differences of the rate files together with everything else (``design_full``). A member's
+light past its cutout that lands on a neighbour's trace is then separated like the rest
+instead of being masked out.
 """
 
 import os
@@ -49,7 +61,10 @@ from campfire_pipeline.nirspec import profile_contam as CT
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec import profile_joint as PJ
 
-JOINT_PASS_VERSION = '2'          # 2: the light past the cutouts is among the joint unknowns
+JOINT_PASS_VERSION = '3'          # 2: the light past the cutouts is among the joint unknowns
+#                                   3: nod differences instead of the master sky; the neighbours'
+#                                      light on the target's pixels is written beside its pass 1
+JOINT_LIGHT_VERSION = '1'
 SPEC_SRC = 'joint'
 CHUNK = 512
 
@@ -180,11 +195,10 @@ class MemberCache:
     use and kept for the most recent ``size`` sources (a worker processes neighbourhoods
     in coupling order, ``target_order``)."""
 
-    def __init__(self, tasks, workspace, sky_for, stage_config, is_prism, size=60):
+    def __init__(self, tasks, workspace, stage_config, is_prism, size=60):
         from campfire_pipeline.nirspec import profile_chain as PC
         self.tasks = tasks                      # sid -> dict(groups, overrides, science, prism_product)
         self.workspace = workspace
-        self.sky_for = sky_for
         self.cfg = PC.ChainConfig.from_stage_config(stage_config)
         self.is_prism = is_prism
         self.size = size
@@ -224,10 +238,8 @@ class MemberCache:
         return self._prism[sid]
 
     def _build(self, sid):
-        from campfire_pipeline.nirspec import first_pass as FP
         t = self.tasks[sid]
-        exps = FP.load_source_sky(t['groups'], self.sky_for, bkg_overrides=t['overrides'],
-                                  science=set(t['science']))
+        exps = PF.load_source(t['groups'], bkg_overrides=t['overrides'], science=set(t['science']))
         cfg = self.cfg
         M = PF.ProfileModel(exps, chromatic=True, priors=cfg.priors, bounds=cfg.bounds)
         if sid not in self._shape:
@@ -249,34 +261,41 @@ class MemberCache:
 # ---------------------------------------------------------------------------
 # The light past the cutouts
 # ---------------------------------------------------------------------------
-def _rate_minus_sky(workspace, key, rows, cols):
-    """(data, variance, bad) of one single frame on a detector band, count-rate units:
-    the rate minus the painted master background. Bad: DO_NOT_USE in the rate, a
-    pixel the master background did not paint, or no value."""
-    from astropy.io import fits
+def _rate_nod_diff(workspace, key, partner_keys, rows, cols):
+    """(data, variance, bad) of one nod difference on a detector band, count-rate units:
+    the exposure's rate minus the mean of its partners' (the frames stage 2b subtracts),
+    so the sky cancels pixel by pixel. Bad: DO_NOT_USE in any of the rates, or no value.
+    None without partners or without a rate file."""
     from campfire_pipeline.nirspec import profile_extend as PE
-    rp, mp = os.path.join(workspace, f'{key}_rate.fits'), os.path.join(workspace, f'{key}_mbkg.fits')
-    if not (os.path.exists(rp) and os.path.exists(mp)):
+    paths = [os.path.join(workspace, f'{k}_rate.fits') for k in [key] + list(partner_keys)]
+    if not partner_keys or not all(os.path.exists(p) for p in paths):
         return None
-    sci, var, bad = PE._rate(rp, rows, cols)
-    sl = (slice(rows[0], rows[-1] + 1), slice(cols[0], cols[-1] + 1))
-    with fits.open(mp) as h:
-        if 'MBKG2D' not in h:
-            return None
-        sky = np.asarray(h['MBKG2D'].data[sl], float)
-        if 'MBKG2DDQ' in h:
-            bad = bad | (np.asarray(h['MBKG2DDQ'].data[sl]) != 0)
-    d = sci - sky
-    bad = bad | ~np.isfinite(d) | ~np.isfinite(var) | (var <= 0)
-    return d, var, bad
+    d, v, bad = PE._rate(paths[0], rows, cols)
+    n = len(partner_keys)
+    for p in paths[1:]:
+        s, vj, bj = PE._rate(p, rows, cols)
+        d = d - s / n
+        v = v + vj / n ** 2
+        bad = bad | bj
+    bad = bad | ~np.isfinite(d) | ~np.isfinite(v) | (v <= 0)
+    return d, v, bad
+
+
+def _terms(exps, k):
+    """The frames of exposure k's nod difference and their weights: [(k, 1), (j, -1/n) for
+    each partner j]."""
+    e = exps[k]
+    part = list(e.partners or [])
+    return [(k, 1.0)] + [(j, -1.0 / len(part)) for j in part]
 
 
 def ext_setup(m, workspace):
     """A member's light past the wavelengths its fit pixels have (``m.ext``): one grid
     per end (``profile_extend.end_rows``), its frames per unit count-rate spectrum on the
-    detector there (sparse, single frames), and the data there, the rate minus the
-    painted sky of each science frame, on the pixels its own trace lights. Nothing past
-    the cutout (``n = 0``) when it has no such pixels."""
+    detector there (sparse, one per exposure: the source's own light in that frame), and
+    the data there, each science exposure's nod difference of the rate files
+    (``_rate_nod_diff``), on the pixels its own trace lights in that exposure. Nothing
+    past the cutout (``n = 0``) when it has no such pixels."""
     from campfire_pipeline.nirspec import profile_extend as PE
     M, exps = m.model, m.exps
     lam_in = np.asarray(M.pix['lam'], float)
@@ -304,7 +323,8 @@ def ext_setup(m, workspace):
                                    lam=lam[on][o], g=gimg[on][o])
         if not exps[k].use_data:
             continue
-        data = _rate_minus_sky(workspace, key, rows, cols)
+        data = _rate_nod_diff(workspace, key, [CT.exposure_key(exps[j].name) for j in (exps[k].partners or [])],
+                              rows, cols)
         if data is None:
             continue
         d, v, bad = data
@@ -356,13 +376,18 @@ def design_full(members):
     """The joint design over each member's whole trace: ``profile_joint.design`` (the
     cutout pixels and the in-range spectra), plus every member's extension unknowns
     (count rate) on those pixels (converted with the receiving pixel's calibration), and
-    rows for each member's pixels past its cutout (single frames, count rate) that no
-    cutout already holds, with every member's in-range light (converted back with the
-    giving member's calibration) and extension light on them.
+    rows for each member's pixels past its cutout (nod differences of the rate files,
+    count rate) that no cutout already holds, with every member's in-range light
+    (converted back with the giving member's calibration) and extension light on them.
+
+    Every row is a nod difference: a member's light enters through each frame of the
+    row's difference with its weight (+1 for the exposure, -1/n for each partner;
+    ``_terms``), as in ``profile_joint.design``. A datum is the exposure, its partners
+    and the detector pixel; it enters once.
 
     Column layout per member: its in-range grid (``col0``), then its blue and red end
-    grids (``xcol0``). Single frames only (the first pass; no partners). Returns (A, d,
-    v, n_cut) with ``n_cut`` the number of cutout rows."""
+    grids (``xcol0``). Returns (A, d, v, n_cut) with ``n_cut`` the number of cutout
+    rows."""
     tags = {}
     cut_keys = [PJ._pixel_keys(m, tags)[3] for m in members]
     PJ.owned_pixels(members)
@@ -378,9 +403,10 @@ def design_full(members):
     A0 = A0.tocoo()
     rows, cols, vals = [A0.row], [newcol[A0.col]], [A0.data]
 
-    def add_ext_light(r, det, key, conv_of):
+    def add_ext_light(r, det, key, conv_of, w=1.0):
         """Every member's extension light at detector pixels ``det`` (rows ``r``) of frame
-        ``key``; ``conv_of(sel)`` converts count rate to the row's units."""
+        ``key``, times the frame's weight ``w`` in the row's nod difference; ``conv_of(sel)``
+        converts count rate to the row's units."""
         for c in members:
             mod = c.ext['model'].get(key) if c.ext['n'] else None
             if mod is None:
@@ -388,7 +414,7 @@ def design_full(members):
             found, pos = _lookup(mod, det)
             if not found.any():
                 continue
-            conv = conv_of(found)
+            conv = w * conv_of(found)
             ok, i, t = _ext_cols(c, mod['lam'][pos[found]])
             ok &= np.isfinite(conv)
             if not ok.any():
@@ -409,8 +435,9 @@ def design_full(members):
             iy, ix, r = s.pix_iy[sel], s.pix_ix[sel], row0 + loc[sel]
             e = s.model.exps[k]
             det = (iy + int(e.origin[0])).astype(np.int64) * 100000 + (ix + int(e.origin[1]))
-            cal = s.calibration(k)[iy, ix]
-            add_ext_light(r, det, CT.exposure_key(e.name), lambda f, cal=cal: cal[f])
+            for j, w in _terms(s.model.exps, k):
+                cal = s.calibration(j)[iy, ix]          # count rate -> the member's units in frame j
+                add_ext_light(r, det, CT.exposure_key(s.model.exps[j].name), lambda f, cal=cal: cal[f], w)
         row0 += int(own.sum())
     n_cut = row0
 
@@ -421,8 +448,9 @@ def design_full(members):
         R = s.ext.get('rows') if s.ext['n'] else None
         if R is None:
             continue
-        names = [CT.exposure_key(s.exps[k].name) for k in R['k']]
-        tid = np.array([tags.setdefault(nm + '|', len(tags)) for nm in names], np.int64)
+        tag_of = {k: CT.exposure_key(s.exps[k].name) + '|' + ','.join(
+            sorted(CT.exposure_key(s.exps[j].name) for j in (s.exps[k].partners or []))) for k in np.unique(R['k'])}
+        tid = np.array([tags.setdefault(tag_of[k], len(tags)) for k in R['k']], np.int64)
         keys = tid * 10 ** 10 + R['det']
         own = ~np.isin(keys, claimed)
         _, first = np.unique(keys, return_index=True)
@@ -439,37 +467,38 @@ def design_full(members):
         dy, dx = np.divmod(det, 100000)                     # 1-based detector row, column
         for k in np.unique(kk):
             sk = kk == k
-            key = CT.exposure_key(s.exps[k].name)
             r = r_all[sk]
-            # in-range light of every member, from its calibrated units to count rate
-            for c in members:
-                b = c.basis.get(key)
-                if b is None:
-                    continue
-                cy = dy[sk] - int(b['origin'][0])
-                cx = dx[sk] - int(b['origin'][1])
-                ny, nx = b['prof'].shape
-                ins = (cy >= 0) & (cy < ny) & (cx >= 0) & (cx < nx)
-                if not ins.any():
-                    continue
-                prof = b['prof'][cy[ins], cx[ins]]
-                lam = b['plam'][cy[ins], cx[ins]]
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    conv = 1.0 / b['cal'][cy[ins], cx[ins]]
-                g = c.model.lam_grid
-                ok = (np.isfinite(prof) & (prof != 0) & np.isfinite(lam) & (lam >= g[0]) & (lam <= g[-1])
-                      & np.isfinite(conv))
-                if not ok.any():
-                    continue
-                lam = lam[ok]
-                i = np.clip(np.searchsorted(g, lam) - 1, 0, g.size - 2)
-                t = np.clip((lam - g[i]) / (g[i + 1] - g[i]), 0.0, 1.0)
-                val = conv[ok] * prof[ok]
-                rr = r[ins][ok]
-                rows.extend([rr, rr])
-                cols.extend([c.col0 + i, c.col0 + i + 1])
-                vals.extend([val * (1 - t), val * t])
-            add_ext_light(r, det[sk], key, lambda f, n=int(sk.sum()): np.ones(int(f.sum())))
+            for j, w in _terms(s.exps, k):
+                key = CT.exposure_key(s.exps[j].name)
+                # in-range light of every member in frame j, from its calibrated units to count rate
+                for c in members:
+                    b = c.basis.get(key)
+                    if b is None:
+                        continue
+                    cy = dy[sk] - int(b['origin'][0])
+                    cx = dx[sk] - int(b['origin'][1])
+                    ny, nx = b['prof'].shape
+                    ins = (cy >= 0) & (cy < ny) & (cx >= 0) & (cx < nx)
+                    if not ins.any():
+                        continue
+                    prof = b['prof'][cy[ins], cx[ins]]
+                    lam = b['plam'][cy[ins], cx[ins]]
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        conv = w / b['cal'][cy[ins], cx[ins]]
+                    g = c.model.lam_grid
+                    ok = (np.isfinite(prof) & (prof != 0) & np.isfinite(lam) & (lam >= g[0]) & (lam <= g[-1])
+                          & np.isfinite(conv))
+                    if not ok.any():
+                        continue
+                    lam = lam[ok]
+                    i = np.clip(np.searchsorted(g, lam) - 1, 0, g.size - 2)
+                    t = np.clip((lam - g[i]) / (g[i + 1] - g[i]), 0.0, 1.0)
+                    val = conv[ok] * prof[ok]
+                    rr = r[ins][ok]
+                    rows.extend([rr, rr])
+                    cols.extend([c.col0 + i, c.col0 + i + 1])
+                    vals.extend([val * (1 - t), val * t])
+                add_ext_light(r, det[sk], key, lambda f: np.ones(int(f.sum())), w)
         row0 += int(own.sum())
     A = sp.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(row0, col))
     return A, np.concatenate(d), np.concatenate(v), n_cut
@@ -582,7 +611,35 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
     by_ext = np.where(pc >= 0, parts[np.maximum(pc, 0)] % 2 == 1, False)
     return dict(lam=members[0].model.lam_grid, flux=flux[:n_in], err=err[:n_in], nosep=nosep[:n_in],
                 corr=corr[:n_in], ext=ext, npix=int(use.sum()), nclip=int((~use & np.isfinite(d)).sum()),
-                nosep_sid=by_sid, nosep_ext=by_ext)
+                nosep_sid=by_sid, nosep_ext=by_ext, others=_others_on_target(members, A, f, gi, s))
+
+
+def _others_on_target(members, A, f, gi, s):
+    """Each other member's light on the target's own pixels from this solve: per member
+    dict(sid, rows, val, err), ``rows`` indexing the target's pixel table (the target is
+    first, so it owns all its pixels and they are the first rows of ``A``), in the units
+    of the target's nod differences. ``err``: the member's unknowns' errors with the other
+    unknowns held (a lower bound; reported only), propagated linearly."""
+    t = members[0]
+    nT = int(np.sum(t.owned)) if getattr(t, 'owned', None) is not None else 0
+    if nT == 0:
+        return []
+    e_cond = np.zeros(A.shape[1])
+    e_cond[gi] = s                                       # 1 / sqrt(N_jj) of the unscaled unknowns
+    At = A[:nT].tocsc()
+    out = []
+    for c in members[1:]:
+        cs = slice(c.col0, c.xcol0 + c.ext['n'])
+        Ac = At[:, cs]
+        if Ac.nnz == 0:
+            continue
+        rows = np.unique(Ac.nonzero()[0])
+        val = np.asarray(Ac @ f[cs]).ravel()[rows]
+        err = np.asarray(abs(Ac) @ e_cond[cs]).ravel()[rows]
+        keep = (val != 0) | (err != 0)
+        if keep.any():
+            out.append(dict(sid=int(c.sid), rows=rows[keep], val=val[keep], err=err[keep]))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +707,113 @@ def ext_frames(target, ends):
                 npix=0, nmask=0)
 
 
+# ---------------------------------------------------------------------------
+# The neighbours' light on the target, from the target's own solve
+# ---------------------------------------------------------------------------
+def joint_light_path(pass1_file):
+    """The file beside a pass-1 file holding the other members' light on its target."""
+    return pass1_file[:-len('_pass1.npz')] + '_jointlight.npz'
+
+
+def _exposure_tags(exps):
+    """Per exposure: its key and its nod difference (the exposure and its partners)."""
+    return [CT.exposure_key(e.name) + '|' + ','.join(sorted(CT.exposure_key(exps[j].name)
+                                                           for j in (e.partners or []))) for e in exps]
+
+
+KEEP_FRAC = 0.01        # joint-light pixels kept: a member's light or its error above this x the pixel's noise
+
+
+def write_joint_light(path, target, others, sig):
+    """Write the other members' light on the target's pixels (``solve_target``'s
+    ``others``) atomically: per pixel its member, exposure, row and column on the target's
+    common frame, value and error (single precision), with each exposure's nod difference
+    for the check on reading. Pixels where a member's light and its error are both below
+    ``KEEP_FRAC`` of the pixel's noise are left out (most of a faint member's pixels;
+    3.5 MB per G395M source with them)."""
+    k, iy, ix = target.pix_k, target.pix_iy, target.pix_ix
+    pv = getattr(target.model, 'pix', {}).get('v') if hasattr(target, 'model') else None
+    if pv is not None:
+        sig_px = np.sqrt(np.asarray(pv, float))
+        kept = []
+        for o in others:
+            s = sig_px[o['rows']]
+            keep = (np.abs(o['val']) > KEEP_FRAC * s) | (np.abs(o['err']) > KEEP_FRAC * s)
+            if keep.any():
+                kept.append(dict(o, rows=o['rows'][keep], val=o['val'][keep], err=o['err'][keep]))
+        others = kept
+    sids = np.array([o['sid'] for o in others], np.int64)
+    mi = np.concatenate([np.full(o['rows'].size, i) for i, o in enumerate(others)]) if others else np.zeros(0, int)
+    rows = np.concatenate([o['rows'] for o in others]) if others else np.zeros(0, int)
+    arrays = dict(version=JOINT_LIGHT_VERSION, sig=sig, sid=int(target.sid), members=sids,
+                  tags=np.array(_exposure_tags(target.exps)), origin=np.array(target.exps[0].origin),
+                  shape=np.array(target.exps[0].y.shape), m=mi.astype(np.int32), k=k[rows].astype(np.int16),
+                  iy=iy[rows].astype(np.int32), ix=ix[rows].astype(np.int32),
+                  val=(np.concatenate([o['val'] for o in others]) if others else np.zeros(0)).astype(np.float32),
+                  err=(np.concatenate([o['err'] for o in others]) if others else np.zeros(0)).astype(np.float32))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path[:-4] + '.tmp.npz'
+    np.savez_compressed(tmp, **arrays)
+    os.replace(tmp, path)
+
+
+def read_joint_light(path, sig=None):
+    """The neighbours' light file as a dict, or None when missing, of another version or
+    (with ``sig``) of another solve."""
+    if not os.path.exists(path):
+        return None
+    z = np.load(path)
+    if str(z['version']) != JOINT_LIGHT_VERSION or (sig is not None and str(z['sig']) != str(sig)):
+        return None
+    return {n: z[n] for n in z.files}
+
+
+def add_joint_light(P, exps, jl):
+    """Add the neighbours' light from the target's own joint solve (``read_joint_light``)
+    to a ``profile_contam.Prediction`` that left those members out (``predict`` with
+    ``exclude`` = them and ``exclude_ext``): subtracted, never masked, like any jointly
+    solved light (``pred_joint``; its error in ``dpred_joint``, reported only).
+
+    The target's exposures must be the ones the solve used: the same nod differences on
+    the same common frame. Raises ValueError otherwise."""
+    tags = _exposure_tags(exps)
+    stored = [str(t) for t in jl['tags']]
+    if tags != stored or tuple(exps[0].origin) != tuple(int(x) for x in jl['origin']) \
+            or tuple(exps[0].y.shape) != tuple(int(x) for x in jl['shape']):
+        raise ValueError(f"joint light of source {int(jl['sid'])}: the solve's exposures {stored} are not the "
+                         f'product\'s {tags}')
+    n = len(exps)
+    if P.pred_joint is None:
+        P.pred_joint = [np.zeros(e.y.shape) for e in exps]
+    if P.dpred_joint is None:
+        P.dpred_joint = [np.zeros(e.y.shape) for e in exps]
+    c_plan = PF.planned_position(exps)[0]
+    for i, csid in enumerate(int(s) for s in jl['members']):
+        sel = jl['m'] == i
+        if not sel.any():
+            continue
+        for k in np.unique(jl['k'][sel]):
+            sk = sel & (jl['k'] == k)
+            img = np.zeros(exps[k].y.shape)
+            dimg = np.zeros(exps[k].y.shape)
+            np.add.at(img, (jl['iy'][sk], jl['ix'][sk]), jl['val'][sk])
+            np.add.at(dimg, (jl['iy'][sk], jl['ix'][sk]), jl['err'][sk])
+            P.pred[k] = P.pred[k] + img
+            P.pred_joint[k] = P.pred_joint[k] + img
+            P.dpred_joint[k] = P.dpred_joint[k] + dimg
+            P.by_source.setdefault(csid, [None] * n)
+            P.by_source[csid][k] = img if P.by_source[csid][k] is None else P.by_source[csid][k] + img
+            e = exps[k]
+            if e.use_data and e.partners is not None:
+                ms = CT.main_shutter(e, c_plan) & e.ok
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    v = np.abs(img) / CT.diff_sigma(exps, k)
+                v = float(np.nanmax(np.where(ms, v, np.nan))) if ms.any() else 0.0
+                P.contributors[csid] = max(P.contributors.get(csid, 0.0), v if np.isfinite(v) else 0.0)
+        P.joint.add(csid)
+    return P
+
+
 def signature(stage_config, ids, prism=None):
     """The cache signature of a joint pass-1 file: the pass-1 settings, this module's
     version, the neighbourhood's members and the PRISM shapes they take (``prism``, one
@@ -702,11 +866,14 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
     mpaths = [TO.trace_map_path(os.path.join(cache.workspace, CT.MAPS_SUBDIR), f'{k}_rate.fits') for k in sorted(keys)]
     mpaths = [p for p in mpaths if os.path.exists(p)]
     sig = signature(stage_config, ids, [cache.prism_sig(s) for s in ids])
-    # a rebuilt master background (the sky every member is fitted on) redoes it too
-    mbkg = [p for p in (os.path.join(cache.workspace, f'{k}_mbkg.fits') for k in sorted(keys)) if os.path.exists(p)]
-    prev = None if overwrite else CT._pass1_valid(out, list(groups) + [mpaths, mbkg], len(mpaths), sig)
+    jpath = joint_light_path(out)
+    prev = None if overwrite else CT._pass1_valid(out, list(groups) + [mpaths], len(mpaths), sig)
     if prev is not None and not CT._boxcar_stale(prev, out, cache.workspace, t['product']):
-        return out
+        # a joint pass 1 needs its neighbours' light beside it; a boxcar one has none
+        if str(prev['why'] if 'why' in prev else '') != 'joint' or read_joint_light(jpath, sig) is not None:
+            return out
+    if os.path.exists(jpath):
+        os.remove(jpath)
     tmaps = {k: maps[k] for k in keys if k in maps}
     try:
         try:
@@ -734,6 +901,7 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
     sol = solve_target(members, degenerate=degenerate)
     P1 = pass1_of(target, sol, tmaps, stage_config)
     CT.write_pass1(out, P1, sig, len(mpaths), SPEC_SRC, '1')
+    write_joint_light(jpath, target, sol.get('others', []), sig)
     if os.path.exists(missing):
         os.remove(missing)
     return out
@@ -743,9 +911,7 @@ def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_k
               depth=2, cap=25, degenerate=0.9, pass1_dir=None):
     """One worker's share of a disperser: the joint first pass of ``targets`` (in
     coupling order), with one member cache. Returns the written paths."""
-    from campfire_pipeline.nirspec import first_pass as FP
-    sky_for = FP.master_sky(workspace)
-    cache = MemberCache(tasks, workspace, sky_for, stage_config, is_prism)
+    cache = MemberCache(tasks, workspace, stage_config, is_prism)
     keys = maps_keys or sorted({CT.exposure_key(f) for t in tasks.values() for g in t['groups'] for f in g})
     from campfire_pipeline.nirspec import trace_overlap as TO
     maps = {}

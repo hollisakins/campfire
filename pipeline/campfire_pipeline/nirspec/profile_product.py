@@ -4,8 +4,10 @@ One product's profile-fit extraction profile, extraction v2 (prototype).
 Per product (one source, one disperser), after Spec3 has written its crf:
 
 1. load the source's exposures (``profile_fit.load_source``);
-2. predict other slitlets' light from the neighbours' pass-1 spectra and mask or
-   subtract it for the shape fit (``profile_contam``; ``contam_predict``);
+2. predict other slitlets' light and mask or subtract it for the shape fit
+   (``profile_contam``; ``contam_predict``): the members of the source's joint-pass
+   neighbourhood from that solve (``joint_first_pass.add_joint_light``, subtracted,
+   never masked), every other source from its own pass 1;
 3. choose the shape (``profile_chain``; for gratings the PRISM shape of the same
    source is read from the PRISM product of this run or an earlier one);
 4. scan for a same-slitlet neighbour on the residuals (``nod_scan``; ``scan_neighbours``);
@@ -121,9 +123,24 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
                     return ('no science exposure of it reaches stage 3 in this disperser (every nod '
                             'excluded, e.g. by a background override), so it has no s2d either')
                 return CT.missing_reason(workspace_dir, name)
+            # the neighbours' light from the target's own joint solve (joint_first_pass), when
+            # its pass 1 came from there: those members are left out of the prediction from
+            # their own pass 1s and added from it
+            jl = _own_joint_light(workspace_dir, names, source_id) if joint is None else None
+            members = {int(s) for s in jl['members']} if jl is not None else set()
             P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=one_pass(source_id),
                            pair_ratio=fl['pair_ratio'], echo=fl['echo'],
-                           keep_sources=js['enabled'] or joint is not None, why_missing=why_missing)
+                           keep_sources=js['enabled'] or joint is not None, why_missing=why_missing,
+                           exclude=members, exclude_ext=bool(members))
+            if jl is not None:
+                from campfire_pipeline.nirspec import joint_first_pass as JF
+                try:
+                    JF.add_joint_light(P, exps, jl)
+                except ValueError as e:
+                    log(f'{e}; neighbours predicted from their own pass 1s')
+                    P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=one_pass(source_id),
+                                   pair_ratio=fl['pair_ratio'], echo=fl['echo'],
+                                   keep_sources=js['enabled'] or joint is not None, why_missing=why_missing)
             saved = [(e.ok, e.diff) for e in exps]
             if js['enabled'] or joint is not None:
                 exps0 = [copy.copy(e) for e in exps]          # the data before any handling (pair metrics)
@@ -221,6 +238,22 @@ def write_fallback(path, reason):
     from astropy.io import fits
     from campfire_pipeline.nirspec.stage3 import extraction_cards
     fits.HDUList([fits.PrimaryHDU(header=extraction_cards('boxcar3', reason, 'off'))]).writeto(path, overwrite=True)
+
+
+def _own_joint_light(workspace_dir, pass1_products, source_id):
+    """The neighbours' light from the source's own joint solve
+    (``joint_first_pass.read_joint_light``), or None: no joint pass 1, or the file is
+    missing or of another solve."""
+    from campfire_pipeline.nirspec import joint_first_pass as JF
+    from campfire_pipeline.nirspec import profile_contam as CT
+    name = (pass1_products or {}).get(int(source_id))
+    path = CT.pass1_path(workspace_dir, name) if name else None
+    if not path or not os.path.exists(path):
+        return None
+    z = np.load(path)
+    if 'why' not in z or str(z['why']) != 'joint':
+        return None
+    return JF.read_joint_light(JF.joint_light_path(path), str(z['sig']))
 
 
 def _own_notsep(workspace_dir, pass1_products, source_id):

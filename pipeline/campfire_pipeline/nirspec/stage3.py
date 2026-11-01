@@ -478,8 +478,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                                        t['science'], int(sid), stage_config, is_prism, prism_product,
                                        pass1_products, False)
             if CT.pass1_settings(stage_config)['mode'] == 'joint':
-                # every source solved with its neighbours on single frames minus the master
-                # background (joint_first_pass); replaces the masked pass and its second round
+                # every source solved with its neighbours on its nod differences
+                # (joint_first_pass); replaces the masked pass and its second round
                 from campfire_pipeline.nirspec import joint_first_pass as JF
                 log(f"Profile fit: joint pass 1 for {len(jtasks)} {fg} sources")
                 with TM.phase(f'pass1 joint {fg} ({len(jtasks)})'):
