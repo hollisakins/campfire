@@ -1400,3 +1400,16 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   unchanged. Next (agreed with the extraction session): one trace map per exposure, built in
   step 1 from every commanded shutter and stored in the rate file, replacing the coverage
   counter cache and the stage-3 `tracemaps/` cache; stuck shutters removed when it is read.
+- **2026-11-01, the coverage counter stays.** With the trace map built in step 1 (`trace_overlap.ShutterMap`),
+  the question was whether the master background could count traces per pixel from it (light within
+  `OPEN_HALF + LIGHT_PAD` = 0.75 slit units of an open shutter centre) instead of the coverage counter
+  (each slitlet's whole jwst extent: closed shutters and the 1.05-unit margins included). PRISM: no
+  measured pixel changes. G395M (`ember_cosmos_p1`, six rate files): 27-38 % more empty-shutter core
+  pixels admitted, none lost, and those pixels read high against the already-admitted pixels of the
+  same shutter at the same wavelength: median ratio 1.033 ± 0.004 (35,154 pixels); 1.030 under one
+  other slitlet's extent, 1.081 under two; 1.040 ± 0.006 when the other slitlet's nearest open
+  shutter is 0.75-0.9 slit units away, 1.028 ± 0.006 at 0.9-1.1. A neighbour's light carries on at
+  the few-per-cent level 0.25-0.6 slit units past its open edge, beyond the map's pad (the bar-shadow
+  tables' fall-off past an outer shutter says the same). Admitting them would bias the G395M master
+  background about 1 % high, so the counter (same geometry pass, no second `assign_wcs`) stays.
+  Script: `scratch/claude/mbkg_ship/tracemap/extra_pixels_clean.py`.
