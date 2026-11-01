@@ -998,6 +998,24 @@ full-range run on master-sky frames:
   error / spectrum error median 0.07, so the inflated score no longer flatters.
 - Not separable: over 90 % in 31 of 477 G395M sources, over 50 % in 72, none in 358.
 
+**The 632334 line (2026-11-01).** 632334's 4.017 µm line and 629668's 5.046 µm fall on the
+same detector pixels, inside both sources' main shutters in all three nods (the two traces
+overlap and nod together). PRISM puts the line on 632334 (1.9 µJy against 0.35 continuum;
+629668's PRISM is flat at 5.05). The joint solve gives 629668 22 % of the line peak in
+632334's solve, and 632334 62 % of it in 629668's, which is 629668's false 5.05 µm line. The
+correlation of the two spectra there is about -0.55, so the -0.9 flag does not fire: the two
+profiles do differ (632334 narrow and centred, 629668 broad at +0.42), and the split is
+decided by the profiles.
+- Width is not the cause: the data prefer 632334's narrow PRISM width (0.027); wider is worse.
+- The centre is. 632334's G395M profile takes the PRISM fit's offset from plan (`map_shape`;
+  only the per-exposure offsets are refitted). Moving it by -0.1 slit units: χ² over the line
+  pixels 507 → 197 (89 pixels), 629668's share of the line 2.4e-11 → -0.2e-11 (data 10.1e-11),
+  632334's line flux +47 %. The continuum (4.3-4.9 µm, 4441 pixels) prefers the same shift
+  (χ² 2936 at 0, 2877 at -0.1, 2903 at -0.15), so the PRISM centre is off in G395M for the
+  whole source, not only at the line.
+- The user (2026-11-01): "When the model adopts prism shapes, does it also adopt prism
+  centering? that may not be accurate." Yes, and here it is off by about 0.1 slit units.
+
 **Open (extraction session).**
 - Proposed then withdrawn: end each extension grid where the exposure's count-rate sky falls
   below a few percent of its level at the cutout end. The user (2026-10-31): "I'm hesitant
