@@ -378,19 +378,22 @@ def _no_source_scales(paths):
 
 
 def _override_text(ax, why):
-    """The reason an override chose a nod's background, in the corner of its image."""
-    ax.text(0.005, 0.96, f'override: {why}', transform=ax.transAxes, fontsize=5, fontname='monospace',
+    """The reason an override chose a nod's background (or the flag of a nod that kept its
+    partners), in the corner of its image."""
+    text = why if why.startswith('no clean partner') else f'override: {why}'
+    ax.text(0.005, 0.96, text, transform=ax.transAxes, fontsize=5, fontname='monospace',
             va='top', ha='left', color='k', bbox=dict(facecolor='w', alpha=0.75, edgecolor='none', pad=1))
 
 
 def _bkg_note(path):
     """(' - [partners]', reason) of a canonical after stage 2b: the nods it was
-    subtracted against (``BKGNODS``) and, when an override chose them, why (``BKGWHY``)."""
+    subtracted against (``BKGNODS``) and why (``BKGWHY``: an override's reason, or the
+    flag of a nod that kept its partners)."""
     if not path:
         return '', ''
     h = fits.getheader(path)
     nods = str(h.get('BKGNODS', '')).strip()
-    why = str(h.get('BKGWHY', '')).strip() if h.get('BKGOVR') else ''
+    why = str(h.get('BKGWHY', '')).strip()
     return (f' - [{nods}]' if nods and nods != 'N/A' else ''), why
 
 

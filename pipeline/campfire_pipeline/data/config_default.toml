@@ -65,13 +65,18 @@
     empirical_barshadow = false
     rectify = true
     plot_bkgsub = true
-    # Stage 2b: a background partner that puts another catalogued source of the slitlet
-    # (MSA metadata) on a source's main shutter is dropped when that neighbour's light in
-    # its own shutter is at least this fraction of the sky there (frame before subtraction
-    # against the master background, median over the spectrum) and another partner
-    # remains. With three nods a kept neighbour biases the source by half that, negative.
-    # A hand override of the same nod wins. A very large value keeps every partner.
+    # Stage 2b: a background partner whose frame puts another catalogue source (the MSA
+    # plan's SOURCE_INFO, placed along the slitlet at every dither point) within
+    # slitlet_neighbour_max_distance of a source's position in a nod (slit units: a
+    # shutter's open height is 1, the pitch 1.15) is dropped when that neighbour's light is
+    # at least slitlet_neighbour_min_sky of the sky (frame before subtraction against the
+    # master background, over one shutter height around it, median over the spectrum) and
+    # another partner remains; otherwise the nod keeps its partners and is flagged
+    # (BKGWHY "no clean partner"). With three nods a kept neighbour biases the source by
+    # half its light, negative. A hand override of the same nod wins. A very large
+    # min_sky keeps every partner.
     slitlet_neighbour_min_sky = 0.02
+    slitlet_neighbour_max_distance = 0.75
     empirical_wavecorr = false
     # Master background (docs/design-nirspec-master-background.md §4): the sky of each
     # exposure x detector from its empty shutters, written as <root>_<nod>_<nrsN>_mbkg.fits

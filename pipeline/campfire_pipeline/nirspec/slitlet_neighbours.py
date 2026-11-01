@@ -1,24 +1,33 @@
-"""Catalogued neighbours in a source's own slitlet: which nod partners to drop (prototype).
+"""Catalogued neighbours of a source's own slitlet: which nod partners to drop.
 
-The MSA metadata (``SHUTTER_INFO``) lists, for every shutter of a slitlet at every
-dither point, the catalogue source in it. A slitlet can hold two catalogued sources;
-when a partner frame puts the other one in the source's main shutter, subtracting that
-frame puts a negative copy of it on the source. Stage 2b then drops the partner, as a
-hand override would, provided
+The MSA plan's ``SOURCE_INFO`` table gives every catalogue source's sky position and its
+``SHUTTER_INFO`` table where the planned sources fall in their shutters. A quadratic map
+from sky offsets to MSA shutter coordinates, fitted per configuration and quadrant to
+those placements (with one offset per dither point), places every catalogue source
+along any slitlet at every dither point (``SkyToMsa``; on p1 it reproduces the planned
+placements to 0.003 shutter), including sources just across a bar or past the slitlet's
+end, which ``SHUTTER_INFO`` does not list in that slitlet.
 
-* the neighbour is bright enough to matter: its light in its own shutter is at least
-  ``min_sky_frac`` of the sky there (the frame before subtraction against the master
-  background, median over the spectrum), and
-* another partner remains (otherwise the nod keeps its partners and is reported).
+When a partner frame puts a neighbour within ``max_distance`` (slit units) of the
+target's position in a nod, subtracting that frame puts a negative copy of the
+neighbour on the target. Stage 2b then drops that partner, as a hand override would,
+provided
+
+* the neighbour is bright enough to matter: its light is at least ``min_sky_frac`` of
+  the sky (the frame before subtraction against the master background, over one shutter
+  height around it, median over the spectrum), and
+* another partner remains. Otherwise the nod keeps its partners and is flagged
+  (``no clean partner``).
 
 Overlap with other slitlets' traces is not this module's job (the joint model's
 ``fnu_contam``). Neighbours the catalogue does not list are the residual scan's
 (``nod_scan``).
 
-Coordinates: a slitlet keeps one MSA shutter row and runs along shutter columns; in a
-frame's slit coordinates (centred on the source's shutter at that dither) a shutter
-``dc`` columns away is centred at ``dc * MSA_SLIT_PITCH``, and the estimated position
-in a shutter (0 to 1) is ``y - 0.5`` from its centre.
+Coordinates: along the slitlet ``u = (column + y - 0.5) * MSA_SLIT_PITCH`` in slit units
+(a shutter's open height is 1, the pitch 1.15), with ``y`` the position in the shutter
+in pitch units (0 to 1, as the plan's ``estimated_source_in_shutter_y``); across it
+``row + x - 0.5`` in shutter pitches. A frame's slit coordinates are centred on the
+target's shutter at its dither point.
 """
 import os
 from dataclasses import dataclass, field
@@ -28,77 +37,167 @@ import numpy as np
 from .constants import MSA_SLIT_PITCH
 
 OPEN_HALF = 0.5
-MIN_SKY_FRAC = 0.02          # default threshold: the neighbour's light / the sky in its shutter
+LIGHT_PAD = 0.25             # light beyond a shutter's open area, slit units (trace_overlap.LIGHT_PAD)
+ROW_REACH = 0.75             # across the slitlet: open half-width (~0.37 pitch) plus the PSF, row pitches
+MIN_SKY_FRAC = 0.02          # default threshold: the neighbour's light / the sky
+MAX_DISTANCE = 0.75          # default: a partner is dirty within this distance of the target, slit units
+MEASURE_SEP = 1.0            # the neighbour is measured only this far from the target, slit units
+
+
+# ---------------------------------------------------------------------------
+# Positions: every catalogue source along every slitlet
+# ---------------------------------------------------------------------------
+def _terms(east, north, quadratic=True):
+    e, n = np.asarray(east, float), np.asarray(north, float)
+    return np.c_[e, n, e * e, e * n, n * n] if quadratic else np.c_[e, n]
 
 
 @dataclass
-class Placement:
-    column: int                  # MSA shutter column
-    y: float                     # estimated position in the shutter, 0 to 1 (NaN if not given)
+class SkyToMsa:
+    """Sky offsets (arcsec east and north of the catalogue's median) to MSA shutter
+    coordinates (``row + x - 0.5``, ``column + y - 0.5``) for one configuration: per
+    quadrant the shared terms and one offset per dither point."""
+    ids: np.ndarray
+    east: np.ndarray
+    north: np.ndarray
+    fits: dict = field(default_factory=dict)     # quadrant -> (quadratic, terms (k, 2), {dither: (2,)})
+
+    @classmethod
+    def fit(cls, shutter_table, source_table, msa_metadata_id):
+        src = source_table[np.asarray(source_table['source_id']) > 0]
+        ra, dec = np.asarray(src['ra'], float), np.asarray(src['dec'], float)
+        ra0, dec0 = np.median(ra), np.median(dec)
+        m = cls(ids=np.asarray(src['source_id'], np.int64), east=(ra - ra0) * np.cos(np.radians(dec0)) * 3600,
+                north=(dec - dec0) * 3600)
+        index = {int(s): i for i, s in enumerate(m.ids)}
+        t = shutter_table[shutter_table['msa_metadata_id'] == int(msa_metadata_id)]
+        x = np.ma.filled(np.ma.asarray(t['estimated_source_in_shutter_x'], dtype=float), np.nan)
+        y = np.ma.filled(np.ma.asarray(t['estimated_source_in_shutter_y'], dtype=float), np.nan)
+        use = (np.asarray(t['source_id']) > 0) & (t['background'] == 'N') & np.isfinite(x) & np.isfinite(y) \
+            & np.isin(np.asarray(t['source_id']), m.ids)
+        for q in np.unique(t['shutter_quadrant'][use]):
+            sel = use & (t['shutter_quadrant'] == q)
+            dith = np.asarray(t['dither_point_index'][sel], int)
+            ds = sorted(set(dith.tolist()))
+            i = np.array([index[int(s)] for s in t['source_id'][sel]])
+            for quadratic in (True, False):
+                k = 5 if quadratic else 2
+                if sel.sum() >= k + len(ds) + 3:
+                    break
+            else:
+                continue
+            A = np.c_[_terms(m.east[i], m.north[i], quadratic), (dith[:, None] == np.array(ds)[None, :]).astype(float)]
+            P = np.c_[np.asarray(t['shutter_row'][sel]) + x[sel] - 0.5, np.asarray(t['shutter_column'][sel]) + y[sel] - 0.5]
+            coef, *_ = np.linalg.lstsq(A, P, rcond=None)
+            m.fits[int(q)] = (quadratic, coef[:k], {d: coef[k + j] for j, d in enumerate(ds)})
+        return m
+
+    def place(self, quadrant, dither):
+        """(row, column) coordinates of every catalogue source at this dither point in
+        this quadrant's frame, or None without a fit."""
+        f = self.fits.get(int(quadrant))
+        if f is None or int(dither) not in f[2]:
+            return None
+        quadratic, terms, off = f
+        p = _terms(self.east, self.north, quadratic) @ terms + off[int(dither)]
+        return p[:, 0], p[:, 1]
+
+
+@dataclass
+class Slitlet:
+    """The target's slitlet in one configuration, along it in slit units."""
+    slitlet_id: int
+    quadrant: int
+    row: int
+    open_u: dict                 # dither -> centres of the open shutters
+    target_u: dict               # dither -> the target's position (dithers where it is in the slitlet)
+    ref_u: dict                  # dither -> centre of the target's shutter (the frame's slit-coordinate origin)
 
 
 @dataclass
 class Neighbour:
-    """One catalogued source sharing a slitlet with the target."""
+    """One catalogue source within reach of the target's slitlet."""
     source_id: int
-    where: dict                  # dither -> Placement (dithers where it is in an open shutter)
-    sky_frac: float = np.nan     # its light / the sky in its shutter (median over the spectrum)
+    where: dict                  # dither -> position along the slitlet (dithers where it is within reach)
+    sky_frac: float = np.nan     # its light / the sky around it (median over the spectrum)
     sky_frac_hi: float = np.nan  # the same, 90th percentile (a line-dominated neighbour)
     measured_in: str = ''        # frame the brightness was measured in
 
 
+def scene(shutter_table, sky, msa_metadata_id, source_id):
+    """(``Slitlet``, [``Neighbour``]) of one source in one configuration, or (None, [])
+    when the configuration does not hold it. A neighbour is any other catalogue source
+    within ``ROW_REACH`` of the slitlet's row and ``OPEN_HALF + LIGHT_PAD`` of one of its
+    open shutters at some dither point: placed by ``sky`` (``SkyToMsa``), or, for a
+    source the fit cannot place, where ``SHUTTER_INFO`` lists it in the slitlet."""
+    from .metafile import _source_rows
+    t = shutter_table[shutter_table['msa_metadata_id'] == int(msa_metadata_id)]
+    mine = t[_source_rows(t, int(source_id)) & (t['background'] == 'N')]
+    if not len(mine):
+        return None, []
+    prim = mine[mine['primary_source'] == 'Y']
+    vals, counts = np.unique((prim if len(prim) else mine)['slitlet_id'], return_counts=True)
+    sid_slit = int(vals[np.argmax(counts)])
+    mine = mine[mine['slitlet_id'] == sid_slit]
+    q, row = int(mine['shutter_quadrant'][0]), int(mine['shutter_row'][0])
+    rows = t[t['slitlet_id'] == sid_slit]
+    ys = np.ma.filled(np.ma.asarray(rows['estimated_source_in_shutter_y'], dtype=float), np.nan)
+    listed = lambda r, y: (int(r['shutter_column']) + (y if np.isfinite(y) else 0.5) - 0.5) * MSA_SLIT_PITCH  # noqa: E731
+    dithers = sorted(set(np.asarray(rows['dither_point_index'], int).tolist()))
+    sl = Slitlet(slitlet_id=sid_slit, quadrant=q, row=row, open_u={}, target_u={}, ref_u={})
+    where = {}
+    hit = np.flatnonzero(sky.ids == int(source_id)) if sky is not None else []
+    for d in dithers:
+        here = rows['dither_point_index'] == d
+        sl.open_u[d] = np.unique(np.asarray(rows['shutter_column'][here], int)) * MSA_SLIT_PITCH
+        placed = sky.place(q, d) if sky is not None else None
+        tr = here & (rows['source_id'] == int(source_id)) & (rows['background'] == 'N')
+        if tr.any():
+            k = int(np.flatnonzero(tr)[0])
+            sl.ref_u[d] = int(rows['shutter_column'][k]) * MSA_SLIT_PITCH
+            sl.target_u[d] = (float(placed[1][hit[0]]) * MSA_SLIT_PITCH if placed is not None and len(hit)
+                              else listed(rows[k], ys[k]))
+        if placed is not None:
+            r, c = placed
+            u = c * MSA_SLIT_PITCH
+            near = np.min(np.abs(u[:, None] - sl.open_u[d][None, :]), axis=1) < OPEN_HALF + LIGHT_PAD
+            for i in np.flatnonzero(near & (np.abs(r - row) < ROW_REACH) & (sky.ids != int(source_id))):
+                where.setdefault(int(sky.ids[i]), {})[d] = float(u[i])
+        for k in np.flatnonzero(here & (rows['background'] == 'N') & (np.asarray(rows['source_id']) > 0)
+                                & (rows['source_id'] != int(source_id))):
+            s = int(rows['source_id'][k])
+            if placed is None or s not in sky.ids:
+                where.setdefault(s, {})[d] = listed(rows[k], ys[k])
+    return sl, [Neighbour(s, w) for s, w in sorted(where.items())]
+
+
+# ---------------------------------------------------------------------------
+# Which partners hold a neighbour on the target
+# ---------------------------------------------------------------------------
 @dataclass
 class NodDecision:
     root: str
     nod: int
     partners: list               # nods subtracted by default
     keep: list                   # nods kept
-    dirty: dict = field(default_factory=dict)    # partner nod -> neighbours (ids) in this nod's shutter there
+    dirty: dict = field(default_factory=dict)    # partner nod -> neighbours (ids) near the target there
     why: str = ''                # 'dropped' | 'faint' | 'no clean partner' | ''
 
 
-def slitlet_layout(shutter_table, msa_metadata_id):
-    """{slitlet id: {source id: {dither: Placement}}} of one configuration, for the
-    slitlets whose open shutters hold more than one real catalogue source."""
-    from .metafile import _source_rows
-    t = shutter_table[shutter_table['msa_metadata_id'] == int(msa_metadata_id)]
-    t = t[_source_rows(t) & (t['background'] == 'N')]
-    out = {}
-    for s in np.unique(t['slitlet_id']):
-        r = t[t['slitlet_id'] == s]
-        if np.unique(r['source_id']).size < 2:
-            continue
-        d = {}
-        ys = np.ma.filled(np.ma.asarray(r['estimated_source_in_shutter_y'], dtype=float), np.nan)
-        for row, y in zip(r, ys):
-            d.setdefault(int(row['source_id']), {})[int(row['dither_point_index'])] = Placement(
-                int(row['shutter_column']), float(y))
-        out[int(s)] = d
-    return out
-
-
-def neighbours_of(layout, source_id):
-    """(the target's {dither: Placement}, [Neighbour]) in its slitlet, or (None, [])."""
-    for srcs in layout.values():
-        if int(source_id) in srcs:
-            return srcs[int(source_id)], [Neighbour(int(o), w) for o, w in sorted(srcs.items()) if o != int(source_id)]
-    return None, []
-
-
-def dirty_partners(target, neighbours, nod_dither, partners):
-    """Per nod: {partner nod: [neighbour ids in the target's main shutter of that nod,
-    in the partner's frame]}. ``nod_dither`` {nod: dither point}; ``partners`` {nod:
-    [nods subtracted by default]}. A nod whose dither does not hold the target has no
-    main shutter and is skipped."""
+def dirty_partners(slit, neighbours, nod_dither, partners, max_distance=MAX_DISTANCE):
+    """Per nod: {partner nod: [neighbours that the partner's frame puts within
+    ``max_distance`` of the target's position in the nod]}. ``nod_dither`` {nod: dither
+    point}; ``partners`` {nod: [nods subtracted by default]}. A nod whose dither does not
+    hold the target is skipped."""
     out = {}
     for nod, parts in partners.items():
-        here = target.get(nod_dither[nod])
-        if here is None:
+        t = slit.target_u.get(nod_dither[nod])
+        if t is None:
             continue
         d = {}
         for j in parts:
             ids = [n.source_id for n in neighbours
-                   if (p := n.where.get(nod_dither[j])) is not None and p.column == here.column]
+                   if (u := n.where.get(nod_dither[j])) is not None and abs(u - t) < max_distance]
             if ids:
                 d[j] = ids
         if d:
@@ -106,18 +205,12 @@ def dirty_partners(target, neighbours, nod_dither, partners):
     return out
 
 
-def offset_in_frame(target, neighbour_at, dither):
-    """Centre (slit units) of the neighbour's shutter in the frame of ``dither``, which is
-    centred on the target's shutter there."""
-    return (neighbour_at.column - target[dither].column) * MSA_SLIT_PITCH
-
-
 BIN_COLS = 20                # columns per bin along the trace (a single column's sky is too noisy)
 
 
 def light_over_sky(sci, sky, ys, centre, bin_cols=BIN_COLS):
-    """A source's light over the sky in a shutter (``|ys - centre| < 0.5``), summed
-    over the shutter's rows and over bins of ``bin_cols`` columns: (median, 90th
+    """A source's light over the sky in one shutter height (``|ys - centre| < 0.5``),
+    summed over those rows and over bins of ``bin_cols`` columns: (median, 90th
     percentile) over the bins where the sky is positive."""
     inside = np.isfinite(ys) & (np.abs(ys - centre) < OPEN_HALF) & np.isfinite(sci) & np.isfinite(sky)
     light = np.sum(np.where(inside, sci - sky, 0.0), axis=0)
@@ -132,34 +225,39 @@ def light_over_sky(sci, sky, ys, centre, bin_cols=BIN_COLS):
     return float(np.median(r)), float(np.percentile(r, 90))
 
 
-def measure(neighbour, target, frames):
+def measure(neighbour, slit, frames):
     """Fill the neighbour's ``sky_frac`` from the target's own frames before subtraction:
-    ``frames`` {dither: (sci, sky, ys, has_target)}. Uses the frame where the
-    neighbour is in an open shutter farthest from the target's (the target's wing
-    least in it), never one where they share a shutter."""
+    ``frames`` {dither: (sci, sky, ys, has_target)}. Uses a frame that holds the target
+    and puts the neighbour at least ``MEASURE_SEP`` from it, preferring one with the
+    neighbour inside an open shutter, then the farthest (the target's wing least in it).
+    Unmeasured otherwise."""
     best = None
     for d, (sci, sky, ys, has_target) in frames.items():
-        at = neighbour.where.get(d)
-        if at is None or not has_target or d not in target or at.column == target[d].column:
+        u = neighbour.where.get(d)
+        if u is None or not has_target or d not in slit.target_u or d not in slit.ref_u:
             continue
-        sep = abs(at.column - target[d].column)
-        if best is None or sep > best[0]:
-            best = (sep, d)
+        sep = abs(u - slit.target_u[d])
+        if sep < MEASURE_SEP:
+            continue
+        inside = bool(np.min(np.abs(u - slit.open_u[d])) < OPEN_HALF)
+        if best is None or (inside, sep) > best[0]:
+            best = ((inside, sep), d)
     if best is None:
         return neighbour
     d = best[1]
     sci, sky, ys, _ = frames[d]
-    neighbour.sky_frac, neighbour.sky_frac_hi = light_over_sky(sci, sky, ys, offset_in_frame(target, neighbour.where[d], d))
+    neighbour.sky_frac, neighbour.sky_frac_hi = light_over_sky(sci, sky, ys, neighbour.where[d] - slit.ref_u[d])
     neighbour.measured_in = f'dither {d}'
     return neighbour
 
 
-def decide(root, target, neighbours, nod_dither, partners, min_sky_frac=MIN_SKY_FRAC):
-    """``NodDecision`` per nod with at least two default partners. A partner is dropped
-    when it holds, in the nod's main shutter, a neighbour at or above ``min_sky_frac``
-    (or one whose brightness could not be measured) and a partner remains."""
+def decide(root, slit, neighbours, nod_dither, partners, min_sky_frac=MIN_SKY_FRAC, max_distance=MAX_DISTANCE):
+    """``NodDecision`` per nod. A partner is dropped when it puts on the target a
+    neighbour at or above ``min_sky_frac`` (or one whose brightness could not be
+    measured) and a partner remains; when none would, the nod keeps its partners
+    (``no clean partner``)."""
     bright = {n.source_id for n in neighbours if not (n.sky_frac < min_sky_frac)}   # NaN counts as bright
-    dirty = dirty_partners(target, neighbours, nod_dither, partners)
+    dirty = dirty_partners(slit, neighbours, nod_dither, partners, max_distance)
     out = []
     for nod in sorted(partners):
         parts = sorted(partners[nod])
@@ -177,49 +275,61 @@ def decide(root, target, neighbours, nod_dither, partners, min_sky_frac=MIN_SKY_
     return out
 
 
+# ---------------------------------------------------------------------------
+# One source's background groups
+# ---------------------------------------------------------------------------
 @dataclass
 class Group:
     """One background group (a root and detector) of a source, measured."""
     root: str
-    target: dict                 # dither -> Placement
+    slit: Slitlet
     neighbours: list             # [Neighbour], brightness filled where measurable
     nod_dither: dict             # nod -> dither point
     partners: dict               # nod -> nods subtracted by default
     target_frac: float = np.nan  # the target's own light over the sky in its shutter
 
 
-def layout_for(cal_file, msa_dir, layouts):
-    """The shared-slitlet layout of a canonical's MSA configuration (cached in ``layouts``)."""
+def scene_for(cal_file, msa_dir, source_id, cache):
+    """``scene`` of a canonical's source in its MSA configuration (tables and fits cached
+    in ``cache`` per metafile and configuration)."""
     from astropy.io import fits
     from astropy.table import Table
     h = fits.getheader(cal_file)
     key = (os.path.join(msa_dir, str(h['MSAMETFL'])), int(h['MSAMETID']))
-    if key not in layouts:
-        layouts[key] = slitlet_layout(Table.read(key[0], hdu='SHUTTER_INFO'), key[1])
-    return layouts[key]
+    if key not in cache:
+        shut = Table.read(key[0], hdu='SHUTTER_INFO')
+        try:
+            src = Table.read(key[0], hdu='SOURCE_INFO')
+            sky = SkyToMsa.fit(shut, src, key[1])
+        except (KeyError, ValueError):
+            sky = None
+        cache[key] = (shut, sky)
+    shut, sky = cache[key]
+    return scene(shut, sky, key[1], source_id)
 
 
-def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, layouts=None):
+def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, cache=None, max_distance=MAX_DISTANCE):
     """``Group`` of one source's background group (canonicals of one root and detector,
     before or after stage 2b: the frames before subtraction are read from
-    ``PRE_BKGSUB_SCI`` when present), or None when the source shares no slitlet. The
-    neighbours are measured only when one of them falls in a partner frame."""
+    ``PRE_BKGSUB_SCI`` when present), or None when its configuration does not hold it.
+    The neighbours are measured only when one of them is near the target in a partner
+    frame."""
     from astropy.io import fits
     from jwst.datamodels import MultiSlitModel
     from . import master_bkg as MB
     from . import profile_contam as CT
 
     products = {} if products is None else products
-    layouts = {} if layouts is None else layouts
-    target, neighbours = neighbours_of(layout_for(cal_files[0], msa_dir, layouts), source_id)
-    if target is None:
+    cache = {} if cache is None else cache
+    slit, neighbours = scene_for(cal_files[0], msa_dir, source_id, cache)
+    if slit is None:
         return None
     heads = [fits.getheader(f) for f in cal_files]
     nods = [int(os.path.basename(f).split('_')[2]) for f in cal_files]
-    g = Group(root='_'.join(os.path.basename(cal_files[0]).split('_')[:2]), target=target, neighbours=neighbours,
+    g = Group(root='_'.join(os.path.basename(cal_files[0]).split('_')[:2]), slit=slit, neighbours=neighbours,
               nod_dither={n: int(h['PATT_NUM']) for n, h in zip(nods, heads)},
               partners={n: [m for m in nods if m != n] for n in nods})
-    if not dirty_partners(target, neighbours, g.nod_dither, g.partners):
+    if not dirty_partners(slit, neighbours, g.nod_dither, g.partners, max_distance):
         return g
     frames = {}
     for f, h, n in zip(cal_files, heads, nods):
@@ -238,20 +348,11 @@ def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, layout
         frames[g.nod_dither[n]] = (np.asarray(s['sci'], float), np.asarray(s['sky'], float), np.asarray(ys, float),
                                    str(h.get('SRCFLUX', 'T')).strip().upper() != 'F')
     for nb in neighbours:
-        measure(nb, target, frames)
+        measure(nb, slit, frames)
     own = [v for v in (light_over_sky(sci, sky, ys, 0.0)[0] for sci, sky, ys, has in frames.values() if has)
            if np.isfinite(v)]
     g.target_frac = float(np.median(own)) if own else np.nan
     return g
-
-
-def source_decisions(cal_files, source_id, mbkg_dir, msa_dir, min_sky_frac=MIN_SKY_FRAC, products=None, layouts=None):
-    """The decisions of one background group alone: (list of ``NodDecision``,
-    [Neighbour], the target's own light over the sky), or ([], [], NaN)."""
-    g = measure_group(cal_files, source_id, mbkg_dir, msa_dir, products, layouts)
-    if g is None:
-        return [], [], np.nan
-    return decide(g.root, g.target, g.neighbours, g.nod_dither, g.partners, min_sky_frac), g.neighbours, g.target_frac
 
 
 def combine(groups):
@@ -270,7 +371,7 @@ def combine(groups):
         nbs.append(Neighbour(n.source_id, n.where, max(fr) if fr else np.nan, max(hi) if hi else np.nan,
                              next((x.measured_in for x in same if x.measured_in), '')))
     tf = [g.target_frac for g in groups if np.isfinite(g.target_frac)]
-    return Group(root=base.root, target=base.target, neighbours=nbs, nod_dither=base.nod_dither,
+    return Group(root=base.root, slit=base.slit, neighbours=nbs, nod_dither=base.nod_dither,
                  partners=base.partners, target_frac=max(tf) if tf else np.nan)
 
 
@@ -299,23 +400,29 @@ def layer(effective, scan_nods, slitlet):
     return out, auto, why
 
 
-def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC):
+def _names(ids, frac):
+    return 'neighbour ' + ','.join(f'{i} at {frac[i]:.3f}' if np.isfinite(frac[i]) else f'{i} unmeasured'
+                                   for i in ids) + ' of sky'
+
+
+def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_distance=MAX_DISTANCE):
     """The overrides of one source in one exposure root, over its detector groups
     (lists of canonical paths): (root, {nod (str): (kept nods, reason)} for the nods
-    whose partners change, [the nods with a bright neighbour in every partner, as
-    'root:nod'], the combined ``Group`` or None). The reason names the neighbours and
-    their light over the sky, e.g. ``'slitlet 634547 at 0.031 of sky'``."""
-    products, layouts = {}, {}
-    g = combine([measure_group(files, source_id, workspace, workspace, products, layouts) for files in groups])
+    whose partners change, {nod (str): flag} for the nods with a bright neighbour from
+    every partner, the combined ``Group`` or None). The reason names the neighbours and
+    their light over the sky, e.g. ``'neighbour 634547 at 0.031 of sky'``; the flag
+    starts ``'no clean partner: '``."""
+    products, cache = {}, {}
+    g = combine([measure_group(files, source_id, workspace, workspace, products, cache, max_distance)
+                 for files in groups])
     if g is None:
-        return None, {}, [], None
+        return None, {}, {}, None
     frac = {n.source_id: n.sky_frac for n in g.neighbours}
-    out, unresolved = {}, []
-    for d in decide(g.root, g.target, g.neighbours, g.nod_dither, g.partners, min_sky_frac):
+    out, flags = {}, {}
+    for d in decide(g.root, g.slit, g.neighbours, g.nod_dither, g.partners, min_sky_frac, max_distance):
         if d.why == 'dropped':
-            ids = sorted({i for j in set(d.partners) - set(d.keep) for i in d.dirty[j]})
-            out[str(d.nod)] = (d.keep, 'slitlet ' + ','.join(
-                f'{i} at {frac[i]:.3f}' if np.isfinite(frac[i]) else f'{i} unmeasured' for i in ids) + ' of sky')
+            out[str(d.nod)] = (d.keep, _names(sorted({i for j in set(d.partners) - set(d.keep) for i in d.dirty[j]}), frac))
         elif d.why == 'no clean partner':
-            unresolved.append(f'{g.root}:{d.nod}')
-    return g.root, out, unresolved, g
+            flags[str(d.nod)] = 'no clean partner: ' + _names(sorted({i for ids in d.dirty.values() for i in ids
+                                                                      if not (frac[i] < min_sky_frac)}), frac)
+    return g.root, out, flags, g

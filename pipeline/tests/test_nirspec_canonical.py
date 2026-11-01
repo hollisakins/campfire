@@ -274,11 +274,13 @@ def test_bkg_nods_cards():
         'BKGNODS': ('2,3', 'nods subtracted as background (stage 2b)'),
         'BKGOVR': (False, 'background nods set by an override'),
         'BKGAUTO': (False, 'override chosen automatically'),
-        'BKGWHY': ('', 'why the override (hand/scan/slitlet neighbour)')}
+        'BKGWHY': ('', 'why the override, or a flag')}
     assert C.bkg_nods_cards([1], overridden=True)['BKGNODS'][0] == '1'
     assert C.bkg_nods_cards([1], overridden=True, auto=True)['BKGAUTO'][0] is True
     assert C.bkg_nods_cards([1], overridden=False, auto=True)['BKGAUTO'][0] is False
     assert C.bkg_nods_cards([], overridden=True)['BKGNODS'][0] == 'excluded'
-    why = 'slitlet 634547 at 0.031 of sky'
+    why = 'neighbour 634547 at 0.031 of sky'
     assert C.bkg_nods_cards([2], overridden=True, auto=True, why=why)['BKGWHY'][0] == why
-    assert C.bkg_nods_cards([2, 3], overridden=False, why=why)['BKGWHY'][0] == ''
+    flag = 'no clean partner: ' + why                     # partners kept, the nod flagged
+    assert C.bkg_nods_cards([2, 3], overridden=False, why=flag)['BKGWHY'][0] == flag[:68]
+    assert C.bkg_nods_cards([2, 3], overridden=False, why='')['BKGWHY'][0] == ''

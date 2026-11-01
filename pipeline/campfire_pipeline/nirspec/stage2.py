@@ -420,16 +420,19 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
 
         pending.append((bg, bg_files, source_id, root, detector))
 
-    # catalogued neighbours in a source's own slitlet: a partner that puts one on the
-    # source's main shutter is dropped when the neighbour is bright enough
-    # (slitlet_neighbours); hand overrides win, the neighbour scan's file yields
+    # catalogued neighbours of a source's own slitlet: a partner that puts one near the
+    # source is dropped when the neighbour is bright enough (slitlet_neighbours); hand
+    # overrides win, the neighbour scan's file yields
     from campfire_pipeline.nirspec import slitlet_neighbours as SN
-    slitlet = slitlet_overrides(obs, pending, stage_config.get('slitlet_neighbour_min_sky', SN.MIN_SKY_FRAC),
-                                n_processes)
+    slitlet, flags = slitlet_overrides(
+        obs, pending, stage_config.get('slitlet_neighbour_min_sky', SN.MIN_SKY_FRAC),
+        stage_config.get('slitlet_neighbour_max_distance', SN.MAX_DISTANCE), n_processes)
     for bg, bg_files, source_id, root, detector in pending:
         hand_scan = (effective.get(root) or {}).get(str(source_id)) or {}
         scan_nods = from_auto.get((root, str(source_id)), set())
         bkg_overrides, auto_nods, reasons = SN.layer(hand_scan, scan_nods, slitlet.get((root, int(source_id)), {}))
+        for nod, why in flags.get((root, int(source_id)), {}).items():
+            reasons.setdefault(nod, why)                # partners kept: recorded, not an override
         bkg_overrides = bkg_overrides or None
 
         log(f'ID{source_id}: Running stage2b for bkg_group {bg} ({root}_{detector})')
@@ -1548,42 +1551,37 @@ def scan_notes(obs):
     return out
 
 
-def slitlet_overrides(obs, pending, min_sky_frac, n_processes=1):
-    """Overrides for catalogued neighbours in a source's own slitlet, for the background
+def slitlet_overrides(obs, pending, min_sky_frac, max_distance, n_processes=1):
+    """Overrides for catalogued neighbours of a source's own slitlet, for the background
     groups stage 2b is about to run (``pending``: (bkg group, files, source id, root,
-    detector)): {(root, source id): {nod (str): (kept nods, reason)}}. Only sources whose
-    MSA configuration lists another catalogued source in their slitlet are measured; a
-    nod whose every partner holds a bright neighbour keeps its partners and is logged."""
-    from astropy.table import Table
+    detector)): ({(root, source id): {nod (str): (kept nods, reason)}}, {(root, source id):
+    {nod (str): flag}}). Only sources with a catalogue source within reach of their
+    slitlet at some dither point are measured (``slitlet_neighbours.scene``); a nod whose
+    every partner puts a bright neighbour on the source keeps its partners and is flagged."""
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec import slitlet_neighbours as SN
 
-    groups, layouts = {}, {}
+    groups, cache = {}, {}
     for _, bg_files, source_id, root, _ in pending:
         groups.setdefault((root, int(source_id)), []).append(list(bg_files['path']))
-    shared = {}
-    for (root, sid), gs in groups.items():
-        if root not in shared:
-            h = fits.getheader(gs[0][0])
-            key = (os.path.join(obs.workspace_dir, str(h['MSAMETFL'])), int(h['MSAMETID']))
-            if key not in layouts:
-                layouts[key] = SN.slitlet_layout(Table.read(key[0], hdu='SHUTTER_INFO'), key[1])
-            shared[root] = {s for srcs in layouts[key].values() for s in srcs}
-    todo = [(gs, sid, obs.workspace_dir, min_sky_frac) for (root, sid), gs in groups.items() if sid in shared[root]]
+    todo = [(gs, sid, obs.workspace_dir, min_sky_frac, max_distance) for (root, sid), gs in groups.items()
+            if SN.scene_for(gs[0][0], obs.workspace_dir, sid, cache)[1]]
     if not todo:
-        return {}
+        return {}, {}
     res = dispatch(SN.root_overrides, todo, n_processes=n_processes, use_starmap=True)
-    out = {}
-    for (gs, sid, _, _), (root, nods, unresolved, _) in zip(todo, res):
+    out, flags = {}, {}
+    for (gs, sid, *_), (root, nods, flagged, _) in zip(todo, res):
         if nods:
             out[(root, sid)] = nods
             for nod, (keep, why) in nods.items():
                 log(f'ID{sid}: {root} nod {nod}: background nods {keep} ({why})')
-        for u in unresolved:
-            log(f'ID{sid}: {u}: a bright neighbour of the slitlet is in every partner; partners kept')
-    log(f'Same-slitlet neighbours: {len(todo)} sources share a slitlet, {len(out)} get overrides '
-        f'({sum(len(v) for v in out.values())} nods)')
-    return out
+        if flagged:
+            flags[(root, sid)] = flagged
+            for nod, why in flagged.items():
+                log(f'ID{sid}: {root} nod {nod}: partners kept ({why})')
+    log(f'Same-slitlet neighbours: {len(todo)} sources have one within reach, {len(out)} get overrides '
+        f'({sum(len(v) for v in out.values())} nods), {sum(len(v) for v in flags.values())} nods flagged')
+    return out, flags
 
 
 def run_stage2b_single_slitlet(
@@ -1712,7 +1710,7 @@ def run_stage2b_single_slitlet(
                 header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG=None)
                 nod = str(_nod_number(cal_files[i]))
                 header_updates.update(C.bkg_nods_cards(bkg_nods, overridden=overridden, auto=nod in set(auto_nods or ()),
-                                                       why=(reasons or {}).get(nod, 'hand')))
+                                                       why=(reasons or {}).get(nod, 'hand' if overridden else '')))
                 if rectify:
                     resampled = result.copy()
                     resampled = pixel_replace.call(resampled)
