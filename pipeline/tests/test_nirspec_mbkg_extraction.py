@@ -224,3 +224,54 @@ def test_no_master_background_spectrum_when_its_spec3_did_not_run(tmp_path):
     S3.opt_ext_single_source('p', str(tmp_path), profile_fit=True, mbkg_spectrum=True)
     with fits.open(tmp_path / 'p_spec.fits') as h:
         assert not any(x.name in S3.MBKG_EXTENSIONS for x in h)
+
+
+def test_combined_product_carries_the_master_background_spectrum(tmp_path, monkeypatch):
+    from astropy.io import fits
+    from astropy.table import Table
+    from campfire_pipeline.nirspec import mbkg_extraction as MX
+    from campfire_pipeline.nirspec import stage3 as S3
+
+    n = 60
+    wave = np.linspace(3.0, 5.0, n)
+    cols = ('opt', '3px', '4px', '5px', 'prof', 'contam')
+    files = []
+    for i, f in enumerate((2.0, 2.0)):
+        t = Table({'wave': wave})
+        for c in cols:
+            t[f'fnu_{c}'] = np.full(n, 0.0 if c == 'contam' else f)
+            t[f'fnu_{c}_err'] = np.full(n, 0.1)
+        h = fits.table_to_hdu(t)
+        h.name = 'SPEC1D_MBKG'
+        h.header['EXTRACT'] = 'profile'
+        prim = fits.PrimaryHDU()
+        prim.header['PFSELFSB'] = 0.01
+        name = f'p_g{i}_spec.fits'
+        fits.HDUList([prim, h]).writeto(tmp_path / name)
+        files.append(name)
+    sci_shape = (7, n)
+    wave2d = np.tile(wave, (7, 1))
+
+    def fake_spec3(product_name, cal_files, workspace, source_id, shape=sci_shape):
+        paths = MX.product_paths(workspace, product_name, source_id)
+        os.makedirs(os.path.dirname(paths['s2d']), exist_ok=True)
+        fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.ones(shape), name='SCI'),
+                      fits.ImageHDU(np.ones(shape), name='ERR'),
+                      fits.ImageHDU(np.tile(wave, (shape[0], 1)), name='WAVELENGTH')]).writeto(paths['s2d'])
+        return paths
+
+    monkeypatch.setattr(MX, 'run_spec3', fake_spec3)
+    exposures = {'filename': ['a', 'b'], 'bkg_nods': ['2', '1'], 'bkg_why': ['every background exposure: x', '']}
+    clip = dict(sigma_clip_enabled=False)
+    hdus, cards = S3._combined_mbkg(files, ['a', 'b'], str(tmp_path), 'p', 7, wave, [1.0, 3.0], sci_shape, wave2d,
+                                    2, 5, fits.Header(), exposures, False, clip, None, 0.10)
+    assert [h.name for h in hdus] == ['SPEC1D_MBKG', 'SCI_MBKG', 'ERR_MBKG', 'PROF1D_MBKG']
+    spec = hdus[0].data
+    assert np.array_equal(spec['wave'], wave) and np.allclose(spec['fnu_opt'], 2.0)
+    assert cards['MBKGPREF'][0] and cards['MBKGWHY'][0] == 'no_clear_background'
+    # a stacked grid other than the nodded one: no master-background spectrum
+    monkeypatch.setattr(MX, 'run_spec3', lambda *a: fake_spec3(*a, shape=(8, n)))
+    for d in os.listdir(MX.subdir(str(tmp_path))):
+        os.remove(os.path.join(MX.subdir(str(tmp_path)), d))
+    assert S3._combined_mbkg(files, ['a', 'b'], str(tmp_path), 'p', 7, wave, [1.0, 3.0], sci_shape, wave2d,
+                             2, 5, fits.Header(), exposures, False, clip, None, 0.10) == ([], {})
