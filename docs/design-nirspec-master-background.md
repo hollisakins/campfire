@@ -1463,3 +1463,38 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     +28-52 % → 0-7 %, empty shutter plus another slitlet's margin +4-7 % → 0-3 %, empty shutters only
     unchanged (+0.1 to +2.9 %); `MBKG2DDQ` bit 2 (a footprint not painted) from ~1.05 M to ~55 k
     pixels per detector.
+- **2026-11-02, after the 1.6 rerun: no per-slitlet scale, no smooth field term; the flat past the
+  calibrated range deferred.** The extraction-v2 rerun of p1 on 1.6 still had 17/20 G395M
+  master-background spectra beyond 3σ of PRISM, and the per-slitlet scale (off since 2026-10-30)
+  was raised again. Measured read-only on the 1.6 products (scratch `mbkg_ship/repeat16/`): every
+  empty shutter in every nod, Σ(rate − MBKG2D) / Σ MBKG2D over its core on pixels only its slitlet
+  covers, outside source shutters, each exposure's median removed. These are self-consistency
+  tests (a measurement against itself in another nod, or against its neighbors); the few-per-cent
+  level itself depends on how it is measured (pixel selection, overlap, contamination; 2026-11-01:
+  +3.3 % from admitting pixels near a neighbor's open edge) and is not a defect to chase.
+  - *Repeats from nod to nod, mostly past the calibrated range.* Repeating / non-repeating part:
+    G395M NRS1 5.3 / 3.7 % inside the range, 13.9 / 11.6 % past it; NRS2 2.6 / 2.9 % and
+    16.9 / 4.1 %; PRISM 1.5 / 0.5 % and 7 / 0.8 %. Past the range the master background is painted
+    in count rate with no flat field, so each pixel's flat structure stays in the residual and
+    repeats wherever the same shutter lands.
+  - *Not a slitlet property on G395M.* Inside the range two empty shutters of one slitlet in one
+    nod differ by 10.3 % (NRS1) and 5.0 % (NRS2), unrelated shutters by 12.4 % and 7.3 %; PRISM
+    0.9 % against 2.4 %, a real slitlet term. A per-slitlet scale on G395M would remove little and
+    add the noise of one or two shutters, so it stays off (Hollis, 2026-11-02).
+  - *No smooth field term on G395M.* Each slitlet's offsets predicted from the other slitlets only
+    (polynomials of degree 1-3 in column and row, or a neighbor average of width 100-400 px):
+    G395M NRS1 7.4 % → 7.3 % at best (photon noise 3.6 %), NRS2 4.2 % → 4.3 % or worse (noise
+    1.7 %). The G395M scatter is specific to each shutter; only the same shutter in another nod
+    predicts it, which is the nod subtraction (no hybrid, 2026-10-28). PRISM's offsets are
+    predictable on a ~100 px scale (1.7 % → 1.0 %, 60 % of the non-noise variance), not by a
+    detector-wide polynomial (10-50 %).
+  - *Not a dispersion shift, not light between the slitlets.* A fitted per-shutter shift does not
+    repeat on G395M and does not reduce the scatter (PRISM shutters have ~0.9-column shifts that
+    repeat but do not move their offsets); light on uncovered pixels averages zero and does not
+    predict the offsets.
+  - *Deferred: a flat field past the calibrated range* (Hollis, 2026-11-02). Only needed if the
+    calibration for extraction is ever extended past the nominal range; until then the
+    count-rate painting there serves the contamination model, and its per-pixel structure
+    (above) is known.
+  - The adequacy test that needs no absolute level: the production extraction run on empty
+    shutters as if they held a source should give flux consistent with zero within its errors.
