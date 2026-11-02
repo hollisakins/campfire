@@ -302,6 +302,8 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
     from campfire_pipeline.nirspec.stage3 import _cleanup_spec3_intermediates
     from campfire_pipeline.nirspec import profile_timing as TM
 
+    from campfire_pipeline.nirspec import mbkg_extraction as MX
+
     prev_cwd = os.getcwd()
     os.chdir(workspace_dir)
     TM.reset()
@@ -311,6 +313,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         if not os.path.exists(crf):
             log(f"{product_name}: no Spec3 crf ({crf}); 3-pixel boxcar")
             write_fallback(path, FALLBACK_NO_CRF)
+            MX.write_fallback(product_name, workspace_dir, source_id, FALLBACK_NO_CRF)
             return _fallback_summary(product_name, source_id, is_prism, FALLBACK_NO_CRF)
         try:
             A = analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
@@ -319,6 +322,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         except PF.ProfileFitFallback as e:
             log(f"{product_name}: {e}; 3-pixel boxcar ({e.reason})")
             write_fallback(path, e.reason)
+            MX.write_fallback(product_name, workspace_dir, source_id, e.reason)
             return _fallback_summary(product_name, source_id, is_prism, e.reason)
         exps, C, P, clean, cstate, S = A.exps, A.chain, A.prediction, A.clean, A.contam_state, A.scan
         R = C.result
@@ -356,6 +360,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
 
         hdr = shape_header(C, exps)
         hdr['PFNSRCF'] = (int(sum(not e.has_source for e in exps)), 'Exposures without the source (SRCFLUX=F)')
+        hdr['PFSELFSB'] = (float(MX.self_subtraction(R, exps)), 'Own light the nod subtraction removes (share)')
         hdr['PFCMODE'] = (cstate, 'Other-slitlet light: off/mask/hybrid/no_maps/..._undone')
         if P is not None:
             def _v(x):
@@ -382,6 +387,11 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         out = fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus)
         out.writeto(path, overwrite=True)
         TM.stop('write', t_mark)
+        if bool(stage_config.get('mbkg_spectrum', True)):
+            # the master-background spectrum at the shape this chain chose (mbkg_extraction)
+            with TM.step('mbkg'):
+                MX.fit_product(product_name, workspace_dir, groups, science, source_id, C, stage_config,
+                               pass1_products=pass1_products, log=log)
         TM.report(f'product {product_name}', log=log)
         return dict(product=product_name, source_id=int(source_id), shape=C.shape, reason=C.reason,
                     is_prism=bool(is_prism),
