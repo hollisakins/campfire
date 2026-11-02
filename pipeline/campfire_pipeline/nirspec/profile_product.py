@@ -11,11 +11,17 @@ Per product (one source, one disperser), after Spec3 has written its crf:
 3. choose the shape (``profile_chain``; for gratings the PRISM shape of the same
    source is read from the PRISM product of this run or an earlier one);
 4. scan for a same-slitlet neighbour on the residuals (``nod_scan``; ``scan_neighbours``);
-5. drizzle the chosen model per unit reported flux through the crf (``PROF2D``), the
-   predicted other-source light (``CONTAM2D``) and its uncertainty (``CONTERR2D``), and
-   write ``{product}_pf.fits`` with every decision in the primary header.
+5. build the product's pixel maps once from the crf (``drizzle_map.DrizzleMap``: the s2d's
+   grid and each exposure's mapping onto it), drizzle through them the chosen model per
+   unit reported flux (``PROF2D``), the predicted other-source light (``CONTAM2D``) and its
+   uncertainty (``CONTERR2D``), and write ``{product}_pf.fits`` with every decision in the
+   primary header;
+6. with ``mbkg_spectrum``, the master-background product through the same maps
+   (``mbkg_extraction.fit_product``: its 2-D, the fit at this shape, its ``PROF2D`` /
+   ``CONTAM2D`` / ``CONTERR2D``).
 
-Stage 3 then extracts ``fnu_prof`` and ``fnu_contam`` from the s2d with ``PROF2D`` and
+Every 2-D image is drizzled here, before stage 3 extracts anything. Stage 3 then
+extracts ``fnu_prof`` and ``fnu_contam`` from the s2d with ``PROF2D`` and
 chooses the best spectrum ``fnu`` (``stage3._profile_fit_columns``), then deletes the
 ``_pf.fits``: what the ``_spec.fits`` does not keep (CONTERR2D) is reduced to its 1-D
 columns and cards.
@@ -286,17 +292,20 @@ def shape_header(C, exps):
 
 def run_product(product_name, workspace_dir, groups, overrides, science, source_id, stage_config,
                 is_prism, prism_product='', pass1_products=None, cleanup_crfs=True):
-    """Build ``{product_name}_pf.fits``. Returns a dict summary (for the driver).
+    """Build ``{product_name}_pf.fits`` and, with ``mbkg_spectrum``, the master-background
+    files (module doc). Returns a dict summary (for the driver).
 
     Named conditions (``FALLBACK_NO_CRF`` and the ``profile_fit.ProfileFitFallback``
     subclasses: an old-layout observation, no usable pixel, too few wavelengths) write
     a ``_pf.fits`` that holds only the reason; the product's best spectrum is then the
-    3-pixel boxcar and the summary's ``fallback`` names the reason. Any other
+    3-pixel boxcar and the summary's ``fallback`` names the reason (the
+    master-background spectrum too; without a crf there is none). Any other
     exception propagates: the stage fails.
 
     pass1_products : {source id: pass-1 product name} of the configuration (contamination)."""
     from astropy.io import fits
     from campfire_pipeline.common.io import log
+    from campfire_pipeline.nirspec import drizzle_map as DM
     from campfire_pipeline.nirspec import profile_fit as PF
     from campfire_pipeline.nirspec import profile_contam as CT
     from campfire_pipeline.nirspec.stage3 import _cleanup_spec3_intermediates
@@ -308,13 +317,19 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
     os.chdir(workspace_dir)
     TM.reset()
     path = os.path.join(workspace_dir, f'{product_name}_pf.fits')
+    mbkg = bool(stage_config.get('mbkg_spectrum', True))
     try:
         crf = f'{product_name}_s{source_id:09d}_crf.fits'
         if not os.path.exists(crf):
-            log(f"{product_name}: no Spec3 crf ({crf}); 3-pixel boxcar")
+            # nothing to drizzle through: no master-background 2-D either
+            log(f"{product_name}: no Spec3 crf ({crf}); 3-pixel boxcar, no master-background spectrum")
             write_fallback(path, FALLBACK_NO_CRF)
-            MX.write_fallback(product_name, workspace_dir, source_id, FALLBACK_NO_CRF)
             return _fallback_summary(product_name, source_id, is_prism, FALLBACK_NO_CRF)
+
+        def pixel_maps():
+            # the product's grid and every exposure's pixel map onto it, once (drizzle_map)
+            with TM.step('map'):
+                return DM.DrizzleMap.from_crf(crf, DM.step_settings(f'{product_name}_s2d.fits'))
         try:
             A = analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                                 prism_product=prism_product, pass1_products=pass1_products,
@@ -322,7 +337,9 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         except PF.ProfileFitFallback as e:
             log(f"{product_name}: {e}; 3-pixel boxcar ({e.reason})")
             write_fallback(path, e.reason)
-            MX.write_fallback(product_name, workspace_dir, source_id, e.reason)
+            if mbkg:
+                with TM.step('mbkg'):
+                    MX.write_fallback(product_name, workspace_dir, source_id, e.reason, pixel_maps(), log=log)
             return _fallback_summary(product_name, source_id, is_prism, e.reason)
         exps, C, P, clean, cstate, S = A.exps, A.chain, A.prediction, A.clean, A.contam_state, A.scan
         R = C.result
@@ -336,23 +353,21 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
                 log(f'{product_name}: same-slitlet neighbour at Delta {S.delta:+.2f}, dchi2 {S.dchi2:.0f}, '
                     f'proposals {S.proposals}, unresolved {S.unresolved}')
 
+        dmap = pixel_maps()
         t_mark = TM.start()
-        prof = PF.drizzle_frames(R, crf, unit=True)
-        hdus = [fits.ImageHDU(np.asarray(prof.data, float) / 1e12, name='PROF2D')]
-        prof.close()
+        prof = PF.drizzle_frames(R, dmap, unit=True)
+        hdus = [fits.ImageHDU(np.asarray(prof, float) / 1e12, name='PROF2D')]
         if P is not None:
             live = CT.live_frames(exps, P)
-            c2d = PF.drizzle_arrays(lambda name: live.get(name), crf)
-            h = fits.ImageHDU(np.asarray(c2d.data, float), name='CONTAM2D')
+            c2d = PF.drizzle_arrays(lambda name: live.get(name), dmap)
+            h = fits.ImageHDU(np.asarray(c2d, float), name='CONTAM2D')
             h.header['BUNIT'] = ('MJy', 'Predicted other-source light, same units as SCI')
             hdus.append(h)
-            c2d.close()
             live = CT.live_frames(exps, P, what='dpred')
-            e2d = PF.drizzle_arrays(lambda name: live.get(name), crf)
-            h = fits.ImageHDU(np.asarray(e2d.data, float), name='CONTERR2D')
+            e2d = PF.drizzle_arrays(lambda name: live.get(name), dmap)
+            h = fits.ImageHDU(np.asarray(e2d, float), name='CONTERR2D')
             h.header['BUNIT'] = ('MJy', 'Uncertainty of CONTAM2D (systematic), as SCI')
             hdus.append(h)
-            e2d.close()
             ns = _own_notsep(workspace_dir, pass1_products, source_id)
             if ns is not None:
                 hdus.append(ns)
@@ -387,10 +402,11 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         out = fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus)
         out.writeto(path, overwrite=True)
         TM.stop('write', t_mark)
-        if bool(stage_config.get('mbkg_spectrum', True)):
-            # the master-background spectrum at the shape this chain chose (mbkg_extraction)
+        if mbkg:
+            # the master-background 2-D and spectrum at the shape this chain chose, through
+            # the same pixel maps (mbkg_extraction)
             with TM.step('mbkg'):
-                MX.fit_product(product_name, workspace_dir, groups, science, source_id, C, stage_config,
+                MX.fit_product(product_name, workspace_dir, exps, science, source_id, C, stage_config, dmap,
                                pass1_products=pass1_products, log=log)
         TM.report(f'product {product_name}', log=log)
         return dict(product=product_name, source_id=int(source_id), shape=C.shape, reason=C.reason,

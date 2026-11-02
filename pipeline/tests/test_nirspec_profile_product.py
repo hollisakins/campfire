@@ -27,15 +27,24 @@ def test_no_crf_falls_back(tmp_path):
 
 @pytest.mark.parametrize('exc', [PF.NotBackgroundSubtracted, PF.NoUsablePixels, PF.TooFewWavelengths])
 def test_named_conditions_fall_back(tmp_path, monkeypatch, exc):
+    """The nodded product and its master-background product fall back alike, the latter
+    with its 2-D through the product's pixel maps."""
+    from campfire_pipeline.nirspec import drizzle_map as DM
+    from campfire_pipeline.nirspec import mbkg_extraction as MX
     _with_crf(tmp_path)
 
     def boom(*a, **k):
         raise exc('profile fit: test')
     monkeypatch.setattr(PP, 'analyse_product', boom)
+    monkeypatch.setattr(DM, 'step_settings', lambda path: {})
+    monkeypatch.setattr(DM.DrizzleMap, 'from_crf', classmethod(lambda cls, crf, s: ('map', crf)))
+    seen = []
+    monkeypatch.setattr(MX, 'write_fallback', lambda *a, **k: seen.append(a))
     r = _run(tmp_path)
     assert r['fallback'] == exc.reason
     assert exc.reason in S3.EXTRACT_REASONS
     assert fits.getheader(tmp_path / 'obs_prism_7_pf.fits')['EXTRWHY'] == exc.reason
+    assert seen == [('obs_prism_7', str(tmp_path), 7, exc.reason, ('map', 'obs_prism_7_s000000007_crf.fits'))]
 
 
 @pytest.mark.parametrize('exc', [RuntimeError, ValueError, KeyError])

@@ -1638,18 +1638,50 @@ session, user decisions 2026-11-01: 2-D in the FITS, three reasons, exposure cou
 with their master background subtracted, so the two differ only in how the background was
 removed:
 - Frames: each science exposure's calibrated frame (`PRE_BKGSUB_SCI`) minus its master
-  background (`stage2.master_background_on`, `sky_for_slit`), written as a copy of its
-  canonical in `<workspace>/mbkg/` (variance plus the master background's; the
-  `PRE_BKGSUB_*` arrays kept for the pixel calibration and the frame's own variance).
-- 2-D: jwst's Spec3Pipeline on the copies under `<product>_mbkg`, in the product's Spec3
-  task. Same exposures, so the same 2-D grid (p1 923747 G395M: identical WAVELENGTH array;
-  the 1-D x1d wavelengths differ by 1e-15 um, so the check is on the 2-D grid and the
-  spectrum is written on the nodded `wave`). One extra Spec3 run per product.
-- Fit: the copies as single frames (`load_source(single_frames=True)`), the forward model at
-  the nodded chain's shape, the spectrum solved; `PROF2D` / `CONTAM2D` / `CONTERR2D` drizzled
-  through the master-background crf. Other sources' light from their pass 1s, once and
-  positive, catalogued same-slitlet neighbors included (`predict(include=...)`, from
+  background (`stage2.master_background_on`, `sky_for_slit`), in memory
+  (`mbkg_extraction.frame_arrays`; variance plus the master background's). Until
+  2026-11-02 they were written as copies of the canonicals in `<workspace>/mbkg/` and read
+  back.
+- 2-D: the frames drizzled as data through the nodded product's pixel maps
+  (`drizzle_map`, below), so on the nodded grid by construction, with the nodded Spec3's
+  outlier flags (`nodded_outlier_flags`, the one place of that choice; decision pending,
+  below). Until 2026-11-02: one extra Spec3 run per product on the copies, with its own
+  outlier detection (and its own grid, checked against the nodded one).
+- Fit: the nodded fit's exposures with the frames in place of the nod differences, as single
+  frames (`single_frame_exposures`: geometry, variance and path loss from the nodded load;
+  identical to `load_source(single_frames=True)` on the old copies, p1 629466 PRISM), the
+  forward model at the nodded chain's shape, the spectrum solved; `PROF2D` / `CONTAM2D` /
+  `CONTERR2D` drizzled through the same pixel maps. Other sources' light from their pass 1s,
+  once and positive, catalogued same-slitlet neighbors included (`predict(include=...)`, from
   `slitlet_neighbours.scene`): the stored map counts them as the slitlet's own light.
+
+**Drizzle once (2026-11-02, branch `claude/drizzle-once`).** Every 2-D image of a product is
+drizzled before any 1-D extraction, through one set of pixel maps per product
+(`drizzle_map.DrizzleMap.from_crf`: jwst's output grid from the crf, each exposure's
+`calc_pixmap` once; then the drizzle library directly, with stcal's weights and variance
+propagation). The nodded data stay Spec3's s2d. Checks on p1 629466 PRISM (3 exposures;
+scripts in `scratch/claude/drizzle-once/`):
+- The crf's own arrays through the map reproduce Spec3's s2d bit for bit: SCI, ERR, WHT,
+  VAR_POISSON, VAR_RNOISE, VAR_FLAT.
+- `PROF2D` / `CONTAM2D` / `CONTERR2D` against the per-image `ResampleSpecStep` calls: equal to
+  1-2 float32 ulps (max 1.8e-7 of the peak, 155 of 12990 pixels). Cause: jwst builds each
+  call's grid with the slit position weighted by the image being drizzled, so a model's grid
+  sat 1.6e-9 pixel from the data's; with the grid built from the model the map reproduces
+  the old call bit for bit. The map uses the data's grid, the one the extraction reads.
+  `fnu` moves by at most 1.5e-7 relative.
+- Master-background 2-D against its own Spec3: the grid alone changes it by 2e-9 of the
+  peak; the outlier flags change 32 of 12990 pixels. The master background's own outlier
+  detection flagged 20 of 23058 usable pixels, the nodded one 10 (9 shared, 11 lost, 1
+  new). Lost are two hot pixels at +69 sigma in one exposure: stationary on the detector,
+  they cancel in the nod differences, so the nodded detection does not flag them there,
+  and they stay in `SCI_MBKG` (two spikes, up to +540 sigma, outside the aperture rows).
+  `SPEC1D_MBKG.fnu` moved by at most 0.4 sigma in 4 of 433 columns. Whether the
+  master-background frames need outlier detection of their own is the user's decision.
+- Without a crf (a rare named condition) there is no master-background spectrum: the old
+  one had its own Spec3.
+- Time (machine under load): the master-background Spec3 (7.6 s) is gone; the nodded drizzles
+  3.8 s -> 0.06 s plus 1.0 s for the map; the master-background fit 5.5 s -> 2.3 s, of which
+  ~0.75 s per exposure is `sky_for_slit` opening the canonical as a datamodel.
 - Extraction: `stage3.extract_columns` (factored out of `opt_ext_single_source`, so both
   spectra run the same code) on the nodded aperture rows.
 - Extensions: `SPEC1D_MBKG` (SPEC1D's columns, same `wave`; header: the extraction cards,

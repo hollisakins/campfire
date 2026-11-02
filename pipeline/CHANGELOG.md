@@ -30,6 +30,19 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec stage 3: every 2-D image drizzled once per product, the master-background
+  spectrum in memory.** A product's pixel maps (`drizzle_map`: jwst's output grid from the
+  Spec3 crf, each exposure's pixel map once) carry every drizzle, through the drizzle library
+  directly: `PROF2D` / `CONTAM2D` / `CONTERR2D` (was one `ResampleSpecStep` call each) and the
+  master-background 2-D and its `PROF2D` / `CONTAM2D` / `CONTERR2D` (was a second Spec3 run
+  on copies of the canonicals written to `mbkg/`). The master-background frames are built in
+  memory and fitted on the nodded load's exposures. The crf's own arrays through the map
+  reproduce Spec3's s2d bit for bit; the nodded model arrays move by 1-2 float32 ulps (the
+  data's grid instead of one built from each image). The master-background 2-D now takes the
+  nodded Spec3's outlier flags (`mbkg_extraction.nodded_outlier_flags`; decision pending): on
+  p1 629466 PRISM 32 of 12990 2-D pixels change, `SPEC1D_MBKG.fnu` by at most 0.4 sigma.
+  Without a crf there is no master-background spectrum. Same extensions, columns and cards.
+
 - **NIRSpec master background 1.6: every footprint painted, light from one MSA spot counted
   once.** The G395M master background read low (pixels on a failed-open shutter +54 %, pixels
   under another slitlet's margin +5 to +10 %, on `ember_cosmos_p1`). Two causes: failed-open
