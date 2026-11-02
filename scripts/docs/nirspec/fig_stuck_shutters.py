@@ -1,125 +1,137 @@
-"""Finding stuck-closed shutters: each commanded-open shutter's background is fitted with
-the model of the background seen through it.
+"""Finding stuck-closed shutters automatically (master background, step 1).
 
-Top: one slitlet containing a stuck shutter, as count rate, each shutter outlined and
-labeled with its fitted amplitude a (1 = passes the background like an open shutter, 0 =
-passes nothing). Bottom: a for every commanded-open shutter of the MSA configuration (the
-median over its nods and detectors). Shutters below 0.3 are called stuck; between 0.3 and
-0.8 they are listed for a look by eye; at 0.8 and above they are open.
+Before calibration, the count-rate frame of every exposure is fitted as a sum of one
+background model per commanded-open shutter: the exposure's background spectrum, seen
+through that shutter (its position, bar shadow and the detector rows its light reaches),
+each with its own amplitude a. An open shutter comes out near a = 1, a stuck-closed one
+near 0, whether or not other slitlets' light falls on the same pixels; a shutter is called
+stuck when the median a over the nods and both detectors is below 0.3.
+
+One row per example: the data around one slitlet, the model with every shutter open, the
+model with each shutter at its fitted amplitude, and the brightness across the slitlet
+(averaged over a stretch of columns) for all three.
 
     python scripts/docs/nirspec/fig_stuck_shutters.py --root <root> --obs ember_cosmos_p1 \
-        --exposure jw07076001001_05101_00001_nrs1 [--shutter q3r100c50]
+        --example jw07076001001_03101_00001_nrs1:q4r58c92 \
+        --example jw07076001001_05101_00001_nrs1:q4r117c24
 """
 import common as C
 
 p = C.parser(__doc__.splitlines()[0])
-p.add_argument('--exposure', required=True, help='exposure whose configuration the histogram shows')
-p.add_argument('--example-exposure', default=None,
-               help='exposure for the slitlet example (default: --exposure); a PRISM exposure shows it best')
-p.add_argument('--shutter', default=None, help="physical key like 'q3r100c50'; default: a clear stuck example")
+p.add_argument('--example', action='append', required=True,
+               help="'<exposure>:q<Q>r<ROW>c<COL>', a stuck shutter to show (repeat for more rows)")
+p.add_argument('--columns', type=int, default=150, help='columns averaged in the profile across the slitlet')
 args = p.parse_args()
 root = C.setup_root(args.root)
 
+import os                                                             # noqa: E402
 import re                                                             # noqa: E402
+import warnings                                                       # noqa: E402
 
 import numpy as np                                                    # noqa: E402
 from astropy.io import fits                                           # noqa: E402
 from astropy.table import Table                                       # noqa: E402
 
-from campfire_pipeline.nirspec import trace_overlap as TO             # noqa: E402
+from campfire_pipeline.nirspec import barshadow_calibration as B      # noqa: E402
+from campfire_pipeline.nirspec import master_bkg as M                 # noqa: E402
+from campfire_pipeline.nirspec import master_bkg_rate as R            # noqa: E402
+from campfire_pipeline.nirspec import shutter_fit as SF               # noqa: E402
+from campfire_pipeline.nirspec.coverage import rate_geometry          # noqa: E402
 
+warnings.filterwarnings('ignore', category=RuntimeWarning)
 plt = C.style()
 ws = C.workspace(root, args.obs)
-with fits.open(C.rate_file(ws, args.exposure)) as h:
-    calls_all = Table(h['CALLS'].data)
-    grating = f"{h[0].header.get('GRATING', '')}/{h[0].header.get('FILTER', '')}"
-example = args.example_exposure or args.exposure
-rpath = C.rate_file(ws, example)
-with fits.open(rpath) as h:
-    rate = np.asarray(h['SCI'].data, float)
-    calls = Table(h['CALLS'].data)
-    grating_ex = f"{h[0].header.get('GRATING', '')}/{h[0].header.get('FILTER', '')}"
-sm = TO.ShutterMap.read(rpath)
-sh = sm.shutters
-keys = list(zip(np.asarray(sh['q'], int), np.asarray(sh['row'], int), np.asarray(sh['col'], int)))
-a_of = {(int(r['q']), int(r['row']), int(r['col'])): float(r['a']) for r in calls}
-core = (sm.flag & TO.CORE) > 0
+cache_dir = os.path.join(root, 'cache', 'coverage')
 
 
-def pixels_of(k):
-    """Pixels inside shutter row k's open area (any layer)."""
-    m = np.zeros(rate.shape, bool)
-    for layer in range(sm.sh1.shape[0]):
-        m |= (sm.sh1[layer] == k) & core[layer]
-    return m
+def models(exposure):
+    """Data, the template matrix, the parameters of its columns and the fitted amplitudes."""
+    rpath = C.rate_file(ws, exposure)
+    h = fits.getheader(rpath)
+    key = (str(h['GRATING']).strip().upper(), str(h['FILTER']).strip().upper())
+    geo = rate_geometry(rpath, cache_dir, R.cutoffs_for(*key), None)
+    sky, qs = R.read_rate_sky(rpath)
+    _, bs_path = M._barshadow_reference(key[0], rpath)
+    info, _ = SF._shutter_info(rpath)
+    A, params, _ = SF.build_templates(geo, sky, qs, B.load_table(bs_path), info)
+    with fits.open(rpath) as f:
+        rate = np.asarray(f['SCI'].data, float)
+        amp = Table(f['SHUTAMP'].data)
+    a_of = {(int(r['q']), int(r['row']), int(r['col'])): float(r['a']) for r in amp}
+    return rate, A.tocsc(), params, a_of, f"{key[0]}/{key[1]}"
 
 
-if args.shutter:
-    q, r, c = map(int, re.match(r'q(\d)r(\d+)c(\d+)', args.shutter).groups())
-    target = keys.index((q, r, c))
-else:                       # the darkest stuck shutter here whose slitlet has an open shutter too
-    best = None
-    for k, key in enumerate(keys):
-        a = a_of.get(key, np.nan)
-        if not (a < 0.1):
-            continue
-        mates = [i for i in range(len(sh)) if sh['slit'][i] == sh['slit'][k] and i != k]
-        if not any(a_of.get(keys[i], 0) > 0.85 for i in mates):
-            continue
-        n = pixels_of(k).sum()
-        if n > 2000 and (best is None or n > best[1]):
-            best = (k, n)
-    target = best[0]
-slit = int(sh['slit'][target])
-members = [i for i in range(len(sh)) if int(sh['slit'][i]) == slit]
-foot = np.zeros(rate.shape, bool)
-masks = {}
-for i in members:
-    masks[i] = pixels_of(i)
-    foot |= masks[i]
-ys, xs = np.nonzero(foot)
-y0, y1 = ys.min() - 6, ys.max() + 7
-x0, x1 = xs.min(), xs.max() + 1
-sl = (slice(y0, y1), slice(x0, x1))
-ext = [x0 - 0.5, x1 - 0.5, y0 - 0.5, y1 - 0.5]
-
-fig = plt.figure(figsize=(11.5, 7.6), constrained_layout=True)
-gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.25])
-ax = fig.add_subplot(gs[0])
-ax.imshow(rate[sl], extent=ext, cmap='Greys', norm=C.asinh_norm(rate[sl]), aspect='auto')
-for i in members:
-    key = keys[i]
-    a = a_of.get(key, np.nan)
-    stuck = a < 0.3
-    color = C.PALETTE[5] if stuck else C.PALETTE[0]
-    yy, xx = np.nonzero(masks[i])
-    C.draw_trace(ax, yy, xx, color, lw=1.8)
-    ax.text(x0 + 0.01 * (x1 - x0), float(np.median(yy)),
-            f'q{key[0]} r{key[1]} c{key[2]}:  a = {a:.2f}  ({"stuck" if stuck else "open"})',
-            fontsize=9.5, va='center', ha='left', color=C.INK,
-            bbox=dict(boxstyle='round,pad=0.2', fc='white', ec=color, lw=1, alpha=0.9))
-ax.set_xlim(ext[0], ext[1])
-ax.set_ylim(ext[2], ext[3])
-ax.set_title(f'One slitlet with a stuck shutter ({grating_ex}): no background light comes through it')
-ax.set_xlabel('detector column')
-ax.set_ylabel('detector row')
-
-ax = fig.add_subplot(gs[1])
-a_all = np.asarray(calls_all['a'], float)
-a_all = a_all[np.isfinite(a_all)]
-bins = np.linspace(-0.2, 2.0, 111)
-ax.axvspan(bins[0], 0.3, color=C.PALETTE[5], alpha=0.10, lw=0)
-ax.axvspan(0.3, 0.8, color=C.PALETTE[1], alpha=0.12, lw=0)
-ax.hist(np.clip(a_all, bins[0], bins[-1]), bins=bins, color=C.PALETTE[0])
-ax.set_yscale('log')
-ax.set_ylim(0.7, None)
-top = ax.get_ylim()[1]
-for x, txt in ((0.05, 'called stuck'), (0.55, 'checked by eye'), (1.15, 'open')):
-    ax.text(x, top * 0.6, txt, ha='center', va='top', fontsize=10.5, color=C.INK)
-ax.set_xlabel('fitted amplitude a (median over nods and detectors)')
-ax.set_ylabel('shutters')
-ax.set_title(f'Every commanded-open shutter of one MSA configuration ({grating}, {len(a_all)} shutters; '
-             'above 1: a source adds light)')
-fig.suptitle(f'{args.obs}  example {example}, histogram {args.exposure[:19]}', x=0.01, ha='left', fontsize=10,
-             color=C.MUTED)
+fig = plt.figure(figsize=(14, 3.6 * len(args.example) + 0.6), constrained_layout=True)
+gs = fig.add_gridspec(len(args.example), 4, width_ratios=[1, 1, 1, 0.55])
+for r, ex in enumerate(args.example):
+    exposure, shutter = ex.split(':')
+    q, row, col = map(int, re.match(r'q(\d)r(\d+)c(\d+)', shutter).groups())
+    rate, A, params, a_of, grating = models(exposure)
+    NY, NX = rate.shape
+    target = [i for i, pp in enumerate(params) if (pp['q'], pp['row'], pp['col']) == (q, row, col)]
+    if not target:
+        raise SystemExit(f'{shutter} has no background model in {exposure}')
+    slit = params[target[0]]['slitlet_id']
+    members = [i for i, pp in enumerate(params) if pp['kind'] == 'msa' and pp['slitlet_id'] == slit]
+    pix = {i: A[:, i].nonzero()[0] for i in members}
+    allp = np.concatenate(list(pix.values()))
+    ys, xs = np.unravel_index(allp, (NY, NX))
+    y0, y1 = max(ys.min() - 8, 0), min(ys.max() + 9, NY)
+    x0, x1 = xs.min(), xs.max() + 1
+    # every shutter whose light reaches this region, at a = 1 and at its fitted a
+    box = np.zeros((NY, NX), bool)
+    box[y0:y1, x0:x1] = True
+    near = np.flatnonzero(np.asarray(A[box.ravel()].sum(axis=0)).ravel() != 0)
+    a_fit = np.array([a_of.get((params[i]['q'], params[i]['row'], params[i]['col']), 1.0)
+                      if params[i]['kind'] == 'msa' else 1.0 for i in near])
+    open_model = np.asarray(A[:, near] @ np.ones(near.size)).reshape(NY, NX)
+    fit_model = np.asarray(A[:, near] @ a_fit).reshape(NY, NX)
+    sl = (slice(y0, y1), slice(x0, x1))
+    ext = [x0 - 0.5, x1 - 0.5, y0 - 0.5, y1 - 0.5]
+    norm = C.asinh_norm(rate[sl])
+    a_t = a_of.get((q, row, col), np.nan)
+    a_txt = f'{a_t:.2f}'.replace('-0.00', '0.00')
+    for k, (img, title) in enumerate([(rate, 'Data (count rate)'), (open_model, 'Model: every shutter open'),
+                                      (fit_model, 'Model: fitted amplitudes')]):
+        ax = fig.add_subplot(gs[r, k])
+        ax.imshow(img[sl], extent=ext, cmap='Greys', norm=norm, aspect='auto')
+        for i in members:
+            yy, xx = np.unravel_index(pix[i], (NY, NX))
+            stuck = i in target
+            C.draw_trace(ax, yy, xx, C.PALETTE[5] if stuck else C.PALETTE[0], lw=1.4 if stuck else 1.0)
+        ax.set_xlim(ext[0], ext[1])
+        ax.set_ylim(ext[2], ext[3])
+        if r == 0:
+            ax.set_title(title)
+        if k == 0:
+            ax.set_ylabel('detector row')
+            C.label_panel(ax, f'{grating}: shutter q{q} r{row} c{col}, a = {a_txt}')
+        else:
+            ax.set_yticklabels([])
+        if r == len(args.example) - 1:
+            ax.set_xlabel('detector column')
+    # profile across the slitlet over the stretch of columns where its background is brightest
+    colsum = np.nansum(open_model[sl], axis=0)
+    c0 = int(np.argmax(np.convolve(colsum, np.ones(args.columns), 'valid')))
+    cs = slice(x0 + c0, x0 + c0 + args.columns)
+    rows = np.arange(y0, y1)
+    ax = fig.add_subplot(gs[r, 3])
+    ax.axvline(0, color='#999999', lw=0.8)
+    C.profile_step(ax, np.nanmean(rate[y0:y1, cs], axis=1), rows, '#555555', vertical=True, label='data')
+    C.profile_step(ax, np.nanmean(open_model[y0:y1, cs], axis=1), rows, C.PALETTE[0], vertical=True,
+                   fill_alpha=0, ls='--', label='every shutter open')
+    C.profile_step(ax, np.nanmean(fit_model[y0:y1, cs], axis=1), rows, C.PALETTE[5], vertical=True,
+                   fill_alpha=0, label='fitted amplitudes')
+    yy, _ = np.unravel_index(pix[target[0]], (NY, NX))
+    ax.axhspan(yy.min() - 0.5, yy.max() + 0.5, color=C.PALETTE[5], alpha=0.08, lw=0)
+    ax.set_ylim(ext[2], ext[3])
+    ax.set_yticklabels([])
+    if r == 0:
+        ax.set_title('Across the slitlet')
+        ax.legend(loc='upper right', fontsize=8.5)
+    ax.set_xlabel('count rate')
+    ax.text(0.97, 0.02, f'columns {cs.start}-{cs.stop - 1}', transform=ax.transAxes, ha='right', va='bottom',
+            fontsize=8.5, color=C.MUTED)
+fig.suptitle(f'{args.obs}: stuck shutter outlined in orange, the other shutters of its slitlet in blue',
+             x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'stuck_shutters.png')
