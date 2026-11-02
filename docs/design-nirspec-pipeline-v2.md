@@ -612,6 +612,17 @@ as above; 141 NRS1 / 138 NRS2 clean stars.
   ~0.02 rows of `CENTRE_LAW` below 3 um; at 4.7 um NRS2 quadrant 2 -0.36 vs -0.25 rows, NRS1
   quadrant 4 -0.26 vs -0.21, slope with source position NRS1 -0.087 vs -0.107; NRS1 quadrant 1
   has no stars at 3.7-4.7 um (NaN; fill from the detector value before use).
+- What a symmetric PSF leaves (each star's centre free in every exposure, `fit_centres`; figures
+  `psf_stack_free_centres.png`, `star_own_width_<key>.png`): at the median star width the stack
+  fits the core within ~1 % of the peak, but the star's own image is skewed towards slit +y on
+  both detectors and at all wavelengths: a shoulder of +0.6-0.9 % of the light per pixel at +1.25 to
+  +1.75 rows, a deficit of 0.3-0.8 % at -1.25 to -1.75, a tail of 0.2-0.5 % per pixel to +4 rows;
+  the same whichever side the nod partners are on (so not their copies), at +-1.5 rows rather than
+  on the core's steep sides (so not centring); about 1 % of the light in all. In bright stars it is
+  5-20 sigma per pixel (own-width chi2/dof 5-60, edge stars up to 200, falling to 1-6 in the red).
+  The pattern above 4.5 um is the core widening across 4.1-5.3 um (0.585 to 0.661 rows on NRS1):
+  splitting the range at 4.6 um removes about two thirds of it. The table's last node is at 4.70 um
+  and is held flat beyond it.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_new.json`, `centre_law_new.json`,
   `offset_law.log`, `kappa_by_obs.log`, `p1_out_of_sample.json`, `summary.log`, `selection.log`,
   `figures/` with `nod_offset_law.png`); the shared-position refit in `scratch/claude/psf_cal/`.
