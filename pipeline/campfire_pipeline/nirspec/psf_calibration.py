@@ -118,10 +118,12 @@ class StarTask:
     x_start: int = None
     y_start: int = None
     srcy: float = np.nan
+    disperser: str = 'prism_clear'
 
     @property
     def key(self):
-        return f'{self.obs}_{self.source_id}_{self.detector}'
+        base = f'{self.obs}_{self.source_id}_{self.detector}'
+        return base if self.disperser == 'prism_clear' else f'{base}_{self.disperser}'
 
 
 def star_tasks(root, obs_name, disperser='prism_clear', observations_file=None):
@@ -150,7 +152,7 @@ def star_tasks(root, obs_name, disperser='prism_clear', observations_file=None):
                                 groups=[[str(p) for p in g] for g in t['groups']], overrides=t['overrides'],
                                 science=[str(n) for n in t['science']], quadrant=int(h.get('MSAQUAD', 0)),
                                 x_start=int(h.get('SLTSTRT1', -1)), y_start=int(h.get('SLTSTRT2', -1)),
-                                srcy=float(h.get('SRCYPOS', np.nan))))
+                                srcy=float(h.get('SRCYPOS', np.nan)), disperser=disperser))
     return out
 
 
@@ -196,16 +198,16 @@ class RangeFit:
     a constant core sigma and wing fraction over the range (``constant_tables``), or a
     given table."""
 
-    def __init__(self, exps, lam_range, centre_law_tables=None):
+    def __init__(self, exps, lam_range, centre_law_tables=None, nod_law=None):
         self.lam_range = tuple(lam_range)
         law = PF.NO_CENTRE_LAW if centre_law_tables is None else centre_law_tables
         ex = restrict(exps, lam_range)
-        M0 = PF.ProfileModel(ex, centre_law_tables=law)
+        M0 = PF.ProfileModel(ex, centre_law_tables=law, nod_law=nod_law)
         g = M0.lam_grid
         g = g[(g > lam_range[0] - GRID_MARGIN) & (g < lam_range[1] + GRID_MARGIN)]
         if g.size < 3:
             raise PF.TooFewWavelengths('psf calibration: too few wavelengths in range')
-        self.M = PF.ProfileModel(ex, grid=g, centre_law_tables=law)
+        self.M = PF.ProfileModel(ex, grid=g, centre_law_tables=law, nod_law=nod_law)
         M = self.M
         self.eoff = np.zeros(len(ex))
         self.v_raw = M.pix['v'].copy()
@@ -365,6 +367,363 @@ class RangeFit:
 
 
 # ---------------------------------------------------------------------------
+# Nod offsets (the measurement behind profile_fit.NOD_OFFSET_LAW)
+# ---------------------------------------------------------------------------
+MSA_NCOL = 365          # shutters per row of an MSA quadrant: SHUTTRID = (row - 1) * 365 + column
+OFFSET_BOUND = 0.1      # per-exposure offset, slit units
+
+
+def exposure_meta(exps):
+    """Per exposure, what could describe its nod offset: the nod (file sequence number and
+    PATT_NUM), the commanded dither offset (XOFFSET / YOFFSET, arcsec), the planned source
+    position SRCYPOS, the MSA quadrant and the source shutter's row and column (from SHUTTRID),
+    the slitlet's start on the detector, the disperser."""
+    from astropy.io import fits
+    out = []
+    for e in exps:
+        m = dict(name=e.name, nod=int(e.name.split('_')[2]), src_y=float(e.src_y), has_source=bool(e.has_source),
+                 grating=e.grating, detector=e.detector)
+        try:
+            h0, h1 = fits.getheader(e.path, 0), fits.getheader(e.path, 'SCI')
+            sid = int(h1.get('SHUTTRID', 0))
+            m.update(patt_num=int(h0.get('PATT_NUM', -1)), xoffset=float(h0.get('XOFFSET', np.nan)),
+                     yoffset=float(h0.get('YOFFSET', np.nan)), quadrant=int(h1.get('MSAQUAD', 0)),
+                     x_start=int(h1.get('SLTSTRT1', -1)), y_start=int(h1.get('SLTSTRT2', -1)),
+                     shutter_row=(sid - 1) // MSA_NCOL + 1 if sid > 0 else -1,
+                     shutter_col=(sid - 1) % MSA_NCOL + 1 if sid > 0 else -1)
+        except (OSError, KeyError, ValueError, TypeError):
+            pass
+        out.append(m)
+    return out
+
+
+def _fit_offsets(RF, f_wing, x0, use):
+    """Core width, centre, drift and a free position offset per exposure that contains the
+    source (the first one held at zero; the shared centre absorbs it), on fixed pixels.
+    Returns (offsets relative to their mean over those exposures, their errors, chi2), slit units."""
+    M = RF.M
+    src = [k for k, e in enumerate(M.exps) if e.has_source]
+    free = src[1:]
+    lo = np.array([x0[0] + 1 - CENTRE_BOUND, 1 - DRIFT_BOUND, S_BOUNDS[0]] + [-OFFSET_BOUND] * len(free))
+    hi = np.array([x0[0] + 1 + CENTRE_BOUND, 1 + DRIFT_BOUND, S_BOUNDS[1]] + [OFFSET_BOUND] * len(free))
+
+    def eoff_of(x):
+        e = np.zeros(len(M.exps))
+        e[free] = x[3:]
+        return e
+
+    def resid(x):
+        RF.eoff = eoff_of(x)
+        f, _, A = RF.solve(x[0] - 1.0, x[1] - 1.0, constant_tables(x[2], f_wing))
+        return np.where(use, (M.pix['d'] - A @ f) / np.sqrt(M.pix['v']), 0.0)
+    x = np.clip(np.array([x0[0] + 1.0, x0[1] + 1.0, x0[2]] + [0.0] * len(free)), lo + 1e-6, hi - 1e-6)
+    try:
+        res = least_squares(resid, x, bounds=(lo, hi), x_scale='jac', ftol=1e-6, xtol=1e-6, gtol=1e-6)
+    finally:
+        RF.eoff = np.zeros(len(M.exps))
+    chi2 = float(np.sum(res.fun ** 2))
+    ndof = max(float(np.sum(M.dof_weight()[use])) - len(x), 1.0)
+    J = res.jac[np.flatnonzero(use)]
+    cov = np.linalg.pinv(J.T @ J) * max(chi2 / ndof, 1.0)
+    # offsets of the source exposures, the first fixed at 0, then relative to their mean
+    n = len(src)
+    A = np.eye(n) - 1.0 / n
+    C = np.zeros((n, n))
+    C[1:, 1:] = cov[3:, 3:]
+    e_src = A @ np.concatenate([[0.0], res.x[3:]])
+    err_src = np.sqrt(np.abs(np.diag(A @ C @ A.T)))
+    off, err = np.full(len(M.exps), np.nan), np.full(len(M.exps), np.nan)
+    off[src], err[src] = e_src, err_src
+    return off, err, chi2
+
+
+def grating_ranges(exps, n=3):
+    """``n`` wavelength ranges, equal in log wavelength, over a grating's coverage."""
+    lam = np.concatenate([e.wav[np.isfinite(e.wav)] for e in exps if e.use_data])
+    lo, hi = np.percentile(lam, [2, 98])
+    edges = np.exp(np.linspace(np.log(lo), np.log(hi), n + 1))
+    return tuple((float(a), float(b)) for a, b in zip(edges[:-1], edges[1:]))
+
+
+def measure_offsets(task, ranges=None, snr_min=10.0, edge_max=0.45, exps=None):
+    """Per range of one star: the per-exposure offsets fitted freely (no nod law in the model),
+    and the chi2 with offsets held at zero, free, and given by ``NOD_OFFSET_LAW`` (each with the
+    core width, centre and drift refitted, on the same pixels). Ranges: ``RANGES`` for the
+    PRISM, else ``grating_ranges``. Only ranges with peak S/N >= ``snr_min`` and the star within
+    ``edge_max`` of the shutter centre."""
+    exps = load_star(task) if exps is None else exps
+    meta = exposure_meta(exps)
+    is_prism = exps[0].grating.upper().startswith('PRISM')
+    ranges = ranges or (RANGES if is_prism else grating_ranges(exps))
+    rec = dict(key=task.key, obs=task.obs, source_id=task.source_id, detector=task.detector,
+               grating=exps[0].grating, exposures=meta, ranges=[])
+    for r, (a, b) in enumerate(ranges):
+        row = dict(range=r, lam=[a, b])
+        try:
+            RF = RangeFit(exps, (a, b), nod_law=False)
+        except (PF.ProfileFitFallback, ValueError) as err:
+            row['error'] = str(err)
+            rec['ranges'].append(row)
+            continue
+        f_wing = float(np.interp(0.5 * (a + b), PF.PSF_LAM, PF.PSF_TABLES[task.detector]['f']))
+        RF.set_floor(np.zeros(RF.M.npix))
+        ref = RF.fit(tables=PF.PSF_TABLES)
+        RF.set_floor(ref['_model'])
+        fr = RF.fit(f_wing=f_wing, x0=ref['_x'] + [0.45])
+        row.update(peak_snr=fr['peak_snr'], c_node=fr['c_node'], S=fr.get('S'), chi2_zero=fr['chi2'], ndof=fr['ndof'])
+        if fr['peak_snr'] < snr_min or abs(fr['c_node']) > edge_max:
+            rec['ranges'].append(row)
+            continue
+        off, err, chi2 = _fit_offsets(RF, f_wing, fr['_x'], fr['_use'])
+        RF.eoff = PF.nod_shifts(RF.M.exps)
+        fl = RF.fit(f_wing=f_wing, x0=fr['_x'], use=fr['_use'])
+        RF.eoff = np.zeros(len(RF.M.exps))
+        row.update(offsets=off, errors=err, chi2_free=chi2, chi2_law=fl['chi2'],
+                   law=PF.nod_shifts(RF.M.exps), dy=float(np.nanmedian(RF.M.exps[0].dy)))
+        rec['ranges'].append(row)
+    return rec
+
+
+def run_offsets(tasks, out_dir, snr_min=10.0, log=print):
+    os.makedirs(out_dir, exist_ok=True)
+    for i, t in enumerate(tasks):
+        path = os.path.join(out_dir, f'{t.key}.json')
+        if os.path.exists(path):
+            continue
+        try:
+            rec = measure_offsets(t, snr_min=snr_min)
+        except Exception as err:
+            log(f'{t.key}: failed: {type(err).__name__}: {err}')
+            rec = dict(key=t.key, error=str(err), ranges=[])
+        write_json(path, rec)
+        n = sum('offsets' in x for x in rec['ranges'])
+        log(f'[{i + 1}/{len(tasks)}] {t.key}: {n} ranges measured')
+
+
+def offset_rows(records, group=None):
+    """Per measured exposure (contains the source, planned position not a placeholder): the
+    offset and its error, and the candidate descriptions. ``group``: a function of the record
+    giving a label (default the disperser)."""
+    rows = []
+    for rec in records:
+        meta = rec.get('exposures') or []
+        for row in rec['ranges']:
+            if 'offsets' not in row:
+                continue
+            off, err = np.array(row['offsets'], float), np.array(row['errors'], float)
+            ok = np.array([m['has_source'] and np.isfinite(o) and np.isfinite(m.get('yoffset', np.nan))
+                           for m, o in zip(meta, off)])
+            sy = np.array([m['src_y'] for m in meta])
+            if any(s != 0.0 for s in sy[ok]):
+                ok &= sy != 0.0
+            if ok.sum() < 2:
+                continue
+            yo = np.array([m.get('yoffset', np.nan) for m in meta])
+            for k in np.flatnonzero(ok):
+                m = meta[k]
+                rows.append(dict(key=rec['key'], obs=rec.get('obs'), det=rec.get('detector'),
+                                 grating=rec.get('grating'), range=row['range'], lam=0.5 * sum(row['lam']),
+                                 nod=m['nod'], off=float(off[k] - off[ok].mean()), err=float(err[k]),
+                                 planned=float(sy[k] - sy[ok].mean()), dyoff=float(yo[k] - yo[ok].mean()),
+                                 y_start=m.get('y_start'), x_start=m.get('x_start'), quad=m.get('quadrant'),
+                                 shutter_row=m.get('shutter_row'), shutter_col=m.get('shutter_col'),
+                                 dy=row['dy'], snr=row['peak_snr'], label=group(rec) if group else rec.get('grating')))
+    return rows
+
+
+def _wlsq(X, y, e, floor):
+    w = 1.0 / (e ** 2 + floor ** 2)
+    A = X * np.sqrt(w)[:, None]
+    p, *_ = np.linalg.lstsq(A, y * np.sqrt(w), rcond=None)
+    return p
+
+
+def offset_law_models(rows, floor=None):
+    """Compare descriptions of the measured offsets (slit units). Each is fitted by weighted
+    least squares (errors plus an intrinsic scatter ``floor``, default the scatter about the
+    planned positions), scored by weighted rms, and by the rms when each observation is
+    predicted from the others (does the description carry over?).
+
+    planned_1   : offset = SRCYPOS_k - mean (no parameter; the planning metadata)
+    planned_k   : offset = kappa x (SRCYPOS_k - mean)
+    row_x_nod   : offset = (a + b x slitlet detector row) x commanded nod step (YOFFSET, arcsec)
+    msa_x_nod   : offset = (a_quadrant + b x source shutter row) x commanded nod step
+    row         : offset = (a + b x slitlet detector row) x sign of the nod step (not proportional)"""
+    y = np.array([r['off'] for r in rows])
+    e = np.array([r['err'] for r in rows])
+    P = np.array([r['planned'] for r in rows])
+    d = np.array([r['dyoff'] for r in rows])
+    row_ = np.array([r['y_start'] for r in rows], float) / 1000.0
+    srow = np.array([r['shutter_row'] for r in rows], float) / 100.0
+    quad = np.array([r['quad'] for r in rows])
+    obs = np.array([r['obs'] for r in rows])
+    if floor is None:
+        floor = float(1.4826 * np.median(np.abs(y - P)))
+    quads = sorted(set(quad))
+    designs = {
+        'planned_1': None,
+        'planned_k': np.column_stack([P]),
+        'row_x_nod': np.column_stack([d, d * row_]),
+        'msa_x_nod': np.column_stack([d * (quad == q) for q in quads] + [d * srow]),
+        'row': np.column_stack([np.sign(d), np.sign(d) * row_]),
+        'zero': np.zeros((len(rows), 0)),
+    }
+    w = 1.0 / (e ** 2 + floor ** 2)
+    out = {}
+    for name, X in designs.items():
+        if X is None:
+            pred, p = P, []
+        elif X.shape[1] == 0:
+            pred, p = np.zeros_like(y), []
+        else:
+            p = _wlsq(X, y, e, floor)
+            pred = X @ p
+        res = y - pred
+        cv = np.full_like(y, np.nan)
+        for o in np.unique(obs):
+            m = obs == o
+            if X is None:
+                cv[m] = res[m]
+            elif X.shape[1] == 0:
+                cv[m] = y[m]
+            else:
+                if (~m).sum() <= X.shape[1] or np.linalg.matrix_rank(X[~m]) < X.shape[1]:
+                    continue
+                q = _wlsq(X[~m], y[~m], e[~m], floor)
+                cv[m] = y[m] - X[m] @ q
+        ok = np.isfinite(cv)
+        out[name] = dict(params=[float(v) for v in p], wrms=float(np.sqrt(np.sum(w * res ** 2) / np.sum(w))),
+                         chi2r=float(np.sum(res ** 2 / (e ** 2 + floor ** 2)) / max(len(y) - len(p), 1)),
+                         cv_wrms=float(np.sqrt(np.sum(w[ok] * cv[ok] ** 2) / np.sum(w[ok]))), n=len(y))
+    out['_floor'] = floor
+    out['_quads'] = [int(q) for q in quads]
+    return out
+
+
+def residual_trends(rows):
+    """Slopes of the offsets left after the planned positions (offset - planned) against
+    detector column, wavelength, detector row and nod step (weighted least squares)."""
+    y = np.array([r['off'] - r['planned'] for r in rows])
+    e = np.array([r['err'] for r in rows])
+    floor = float(1.4826 * np.median(np.abs(y)))
+    out = {}
+    for name, x in (('x_start', [r['x_start'] / 1000.0 for r in rows]), ('lam', [r['lam'] for r in rows]),
+                    ('y_start', [r['y_start'] / 1000.0 for r in rows]), ('planned', [r['planned'] for r in rows])):
+        x = np.array(x, float)
+        X = np.column_stack([np.ones_like(x), x])
+        w = 1.0 / (e ** 2 + floor ** 2)
+        A = X * np.sqrt(w)[:, None]
+        p, *_ = np.linalg.lstsq(A, y * np.sqrt(w), rcond=None)
+        r = y - X @ p
+        cov = np.linalg.pinv(A.T @ A) * max(np.sum(w * r ** 2) / max(len(y) - 2, 1), 1.0)
+        out[name] = dict(slope=float(p[1]), err=float(np.sqrt(cov[1, 1])), intercept=float(p[0]))
+    return out
+
+
+def step_offset_law(out_dir, log=print):
+    """Compare the descriptions of the measured nod offsets (``offset_law_models``), overall,
+    for the PRISM and for each grating, plus the trends left after the planned positions;
+    writes offset_law.json and offset_law.log."""
+    recs = [r for r in read_records(os.path.join(out_dir, 'offsets')) if r.get('ranges')]
+    rows = offset_rows(recs)
+    groups = {'all': rows}
+    for g in sorted({r['grating'] for r in rows}):
+        groups[g] = [r for r in rows if r['grating'] == g]
+    lines, out = [], {}
+    for name, rr in groups.items():
+        if len(rr) < 10:
+            continue
+        m = offset_law_models(rr)
+        out[name] = m
+        nst = len({r['key'] for r in rr})
+        lines.append(f'== {name}: {len(rr)} exposure offsets from {nst} stars; scatter floor {m["_floor"]:.4f} slit units')
+        lines.append('   description   params                         wrms [slit units]  chi2/dof  predicted for a held-out '
+                     'observation: wrms')
+        for k, v in m.items():
+            if k.startswith('_'):
+                continue
+            ps = ' '.join(f'{p:+.4f}' for p in v['params'])
+            lines.append(f'   {k:12s}  {ps:30s} {v["wrms"]:.4f}            {v["chi2r"]:6.2f}    {v["cv_wrms"]:.4f}')
+    tr = residual_trends(rows)
+    out['_trends'] = tr
+    lines.append('== offsets left after the planned positions, weighted slopes (all dispersers):')
+    for k, v in tr.items():
+        lines.append(f'   against {k:8s}: {v["slope"]:+.5f} +- {v["err"]:.5f} slit units per unit '
+                     f'(x_start, y_start in 1000 px; lam in um; planned in slit units)')
+    write_json(os.path.join(out_dir, 'offset_law.json'), out)
+    with open(os.path.join(out_dir, 'offset_law.log'), 'w') as fh:
+        fh.write('\n'.join(lines) + '\n')
+    for x in lines:
+        log(x)
+    return rows, out
+
+
+def plot_offset_law(out_dir, path):
+    """The nod offset law: measured per-exposure offsets against the planned ones (SRCYPOS),
+    against the slitlet's detector row per unit nod step, and what is left against wavelength
+    and detector column."""
+    import matplotlib.pyplot as plt
+    _style()
+    recs = [r for r in read_records(os.path.join(out_dir, 'offsets')) if r.get('ranges')]
+    rows = offset_rows(recs)
+    prism = np.array([r['grating'].upper().startswith('PRISM') for r in rows])
+    off = np.array([r['off'] / r['dy'] for r in rows])
+    pln = np.array([r['planned'] / r['dy'] for r in rows])
+    err = np.array([r['err'] / r['dy'] for r in rows])
+    good = err < 0.02
+    step = np.array([r['dyoff'] for r in rows])
+    yst = np.array([r['y_start'] for r in rows], float)
+    lam = np.array([r['lam'] for r in rows])
+    xst = np.array([r['x_start'] for r in rows], float)
+    fig, axs = plt.subplots(2, 2, figsize=(10.5, 8.2))
+    ax = axs[0, 0]
+    for sel_, col, lab in ((prism, NEW_C, 'PRISM'), (~prism, OLD_C, 'gratings')):
+        m = sel_ & good
+        ax.plot(pln[m], off[m], 'o', ms=3, color=col, alpha=0.45, mec='none', label=f'{lab} ({m.sum()} exposure-ranges)')
+    lim = np.nanmax(np.abs(pln)) * 1.15
+    ax.plot([-lim, lim], [-lim, lim], '-', color=INK, lw=1.2, label='law: measured = planned')
+    ax.set_xlabel('planned shift from SRCYPOS [detector rows]')
+    ax.set_ylabel('measured shift [detector rows]')
+    ax.set_title('Each nod\'s measured position against its planned one', loc='left')
+    ax.legend(frameon=False, fontsize=8)
+    ax = axs[0, 1]
+    nz = good & (np.abs(step) > 0.1)
+    for sel_, col, lab in ((prism, NEW_C, 'PRISM'), (~prism, OLD_C, 'gratings')):
+        m = nz & sel_
+        ax.plot(yst[m], off[m] / step[m], 'o', ms=3, color=col, alpha=0.45, mec='none', label=f'measured, {lab}')
+    ax.plot(yst[nz], pln[nz] / step[nz], '.', ms=2, color=INK, alpha=0.6, label='planned (SRCYPOS)')
+    ax.axhline(0, color=MUTED, lw=0.8)
+    ax.set_xlabel('slitlet start on the detector [row]')
+    ax.set_ylabel('shift per arcsec of commanded nod [rows/arcsec]')
+    ax.set_title('The field dependence: both follow the detector row', loc='left')
+    ax.legend(frameon=False, fontsize=8)
+    for ax, x, xl, bins in ((axs[1, 0], lam, 'wavelength [µm]', np.array([0.7, 1.0, 1.5, 2.0, 2.6, 3.3, 4.1, 5.3])),
+                            (axs[1, 1], xst, 'slitlet start on the detector [column]', np.linspace(0, 2048, 9))):
+        res = off - pln
+        for sel_, col, lab, mk in ((prism, NEW_C, 'PRISM', 'o'), (~prism, OLD_C, 'gratings', 's')):
+            m = sel_ & good
+            idx = np.digitize(x[m], bins) - 1
+            med = [np.median(res[m][idx == i]) if np.sum(idx == i) > 5 else np.nan for i in range(bins.size - 1)]
+            sem = [1.2533 * np.std(res[m][idx == i]) / np.sqrt(np.sum(idx == i)) if np.sum(idx == i) > 5 else np.nan
+                   for i in range(bins.size - 1)]
+            ax.errorbar(0.5 * (bins[1:] + bins[:-1]), med, yerr=sem, fmt=mk + '-', color=col, ms=5, capsize=2,
+                        label=f'{lab}, median')
+        ax.axhline(0, color=MUTED, lw=0.8)
+        ax.set_xlabel(xl)
+        ax.set_ylabel('measured - planned [detector rows]')
+        ax.set_ylim(-0.03, 0.03)
+        ax.legend(frameon=False, fontsize=8)
+    axs[1, 0].set_title('What is left, against wavelength', loc='left')
+    axs[1, 1].set_title('What is left, against detector column', loc='left')
+    fig.suptitle('Nod offset law: every nod sits at its own planned position', x=0.01, ha='left', fontsize=12)
+    fig.text(0.01, 0.94, 'Per-exposure positions of calibration stars fitted freely through the profile model '
+             '(relative to each star\'s mean), against SRCYPOS from the MSA planning metadata.', fontsize=9, color=MUTED)
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # Per star
 # ---------------------------------------------------------------------------
 def _public(d):
@@ -375,7 +734,7 @@ def current_wing(det):
     return dict(zip(range(len(RANGES)), np.asarray(PF.PSF_TABLES[det]['f'], float)))
 
 
-def fit_star(task, exps=None, wing=None, f_grid=F_GRID, sample_tables=None, snr_floor=5.0, log=None):
+def fit_star(task, exps=None, wing=None, f_grid=F_GRID, sample_tables=None, snr_floor=5.0, log=None, nod_law=None):
     """Fit one star in every range.
 
     Per range: a reference fit with the current table (centre and drift free), which
@@ -387,6 +746,8 @@ def fit_star(task, exps=None, wing=None, f_grid=F_GRID, sample_tables=None, snr_
 
     sample_tables : {name: PSF tables or None (the current table)}: also return the
         stacking samples (``RangeFit.samples``) of a fit at each of these tables.
+    nod_law : the model's nod geometry (``ProfileModel``): None for ``NOD_OFFSET_LAW``,
+        False for one position shared by all exposures (the geometry before 2026-11-02).
     Returns (record, samples): record = dict(star info, ranges=[per-range dicts]).
     """
     log = log or (lambda *a: None)
@@ -401,7 +762,7 @@ def fit_star(task, exps=None, wing=None, f_grid=F_GRID, sample_tables=None, snr_
     for r, (a, b) in enumerate(RANGES):
         row = dict(range=r, lam=[a, b])
         try:
-            RF = RangeFit(exps, (a, b))
+            RF = RangeFit(exps, (a, b), nod_law=nod_law)
         except (PF.ProfileFitFallback, ValueError) as err:
             row['error'] = str(err)
             rec['ranges'].append(row)
@@ -811,7 +1172,7 @@ def read_records(directory):
                 out.append(json.load(fh))
     for rec in out:                      # JSON nulls back to NaN in the numbers used
         for row in rec['ranges']:
-            for st in ('ref', 'free', 'joint', 'fit_old', 'fit_new'):
+            for st in ('ref', 'free', 'joint', 'fit_old', 'fit_new', 'fit_zero'):
                 x = row.get(st)
                 if x:
                     for k in ('e_S', 'e_c', 'S', 'c_node', 'chi2r', 'peak_snr'):
@@ -820,7 +1181,7 @@ def read_records(directory):
     return out
 
 
-def fit_table(records, stages=('ref', 'free', 'joint', 'fit_old', 'fit_new')):
+def fit_table(records, stages=('ref', 'free', 'joint', 'fit_old', 'fit_new', 'fit_zero')):
     """Per-(star, range) table of the fits (astropy Table)."""
     from astropy.table import Table
     rows = []
@@ -840,10 +1201,11 @@ def fit_table(records, stages=('ref', 'free', 'joint', 'fit_old', 'fit_new')):
 
 
 def run_stars(tasks, out_dir, wing_for=None, f_grid=F_GRID, sample_tables=None, sample_dir=None, overwrite=False,
-              log=print):
+              log=print, nod_law=None):
     """``fit_star`` over tasks, one JSON per star in ``out_dir`` (skipped when present
     unless ``overwrite``); samples (``sample_tables``) to ``sample_dir`` as npz.
-    ``wing_for(det)`` gives the per-range wing fractions (default: the current table)."""
+    ``wing_for(det)`` gives the per-range wing fractions (default: the current table);
+    ``nod_law`` as in ``fit_star``."""
     os.makedirs(out_dir, exist_ok=True)
     for i, t in enumerate(tasks):
         path = os.path.join(out_dir, f'{t.key}.json')
@@ -851,7 +1213,7 @@ def run_stars(tasks, out_dir, wing_for=None, f_grid=F_GRID, sample_tables=None, 
             continue
         try:
             rec, samp = fit_star(t, wing=None if wing_for is None else wing_for(t.detector), f_grid=f_grid,
-                                 sample_tables=sample_tables, log=log)
+                                 sample_tables=sample_tables, log=log, nod_law=nod_law)
         except Exception as err:
             log(f'{t.key}: failed: {type(err).__name__}: {err}')
             rec, samp = dict(key=t.key, obs=t.obs, source_id=t.source_id, detector=t.detector, quadrant=t.quadrant,
@@ -869,12 +1231,13 @@ def run_stars(tasks, out_dir, wing_for=None, f_grid=F_GRID, sample_tables=None, 
 # Steps: pass 1 (fit), selection and joint wing fraction, pass 2 (refit at the
 # joint wing fraction), the tables, pass 3 (stacking samples), figures
 # ---------------------------------------------------------------------------
-def tasks_for(root, observations, keys=None, part=None):
+def tasks_for(root, observations, keys=None, part=None, dispersers=('prism_clear',)):
     """Star tasks of the observations (only ``keys`` when given); ``part`` = (i, n) keeps
     every n-th task from the i-th, to split a step over n processes."""
     out = []
     for name in observations:
-        out += [t for t in star_tasks(root, name) if keys is None or t.key in keys]
+        for disp in dispersers:
+            out += [t for t in star_tasks(root, name, disperser=disp) if keys is None or t.key in keys]
     if part is not None:
         i, n = part
         out = out[i::n]
@@ -934,12 +1297,13 @@ def wing_for_joint(joint):
     return f
 
 
-def step_refit(root, out_dir, observations, log=print, part=None):
+def step_refit(root, out_dir, observations, log=print, part=None, nod_law=None):
     """Pass 2: every usable star (clean and edge) refitted at the joint wing fraction."""
     sel, joint = read_selection(out_dir)
     keys = {k for v in sel['usable'].values() for k in v}
     tasks = tasks_for(root, observations, keys, part=part)
-    run_stars(tasks, os.path.join(out_dir, 'pass2'), wing_for=wing_for_joint(joint), f_grid=None, log=log)
+    run_stars(tasks, os.path.join(out_dir, 'pass2'), wing_for=wing_for_joint(joint), f_grid=None, log=log,
+              nod_law=nod_law)
 
 
 def clean_in_pass2(records2, sel, snr_min=None):
@@ -986,24 +1350,27 @@ def read_table(out_dir):
         return json.load(fh)
 
 
-def step_samples(root, out_dir, observations, log=print, part=None):
-    """Pass 3: every clean star fitted with the current and the new table, with the
-    stacking samples (``RangeFit.samples``) for the profile figure."""
+def step_samples(root, out_dir, observations, log=print, part=None, nod_law=None, extra_tables=None):
+    """Pass 3: every clean star fitted with the current and the new table (and
+    ``extra_tables``: {name: table directory}, e.g. an earlier refit), with the stacking
+    samples (``RangeFit.samples``) for the profile figure."""
     sel, joint = read_selection(out_dir)
     rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
     clean = clean_in_pass2(rec2, sel)
     keys = {k for v in clean.values() for k in v}
-    new = tables_for_model(read_table(out_dir))
+    tabs = {'old': PF.PSF_TABLES, 'new': tables_for_model(read_table(out_dir))}
+    for name, d in (extra_tables or {}).items():
+        tabs[name] = tables_for_model(read_table(d))
     run_stars(tasks_for(root, observations, keys, part=part), os.path.join(out_dir, 'pass3'),
-              wing_for=wing_for_joint(joint),
-              f_grid=None, sample_tables={'old': PF.PSF_TABLES, 'new': new},
-              sample_dir=os.path.join(out_dir, 'samples'), log=log)
+              wing_for=wing_for_joint(joint), f_grid=None, sample_tables=tabs,
+              sample_dir=os.path.join(out_dir, 'samples'), log=log, nod_law=nod_law)
 
 
 def merged_records(out_dir):
     """Pass 1 records with pass 2's fits as 'joint' and pass 3's table fits added."""
     recs = {r['key']: r for r in read_records(os.path.join(out_dir, 'pass1'))}
-    for sub, pairs in (('pass2', (('free', 'joint'),)), ('pass3', (('fit_old', 'fit_old'), ('fit_new', 'fit_new')))):
+    for sub, pairs in (('pass2', (('free', 'joint'),)),
+                       ('pass3', (('fit_old', 'fit_old'), ('fit_new', 'fit_new'), ('fit_zero', 'fit_zero')))):
         d = os.path.join(out_dir, sub)
         if not os.path.isdir(d):
             continue
@@ -1028,6 +1395,7 @@ def write_fit_table(out_dir):
 # Figures
 # ---------------------------------------------------------------------------
 NEW_C, OLD_C, STAR_C, EDGE_C, INK, MUTED = '#2a78d6', '#eb6834', '#9a9893', '#1baf7a', '#0b0b0b', '#52514e'
+COMPARE_LABELS = {'zero': 'refit without the nod law'}
 QUAD_C = {1: '#2a78d6', 2: '#eb6834', 3: '#1baf7a', 4: '#6250d6'}
 
 
@@ -1040,10 +1408,10 @@ def _style():
                          'axes.facecolor': '#fcfcfb', 'savefig.facecolor': '#fcfcfb'})
 
 
-def plot_widths(out_dir, path):
+def plot_widths(out_dir, path, compare=None):
     """(a) Core width and wing fraction against wavelength per detector: every clean
     star's width (at the joint wing fraction), their 25th percentile (the new table),
-    their median, and the current table."""
+    their median, the current table and (``compare``: {label: directory}) earlier refits."""
     import matplotlib.pyplot as plt
     _style()
     sel, joint = read_selection(out_dir)
@@ -1067,6 +1435,9 @@ def plot_widths(out_dir, path):
         ax.plot(lamc, t['S_rows'], 'o-', color=NEW_C, ms=6, lw=2, label='new table (25th percentile)', zorder=4)
         ax.plot(PF.PSF_LAM, PF.PSF_TABLES[det]['S_rows'], 's--', color=OLD_C, ms=5, lw=1.6, label='current table',
                 zorder=4)
+        comp = {lab: read_table(d)[det] for lab, d in (compare or {}).items()}
+        for lab, ct in comp.items():
+            ax.plot(lamc, ct['S_rows'], '^:', color=EDGE_C, ms=5, lw=1.6, label=lab, zorder=4)
         ax.set_title(f'{det}: core width (numbers: stars per range)', loc='left')
         ax.set_ylim(0.25, 0.85)
         if j == 0:
@@ -1076,6 +1447,8 @@ def plot_widths(out_dir, path):
         fe = [joint[(det, r)]['f_err'] if (det, r) in joint else np.nan for r in range(len(RANGES))]
         axf.errorbar(lamc, fj, yerr=fe, fmt='o-', color=NEW_C, ms=6, lw=2, capsize=3, label='new (joint fit of the stars)')
         axf.plot(PF.PSF_LAM, PF.PSF_TABLES[det]['f'], 's--', color=OLD_C, ms=5, lw=1.6, label='current table')
+        for lab, ct in comp.items():
+            axf.plot(lamc, ct['f'], '^:', color=EDGE_C, ms=5, lw=1.6, label=lab)
         axf.set_title(f'{det}: share of light in the wide wing', loc='left')
         axf.set_ylim(0, 0.6)
         if j == 0:
@@ -1086,6 +1459,9 @@ def plot_widths(out_dir, path):
         fw_old = [fwhm_rows(s, ff) for s, ff in zip(PF.PSF_TABLES[det]['S_rows'], PF.PSF_TABLES[det]['f'])]
         axw.plot(lamc, fw_new, 'o-', color=NEW_C, ms=6, lw=2, label='new table')
         axw.plot(PF.PSF_LAM, fw_old, 's--', color=OLD_C, ms=5, lw=1.6, label='current table')
+        for lab, ct in comp.items():
+            axw.plot(lamc, [fwhm_rows(s, ff) for s, ff in zip(ct['S_rows'], ct['f'])], '^:', color=EDGE_C, ms=5,
+                     lw=1.6, label=lab)
         axw.set_title(f'{det}: full width at half maximum of core + wing', loc='left')
         axw.set_ylim(0.6, 1.8)
         axw.set_xscale('log')
@@ -1132,7 +1508,7 @@ def _stack(samples_dir, keys, r, name, bins):
         return np.nanmedian(D, axis=0), np.nanmedian(M, axis=0), len(per_d)
 
 
-def plot_profiles(out_dir, path, half=4.0, step=0.25):
+def plot_profiles(out_dir, path, half=4.0, step=0.25, compare=None):
     """(b) Per detector and range: the clean stars' own images stacked (each pixel as a
     fraction of the star's light, against its distance from the fitted trace centre),
     against the model with the current and the new table, and the residuals."""
@@ -1159,11 +1535,19 @@ def plot_profiles(out_dir, path, half=4.0, step=0.25):
             do, mo, _ = old
             ax.semilogy(bc, np.clip(dn, 1e-4, None), 'o', color=INK, ms=3, label='stars (median)')
             ax.semilogy(bc, mo, '--', color=OLD_C, lw=1.6, label='model, current table')
+            for name, lab in (compare or {}).items():
+                z = _stack(sdir, clean.get((det, r), []), r, name, bins)
+                if z is not None:
+                    ax.semilogy(bc, z[1], ':', color=EDGE_C, lw=1.6, label=f'model, {lab}')
             ax.semilogy(bc, mn, '-', color=NEW_C, lw=1.8, label='model, new table')
             ax.set_ylim(3e-4, 1.0)
             pk = np.nanmax(mn)
             axr.axhline(0, color=MUTED, lw=0.8)
             axr.plot(bc, 100 * (do - mo) / pk, '--', color=OLD_C, lw=1.4)
+            for name in (compare or {}):
+                z = _stack(sdir, clean.get((det, r), []), r, name, bins)
+                if z is not None:
+                    axr.plot(bc, 100 * (z[0] - z[1]) / pk, ':', color=EDGE_C, lw=1.4)
             axr.plot(bc, 100 * (dn - mn) / pk, '-', color=NEW_C, lw=1.6)
             axr.set_ylim(-4, 4)
             ax.set_title(f'{det}  {RANGES[r][0]}–{RANGES[r][1]} µm\n{n} stars', fontsize=9)
@@ -1184,14 +1568,20 @@ def plot_profiles(out_dir, path, half=4.0, step=0.25):
     plt.close(fig)
 
 
-def plot_centre_law(out_dir, path, dy=0.229):
+def read_centre_law(out_dir):
+    with open(os.path.join(out_dir, 'centre_law_new.json')) as fh:
+        return {k: {kk: (np.array([np.nan if x is None else x for x in vv], float) if isinstance(vv, list) else vv)
+                    for kk, vv in v.items()} for k, v in json.load(fh).items()}
+
+
+def plot_centre_law(out_dir, path, dy=0.229, compare=None):
     """(c) The trace centre law: drift with wavelength per MSA quadrant and the slope
-    with the star's position, refitted against the current ``CENTRE_LAW``."""
+    with the star's position, refitted against the current ``CENTRE_LAW`` (and, for the
+    detector-level drift and the slope, ``compare``: {label: directory} of earlier refits)."""
     import matplotlib.pyplot as plt
     _style()
-    with open(os.path.join(out_dir, 'centre_law_new.json')) as fh:
-        law = {k: {kk: (np.array([np.nan if x is None else x for x in vv], float) if isinstance(vv, list) else vv)
-                   for kk, vv in v.items()} for k, v in json.load(fh).items()}
+    law = read_centre_law(out_dir)
+    comp = {lab: read_centre_law(d) for lab, d in (compare or {}).items()}
     lamc = range_centres()
     fig, axs = plt.subplots(2, 2, figsize=(10, 6.6), sharex=True)
     for j, det in enumerate(('NRS1', 'NRS2')):
@@ -1208,12 +1598,16 @@ def plot_centre_law(out_dir, path, dy=0.229):
                     lw=1.2, ms=4, capsize=2, label='all quadrants, new')
         ax.plot(PF.PSF_LAM, PF.CENTRE_LAW[det]['D'] / dy, 's--', color=INK, lw=1, ms=3.5, alpha=0.7,
                 label='all quadrants, current')
+        for lab, cl in comp.items():
+            ax.plot(lamc, np.array(cl[det]['D']) / dy, '^:', color=STAR_C, lw=1.2, ms=4, label=f'all quadrants, {lab}')
         ax.axhline(0, color=MUTED, lw=0.8)
         ax.set_title(f'{det}: trace shift with wavelength', loc='left')
         ax.legend(frameon=False, fontsize=7.5, loc='lower left', ncol=1)
         axa.errorbar(lamc, law[det]['alpha'], yerr=law[det]['ealpha'], fmt='o-', color=NEW_C, lw=1.8, ms=5,
                      capsize=2, label='new')
         axa.plot(PF.PSF_LAM, PF.CENTRE_LAW[det]['alpha'], 's--', color=OLD_C, lw=1.5, ms=4, label='current')
+        for lab, cl in comp.items():
+            axa.plot(lamc, cl[det]['alpha'], '^:', color=EDGE_C, lw=1.5, ms=4, label=lab)
         axa.axhline(0, color=MUTED, lw=0.8)
         axa.set_title(f'{det}: extra shift per unit of source offset', loc='left')
         axa.set_xscale('log')
@@ -1337,7 +1731,7 @@ def plot_star_residuals(root, out_dir, key, path, exposure=0):
     plt.close(fig)
 
 
-def write_summary(out_dir, log=print):
+def write_summary(out_dir, log=print, compare=None):
     """Old against new per detector and range (core, wing, FWHM, light beyond 1.5 rows on
     each side: data and both models); writes summary.json and summary.log."""
     table = read_table(out_dir)
@@ -1363,6 +1757,36 @@ def write_summary(out_dir, log=print):
                          f"({t['S_p50'][r]:.3f}) {100 * (t['S_rows'][r] / o['S_rows'][r] - 1):+5.1f}% | "
                          f"{o['f'][r]:.3f} -> {t['f'][r]:.3f}+-{fe:.3f} | {fo:.3f} -> {fn:.3f} "
                          f"{100 * (fn / fo - 1):+5.1f}% | {sd}")
+    for name, d in (compare or {}).items():
+        ct = read_table(d)
+        lines.append(f'== against {name} ({d})')
+        lines.append('det  lam  | core: that -> new          | wing: that -> new | FWHM: that -> new')
+        for det in ('NRS1', 'NRS2'):
+            t, c = table[det], ct[det]
+            for r in range(len(RANGES)):
+                fc, fn = fwhm_rows(c['S_rows'][r], c['f'][r]), fwhm_rows(t['S_rows'][r], t['f'][r])
+                lines.append(f"{det} {t['lam'][r]:4.2f} | {c['S_rows'][r]:.3f} -> {t['S_rows'][r]:.3f} "
+                             f"{100 * (t['S_rows'][r] / c['S_rows'][r] - 1):+5.1f}% | {c['f'][r]:.3f} -> {t['f'][r]:.3f} | "
+                             f"{fc:.3f} -> {fn:.3f} {100 * (fn / fc - 1):+5.1f}%")
+    # summed chi2 of the clean stars with each table (pass 3: same pixels and weights, centre and drift free)
+    sel, _ = read_selection(out_dir)
+    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
+    clean = clean_in_pass2(rec2, sel)
+    p3d = os.path.join(out_dir, 'pass3')
+    if os.path.isdir(p3d):
+        p3 = {r['key']: r for r in read_records(p3d)}
+        names = ['new'] + list(compare or {})
+        lines.append('== summed chi2 of the clean stars with each table, relative to the current table')
+        lines.append('det  range      n | ' + ' | '.join(f'{n:>8s}' for n in names))
+        for det in ('NRS1', 'NRS2'):
+            for r in range(len(RANGES)):
+                ks = [k for k in clean.get((det, r), []) if k in p3 and all(
+                    f'fit_{n}' in p3[k]['ranges'][r] for n in ['old'] + names)]
+                if not ks:
+                    continue
+                o = sum(p3[k]['ranges'][r]['fit_old']['chi2'] for k in ks)
+                vals = [sum(p3[k]['ranges'][r][f'fit_{n}']['chi2'] for k in ks) / o for n in names]
+                lines.append(f'{det} {RANGES[r][0]}-{RANGES[r][1]} {len(ks):4d} | ' + ' | '.join(f'{v:8.4f}' for v in vals))
     write_json(os.path.join(out_dir, 'summary.json'), out)
     with open(os.path.join(out_dir, 'summary.log'), 'w') as fh:
         fh.write('\n'.join(lines) + '\n')
@@ -1381,7 +1805,12 @@ def brightest_clean(out_dir, det, r=3):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description='PRISM cross-dispersion PSF calibration on calibration-field stars')
-    ap.add_argument('step', choices=['fit', 'select', 'refit', 'table', 'samples', 'figures'])
+    ap.add_argument('step', choices=['offsets', 'offset_law', 'fit', 'select', 'refit', 'table', 'samples', 'figures'])
+    ap.add_argument('--dispersers', nargs='*', default=['prism_clear'], help='offsets step: dispersers')
+    ap.add_argument('--no-nod-law', action='store_true',
+                    help='fit with one position shared by all exposures (the geometry before NOD_OFFSET_LAW)')
+    ap.add_argument('--compare', nargs='*', default=[], help='samples / figures: name=dir of an earlier refit '
+                    'to score and draw beside the current and the new table')
     ap.add_argument('--root', help='reduced CAMPFIRE root holding the observations')
     ap.add_argument('--out', required=True, help='output directory')
     ap.add_argument('--obs', nargs='*', default=[], help='observations')
@@ -1391,26 +1820,36 @@ def main(argv=None):
                     'refit, samples), to run a step as n processes')
     a = ap.parse_args(argv)
     part = tuple(int(x) for x in a.part.split('/')) if a.part else None
+    law = False if a.no_nod_law else None
+    compare = dict(x.split('=', 1) for x in a.compare)
     log = lambda *x: print(*x, flush=True)          # noqa: E731
-    if a.step == 'fit':
-        run_stars(tasks_for(a.root, a.obs, part=part), os.path.join(a.out, 'pass1'), log=log)
+    if a.step == 'offsets':
+        run_offsets(tasks_for(a.root, a.obs, part=part, dispersers=a.dispersers), os.path.join(a.out, 'offsets'),
+                    log=log)
+    elif a.step == 'offset_law':
+        step_offset_law(a.out, log=log)
+        os.makedirs(os.path.join(a.out, 'figures'), exist_ok=True)
+        plot_offset_law(a.out, os.path.join(a.out, 'figures', 'nod_offset_law.png'))
+    elif a.step == 'fit':
+        run_stars(tasks_for(a.root, a.obs, part=part), os.path.join(a.out, 'pass1'), log=log, nod_law=law)
     elif a.step == 'select':
         step_select(a.out, snr_min=a.snr_min, edge_max=a.edge_max, log=log)
     elif a.step == 'refit':
-        step_refit(a.root, a.out, a.obs, log=log, part=part)
+        step_refit(a.root, a.out, a.obs, log=log, part=part, nod_law=law)
     elif a.step == 'table':
         step_table(a.out, log=log)
     elif a.step == 'samples':
-        step_samples(a.root, a.out, a.obs, log=log, part=part)
+        step_samples(a.root, a.out, a.obs, log=log, part=part, nod_law=law, extra_tables=compare)
     elif a.step == 'figures':
         write_fit_table(a.out)
         fd = os.path.join(a.out, 'figures')
         os.makedirs(fd, exist_ok=True)
-        plot_widths(a.out, os.path.join(fd, 'psf_widths.png'))
-        plot_profiles(a.out, os.path.join(fd, 'psf_profiles.png'))
-        plot_centre_law(a.out, os.path.join(fd, 'centre_law.png'))
+        labels = {name: COMPARE_LABELS.get(name, name) for name in compare}
+        plot_widths(a.out, os.path.join(fd, 'psf_widths.png'), compare={labels[n]: d for n, d in compare.items()})
+        plot_profiles(a.out, os.path.join(fd, 'psf_profiles.png'), compare=labels)
+        plot_centre_law(a.out, os.path.join(fd, 'centre_law.png'), compare={labels[n]: d for n, d in compare.items()})
         plot_position(a.out, os.path.join(fd, 'psf_position.png'))
-        write_summary(a.out, log=log)
+        write_summary(a.out, log=log, compare=compare)
         if a.root:
             for det in ('NRS1', 'NRS2'):
                 key = brightest_clean(a.out, det)

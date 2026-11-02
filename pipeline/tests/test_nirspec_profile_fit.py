@@ -261,3 +261,71 @@ def test_fit_recovers_flux_when_a_partner_lacks_the_source():
     exps[2].has_source = True
     B = PF.fit(exps, chromatic=False)
     assert B.chi2_red > 2 * F.chi2_red
+
+
+# ---------------------------------------------------------------------------
+# nod geometry (NOD_OFFSET_LAW): each exposure at its own planned position
+# ---------------------------------------------------------------------------
+def _nodded(src=(0.10, 0.115, 0.085)):
+    """The three nods with planned positions that differ between nods, as the MSA planning
+    metadata gives them (the nod step projected on the MSA varies across the field)."""
+    exps = _exposures(src_y=src[0])
+    for e, s in zip(exps, src):
+        e.src_y = s
+    return exps
+
+
+def test_nod_shifts_follow_each_exposures_planned_position():
+    exps = _nodded()
+    assert np.allclose(PF.nod_shifts(exps), [0.0, 0.015, -0.015])
+    assert np.allclose(PF.nod_shifts(exps, law=False), 0.0)
+    assert np.allclose(PF.nod_shifts(exps, law=dict(scale=2.0)), [0.0, 0.03, -0.03])
+    exps[2].src_y = 0.0                      # a placeholder next to real values: no shift
+    assert PF.nod_shifts(exps)[2] == 0.0
+    exps[1].has_source = False               # a frame without the source: no shift
+    assert PF.nod_shifts(exps)[1] == 0.0
+
+
+def test_a_single_exposure_is_not_shifted():
+    """With one exposure (no nod partners) the reference is its own planned position: the
+    law changes nothing."""
+    e = _nodded()[1]
+    e.partners = []
+    assert PF.nod_shifts([e])[0] == 0.0
+    M_on, M_off = PF.ProfileModel([e]), PF.ProfileModel([e], nod_law=False)
+    p = np.array([0.115, 0.0, np.log(0.1), 0.0])
+    assert np.allclose(M_on.design(p, np.zeros(1)).toarray(), M_off.design(p, np.zeros(1)).toarray())
+
+
+def test_partner_copies_move_with_their_own_exposure():
+    """Exposure k's model difference is its own frame minus its partners' frames, each at its
+    own planned position, and the law moves an exposure's image by its shift."""
+    exps = _nodded()
+    R = _truth_result(exps, TRUTH, [0, 0, 0], 100.0)
+    own = [PF.frame_image(R, j) for j in range(3)]
+    for k in range(3):
+        expect = own[k] - np.mean([own[j] for j in exps[k].partners], axis=0)
+        got = PF.model_frame(R, k, applied_pathloss=False, common=True)
+        inside = np.isfinite(got) & np.isfinite(expect)
+        for j, _ in PF.term_weights(exps, k):
+            inside &= (exps[j].wav > R.lam[0]) & (exps[j].wav < R.lam[-1])
+        assert np.nanmax(np.abs(got - expect)[inside]) < 1e-6 * np.nanmax(np.abs(expect))
+    p = np.array([TRUTH['centre'], 0.0, np.log(TRUTH['width']), 0.0])
+    lam = np.array([1.5, 3.0])
+    M_off = PF.ProfileModel(exps, nod_law=False)
+    for k, s in enumerate([0.0, 0.015, -0.015]):
+        dc = R.model.centre(p, np.zeros(3), k, lam) - M_off.centre(p, np.zeros(3), k, lam)
+        assert np.allclose(dc, s * (1 + PF.centre_law(lam, 'NRS1', 1)[1]))
+
+
+def test_known_nod_law_is_fitted_and_needed():
+    """Data made with the nods at their planned positions: the model with the law fits them
+    (chi2 ~ 1, centre recovered); one shared position cannot."""
+    exps = _nodded()
+    truth = dict(centre=0.10, drift=0.0, width=0.05, width_change=0.0)
+    _inject(exps, truth, [0, 0, 0], flux_scale=300.0, noise=1.0, seed=21)
+    R = PF.fit(exps, chromatic=False)
+    assert 0.9 < R.chi2_red < 1.1
+    assert abs(R.params['centre'] - 0.10) < 0.005
+    B = PF.fit(exps, chromatic=False, model=PF.ProfileModel(exps, chromatic=False, nod_law=False))
+    assert B.chi2_red > 1.2 * R.chi2_red

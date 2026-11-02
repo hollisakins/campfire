@@ -553,7 +553,7 @@ calibration fields of programs 12497 and 6642 reduced with the current stages 2a
   star-wide from 1.0-1.5 and 2.6-3.3 um), reduced chi2 > 5 x median. 131 NRS1 / 133 NRS2 clean
   stars (October: 73 / 59; 66 / 49 in common; the rest of October's are outliers or edge stars
   here, `selection_vs_october.log`).
-- Result: NRS1 core 0.322, 0.313, 0.332, 0.351, 0.376, 0.441, 0.609 rows, wing 0.341, 0.357,
+- First refit, nods at one shared position (superseded below): NRS1 core 0.322, 0.313, 0.332, 0.351, 0.376, 0.441, 0.609 rows, wing 0.341, 0.357,
   0.364, 0.384, 0.396, 0.344, 0.137; NRS2 core 0.323, 0.315, 0.318, 0.336, 0.395, 0.472, 0.586,
   wing 0.349, 0.373, 0.434, 0.459, 0.395, 0.295, 0.174. FWHM of core + wing 8-16 % narrower than
   the current table on NRS1 at 0.85-2.95 um, 1-12 % on NRS2, within 5 % in the red.
@@ -562,24 +562,59 @@ calibration fields of programs 12497 and 6642 reduced with the current stages 2a
   price; a median-core table with the same wing fits
   0-1 % better than the current one in the blue, 5-10 % on NRS1 in the red. In the module's terms
   the current table sits near the population median, not on the narrow side.
-- Two model gaps showed up, both the same for either table. (1) The nod positions: with a free
-  position offset per exposure, bright stars' chi2 falls to 0.2-0.7 of its value (median per
-  range; up to 25 times for single stars); the offsets are linear in
-  the slitlet's detector row (zero near row 1000, +-0.08 rows at the edges, mirror-image for the
-  two outer nods, NRS1 and NRS2 on one line), a field-dependent nod step the WCS geometry does not
-  reproduce. Freeing them lowers the NRS1 joint wing fraction by 0.05-0.11, so part of the higher
-  wing above is the PSF absorbing misplaced partner copies. (2) The PSF is skewed towards +y in
-  slit coordinates: the stacked stars carry about 1 % of their light beyond +1.5 rows that no
-  symmetric model gives, and less than the models beyond -1.5 rows.
-- Centre law: the refit (stars' own centres, no law applied, regressor the measured centre)
-  agrees with `CENTRE_LAW` within ~0.02 rows below 3 um; at 4.7 um the drift is larger for NRS2
-  quadrant 2 (-0.38 vs -0.25 rows) and NRS1 quadrant 4 (-0.27 vs -0.21), and the slope with source
-  position smaller on NRS1 (-0.085 vs -0.107).
-- Proposed order: decide the nod geometry first (a per-exposure offset law from the field
-  position, or offsets fitted for bright sources), then rerun the calibration with it, then decide
-  the table. Outputs and figures: `scratch/claude/psf_cal/` (`psf_table_new.json`,
-  `centre_law_new.json`, `star_fits.ecsv`, `selection.log`, `summary.log`,
-  `chi2_comparison.log`, `offsets_test.log`, `figures/`).
+- That refit found the nods misplaced: with a free position offset per exposure, bright stars'
+  chi2 fell to 0.2-0.7 of its value, the offsets linear in the slitlet's detector row (+-0.08 rows
+  at the edges, mirror-image for the two outer nods), and freeing them lowered the joint wing
+  fraction by 0.05-0.11. The user chose a fixed offset law, no free parameter per source
+  (2026-11-02).
+
+**Nod offset law (2026-11-02, built, on by default: `profile_fit.NOD_OFFSET_LAW`).** Each
+exposure's image of the source, and its negative copies in the other nods' differences, sits at
+the source's planned position in that exposure (its own SRCYPOS), not at one shared position
+(`nod_shifts`; shift = scale x (SRCYPOS_k - planned position), applied in `ProfileModel.centre`
+before the centre law; `ProfileModel(nod_law=False)` is the old geometry).
+- Measurement: per-exposure offsets fitted freely (no law) on 465 calibration stars, 5091
+  exposure x range values, PRISM in all six fields and six gratings of 6642 obs 2
+  (`psf_calibration.measure_offsets`; c4_p4 G140H too faint per exposure).
+- Which description: the planned SRCYPOS differences (no parameter) take the weighted rms from
+  0.0100 to 0.0043 slit units; a fitted (a + b x detector row) x nod step or (quadrant + b x MSA
+  shutter row) x nod step does as well in sample (0.0043) but predicts a held-out observation worse
+  (0.0048-0.0049 vs 0.0043); a law not proportional to the nod step is worse (0.0067). Nothing is
+  left against detector column, row or wavelength (slopes 0 +- 1e-4 slit units). The planning
+  metadata already carries the field-dependent nod step; the model dropped it.
+- Scale: measured / planned = 1.03 overall, but per visit 0.85-1.21 for the PRISM, and the six
+  gratings of 6642 obs 2 (0.5-0.88) follow that visit's PRISM (0.85): a visit effect, not a
+  disperser effect, which a fixed law cannot follow. Scale 1 (the planned shifts as they stand).
+- Effect: median chi2 of PRISM star fits 0.37 of the shared-position value above peak S/N 100,
+  0.62 at 30-100, 0.93 at 10-30 (free offsets: 0.32 / 0.58 / 0.93); bright grating ranges of
+  6642 obs 2 do not gain (1.01, 39 ranges). Out of sample (ember_cosmos_p1, six bright compact
+  isolated PRISM sources and three G395M with < 2 % predicted contamination): chi2 on common pixels
+  0.93-1.00 of without (brightest gains most), reported flux changes <= 0.3 %.
+- A single exposure (no nod partners) is not shifted (its own SRCYPOS is the reference); frames
+  with a placeholder SRCYPOS (0.000 next to real values) or without the source are not shifted.
+
+**PSF refit with the law (pending the user's decision, tables unchanged).** Same method and cuts
+as above; 141 NRS1 / 138 NRS2 clean stars.
+- NRS1 core 0.334, 0.343, 0.367, 0.373, 0.393, 0.472, 0.607 rows, wing 0.315, 0.283, 0.281, 0.328,
+  0.360, 0.294, 0.138; NRS2 core 0.338, 0.338, 0.360, 0.390, 0.406, 0.464, 0.571, wing 0.314, 0.317,
+  0.324, 0.319, 0.366, 0.315, 0.221.
+- Against the current table: FWHM of core + wing 6-12 % narrower on NRS1 at 0.85-2.95 um, within
+  +-6 % elsewhere (NRS2 -5.8 to +1.1 %). Against the shared-position refit, at 0.7-3.3 um: the
+  wing fraction 0.03-0.14 lower, the core 3-16 % wider, FWHM 1-8 % wider (closer to the current
+  table); in the red within a few percent either way.
+- Summed chi2 of the clean stars with the new table is 0-5 % above the current one at 0.7-3.3 um
+  and 1-4 % above on NRS2 at 3.3-5.3 um (the narrow-side rule's price), 4-8 % below on NRS1 at
+  3.3-5.3 um; the shared-position refit's table fits worse than or as well as the new one in
+  every range.
+- The PSF skew towards +y remains with the law: beyond +1.5 rows the stars carry 0.6-2 % of their
+  light more than beyond -1.5 rows, where the symmetric model gives about the same on both sides.
+- Centre law (no law applied, regressor the measured centre) unchanged by the nod law: within
+  ~0.02 rows of `CENTRE_LAW` below 3 um; at 4.7 um NRS2 quadrant 2 -0.36 vs -0.25 rows, NRS1
+  quadrant 4 -0.26 vs -0.21, slope with source position NRS1 -0.087 vs -0.107; NRS1 quadrant 1
+  has no stars at 3.7-4.7 um (NaN; fill from the detector value before use).
+- Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_new.json`, `centre_law_new.json`,
+  `offset_law.log`, `kappa_by_obs.log`, `p1_out_of_sample.json`, `summary.log`, `selection.log`,
+  `figures/` with `nod_offset_law.png`); the shared-position refit in `scratch/claude/psf_cal/`.
 
 ### 3.8 First pass
 
@@ -1897,7 +1932,8 @@ a fix or needs another field or disperser), **To make**.
 | Same-row inseparability cause | extraction session | |
 | Master-background spectrum: end-to-end p1 run and review (built, section 4); the 1-D combine of several groups; the `extended` threshold | extraction session | user |
 | Default galaxy width 0.15 vs 0.21 | user | |
-| PSF table and centre-law refit (3.7, `psf_calibration.py`): built, provisional; the nod-position mismatch (+-0.08 rows, linear in detector row) biases the wing fraction. Decide the nod geometry, rerun, then adopt or not | user | nod geometry |
+| Nod offset law (3.7, `NOD_OFFSET_LAW`: each nod at its own planned SRCYPOS): built, on by default | extraction session | |
+| PSF table and centre-law refit with the nod law (3.7, `psf_calibration.py`): adopt or not; the +y PSF skew is not modelled | user | |
 | Forward-model shutter edge vs measured bar shadow | extraction session | |
 | Stage 1 footprint past the calibrated range | MB session | user |
 | Runtime baseline on one full observation | both | |
@@ -1987,4 +2023,5 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   decisions on physical-shutter keys, the stuck-list format and its ownership split (all
   2026-10-30). The stuck-list loader and auto writer are recorded as proposed.
 - **2026-11-02.** Section 3.7: the PSF and centre-law refit through the profile model, with the
-  nod-position mismatch and the skewed PSF it found; pending the user's decision.
+  nod-position mismatch and the skewed PSF it found; the nod offset law (each nod at its planned
+  SRCYPOS, built and on by default); the refit with the law, pending the user's decision.

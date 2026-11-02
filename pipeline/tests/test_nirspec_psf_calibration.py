@@ -184,6 +184,30 @@ def test_selection_rejects_faint_edge_and_odd_stars():
     assert len(clean) == 6
 
 
+def test_free_offsets_recover_the_nod_shifts():
+    """Stars made with the nods at their planned positions (the law on): fitted with one
+    shared position plus a free offset per exposure, the offsets are the planned shifts."""
+    exps = _exposures(src_y=0.05)
+    for e, s in zip(exps, (0.05, 0.066, 0.034)):
+        e.src_y = s
+    _inject(exps, 0.42, 0.25, 0.05)                 # law on: each nod at its planned position
+    RF = PC.RangeFit(exps, (1.0, 2.6), nod_law=False)
+    RF.set_floor(np.zeros(RF.M.npix))
+    ref = RF.fit(tables=PF.PSF_TABLES)
+    RF.set_floor(ref['_model'])
+    fr = RF.fit(f_wing=0.25, x0=ref['_x'] + [0.45])
+    off, err, chi2 = PC._fit_offsets(RF, 0.25, fr['_x'], fr['_use'])
+    assert np.allclose(off, [0.0, 0.016, -0.016], atol=0.002)
+    assert chi2 < fr['chi2']
+    rows = PC.offset_rows([dict(key='syn', obs='syn', detector='NRS1', grating='PRISM/CLEAR',
+                                exposures=[dict(nod=i + 1, src_y=e.src_y, has_source=True, yoffset=0.5 * (i % 2),
+                                                y_start=100, x_start=100, quadrant=1, shutter_row=50,
+                                                shutter_col=50) for i, e in enumerate(exps)],
+                                ranges=[dict(range=0, lam=[1.0, 2.6], offsets=off, errors=err, peak_snr=50.0,
+                                             dy=DY)])])
+    assert np.allclose([r['off'] for r in rows], [r['planned'] for r in rows], atol=0.002)
+
+
 def test_centre_law_recovered():
     """Stars in two quadrants with a known drift per quadrant and slope with position."""
     rng = np.random.default_rng(7)

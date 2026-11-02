@@ -165,6 +165,41 @@ def centre_law(lam, det, quad=None, law=None):
 # The centre law switched off: the fitted centre is where the light is.
 NO_CENTRE_LAW = {det: dict(D=np.zeros(PSF_LAM.size), alpha=np.zeros(PSF_LAM.size)) for det in ('NRS1', 'NRS2')}
 
+# Nod geometry: each exposure's image of the source sits at the source's planned position in
+# that exposure (its own SRCYPOS, from the MSA planning metadata), not at one position shared by
+# all nods. The planned positions of a source differ between nods by up to ~0.02 slit units
+# (~0.08 detector rows), in proportion to the nod step and linearly with the slitlet's detector
+# row, because the nod step projected on the MSA varies across the field. Measured on 465
+# calibration-field stars, 5091 exposure offsets fitted freely (``psf_calibration``,
+# 2026-11-02; programs 12497 obs 1-5 and 6642 obs 2, PRISM and six gratings): the planned
+# shifts take the rms of the offsets from 0.0100 to 0.0043 slit units, as well as a fitted
+# row or MSA-row law in sample and better for a held-out observation; nothing is left against
+# detector column, row or wavelength. The scale measured / planned is 1.03 overall but varies
+# per visit (PRISM 0.85-1.21; the gratings of 6642 obs 2, 0.5-0.88, with that visit's PRISM), so
+# the planned shifts are used as they stand (scale 1).
+NOD_OFFSET_LAW = dict(scale=1.0)
+
+
+def nod_shifts(exps, law=None, c_ref=None):
+    """Per exposure: the shift of its source image from the shared centre, slit units:
+    ``law['scale']`` x (its SRCYPOS - the reference position ``c_ref``, default the planned
+    position of ``planned_position``). Zero for an exposure whose SRCYPOS is a placeholder
+    (exactly 0.000 next to nonzero values) or that does not contain the source.
+    law : None for ``NOD_OFFSET_LAW``, False for no shifts."""
+    exps = list(exps)
+    if law is False or not exps:
+        return np.zeros(len(exps))
+    law = NOD_OFFSET_LAW if law is None else law
+    c = planned_position(exps)[0] if c_ref is None else float(c_ref)
+    vals = [e.src_y for e in exps if e.has_source]
+    placeholder = any(v != 0.0 for v in vals)
+    out = np.zeros(len(exps))
+    for k, e in enumerate(exps):
+        if not e.has_source or not np.isfinite(e.src_y) or (placeholder and e.src_y == 0.0):
+            continue
+        out[k] = float(law['scale']) * (e.src_y - c)
+    return out
+
 
 def _transmitted(o, s, intervals):
     """Fraction of N(o, s) inside the intervals."""
@@ -539,17 +574,21 @@ class ProfileModel:
 
     psf_tables / centre_law_tables : replace ``PSF_TABLES`` / ``CENTRE_LAW`` for this
         model (``psf_params`` / ``centre_law``); None uses the module's tables. For
-        calibrating them on stars (``psf_calibration``), not for extraction."""
+        calibrating them on stars (``psf_calibration``), not for extraction.
+    nod_law : the nod geometry (``nod_shifts``): None for ``NOD_OFFSET_LAW``, False for one
+        position shared by every exposure (to measure the offsets themselves)."""
 
     psf_tables = None
     centre_law_tables = None
+    nod_shift = None
 
     def __init__(self, exps, chromatic=True, priors=None, grid=None, bounds=None, c_prior=None,
-                 psf_tables=None, centre_law_tables=None):
+                 psf_tables=None, centre_law_tables=None, nod_law=None):
         self.exps = exps
         self.chromatic = chromatic
         self.psf_tables = psf_tables
         self.centre_law_tables = centre_law_tables
+        self.nod_shift = nod_shifts(exps, nod_law)
         self.priors = priors or Priors()
         self.bounds_cfg = bounds or Bounds()
         self.c_prior, self.srcy_flag = planned_position(exps)
@@ -680,6 +719,7 @@ class ProfileModel:
         3-pixel boxcar, ``profile_contam.boxcar_pass1``). ``grid`` is the spectrum grid."""
         M = cls.__new__(cls)
         M.exps, M.chromatic = exps, True
+        M.nod_shift = nod_shifts(exps)
         M.priors, M.bounds_cfg = priors or Priors(), bounds or Bounds()
         M.c_prior, M.srcy_flag = planned_position(exps)
         M.lam_grid = np.asarray(grid, float)
@@ -723,8 +763,12 @@ class ProfileModel:
         return np.clip(np.log2(lam / self.pivot), lo, hi)
 
     def centre(self, p, eoff, k, lam):
+        """Exposure k's trace centre: the shared source centre moved to the source's planned
+        position in exposure k (``nod_shift``), plus k's offset, then the centre law."""
         e = self.exps[k]
         cg = p[0] + p[1] * self._x(lam)
+        if self.nod_shift is not None:
+            cg = cg + self.nod_shift[k]
         D, a = centre_law(lam, e.detector, e.quadrant, law=self.centre_law_tables)
         return cg + eoff[k] + D + a * cg
 
@@ -1301,7 +1345,7 @@ def drizzle_arrays(frame_of, dmap):
     return dmap.drizzle({name: frame_of(name) for name in dmap.names})['data']
 
 
-FIT_VERSION = '2'                     # 2: no per-exposure pointing offsets fitted
+FIT_VERSION = '3'                     # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position
 
 
 def run_single_source(product_name, workspace_dir, groups, bkg_overrides, science,

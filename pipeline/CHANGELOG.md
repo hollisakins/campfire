@@ -37,9 +37,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   with figures; CLI `python -m campfire_pipeline.nirspec.psf_calibration`. `ProfileModel`
   takes optional `psf_tables` / `centre_law_tables` (default: the module tables, so the
   extraction is unchanged); `NO_CENTRE_LAW` measures where the light is. The tables
-  themselves are not changed here.
+  themselves are not changed here. Also measures the per-exposure nod offsets (`offsets`,
+  `offset_law` steps) behind `NOD_OFFSET_LAW`.
 
 ### Algorithm
+
+- **NIRSpec profile fit: each nod at its own planned position (`profile_fit.NOD_OFFSET_LAW`,
+  on by default).** The model placed a source at one slit position in every exposure; the MSA
+  planning metadata gives each exposure its own (SRCYPOS), and the nods differ by up to ~0.08
+  detector rows, in proportion to the nod step and linearly across the field. Each exposure's
+  image, and its negative copies in the other nods' differences, now sits at its own planned
+  position (`nod_shifts`; `ProfileModel(nod_law=False)` restores the old geometry). Measured on
+  465 calibration stars (PRISM and six gratings): the planned shifts take the rms of freely
+  fitted offsets from 0.010 to 0.004 slit units; the median chi2 of PRISM star fits falls to
+  0.37 of its value above peak S/N 100 and 0.62 at 30-100. On p1 galaxies the chi2 improves by
+  up to 7 % and the flux moves by < 0.3 %. A single exposure, or a placeholder SRCYPOS, is not
+  shifted.
 
 - **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
   run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint
