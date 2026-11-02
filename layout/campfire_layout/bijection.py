@@ -56,6 +56,7 @@ _NIRSPEC_OBS_SUFFIXES = (
     ("_lines.fits", "nirspec_lines"),  # ditto
     ("_lines.json", "nirspec_lines_json"),
     ("_spec_1d.json", "spectrum_1d_json"),
+    ("_spec_mbkg.json", "spectrum_mbkg_json"),
     ("_spec.json", "spectrum_json"),
     ("_zfit.json", "zfit"),
     ("_rgb.png", "rgb"),

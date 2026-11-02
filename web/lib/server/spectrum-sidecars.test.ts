@@ -53,14 +53,14 @@ beforeEach(() => {
 describe('resolveSpectrumSidecars', () => {
   it('resolves every sidecar of every path in one registry call', async () => {
     for (const f of [FITS_A, FITS_B]) {
-      for (const suffix of ['_spec.json', '_spec_1d.json', '_zfit.json', '_lines.json']) {
+      for (const suffix of ['_spec.json', '_spec_1d.json', '_zfit.json', '_lines.json', '_spec_mbkg.json']) {
         const k = sib(f, suffix);
         resolvedByKey[k] = registered(k);
       }
     }
     const out = await resolveSpectrumSidecars([FITS_A, FITS_B, FITS_A]);
     expect(resolveCalls).toHaveLength(1);
-    expect(resolveCalls[0]).toHaveLength(8);
+    expect(resolveCalls[0]).toHaveLength(10);
     expect(out.size).toBe(2);
     for (const f of [FITS_A, FITS_B]) {
       const u = out.get(f)!;
@@ -69,9 +69,11 @@ describe('resolveSpectrumSidecars', () => {
       expect(u.spectrum_1d).toContain(`/o/${sib(f, '_spec_1d.json')}?`);
       expect(u.zfit).toContain(`/o/${sib(f, '_zfit.json')}?`);
       expect(u.lines).toContain(`/o/${sib(f, '_lines.json')}?`);
+      expect(u.mbkg).toContain(`/o/${sib(f, '_spec_mbkg.json')}?`);
       expect(u.has_1d).toBe(true);
       expect(u.has_zfit).toBe(true);
       expect(u.has_lines).toBe(true);
+      expect(u.has_mbkg).toBe(true);
     }
   });
 
@@ -85,11 +87,13 @@ describe('resolveSpectrumSidecars', () => {
     expect(a.has_1d).toBe(false);
     expect(a.has_zfit).toBe(false);
     expect(a.has_lines).toBe(false);
+    expect(a.has_mbkg).toBe(false);
     const b = out.get(FITS_B)!;
     expect(b.spectrum).toBeNull();
     expect(b.has_1d).toBeNull();
     expect(b.has_zfit).toBeNull();
     expect(b.has_lines).toBeNull();
+    expect(b.has_mbkg).toBeNull();
   });
 
   it('resolves the line-fit sidecar independently of the zfit one', async () => {
@@ -118,7 +122,8 @@ describe('resolveSpectrumSidecars', () => {
     resolveThrows = true;
     const out = await resolveSpectrumSidecars([FITS_A]);
     expect(out.get(FITS_A)).toEqual({
-      front: true, spectrum: null, spectrum_1d: null, zfit: null, lines: null, has_1d: null, has_zfit: null, has_lines: null,
+      front: true, spectrum: null, spectrum_1d: null, zfit: null, lines: null, mbkg: null,
+      has_1d: null, has_zfit: null, has_lines: null, has_mbkg: null,
     });
   });
 
@@ -127,7 +132,7 @@ describe('resolveSpectrumSidecars', () => {
     const out = await resolveSpectrumSidecars(['not/a/layout/key.txt', FITS_A]);
     expect(out.get('not/a/layout/key.txt')!.has_1d).toBeNull();
     expect(out.get(FITS_A)!.has_1d).toBe(false);
-    expect(resolveCalls[0]).toHaveLength(4);
+    expect(resolveCalls[0]).toHaveLength(5);
   });
 
   it('answers an empty batch without touching the registry', async () => {
@@ -139,7 +144,7 @@ describe('resolveSpectrumSidecars', () => {
 
 describe('spectrum1dSources', () => {
   it('prefers the 1-D front url, then the full JSON, and always names the streaming route', () => {
-    const base = { front: true, spectrum: 'https://f/o/full', spectrum_1d: 'https://f/o/1d', zfit: null, lines: null, has_1d: true, has_zfit: null, has_lines: null };
+    const base = { front: true, spectrum: 'https://f/o/full', spectrum_1d: 'https://f/o/1d', zfit: null, lines: null, mbkg: null, has_1d: true, has_zfit: null, has_lines: null, has_mbkg: null };
     expect(spectrum1dSources(base, FITS_A).front).toBe('https://f/o/1d');
     expect(spectrum1dSources({ ...base, spectrum_1d: null }, FITS_A).front).toBe('https://f/o/full');
     expect(spectrum1dSources({ ...base, front: false }, FITS_A).front).toBeNull();
@@ -152,7 +157,7 @@ describe('spectrum1dSources', () => {
 
 describe('dehydrateSidecarUrls', () => {
   it('produces one settled query per path under the sidecar key', () => {
-    const urls = { front: true, spectrum: 'https://f/o/full', spectrum_1d: null, zfit: null, lines: null, has_1d: false, has_zfit: null, has_lines: null };
+    const urls = { front: true, spectrum: 'https://f/o/full', spectrum_1d: null, zfit: null, lines: null, mbkg: null, has_1d: false, has_zfit: null, has_lines: null, has_mbkg: null };
     const state = dehydrateSidecarUrls(new Map([[FITS_A, urls]]));
     expect(state.queries).toHaveLength(1);
     expect(state.queries[0].queryKey).toEqual(spectrumSidecarsKey(FITS_A));
@@ -179,6 +184,8 @@ describe('resolveSpectrumSidecars under a release', () => {
     expect(u.has_1d).toBe(true);
     expect(u.has_zfit).toBe(false);
     expect(u.has_lines).toBe(false);
+    expect(u.mbkg).toBeNull();
+    expect(u.has_mbkg).toBe(false);
     expect(releaseSpectrumAvailable(u)).toBe(true);
   });
 
@@ -200,10 +207,10 @@ describe('resolveSpectrumSidecars under a release', () => {
     expect(live.queries[0].queryKey).toEqual(['spectrum-sidecars', FITS_A]);
   });
 });
-const NO = { front: true, spectrum: null, spectrum_1d: null, zfit: null, lines: null, has_1d: null, has_zfit: null, has_lines: null };
+const NO = { front: true, spectrum: null, spectrum_1d: null, zfit: null, lines: null, mbkg: null, has_1d: null, has_zfit: null, has_lines: null, has_mbkg: null };
 
 describe('releaseSpectrumAvailable', () => {
-  const base = { front: false, spectrum: null, spectrum_1d: null, zfit: null, lines: null, has_1d: false, has_zfit: false, has_lines: false };
+  const base = { front: false, spectrum: null, spectrum_1d: null, zfit: null, lines: null, mbkg: null, has_1d: false, has_zfit: false, has_lines: false, has_mbkg: false };
   it('plots an archived member whose full JSON exists even with the front off and no 1-D sidecar', () => {
     expect(releaseSpectrumAvailable({ ...base, has_spectrum: true })).toBe(true);
     expect(releaseSpectrumAvailable({ ...base, has_spectrum: false })).toBe(false);

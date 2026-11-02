@@ -31,8 +31,10 @@ from campfire.deploy.discover import (
 )
 from campfire.deploy.generate import (
     generate_spectrum_jsons,
+    generate_spectrum_mbkg_json,
     generate_spectrum_products,
     generate_thumbnails_from_fits,
+    read_mbkg_row_fields,
     generate_zfit_json,
 )
 from campfire_layout import KeyScheme, Scope, storage_key
@@ -748,30 +750,36 @@ def deploy_observation(
         scope = Scope(obs=obs_name)
 
         # One pass per final generates BOTH derivatives from a single FITS read:
-        # the spectrum JSON (uploaded) and the SVG thumbnails (embedded in the
-        # spectra rows) — previously two stages, each re-opening every final.
-        # Thumbnails are needed even on --supabase-only (the rows still update).
+        # the spectrum JSON (uploaded) and the spectra-row fields read from the
+        # file (SVG thumbnails, master-background columns) — previously two
+        # stages, each re-opening every final. The row fields are needed even on
+        # --supabase-only (the rows still update).
         print("Generating content...")
-        thumb_map: dict[str, dict] = {}
+        row_fields_map: dict[str, dict] = {}
         for spec_path in tqdm(spec_paths, desc="Processing", unit="file"):
             if supabase_only:
                 try:
-                    thumb_map[spec_path.name] = generate_thumbnails_from_fits(spec_path)
+                    row_fields_map[spec_path.name] = {
+                        **generate_thumbnails_from_fits(spec_path),
+                        **read_mbkg_row_fields(spec_path),
+                    }
                 except Exception as e:
                     print(f"  Warning: {spec_path.name}: {e}")
                 continue
-            # FITS file + JSON derivative + thumbnails (single read)
+            # FITS file + JSON derivatives + row fields (single read)
             upload_tasks.append(UploadTask(spec_path, storage_key('nirspec_spec', scope, spec_path.name, scheme=KeyScheme.CANONICAL), 'application/fits'))
-            json_path, json_1d_path, thumbs = generate_spectrum_products(spec_path, temp_dir)
-            thumb_map[spec_path.name] = thumbs
+            json_path, json_1d_path, json_mbkg_path, row_fields = generate_spectrum_products(spec_path, temp_dir)
+            row_fields_map[spec_path.name] = row_fields
             upload_tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
             upload_tasks.append(UploadTask(json_1d_path, storage_key('spectrum_1d_json', scope, json_1d_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
+            if json_mbkg_path is not None:
+                upload_tasks.append(UploadTask(json_mbkg_path, storage_key('spectrum_mbkg_json', scope, json_mbkg_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
-        # Enrich spectra records with thumbnails before the catalog upsert.
+        # Enrich spectra records with the file's row fields before the catalog upsert.
         for rec in spectra:
             fits_name = rec['fits_path'].split('/')[-1]
-            if fits_name in thumb_map:
-                rec.update(thumb_map[fits_name])
+            if fits_name in row_fields_map:
+                rec.update(row_fields_map[fits_name])
 
         # NIRSpec science products are homed on OSN under CANONICAL keys
         # (epic #210 / #216 — deploy → OSN).
@@ -1137,6 +1145,9 @@ def deploy_json(
             json_path, json_1d_path = generate_spectrum_jsons(path, temp_dir)
             tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
             tasks.append(UploadTask(json_1d_path, storage_key('spectrum_1d_json', scope, json_1d_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
+            json_mbkg_path = generate_spectrum_mbkg_json(path, temp_dir)
+            if json_mbkg_path is not None:
+                tasks.append(UploadTask(json_mbkg_path, storage_key('spectrum_mbkg_json', scope, json_mbkg_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
         print("Uploading to OSN...")
         uploaded_keys: set[str] = set()

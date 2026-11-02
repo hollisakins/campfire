@@ -145,12 +145,23 @@ def read_spectrum_data(fits_path: Path) -> dict:
         return _spectrum_data_from_hdul(hdul)
 
 
-def _spectrum_data_from_hdul(hdul) -> dict:
-    """JSON-export payload from an already-open HDUList (single-read path)."""
-    spec1d = hdul['SPEC1D'].data
-    sci = hdul['SCI'].data
-    err = hdul['ERR'].data
-    prof1d = hdul['PROF1D'].data
+def read_spectrum_mbkg_data(fits_path: Path) -> dict | None:
+    """The master-background spectrum's JSON payload (see
+    :func:`_mbkg_data_from_hdul`), or None when the file has none."""
+    with fits.open(fits_path) as hdul:
+        return _mbkg_data_from_hdul(hdul)
+
+
+def _spectrum_data_from_hdul(hdul, spec1d_ext='SPEC1D', sci_ext='SCI', err_ext='ERR',
+                             prof1d_ext='PROF1D') -> dict:
+    """JSON-export payload from an already-open HDUList (single-read path).
+
+    The extension names default to the nodded spectrum; the master-background
+    spectrum is the same payload read from its ``*_MBKG`` extensions."""
+    spec1d = hdul[spec1d_ext].data
+    sci = hdul[sci_ext].data
+    err = hdul[err_ext].data
+    prof1d = hdul[prof1d_ext].data
 
     # 1D spectrum. Any non-finite flux (NaN *or* ±inf) becomes JSON null —
     # inf is just as invalid as NaN under strict JSON, and json.dump below
@@ -158,7 +169,6 @@ def _spectrum_data_from_hdul(hdul) -> dict:
     wave = [round(x, 6) for x in spec1d['wave'].tolist()]
     fnu = [None if not np.isfinite(x) else round(float(x), 6) for x in spec1d['fnu']]
     fnu_err = [None if not np.isfinite(x) else round(float(x), 6) for x in spec1d['fnu_err']]
-    mbkg = _mbkg_spectrum(hdul, spec1d['wave'])
 
     # 2D S/N
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -209,36 +219,43 @@ def _spectrum_data_from_hdul(hdul) -> dict:
         'profile': [round(float(x), 3) for x in collapsed_norm.tolist()],
         'profile_fit': [round(float(x), 3) for x in opt_norm.tolist()],
         'profile_pix': [round(float(x), 2) for x in pix_centered.tolist()],
-        **mbkg,
     }
 
 
-def _mbkg_spectrum(hdul, wave) -> dict:
-    """``fnu_mbkg`` / ``fnu_err_mbkg`` from SPEC1D_MBKG, the spectrum extracted
-    from the master-background-subtracted exposures; empty when the file has none.
+def _mbkg_data_from_hdul(hdul) -> dict | None:
+    """The spectrum extracted from the master-background-subtracted exposures
+    (SPEC1D_MBKG, SCI_MBKG, ERR_MBKG; PROF1D_MBKG when the extraction wrote one,
+    else PROF1D) in the full spectrum payload's shape; None when the file has no
+    SPEC1D_MBKG.
 
-    The portal draws it on SPEC1D's wavelength axis, so the two wave arrays must
-    be identical (same values, not resampled); a file where they differ is
-    refused rather than drawn shifted."""
+    The portal switches between the two spectra on the same axes and zoom, so the
+    master-background one must sit on the nodded one's grid: identical wave
+    values (not resampled) and the same 2-D shape. A file that breaks this, or
+    has SPEC1D_MBKG without its 2-D spectrum, is refused rather than drawn
+    shifted or half-switched."""
     if 'SPEC1D_MBKG' not in hdul:
-        return {}
-    tab = hdul['SPEC1D_MBKG'].data
-    if not np.array_equal(np.asarray(tab['wave']), np.asarray(wave), equal_nan=True):
-        raise ValueError(
-            f"{hdul.filename()}: SPEC1D_MBKG wave differs from SPEC1D wave")
-    return {
-        'fnu_mbkg': [None if not np.isfinite(x) else round(float(x), 6) for x in tab['fnu']],
-        'fnu_err_mbkg': [None if not np.isfinite(x) else round(float(x), 6) for x in tab['fnu_err']],
-    }
+        return None
+    name = hdul.filename()
+    for ext in ('SCI_MBKG', 'ERR_MBKG'):
+        if ext not in hdul:
+            raise ValueError(f"{name}: SPEC1D_MBKG without {ext}")
+    if not np.array_equal(np.asarray(hdul['SPEC1D_MBKG'].data['wave']),
+                          np.asarray(hdul['SPEC1D'].data['wave']), equal_nan=True):
+        raise ValueError(f"{name}: SPEC1D_MBKG wave differs from SPEC1D wave")
+    for ext in ('SCI_MBKG', 'ERR_MBKG'):
+        if hdul[ext].data.shape != hdul['SCI'].data.shape:
+            raise ValueError(f"{name}: {ext} shape {hdul[ext].data.shape} "
+                             f"differs from SCI {hdul['SCI'].data.shape}")
+    prof1d_ext = 'PROF1D_MBKG' if 'PROF1D_MBKG' in hdul else 'PROF1D'
+    return _spectrum_data_from_hdul(hdul, 'SPEC1D_MBKG', 'SCI_MBKG', 'ERR_MBKG', prof1d_ext)
 
 
 # Keys of the spectrum payload that make up the 1-D sidecar (perf T2-D2,
 # #508): everything but the 2-D S/N array, which is 80-95 % of the bytes. The
 # web fetches `<stem>_1d.json` first and paints the primary trace, then the
-# full `<stem>.json` for the heatmap. The master-background keys are present
-# only for spectra that have SPEC1D_MBKG.
+# full `<stem>.json` for the heatmap.
 SPECTRUM_1D_KEYS = (
-    'wave', 'fnu', 'fnu_err', 'fnu_mbkg', 'fnu_err_mbkg', 'n_spatial', 'n_wave',
+    'wave', 'fnu', 'fnu_err', 'n_spatial', 'n_wave',
     'profile', 'profile_fit', 'profile_pix',
 )
 
@@ -270,6 +287,23 @@ def write_spectrum_jsons(data: dict, stem: str, output_dir: Path) -> tuple[Path,
     return json_path, json_1d_path
 
 
+def write_spectrum_mbkg_json(data: dict, stem: str, output_dir: Path) -> Path:
+    """Write the master-background spectrum payload as ``<stem>_mbkg.json`` (the
+    ``spectrum_mbkg_json`` layout sibling of the FITS), fetched by the portal only
+    when its master-background switch is turned on."""
+    path = output_dir / f'{stem}_mbkg.json'
+    with open(path, 'w') as f:
+        json.dump(data, f, allow_nan=False)  # see write_spectrum_jsons
+    return path
+
+
+def generate_spectrum_mbkg_json(fits_path: Path, output_dir: Path) -> Path | None:
+    """The ``_spec_mbkg.json`` of a spectrum FITS, or None when it has no
+    master-background spectrum."""
+    data = read_spectrum_mbkg_data(fits_path)
+    return None if data is None else write_spectrum_mbkg_json(data, fits_path.stem, output_dir)
+
+
 def generate_spectrum_json(fits_path: Path, output_dir: Path) -> Path:
     """Generate the full spectrum JSON (and its 1-D sidecar) for Plotly.
 
@@ -286,31 +320,74 @@ def generate_spectrum_jsons(fits_path: Path, output_dir: Path) -> tuple[Path, Pa
 
 def generate_spectrum_products(
     fits_path: Path, output_dir: Path,
-) -> tuple[Path, Path, dict[str, str]]:
+) -> tuple[Path, Path, Path | None, dict[str, str]]:
     """Generate ALL per-final derivatives in a single FITS read.
 
-    One open yields the spectrum JSON + its 1-D sidecar (uploaded to storage)
-    and the fnu/flambda SVG thumbnails (embedded in the spectra rows). Deploy
-    previously ran two separate passes — 'Generating content' then
-    'Generating thumbnails' — each re-opening every final off NFS.
+    One open yields the spectrum JSON + its 1-D sidecar and, when the file has
+    a master-background spectrum, its ``_spec_mbkg.json`` (all uploaded to
+    storage), and the spectra-row fields read from the file: the fnu/flambda
+    SVG thumbnails and the master-background columns
+    (:func:`mbkg_row_fields`). Deploy previously ran two separate passes —
+    'Generating content' then 'Generating thumbnails' — each re-opening every
+    final off NFS.
 
-    Returns ``(json_path, json_1d_path, thumbnails_dict)``.
+    Returns ``(json_path, json_1d_path, json_mbkg_path_or_None, row_fields)``.
     """
     with fits.open(fits_path) as hdul:
         spec1d = hdul['SPEC1D'].data
         wave_raw = spec1d['wave'].tolist()
         fnu_raw = spec1d['fnu'].tolist()
         data = _spectrum_data_from_hdul(hdul)
+        mbkg_data = _mbkg_data_from_hdul(hdul)
+        row_fields = mbkg_row_fields(hdul)
 
     json_path, json_1d_path = write_spectrum_jsons(data, fits_path.stem, output_dir)
+    json_mbkg_path = (None if mbkg_data is None
+                      else write_spectrum_mbkg_json(mbkg_data, fits_path.stem, output_dir))
 
-    thumbs = {
+    row_fields.update({
         'thumbnail_svg_fnu': generate_spectrum_thumbnail_svg(
             wave_raw, fnu_raw, flux_unit='fnu'),
         'thumbnail_svg_flambda': generate_spectrum_thumbnail_svg(
             wave_raw, fnu_raw, flux_unit='flambda'),
+    })
+    return json_path, json_1d_path, json_mbkg_path, row_fields
+
+
+MBKG_REASONS = ('no_clear_background', 'single_exposure', 'extended')
+
+
+def read_mbkg_row_fields(fits_path: Path) -> dict:
+    """:func:`mbkg_row_fields` of a spec.fits on disk."""
+    with fits.open(fits_path) as hdul:
+        return mbkg_row_fields(hdul)
+
+
+def mbkg_row_fields(hdul) -> dict:
+    """The spectra-row master-background columns from a spec.fits.
+
+    ``has_mbkg_spectrum`` is whether SPEC1D_MBKG is present;
+    ``mbkg_preferred`` / ``mbkg_reason`` come from the primary MBKGPREF /
+    MBKGWHY (the reason only when preferred), ``n_exp`` / ``n_exp_bkg`` from
+    NEXP / NEXPBKG. A card the file lacks is None, so a redeploy of an older
+    file clears rather than keeps a stale value."""
+    hdr = hdul[0].header
+    has = 'SPEC1D_MBKG' in hdul
+    preferred = bool(hdr['MBKGPREF']) if has and 'MBKGPREF' in hdr else None
+    reason = (str(hdr.get('MBKGWHY', '')).strip() or None) if preferred else None
+    if reason is not None and reason not in MBKG_REASONS:
+        raise ValueError(f"{hdul.filename()}: MBKGWHY {reason!r} is not one of {MBKG_REASONS}")
+
+    def count(card):
+        return int(hdr[card]) if card in hdr else None
+
+    return {
+        'has_mbkg_spectrum': has,
+        'mbkg_preferred': preferred,
+        'mbkg_reason': reason,
+        'n_exp': count('NEXP'),
+        'n_exp_bkg': count('NEXPBKG'),
     }
-    return json_path, json_1d_path, thumbs
 
 
 # ---------------------------------------------------------------------------

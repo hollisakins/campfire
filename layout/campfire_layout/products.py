@@ -119,6 +119,15 @@ _register(ProductSpec(
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
     suffix="_spec_1d.json", legacy_prefix=lambda s: f"spectra/{s.obs}",
 ))
+# The spectrum extracted from the master-background-subtracted exposures
+# (SPEC1D_MBKG + SCI_MBKG/ERR_MBKG of the same spec.fits) in spectrum_json's
+# shape, for the spectrum plot's master-background switch; fetched only when the
+# switch is turned on. New product, so no legacy key: reserved canonical form.
+_register(ProductSpec(
+    name="spectrum_mbkg_json", instrument=NS, tree="products", bucket="data",
+    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
+    suffix="_spec_mbkg.json", legacy_prefix=None,
+))
 _register(ProductSpec(
     name="zfit", instrument=NS, tree="products", bucket="data",
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,

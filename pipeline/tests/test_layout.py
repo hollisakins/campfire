@@ -205,11 +205,12 @@ def test_live_parses_default_to_live_root():
 
 
 def test_sibling_roundtrips():
-    """A NIRSpec spectrum key and its four sidecars (what the web's sidecar
+    """A NIRSpec spectrum key and its five sidecars (what the web's sidecar
     resolver derives) form a clique under derive_sibling in both schemes."""
     for rt in GOLDEN["sibling_roundtrips"]:
         spec, sidecars = rt["spec"], rt["sidecars"]
-        assert set(sidecars) == {"spectrum_json", "spectrum_1d_json", "zfit", "nirspec_lines_json"}
+        assert set(sidecars) == {"spectrum_json", "spectrum_1d_json", "zfit", "nirspec_lines_json",
+                                 "spectrum_mbkg_json"}
         assert L.parse_key(spec).product_type == "nirspec_spec"
         for kind, key in sidecars.items():
             assert L.derive_sibling(spec, kind) == key, (rt["scheme"], kind)

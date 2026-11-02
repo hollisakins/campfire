@@ -311,6 +311,12 @@ BEGIN
        -- zfit scalars on the row (perf T2-D2, #508): deploy / backfill only.
        OR OLD.chi2_min IS DISTINCT FROM NEW.chi2_min
        OR OLD.confidence IS DISTINCT FROM NEW.confidence
+       -- master background (deploy only)
+       OR OLD.has_mbkg_spectrum IS DISTINCT FROM NEW.has_mbkg_spectrum
+       OR OLD.mbkg_preferred IS DISTINCT FROM NEW.mbkg_preferred
+       OR OLD.mbkg_reason IS DISTINCT FROM NEW.mbkg_reason
+       OR OLD.n_exp IS DISTINCT FROM NEW.n_exp
+       OR OLD.n_exp_bkg IS DISTINCT FROM NEW.n_exp_bkg
        OR OLD.created_at IS DISTINCT FROM NEW.created_at
        OR OLD.program_slug IS DISTINCT FROM NEW.program_slug
        OR OLD.observation IS DISTINCT FROM NEW.observation

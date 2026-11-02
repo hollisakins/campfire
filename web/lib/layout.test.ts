@@ -218,12 +218,12 @@ describe('release tree relpaths (P1): local only', () => {
 });
 
 describe('sibling round-trips', () => {
-  // A spectrum key and the four sidecars the web's resolver derives from it
+  // A spectrum key and the five sidecars the web's resolver derives from it
   // (spectrum-sidecars.ts) form a clique under deriveSibling in both schemes.
   type RoundTrip = { scheme: string; spec: string; sidecars: Record<string, string> };
   for (const rt of golden.sibling_roundtrips as RoundTrip[]) {
-    it(`${rt.scheme}: spec <-> all four sidecars`, () => {
-      expect(Object.keys(rt.sidecars).sort()).toEqual(['nirspec_lines_json', 'spectrum_1d_json', 'spectrum_json', 'zfit']);
+    it(`${rt.scheme}: spec <-> all five sidecars`, () => {
+      expect(Object.keys(rt.sidecars).sort()).toEqual(['nirspec_lines_json', 'spectrum_1d_json', 'spectrum_json', 'spectrum_mbkg_json', 'zfit']);
       expect(parseKey(rt.spec).productType).toBe('nirspec_spec');
       for (const [kind, key] of Object.entries(rt.sidecars)) {
         expect(deriveSibling(rt.spec, kind)).toBe(key);

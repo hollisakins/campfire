@@ -142,6 +142,9 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Infrastructure
 
+- **Layout kind `spectrum_mbkg_json`** (`<base>_spec_mbkg.json`, in `campfire-layout`): the
+  deploy-side JSON of a spectrum's master-background extraction, a fifth sibling of
+  `_spec.fits`; `test_layout`'s sibling round-trip covers it.
 - **NIRSpec master background (design P1b).** `campfire_pipeline.nirspec.master_bkg` derives,
   at the end of stage 2a (and as `cfpipe nirspec master-bkg`), the sky of every exposure x detector
   from the empty shutters of its canonicals and the background slitlets of its `bkgslits/` file:

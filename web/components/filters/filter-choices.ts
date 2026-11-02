@@ -51,6 +51,12 @@ const GRATING_OPTIONS: FilterOption[] = GRATINGS.map((g) => ({ value: g, label: 
 const DQ_OPTIONS: FilterOption[] = DQ_FLAGS.map((f) => ({ value: f.value, label: f.label, icon: f.icon, color: f.color }));
 const LINE_FLAG_OPTIONS: FilterOption[] = LINE_FLAGS.map((f) => ({ value: f.value, label: f.label, icon: f.icon, color: f.color }));
 const COMPONENT_OPTIONS: FilterOption[] = ['narrow', 'broad', 'doublet'].map((c) => ({ value: c, label: c }));
+// spectra.mbkg_reason (its CHECK lists the same three)
+const MBKG_REASON_OPTIONS: FilterOption[] = [
+  { value: 'no_clear_background', label: 'No background exposure free of a neighbor' },
+  { value: 'single_exposure', label: 'Single exposure' },
+  { value: 'extended', label: 'Wider than the nod step' },
+];
 
 /** The options a choice-valued property offers. */
 export function optionsFor(choices: LeafChoices | undefined, c: FilterChoices): FilterOption[] {
@@ -66,6 +72,7 @@ export function optionsFor(choices: LeafChoices | undefined, c: FilterChoices): 
     case 'dq_flags': return DQ_OPTIONS;
     case 'line_flags': return LINE_FLAG_OPTIONS;
     case 'component': return COMPONENT_OPTIONS;
+    case 'mbkg_reason': return MBKG_REASON_OPTIONS;
     default: return [];
   }
 }

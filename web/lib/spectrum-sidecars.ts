@@ -18,7 +18,9 @@
  * spectrum that predates the 1-D sidecar answers the 1-D query with its full
  * payload, so a second download is waste; a spectrum with no redshift fit or
  * no line fit needs no round trip to learn that); null = the registry did not
- * answer (the client fetches / falls back to be safe).
+ * answer (the client fetches / falls back to be safe). `has_mbkg` likewise for
+ * the master-background spectrum (`_spec_mbkg.json`), which the plot's switch
+ * fetches; the switch is offered only when it is true.
  */
 export interface SpectrumSidecarUrls {
   front: boolean;
@@ -26,6 +28,7 @@ export interface SpectrumSidecarUrls {
   spectrum_1d: string | null;
   zfit: string | null;
   lines: string | null;
+  mbkg: string | null;
   /** Whether the spectrum's own (full) JSON is a registered object: under a
    *  release, whether its archived copy exists (the plot's payload when the
    *  1-D sidecar is absent or the front is off). Optional for older callers. */
@@ -33,12 +36,13 @@ export interface SpectrumSidecarUrls {
   has_1d: boolean | null;
   has_zfit: boolean | null;
   has_lines: boolean | null;
+  has_mbkg: boolean | null;
 }
 
 /** The "front off / nothing known" answer: every fetch goes to the app routes. */
 export const NO_FRONT: SpectrumSidecarUrls = {
-  front: false, spectrum: null, spectrum_1d: null, zfit: null, lines: null,
-  has_1d: null, has_zfit: null, has_lines: null,
+  front: false, spectrum: null, spectrum_1d: null, zfit: null, lines: null, mbkg: null,
+  has_1d: null, has_zfit: null, has_lines: null, has_mbkg: null,
 };
 
 // TanStack keys, keyed on the FITS path — what is fetched, never the viewer
@@ -54,6 +58,7 @@ export const spectrumJsonKey = (fitsPath: string, dr?: string | null) => keyed('
 export const spectrum1dKey = (fitsPath: string, dr?: string | null) => keyed('spectrum-1d', fitsPath, dr);
 export const redshiftFitKey = (fitsPath: string, dr?: string | null) => keyed('redshift-fit', fitsPath, dr);
 export const lineFitKey = (fitsPath: string, dr?: string | null) => keyed('line-fit', fitsPath, dr);
+export const spectrumMbkgKey = (fitsPath: string, dr?: string | null) => keyed('spectrum-mbkg', fitsPath, dr);
 
 /** `url` with `dr=<tag>` appended (no-op without a tag). Same rule as
  * lib/fetch-json's withDrParam; duplicated here so this module stays free

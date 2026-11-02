@@ -378,7 +378,17 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
         '_spec\.fits$', '', 'i'
       )
     ) STORED,
-    "is_public" boolean NOT NULL DEFAULT false
+    "is_public" boolean NOT NULL DEFAULT false,
+    -- The master-background spectrum (SPEC1D_MBKG / SCI_MBKG of the same
+    -- spec.fits) and the exposure counts behind the nodded one, written by
+    -- deploy from the spec.fits primary header (MBKGPREF / MBKGWHY / NEXP /
+    -- NEXPBKG). NULL when the file predates the cards. Last, in the order the
+    -- migration appended them (cat_spectra mirrors the physical order).
+    "has_mbkg_spectrum" boolean NOT NULL DEFAULT false,
+    "mbkg_preferred" boolean,
+    "mbkg_reason" "text" CONSTRAINT "spectra_mbkg_reason_check" CHECK (("mbkg_reason" IS NULL OR "mbkg_reason" = ANY (ARRAY['no_clear_background'::"text", 'single_exposure'::"text", 'extended'::"text"]))),
+    "n_exp" integer,
+    "n_exp_bkg" integer
 );
 COMMENT ON COLUMN "public"."spectra"."is_public" IS 'Planner-visible access scope (Catalog Read Model phase 1, #533): the program''s is_public, trigger-maintained (sync_row_is_public on program_slug changes; propagate_program_is_public when a program flips). select_spectra_by_access tests (NOT link AND is_public) OR program_slug = ANY(scope); same row set, real statistics.';
 
@@ -405,6 +415,12 @@ COMMENT ON COLUMN "public"."spectra"."thumbnail_svg_fnu" IS 'Pre-generated SVG s
 
 
 COMMENT ON COLUMN "public"."spectra"."thumbnail_svg_flambda" IS 'Pre-generated SVG sparkline thumbnail in f_lambda units. Set during deployment to avoid R2 fetches and CPU-intensive processing at runtime.';
+
+COMMENT ON COLUMN "public"."spectra"."has_mbkg_spectrum" IS 'The spec.fits carries the spectrum extracted from the master-background-subtracted exposures (SPEC1D_MBKG, SCI_MBKG, ERR_MBKG); deploy uploads it as the _spec_mbkg.json sidecar.';
+COMMENT ON COLUMN "public"."spectra"."mbkg_preferred" IS 'MBKGPREF: the master-background spectrum is likely better than the nodded one. NULL without a master-background spectrum.';
+COMMENT ON COLUMN "public"."spectra"."mbkg_reason" IS 'MBKGWHY, set only when mbkg_preferred: no_clear_background (a bright catalogued neighbor near the source in every background exposure of some exposure), single_exposure (no nodded subtraction), extended (the source is wider than the nod step).';
+COMMENT ON COLUMN "public"."spectra"."n_exp" IS 'NEXP: exposures combined into the spectrum.';
+COMMENT ON COLUMN "public"."spectra"."n_exp_bkg" IS 'NEXPBKG: the fewest background exposures subtracted from any one of the combined exposures (2 for a full 3-shutter nod, 1 when a background exposure was dropped for a neighbor, 0 when an exposure had none).';
 
 
 
@@ -1454,7 +1470,8 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- product_type tracks the campfire_layout PRODUCTS registry (every entry with a
     -- non-null bucket). A new cloud-backed product type requires a migration here.
     CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
-        'nirspec_spec'::"text", 'spectrum_json'::"text", 'spectrum_1d_json'::"text", 'zfit'::"text",
+        'nirspec_spec'::"text", 'spectrum_json'::"text", 'spectrum_1d_json'::"text",
+        'spectrum_mbkg_json'::"text", 'zfit'::"text",
         'nirspec_lines'::"text", 'nirspec_lines_json'::"text", 'nirspec_redshifts'::"text",
         'nirspec_spectrum_exposure'::"text", 'nirspec_rate'::"text", 'nirspec_mbkg'::"text",
         'rgb'::"text", 'sed'::"text",
@@ -1773,6 +1790,11 @@ CREATE TABLE IF NOT EXISTS "public"."dr_spectra" (
     "spectrum_id" "text",
     "search_text" "text",
     "is_public" boolean NOT NULL DEFAULT false,
+    "has_mbkg_spectrum" boolean NOT NULL DEFAULT false,
+    "mbkg_preferred" boolean,
+    "mbkg_reason" "text",
+    "n_exp" integer,
+    "n_exp_bkg" integer,
     CONSTRAINT "dr_spectra_pkey" PRIMARY KEY ("tag", "id"),
     CONSTRAINT "dr_spectra_tag_spectrum_id_key" UNIQUE ("tag", "spectrum_id")
 );
