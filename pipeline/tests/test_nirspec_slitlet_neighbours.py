@@ -176,7 +176,7 @@ def test_bkg_cards_match_reads_bkgnods_and_bkgwhy(tmp_path):
         fits.PrimaryHDU(header=h).writeto(p)
         paths.append(p)
     reasons = {'1': 'neighbor 9 at 0.030 of background'}
-    assert _bkg_cards_match(paths, {'1': [2]}, ['1'], reasons)
-    assert not _bkg_cards_match(paths, None, [], {})                     # stage 2b would now keep both
-    assert not _bkg_cards_match(paths, {'1': [3]}, ['1'], reasons)       # another partner
-    assert not _bkg_cards_match(paths, {'1': [2]}, ['1'], {'1': 'neighbor 9 at 0.050 of background'})
+    assert _bkg_cards_match(paths, {'1': [2]}, ['1'], reasons) == 'same'
+    assert _bkg_cards_match(paths, None, [], {}) == 'subtraction'         # stage 2b would now keep both
+    assert _bkg_cards_match(paths, {'1': [3]}, ['1'], reasons) == 'subtraction'   # another partner
+    assert _bkg_cards_match(paths, {'1': [2]}, ['1'], {'1': 'neighbor 9 at 0.050 of background'}) == 'cards'

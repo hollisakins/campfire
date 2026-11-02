@@ -1573,22 +1573,33 @@ def bkgsub_tasks(obs, stage_config, pending, n_processes=1, pass1_prefix=None):
     return tasks
 
 
-def _bkg_cards_match(paths, overrides, auto_nods, reasons):
-    """Whether the canonicals ``paths`` (one background group, after stage 2b) carry the
-    ``BKGNODS`` / ``BKGWHY`` that these overrides and reasons would write."""
+def _wanted_bkg_cards(paths, overrides, auto_nods, reasons):
+    """The ``bkg_nods_cards`` stage 2b writes on each canonical of ``paths`` (one
+    background group) for these overrides and reasons."""
     from campfire_pipeline.nirspec import canonical as C
-    partners = nod_background_partners(paths, overrides)
-    for path, part in zip(paths, partners):
-        h = fits.getheader(path)
+    out = []
+    for path, part in zip(paths, nod_background_partners(paths, overrides)):
         nod = str(_nod_number(path))
         overridden = overrides is not None and nod in overrides
-        want = C.bkg_nods_cards([_nod_number(paths[j]) for j in part] if part else [], overridden,
-                                auto=nod in set(auto_nods or ()),
-                                why=(reasons or {}).get(nod, 'hand' if overridden else ''))
-        if str(h.get('BKGNODS', '')).strip() != want['BKGNODS'][0] or \
-                str(h.get('BKGWHY', '')).strip() != str(want['BKGWHY'][0]).strip():
-            return False
-    return True
+        out.append(C.bkg_nods_cards([_nod_number(paths[j]) for j in part] if part else [], overridden,
+                                    auto=nod in set(auto_nods or ()),
+                                    why=(reasons or {}).get(nod, 'hand' if overridden else '')))
+    return out
+
+
+def _bkg_cards_match(paths, overrides, auto_nods, reasons):
+    """How the canonicals ``paths`` (one background group, after stage 2b) compare with
+    what these overrides and reasons would write: 'same', 'cards' (the same background
+    exposures, other ``BKGOVR`` / ``BKGAUTO`` / ``BKGWHY``, e.g. another brightness in the
+    reason) or 'subtraction' (other background exposures)."""
+    state = 'same'
+    for path, want in zip(paths, _wanted_bkg_cards(paths, overrides, auto_nods, reasons)):
+        h = fits.getheader(path)
+        if str(h.get('BKGNODS', '')).strip() != want['BKGNODS'][0]:
+            return 'subtraction'
+        if any(str(h.get(k, '')).strip() != str(v[0]).strip() for k, v in want.items() if k != 'BKGNODS'):
+            state = 'cards'
+    return state
 
 
 def revise_slitlet_overrides(obs, stage_config, source_ids, filter_grating, pass1_prefix, n_processes=1):
@@ -1612,10 +1623,19 @@ def revise_slitlet_overrides(obs, stage_config, source_ids, filter_grating, pass
         pending.append((bg, bg_files, bg_files['source_id'][0], bg_files['root'][0], bg_files['detector'][0]))
     if not pending:
         return set()
+    from campfire_pipeline.nirspec import canonical as C
     tasks = bkgsub_tasks(obs, stage_config, pending, n_processes, pass1_prefix=pass1_prefix)
-    redo, changed = [], set()
+    redo, changed, relabelled = [], set(), 0
     for (bg, bg_files, sid, root, det), task in zip(pending, tasks):
-        if _bkg_cards_match(list(bg_files['path']), task[2], task[3], task[4]):
+        paths = list(bg_files['path'])
+        state = _bkg_cards_match(paths, task[2], task[3], task[4])
+        if state == 'cards':
+            # the same background exposures: only the recorded reason changes
+            for path, want in zip(paths, _wanted_bkg_cards(paths, task[2], task[3], task[4])):
+                C.append_extras(path, header_updates=want)
+            relabelled += 1
+            continue
+        if state == 'same':
             continue
         log(f'ID{sid}: {root}_{det}: background exposures revised from the joint first pass')
         redo.append(task)
@@ -1626,7 +1646,8 @@ def revise_slitlet_overrides(obs, stage_config, source_ids, filter_grating, pass
         done = files[np.isin(files['source_id'], sorted(changed))]
         dispatch(stamp_exp_group_single, list(done), n_processes=n_processes)
     log(f'Same-slitlet decisions from the joint first pass ({filter_grating}): {len(pending)} groups checked, '
-        f'{len(redo)} redone ({len(changed)} sources)')
+        f'{len(redo)} with other background exposures redone ({len(changed)} sources), {relabelled} with only '
+        f'another recorded reason relabelled')
     return changed
 
 
