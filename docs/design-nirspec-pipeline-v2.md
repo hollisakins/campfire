@@ -1371,6 +1371,16 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
     other side of 0.02), mostly other slitlets' light in the band; the errors are mostly
     overestimates, so they cost extra dropped exposures (noise) more than missed ones
     (bias). Note that the reference (the neighbor's own exposures) has the same problem.
+  - The user does not accept this as a known limitation (2026-11-01). The joint first
+    pass's model of each neighbor (its pass-1 frame of that exposure, divided by the
+    point-source path loss) gives the same quantity with other slitlets' light separated
+    (`e2e_brightness_model.py`, `e2e_slitlet/brightness_model.png`, 120 pairs). PRISM, band
+    free of other slitlets: data / model median 0.87 (units and placement check out).
+    G395M, band more than 20 % lit by another slitlet's source (51 pairs): data / model
+    median 3.1, 38 off by more than 2x, 20 across 0.02; the neighbor's own exposures read
+    1.9x the model. So the data measure counts other slitlets' light; the joint model
+    separates it. Proposed: take the brightness from the joint model (needs the joint
+    first pass before the stage-2b decision; see the open-decisions table).
 - Cleanup (user, 2026-11-01): the masked pass 1, pass 1b, the echo correction, the old
   group joint solve and `first_pass.py` removed (merge of `claude/extraction-v2-cleanup`,
   about 2,800 lines). End-to-end check on p1 (stage 3 only, the 74 sources,
