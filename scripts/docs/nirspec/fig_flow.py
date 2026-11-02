@@ -116,7 +116,7 @@ with g.subgraph(name='cluster_s2a') as c:
         m.attr(label='master background, step 1 (count rate)', style='rounded,filled', fillcolor='#fffaf2',
                color=ORANGE, fontcolor='#a86e00')
         inp(m, 'msa2', 'MSA metafile;\nfailed-open shutters (msaoper)')
-        step(m, 'geo', 'footprint of every commanded slitlet\nand failed-open shutter', FILL['mb'])
+        step(m, 'geo', 'footprint of every commanded slitlet and\nfailed-open shutter (each with its margin)', FILL['mb'])
         inp(m, 'bs', 'measured bar-shadow tables')
         step(m, 'mb1', 'background spectrum from the empty shutters;\nquadrant scales', FILL['mb'])
         step(m, 'sfit', 'each commanded-open shutter\'s background amplitude\nfitted; stuck when < '
@@ -184,8 +184,10 @@ g.edge('sub', 'bsub')
 with g.subgraph(name='cluster_s3') as c:
     c.attr(label='Stage 3: combination and extraction', style='rounded,filled', fillcolor='#f8fbfd', color=SKY,
            fontcolor='#2b7fb0')
-    step(c, 'spec3', 'jwst Spec3: exposures rectified and combined', FILL['s3'])
-    data(c, 's2d', '2-D spectrum and resampled exposures')
+    step(c, 'spec3', 'jwst Spec3: exposures rectified and combined;\noutlier pixels flagged', FILL['s3'])
+    data(c, 's2d', '2-D spectrum and each exposure\non the product grid (crf)')
+    step(c, 'dmap', 'pixel map: the product\'s grid and each exposure\'s\nmapping onto it, built once; '
+                    'PROF2D, CONTAM2D\nand the master-background 2-D are drizzled through it', FILL['s3'])
     step(c, 'opt', 'optimal extraction;\n3-, 4-, 5-pixel boxcars', FILL['s3'])
     with c.subgraph(name='cluster_pf') as m:
         m.attr(label=label('profile extraction', [knob('stage3', 'profile_fit')]), style='rounded,dashed',
@@ -207,8 +209,9 @@ with g.subgraph(name='cluster_s3') as c:
         step(m, 'scan', 'search for uncataloged neighbors in the residuals;\nproposed background-nod changes, '
                         'applied by stage 2b\non its next run with scan_action = "auto_override"', FILL['s3'],
              [knob('stage3', 'scan_neighbours'), knob('stage3', 'scan_action')])
-    step(c, 'mbs', 'master-background spectrum: calibrated cutouts minus\ntheir master background (_mbkg.fits), jwst Spec3, '
-                   'the same fit at the\nnodded shape; light through failed-open shutters\nsolved with the source',
+    step(c, 'mbs', 'master-background spectrum: calibrated cutouts minus their\nmaster background (_mbkg.fits), '
+                   'in memory; bad pixels = Spec3\'s\noutlier flags + hot pixels; drizzled through the pixel map;\n'
+                   'the same fit at the nodded shape, light through\nfailed-open shutters solved with the source',
          FILL['mb'], [knob('stage3', 'mbkg_spectrum')])
     step(c, 'best', 'best spectrum chosen (fnu)', FILL['s3'], [knob('stage3', 'contam_1d')])
     step(c, 'comb', '1-D combination of exposure groups', FILL['s3'], ['combine_method = "1d"  (default "'
@@ -218,6 +221,9 @@ with g.subgraph(name='cluster_s3') as c:
 g.edge('bsub', 'spec3')
 g.edge('spec3', 's2d')
 g.edge('s2d', 'opt')
+g.edge('s2d', 'dmap')
+g.edge('dmap', 'pfit')
+g.edge('dmap', 'mbs', style='dashed', color=VERM, constraint='false')
 g.edge('tmap', 'joint', style='dashed', color=VERM, constraint='false')
 g.edge('bsub', 'joint', style='dashed', color=VERM)
 g.edge('joint', 'pass1')
@@ -253,7 +259,7 @@ g.edge('lines', 'lf')
 
 # --- layout: keep the main path straight down the page ---------------------------------------
 SPINE = ['uncal', 'det1', 'cfn', 'bkg1', 'bkg2d', 'mask', 'rate', 'spec2', 'canon', 'units', 'mb2', 'paint', 'mbkg',
-         'nbr', 'pick', 'sub', 'bsub', 'spec3', 's2d', 'opt', 'best', 'spec', 'zfit']
+         'nbr', 'pick', 'sub', 'bsub', 'spec3', 's2d', 'dmap', 'opt', 'best', 'spec', 'zfit']
 for a, b in zip(SPINE[:-1], SPINE[1:]):
     g.edge(a, b, style='invis', weight='30')
 
