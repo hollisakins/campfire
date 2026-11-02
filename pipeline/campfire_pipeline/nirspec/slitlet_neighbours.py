@@ -228,43 +228,26 @@ def light_over_sky(sci, sky, ys, centre, bin_cols=BIN_COLS, use=None):
     return float(np.median(r)), float(np.percentile(r, 90))
 
 
-def usable_pixels(ys, open_centres, others=None):
+def usable_pixels(ys, open_centres):
     """Pixels a brightness is measured on: inside one of the slitlet's open shutters
-    (``|ys - centre| < OPEN_HALF``; the cutout's margin beyond them has almost no
-    background, so a ratio there is unstable) and not lit by another slitlet's source
-    in that frame (``others``, ``other_sources``)."""
+    (``|ys - centre| < OPEN_HALF``). The cutout's margin beyond them has almost no
+    background, so a ratio there is unstable (634547 on p1 read 0.28 of the background
+    against 0.004 in its own exposures). Leaving out the pixels other slitlets' sources
+    light was tried and dropped: on p1 G395M it left 49 of 115 neighbors unmeasured
+    (18 before) without better agreement."""
     ys = np.asarray(ys, float)
-    near = np.min(np.abs(np.where(np.isfinite(ys), ys, np.inf)[..., None]
+    return np.min(np.abs(np.where(np.isfinite(ys), ys, np.inf)[..., None]
                          - np.asarray(open_centres, float)[None, None, :]), axis=-1) < OPEN_HALF
-    return near if others is None else near & ~others
-
-
-def other_sources(rate_file, source_id, region, stuck=None):
-    """Pixels of a cutout (``region`` = (x0, y0, nx, ny), 0-based) that another slitlet's
-    source shutter lights in that exposure, from the trace map stored in its rate file
-    (``trace_overlap.trace_map_from_rate``, ``stuck`` removed); None without one."""
-    from . import trace_overlap as TO
-    tm = TO.trace_map_from_rate(rate_file, stuck) if os.path.exists(rate_file) else None
-    if tm is None:
-        return None
-    iy, ix, idx, flg = tm.traces_in(*region)
-    mine = set(tm.rows_of(int(source_id)).tolist())
-    kind = np.asarray(tm.slits['kind']).astype(str)
-    sel = np.array([int(i) not in mine for i in idx], bool) & (kind[idx] == 'slitlet') & tm.source_shutter(flg)
-    out = np.zeros((region[3], region[2]), bool)
-    out[iy[sel], ix[sel]] = True
-    return out
 
 
 def measure(neighbour, slit, frames):
     """Fill the neighbour's ``sky_frac`` from the target's own frames before subtraction:
-    ``frames`` {dither: (sci, sky, ys, has_target, others)}, ``others`` the pixels another
-    slitlet's source lights there (or None). Tries the frames that hold the target and
-    put the neighbour at least ``MEASURE_SEP`` from it, the ones with the neighbour inside
-    an open shutter first, then the farthest (the target's wing least in it), on
+    ``frames`` {dither: (sci, sky, ys, has_target)}. Tries the frames that hold the target
+    and put the neighbour at least ``MEASURE_SEP`` from it, the ones with the neighbour
+    inside an open shutter first, then the farthest (the target's wing least in it), on
     ``usable_pixels`` only; the first that gives a value is used. Unmeasured otherwise."""
     cands = []
-    for d, (sci, sky, ys, has_target, others) in frames.items():
+    for d, (sci, sky, ys, has_target) in frames.items():
         u = neighbour.where.get(d)
         if u is None or not has_target or d not in slit.target_u or d not in slit.ref_u:
             continue
@@ -274,8 +257,8 @@ def measure(neighbour, slit, frames):
         inside = bool(np.min(np.abs(u - slit.open_u[d])) < OPEN_HALF)
         cands.append(((inside, sep), d))
     for _, d in sorted(cands, reverse=True):
-        sci, sky, ys, _, others = frames[d]
-        use = usable_pixels(ys, slit.open_u[d] - slit.ref_u[d], others)
+        sci, sky, ys, _ = frames[d]
+        use = usable_pixels(ys, slit.open_u[d] - slit.ref_u[d])
         med, hi = light_over_sky(sci, sky, ys, neighbour.where[d] - slit.ref_u[d], use=use)
         if np.isfinite(med):
             neighbour.sky_frac, neighbour.sky_frac_hi = med, hi
@@ -341,15 +324,12 @@ def scene_for(cal_file, msa_dir, source_id, cache):
     return scene(shut, sky, key[1], source_id)
 
 
-def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, cache=None, max_distance=MAX_DISTANCE,
-                  stuck=None):
+def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, cache=None, max_distance=MAX_DISTANCE):
     """``Group`` of one source's background group (canonicals of one root and detector,
     before or after stage 2b: the frames before subtraction are read from
     ``PRE_BKGSUB_SCI`` when present), or None when its configuration does not hold it.
     The neighbours are measured only when one of them is near the target in a partner
-    frame. Other slitlets' sources are located with the trace map in each exposure's
-    rate file (``{mbkg_dir}/<exposure>_rate.fits``), ``stuck`` ({root: {(q, row, col)}})
-    removed."""
+    frame."""
     from astropy.io import fits
     from jwst.datamodels import MultiSlitModel
     from . import master_bkg as MB
@@ -380,16 +360,13 @@ def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, cache=
         sl = m.slits[0]
         yy, xx = np.mgrid[:sl.data.shape[0], :sl.data.shape[1]]
         _, ys, _ = sl.meta.wcs.get_transform('detector', 'slit_frame')(xx, yy)
-        region = (int(sl.xstart) - 1, int(sl.ystart) - 1, sl.data.shape[1], sl.data.shape[0])
         m.close()
-        others = other_sources(os.path.join(mbkg_dir, f'{ek}_rate.fits'), source_id, region,
-                               (stuck or {}).get(ek[:19], set()))
         frames[g.nod_dither[n]] = (np.asarray(s['sci'], float), np.asarray(s['sky'], float), np.asarray(ys, float),
-                                   str(h.get('SRCFLUX', 'T')).strip().upper() != 'F', others)
+                                   str(h.get('SRCFLUX', 'T')).strip().upper() != 'F')
     for nb in neighbours:
         measure(nb, slit, frames)
-    own = [v for v in (light_over_sky(sci, sky, ys, 0.0, use=usable_pixels(ys, slit.open_u[d] - slit.ref_u[d], oth))[0]
-                       for d, (sci, sky, ys, has, oth) in frames.items() if has and d in slit.ref_u)
+    own = [v for v in (light_over_sky(sci, sky, ys, 0.0, use=usable_pixels(ys, slit.open_u[d] - slit.ref_u[d]))[0]
+                       for d, (sci, sky, ys, has) in frames.items() if has and d in slit.ref_u)
            if np.isfinite(v)]
     g.target_frac = float(np.median(own)) if own else np.nan
     return g
@@ -445,7 +422,7 @@ def _names(ids, frac):
                                    for i in ids) + ' of background'
 
 
-def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_distance=MAX_DISTANCE, stuck=None):
+def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_distance=MAX_DISTANCE):
     """The overrides of one source in one exposure root, over its detector groups
     (lists of canonical paths): (root, {nod (str): (kept nods, reason)} for the nods
     whose partners change, {nod (str): flag} for the nods with a bright neighbour from
@@ -453,7 +430,7 @@ def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_
     their light over the background, e.g. ``'neighbor 634547 at 0.031 of background'``; the flag
     starts ``'every background exposure: '``."""
     products, cache = {}, {}
-    g = combine([measure_group(files, source_id, workspace, workspace, products, cache, max_distance, stuck)
+    g = combine([measure_group(files, source_id, workspace, workspace, products, cache, max_distance)
                  for files in groups])
     if g is None:
         return None, {}, {}, None

@@ -130,6 +130,3 @@ def test_light_over_sky_reads_the_neighbours_shutter():
     assert SN.light_over_sky(sci, sky, ys, 2.0)[0] > 0.5
     use = SN.usable_pixels(ys, [-1.15, 0.0, 1.15])
     assert abs(SN.light_over_sky(sci, sky, ys, 2.0, use=use)[0] - 0.04) < 1e-9
-    other = np.abs(ys - 1.15) < 0.3                       # another slitlet's source on part of the band
-    sci[other] += 1.0
-    assert abs(SN.light_over_sky(sci, sky, ys, 1.15, use=SN.usable_pixels(ys, [1.15], other))[0] - 0.04) < 1e-9

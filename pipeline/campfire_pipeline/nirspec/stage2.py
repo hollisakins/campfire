@@ -1559,14 +1559,12 @@ def slitlet_overrides(obs, pending, min_sky_frac, max_distance, n_processes=1):
     slitlet at some dither point are measured (``slitlet_neighbours.scene``); a nod whose
     every partner puts a bright neighbour on the source keeps its partners and is flagged."""
     from campfire_pipeline.common.parallel import dispatch
-    from campfire_pipeline.nirspec import profile_contam as CT
     from campfire_pipeline.nirspec import slitlet_neighbours as SN
 
     groups, cache = {}, {}
     for _, bg_files, source_id, root, _ in pending:
         groups.setdefault((root, int(source_id)), []).append(list(bg_files['path']))
-    stuck = CT.stuck_keys_by_root(obs)
-    todo = [(gs, sid, obs.workspace_dir, min_sky_frac, max_distance, stuck) for (root, sid), gs in groups.items()
+    todo = [(gs, sid, obs.workspace_dir, min_sky_frac, max_distance) for (root, sid), gs in groups.items()
             if SN.scene_for(gs[0][0], obs.workspace_dir, sid, cache)[1]]
     if not todo:
         return {}, {}
