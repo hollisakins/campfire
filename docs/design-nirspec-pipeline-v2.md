@@ -1518,6 +1518,32 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   0.66, against 1.57 / 4.73 before subtracting. What is left at the red end is a part of
   the neighbors' light the model misses, plus, in the master-background spectrum, the
   background level above.
+- uncover2 end to end (2026-11-02; PRISM, 344 sources, two visits of three exposure groups;
+  stage 2a, 2b and 3 from the production rate files in an isolated root, 4 h 45 min, no
+  errors). The 1-D combination of several exposure groups carries the master-background
+  spectrum (20698: 6 groups, 18 exposures, `NEXP` / `NEXPBKG` / `MBKGNEXP` filled). 20698
+  (z~2 LRD, the user's case; `e2e_slitlet/uncover2_20698.png`): the optimal extraction on
+  the new frames matches the production v0.3 optimal within about 1 %; the profile
+  extraction is within about 5 % of it (-4 % at 1.2-1.8 µm, +5 % at 4.0-4.3 µm, +5-10 %
+  near 5 µm); the master-background spectrum lies above the nodded ones, about 3 % where
+  the source is bright and 10-20 % where it is faint or the background is high, the shape
+  of a small additive background difference. A comparison of methods, not of either with a
+  truth.
+- p1 stage 3 with the drizzle-once code (2026-11-02, before its merge; the 74 sources,
+  products saved before in `scratch/claude/extraction-v2/p1_before_drizzle`): nodded `fnu`
+  identical to rounding in 98 of 99 products; stage 3 803 s against 1001 s (Spec3 173 → 65
+  s, products 224 → 143 s; pass 1 480 s unchanged). The master-background spectra agree
+  with the nodded ones as before; three heavily contaminated G395M sources (885305,
+  885945, 884644) changed most, because the old master-background Spec3's outlier detection
+  clipped other sources' light that moves between exposures, and the new run keeps it
+  (`e2e_slitlet/drizzle_885305.png`). 922323 showed two older bugs (fixes on
+  `claude/bkg-revision`, user 2026-11-02): (1) the same-slitlet background choice for a
+  neighbor at the 0.02 threshold flipped between runs (0.020 kept, 0.021 dropped), the
+  measurement apparently depending on the background choice the previous run left in the
+  canonicals; (2) Spec3 (s2d, crf, `EXPOSURES`) runs before the revision of background
+  exposures and is not rerun, so a revised source's 2-D and `EXPOSURES` show the choice
+  from before (922323's product says nods 1,2 while its log says nod 3 used nod 1 only).
+  `claude/drizzle-once` merged (user, 2026-11-02).
 - The 1D combination of several exposure groups did not carry the master-background
   spectrum (not built, no other reason); built (530bedb5): each group's `SPEC1D_MBKG`
   combined as the nodded columns are, the 2-D spectrum from one master-background Spec3
