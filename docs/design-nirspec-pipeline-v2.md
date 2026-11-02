@@ -1468,6 +1468,31 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   master background 1.6 fix, so the mark is set from the fixed master background; the
   PRISM comparison is rerun then.
   The deploy reader on `claude/mbkg-web` accepts all 99 p1 products.
+- Master background 1.6 on p1 (2026-11-02; `claude/mbkg-paint` f620b887, not merged; run
+  from a detached worktree with this branch's 165382b7 plus its `master_bkg.py`, 256
+  NIRSpec and master-background tests pass). 1.6 paints failed-open shutters at their
+  measured transmission (0 to 1, combined over the nods; G395M 12/q3 0.09, 19/q3 0.51,
+  14/q3 0.03, 23/q4 0.00, 1/q1 0.17, 5/q1 0.26, as the master-background session
+  measured), keeps the margins of crossing traces, and leaves 21/q4 and 24/q4 unpainted
+  (closed in the science state). Stage 3 for the 74 sources, no errors. Against PRISM
+  (20 G395M sources): beyond 3 sigma 17 master-background spectra against 9 nodded (16
+  with 1.5); median 7.3 against 2.8 sigma (8.1 with 1.5); 921027 still 37x. Every
+  master-background spectrum moved down by a similar amount: those too high came closer
+  (925403 8.0 → 6.1, 950151 6.8 → 3.1, 879928 2.6 → 1.8, 633676 2.6 → 1.4), others are
+  now below PRISM (880017 -1.4 → -3.0, 634522 -0.8 → -1.5, 925380 0.53 → 0.40). Why
+  (`e2e_mbkg_level.py`, `e2e_mbkg_residual.py`, figure `e2e_slitlet/mb16_g395m_vs_prism.png`):
+  on G395M the background left in the source's own slitlet away from the source is
+  -7 % to +7 % of the background per exposure (PRISM -3 % to +3 %), and in the 2-D
+  master-background spectrum the rows away from the source carry a level as large as the
+  source (921027 6.9e-14 against 8.0e-14 on the source, 634522 -1.7e-14 against -1.1e-14,
+  632454 2.0e-14 against 1.5e-14; PRISM about 10x below its source). That level, scaled
+  to the extraction, accounts for most of the difference from PRISM in 634522, 632454,
+  925380 and 634072. 921027 and 925403 are different: bright bands past 4.3 µm (921027
+  the band at rows 636-652 near 24/q4, unexplained) that are not flat across the slitlet;
+  925403's nodded spectrum is high there too (3.2x). So the failed-open and margin fixes
+  removed the part that was always positive, and the slitlet-to-slitlet scatter of a few
+  percent is now what limits the G395M master-background spectrum; 8 G395M products carry
+  MBKGPREF.
 - The 1D combination of several exposure groups did not carry the master-background
   spectrum (not built, no other reason); built (530bedb5): each group's `SPEC1D_MBKG`
   combined as the nodded columns are, the 2-D spectrum from one master-background Spec3
