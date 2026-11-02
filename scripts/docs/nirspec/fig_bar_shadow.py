@@ -52,29 +52,39 @@ tm, tc = table(measured), table(crds)
 lam_all = tm['DATA1X1'][1]
 waves = args.wavelengths or list(np.round(np.percentile(lam_all, [15, 50, 85]), 1))
 
-fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.6), sharey=True, constrained_layout=True)
-for ax, name, title, xlab in [
-        (axes[0], 'DATA1X1', 'An open shutter between closed ones',
-         'position across the shutter (shutter widths from its center)'),
-        (axes[1], 'DATA1X3', 'The bar between two open shutters',
-         'position (shutter widths; the bar is at -0.5)')]:
-    for k, wl in enumerate(waves):
-        color = C.PALETTE[k]
-        for t, ls, lab in ((tm, '-', 'measured'), (tc, '--', 'CRDS reference')):
-            y, lam, d = t[name]
-            col = int(np.argmin(np.abs(lam - wl)))
-            prof = d[:, col].copy()
-            if t is tc and name == 'DATA1X1':
-                prof[np.abs(y) > 0.5] = np.nan        # jwst reads the reference only inside the open shutter
-            ax.step(y, prof, where='mid', color=color, ls=ls, lw=1.8 if ls == '-' else 1.4,
-                    label=f'{wl:g} µm, {lab}')
-    ax.axhline(1.0, color='#cccccc', lw=0.8, zorder=0)
-    ax.set_title(title)
-    ax.set_xlabel(xlab)
-axes[0].set_ylabel('transmission (1 = open shutter center)')
-axes[0].set_xlim(-1, 1)
-axes[1].set_xlim(-1, 0)
-axes[0].legend(loc='lower center', ncol=1, fontsize=9)
+def slitlet_profile(t, wl, y, crds=False):
+    """Transmission across a 3-shutter slitlet (shutter centres at -1, 0, +1) at wavelength
+    ``wl``: the outer edges from DATA1X1 (an open shutter with closed neighbors, its rows -1..1
+    around the shutter), the two interior bars from DATA1X3 (rows -1..0 from one shutter's
+    centre to the next). The CRDS reference is used by jwst only inside open shutters, so
+    beyond the outer shutters' edges it is left blank."""
+    out = np.full(y.shape, np.nan)
+    for name, lo, hi, centre in (('DATA1X1', -2.0, -1.0, -1.0), ('DATA1X3', -1.0, 0.0, 0.0),
+                                 ('DATA1X3', 0.0, 1.0, 1.0), ('DATA1X1', 1.0, 2.0, 1.0)):
+        ty, lam, d = t[name]
+        col = int(np.argmin(np.abs(lam - wl)))
+        sel = (y >= lo) & (y < hi) if hi < 2 else (y >= lo) & (y <= hi)
+        out[sel] = np.interp(y[sel] - centre, ty, d[:, col])
+    if crds:
+        out[np.abs(y) > 1.5] = np.nan
+    return out
+
+
+y = np.linspace(-2, 2, 2001)
+fig, ax = plt.subplots(figsize=(10.5, 4.8), constrained_layout=True)
+for c in (-1, 0, 1):                                # the three open shutters
+    ax.axvspan(c - 0.5, c + 0.5, color='#eeeeee', lw=0, zorder=0)
+for k, wl in enumerate(waves):
+    color = C.PALETTE[k]
+    ax.step(y, slitlet_profile(tm, wl, y), where='mid', color=color, lw=1.8, label=f'{wl:g} µm, measured')
+    ax.step(y, slitlet_profile(tc, wl, y, crds=True), where='mid', color=color, ls='--', lw=1.3,
+            label=f'{wl:g} µm, CRDS reference')
+ax.axhline(1.0, color='#bbbbbb', lw=0.8, zorder=0)
+ax.set_xlim(-2, 2)
+ax.set_xlabel('position across a three-shutter slitlet (shutter widths; shaded: the open shutters)')
+ax.set_ylabel('transmission (1 = open shutter center)')
+ax.set_title('How the MSA dims uniform light across a slitlet')
+ax.legend(loc='center left', bbox_to_anchor=(1.01, 0.5), fontsize=9)
 fig.suptitle(f'{args.disperser.upper()}: measured profile ({os.path.basename(measured)}) and '
              f'{os.path.basename(crds)}', x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, f'bar_shadow_{args.disperser}.png')

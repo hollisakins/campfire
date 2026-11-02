@@ -10,7 +10,8 @@ OBS=ember_cosmos_p1
 PY=(conda run --no-capture-output -n campfire python)
 
 $PY $D/fig_overlap.py --root $ROOT --obs $OBS --exposure jw07076001001_05101_00001_nrs1
-$PY $D/fig_master_background.py --root $ROOT --obs $OBS --exposure jw07076001001_03101_00001_nrs1
+$PY $D/fig_master_background.py --root $ROOT --obs $OBS --exposure jw07076001001_03101_00001_nrs1 \
+    --region 680 1430 470 210
 $PY $D/fig_bar_shadow.py --root $ROOT --disperser prism
 $PY $D/fig_stuck_shutters.py --root $ROOT --obs $OBS --example jw07076001001_03101_00001_nrs1:q4r58c92 \
     --example jw07076001001_05101_00002_nrs1:q3r9c19
