@@ -136,21 +136,34 @@ def open_intervals(open_k):
     return [(k * MSA_SLIT_PITCH - OPEN_HALF, k * MSA_SLIT_PITCH + OPEN_HALF) for k in open_k]
 
 
-def psf_params(lam, det):
-    """Core sigma (native rows) and wing fraction at each wavelength."""
-    tab = PSF_TABLES[det]
-    return np.interp(lam, PSF_LAM, tab['S_rows']), np.interp(lam, PSF_LAM, tab['f'])
+def psf_params(lam, det, tables=None):
+    """Core sigma (native rows) and wing fraction at each wavelength.
+
+    tables : replaces ``PSF_TABLES`` (same layout; an entry may carry its own
+        wavelength nodes as ``lam``, default ``PSF_LAM``), e.g. a PSF being
+        calibrated (``psf_calibration``)."""
+    tab = (PSF_TABLES if tables is None else tables)[det]
+    nodes = tab.get('lam', PSF_LAM)
+    return np.interp(lam, nodes, tab['S_rows']), np.interp(lam, nodes, tab['f'])
 
 
-def centre_law(lam, det, quad=None):
-    """(D, alpha) per wavelength for a detector and MSA quadrant."""
+def centre_law(lam, det, quad=None, law=None):
+    """(D, alpha) per wavelength for a detector and MSA quadrant.
+
+    law : replaces ``CENTRE_LAW`` (same layout), e.g. ``NO_CENTRE_LAW`` to measure
+        the trace centre itself (``psf_calibration``)."""
+    law = CENTRE_LAW if law is None else law
     other = 'NRS2' if det == 'NRS1' else 'NRS1'
-    D = CENTRE_LAW[det]['D']
+    D = law[det]['D']
     for key in (f'Q{quad}_{det}', f'Q{quad}_{other}'):
-        if key in CENTRE_LAW:
-            D = CENTRE_LAW[key]['D']
+        if key in law:
+            D = law[key]['D']
             break
-    return np.interp(lam, PSF_LAM, D), np.interp(lam, PSF_LAM, CENTRE_LAW[det]['alpha'])
+    return np.interp(lam, PSF_LAM, D), np.interp(lam, PSF_LAM, law[det]['alpha'])
+
+
+# The centre law switched off: the fitted centre is where the light is.
+NO_CENTRE_LAW = {det: dict(D=np.zeros(PSF_LAM.size), alpha=np.zeros(PSF_LAM.size)) for det in ('NRS1', 'NRS2')}
 
 
 def _transmitted(o, s, intervals):
@@ -522,11 +535,21 @@ def term_weights(exps, k):
 
 
 class ProfileModel:
-    """Pixel table, spectrum grid and the linear model for a set of exposures."""
+    """Pixel table, spectrum grid and the linear model for a set of exposures.
 
-    def __init__(self, exps, chromatic=True, priors=None, grid=None, bounds=None, c_prior=None):
+    psf_tables / centre_law_tables : replace ``PSF_TABLES`` / ``CENTRE_LAW`` for this
+        model (``psf_params`` / ``centre_law``); None uses the module's tables. For
+        calibrating them on stars (``psf_calibration``), not for extraction."""
+
+    psf_tables = None
+    centre_law_tables = None
+
+    def __init__(self, exps, chromatic=True, priors=None, grid=None, bounds=None, c_prior=None,
+                 psf_tables=None, centre_law_tables=None):
         self.exps = exps
         self.chromatic = chromatic
+        self.psf_tables = psf_tables
+        self.centre_law_tables = centre_law_tables
         self.priors = priors or Priors()
         self.bounds_cfg = bounds or Bounds()
         self.c_prior, self.srcy_flag = planned_position(exps)
@@ -702,14 +725,14 @@ class ProfileModel:
     def centre(self, p, eoff, k, lam):
         e = self.exps[k]
         cg = p[0] + p[1] * self._x(lam)
-        D, a = centre_law(lam, e.detector, e.quadrant)
+        D, a = centre_law(lam, e.detector, e.quadrant, law=self.centre_law_tables)
         return cg + eoff[k] + D + a * cg
 
     def width(self, p, lam):
         return np.maximum(np.exp(p[2]) + p[3] * self._x(lam), W_FLOOR)
 
     def _split(self, k, lam, dy):
-        S_rows, f = psf_params(lam, self.exps[k].detector)
+        S_rows, f = psf_params(lam, self.exps[k].detector, tables=self.psf_tables)
         S = S_rows * dy
         a = S / np.sqrt(2.0)
         return a, a, f

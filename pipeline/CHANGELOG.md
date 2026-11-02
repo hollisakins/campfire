@@ -28,6 +28,17 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+
+- **NIRSpec: PSF calibration module for the profile fit (`nirspec/psf_calibration.py`).**
+  Re-derives the cross-dispersion PSF table (`profile_fit.PSF_TABLES`) and the trace centre
+  law (`CENTRE_LAW`) from calibration-field PRISM stars through the profile fit's own model
+  (the frames stage 3 reads, shutter clipping, pixel integration, throughput, nod partners),
+  with figures; CLI `python -m campfire_pipeline.nirspec.psf_calibration`. `ProfileModel`
+  takes optional `psf_tables` / `centre_law_tables` (default: the module tables, so the
+  extraction is unchanged); `NO_CENTRE_LAW` measures where the light is. The tables
+  themselves are not changed here.
+
 ### Algorithm
 
 - **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
