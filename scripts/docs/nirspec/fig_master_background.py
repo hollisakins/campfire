@@ -9,6 +9,11 @@ shutters that disagree (a faint source, a stuck or partly open shutter) are left
 
     python scripts/docs/nirspec/fig_master_background.py --root <root> --obs ember_cosmos_p1 \
         --exposure jw07076001001_03101_00001_nrs1 [--region X0 Y0 NX NY]
+
+Redraw this figure if the regions past the calibrated wavelength range get a better
+calibration: there the master background is in count rate without a flat field, which
+leaves a few percent at the ends of the traces. Redraw it, and fig_failed_open.py, once the
+failed-open shutters' footprints include their margins.
 """
 import common as C
 

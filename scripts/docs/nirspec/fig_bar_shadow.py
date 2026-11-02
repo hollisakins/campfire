@@ -71,9 +71,7 @@ def slitlet_profile(t, wl, y, crds=False):
 
 
 y = np.linspace(-2, 2, 2001)
-fig, ax = plt.subplots(figsize=(10.5, 4.8), constrained_layout=True)
-for c in (-1, 0, 1):                                # the three open shutters
-    ax.axvspan(c - 0.5, c + 0.5, color='#eeeeee', lw=0, zorder=0)
+fig, ax = plt.subplots(figsize=(7.5, 4.2), constrained_layout=True)
 for k, wl in enumerate(waves):
     color = C.PALETTE[k]
     ax.step(y, slitlet_profile(tm, wl, y), where='mid', color=color, lw=1.8, label=f'{wl:g} µm, measured')
@@ -81,10 +79,11 @@ for k, wl in enumerate(waves):
             label=f'{wl:g} µm, CRDS reference')
 ax.axhline(1.0, color='#bbbbbb', lw=0.8, zorder=0)
 ax.set_xlim(-2, 2)
-ax.set_xlabel('position across a three-shutter slitlet (shutter widths; shaded: the open shutters)')
+ax.set_ylim(-0.03, 1.32)
+ax.set_xlabel('position across the slitlet (shutter widths from its center)')
 ax.set_ylabel('transmission (1 = open shutter center)')
-ax.set_title('How the MSA dims uniform light across a slitlet')
-ax.legend(loc='center left', bbox_to_anchor=(1.01, 0.5), fontsize=9)
+ax.set_title('Bar shadow for a three-shutter slitlet')
+ax.legend(loc='upper center', ncol=3, fontsize=8.5, columnspacing=1.2, handlelength=2.2)
 fig.suptitle(f'{args.disperser.upper()}: measured profile ({os.path.basename(measured)}) and '
              f'{os.path.basename(crds)}', x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, f'bar_shadow_{args.disperser}.png')

@@ -21,7 +21,8 @@ p.add_argument('--exposure', required=True, help="the NRS1 exposure, e.g. 'jw070
 p.add_argument('--rows', type=int, nargs=2, metavar=('Y0', 'NY'), default=None,
                help='band of NRS1 detector rows (0-based first row, number of rows); default: chosen automatically')
 p.add_argument('--strip', type=int, default=36, help='rows in the automatic band')
-p.add_argument('--zeroth', type=int, default=8, help='zeroth-order images to mark at most (0: none)')
+p.add_argument('--zeroth', type=int, default=8,
+               help='zeroth-order images looked for in the band; one is labeled (0: none)')
 args = p.parse_args()
 root = C.setup_root(args.root)
 
@@ -52,14 +53,21 @@ else:
 sl = (slice(y0, y0 + ny), slice(0, NX))
 ext = [-0.5, NX - 0.5, y0 - 0.5, y0 + ny - 0.5]
 
-fig = plt.figure(figsize=(12, 12))
-gs = fig.add_gridspec(3, 2, height_ratios=[2.25, 0.8, 0.8], hspace=0.22, wspace=0.06,
-                      left=0.07, right=0.9, top=0.95, bottom=0.05)
+# axes placed by hand so the square detector panels fill their space (figure fractions)
+FW, FH = 12.0, 10.6
+fig = plt.figure(figsize=(FW, FH))
+L, R, GAP = 0.075, 0.885, 0.025
+w = (R - L - GAP) / 2                                  # width of one detector panel
+h_top = w * FW / FH                                    # square
+y_top = 0.955 - h_top
+h_band = 1.55 / FH
+y_r = y_top - 0.075 - h_band                           # room for the zoom lines
+y_f = y_r - 0.018 - h_band
 cmap = ListedColormap(['#ffffff', '#cfe3f1', '#6baed6', '#2171b5', '#08306b'])
 cnorm = BoundaryNorm(np.arange(-0.5, 5), 5)
 top = []
 for k, (cnt, det) in enumerate([(count1, 'NRS1'), (count2, 'NRS2')]):
-    ax = fig.add_subplot(gs[0, k])
+    ax = fig.add_axes([L + k * (w + GAP), y_top, w, h_top])
     im = ax.imshow(np.minimum(cnt, 4), cmap=cmap, norm=cnorm)
     C.label_panel(ax, det)
     ax.set_xticklabels([])
@@ -71,16 +79,16 @@ for k, (cnt, det) in enumerate([(count1, 'NRS1'), (count2, 'NRS2')]):
     else:
         ax.set_yticklabels([])
     top.append(ax)
-cax = fig.add_axes([0.91, 0.63, 0.012, 0.3])
+cax = fig.add_axes([R + 0.012, y_top, 0.013, h_top])
 cb = fig.colorbar(im, cax=cax, ticks=range(5))
 cb.ax.set_yticklabels(['0', '1', '2', '3', '4+'])
-cb.set_label('slitlets lighting the pixel')
+cb.set_label('# of contributing slitlets')
 cb.ax.minorticks_off()
 
-ax_r = fig.add_subplot(gs[1, :])
+ax_r = fig.add_axes([L, y_r, R - L, h_band])
 ax_r.imshow(rate[sl], extent=ext, cmap='Greys', norm=C.asinh_norm(rate[sl]), aspect='auto')
 ax_r.set_ylabel('row')
-ax_f = fig.add_subplot(gs[2, :], sharex=ax_r, sharey=ax_r)
+ax_f = fig.add_axes([L, y_f, R - L, h_band], sharex=ax_r, sharey=ax_r)
 plt.setp(ax_r.get_xticklabels(), visible=False)
 ax_f.imshow(rate[sl], extent=ext, cmap='Greys', norm=C.asinh_norm(rate[sl]), aspect='auto', alpha=0.35)
 for xa in (-0.5, NX - 0.5):                       # NRS1's bottom edge under the box to the band below
@@ -106,12 +114,16 @@ if args.zeroth > 0:
             peaks.append(int(c))
         if len(peaks) == args.zeroth:
             break
-    for c in peaks:
-        ax_r.annotate('', xy=(c, y0 + ny - 1), xytext=(c, y0 + ny + 4.5), annotation_clip=False,
+    if peaks:                                      # label one, inside the panel
+        c = sorted(peaks)[len(peaks) // 2]
+        rows_hi = np.flatnonzero(hp[:, c] > 5 * noise)
+        yc = y0 + float(np.median(rows_hi))
+        tx = c + 0.06 * NX
+        ty = y0 + 0.25 * ny if yc > y0 + 0.5 * ny else y0 + 0.75 * ny
+        ax_r.annotate('zeroth-order image', xy=(c + 4, yc), xytext=(tx, ty), color=C.PALETTE[5], fontsize=10,
+                      fontweight='bold', va='center', ha='left',
+                      bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.85),
                       arrowprops=dict(arrowstyle='-|>', color=C.PALETTE[5], lw=1.4))
-    if peaks:
-        ax_r.text(min(peaks), y0 + ny + 5.5, 'zeroth-order images', color=C.PALETTE[5], fontsize=10,
-                  ha='left', va='bottom', clip_on=False)
 
 in_band = (iy >= y0) & (iy < y0 + ny)
 ids, n = np.unique(idx[in_band], return_counts=True)
