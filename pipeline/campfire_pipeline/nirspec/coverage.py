@@ -30,8 +30,8 @@ import os
 
 import numpy as np
 
-COVERAGE_VERSION = 2          # 2: footprints over the extended geometry (both ends)
-ROW_PAD = 12                  # rows beyond the cutout the block covers: the trace drifts ~6 rows over the extension
+COVERAGE_VERSION = 3          # 2: footprints over the extended geometry (both ends); 3: failed-open margins
+ROW_PAD = 12                 # rows beyond the cutout the block covers: the trace drifts ~6 rows over the extension
 
 # Where the sky light past the calibrated range ends, per (grating, filter), in µm, as
 # (blue, red); None at an end means the footprint runs to the detector edge (the slit
@@ -190,8 +190,29 @@ def add_block(frame, g, values=None):
 # One rate file's slitlets: the geometry cache and the counter
 # ---------------------------------------------------------------------------
 
-GEOMETRY_VERSION = 1
+GEOMETRY_VERSION = 2          # 2: failed-open shutters carry the margin of a commanded slitlet
 FIXED_SLITS = ('S200A1', 'S200A2', 'S400A1', 'S1600A1', 'S200B1')
+FAILED_OPEN_Y = 1.0           # slit-frame half extent of a failed-open shutter (open heights)
+
+
+def failed_open_slitlets(msaoper):
+    """The ``msaoper`` failed-open shutters as one-shutter slits (jwst's
+    ``msaflagopen.create_slitlets``), each given what ``assign_wcs`` gives a commanded
+    slitlet's record:
+
+    * the slit extent: its open area (``ymin`` / ``ymax`` = ±0.5) plus jwst's 0.5 margin
+      beyond it. jwst's own records stop at the open area, so the rows just past the
+      shutter, which carry 5-50 % of its core level (PRISM, measured 2026-11-02), were
+      outside every footprint and never painted; with the margin they are painted from
+      the closed-neighbor rows of the bar-shadow profile like any slitlet's;
+    * the shutter scales ``MSA_SLIT_SCALES`` (pitch / open size, ``slit_yscale`` 1.15).
+      jwst leaves them at 1.0 on these records (its transforms do not read them), which
+      made ``_pitch`` count the open height as the pitch: the bar-shadow profile came out
+      1.15x too narrow across the shutter, short of the data at both edges."""
+    from jwst.assign_wcs.nirspec import MSA_SLIT_SCALES
+    from jwst.msaflagopen.msaflag_open import create_slitlets
+    return [s._replace(ymin=-FAILED_OPEN_Y, ymax=FAILED_OPEN_Y, slit_xscale=MSA_SLIT_SCALES[0],
+                       slit_yscale=MSA_SLIT_SCALES[1]) for s in create_slitlets(msaoper)]
 
 
 def geometry_cache_path(rate_path, cache_dir, cutoffs=None, wavelengthrange_override=None):
@@ -204,13 +225,12 @@ def geometry_cache_path(rate_path, cache_dir, cutoffs=None, wavelengthrange_over
 def _assign_wcs(rate_path, wavelengthrange_override=None):
     """``assign_wcs`` on the rate file in memory with the metafile its header names (the
     original one, so every commanded-open shutter is present), plus the failed-open
-    shutters of the ``msaoper`` reference on a WCS of their own:
+    shutters of the ``msaoper`` reference on a WCS of their own (``failed_open_slitlets``):
     ``[(holder, slits, kind), ...]`` with kind ``'msa'`` / ``'failed'``."""
     from gwcs.wcs import WCS
     from jwst.assign_wcs import AssignWcsStep
     from jwst.assign_wcs.nirspec import generate_compound_bbox, slitlets_wcs
     from jwst.datamodels import ImageModel
-    from jwst.msaflagopen.msaflag_open import create_slitlets
     from jwst.msaflagopen.msaflagopen_step import MSAFlagOpenStep, create_reference_filename_dictionary
 
     prev = os.getcwd()
@@ -223,7 +243,7 @@ def _assign_wcs(rate_path, wavelengthrange_override=None):
                 step.override_wavelengthrange = wavelengthrange_override
             processed = step.run(model)
         out = [(processed, list(processed.meta.wcs.get_transform('gwa', 'slit_frame').slits), 'msa')]
-        failed = create_slitlets(MSAFlagOpenStep().get_reference_file(processed, 'msaoper'))
+        failed = failed_open_slitlets(MSAFlagOpenStep().get_reference_file(processed, 'msaoper'))
         if failed:
             holder = ImageModel()
             holder.meta.wcs = WCS(slitlets_wcs(processed, create_reference_filename_dictionary(processed), failed))
