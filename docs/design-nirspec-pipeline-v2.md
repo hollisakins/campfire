@@ -1564,6 +1564,21 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   exposures and is not rerun, so a revised source's 2-D and `EXPOSURES` show the choice
   from before (922323's product says nods 1,2 while its log says nod 3 used nod 1 only).
   `claude/drizzle-once` merged (user, 2026-11-02).
+- PSF table re-derived from the six calibration fields (2026-11-02; stage 2a/2b rerun with
+  this branch in `scratch/claude/e2e_nrscal`; module `psf_calibration.py` on
+  `claude/psf-table`; outputs and figures `scratch/claude/psf_cal/`). 131 / 133 clean NRS1
+  / NRS2 PRISM stars, fitted through the profile model on the nod differences stage 3
+  reads. Found: each nod sits off its WCS position by an amount linear in the slitlet's
+  detector row, zero near row 1000 and +-0.08 rows at the edges, the two outer nods mirror
+  images, NRS1 and NRS2 on one line (`figures/nod_offsets.png`); the model has held the
+  per-exposure offsets at zero since 2026-11-01, and with them free the bright stars' chi2
+  falls 2-5x and the NRS1 joint wing fraction by 0.05-0.11, the core widths by <= 0.003
+  rows. With offsets at zero the refit gives a narrower core (NRS1 0.32 against 0.39 rows
+  in the blue) and a larger wing fraction (0.34-0.40 against 0.19-0.30), core and wing
+  trading. Decision (user, 2026-11-02): a fixed nod-offset law, measured from these stars
+  and built into the model as fixed geometry like the centre law, no free parameter per
+  source; then the PSF table is refitted with it. `PSF_TABLES` / `CENTRE_LAW` unchanged
+  until the user decides on the refit.
 - The 1D combination of several exposure groups did not carry the master-background
   spectrum (not built, no other reason); built (530bedb5): each group's `SPEC1D_MBKG`
   combined as the nodded columns are, the 2-D spectrum from one master-background Spec3
