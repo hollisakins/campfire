@@ -1445,7 +1445,28 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   source's pass 1, and a failed-open shutter has no source. Scope on p1
   (`e2e_failed_open_count.py`): 109 of 681 products have failed-open pixels on the
   source's own shutter (91 G395M, 18 PRISM; up to half of it, 924509 0.51); 921027 has
-  none (`PFFOPEN` 0), so its excess is the background level, not this. Design pending.
+  none (`PFFOPEN` 0), so its excess is the background level, not this. On 924509 the
+  two failed-open shutters are in the slitlet's own MSA rows (155 and 157) but other
+  columns (44 and 157, against 170), so their traces run along the slitlet's rows at
+  other wavelengths, and the source crosses them as it moves between exposures.
+  Built (user, 2026-11-02, `failed_open.py`): per exposure and failed-open shutter on the
+  source's trace, a spectrum along detector columns (linear between knots every pass-1
+  smoothing length: 15 columns PRISM, 31 gratings) times a flat profile over the
+  shutter's pixels, solved together with the source at the nodded chain's shape on the
+  master-background frames minus the other sources' predicted light, with its own
+  outlier rejection (the source-only fit clips that light as outliers). Added to
+  `CONTAM2D` / `CONTERR2D` (statistical error plus `DPRED_FLOOR` of the light, since the
+  flat profile is an assumption); cards `PFNFOPEN` / `PFFOSIG` in `SPEC1D_MBKG`.
+  Synthetic test: recovers the light off and across the source within 0.03 of a 0.2-0.8
+  signal at noise 0.05. The nodded spectrum is unchanged. Open: the background behind a
+  failed-open shutter cancels between exposures, but an object behind one moves with the
+  nod and need not cancel; not checked for the nodded spectrum.
+- Not added (user, 2026-11-02): a fourth `MBKGWHY` reason for another slitlet's light
+  entering mainly through the background exposures (629466); the contamination model
+  handles it.
+- Holding `MBKGPREF` back on G395M: moot (user, 2026-11-02). Nothing ships before the
+  master background 1.6 fix, so the mark is set from the fixed master background; the
+  PRISM comparison is rerun then.
   The deploy reader on `claude/mbkg-web` accepts all 99 p1 products.
 - The 1D combination of several exposure groups did not carry the master-background
   spectrum (not built, no other reason); built (530bedb5): each group's `SPEC1D_MBKG`

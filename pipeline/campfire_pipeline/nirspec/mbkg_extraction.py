@@ -21,7 +21,9 @@ two differ only in how the background was removed (parity):
    nodded chain chose, the spectrum solved. Other sources' light is predicted from their
    pass 1s, once and positive where each is in that exposure (``profile_contam.predict``),
    catalogued neighbors in the target's own slitlet included (``include``): no
-   background exposure is dropped for them here. ``PROF2D`` / ``CONTAM2D`` /
+   background exposure is dropped for them here. Light through failed-open shutters on
+   the trace is solved with the source and added to it (``failed_open``; cards
+   ``PFNFOPEN`` / ``PFFOSIG``). ``PROF2D`` / ``CONTAM2D`` /
    ``CONTERR2D`` are drizzled through the master-background crf into
    ``{product}_mbkg_pf.fits``.
 4. stage 3 extracts it exactly like the nodded product (``stage3.extract_columns``) into
@@ -260,6 +262,7 @@ def fit_product(product_name, workspace, groups, science, source_id, chain, stag
     the file's path, or None when the master-background Spec3 did not run (no
     ``_mbkg_s2d.fits``: no master-background spectrum at all)."""
     from astropy.io import fits
+    from campfire_pipeline.nirspec import failed_open as FO
     from campfire_pipeline.nirspec import profile_contam as CT
     from campfire_pipeline.nirspec import profile_fit as PF
     from campfire_pipeline.nirspec import profile_product as PP
@@ -296,6 +299,7 @@ def fit_product(product_name, workspace, groups, science, source_id, chain, stag
     prof = PF.drizzle_frames(R, paths['crf'], unit=True)
     hdus.append(fits.ImageHDU(np.asarray(prof.data, float) / 1e12, name='PROF2D'))
     prof.close()
+    fo_cards = (0, 0.0)
     fl = PP.stage_flags(stage_config)
     if fl['contam']:
         maps = CT.maps_for_exposures(workspace, exps)
@@ -314,6 +318,17 @@ def fit_product(product_name, workspace, groups, science, source_id, chain, stag
             canonical = os.path.join(workspace, os.path.basename(groups[0][0]))
             near = same_slitlet_sources(canonical, workspace, source_id)
             P = CT.predict(exps, source_id, maps, pass1_for, workspace, why_missing=why_missing, include=near)
+            s1 = CT.pass1_settings(stage_config)
+            knot = max(s1['smooth_prism'] if exps[0].grating.startswith('PRISM') else s1['smooth_grating'], 3)
+            p_shape = PF.shape_vector(shape, M.c_prior, M.priors.width_median)
+            L = FO.solve(M, p_shape, exps, source_id, maps, knot, minus=P.pred)
+            if L is not None:
+                for k in range(len(exps)):
+                    P.pred[k] = P.pred[k] + L.pred[k]
+                    P.dpred[k] = P.dpred[k] + L.dpred[k]
+                fo_cards = (len({n for _, n in L.shutters}), max(L.shutters.values(), default=0.0))
+                log(f'{product_name}: master background: {fo_cards[0]} failed-open shutter(s) on the trace, '
+                    f'their light up to {fo_cards[1]:.1f} x the noise on the main shutter')
             for what, name, unit in (('pred', 'CONTAM2D', 'Predicted other-source light, as SCI'),
                                      ('dpred', 'CONTERR2D', 'Uncertainty of CONTAM2D (systematic), as SCI')):
                 live = CT.live_frames(exps, P, what=what)
@@ -326,5 +341,7 @@ def fit_product(product_name, workspace, groups, science, source_id, chain, stag
     for k, v in chain.header_cards().items():
         hdr[k] = v
     hdr['PFNEXP'] = (len(exps), 'Exposures in the model (master background subtracted)')
+    hdr['PFNFOPEN'] = (int(fo_cards[0]), 'Failed-open shutters modeled on the trace')
+    hdr['PFFOSIG'] = (float(fo_cards[1]), 'Their max light / noise on the main shutter')
     fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus).writeto(paths['pf'], overwrite=True)
     return paths['pf']
