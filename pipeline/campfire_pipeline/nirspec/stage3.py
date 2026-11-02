@@ -3,18 +3,22 @@ Stage 3: Spec3Pipeline, optimal extraction, and 1D combination across exposure g
 
 Order of operations for one product (``combine_method = "2d"``, or one exposure group):
 
-1. Spec3 on its background-subtracted exposures (``run_stage3_single_source``): the s2d,
+1. With the profile fit, per disperser (``run_profile_fit_phase``): the joint first pass
+   of every source, then the same-slitlet decisions redone from it and stage 2b again
+   where the background exposures change (``stage2.revise_slitlet_overrides``), so
+   everything below reads the canonicals as finally subtracted.
+2. Spec3 on its background-subtracted exposures (``run_stage3_single_source``): the s2d,
    x1d and the outlier-flagged crf; the EXPOSURES table.
-2. The profile fit (``run_profile_fit_phase``, ``profile_product.run_product``): load, fit,
-   then every 2-D image of the product drizzled through one set of pixel maps built from
-   the crf (``drizzle_map``): the nodded ``PROF2D`` / ``CONTAM2D`` / ``CONTERR2D``, and
-   the master-background 2-D and its ``PROF2D`` / ``CONTAM2D`` / ``CONTERR2D``
+3. The profile fit (``profile_product.run_product``): load, fit, then every 2-D image of
+   the product drizzled through one set of pixel maps built from the crf
+   (``drizzle_map``): the nodded ``PROF2D`` / ``CONTAM2D`` / ``CONTERR2D``, and the
+   master-background 2-D and its ``PROF2D`` / ``CONTAM2D`` / ``CONTERR2D``
    (``mbkg_extraction``), made in memory. Without the profile fit, the master-background
-   2-D is drizzled in step 1, through the same kind of map.
-3. Extraction (``opt_ext_single_source``): every 1-D extraction of both 2-D spectra into
+   2-D is drizzled in step 2, through the same kind of map.
+4. Extraction (``opt_ext_single_source``): every 1-D extraction of both 2-D spectra into
    the ``_spec.fits``.
 
-Several exposure groups (``combine_method = "1d"``): steps 1-3 per group, then
+Several exposure groups (``combine_method = "1d"``): steps 2-4 per group, then
 ``combine_per_eg_spectra`` combines the groups' 1-D spectra (nodded and master
 background) and takes the stacked 2-D from one more Spec3 over all exposures, with the
 stacked master-background 2-D drizzled through that run's pixel maps.
@@ -196,23 +200,25 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
 
     from campfire_pipeline.nirspec import profile_timing as TM
 
-    # Phase 1: Spec3Pipeline + optimal extraction
-    with TM.phase(f'spec3 {obs.name} ({len(tasks)} products)'):
-        dispatch(
-            run_stage3_single_source,
-            tasks,
-            n_processes=n_processes,
-            use_starmap=True,
-            **s3_kwargs,
-        )
-
+    # Phase 1: Spec3Pipeline and every drizzle, then the extraction. With the profile fit,
+    # Spec3 runs per disperser after the same-slitlet revision (run_profile_fit_phase), so
+    # the s2d and the EXPOSURES table come from the background actually subtracted
     if pf_tasks:
         from campfire_pipeline.config import get_stage_config
         log(f"Profile fit: {len(pf_tasks)} products")
         with TM.phase(f'profile_fit {obs.name} (all)'):
             run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=n_processes, overwrite=overwrite,
                                   cleanup_crfs=cleanup_crfs, stage2_config=get_stage_config('stage2', config, obs),
-                                  s3_tasks=tasks if combine_method == '2d' else None, s3_kwargs=s3_kwargs)
+                                  s3_tasks=tasks, s3_kwargs=s3_kwargs)
+    else:
+        with TM.phase(f'spec3 {obs.name} ({len(tasks)} products)'):
+            dispatch(
+                run_stage3_single_source,
+                tasks,
+                n_processes=n_processes,
+                use_starmap=True,
+                **s3_kwargs,
+            )
 
     optext_tasks = [(task[2], task[1]) for task in tasks]
     with TM.phase(f'extraction {obs.name} ({len(optext_tasks)} products)'):
@@ -463,20 +469,45 @@ def _prism_fg(fgs):
     return next((fg for fg in sorted(fgs) if str(fg).lower().startswith('prism')), None)
 
 
+def _own_partners_differ(task):
+    """True when a source's canonicals (``task``: ``_profile_fit_task``) hold other
+    background exposures than its override files give (``BKGNODS`` against
+    ``stage2.nod_background_partners``), e.g. a same-slitlet override."""
+    from campfire_pipeline.nirspec import profile_fit as PF
+    from campfire_pipeline.nirspec.stage2 import nod_background_partners
+    for files, ov in zip(task['groups'], task['overrides']):
+        live = PF.partners_from_headers(files, [fits.getheader(f) for f in files])
+        if live is not None and live != nod_background_partners(files, ov):
+            return True
+    return False
+
+
 def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=False, cleanup_crfs=True,
                           stage2_config=None, s3_tasks=None, s3_kwargs=None):
-    """Profile-fit extraction profiles of the products in ``pf_tasks`` (extraction v2).
+    """Spec3 and the profile-fit extraction profiles of the products in ``pf_tasks``
+    (extraction v2), every 2-D image of them drizzled before stage 3 extracts anything.
 
     Dispersers run PRISM first, so a grating can take the PRISM shape of the same
-    source. With ``contam_predict``: trace maps for every exposure of the
-    observation (cached), then per disperser the joint first pass of every source of
-    the configuration (also the ones not being re-run: their light reaches the
-    re-run ones; ``joint_first_pass``), then the products. With ``stage2_config``
-    (and ``slitlet_neighbor_brightness = "model"``), the same-slitlet decisions of
-    the re-run sources are redone after the joint first pass with each neighbour's
-    brightness from its modeled light (``stage2.revise_slitlet_overrides``); a source
-    whose background exposures change gets stage 2b and its combined 2-D spectrum
-    (``s3_tasks``, ``run_stage3_single_source``) again before its product. The
+    source. With ``contam_predict``, trace maps for every exposure of the observation
+    (cached), then per disperser:
+
+    1. the joint first pass of every source of the configuration (also the ones not
+       being re-run: their light reaches the re-run ones; ``joint_first_pass``);
+    2. with ``stage2_config`` (and ``slitlet_neighbor_brightness = "model"``), the
+       same-slitlet decisions of the re-run sources redone with each neighbour's
+       brightness from its modeled light (``stage2.revise_slitlet_overrides``), and
+       stage 2b again where the background exposures change. The pass of step 1 then
+       solves every member on the nod differences of the override files, rebuilt from
+       the frames before subtraction (``pre_bkgsub``), so the brightness, and with it the
+       decision, does not depend on the choice an earlier run wrote into the canonicals;
+    3. the joint first pass again, on the canonicals as now subtracted, of the sources
+       whose own background exposures are not the override files' (``_own_partners_differ``):
+       a product takes its neighbours' light from its own solve, which must be on its
+       own nod differences (``joint_first_pass.add_joint_light``);
+
+    then (every disperser) Spec3 of its products (``s3_tasks``,
+    ``run_stage3_single_source``: the s2d, crf and EXPOSURES table from the canonicals as
+    revised) and the products (``profile_product.run_product``: every drizzle). The
     neighbour-scan proposals are written to the observation's reference directory
     (``scan_action``)."""
     from campfire_pipeline.common.parallel import dispatch
@@ -489,9 +520,17 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     fl = stage_flags(stage_config)
     shape = str(stage_config.get('profile_fit_shape', 'gated')).lower()
     contam = fl['contam'] and shape != 'free'
+    revise = stage2_config is not None and \
+        str(stage_config.get('slitlet_neighbor_brightness', 'model')).lower() == 'model'
+    s3_kwargs = s3_kwargs or {}
+    s3_of = {t[2]: t for t in (s3_tasks or [])}
     by_fg = {}
     for t in pf_tasks:
         by_fg.setdefault(t['filter_grating'], []).append(t)
+    rest = [t for name, t in s3_of.items() if name not in {p['product_name'] for p in pf_tasks}]
+    if rest:
+        with TM.phase(f'spec3 other ({len(rest)} products)'):
+            dispatch(run_stage3_single_source, rest, n_processes=n_processes, use_starmap=True, **s3_kwargs)
     all_fg = set(by_fg)
     sci_all = None
     if contam:
@@ -522,25 +561,35 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                 t = _profile_fit_task(obs, every_fg, tf, f"{obs.name}_{fg}_{sid}", sid)
                 prism_product = f"{obs.name}_{prism_fg}_{sid}" if (prism_fg and not is_prism) else ''
                 pass1_products[int(sid)] = t['product_name']
+                s3 = s3_of.get(t['product_name'])
                 jtasks[int(sid)] = dict(product=t['product_name'], groups=t['groups'], overrides=t['overrides'],
-                                        science=t['science'], prism_product=prism_product)
+                                        science=t['science'], prism_product=prism_product,
+                                        # Spec3 runs after this pass: the boxcar fallback's own (JF._boxcar)
+                                        spec3=None if s3 is None else
+                                        (s3, dict(s3_kwargs, cleanup_crfs=True, mbkg_spectrum=False)))
             # every source solved with its neighbours on its nod differences (joint_first_pass)
-            log(f"Profile fit: joint pass 1 for {len(jtasks)} {fg} sources")
+            log(f"Profile fit: joint pass 1 for {len(jtasks)} {fg} sources"
+                + (' (nod differences of the override files)' if revise else ''))
             with TM.phase(f'pass1 joint {fg} ({len(jtasks)})'):
                 JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
                        overwrite={s for s in jtasks if s in run_sids} if overwrite else False,
-                       cache_size=int(stage_config.get('contam_joint_cache', 60)))
-            if stage2_config is not None and \
-                    str(stage_config.get('slitlet_neighbor_brightness', 'model')).lower() == 'model':
+                       cache_size=int(stage_config.get('contam_joint_cache', 60)), pre_bkgsub=revise)
+            if revise:
                 from campfire_pipeline.nirspec.stage2 import revise_slitlet_overrides
                 with TM.phase(f'slitlet revision {fg}'):
-                    changed = revise_slitlet_overrides(obs, stage2_config, run_sids, fg, f'{obs.name}_{fg}',
-                                                       n_processes)
-                redo = [t for t in (s3_tasks or []) if int(t[3]) in changed and t[2] == f'{obs.name}_{fg}_{t[3]}']
-                if redo:
-                    log(f"Profile fit: combined 2-D spectra again for {len(redo)} {fg} sources")
-                    dispatch(run_stage3_single_source, redo, n_processes=n_processes, use_starmap=True,
-                             **(s3_kwargs or {}))
+                    revise_slitlet_overrides(obs, stage2_config, run_sids, fg, f'{obs.name}_{fg}', n_processes)
+                own = sorted(s for s, t in jtasks.items() if _own_partners_differ(t))
+                if own:
+                    log(f"Profile fit: joint pass 1 again for {len(own)} {fg} sources on their own background "
+                        f"exposures")
+                    with TM.phase(f'pass1 joint own {fg} ({len(own)})'):
+                        JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
+                               cache_size=int(stage_config.get('contam_joint_cache', 60)), targets=own)
+        # Spec3 from the canonicals as (now) subtracted: the s2d, crf and EXPOSURES table
+        s3 = [s3_of[t['product_name']] for t in by_fg[fg] if t['product_name'] in s3_of]
+        if s3:
+            with TM.phase(f'spec3 {fg} ({len(s3)} products)'):
+                dispatch(run_stage3_single_source, s3, n_processes=n_processes, use_starmap=True, **s3_kwargs)
         tasks = []
         for t in by_fg[fg]:
             prism_product = f"{obs.name}_{prism_fg}_{t['source_id']}" if (prism_fg and not is_prism) else ''

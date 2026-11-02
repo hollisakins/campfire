@@ -258,7 +258,72 @@ def own_variance(path, slit):
     return np.asarray(vp, float) + np.asarray(vr, float)
 
 
-def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_frames=False):
+def _applied_pathloss(m, s):
+    """The path-loss correction applied to slit ``s`` of model ``m`` (point or uniform, as
+    jwst's ``do_correction_mos`` chose it), or ones when none was applied."""
+    pl_type = str(getattr(s, 'pathloss_correction_type', '') or '').upper()
+    applied = 'COMPLETE' in str(m.meta.cal_step.pathloss).upper()
+    if applied and pl_type == 'UNIFORM':
+        return np.asarray(s.pathloss_uniform, float)
+    if applied:
+        return np.asarray(s.pathloss_point, float)
+    return np.ones(s.data.shape)
+
+
+def rebuild_nod_differences(frames, dqs, partners):
+    """Stage 2b's nod differences, rebuilt in memory from the frames before subtraction.
+
+    ``frames`` / ``dqs``: per exposure its frame with the path loss removed and its DQ, on
+    the group's common frame, 0 outside its cutout (stage 2b pads to the common region with
+    zeros, ``stage2.pad_to_common_detector_region``); ``partners`` as
+    ``stage2.nod_background_partners`` gives them. Per exposure (diff, dq): the frame minus
+    the mean of its partners' values, NaN left out and 0 where no partner has one (jwst's
+    ``average_background``: its 3-sigma clip removes nothing from at most four values),
+    DQ the OR of all; an excluded exposure (None) keeps its own frame and DQ."""
+    out = []
+    for i, part in enumerate(partners):
+        if part is None:
+            out.append((frames[i], dqs[i]))
+            continue
+        stack = np.array([frames[j] for j in part], float)
+        n = np.sum(np.isfinite(stack), axis=0)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            mean = np.where(n > 0, np.nansum(stack, axis=0) / np.maximum(n, 1), 0.0)
+        dq = np.asarray(dqs[i]).copy()
+        for j in part:
+            dq = dq | np.asarray(dqs[j])
+        out.append((frames[i] - mean, dq))
+    return out
+
+
+def _pre_bkgsub_differences(cal_files, heads, models, slits, partners, y0, x0, shape):
+    """Each exposure's nod difference (path loss removed) and DQ on its own cutout, rebuilt
+    from the canonicals' frames before subtraction with ``partners``
+    (``rebuild_nod_differences``): ``PRE_BKGSUB_SCI`` / ``_DQ``, or the live arrays of a
+    canonical stage 2b left calibrated (``CFP_BKG`` excluded or skipped). None when a file
+    of the group has neither."""
+    from campfire_pipeline.nirspec import canonical as C
+    pre = []
+    for f, h, s in zip(cal_files, heads, slits):
+        p = C.read_slit_arrays(f, exts=('SCI', 'DQ'), prefix=C.PRE_BKGSUB_PREFIX)
+        if 'SCI' not in p and str(h.get('CFP_BKG', '')).startswith(('excluded', 'skipped')):
+            p = {'SCI': np.asarray(s.data), 'DQ': np.asarray(s.dq)}
+        pre.append(p)
+    if any('SCI' not in p or np.shape(p['SCI']) != s.data.shape for p, s in zip(pre, slits)):
+        return None
+    frames = [_place(np.asarray(p['SCI'], float) * _applied_pathloss(m, s), s, y0, x0, shape, fill=0.0)
+              for p, m, s in zip(pre, models, slits)]
+    dqs = [_place(np.asarray(p.get('DQ', np.zeros(s.data.shape)), float), s, y0, x0, shape, fill=0.0)
+           .astype(np.uint32) for p, s in zip(pre, slits)]
+    out = []
+    for (d, q), s in zip(rebuild_nod_differences(frames, dqs, partners), slits):
+        r, c = s.ystart - y0, s.xstart - x0
+        ny, nx = s.data.shape
+        out.append((d[r:r + ny, c:c + nx], q[r:r + ny, c:c + nx]))
+    return out
+
+
+def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_frames=False, pre_bkgsub=False):
     """Exposures of one stage-2b background group, from the canonical files.
 
     The live SCI is stage 2b's nod difference with the path loss re-applied; this
@@ -270,6 +335,12 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
         way (e.g. master-background-subtracted copies; ``mbkg_extraction`` builds its
         frames in memory instead, ``single_frame_exposures``): no exposure is
         subtracted from another (``partners == []``).
+    pre_bkgsub : the nod differences of ``bkg_overrides`` (the override files' partners,
+        never the canonicals' ``BKGNODS``), rebuilt from the frames before subtraction
+        (``_pre_bkgsub_differences``), so they do not depend on which partners stage 2b
+        last subtracted (the joint first pass whose brightness decides the same-slitlet
+        overrides, ``stage3.run_profile_fit_phase``). A group with a canonical that holds
+        no frame before subtraction is read as without it.
     """
     from astropy.io import fits
     from jwst.datamodels import MultiSlitModel
@@ -280,31 +351,35 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
     srcflux = [str(h.get('SRCFLUX', 'T')).strip().upper() != 'F' for h in heads]
     slits = [m.slits[0] for m in models]
     y0, x0, shape = _common_frame(slits)
+    rebuilt = None
     if single_frames:
         partners = [[] for _ in cal_files]
     else:
-        partners = partners_from_headers(cal_files, heads)
+        partners = None
+        if pre_bkgsub:
+            partners = nod_background_partners(cal_files, bkg_overrides)
+            rebuilt = _pre_bkgsub_differences(cal_files, heads, models, slits, partners, y0, x0, shape)
+            if rebuilt is None:
+                partners = None
+        if partners is None:
+            partners = partners_from_headers(cal_files, heads)
         if partners is None:
             partners = nod_background_partners(cal_files, bkg_overrides)
     exps = []
-    for f, m, s, part, has_src in zip(cal_files, models, slits, partners, srcflux):
+    for k, (f, m, s, part, has_src) in enumerate(zip(cal_files, models, slits, partners, srcflux)):
         if part is not None and 'COMPLETE' not in str(m.meta.cal_step.bkg_subtract).upper():
             raise NotBackgroundSubtracted(f'profile fit: {f} is not background-subtracted (stage 2b has not run on it)')
         ny, nx = s.data.shape
         yy, xx = np.mgrid[:ny, :nx]
         _, ys, _ = s.meta.wcs.get_transform('detector', 'slit_frame')(xx, yy)
-        pl_type = str(getattr(s, 'pathloss_correction_type', '') or '').upper()
-        applied = 'COMPLETE' in str(m.meta.cal_step.pathloss).upper()
-        if applied and pl_type == 'UNIFORM':
-            pl = np.asarray(s.pathloss_uniform, float)
-        elif applied:
-            pl = np.asarray(s.pathloss_point, float)
-        else:
-            pl = np.ones((ny, nx))
+        pl = _applied_pathloss(m, s)
         var = (own_variance(f, s)
                + (np.asarray(s.var_flat, float) if s.var_flat is not None and np.size(s.var_flat) else 0.0))
-        dq_bad = (np.asarray(s.dq) & DO_NOT_USE) > 0
-        diff = np.asarray(s.data, float) * pl
+        if rebuilt is not None:
+            diff, dq = rebuilt[k]
+        else:
+            diff, dq = np.asarray(s.data, float) * pl, s.dq
+        dq_bad = (np.asarray(dq) & DO_NOT_USE) > 0
         ok = np.isfinite(diff) & np.isfinite(var) & (var > 0) & ~dq_bad & np.isfinite(ys) & np.isfinite(s.wavelength) & np.isfinite(pl) & (pl > 0)
         name = str(f).split('/')[-1]
         exps.append(Exposure(
@@ -349,15 +424,16 @@ def partners_from_headers(cal_files, heads):
     return out
 
 
-def load_source(groups, bkg_overrides=None, science=None, single_frames=False):
+def load_source(groups, bkg_overrides=None, science=None, single_frames=False, pre_bkgsub=False):
     """All exposures of a source: ``groups`` is a list of canonical-file lists, one per
     stage-2b background group, and ``bkg_overrides`` the matching list of that group's
-    nod overrides (or None). Partner indices are made global. ``single_frames``: see
-    ``load_group``."""
+    nod overrides (or None). Partner indices are made global. ``single_frames`` and
+    ``pre_bkgsub``: see ``load_group``."""
     out = []
     overrides = bkg_overrides if isinstance(bkg_overrides, (list, tuple)) else [bkg_overrides] * len(groups)
     for g, files in enumerate(groups):
-        exps = load_group(files, bkg_overrides=overrides[g], science=science, group=g, single_frames=single_frames)
+        exps = load_group(files, bkg_overrides=overrides[g], science=science, group=g, single_frames=single_frames,
+                          pre_bkgsub=pre_bkgsub)
         base = len(out)
         for e in exps:
             if e.partners is not None:

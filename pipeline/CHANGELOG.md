@@ -30,6 +30,24 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
+  run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint
+  first pass's model of each neighbor. That pass fitted every source on the nod differences
+  its canonicals held, i.e. on the choice the previous run wrote, so a source near the 0.02
+  threshold alternated from run to run (`ember_cosmos_p1` 922323: its neighbor read 0.020
+  starting from one choice and 0.021 starting from the other). When the decisions are
+  redone, the pass now fits every source on the nod differences of the override files (hand
+  and scan), rebuilt in memory from the frames before subtraction with stage 2b's arithmetic
+  (`profile_fit.load_group(pre_bkgsub=True)`; its own pass-1 cache key), and solves again, on
+  their canonicals, the sources whose background exposures then differ from those, so their
+  products still take their neighbors' light from their own solve. Spec3 ran before the
+  revision and, with `combine_method = "1d"`, never again: a revised source's s2d, the
+  drizzles through its crf and its `EXPOSURES` table kept the old choice. Now, per
+  disperser: pass 1, revision, pass 1 again where needed, Spec3, the products (every
+  drizzle); then the extraction. Spec3 runs once per product, as before; the pass-1
+  boxcar fallback runs its product's Spec3 itself when there is no current s2d. A source
+  near the threshold can get a different background than before.
+
 - **NIRSpec master background 1.7: failed-open shutters get a commanded slitlet's margin and
   the real shutter pitch.** In 1.6, data minus master background along a fully open failed-open
   shutter showed a stripe on each edge, +12 to +22 % of the shutter's core level just inside

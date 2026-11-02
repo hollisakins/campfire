@@ -77,6 +77,7 @@ leaves other sources' light in many spectra. The redesign does four things:
 | Joint linear solve of local neighbourhoods | Decided (user, 2026-10-30); Built as the joint first pass, the only pass 1 (0a746f33, 8792506e, 45db22af). The masked pass 1, pass 1b, the echo correction and the old group solve (`contam_joint`) are removed (user, 2026-11-01) | extraction session | 3.9 |
 | No per-exposure pointing offsets in the profile fit | Built (b6e62302) | extraction session | 3.7 |
 | Same-slitlet overrides in stage 2b, by position from `SOURCE_INFO` (0.75 slit units, 0.02 of the sky, unmeasurable neighbours count as bright, no clean partner: keep both and flag) | Decided (user, 2026-11-01); Built (3795e228, 7e7c160f); p1 rerun and PRISM check done | extraction session | 3.9 |
+| Stage 3's same-slitlet decision independent of the previous run (joint pass on the override files' nod differences, rebuilt from the frames before subtraction); Spec3 and every drizzle after the revision | Built (2026-11-02, `claude/bkg-revision`; p1 922323); p1 end-to-end check pending | extraction session | 3.9 |
 | Shipped errors include the subtracted sky exposures' noise (today about 20 % low with three exposures) | Follow-up (user, 2026-11-01); not built; blocks a fair V26 | extraction session | 3.9 |
 | Contamination past the calibrated range fitted in count-rate units | Decided (user, 2026-10-30); Built in part (`profile_extend.py`, e3af87b0) | extraction session | 3.9 |
 | `fnu` not contamination-subtracted; `fnu_contam` separate, NaN where inseparable | Decided (user, 2026-10-30); Built (af58617f: `contam_1d = "report"` default, `"subtract"` opt-in) | extraction session | 4 |
@@ -132,8 +133,10 @@ what the branch does now where it differs.
    neighbour's predicted light on the target. Flags wavelengths where two sources cannot be
    told apart. Today: the masked one-pass prediction (`profile_contam.predict`) with a
    gated group solve (`profile_joint`, off).
-9. **Final extraction.** Stage 3 resampling (`Spec3Pipeline`), then the nodded profile
-   extraction of each source (`profile_fit.py`), with the neighbours' light known from step 8.
+9. **Final extraction.** The same-slitlet decisions redone from step 8, stage 2b again where
+   they change (section 3.9), then stage 3 resampling (`Spec3Pipeline`) and every drizzle,
+   then the nodded profile extraction of each source (`profile_fit.py`), with the neighbours'
+   light known from step 8.
    Writes `<obs>_<grating>_<sid>_spec.fits`.
 10. **Products.** `fnu` (best), the boxcars, `fnu_prof`, `fnu_contam` (NaN where inseparable),
     `PROF2D`, `CONTAM2D`, and the master-background spectrum as extra extensions (section 4).
@@ -1421,6 +1424,23 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
     sigma) nodded. Proposed: a "likely better" reason for this case (another slitlet's
     light entering only through the background exposures, from the joint model's
     prediction split by sign).
+  - Fixed (2026-11-02, `claude/bkg-revision`; p1 922323, nod 3 in `jw07076001001_05101`): the
+    decision flipped from run to run. Its neighbor 922322 read 0.020 of the background in a
+    run that started from canonicals where nod 3 used only exposure 1 (both kept), and 0.021
+    in the next, which started from both (exposure 2 dropped). The joint first pass fitted
+    every member on its live nod differences, i.e. on the choice the previous run wrote
+    (`BKGNODS`), and 922323 is the second member of 922322's neighbourhood. Now, when the
+    decisions are redone, that pass fits every member on the nod differences of the override
+    files (hand and scan), rebuilt in memory from `PRE_BKGSUB_*` with stage 2b's arithmetic
+    (`profile_fit.load_group(pre_bkgsub=True)`), so the same data and settings give the same
+    decision. The sources whose own background exposures then differ from the override
+    files' get their pass 1 again on their canonicals, since a product takes its neighbors'
+    light from its own solve (`add_joint_light`). Second bug: Spec3 ran before the revision
+    and, with `combine_method = "1d"` (p1), never again, so a revised source's s2d, the
+    drizzles through its crf and its EXPOSURES table kept the old choice (run B: `bkg_nods
+    '1,2'`, against the log's [1]). Now per disperser: pass 1, revision, pass 1 again where
+    needed, Spec3, the products (every drizzle); then the extraction. Spec3 still runs once
+    per product.
 - Master-background spectrum on p1 (stage 3 for the 74 sources after the merge of
   `claude/mbkg-extraction`, no errors; Spec3 169 s against 65 s): all 99 products carry
   the four extensions on the nodded grids; 12 have MBKGPREF (no_clear_background). Against

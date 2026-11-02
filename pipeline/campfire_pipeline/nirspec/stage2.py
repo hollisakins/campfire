@@ -1633,7 +1633,10 @@ def revise_slitlet_overrides(obs, stage_config, source_ids, filter_grating, pass
     decisions of ``source_ids`` with each neighbour's brightness from its modeled light
     (``pass1_prefix``, e.g. ``ember_cosmos_p1_g395m_f290lp``) instead of the data, and
     run stage 2b again on the background groups whose choice changes. ``stage_config``
-    is stage 2's. Returns the source ids whose groups were redone."""
+    is stage 2's. That pass solved every source on the nod differences of the override
+    files (``profile_fit.load_group``'s ``pre_bkgsub``), not on what the canonicals hold,
+    so the same data and settings give the same decision whatever an earlier run chose.
+    Returns the source ids whose groups were redone."""
     from campfire_pipeline.common.parallel import dispatch
 
     files = obs.discover_files(ext='canonical', source_ids=list(source_ids))
