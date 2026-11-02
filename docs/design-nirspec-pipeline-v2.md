@@ -1492,7 +1492,14 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   925403's nodded spectrum is high there too (3.2x). So the failed-open and margin fixes
   removed the part that was always positive, and the slitlet-to-slitlet scatter of a few
   percent is now what limits the G395M master-background spectrum; 8 G395M products carry
-  MBKGPREF.
+  MBKGPREF, kept as is (user, 2026-11-02). Asked how to correct the level, the user chose
+  the per-slitlet scale in the master-background step; that reopens the 2026-10-30
+  decision that ruled it out ("that's not master background at that point"), so it is
+  pending a check of whether the slitlet's offset repeats from nod to nod (a property of
+  the slitlet) or not (the per-exposure floor only nod subtraction removes; on PRISM per
+  shutter about 2.7 %, 40 % repeatable). From the per-exposure numbers above, mixed:
+  634522 (-5.0, -5.4, -2.9 %) and 879928 (+2.9, +3.5, +2.3 %) repeat; 880017 (+8.4, -3.5,
+  -2.9 %), 925275 (+6.7, -1.0, -0.7 %) and 924186 do not.
 - The 1D combination of several exposure groups did not carry the master-background
   spectrum (not built, no other reason); built (530bedb5): each group's `SPEC1D_MBKG`
   combined as the nodded columns are, the 2-D spectrum from one master-background Spec3
