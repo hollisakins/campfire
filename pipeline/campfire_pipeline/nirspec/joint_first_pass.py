@@ -18,7 +18,10 @@ Per disperser (``run``):
    (two steps, at most ``cap`` sources, strongest first);
 3. per member, once per worker (``MemberCache``): its nod differences, the data of its
    final profile fit (``profile_fit.load_source``: each exposure minus the mean of the
-   frames stage 2b subtracted), the shape of the chain (the PRISM shape of the same
+   frames stage 2b subtracted; with ``pre_bkgsub``, of the partners the override files
+   give, rebuilt from the frames before subtraction, so the solve does not depend on the
+   same-slitlet choice stage 2b last made; stage 3 decides that choice from this pass),
+   the shape of the chain (the PRISM shape of the same
    source when the PRISM product took its own fit, else its own fit above the grating
    gate, else the default shape; ``shape_for``), the per-exposure pointing offsets at
    that shape, and its frames per unit spectrum (``profile_joint``);
@@ -196,13 +199,14 @@ class MemberCache:
     use and kept for the most recent ``size`` sources (a worker processes neighbourhoods
     in coupling order, ``target_order``)."""
 
-    def __init__(self, tasks, workspace, stage_config, is_prism, size=60):
+    def __init__(self, tasks, workspace, stage_config, is_prism, size=60, pre_bkgsub=False):
         from campfire_pipeline.nirspec import profile_chain as PC
         self.tasks = tasks                      # sid -> dict(groups, overrides, science, prism_product)
         self.workspace = workspace
         self.cfg = PC.ChainConfig.from_stage_config(stage_config)
         self.is_prism = is_prism
         self.size = size
+        self.pre_bkgsub = pre_bkgsub            # nod differences of the override files (profile_fit.load_group)
         self._m = OrderedDict()
         self._shape = {}                        # sid -> (shape, label, eoff): kept when a member is evicted
         self._failed = {}                       # sid -> the ProfileFitFallback its build raised
@@ -240,7 +244,8 @@ class MemberCache:
 
     def _build(self, sid):
         t = self.tasks[sid]
-        exps = PF.load_source(t['groups'], bkg_overrides=t['overrides'], science=set(t['science']))
+        exps = PF.load_source(t['groups'], bkg_overrides=t['overrides'], science=set(t['science']),
+                              pre_bkgsub=self.pre_bkgsub)
         cfg = self.cfg
         M = PF.ProfileModel(exps, chromatic=True, priors=cfg.priors, bounds=cfg.bounds)
         if sid not in self._shape:
@@ -815,14 +820,20 @@ def add_joint_light(P, exps, jl):
     return P
 
 
-def signature(stage_config, ids, prism=None):
+def signature(stage_config, ids, prism=None, pre_bkgsub=False, overrides=None):
     """The cache signature of a joint pass-1 file: the pass-1 settings, this module's
-    version, the neighbourhood's members and the PRISM shapes they take (``prism``, one
-    string per member)."""
+    version, the neighbourhood's members, the PRISM shapes they take (``prism``, one
+    string per member) and, with ``pre_bkgsub``, that the nod differences were the
+    override files' (``MemberCache``) and which (``overrides``, one string per member), so
+    a pass 1 of the other kind, or of other overrides, is never reused."""
     st = CT.pass1_settings(stage_config)
     s = dict(st, joint=JOINT_PASS_VERSION, members=','.join(str(s) for s in ids))
     if prism:
         s['prism'] = ';'.join(prism)
+    if pre_bkgsub:
+        s['bkg'] = 'pre'
+        if overrides:
+            s['overrides'] = ';'.join(overrides)
     return CT._signature(s)
 
 
@@ -835,17 +846,35 @@ def _paths(workspace, product, pass1_dir):
     return CT.pass1_path(workspace, product), CT.missing_path(workspace, product)
 
 
+def _spec3_current(workspace, product, paths):
+    """True when the product's Spec3 s2d and x1d exist and are newer than every canonical
+    of ``paths``."""
+    out = [os.path.join(workspace, f'{product}{s}') for s in ('_s2d.fits', '_x1d.fits')]
+    if not all(os.path.exists(p) for p in out):
+        return False
+    newest = max((os.path.getmtime(p) for p in paths if os.path.exists(p)), default=0.0)
+    return min(os.path.getmtime(p) for p in out) > newest
+
+
 def _boxcar(sid, t, cache, maps, stage_config, err):
     """Pass 1 of a target whose own member cannot be built (a named fallback): its
     stage-3 3-pixel boxcar (``profile_contam.boxcar_pass1``), as the masked first pass
-    does, so the targets its trace crosses are still predicted. Raises ``err`` when there
-    is no boxcar either."""
-    from campfire_pipeline.nirspec.stage3 import spec3_boxcar3
+    does, so the targets its trace crosses are still predicted. Stage 3 runs Spec3 after
+    this pass (``stage3.run_profile_fit_phase``), so a product of this run (``t['spec3']``,
+    the ``stage3.run_stage3_single_source`` arguments) whose s2d is missing or older than
+    its canonicals gets its Spec3 here first. Raises ``err`` when there is no boxcar
+    either."""
+    from campfire_pipeline.nirspec.stage3 import spec3_boxcar3, run_stage3_single_source
+    s3 = t.get('spec3')
+    if s3 is not None and not _spec3_current(cache.workspace, t['product'], [f for g in t['groups'] for f in g]):
+        args, kw = s3
+        run_stage3_single_source(*args, **kw)
     box = spec3_boxcar3(cache.workspace, t['product'])
     if box is None:
         raise type(err)(f'{err}; no stage-3 s2d or spectrum to take its 3-pixel boxcar from '
                         f'(no science exposure reached stage 3)') from err
-    exps = PF.load_source(t['groups'], bkg_overrides=t['overrides'], science=set(t['science']))
+    exps = PF.load_source(t['groups'], bkg_overrides=t['overrides'], science=set(t['science']),
+                          pre_bkgsub=getattr(cache, 'pre_bkgsub', False))
     return CT.boxcar_pass1(exps, sid, maps, cache.workspace, cache.is_prism, stage_config, box[:3]), box[3]
 
 
@@ -866,7 +895,9 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
     keys = {CT.exposure_key(f) for g in groups for f in g}
     mpaths = [TO.trace_map_path(os.path.join(cache.workspace, CT.MAPS_SUBDIR), f'{k}_rate.fits') for k in sorted(keys)]
     mpaths = [p for p in mpaths if os.path.exists(p)]
-    sig = signature(stage_config, ids, [cache.prism_sig(s) for s in ids])
+    pre = getattr(cache, 'pre_bkgsub', False)
+    sig = signature(stage_config, ids, [cache.prism_sig(s) for s in ids], pre,
+                    [repr(cache.tasks[int(s)].get('overrides')) for s in ids] if pre else None)
     jpath = joint_light_path(out)
     prev = None if overwrite else CT._pass1_valid(out, list(groups) + [mpaths], len(mpaths), sig)
     if prev is not None and not CT._boxcar_stale(prev, out, cache.workspace, t['product']):
@@ -909,11 +940,11 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
 
 
 def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_keys=None, overwrite=False,
-              depth=2, cap=25, degenerate=0.9, pass1_dir=None, cache_size=60):
+              depth=2, cap=25, degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False):
     """One worker's share of a disperser: the joint first pass of ``targets`` (in
     coupling order), with one member cache of ``cache_size`` members. Returns the
     written paths."""
-    cache = MemberCache(tasks, workspace, stage_config, is_prism, size=cache_size)
+    cache = MemberCache(tasks, workspace, stage_config, is_prism, size=cache_size, pre_bkgsub=pre_bkgsub)
     keys = maps_keys or sorted({CT.exposure_key(f) for t in tasks.values() for g in t['groups'] for f in g})
     from campfire_pipeline.nirspec import trace_overlap as TO
     maps = {}
@@ -931,13 +962,15 @@ def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_k
 
 
 def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False, depth=2, cap=25,
-        degenerate=0.9, pass1_dir=None, cache_size=60):
+        degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, targets=None):
     """The joint first pass of every source of one disperser.
 
-    tasks : {sid: dict(product, groups, overrides, science, prism_product)} for every
-    source of the disperser (its light reaches the others). overwrite : bool, or the set
-    of source ids whose pass 1 is redone whatever its cache says (the others are redone
-    only when stale). Returns the written paths."""
+    tasks : {sid: dict(product, groups, overrides, science, prism_product[, spec3])} for
+    every source of the disperser (its light reaches the others; ``spec3``: ``_boxcar``).
+    overwrite : bool, or the set of source ids whose pass 1 is redone whatever its cache
+    says (the others are redone only when stale). pre_bkgsub : every member's nod
+    differences those of the override files (``MemberCache``). targets : solve only these
+    sources' neighbourhoods (default every source). Returns the written paths."""
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec import trace_overlap as TO
 
@@ -950,10 +983,15 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
             maps[k] = TO.TraceMap.read(p)
     coupled = coupling(files, maps)
     order = target_order(coupled, depth=depth, cap=cap)
+    if targets is not None:
+        want = {int(t) for t in targets}
+        order = [s for s in order if s in want]
+    if not order:
+        return []
     nb = max(1, int(n_processes))
     size = int(np.ceil(len(order) / nb))
     batches = [order[i:i + size] for i in range(0, len(order), size)]
     args = [(b, tasks, workspace, stage_config, is_prism, coupled, keys, overwrite, depth, cap, degenerate,
-             pass1_dir, cache_size) for b in batches]
+             pass1_dir, cache_size, pre_bkgsub) for b in batches]
     res = dispatch(run_batch, args, n_processes=n_processes, use_starmap=True) or []
     return [p for r in res for p in (r or [])]

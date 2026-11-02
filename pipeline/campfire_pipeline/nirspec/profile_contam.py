@@ -9,9 +9,11 @@ source and used to protect the source's shape fit:
 The order of work, per disperser of an observation (``stage3.run_profile_fit_phase``):
 
 1. **pass 1**: every source solved with its neighbours on its nod differences
-   (``joint_first_pass``);
-2. **final**: every product's shape fit with the predicted light of the others
-   subtracted or masked (``predict`` + ``apply``), then the 1-D extraction.
+   (``joint_first_pass``; on the override files' nod differences when the same-slitlet
+   decisions are redone from it, then again on their own for the sources whose
+   background exposures those decisions change);
+2. **final**: Spec3, then every product's shape fit with the predicted light of the
+   others subtracted or masked (``predict`` + ``apply``), then the 1-D extraction.
 
 Nothing is iterated: each step reads only the output of the steps before it.
 
