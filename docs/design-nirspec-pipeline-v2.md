@@ -1471,8 +1471,9 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   master background 1.6 fix, so the mark is set from the fixed master background; the
   PRISM comparison is rerun then.
   The deploy reader on `claude/mbkg-web` accepts all 99 p1 products.
-- Master background 1.6 on p1 (2026-11-02; `claude/mbkg-paint` f620b887, not merged; run
-  from a detached worktree with this branch's 165382b7 plus its `master_bkg.py`, 256
+- Master background 1.6 on p1 (2026-11-02; `claude/mbkg-paint` f620b887; `claude/mbkg-paint`
+  and `claude/mbkg-web` merged into this branch the same day (user), 309 pipeline and 41
+  deploy tests pass; run from a detached worktree with this branch's 165382b7 plus its `master_bkg.py`, 256
   NIRSpec and master-background tests pass). 1.6 paints failed-open shutters at their
   measured transmission (0 to 1, combined over the nods; G395M 12/q3 0.09, 19/q3 0.51,
   14/q3 0.03, 23/q4 0.00, 1/q1 0.17, 5/q1 0.26, as the master-background session
