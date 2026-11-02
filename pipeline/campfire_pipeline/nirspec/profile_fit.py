@@ -211,7 +211,6 @@ class Exposure:
     origin: tuple = None           # (ystart, xstart) of the common frame on the detector, 1-based like jwst
     has_source: bool = True        # the source is in this frame (SRCFLUX != F)
     pa_v3: float = np.nan          # telescope roll [deg]
-    nod_partners: list = None      # a single frame (``partners == []``, ``first_pass``): its nodded partners
 
     @property
     def dy(self):
@@ -483,9 +482,9 @@ class ProfileModel:
         of the set. Degrees of freedom are counted as (N-1)/N per pixel
         (``dof_weight``).
 
-        An exposure with no partners (an empty list: a single frame with the sky
-        subtracted some other way, ``first_pass``) is its own frame: its variance as
-        given, one independent value per pixel."""
+        An exposure with no partners (an empty list: a single frame with the background
+        subtracted some other way, e.g. the master background) is its own frame: its
+        variance as given, one independent value per pixel."""
         e = self.exps[k]
         n = len(e.partners)
         if n == 0:
