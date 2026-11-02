@@ -1407,6 +1407,28 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
     PRISM: shipped `fnu_prof` beyond 3 sigma in 7 of 17 (10 before), `fnu_prof -
     fnu_contam` in 6 of 17 (10 before); part of that is the larger, now correct, errors.
     629466 stays at -44 sigma: not explained by the background choice.
+  - 629466 explained (`e2e_629466_geometry.py`, `e2e_product_2d.py`, `e2e_overlap_of.py`,
+    `e2e_slitlet/629466_g395m.png`): a faint source (~0.05 uJy) on which another slitlet's
+    source, 632748 (~4 uJy past 4.4 um, 80x brighter), lands only through the background
+    exposures (exposure 2's partners 1 and 3 put it on 629466's shutter; it is never in
+    629466's shutter in 629466's own exposures). The nodded spectrum carries its negative
+    image (-1 to -1.5 uJy past 4.4 um); `fnu_contam` predicts it, but a 10 % error on a
+    source 80x brighter is 8x the target, and 629466's own joint pass is negative there
+    too. Its master-background spectrum is 2.2x PRISM (+5.3 sigma) against -10.6x (-44
+    sigma) nodded. Proposed: a "likely better" reason for this case (another slitlet's
+    light entering only through the background exposures, from the joint model's
+    prediction split by sign).
+- Master-background spectrum on p1 (stage 3 for the 74 sources after the merge of
+  `claude/mbkg-extraction`, no errors; Spec3 169 s against 65 s): all 99 products carry
+  the four extensions on the nodded grids; 12 have MBKGPREF (no_clear_background). Against
+  PRISM (20 G395M sources): beyond 3 sigma 16 master-background spectra against 9 nodded
+  (median 8.1 against 2.8 sigma), mostly too high (921027 38x); subtracting `fnu_contam`
+  does not help (15 against 9). Cause (`e2e_mbkg_residual.py`, `e2e_mbkg_level.py`): on
+  G395M the master background is too low in these crowded slitlets, (frame - master
+  background) / master background away from all sources +0.02 to +0.20 per exposure
+  (921027 +0.19 / +0.12 / +0.07, 925403 +0.14 / +0.20), against +-0.02 on PRISM; for
+  sources at 1-5 % of the background that dominates. Reported to the master-background
+  session (its painting).
 - Cleanup (user, 2026-11-01): the masked pass 1, pass 1b, the echo correction, the old
   group joint solve and `first_pass.py` removed (merge of `claude/extraction-v2-cleanup`,
   about 2,800 lines). End-to-end check on p1 (stage 3 only, the 74 sources,
