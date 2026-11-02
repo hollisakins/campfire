@@ -1429,6 +1429,12 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   (921027 +0.19 / +0.12 / +0.07, 925403 +0.14 / +0.20), against +-0.02 on PRISM; for
   sources at 1-5 % of the background that dominates. Reported to the master-background
   session (its painting).
+- The 1D combination of several exposure groups did not carry the master-background
+  spectrum (not built, no other reason); built (530bedb5): each group's `SPEC1D_MBKG`
+  combined as the nodded columns are, the 2-D spectrum from one master-background Spec3
+  over all exposures, the cards from the combined `EXPOSURES`; `NEXP` / `NEXPBKG` now
+  on combined products too. Unit-tested; p1 has no source with several exposure groups,
+  so the end-to-end check needs another observation.
 - Cleanup (user, 2026-11-01): the masked pass 1, pass 1b, the echo correction, the old
   group joint solve and `first_pass.py` removed (merge of `claude/extraction-v2-cleanup`,
   about 2,800 lines). End-to-end check on p1 (stage 3 only, the 74 sources,
