@@ -30,6 +30,37 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec master background 1.6: every footprint painted, light from one MSA spot counted
+  once.** The G395M master background read low (pixels on a failed-open shutter +54 %, pixels
+  under another slitlet's margin +5 to +10 %, on `ember_cosmos_p1`). Two causes: failed-open
+  shutters were in the coverage counter but never painted, and a slitlet's margin was dropped
+  wherever any open shutter was painted, which was meant for the next slitlet in the same MSA
+  column but also dropped the margins of crossing traces. Now the failed-open shutters (and any
+  slitlet that has neither a canonical nor a background-slit entry) are painted in count-rate
+  units from the rate file's `RateGeometry` over their whole footprint, and `merge_painted`
+  combines the layers: a pixel and a wavelength fix the spot on the MSA the light came
+  through, so layers within `master_bkg_same_spot_px` (1) columns of dispersion in wavelength
+  are one spot (the open shutter's sky if one is open there, else the margins' mean) and
+  different spots are summed. Failed-open shutters do not all pass an empty shutter's sky: on
+  p1 G395M, at the position the WCS gives, they pass from 0 to 1 of it, the same in every nod
+  (12/q3 0.06-0.12, 19/q3 0.49-0.53, 23/q4 0; most 0.9-1.0), so each is painted at its
+  measured transmission (`failed_open_transmission`: the median over its open-shutter core,
+  outside source shutters, of the rate minus everything else painted there over its full-sky
+  paint, clipped to [0, 1]; 1 when fewer than `master_bkg_failed_open_min_pixels` (200)
+  pixels measure it; `master_bkg_failed_open_scale = 'full'` paints all at 1). The
+  transmission is a property of the shutter, so once every rate file is painted the nods of
+  a configuration are combined per shutter and detector (`combine_failed_open`: when at least
+  two nods, and more than half, lie within `master_bkg_failed_open_nod_tol` (0.1) of their
+  median, every nod takes that median; an object behind the shutter in one nod is the
+  outlier) and the products are corrected in place (`rescale_failed_open`, exact because a
+  failed-open shutter's light adds to the rest unless it shares an MSA spot with another
+  layer, which the painter checks); card `MBKGFOSC` says which. Shutters
+  msaoper lists open only for the internal lamp (science `state` closed, vignetted; jwst flags
+  them anyway) are not painted. Failed-open pixels on p1 G395M went from +40-80 % to +3-6 %
+  (per-shutter medians +0.5 to +4 %). `MBKG2DN` counts MSA spots; `MBKG2DDQ` bit 8 marks a
+  painted failed-open shutter (light above its sky, such as an object behind it, is
+  contamination, not background); bit 2 now means a footprint that could not be painted. New
+  cards `MBKGNFO`, `MBKGNGEO`. `CFMBKGV` 1.6.
 - **NIRSpec master background 1.5: step 1's tables live in the rate file; `_mbkg.fits`
   compressed.** Step 1 (`master_bkg_rate`) writes `MBKG1DR` (with the step's cards in its
   header), `MBKGQSR`, `MBKGSHR`, `SHUTAMP` and `CALLS` into `<base>_rate.fits` itself, after
