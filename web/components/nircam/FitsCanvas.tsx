@@ -3,7 +3,7 @@
 import React, { useEffect, useRef } from 'react';
 import {
   FitsImageViewer,
-  fetchSciImage, fetchCompressedImage, subtractImages, resolveFitsSource,
+  fetchSciImage, fetchCompressedImage, subtractImages, resolveFitsSource, zscaleLimits,
   type SciImage,
   type StretchMode,
   type ColormapName,
@@ -59,6 +59,20 @@ async function loadView(
   return cacheSet(key, subtractImages(rate, mbkg));
 }
 
+// One display range for all three views of an exposure: the ZScale of the rate
+// image. Each view's own ZScale would put the master background and the
+// residual on different scales from the rate, so the views could not be
+// compared by eye.
+const rateLimitsCache = new Map<string, [number, number] | null>();
+
+async function rateLimits(fitsKey: string, signal: AbortSignal): Promise<[number, number] | null> {
+  if (rateLimitsCache.has(fitsKey)) return rateLimitsCache.get(fitsKey)!;
+  const limits = zscaleLimits((await loadSci(fitsKey, signal)).data);
+  rateLimitsCache.set(fitsKey, limits);
+  while (rateLimitsCache.size > IMAGE_CACHE_SIZE) rateLimitsCache.delete(rateLimitsCache.keys().next().value!);
+  return limits;
+}
+
 /**
  * A native-resolution WebGL2 render of an exposure's SCI extension (or, for a
  * NIRSpec rate exposure, its 2-D master background or rate minus it), sized
@@ -66,8 +80,10 @@ async function loadView(
  * legacy `<img>` PNG (epic #261, N5). Fully controlled: stretch / colormap /
  * display range come in as props; the component owns only the fetch + GL. It
  * ZScales on load and reports the resulting range via `onLoad` so the host can
- * seed its min/max controls. `pointer-events-none` so the overlay above it
- * receives all interaction.
+ * seed its min/max controls. With a master background the three views share
+ * the rate's ZScale, reported once per exposure: switching views keeps the
+ * host's range (automatic or set by hand). `pointer-events-none` so the
+ * overlay above it receives all interaction.
  */
 export interface FitsCanvasLoad {
   width: number;
@@ -103,6 +119,11 @@ export default function FitsCanvas({
   const onErrorRef = useRef(onError);
   onLoadRef.current = onLoad;
   onErrorRef.current = onError;
+  // The host's current range, read when a view switch reloads the image, and
+  // the exposure whose range was last reported to it.
+  const rangeRef = useRef<[number, number]>([vmin, vmax]);
+  rangeRef.current = [vmin, vmax];
+  const reportedRef = useRef<string | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -127,11 +148,21 @@ export default function FitsCanvas({
     (async () => {
       try {
         const image = await loadView(fitsKey, mbkgKey, view, controller.signal);
+        const shared = mbkgKey ? await rateLimits(fitsKey, controller.signal) : null;
         if (controller.signal.aborted) return;
         viewer.setImage(image);          // auto-ZScales
         viewer.setStretchMode(stretch);
         viewer.setColormap(colormap);
+        const exposure = `${fitsKey}|${mbkgKey ?? ''}`;
+        const [hostLo, hostHi] = rangeRef.current;
+        if (mbkgKey && reportedRef.current === exposure && hostHi > hostLo) {
+          // a view switch of the same exposure: keep the host's range
+          viewer.setDisplayRange(hostLo, hostHi);
+          return;
+        }
+        if (shared) viewer.setDisplayRange(shared[0], shared[1]);
         const [lo, hi] = viewer.getDisplayRange();
+        reportedRef.current = exposure;
         onLoadRef.current?.({ width: image.width, height: image.height, vmin: lo, vmax: hi });
       } catch (e) {
         if (controller.signal.aborted) return;
