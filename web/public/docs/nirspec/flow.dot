@@ -1,0 +1,215 @@
+digraph flow {
+	compound=true fontname=Helvetica fontsize=11 newrank=true nodesep=0.25 pad=0.2 rankdir=TB ranksep=0.32 splines=spline
+	node [fontname=Helvetica fontsize=10 margin="0.12,0.06"]
+	edge [arrowsize=0.7 color="#555555" fontname=Helvetica fontsize=8.5]
+	subgraph cluster_in {
+		color="#bbbbbb" fontcolor="#555555" label=Inputs style=rounded
+		uncal [label="raw exposures
+(_uncal.fits)" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		msa [label="MSA metafile
+(shutters, catalog sources)" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		msaoper [label="failed-open shutters
+(msaoper, CRDS)" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		crds [label="CRDS reference files" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		bstable [label="measured bar-shadow tables" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		psf [label="PSF table and trace-centre law
+(calibration stars)" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		masks [label="manual masks
+(observations.toml)" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		stuck [label="stuck-shutter list
+(manual, web, auto)" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		ovr [label="hand-set background nods" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+	}
+	subgraph cluster_s1 {
+		color="#0072B2" fillcolor="#fafcfe" fontcolor="#0072B2" label="Stage 1: detector" style="rounded,filled"
+		det1 [label="jwst Detector1
+(ramps to count rate)" color="#444444" fillcolor="#e8f0f8" penwidth=1.0 shape=box style="rounded,filled"]
+		cfn [label="jwst clean_flicker_noise" color="#D55E00" fillcolor="#e8f0f8" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+		bkg1 [label="detector background removed, fitted outside the traces:
+picture frame, column 1/f, row 1/f (PRISM); 5 passes;
+variance rescaled" color="#444444" fillcolor="#e8f0f8" penwidth=1.0 shape=box style="rounded,filled"]
+		bkg2d [label="2-D background" color="#D55E00" fillcolor="#e8f0f8" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+		rate [label="count-rate frame
+(_rate.fits)" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		mask [label="manual masks applied" color="#D55E00" fillcolor="#e8f0f8" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+	}
+	uncal -> det1
+	det1 -> cfn [label="do_clean_flicker_noise = true" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	det1 -> bkg1
+	bkg1 -> bkg2d [label="subtract_2d = false" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	bkg1 -> rate
+	msa -> bkg1 [label="trace footprints" style=dotted]
+	masks -> mask [style=dotted]
+	rate -> mask [arrowtail=none dir=both]
+	subgraph cluster_s2a {
+		color="#009E73" fillcolor="#f9fcfb" fontcolor="#009E73" label="Stage 2a: calibration" style="rounded,filled"
+		subgraph cluster_mb1 {
+			color="#E69F00" fillcolor="#fffaf2" fontcolor="#a86e00" label="master background, step 1 (count rate)" style="rounded,filled"
+			geo [label="footprint of every commanded slitlet
+and failed-open shutter" color="#444444" fillcolor="#fdf1e1" penwidth=1.0 shape=box style="rounded,filled"]
+			mb1 [label="background spectrum from the empty shutters;
+quadrant scales" color="#444444" fillcolor="#fdf1e1" penwidth=1.0 shape=box style="rounded,filled"]
+			sfit [label="each commanded-open shutter's background amplitude
+fitted; stuck when < 0.3 over nods and detectors" color="#444444" fillcolor="#fdf1e1" penwidth=1.0 shape=box style="rounded,filled"]
+			tmap [label="trace map: which slitlets light each pixel" color="#444444" fillcolor="#fdf1e1" penwidth=1.0 shape=box style="rounded,filled"]
+		}
+		spec2 [label="jwst Spec2, one run per rate file, stuck shutters closed:
+WCS, flat field, path loss, flux and wavelength calibration" color="#444444" fillcolor="#e6f4ef" penwidth=1.0 shape=box style="rounded,filled"]
+		wavecorr [label="JADES empirical wavelength correction" color="#D55E00" fillcolor="#e6f4ef" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+		extend [label="G140M / G235M past the nominal red end" color="#D55E00" fillcolor="#e6f4ef" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+		canon [label="calibrated cutout
+per source and exposure" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		bkgslits [label="background-only slitlets" color="#D55E00" fillcolor=white fontsize=9.5 shape=note style="filled,dashed"]
+		units [label="units fixed where jwst
+found no source" color="#444444" fillcolor="#e6f4ef" penwidth=1.0 shape=box style="rounded,filled"]
+		subgraph cluster_mb2 {
+			color="#E69F00" fillcolor="#fffaf2" fontcolor="#a86e00" label="master background, step 2 (calibrated)" style="rounded,filled"
+			mb2 [label="clean empty shutters reselected; background spectrum
+(the exposure group's pool unless an exposure differs)" color="#444444" fillcolor="#fdf1e1" penwidth=1.0 shape=box style="rounded,filled"]
+			paint [label="master background on the detector, through every
+shutter's footprint and bar shadow (failed-open
+shutters at their measured transmission)" color="#D55E00" fillcolor="#fdf1e1" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+		}
+		mbkg [label="master background
+(_mbkg.fits)" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+	}
+	rate -> geo
+	msa -> geo [style=dotted]
+	msaoper -> geo [style=dotted]
+	geo -> mb1
+	bstable -> mb1 [style=dotted]
+	mb1 -> sfit
+	geo -> tmap
+	sfit -> stuck [label="auto entries
+detect_stuck_shutters = true" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	tmap -> rate [label="stored in
+the rate file" constraint=false style=dotted]
+	stuck -> spec2 [style=dotted]
+	rate -> spec2
+	crds -> spec2 [style=dotted]
+	wavecorr -> spec2 [label="empirical_wavecorr = false" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	extend -> spec2 [label="extend_g140m_g235m = false" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	spec2 -> canon
+	spec2 -> bkgslits [label="extract_bkgslits = true" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	canon -> units
+	units -> mb2
+	bkgslits -> mb2 [color="#D55E00" style=dashed]
+	mb1 -> mb2 [label="count-rate background" style=dotted]
+	mb2 -> paint
+	mb2 -> paint [label="master_bkg_write_2d = true" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	paint -> mbkg
+	subgraph cluster_s2b {
+		color="#CC79A7" fillcolor="#fcf9fc" fontcolor="#CC79A7" label="Stage 2b: nod subtraction" style="rounded,filled"
+		nbr [label="other catalog sources placed along the slitlet in every nod;
+their brightness against the master background" color="#444444" fillcolor="#f3eaf2" penwidth=1.0 shape=box style="rounded,filled"]
+		pick [label="background nods of each exposure: a nod is left out
+when a bright neighbor sits where the source is" color="#444444" fillcolor="#f3eaf2" penwidth=1.0 shape=box style="rounded,filled"]
+		sub [label="path loss undone, background nods subtracted
+(jwst Background), path loss redone" color="#444444" fillcolor="#f3eaf2" penwidth=1.0 shape=box style="rounded,filled"]
+		bsub [label="background-subtracted cutouts
+(calibrated frame kept)" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		rect [label="rectified view of each exposure" color="#D55E00" fillcolor="#f3eaf2" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+	}
+	msa -> nbr [style=dotted]
+	mbkg -> nbr
+	canon -> nbr
+	nbr -> pick [label="slitlet_neighbor_min_background = 0.02
+slitlet_neighbor_max_distance = 0.75" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	ovr -> pick [label="hand choices win" style=dotted]
+	pick -> sub
+	canon -> sub
+	sub -> bsub
+	sub -> rect [label="rectify = true" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	subgraph cluster_s3 {
+		color="#56B4E9" fillcolor="#f8fbfd" fontcolor="#2b7fb0" label="Stage 3: combination and extraction" style="rounded,filled"
+		spec3 [label="jwst Spec3: exposures rectified and combined" color="#444444" fillcolor="#eaf4fb" penwidth=1.0 shape=box style="rounded,filled"]
+		s2d [label="2-D spectrum and
+resampled exposures" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		opt [label="optimal extraction and
+3-, 4-, 5-pixel boxcars" color="#444444" fillcolor="#eaf4fb" penwidth=1.0 shape=box style="rounded,filled"]
+		subgraph cluster_pf {
+			color="#D55E00" fontcolor="#D55E00" fontname=Courier label="profile extraction  (profile_fit = true)" style="rounded,dashed"
+			joint [label="first pass: every source solved together
+with the sources whose light shares its pixels" color="#D55E00" fillcolor="#eaf4fb" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+			pass1 [label="first-pass spectrum of every source" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+			redo [label="neighbor check redone with each
+neighbor's modeled brightness" color="#D55E00" fillcolor="#eaf4fb" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+			shape [label="source shape: own fit above the detection gate,
+else the PRISM shape (gratings), else the default" color="#444444" fillcolor="#eaf4fb" penwidth=1.0 shape=box style="rounded,filled"]
+			pfit [label="one spectrum fitted to every nod difference:
+Gaussian galaxy x PSF, clipped by the shutters" color="#444444" fillcolor="#eaf4fb" penwidth=1.0 shape=box style="rounded,filled"]
+			contam [label="other sources' light on the source predicted" color="#D55E00" fillcolor="#eaf4fb" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+			scan [label="search for uncataloged neighbors
+in the residuals" color="#D55E00" fillcolor="#eaf4fb" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+			prop [label="proposed background-nod changes" color="#D55E00" fillcolor=white fontsize=9.5 shape=note style="filled,dashed"]
+		}
+		subgraph cluster_mbs {
+			color="#D55E00" fontcolor="#D55E00" fontname=Courier label="master-background spectrum  (mbkg_spectrum = true)" style="rounded,dashed"
+			mbs [label="exposures minus their master background; jwst Spec3;
+the same fit at the nodded shape, light through
+failed-open shutters solved with the source" color="#D55E00" fillcolor="#fdf1e1" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+		}
+		best [label="best spectrum chosen" color="#444444" fillcolor="#eaf4fb" penwidth=1.0 shape=box style="rounded,filled"]
+		comb [label="1-D combination of exposure groups" color="#D55E00" fillcolor="#eaf4fb" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+		spec [label="_spec.fits: SPEC1D (fnu, fnu_opt, boxcars, fnu_prof, fnu_contam),
+2-D spectrum, PROF2D, CONTAM2D, SPEC1D_MBKG and its 2-D" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+	}
+	bsub -> spec3
+	spec3 -> s2d
+	s2d -> opt
+	rate -> joint [label="trace maps
+contam_predict = true" color="#D55E00" fontcolor="#D55E00" fontname=Courier lhead=cluster_pf style=dashed]
+	bsub -> joint
+	psf -> joint [style=dotted]
+	joint -> pass1
+	pass1 -> redo
+	redo -> pick [label="sources whose background nods change: stage 2b again
+slitlet_neighbor_brightness = \"model\"" color="#D55E00" constraint=false fontcolor="#D55E00" fontname=Courier style=dashed]
+	pass1 -> shape
+	shape -> shape [label="profile_fit_shape = \"gated\"
+profile_fit_prism_transfer = true" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	shape -> pfit
+	psf -> pfit [style=dotted]
+	bsub -> pfit
+	s2d -> pfit [label="drizzled like
+the 2-D spectrum" style=dotted]
+	pass1 -> contam
+	pfit -> scan
+	scan -> prop [label="scan_neighbours = true" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	prop -> ovr [label="applied by stage 2b next run
+if scan_action = \"auto_override\" (default \"report_only\")" color="#D55E00" constraint=false fontcolor="#D55E00" fontname=Courier style=dashed]
+	canon -> mbs [color="#D55E00" style=dashed]
+	mbkg -> mbs [color="#D55E00" style=dashed]
+	shape -> mbs [color="#D55E00" style=dashed]
+	pass1 -> mbs [color="#D55E00" style=dashed]
+	opt -> best
+	pfit -> best
+	contam -> best [label="fnu_contam reported
+contam_1d = \"report\"" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	best -> comb [label="combine_method = \"1d\"
+(default \"2d\")" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	best -> spec
+	comb -> spec [color="#D55E00" style=dashed]
+	mbs -> spec [color="#D55E00" style=dashed]
+	subgraph cluster_z {
+		color="#888888" fillcolor="#fbfbfb" fontcolor="#555555" label="Redshift and line fitting" style="rounded,filled"
+		zfit [label="templates fitted over a grid of redshifts" color="#444444" fillcolor="#f2f2f2" penwidth=1.0 shape=box style="rounded,filled"]
+		zf [label="_zfit.fits" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		lines [label="line fluxes at the inspected redshift
+(cfpipe nirspec linefit, after inspection)" color="#444444" fillcolor="#f2f2f2" penwidth=1.0 shape=box style="rounded,filled"]
+		lf [label="_lines.fits" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+	}
+	spec -> zfit
+	zfit -> zf
+	spec -> lines
+	lines -> lf
+	subgraph cluster_key {
+		color="#bbbbbb" fontcolor="#555555" label=Key style=rounded
+		k_step [label="processing step" color="#444444" fillcolor="#ffffff" penwidth=1.0 shape=box style="rounded,filled"]
+		k_opt [label="step an option can turn off" color="#D55E00" fillcolor="#ffffff" penwidth=1.0 shape=box style="rounded,filled,dashed"]
+		k_data [label="file or table" color="#777777" fillcolor=white fontsize=9.5 shape=note style=filled]
+		k_a [label="" shape=point width=0.01]
+		k_b [label="" shape=point width=0.01]
+		k_a -> k_b [label="option = default" color="#D55E00" fontcolor="#D55E00" fontname=Courier style=dashed]
+	}
+}
