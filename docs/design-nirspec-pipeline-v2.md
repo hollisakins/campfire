@@ -619,7 +619,8 @@ as above; 141 NRS1 / 138 NRS2 clean stars.
   +1.75 rows, a deficit of 0.3-0.8 % at -1.25 to -1.75, a tail of 0.2-0.5 % per pixel to +4 rows;
   the same whichever side the nod partners are on (so not their copies), at +-1.5 rows rather than
   on the core's steep sides (so not centring); about 1 % of the light in all. In bright stars it is
-  5-20 sigma per pixel (own-width chi2/dof 5-60, edge stars up to 200, falling to 1-6 in the red).
+  beyond 5 sigma per pixel along the trace (own-width chi2/dof 5-60, edge stars up to 200, falling
+  to 1-6 in the red); in a star of peak S/N 60, 3-5 sigma below 2.5 um and noise above 3 um.
   The pattern above 4.5 um is the core widening across 4.1-5.3 um (0.585 to 0.661 rows on NRS1):
   splitting the range at 4.6 um removes about two thirds of it. The table's last node is at 4.70 um
   and is held flat beyond it.
