@@ -1499,7 +1499,17 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   the slitlet) or not (the per-exposure floor only nod subtraction removes; on PRISM per
   shutter about 2.7 %, 40 % repeatable). From the per-exposure numbers above, mixed:
   634522 (-5.0, -5.4, -2.9 %) and 879928 (+2.9, +3.5, +2.3 %) repeat; 880017 (+8.4, -3.5,
-  -2.9 %), 925275 (+6.7, -1.0, -0.7 %) and 924186 do not.
+  -2.9 %), 925275 (+6.7, -1.0, -0.7 %) and 924186 do not. The master-background session
+  then measured it per empty shutter (`~/campfire-data/scratch/claude/mbkg_ship/repeat16/`)
+  and took it to the user. 925403 (its finding): the 4.4-5.1 µm rows are crossed in all
+  three exposures by the source shutters of 630784 and 948429; a bright continuum on the
+  lower edge of 925403's source shutter moves with the nods, so nodding cannot remove it.
+  The contamination model predicts most of it (`e2e_925403_contam.py`, medians in µJy).
+  Nodded: fnu - fnu_contam is 0.113 at 4.4-4.7 µm (PRISM 0.122, fnu 0.80, contam 0.74)
+  and 0.35 at 4.7-5.1 µm (PRISM 0.13, fnu 2.48, contam 1.06). Master background: 0.35 and
+  0.66, against 1.57 / 4.73 before subtracting. What is left at the red end is a part of
+  the neighbors' light the model misses, plus, in the master-background spectrum, the
+  background level above.
 - The 1D combination of several exposure groups did not carry the master-background
   spectrum (not built, no other reason); built (530bedb5): each group's `SPEC1D_MBKG`
   combined as the nodded columns are, the 2-D spectrum from one master-background Spec3
