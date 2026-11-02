@@ -1436,8 +1436,16 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   640-647 in all three exposures, which nodding cancels and the master background
   cannot), and about +-5 % scatter between slitlets otherwise. Its proposals (to the
   user): paint failed-open shutters and flag the bright ones, add margins, split DQ bit 2.
-  Open for the extraction: treat MSA_FAILED_OPEN pixels as missing in the
-  master-background extraction (recommended), not in the nodded one.
+  Decision (user, 2026-11-02, relayed by the master-background session): failed-open
+  shutters are painted with background (master background 1.6, in progress there), and
+  the master-background extraction keeps MSA_FAILED_OPEN pixels. Light above the
+  background in a failed-open shutter is other-source light, modeled like any
+  neighbor's. Today the contamination model only records those pixels
+  (`profile_contam.Geometry.failed_open`, `PFFOPEN`): it predicts other light from a
+  source's pass 1, and a failed-open shutter has no source. Scope on p1
+  (`e2e_failed_open_count.py`): 109 of 681 products have failed-open pixels on the
+  source's own shutter (91 G395M, 18 PRISM; up to half of it, 924509 0.51); 921027 has
+  none (`PFFOPEN` 0), so its excess is the background level, not this. Design pending.
   The deploy reader on `claude/mbkg-web` accepts all 99 p1 products.
 - The 1D combination of several exposure groups did not carry the master-background
   spectrum (not built, no other reason); built (530bedb5): each group's `SPEC1D_MBKG`
