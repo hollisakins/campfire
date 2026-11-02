@@ -1397,6 +1397,16 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
     2b and the combined 2-D spectrum again for the groups whose choice changes
     (`stage2.revise_slitlet_overrides`). Stage 2b keeps the data measure as its first
     guess. `slitlet_neighbor_brightness = "model"` ("data" keeps stage 2b's choice).
+  - p1 run (stage 2b + 3 for the 74 sources, with the error-propagation fix; first attempt
+    failed: the padding of groups whose cutouts differ in size left the variance arrays
+    unpadded, fixed in 1b4a0758). Stage 2b's data measure: 54 sources with overrides on
+    65 exposures, 19 flagged. From the joint model, G395M: 22 sources on 26 exposures, 8
+    flagged (PRISM: 15 on 18, 4 flagged); fewer drops, as the data overestimated. The
+    revision redid 71 of 110 G395M groups, many only for a new brightness in BKGWHY; now
+    those are relabelled without a new subtraction (1000d709). G395M neighbors against
+    PRISM: shipped `fnu_prof` beyond 3 sigma in 7 of 17 (10 before), `fnu_prof -
+    fnu_contam` in 6 of 17 (10 before); part of that is the larger, now correct, errors.
+    629466 stays at -44 sigma: not explained by the background choice.
 - Cleanup (user, 2026-11-01): the masked pass 1, pass 1b, the echo correction, the old
   group joint solve and `first_pass.py` removed (merge of `claude/extraction-v2-cleanup`,
   about 2,800 lines). End-to-end check on p1 (stage 3 only, the 74 sources,
