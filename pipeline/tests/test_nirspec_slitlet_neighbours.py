@@ -124,3 +124,12 @@ def test_light_over_sky_reads_the_neighbours_shutter():
     med, hi = SN.light_over_sky(sci, sky, ys, 1.15)
     assert abs(med - 0.04) < 1e-9 and abs(hi - 0.04) < 1e-9
     assert abs(SN.light_over_sky(sci, sky, ys, 0.0)[0]) < 1e-9
+    # past the last open shutter the background is near zero and stray light reads huge
+    sky[ys > 1.75] = 1e-3
+    sci[ys > 1.75] = 0.5
+    assert SN.light_over_sky(sci, sky, ys, 2.0)[0] > 0.5
+    use = SN.usable_pixels(ys, [-1.15, 0.0, 1.15])
+    assert abs(SN.light_over_sky(sci, sky, ys, 2.0, use=use)[0] - 0.04) < 1e-9
+    other = np.abs(ys - 1.15) < 0.3                       # another slitlet's source on part of the band
+    sci[other] += 1.0
+    assert abs(SN.light_over_sky(sci, sky, ys, 1.15, use=SN.usable_pixels(ys, [1.15], other))[0] - 0.04) < 1e-9
