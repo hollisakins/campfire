@@ -17,7 +17,10 @@ p = C.parser(__doc__.splitlines()[0])
 p.add_argument('--source', type=int, required=True)
 p.add_argument('--exposure-group', required=True, help="e.g. 'jw07076001001_03101'")
 p.add_argument('--detector', default='nrs1')
-p.add_argument('--bin', type=int, default=20, help='wavelength pixels averaged per displayed column (1: none)')
+p.add_argument('--bin', type=int, default=1,
+               help='wavelength pixels averaged per displayed column, for faint sources (1: none)')
+p.add_argument('--grating-tag', default='prism_clear',
+               help="the source's spec.fits grating tag, for the wavelength axis (e.g. 'g395m_f290lp')")
 args = p.parse_args()
 root = C.setup_root(args.root)
 
@@ -55,6 +58,31 @@ for f in files:
                            override=bool(hd.get('BKGOVR', False))))
     frames[-1]['after'] = binned(frames[-1]['after_full'], args.bin)
 frames.sort(key=lambda d: d['nod'])
+
+# wavelength of each rectified column: the rectified frames do not store it, but the
+# source's combined spectrum is rectified onto the same column grid by the same jwst step
+wave = None
+spec = C.spec_file(ws, args.obs, args.grating_tag, args.source)
+if os.path.exists(spec):
+    w = np.asarray(fits.getdata(spec, 'SPEC1D')['wave'], float)
+    if w.size == frames[0]['before_full'].shape[1]:
+        wave = w
+
+
+def wavelength_axis(ax):
+    """Ticks at whole microns when the column wavelengths are known, else pixel columns."""
+    if wave is None:
+        ax.set_xlabel(f'wavelength (blocks of {args.bin} pixels)' if args.bin > 1 else 'wavelength pixel')
+        return
+    cols = (np.arange(wave.size) + 0.5) / args.bin - 0.5          # column centres in displayed units
+    ok = np.isfinite(wave)
+    lo, hi = np.nanmin(wave), np.nanmax(wave)
+    step = 1.0 if hi - lo > 2 else 0.2
+    ticks = np.arange(np.ceil(lo / step) * step, hi, step)
+    ax.set_xticks(np.interp(ticks, wave[ok], cols[ok]))
+    ax.set_xticklabels([f'{t:g}' for t in ticks])
+    ax.minorticks_off()
+    ax.set_xlabel('wavelength (µm)')
 same_grid = len({fr['before_full'].shape for fr in frames}) == 1
 va = np.nanpercentile(np.abs(np.concatenate([fr['after'].ravel() for fr in frames])), 99)
 # profiles on one relative scale: 1 = the brightest point of any subtracted profile
@@ -97,9 +125,12 @@ for r, fr in enumerate(frames):
 axes[0, 0].set_title('Calibrated exposure')
 axes[0, 1].set_title('After nod subtraction')
 axes[0, 2].set_title('Along the slitlet')
-xl = f'wavelength (blocks of {args.bin} pixels)' if args.bin > 1 else 'wavelength pixel'
-axes[-1, 0].set_xlabel(xl)
-axes[-1, 1].set_xlabel(xl)
+for r in range(len(frames)):
+    for a in axes[r, :2]:
+        wavelength_axis(a)
+        if r < len(frames) - 1:
+            a.set_xticklabels([])
+            a.set_xlabel('')
 axes[-1, 2].set_xlabel('mean over wavelength (relative)')
 for a in axes[:, 2]:
     a.set_xlim(-1.15, 1.15)

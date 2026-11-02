@@ -17,6 +17,6 @@ $PY $D/fig_stuck_shutters.py --root $ROOT --obs $OBS --example jw07076001001_031
 $PY $D/fig_failed_open.py --root $ROOT --obs $OBS --exposure jw07076001001_03101_00001_nrs1 \
     --shutters 11 19 12 --labels "all of it" "about half" "almost none"
 $PY $D/fig_nod_subtraction.py --root $ROOT --obs $OBS --source 634072 \
-    --exposure-group jw07076001001_03101 --detector nrs2 --bin 4
+    --exposure-group jw07076001001_03101 --detector nrs2
 $PY $D/fig_nod_subtraction.py --root $ROOT --obs $OBS --source 925404 \
-    --exposure-group jw07076001001_03101 --detector nrs1 --bin 4 --out nod_left_out.png
+    --exposure-group jw07076001001_03101 --detector nrs1 --out nod_left_out.png
