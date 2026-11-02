@@ -7,6 +7,8 @@ replaced by stand-ins; the bookkeeping of frames, partners, signs and units is
 what is tested here.
 """
 
+import os
+
 import numpy as np
 import pytest
 from astropy.io import fits
@@ -465,81 +467,88 @@ def test_smooth_points_from_resolution_elements():
     assert s['smooth_prism'] == s['smooth_grating'] == 21
 
 
-def _covered_pass1(t_exps, Rt, c_offset, c_scale=0.0):
-    """The pass 1 of a contaminant (sid 2, centre ``c_offset`` in the same slitlet) whose
-    trace the target covers: solved unmasked over data holding the target's light (and
-    its own, ``c_scale``), with the solve's design stored as ``compute_pass1`` does."""
-    import copy
-    exps = copy.deepcopy(t_exps)
-    shape = dict(centre_offset=c_offset, drift=0.0, width=0.1, width_change=0.0)
-    Rc_true = T._truth_result(exps, dict(centre=c_offset, drift=0.0, width=0.1, width_change=0.0), [0, 0, 0], c_scale)
-    for k, e in enumerate(exps):
-        e.diff = (PF.model_frame(Rt, k, applied_pathloss=False, common=True)
-                  + PF.model_frame(Rc_true, k, applied_pathloss=False, common=True))
-    M = PF.ProfileModel(exps, chromatic=True)
-    R = PF.fit_fixed(model=M, shape=shape, use=np.ones(M.npix, bool))
-    frames = {}
-    for j, e in enumerate(exps):
-        img = PF.frame_image(R, j)
-        prof = PF.frame_image(R, j, spectrum=np.ones(R.lam.size))
-        idx = np.flatnonzero(np.isfinite(img) & (np.abs(img) > 0))
-        frames[CT.exposure_key(e.name)] = dict(origin=np.array(e.origin), shape=np.array(e.y.shape), idx=idx,
-                                               img=img.ravel()[idx], err=0.05 * np.abs(img.ravel()[idx]),
-                                               cal=np.ones(idx.size), prof=prof.ravel()[idx],
-                                               plam=e.wav.ravel()[idx].astype(np.float32))
-    P1 = CT.Pass1(sid=2, lam=R.lam, flux=R.flux, flux_err=R.flux_err, frames=frames, reliable=False, nosrc=set())
-    P1.flux_raw, P1.err_raw = R.flux.copy(), R.flux_err.copy()
-    P1.nband, P1.n_smooth, P1.keep_lines = CT.normal_band(R), 0, True
-    return P1, Rc_true
+def test_excluded_member_light_is_left_out(stand_ins):
+    """A contaminant whose light is modelled elsewhere (a member of the target's joint
+    first pass) is not predicted on the target (``exclude``)."""
+    t_exps, _ = _source(1, 0.0, 10.0)
+    c_exps, Rc = _source(2, 0.3, 5.0)
+    P1 = _pass1_of(Rc, 2)
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.', exclude={2})
+    assert all(np.all(p == 0) for p in P.pred) and 2 not in P.contributors and P.excluded == {2}
 
 
-def test_echo_of_the_target_is_taken_out_of_an_unreliable_contaminant(stand_ins):
-    """5301 / 8427: a contaminant whose trace the target covers is solved over the
-    target's pixels; its pass 1 then holds the target's light, and predicted back it
-    lands on the target's own light (its lines masked as contamination). With the
-    echo taken out, a dark contaminant predicts nothing, and a real one its own light."""
-    t_exps, Rt = _source(1, 0.0, 10.0)
+# ---------------------------------------------------------------------------
+# light past a contaminant's cutout (profile_extend)
+# ---------------------------------------------------------------------------
+def test_merge_sparse_extension_replaces_uncalibrated_pixels():
+    from campfire_pipeline.nirspec import profile_extend as PE
+    a = dict(origin=np.array([1, 1]), shape=np.array([2, 4]), idx=np.array([0, 1, 2, 3]),
+             img=np.array([1., 2., 3., 4.]), err=np.ones(4), cal=np.array([1., 1., np.nan, np.nan]))
+    b = dict(origin=np.array([1, 3]), shape=np.array([1, 4]), idx=np.array([0, 1, 2, 3]),
+             img=np.array([30., 40., 50., 60.]), err=np.ones(4), cal=np.ones(4), ext=np.ones(4, bool))
+    m = PE.merge_sparse(a, b)
+    assert tuple(m['origin']) == (1, 1) and tuple(m['shape']) == (1, 6)
+    det = {int(i): (float(v), bool(x)) for i, v, x in zip(m['idx'], m['img'], m['ext'])}
+    # columns 1-2 of a (calibrated) kept; 3-4 (no calibration) replaced by b; b's 5-6 added
+    assert det[0] == (1.0, False) and det[1] == (2.0, False)
+    assert det[2] == (30.0, True) and det[3] == (40.0, True) and det[5] == (60.0, True)
+
+
+def test_extension_pixels_are_predicted(monkeypatch):
+    """Pixels where a contaminant's trace runs past its nominal range are predicted from
+    its pass 1 extended there (``ext`` pixels, count-rate units), converted with the
+    target's calibration. Without an extension nothing is predicted there and nothing
+    is masked: the maps follow every trace and every pass 1 is extended."""
+    t_exps, _ = _source(1, 0.0, 10.0)
     for e in t_exps:
-        e.var = np.full(e.y.shape, 1e-4)
-    own = _pass1_of(Rt, 1)
-    P1c, _ = _covered_pass1(t_exps, Rt, 0.3)
-    assert P1c.has_design()
-    assert np.nanmedian(np.abs(P1c.flux_raw)) > 0.05 * np.nanmedian(Rt.flux)     # the echo is there
-    kw = dict(own_pass1=own)
-    Pn = CT.predict(t_exps, 1, {'x': None}, lambda s: P1c if s == 2 else None, '.', echo=False, **kw)
-    Pe = CT.predict(t_exps, 1, {'x': None}, lambda s: P1c if s == 2 else None, '.', **kw)
-    assert Pe.echoed == {2} and not Pn.echoed and Pe.unreliable == {2}
-    big = max(np.nanmax(np.abs(p)) for p in Pn.pred_unreliable)
-    left = max(np.nanmax(np.abs(p)) for p in Pe.pred_unreliable)
-    assert left < 1e-3 * big
-    # a real contaminant keeps its light (the target's own pass 1 is clean here)
-    P1r, Rc = _covered_pass1(t_exps, Rt, 0.3, c_scale=2.0)
-    Pr = CT.predict(t_exps, 1, {'x': None}, lambda s: P1r if s == 2 else None, '.', **kw)
-    truth = [np.nan_to_num(sum(w * PF.frame_image(Rc, j) for j, w in PF.term_weights(t_exps, k))) for k in range(3)]
-    for k in range(3):
-        np.testing.assert_allclose(Pr.pred_unreliable[k], truth[k], atol=1e-3 * np.max(np.abs(truth[k])))
-    # without the target's own pass 1 nothing is corrected
-    P0 = CT.predict(t_exps, 1, {'x': None}, lambda s: P1c if s == 2 else None, '.')
-    assert not P0.echoed
-    # nor when the target's own pass 1 failed the sanity guard (its level is not its light)
-    own.why = 'guard'
-    P0 = CT.predict(t_exps, 1, {'x': None}, lambda s: P1c if s == 2 else None, '.', own_pass1=own)
-    assert not P0.echoed
+        e.var = np.ones(e.y.shape)
+    c_exps, Rc = _source(2, 0.3, 50.0)
+    past = np.zeros(t_exps[0].y.shape, bool)
+    past[:, 120:] = True
+    monkeypatch.setattr(CT, 'geometry', lambda exps, sid, maps: CT.Geometry(
+        mask=[np.ones(e.y.shape, bool) for e in exps], sources=[{2: np.ones(e.y.shape, bool)} for e in exps],
+        lit_from=[{2: {0, 1, 2}} for e in exps]))
+    monkeypatch.setattr(CT, 'calibration', lambda e, rate_dir: np.full(e.y.shape, 2.0))   # target: 2 per rate unit
+    P1 = _pass1_of(Rc, 2)
+    P1.nosrc = set()
+    for fr in P1.frames.values():                        # in-range frames stop at column 120 ...
+        col = fr['idx'] % NX
+        x = col >= 120
+        fr['ext'] = x                                    # ... past it the light is in count-rate units
+        fr['cal'] = np.where(x, 1.0, 2.0)
+        fr['img'] = np.where(x, fr['img'] / 2.0, fr['img'])
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    lit = past & (np.abs(np.nan_to_num(PF.frame_image(Rc, 0))) > 0)
+    F = [PF.frame_image(Rc, j) for j in range(3)]
+    expect = np.nan_to_num(F[0] - 0.5 * (F[1] + F[2]))
+    np.testing.assert_allclose(P.pred[0][lit], expect[lit], rtol=1e-5, atol=1e-9)
+    for fr in P1.frames.values():                        # without the extension
+        keep = ~fr['ext']
+        for n in ('idx', 'img', 'err', 'cal', 'ext'):
+            fr[n] = fr[n][keep]
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    assert not P.pred[0][past].any()
+    ok = t_exps[0].ok.copy()
+    CT.apply(t_exps, P, mode='hybrid', kappa=1.0)
+    assert np.array_equal(t_exps[0].ok[past], ok[past])
 
 
-def test_second_round_reads_first_round_results_only(tmp_path):
-    """Pass 1b subtracts only first-round reliable results: a file another pass 1b has
-    already rewritten (reliable or not) is not used, whatever the finishing order."""
-    d = tmp_path / CT.PASS1_SUBDIR
-    d.mkdir()
-    lam = np.linspace(1, 2, 5)
-    for name, rnd, rel in (('a', '1', True), ('b', '2', True), ('c', '1', False)):
-        np.savez(d / f'{name}_pass1.npz', sid=1, lam=lam, flux=lam, flux_err=lam, keys=np.array([], dtype=str),
-                 nosrc=np.array([], dtype=str), reliable=rel, round=rnd)
-    assert CT.first_round_reliable(str(tmp_path), 'a') is not None
-    assert CT.first_round_reliable(str(tmp_path), 'b') is None
-    assert CT.first_round_reliable(str(tmp_path), 'c') is None
-    assert CT.first_round_reliable(str(tmp_path), 'zz') is None and CT.first_round_reliable(str(tmp_path), None) is None
+def test_step_timing_accumulates_and_reports():
+    from campfire_pipeline.nirspec import profile_timing as TM
+    TM.reset()
+    for _ in range(2):
+        with TM.step('a'):
+            sum(range(10000))
+    m = TM.start()
+    TM.stop('b', m)
+    s = TM.snapshot()
+    assert s['a'][2] == 2 and s['b'][2] == 1 and s['a'][0] >= 0
+    lines = []
+    TM.report('product x', log=lines.append)
+    assert lines[0].startswith('TIMING product x a=') and ' b=' in lines[0] and TM.snapshot() == {}
+    with TM.phase('p', log=lines.append):
+        pass
+    assert lines[1].startswith('TIMING-PHASE p wall=') and 'cpu=' in lines[1]
 
 
 # ---------------------------------------------------------------------------
@@ -605,31 +614,15 @@ def test_boxcar_contaminant_is_subtracted_and_counted(stand_ins):
     assert not P.boxcar
 
 
-def _spec_file(path, box):
-    wave, fnu, err = box
-    cols = [fits.Column(name=n, format='D', array=a) for n, a in
-            (('wave', wave), ('fnu', fnu), ('fnu_3px', fnu), ('fnu_3px_err', err))]
-    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU.from_columns(cols, name='SPEC1D')]).writeto(path)
-
-
-def test_run_pass1_falls_back_to_the_boxcar_or_says_why_not(stand_ins, monkeypatch, tmp_path):
-    """run_pass1 on a source whose own pass 1 falls back writes a boxcar pass 1 from its
-    stage-3 spectrum; with no s2d or spectrum it writes none, and a target its trace
-    crosses fails with the reason."""
-    monkeypatch.setattr(PF, 'load_source', lambda groups, bkg_overrides=None, science=None: _no_usable_pixels(2))
-    monkeypatch.setattr(CT, 'maps_for_exposures', lambda workspace, exps: {})
-    _, box = _default_shape_source(2, 5.0)
+def test_missing_pass1_error_quotes_the_recorded_reason(stand_ins, tmp_path):
+    """A source with no pass 1 (its own fell back and it has no boxcar either) leaves its
+    reason beside the pass-1 files; a target its trace crosses fails with that reason."""
     ws = str(tmp_path)
-    _spec_file(tmp_path / 'obs_prism_2_spec.fits', box)
-    groups = [[str(tmp_path / 'jw00000001001_03101_00001_nrs1_2.fits')]]
-    out = CT.run_pass1('obs_prism_2', ws, groups, [None], [], 2, True, NO_SMOOTH)
-    P1 = CT.Pass1.read(out)
-    assert P1.why == 'boxcar' and P1.reliable and P1.frames
+    path = CT.missing_path(ws, 'obs_prism_3')
+    os.makedirs(os.path.dirname(path))
+    with open(path, 'w') as f:
+        f.write('no_usable_pixels: no stage-3 s2d or spectrum to take its 3-pixel boxcar from\n')
     assert CT.missing_reason(ws, 'obs_prism_2') is None
-    # no stage-3 product at all (every nod excluded): no pass 1, and the error says why
-    assert CT.run_pass1('obs_prism_3', ws, groups, [None], [], 3, True, NO_SMOOTH) is None
-    why = CT.missing_reason(ws, 'obs_prism_3')
-    assert 'no_usable_pixels' in why and 'no stage-3 s2d' in why
     t_exps, _ = _source(1, 0.0, 10.0)
     with pytest.raises(CT.MissingContaminant, match='no stage-3 s2d'):          # the maps name source 2 here
         CT.predict(t_exps, 1, {'x': None}, lambda s: None, ws,

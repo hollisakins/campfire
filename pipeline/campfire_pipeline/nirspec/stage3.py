@@ -423,20 +423,18 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
 
     Dispersers run PRISM first, so a grating can take the PRISM shape of the same
     source. With ``contam_predict``: trace maps for every exposure of the
-    observation (cached), then per disperser the pass-1 spectra of every source of
+    observation (cached), then per disperser the joint first pass of every source of
     the configuration (also the ones not being re-run: their light reaches the
-    re-run ones), then the products. The neighbour-scan proposals are written to
-    the observation's reference directory (``scan_action``)."""
+    re-run ones; ``joint_first_pass``), then the products. The neighbour-scan
+    proposals are written to the observation's reference directory (``scan_action``)."""
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec.observation import Observation
+    from campfire_pipeline.nirspec import joint_first_pass as JF
     from campfire_pipeline.nirspec import profile_contam as CT
     from campfire_pipeline.nirspec.profile_product import run_product, stage_flags
-
-    from campfire_pipeline.nirspec import profile_joint as PJ
     from campfire_pipeline.nirspec import profile_timing as TM
 
     fl = stage_flags(stage_config)
-    js = PJ.joint_settings(stage_config)
     shape = str(stage_config.get('profile_fit_shape', 'gated')).lower()
     contam = fl['contam'] and shape != 'free'
     by_fg = {}
@@ -463,54 +461,31 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     for fg in order:
         is_prism = fg == prism_fg
         pass1_products = {}
-        all_tasks = {}       # every source of the disperser, as run_product arguments (joint-solve groups)
         if contam:
             sub = sci_all[sci_all['filter_grating'] == fg]
             every_fg = every[every['filter_grating'] == fg]
-            p1, jtasks = [], {}
+            jtasks = {}
             for sid in np.unique(sub['source_id']):
                 tf = sub[sub['source_id'] == sid]
                 t = _profile_fit_task(obs, every_fg, tf, f"{obs.name}_{fg}_{sid}", sid)
                 prism_product = f"{obs.name}_{prism_fg}_{sid}" if (prism_fg and not is_prism) else ''
                 pass1_products[int(sid)] = t['product_name']
-                p1.append((t['product_name'], obs.workspace_dir, t['groups'], t['overrides'], t['science'],
-                           int(sid), is_prism, stage_config, prism_product, bool(overwrite and int(sid) in run_sids)))
                 jtasks[int(sid)] = dict(product=t['product_name'], groups=t['groups'], overrides=t['overrides'],
                                         science=t['science'], prism_product=prism_product)
-                all_tasks[int(sid)] = (t['product_name'], obs.workspace_dir, t['groups'], t['overrides'],
-                                       t['science'], int(sid), stage_config, is_prism, prism_product,
-                                       pass1_products, False)
-            if CT.pass1_settings(stage_config)['mode'] == 'joint':
-                # every source solved with its neighbours on its nod differences
-                # (joint_first_pass); replaces the masked pass and its second round
-                from campfire_pipeline.nirspec import joint_first_pass as JF
-                log(f"Profile fit: joint pass 1 for {len(jtasks)} {fg} sources")
-                with TM.phase(f'pass1 joint {fg} ({len(jtasks)})'):
-                    JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
-                           overwrite={s for s in jtasks if s in run_sids} if overwrite else False,
-                           cache_size=int(stage_config.get('contam_joint_cache', 60)))
-            else:
-                log(f"Profile fit: pass 1 for {len(p1)} {fg} sources")
-                with TM.phase(f'pass1 {fg} ({len(p1)})'):
-                    dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True)
-                # second round for the sources whose trace others cover (see profile_contam.run_pass1)
-                with TM.phase(f'pass1b {fg} ({len(p1)})'):
-                    dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True,
-                             pass1_products=pass1_products, second=True)
-        joint = contam and js['enabled']
+            # every source solved with its neighbours on its nod differences (joint_first_pass)
+            log(f"Profile fit: joint pass 1 for {len(jtasks)} {fg} sources")
+            with TM.phase(f'pass1 joint {fg} ({len(jtasks)})'):
+                JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
+                       overwrite={s for s in jtasks if s in run_sids} if overwrite else False,
+                       cache_size=int(stage_config.get('contam_joint_cache', 60)))
         tasks = []
         for t in by_fg[fg]:
             prism_product = f"{obs.name}_{prism_fg}_{t['source_id']}" if (prism_fg and not is_prism) else ''
             tasks.append((t['product_name'], t['workspace_dir'], t['groups'], t['overrides'], t['science'],
-                          t['source_id'], stage_config, is_prism, prism_product, pass1_products,
-                          cleanup_crfs and not joint))      # the joint solve redoes products: keep their crfs
+                          t['source_id'], stage_config, is_prism, prism_product, pass1_products, cleanup_crfs))
         log(f"Profile fit: {len(tasks)} {fg} products")
         with TM.phase(f'products {fg} ({len(tasks)})'):
             res = [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]
-        if joint:
-            with TM.phase(f'joint {fg}'):
-                res = _joint_phase(obs, fg, tasks, res, stage_config, pass1_products, js, n_processes,
-                                   cleanup_crfs, all_tasks=all_tasks)
         results += res
     log_fallbacks(results)
     if fl['scan']:
@@ -527,67 +502,6 @@ def log_fallbacks(results):
     what = ', '.join(f'{k} {v}' for k, v in sorted(n.items())) if n else 'none'
     log(f"Profile fit: {len(results)} products, fallbacks to the 3-pixel boxcar: {what}")
     return n
-
-
-def _joint_phase(obs, fg, tasks, results, stage_config, pass1_products, js, n_processes, cleanup_crfs,
-                 all_tasks=None, metrics=None):
-    """Joint solve of the strongly coupled overlap groups of one disperser
-    (``contam_joint``, ``profile_joint``), after its one-pass products. Returns the
-    results with the redone members' one-pass summaries replaced.
-
-    Groups are formed from the coupling of every source of the disperser
-    (``all_tasks``: sid -> ``run_product`` arguments), not only the products of this
-    run, so a ``--source-ids`` run finds the same groups as a full run. The pair
-    metrics of the products of this run come from their results; those of every other
-    source are computed in memory (``profile_product.one_pass_metrics``; nothing of
-    theirs is written), together with the one-pass shape they enter a joint solve
-    with. Only the groups with a source of this run are solved, and only this run's
-    receivers are redone: another source's product is never rewritten.
-
-    metrics : replaces ``one_pass_metrics`` (tests)."""
-    from campfire_pipeline.common.parallel import dispatch
-    from campfire_pipeline.nirspec import profile_joint as PJ
-    from campfire_pipeline.nirspec.profile_product import one_pass_metrics
-
-    pairs = {int(r['source_id']): (r.get('pairs') or {}) for r in results}
-    by_sid = {int(t[5]): t for t in tasks}
-    requested = set(by_sid)
-    members = {**(all_tasks or {}), **by_sid}
-    others = [t for sid, t in sorted(members.items()) if sid not in requested]
-    shapes = {}
-    if others:
-        log(f"Profile fit: pair metrics of {len(others)} {fg} sources not in this run (in memory)")
-        for m in dispatch(metrics or one_pass_metrics, others, n_processes=n_processes, use_starmap=True) or []:
-            pairs[int(m['source_id'])] = m['pairs'] or {}
-            shapes[int(m['source_id'])] = m['shape']
-    groups = PJ.select_groups(pairs, set(members), min_sigma=js['min_sigma'], min_frac=js['min_frac'],
-                              max_members=js['max_members'])
-    # a group whose receivers are all outside this run would change no product of it
-    redo = [PJ.receivers(pairs, g, min_sigma=js['min_sigma'], min_frac=js['min_frac']) & requested
-            for g in groups]
-    groups, redo = [g for g, r in zip(groups, redo) if r], [r for r in redo if r]
-    log(f"Profile fit: {len(groups)} {fg} joint-solve groups "
-        f"({sum(len(g) for g in groups)} sources, sizes {sorted(len(g) for g in groups)}; "
-        f"{sum(len(r) for r in redo)} products redone)")
-    if groups:
-        gtasks = [([members[s] for s in g], obs.workspace_dir, stage_config, pass1_products, r, None,
-                   {s: shapes[s] for s in g if s in shapes})
-                  for g, r in zip(groups, redo)]
-        redone = {}
-        for out in dispatch(PJ.run_group, gtasks, n_processes=n_processes, use_starmap=True) or []:
-            for r in out or []:
-                if r:
-                    redone[int(r['source_id'])] = r
-        results = [redone.get(int(r['source_id']), r) for r in results]
-    if cleanup_crfs:
-        prev = os.getcwd()
-        os.chdir(obs.workspace_dir)
-        try:
-            for t in tasks:
-                _cleanup_spec3_intermediates(list(t[4]), t[0])
-        finally:
-            os.chdir(prev)
-    return results
 
 
 def _prism_xdisp(obs, r, results, tol):
@@ -962,7 +876,7 @@ def opt_ext_single_source(
 
     spec = fits.HDUList(hdus=[primary, spec1d, sci, err, wav, wht] + pf_hdus + [prof1d, exp])
     spec.writeto(out_filename, overwrite=True)
-    # every product's profile fit (joint solve, cross-disperser scan) finished before
+    # every product's profile fit (cross-disperser scan included) finished before
     # extraction began; later runs read the shape cards from the _spec.fits
     if profile_fit and os.path.exists(pf_file):
         os.remove(pf_file)
@@ -1006,12 +920,9 @@ PF_FLUX_COLUMNS = (('_prof', 'Profile-fit flux, nothing subtracted'),
 
 
 def _add_pf_columns(table, columns, wave):
-    """fnu_prof / fnu_contam (with errors and flam twins), then the joint-solve columns."""
+    """fnu_prof / fnu_contam (with errors and flam twins)."""
     for sfx, desc in PF_FLUX_COLUMNS:
         _add_flux_columns(table, sfx, columns[f'fnu{sfx}'][0], columns[f'fnu{sfx}_err'][0], wave, desc)
-    for name, (data, desc) in columns.items():
-        if name.startswith('joint_'):
-            table.add_column(Column(name=name, data=data, description=desc))
 
 
 def model_rows_extraction(P, data, err, mask, frac=0.02):
@@ -1075,48 +986,6 @@ def _contam_1d(C2D, E2D, Pm, weight_rows, V, flux, flux_err):
         ivar = 1.0 / flux_err[okn] ** 2
         csig = float(abs(np.sum(cflux[okn] * ivar)) / np.sqrt(np.sum(ivar))) if okn.any() else 0.0
     return dict(cflux=cflux, cerr=cerr, predicted=predicted, contam=contam, conmax=conmax, csig=csig)
-
-
-def _joint_inflation(JT, wave):
-    """The joint solve's error inflation (joint over isolated error) and most negative
-    correlation, from the JOINT table, at the 1-D wavelengths (NaN outside)."""
-    jl = JT['lam']
-    jok = np.isfinite(jl) & np.isfinite(JT['err']) & np.isfinite(JT['err_iso']) & (JT['err_iso'] > 0)
-    if jok.sum() <= 1:
-        return np.full(wave.shape, np.nan), np.full(wave.shape, np.nan)
-    o = np.argsort(jl[jok])
-    infl = np.interp(wave, jl[jok][o], (JT['err'][jok] / JT['err_iso'][jok])[o], left=np.nan, right=np.nan)
-    jc = np.isfinite(JT['corr']) & jok
-    oc = np.argsort(jl[jc])
-    jcorr = np.interp(wave, jl[jc][oc], JT['corr'][jc][oc], left=np.nan, right=np.nan) \
-        if jc.sum() > 1 else np.full(wave.shape, np.nan)
-    return infl, jcorr
-
-
-def _joint_stat(infl, flux_err):
-    """The statistical cost of the joint split, added to the joint result's other-light error."""
-    if infl is None:
-        return 0.0 * flux_err
-    with np.errstate(invalid='ignore'):
-        return np.where(np.isfinite(infl), flux_err * np.sqrt(np.clip(infl ** 2 - 1.0, 0.0, None)), 0.0)
-
-
-def _joint_noise_ratio(joint_set, onepass_set, infl, Pm, weight_rows, V, flux, flux_err, contam_1d, min_sigma):
-    """Integrated noise of the joint result over the one-pass one (same columns): each as
-    the profile extraction would be with it (other light subtracted above ``min_sigma``, its systematic
-    error, and for the joint one the split's statistical cost, added)."""
-    def err_of(s, joint):
-        c = _contam_1d(s[0], s[1], Pm, weight_rows, V, flux, flux_err)
-        ce = np.where(np.isfinite(c['cerr']), c['cerr'], 0.0)
-        if joint:
-            ce = np.sqrt(ce ** 2 + _joint_stat(infl, flux_err) ** 2)
-        sub = contam_1d == 'subtract' and c['csig'] > min_sigma
-        return np.sqrt(flux_err ** 2 + ce ** 2) if sub else flux_err
-    eJ, eO = err_of(joint_set, True), err_of(onepass_set, False)
-    ok = np.isfinite(eJ) & np.isfinite(eO) & (eJ > 0) & (eO > 0)
-    if ok.sum() < 10:
-        return np.nan
-    return float(np.sqrt(np.sum(1 / eO[ok] ** 2) / np.sum(1 / eJ[ok] ** 2)))
 
 
 # Which extraction is the best spectrum ``fnu`` of a product (header EXTRACT), and why
@@ -1225,8 +1094,7 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     the best spectrum is the 3-pixel boxcar.
 
     Returns dict(columns={name: (data, description)} of fnu_prof / fnu_contam and their
-    errors (plus the joint-solve columns), header, hdus (PROF2D, CONTAM2D), choice,
-    reason).
+    errors, header, hdus (PROF2D, CONTAM2D), choice, reason).
     """
     nan = np.full(np.shape(wave), np.nan)
     with fits.open(pf_file) as h:
@@ -1244,21 +1112,9 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         P = np.asarray(h['PROF2D'].data, float)
         C2D = np.asarray(h['CONTAM2D'].data, float) if 'CONTAM2D' in h else None
         E2D = np.asarray(h['CONTERR2D'].data, float) if 'CONTERR2D' in h else None
-        JT = h['JOINT'].data if 'JOINT' in h else None
         NS = h['NOTSEP'].data if 'NOTSEP' in h else None
         if NS is not None:
             NS = (np.asarray(NS['lam'], float), np.asarray(NS['notsep'], bool))
-        if JT is not None:
-            JT = {n: np.asarray(JT[n], float) for n in ('lam', 'err', 'err_iso', 'corr', 'flag') if n in JT.names}
-        # joint-solve receivers carry the result that was not delivered (``profile_joint.deliver``):
-        # the one-pass other light (*_1P) when fnu_prof is the joint result, the joint one (*_J) else
-        joint_use = bool(header['PFJUSE']) if 'PFJUSE' in header else None
-        alt_sfx = None if joint_use is None else ('_1P' if joint_use else '_J')
-        ALT = {}
-        if alt_sfx is not None:
-            for n in ('CONTAM2D', 'CONTERR2D'):
-                if n + alt_sfx in h:
-                    ALT[n] = np.asarray(h[n + alt_sfx].data, float)
     if rows not in ('aperture', 'model'):
         raise ValueError(f"profile_fit_rows must be 'aperture' or 'model', got {rows!r}")
     if P.shape != s2d_sci.shape:
@@ -1290,23 +1146,6 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         if key.startswith('PF'):
             keep[key] = (header[key], header.comments[key])
     keep['PFROWS'] = (rows, 'Rows of fnu_prof: aperture / model')
-    if (joint_use is not None and str(header.get('PFJGATE', '')).lower() == 'noise' and C2D is not None
-            and ALT.get('CONTAM2D') is not None and ALT['CONTAM2D'].shape == P.shape == C2D.shape):
-        # the noise gate (``profile_joint``): decided here, on the two extracted results
-        sets = {joint_use: (C2D, E2D), (not joint_use): (ALT['CONTAM2D'], ALT.get('CONTERR2D'))}
-        infl = _joint_inflation(JT, wave)[0] if JT is not None else None
-        ratio = _joint_noise_ratio(sets[True], sets[False], infl, Pm, weight_rows, s2d_err ** 2, flux, flux_err,
-                                   contam_1d, contam_1d_min_sigma)
-        gmax = float(header.get('PFJGMAX', np.inf))
-        use = bool(np.isfinite(ratio) and ratio <= gmax)
-        why = (f'noise<={gmax:g}' if use else (f'noise>{gmax:g}' if np.isfinite(ratio) else 'noise_undefined'))
-        keep['PFJUSE'] = (use, 'fnu_prof is the joint result (F: one-pass)')
-        keep['PFJGVAL'] = (float(ratio) if np.isfinite(ratio) else -999.0,
-                           'Noise of the joint result / the one-pass one')
-        keep['PFJWHY'] = (why, 'Why the joint result is (not) delivered')
-        if use != joint_use:
-            (C2D, E2D) = sets[use]
-            joint_use = use
     hdus = []
     prof = fits.ImageHDU(P, name='PROF2D')
     prof.header['BUNIT'] = ('MJy / uJy', 'SCI per unit reported flux (not per column)')
@@ -1323,28 +1162,6 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     keep['PFCONTAM'] = (main['contam'], 'Predicted other light / fnu_prof, integrated')
     keep['PFCONMAX'] = (main['conmax'], '95th pct of |contam/fnu_prof| where S/N > 3')
     keep['PFCONSIG'] = (csig, 'Predicted other light / noise, integrated')
-    with np.errstate(invalid='ignore', divide='ignore'):
-        if JT is not None:
-            # joint solve: the other members' light was solved with this source's
-            # spectrum; its statistical uncertainty is the error inflation of the joint
-            # covariance over the isolated one, added to the systematic part (CONTERR2D).
-            # It belongs to the joint result only: to fnu_contam when fnu_prof is the joint
-            # one (PFJUSE true, or a product written before the gate)
-            jl = JT['lam']
-            jok = np.isfinite(jl) & np.isfinite(JT['err']) & np.isfinite(JT['err_iso']) & (JT['err_iso'] > 0)
-            o = np.argsort(jl[jok])
-            infl, jcorr = _joint_inflation(JT, wave)
-            if joint_use is None or joint_use:
-                cerr = np.sqrt(np.where(np.isfinite(cerr), cerr, 0.0) ** 2 + _joint_stat(infl, flux_err) ** 2)
-            thr = float(header.get('PFJDEGT', 0.9))
-            jflag = (np.isfinite(jcorr) & (jcorr < -thr)).astype(np.int16)
-            if 'flag' in JT and jok.sum() > 1:
-                # nearest spectrum point of the joint solve: 1 split not determined, 2 shape-limited
-                jw = jl[jok][o]
-                i = np.clip(np.searchsorted(jw, wave), 1, jw.size - 1)
-                near = np.where(np.abs(wave - jw[i - 1]) < np.abs(wave - jw[i]), i - 1, i)
-                jflag = np.where(np.isfinite(wave) & (wave >= jw[0]) & (wave <= jw[-1]),
-                                 JT['flag'][jok][o][near], 0).astype(np.int16)
     notsep = _notsep_on(NS, wave)
     if NS is not None:
         keep['PFNOTSEP'] = (float(notsep[np.isfinite(flux)].mean()) if np.isfinite(flux).any() else 0.0,
@@ -1354,10 +1171,6 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
                              'Predicted other-source flux in the fnu_prof extraction '
                              '(NaN: none predicted, or not separable)')
     columns['fnu_contam_err'] = (np.where(predicted, cerr, np.nan), 'Its uncertainty (systematic)')
-    if JT is not None:
-        columns['joint_corr'] = (jcorr, 'Most negative correlation with a joint-solve member')
-        columns['joint_infl'] = (infl, 'Joint-solve error inflation over the isolated error')
-        columns['joint_flag'] = (jflag, 'Shared light: 1 split not determined, 2 shape-limited')
     choice, reason = choose_extraction(True, bool(np.any(predicted)), csig, contam_1d, contam_1d_min_sigma)
     keep.update(extraction_cards(choice, reason, 'predicted' if np.any(predicted) else 'none'))
     c = fits.ImageHDU(C2D, name='CONTAM2D')
