@@ -1,0 +1,92 @@
+"""The master background of one exposure: measured from empty shutters, painted onto the
+detector.
+
+Top row: a detector region as count rate, the master background painted onto it, and the
+two subtracted (what is left is the light of the sources). Bottom left: the background
+spectrum measured from the empty shutters, with the zodiacal-light prediction for the
+pointing and date. Bottom right: each empty shutter's brightness relative to that spectrum;
+shutters that disagree (a faint source, a stuck or partly open shutter) are left out.
+
+    python scripts/docs/nirspec/fig_master_background.py --root <root> --obs ember_cosmos_p1 \
+        --exposure jw07076001001_03101_00001_nrs1 [--region X0 Y0 NX NY]
+"""
+import common as C
+
+p = C.parser(__doc__.splitlines()[0])
+p.add_argument('--exposure', required=True)
+p.add_argument('--region', type=int, nargs=4, metavar=('X0', 'Y0', 'NX', 'NY'), default=None)
+args = p.parse_args()
+root = C.setup_root(args.root)
+
+import numpy as np                                                    # noqa: E402
+from astropy.io import fits                                           # noqa: E402
+
+plt = C.style()
+ws = C.workspace(root, args.obs)
+with fits.open(C.mbkg_file(ws, args.exposure)) as h:
+    mb2d = np.asarray(h['MBKG2D'].data, float)
+    t1 = h['MBKG1D'].data
+    sh = h['SHUTTERS'].data
+rate, rhdr = fits.getdata(C.rate_file(ws, args.exposure), 'SCI', header=False), fits.getheader(C.rate_file(ws, args.exposure))
+rate = np.asarray(rate, float)
+grating = f"{rhdr.get('GRATING', '')}/{rhdr.get('FILTER', '')}"
+
+if args.region:
+    x0, y0, nx, ny = args.region
+else:                                                    # the most completely painted region of this size
+    nx, ny = 500, 220
+    from scipy.ndimage import uniform_filter
+    cover = uniform_filter((np.isfinite(mb2d) & (mb2d > 0)).astype(float), size=(ny, nx), mode='constant')
+    yc, xc = np.unravel_index(np.argmax(cover), cover.shape)
+    x0, y0 = int(np.clip(xc - nx // 2, 0, rate.shape[1] - nx)), int(np.clip(yc - ny // 2, 0, rate.shape[0] - ny))
+sl = (slice(y0, y0 + ny), slice(x0, x0 + nx))
+ext = [x0 - 0.5, x0 + nx - 0.5, y0 - 0.5, y0 + ny - 0.5]
+d, m = rate[sl], np.where(np.isfinite(mb2d[sl]), mb2d[sl], np.nan)
+
+fig = plt.figure(figsize=(12, 8.2), constrained_layout=True)
+gs = fig.add_gridspec(2, 3, height_ratios=[1, 0.95])
+norm = C.asinh_norm(d)
+for k, (img, title) in enumerate([(d, 'Data (count rate)'), (m, 'Master background, painted'),
+                                  (d - np.nan_to_num(m), 'Data minus master background')]):
+    ax = fig.add_subplot(gs[0, k])
+    if k < 2:
+        ax.imshow(img, extent=ext, cmap='Greys', norm=norm, aspect='auto')
+    else:
+        lim = np.nanpercentile(np.abs(img), 99)
+        ax.imshow(img, extent=ext, cmap='RdBu_r', vmin=-lim, vmax=lim, aspect='auto')
+    ax.set_title(title)
+    ax.set_xlabel('detector column')
+    if k == 0:
+        ax.set_ylabel('detector row')
+    else:
+        ax.set_yticklabels([])
+
+ax = fig.add_subplot(gs[1, :2])
+w = np.asarray(t1['wavelength'], float)
+sb, se = np.asarray(t1['surf_bright'], float), np.asarray(t1['surf_bright_err'], float)
+ok = np.isfinite(sb)
+ax.fill_between(w[ok], (sb - se)[ok], (sb + se)[ok], color=C.PALETTE[0], alpha=0.25, lw=0)
+ax.plot(w[ok], sb[ok], color=C.PALETTE[0], label='measured from the empty shutters')
+if 'model_surf_bright' in t1.columns.names:
+    mod = np.asarray(t1['model_surf_bright'], float)
+    if np.any(np.isfinite(mod)):
+        ax.plot(w, mod, color=C.PALETTE[1], ls='--', label='zodiacal light predicted for this pointing and date')
+ax.set_xlabel('wavelength (µm)')
+ax.set_ylabel('background (MJy/sr)')
+ax.set_title('The background spectrum of this exposure')
+ax.legend(loc='upper left')
+
+ax = fig.add_subplot(gs[1, 2])
+scale = np.asarray(sh['scale'], float)
+clean = np.asarray(sh['clean'], bool)
+bins = np.linspace(0.8, 1.2, 41)
+ax.hist(np.clip(scale[clean], bins[0], bins[-1]), bins=bins, color=C.PALETTE[0], label=f'used ({clean.sum()})')
+ax.hist(np.clip(scale[~clean], bins[0], bins[-1]), bins=bins, color=C.PALETTE[5], alpha=0.8,
+        label=f'left out ({(~clean).sum()})')
+ax.axvline(1.0, color=C.MUTED, lw=0.8)
+ax.set_xlabel('empty shutter / background spectrum')
+ax.set_ylabel('shutters')
+ax.set_title('Each empty shutter against the spectrum')
+ax.legend(loc='upper right')
+fig.suptitle(f'{args.obs}  {args.exposure}  ({grating})', x=0.01, ha='left', fontsize=10, color=C.MUTED)
+C.save(fig, args, 'master_background.png')
