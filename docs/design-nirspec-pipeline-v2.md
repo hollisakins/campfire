@@ -1428,7 +1428,17 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   background) / master background away from all sources +0.02 to +0.20 per exposure
   (921027 +0.19 / +0.12 / +0.07, 925403 +0.14 / +0.20), against +-0.02 on PRISM; for
   sources at 1-5 % of the background that dominates. Reported to the master-background
-  session (its painting).
+  session (its painting). Its diagnosis (2026-11-01,
+  `~/campfire-data/scratch/claude/mbkg_ship/g395m_level/`): background pixels read +1.4 %
+  where nothing is left out, +5 % / +10 % where one / two other slitlets' margins are
+  dropped (the painter adds a margin only where no open shutter is painted), +54 % on a
+  failed-open shutter (never painted; 921027 has a bright object behind one on rows
+  640-647 in all three exposures, which nodding cancels and the master background
+  cannot), and about +-5 % scatter between slitlets otherwise. Its proposals (to the
+  user): paint failed-open shutters and flag the bright ones, add margins, split DQ bit 2.
+  Open for the extraction: treat MSA_FAILED_OPEN pixels as missing in the
+  master-background extraction (recommended), not in the nodded one.
+  The deploy reader on `claude/mbkg-web` accepts all 99 p1 products.
 - The 1D combination of several exposure groups did not carry the master-background
   spectrum (not built, no other reason); built (530bedb5): each group's `SPEC1D_MBKG`
   combined as the nodded columns are, the 2-D spectrum from one master-background Spec3
