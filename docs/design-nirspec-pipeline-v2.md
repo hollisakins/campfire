@@ -1342,7 +1342,8 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   sources) B is worse in all 5: rms 1.35 → 1.59 with the stated errors, 1.35 → 1.39 with
   them scaled for the extra noise (`e2e_slitlet/final_a_vs_b.pdf`, `e2e_farther_run.sh`).
   With the neighbour near the source in both, one sky exposure costs more noise than the
-  bias it removes. Recommendation: keep A.
+  bias it removes. Decided (user, 2026-11-01): A ("yes, i think A is fine"); the trial
+  option is removed again.
 
 **Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
@@ -1521,7 +1522,7 @@ a fix or needs another field or disperser), **To make**.
 | Runtime baseline on one full observation | both | |
 | Speed up stage 2's per-source work (user goal, 2026-10-31). First profile one stage-2b group and one rectification: in stage 2b the log line "Inverting the pathloss" only marks the start of a group, which also subtracts the nods, reapplies the pathloss and rectifies again, so the slow part is not yet known. Candidate fixes once measured: rectify once instead of in both 2a and 2b, invert the pathloss arithmetically from the stored correction instead of a `PathLossStep` call, and batch per exposure instead of per source | extraction session | |
 | Rebuild the extraction report as final documentation (main text = what ships; appendices = explored and rejected) | extraction session | |
-| Same-slitlet overrides by position (3.9, `slitlet_neighbours.py`, built in stage 2b): the threshold (0.02), the nods with no clean partner (keep both, or keep the partner that puts the neighbour farther, e.g. 923747), the p1 rerun and PRISM check | extraction session | user |
+| Same-slitlet overrides by position (3.9, `slitlet_neighbours.py`, built in stage 2b): decided 2026-11-01 (0.75 slit units, 0.02 of the sky, unmeasurable neighbours count as bright, no clean partner: keep both and flag); p1 rerun and PRISM check done. Left: the CHANGELOG entry before a PR | extraction session | |
 | Informational "master background likely better" columns (archive products, 3.9) | extraction session | user |
 
 ---

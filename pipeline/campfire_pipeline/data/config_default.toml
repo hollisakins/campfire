@@ -77,10 +77,6 @@
     # min_sky keeps every partner.
     slitlet_neighbour_min_sky = 0.02
     slitlet_neighbour_max_distance = 0.75
-    # When every background partner puts a bright neighbour near the source: "keep" (all
-    # partners, flagged) or "farther" (only the partner that puts it farthest, when that is
-    # at least 0.2 slit units farther than with the others; trial, not decided)
-    slitlet_neighbour_no_clean = "keep"
     empirical_wavecorr = false
     # Master background (docs/design-nirspec-master-background.md §4): the sky of each
     # exposure x detector from its empty shutters, written as <root>_<nod>_<nrsN>_mbkg.fits

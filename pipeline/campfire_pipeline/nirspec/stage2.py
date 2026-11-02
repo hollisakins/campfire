@@ -426,8 +426,7 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
     from campfire_pipeline.nirspec import slitlet_neighbours as SN
     slitlet, flags = slitlet_overrides(
         obs, pending, stage_config.get('slitlet_neighbour_min_sky', SN.MIN_SKY_FRAC),
-        stage_config.get('slitlet_neighbour_max_distance', SN.MAX_DISTANCE), n_processes,
-        no_clean=str(stage_config.get('slitlet_neighbour_no_clean', 'keep')).lower())
+        stage_config.get('slitlet_neighbour_max_distance', SN.MAX_DISTANCE), n_processes)
     for bg, bg_files, source_id, root, detector in pending:
         hand_scan = (effective.get(root) or {}).get(str(source_id)) or {}
         scan_nods = from_auto.get((root, str(source_id)), set())
@@ -1552,7 +1551,7 @@ def scan_notes(obs):
     return out
 
 
-def slitlet_overrides(obs, pending, min_sky_frac, max_distance, n_processes=1, no_clean='keep'):
+def slitlet_overrides(obs, pending, min_sky_frac, max_distance, n_processes=1):
     """Overrides for catalogued neighbours of a source's own slitlet, for the background
     groups stage 2b is about to run (``pending``: (bkg group, files, source id, root,
     detector)): ({(root, source id): {nod (str): (kept nods, reason)}}, {(root, source id):
@@ -1565,7 +1564,7 @@ def slitlet_overrides(obs, pending, min_sky_frac, max_distance, n_processes=1, n
     groups, cache = {}, {}
     for _, bg_files, source_id, root, _ in pending:
         groups.setdefault((root, int(source_id)), []).append(list(bg_files['path']))
-    todo = [(gs, sid, obs.workspace_dir, min_sky_frac, max_distance, no_clean) for (root, sid), gs in groups.items()
+    todo = [(gs, sid, obs.workspace_dir, min_sky_frac, max_distance) for (root, sid), gs in groups.items()
             if SN.scene_for(gs[0][0], obs.workspace_dir, sid, cache)[1]]
     if not todo:
         return {}, {}
