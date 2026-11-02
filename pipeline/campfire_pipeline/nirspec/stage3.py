@@ -184,10 +184,12 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
         )
 
     if pf_tasks:
+        from campfire_pipeline.config import get_stage_config
         log(f"Profile fit: {len(pf_tasks)} products")
         with TM.phase(f'profile_fit {obs.name} (all)'):
             run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=n_processes, overwrite=overwrite,
-                                  cleanup_crfs=cleanup_crfs)
+                                  cleanup_crfs=cleanup_crfs, stage2_config=get_stage_config('stage2', config, obs),
+                                  s3_tasks=tasks if combine_method == '2d' else None, s3_kwargs=s3_kwargs)
 
     optext_tasks = [(task[2], task[1]) for task in tasks]
     with TM.phase(f'extraction {obs.name} ({len(optext_tasks)} products)'):
@@ -418,15 +420,22 @@ def _prism_fg(fgs):
     return next((fg for fg in sorted(fgs) if str(fg).lower().startswith('prism')), None)
 
 
-def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=False, cleanup_crfs=True):
+def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=False, cleanup_crfs=True,
+                          stage2_config=None, s3_tasks=None, s3_kwargs=None):
     """Profile-fit extraction profiles of the products in ``pf_tasks`` (extraction v2).
 
     Dispersers run PRISM first, so a grating can take the PRISM shape of the same
     source. With ``contam_predict``: trace maps for every exposure of the
     observation (cached), then per disperser the joint first pass of every source of
     the configuration (also the ones not being re-run: their light reaches the
-    re-run ones; ``joint_first_pass``), then the products. The neighbour-scan
-    proposals are written to the observation's reference directory (``scan_action``)."""
+    re-run ones; ``joint_first_pass``), then the products. With ``stage2_config``
+    (and ``slitlet_neighbor_brightness = "model"``), the same-slitlet decisions of
+    the re-run sources are redone after the joint first pass with each neighbour's
+    brightness from its modeled light (``stage2.revise_slitlet_overrides``); a source
+    whose background exposures change gets stage 2b and its combined 2-D spectrum
+    (``s3_tasks``, ``run_stage3_single_source``) again before its product. The
+    neighbour-scan proposals are written to the observation's reference directory
+    (``scan_action``)."""
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec.observation import Observation
     from campfire_pipeline.nirspec import joint_first_pass as JF
@@ -478,6 +487,17 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                 JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
                        overwrite={s for s in jtasks if s in run_sids} if overwrite else False,
                        cache_size=int(stage_config.get('contam_joint_cache', 60)))
+            if stage2_config is not None and \
+                    str(stage_config.get('slitlet_neighbor_brightness', 'model')).lower() == 'model':
+                from campfire_pipeline.nirspec.stage2 import revise_slitlet_overrides
+                with TM.phase(f'slitlet revision {fg}'):
+                    changed = revise_slitlet_overrides(obs, stage2_config, run_sids, fg, f'{obs.name}_{fg}',
+                                                       n_processes)
+                redo = [t for t in (s3_tasks or []) if int(t[3]) in changed and t[2] == f'{obs.name}_{fg}_{t[3]}']
+                if redo:
+                    log(f"Profile fit: combined 2-D spectra again for {len(redo)} {fg} sources")
+                    dispatch(run_stage3_single_source, redo, n_processes=n_processes, use_starmap=True,
+                             **(s3_kwargs or {}))
         tasks = []
         for t in by_fg[fg]:
             prism_product = f"{obs.name}_{prism_fg}_{t['source_id']}" if (prism_fg and not is_prism) else ''

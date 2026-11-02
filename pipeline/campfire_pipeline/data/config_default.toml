@@ -210,6 +210,11 @@
     contam_mode = "hybrid"                   # "hybrid" (subtract, mask where uncertain) | "mask"
     contam_joint_cache = 60                  # joint pass: members kept per worker (about 45 MB each on G395M;
                                              # a solve adds about 2.6 GB at its peak). Lower it to run more workers
+    slitlet_neighbor_brightness = "model"    # after the joint pass, redo stage 2b's same-slitlet decisions with each
+                                             # neighbor's brightness from its modeled light, which leaves out other
+                                             # slitlets' light (p1 G395M: the data read 3x the model there); a source
+                                             # whose background exposures change gets stage 2b again. "data": keep
+                                             # stage 2b's decisions
     contam_pass1_smooth_prism = 7.5          # a pass 1 from a source's 3-pixel boxcar (its own fit fell back):
     contam_pass1_smooth_grating = 15.0       # outliers clipped, then a running mean over this many resolution
                                              # elements (2 pixels each; 0: off). contam_pass1_smooth

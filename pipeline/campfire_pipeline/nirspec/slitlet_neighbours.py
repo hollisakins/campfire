@@ -240,29 +240,60 @@ def usable_pixels(ys, open_centres):
                          - np.asarray(open_centres, float)[None, None, :]), axis=-1) < OPEN_HALF
 
 
-def measure(neighbour, slit, frames):
+def model_light(pass1, key, y0, x0, shape, pathloss):
+    """A source's modeled light on a cutout: its pass-1 frame of exposure ``key``
+    (``profile_contam.Pass1``, the joint first pass's spectrum at its shape, other
+    slitlets' light separated) placed on the cutout whose 0-based detector corner is
+    (``y0``, ``x0``), in the canonical's units (divided by the point-source ``pathloss``
+    the frame image has removed). Pixels past the cutouts (``ext``, count-rate units) are
+    left out. None when the pass 1 has no frame of that exposure."""
+    fr = None if pass1 is None else pass1.frames.get(key)
+    if fr is None:
+        return None
+    out = np.zeros(shape)
+    iy, ix = np.unravel_index(np.asarray(fr['idx']), tuple(int(v) for v in fr['shape']))
+    ty, tx = int(fr['origin'][0]) - 1 + iy - y0, int(fr['origin'][1]) - 1 + ix - x0
+    ok = (ty >= 0) & (ty < shape[0]) & (tx >= 0) & (tx < shape[1])
+    if 'ext' in fr:
+        ok &= ~np.asarray(fr['ext'], bool)
+    np.add.at(out, (ty[ok], tx[ok]), np.asarray(fr['img'], float)[ok])
+    pl = np.asarray(pathloss, float)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.where(np.isfinite(pl) & (pl > 0), out / pl, 0.0)
+
+
+def measure(neighbour, slit, frames, model_of=None):
     """Fill the neighbour's ``sky_frac`` from the target's own frames before subtraction:
-    ``frames`` {dither: (sci, sky, ys, has_target)}. Tries the frames that hold the target
-    and put the neighbour at least ``MEASURE_SEP`` from it, the ones with the neighbour
-    inside an open shutter first, then the farthest (the target's wing least in it), on
-    ``usable_pixels`` only; the first that gives a value is used. Unmeasured otherwise."""
+    ``frames`` {dither: (sci, sky, ys, has_target)}.
+
+    With ``model_of`` (dither -> the neighbour's modeled light on that frame, or None;
+    ``model_light``), the light is the model's: other slitlets' light is not counted
+    and the target's is not in it, so any frame holding the target serves. On p1 G395M
+    the data measure read 3x the model where another slitlet lights the band, while the
+    model agreed with the neighbours' PRISM spectra (2 of 17 beyond 3 sigma, against 10
+    of 17 for the shipped G395M spectra). Without a model the data measure is used: the
+    frames that put the neighbour at least ``MEASURE_SEP`` from the target. Either way
+    the frames with the neighbour inside an open shutter come first, then the farthest,
+    on ``usable_pixels`` only; the first that gives a value is used."""
     cands = []
     for d, (sci, sky, ys, has_target) in frames.items():
         u = neighbour.where.get(d)
         if u is None or not has_target or d not in slit.target_u or d not in slit.ref_u:
             continue
+        model = model_of(d) if model_of is not None else None
         sep = abs(u - slit.target_u[d])
-        if sep < MEASURE_SEP:
+        if model is None and sep < MEASURE_SEP:
             continue
         inside = bool(np.min(np.abs(u - slit.open_u[d])) < OPEN_HALF)
-        cands.append(((inside, sep), d))
-    for _, d in sorted(cands, reverse=True):
+        cands.append(((model is not None, inside, sep), d, model))
+    for _, d, model in sorted(cands, key=lambda c: c[0], reverse=True):
         sci, sky, ys, _ = frames[d]
         use = usable_pixels(ys, slit.open_u[d] - slit.ref_u[d])
-        med, hi = light_over_sky(sci, sky, ys, neighbour.where[d] - slit.ref_u[d], use=use)
+        light = sci if model is None else sky + model
+        med, hi = light_over_sky(light, sky, ys, neighbour.where[d] - slit.ref_u[d], use=use)
         if np.isfinite(med):
             neighbour.sky_frac, neighbour.sky_frac_hi = med, hi
-            neighbour.measured_in = f'dither {d}'
+            neighbour.measured_in = f'dither {d}' + (' (model)' if model is not None else '')
             break
     return neighbour
 
@@ -324,12 +355,14 @@ def scene_for(cal_file, msa_dir, source_id, cache):
     return scene(shut, sky, key[1], source_id)
 
 
-def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, cache=None, max_distance=MAX_DISTANCE):
+def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, cache=None, max_distance=MAX_DISTANCE,
+                  pass1_for=None):
     """``Group`` of one source's background group (canonicals of one root and detector,
     before or after stage 2b: the frames before subtraction are read from
     ``PRE_BKGSUB_SCI`` when present), or None when its configuration does not hold it.
     The neighbours are measured only when one of them is near the target in a partner
-    frame."""
+    frame; with ``pass1_for`` (source id -> ``profile_contam.Pass1`` or None, the joint
+    first pass of this disperser) from their modeled light (``measure``)."""
     from astropy.io import fits
     from jwst.datamodels import MultiSlitModel
     from . import master_bkg as MB
@@ -347,7 +380,7 @@ def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, cache=
               partners={n: [m for m in nods if m != n] for n in nods})
     if not dirty_partners(slit, neighbours, g.nod_dither, g.partners, max_distance):
         return g
-    frames = {}
+    frames, geo = {}, {}
     for f, h, n in zip(cal_files, heads, nods):
         ek = CT.exposure_key(f)
         if ek not in products:
@@ -360,11 +393,16 @@ def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, cache=
         sl = m.slits[0]
         yy, xx = np.mgrid[:sl.data.shape[0], :sl.data.shape[1]]
         _, ys, _ = sl.meta.wcs.get_transform('detector', 'slit_frame')(xx, yy)
+        geo[g.nod_dither[n]] = (ek, int(sl.ystart) - 1, int(sl.xstart) - 1, sl.data.shape,
+                                np.asarray(sl.pathloss_point, float) if sl.pathloss_point is not None
+                                and np.size(sl.pathloss_point) else np.ones(sl.data.shape))
         m.close()
         frames[g.nod_dither[n]] = (np.asarray(s['sci'], float), np.asarray(s['sky'], float), np.asarray(ys, float),
                                    str(h.get('SRCFLUX', 'T')).strip().upper() != 'F')
     for nb in neighbours:
-        measure(nb, slit, frames)
+        P1 = pass1_for(nb.source_id) if pass1_for is not None else None
+        model_of = None if P1 is None else (lambda d, P1=P1: model_light(P1, *geo[d]) if d in geo else None)
+        measure(nb, slit, frames, model_of)
     own = [v for v in (light_over_sky(sci, sky, ys, 0.0, use=usable_pixels(ys, slit.open_u[d] - slit.ref_u[d]))[0]
                        for d, (sci, sky, ys, has) in frames.items() if has and d in slit.ref_u)
            if np.isfinite(v)]
@@ -422,15 +460,32 @@ def _names(ids, frac):
                                    for i in ids) + ' of background'
 
 
-def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_distance=MAX_DISTANCE):
+def pass1_reader(workspace, prefix):
+    """Source id -> its joint-first-pass ``Pass1`` (``{prefix}_{sid}``, e.g.
+    ``ember_cosmos_p1_g395m_f290lp``) or None when it has none; cached."""
+    from . import profile_contam as CT
+    seen = {}
+
+    def read(sid):
+        if sid not in seen:
+            path = CT.pass1_path(workspace, f'{prefix}_{int(sid)}')
+            seen[sid] = CT.Pass1.read(path) if os.path.exists(path) else None
+        return seen[sid]
+    return read
+
+
+def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_distance=MAX_DISTANCE,
+                   pass1_prefix=None):
     """The overrides of one source in one exposure root, over its detector groups
     (lists of canonical paths): (root, {nod (str): (kept nods, reason)} for the nods
     whose partners change, {nod (str): flag} for the nods with a bright neighbour from
     every partner, the combined ``Group`` or None). The reason names the neighbours and
     their light over the background, e.g. ``'neighbor 634547 at 0.031 of background'``; the flag
-    starts ``'every background exposure: '``."""
+    starts ``'every background exposure: '``. With ``pass1_prefix`` the neighbours'
+    brightness comes from the joint first pass (``pass1_reader``, stage 3)."""
     products, cache = {}, {}
-    g = combine([measure_group(files, source_id, workspace, workspace, products, cache, max_distance)
+    pass1_for = pass1_reader(workspace, pass1_prefix) if pass1_prefix else None
+    g = combine([measure_group(files, source_id, workspace, workspace, products, cache, max_distance, pass1_for)
                  for files in groups])
     if g is None:
         return None, {}, {}, None

@@ -130,3 +130,53 @@ def test_light_over_sky_reads_the_neighbours_shutter():
     assert SN.light_over_sky(sci, sky, ys, 2.0)[0] > 0.5
     use = SN.usable_pixels(ys, [-1.15, 0.0, 1.15])
     assert abs(SN.light_over_sky(sci, sky, ys, 2.0, use=use)[0] - 0.04) < 1e-9
+
+
+def test_model_light_places_the_pass1_frame_on_the_cutout():
+    from types import SimpleNamespace
+    img = np.array([1.0, 2.0, 4.0])
+    fr = dict(origin=np.array([11, 21]), shape=np.array([4, 5]), idx=np.array([0, 6, 19]), img=img,
+              ext=np.array([False, False, True]))
+    P1 = SimpleNamespace(frames={'k': fr})
+    pl = np.full((3, 3), 0.5)
+    # the frame's 1-based origin (11, 21) is detector (10, 20); the cutout's 0-based corner is (9, 20)
+    out = SN.model_light(P1, 'k', 9, 20, (3, 3), pl)
+    assert np.isclose(out[1, 0], 1.0 / 0.5)                   # frame (0, 0) -> cutout (1, 0), path loss put back
+    assert np.isclose(out[2, 1], 2.0 / 0.5)                   # frame (1, 1) -> cutout (2, 1)
+    assert np.isclose(out.sum(), 6.0)                         # frame (3, 4) is off the cutout and 'ext' anyway
+    assert SN.model_light(P1, 'other', 10, 21, (3, 3), pl) is None
+
+
+def test_measure_from_the_model_ignores_other_light_and_the_separation_limit():
+    ny, nx = 30, 200
+    ys = np.repeat(np.linspace(-1.8, 3.0, ny)[:, None], nx, axis=1)
+    sky = np.ones((ny, nx))
+    sci = sky.copy()
+    sci[np.abs(ys - 0.6) < 0.5] += 0.5                       # another slitlet's light where the neighbor is
+    model = np.where(np.abs(ys - 0.6) < 0.5, 0.03, 0.0)       # the neighbor's own modeled light
+    slit = SN.Slitlet(slitlet_id=1, quadrant=1, row=1, open_u={1: np.array([-1.15, 0.0, 1.15])},
+                      target_u={1: 0.0}, ref_u={1: 0.0})
+    frames = {1: (sci, sky, ys, True)}
+    nb = SN.measure(SN.Neighbour(9, {1: 0.6}), slit, frames)  # data: too close (0.6 < 1) to measure
+    assert not np.isfinite(nb.sky_frac)
+    nb = SN.measure(SN.Neighbour(9, {1: 0.6}), slit, frames, model_of=lambda d: model)
+    assert abs(nb.sky_frac - 0.03) < 1e-9 and nb.measured_in == 'dither 1 (model)'
+
+
+def test_bkg_cards_match_reads_bkgnods_and_bkgwhy(tmp_path):
+    from astropy.io import fits
+    from campfire_pipeline.nirspec import canonical as C
+    from campfire_pipeline.nirspec.stage2 import _bkg_cards_match
+    paths = []
+    for nod, partners, why in ((1, [2], 'neighbor 9 at 0.030 of background'), (2, [1, 3], ''), (3, [1, 2], '')):
+        h = fits.Header()
+        for k, (v, c) in C.bkg_nods_cards(partners, overridden=nod == 1, auto=nod == 1, why=why).items():
+            h[k] = (v, c)
+        p = str(tmp_path / f'jw00001001001_03101_{nod:05d}_nrs1_7.fits')
+        fits.PrimaryHDU(header=h).writeto(p)
+        paths.append(p)
+    reasons = {'1': 'neighbor 9 at 0.030 of background'}
+    assert _bkg_cards_match(paths, {'1': [2]}, ['1'], reasons)
+    assert not _bkg_cards_match(paths, None, [], {})                     # stage 2b would now keep both
+    assert not _bkg_cards_match(paths, {'1': [3]}, ['1'], reasons)       # another partner
+    assert not _bkg_cards_match(paths, {'1': [2]}, ['1'], {'1': 'neighbor 9 at 0.050 of background'})
