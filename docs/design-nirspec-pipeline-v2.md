@@ -1489,10 +1489,17 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   to the extraction, accounts for most of the difference from PRISM in 634522, 632454,
   925380 and 634072. 921027 and 925403 are different: bright bands past 4.3 µm (921027
   the band at rows 636-652 near 24/q4, unexplained) that are not flat across the slitlet;
-  925403's nodded spectrum is high there too (3.2x). So the failed-open and margin fixes
-  removed the part that was always positive, and the slitlet-to-slitlet scatter of a few
-  percent is now what limits the G395M master-background spectrum; 8 G395M products carry
-  MBKGPREF, kept as is (user, 2026-11-02). Asked how to correct the level, the user chose
+  925403's nodded spectrum is high there too (3.2x). Caveat (user, 2026-11-02): none of
+  this measures the master background against a truth. The PRISM comparison compares two
+  extractions, each with its own handling of contamination and overlap, with statistical
+  errors only; the level "away from the source" depends on which pixels are counted as
+  background (here: |ys - source| > 0.75 slit units, other sources' source shutters
+  masked, their wings and margins not); and the master-background session's per-shutter
+  numbers use yet another selection. What is established is only that, measured this way,
+  the G395M master-background spectrum differs from PRISM more than the nodded one does
+  (median 7.3 against 2.8 sigma), and that the difference follows the level in its own
+  off-source rows. Not established: that the master background is too high or too low.
+  8 G395M products carry MBKGPREF, kept as is (user, 2026-11-02). Asked how to correct the level, the user chose
   the per-slitlet scale in the master-background step; that reopens the 2026-10-30
   decision that ruled it out ("that's not master background at that point"), so it is
   pending a check of whether the slitlet's offset repeats from nod to nod (a property of
