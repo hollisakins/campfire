@@ -28,9 +28,12 @@ the in-shutter offset itself is explained and fixed in 1.3 (§9, last entry).
 `deploy` upload it beside the rate file, `campfire pull --intermediate` fetches it, and it is readable by
 the program's members like the rate file (not part of data releases). Deploy writes the master-background
 columns of `nirspec_rate_exposures` (`mbkg_storage_key`, `mbkg_source` and `mbkg_rate_source` as
-combined | exposure, `mbkg_test`, `mbkg_exposures`, `mbkg_n_empty_shutters`, `mbkg_version`); program
-viewers read them through `get_program_mbkg()` on the metadata program page, and the admin rate review
-draws the rate, the 2-D master background or their difference.
+combined | exposure, `mbkg_test`, `mbkg_exposures`, `mbkg_n_empty_shutters`, `mbkg_version`), with what was observed
+(`filter`, `exposure_time`, `date_obs`, `readout_pattern`, `n_groups`, `n_integrations`,
+`dither_position`, `n_dither_positions`, from the rate header). Program viewers read the exposures
+table of the metadata program page through `get_program_exposures()` (one row per exposure; of the
+master background only which one the exposure uses, combined or its own), and the admin rate review
+draws the rate, the 2-D master background or their difference on one display range.
 
 **Fixed slits (2026-11-01, Hollis):** both steps skip a standalone fixed-slit exposure
 (`NRS_FIXEDSLIT`, no MSA metafile; `master_bkg_rate.has_master_background`): it has no empty

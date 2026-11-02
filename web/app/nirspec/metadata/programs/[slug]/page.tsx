@@ -9,13 +9,13 @@ import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { MarkdownRenderer } from '@/components/docs';
-import { useProgramDetailQuery, useProgramMbkgQuery } from '@/lib/hooks/useProgramsQuery';
+import { useProgramDetailQuery, useProgramExposuresQuery } from '@/lib/hooks/useProgramsQuery';
 import { LogIn, Telescope, ExternalLink, ArrowRight, AlertCircle, ChevronRight, ChevronDown, Download } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { pointingsToCsv, pointingsToDs9, flattenPointings, downloadBlob } from '@/lib/pointings';
 import { ProvenanceCell } from '@/components/metadata/ProvenanceCell';
-import { MasterBackgroundSubtable } from '@/components/metadata/MasterBackgroundSubtable';
-import type { ExposureMbkg } from '@/app/api/metadata/programs/[slug]/mbkg/route';
+import { ExposuresSubtable } from '@/components/metadata/ExposuresSubtable';
+import type { ProgramExposure } from '@/app/api/metadata/programs/[slug]/exposures/route';
 import type { Pointing } from '@/lib/types';
 
 // Editorial content registry — add imports as markdown files are authored
@@ -43,16 +43,16 @@ export default function ProgramDetailPage() {
   const observations = data?.observations ?? [];
   const error = data?.error ?? null;
   const loading = isLoading;
-  const { data: mbkgData } = useProgramMbkgQuery(programSlug, !authLoading && !!user && !!program);
-  const mbkgByObs = React.useMemo(() => {
-    const m = new Map<string, ExposureMbkg[]>();
-    for (const e of mbkgData?.exposures ?? []) {
+  const { data: exposuresData } = useProgramExposuresQuery(programSlug, !authLoading && !!user && !!program);
+  const exposuresByObs = React.useMemo(() => {
+    const m = new Map<string, ProgramExposure[]>();
+    for (const e of exposuresData?.exposures ?? []) {
       const list = m.get(e.observation);
       if (list) list.push(e);
       else m.set(e.observation, [e]);
     }
     return m;
-  }, [mbkgData]);
+  }, [exposuresData]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const toggleExpanded = (obsName: string) => {
@@ -275,8 +275,8 @@ export default function ProgramDetailPage() {
                 <tbody>
                   {observations.map((obs) => {
                     const hasPointings = obs.pointings != null && obs.pointings.length > 0;
-                    const mbkg = mbkgByObs.get(obs.observation) ?? [];
-                    const hasDetails = hasPointings || mbkg.length > 0;
+                    const exposures = exposuresByObs.get(obs.observation) ?? [];
+                    const hasDetails = hasPointings || exposures.length > 0;
                     const isExpanded = expanded.has(obs.observation);
                     return (
                       <React.Fragment key={obs.observation}>
@@ -289,7 +289,7 @@ export default function ProgramDetailPage() {
                               <button
                                 onClick={() => toggleExpanded(obs.observation)}
                                 className="text-text-secondary hover:text-primary transition-colors"
-                                title={isExpanded ? 'Collapse' : 'Show pointings and master background'}
+                                title={isExpanded ? 'Collapse' : 'Show pointings and exposures'}
                               >
                                 {isExpanded ? (
                                   <ChevronDown className="w-4 h-4" />
@@ -343,7 +343,7 @@ export default function ProgramDetailPage() {
                                   onDownloadDs9={() => downloadObsDs9(obs.observation, obs.pointings!)}
                                 />
                               )}
-                              {mbkg.length > 0 && <MasterBackgroundSubtable exposures={mbkg} />}
+                              {exposures.length > 0 && <ExposuresSubtable exposures={exposures} />}
                             </td>
                           </tr>
                         )}

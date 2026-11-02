@@ -1054,17 +1054,36 @@ CREATE TABLE IF NOT EXISTS "public"."nirspec_rate_exposures" (
     "mbkg_test" "text",
     "mbkg_exposures" "text"[],
     "mbkg_n_empty_shutters" integer,
-    "mbkg_version" "text"
+    "mbkg_version" "text",
+    "filter" "text",
+    "exposure_time" double precision,
+    "date_obs" "text",
+    "readout_pattern" "text",
+    "n_groups" integer,
+    "n_integrations" integer,
+    "dither_position" integer,
+    "n_dither_positions" integer
 );
 
 
 ALTER TABLE "public"."nirspec_rate_exposures" OWNER TO "postgres";
 
 
+-- What was observed (deploy-owned, read from the rate file's primary header). With
+-- the master background columns below, what program viewers read through
+-- get_program_exposures(): the exposures table of the metadata program page.
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."filter" IS 'FILTER of the exposure.';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."exposure_time" IS 'Effective exposure time in seconds (EFFEXPTM).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."date_obs" IS 'UTC date the exposure started (DATE-OBS).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."readout_pattern" IS 'Detector readout pattern (READPATT), e.g. NRSIRS2.';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."n_groups" IS 'Groups per integration (NGROUPS).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."n_integrations" IS 'Integrations in the exposure (NINTS).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."dither_position" IS 'Position of the exposure in the dither / nod pattern (PATT_NUM), 1-based.';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."n_dither_positions" IS 'Points in the dither / nod pattern (NUMDTHPT).';
+
 -- The master background of the exposure x detector (deploy-owned, read from the
 -- <root>_<nrsN>_mbkg.fits beside the rate file and the step-1 tables in the rate
--- file; docs/design-nirspec-master-background.md). Program viewers read these
--- columns, and only these, through get_observation_mbkg().
+-- file; docs/design-nirspec-master-background.md).
 COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_storage_key" IS 'Canonical key of the exposure''s master background (<root>_<nrsN>_mbkg.fits, product nirspec_mbkg).';
 COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_source" IS 'Which master background the exposure uses: combined (over the exposures that agree) or exposure (its own empty shutters, when it differs from the others).';
 COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_rate_source" IS 'The same choice for the count-rate master background derived from the rate file (master background step 1).';

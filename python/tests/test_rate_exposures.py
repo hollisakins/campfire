@@ -120,6 +120,31 @@ def _write_rate(path, rate_source="pool"):
                  ).writeto(path)
 
 
+def test_records_carry_what_was_observed(tmp_path):
+    import numpy as np
+    from astropy.io import fits
+    rate = tmp_path / "jw09214009001_03105_00001_nrs1_rate.fits"
+    h = fits.Header()
+    for k, v in dict(GRATING="G140M", FILTER="F100LP", EFFEXPTM=8753.334, **{"DATE-OBS": "2025-11-06"},
+                     READPATT="NRSIRS2", NGROUPS=20, NINTS=6, PATT_NUM=1, NUMDTHPT=3).items():
+        h[k] = v
+    fits.HDUList([fits.PrimaryHDU(header=h), fits.ImageHDU(np.zeros((4, 5), np.float32), name="SCI")]
+                 ).writeto(rate)
+    r = build_rate_exposure_records([rate], observation="spurs_a2744", scope=Scope(obs="spurs_a2744"))[0]
+    assert (r["grating"], r["filter"], r["date_obs"], r["readout_pattern"]) == (
+        "G140M", "F100LP", "2025-11-06", "NRSIRS2")
+    assert r["exposure_time"] == pytest.approx(8753.334)
+    assert (r["n_groups"], r["n_integrations"], r["dither_position"], r["n_dither_positions"]) == (20, 6, 1, 3)
+    # a re-deploy carries them in the UPDATE; a file without the cards leaves them out
+    key = {("spurs_a2744", "jw09214009001_03105_00001", "nrs1")}
+    _, upd = partition_rate_records([r], existing_keys=key, now="T")
+    assert upd[0]["filter"] == "F100LP" and upd[0]["n_dither_positions"] == 3
+    bare = tmp_path / "jw09214009001_03105_00002_nrs1_rate.fits"
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.zeros((4, 5), np.float32), name="SCI")]).writeto(bare)
+    rb = build_rate_exposure_records([bare], observation="spurs_a2744", scope=Scope(obs="spurs_a2744"))[0]
+    assert "filter" not in rb and "exposure_time" not in rb
+
+
 def _write_mbkg(path, **cards):
     from astropy.io import fits
     h = fits.Header()

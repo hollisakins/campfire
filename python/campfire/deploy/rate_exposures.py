@@ -56,6 +56,40 @@ def read_rate_metadata(path: Path) -> tuple[str | None, int | None, int | None]:
         return None, None, None
 
 
+# What was observed: column -> (primary-header card, type).
+_OBSERVING_CARDS = {
+    "filter": ("FILTER", str),
+    "exposure_time": ("EFFEXPTM", float),
+    "date_obs": ("DATE-OBS", str),
+    "readout_pattern": ("READPATT", str),
+    "n_groups": ("NGROUPS", int),
+    "n_integrations": ("NINTS", int),
+    "dither_position": ("PATT_NUM", int),
+    "n_dither_positions": ("NUMDTHPT", int),
+}
+
+
+def read_observing_metadata(path: Path) -> dict:
+    """The exposures-table columns of one rate file (what was observed), from its
+    primary header. A card that is absent or unreadable leaves its column out, so a
+    re-deploy never blanks it; an unreadable file gives nothing."""
+    try:
+        from astropy.io import fits
+        h = fits.getheader(path, 0)
+    except Exception:
+        return {}
+    out = {}
+    for col, (card, cast) in _OBSERVING_CARDS.items():
+        value = h.get(card)
+        if value is None or (cast is str and not str(value).strip()):
+            continue
+        try:
+            out[col] = cast(value).strip() if cast is str else cast(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 _MBKG_SUFFIX = "_mbkg.fits"
 
 # The pipeline's labels for which master background an exposure uses (MBKGSRC on the
@@ -133,6 +167,7 @@ def build_rate_exposure_records(
             "storage_key": storage_key(
                 "nirspec_rate", scope, path.name, scheme=KeyScheme.CANONICAL),
             "stage": "rate",
+            **read_observing_metadata(path),
             **read_mbkg_metadata(path, scope),
         })
     return records
@@ -141,6 +176,8 @@ def build_rate_exposure_records(
 # Columns deploy owns on a re-register (everything else is web-owned triage).
 _IDENTITY_COLS = ("observation", "exposure_root", "detector", "filename", "stage")
 _RENDER_COLS = ("grating", "image_width", "image_height", "storage_key")
+# What was observed (read_observing_metadata): deploy-owned like the render columns.
+_OBSERVING_COLS = tuple(_OBSERVING_CARDS)
 # The master background (read from the _mbkg.fits beside the rate file): deploy-owned
 # like the render columns. A batch that carries none leaves them untouched; in a batch
 # where some exposures have one, postgrest-py sends the union of keys, so a row whose
@@ -164,7 +201,7 @@ def partition_rate_records(
         if key in existing_keys:
             update = {c: r[c] for c in _IDENTITY_COLS}
             update["updated_at"] = now
-            for c in _RENDER_COLS + _MBKG_COLS:
+            for c in _RENDER_COLS + _OBSERVING_COLS + _MBKG_COLS:
                 if r.get(c) is not None:
                     update[c] = r[c]
             update_records.append(update)
