@@ -1347,6 +1347,30 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   With the neighbour near the source in both, one sky exposure costs more noise than the
   bias it removes. Decided (user, 2026-11-01): A ("yes, i think A is fine"); the trial
   option is removed again.
+- Vocabulary (user, 2026-11-01): "background", not "sky"; American spelling. The config
+  keys are now `slitlet_neighbor_min_background` / `slitlet_neighbor_max_distance` and
+  `BKGWHY` reads "neighbor <id> at <f> of background" or "every background exposure: ..."
+  (b18e5d49).
+- Validation of the neighbor brightness measure (user: "worth validating"). Most neighbors
+  are targets too, so each is measured twice with the same function: in the target's
+  exposures at the neighbor's position (what stage 2b uses) and in its own exposures at
+  its own shutter (`e2e_brightness_check.py`, `e2e_brightness_fig.py`,
+  `e2e_brightness_overlap.py`; 143 pairs).
+  - Before: PRISM agreed (median ratio 1.08) except 634547, 0.28 of the background
+    against 0.004 own: its band ran past the last open shutter into the cutout margin,
+    where the master background is near zero (the margin read 19x its background).
+    G395M: median 1.10 but 35 of 115 pairs off by more than 2x. Pairs whose band no other
+    slitlet's source lights agree to ~15 % (29 pairs); where one lights more than 20 % of
+    it (66 pairs) they differ by a factor 1.6 median.
+  - Fix (d7069b89): the measure uses only pixels inside the slitlet's open shutters and
+    tries the next candidate exposure when one gives no value. PRISM: median 1.03,
+    634547 now 0.016. Leaving out the pixels other slitlets light was tried and dropped
+    (9bacabc8): on G395M it left 49 of 115 neighbors unmeasured (18 before) without
+    better agreement.
+  - Open: G395M stays scattered (median 1.28, 35 of 115 off by more than 2x, 26 on the
+    other side of 0.02), mostly other slitlets' light in the band; the errors are mostly
+    overestimates, so they cost extra dropped exposures (noise) more than missed ones
+    (bias). Note that the reference (the neighbor's own exposures) has the same problem.
 
 **Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
