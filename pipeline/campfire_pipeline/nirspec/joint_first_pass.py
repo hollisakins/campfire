@@ -772,7 +772,7 @@ def read_joint_light(path, sig=None):
 def add_joint_light(P, exps, jl):
     """Add the neighbours' light from the target's own joint solve (``read_joint_light``)
     to a ``profile_contam.Prediction`` that left those members out (``predict`` with
-    ``exclude`` = them and ``exclude_ext``): subtracted, never masked, like any jointly
+    ``exclude`` = them): subtracted, never masked, like any jointly
     solved light (``pred_joint``; its error in ``dpred_joint``, reported only).
 
     The target's exposures must be the ones the solve used: the same nod differences on
@@ -883,7 +883,7 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
             P1, src = _boxcar(sid, t, cache, tmaps, stage_config, e)
             log(f"{t['product']}: pass 1 from the stage-3 3-pixel boxcar ({src}), its own fell back "
                 f"({e.reason}: {e})")
-            CT.write_pass1(out, P1, sig, len(mpaths), SPEC_SRC, '1')
+            CT.write_pass1(out, P1, sig, len(mpaths), SPEC_SRC)
             if os.path.exists(missing):
                 os.remove(missing)
             return out
@@ -901,7 +901,7 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
             log(f"{t['product']}: neighbour {s} left out of the joint solve ({e.reason})")
     sol = solve_target(members, degenerate=degenerate)
     P1 = pass1_of(target, sol, tmaps, stage_config)
-    CT.write_pass1(out, P1, sig, len(mpaths), SPEC_SRC, '1')
+    CT.write_pass1(out, P1, sig, len(mpaths), SPEC_SRC)
     write_joint_light(jpath, target, sol.get('others', []), sig)
     if os.path.exists(missing):
         os.remove(missing)

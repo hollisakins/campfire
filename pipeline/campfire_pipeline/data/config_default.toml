@@ -201,28 +201,20 @@
     bound_drift = 0.3
     bound_width_change = 0.3
     srcypos_tolerance = 0.05
-    # Other slitlets' light (trace maps + one-pass prediction from pass-1 spectra)
+    # Other slitlets' light (trace maps + prediction from pass-1 spectra). Pass 1: each source
+    # solved with its neighbours on its nod differences, nothing masked or smoothed
+    # (joint_first_pass), its light past its cutout too (count rate, no calibration;
+    # profile_extend); failed-open shutters are recorded only (their background cancels in
+    # a nod difference)
     contam_predict = true
     contam_mode = "hybrid"                   # "hybrid" (subtract, mask where uncertain) | "mask"
-    contam_pass1 = "joint"                   # pass-1 spectra: "joint" (each source solved with its neighbours on
-                                             # its nod differences, nothing masked or smoothed) | "fixed"
-                                             # (masked fixed-shape solve and its second round; retired after
-                                             # validation) | "stage3" (existing stage-3 fnu of each source)
     contam_joint_cache = 60                  # joint pass: members kept per worker (about 45 MB each on G395M;
                                              # a solve adds about 2.6 GB at its peak). Lower it to run more workers
-    contam_pass1_smooth_prism = 7.5          # pass-1 spectra: outliers clipped, then a running mean over this many
-    contam_pass1_smooth_grating = 15.0       # resolution elements (2 pixels each; 0: off). contam_pass1_smooth
+    contam_pass1_smooth_prism = 7.5          # a pass 1 from a source's 3-pixel boxcar (its own fit fell back):
+    contam_pass1_smooth_grating = 15.0       # outliers clipped, then a running mean over this many resolution
+                                             # elements (2 pixels each; 0: off). contam_pass1_smooth
                                              # (grid points, both dispersers) overrides when set
     contam_pass1_lines = true                # keep clipped positive runs of >= 2 samples (a contaminant's lines)
-    contam_pass1_guard = 3.0                 # pass-1 p95 |flux| above this x the stage-3 p95: unreliable (0: off)
-    contam_pass1_guard_ref = "max"           # stage-3 reference: "stage3" (fnu) | "boxcar_skip" | "box3" (fnu_3px)
-                                             # | "max" (larger of fnu and fnu_3px: a boxcar-fallback fnu is low)
-    contam_pass1_shape = "chain"             # "chain" (PRISM / own gated / default) | "default"
-                                             # every pass 1 also fits its source's light past its cutout's red
-                                             # end (count rate, no calibration; profile_extend); failed-open
-                                             # shutters are recorded only (their sky cancels in a nod difference)
-    contam_echo = true                       # an unreliable contaminant solved over the target's pixels is
-                                             # predicted with the target's own light taken out of its pass 1
     contam_mask_kappa = 1.0                  # threshold in units of the per-pixel noise
     contam_min_clean_fraction = 0.5          # less main-shutter data left: no own fit
     contam_min_clean_fraction_exposure = 0.3 # or less than this in any exposure
@@ -238,28 +230,6 @@
                                              # 2026-10-30) | "subtract" (fnu_prof - fnu_contam, EXTRACT = profile_decontam)
     contam_1d_min_sigma = 3.0                # subtract only when the prediction exceeds this x the integrated noise
                                              # (vs PRISM: helps above 3, neutral at 1-3; round 3)
-    # Joint solve of strongly coupled overlap groups (prototype, profile_joint; off by default)
-    contam_joint = false                     # after the one-pass products: solve each group's spectra together
-                                             # (fixed one-pass shapes, full resolution) and redo its receivers.
-                                             # Off: gated, it still delivers joint results worse than one-pass
-                                             # vs PRISM (p9 542105, p14 8256) and faint-in-bright ones (5215, 11147)
-    contam_joint_min_sigma = 10.0            # a pair is coupled when the contaminant's light in the target's
-    contam_joint_min_frac = 0.3              # spectrum is >= this x its integrated noise AND >= this x its light
-    contam_joint_max_members = 6             # larger groups: the weakest pairs stay on the one-pass path
-    contam_joint_smooth = 0.0                # second-difference prior on the other members (0: none)
-    contam_joint_degenerate = 0.9            # correlation below minus this: split not determined (joint_flag 1)
-    contam_joint_sens_centre = 0.02          # typical shape error of the others for the shape-limited flag
-    contam_joint_sens_log_width = 0.1        # (joint_flag 2, PFJSENS)
-    contam_joint_clip = 5.0
-    contam_joint_refit = false               # true: the receivers' shape chain reruns on the jointly subtracted
-                                             # data (moved 7420 by +0.18 in centre); false: the solve's shape
-    contam_joint_gate = "noise"              # per receiver: deliver the joint result only when this quantity is
-    contam_joint_gate_max = 2.0              # <= the max, else the one-pass one (PFJUSE, PFJGVAL, PFJWHY; both
-                                             # kept in the _pf.fits). "noise": integrated noise of the joint
-                                             # fnu_prof / the one-pass fnu_prof, decided at the extraction
-                                             # (vs PRISM, p14+p9: every joint improvement <= 1.80, rejects 4 of 19
-                                             # degraded products; round 6). "off": always the joint result.
-                                             # Also sensf | sens | fshape | cdeg | infl (profile_joint)
     # Same-slitlet neighbour scan on the residuals: the target refitted at its chosen shape
     # on the nod differences as stage 2b made them, leaving out (not modelling) every pixel
     # another slitlet's source shutter lights in any frame of the difference (trace maps),
