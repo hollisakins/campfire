@@ -21,6 +21,8 @@ p.add_argument('--bin', type=int, default=1,
                help='wavelength pixels averaged per displayed column, for faint sources (1: none)')
 p.add_argument('--grating-tag', default='prism_clear',
                help="the source's spec.fits grating tag, for the wavelength axis (e.g. 'g395m_f290lp')")
+p.add_argument('--mark', action='store_true',
+               help='mark the source and the neighbors that caused a nod to be left out on the calibrated frames')
 args = p.parse_args()
 root = C.setup_root(args.root)
 
@@ -47,17 +49,59 @@ def binned(img, n):
     return np.nanmean(img[:, :m].reshape(img.shape[0], -1, n), axis=2)
 
 
+def source_rows(canonical, radec):
+    """Row of each (ra, dec) along the slitlet in the canonical's rectified frame. The
+    rectified frames do not store their coordinates, so the exposure is rectified again in
+    memory with the same jwst step stage 2a uses (nothing is written); each row's sky
+    position at the central column defines a line, and each source is projected onto it."""
+    import logging
+    for name in ('stpipe', 'jwst', 'stcal', 'CRDS'):
+        logging.getLogger(name).setLevel(logging.WARNING)
+    from jwst.datamodels import MultiSlitModel
+    from jwst.resample import ResampleSpecStep
+    cwd = os.getcwd()
+    os.chdir(os.path.dirname(canonical))
+    try:
+        with MultiSlitModel(os.path.basename(canonical)) as m:
+            s = ResampleSpecStep().call(m).slits[0]
+            ny, nx = s.data.shape
+            ra, dec, _ = s.meta.wcs(np.full(ny, nx // 2), np.arange(ny))
+    finally:
+        os.chdir(cwd)
+    cosd = np.cos(np.radians(np.nanmedian(dec)))
+    e, n = (ra - ra[0]) * cosd * 3600, (dec - dec[0]) * 3600
+    step = np.hypot(np.diff(e), np.diff(n)).mean()
+    ux, uy = (e[-1] - e[0]) / np.hypot(e[-1] - e[0], n[-1] - n[0]), (n[-1] - n[0]) / np.hypot(e[-1] - e[0], n[-1] - n[0])
+    return [((r0 - ra[0]) * cosd * 3600 * ux + (d0 - dec[0]) * 3600 * uy) / step for r0, d0 in radec]
+
+
 frames = []
 for f in files:
     with fits.open(f) as h:
         hd = h[0].header
         before = np.asarray(h['S2D_SCI'].data, float)
         frames.append(dict(nod=int(hd.get('PATT_NUM', 0)), before_full=before, before=binned(before, args.bin),
+                           path=f, metafile=str(hd.get('MSAMETFL', '')),
                            after_full=np.asarray(h['S2D_BKGSUB_SCI'].data, float),
                            why=str(hd.get('BKGWHY', '') or ''), used=str(hd.get('BKGNODS', '') or ''),
                            override=bool(hd.get('BKGOVR', False))))
     frames[-1]['after'] = binned(frames[-1]['after_full'], args.bin)
 frames.sort(key=lambda d: d['nod'])
+
+# the sources to mark: this one, and every neighbor a nod was left out for
+marks = {}
+if args.mark:
+    import re
+    from astropy.table import Table
+    ids = [args.source] + sorted({int(m) for fr in frames for m in re.findall(r'neighbor (\d+)', fr['why'])})
+    src = Table.read(os.path.join(ws, frames[0]['metafile']), hdu='SOURCE_INFO')
+    radec = []
+    for s in ids:
+        row = src[np.asarray(src['source_id']) == s]
+        radec.append((float(row['ra'][0]), float(row['dec'][0])) if len(row) else (np.nan, np.nan))
+    for fr in frames:
+        fr['marks'] = dict(zip(ids, source_rows(fr['path'], radec)))
+    marks = {s: C.PALETTE[k % len(C.PALETTE)] for k, s in enumerate(ids)}
 
 # wavelength of each rectified column: the rectified frames do not store it, but the
 # source's combined spectrum is rectified onto the same column grid by the same jwst step
@@ -96,6 +140,17 @@ for r, fr in enumerate(frames):
     ax = axes[r, 0]
     ax.imshow(fr['before'], cmap='Greys', norm=C.asinh_norm(fr['before']), aspect='auto')
     C.label_panel(ax, f'nod {fr["nod"]}')
+    nxd = fr['before'].shape[1]
+    for s, color in marks.items():
+        y = fr['marks'].get(s, np.nan)
+        if not np.isfinite(y) or not (-0.5 <= y <= fr['before'].shape[0] - 0.5):
+            continue
+        for xa, xb in ((-0.5, 0.06 * nxd), (0.94 * nxd, nxd - 0.5)):     # ticks at both edges, data left clear
+            ax.plot([xa, xb], [y, y], color=color, lw=2.2, solid_capstyle='butt')
+        ax.text(0.065 * nxd, y, f' {s}' + (' (this source)' if s == args.source else ''), color=color,
+                fontsize=9, va='center', ha='left', fontweight='bold',
+                bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.8))
+    ax.set_xlim(-0.5, nxd - 0.5)
     ax = axes[r, 1]
     ax.imshow(fr['after'], cmap='RdBu_r', vmin=-va, vmax=va, aspect='auto')
     used = fr['used'] if fr['override'] else ', '.join(str(o['nod']) for o in others)
