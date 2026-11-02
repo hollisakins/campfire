@@ -1371,6 +1371,14 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
     other side of 0.02), mostly other slitlets' light in the band; the errors are mostly
     overestimates, so they cost extra dropped exposures (noise) more than missed ones
     (bias). Note that the reference (the neighbor's own exposures) has the same problem.
+- Cleanup (user, 2026-11-01): the masked pass 1, pass 1b, the echo correction, the old
+  group joint solve and `first_pass.py` removed (merge of `claude/extraction-v2-cleanup`,
+  about 2,800 lines). End-to-end check on p1 (stage 3 only, the 74 sources,
+  `e2e_cleanup_run.sh`, `e2e_compare_products.py`): all 99 products have identical SCI;
+  `fnu` / `fnu_prof` within 3e-6 of their error, `fnu_contam` within 1e-4 (rounding of
+  the recomputed pass 1). 17 config keys are gone (`contam_pass1*` except
+  `contam_pass1_smooth`, `contam_echo`, `contam_joint*` except `contam_joint_cache`);
+  left in a config they are ignored.
 
 **Automatic nod-partner overrides: prototype (2026-11-01, superseded).** The user asked to build them
 from estimated light, the light estimated from the master-background products.
