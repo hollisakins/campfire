@@ -1537,3 +1537,29 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     (above) is known.
   - The adequacy test that needs no absolute level: the production extraction run on empty
     shutters as if they held a source should give flux consistent with zero within its errors.
+- **2026-11-02, master background 1.7: failed-open shutters get a commanded slitlet's margin
+  and the real shutter pitch.** The extraction-v2 docs figures showed a bright stripe on both
+  edges of each fully open failed-open shutter in data minus `MBKG2D`. Two problems in the
+  records jwst's `msaflagopen.create_slitlets` makes for the `msaoper` shutters caused it:
+  - The extent stops at the open area (`ymin` / `ymax` = ±0.5), with none of the 0.5 margin
+    `assign_wcs` gives a commanded slitlet. The rows just past the shutter, which carry the
+    light the bar-shadow profile puts on a closed neighbor, were in no footprint.
+  - `slit_yscale` is 1.0 instead of 1.15. jwst's transforms don't use it, but our pitch does,
+    so the shutter's profile was squeezed by 1.15.
+
+  Decided (Hollis, 2026-11-02) to treat them like any one-shutter slitlet:
+  `coverage.failed_open_slitlets` sets ±1.0 and `MSA_SLIT_SCALES`, and the rate geometry
+  and both trace maps use it. Measured on p1 (scratch `mbkg_ship/edges16/`):
+  - **PRISM, fully open (39 shutter × exposures):** data minus master background, as a
+    fraction of the shutter's core level, goes from +12 to +22 % at both edges to within ±2 %
+    across the shutter. The transmissions don't change.
+  - **PRISM, part-transmitting (0.2-0.8, 10 shutter × exposures):** now over-painted by up to
+    14 % on one edge. The transmission is one number per shutter, and a partly open shutter
+    doesn't pass a scaled copy of the full profile. Light above the paint stays with the
+    contamination model.
+  - **G395M:** too faint to tell. The light through a failed-open shutter is about
+    0.0035 DN/s, and the rate between traces sits +0.0005 above zero on NRS1.
+
+  The step-1 shutter fit (`shutter_fit.build_templates`) models each shutter on its own rows
+  only, so the margin rows are in no template. That is harmless for the amplitudes; the
+  master background paints those rows.

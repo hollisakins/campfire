@@ -53,7 +53,7 @@ from campfire_pipeline.common.io import log
 from campfire_pipeline.nirspec import master_bkg as M
 from campfire_pipeline.nirspec import stuck_list as S
 from campfire_pipeline.nirspec import trace_overlap as TO
-from campfire_pipeline.nirspec.coverage import (cache_path, cutoffs_for, default_cache_dir,
+from campfire_pipeline.nirspec.coverage import (GEOMETRY_VERSION, cache_path, cutoffs_for, default_cache_dir,
                                                  rate_geometry)
 
 STEP1_VERSION = '1.4'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different;
@@ -361,6 +361,7 @@ def _inputs_cards(rate, bs_path, cutoffs, decided):
         'MBKGCUT': (json.dumps(list(cutoffs)), 'footprint wavelength cutoffs [um]'),
         'MBKGDEC': (decided, 'hash of the manual/web stuck entries of the root'),
         'MBKGTMV': (TO.SHUTTER_MAP_VERSION, 'trace map (TM* extensions) version'),
+        'MBKGGEOV': (GEOMETRY_VERSION, 'slitlet footprint geometry version'),
     }
 
 
