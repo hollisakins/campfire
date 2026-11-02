@@ -1499,16 +1499,13 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   the G395M master-background spectrum differs from PRISM more than the nodded one does
   (median 7.3 against 2.8 sigma), and that the difference follows the level in its own
   off-source rows. Not established: that the master background is too high or too low.
-  8 G395M products carry MBKGPREF, kept as is (user, 2026-11-02). Asked how to correct the level, the user chose
-  the per-slitlet scale in the master-background step; that reopens the 2026-10-30
-  decision that ruled it out ("that's not master background at that point"), so it is
-  pending a check of whether the slitlet's offset repeats from nod to nod (a property of
-  the slitlet) or not (the per-exposure floor only nod subtraction removes; on PRISM per
-  shutter about 2.7 %, 40 % repeatable). From the per-exposure numbers above, mixed:
-  634522 (-5.0, -5.4, -2.9 %) and 879928 (+2.9, +3.5, +2.3 %) repeat; 880017 (+8.4, -3.5,
-  -2.9 %), 925275 (+6.7, -1.0, -0.7 %) and 924186 do not. The master-background session
-  then measured it per empty shutter (`~/campfire-data/scratch/claude/mbkg_ship/repeat16/`)
-  and took it to the user. 925403 (its finding): the 4.4-5.1 µm rows are crossed in all
+  8 G395M products carry MBKGPREF, kept as is (user, 2026-11-02). The per-slitlet scale
+  was raised again and decided against (user with the master-background session,
+  2026-11-02, after its per-shutter nod-repeatability measurement,
+  `~/campfire-data/scratch/claude/mbkg_ship/repeat16/`): no per-slitlet and no smooth
+  row/column scaling of the master background on any disperser, the opt-in code removed
+  (`claude/mbkg-paint` 0831aa2d); on G395M the scatter is specific to each shutter and
+  neither predicts it (master-background design doc, 2026-11-02). 925403 (its finding): the 4.4-5.1 µm rows are crossed in all
   three exposures by the source shutters of 630784 and 948429; a bright continuum on the
   lower edge of 925403's source shutter moves with the nods, so nodding cannot remove it.
   The contamination model predicts most of it (`e2e_925403_contam.py`, medians in µJy).
