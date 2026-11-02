@@ -1322,7 +1322,8 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     (c) The consumer masks, by default, the pixels where the total is incomplete by construction: a
     covering trace that was never painted (bit 2) and a trace's beyond-cutoff tail (bit 4). On G395M
     NRS1 the slits of 631564 and 632747 sit under five to six other traces with 74–100 % of their
-    pixels in those traces' tails, so they are masked rather than mis-subtracted. (d) The per-slitlet
+    pixels in those traces' tails, so they are masked rather than mis-subtracted. (d) [Removed
+    2026-11-02, see the decision below.] The per-slitlet
     term is available as an opt-in (`sky_for_slit(..., slitlet_scale_on=True)`: the slit's own
     contribution rescaled by the median scale of its own clean empty shutters from `SHUTTERS`); off by
     default, since whether to use it is a design choice (§9: no hybrid with the nods; this uses only
@@ -1464,7 +1465,11 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     unchanged (+0.1 to +2.9 %); `MBKG2DDQ` bit 2 (a footprint not painted) from ~1.05 M to ~55 k
     pixels per detector.
 - **2026-11-02, after the 1.6 rerun: no per-slitlet scale, no smooth field term; the flat past the
-  calibrated range deferred.** The extraction-v2 rerun of p1 on 1.6 still had 17/20 G395M
+  calibrated range deferred.** **Decision (Hollis, 2026-11-02): the master background is not
+  rescaled per slitlet or by any smooth function of position, on any disperser; the opt-in
+  (`sky_for_slit(..., slitlet_scale_on=)`, `slitlet_scale`, `sky_total_on_cutout(..., own_scale=)`)
+  is removed from the code so it is not raised again.** The quadrant scales stay (a measured
+  per-quadrant term, §9). The evidence: the extraction-v2 rerun of p1 on 1.6 still had 17/20 G395M
   master-background spectra beyond 3σ of PRISM, and the per-slitlet scale (off since 2026-10-30)
   was raised again. Measured read-only on the 1.6 products (scratch `mbkg_ship/repeat16/`): every
   empty shutter in every nod, Σ(rate − MBKG2D) / Σ MBKG2D over its core on pixels only its slitlet

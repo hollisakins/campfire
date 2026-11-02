@@ -754,8 +754,7 @@ def sky_on_geometry(prod, frame, g, table):
                 units=frame['bunit'], quadrant=g['quadrant'], shape=frame['sci'].shape, open=g['is_open'])
 
 
-def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0,
-                 slitlet_scale_on=False):
+def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0):
     """The master background on one slit's cutout, in that slit's own frame and units.
 
     ``product`` is a ``_mbkg.fits`` path or ``load_product`` output (pass the same dict
@@ -778,10 +777,8 @@ def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0,
     returns only the slit's own slitlet (the painter's input; also the fallback when the
     product has no ``MBKG2D`` or the rate file is not beside it). Nothing is masked by
     default: ``mask_bits`` (``DQ_UNPAINTED``: a covering trace that was not painted) is
-    opt-in, and pixels nothing covers are NaN. ``slitlet_scale_on`` rescales the slit's
-    own contribution by the median scale of its own clean empty shutters
-    (``slitlet_scale``), the per-slitlet term of §9; off by default, a design choice
-    rather than a correction.
+    opt-in, and pixels nothing covers are NaN. There is no per-slitlet or smooth rescaling
+    of the master background (decided 2026-11-02, design doc).
     """
     from jwst.datamodels import MultiSlitModel
     prod = load_product(product) if isinstance(product, str) else product
@@ -801,11 +798,7 @@ def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0,
                       f'{prod["header"].get("MBKGRATE")} beside it; returning the slit\'s own slitlet only '
                       f'(mode="own"), not the painted total', RuntimeWarning, stacklevel=2)
         return own
-    scale = 1.0
-    if slitlet_scale_on:
-        name = os.path.basename(path)[:-5].split('_')[-1] if int(extver) == 1 else f'BKG{g["slitlet_id"]}'
-        scale = slitlet_scale(prod, name)
-    return sky_total_on_cutout(prod, own, frame, mask_bits=mask_bits, own_scale=scale)
+    return sky_total_on_cutout(prod, own, frame, mask_bits=mask_bits)
 
 
 def pixelwise_factor(sci, rate_box):
@@ -821,26 +814,13 @@ def pixelwise_factor(sci, rate_box):
     return np.where(np.isfinite(F), F, colmed[None, :])
 
 
-def slitlet_scale(prod, slit_name):
-    """The median scale of a slit's own clean empty shutters against the exposure's sky
-    (the per-slitlet term of §9), from the ``SHUTTERS`` table; 1 when it has none."""
-    t = prod.get('shutters')
-    if t is None or len(t) == 0:
-        return 1.0
-    sel = (np.char.strip(t['slit'].astype(str)) == str(slit_name)) & np.asarray(t['clean'], bool)
-    v = np.asarray(t['scale'], float)[sel]
-    v = v[np.isfinite(v)]
-    return float(np.median(v)) if v.size else 1.0
-
-
-def sky_total_on_cutout(prod, own, frame, mask_bits=0, own_scale=1.0):
+def sky_total_on_cutout(prod, own, frame, mask_bits=0):
     """What a consumer subtracts: the painted total (every covering slitlet's sky,
     ``MBKG2D``) on the slit's cutout, in the slit's frame through the pixelwise factor.
     ``own`` is ``sky_on_geometry`` output for the slit. Pixels carrying any of
     ``mask_bits`` (opt-in; ``DQ_UNPAINTED`` where a covering trace was not painted, the
-    total being incomplete there) and pixels nothing covers are NaN. ``own_scale``
-    rescales the slit's own contribution (``total + own * (s - 1)``), the per-slitlet
-    term from its own empty shutters. Returns the dict with ``sky``, ``var``, ``dq``
+    total being incomplete there) and pixels nothing covers are NaN. Returns the dict
+    with ``sky``, ``var``, ``dq``
     (the ``MBKG2DDQ`` cutout), ``n_cover``, ``own_sky`` (the slit's own slitlet),
     ``sky_rate`` (the painted total in DN/s, finite past the calibrated range too),
     ``rate`` (the rate cutout) and ``calibrated`` (where the slit's ``SCI`` is finite,
@@ -853,10 +833,7 @@ def sky_total_on_cutout(prod, own, frame, mask_bits=0, own_scale=1.0):
     F = pixelwise_factor(frame['sci'], rate_box)
     total = mb * F
     own_sky = own['sky']
-    if own_scale != 1.0:
-        add = np.where(np.isfinite(own_sky), own_sky * (own_scale - 1.0), 0.0)
-        total = total + add
-    masked = (dq & (DQ_UNCOVERED | int(mask_bits))) > 0
+    masked =(dq & (DQ_UNCOVERED | int(mask_bits))) > 0
     total[masked] = np.nan
     sky_rate = np.where(masked, np.nan, mb.astype(float))
     with np.errstate(invalid='ignore', divide='ignore'):

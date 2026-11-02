@@ -194,8 +194,8 @@ Release procedure: edit the `## Unreleased` section below, then run
   a pixel carries several slitlets' sky; the slit's own slitlet alone, evaluated with the bar shadow
   from the empirical table where one exists and CRDS otherwise, is `own_sky` and `mode='own'`), with
   the 3 % error floor in the variance; nothing is masked by default (`mask_bits` is opt-in, flagging a
-  covering trace that was not painted), and `slitlet_scale_on` is the opt-in per-slitlet rescaling
-  from the slit's own clean shutters. **The sky is painted past the calibrated range (algorithm 1.1,
+  covering trace that was not painted); there is no per-slitlet or smooth rescaling of the master
+  background (decided 2026-11-02). **The sky is painted past the calibrated range (algorithm 1.1,
   2026-10-30).** The painter used to stop where a cutout's wavelength or calibration ends, while the
   sky light runs on: on G140M and G235M NRS2 every trace stopped at a fixed detector column (1593 to
   1824) with the sky continuing to the detector edge at full strength, on G395M the filter cut-on

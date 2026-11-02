@@ -221,9 +221,6 @@ def test_total_masks_nothing_by_default_and_carries_the_rate_unit_sky():
     assert np.allclose(r['rate'], 0.05) and not r['calibrated'][:, 0].any() and r['calibrated'][:, 1:].all()
     r2 = M.sky_total_on_cutout(prod, own, frame, mask_bits=M.DQ_UNPAINTED)
     assert np.isnan(r2['sky'][0, 1]) and np.isnan(r2['sky_rate'][0, 1]) and np.isfinite(r2['sky'][0, 2])
-    # the own part rescaled by 0.9 lowers the total by 0.1 x own, not 0.1 x total
-    r3 = M.sky_total_on_cutout(prod, own, frame, own_scale=0.9)
-    assert np.allclose(r3['sky'][1, 1], r['sky'][1, 1] - 0.1 * own['sky'][1, 1])
 
 
 def test_rate_sky_falls_back_to_the_pool_then_the_other_detector_then_holds():
@@ -253,14 +250,6 @@ def test_rate_sky_edges_extend_the_grid_with_the_end_steps():
     assert np.allclose(np.diff(e), 0.1)
     assert e[0] <= 0.72 < e[1] and e[-2] < 1.56 <= e[-1]
     assert np.allclose(M.rate_sky_edges(centres, 1.0, 1.3), [0.95, 1.05, 1.15, 1.25, 1.35])
-
-
-def test_slitlet_scale_reads_the_slits_clean_shutters():
-    from astropy.table import Table
-    t = Table({'slit': ['5', '5', '5', 'BKG77'], 'clean': [True, True, False, True], 'scale': [0.9, 0.94, 1.5, 1.2]})
-    assert M.slitlet_scale({'shutters': t}, '5') == pytest.approx(0.92)
-    assert M.slitlet_scale({'shutters': t}, 'BKG77') == pytest.approx(1.2)
-    assert M.slitlet_scale({'shutters': t}, '6') == 1.0
 
 
 def test_combine_weights_shutters_equally_when_errors_follow_their_own_values():
