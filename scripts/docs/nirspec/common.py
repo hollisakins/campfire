@@ -101,7 +101,8 @@ def trace_map(ws, exposure, stuck):
 
 
 def style():
-    """One look for every figure: white background, readable type, light axes."""
+    """One look for every figure: white background, readable type, a frame on all four
+    sides with inward ticks on every side, minor ticks on."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -109,14 +110,64 @@ def style():
         'figure.facecolor': 'white', 'axes.facecolor': 'white', 'savefig.facecolor': 'white',
         'font.size': 11, 'axes.titlesize': 12, 'axes.labelsize': 11, 'legend.fontsize': 10,
         'xtick.labelsize': 9.5, 'ytick.labelsize': 9.5,
-        'axes.edgecolor': '#bbbbbb', 'axes.labelcolor': INK, 'text.color': INK,
-        'xtick.color': '#555555', 'ytick.color': '#555555',
-        'axes.spines.top': False, 'axes.spines.right': False,
+        'axes.edgecolor': '#444444', 'axes.linewidth': 0.9, 'axes.labelcolor': INK, 'text.color': INK,
+        'xtick.color': '#333333', 'ytick.color': '#333333',
+        'axes.spines.top': True, 'axes.spines.right': True,
+        'xtick.top': True, 'xtick.bottom': True, 'ytick.left': True, 'ytick.right': True,
+        'xtick.direction': 'in', 'ytick.direction': 'in',
+        'xtick.minor.visible': True, 'ytick.minor.visible': True,
+        'xtick.major.size': 4.5, 'ytick.major.size': 4.5, 'xtick.minor.size': 2.5, 'ytick.minor.size': 2.5,
         'axes.titlelocation': 'left', 'axes.titleweight': 'bold',
         'legend.frameon': False, 'lines.linewidth': 1.6,
         'image.interpolation': 'nearest', 'image.origin': 'lower',
     })
     return plt
+
+
+def smooth_edges(iy, ix, deg=2, min_cols=20):
+    """Smooth lower and upper edges of a trace footprint given its pixels (rows ``iy``,
+    columns ``ix``): per column the lowest and highest lit row, each fitted with a
+    polynomial in column. Returns (columns, lower, upper) on a fine grid over the columns
+    the footprint covers, in pixel coordinates (edges at the pixel borders), or None."""
+    import numpy as np
+    iy, ix = np.asarray(iy), np.asarray(ix)
+    cols = np.unique(ix)
+    if cols.size < min_cols:
+        return None
+    lo = np.array([iy[ix == c].min() for c in cols], float) - 0.5
+    hi = np.array([iy[ix == c].max() for c in cols], float) + 0.5
+    x = np.linspace(cols.min() - 0.5, cols.max() + 0.5, 400)
+    t = (cols - cols.mean()) / max(np.ptp(cols), 1)
+    tx = (x - cols.mean()) / max(np.ptp(cols), 1)
+    d = min(deg, cols.size - 1)
+    return x, np.polyval(np.polyfit(t, lo, d), tx), np.polyval(np.polyfit(t, hi, d), tx)
+
+
+def draw_trace(ax, iy, ix, color, fill_alpha=0.0, lw=1.5, label=None):
+    """Draw a trace footprint as two smooth edge lines (optionally filled between)."""
+    e = smooth_edges(iy, ix)
+    if e is None:
+        return None
+    x, lo, hi = e
+    if fill_alpha > 0:
+        ax.fill_between(x, lo, hi, color=color, alpha=fill_alpha, lw=0)
+    ax.plot(x, lo, color=color, lw=lw, label=label)
+    ax.plot(x, hi, color=color, lw=lw)
+    return e
+
+
+def profile_step(ax, values, positions, color, label=None, vertical=False, fill_alpha=0.25, lw=1.5, ls='-'):
+    """A profile drawn as steps, filled to zero. ``positions`` are the bin centers (pixel
+    rows); with ``vertical`` the profile runs up the y axis (value on x)."""
+    import numpy as np
+    v = np.asarray(values, float)
+    pos = np.asarray(positions, float)
+    edges = np.r_[pos[0] - 0.5, 0.5 * (pos[1:] + pos[:-1]), pos[-1] + 0.5]
+    orient = 'horizontal' if vertical else 'vertical'
+    if fill_alpha > 0:
+        ax.stairs(np.nan_to_num(v), edges, baseline=0, fill=True, color=color, alpha=fill_alpha,
+                  orientation=orient, lw=0)
+    ax.stairs(v, edges, baseline=None, color=color, lw=lw, ls=ls, orientation=orient, label=label)
 
 
 def save(fig, args, default_name):

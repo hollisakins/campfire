@@ -66,7 +66,7 @@ for ax, name, title, xlab in [
             prof = d[:, col].copy()
             if t is tc and name == 'DATA1X1':
                 prof[np.abs(y) > 0.5] = np.nan        # jwst reads the reference only inside the open shutter
-            ax.plot(y, prof, color=color, ls=ls, lw=1.8 if ls == '-' else 1.4,
+            ax.step(y, prof, where='mid', color=color, ls=ls, lw=1.8 if ls == '-' else 1.4,
                     label=f'{wl:g} µm, {lab}')
     ax.axhline(1.0, color='#cccccc', lw=0.8, zorder=0)
     ax.set_title(title)

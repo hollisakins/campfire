@@ -1,12 +1,12 @@
-"""Nod subtraction: each exposure minus its partner exposures, and when a partner is skipped.
+"""Nod subtraction: each exposure minus the other nods, and when a nod is left out.
 
 One row per exposure of a source (one exposure group, one detector), rectified and averaged
-in blocks along the wavelength axis for display: the calibrated frame, the frame after its
-partner exposures are subtracted (the source positive, its copies from the partner
-exposures negative), and the brightness along the slitlet averaged over wavelength. When
-the pipeline skipped a partner exposure because another source sits in that partner's
-shutter, the profile also shows the same exposure minus the mean of every partner, dashed:
-an illustration of what skipping avoids, computed here from the rectified frames.
+in blocks along the wavelength axis for display: the calibrated frame, the frame after the
+other nods are subtracted (the source positive, its copies from the other nods negative),
+and the brightness along the slitlet averaged over wavelength. When the pipeline left a nod
+out of the background because another source sits in the shutter that nod would use, the
+profile also shows the same exposure minus the mean of all the other nods, dashed: an
+illustration of what leaving it out avoids, computed here from the rectified frames.
 
     python scripts/docs/nirspec/fig_nod_subtraction.py --root <root> --obs ember_cosmos_p1 \
         --source 634072 --exposure-group jw07076001001_03101 --detector nrs2
@@ -67,22 +67,24 @@ for r, fr in enumerate(frames):
     C.label_panel(ax, f'nod {fr["nod"]}')
     ax = axes[r, 1]
     ax.imshow(fr['after'], cmap='RdBu_r', vmin=-va, vmax=va, aspect='auto')
-    partners = fr['used'] if fr['override'] else ', '.join(str(o['nod']) for o in others)
-    C.label_panel(ax, f'minus nod {partners}' if fr['override'] else f'minus the mean of nods {partners}')
+    used = fr['used'] if fr['override'] else ', '.join(str(o['nod']) for o in others)
+    C.label_panel(ax, f'minus nod {used}' if fr['override'] else f'minus the mean of nods {used}')
     ax = axes[r, 2]
     rows = np.arange(fr['after_full'].shape[0])
-    ax.axhline(0, color='#cccccc', lw=0.8)
-    ax.plot(np.nanmean(fr['after_full'], axis=1), rows, color=C.PALETTE[0], lw=1.8, label='as subtracted')
+    ax.axvline(0, color='#999999', lw=0.8)
+    C.profile_step(ax, np.nanmean(fr['after_full'], axis=1), rows, C.PALETTE[0], vertical=True,
+                   label='as subtracted')
     if fr['override'] and same_grid:
         alt = fr['before_full'] - np.nanmean([o['before_full'] for o in others], axis=0)
-        ax.plot(np.nanmean(alt, axis=1), rows, color=C.PALETTE[5], lw=1.6, ls='--',
-                label='if every partner were used')
+        C.profile_step(ax, np.nanmean(alt, axis=1), rows, C.PALETTE[5], vertical=True, fill_alpha=0, ls='--',
+                       label='with every other nod')
         ax.legend(loc='lower right', fontsize=8.5)
-        ax.text(0.02, 0.98, f'skipped: {fr["why"]}', transform=ax.transAxes, fontsize=8.5, va='top', color=C.INK)
+        ax.text(0.02, 0.98, f'nod left out: {fr["why"]}', transform=ax.transAxes, fontsize=8.5, va='top',
+                color=C.INK)
     ax.set_ylim(rows[0] - 0.5, rows[-1] + 0.5)
     for a in axes[r, :2]:
         a.set_yticks([])
-    axes[r, 2].set_yticks([])
+    axes[r, 2].set_yticklabels([])
     if r < len(frames) - 1:
         for a in axes[r]:
             a.set_xticklabels([])

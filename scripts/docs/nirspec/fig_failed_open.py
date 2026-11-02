@@ -2,10 +2,10 @@
 (and sometimes an object) onto the detector.
 
 One row per failed-open shutter: the count rate around its trace (outlined), the master
-background painted there, and the data minus the background. The listed failed-open
-shutters pass anything from all of an empty shutter's background to almost none, so each is
-painted at the fraction measured from its own pixels; light above that (an object behind
-the shutter) is left for the contamination model.
+background there, and the data minus the background. Failed-open shutters pass anything
+from all of an empty shutter's background to almost none, so the master background includes
+each at the fraction measured from its own pixels; light above that (an object behind the
+shutter) is left for the contamination model.
 
     python scripts/docs/nirspec/fig_failed_open.py --root <root> --obs ember_cosmos_p1 \
         --exposure jw07076001001_03101_00001_nrs1 --shutters 11 19 12 \
@@ -45,22 +45,22 @@ for r, num in enumerate(args.shutters):
     sel = idx == row
     y0, y1 = max(iy[sel].min() - args.margin, 0), min(iy[sel].max() + args.margin + 1, NY)
     x0, x1 = ix[sel].min(), ix[sel].max() + 1
-    m = np.zeros((y1 - y0, x1 - x0))
-    m[iy[sel] - y0, ix[sel] - x0] = 1.0
     sl = (slice(y0, y1), slice(x0, x1))
     ext = [x0 - 0.5, x1 - 0.5, y0 - 0.5, y1 - 0.5]
     d, b = rate[sl], np.nan_to_num(mb[sl])
     norm = C.asinh_norm(np.concatenate([d.ravel(), b.ravel()]))
     resid = d - b
     lim = np.nanpercentile(np.abs(resid), 98)
-    for k, (img, title) in enumerate([(d, 'Data (count rate)'), (b, 'Master background, painted'),
+    for k, (img, title) in enumerate([(d, 'Data (count rate)'), (b, 'Master background'),
                                       (resid, 'Data minus master background')]):
         ax = axes[r, k]
         if k < 2:
             ax.imshow(img, extent=ext, cmap='Greys', norm=norm, aspect='auto')
         else:
             ax.imshow(img, extent=ext, cmap='RdBu_r', vmin=-lim, vmax=lim, aspect='auto')
-        ax.contour(np.arange(x0, x1), np.arange(y0, y1), m, levels=[0.5], colors=[C.PALETTE[1]], linewidths=1.3)
+        C.draw_trace(ax, iy[sel], ix[sel], C.PALETTE[1], lw=1.3)
+        ax.set_xlim(ext[0], ext[1])
+        ax.set_ylim(ext[2], ext[3])
         if r == 0:
             ax.set_title(title)
         if k == 0:

@@ -92,13 +92,14 @@ for i in members:
     a = a_of.get(key, np.nan)
     stuck = a < 0.3
     color = C.PALETTE[5] if stuck else C.PALETTE[0]
-    ax.contour(np.arange(x0, x1), np.arange(y0, y1), masks[i][sl].astype(float), levels=[0.5],
-               colors=[color], linewidths=1.8)
     yy, xx = np.nonzero(masks[i])
+    C.draw_trace(ax, yy, xx, color, lw=1.8)
     ax.text(x0 + 0.01 * (x1 - x0), float(np.median(yy)),
             f'q{key[0]} r{key[1]} c{key[2]}:  a = {a:.2f}  ({"stuck" if stuck else "open"})',
             fontsize=9.5, va='center', ha='left', color=C.INK,
             bbox=dict(boxstyle='round,pad=0.2', fc='white', ec=color, lw=1, alpha=0.9))
+ax.set_xlim(ext[0], ext[1])
+ax.set_ylim(ext[2], ext[3])
 ax.set_title(f'One slitlet with a stuck shutter ({grating_ex}): no background light comes through it')
 ax.set_xlabel('detector column')
 ax.set_ylabel('detector row')

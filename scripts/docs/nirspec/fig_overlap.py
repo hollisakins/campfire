@@ -69,12 +69,10 @@ ids, n = np.unique(idx[in_strip], return_counts=True)
 ids = ids[n > 200]                                                     # traces with a real footprint in the strip
 order = ids[np.argsort([np.median(ix[in_strip & (idx == t)]) for t in ids])]
 for k, t in enumerate(order):
-    sel = in_strip & (idx == t)
-    m = np.zeros((ny, NX))
-    m[iy[sel] - y0, ix[sel]] = 1.0
+    sel_all = idx == t                                                 # the whole trace, so its edges are smooth
+    sel = in_strip & sel_all
     color = C.PALETTE[k % 6]                                           # 6 strong colors; neighbors differ
-    ax.contourf(np.arange(NX), np.arange(y0, y0 + ny), m, levels=[0.5, 1.5], colors=[color], alpha=0.35)
-    ax.contour(np.arange(NX), np.arange(y0, y0 + ny), m, levels=[0.5], colors=[color], linewidths=1.2)
+    C.draw_trace(ax, iy[sel_all], ix[sel_all], color, fill_alpha=0.30, lw=1.3)
     rec = tm.slits[int(t)]
     sid = int(rec['source_id']) if 'source_id' in tm.slits.colnames else -1
     name = str(sid) if sid > 0 else ('failed-open shutter' if 'failed' in str(rec['kind']) else str(rec['kind']))
@@ -82,6 +80,7 @@ for k, t in enumerate(order):
     ya = float(np.median(iy[sel]))
     ax.text(max(xa, 5), ya, name, fontsize=8.5, color=C.INK, va='center', ha='left',
             bbox=dict(boxstyle='round,pad=0.15', fc='white', ec=color, lw=0.8, alpha=0.9))
+ax.set_ylim(y0 - 0.5, y0 + ny - 0.5)
 ax.set_title("The same strip: each slitlet's footprint, labeled with its source")
 ax.set_ylabel('row')
 ax.set_xlabel('detector column (wavelength increases to the right)')

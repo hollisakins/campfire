@@ -1,8 +1,8 @@
-"""The master background of one exposure: measured from empty shutters, painted onto the
-detector.
+"""The master background of one exposure: measured from empty shutters, then modeled on
+the detector through every shutter's geometry.
 
-Top row: a detector region as count rate, the master background painted onto it, and the
-two subtracted (what is left is the light of the sources). Bottom left: the background
+Top row: a detector region as count rate, the master background there, and the two
+subtracted (what is left is the light of the sources). Bottom left: the background
 spectrum measured from the empty shutters, with the zodiacal-light prediction for the
 pointing and date. Bottom right: each empty shutter's brightness relative to that spectrum;
 shutters that disagree (a faint source, a stuck or partly open shutter) are left out.
@@ -33,7 +33,7 @@ grating = f"{rhdr.get('GRATING', '')}/{rhdr.get('FILTER', '')}"
 
 if args.region:
     x0, y0, nx, ny = args.region
-else:                                                    # the most completely painted region of this size
+else:                                                    # the region of this size the master background covers best
     nx, ny = 500, 220
     from scipy.ndimage import uniform_filter
     cover = uniform_filter((np.isfinite(mb2d) & (mb2d > 0)).astype(float), size=(ny, nx), mode='constant')
@@ -46,7 +46,7 @@ d, m = rate[sl], np.where(np.isfinite(mb2d[sl]), mb2d[sl], np.nan)
 fig = plt.figure(figsize=(12, 8.2), constrained_layout=True)
 gs = fig.add_gridspec(2, 3, height_ratios=[1, 0.95])
 norm = C.asinh_norm(d)
-for k, (img, title) in enumerate([(d, 'Data (count rate)'), (m, 'Master background, painted'),
+for k, (img, title) in enumerate([(d, 'Data (count rate)'), (m, 'Master background'),
                                   (d - np.nan_to_num(m), 'Data minus master background')]):
     ax = fig.add_subplot(gs[0, k])
     if k < 2:
