@@ -72,9 +72,9 @@ leaves other sources' light in many spectra. The redesign does four things:
 | Forward-model profile extraction on by default | Decided (user, 2026-10-29); Built (4ca99b5a) | extraction session | 3.7 |
 | Shape chain: own fit above the gate, else PRISM shape, else default | Decided (user, 2026-10-22/23); Built (49d0fe83 and earlier) | extraction session | 3.7 |
 | Instrument model (PSF, shutter geometry) fixed, never fitted | Decided (user, 2026-10-24) | extraction session | 3.7 |
-| First pass on master-background-subtracted single frames | Decided (user, 2026-10-29); Built as a module (c72d10cb, 0f466d6c, 5b8d6851), not wired into stage 3 | extraction session | 3.8 |
+| First pass on master-background-subtracted single frames | Decided (user, 2026-10-29); Built as a module (c72d10cb, 0f466d6c, 5b8d6851), never wired into stage 3; removed (user, 2026-11-01: superseded by the joint first pass; in the git history) | extraction session | 3.8 |
 | Pass-1 contamination mask | Replaced (user, 2026-10-30): it is circular on G395M | extraction session | 3.9 |
-| Joint linear solve of local neighbourhoods | Decided (user, 2026-10-30); Built as the joint first pass, on by default (`contam_pass1 = "joint"`, 0a746f33, 8792506e, 45db22af); the masked pass 1 / pass 1b and the old group solve (`contam_joint`, off) remain in the code, to remove | extraction session | 3.9 |
+| Joint linear solve of local neighbourhoods | Decided (user, 2026-10-30); Built as the joint first pass, the only pass 1 (0a746f33, 8792506e, 45db22af). The masked pass 1, pass 1b, the echo correction and the old group solve (`contam_joint`) are removed (user, 2026-11-01) | extraction session | 3.9 |
 | No per-exposure pointing offsets in the profile fit | Built (b6e62302) | extraction session | 3.7 |
 | Same-slitlet overrides in stage 2b, by position from `SOURCE_INFO` (0.75 slit units, 0.02 of the sky, unmeasurable neighbours count as bright, no clean partner: keep both and flag) | Decided (user, 2026-11-01); Built (3795e228, 7e7c160f); p1 rerun and PRISM check done | extraction session | 3.9 |
 | Shipped errors include the subtracted sky exposures' noise (today about 20 % low with three exposures) | Follow-up (user, 2026-11-01); not built; blocks a fair V26 | extraction session | 3.9 |
@@ -1514,14 +1514,13 @@ a fix or needs another field or disperser), **To make**.
 | Remeasure the +2.5 % in-range offset and G395M blue extension after b0c08026 | MB session | |
 | Held-out validation of the b0c08026 tables; user sign-off on grating tables | MB session | user |
 | Grating sky smoothing trial | MB session | user |
-| Remove the superseded masked pass 1, echo, pass 1b and old group solve (`contam_joint`); retire `tracemaps/` once pass-1 validity keys on the rate files | extraction session | |
+| Retire `tracemaps/` once pass-1 validity keys on the rate files (the superseded passes are removed) | extraction session | |
 | Error propagation: write the variance including the subtracted sky exposures in stage 2b (profile fit reads the frame's own from `PRE_BKGSUB_VAR_*`); before V26 | extraction session | user (when) |
 | Update the CHANGELOG extraction entry (joint first pass, no per-exposure offsets, same-slitlet overrides, maps from the rate file) | extraction session | |
 | Neighbour scan: stay `report_only` or apply (`auto_override`) | user | |
 | Second field (a spurs observation) and G140M / G235M end to end | extraction session | |
 | Full-field separability count (477 p1 G395M sources) | extraction session | |
 | Same-row inseparability cause | extraction session | |
-| Wire the first pass into stage 3 | extraction session | |
 | Master-background spectrum extensions | extraction session | |
 | Default galaxy width 0.15 vs 0.21 | user | |
 | Forward-model shutter edge vs measured bar shadow | extraction session | |
@@ -1543,9 +1542,8 @@ a fix or needs another field or disperser), **To make**.
 | Bar shadow | `nirspec/barshadow_calibration.py`, `data/Generate_Barshadow_Cals.py`, `data/empirical_jwst_nirspec_barshadow_*.fits` |
 | Stuck shutters (today) | `nirspec/stuck_shutters.py`; hook `stage2.py:304-372` |
 | Trace maps | `nirspec/trace_overlap.py` |
-| First pass | `nirspec/first_pass.py` |
-| Pass 1, prediction (today) | `nirspec/profile_contam.py`, `nirspec/profile_extend.py` |
-| Joint solve (today, off) | `nirspec/profile_joint.py` |
+| First pass (joint, on nod differences) | `nirspec/joint_first_pass.py`; its linear system `nirspec/profile_joint.py` |
+| Prediction of other slitlets' light | `nirspec/profile_contam.py`, `nirspec/profile_extend.py` |
 | Profile model, shape chain | `nirspec/profile_fit.py`, `nirspec/profile_chain.py`, `nirspec/profile_product.py` |
 | Orchestration | `nirspec/stage3.py` (`run_profile_fit_phase`) |
 | nods.pdf | `nirspec/plots.py` |
