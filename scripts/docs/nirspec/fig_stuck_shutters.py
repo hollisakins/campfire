@@ -110,8 +110,10 @@ for r, ex in enumerate(args.example):
             ax.set_yticklabels([])
         if r == len(args.example) - 1:
             ax.set_xlabel('detector column')
-    # profile across the slitlet over the stretch of columns where its background is brightest
-    colsum = np.nansum(open_model[sl], axis=0)
+    # profile across the slitlet over the stretch of columns where the stuck shutter's own
+    # background model is brightest
+    own = np.asarray(A[:, target[0]].todense()).reshape(NY, NX)
+    colsum = np.nansum(own[sl], axis=0)
     c0 = int(np.argmax(np.convolve(colsum, np.ones(args.columns), 'valid')))
     cs = slice(x0 + c0, x0 + c0 + args.columns)
     rows = np.arange(y0, y1)
