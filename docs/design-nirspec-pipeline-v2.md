@@ -74,7 +74,10 @@ leaves other sources' light in many spectra. The redesign does four things:
 | Instrument model (PSF, shutter geometry) fixed, never fitted | Decided (user, 2026-10-24) | extraction session | 3.7 |
 | First pass on master-background-subtracted single frames | Decided (user, 2026-10-29); Built as a module (c72d10cb, 0f466d6c, 5b8d6851), not wired into stage 3 | extraction session | 3.8 |
 | Pass-1 contamination mask | Replaced (user, 2026-10-30): it is circular on G395M | extraction session | 3.9 |
-| Joint linear solve of local neighbourhoods | Decided (user, 2026-10-30); Prototyped (`joint_scope/`, `joint_real2/`, `joint_sim/`); old group solve Built but off | extraction session | 3.9 |
+| Joint linear solve of local neighbourhoods | Decided (user, 2026-10-30); Built as the joint first pass, on by default (`contam_pass1 = "joint"`, 0a746f33, 8792506e, 45db22af); the masked pass 1 / pass 1b and the old group solve (`contam_joint`, off) remain in the code, to remove | extraction session | 3.9 |
+| No per-exposure pointing offsets in the profile fit | Built (b6e62302) | extraction session | 3.7 |
+| Same-slitlet overrides in stage 2b, by position from `SOURCE_INFO` (0.75 slit units, 0.02 of the sky, unmeasurable neighbours count as bright, no clean partner: keep both and flag) | Decided (user, 2026-11-01); Built (3795e228, 7e7c160f); p1 rerun and PRISM check done | extraction session | 3.9 |
+| Shipped errors include the subtracted sky exposures' noise (today about 20 % low with three exposures) | Follow-up (user, 2026-11-01); not built; blocks a fair V26 | extraction session | 3.9 |
 | Contamination past the calibrated range fitted in count-rate units | Decided (user, 2026-10-30); Built in part (`profile_extend.py`, e3af87b0) | extraction session | 3.9 |
 | `fnu` not contamination-subtracted; `fnu_contam` separate, NaN where inseparable | Decided (user, 2026-10-30); Built (af58617f: `contam_1d = "report"` default, `"subtract"` opt-in) | extraction session | 4 |
 | Column set `fnu`, `fnu_opt`, `fnu_3px/4px/5px`, `fnu_prof`, `fnu_contam` | Decided (user, 2026-10-29); Built (686eedaf) | extraction session | 4 |
@@ -1511,7 +1514,11 @@ a fix or needs another field or disperser), **To make**.
 | Remeasure the +2.5 % in-range offset and G395M blue extension after b0c08026 | MB session | |
 | Held-out validation of the b0c08026 tables; user sign-off on grating tables | MB session | user |
 | Grating sky smoothing trial | MB session | user |
-| Write the joint-solve plan, then code it; drop the mask, echo and pass 1b | extraction session | |
+| Remove the superseded masked pass 1, echo, pass 1b and old group solve (`contam_joint`); retire `tracemaps/` once pass-1 validity keys on the rate files | extraction session | |
+| Error propagation: write the variance including the subtracted sky exposures in stage 2b (profile fit reads the frame's own from `PRE_BKGSUB_VAR_*`); before V26 | extraction session | user (when) |
+| Update the CHANGELOG extraction entry (joint first pass, no per-exposure offsets, same-slitlet overrides, maps from the rate file) | extraction session | |
+| Neighbour scan: stay `report_only` or apply (`auto_override`) | user | |
+| Second field (a spurs observation) and G140M / G235M end to end | extraction session | |
 | Full-field separability count (477 p1 G395M sources) | extraction session | |
 | Same-row inseparability cause | extraction session | |
 | Wire the first pass into stage 3 | extraction session | |
