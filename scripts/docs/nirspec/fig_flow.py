@@ -65,17 +65,17 @@ N = {
     'sub':    (c2b2, 1.4, 'nod subtraction', 'step', ()),
     'bsub':   (c2b2, 2.4, 'background-subtracted\ncutouts', 'file', ()),
 
-    'spec3':  (c3a, 0, 'exposure combination (jwst Spec3)', 'step', ()),
-    'dmap':   (c3a, 1, 'pixel map\n(each 2-D drizzled once)', 'step', ()),
-    'joint':  (c3a, 2, 'joint solve of\noverlapping sources', 'step', (knob('stage3', 'contam_predict'),)),
-    'recheck': (c3b, 2, 'neighbor recheck', 'step', (knob('stage3', 'slitlet_neighbor_brightness'),)),
-    'shape':  (c3a, 3.1, 'source shape selection', 'step', (knob('stage3', 'profile_fit_shape'),)),
-    'pfit':   (c3a, 4.1, 'profile extraction\n(galaxy x star-measured PSF)', 'step', (knob('stage3', 'profile_fit'),)),
-    'opt':    (c3b, 1, 'optimal and boxcar\nextractions', 'step', ()),
-    'mbs':    (c3b, 4.1, 'master-background spectrum\n(cutouts minus master background)', 'mb',
+    'joint':  (c3a, 0, 'joint solve of\noverlapping sources', 'step', (knob('stage3', 'contam_predict'),)),
+    'recheck': (c3b, 0, 'neighbor recheck', 'step', (knob('stage3', 'slitlet_neighbor_brightness'),)),
+    'spec3':  (c3a, 1.2, 'exposure combination (jwst Spec3)', 'step', ()),
+    'opt':    (c3b, 1.2, 'optimal and boxcar\nextractions', 'step', ()),
+    'dmap':   (c3a, 2.2, 'pixel map\n(each 2-D drizzled once)', 'step', ()),
+    'shape':  (c3a, 3.2, 'source shape selection', 'step', (knob('stage3', 'profile_fit_shape'),)),
+    'pfit':   (c3a, 4.2, 'profile extraction\n(galaxy x star-measured PSF)', 'step', (knob('stage3', 'profile_fit'),)),
+    'mbs':    (c3b, 4.2, 'master-background spectrum\n(cutouts minus master background)', 'mb',
                (knob('stage3', 'mbkg_spectrum'),)),
-    'contam': (c3a, 5.2, 'contamination prediction', 'step', ()),
-    'comb':   (c3a, 6.2, '1-D combination of\nexposure groups', 'step',
+    'contam': (c3a, 5.3, 'contamination prediction', 'step', ()),
+    'comb':   (c3a, 6.3, '1-D combination of\nexposure groups', 'step',
                ('combine_method = "1d"', '(default "' + CFG['stage3']['combine_method'] + '")')),
     'spec':   (c3b, 6.4, 'spectrum file (_spec.fits)', 'file', ()),
 
@@ -135,9 +135,11 @@ def arrow(a, b, sa='bottom', sb='top', rad=0.0, dashed=False, color='#555555', l
                 ha='center', va='bottom', zorder=6, bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none'))
 
 
-def route(a, b, path, sa='right', sb='left', dashed=False, color='#222222', lw=1.6, label=None, label_at=None):
+def route(a, b, path, sa='right', sb='left', dashed=False, color='#222222', lw=1.6, label=None, label_at=None,
+          dy=0.0):
     """A right-angled link: from ``a``'s side ``sa`` through the corner points ``path`` (each an
-    (x, y), or ('x', value) / ('y', value) to move along one axis) to ``b``'s side ``sb``."""
+    (x, y), or ('x', value) / ('y', value) to move along one axis) to ``b``'s side ``sb``
+    (moved by ``dy`` when several links end on the same side)."""
     pts = [anchor(a, sa)]
     for q in path:
         if q[0] == 'x':
@@ -147,6 +149,7 @@ def route(a, b, path, sa='right', sb='left', dashed=False, color='#222222', lw=1
         else:
             pts.append(q)
     end = anchor(b, sb)
+    end = (end[0], end[1] + dy)
     if sb in ('left', 'right'):
         pts.append((pts[-1][0], end[1]))
     else:
@@ -173,7 +176,7 @@ for a, b in [('uncal', 'det1'), ('det1', 'cfn'), ('cfn', 'bkg1'), ('bkg1', 'bkg2
              ('mask', 'rate'),
              ('geo', 'mb1'), ('mb1', 'sfit'), ('spec2', 'canon'), ('canon', 'mb2'), ('mb2', 'mbkg'),
              ('nbr', 'sub'), ('sub', 'bsub'),
-             ('spec3', 'dmap'), ('dmap', 'joint'), ('joint', 'shape'), ('shape', 'pfit'), ('pfit', 'contam'),
+             ('joint', 'spec3'), ('spec3', 'dmap'), ('dmap', 'shape'), ('shape', 'pfit'), ('pfit', 'contam'),
              ('contam', 'comb'),
              ('zfit', 'zf'), ('lines', 'lf')]:
     arrow(a, b)
@@ -181,7 +184,7 @@ arrow('geo', 'tmap', 'right', 'left')
 arrow('sfit', 'stuck', 'right', 'left')
 G = dict(color='#555555', lw=1.1)
 route('stuck', 'spec2', [], sa='bottom', sb='right', **G)
-arrow('dmap', 'opt', 'right', 'left')
+arrow('spec3', 'opt', 'right', 'left')
 arrow('joint', 'recheck', 'right', 'left')
 arrow('pfit', 'mbs', 'right', 'left')
 _o, _s = anchor('opt', 'right'), anchor('spec', 'top')     # into the spectrum file's top, right of centre
@@ -198,9 +201,11 @@ route('rate', 'spec2', [('x', 3.18)])
 route('mbkg', 'nbr', [('x', 9.06), ('y', anchor('nbr', 'left')[1] - 0.1)])
 route('canon', 'nbr', [('x', 9.18), ('y', anchor('nbr', 'left')[1] + 0.1)])
 route('bsub', 'spec3', [('x', 12.42), ('y', anchor('spec3', 'left')[1])])
+route('bsub', 'joint', [('x', 12.42), ('y', anchor('joint', 'left')[1] - 0.1)], dy=-0.1)
 route('spec', 'zfit', [('x', 18.36)])
 route('spec', 'lines', [('x', 18.48)])
-route('tmap', 'joint', [('y', 0.85), ('x', 12.52), ('y', anchor('joint', 'left')[1])], sa='top', dashed=True)
+route('tmap', 'joint', [('y', 0.85), ('x', 12.52), ('y', anchor('joint', 'left')[1] + 0.1)], sa='top', dashed=True,
+      dy=0.1)
 route('recheck', 'nbr', [('y', 0.92), ('x', anchor('nbr', 'top')[0])], sa='top', sb='top', dashed=True,
       label='changed sources run again', label_at=(14.2, 0.92))
 
