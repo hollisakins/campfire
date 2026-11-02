@@ -49,7 +49,7 @@ LIGHT_PAD = 0.25     # PSF spill beyond the open area (~1 detector row), slit_fr
 NONE = -1
 IN_SOURCE = 1        # flag bit: the pixel is in the trace's source shutter (light a nod difference keeps)
 PAST_ROWS = 8        # rows added above and below the bounding box where a trace is followed past its range
-MAP_VERSION = '7'
+MAP_VERSION = '8'    # 8: failed-open shutters padded like any open shutter (their extent had stopped at the open area)
 
 
 def open_shutter_centres(shutter_state, ymin, ymax, pitch=MSA_SLIT_PITCH, margin=MSA_SLIT_MARGIN):
@@ -295,16 +295,17 @@ def _slitlet_traces(model, sources=None):
 
 
 def _failed_open_traces(model):
-    """Failed-open shutters as one-shutter slits, via jwst's msaflagopen machinery."""
+    """Failed-open shutters as one-shutter slits, via jwst's msaflagopen machinery, with a
+    commanded slitlet's margin (``coverage.failed_open_slitlets``)."""
     from gwcs.wcs import WCS
     from jwst.assign_wcs import nirspec
-    from jwst.msaflagopen import msaflag_open
     from jwst.msaflagopen.msaflagopen_step import MSAFlagOpenStep, create_reference_filename_dictionary
+    from campfire_pipeline.nirspec.coverage import failed_open_slitlets
 
     msaoper = MSAFlagOpenStep().get_reference_file(model, 'msaoper')
     if msaoper in (None, 'N/A'):
         return
-    slits = msaflag_open.create_slitlets(msaoper)
+    slits = failed_open_slitlets(msaoper)
     tmp = model.copy()
     tmp.meta.exposure.type = 'NRS_MSASPEC'
     tmp.meta.wcs = WCS(nirspec.slitlets_wcs(tmp, create_reference_filename_dictionary(model), slits))
@@ -501,7 +502,7 @@ def get_trace_map(rate_file, cache_dir, workdir=None, exposure_name=None, **buil
 # The stored map: per shutter, built once from the rate file's geometry
 # ---------------------------------------------------------------------------
 CORE = 2             # flag bit: inside the open area of the pixel's nearest open shutter (unpadded)
-SHUTTER_MAP_VERSION = '1'
+SHUTTER_MAP_VERSION = '2'   # 2: failed-open shutters padded like any open shutter
 SHUTTER_MAP_EXTENSIONS = ('TMSH1', 'TMSH2', 'TMFLAG', 'TMSLITS', 'TMSHUT')
 
 

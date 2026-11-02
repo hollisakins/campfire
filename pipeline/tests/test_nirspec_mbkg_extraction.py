@@ -1,4 +1,5 @@
-"""The master-background spectrum (``mbkg_extraction``): the frames, the single-frame fit
+"""The master-background spectrum (``mbkg_extraction``): the frames in memory, their
+outlier flags and 2-D through the nodded pixel maps, the single-frame exposures and fit
 at a fixed shape, the self-subtraction share, the ``MBKGPREF`` / ``MBKGWHY`` rule and the
 ``_spec.fits`` extensions (``stage3.opt_ext_single_source``)."""
 
@@ -77,46 +78,224 @@ def test_preferred_takes_the_first_reason_that_applies():
 
 
 # ---------------------------------------------------------------------------
-# the frames
+# the frames, in memory
 # ---------------------------------------------------------------------------
-def test_write_frame_subtracts_the_master_background(tmp_path, monkeypatch):
+def _canonical(tmp_path, ny=6, nx=8):
+    """A canonical whose live slit is a nod difference (99) and whose PRE_BKGSUB arrays
+    hold the calibrated frame (5)."""
     from jwst.datamodels import MultiSlitModel, SlitModel
     from campfire_pipeline.nirspec import canonical as C
 
-    ny, nx = 6, 8
+    live_dq = np.zeros((ny, nx), np.uint32)
+    live_dq[1, 1] = MX.OUTLIER | PF.DO_NOT_USE              # a partner's flag stage 2b carried over
     m = MultiSlitModel()
     m.slits.append(SlitModel(data=np.full((ny, nx), 99.0, np.float32), err=np.ones((ny, nx), np.float32),
-                             dq=np.zeros((ny, nx), np.uint32), var_poisson=np.full((ny, nx), 9.0, np.float32),
+                             dq=live_dq, var_poisson=np.full((ny, nx), 9.0, np.float32),
                              var_rnoise=np.full((ny, nx), 1.0, np.float32),
-                             var_flat=np.zeros((ny, nx), np.float32)))
+                             var_flat=np.full((ny, nx), 0.25, np.float32)))
     canonical = str(tmp_path / 'jw07076001001_03101_00001_nrs1_7.fits')
     m.save(canonical)
     pre = {'SCI': np.full((ny, nx), 5.0, np.float32), 'VAR_POISSON': np.full((ny, nx), 2.0, np.float32),
            'VAR_RNOISE': np.full((ny, nx), 1.0, np.float32), 'DQ': np.zeros((ny, nx), np.uint32)}
     C.append_extras(canonical, extra_hdus=C.make_prefixed_hdus(pre, C.PRE_BKGSUB_PREFIX))
+    return canonical, live_dq
+
+
+def test_frame_arrays_subtract_the_master_background(tmp_path, monkeypatch):
+    ny, nx = 6, 8
+    canonical, live_dq = _canonical(tmp_path, ny, nx)
     sky = np.full((ny, nx), 3.0)
     sky[0, 0] = np.nan                                     # a pixel the master background does not cover
     monkeypatch.setattr('campfire_pipeline.nirspec.stage2.master_background_on',
                         lambda path: (sky, np.full((ny, nx), 0.5)))
-    out = MX.write_frame(canonical, str(tmp_path))
-    assert out == MX.copy_path(str(tmp_path), canonical) and out.endswith('_nrs1_7_mbkgsub.fits')
-    with MultiSlitModel(out) as c:
-        s = c.slits[0]
-        assert c.meta.filename == os.path.basename(out)   # what the crf drizzle matches on
-        assert str(c.meta.cal_step.bkg_subtract) == 'COMPLETE'
-        np.testing.assert_allclose(s.data[1:, :], 2.0)    # the calibrated frame, not the nod difference
-        assert np.isnan(s.data[0, 0]) and (s.dq[0, 0] & PF.DO_NOT_USE)
-        np.testing.assert_allclose(s.var_poisson[1:, :], 2.5)
-        np.testing.assert_allclose(s.err[1:, :], np.sqrt(3.5))
-    kept = C.read_slit_arrays(out, prefix=C.PRE_BKGSUB_PREFIX)
-    np.testing.assert_array_equal(kept['SCI'], pre['SCI'])
-    assert fits.getheader(out)['CFMBKGSB']
+    f = MX.frame_arrays(canonical)
+    frame, live = f.arrays, f.live_dq
+    assert not os.path.exists(MX.subdir(str(tmp_path)))  # nothing written
+    assert len(f.origin) == 2
+    np.testing.assert_allclose(frame['data'][1:, :], 2.0)  # the calibrated frame, not the nod difference
+    assert np.isnan(frame['data'][0, 0]) and (frame['dq'][0, 0] & PF.DO_NOT_USE)
+    assert frame['dq'][1, 1] == 0                          # the frame's own DQ, not the nod difference's
+    np.testing.assert_allclose(frame['var_poisson'][1:, :], 2.5)
+    np.testing.assert_allclose(frame['var_rnoise'], 1.0)
+    np.testing.assert_allclose(frame['var_flat'], 0.25)
+    np.testing.assert_allclose(frame['err'][1:, :], np.sqrt(3.75))
+    assert {frame[k].dtype for k in ('data', 'err', 'var_poisson')} == {np.dtype(np.float32)}
+    np.testing.assert_array_equal(live, live_dq)
 
 
-def test_write_frame_without_a_master_background(tmp_path, monkeypatch):
+def test_frame_arrays_without_a_master_background(tmp_path, monkeypatch):
     monkeypatch.setattr('campfire_pipeline.nirspec.stage2.master_background_on', lambda path: None)
     with pytest.raises(MX.NoMasterBackground):
-        MX.write_frame(str(tmp_path / 'jw07076001001_03101_00001_nrs1_7.fits'), str(tmp_path))
+        MX.frame_arrays(str(tmp_path / 'jw07076001001_03101_00001_nrs1_7.fits'))
+
+
+def test_outlier_flags_are_the_nodded_crf_and_the_hot_pixels():
+    """The one place of the choice: what the nodded Spec3 flagged in this exposure and the
+    hot pixels are flagged in its master-background frame, on top of its own mask; flags
+    the canonical already had are not taken from the crf (the frame keeps its own DQ)."""
+    a = dict(data=np.ones((4, 5), np.float32), dq=np.zeros((4, 5), np.uint32))
+    a['dq'][3, 4] = PF.DO_NOT_USE                          # no master background there
+    live = np.zeros((4, 5), np.uint32)
+    live[0, 0] = MX.OUTLIER | PF.DO_NOT_USE                # in the nod difference before Spec3
+    crf = live.copy()
+    crf[2, 1] = MX.OUTLIER | PF.DO_NOT_USE                 # flagged by the nodded Spec3
+    crf[1, 3] = 4                                          # another flag: not an outlier
+    hot = np.zeros((4, 5), bool)
+    hot[0, 4] = True
+    out = MX.outlier_flags(MX.Frame(a, live), crf, hot)
+    assert out['dq'][2, 1] == MX.OUTLIER | PF.DO_NOT_USE and out['dq'][0, 4] == MX.OUTLIER | PF.DO_NOT_USE
+    assert out['dq'][0, 0] == 0 and out['dq'][1, 3] == 0 and out['dq'][3, 4] == PF.DO_NOT_USE
+    assert int(np.sum(out['dq'] > 0)) == 3
+    assert a['dq'][2, 1] == 0                              # the frame itself is untouched
+    assert out['dq'].dtype == np.uint32
+
+
+# ---------------------------------------------------------------------------
+# the hot-pixel mask
+# ---------------------------------------------------------------------------
+def _scene(n_exp=3, hot=((10, 30),), cosmic=None, seed=4, origins=None):
+    """Frames of one detector region (err 1): noise, a smooth band fixed on the detector
+    (rows 3-6, 40 sigma, a slow ramp along the dispersion), a source trace that moves by 5
+    rows between exposures with a one-pixel emission line (60 sigma), hot pixels fixed on
+    the detector (30 sigma) and optionally a cosmic ray in one exposure."""
+    ny, nx = 24, 60
+    rng = np.random.default_rng(seed)
+    origins = origins or [(100, 200)] * n_exp
+    frames, truth = {}, {}
+    for k in range(n_exp):
+        oy, ox = origins[k]
+        yy, xx = np.mgrid[:ny, :nx]
+        dy, dx = yy + oy, xx + ox                          # detector pixel
+        d = rng.normal(0.0, 1.0, (ny, nx))
+        d += np.where((dy >= 103) & (dy <= 106), 40.0 * (1 + 0.01 * dx - 2.0), 0.0)   # the band
+        src = 110 + 5 * k
+        d += 20.0 * np.exp(-0.5 * ((dy - src) / 0.8) ** 2)
+        d[(dy == src) & (dx == 225)] += 60.0               # its emission line
+        for y, x in hot:
+            d[(dy == y + 100) & (dx == x + 200)] += 30.0
+        if cosmic is not None and k == cosmic[0]:
+            d[(dy == cosmic[1] + 100) & (dx == cosmic[2] + 200)] += 100.0
+        arrays = dict(data=d.astype(np.float32), dq=np.zeros((ny, nx), np.uint32), err=np.ones((ny, nx), np.float32))
+        frames[f'e{k}'] = MX.Frame(arrays, np.zeros((ny, nx), np.uint32), 'NRS1', (oy, ox))
+    return frames
+
+
+def test_a_hot_pixel_fixed_in_every_exposure_is_flagged():
+    frames = _scene()
+    hot = MX.hot_pixels(frames)
+    for n, m in hot.items():
+        assert m[10, 30] and int(m.sum()) == 1, n
+
+
+def test_a_fixed_smooth_band_and_a_moving_source_are_not_flagged():
+    """The band is fixed on the detector in every exposure but smooth along its rows; the
+    source (and its one-pixel line, 60 sigma above its row) moves between exposures."""
+    frames = _scene(hot=())
+    for n, f in frames.items():
+        s = MX.local_contrast(f)
+        assert np.nanmax(s) > MX.HOT_SIGMA                 # the line stands out in its own exposure
+    assert not any(m.any() for m in MX.hot_pixels(frames).values())
+
+
+def test_a_cosmic_ray_in_one_exposure_is_not_flagged():
+    frames = _scene(hot=(), cosmic=(1, 18, 45))
+    assert MX.local_contrast(frames['e1'])[18, 45] > 50
+    assert not any(m.any() for m in MX.hot_pixels(frames).values())
+
+
+def test_hot_pixels_are_matched_on_the_detector():
+    """Cutouts at different detector positions: the same detector pixel, at different
+    cutout pixels, is flagged in each; other detectors are separate."""
+    frames = _scene(origins=[(100, 200), (102, 199), (100, 200)])
+    hot = MX.hot_pixels(frames)
+    assert hot['e0'][10, 30] and hot['e2'][10, 30] and hot['e1'][8, 31]
+    assert sum(int(m.sum()) for m in hot.values()) == 3
+    frames['e2'].detector = 'NRS2'                         # two exposures left on NRS1: still every one
+    hot = MX.hot_pixels(frames)
+    assert hot['e0'][10, 30] and hot['e1'][8, 31] and not hot['e2'].any()
+
+
+def test_one_exposure_flags_nothing_two_must_agree():
+    one = _scene(n_exp=1)
+    assert not MX.hot_pixels(one)['e0'].any()               # nothing tells a hot pixel from the source
+    two = _scene(n_exp=2)
+    assert all(m[10, 30] for m in MX.hot_pixels(two).values())
+    two['e1'].arrays['data'][10, 30] = 0.0                 # high in one of two: not flagged
+    assert not any(m.any() for m in MX.hot_pixels(two).values())
+    three = _scene()
+    three['e2'].arrays['dq'][10, 30] = PF.DO_NOT_USE       # unusable in one: the other two decide
+    hot = MX.hot_pixels(three)
+    assert hot['e0'][10, 30] and hot['e1'][10, 30] and not hot['e2'][10, 30]
+
+
+def test_master_background_two_d_through_the_nodded_map():
+    """``drizzle_2d``: the frames drizzled as data through the product's map, with the
+    nodded outlier flags and the hot pixels masking their pixels."""
+    from test_nirspec_drizzle_map import NX as DX, NY as DY, _exposures as _dexps, _map, _wcs
+    exps = _dexps()
+    out_wcs = _wcs(0.0, 0.0, shape=(DY, DX))
+    d = _map(exps, out_wcs)
+    d.exposures[0].arrays['dq'][6, 6] |= MX.OUTLIER | PF.DO_NOT_USE      # the nodded Spec3's flag
+    frames = {}
+    for e in exps:
+        frame = {k: np.array(e[k]) for k in ('data', 'err', 'var_poisson', 'var_rnoise', 'var_flat')}
+        frame['data'] = np.full((DY, DX), 3.0, np.float32)
+        frame['data'][9, 14] = 3.0 + 50 * frame['err'][9, 14]          # a hot pixel, in both
+        frame['dq'] = np.zeros((DY, DX), np.uint32)
+        frames[e['name']] = MX.Frame(frame, np.zeros((DY, DX), np.uint32), 'NRS1', (1, 1))
+    out = MX.drizzle_2d(d, frames)
+    hot = np.zeros((DY, DX), int)
+    hot[9, 14] = MX.OUTLIER | PF.DO_NOT_USE
+    outlier = [np.where((x.arrays['dq'] & MX.OUTLIER) > 0, MX.OUTLIER | PF.DO_NOT_USE, 0) | hot for x in d.exposures]
+    flagged = d.drizzle({e['name']: {**frames[e['name']].arrays, 'dq': (frames[e['name']].arrays['dq'] | outlier[k])}
+                         for k, e in enumerate(exps)}, variances=True)
+    clean = d.drizzle({e['name']: frames[e['name']].arrays for e in exps}, variances=True)
+    np.testing.assert_array_equal(out['data'], flagged['data'])
+    np.testing.assert_array_equal(out['err'], flagged['err'])
+    assert not np.array_equal(out['wht'], clean['wht'])   # the flags took the pixels' weight
+    np.testing.assert_allclose(out['data'][np.isfinite(out['data'])], 3.0, rtol=1e-6)
+    with pytest.raises(ValueError):
+        MX.drizzle_2d(d, {exps[0]['name']: frames[exps[0]['name']]})
+
+
+def test_single_frame_exposures_from_the_nodded_load():
+    """The fit's master-background exposures, in memory: the science exposures of the
+    nodded load with their frame (times the path loss) in place of the nod difference,
+    nothing subtracted, usable pixels from the frame, on their own common frame (a
+    background-only exposure that widened the nodded frame is left out)."""
+    exps = _exposures()
+    pad = 2
+    for k, e in enumerate(exps):
+        for f in ('diff', 'var', 'wav', 'y', 'pl_applied', 'pl_point'):
+            a = np.full((NY + 2 * pad, NX), np.nan)
+            a[pad:pad + NY] = getattr(e, f)
+            setattr(e, f, a)
+        e.ok = np.pad(e.ok, ((pad, pad), (0, 0)))
+        e.origin = (11, 21)
+        e.cutout = (pad, 0, NY, NX)
+    exps[0].use_data = False                               # a background exposure only
+    exps[0].cutout = (0, 0, NY + 2 * pad, NX)              # with a taller cutout
+    exps[1].pl_applied[pad + 3, 5] = 0.0                   # no path loss there
+    frames = {}
+    for e in exps:
+        data = np.full((NY, NX), 4.0, np.float32)
+        dq = np.zeros((NY, NX), np.uint32)
+        data[0, 0] = np.nan
+        dq[1, 1] = PF.DO_NOT_USE
+        frames[e.name] = MX.Frame(dict(data=data, dq=dq), dq)
+    out = MX.single_frame_exposures(exps, frames)
+    assert [x.name for x in out] == [exps[1].name, exps[2].name]
+    for x, e in zip(out, exps[1:]):
+        assert x.partners == [] and x.use_data and x.group == 0
+        assert x.cutout == (0, 0, NY, NX) and x.origin == (11 + pad, 21) and x.diff.shape == (NY, NX)
+        np.testing.assert_array_equal(x.var, e.var[pad:pad + NY])
+        np.testing.assert_array_equal(x.wav, e.wav[pad:pad + NY])
+        np.testing.assert_array_equal(x.diff, np.asarray(frames[e.name].arrays['data'], float) * e.pl_applied[pad:pad + NY])
+        assert not x.ok[0, 0] and not x.ok[1, 1] and x.ok[2, 2]
+        assert e.partners and e.diff.shape == (NY + 2 * pad, NX)   # the nodded exposures are untouched
+    assert not out[0].ok[3, 5] and out[1].ok[3, 5]
+    M = PF.ProfileModel(out, chromatic=True)
+    assert np.all(M.dof_weight() == 1.0)                   # single frames: one independent value per pixel
 
 
 # ---------------------------------------------------------------------------
@@ -125,10 +304,11 @@ def test_write_frame_without_a_master_background(tmp_path, monkeypatch):
 NAMES = ['jw07076001001_03101_00001_nrs1_7.fits', 'jw07076001001_03101_00002_nrs1_7.fits']
 
 
-def _inputs(tmp_path, product, amp, where, contam=0.1, wave=None, bkg_why=('', ''), x1d_shift=0.0):
-    """A minimal s2d / x1d pair (a source of ``amp`` uJy with a Gaussian profile) and its
-    _pf.fits under ``where`` (the workspace or its ``mbkg`` subdirectory)."""
-    ny, nx = 30, 60
+def _inputs(tmp_path, product, amp, where, contam=0.1, wave=None, bkg_why=('', ''), ny=30, x1d=True):
+    """A minimal s2d (and x1d) of a source of ``amp`` uJy with a Gaussian profile and its
+    _pf.fits under ``where`` (the workspace, or its ``mbkg`` subdirectory: the
+    master-background 2-D has no x1d)."""
+    nx = 60
     rows = np.arange(ny)[:, None]
     prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
     prof = prof / prof[:, :1].sum()
@@ -140,11 +320,11 @@ def _inputs(tmp_path, product, amp, where, contam=0.1, wave=None, bkg_why=('', '
                   fits.ImageHDU(np.full((ny, nx), 0.01 / 1e12), name='ERR'),
                   fits.ImageHDU(np.tile(wave, (ny, 1)), name='WAVELENGTH'),
                   fits.ImageHDU(np.ones((ny, nx)), name='WHT'), exp]).writeto(os.path.join(where, f'{product}_s2d.fits'))
-    x1 = fits.BinTableHDU.from_columns([fits.Column(name='WAVELENGTH', format='D', array=wave + x1d_shift)],
-                                       name='EXTRACT1D')
-    x1.header['EXTRYSTR'] = 13
-    x1.header['EXTRYSTP'] = 18
-    fits.HDUList([fits.PrimaryHDU(), x1]).writeto(os.path.join(where, f'{product}_x1d.fits'))
+    if x1d:
+        x1 = fits.BinTableHDU.from_columns([fits.Column(name='WAVELENGTH', format='D', array=wave)], name='EXTRACT1D')
+        x1.header['EXTRYSTR'] = 13
+        x1.header['EXTRYSTP'] = 18
+        fits.HDUList([fits.PrimaryHDU(), x1]).writeto(os.path.join(where, f'{product}_x1d.fits'))
     h = fits.Header()
     h['PFNCONT'] = 1
     h['PFSELFSB'] = 0.02
@@ -164,7 +344,7 @@ def _master_backgrounds(tmp_path, sources=('pool', 'exposure')):
 
 def test_spec_fits_carries_the_master_background_spectrum(tmp_path):
     _inputs(tmp_path, 'p', 10.0, str(tmp_path))
-    _inputs(tmp_path, 'p_mbkg', 8.0, MX.subdir(str(tmp_path)))
+    _inputs(tmp_path, 'p_mbkg', 8.0, MX.subdir(str(tmp_path)), x1d=False)
     _master_backgrounds(tmp_path)
     S3.opt_ext_single_source('p', str(tmp_path), profile_fit=True, mbkg_spectrum=True)
     path = tmp_path / 'p_spec.fits'
@@ -194,44 +374,43 @@ def test_spec_fits_carries_the_master_background_spectrum(tmp_path):
 def test_flagged_exposure_prefers_the_master_background(tmp_path):
     _inputs(tmp_path, 'p', 10.0, str(tmp_path), bkg_why=('every background exposure: neighbor 9 at 0.050 of '
                                                           'background', ''))
-    _inputs(tmp_path, 'p_mbkg', 8.0, MX.subdir(str(tmp_path)))
+    _inputs(tmp_path, 'p_mbkg', 8.0, MX.subdir(str(tmp_path)), x1d=False)
     S3.opt_ext_single_source('p', str(tmp_path), profile_fit=True, mbkg_spectrum=True)
     hd = fits.getheader(tmp_path / 'p_spec.fits')
     assert (hd['MBKGPREF'], hd['MBKGWHY']) == (True, 'no_clear_background')
 
 
-def test_a_different_grid_leaves_out_the_master_background_spectrum(tmp_path):
+def test_a_two_d_of_another_shape_leaves_out_the_master_background_spectrum(tmp_path):
+    """The master-background 2-D is on the nodded grid by construction; a file of another
+    shape (stale) is not used."""
     _inputs(tmp_path, 'p', 10.0, str(tmp_path))
-    _inputs(tmp_path, 'p_mbkg', 8.0, MX.subdir(str(tmp_path)), wave=np.linspace(1.0, 5.0, 60) + 1e-6)
+    _inputs(tmp_path, 'p_mbkg', 8.0, MX.subdir(str(tmp_path)), ny=31, x1d=False)
     S3.opt_ext_single_source('p', str(tmp_path), profile_fit=True, mbkg_spectrum=True)
     with fits.open(tmp_path / 'p_spec.fits') as h:
         assert not any(x.name in S3.MBKG_EXTENSIONS for x in h)
         assert 'MBKGPREF' not in h[0].header and h[0].header['NEXP'] == 2
 
 
-def test_rounding_of_the_one_dimensional_wave_is_accepted(tmp_path):
-    """jwst's 1-D wavelengths of one 2-D grid differ by ~1e-15 um between two runs (p1):
-    the master-background spectrum is kept and written on the nodded wave."""
+def test_the_master_background_spectrum_is_written_on_the_nodded_wave(tmp_path):
+    """No 1-D of its own (no Spec3, no x1d): the nodded aperture rows and ``wave``."""
     _inputs(tmp_path, 'p', 10.0, str(tmp_path))
-    _inputs(tmp_path, 'p_mbkg', 8.0, MX.subdir(str(tmp_path)), x1d_shift=2e-15)
+    _inputs(tmp_path, 'p_mbkg', 8.0, MX.subdir(str(tmp_path)), x1d=False)
     S3.opt_ext_single_source('p', str(tmp_path), profile_fit=True, mbkg_spectrum=True)
     with fits.open(tmp_path / 'p_spec.fits') as h:
         np.testing.assert_array_equal(h['SPEC1D_MBKG'].data['wave'], h['SPEC1D'].data['wave'])
 
 
-def test_no_master_background_spectrum_when_its_spec3_did_not_run(tmp_path):
+def test_no_master_background_spectrum_without_its_two_d(tmp_path):
     _inputs(tmp_path, 'p', 10.0, str(tmp_path))
     S3.opt_ext_single_source('p', str(tmp_path), profile_fit=True, mbkg_spectrum=True)
     with fits.open(tmp_path / 'p_spec.fits') as h:
         assert not any(x.name in S3.MBKG_EXTENSIONS for x in h)
 
 
-def test_combined_product_carries_the_master_background_spectrum(tmp_path, monkeypatch):
-    from astropy.io import fits
-    from astropy.table import Table
-    from campfire_pipeline.nirspec import mbkg_extraction as MX
-    from campfire_pipeline.nirspec import stage3 as S3
-
+def test_combined_product_carries_the_master_background_spectrum(tmp_path):
+    """The groups' master-background spectra combined, with the stacked 2-D the stacked
+    Spec3 drizzled through its pixel maps (``run_stage3_single_source``; here written
+    directly)."""
     n = 60
     wave = np.linspace(3.0, 5.0, n)
     cols = ('opt', '3px', '4px', '5px', 'prof', 'contam')
@@ -250,28 +429,24 @@ def test_combined_product_carries_the_master_background_spectrum(tmp_path, monke
         fits.HDUList([prim, h]).writeto(tmp_path / name)
         files.append(name)
     sci_shape = (7, n)
-    wave2d = np.tile(wave, (7, 1))
+    path = MX.product_paths(str(tmp_path), 'p', 7)['s2d']
 
-    def fake_spec3(product_name, cal_files, workspace, source_id, shape=sci_shape):
-        paths = MX.product_paths(workspace, product_name, source_id)
-        os.makedirs(os.path.dirname(paths['s2d']), exist_ok=True)
-        fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.ones(shape), name='SCI'),
-                      fits.ImageHDU(np.ones(shape), name='ERR'),
-                      fits.ImageHDU(np.tile(wave, (shape[0], 1)), name='WAVELENGTH')]).writeto(paths['s2d'])
-        return paths
+    def two_d(shape):
+        MX.write_2d_file(path, dict(data=np.ones(shape, np.float32), err=np.ones(shape, np.float32),
+                                    wht=np.ones(shape, np.float32)))
 
-    monkeypatch.setattr(MX, 'run_spec3', fake_spec3)
     exposures = {'filename': ['a', 'b'], 'bkg_nods': ['2', '1'], 'bkg_why': ['every background exposure: x', '']}
     clip = dict(sigma_clip_enabled=False)
-    hdus, cards = S3._combined_mbkg(files, ['a', 'b'], str(tmp_path), 'p', 7, wave, [1.0, 3.0], sci_shape, wave2d,
-                                    2, 5, fits.Header(), exposures, False, clip, None, 0.10)
+    args = (files, str(tmp_path), 'p', 7, wave, [1.0, 3.0], sci_shape, 2, 5, fits.Header(), exposures, False, clip,
+            None, 0.10)
+    # no stacked master-background 2-D (an exposure without a master background): none
+    assert S3._combined_mbkg(*args) == ([], {})
+    two_d(sci_shape)
+    hdus, cards = S3._combined_mbkg(*args)
     assert [h.name for h in hdus] == ['SPEC1D_MBKG', 'SCI_MBKG', 'ERR_MBKG', 'PROF1D_MBKG']
     spec = hdus[0].data
     assert np.array_equal(spec['wave'], wave) and np.allclose(spec['fnu_opt'], 2.0)
     assert cards['MBKGPREF'][0] and cards['MBKGWHY'][0] == 'no_clear_background'
-    # a stacked grid other than the nodded one: no master-background spectrum
-    monkeypatch.setattr(MX, 'run_spec3', lambda *a: fake_spec3(*a, shape=(8, n)))
-    for d in os.listdir(MX.subdir(str(tmp_path))):
-        os.remove(os.path.join(MX.subdir(str(tmp_path)), d))
-    assert S3._combined_mbkg(files, ['a', 'b'], str(tmp_path), 'p', 7, wave, [1.0, 3.0], sci_shape, wave2d,
-                             2, 5, fits.Header(), exposures, False, clip, None, 0.10) == ([], {})
+    # a stacked 2-D of another shape than the nodded one: no master-background spectrum
+    two_d((8, n))
+    assert S3._combined_mbkg(*args) == ([], {})

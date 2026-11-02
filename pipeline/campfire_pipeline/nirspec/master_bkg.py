@@ -75,7 +75,7 @@ from campfire_pipeline.nirspec import barshadow_calibration as B
 from campfire_pipeline.nirspec.coverage import (coverage_from_wcs, cutoffs_for, default_cache_dir, cache_path,
                                                  geometry_cache_path, slit_geometry_extended)
 
-ALGORITHM_VERSION = '1.6'    # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
+ALGORITHM_VERSION = '1.7'    # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
 #                               1.3: equal shutter weights, sky divided to the open-shutter centre (2026-10-31)
 #                               1.4: the group pool painted unless the exposure differs (pool_check) (2026-10-31)
 #                               1.5: step-1 tables read from the rate file, no MBKG1DR copy, 2-D extensions
@@ -83,6 +83,8 @@ ALGORITHM_VERSION = '1.6'    # 1.1: painted past the calibrated range; 1.2: coun
 #                               1.6: failed-open shutters (and slitlets without a slit) painted, each failed-open
 #                                    shutter at its measured transmission; overlapping light summed unless it
 #                                    comes through the same MSA spot (merge_painted) (2026-11-02)
+#                               1.7: failed-open shutters get a commanded slitlet's margin and the real shutter
+#                                    pitch (coverage.failed_open_slitlets) (2026-11-02)
 _PREFIX = 'master_bkg_'
 DEFAULTS = dict(
     master_bkg_source_pad_px=3.0,     # rows beyond the source shutter's edges dropped (§9: 3 px)

@@ -4,49 +4,58 @@ user decisions 2026-10-29 and 2026-11-01).
 
 The nodded spectrum stays the preferred product. This one is the same extraction on the
 exposures with their master background subtracted instead of the other exposures, so the
-two differ only in how the background was removed (parity):
+two differ only in how the background was removed (parity). Everything is made in memory
+on the nodded product's 2-D grid, through its pixel maps (``drizzle_map.DrizzleMap``, one
+per product, built from the nodded Spec3 crf), before any 1-D extraction:
 
-1. ``write_frame``: each science exposure's calibrated frame (``PRE_BKGSUB_SCI``, or the
+1. ``frame_arrays``: each science exposure's calibrated frame (``PRE_BKGSUB_SCI``, or the
    live SCI before stage 2b) minus its master background (``stage2.master_background_on``),
-   written as a copy of its canonical in ``{workspace}/mbkg/``. The copy's live SCI / ERR /
-   VAR_* hold the subtracted frame (the master background's variance added to the
-   Poisson term); its ``PRE_BKGSUB_*`` arrays are the canonical's, which the pixel
-   calibration (``profile_contam.calibration``) and the frame's own variance
-   (``profile_fit.own_variance``) read.
-2. ``run_spec3``: jwst's Spec3Pipeline on those copies under ``{product}_mbkg``: the 2-D
-   spectrum is resampled exactly as the nodded one (the same exposures, so the same
-   grid; stage 3 checks it).
-3. ``fit_product``: the copies as single frames (``profile_fit.load_source``,
-   ``single_frames``: nothing subtracted from them), the forward model at the shape the
-   nodded chain chose, the spectrum solved. Other sources' light is predicted from their
-   pass 1s, once and positive where each is in that exposure (``profile_contam.predict``),
-   catalogued neighbors in the target's own slitlet included (``include``): no
-   background exposure is dropped for them here. Light through failed-open shutters on
-   the trace is solved with the source and added to it (``failed_open``; cards
-   ``PFNFOPEN`` / ``PFFOSIG``). ``PROF2D`` / ``CONTAM2D`` /
-   ``CONTERR2D`` are drizzled through the master-background crf into
+   with the master background's variance added to the Poisson term and DO_NOT_USE where
+   it has none. Nothing is written.
+2. ``drizzle_2d``: those frames drizzled as data onto the nodded grid, with their outlier
+   flags (``outlier_flags``: the choice is there): the nodded Spec3's, plus the pixels
+   fixed high on the detector in every exposure (``hot_pixels``), which cancel in the nod
+   differences. Into ``{workspace}/mbkg/{product}_mbkg_s2d.fits`` (SCI, ERR, WHT). The
+   grid is the nodded one by construction.
+3. ``fit_product``: the nodded fit's exposures with their frame minus master background
+   in place of the nod difference, as single frames (``single_frame_exposures``: nothing
+   subtracted from them), the forward model at the shape the nodded chain chose, the
+   spectrum solved. Other sources' light is predicted from their pass 1s, once and
+   positive where each is in that exposure (``profile_contam.predict``), catalogued
+   neighbors in the target's own slitlet included (``include``): no background exposure
+   is dropped for them here. Light through failed-open shutters on the trace is solved
+   with the source and added to it (``failed_open``; cards ``PFNFOPEN`` / ``PFFOSIG``).
+   ``PROF2D`` / ``CONTAM2D`` / ``CONTERR2D`` are drizzled through the same maps into
    ``{product}_mbkg_pf.fits``.
 4. stage 3 extracts it exactly like the nodded product (``stage3.extract_columns``) into
    ``SPEC1D_MBKG``, ``SCI_MBKG``, ``ERR_MBKG`` and ``PROF1D_MBKG`` of the same
    ``_spec.fits`` (``stage3.opt_ext_single_source``), with the primary cards ``MBKGPREF``
    / ``MBKGWHY`` (``preferred``) and ``MBKGNEXP``.
 
+Steps 1-3 run in the product's profile fit (``profile_product.run_product``); without the
+profile fit, steps 1-2 run after its Spec3 (``write_2d``); a 1-D combined product of
+several exposure groups gets its 2-D the same way from the stacked crf
+(``stage3._combined_mbkg``).
+
 Named conditions (no master background for an exposure, no crf, a profile-fit fallback,
-a grid that differs from the nodded one) leave the product without the
+a 2-D of another shape than the nodded one) leave the product without the
 master-background spectrum or with its 3-pixel boxcar as ``fnu``, logged. Anything else
 fails the stage.
 """
 
 import glob
 import os
+import warnings
+from dataclasses import dataclass
 
 import numpy as np
 
-MBKG_SUBDIR = 'mbkg'            # the copies and the Spec3 products, inside the workspace
-SUFFIX = '_mbkg'                # product name suffix of the master-background Spec3 run
-COPY_SUFFIX = '_mbkgsub.fits'   # a copy's name: the canonical's with this ending (never a canonical name)
+MBKG_SUBDIR = 'mbkg'            # the 2-D and profile-fit files, inside the workspace
+SUFFIX = '_mbkg'                # product name suffix of the master-background files
 WHY = ('no_clear_background', 'single_exposure', 'extended')
 FALLBACK_NO_MBKG = 'no_master_background'
+OUTLIER = 16                    # jwst DQ OUTLIER
+DO_NOT_USE = 1
 
 
 class NoMasterBackground(RuntimeError):
@@ -57,98 +66,252 @@ def subdir(workspace):
     return os.path.join(workspace, MBKG_SUBDIR)
 
 
-def copy_path(workspace, canonical):
-    return os.path.join(subdir(workspace), os.path.basename(canonical).replace('.fits', COPY_SUFFIX))
-
-
-def product_paths(workspace, product_name, source_id):
-    """The master-background Spec3 and profile-fit files of a product."""
+def product_paths(workspace, product_name, source_id=0):
+    """The master-background 2-D and profile-fit files of a product."""
     d, p = subdir(workspace), f'{product_name}{SUFFIX}'
-    return dict(s2d=os.path.join(d, f'{p}_s2d.fits'), x1d=os.path.join(d, f'{p}_x1d.fits'),
-                crf=os.path.join(d, f'{p}_s{int(source_id):09d}_crf.fits'), pf=os.path.join(d, f'{p}_pf.fits'))
+    return dict(s2d=os.path.join(d, f'{p}_s2d.fits'), pf=os.path.join(d, f'{p}_pf.fits'))
 
 
-def write_frame(canonical, workspace):
-    """Write the master-background-subtracted copy of one canonical (module doc, 1).
-    Raises ``NoMasterBackground`` when its exposure has no ``_mbkg.fits``."""
-    from jwst.datamodels import MultiSlitModel
+@dataclass
+class Frame:
+    """One exposure's frame minus its master background (``frame_arrays``).
+
+    arrays : ``data``, ``dq``, ``err``, ``var_poisson``, ``var_rnoise`` (and ``var_flat``)
+        on the canonical's cutout, as the drizzle takes them (float32 / uint32).
+    live_dq : the canonical's live DQ (``outlier_flags``).
+    detector, origin : where the cutout sits: detector name and its (ystart, xstart),
+        1-based like jwst (``hot_pixels``)."""
+    arrays: dict
+    live_dq: np.ndarray
+    detector: str = ''
+    origin: tuple = (1, 1)
+
+
+def frame_arrays(canonical):
+    """One canonical's frame minus its master background, in memory (module doc, 1): a
+    ``Frame``. Raises ``NoMasterBackground`` when its exposure has no ``_mbkg.fits``."""
+    from astropy.io import fits
     from campfire_pipeline.nirspec import canonical as C
-    from campfire_pipeline.nirspec.profile_fit import DO_NOT_USE
     from campfire_pipeline.nirspec.stage2 import master_background_on
 
     bg = master_background_on(canonical)
     if bg is None:
         raise NoMasterBackground(f'{os.path.basename(canonical)}: no master background beside it')
     sky, sky_var = bg
+    live = C.read_slit_arrays(canonical, exts=('SCI', 'DQ', 'VAR_POISSON', 'VAR_RNOISE', 'VAR_FLAT'))
     pre = C.read_slit_arrays(canonical, prefix=C.PRE_BKGSUB_PREFIX)
-    out = copy_path(workspace, canonical)
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    with MultiSlitModel(canonical) as m:
-        s = m.slits[0]
-        sci = np.asarray(pre.get('SCI', s.data), float)
-        vp = np.asarray(pre.get('VAR_POISSON', s.var_poisson), float)
-        vr = np.asarray(pre.get('VAR_RNOISE', s.var_rnoise), float)
-        dq = np.asarray(pre.get('DQ', s.dq)).astype(s.dq.dtype)
-        known = np.isfinite(sky)
-        sci = np.where(known, sci - sky, np.nan)
-        vp = np.where(known & np.isfinite(sky_var), vp + sky_var, vp)
-        dq = np.where(known, dq, dq | DO_NOT_USE).astype(s.dq.dtype)
-        vf = np.asarray(s.var_flat, float) if s.var_flat is not None and np.size(s.var_flat) else 0.0
-        s.data = sci.astype(s.data.dtype)
-        s.var_poisson = vp.astype(s.var_poisson.dtype)
-        s.var_rnoise = vr.astype(s.var_rnoise.dtype)
-        s.err = np.sqrt(vp + vr + vf).astype(s.err.dtype)
-        s.dq = dq
-        m.meta.cal_step.bkg_subtract = 'COMPLETE'
-        m.save(out)                                # on_save names the copy after its own file
-    C.append_extras(out, extra_hdus=C.make_prefixed_hdus(pre, C.PRE_BKGSUB_PREFIX),
-                    header_updates={'CFMBKGSB': (True, 'master background subtracted (mbkg_extraction)')})
+    sci = np.asarray(pre.get('SCI', live['SCI']), float)
+    vp = np.asarray(pre.get('VAR_POISSON', live['VAR_POISSON']), float)
+    vr = np.asarray(pre.get('VAR_RNOISE', live['VAR_RNOISE']), float)
+    dq = np.asarray(pre.get('DQ', live['DQ'])).astype(np.uint32)
+    known = np.isfinite(sky)
+    sci = np.where(known, sci - sky, np.nan)
+    vp = np.where(known & np.isfinite(sky_var), vp + sky_var, vp)
+    dq = np.where(known, dq, dq | DO_NOT_USE).astype(np.uint32)
+    vf = np.asarray(live['VAR_FLAT'], float) if np.size(live.get('VAR_FLAT', [])) else 0.0
+    frame = dict(data=sci.astype(np.float32), dq=dq, var_poisson=vp.astype(np.float32),
+                 var_rnoise=vr.astype(np.float32), err=np.sqrt(vp + vr + vf).astype(np.float32))
+    if np.size(live.get('VAR_FLAT', [])):
+        frame['var_flat'] = np.asarray(live['VAR_FLAT']).astype(np.float32)
+    h = fits.getheader(canonical, 'SCI')
+    return Frame(frame, np.asarray(live['DQ']).astype(np.uint32), str(fits.getheader(canonical).get('DETECTOR', '')),
+                 (int(h.get('SLTSTRT2', 1)), int(h.get('SLTSTRT1', 1))))
+
+
+def frames_for(canonicals):
+    """``frame_arrays`` of every canonical, keyed by file name: {name: Frame}. Raises
+    ``NoMasterBackground``."""
+    return {os.path.basename(c): frame_arrays(c) for c in canonicals}
+
+
+# ---------------------------------------------------------------------------
+# Outlier flags of the master-background frames: the choice is here, and only here
+# ---------------------------------------------------------------------------
+HOT_SIGMA = 5.0          # a hot pixel stands this many sigma above its row and its column neighbors ...
+HOT_MIN_EXPOSURES = 2    # ... in every exposure that sees the detector pixel, at least this many
+HOT_ROW_HALF = 3         # row neighbors: +-3 pixels along the dispersion
+HOT_COL_HALF = 2         # column neighbors: +-2 pixels across it
+
+
+def _shifted_median(a, axis, half):
+    """Per pixel, the median of its neighbors within +-``half`` along ``axis`` (itself
+    left out; NaN outside the array or unusable)."""
+    n = a.shape[axis]
+    stack = []
+    for s in range(-half, half + 1):
+        if s == 0:
+            continue
+        b = np.full(a.shape, np.nan)
+        src = [slice(None)] * 2
+        dst = [slice(None)] * 2
+        src[axis] = slice(max(s, 0), n + min(s, 0))
+        dst[axis] = slice(max(-s, 0), n + min(-s, 0))
+        b[tuple(dst)] = a[tuple(src)]
+        stack.append(b)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)          # all-NaN neighborhoods
+        return np.nanmedian(np.array(stack), axis=0)
+
+
+def local_contrast(frame):
+    """How far each pixel of a frame stands above its surroundings in that frame, in
+    sigma: the smaller of (value minus the median of its row neighbors within
+    ``HOT_ROW_HALF``) and (value minus the median of its column neighbors within
+    ``HOT_COL_HALF``), over its error. NaN where the frame is unusable.
+
+    A single hot pixel stands above both. Light smooth along the dispersion (a trace, a
+    failed-open shutter's band) does not stand above its row; light spread across a few
+    rows (an extended line, a band's edge rows) does not stand above its column."""
+    a = frame.arrays
+    d = np.where((a['dq'] & DO_NOT_USE) > 0, np.nan, np.asarray(a['data'], float))
+    rx = d - _shifted_median(d, 1, HOT_ROW_HALF)
+    ry = d - _shifted_median(d, 0, HOT_COL_HALF)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.minimum(rx, ry) / np.asarray(a['err'], float)
+
+
+def hot_pixels(frames):
+    """Pixels fixed high on the detector: {name: boolean mask on its cutout}.
+
+    A detector pixel is hot where ``local_contrast`` exceeds ``HOT_SIGMA`` in every
+    exposure (on the same detector) that has a usable value there, and at least
+    ``HOT_MIN_EXPOSURES`` do. Such a pixel cancels in the nod differences, so the nodded
+    outlier detection never flags it, but it stays in a frame minus master background.
+    Sky light, the source and neighbors move on the detector between nods, so they cannot
+    be high at one detector pixel in every exposure (the source of a product with no nod
+    at all could; its exposures would then count as one). With one exposure nothing tells
+    a hot pixel from the source: no pixel is flagged (jwst's outlier detection also skips
+    a single exposure). A cosmic ray hits one exposure and is not flagged here."""
+    names = list(frames)
+    out = {n: np.zeros(frames[n].arrays['data'].shape, bool) for n in names}
+    for det in sorted({frames[n].detector for n in names}):
+        mem = [n for n in names if frames[n].detector == det]
+        if len(mem) < HOT_MIN_EXPOSURES:
+            continue
+        y0 = min(frames[n].origin[0] for n in mem)
+        x0 = min(frames[n].origin[1] for n in mem)
+        y1 = max(frames[n].origin[0] + frames[n].arrays['data'].shape[0] for n in mem)
+        x1 = max(frames[n].origin[1] + frames[n].arrays['data'].shape[1] for n in mem)
+        seen = np.zeros((y1 - y0, x1 - x0), int)
+        high = np.zeros((y1 - y0, x1 - x0), int)
+        cut, usable = {}, {}
+        for n in mem:
+            f = frames[n]
+            r, c = f.origin[0] - y0, f.origin[1] - x0
+            ny, nx = f.arrays['data'].shape
+            cut[n] = (slice(r, r + ny), slice(c, c + nx))
+            s = local_contrast(f)
+            usable[n] = np.isfinite(s)
+            seen[cut[n]] += usable[n]
+            high[cut[n]] += usable[n] & (s > HOT_SIGMA)
+        hot = (seen >= HOT_MIN_EXPOSURES) & (high == seen)
+        for n in mem:
+            out[n] = hot[cut[n]] & usable[n]
     return out
 
 
-def run_spec3(product_name, cal_files, workspace, source_id):
-    """The master-background copies of a product's science exposures and Spec3 on them
-    (module doc, 2). Returns the ``product_paths``. Raises ``NoMasterBackground``."""
-    from jwst.associations import asn_from_list as AL
-    from jwst.pipeline import Spec3Pipeline
+def outlier_flags(frame, crf_dq, hot):
+    """A master-background frame's arrays with its outlier flags: the decision of where
+    they come from is here, and only here (user, 2026-11-02).
 
-    copies = [write_frame(os.path.join(workspace, os.path.basename(f)), workspace) for f in cal_files]
-    name = f'{product_name}{SUFFIX}'
-    prev = os.getcwd()
-    os.chdir(subdir(workspace))
+    Flagged ``OUTLIER`` and DO_NOT_USE, on top of its own mask (no master background:
+    DO_NOT_USE, ``frame_arrays``):
+    - what the nodded Spec3's outlier detection flagged in this exposure (``OUTLIER`` in
+      the nodded crf's DQ that the canonical's live DQ does not have);
+    - its hot pixels (``hot``, ``hot_pixels``), which cancel in the nod differences.
+    jwst's outlier detection is not run on the frames. Before 2026-11-02 they had a Spec3
+    run of their own and its outlier detection on them."""
+    a = frame.arrays
+    new = ((np.asarray(crf_dq) & OUTLIER) > 0) & ((np.asarray(frame.live_dq) & OUTLIER) == 0)
+    out = dict(a)
+    out['dq'] = (a['dq'] | np.where(new | np.asarray(hot, bool), OUTLIER | DO_NOT_USE, 0)).astype(a['dq'].dtype)
+    return out
+
+
+def drizzle_2d(dmap, frames):
+    """The master-background 2-D spectrum (module doc, 2): ``frames`` ({name: Frame},
+    every exposure of the map) drizzled as data through ``dmap`` with their outlier flags
+    (``outlier_flags``). Returns dict(data, err, wht, ...) (``DrizzleMap.drizzle``)."""
+    missing = [x.name for x in dmap.exposures if x.name not in frames]
+    if missing:
+        raise ValueError(f'master background: no frame for {missing}')
+    hot = hot_pixels({x.name: frames[x.name] for x in dmap.exposures})
+    inputs = {x.name: outlier_flags(frames[x.name], x.arrays['dq'], hot[x.name]) for x in dmap.exposures}
+    return dmap.drizzle(inputs, variances=True)
+
+
+def write_2d_file(path, d2):
+    """``{product}_mbkg_s2d.fits``: SCI, ERR, WHT of ``drizzle_2d`` (MJy, the s2d's units)."""
+    from astropy.io import fits
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(d2['data'], name='SCI'), fits.ImageHDU(d2['err'], name='ERR'),
+                  fits.ImageHDU(d2['wht'], name='WHT')]).writeto(path, overwrite=True)
+
+
+def write_2d(product_name, workspace, source_id, dmap, log=None):
+    """Steps 1-2 of the module doc for a product: its master-background 2-D through
+    ``dmap`` (the frames of the map's exposures, the canonicals in ``workspace``).
+    Returns the frames ({name: Frame}), or None (logged) when an exposure has
+    no master background (no master-background spectrum)."""
+    log = log or (lambda *a: None)
     try:
-        asn = AL.asn_from_list([(os.path.basename(c), 'science') for c in copies],
-                               with_exptype=True, product_name=name)
-        _, text = asn.dump()
-        asn_file = f'{name}_spec3.json'
-        with open(asn_file, 'w') as fh:
-            fh.write(text)
-        Spec3Pipeline.call(asn_file, save_results=True)
-        for ext in ('s2d', 'x1d'):
-            target = f'{name}_{ext}.fits'
-            msa = f'{name}_s{int(source_id):09d}_{ext}.fits'
-            if os.path.exists(msa):
-                os.replace(msa, target)
-                continue
-            fs = sorted(glob.glob(f'{name}_*_s{int(source_id):09d}_{ext}.fits'))
-            if fs:
-                os.replace(fs[0], target)
-        os.remove(asn_file)
-    finally:
-        os.chdir(prev)
-    return product_paths(workspace, product_name, source_id)
+        frames = frames_for([os.path.join(workspace, n) for n in dmap.names])
+    except NoMasterBackground as e:
+        log(f'{product_name}: no master-background spectrum ({e})')
+        return None
+    write_2d_file(product_paths(workspace, product_name, source_id)['s2d'], drizzle_2d(dmap, frames))
+    return frames
 
 
-def cleanup(workspace, product_name, cal_files):
-    """Remove a product's master-background intermediates (copies, crf, Spec3 and
-    profile-fit files) once its ``_spec.fits`` is written."""
-    d, name = subdir(workspace), f'{product_name}{SUFFIX}'
-    paths = [copy_path(workspace, f) for f in cal_files]
-    paths += [c.replace('.fits', '_a3001_crf.fits') for c in paths]
-    paths += glob.glob(os.path.join(d, f'{name}_*'))
-    for p in paths:
-        if os.path.exists(p):
-            os.remove(p)
+def cleanup(workspace, product_name):
+    """Remove a product's master-background files (2-D, profile fit) once its
+    ``_spec.fits`` is written."""
+    for p in glob.glob(os.path.join(subdir(workspace), f'{product_name}{SUFFIX}_*')):
+        os.remove(p)
+
+
+def single_frame_exposures(exps, frames):
+    """The fit's master-background exposures, in memory (module doc, 3): every science
+    exposure of the nodded fit (``exps``, ``use_data``) with its frame minus master
+    background (``frames``) in place of the nod difference, nothing subtracted
+    (``partners == []``). Geometry, variance and path loss are the nodded load's; the
+    usable pixels are recomputed from the frame (``profile_fit.load_group``). Each
+    group's science exposures are placed on their own common frame, as
+    ``profile_fit.load_source(single_frames=True)`` on those exposures alone places them."""
+    import copy
+    from campfire_pipeline.nirspec import profile_fit as PF
+
+    sci = [e for e in exps if e.use_data]
+    out = []
+    for g, group in enumerate(sorted({e.group for e in sci})):
+        mem = [e for e in sci if e.group == group]
+        det = [(e.origin[0] + e.cutout[0], e.origin[1] + e.cutout[1], e.cutout[2], e.cutout[3]) for e in mem]
+        y0, x0 = min(d[0] for d in det), min(d[1] for d in det)
+        shape = (max(d[0] + d[2] for d in det) - y0, max(d[1] + d[3] for d in det) - x0)
+        for e, (ys, xs, ny, nx) in zip(mem, det):
+            r0, c0 = e.cutout[0], e.cutout[1]
+            cut = (slice(r0, r0 + ny), slice(c0, c0 + nx))
+            r1, c1 = ys - y0, xs - x0
+
+            def place(a, fill=np.nan):
+                p = np.full(shape, fill, dtype=float)
+                p[r1:r1 + ny, c1:c1 + nx] = a
+                return p
+            frame = frames[e.name].arrays
+            pl = e.pl_applied[cut]
+            var = e.var[cut]                      # var x pl^2: positive and finite where var is (pl > 0)
+            diff = np.asarray(frame['data'], float) * pl
+            dq_bad = (np.asarray(frame['dq']) & PF.DO_NOT_USE) > 0
+            ok = (np.isfinite(diff) & np.isfinite(var) & (var > 0) & ~dq_bad & np.isfinite(e.y[cut])
+                  & np.isfinite(e.wav[cut]) & np.isfinite(pl) & (pl > 0))
+            x = copy.copy(e)
+            x.group, x.partners, x.use_data = g, [], True
+            x.diff, x.var, x.ok = place(diff), place(var), place(ok.astype(float), fill=0.0) > 0
+            x.wav, x.y = place(e.wav[cut]), place(e.y[cut])
+            x.pl_applied, x.pl_point = place(pl), place(e.pl_point[cut])
+            x.cutout, x.origin = (r1, c1, ny, nx), (y0, x0)
+            out.append(x)
+    return out
 
 
 def same_slitlet_sources(canonical, workspace, source_id):
@@ -244,23 +407,25 @@ def background_sources(filenames, workspace):
     return src, version
 
 
-def write_fallback(product_name, workspace, source_id, reason):
-    """The master-background profile-fit file of a product whose nodded fit fell back
-    (``profile_product.write_fallback``, same reason): its ``fnu`` is the 3-pixel boxcar
-    too. Nothing when its Spec3 did not run."""
+def write_fallback(product_name, workspace, source_id, reason, dmap, log=None):
+    """The master-background files of a product whose nodded fit fell back
+    (``profile_product.write_fallback``, same reason): its 2-D through ``dmap`` and a
+    profile-fit file holding only the reason, so its ``fnu`` is the 3-pixel boxcar too.
+    Nothing when an exposure has no master background."""
     from campfire_pipeline.nirspec import profile_product as PP
-    paths = product_paths(workspace, product_name, source_id)
-    if os.path.exists(paths['s2d']):
-        PP.write_fallback(paths['pf'], reason)
+    if write_2d(product_name, workspace, source_id, dmap, log=log) is None:
+        return
+    PP.write_fallback(product_paths(workspace, product_name, source_id)['pf'], reason)
 
 
-def fit_product(product_name, workspace, groups, science, source_id, chain, stage_config, pass1_products=None,
-                log=None):
-    """``{product}_mbkg_pf.fits`` of a product (module doc, 3), after its nodded chain
-    ``chain`` (``profile_chain.ChainResult``) chose the shape. Named conditions write a
-    fallback file (the master-background ``fnu`` is then its 3-pixel boxcar). Returns
-    the file's path, or None when the master-background Spec3 did not run (no
-    ``_mbkg_s2d.fits``: no master-background spectrum at all)."""
+def fit_product(product_name, workspace, exps, science, source_id, chain, stage_config, dmap,
+                pass1_products=None, log=None):
+    """The master-background 2-D and ``{product}_mbkg_pf.fits`` of a product (module doc,
+    1-3), after its nodded chain ``chain`` (``profile_chain.ChainResult``) chose the shape
+    on the nodded exposures ``exps``; everything drizzled through the product's map
+    ``dmap``. A profile-fit fallback writes a fallback file (the master-background
+    ``fnu`` is then its 3-pixel boxcar). Returns the file's path, or None when an
+    exposure has no master background (no master-background spectrum at all)."""
     from astropy.io import fits
     from campfire_pipeline.nirspec import failed_open as FO
     from campfire_pipeline.nirspec import profile_contam as CT
@@ -269,21 +434,16 @@ def fit_product(product_name, workspace, groups, science, source_id, chain, stag
 
     log = log or (lambda *a: None)
     paths = product_paths(workspace, product_name, source_id)
-    if not os.path.exists(paths['s2d']):
-        return None
-    if not os.path.exists(paths['crf']):
-        log(f'{product_name}: no master-background crf; its fnu is the 3-pixel boxcar')
-        PP.write_fallback(paths['pf'], PP.FALLBACK_NO_CRF)
-        return paths['pf']
     science = set(science)
-    mb_groups = [[copy_path(workspace, f) for f in g if os.path.basename(f) in science
-                  and os.path.exists(copy_path(workspace, f))] for g in groups]
-    mb_groups = [g for g in mb_groups if g]
-    names = {os.path.basename(c) for g in mb_groups for c in g}
+    frames = write_2d(product_name, workspace, source_id, dmap, log=log)
+    if frames is None:
+        return None
     try:
-        exps = PF.load_source(mb_groups, science=names, single_frames=True)
+        mexps = single_frame_exposures([e for e in exps if e.name in science], frames)
+        if not mexps:
+            raise PF.NoUsablePixels('master background: no science exposure')
         M0 = chain.result.model
-        M = PF.ProfileModel(exps, chromatic=M0.chromatic, priors=M0.priors, bounds=M0.bounds_cfg,
+        M = PF.ProfileModel(mexps, chromatic=M0.chromatic, priors=M0.priors, bounds=M0.bounds_cfg,
                             c_prior=M0.c_prior, grid=M0.lam_grid)
         M.pivot = M0.pivot                    # the chain's shape is defined at its own pivot
         p = chain.result.params
@@ -296,13 +456,12 @@ def fit_product(product_name, workspace, groups, science, source_id, chain, stag
         return paths['pf']
 
     hdus = []
-    prof = PF.drizzle_frames(R, paths['crf'], unit=True)
-    hdus.append(fits.ImageHDU(np.asarray(prof.data, float) / 1e12, name='PROF2D'))
-    prof.close()
+    prof = PF.drizzle_frames(R, dmap, unit=True)
+    hdus.append(fits.ImageHDU(np.asarray(prof, float) / 1e12, name='PROF2D'))
     fo_cards = (0, 0.0)
     fl = PP.stage_flags(stage_config)
     if fl['contam']:
-        maps = CT.maps_for_exposures(workspace, exps)
+        maps = CT.maps_for_exposures(workspace, mexps)
         if maps:
             pass1_products = pass1_products or {}
 
@@ -315,15 +474,14 @@ def fit_product(product_name, workspace, groups, science, source_id, chain, stag
                 name = pass1_products.get(int(sid))
                 return CT.missing_reason(workspace, name) if name else 'no pass 1 in this disperser'
 
-            canonical = os.path.join(workspace, os.path.basename(groups[0][0]))
-            near = same_slitlet_sources(canonical, workspace, source_id)
-            P = CT.predict(exps, source_id, maps, pass1_for, workspace, why_missing=why_missing, include=near)
+            near = same_slitlet_sources(exps[0].path, workspace, source_id)
+            P = CT.predict(mexps, source_id, maps, pass1_for, workspace, why_missing=why_missing, include=near)
             s1 = CT.pass1_settings(stage_config)
-            knot = max(s1['smooth_prism'] if exps[0].grating.startswith('PRISM') else s1['smooth_grating'], 3)
+            knot = max(s1['smooth_prism'] if mexps[0].grating.startswith('PRISM') else s1['smooth_grating'], 3)
             p_shape = PF.shape_vector(shape, M.c_prior, M.priors.width_median)
-            L = FO.solve(M, p_shape, exps, source_id, maps, knot, minus=P.pred)
+            L = FO.solve(M, p_shape, mexps, source_id, maps, knot, minus=P.pred)
             if L is not None:
-                for k in range(len(exps)):
+                for k in range(len(mexps)):
                     P.pred[k] = P.pred[k] + L.pred[k]
                     P.dpred[k] = P.dpred[k] + L.dpred[k]
                 fo_cards = (len({n for _, n in L.shutters}), max(L.shutters.values(), default=0.0))
@@ -331,16 +489,15 @@ def fit_product(product_name, workspace, groups, science, source_id, chain, stag
                     f'their light up to {fo_cards[1]:.1f} x the noise on the main shutter')
             for what, name, unit in (('pred', 'CONTAM2D', 'Predicted other-source light, as SCI'),
                                      ('dpred', 'CONTERR2D', 'Uncertainty of CONTAM2D (systematic), as SCI')):
-                live = CT.live_frames(exps, P, what=what)
-                d2 = PF.drizzle_arrays(lambda n: live.get(n), paths['crf'])
-                h = fits.ImageHDU(np.asarray(d2.data, float), name=name)
+                live = CT.live_frames(mexps, P, what=what)
+                d2 = dmap.drizzle({n: live.get(n) for n in dmap.names})['data']
+                h = fits.ImageHDU(np.asarray(d2, float), name=name)
                 h.header['BUNIT'] = ('MJy', unit)
                 hdus.append(h)
-                d2.close()
     hdr = fits.Header()
     for k, v in chain.header_cards().items():
         hdr[k] = v
-    hdr['PFNEXP'] = (len(exps), 'Exposures in the model (master background subtracted)')
+    hdr['PFNEXP'] = (len(mexps), 'Exposures in the model (master background subtracted)')
     hdr['PFNFOPEN'] = (int(fo_cards[0]), 'Failed-open shutters modeled on the trace')
     hdr['PFFOSIG'] = (float(fo_cards[1]), 'Their max light / noise on the main shutter')
     fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus).writeto(paths['pf'], overwrite=True)

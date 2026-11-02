@@ -1,5 +1,23 @@
 """
 Stage 3: Spec3Pipeline, optimal extraction, and 1D combination across exposure groups.
+
+Order of operations for one product (``combine_method = "2d"``, or one exposure group):
+
+1. Spec3 on its background-subtracted exposures (``run_stage3_single_source``): the s2d,
+   x1d and the outlier-flagged crf; the EXPOSURES table.
+2. The profile fit (``run_profile_fit_phase``, ``profile_product.run_product``): load, fit,
+   then every 2-D image of the product drizzled through one set of pixel maps built from
+   the crf (``drizzle_map``): the nodded ``PROF2D`` / ``CONTAM2D`` / ``CONTERR2D``, and
+   the master-background 2-D and its ``PROF2D`` / ``CONTAM2D`` / ``CONTERR2D``
+   (``mbkg_extraction``), made in memory. Without the profile fit, the master-background
+   2-D is drizzled in step 1, through the same kind of map.
+3. Extraction (``opt_ext_single_source``): every 1-D extraction of both 2-D spectra into
+   the ``_spec.fits``.
+
+Several exposure groups (``combine_method = "1d"``): steps 1-3 per group, then
+``combine_per_eg_spectra`` combines the groups' 1-D spectra (nodded and master
+background) and takes the stacked 2-D from one more Spec3 over all exposures, with the
+stacked master-background 2-D drizzled through that run's pixel maps.
 """
 
 import os
@@ -59,9 +77,11 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
     plot_optext = stage_config.get('plot_optext', True)
     combine_method = stage_config.get('combine_method', '2d')
     profile_fit = bool(stage_config.get('profile_fit', False))
-    # the master-background spectrum (mbkg_extraction): its Spec3 runs with each product's
+    # the master-background spectrum (mbkg_extraction): its 2-D is drizzled through each
+    # product's pixel maps in the profile fit (profile_product.run_product), or, without
+    # it, right after the product's Spec3
     mbkg_spectrum = bool(stage_config.get('mbkg_spectrum', True))
-    s3_kwargs['mbkg_spectrum'] = mbkg_spectrum
+    s3_kwargs['mbkg_spectrum'] = mbkg_spectrum and not profile_fit
     cleanup_crfs = s3_kwargs['cleanup_crfs']
     if profile_fit:
         # the profile fit drizzles its model through Spec3's crf; it cleans up after itself
@@ -265,9 +285,10 @@ def run_stage3_single_source(
         mbkg_spectrum: bool = False,
     ):
     """Spec3Pipeline on a product's background-subtracted exposures (the s2d, x1d and,
-    for the profile fit, the crf) and its EXPOSURES table; with ``mbkg_spectrum`` also on
-    their master-background-subtracted copies (``mbkg_extraction.run_spec3``; an
-    exposure without a master background leaves the product without one, logged)."""
+    for the profile fit, the crf) and its EXPOSURES table; with ``mbkg_spectrum`` also
+    the master-background 2-D, drizzled through the product's pixel maps from the crf
+    (``mbkg_extraction.write_2d``; an exposure without a master background, or no crf,
+    leaves the product without one, logged)."""
     from jwst.pipeline import Spec3Pipeline
 
 
@@ -364,11 +385,14 @@ def run_stage3_single_source(
             hdul.append(exposures)
 
         if mbkg_spectrum:
+            from campfire_pipeline.nirspec import drizzle_map as DM
             from campfire_pipeline.nirspec import mbkg_extraction as MX
-            try:
-                MX.run_spec3(product_name, cal_files, os.getcwd(), source_id)
-            except MX.NoMasterBackground as e:
-                log(f'{product_name}: no master-background spectrum ({e})')
+            crf = f'{product_name}_s{source_id:09d}_crf.fits'
+            if os.path.exists(crf):
+                dmap = DM.DrizzleMap.from_crf(crf, DM.step_settings(s2d_file))
+                MX.write_2d(product_name, os.getcwd(), source_id, dmap, log=log)
+            else:
+                log(f'{product_name}: no master-background spectrum (no Spec3 crf {crf})')
 
     except Exception as e:
         log("ERROR", e)
@@ -800,46 +824,37 @@ def extract_columns(s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, pf_file
 MBKG_EXTENSIONS = ('SPEC1D_MBKG', 'SCI_MBKG', 'ERR_MBKG', 'PROF1D_MBKG')
 
 
-MBKG_WAVE_ATOL = 1e-9   # um: jwst's 1-D wavelengths of one 2-D grid agree to ~1e-15 between two runs
-
-
-def mbkg_spectrum_hdus(product_name, workspace_dir, wave, wave2d, ap_start, ap_stop, s2dh, exposures,
+def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, ap_stop, s2dh, exposures,
                        primary_hdr, is_fixed_slit, profile_fit, extended_frac, extract_kw):
     """The master-background spectrum of a product (``mbkg_extraction``): its 2-D
     spectrum and every 1-D extraction of it, made exactly as the nodded ones
-    (``extract_columns`` on the master-background Spec3 output, with the nodded
-    aperture rows and the nodded ``wave``, so the deploy contract's identical wave
-    holds), as ``SPEC1D_MBKG`` (SPEC1D's columns on the same ``wave``; its header
-    carries the extraction cards, ``MBKGVER`` and the per-exposure ``MBKGSRC``),
-    ``SCI_MBKG`` / ``ERR_MBKG`` (SCI's grid) and ``PROF1D_MBKG``; and the primary cards
-    ``MBKGPREF`` / ``MBKGWHY`` (``mbkg_extraction.preferred``, from the exposures and the
-    nodded fit's ``PFSELFSB``) and ``MBKGNEXP``.
+    (``extract_columns`` on the master-background 2-D, drizzled through the nodded
+    product's pixel maps onto its grid, with the nodded aperture rows and the nodded
+    ``wave``, so the deploy contract's identical wave holds), as ``SPEC1D_MBKG``
+    (SPEC1D's columns on the same ``wave``; its header carries the extraction cards,
+    ``MBKGVER`` and the per-exposure ``MBKGSRC``), ``SCI_MBKG`` / ``ERR_MBKG`` (SCI's grid)
+    and ``PROF1D_MBKG``; and the primary cards ``MBKGPREF`` / ``MBKGWHY``
+    (``mbkg_extraction.preferred``, from the exposures and the nodded fit's ``PFSELFSB``)
+    and ``MBKGNEXP``.
 
-    Returns (hdus, cards). Named conditions return ([], {}) and log why: the
-    master-background Spec3 did not run (an exposure without a master background), or
-    its grid is not the nodded one: the 2-D wavelength arrays must be identical
-    (``wave2d``, the nodded s2d's WAVELENGTH) and the 1-D ones agree within
-    ``MBKG_WAVE_ATOL`` (jwst's 1-D extraction places the aperture slightly differently
-    between two runs on one grid, 1e-9 rows on p1)."""
+    Returns (hdus, cards). Named conditions return ([], {}) and log why: no
+    master-background 2-D (an exposure without a master background, or no crf), or a
+    2-D of another shape than the nodded SCI (``sci_shape``; the grid is the nodded one
+    by construction, so only a stale file could)."""
     from campfire_pipeline.nirspec import mbkg_extraction as MX
 
     paths = MX.product_paths(workspace_dir, product_name, 0)
-    if not (os.path.exists(paths['s2d']) and os.path.exists(paths['x1d'])):
-        log(f'{product_name}: no master-background spectrum (its Spec3 did not run)')
+    if not os.path.exists(paths['s2d']):
+        log(f'{product_name}: no master-background spectrum (no master-background 2-D)')
         return [], {}
-    with fits.open(paths['s2d']) as s2d, fits.open(paths['x1d']) as x1d:
+    with fits.open(paths['s2d']) as s2d:
         mb_sci = np.asarray(s2d['SCI'].data, float)
         mb_err = np.asarray(s2d['ERR'].data, float)
         mb_mask = s2d['WHT'].data == 0
-        mb_wave2d = np.asarray(s2d['WAVELENGTH'].data, float)
-        mb_wave = np.asarray(x1d['EXTRACT1D'].data['WAVELENGTH'], float)
     wave = np.asarray(wave)
-    same = (mb_wave2d.shape == np.shape(wave2d) and np.array_equal(mb_wave2d, np.asarray(wave2d, float), equal_nan=True)
-            and mb_wave.shape == wave.shape
-            and np.allclose(mb_wave, wave, rtol=0.0, atol=MBKG_WAVE_ATOL, equal_nan=True))
-    if not same:
-        log(f'{product_name}: no master-background spectrum: its grid {mb_sci.shape} / {mb_wave.size} differs '
-            f'from the nodded one {np.shape(wave2d)} / {wave.size}')
+    if mb_sci.shape != tuple(sci_shape):
+        log(f'{product_name}: no master-background spectrum: its 2-D {mb_sci.shape} differs from the nodded one '
+            f'{tuple(sci_shape)}')
         return [], {}
     ex = extract_columns(mb_sci * 1e12, mb_err * 1e12, mb_mask, ap_start, ap_stop, wave,
                          pf_file=paths['pf'] if profile_fit else None, is_fixed_slit=is_fixed_slit,
@@ -1007,7 +1022,7 @@ def opt_ext_single_source(
         primary.header['NEXPBKG'] = (nexp_bkg, 'Fewest background exposures subtracted from one')
     mbkg = []
     if mbkg_spectrum:
-        mbkg, mcards = mbkg_spectrum_hdus(product_name, workspace_dir, wave, s2d['WAVELENGTH'].data, x1d_start,
+        mbkg, mcards = mbkg_spectrum_hdus(product_name, workspace_dir, wave, s2d['SCI'].data.shape, x1d_start,
                                           x1d_stop, s2dh, exposures, primary.header, is_fixed_slit, profile_fit,
                                           mbkg_extended_frac,
                                           dict(profile_fit_rows=profile_fit_rows,
@@ -1023,7 +1038,7 @@ def opt_ext_single_source(
     if profile_fit and os.path.exists(pf_file):
         os.remove(pf_file)
     if mbkg_spectrum:
-        MX.cleanup(workspace_dir, product_name, exposures.get('filename', []))
+        MX.cleanup(workspace_dir, product_name)
 
 
     if plot_optext:
@@ -1397,17 +1412,18 @@ def _combined_spec1d(common_wave, combined, fnu_best, fnu_best_err, choice, pf_c
     return table_to_hdu(spec1d)
 
 
-def _combined_mbkg(per_eg_spec_files, all_cal_files, workspace_dir, product_name, source_id, common_wave,
-                   exposure_times, sci_shape, wave2d, ap_start, ap_stop, s2dh, exposures, is_fixed_slit,
+def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, common_wave,
+                   exposure_times, sci_shape, ap_start, ap_stop, s2dh, exposures, is_fixed_slit,
                    combine_kw, profile_fit_contam, extended_frac):
     """The master-background spectrum of a 1D-combined product, made as its nodded
     spectrum is: every group's ``SPEC1D_MBKG`` column combined onto ``common_wave``
     (exposure-time weights, the same clipping), the best spectrum chosen again on the
-    combined spectra (``_combined_profile_fit``), and the 2-D spectrum from one
-    master-background Spec3 over all exposures (``mbkg_extraction.run_spec3``), which
-    must land on the nodded stacked grid (``sci_shape`` / ``wave2d``). Returns (hdus,
-    cards) like ``mbkg_spectrum_hdus``; ([], {}) with a log line when a group has no
-    master-background spectrum or the grid differs."""
+    combined spectra (``_combined_profile_fit``), and the 2-D spectrum drizzled through
+    the stacked product's pixel maps with its Spec3 (``run_stage3_single_source``,
+    ``mbkg_extraction.write_2d``), on the nodded stacked grid by construction
+    (``sci_shape`` checks it). Returns (hdus, cards) like ``mbkg_spectrum_hdus``; ([], {})
+    with a log line when a group has no master-background spectrum or there is no
+    stacked master-background 2-D."""
     from campfire_pipeline.nirspec import mbkg_extraction as MX
 
     keys = {'opt': ('fnu_opt', 'fnu_opt_err'), '3px': ('fnu_3px', 'fnu_3px_err'), '4px': ('fnu_4px', 'fnu_4px_err'),
@@ -1434,17 +1450,15 @@ def _combined_mbkg(per_eg_spec_files, all_cal_files, workspace_dir, product_name
                                       extract=str(hh.get('EXTRACT', '')), reason=str(hh.get('EXTRWHY', '')),
                                       state=str(hh.get('CONTSTAT', 'off'))))
             selfsub.append(h[0].header.get('PFSELFSB'))
-    try:
-        paths = MX.run_spec3(product_name, all_cal_files, workspace_dir, source_id)
-    except MX.NoMasterBackground as e:
-        log(f'{product_name}: no master-background spectrum ({e})')
+    paths = MX.product_paths(workspace_dir, product_name, source_id)
+    if not os.path.exists(paths['s2d']):
+        log(f'{product_name}: no master-background spectrum (no stacked master-background 2-D)')
         return [], {}
     with fits.open(paths['s2d']) as s2d:
         mb_sci = np.asarray(s2d['SCI'].data, float)
         mb_err = np.asarray(s2d['ERR'].data, float)
-        mb_wave2d = np.asarray(s2d['WAVELENGTH'].data, float)
-    if mb_sci.shape != tuple(sci_shape) or not np.array_equal(mb_wave2d, np.asarray(wave2d, float), equal_nan=True):
-        log(f'{product_name}: no master-background spectrum: its stacked grid {mb_sci.shape} differs from the '
+    if mb_sci.shape != tuple(sci_shape):
+        log(f'{product_name}: no master-background spectrum: its stacked 2-D {mb_sci.shape} differs from the '
             f'nodded one {tuple(sci_shape)}')
         return [], {}
     combined = {k: combine_1d_spectra(v['wavelengths'], v['fluxes'], v['errors'], exposure_times, common_wave,
@@ -1563,8 +1577,9 @@ def combine_per_eg_spectra(
                     extract=str(ph.get('EXTRACT', '')), reason=str(ph.get('EXTRWHY', '')),
                     state=str(ph.get('CONTSTAT', 'off'))))
 
-    # --- Step 2: Stacked 2D via Spec3Pipeline on ALL canonical files ---
-    run_stage3_single_source(all_cal_files, workspace_dir, product_name, source_id)
+    # --- Step 2: Stacked 2D via Spec3Pipeline on ALL canonical files (and the stacked
+    # master-background 2-D through its pixel maps) ---
+    run_stage3_single_source(all_cal_files, workspace_dir, product_name, source_id, mbkg_spectrum=mbkg_spectrum)
 
     # --- Step 3: Get common wavelength grid from stacked x1d ---
     x1d_file = os.path.join(workspace_dir, f'{product_name}_x1d.fits')
@@ -1713,8 +1728,8 @@ def combine_per_eg_spectra(
     mbkg = []
     if mbkg_spectrum:
         mbkg, mcards = _combined_mbkg(
-            per_eg_spec_files, all_cal_files, workspace_dir, product_name, source_id, common_wave, exposure_times,
-            s2d['SCI'].data.shape, s2d['WAVELENGTH'].data, x1d_start, x1d_stop, s2dh, exposures, is_fixed_slit,
+            per_eg_spec_files, workspace_dir, product_name, source_id, common_wave, exposure_times,
+            s2d['SCI'].data.shape, x1d_start, x1d_stop, s2dh, exposures, is_fixed_slit,
             dict(sigma_clip_enabled=sigma_clip, sigma_clip_low=sigma_clip_low, sigma_clip_high=sigma_clip_high,
                  sigma_clip_maxiters=sigma_clip_maxiters),
             profile_fit_contam, mbkg_extended_frac)
@@ -1728,7 +1743,7 @@ def combine_per_eg_spectra(
     spec.writeto(out_filename, overwrite=True)
     log(f"Stage3 (1D combine): wrote {out_filename}")
     if mbkg_spectrum:
-        MX.cleanup(workspace_dir, product_name, all_cal_files)
+        MX.cleanup(workspace_dir, product_name)
 
     if plot_optext:
         from campfire_pipeline.nirspec.plots import plot_spectrum_qa

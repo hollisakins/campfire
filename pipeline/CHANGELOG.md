@@ -30,6 +30,49 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec master background 1.7: failed-open shutters get a commanded slitlet's margin and
+  the real shutter pitch.** In 1.6, data minus master background along a fully open failed-open
+  shutter showed a stripe on each edge, +12 to +22 % of the shutter's core level just inside
+  its open area and in the row beyond it (PRISM, `ember_cosmos_p1`, median of 39 shutters ×
+  exposures). There were two causes in the records jwst's `msaflagopen.create_slitlets`
+  makes for the `msaoper` shutters:
+  - Their slit extent stops at the open area (`ymin` / `ymax` = ±0.5). Commanded slitlets get
+    0.5 more beyond it, so the rows just past a failed-open shutter were in no footprint and
+    never painted.
+  - Their `slit_yscale` is 1.0, not the 1.15 of every MSA shutter. jwst's transforms don't
+    read it, but `coverage._pitch` does, so the shutter's bar-shadow profile came out 1.15×
+    too narrow.
+
+  `coverage.failed_open_slitlets` now gives these records both (±1.0 and `MSA_SLIT_SCALES`),
+  and both the rate geometry and the stored trace map read it. The edge stripes on PRISM
+  fully open shutters go to within ±2 % of the core level, and the measured transmissions
+  don't change (core |f| ≤ 0.3).
+  - Shutters that pass part of the background (10 PRISM shutter × exposures at 0.2-0.8) are
+    now over-painted by up to 14 % on one edge. A partly open shutter doesn't pass a scaled
+    copy of a fully open one's profile.
+  - On G395M the comparison can't be measured: the light through a failed-open shutter is
+    about 0.0035 DN/s, and the rate between traces already sits +0.0005 above zero on NRS1.
+
+  The failed-open footprints are wider in the coverage counter (`COVERAGE_VERSION` 3), the
+  rate geometry (`GEOMETRY_VERSION` 2, new step-1 card `MBKGGEOV`) and the trace maps
+  (`MAP_VERSION` 8, `SHUTTER_MAP_VERSION` 2), so step 1, the trace maps and pass 1 of the
+  contamination model rebuild. `CFMBKGV` 1.7.
+- **NIRSpec stage 3: every 2-D image drizzled once per product, the master-background
+  spectrum in memory.** A product's pixel maps (`drizzle_map`: jwst's output grid from the
+  Spec3 crf, each exposure's pixel map once) carry every drizzle, through the drizzle library
+  directly: `PROF2D` / `CONTAM2D` / `CONTERR2D` (was one `ResampleSpecStep` call each) and the
+  master-background 2-D and its `PROF2D` / `CONTAM2D` / `CONTERR2D` (was a second Spec3 run
+  on copies of the canonicals written to `mbkg/`). The master-background frames are built in
+  memory and fitted on the nodded load's exposures. The crf's own arrays through the map
+  reproduce Spec3's s2d bit for bit; the nodded model arrays move by 1-2 float32 ulps (the
+  data's grid instead of one built from each image). The master-background frames' outlier
+  flags (`mbkg_extraction.outlier_flags`) are the nodded Spec3's plus a hot-pixel mask
+  (`hot_pixels`: more than 5 sigma above both its row and its column neighbors in every
+  exposure, at least 2; they cancel in the nod differences) plus the pixels without a master
+  background; no outlier detection of their own. On p1 629466 PRISM: 18 flagged pixels
+  against the old run's 20 (14 shared), the brightest `SCI_MBKG` pixel 7 sigma (old run 207),
+  `SPEC1D_MBKG.fnu` within 1.4 sigma. Without a crf there is no master-background spectrum.
+  Same extensions, columns and cards.
 - **NIRSpec master background 1.6: every footprint painted, light from one MSA spot counted
   once.** The G395M master background read low (pixels on a failed-open shutter +54 %, pixels
   under another slitlet's margin +5 to +10 %, on `ember_cosmos_p1`). Two causes: failed-open
