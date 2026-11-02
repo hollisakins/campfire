@@ -612,7 +612,13 @@ WITH (security_invoker = true) AS
          chi2_min,
          confidence,
          science_hash,
-         is_public
+         is_public,
+         -- appended after is_public: the live table's physical column order
+         has_mbkg_spectrum,
+         mbkg_preferred,
+         mbkg_reason,
+         n_exp,
+         n_exp_bkg
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -643,7 +649,12 @@ WITH (security_invoker = true) AS
            chi2_min,
            confidence,
            science_hash,
-           is_public
+           is_public,
+           has_mbkg_spectrum,
+           mbkg_preferred,
+           mbkg_reason,
+           n_exp,
+           n_exp_bkg
     FROM public.spectra
     UNION ALL
     SELECT 'dr'::text AS cat_src,
@@ -675,7 +686,12 @@ WITH (security_invoker = true) AS
            chi2_min,
            confidence,
            science_hash,
-           is_public
+           is_public,
+           has_mbkg_spectrum,
+           mbkg_preferred,
+           mbkg_reason,
+           n_exp,
+           n_exp_bkg
     FROM public.dr_spectra
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
@@ -4836,7 +4852,8 @@ AS $$
     "spectra": {
       "id": "int", "spectrum_id": "text", "target_id": "text", "grating": "text",
       "signal_to_noise": "num", "exposure_time": "num", "redshift_auto": "num", "chi2_min": "num",
-      "confidence": "num", "dq_flags": "bits", "deploy_status": "text", "program_slug": "text",
+      "confidence": "num", "has_mbkg_spectrum": "bool", "mbkg_preferred": "bool", "mbkg_reason": "text",
+      "n_exp": "int", "n_exp_bkg": "int", "dq_flags": "bits", "deploy_status": "text", "program_slug": "text",
       "observation": "text", "date_obs": "text", "cfpipe_version": "text", "jwst_version": "text",
       "crds_context": "text", "is_public": "bool", "reduced_at": "ts", "created_at": "ts", "updated_at": "ts"
     },
@@ -7145,6 +7162,40 @@ $$;
 
 REVOKE ALL ON FUNCTION public.get_observation_stats(text[], boolean) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
+
+-- =============================================================================
+-- get_program_exposures
+-- =============================================================================
+-- Every exposure x detector of a program's observations (the exposures table of
+-- the metadata program page): what was observed, and which master background
+-- the exposure uses. nirspec_rate_exposures is admin-only under RLS (it carries
+-- the review state), so this SECURITY DEFINER reader hands program viewers these
+-- columns and nothing else, scoped like every other catalog read: the program
+-- must be in accessible_program_slugs(), and a share link sees only the
+-- observation it was minted for.
+CREATE OR REPLACE FUNCTION public.get_program_exposures(p_program_slug text)
+RETURNS TABLE(
+  observation text, exposure_root text, detector text, grating text, filter text,
+  date_obs text, exposure_time double precision, readout_pattern text,
+  n_groups integer, n_integrations integer, dither_position integer,
+  n_dither_positions integer, mbkg_source text
+)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT r.observation, r.exposure_root, r.detector, r.grating, r.filter,
+         r.date_obs, r.exposure_time, r.readout_pattern,
+         r.n_groups, r.n_integrations, r.dither_position,
+         r.n_dither_positions, r.mbkg_source
+  FROM public.nirspec_rate_exposures r
+  JOIN public.observations o ON o.name = r.observation
+  WHERE o.program_slug = p_program_slug
+    AND p_program_slug = ANY(public.accessible_program_slugs())
+    AND (NOT public.is_link_account() OR r.observation = public.link_observation())
+  ORDER BY r.observation, r.exposure_root, r.detector;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_program_exposures(text) TO authenticated;
 
 
 -- =============================================================================
@@ -11815,8 +11866,8 @@ BEGIN
       WHERE o.redshift_auto IS DISTINCT FROM zsrc.z
     ),
     ins_spectra AS (
-      INSERT INTO dr_spectra (tag, id, grating, fits_path, signal_to_noise, created_at, updated_at, target_id, thumbnail_svg_fnu, thumbnail_svg_flambda, file_hash, science_hash, file_size, exposure_time, crds_context, jwst_version, cfpipe_version, date_obs, reduced_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status, program_slug, observation, spectrum_id, search_text, is_public)
-      SELECT p_tag, s.id, s.grating, s.fits_path, s.signal_to_noise, s.created_at, s.updated_at, s.target_id, s.thumbnail_svg_fnu, s.thumbnail_svg_flambda, s.file_hash, s.science_hash, s.file_size, s.exposure_time, s.crds_context, s.jwst_version, s.cfpipe_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min, s.confidence, s.dq_flags, s.deploy_status, s.program_slug, s.observation, s.spectrum_id, s.search_text, s.is_public
+      INSERT INTO dr_spectra (tag, id, grating, fits_path, signal_to_noise, created_at, updated_at, target_id, thumbnail_svg_fnu, thumbnail_svg_flambda, file_hash, science_hash, file_size, exposure_time, crds_context, jwst_version, cfpipe_version, date_obs, reduced_at, redshift_auto, chi2_min, confidence, has_mbkg_spectrum, mbkg_preferred, mbkg_reason, n_exp, n_exp_bkg, dq_flags, deploy_status, program_slug, observation, spectrum_id, search_text, is_public)
+      SELECT p_tag, s.id, s.grating, s.fits_path, s.signal_to_noise, s.created_at, s.updated_at, s.target_id, s.thumbnail_svg_fnu, s.thumbnail_svg_flambda, s.file_hash, s.science_hash, s.file_size, s.exposure_time, s.crds_context, s.jwst_version, s.cfpipe_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min, s.confidence, s.has_mbkg_spectrum, s.mbkg_preferred, s.mbkg_reason, s.n_exp, s.n_exp_bkg, s.dq_flags, s.deploy_status, s.program_slug, s.observation, s.spectrum_id, s.search_text, s.is_public
       FROM spectra s JOIN pub p ON p.id = s.id
       RETURNING 1
     ),
@@ -11906,8 +11957,8 @@ BEGIN
       -- and what the byte pass archives): a legacy R2 twin of the same key is
       -- never picked by plan order (Codex on #599)
       WHERE so.root = 'live' AND so.status = 'active' AND so.backend = 'osn' AND so.bucket = 'data'
-        AND so.product_type IN ('nirspec_spec', 'spectrum_json', 'spectrum_1d_json', 'zfit',
-                                'nirspec_lines', 'nirspec_lines_json')
+        AND so.product_type IN ('nirspec_spec', 'spectrum_json', 'spectrum_1d_json',
+                                'spectrum_mbkg_json', 'zfit', 'nirspec_lines', 'nirspec_lines_json')
       UNION ALL
       -- The zfit / line-fit sidecars deploy registered WITHOUT a spectrum_id
       -- (every zfit, nirspec_lines and nirspec_lines_json row in production on
@@ -12898,6 +12949,8 @@ BEGIN
              'cfpipe_version', s.cfpipe_version, 'crds_context', s.crds_context,
              'jwst_version', s.jwst_version, 'date_obs', s.date_obs, 'reduced_at', s.reduced_at,
              'redshift_auto', s.redshift_auto, 'chi2_min', s.chi2_min, 'confidence', s.confidence,
+             'has_mbkg_spectrum', s.has_mbkg_spectrum, 'mbkg_preferred', s.mbkg_preferred,
+             'mbkg_reason', s.mbkg_reason, 'n_exp', s.n_exp, 'n_exp_bkg', s.n_exp_bkg,
              'dq_flags', s.dq_flags, 'program_slug', s.program_slug, 'observation', s.observation,
              -- the frozen target's field: an objectless spectrum has no object row
              'field', COALESCE(t.field, o.field))
@@ -14196,6 +14249,7 @@ REVOKE ALL ON FUNCTION public.get_objects_for_sync(p_program_slugs text[], p_use
 REVOKE ALL ON FUNCTION public.get_objects_near(p_ra double precision, p_dec double precision, p_radius_degrees double precision, p_program_slugs text[], p_limit integer, p_exclude_object_id text, p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_observation_manifest(p_obs_name text, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_observation_stats(p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_program_exposures(p_program_slug text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_observations_overview(p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_photometry_for_sync(p_program_slugs text[], p_updated_since timestamp with time zone, p_limit integer, p_include_unpublished boolean, p_include_counts boolean, p_after_id integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_program_stats() FROM PUBLIC, anon;

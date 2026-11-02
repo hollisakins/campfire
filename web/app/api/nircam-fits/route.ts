@@ -17,9 +17,11 @@ export const runtime = 'nodejs';
 // Product types this proxy is allowed to serve. NIRCam exposures (epic #261),
 // NIRSpec rate files (review loop P3), and canonical NIRSpec spectrum-exposures
 // (P5 nods renderer — the S2D_* rectified cutouts) — all uncompressed FITS the
-// in-browser decoder range-fetches. Keeps the route from being an arbitrary read.
+// in-browser decoder range-fetches — and NIRSpec master backgrounds (the rate
+// review's master-background views; their MBKG2D is GZIP_2 tile-compressed,
+// decoded in the browser). Keeps the route from being an arbitrary read.
 const FITS_ALLOWED_PRODUCTS = new Set([
-  'nircam_exposure', 'nirspec_rate', 'nirspec_spectrum_exposure',
+  'nircam_exposure', 'nirspec_rate', 'nirspec_spectrum_exposure', 'nirspec_mbkg',
 ]);
 
 /**

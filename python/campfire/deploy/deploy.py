@@ -21,6 +21,7 @@ from campfire.deploy.config import load_observations, load_programs, resolve_fie
 from campfire.deploy.discover import (
     discover_pointings_ecsv,
     discover_rate_files,
+    discover_mbkg_files,
     discover_shutters_ecsv,
     discover_spectrum_exposures,
     discover_slits_json,
@@ -30,8 +31,10 @@ from campfire.deploy.discover import (
 )
 from campfire.deploy.generate import (
     generate_spectrum_jsons,
+    generate_spectrum_mbkg_json,
     generate_spectrum_products,
     generate_thumbnails_from_fits,
+    read_mbkg_row_fields,
     generate_zfit_json,
 )
 from campfire_layout import KeyScheme, Scope, storage_key
@@ -257,6 +260,7 @@ def _deploy_intermediates_only(
     # spectrum-exposures exist yet, so this path must handle rate-only deploys (see
     # the guard below).
     rate_files = discover_rate_files(obs_dir)
+    mbkg_files = discover_mbkg_files(obs_dir)
     obs_cfg = load_observations().get(obs_name, {})
     field = obs_cfg.get('field', '')
     program_slug = obs_cfg.get('program', '')
@@ -281,6 +285,7 @@ def _deploy_intermediates_only(
     print(f"  Program: {program_slug}")
     print(f"  Canonical spectrum-exposures: {len(exposure_files)}")
     print(f"  Detector rate files: {len(rate_files)}")
+    print(f"  Master backgrounds: {len(mbkg_files)}")
 
     if not exposure_files and not rate_files:
         print("No canonical spectrum-exposures, rate files, or finals — nothing to deploy.")
@@ -335,6 +340,10 @@ def _deploy_intermediates_only(
         UploadTask(p, storage_key('nirspec_rate', scope, p.name,
                                   scheme=KeyScheme.CANONICAL), 'application/fits')
         for p in rate_files
+    ] + [
+        UploadTask(p, storage_key('nirspec_mbkg', scope, p.name,
+                                  scheme=KeyScheme.CANONICAL), 'application/fits')
+        for p in mbkg_files
     ]
     # Best-effort provenance from the first exposure header (Phase 3): the
     # intermediates carry whatever cards the reduction stamped. Absent → NULL.
@@ -741,30 +750,36 @@ def deploy_observation(
         scope = Scope(obs=obs_name)
 
         # One pass per final generates BOTH derivatives from a single FITS read:
-        # the spectrum JSON (uploaded) and the SVG thumbnails (embedded in the
-        # spectra rows) — previously two stages, each re-opening every final.
-        # Thumbnails are needed even on --supabase-only (the rows still update).
+        # the spectrum JSON (uploaded) and the spectra-row fields read from the
+        # file (SVG thumbnails, master-background columns) — previously two
+        # stages, each re-opening every final. The row fields are needed even on
+        # --supabase-only (the rows still update).
         print("Generating content...")
-        thumb_map: dict[str, dict] = {}
+        row_fields_map: dict[str, dict] = {}
         for spec_path in tqdm(spec_paths, desc="Processing", unit="file"):
             if supabase_only:
                 try:
-                    thumb_map[spec_path.name] = generate_thumbnails_from_fits(spec_path)
+                    row_fields_map[spec_path.name] = {
+                        **generate_thumbnails_from_fits(spec_path),
+                        **read_mbkg_row_fields(spec_path),
+                    }
                 except Exception as e:
                     print(f"  Warning: {spec_path.name}: {e}")
                 continue
-            # FITS file + JSON derivative + thumbnails (single read)
+            # FITS file + JSON derivatives + row fields (single read)
             upload_tasks.append(UploadTask(spec_path, storage_key('nirspec_spec', scope, spec_path.name, scheme=KeyScheme.CANONICAL), 'application/fits'))
-            json_path, json_1d_path, thumbs = generate_spectrum_products(spec_path, temp_dir)
-            thumb_map[spec_path.name] = thumbs
+            json_path, json_1d_path, json_mbkg_path, row_fields = generate_spectrum_products(spec_path, temp_dir)
+            row_fields_map[spec_path.name] = row_fields
             upload_tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
             upload_tasks.append(UploadTask(json_1d_path, storage_key('spectrum_1d_json', scope, json_1d_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
+            if json_mbkg_path is not None:
+                upload_tasks.append(UploadTask(json_mbkg_path, storage_key('spectrum_mbkg_json', scope, json_mbkg_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
-        # Enrich spectra records with thumbnails before the catalog upsert.
+        # Enrich spectra records with the file's row fields before the catalog upsert.
         for rec in spectra:
             fits_name = rec['fits_path'].split('/')[-1]
-            if fits_name in thumb_map:
-                rec.update(thumb_map[fits_name])
+            if fits_name in row_fields_map:
+                rec.update(row_fields_map[fits_name])
 
         # NIRSpec science products are homed on OSN under CANONICAL keys
         # (epic #210 / #216 — deploy → OSN).
@@ -807,6 +822,15 @@ def deploy_observation(
                     'application/fits'))
             if rate_files:
                 print(f"  + {len(rate_files)} detector rate files")
+            # The master background of each rate file (<root>_<nrsN>_mbkg.fits, end of
+            # stage 2a): per-detector like the rate file, so never source-filtered.
+            mbkg_files = discover_mbkg_files(obs_dir)
+            for mbkg_path in mbkg_files:
+                upload_tasks.append(UploadTask(
+                    mbkg_path, storage_key('nirspec_mbkg', scope, mbkg_path.name, scheme=KeyScheme.CANONICAL),
+                    'application/fits'))
+            if mbkg_files:
+                print(f"  + {len(mbkg_files)} master backgrounds")
 
             # Push plan (storage unification): dedup the OSN-bound products
             # against the server registry — pipeline-written FITS that a prior
@@ -1121,6 +1145,9 @@ def deploy_json(
             json_path, json_1d_path = generate_spectrum_jsons(path, temp_dir)
             tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
             tasks.append(UploadTask(json_1d_path, storage_key('spectrum_1d_json', scope, json_1d_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
+            json_mbkg_path = generate_spectrum_mbkg_json(path, temp_dir)
+            if json_mbkg_path is not None:
+                tasks.append(UploadTask(json_mbkg_path, storage_key('spectrum_mbkg_json', scope, json_mbkg_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
         print("Uploading to OSN...")
         uploaded_keys: set[str] = set()

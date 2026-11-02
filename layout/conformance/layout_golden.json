@@ -86,6 +86,18 @@
       "tree_class": "cloud-backed-product"
     },
     {
+      "product_type": "spectrum_mbkg_json",
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
+      "filename": "ember_egs_p1_prism_clear_15182_spec_mbkg.json",
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec_mbkg.json",
+      "key_legacy": null,
+      "key_canonical": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec_mbkg.json",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
       "product_type": "nirspec_lines_json",
       "scope": {
         "obs": "ember_egs_p1"
@@ -510,6 +522,11 @@
       "from": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
       "to": "nirspec_lines_json",
       "expect": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_lines.json"
+    },
+    {
+      "from": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+      "to": "spectrum_mbkg_json",
+      "expect": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec_mbkg.json"
     }
   ],
   "known_keys": [
@@ -525,7 +542,8 @@
     "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits.gz",
     "data/products/nircam/cosmos/cosmos_layout.png",
     "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec_1d.json",
-    "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_lines.json"
+    "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_lines.json",
+    "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec_mbkg.json"
   ],
   "unknown_keys": [
     "spectra/../etc/passwd",
@@ -553,7 +571,8 @@
         "spectrum_json": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.json",
         "spectrum_1d_json": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec_1d.json",
         "zfit": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json",
-        "nirspec_lines_json": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_lines.json"
+        "nirspec_lines_json": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_lines.json",
+        "spectrum_mbkg_json": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec_mbkg.json"
       }
     },
     {
@@ -563,7 +582,8 @@
         "spectrum_json": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.json",
         "spectrum_1d_json": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec_1d.json",
         "zfit": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json",
-        "nirspec_lines_json": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_lines.json"
+        "nirspec_lines_json": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_lines.json",
+        "spectrum_mbkg_json": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec_mbkg.json"
       }
     }
   ],

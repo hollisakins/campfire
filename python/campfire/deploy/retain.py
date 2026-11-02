@@ -41,7 +41,7 @@ from typing import Iterable, Optional
 from campfire_layout import LayoutError, archive_key, key_for_parsed, parse_key
 
 RETAINED_PRODUCT_TYPES = frozenset({
-    'nirspec_spec', 'spectrum_json', 'spectrum_1d_json',
+    'nirspec_spec', 'spectrum_json', 'spectrum_1d_json', 'spectrum_mbkg_json',
     'zfit', 'nirspec_lines', 'nirspec_lines_json',
 })
 

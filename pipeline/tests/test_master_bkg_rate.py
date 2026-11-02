@@ -172,3 +172,22 @@ def test_write_into_rate_survives_a_jwst_save_and_a_rewrite(tmp_path):
     with ImageModel(path) as m:
         assert np.all(m.data == 1)
     assert R.step1_header(path) is None
+
+
+def test_fixed_slit_exposures_get_no_master_background(tmp_path):
+    """A standalone fixed-slit rate file (no MSA, no metafile) is skipped by both steps:
+    there are no empty shutters to build a master background from."""
+    from types import SimpleNamespace
+    assert R.has_master_background({'EXP_TYPE': 'NRS_MSASPEC', 'MSAMETFL': 'jw_01_msa.fits'})
+    assert not R.has_master_background({'EXP_TYPE': 'NRS_MSASPEC'})
+    assert not R.has_master_background({'EXP_TYPE': 'NRS_FIXEDSLIT'})
+    ws = tmp_path / 'products' / 'nirspec' / 'fs_obs'
+    ws.mkdir(parents=True)
+    rate = ws / 'jw01_03101_00001_nrs1_rate.fits'
+    hdu = fits.PrimaryHDU()
+    hdu.header['EXP_TYPE'] = 'NRS_FIXEDSLIT'
+    fits.HDUList([hdu, fits.ImageHDU(np.zeros((4, 4), np.float32), name='SCI')]).writeto(rate)
+    obs = SimpleNamespace(name='fs_obs', rate_files=[str(rate)], workspace_dir=str(ws), bkgslits_dir=None,
+                          stuck_closed_shutters_mtime=0.0)
+    assert M.run_master_bkg(obs, {}) == []
+    assert not list(ws.glob('*_mbkg.fits'))

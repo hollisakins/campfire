@@ -8,7 +8,7 @@ import { resolveObjectBackends, type ResolvedObject } from '@/lib/r2';
 import { releaseFrontUrls, resolveReleaseMembers } from '@/lib/server/dr-files';
 import { spectrumSidecarsKey, type SpectrumSidecarUrls } from '@/lib/spectrum-sidecars';
 
-type SidecarKeys = [json: string, json1d: string, zfit: string, lines: string];
+type SidecarKeys = [json: string, json1d: string, zfit: string, lines: string, mbkg: string];
 
 /** The release a page is browsing: its manifest is read with the viewer's client. */
 export interface SidecarRelease {
@@ -36,7 +36,8 @@ export async function resolveSpectrumSidecars(
 ): Promise<Map<string, SpectrumSidecarUrls>> {
   const front = cdnFrontBase() !== null;
   const unknown = (): SpectrumSidecarUrls => ({
-    front, spectrum: null, spectrum_1d: null, zfit: null, lines: null, has_1d: null, has_zfit: null, has_lines: null,
+    front, spectrum: null, spectrum_1d: null, zfit: null, lines: null, mbkg: null,
+    has_1d: null, has_zfit: null, has_lines: null, has_mbkg: null,
   });
   const out = new Map<string, SpectrumSidecarUrls>();
 
@@ -48,6 +49,7 @@ export async function resolveSpectrumSidecars(
         deriveSibling(p, 'spectrum_1d_json'),
         deriveSibling(p, 'zfit'),
         deriveSibling(p, 'nirspec_lines_json'),
+        deriveSibling(p, 'spectrum_mbkg_json'),
       ]);
     } catch (err) {
       console.warn(`spectrum sidecars: cannot derive sidecar keys for ${p}:`, err);
@@ -79,9 +81,9 @@ export async function resolveSpectrumSidecars(
   }
 
   let i = 0;
-  for (const [p, [jsonKey, json1dKey, zfitKey, linesKey]] of keysByPath) {
-    const [json, json1d, zfit, lines] = resolved.slice(i, i + 4);
-    i += 4;
+  for (const [p, [jsonKey, json1dKey, zfitKey, linesKey, mbkgKey]] of keysByPath) {
+    const [json, json1d, zfit, lines, mbkg] = resolved.slice(i, i + 5);
+    i += 5;
     // The resolver fails open with no content identity for ANY key, so "no
     // row" is only believed when the full JSON — which every deployed
     // spectrum registers — did resolve.
@@ -92,10 +94,12 @@ export async function resolveSpectrumSidecars(
       spectrum_1d: urls.get(json1dKey) ?? null,
       zfit: urls.get(zfitKey) ?? null,
       lines: urls.get(linesKey) ?? null,
+      mbkg: urls.get(mbkgKey) ?? null,
       has_spectrum: json?.contentHash ? true : null,
       has_1d: presence(json1d),
       has_zfit: presence(zfit),
       has_lines: presence(lines),
+      has_mbkg: presence(mbkg),
     });
   }
   return out;
@@ -111,7 +115,7 @@ async function resolveReleaseSidecars(
   try {
     const members = await resolveReleaseMembers(release.supabase, release.tag, keys);
     const urls = await releaseFrontUrls(members);
-    for (const [p, [jsonKey, json1dKey, zfitKey, linesKey]] of keysByPath) {
+    for (const [p, [jsonKey, json1dKey, zfitKey, linesKey, mbkgKey]] of keysByPath) {
       const available = (k: string) => members.get(k) != null;
       out.set(p, {
         front,
@@ -122,17 +126,22 @@ async function resolveReleaseSidecars(
         spectrum_1d: available(json1dKey) ? urls.get(json1dKey) ?? null : null,
         zfit: available(zfitKey) ? urls.get(zfitKey) ?? null : null,
         lines: available(linesKey) ? urls.get(linesKey) ?? null : null,
+        mbkg: available(mbkgKey) ? urls.get(mbkgKey) ?? null : null,
         has_spectrum: available(jsonKey),
         has_1d: available(json1dKey),
         has_zfit: available(zfitKey),
         has_lines: available(linesKey),
+        has_mbkg: available(mbkgKey),
       });
     }
   } catch (err) {
     console.error('spectrum sidecars: release manifest resolve failed', err);
     // Nothing is handed out: a release never falls back to live files.
     for (const p of keysByPath.keys()) {
-      out.set(p, { front, spectrum: null, spectrum_1d: null, zfit: null, lines: null, has_spectrum: false, has_1d: false, has_zfit: false, has_lines: false });
+      out.set(p, {
+        front, spectrum: null, spectrum_1d: null, zfit: null, lines: null, mbkg: null,
+        has_spectrum: false, has_1d: false, has_zfit: false, has_lines: false, has_mbkg: false,
+      });
     }
   }
   return out;

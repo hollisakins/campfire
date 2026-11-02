@@ -112,12 +112,14 @@ def _exposure_ref_for(product_type: str, filename: str) -> str | None:
     (``{root}_{nod}_nrs[12]_{source}.fits``) IS the natural unique exposure key, for
     ``nircam_exposure`` the JWST rootname (``jw..._nrc{a,b}{1-4,long}.fits``) is, and
     for ``nirspec_rate`` the rate rootname stem (``jw..._nrsN_rate``, one per
-    exposure×detector) is, so the ref is the filename stem (drop ``.fits``). Backs
+    exposure×detector) is, and for ``nirspec_mbkg`` its stem (``jw..._nrsN_mbkg``), so the
+    ref is the filename stem (drop ``.fits``). Backs
     the partial-unique ``(product_type, exposure_ref) WHERE status='active'`` registry
     contract (one current object per product/exposure). None for non-exposure products
     (their exposure_ref stays NULL; NULLs are distinct, so finals never collide).
     """
-    if product_type in ('nirspec_spectrum_exposure', 'nircam_exposure', 'nirspec_rate') and filename.endswith('.fits'):
+    if product_type in ('nirspec_spectrum_exposure', 'nircam_exposure', 'nirspec_rate',
+                        'nirspec_mbkg') and filename.endswith('.fits'):
         return filename[: -len('.fits')]
     return None
 
@@ -129,9 +131,10 @@ def _spectrum_id_for(filename: str) -> str | None:
     ``_spec.fits``); spectrum JSON (``_spec.json``) belongs to the same spectrum.
     Returns None for products that aren't tied to a single spectrum (zfit, rgb,
     sed, photometry, nircam previews). The 1-D sidecar (``_spec_1d.json``,
-    #508) belongs to its spectrum like the full JSON does.
+    #508) and the master-background spectrum (``_spec_mbkg.json``) belong to
+    their spectrum like the full JSON does.
     """
-    for suffix in ('_spec.fits', '_spec_1d.json', '_spec.json'):
+    for suffix in ('_spec.fits', '_spec_1d.json', '_spec_mbkg.json', '_spec.json'):
         if filename.endswith(suffix):
             return filename[: -len(suffix)]
     return None

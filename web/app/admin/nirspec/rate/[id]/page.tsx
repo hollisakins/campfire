@@ -17,6 +17,7 @@ import {
 } from '@/lib/actions/nirspec-rate';
 import type { NirspecRateExposure, MaskRegionsPayload } from '@/lib/types';
 import MaskEditor from '@/components/nircam/MaskEditor';
+import type { FitsView } from '@/components/nircam/FitsCanvas';
 import { parseRateNavParams } from '@/lib/nirspec-rate-nav';
 import { getCachedRate, setCachedRate } from '@/lib/nirspec-rate-cache';
 
@@ -93,6 +94,13 @@ function RateDetailPageInner() {
     { forId: number; data: RateNeighbors } | null
   >(null);
   const [showHelp, setShowHelp] = useState(false);
+  // Which image the viewer draws; kept across navigation so a queue can be
+  // walked in one view. Exposures without a master background draw the rate.
+  const [fitsView, setFitsView] = useState<FitsView>('rate');
+  const cycleView = useCallback(
+    () => setFitsView((v) => FITS_VIEWS[(FITS_VIEWS.findIndex((x) => x.value === v) + 1) % FITS_VIEWS.length]!.value),
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -266,13 +274,15 @@ function RateDetailPageInner() {
         case 'P': e.preventDefault(); handlePrev(); break;
         case 's':
         case 'S': e.preventDefault(); handleSave(); break;
+        case 'b':
+        case 'B': e.preventDefault(); cycleView(); break;
         case '?': e.preventDefault(); setShowHelp(prev => !prev); break;
         case 'Escape': if (showHelp) setShowHelp(false); break;
       }
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [handleNext, handlePrev, handleSave, showHelp, editStatus]);
+  }, [handleNext, handlePrev, handleSave, showHelp, editStatus, cycleView]);
 
   if (loading) {
     return (
@@ -299,6 +309,7 @@ function RateDetailPageInner() {
   const fitsMaskAvailable = Boolean(
     exposure.storage_key && exposure.image_width && exposure.image_height,
   );
+  const mbkgKey = exposure.mbkg_storage_key ?? undefined;
 
   const handleSaveMasks = async (
     regions: MaskRegionsPayload,
@@ -410,6 +421,7 @@ function RateDetailPageInner() {
             <div className="flex justify-between"><dt>Mark approved</dt><dd className="font-mono text-text-secondary">2</dd></div>
             <div className="flex justify-between"><dt>Mark excluded</dt><dd className="font-mono text-text-secondary">3</dd></div>
             <div className="flex justify-between"><dt>Save</dt><dd className="font-mono text-text-secondary">S</dd></div>
+            <div className="flex justify-between"><dt>Rate / master background / difference</dt><dd className="font-mono text-text-secondary">B</dd></div>
             <div className="flex justify-between"><dt>Help</dt><dd className="font-mono text-text-secondary">?</dd></div>
           </dl>
           <p className="mt-2 text-xs text-text-secondary">
@@ -427,11 +439,33 @@ function RateDetailPageInner() {
       <div className="flex gap-6">
         {/* Image viewer: live FITS render (SCI) + mask editor */}
         <div className="flex-1 min-w-0">
+          {fitsMaskAvailable && mbkgKey && (
+            <div className="mb-2 inline-flex rounded-lg border border-border overflow-hidden text-xs" role="group">
+              {FITS_VIEWS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={(e) => { if (e.detail > 0) e.currentTarget.blur(); setFitsView(value); }}
+                  aria-pressed={fitsView === value}
+                  title="B"
+                  className={`px-3 py-1.5 border-r border-border last:border-r-0 transition-colors ${
+                    fitsView === value
+                      ? 'bg-primary text-on-primary'
+                      : 'bg-card text-text-secondary hover:bg-card-hover'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <Card className="overflow-hidden">
             {fitsMaskAvailable ? (
               <div className="h-[80vh]">
                 <MaskEditor
                   fitsKey={exposure.storage_key!}
+                  mbkgKey={mbkgKey}
+                  fitsView={mbkgKey ? fitsView : 'rate'}
                   exposureKey={exposure.id}
                   imageWidth={exposure.image_width!}
                   imageHeight={exposure.image_height!}
@@ -481,6 +515,7 @@ function RateDetailPageInner() {
                 <dd className="text-text-primary font-mono text-xs">{exposure.stage}</dd>
               </div>
             </dl>
+            {mbkgKey && <MasterBackgroundRows exposure={exposure} />}
           </Card>
 
           {/* Triage controls */}
@@ -535,6 +570,59 @@ function RateDetailPageInner() {
         </div>
       </div>
     </div>
+  );
+}
+
+const FITS_VIEWS: { value: FitsView; label: string }[] = [
+  { value: 'rate', label: 'Rate' },
+  { value: 'mbkg', label: 'Master background' },
+  { value: 'rate_minus_mbkg', label: 'Rate − master background' },
+];
+
+const MBKG_SOURCE_LABEL: Record<string, string> = { combined: 'combined', exposure: 'this exposure' };
+
+function MasterBackgroundRows({ exposure }: { exposure: NirspecRateExposure }) {
+  const n = exposure.mbkg_exposures?.length ?? 0;
+  const source = exposure.mbkg_source
+    ? MBKG_SOURCE_LABEL[exposure.mbkg_source] ?? exposure.mbkg_source
+    : '—';
+  return (
+    <>
+      <h3 className="text-xs font-medium text-text-secondary uppercase tracking-wider mt-4 mb-2">
+        Master background
+      </h3>
+      <dl className="space-y-2 text-sm">
+        <div className="flex justify-between gap-3">
+          <dt className="text-text-secondary">Source</dt>
+          <dd className="text-text-primary text-right">
+            {source}
+            {exposure.mbkg_source === 'combined' && n > 0 ? ` (${n} exposures)` : ''}
+          </dd>
+        </div>
+        {exposure.mbkg_rate_source && exposure.mbkg_rate_source !== exposure.mbkg_source && (
+          <div className="flex justify-between gap-3">
+            <dt className="text-text-secondary">Count rate</dt>
+            <dd className="text-text-primary text-right">
+              {MBKG_SOURCE_LABEL[exposure.mbkg_rate_source] ?? exposure.mbkg_rate_source}
+            </dd>
+          </div>
+        )}
+        {exposure.mbkg_test && (
+          <div className="flex justify-between gap-3">
+            <dt className="text-text-secondary">Test</dt>
+            <dd className="text-text-primary text-right text-xs">{exposure.mbkg_test}</dd>
+          </div>
+        )}
+        <div className="flex justify-between gap-3">
+          <dt className="text-text-secondary">Empty shutters</dt>
+          <dd className="text-text-primary">{exposure.mbkg_n_empty_shutters ?? '—'}</dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="text-text-secondary">Version</dt>
+          <dd className="text-text-primary font-mono text-xs">{exposure.mbkg_version ?? '—'}</dd>
+        </div>
+      </dl>
+    </>
   );
 }
 

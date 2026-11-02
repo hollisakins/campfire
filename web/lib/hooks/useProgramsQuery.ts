@@ -5,6 +5,7 @@ import { fetchJson } from '@/lib/fetch-json';
 import { useDrTag } from '@/lib/dr/client';
 import type { ProgramsOverviewResponse } from '@/app/api/metadata/programs/route';
 import type { ProgramDetailResponse } from '@/app/api/metadata/programs/[slug]/route';
+import type { ProgramExposuresResponse } from '@/app/api/metadata/programs/[slug]/exposures/route';
 import type { ObservationsOverviewResponse } from '@/app/api/metadata/observations/route';
 import type { DatabaseOverviewResponse } from '@/app/api/metadata/overview/route';
 
@@ -29,6 +30,18 @@ export function useProgramDetailQuery(programSlug: string, enabled: boolean = tr
     queryKey: ['programDetail', programSlug, dr ?? 'live'],
     queryFn: ({ signal }) =>
       fetchJson<ProgramDetailResponse>(`/api/metadata/programs/${encodeURIComponent(programSlug)}`, { signal, dr }),
+    staleTime: 10 * 60 * 1000,
+    enabled: enabled && !!programSlug,
+  });
+}
+
+// Every exposure of the program's observations. Read live (not part of a data
+// release), so the key carries no release tag.
+export function useProgramExposuresQuery(programSlug: string, enabled: boolean = true) {
+  return useQuery<ProgramExposuresResponse>({
+    queryKey: ['programExposures', programSlug],
+    queryFn: ({ signal }) =>
+      fetchJson<ProgramExposuresResponse>(`/api/metadata/programs/${encodeURIComponent(programSlug)}/exposures`, { signal }),
     staleTime: 10 * 60 * 1000,
     enabled: enabled && !!programSlug,
   });

@@ -378,7 +378,17 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
         '_spec\.fits$', '', 'i'
       )
     ) STORED,
-    "is_public" boolean NOT NULL DEFAULT false
+    "is_public" boolean NOT NULL DEFAULT false,
+    -- The master-background spectrum (SPEC1D_MBKG / SCI_MBKG of the same
+    -- spec.fits) and the exposure counts behind the nodded one, written by
+    -- deploy from the spec.fits primary header (MBKGPREF / MBKGWHY / NEXP /
+    -- NEXPBKG). NULL when the file predates the cards. Last, in the order the
+    -- migration appended them (cat_spectra mirrors the physical order).
+    "has_mbkg_spectrum" boolean NOT NULL DEFAULT false,
+    "mbkg_preferred" boolean,
+    "mbkg_reason" "text" CONSTRAINT "spectra_mbkg_reason_check" CHECK (("mbkg_reason" IS NULL OR "mbkg_reason" = ANY (ARRAY['no_clear_background'::"text", 'single_exposure'::"text", 'extended'::"text"]))),
+    "n_exp" integer,
+    "n_exp_bkg" integer
 );
 COMMENT ON COLUMN "public"."spectra"."is_public" IS 'Planner-visible access scope (Catalog Read Model phase 1, #533): the program''s is_public, trigger-maintained (sync_row_is_public on program_slug changes; propagate_program_is_public when a program flips). select_spectra_by_access tests (NOT link AND is_public) OR program_slug = ANY(scope); same row set, real statistics.';
 
@@ -405,6 +415,12 @@ COMMENT ON COLUMN "public"."spectra"."thumbnail_svg_fnu" IS 'Pre-generated SVG s
 
 
 COMMENT ON COLUMN "public"."spectra"."thumbnail_svg_flambda" IS 'Pre-generated SVG sparkline thumbnail in f_lambda units. Set during deployment to avoid R2 fetches and CPU-intensive processing at runtime.';
+
+COMMENT ON COLUMN "public"."spectra"."has_mbkg_spectrum" IS 'The spec.fits carries the spectrum extracted from the master-background-subtracted exposures (SPEC1D_MBKG, SCI_MBKG, ERR_MBKG); deploy uploads it as the _spec_mbkg.json sidecar.';
+COMMENT ON COLUMN "public"."spectra"."mbkg_preferred" IS 'MBKGPREF: the master-background spectrum is likely better than the nodded one. NULL without a master-background spectrum.';
+COMMENT ON COLUMN "public"."spectra"."mbkg_reason" IS 'MBKGWHY, set only when mbkg_preferred: no_clear_background (a bright catalogued neighbor near the source in every background exposure of some exposure), single_exposure (no nodded subtraction), extended (the source is wider than the nod step).';
+COMMENT ON COLUMN "public"."spectra"."n_exp" IS 'NEXP: exposures combined into the spectrum.';
+COMMENT ON COLUMN "public"."spectra"."n_exp_bkg" IS 'NEXPBKG: the fewest background exposures subtracted from any one of the combined exposures (2 for a full 3-shutter nod, 1 when a background exposure was dropped for a neighbor, 0 when an exposure had none).';
 
 
 
@@ -1031,11 +1047,50 @@ CREATE TABLE IF NOT EXISTS "public"."nirspec_rate_exposures" (
     "mask_regions" "jsonb",
     "notes" "text",
     "created_at" timestamp with time zone NOT NULL DEFAULT "now"(),
-    "updated_at" timestamp with time zone NOT NULL DEFAULT "now"()
+    "updated_at" timestamp with time zone NOT NULL DEFAULT "now"(),
+    "mbkg_storage_key" "text",
+    "mbkg_source" "text",
+    "mbkg_rate_source" "text",
+    "mbkg_test" "text",
+    "mbkg_exposures" "text"[],
+    "mbkg_n_empty_shutters" integer,
+    "mbkg_version" "text",
+    "filter" "text",
+    "exposure_time" double precision,
+    "date_obs" "text",
+    "readout_pattern" "text",
+    "n_groups" integer,
+    "n_integrations" integer,
+    "dither_position" integer,
+    "n_dither_positions" integer
 );
 
 
 ALTER TABLE "public"."nirspec_rate_exposures" OWNER TO "postgres";
+
+
+-- What was observed (deploy-owned, read from the rate file's primary header). With
+-- the master background columns below, what program viewers read through
+-- get_program_exposures(): the exposures table of the metadata program page.
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."filter" IS 'FILTER of the exposure.';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."exposure_time" IS 'Effective exposure time in seconds (EFFEXPTM).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."date_obs" IS 'UTC date the exposure started (DATE-OBS).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."readout_pattern" IS 'Detector readout pattern (READPATT), e.g. NRSIRS2.';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."n_groups" IS 'Groups per integration (NGROUPS).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."n_integrations" IS 'Integrations in the exposure (NINTS).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."dither_position" IS 'Position of the exposure in the dither / nod pattern (PATT_NUM), 1-based.';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."n_dither_positions" IS 'Points in the dither / nod pattern (NUMDTHPT).';
+
+-- The master background of the exposure x detector (deploy-owned, read from the
+-- <root>_<nrsN>_mbkg.fits beside the rate file and the step-1 tables in the rate
+-- file; docs/design-nirspec-master-background.md).
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_storage_key" IS 'Canonical key of the exposure''s master background (<root>_<nrsN>_mbkg.fits, product nirspec_mbkg).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_source" IS 'Which master background the exposure uses: combined (over the exposures that agree) or exposure (its own empty shutters, when it differs from the others).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_rate_source" IS 'The same choice for the count-rate master background derived from the rate file (master background step 1).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_test" IS 'Outcome of the test against the other exposures: consistent, differs <band> <deviation> (<significance>), or too few empty shutters.';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_exposures" IS 'Exposures (nod/detector) combined into the master background.';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_n_empty_shutters" IS 'Empty shutters of this exposure x detector that passed (MBKGNSH).';
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_version" IS 'Master-background algorithm version (CFMBKGV).';
 
 
 CREATE SEQUENCE IF NOT EXISTS "public"."nirspec_rate_exposures_id_seq"
@@ -1434,7 +1489,8 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- product_type tracks the campfire_layout PRODUCTS registry (every entry with a
     -- non-null bucket). A new cloud-backed product type requires a migration here.
     CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
-        'nirspec_spec'::"text", 'spectrum_json'::"text", 'spectrum_1d_json'::"text", 'zfit'::"text",
+        'nirspec_spec'::"text", 'spectrum_json'::"text", 'spectrum_1d_json'::"text",
+        'spectrum_mbkg_json'::"text", 'zfit'::"text",
         'nirspec_lines'::"text", 'nirspec_lines_json'::"text", 'nirspec_redshifts'::"text",
         'nirspec_spectrum_exposure'::"text", 'nirspec_rate'::"text", 'nirspec_mbkg'::"text",
         'rgb'::"text", 'sed'::"text",
@@ -1753,6 +1809,11 @@ CREATE TABLE IF NOT EXISTS "public"."dr_spectra" (
     "spectrum_id" "text",
     "search_text" "text",
     "is_public" boolean NOT NULL DEFAULT false,
+    "has_mbkg_spectrum" boolean NOT NULL DEFAULT false,
+    "mbkg_preferred" boolean,
+    "mbkg_reason" "text",
+    "n_exp" integer,
+    "n_exp_bkg" integer,
     CONSTRAINT "dr_spectra_pkey" PRIMARY KEY ("tag", "id"),
     CONSTRAINT "dr_spectra_tag_spectrum_id_key" UNIQUE ("tag", "spectrum_id")
 );
@@ -2745,6 +2806,12 @@ ALTER TABLE ONLY "public"."nirspec_rate_exposures"
 
 ALTER TABLE ONLY "public"."nirspec_rate_exposures"
     ADD CONSTRAINT "nirspec_rate_exposures_unique" UNIQUE ("observation", "exposure_root", "detector");
+
+ALTER TABLE ONLY "public"."nirspec_rate_exposures"
+    ADD CONSTRAINT "nirspec_rate_exposures_mbkg_source_check" CHECK (("mbkg_source" = ANY (ARRAY['combined'::"text", 'exposure'::"text"])));
+
+ALTER TABLE ONLY "public"."nirspec_rate_exposures"
+    ADD CONSTRAINT "nirspec_rate_exposures_mbkg_rate_source_check" CHECK (("mbkg_rate_source" = ANY (ARRAY['combined'::"text", 'exposure'::"text"])));
 
 ALTER TABLE ONLY "public"."spectrum_exposures"
     ADD CONSTRAINT "spectrum_exposures_pkey" PRIMARY KEY ("id");

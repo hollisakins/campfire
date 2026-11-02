@@ -56,6 +56,98 @@ def read_rate_metadata(path: Path) -> tuple[str | None, int | None, int | None]:
         return None, None, None
 
 
+# What was observed: column -> (primary-header card, type).
+_OBSERVING_CARDS = {
+    "filter": ("FILTER", str),
+    "exposure_time": ("EFFEXPTM", float),
+    "date_obs": ("DATE-OBS", str),
+    "readout_pattern": ("READPATT", str),
+    "n_groups": ("NGROUPS", int),
+    "n_integrations": ("NINTS", int),
+    "dither_position": ("PATT_NUM", int),
+    "n_dither_positions": ("NUMDTHPT", int),
+}
+
+
+def read_observing_metadata(path: Path) -> dict:
+    """The exposures-table columns of one rate file (what was observed), from its
+    primary header. A card that is absent or unreadable leaves its column out, so a
+    re-deploy never blanks it; an unreadable file gives nothing."""
+    try:
+        from astropy.io import fits
+        h = fits.getheader(path, 0)
+    except Exception:
+        return {}
+    out = {}
+    for col, (card, cast) in _OBSERVING_CARDS.items():
+        value = h.get(card)
+        if value is None or (cast is str and not str(value).strip()):
+            continue
+        try:
+            out[col] = cast(value).strip() if cast is str else cast(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+_MBKG_SUFFIX = "_mbkg.fits"
+
+# The pipeline's labels for which master background an exposure uses (MBKGSRC on the
+# _mbkg.fits primary, MBKGPSRC on the rate file's MBKG1DR header) -> the portal's.
+# 'pool' is the master background combined over the exposures that agree; 'group' is
+# that combination used because the exposure has too few empty shutters of its own.
+_MBKG_SOURCE = {"pool": "combined", "group": "combined", "exposure": "exposure"}
+
+
+def _mbkg_source(label) -> str | None:
+    return _MBKG_SOURCE.get(str(label).strip()) if label is not None else None
+
+
+def read_mbkg_metadata(rate_path: Path, scope: Scope) -> dict:
+    """The master-background columns of one rate file's row, from the
+    ``{root}_{nrsN}_mbkg.fits`` beside it (end of stage 2a) and the step-1 table
+    header in the rate file itself (``MBKG1DR``). Columns whose source is absent are
+    left out (so a re-deploy without the product never blanks them); any read failure
+    degrades the same way."""
+    out: dict = {}
+    try:
+        from astropy.io import fits
+    except Exception:
+        return out
+    try:
+        with fits.open(rate_path, memmap=False) as hdul:
+            if "MBKG1DR" in hdul:
+                src = _mbkg_source(hdul["MBKG1DR"].header.get("MBKGPSRC"))
+                if src:
+                    out["mbkg_rate_source"] = src
+    except Exception:
+        pass
+    mbkg = rate_path.with_name(rate_path.name[: -len(_RATE_SUFFIX)] + _MBKG_SUFFIX)
+    if not mbkg.exists():
+        return out
+    try:
+        h = fits.getheader(mbkg, 0)
+    except Exception:
+        return out
+    out["mbkg_storage_key"] = storage_key(
+        "nirspec_mbkg", scope, mbkg.name, scheme=KeyScheme.CANONICAL)
+    label = h.get("MBKGSRC")
+    if label is not None:
+        out["mbkg_source"] = _mbkg_source(label)
+    if str(label).strip() == "group":
+        out["mbkg_test"] = "too few empty shutters"
+    elif h.get("MBKGPDEC") is not None:
+        out["mbkg_test"] = str(h["MBKGPDEC"])
+    members = h.get("MBKGPMEM")
+    if members is not None:
+        out["mbkg_exposures"] = [] if str(members) == "none" else str(members).split()
+    if h.get("MBKGNSH") is not None:
+        out["mbkg_n_empty_shutters"] = int(h["MBKGNSH"])
+    if h.get("CFMBKGV") is not None:
+        out["mbkg_version"] = str(h["CFMBKGV"])
+    return out
+
+
 def build_rate_exposure_records(
     rate_files: list[Path], *, observation: str, scope: Scope,
 ) -> list[dict]:
@@ -75,6 +167,8 @@ def build_rate_exposure_records(
             "storage_key": storage_key(
                 "nirspec_rate", scope, path.name, scheme=KeyScheme.CANONICAL),
             "stage": "rate",
+            **read_observing_metadata(path),
+            **read_mbkg_metadata(path, scope),
         })
     return records
 
@@ -82,6 +176,14 @@ def build_rate_exposure_records(
 # Columns deploy owns on a re-register (everything else is web-owned triage).
 _IDENTITY_COLS = ("observation", "exposure_root", "detector", "filename", "stage")
 _RENDER_COLS = ("grating", "image_width", "image_height", "storage_key")
+# What was observed (read_observing_metadata): deploy-owned like the render columns.
+_OBSERVING_COLS = tuple(_OBSERVING_CARDS)
+# The master background (read from the _mbkg.fits beside the rate file): deploy-owned
+# like the render columns. A batch that carries none leaves them untouched; in a batch
+# where some exposures have one, postgrest-py sends the union of keys, so a row whose
+# exposure has no master background is cleared (NULL), which is the truth.
+_MBKG_COLS = ("mbkg_storage_key", "mbkg_source", "mbkg_rate_source", "mbkg_test",
+              "mbkg_exposures", "mbkg_n_empty_shutters", "mbkg_version")
 
 
 def partition_rate_records(
@@ -99,7 +201,7 @@ def partition_rate_records(
         if key in existing_keys:
             update = {c: r[c] for c in _IDENTITY_COLS}
             update["updated_at"] = now
-            for c in _RENDER_COLS:
+            for c in _RENDER_COLS + _OBSERVING_COLS + _MBKG_COLS:
                 if r.get(c) is not None:
                     update[c] = r[c]
             update_records.append(update)

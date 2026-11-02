@@ -34,12 +34,13 @@ import { archiveKey, parseKey, toCanonicalKey } from '@/lib/layout';
  * planned against, since nothing depends on its old bytes.
  */
 
-/** Product types retained on redeploy (decision D-P2-1): the six NIRSpec
+/** Product types retained on redeploy (decision D-P2-1): the seven NIRSpec
  * finals/sidecars. Mosaics are archived by the DR freeze only. */
 export const RETAINED_PRODUCT_TYPES: ReadonlySet<string> = new Set([
   'nirspec_spec',
   'spectrum_json',
   'spectrum_1d_json',
+  'spectrum_mbkg_json',
   'zfit',
   'nirspec_lines',
   'nirspec_lines_json',

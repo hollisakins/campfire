@@ -14,6 +14,7 @@
  */
 
 import { parseFitsHeader, FitsHeader, IncompleteHeaderError, padToBlock } from './fits-header';
+import { decodeGzip2Tile, gunzip } from '@fitsgl/core/internal';
 
 export interface SciImage {
   /** Native-endian SCI pixels, row-major, length `width * height`. Row 0 is the FITS first row. */
@@ -116,7 +117,11 @@ function hduAt(buf: Uint8Array, start: number): HduHeader {
   if (naxis > 0) {
     let npix = 1;
     for (let a = 1; a <= naxis; a++) npix *= header.getInt(`NAXIS${a}`) ?? 1;
-    dataBytes = (npix * Math.abs(bitpix)) / 8;
+    // A BINTABLE's heap (PCOUNT: variable-length arrays, tile-compressed images,
+    // the rate file's ASDF) follows its main table inside the same data unit.
+    const pcount = header.getInt('PCOUNT') ?? 0;
+    const gcount = header.getInt('GCOUNT') ?? 1;
+    dataBytes = gcount * (pcount + (npix * Math.abs(bitpix)) / 8);
   }
   return {
     header,
@@ -273,4 +278,150 @@ export async function fetchS2dCell(
   }
   const data = swapToFloat32(block.byteLength === bytes ? block : block.slice(0, bytes));
   return { data, width, height, primaryHeader, sciHeader };
+}
+
+/** Walk `buf`'s HDU chain to the HDU named `extname`. Throws IncompleteHeaderError
+ * when the buffer runs out mid-walk (caller grows) or HduNotFoundError when every
+ * HDU in the buffer was walked without a match. */
+function findNamedHdu(buf: Uint8Array, extname: string): HduHeader {
+  let off = 0;
+  for (let i = 0; i < 64; i++) {
+    if (off + 2880 > buf.length) {
+      throw new IncompleteHeaderError(`${extname} header not reached within ${buf.length} bytes`);
+    }
+    const hdu = hduAt(buf, off);
+    if (hdu.extname === extname) return hdu;
+    off = hdu.nextHdu;
+  }
+  throw new HduNotFoundError(`No ${extname} extension in the first 64 HDUs`);
+}
+
+/** Byte width of one BINTABLE field from its TFORMn (`rT`, e.g. `1PB(3688)`, `2E`). */
+export function tformWidth(tform: string): number {
+  const m = /^\s*(\d*)([LXBIJKAEDCMPQ])/.exec(tform);
+  if (!m) throw new Error(`Unsupported TFORM ${JSON.stringify(tform)}`);
+  const repeat = m[1] === '' ? 1 : Number(m[1]);
+  const code = m[2]!;
+  if (code === 'X') return Math.ceil(repeat / 8);
+  const size: Record<string, number> = {
+    L: 1, B: 1, A: 1, I: 2, J: 4, E: 4, K: 8, D: 8, C: 8, M: 16, P: 8, Q: 16,
+  };
+  return repeat * size[code]!;
+}
+
+/**
+ * Fetch + decode a tile-compressed image HDU (`ZIMAGE = T`) named `extname`, e.g.
+ * the 2-D master background (`MBKG2D`) of a `_mbkg.fits`: lossless GZIP_2 float32,
+ * one tile per detector row. One range request for the header window (grown as
+ * needed), one for the HDU's whole data unit (tile table + heap); each tile is
+ * gunzipped and byte-unshuffled by FitsGL's `decodeGzip2Tile`. Only GZIP_2 on
+ * float32 without quantization is accepted (RICE_1 / quantized floats are
+ * rejected), which is what the pipeline writes for it.
+ */
+export async function fetchCompressedImage(
+  fitsUrl: string,
+  extname: string,
+  signal?: AbortSignal,
+): Promise<SciImage> {
+  let headerBytes = INITIAL_HEADER_BYTES;
+  let hdu: HduHeader;
+  for (;;) {
+    const head = new Uint8Array(await fetchRange(fitsUrl, 0, headerBytes - 1, signal));
+    try {
+      hdu = findNamedHdu(head, extname);
+      break;
+    } catch (e) {
+      if (!(e instanceof IncompleteHeaderError)) throw e;
+      // A short read is the end of the file: every HDU was walked.
+      if (head.length < headerBytes || headerBytes >= MAX_S2D_HEADER_BYTES) {
+        throw new HduNotFoundError(`No ${extname} extension found`);
+      }
+      headerBytes = Math.min(headerBytes * 4, MAX_S2D_HEADER_BYTES);
+    }
+  }
+
+  const h = hdu.header;
+  if (h.getBool('ZIMAGE') !== true) throw new Error(`${extname} is not a tile-compressed image`);
+  const cmp = h.getString('ZCMPTYPE');
+  if (cmp !== 'GZIP_2') throw new Error(`${extname}: compression ${cmp ?? '?'} is not supported (GZIP_2 only)`);
+  if (h.requireInt('ZBITPIX') !== -32) throw new Error(`${extname} is not float32 (ZBITPIX=${h.getInt('ZBITPIX')})`);
+  const width = h.requireInt('ZNAXIS1');
+  const height = h.requireInt('ZNAXIS2');
+  const tileW = h.getInt('ZTILE1') ?? width;
+  const tileH = h.getInt('ZTILE2') ?? 1;
+  const rowBytes = h.requireInt('NAXIS1');
+  const nRows = h.requireInt('NAXIS2');
+  const pcount = h.getInt('PCOUNT') ?? 0;
+  const heapStart = h.getInt('THEAP') ?? rowBytes * nRows;
+
+  // Column layout: where COMPRESSED_DATA (and the per-tile lossless fallback,
+  // GZIP_COMPRESSED_DATA) sit in each row, and their descriptor kind (P/Q).
+  const nFields = h.requireInt('TFIELDS');
+  const cols = new Map<string, { offset: number; wide: boolean }>();
+  let off = 0;
+  for (let n = 1; n <= nFields; n++) {
+    const tform = h.getString(`TFORM${n}`) ?? '';
+    const name = (h.getString(`TTYPE${n}`) ?? '').toUpperCase();
+    cols.set(name, { offset: off, wide: /^\s*\d*Q/.test(tform) });
+    off += tformWidth(tform);
+  }
+  if (cols.has('ZSCALE')) throw new Error(`${extname} is quantized; only lossless GZIP_2 is supported`);
+  const data = cols.get('COMPRESSED_DATA');
+  if (!data) throw new Error(`${extname} has no COMPRESSED_DATA column`);
+  const fallback = cols.get('GZIP_COMPRESSED_DATA');
+
+  const span = rowBytes * nRows + pcount;
+  const buf = await fetchRange(fitsUrl, hdu.dataStart, hdu.dataStart + span - 1, signal);
+  if (buf.byteLength < span) throw new Error(`Short ${extname} read: got ${buf.byteLength} of ${span} bytes`);
+  const view = new DataView(buf);
+  const bytes = new Uint8Array(buf);
+  const descriptor = (row: number, col: { offset: number; wide: boolean }): [number, number] => {
+    const at = row * rowBytes + col.offset;
+    return col.wide
+      ? [Number(view.getBigInt64(at)), Number(view.getBigInt64(at + 8))]
+      : [view.getInt32(at), view.getInt32(at + 4)];
+  };
+
+  const nTilesX = Math.ceil(width / tileW);
+  const nTilesY = Math.ceil(height / tileH);
+  if (nTilesX * nTilesY !== nRows) {
+    throw new Error(`${extname}: ${nRows} tile rows for a ${nTilesX} x ${nTilesY} tile grid`);
+  }
+  const out = new Float32Array(width * height);
+  await Promise.all(Array.from({ length: nRows }, async (_, row) => {
+    const tx = row % nTilesX;
+    const ty = Math.floor(row / nTilesX);
+    const w = Math.min(tileW, width - tx * tileW);
+    const th = Math.min(tileH, height - ty * tileH);
+    let [len, at] = descriptor(row, data);
+    let tile: Float32Array;
+    if (len > 0) {
+      const start = heapStart + at;
+      tile = await decodeGzip2Tile(bytes.subarray(start, start + len), w * th);
+    } else if (fallback) {
+      // Per-tile lossless fallback: raw big-endian floats, gzipped, no shuffle.
+      [len, at] = descriptor(row, fallback);
+      const start = heapStart + at;
+      const raw = await gunzip(bytes.subarray(start, start + len));
+      const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+      tile = new Float32Array(w * th);
+      for (let i = 0; i < tile.length; i++) tile[i] = dv.getFloat32(i * 4);
+    } else {
+      tile = new Float32Array(w * th).fill(NaN);
+    }
+    for (let y = 0; y < th; y++) {
+      out.set(tile.subarray(y * w, (y + 1) * w), (ty * tileH + y) * width + tx * tileW);
+    }
+  }));
+  return { data: out, width, height };
+}
+
+/** Rate minus master background, pixel by pixel; NaN where either is NaN. */
+export function subtractImages(a: SciImage, b: SciImage): SciImage {
+  if (a.width !== b.width || a.height !== b.height) {
+    throw new Error(`Image sizes differ: ${a.width}x${a.height} vs ${b.width}x${b.height}`);
+  }
+  const data = new Float32Array(a.data.length);
+  for (let i = 0; i < data.length; i++) data[i] = a.data[i]! - b.data[i]!;
+  return { data, width: a.width, height: a.height };
 }

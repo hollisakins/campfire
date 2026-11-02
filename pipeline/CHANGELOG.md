@@ -173,6 +173,14 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Infrastructure
 
+- **Master background skips standalone fixed-slit exposures in step 2 too.** Step 1 already
+  required an MSA exposure with its metafile; step 2, called at the end of every stage 2a, had no
+  such check and would have tried to build a master background from fixed-slit cutouts. Both now
+  use `master_bkg_rate.has_master_background` and log the files they skip (`shellqs_j0217m0208`:
+  6 rate files skipped, nothing written). Fixed-slit observations get no `_mbkg.fits`.
+- **Layout kind `spectrum_mbkg_json`** (`<base>_spec_mbkg.json`, in `campfire-layout`): the
+  deploy-side JSON of a spectrum's master-background extraction, a fifth sibling of
+  `_spec.fits`; `test_layout`'s sibling round-trip covers it.
 - **NIRSpec master background (design P1b).** `campfire_pipeline.nirspec.master_bkg` derives,
   at the end of stage 2a (and as `cfpipe nirspec master-bkg`), the sky of every exposure x detector
   from the empty shutters of its canonicals and the background slitlets of its `bkgslits/` file:

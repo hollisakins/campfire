@@ -24,7 +24,8 @@ export type TreeRoot = 'objects' | 'spectra' | 'targets';
  *  the option lists the page already carries. */
 export type LeafChoices =
   | 'line' | 'band' | 'grating' | 'program' | 'observation' | 'field' | 'quality'
-  | 'component' | 'deploy_status' | 'list' | 'dq_flags' | 'spectral_features' | 'line_flags';
+  | 'component' | 'deploy_status' | 'list' | 'dq_flags' | 'spectral_features' | 'line_flags'
+  | 'mbkg_reason';
 
 export interface LeafDef {
   type: LeafType;
@@ -71,6 +72,10 @@ export const CATALOGUE: Record<TreeTable, TableDef> = {
     grating: text('Grating', 'grating'),
     signal_to_noise: num('S/N'), exposure_time: num('Exposure time', 's'),
     redshift_auto: num('Auto redshift'), chi2_min: num('Redshift fit χ² (min)'), confidence: num('Redshift fit confidence'),
+    has_mbkg_spectrum: bool('Has a master-background spectrum'),
+    mbkg_preferred: bool('Master background likely better'),
+    mbkg_reason: text('Why the master background', 'mbkg_reason'),
+    n_exp: int('Exposures'), n_exp_bkg: int('Background exposures per exposure'),
     dq_flags: bits('Quality flags', 'dq_flags'), deploy_status: text('Deploy status', 'deploy_status'),
     program_slug: text('Program', 'program'), observation: text('Observation', 'observation'),
     date_obs: text('Observation date'), cfpipe_version: text('cfpipe version'), jwst_version: text('jwst version'),

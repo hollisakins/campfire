@@ -28,6 +28,7 @@ import {
   spectrum1dKey,
   redshiftFitKey,
   lineFitKey,
+  spectrumMbkgKey,
   type SpectrumSidecarUrls,
 } from '@/lib/spectrum-sidecars';
 import { fetchJson } from '@/lib/fetch-json';
@@ -50,7 +51,7 @@ const URLS_STALE_MS = 60 * 60 * 1000;
 // object page's server render can seed `['spectrum-sidecars', path]` through
 // a <HydrationBoundary> before this tree mounts (perf T2-E, #510): the
 // browser's first spectrum request is then the 1-D payload itself.
-export { spectrumSidecarsKey, spectrumJsonKey, spectrum1dKey, redshiftFitKey, lineFitKey };
+export { spectrumSidecarsKey, spectrumJsonKey, spectrum1dKey, redshiftFitKey, lineFitKey, spectrumMbkgKey };
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   try {
@@ -181,6 +182,37 @@ export async function fetchLineFit(client: QueryClient, fitsPath: string, dr?: D
   return res.json();
 }
 
+/** The master-background spectrum (`_spec_mbkg.json`: the full payload's
+ * shape, from the master-background-subtracted exposures). `null` when the
+ * spectrum has none — the resolve's definitive `has_mbkg: false`, else the
+ * route's 404; throws on other failures. */
+export async function fetchSpectrumMbkg(client: QueryClient, fitsPath: string, dr?: Dr): Promise<SpectrumData | null> {
+  const urls = await sidecarUrls(client, fitsPath, dr);
+  if (urls.has_mbkg === false) return null;
+  if (urls.front && urls.mbkg) {
+    try {
+      const res = await fetch(urls.mbkg);
+      if (res.ok) return res.json();
+      console.warn(`master-background front answered ${res.status}; falling back to /api/spectrum`);
+    } catch (err) {
+      console.warn('master-background front fetch failed; falling back to /api/spectrum', err);
+    }
+  }
+  const res = await fetch(sidecarRouteUrl(`/api/spectrum?path=${encodeURIComponent(fitsPath)}&include=mbkg`, dr));
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(await errorMessage(res, 'Failed to load the master-background spectrum'));
+  return res.json();
+}
+
+export function spectrumMbkgQueryOptions(client: QueryClient, fitsPath: string, dr?: Dr) {
+  return {
+    queryKey: spectrumMbkgKey(fitsPath, dr),
+    queryFn: () => fetchSpectrumMbkg(client, fitsPath, dr),
+    staleTime: SIDECAR_STALE_MS,
+    gcTime: SIDECAR_GC_MS,
+  };
+}
+
 export function spectrumJsonQueryOptions(client: QueryClient, fitsPath: string, dr?: Dr) {
   return {
     queryKey: spectrumJsonKey(fitsPath, dr),
@@ -259,6 +291,14 @@ export function useLineFit(fitsPath: string, enabled = true) {
   return useQuery({ ...lineFitQueryOptions(client, fitsPath, dr), enabled });
 }
 
+/** The master-background spectrum; fetched only while `enabled` (the plot's
+ * master-background switch), never prefetched. */
+export function useSpectrumMbkg(fitsPath: string, enabled = true) {
+  const client = useQueryClient();
+  const dr = useDrTag();
+  return useQuery({ ...spectrumMbkgQueryOptions(client, fitsPath, dr), enabled });
+}
+
 /** One fit query per path, in order; `enabled[i]` false skips a fetch (the
  * row already carries the scalars the caller needs). */
 export function useRedshiftFits(fitsPaths: string[], enabled?: boolean[]) {
@@ -310,7 +350,7 @@ export function trimSpectrumCache(queryClient: QueryClient): void {
   for (const [fitsPath] of idle.slice(MAX_CACHED_SPECTRA)) {
     // Live and release entries of the path go together (prefix match on
     // ['<kind>', path] covers both key shapes).
-    for (const key of [spectrumJsonKey(fitsPath), spectrum1dKey(fitsPath), redshiftFitKey(fitsPath), lineFitKey(fitsPath), spectrumSidecarsKey(fitsPath)]) {
+    for (const key of [spectrumJsonKey(fitsPath), spectrum1dKey(fitsPath), redshiftFitKey(fitsPath), lineFitKey(fitsPath), spectrumMbkgKey(fitsPath), spectrumSidecarsKey(fitsPath)]) {
       queryClient.removeQueries({ queryKey: key });
     }
   }

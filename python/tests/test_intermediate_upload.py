@@ -106,3 +106,23 @@ def test_jwst_pid_from_obs_cfg():
     assert _jwst_pid_from_obs_cfg({"files": "jw07076020001*"}) == 7076
     assert _jwst_pid_from_obs_cfg({"files": ["jw07076020001*"]}) == 7076
     assert _jwst_pid_from_obs_cfg({}) == 0
+
+
+def test_discover_mbkg_files(tmp_path):
+    from campfire.deploy.discover import discover_mbkg_files
+    for n in ("jw07076020001_04101_00001_nrs1_mbkg.fits", "jw07076020001_04101_00001_nrs2_mbkg.fits",
+              "jw07076020001_04101_00001_nrs1_rate.fits", "jw07076020001_04101_00001_nrs1_117757.fits",
+              "jw07076020001_04101_00001_nrs1_mbkg_qa.pdf"):
+        (tmp_path / n).write_bytes(b"x")
+    assert [p.name for p in discover_mbkg_files(tmp_path)] == [
+        "jw07076020001_04101_00001_nrs1_mbkg.fits", "jw07076020001_04101_00001_nrs2_mbkg.fits"]
+    # and the spectrum-exposure discovery never takes them
+    from campfire.deploy.discover import discover_spectrum_exposures
+    assert [p.name for p in discover_spectrum_exposures(tmp_path)] == [
+        "jw07076020001_04101_00001_nrs1_117757.fits"]
+
+
+def test_mbkg_exposure_ref():
+    from campfire.deploy.registry import _exposure_ref_for
+    assert _exposure_ref_for("nirspec_mbkg", "jw07076020001_04101_00001_nrs1_mbkg.fits") == (
+        "jw07076020001_04101_00001_nrs1_mbkg")

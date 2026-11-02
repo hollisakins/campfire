@@ -95,8 +95,9 @@ INSERT INTO spectra (target_id, grating, fits_path, deploy_status, redshift_auto
   ('zzz-dr-t-draft', 'PRISM', '/tmp/zzz_dr_draft_prism_spec.fits','draft',     5.0,   500,  'sha256:' || repeat('7', 64), 'sha256:' || repeat('0', 64)),
   ('zzz-dr-t-inact', 'PRISM', '/tmp/zzz_dr_inact_prism_spec.fits','published', 6.0,   500,  'sha256:' || repeat('8', 64), 'sha256:' || repeat('9', 64));
 
--- Registry rows: spec + json + 1d (with spectrum_id) and zfit + lines.json
--- WITHOUT spectrum_id (how deploy registered them), for every spectrum.
+-- Registry rows: spec + json + 1d + master-background json (with spectrum_id)
+-- and zfit + lines.json WITHOUT spectrum_id (how deploy registered them), for
+-- every spectrum.
 INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, science_hash, size_bytes, content_type,
                              product_type, instrument, status, observation, program_slug, spectrum_id)
 SELECT 'osn', 'data', 'data/products/nirspec/' || s.observation || '/' || s.spectrum_id || k.sfx,
@@ -113,7 +114,8 @@ CROSS JOIN (VALUES
   ('_spec.json',    'spectrum_json',      true,  2),
   ('_spec_1d.json', 'spectrum_1d_json',   true,  3),
   ('_zfit.json',    'zfit',               false, 4),
-  ('_lines.json',   'nirspec_lines_json', false, 5)
+  ('_lines.json',   'nirspec_lines_json', false, 5),
+  ('_spec_mbkg.json', 'spectrum_mbkg_json', true, 6)
 ) AS k(sfx, pt, with_sid, i)
 WHERE t.target_id LIKE 'zzz-dr-t-%';
 -- a legacy R2 twin of a spec under the same key, with a provisional etag hash:
@@ -478,9 +480,9 @@ BEGIN
     RAISE EXCEPTION 'filter options wrong: %', (SELECT to_jsonb(o) FROM dr_filter_options o WHERE tag = 'DR-zzz');
   END IF;
 
-  -- members: 6 spectra x 5 products (zfit + lines via the key rule) + 2 mosaics
+  -- members: 6 spectra x 6 products (zfit + lines via the key rule) + 2 mosaics
   SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz' AND component = 'nirspec' AND storage_key LIKE 'data/products/nirspec/zzz_dr_%';
-  IF n <> 30 THEN RAISE EXCEPTION 'expected 30 nirspec members, got %', n; END IF;
+  IF n <> 36 THEN RAISE EXCEPTION 'expected 36 nirspec members, got %', n; END IF;
   SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz' AND product_type IN ('zfit', 'nirspec_lines_json') AND spectrum_id IS NULL;
   IF n <> 0 THEN RAISE EXCEPTION 'key-derived sidecar members should carry the spectrum_id'; END IF;
   IF EXISTS (SELECT 1 FROM dr_manifest WHERE tag = 'DR-zzz' AND storage_key LIKE '%/old_%') THEN
@@ -719,7 +721,7 @@ DECLARE
     ['ERR', '0', '0', '0', '6'],
     ['ERR', '0', '0', '0', '5'],
     ['ERR', '0', '0', '0', '3'],
-    ['ERR', '0', '0', '0', '36'],
+    ['ERR', '0', '0', '0', '42'],
     ['ERR', '0', '0', '0', '2'],
     ['ERR', '0', '0', '0', '1'],
     ['ERR', '0', '0', '0', '2'],
@@ -736,8 +738,8 @@ DECLARE
     -- objects by program OVERLAP, as live: nogrant sees PUB and MIX (MIX has a
     -- public member); the RPCs scope MIX's aggregates per viewer, as live
     ['ERR', '2', '3', '0', '3'],
-    -- members: 3 public spectra x 5 = 15 + 2 mosaics + 4 field products = 21 ; grantee all 36
-    ['ERR', '21', '36', '0', '36'],
+    -- members: 3 public spectra x 6 = 18 + 2 mosaics + 4 field products = 24 ; grantee all 42
+    ['ERR', '24', '42', '0', '42'],
     ['ERR', '2', '2', '0', '2'],     -- fits: through their (public-program) spectra
     ['ERR', '1', '1', '0', '1'],     -- MIX photometry: through the (overlap-visible) object
     ['ERR', '2', '2', '0', '2'],     -- published mosaics: every non-link account

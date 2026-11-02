@@ -53,6 +53,23 @@
       "compressed_suffixes": []
     },
     {
+      "name": "spectrum_mbkg_json",
+      "instrument": "nirspec",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "obs"
+      ],
+      "subdir": "nirspec/{obs}",
+      "filename": null,
+      "suffix": "_spec_mbkg.json",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
       "name": "zfit",
       "instrument": "nirspec",
       "tree": "products",
@@ -702,6 +719,10 @@
       [
         "_spec_1d.json",
         "spectrum_1d_json"
+      ],
+      [
+        "_spec_mbkg.json",
+        "spectrum_mbkg_json"
       ],
       [
         "_spec.json",

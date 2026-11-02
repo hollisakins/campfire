@@ -120,6 +120,11 @@ export const PROPERTIES: PropertyDef[] = [
   { key: 'fresh', scope: 'spectrum', label: 'Fresh line fit', kind: 'bool', shapes: { spectra: { via: ['line_fits'], col: 'stale_redshift', invert: true } } },
   { key: 'confidence', scope: 'spectrum', label: 'Redshift fit confidence', kind: 'range', range: { min: 0, max: 1, step: 0.01, precision: 2, side: 'min', quick: [{ label: '≥ 0.5', min: 0.5, max: null }, { label: '≥ 0.9', min: 0.9, max: null }, { label: '≥ 0.99', min: 0.99, max: null }] }, shapes: { spectra: direct('confidence') } },
   { key: 'redshift_auto', scope: 'spectrum', label: 'Auto redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 2, quick: zQuick }, shapes: { spectra: direct('redshift_auto') } },
+  { key: 'has_mbkg', scope: 'spectrum', label: 'Has master-background spectrum', kind: 'bool', shapes: { spectra: direct('has_mbkg_spectrum') } },
+  { key: 'mbkg_preferred', scope: 'spectrum', label: 'Master background likely better', kind: 'bool', shapes: { spectra: direct('mbkg_preferred') } },
+  { key: 'mbkg_reason', scope: 'spectrum', label: 'Why master background', kind: 'choice', choices: 'mbkg_reason', shapes: { spectra: direct('mbkg_reason') } },
+  { key: 'n_exp', scope: 'spectrum', label: 'Exposures', kind: 'range', range: { min: 0, max: 50, step: 1, precision: 0, side: 'min', quick: nQuick }, shapes: { spectra: direct('n_exp') } },
+  { key: 'n_exp_bkg', scope: 'spectrum', label: 'Background exposures', kind: 'range', range: { min: 0, max: 10, step: 1, precision: 0, side: 'min', quick: [{ label: '≥ 1', min: 1, max: null }, { label: '≥ 2', min: 2, max: null }] }, shapes: { spectra: direct('n_exp_bkg') } },
   { key: 'z_fit', scope: 'spectrum', label: 'Fitted redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 3, quick: zQuick }, shapes: { spectra: via(['line_fits'], 'z_fit') } },
   { key: 'sigma_v', scope: 'spectrum', label: 'Velocity dispersion', kind: 'range', unit: 'km/s', range: { min: 0, max: 5000, step: 10, precision: 0, quick: kmsQuick }, shapes: { spectra: via(['line_fits'], 'sigma_v') } },
   // Line (the clauses of a line measurement)

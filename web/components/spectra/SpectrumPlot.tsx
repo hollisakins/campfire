@@ -3,9 +3,9 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
-import { useSpectrumJson, useSpectrum1d, useRedshiftFit, useLineFit, useSpectrumSidecarUrls, fullPayloadIsSeparate } from '@/lib/hooks/useSpectrumJson';
+import { useSpectrumJson, useSpectrum1d, useRedshiftFit, useLineFit, useSpectrumMbkg, useSpectrumSidecarUrls, fullPayloadIsSeparate } from '@/lib/hooks/useSpectrumJson';
 import { useObjectLinesQuery } from '@/lib/hooks/useObjectLinesQuery';
-import type { SpectrumData } from '@/app/api/spectrum/route';
+import type { SpectrumData, SpectrumData1D } from '@/app/api/spectrum/route';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
 import { COLORSCALE_2D_OPTIONS } from '@/lib/types';
@@ -131,14 +131,30 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // the resolve have been wrong (a 1-D answer without the 2-D array), the
   // landed 1-D payload re-enables it.
   const sidecarUrls = useSpectrumSidecarUrls(fitsPath);
-  const data = oneDQuery.data ?? null;
+  const nodded = oneDQuery.data ?? null;
   const fullQuery = useSpectrumJson(
     fitsPath,
     !sidecarUrls.isPending &&
-      (fullPayloadIsSeparate(sidecarUrls.data) || (data !== null && !('snr_2d' in data))),
+      (fullPayloadIsSeparate(sidecarUrls.data) || (nodded !== null && !('snr_2d' in nodded))),
   );
-  const heat: SpectrumData | null =
-    fullQuery.data ?? (data && 'snr_2d' in data ? (data as SpectrumData) : null);
+  const noddedHeat: SpectrumData | null =
+    fullQuery.data ?? (nodded && 'snr_2d' in nodded ? (nodded as SpectrumData) : null);
+  // Master-background switch: the spectrum extracted from the
+  // master-background-subtracted exposures (`_spec_mbkg.json`, the full
+  // payload's shape on the same grid) replaces the nodded one in every panel —
+  // 1-D, error band, 2-D S/N and profile — so the two always agree; the
+  // wavelength zoom is kept (its uirevision is constant). Offered only when
+  // the resolve says the spectrum has one, fetched only once switched on, and
+  // the nodded spectrum stays drawn until it lands.
+  const [showMbkg, setShowMbkg] = useState(false);
+  const hasMbkg = sidecarUrls.data?.has_mbkg === true;
+  const mbkgQuery = useSpectrumMbkg(fitsPath, showMbkg && hasMbkg);
+  const mbkgData = showMbkg && hasMbkg ? mbkgQuery.data ?? null : null;
+  const mbkgError = showMbkg && mbkgQuery.error
+    ? (mbkgQuery.error instanceof Error ? mbkgQuery.error.message : 'Failed to load the master-background spectrum')
+    : null;
+  const data: SpectrumData1D | null = mbkgData ?? nodded;
+  const heat: SpectrumData | null = mbkgData ?? noddedHeat;
   const loading = oneDQuery.isPending;
   const error = oneDQuery.error ? oneDQuery.error.message : null;
   const heatError = fullQuery.error
@@ -920,6 +936,21 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           >
             stale fit
           </span>
+        )}
+
+        {hasMbkg && (
+          <PlotCheckbox
+            label="Master background"
+            checked={showMbkg}
+            onChange={setShowMbkg}
+            title={
+              mbkgError
+                ? `The master-background spectrum failed to load: ${mbkgError}`
+                : showMbkg && mbkgQuery.isPending
+                  ? 'Loading the master-background spectrum…'
+                  : 'Show the spectrum extracted with the master background subtracted instead of the nodded background exposures'
+            }
+          />
         )}
 
         {/* y-axis auto-stretch toggle (inspection shortcut: y) */}

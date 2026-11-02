@@ -22,6 +22,37 @@ review and the database; the masked first pass gives way to a local joint solve 
 side). Numbers in §9 measured before b0c08026 (the median bar-shadow cells), notably the +2–3 %
 off-centre painted-sky residual and the G395M blue-extension offset, predate the re-derived tables;
 the in-shutter offset itself is explained and fixed in 1.3 (§9, last entry).
+
+**Shipping (2026-11-01, Hollis):** step 1's tables and the trace map live in `<base>_rate.fits`;
+`<base>_mbkg.fits` (lossless-compressed) is the one extra product (`nirspec_mbkg`). `campfire push` /
+`deploy` upload it beside the rate file, `campfire pull --intermediate` fetches it, and it is readable by
+the program's members like the rate file (not part of data releases). Deploy writes the master-background
+columns of `nirspec_rate_exposures` (`mbkg_storage_key`, `mbkg_source` and `mbkg_rate_source` as
+combined | exposure, `mbkg_test`, `mbkg_exposures`, `mbkg_n_empty_shutters`, `mbkg_version`), with what was observed
+(`filter`, `exposure_time`, `date_obs`, `readout_pattern`, `n_groups`, `n_integrations`,
+`dither_position`, `n_dither_positions`, from the rate header). Program viewers read the exposures
+table of the metadata program page through `get_program_exposures()` (one row per exposure; of the
+master background only which one the exposure uses, combined or its own), and the admin rate review
+draws the rate, the 2-D master background or their difference on one display range.
+
+**Fixed slits (2026-11-01, Hollis):** both steps skip a standalone fixed-slit exposure
+(`NRS_FIXEDSLIT`, no MSA metafile; `master_bkg_rate.has_master_background`): it has no empty
+shutters to build a master background from. Checked on `shellqs_j0217m0208` (6 rate files skipped,
+nothing written); the local archive holds 26 such observations (BoRG, GO 2285, GO 2362, SHELLQs).
+*Deferred:* for those observations the master-background spectrum products (the `_spec.fits`
+extensions `SPEC1D_MBKG` / `SCI_MBKG` / `ERR_MBKG`) are to be filled with a **local background**
+instead: the sky measured directly from the parts of the slit that hold no source, so every spectrum
+offers the same alternative to the nodded one. The product must say which background it carries.
+Open beside it, read from the code and not yet tested on data:
+- *fixed-slit sources inside MSA exposures* (none in the local archive: every local metafile's
+  `fixed_slit` column is `NONE`). The shared geometry (`coverage.RateGeometry`) skips the five fixed
+  slits, so they give no empty-shutter samples and the painted `MBKG2D` carries no sky through them,
+  and `sky_for_slit` would model a fixed slit's sky as an MSA shutter's, bar shadow included;
+- *sky through the always-open fixed slits on MSA exposures*, which lands across the middle of the
+  detector. Stage 1's fixed-slit band mask applies to its detector-background fit only, and the
+  single-trace test of the empty-shutter pixels counts MSA traces only, so an empty-shutter pixel
+  that also takes fixed-slit light would pass and read high. The `SHUTTERS` table can show whether any
+  sample falls in that band.
 **Sources:** the pipeline code on this branch; jwst 1.20.2 (the pinned version) read from the wheel; msaexp `main`, `jwst_backgrounds` and `jwst_gtvt` read from GitHub on 2026-10-28; jwst readthedocs; RUBIES / JADES papers as cited inline.
 **Date:** 2026-10-28
 **Context:** the NIRSpec stage 2b nodded (leapfrog) background subtraction in
@@ -892,6 +923,9 @@ measurement on the archive.
    master subtraction, by disperser and wavelength; decide defaults from it.
 5. **P4 (optional) — dual product.** `MBSUB_*` on the canonical, second stage 3 pass, `_spec.fits`
    extensions after `EXPOSURES`, web toggle.
+6. **Deferred — local background for fixed-slit observations.** The master-background spectrum
+   products of a standalone fixed-slit spectrum, filled from the sky on the slit's own source-free
+   rows (status block, "Fixed slits").
 
 ## 8. Files this would touch
 
