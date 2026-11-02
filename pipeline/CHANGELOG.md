@@ -57,6 +57,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   rate geometry (`GEOMETRY_VERSION` 2, new step-1 card `MBKGGEOV`) and the trace maps
   (`MAP_VERSION` 8, `SHUTTER_MAP_VERSION` 2), so step 1, the trace maps and pass 1 of the
   contamination model rebuild. `CFMBKGV` 1.7.
+- **NIRSpec stage 3: every 2-D image drizzled once per product, the master-background
+  spectrum in memory.** A product's pixel maps (`drizzle_map`: jwst's output grid from the
+  Spec3 crf, each exposure's pixel map once) carry every drizzle, through the drizzle library
+  directly: `PROF2D` / `CONTAM2D` / `CONTERR2D` (was one `ResampleSpecStep` call each) and the
+  master-background 2-D and its `PROF2D` / `CONTAM2D` / `CONTERR2D` (was a second Spec3 run
+  on copies of the canonicals written to `mbkg/`). The master-background frames are built in
+  memory and fitted on the nodded load's exposures. The crf's own arrays through the map
+  reproduce Spec3's s2d bit for bit; the nodded model arrays move by 1-2 float32 ulps (the
+  data's grid instead of one built from each image). The master-background frames' outlier
+  flags (`mbkg_extraction.outlier_flags`) are the nodded Spec3's plus a hot-pixel mask
+  (`hot_pixels`: more than 5 sigma above both its row and its column neighbors in every
+  exposure, at least 2; they cancel in the nod differences) plus the pixels without a master
+  background; no outlier detection of their own. On p1 629466 PRISM: 18 flagged pixels
+  against the old run's 20 (14 shared), the brightest `SCI_MBKG` pixel 7 sigma (old run 207),
+  `SPEC1D_MBKG.fnu` within 1.4 sigma. Without a crf there is no master-background spectrum.
+  Same extensions, columns and cards.
 - **NIRSpec master background 1.6: every footprint painted, light from one MSA spot counted
   once.** The G395M master background read low (pixels on a failed-open shutter +54 %, pixels
   under another slitlet's margin +5 to +10 %, on `ember_cosmos_p1`). Two causes: failed-open

@@ -267,7 +267,8 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
 
     science : set of file names that stage 3 combines (default: all with a partner list).
     single_frames : the files are single frames with their background removed some other
-        way (the master-background frames, ``mbkg_extraction``): no exposure is
+        way (e.g. master-background-subtracted copies; ``mbkg_extraction`` builds its
+        frames in memory instead, ``single_frame_exposures``): no exposure is
         subtracted from another (``partners == []``).
     """
     from astropy.io import fits
@@ -1185,36 +1186,20 @@ def boxcar_factor(result, lam):
     return out / n if n else np.full(lam.shape, np.nan)
 
 
-def drizzle_frames(result, crf_path, unit=False):
-    """Drizzle model frames exactly as stage 3 drizzled the data.
-
-    Spec3's outlier-flagged per-source file (``*_crf.fits``, a MultiExposureModel)
-    carries each exposure's DQ and variances; replacing its data with the model and
-    re-running jwst's ResampleSpecStep gives the model the data's weights and masks
-    (re-drizzling the unmodified file reproduces the data s2d exactly).
-    """
+def drizzle_frames(result, dmap, unit=False):
+    """Drizzle model frames exactly as stage 3 drizzled the data: through the product's
+    pixel maps (``drizzle_map.DrizzleMap``, from Spec3's outlier-flagged crf), so the
+    model takes the data's weights and masks on the data's grid. Returns the 2-D array
+    (float32, the s2d's grid)."""
     by_name = {e.name: k for k, e in enumerate(result.model.exps)}
-    return drizzle_arrays(lambda name: model_frame(result, by_name[name], unit=unit), crf_path)
+    return drizzle_arrays(lambda name: model_frame(result, by_name[name], unit=unit), dmap)
 
 
-def drizzle_arrays(frame_of, crf_path):
+def drizzle_arrays(frame_of, dmap):
     """Drizzle arbitrary per-exposure cutout arrays (``frame_of(file name)``, in the
-    live canonical units) through Spec3's crf, as the data were drizzled. A name
-    for which ``frame_of`` returns None gets zeros."""
-    from jwst import datamodels
-    from jwst.datamodels import SourceModelContainer
-    from jwst.resample import ResampleSpecStep
-
-    with datamodels.open(crf_path) as m:
-        for x in m.exposures:
-            frame = frame_of(x.meta.filename)
-            if frame is None:
-                frame = np.zeros(x.data.shape)
-            if frame.shape != x.data.shape:
-                raise ValueError(f'profile fit: model frame {frame.shape} vs crf {x.data.shape} for {x.meta.filename}')
-            x.data = np.nan_to_num(frame).astype(x.data.dtype)
-        out = ResampleSpecStep.call(SourceModelContainer(m))
-    return out
+    live canonical units) through the product's pixel maps, as the data were drizzled.
+    A name for which ``frame_of`` returns None gets zeros."""
+    return dmap.drizzle({name: frame_of(name) for name in dmap.names})['data']
 
 
 FIT_VERSION = '2'                     # 2: no per-exposure pointing offsets fitted
@@ -1229,6 +1214,7 @@ def run_single_source(product_name, workspace_dir, groups, bkg_overrides, scienc
     import os
     from astropy.io import fits
     from campfire_pipeline.common.io import log
+    from campfire_pipeline.nirspec import drizzle_map as DM
 
     exps = load_source(groups, bkg_overrides=bkg_overrides, science=science)
     R = fit(exps, chromatic=chromatic, priors=priors)
@@ -1236,7 +1222,8 @@ def run_single_source(product_name, workspace_dir, groups, bkg_overrides, scienc
     log(f"{product_name}: profile fit centre {p['centre']:+.3f} (prior {p['centre_prior']:+.3f}), "
         f"width {p['width']:.3f}, drift {p['drift']:+.3f}/oct, width change {p['width_change']:+.3f}/oct, "
         f"chi2/dof {R.chi2_red:.3f}")
-    prof = drizzle_frames(R, crf_path, unit=True)
+    s2d = os.path.join(workspace_dir, f'{product_name}_s2d.fits')
+    prof = drizzle_frames(R, DM.DrizzleMap.from_crf(crf_path, DM.step_settings(s2d)), unit=True)
 
     hdr = fits.Header()
     hdr['PFVER'] = (FIT_VERSION, 'Profile-fit model version')
@@ -1254,9 +1241,8 @@ def run_single_source(product_name, workspace_dir, groups, bkg_overrides, scienc
         hdr[f'PFOFF{k}'] = (float(o), f'Pointing offset {e.name[:31]}')
     out = fits.HDUList([
         fits.PrimaryHDU(header=hdr),
-        fits.ImageHDU(np.asarray(prof.data, float) / 1e12, name='PROF2D'),
+        fits.ImageHDU(np.asarray(prof, float) / 1e12, name='PROF2D'),
     ])
     path = os.path.join(workspace_dir, f'{product_name}_pf.fits')
     out.writeto(path, overwrite=True)
-    prof.close()
     return path
