@@ -20,6 +20,15 @@ changes, because every stored hash becomes incomparable):
         + b"DATA" + len(data_bytes) + data_bytes      (raw on-disk block,
               unpadded, scaling NOT applied; empty when the HDU has no data)
 
+The master-background spectrum (extraction v2) is left out: an HDU whose EXTNAME ends
+in ``_MBKG`` (``SPEC1D_MBKG``, ``SCI_MBKG``, ...) is skipped whole (it neither enters
+the hash nor shifts the HDU index of the ones after it), and so are primary-header
+cards whose keyword starts with ``MBKG`` (``MBKGPREF``, ``MBKGWHY``, ...). The hash is
+the identity of the nodded spectrum, which line fits are made from: adding or redoing
+the master-background spectrum does not mark them stale. No file written before the
+master-background spectrum carries either, so every stored hash is unchanged and the
+version stays 1.
+
 Header values go through astropy's parsed card value (so string padding,
 card formatting and CONTINUE splitting do not matter) and ``repr`` (so
 ``1.0`` and ``1`` stay distinct, as they are distinct in the file). A
@@ -56,17 +65,24 @@ VOLATILE_CARDS = frozenset({
 #: Commentary keywords (never part of the identity).
 _COMMENTARY = frozenset({"COMMENT", "HISTORY", ""})
 
+#: The master-background spectrum: extensions with this EXTNAME suffix and primary
+#: cards with this keyword prefix are not part of the identity (module doc).
+MBKG_EXT_SUFFIX = "_MBKG"
+MBKG_CARD_PREFIX = "MBKG"
+
 #: Fixed token for a value-less card: ``repr(fits.card.Undefined())`` is
 #: ``<astropy.io.fits.card.Undefined object at 0x...>``, different in every
 #: process, which would make the hash non-deterministic.
 _UNDEFINED_TOKEN = "<UNDEFINED>"
 
 
-def _header_lines(header: fits.Header) -> list[str]:
+def _header_lines(header: fits.Header, primary: bool = False) -> list[str]:
     lines = []
     for card in header.cards:
         kw = card.keyword
         if kw in VOLATILE_CARDS or kw in _COMMENTARY:
+            continue
+        if primary and kw.startswith(MBKG_CARD_PREFIX):
             continue
         try:
             value = card.value
@@ -86,9 +102,13 @@ def science_hash(path: str | Path) -> str:
     path = Path(path)
     with path.open("rb") as raw, fits.open(raw, memmap=False, lazy_load_hdus=False,
                                             do_not_scale_image_data=True) as hdul:
-        for i, hdu in enumerate(hdul):
+        i = -1
+        for n, hdu in enumerate(hdul):
+            if n > 0 and str(hdu.header.get("EXTNAME", "")).upper().endswith(MBKG_EXT_SUFFIX):
+                continue
+            i += 1
             h.update(b"HDU" + str(i).encode())
-            h.update(b"HEADER" + "\n".join(_header_lines(hdu.header)).encode("utf-8"))
+            h.update(b"HEADER" + "\n".join(_header_lines(hdu.header, primary=(n == 0))).encode("utf-8"))
             # Raw data segment as stored: offset/size come from the parsed
             # layout; size is the unpadded length (heap included for tables).
             size = int(getattr(hdu, "_data_size", 0) or 0)

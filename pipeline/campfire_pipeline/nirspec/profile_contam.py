@@ -658,7 +658,7 @@ def _place_sparse(fr, origin_t, shape_t):
 
 
 def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0, exclude=(),
-            why_missing=None):
+            why_missing=None, include=()):
     """Predicted other sources' light in each science nod difference of a target.
 
     Every source the trace maps put on the target's trace is predicted from its pass
@@ -680,6 +680,11 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
         whose light on it comes from that solve, ``joint_first_pass.add_joint_light``).
     why_missing : callable sid -> why that source has no pass 1 (``missing_reason``), for
         the error message.
+    include : contaminants added to every exposure whatever the maps say: catalogued
+        neighbors in the target's own slitlet, which the maps count as the slitlet's
+        own light (``TraceMap.rows_of``). Placed from their pass-1 frames where they
+        have one; one without a pass 1 (not reduced in this disperser) is skipped.
+        Used on single frames (the master-background spectrum, ``mbkg_extraction``).
 
     A pass 1 taken from the contaminant's 3-pixel boxcar (``boxcar_pass1``) is used like
     any reliable one; such contaminants are listed in ``Prediction.boxcar``.
@@ -693,6 +698,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
     dpred = [np.zeros(e.y.shape) for e in exps]
     pred_u = [np.zeros(e.y.shape) for e in exps]
     exclude = {int(x) for x in exclude}
+    include = {int(x) for x in include} - {int(sid)} - exclude
     c_plan = PF.planned_position(exps)[0]
     cals = {}
 
@@ -705,17 +711,19 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
     boxcar = set()
     for k in range(n):
         e = exps[k]
-        if not e.use_data or e.partners is None or not geo.sources[k]:
+        if not e.use_data or e.partners is None or not (geo.sources[k] or include):
             continue
         sig = diff_sigma(exps, k)
         ms = main_shutter(e, c_plan) & e.ok
         terms = [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in e.partners]
-        for csid in sorted(geo.sources[k]):
+        for csid in sorted(set(geo.sources[k]) | include):
             if int(csid) in exclude:
                 continue
             if csid not in cache:
                 cache[csid] = pass1_for(csid)
             P1 = cache[csid]
+            if P1 is None and int(csid) in include and csid not in geo.sources[k]:
+                continue
             if P1 is None:
                 why = why_missing(csid) if why_missing is not None else None
                 raise MissingContaminant(f'source {sid}: the trace maps put source {csid} on its trace in '

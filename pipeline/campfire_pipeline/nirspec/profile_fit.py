@@ -258,7 +258,7 @@ def own_variance(path, slit):
     return np.asarray(vp, float) + np.asarray(vr, float)
 
 
-def load_group(cal_files, bkg_overrides=None, science=None, group=0):
+def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_frames=False):
     """Exposures of one stage-2b background group, from the canonical files.
 
     The live SCI is stage 2b's nod difference with the path loss re-applied; this
@@ -266,6 +266,9 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0):
     which recovers the frame jwst's background step produced.
 
     science : set of file names that stage 3 combines (default: all with a partner list).
+    single_frames : the files are single frames with their background removed some other
+        way (the master-background frames, ``mbkg_extraction``): no exposure is
+        subtracted from another (``partners == []``).
     """
     from astropy.io import fits
     from jwst.datamodels import MultiSlitModel
@@ -276,9 +279,12 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0):
     srcflux = [str(h.get('SRCFLUX', 'T')).strip().upper() != 'F' for h in heads]
     slits = [m.slits[0] for m in models]
     y0, x0, shape = _common_frame(slits)
-    partners = partners_from_headers(cal_files, heads)
-    if partners is None:
-        partners = nod_background_partners(cal_files, bkg_overrides)
+    if single_frames:
+        partners = [[] for _ in cal_files]
+    else:
+        partners = partners_from_headers(cal_files, heads)
+        if partners is None:
+            partners = nod_background_partners(cal_files, bkg_overrides)
     exps = []
     for f, m, s, part, has_src in zip(cal_files, models, slits, partners, srcflux):
         if part is not None and 'COMPLETE' not in str(m.meta.cal_step.bkg_subtract).upper():
@@ -342,14 +348,15 @@ def partners_from_headers(cal_files, heads):
     return out
 
 
-def load_source(groups, bkg_overrides=None, science=None):
+def load_source(groups, bkg_overrides=None, science=None, single_frames=False):
     """All exposures of a source: ``groups`` is a list of canonical-file lists, one per
     stage-2b background group, and ``bkg_overrides`` the matching list of that group's
-    nod overrides (or None). Partner indices are made global."""
+    nod overrides (or None). Partner indices are made global. ``single_frames``: see
+    ``load_group``."""
     out = []
     overrides = bkg_overrides if isinstance(bkg_overrides, (list, tuple)) else [bkg_overrides] * len(groups)
     for g, files in enumerate(groups):
-        exps = load_group(files, bkg_overrides=overrides[g], science=science, group=g)
+        exps = load_group(files, bkg_overrides=overrides[g], science=science, group=g, single_frames=single_frames)
         base = len(out)
         for e in exps:
             if e.partners is not None:

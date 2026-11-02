@@ -59,6 +59,9 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
     plot_optext = stage_config.get('plot_optext', True)
     combine_method = stage_config.get('combine_method', '2d')
     profile_fit = bool(stage_config.get('profile_fit', False))
+    # the master-background spectrum (mbkg_extraction): its Spec3 runs with each product's
+    mbkg_spectrum = bool(stage_config.get('mbkg_spectrum', True))
+    s3_kwargs['mbkg_spectrum'] = mbkg_spectrum
     cleanup_crfs = s3_kwargs['cleanup_crfs']
     if profile_fit:
         # the profile fit drizzles its model through Spec3's crf; it cleans up after itself
@@ -205,6 +208,8 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
             profile_fit_model_rows_frac=float(stage_config.get('profile_fit_model_rows_frac', 0.02)),
             profile_fit_contam=contam_1d_settings(stage_config),
             profile_fit=profile_fit,
+            mbkg_spectrum=mbkg_spectrum,
+            mbkg_extended_frac=float(stage_config.get('mbkg_extended_frac', 0.10)),
         )
 
     # Phase 2: 1D combination (combine_method='1d' only)
@@ -255,7 +260,12 @@ def run_stage3_single_source(
         source_id: int,
         cleanup_asn: bool = True,
         cleanup_crfs: bool = True,
+        mbkg_spectrum: bool = False,
     ):
+    """Spec3Pipeline on a product's background-subtracted exposures (the s2d, x1d and,
+    for the profile fit, the crf) and its EXPOSURES table; with ``mbkg_spectrum`` also on
+    their master-background-subtracted copies (``mbkg_extraction.run_spec3``; an
+    exposure without a master background leaves the product without one, logged)."""
     from jwst.pipeline import Spec3Pipeline
 
 
@@ -350,6 +360,13 @@ def run_stage3_single_source(
             exposures = table_to_hdu(exposures)
             exposures.name = 'EXPOSURES'
             hdul.append(exposures)
+
+        if mbkg_spectrum:
+            from campfire_pipeline.nirspec import mbkg_extraction as MX
+            try:
+                MX.run_spec3(product_name, cal_files, os.getcwd(), source_id)
+            except MX.NoMasterBackground as e:
+                log(f'{product_name}: no master-background spectrum ({e})')
 
     except Exception as e:
         log("ERROR", e)
@@ -694,6 +711,155 @@ def spec3_boxcar3(workspace_dir, product_name):
     return None
 
 
+def extract_columns(s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, pf_file=None, is_fixed_slit=False,
+                    profile_fit_rows='aperture', profile_fit_model_rows_frac=0.02, profile_fit_contam=None,
+                    label=''):
+    """Every 1-D extraction of one 2-D spectrum (the nodded one or the master-background
+    one, ``mbkg_extraction``): the optimal extraction, the 3/4/5-pixel boxcars and, with
+    ``pf_file``, the profile extraction and the best spectrum ``fnu``
+    (``_profile_fit_columns``); without it, ``fnu`` is the optimal extraction.
+
+    ``s2d_sci`` / ``s2d_err`` in uJy; ``ap_start`` / ``ap_stop`` the x1d aperture rows.
+    Returns dict(spec1d, prof1d (astropy Tables), cards (EXTRACT and the profile-fit
+    cards), pf_hdus (PROF2D, CONTAM2D), choice, optext_status, collapsed, cen,
+    profiles (for the plot))."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+        collapsed = np.nanmedian(s2d_sci, axis=1)
+    cen = (ap_start + ap_stop) / 2
+    profile_opt = optext_profile(collapsed, ap_start, ap_stop, bounded=not is_fixed_slit)
+    corrupted, n_pos, pos_frac = optext_profile_is_corrupted(collapsed, ap_start, ap_stop)
+    if corrupted or all(np.isnan(profile_opt)):
+        log(f"Optimal-extraction profile is corrupted for {label} "
+            f"(n_positive={n_pos}, positive_fraction={pos_frac:.2f}); "
+            f"falling back to 3px boxcar")
+        profile_opt = boxcar_profile(cen-1.5, cen+1.5, len(collapsed))
+        optext_status = 'boxcar-3px'
+        opt_label = 'Optimal (3px boxcar fallback)'
+    else:
+        optext_status = 'optimal'
+        opt_label = 'Optimal'
+
+    fnu_opt, fnu_opt_err = extract_with_profile(profile_opt, s2d_sci, s2d_err, mask=s2d_mask, ivw=True)
+
+    # 3 pixel boxcar, centered on the expected position of the source
+    profile_3px, fnu_3px, fnu_3px_err = boxcar3(s2d_sci, s2d_err, s2d_mask, cen)
+
+    # 4 pixel boxcar, centered on the expected position of the source
+    profile_4px = boxcar_profile(cen-2.0, cen+2.0, len(collapsed))
+    fnu_4px, fnu_4px_err = extract_with_profile(profile_4px, s2d_sci, s2d_err, mask=s2d_mask, ivw=False)
+
+    # 5 pixel boxcar, centered on the expected position of the source
+    profile_5px = boxcar_profile(cen-2.5, cen+2.5, len(collapsed))
+    fnu_5px, fnu_5px_err = extract_with_profile(profile_5px, s2d_sci, s2d_err, mask=s2d_mask, ivw=False)
+
+    # Profile-fit extraction ([nirspec.stage3].profile_fit): fnu_prof, fnu_contam and the
+    # choice of the best spectrum fnu. Without it, fnu is the optimal extraction.
+    pf, pf_hdus = None, []
+    if pf_file is not None:
+        if not os.path.exists(pf_file):
+            raise FileNotFoundError(f'{label}: profile_fit is on but {pf_file} was not written')
+        pf = _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave,
+                                  rows=profile_fit_rows, model_rows_frac=profile_fit_model_rows_frac,
+                                  **(profile_fit_contam or {}))
+        cols = pf['columns']
+        fnu_best, fnu_best_err = best_spectrum(pf['choice'], cols['fnu_prof'][0], cols['fnu_prof_err'][0],
+                                               cols['fnu_contam'][0], fnu_3px, fnu_3px_err)
+        cards, pf_hdus, choice = pf['header'], pf['hdus'], pf['choice']
+    else:
+        fnu_best, fnu_best_err = fnu_opt, fnu_opt_err
+        choice = 'optimal'
+        cards = extraction_cards('optimal', 'profile_fit_off', 'off')
+
+    spec1d = Table()
+    spec1d.add_column(Column(name='wave', data=wave, description='Wavelength', unit='um'))
+    _add_flux_columns(spec1d, '', fnu_best, fnu_best_err, wave, f'Best spectrum ({choice}, EXTRACT)')
+    _add_flux_columns(spec1d, '_opt', fnu_opt, fnu_opt_err, wave, 'Optimally extracted flux')
+    for size, fnu, fnu_err in zip(['3px','4px','5px'],[fnu_3px,fnu_4px,fnu_5px],[fnu_3px_err,fnu_4px_err,fnu_5px_err]):
+        spec1d.add_column(Column(name=f'fnu_{size}', data=fnu, description=f'{size} boxcar extracted flux, fnu units', unit='uJy'))
+        spec1d.add_column(Column(name=f'fnu_{size}_err', data=fnu_err, description=f'{size} boxcar extracted flux error, fnu units', unit='uJy'))
+        spec1d.add_column(Column(name=f'flam_{size}', data=_fnu_to_flam(fnu, wave), description=f'{size} boxcar extracted flux, flam units', unit='erg / (s cm2 Angstrom)'))
+        spec1d.add_column(Column(name=f'flam_{size}_err', data=_fnu_to_flam(fnu_err, wave), description=f'{size} boxcar extracted flux error, flam units', unit='erg / (s cm2 Angstrom)'))
+    if pf is not None:
+        _add_pf_columns(spec1d, pf['columns'], wave)
+
+    prof1d = Table()
+    prof1d['ypos'] = np.arange(len(collapsed))+0.5
+    prof1d['opt'] = profile_opt
+    prof1d['3px'] = profile_3px
+    prof1d['4px'] = profile_4px
+    prof1d['5px'] = profile_5px
+    profiles = {opt_label: profile_opt, '3px boxcar': profile_3px, '4px boxcar': profile_4px,
+                '5px boxcar': profile_5px}
+    return dict(spec1d=spec1d, prof1d=prof1d, cards=cards, pf_hdus=pf_hdus, choice=choice,
+                optext_status=optext_status, collapsed=collapsed, cen=cen, profiles=profiles)
+
+
+MBKG_EXTENSIONS = ('SPEC1D_MBKG', 'SCI_MBKG', 'ERR_MBKG', 'PROF1D_MBKG')
+
+
+MBKG_WAVE_ATOL = 1e-9   # um: jwst's 1-D wavelengths of one 2-D grid agree to ~1e-15 between two runs
+
+
+def mbkg_spectrum_hdus(product_name, workspace_dir, wave, wave2d, ap_start, ap_stop, s2dh, exposures,
+                       primary_hdr, is_fixed_slit, profile_fit, extended_frac, extract_kw):
+    """The master-background spectrum of a product (``mbkg_extraction``): its 2-D
+    spectrum and every 1-D extraction of it, made exactly as the nodded ones
+    (``extract_columns`` on the master-background Spec3 output, with the nodded
+    aperture rows and the nodded ``wave``, so the deploy contract's identical wave
+    holds), as ``SPEC1D_MBKG`` (SPEC1D's columns on the same ``wave``; its header
+    carries the extraction cards, ``MBKGVER`` and the per-exposure ``MBKGSRC``),
+    ``SCI_MBKG`` / ``ERR_MBKG`` (SCI's grid) and ``PROF1D_MBKG``; and the primary cards
+    ``MBKGPREF`` / ``MBKGWHY`` (``mbkg_extraction.preferred``, from the exposures and the
+    nodded fit's ``PFSELFSB``) and ``MBKGNEXP``.
+
+    Returns (hdus, cards). Named conditions return ([], {}) and log why: the
+    master-background Spec3 did not run (an exposure without a master background), or
+    its grid is not the nodded one: the 2-D wavelength arrays must be identical
+    (``wave2d``, the nodded s2d's WAVELENGTH) and the 1-D ones agree within
+    ``MBKG_WAVE_ATOL`` (jwst's 1-D extraction places the aperture slightly differently
+    between two runs on one grid, 1e-9 rows on p1)."""
+    from campfire_pipeline.nirspec import mbkg_extraction as MX
+
+    paths = MX.product_paths(workspace_dir, product_name, 0)
+    if not (os.path.exists(paths['s2d']) and os.path.exists(paths['x1d'])):
+        log(f'{product_name}: no master-background spectrum (its Spec3 did not run)')
+        return [], {}
+    with fits.open(paths['s2d']) as s2d, fits.open(paths['x1d']) as x1d:
+        mb_sci = np.asarray(s2d['SCI'].data, float)
+        mb_err = np.asarray(s2d['ERR'].data, float)
+        mb_mask = s2d['WHT'].data == 0
+        mb_wave2d = np.asarray(s2d['WAVELENGTH'].data, float)
+        mb_wave = np.asarray(x1d['EXTRACT1D'].data['WAVELENGTH'], float)
+    wave = np.asarray(wave)
+    same = (mb_wave2d.shape == np.shape(wave2d) and np.array_equal(mb_wave2d, np.asarray(wave2d, float), equal_nan=True)
+            and mb_wave.shape == wave.shape
+            and np.allclose(mb_wave, wave, rtol=0.0, atol=MBKG_WAVE_ATOL, equal_nan=True))
+    if not same:
+        log(f'{product_name}: no master-background spectrum: its grid {mb_sci.shape} / {mb_wave.size} differs '
+            f'from the nodded one {np.shape(wave2d)} / {wave.size}')
+        return [], {}
+    ex = extract_columns(mb_sci * 1e12, mb_err * 1e12, mb_mask, ap_start, ap_stop, wave,
+                         pf_file=paths['pf'] if profile_fit else None, is_fixed_slit=is_fixed_slit,
+                         label=f'{product_name} (master background)', **extract_kw)
+    sources, version = MX.background_sources(exposures.get('filename', []), workspace_dir)
+    spec = table_to_hdu(ex['spec1d'])
+    spec.name = 'SPEC1D_MBKG'
+    for key in ex['cards']:
+        spec.header[key] = (ex['cards'][key], ex['cards'].comments[key])
+    spec.header['MBKGVER'] = (version, 'master-background algorithm version (CFMBKGV)')
+    spec.header['MBKGSRC'] = (','.join(sources), 'per EXPOSURES row: combined / exposure')
+    prof = table_to_hdu(ex['prof1d'])
+    prof.name = 'PROF1D_MBKG'
+    hdus = [spec, fits.ImageHDU(data=mb_sci.astype(np.float32), header=s2dh.copy(), name='SCI_MBKG'),
+            fits.ImageHDU(data=mb_err.astype(np.float32), header=s2dh.copy(), name='ERR_MBKG'), prof]
+    pref, why = MX.preferred(exposures, primary_hdr.get('PFSELFSB'), extended_frac)
+    cards = {'MBKGPREF': (bool(pref), 'master-background spectrum likely better'),
+             'MBKGWHY': (why, 'why: ' + '/'.join(MX.WHY)),
+             'MBKGNEXP': (int(sum(s == 'exposure' for s in sources)), 'exposures with their own master background')}
+    return hdus, cards
+
+
 def opt_ext_single_source(
       product_name,
       workspace_dir,
@@ -706,6 +872,8 @@ def opt_ext_single_source(
       profile_fit_model_rows_frac = 0.02,
       profile_fit_contam = None,
       profile_fit = False,
+      mbkg_spectrum = False,
+      mbkg_extended_frac = 0.10,
     ):
     """
     Runs an optimal extraction routine and saves an msaexp-style "_spec.fits" file (combining 2D and 1D) for a single object.
@@ -714,6 +882,10 @@ def opt_ext_single_source(
     extraction, with the other sources' predicted light subtracted when it is
     significant, or the 3-pixel boxcar on a named fallback (``_profile_fit_columns``);
     without it, the optimal extraction. ``fnu_opt`` is always the optimal extraction.
+
+    ``NEXP`` / ``NEXPBKG`` count the exposures combined and the fewest background
+    exposures subtracted from one of them. With ``mbkg_spectrum`` the master-background
+    spectrum (``mbkg_extraction``) is added: ``mbkg_spectrum_hdus``.
     """
     log(f"Running optimal extraction and compiling *_spec.fits file for {product_name}")
 
@@ -770,98 +942,30 @@ def opt_ext_single_source(
 
     primary = fits.PrimaryHDU(header=ph)
 
-    # Optimal extraction
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', category=RuntimeWarning)
-        collapsed = np.nanmedian(s2d_sci, axis=1)
     x1d_start = x1d['EXTRACT1D'].header['EXTRYSTR']-1
     x1d_stop = x1d['EXTRACT1D'].header['EXTRYSTP']
-    cen = (x1d_start+x1d_stop)/2
-    profile_opt = optext_profile(collapsed, x1d_start, x1d_stop, bounded=not is_fixed_slit)
-    corrupted, n_pos, pos_frac = optext_profile_is_corrupted(collapsed, x1d_start, x1d_stop)
-    if corrupted or all(np.isnan(profile_opt)):
-        log(f"Optimal-extraction profile is corrupted for {product_name} "
-            f"(n_positive={n_pos}, positive_fraction={pos_frac:.2f}); "
-            f"falling back to 3px boxcar")
-        profile_opt = boxcar_profile(cen-1.5, cen+1.5, len(collapsed))
-        optext_status = 'boxcar-3px'
-        opt_label = 'Optimal (3px boxcar fallback)'
-    else:
-        optext_status = 'optimal'
-        opt_label = 'Optimal'
-    primary.header['CMPFROPT'] = (optext_status, "Optimal extraction status ('optimal' or fallback)")
-
-    fnu_opt, fnu_opt_err = extract_with_profile(profile_opt, s2d_sci, s2d_err, mask=s2d_mask, ivw=True)
-
-    # 3 pixel boxcar, centered on the expected position of the source
-    profile_3px, fnu_3px, fnu_3px_err = boxcar3(s2d_sci, s2d_err, s2d_mask, cen)
-
-    # 4 pixel boxcar, centered on the expected position of the source
-    profile_4px = boxcar_profile(cen-2.0, cen+2.0, len(collapsed))
-    fnu_4px, fnu_4px_err = extract_with_profile(profile_4px, s2d_sci, s2d_err, mask=s2d_mask, ivw=False)
-
-    # 5 pixel boxcar, centered on the expected position of the source
-    profile_5px = boxcar_profile(cen-2.5, cen+2.5, len(collapsed))
-    fnu_5px, fnu_5px_err = extract_with_profile(profile_5px, s2d_sci, s2d_err, mask=s2d_mask, ivw=False)
-
+    wave = x1d['EXTRACT1D'].data['WAVELENGTH']
+    pf_file = os.path.join(workspace_dir, f'{product_name}_pf.fits')
+    ex = extract_columns(s2d_sci, s2d_err, s2d_mask, x1d_start, x1d_stop, wave,
+                         pf_file=pf_file if profile_fit else None, is_fixed_slit=is_fixed_slit,
+                         profile_fit_rows=profile_fit_rows, profile_fit_model_rows_frac=profile_fit_model_rows_frac,
+                         profile_fit_contam=profile_fit_contam, label=product_name)
+    collapsed, cen = ex['collapsed'], ex['cen']
+    primary.header['CMPFROPT'] = (ex['optext_status'], "Optimal extraction status ('optimal' or fallback)")
     if plot_profiles:
         from campfire_pipeline.nirspec.plots import plot_extraction_profiles
-        profiles = {opt_label: profile_opt, '3px boxcar': profile_3px,
-                    '4px boxcar': profile_4px, '5px boxcar': profile_5px}
         plot_extraction_profiles(
             out_filename.replace('_spec.fits', '_prof.pdf'),
-            collapsed, profiles, x1d_start, x1d_stop, cen,
+            collapsed, ex['profiles'], x1d_start, x1d_stop, cen,
         )
-
-
-    wave = x1d['EXTRACT1D'].data['WAVELENGTH']
-
-    # Profile-fit extraction ([nirspec.stage3].profile_fit): fnu_prof, fnu_contam and the
-    # choice of the best spectrum fnu. Without it, fnu is the optimal extraction.
-    pf, pf_hdus = None, []
-    pf_file = os.path.join(workspace_dir, f'{product_name}_pf.fits')
-    if profile_fit:
-        if not os.path.exists(pf_file):
-            raise FileNotFoundError(f'{product_name}: profile_fit is on but {pf_file} was not written')
-        pf = _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, x1d_start, x1d_stop, wave,
-                                  rows=profile_fit_rows, model_rows_frac=profile_fit_model_rows_frac,
-                                  **(profile_fit_contam or {}))
-        cols = pf['columns']
-        fnu_best, fnu_best_err = best_spectrum(pf['choice'], cols['fnu_prof'][0], cols['fnu_prof_err'][0],
-                                               cols['fnu_contam'][0], fnu_3px, fnu_3px_err)
-        cards, pf_hdus, choice = pf['header'], pf['hdus'], pf['choice']
-    else:
-        fnu_best, fnu_best_err = fnu_opt, fnu_opt_err
-        choice = 'optimal'
-        cards = extraction_cards('optimal', 'profile_fit_off', 'off')
+    cards, pf_hdus = ex['cards'], ex['pf_hdus']
     for key in cards:
         primary.header[key] = (cards[key], cards.comments[key])
 
-    spec1d = Table()
-    spec1d.add_column(Column(name='wave', data=wave, description='Wavelength', unit='um'))
-    _add_flux_columns(spec1d, '', fnu_best, fnu_best_err, wave, f'Best spectrum ({choice}, EXTRACT)')
-    _add_flux_columns(spec1d, '_opt', fnu_opt, fnu_opt_err, wave, 'Optimally extracted flux')
-    for size, fnu, fnu_err in zip(['3px','4px','5px'],[fnu_3px,fnu_4px,fnu_5px],[fnu_3px_err,fnu_4px_err,fnu_5px_err]):
-        spec1d.add_column(Column(name=f'fnu_{size}', data=fnu, description=f'{size} boxcar extracted flux, fnu units', unit='uJy'))
-        spec1d.add_column(Column(name=f'fnu_{size}_err', data=fnu_err, description=f'{size} boxcar extracted flux error, fnu units', unit='uJy'))
-        spec1d.add_column(Column(name=f'flam_{size}', data=_fnu_to_flam(fnu, wave), description=f'{size} boxcar extracted flux, flam units', unit='erg / (s cm2 Angstrom)'))
-        spec1d.add_column(Column(name=f'flam_{size}_err', data=_fnu_to_flam(fnu_err, wave), description=f'{size} boxcar extracted flux error, flam units', unit='erg / (s cm2 Angstrom)'))
-    if pf is not None:
-        _add_pf_columns(spec1d, pf['columns'], wave)
-
-    # indices = np.where(fnu_3px_err!=0)[0]
-    # spec1d = spec1d[indices[0]:indices[-1] + 1]
-
-    spec1d = table_to_hdu(spec1d)
+    spec1d = table_to_hdu(ex['spec1d'])
     spec1d.name = 'SPEC1D'
 
-    prof1d = Table()
-    prof1d['ypos'] = np.arange(len(collapsed))+0.5
-    prof1d['opt'] = profile_opt
-    prof1d['3px'] = profile_3px
-    prof1d['4px'] = profile_4px
-    prof1d['5px'] = profile_5px
-    prof1d = table_to_hdu(prof1d)
+    prof1d = table_to_hdu(ex['prof1d'])
     prof1d.name = 'PROF1D'
 
     s2dh = fits.Header()
@@ -893,13 +997,31 @@ def opt_ext_single_source(
     # prof = Table({''})
     exp = s2d['EXPOSURES']
 
+    from campfire_pipeline.nirspec import mbkg_extraction as MX
+    exposures = {c: list(exp.data[c]) for c in exp.data.columns.names}
+    nexp, nexp_bkg = MX.exposure_counts(exposures)
+    primary.header['NEXP'] = (nexp, 'Exposures combined')
+    if nexp_bkg is not None:
+        primary.header['NEXPBKG'] = (nexp_bkg, 'Fewest background exposures subtracted from one')
+    mbkg = []
+    if mbkg_spectrum:
+        mbkg, mcards = mbkg_spectrum_hdus(product_name, workspace_dir, wave, s2d['WAVELENGTH'].data, x1d_start,
+                                          x1d_stop, s2dh, exposures, primary.header, is_fixed_slit, profile_fit,
+                                          mbkg_extended_frac,
+                                          dict(profile_fit_rows=profile_fit_rows,
+                                               profile_fit_model_rows_frac=profile_fit_model_rows_frac,
+                                               profile_fit_contam=profile_fit_contam))
+        for key, value in mcards.items():
+            primary.header[key] = value
 
-    spec = fits.HDUList(hdus=[primary, spec1d, sci, err, wav, wht] + pf_hdus + [prof1d, exp])
+    spec = fits.HDUList(hdus=[primary, spec1d, sci, err, wav, wht] + pf_hdus + [prof1d, exp] + mbkg)
     spec.writeto(out_filename, overwrite=True)
     # every product's profile fit (cross-disperser scan included) finished before
     # extraction began; later runs read the shape cards from the _spec.fits
     if profile_fit and os.path.exists(pf_file):
         os.remove(pf_file)
+    if mbkg_spectrum:
+        MX.cleanup(workspace_dir, product_name, exposures.get('filename', []))
 
 
     if plot_optext:

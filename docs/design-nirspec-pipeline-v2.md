@@ -84,7 +84,7 @@ leaves other sources' light in many spectra. The redesign does four things:
 | `_pf.fits` deleted; `PROF2D` + `CONTAM2D` kept in `spec.fits` | Decided (user, 2026-10-29); Built (4ca99b5a, 2916c182) | extraction session | 4 |
 | "Unpredicted light" removed | Decided (user, 2026-10-29); Built (dbe63ef0, bca17510) | extraction session | 3.9 |
 | No per-exposure sky-difference term in nodded products | Decided (user, 2026-10-29) | both | 3.3 |
-| Master-background spectrum as a secondary product, archive-wide | Decided in principle (user, 2026-10-29); not built | extraction session | 4 |
+| Master-background spectrum as a secondary product, archive-wide | Decided (user, 2026-10-29 and 2026-11-01); Built on `claude/mbkg-extraction` (`mbkg_extraction.py`; `SPEC1D_MBKG`, `SCI_MBKG`, `ERR_MBKG`, `PROF1D_MBKG`, `MBKGPREF` / `MBKGWHY`, `NEXP` / `NEXPBKG`); end-to-end p1 run pending | extraction session | 4 |
 | Per-source runs give the same products as full runs | Decided (user, 2026-10-29); Built (a7094d9e) | extraction session | 3.9 |
 | Stage 1 detector-background mask extended past the calibrated range | Open (recommended in the merge plan) | MB session | 3.1 |
 | Speed up stage 2's per-source work: the rectification after stage 2a and the nodded subtraction in stage 2b | Goal (user, 2026-10-31); not started; profile first | extraction session | 5 (V30) |
@@ -1505,8 +1505,45 @@ Tests (copies with the chosen partners in scratch, `e2e_auto_make.py`; only `SCI
 tables, and the trace map once built); `<base>_mbkg.fits` (step 2); canonicals per source; `bkgslits/` (local,
 regenerable); trace maps (cache).
 
-**Open.** The extension names and columns of the master-background spectrum (extraction
-session). Web: read `fnu_contam` and `CONTAM2D`, offer the toggle (later; not in this PR unless
+**Master-background spectrum (built on `claude/mbkg-extraction`; schema agreed with the MB
+session, user decisions 2026-11-01: 2-D in the FITS, three reasons, exposure counts).**
+`nirspec/mbkg_extraction.py`. The same extraction as the nodded spectrum on the exposures
+with their master background subtracted, so the two differ only in how the background was
+removed:
+- Frames: each science exposure's calibrated frame (`PRE_BKGSUB_SCI`) minus its master
+  background (`stage2.master_background_on`, `sky_for_slit`), written as a copy of its
+  canonical in `<workspace>/mbkg/` (variance plus the master background's; the
+  `PRE_BKGSUB_*` arrays kept for the pixel calibration and the frame's own variance).
+- 2-D: jwst's Spec3Pipeline on the copies under `<product>_mbkg`, in the product's Spec3
+  task. Same exposures, so the same 2-D grid (p1 923747 G395M: identical WAVELENGTH array;
+  the 1-D x1d wavelengths differ by 1e-15 um, so the check is on the 2-D grid and the
+  spectrum is written on the nodded `wave`). One extra Spec3 run per product.
+- Fit: the copies as single frames (`load_source(single_frames=True)`), the forward model at
+  the nodded chain's shape, the spectrum solved; `PROF2D` / `CONTAM2D` / `CONTERR2D` drizzled
+  through the master-background crf. Other sources' light from their pass 1s, once and
+  positive, catalogued same-slitlet neighbors included (`predict(include=...)`, from
+  `slitlet_neighbours.scene`): the stored map counts them as the slitlet's own light.
+- Extraction: `stage3.extract_columns` (factored out of `opt_ext_single_source`, so both
+  spectra run the same code) on the nodded aperture rows.
+- Extensions: `SPEC1D_MBKG` (SPEC1D's columns, same `wave`; header: the extraction cards,
+  `MBKGVER`, per-exposure `MBKGSRC` combined / exposure), `SCI_MBKG`, `ERR_MBKG` (SCI's
+  grid), `PROF1D_MBKG`. Primary: `NEXP`, `NEXPBKG` (always), `MBKGPREF`, `MBKGWHY` (first
+  of `no_clear_background`: an exposure's `BKGWHY` says every background exposure holds a
+  bright neighbor; `single_exposure`: an exposure with no background exposure; `extended`:
+  the nod subtraction removes more than `mbkg_extended_frac` = 0.10 of the source's own
+  main-shutter light, `PFSELFSB` from the nodded fit), `MBKGNEXP`.
+- The science hash (`SCIHASH`, `spectra.science_hash`) leaves out `*_MBKG` extensions and
+  `MBKG*` primary cards, so the master-background spectrum never marks line fits stale; no
+  earlier file has either, so stored hashes are unchanged.
+- Stage 2a rectifies the master-background-subtracted exposure, after step 2 (nods plots,
+  `S2D_SCI` card `MBKGSUB`).
+- Config `[nirspec.stage3] mbkg_spectrum = true`, `mbkg_extended_frac = 0.10` (proposed).
+- Not built: the 1-D combine of several exposure groups (`combine_method = "1d"` with more
+  than one group) does not carry the master-background spectrum; a source with a single
+  exposure gets no product at all (stage 3 combines background-subtracted exposures only),
+  so `single_exposure` cannot fire yet.
+
+**Open.** Web: read `fnu_contam` and `CONTAM2D`, offer the toggle (later; not in this PR unless
 decided).
 
 ---
@@ -1579,7 +1616,7 @@ a fix or needs another field or disperser), **To make**.
 | Second field (a spurs observation) and G140M / G235M end to end | extraction session | |
 | Full-field separability count (477 p1 G395M sources) | extraction session | |
 | Same-row inseparability cause | extraction session | |
-| Master-background spectrum extensions | extraction session | |
+| Master-background spectrum: end-to-end p1 run and review (built, section 4); the 1-D combine of several groups; the `extended` threshold | extraction session | user |
 | Default galaxy width 0.15 vs 0.21 | user | |
 | Forward-model shutter edge vs measured bar shadow | extraction session | |
 | Stage 1 footprint past the calibrated range | MB session | user |
@@ -1603,7 +1640,8 @@ a fix or needs another field or disperser), **To make**.
 | First pass (joint, on nod differences) | `nirspec/joint_first_pass.py`; its linear system `nirspec/profile_joint.py` |
 | Prediction of other slitlets' light | `nirspec/profile_contam.py`, `nirspec/profile_extend.py` |
 | Profile model, shape chain | `nirspec/profile_fit.py`, `nirspec/profile_chain.py`, `nirspec/profile_product.py` |
-| Orchestration | `nirspec/stage3.py` (`run_profile_fit_phase`) |
+| Orchestration | `nirspec/stage3.py` (`run_profile_fit_phase`, `extract_columns`, `mbkg_spectrum_hdus`) |
+| Master-background spectrum | `nirspec/mbkg_extraction.py`; `stage2.master_background_on`; `metadata/science_hash.py` (MBKG left out) |
 | nods.pdf | `nirspec/plots.py` |
 | Config | `pipeline/campfire_pipeline/data/config_default.toml`, `[nirspec.stage2]` and `[nirspec.stage3]` |
 | Changelog | `pipeline/CHANGELOG.md`, `## Unreleased` (one Algorithm entry, MAJOR) |

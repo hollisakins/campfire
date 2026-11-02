@@ -175,3 +175,25 @@ def test_undefined_card_is_deterministic(tmp_path):
     # And no Undefined repr (memory address) leaks into the header lines.
     hdr = fits.Header([fits.Card.fromstring("UNDEFKW =")])
     assert sh._header_lines(hdr) == ["UNDEFKW=<UNDEFINED>"]
+
+
+def test_master_background_spectrum_is_not_part_of_the_identity(tmp_path):
+    p = _multi(tmp_path / "m.fits")
+    before = sh.science_hash(p)
+    assert before == GOLDEN_MULTI
+    with fits.open(p) as h:
+        hdus = [x.copy() for x in h]
+    tab = hdus[2].copy()
+    tab.header["EXTNAME"] = "SPEC1D_MBKG"
+    sci = hdus[1].copy()
+    sci.header["EXTNAME"] = "SCI_MBKG"
+    hdus[0].header["MBKGPREF"] = True
+    hdus[0].header["MBKGWHY"] = "no_clear_background"
+    # inserted before a nodded extension too: the index of the ones after it does not move
+    out = tmp_path / "m2.fits"
+    fits.HDUList([hdus[0], sci, hdus[1], hdus[2], tab]).writeto(out)
+    assert sh.science_hash(out) == before
+    # a non-MBKG primary card or extension still counts
+    hdus[0].header["NEXP"] = 3
+    fits.HDUList([hdus[0], hdus[1], hdus[2]]).writeto(tmp_path / "m3.fits")
+    assert sh.science_hash(tmp_path / "m3.fits") != before

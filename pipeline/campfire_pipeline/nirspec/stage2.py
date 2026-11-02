@@ -324,7 +324,18 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
 
     dispatch(fix_units, list(files), n_processes=n_processes)
 
-    # Resample to s2d for the nods plots
+    # Stamp the pipeline-computed exp_group (CFEXPGRP) on each canonical's primary
+    # header (§4.2) so deploy populates the nods grid with the exact grouping.
+    dispatch(stamp_exp_group_single, list(files), n_processes=n_processes)
+
+    # The master background step 2: the calibrated background of every exposure x
+    # detector from the empty shutters of the canonicals and the background slitlets
+    # written above, painted with step 1's count-rate background.
+    from campfire_pipeline.nirspec.master_bkg import run_master_bkg
+    run_master_bkg(obs, stage_config, n_processes=n_processes, overwrite=overwrite, plot=plot)
+
+    # Last: each exposure with its master background subtracted, rectified for the nods
+    # plots (user, 2026-11-01: after step 2 so the plots show those frames)
     if plot:
         dispatch(resample_single_exposure, list(files), n_processes=n_processes,
                 overwrite=overwrite)
@@ -333,16 +344,6 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
         dispatch(plot_stage2a_results, plot_inputs, n_processes=n_processes,
                  stuck_shutters=stuck_dict, stuck_entries=_stuck_entries(obs),
                  shutter_calls=_shutter_calls(obs, files))
-
-    # Stamp the pipeline-computed exp_group (CFEXPGRP) on each canonical's primary
-    # header (§4.2) so deploy populates the nods grid with the exact grouping.
-    dispatch(stamp_exp_group_single, list(files), n_processes=n_processes)
-
-    # The master background step 2, last: the calibrated sky of every exposure x
-    # detector from the empty shutters of the canonicals and the background slitlets
-    # written above, painted with step 1's count-rate sky.
-    from campfire_pipeline.nirspec.master_bkg import run_master_bkg
-    run_master_bkg(obs, stage_config, n_processes=n_processes, overwrite=overwrite, plot=plot)
 
 
 def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
@@ -1348,19 +1349,37 @@ def fix_units(file):
         hdul.flush()
 
 
+def master_background_on(canonical_file):
+    """The exposure's master background on a canonical's cutout, in its SCI units
+    (``master_bkg.sky_for_slit``): ``(background, variance)``, or None when the exposure
+    has no ``_mbkg.fits`` beside it."""
+    from campfire_pipeline.nirspec import master_bkg as MB
+    from campfire_pipeline.nirspec.profile_contam import exposure_key
+
+    key = exposure_key(canonical_file)
+    path = os.path.join(os.path.dirname(os.path.abspath(canonical_file)), f'{key}_mbkg.fits')
+    if key is None or not os.path.exists(path):
+        return None
+    d = MB.sky_for_slit(MB.load_product(path), canonical_file)
+    return np.asarray(d['sky'], float), np.asarray(d['var'], float)
+
+
 def resample_single_exposure(file: Table, overwrite=False):
-    """Rectify the canonical (cal-state) file and cache the resampled view as
-    ``S2D_{SCI,DQ,VAR_RNOISE}`` HDUs on it (issue #212; was a standalone
-    ``_s2d.fits``). Consumed by plots.py / stuck_shutters.py."""
+    """Rectify the canonical's calibrated frame with its master background subtracted
+    (``master_background_on``; the frame as it is when the exposure has none) and cache
+    the resampled view as ``S2D_{SCI,DQ,VAR_RNOISE}`` HDUs on it (issue #212; was a
+    standalone ``_s2d.fits``), ``MBKGSUB`` on ``S2D_SCI`` saying which. Consumed by the
+    nods plots. Runs after master background step 2 (``run_stage2a``)."""
     from campfire_pipeline.nirspec import canonical as C
 
     canonical_file = file['path']
     workspace_dir = os.path.dirname(canonical_file)
+    background = master_background_on(canonical_file)
 
-    # Skip if the (un-bkgsub) s2d view is already cached on the canonical.
+    # Skip if the view is already cached on the canonical, made the same way.
     if not overwrite:
         with fits.open(canonical_file, memmap=False) as _h:
-            if any((hh.name or '').upper() == 'S2D_SCI' for hh in _h):
+            if 'S2D_SCI' in _h and bool(_h['S2D_SCI'].header.get('MBKGSUB', False)) == (background is not None):
                 return
 
     # Handle directory changes
@@ -1377,6 +1396,10 @@ def resample_single_exposure(file: Table, overwrite=False):
         model = MultiSlitModel(canonical_file)
 
         resampled = model.copy()
+        if background is not None:
+            data = np.asarray(resampled.slits[0].data, float)
+            resampled.slits[0].data = np.where(np.isfinite(background[0]), data - background[0],
+                                               data).astype(resampled.slits[0].data.dtype)
         if resampled.meta.cal_step.pathloss == 'COMPLETE':
             from jwst.pathloss import PathLossStep
             pathloss = PathLossStep()
@@ -1388,6 +1411,9 @@ def resample_single_exposure(file: Table, overwrite=False):
         extras = C.make_prefixed_hdus(
             {'SCI': slit.data, 'DQ': slit.dq, 'VAR_RNOISE': slit.var_rnoise},
             C.S2D_PREFIX)
+        for h in extras:
+            if h.name == 'S2D_SCI':
+                h.header['MBKGSUB'] = (background is not None, 'master background subtracted before rectifying')
         resampled.close()
         model.close()
 

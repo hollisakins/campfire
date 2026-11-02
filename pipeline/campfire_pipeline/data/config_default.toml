@@ -235,6 +235,14 @@
                                              # 2026-10-30) | "subtract" (fnu_prof - fnu_contam, EXTRACT = profile_decontam)
     contam_1d_min_sigma = 3.0                # subtract only when the prediction exceeds this x the integrated noise
                                              # (vs PRISM: helps above 3, neutral at 1-3; round 3)
+    # The master-background spectrum (mbkg_extraction), the secondary product: the same
+    # extraction on the exposures with their master background subtracted, as SPEC1D_MBKG,
+    # SCI_MBKG, ERR_MBKG and PROF1D_MBKG of the _spec.fits. MBKGPREF says when it is likely
+    # better than the nodded spectrum (MBKGWHY: no_clear_background, single_exposure,
+    # extended); extended when the nod subtraction removes more than mbkg_extended_frac of
+    # the source's own light in its main shutter (proposed, 2026-11-01).
+    mbkg_spectrum = true
+    mbkg_extended_frac = 0.10
     # Same-slitlet neighbour scan on the residuals: the target refitted at its chosen shape
     # on the nod differences as stage 2b made them, leaving out (not modelling) every pixel
     # another slitlet's source shutter lights in any frame of the difference (trace maps),
