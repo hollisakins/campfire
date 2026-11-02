@@ -18,5 +18,5 @@ $PY $D/fig_failed_open.py --root $ROOT --obs $OBS --exposure jw07076001001_03101
     --shutters 11 19 12 --labels "all of it" "about half" "almost none"
 $PY $D/fig_nod_subtraction.py --root $ROOT --obs $OBS --source 634072 \
     --exposure-group jw07076001001_03101 --detector nrs2 --bin 4
-$PY $D/fig_nod_subtraction.py --root $ROOT --obs $OBS --source 884724 \
-    --exposure-group jw07076001001_05101 --detector nrs2 --out nod_left_out.png
+$PY $D/fig_nod_subtraction.py --root $ROOT --obs $OBS --source 925404 \
+    --exposure-group jw07076001001_03101 --detector nrs1 --bin 4 --out nod_left_out.png

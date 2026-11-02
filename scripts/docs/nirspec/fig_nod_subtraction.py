@@ -57,9 +57,12 @@ for f in files:
 frames.sort(key=lambda d: d['nod'])
 same_grid = len({fr['before_full'].shape for fr in frames}) == 1
 va = np.nanpercentile(np.abs(np.concatenate([fr['after'].ravel() for fr in frames])), 99)
+# profiles on one relative scale: 1 = the brightest point of any subtracted profile
+pscale = max(np.nanmax(np.abs(np.nanmean(fr['after_full'], axis=1))) for fr in frames)
 
 fig, axes = plt.subplots(len(frames), 3, figsize=(13.5, 2.0 * len(frames) + 0.9), constrained_layout=True,
                          squeeze=False, gridspec_kw=dict(width_ratios=[1, 1, 0.55]))
+handles = None
 for r, fr in enumerate(frames):
     others = [o for o in frames if o is not fr]
     ax = axes[r, 0]
@@ -68,19 +71,22 @@ for r, fr in enumerate(frames):
     ax = axes[r, 1]
     ax.imshow(fr['after'], cmap='RdBu_r', vmin=-va, vmax=va, aspect='auto')
     used = fr['used'] if fr['override'] else ', '.join(str(o['nod']) for o in others)
-    C.label_panel(ax, f'minus nod {used}' if fr['override'] else f'minus the mean of nods {used}')
+    if fr['override']:
+        left = ', '.join(str(o['nod']) for o in others if str(o['nod']) not in fr['used'].split(','))
+        who = fr['why'].split(' at ')[0]
+        C.label_panel(ax, f'minus nod {used}\n(nod {left} left out: {who} in its shutter)')
+    else:
+        C.label_panel(ax, f'minus the mean of nods {used}')
     ax = axes[r, 2]
     rows = np.arange(fr['after_full'].shape[0])
     ax.axvline(0, color='#999999', lw=0.8)
-    C.profile_step(ax, np.nanmean(fr['after_full'], axis=1), rows, C.PALETTE[0], vertical=True,
+    C.profile_step(ax, np.nanmean(fr['after_full'], axis=1) / pscale, rows, C.PALETTE[0], vertical=True,
                    label='as subtracted')
     if fr['override'] and same_grid:
         alt = fr['before_full'] - np.nanmean([o['before_full'] for o in others], axis=0)
-        C.profile_step(ax, np.nanmean(alt, axis=1), rows, C.PALETTE[5], vertical=True, fill_alpha=0, ls='--',
-                       label='with every other nod')
-        ax.legend(loc='lower right', fontsize=8.5)
-        ax.text(0.02, 0.98, f'nod left out: {fr["why"]}', transform=ax.transAxes, fontsize=8.5, va='top',
-                color=C.INK)
+        C.profile_step(ax, np.nanmean(alt, axis=1) / pscale, rows, C.PALETTE[5], vertical=True, fill_alpha=0,
+                       ls='--', label='if no nod were left out')
+        handles = ax.get_legend_handles_labels()
     ax.set_ylim(rows[0] - 0.5, rows[-1] + 0.5)
     for a in axes[r, :2]:
         a.set_yticks([])
@@ -94,7 +100,11 @@ axes[0, 2].set_title('Along the slitlet')
 xl = f'wavelength (blocks of {args.bin} pixels)' if args.bin > 1 else 'wavelength pixel'
 axes[-1, 0].set_xlabel(xl)
 axes[-1, 1].set_xlabel(xl)
-axes[-1, 2].set_xlabel('mean over wavelength')
+axes[-1, 2].set_xlabel('mean over wavelength (relative)')
+for a in axes[:, 2]:
+    a.set_xlim(-1.15, 1.15)
+if handles:
+    fig.legend(*handles, loc='outside lower right', ncol=2, fontsize=9.5)
 fig.suptitle(f'{args.obs}  source {args.source}  {args.exposure_group} {args.detector}  (rectified; rows = position '
              'along the slitlet; wavelength increases to the right)', x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'nod_subtraction.png')
