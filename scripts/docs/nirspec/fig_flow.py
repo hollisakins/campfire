@@ -29,8 +29,8 @@ def knob(section, key):
 
 
 VERM = '#D55E00'
-FILL = {'jwst': '#e6e6e6', 'cf': '#dcebf7', 'file': 'white'}    # stock jwst step | CAMPFIRE step | file
-EDGE = {'jwst': '#555555', 'cf': '#2f6e9e', 'file': '#888888'}
+FILL = {'jwst': '#e6e6e6', 'cf': '#fdf1e1', 'file': 'white'}    # stock jwst step | CAMPFIRE step | file
+EDGE = {'jwst': '#555555', 'cf': '#b07800', 'file': '#888888'}
 # steps an option turns on or off (dashed); every other option line only changes how a step runs
 SWITCH = {'cfn', 'bkg2d', 'joint', 'recheck', 'pfit', 'mbs', 'comb'}
 W, ROW = 2.5, 1.0                       # box width, row spacing (data units)
