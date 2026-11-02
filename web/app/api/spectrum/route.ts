@@ -12,6 +12,10 @@ export interface SpectrumData1D {
   wave: number[];
   fnu: (number | null)[];
   fnu_err: (number | null)[];
+  /** The spectrum extracted from the master-background-subtracted exposures
+   *  (SPEC1D_MBKG), on `wave`; present only for spectra that have one. */
+  fnu_mbkg?: (number | null)[];
+  fnu_err_mbkg?: (number | null)[];
   n_spatial: number;
   n_wave: number;
   // Cross-dispersion profile data

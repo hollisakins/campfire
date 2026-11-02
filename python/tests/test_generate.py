@@ -29,8 +29,10 @@ def _strict_constant(x):
     raise ValueError(f"invalid JSON constant: {x}")
 
 
-def _write_spec_fits(path, *, opt, fnu=None, sci=None):
-    """Build a minimal spectrum FITS with the HDUs read_spectrum_data expects."""
+def _write_spec_fits(path, *, opt, fnu=None, sci=None, fnu_mbkg=None, mbkg_wave=None):
+    """Build a minimal spectrum FITS with the HDUs read_spectrum_data expects.
+
+    ``fnu_mbkg`` adds a SPEC1D_MBKG on SPEC1D's wave (or ``mbkg_wave``)."""
     n_spatial = len(opt)
     n_wave = 4
     wave = np.linspace(1.0, 5.0, n_wave)
@@ -50,13 +52,21 @@ def _write_spec_fits(path, *, opt, fnu=None, sci=None):
         fits.Column(name="ypos", format="D", array=ypos),
         fits.Column(name="opt", format="D", array=np.asarray(opt, dtype=float)),
     ], name="PROF1D")
-    fits.HDUList([
+    hdus = [
         hdu0,
         spec1d,
         fits.ImageHDU(data=sci, name="SCI"),
         fits.ImageHDU(data=err, name="ERR"),
         prof1d,
-    ]).writeto(path)
+    ]
+    if fnu_mbkg is not None:
+        hdus.append(fits.BinTableHDU.from_columns([
+            fits.Column(name="wave", format="D",
+                        array=wave if mbkg_wave is None else np.asarray(mbkg_wave, dtype=float)),
+            fits.Column(name="fnu", format="D", array=np.asarray(fnu_mbkg, dtype=float)),
+            fits.Column(name="fnu_err", format="D", array=np.full(n_wave, 0.2)),
+        ], name="SPEC1D_MBKG"))
+    fits.HDUList(hdus).writeto(path)
 
 
 def test_nonfinite_profile_weight_yields_valid_json(tmp_path):
@@ -208,7 +218,8 @@ def test_generate_spectrum_jsons_writes_full_and_1d_siblings(tmp_path):
     oned = json.loads(json_1d_path.read_text(), parse_constant=_strict_constant)
     assert 'snr_2d' in full
     assert 'snr_2d' not in oned
-    for k in SPECTRUM_1D_KEYS:
+    assert set(oned) == set(full) - {'snr_2d'}
+    for k in oned:
         assert oned[k] == full[k]
     assert json_1d_path.stat().st_size < json_path.stat().st_size
 
@@ -220,6 +231,33 @@ def test_generate_spectrum_products_returns_the_1d_sidecar_too(tmp_path):
     assert json_path.exists() and json_1d_path.exists()
     assert json_1d_path.name.endswith("_spec_1d.json")
     assert set(thumbs) == {'thumbnail_svg_fnu', 'thumbnail_svg_flambda'}
+
+
+def test_master_background_spectrum_rides_in_both_jsons(tmp_path):
+    fits_path = tmp_path / "obs_prism_clear_3_spec.fits"
+    _write_spec_fits(fits_path, opt=[0.2, 1.0, 0.2], fnu_mbkg=[1.5, np.nan, 2.0, 2.5])
+    json_path, json_1d_path = generate_spectrum_jsons(fits_path, tmp_path)
+    full = json.loads(json_path.read_text(), parse_constant=_strict_constant)
+    oned = json.loads(json_1d_path.read_text(), parse_constant=_strict_constant)
+    assert oned['fnu_mbkg'] == [1.5, None, 2.0, 2.5]
+    assert oned['fnu_err_mbkg'] == [0.2] * 4
+    assert full['fnu_mbkg'] == oned['fnu_mbkg']
+
+
+def test_no_master_background_spectrum_leaves_the_keys_out(tmp_path):
+    fits_path = tmp_path / "obs_prism_clear_4_spec.fits"
+    _write_spec_fits(fits_path, opt=[0.2, 1.0, 0.2])
+    data = read_spectrum_data(fits_path)
+    assert 'fnu_mbkg' not in data
+    assert 'fnu_mbkg' not in spectrum_1d_payload(data)
+
+
+def test_master_background_spectrum_on_another_grid_is_refused(tmp_path):
+    fits_path = tmp_path / "obs_prism_clear_5_spec.fits"
+    _write_spec_fits(fits_path, opt=[0.2, 1.0, 0.2], fnu_mbkg=[1.0] * 4,
+                     mbkg_wave=np.linspace(1.0, 5.0, 4) + 1e-4)
+    with pytest.raises(ValueError, match="SPEC1D_MBKG wave differs"):
+        read_spectrum_data(fits_path)
 
 
 # ---------------------------------------------------------------------------

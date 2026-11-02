@@ -172,6 +172,11 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // toggled on — most spectra have no line fit until they are inspected —
   // so it never costs a request on a page that does not ask for it.
   const [showLines, setShowLines] = useState(false);
+  // The spectrum extracted from the master-background-subtracted exposures,
+  // drawn over the nodded one. It rides in the 1-D payload, so the checkbox
+  // exists only for spectra that have one and costs no request.
+  const [showMbkg, setShowMbkg] = useState(false);
+  const hasMbkg = !!data?.fnu_mbkg;
   const lineFitQuery = useLineFit(fitsPath, showLines);
   const lineFitData = lineFitQuery.data ?? null;
   // The toggle is greyed out only once absence is definitive: the resolve
@@ -304,9 +309,16 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       linesContFlambda = lineFitData.cont_fnu.map(toFlambda);
     }
 
+    // Master-background spectrum on the full wave array (nulls stay gaps).
+    const mbkgFnu = data.fnu_mbkg ?? null;
+    const mbkgFlambda = data.fnu_mbkg
+      ? data.fnu_mbkg.map((f, i) => (f !== null ? convertToFlambda(f, data.wave[i]) : null))
+      : null;
+
     return {
       wave, fnu: fnuValues, fnuErr, flambda, flambdaErr, modelWave, modelFnu, modelFlambda,
       linesWave, linesModelFnu, linesModelFlambda, linesContFnu, linesContFlambda,
+      mbkgFnu, mbkgFlambda,
     };
   }, [data, fitData, lineFitData]);
 
@@ -321,6 +333,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     const {
       wave, fnu, fnuErr, flambda, flambdaErr, modelWave, modelFnu, modelFlambda,
       linesWave, linesModelFnu, linesModelFlambda, linesContFnu, linesContFlambda,
+      mbkgFnu, mbkgFlambda,
     } = processedData;
 
     // Select flux values based on current unit
@@ -468,6 +481,21 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         showlegend: false,
         xaxis: 'x2',
         yaxis: 'y3',
+      });
+    }
+
+    const mbkgFlux = fluxUnit === 'fnu' ? mbkgFnu : mbkgFlambda;
+    if (showMbkg && mbkgFlux) {
+      traces.push({
+        x: data.wave,
+        y: mbkgFlux,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: 'Master background subtracted',
+        line: { color: '#14b8a6', width: 1.5, shape: 'hvh' },
+        hovertemplate: `λ: %{x:.3f} μm<br>master background subtracted ${hoverLabel}: %{y:.3e}<extra></extra>`,
+        xaxis: 'x',
+        yaxis: 'y',
       });
     }
 
@@ -641,7 +669,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     };
 
     return { traces, layout, waveMin, waveMax };
-  }, [data, heat, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, grating, showModel, showLines, lineFitData, lineFitStale, autoStretch]);
+  }, [data, heat, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, grating, showModel, showLines, showMbkg, lineFitData, lineFitStale, autoStretch]);
 
   // Emission line markers (drawn on the hidden overlay yaxis4 so they never
   // affect autoscaling or double-click reset) — the only traces that move
@@ -920,6 +948,15 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           >
             stale fit
           </span>
+        )}
+
+        {hasMbkg && (
+          <PlotCheckbox
+            label="Master background"
+            checked={showMbkg}
+            onChange={setShowMbkg}
+            title="Also draw the spectrum extracted with the master background subtracted instead of the nodded background exposures"
+          />
         )}
 
         {/* y-axis auto-stretch toggle (inspection shortcut: y) */}

@@ -158,6 +158,7 @@ def _spectrum_data_from_hdul(hdul) -> dict:
     wave = [round(x, 6) for x in spec1d['wave'].tolist()]
     fnu = [None if not np.isfinite(x) else round(float(x), 6) for x in spec1d['fnu']]
     fnu_err = [None if not np.isfinite(x) else round(float(x), 6) for x in spec1d['fnu_err']]
+    mbkg = _mbkg_spectrum(hdul, spec1d['wave'])
 
     # 2D S/N
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -208,15 +209,36 @@ def _spectrum_data_from_hdul(hdul) -> dict:
         'profile': [round(float(x), 3) for x in collapsed_norm.tolist()],
         'profile_fit': [round(float(x), 3) for x in opt_norm.tolist()],
         'profile_pix': [round(float(x), 2) for x in pix_centered.tolist()],
+        **mbkg,
+    }
+
+
+def _mbkg_spectrum(hdul, wave) -> dict:
+    """``fnu_mbkg`` / ``fnu_err_mbkg`` from SPEC1D_MBKG, the spectrum extracted
+    from the master-background-subtracted exposures; empty when the file has none.
+
+    The portal draws it on SPEC1D's wavelength axis, so the two wave arrays must
+    be identical (same values, not resampled); a file where they differ is
+    refused rather than drawn shifted."""
+    if 'SPEC1D_MBKG' not in hdul:
+        return {}
+    tab = hdul['SPEC1D_MBKG'].data
+    if not np.array_equal(np.asarray(tab['wave']), np.asarray(wave), equal_nan=True):
+        raise ValueError(
+            f"{hdul.filename()}: SPEC1D_MBKG wave differs from SPEC1D wave")
+    return {
+        'fnu_mbkg': [None if not np.isfinite(x) else round(float(x), 6) for x in tab['fnu']],
+        'fnu_err_mbkg': [None if not np.isfinite(x) else round(float(x), 6) for x in tab['fnu_err']],
     }
 
 
 # Keys of the spectrum payload that make up the 1-D sidecar (perf T2-D2,
 # #508): everything but the 2-D S/N array, which is 80-95 % of the bytes. The
 # web fetches `<stem>_1d.json` first and paints the primary trace, then the
-# full `<stem>.json` for the heatmap.
+# full `<stem>.json` for the heatmap. The master-background keys are present
+# only for spectra that have SPEC1D_MBKG.
 SPECTRUM_1D_KEYS = (
-    'wave', 'fnu', 'fnu_err', 'n_spatial', 'n_wave',
+    'wave', 'fnu', 'fnu_err', 'fnu_mbkg', 'fnu_err_mbkg', 'n_spatial', 'n_wave',
     'profile', 'profile_fit', 'profile_pix',
 )
 
