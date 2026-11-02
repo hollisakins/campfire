@@ -125,7 +125,7 @@ def test_write_frame_without_a_master_background(tmp_path, monkeypatch):
 NAMES = ['jw07076001001_03101_00001_nrs1_7.fits', 'jw07076001001_03101_00002_nrs1_7.fits']
 
 
-def _inputs(tmp_path, product, amp, where, contam=0.1, wave=None, bkg_why=('', '')):
+def _inputs(tmp_path, product, amp, where, contam=0.1, wave=None, bkg_why=('', ''), x1d_shift=0.0):
     """A minimal s2d / x1d pair (a source of ``amp`` uJy with a Gaussian profile) and its
     _pf.fits under ``where`` (the workspace or its ``mbkg`` subdirectory)."""
     ny, nx = 30, 60
@@ -140,7 +140,8 @@ def _inputs(tmp_path, product, amp, where, contam=0.1, wave=None, bkg_why=('', '
                   fits.ImageHDU(np.full((ny, nx), 0.01 / 1e12), name='ERR'),
                   fits.ImageHDU(np.tile(wave, (ny, 1)), name='WAVELENGTH'),
                   fits.ImageHDU(np.ones((ny, nx)), name='WHT'), exp]).writeto(os.path.join(where, f'{product}_s2d.fits'))
-    x1 = fits.BinTableHDU.from_columns([fits.Column(name='WAVELENGTH', format='D', array=wave)], name='EXTRACT1D')
+    x1 = fits.BinTableHDU.from_columns([fits.Column(name='WAVELENGTH', format='D', array=wave + x1d_shift)],
+                                       name='EXTRACT1D')
     x1.header['EXTRYSTR'] = 13
     x1.header['EXTRYSTP'] = 18
     fits.HDUList([fits.PrimaryHDU(), x1]).writeto(os.path.join(where, f'{product}_x1d.fits'))
@@ -206,6 +207,16 @@ def test_a_different_grid_leaves_out_the_master_background_spectrum(tmp_path):
     with fits.open(tmp_path / 'p_spec.fits') as h:
         assert not any(x.name in S3.MBKG_EXTENSIONS for x in h)
         assert 'MBKGPREF' not in h[0].header and h[0].header['NEXP'] == 2
+
+
+def test_rounding_of_the_one_dimensional_wave_is_accepted(tmp_path):
+    """jwst's 1-D wavelengths of one 2-D grid differ by ~1e-15 um between two runs (p1):
+    the master-background spectrum is kept and written on the nodded wave."""
+    _inputs(tmp_path, 'p', 10.0, str(tmp_path))
+    _inputs(tmp_path, 'p_mbkg', 8.0, MX.subdir(str(tmp_path)), x1d_shift=2e-15)
+    S3.opt_ext_single_source('p', str(tmp_path), profile_fit=True, mbkg_spectrum=True)
+    with fits.open(tmp_path / 'p_spec.fits') as h:
+        np.testing.assert_array_equal(h['SPEC1D_MBKG'].data['wave'], h['SPEC1D'].data['wave'])
 
 
 def test_no_master_background_spectrum_when_its_spec3_did_not_run(tmp_path):

@@ -778,12 +778,16 @@ def extract_columns(s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, pf_file
 MBKG_EXTENSIONS = ('SPEC1D_MBKG', 'SCI_MBKG', 'ERR_MBKG', 'PROF1D_MBKG')
 
 
-def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, ap_stop, s2dh, exposures,
+MBKG_WAVE_ATOL = 1e-9   # um: jwst's 1-D wavelengths of one 2-D grid agree to ~1e-15 between two runs
+
+
+def mbkg_spectrum_hdus(product_name, workspace_dir, wave, wave2d, ap_start, ap_stop, s2dh, exposures,
                        primary_hdr, is_fixed_slit, profile_fit, extended_frac, extract_kw):
     """The master-background spectrum of a product (``mbkg_extraction``): its 2-D
     spectrum and every 1-D extraction of it, made exactly as the nodded ones
     (``extract_columns`` on the master-background Spec3 output, with the nodded
-    aperture rows), as ``SPEC1D_MBKG`` (SPEC1D's columns on the same ``wave``; its header
+    aperture rows and the nodded ``wave``, so the deploy contract's identical wave
+    holds), as ``SPEC1D_MBKG`` (SPEC1D's columns on the same ``wave``; its header
     carries the extraction cards, ``MBKGVER`` and the per-exposure ``MBKGSRC``),
     ``SCI_MBKG`` / ``ERR_MBKG`` (SCI's grid) and ``PROF1D_MBKG``; and the primary cards
     ``MBKGPREF`` / ``MBKGWHY`` (``mbkg_extraction.preferred``, from the exposures and the
@@ -791,7 +795,10 @@ def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, a
 
     Returns (hdus, cards). Named conditions return ([], {}) and log why: the
     master-background Spec3 did not run (an exposure without a master background), or
-    its grid is not the nodded one (the deploy contract needs the same wave and shape)."""
+    its grid is not the nodded one: the 2-D wavelength arrays must be identical
+    (``wave2d``, the nodded s2d's WAVELENGTH) and the 1-D ones agree within
+    ``MBKG_WAVE_ATOL`` (jwst's 1-D extraction places the aperture slightly differently
+    between two runs on one grid, 1e-9 rows on p1)."""
     from campfire_pipeline.nirspec import mbkg_extraction as MX
 
     paths = MX.product_paths(workspace_dir, product_name, 0)
@@ -802,10 +809,15 @@ def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, a
         mb_sci = np.asarray(s2d['SCI'].data, float)
         mb_err = np.asarray(s2d['ERR'].data, float)
         mb_mask = s2d['WHT'].data == 0
-        mb_wave = np.asarray(x1d['EXTRACT1D'].data['WAVELENGTH'])
-    if mb_sci.shape != tuple(sci_shape) or not np.array_equal(mb_wave, np.asarray(wave)):
+        mb_wave2d = np.asarray(s2d['WAVELENGTH'].data, float)
+        mb_wave = np.asarray(x1d['EXTRACT1D'].data['WAVELENGTH'], float)
+    wave = np.asarray(wave)
+    same = (mb_wave2d.shape == np.shape(wave2d) and np.array_equal(mb_wave2d, np.asarray(wave2d, float), equal_nan=True)
+            and mb_wave.shape == wave.shape
+            and np.allclose(mb_wave, wave, rtol=0.0, atol=MBKG_WAVE_ATOL, equal_nan=True))
+    if not same:
         log(f'{product_name}: no master-background spectrum: its grid {mb_sci.shape} / {mb_wave.size} differs '
-            f'from the nodded one {tuple(sci_shape)} / {np.size(wave)}')
+            f'from the nodded one {np.shape(wave2d)} / {wave.size}')
         return [], {}
     ex = extract_columns(mb_sci * 1e12, mb_err * 1e12, mb_mask, ap_start, ap_stop, wave,
                          pf_file=paths['pf'] if profile_fit else None, is_fixed_slit=is_fixed_slit,
@@ -973,7 +985,7 @@ def opt_ext_single_source(
         primary.header['NEXPBKG'] = (nexp_bkg, 'Fewest background exposures subtracted from one')
     mbkg = []
     if mbkg_spectrum:
-        mbkg, mcards = mbkg_spectrum_hdus(product_name, workspace_dir, wave, s2d['SCI'].data.shape, x1d_start,
+        mbkg, mcards = mbkg_spectrum_hdus(product_name, workspace_dir, wave, s2d['WAVELENGTH'].data, x1d_start,
                                           x1d_stop, s2dh, exposures, primary.header, is_fixed_slit, profile_fit,
                                           mbkg_extended_frac,
                                           dict(profile_fit_rows=profile_fit_rows,
