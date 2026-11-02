@@ -1443,6 +1443,11 @@ def pad_to_common_detector_region(models):
         new_model.slits[0].data = padded_data
         new_model.slits[0].err = padded_err
         new_model.slits[0].dq = padded_dq
+        # the variances too: stage 2b adds the subtracted frames' (background_variance)
+        for name in _VAR_ARRAYS:
+            v = getattr(model.slits[0], name, None)
+            if v is not None and np.shape(v) == data.shape:
+                setattr(new_model.slits[0], name, np.pad(v, pad_width, mode='constant', constant_values=0))
         new_models.append(new_model)
 
         # Store padding info for later un-padding
@@ -1483,7 +1488,17 @@ def unpad_model(model, padding_info):
     new_model.slits[0].data = unpadded_data
     new_model.slits[0].err = unpadded_err
     new_model.slits[0].dq = unpadded_dq
+    for name in _VAR_ARRAYS:
+        v = getattr(model.slits[0], name, None)
+        if v is not None and np.shape(v) == data.shape:
+            setattr(new_model.slits[0], name, v[
+                pad['pad_top'] : v.shape[0] - pad['pad_bottom'] if pad['pad_bottom'] > 0 else None,
+                pad['pad_left'] : v.shape[1] - pad['pad_right'] if pad['pad_right'] > 0 else None
+            ])
     return new_model
+
+
+_VAR_ARRAYS = ('var_poisson', 'var_rnoise', 'var_flat')
 
 def _nod_number(cal_file):
     """Exposure number of a canonical file name (jw..._03101_<00002>_nrs1_<sid>.fits -> 2)."""
