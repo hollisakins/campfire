@@ -221,9 +221,6 @@ def test_total_masks_nothing_by_default_and_carries_the_rate_unit_sky():
     assert np.allclose(r['rate'], 0.05) and not r['calibrated'][:, 0].any() and r['calibrated'][:, 1:].all()
     r2 = M.sky_total_on_cutout(prod, own, frame, mask_bits=M.DQ_UNPAINTED)
     assert np.isnan(r2['sky'][0, 1]) and np.isnan(r2['sky_rate'][0, 1]) and np.isfinite(r2['sky'][0, 2])
-    # the own part rescaled by 0.9 lowers the total by 0.1 x own, not 0.1 x total
-    r3 = M.sky_total_on_cutout(prod, own, frame, own_scale=0.9)
-    assert np.allclose(r3['sky'][1, 1], r['sky'][1, 1] - 0.1 * own['sky'][1, 1])
 
 
 def test_rate_sky_falls_back_to_the_pool_then_the_other_detector_then_holds():
@@ -253,14 +250,6 @@ def test_rate_sky_edges_extend_the_grid_with_the_end_steps():
     assert np.allclose(np.diff(e), 0.1)
     assert e[0] <= 0.72 < e[1] and e[-2] < 1.56 <= e[-1]
     assert np.allclose(M.rate_sky_edges(centres, 1.0, 1.3), [0.95, 1.05, 1.15, 1.25, 1.35])
-
-
-def test_slitlet_scale_reads_the_slits_clean_shutters():
-    from astropy.table import Table
-    t = Table({'slit': ['5', '5', '5', 'BKG77'], 'clean': [True, True, False, True], 'scale': [0.9, 0.94, 1.5, 1.2]})
-    assert M.slitlet_scale({'shutters': t}, '5') == pytest.approx(0.92)
-    assert M.slitlet_scale({'shutters': t}, 'BKG77') == pytest.approx(1.2)
-    assert M.slitlet_scale({'shutters': t}, '6') == 1.0
 
 
 def test_combine_weights_shutters_equally_when_errors_follow_their_own_values():
@@ -368,3 +357,147 @@ def test_pool_members_drops_the_discrepant_exposure_and_keeps_the_rest_together(
     assert members == {'r_00001_nrs1', 'r_00003_nrs1'}
     assert checks['r_00002_nrs1']['differs'] is True and checks['r_00002_nrs1']['dev'] > 0.1
     assert all(checks[b]['verdict'] == 'consistent' for b in members)
+
+
+def _layer(row, lam0, val, is_open, ncols=10, disp=0.002):
+    """One slitlet's layer along a detector row: wavelength rising by ``disp`` per column."""
+    cols = np.arange(ncols)
+    return (row * ncols + cols, lam0 + disp * cols, np.full(ncols, float(val)), np.full(ncols, bool(is_open)))
+
+
+def test_merge_painted_counts_one_msa_spot_once():
+    shape = (4, 10)
+    layers = [
+        _layer(0, 3.0, 1.0, True), _layer(0, 3.1, 2.0, True),         # crossing traces: two spots, summed
+        _layer(1, 3.0, 1.0, True), _layer(1, 3.0005, 0.1, False),     # margin over the next shutter in its column
+        _layer(2, 3.0, 1.0, True), _layer(2, 3.05, 0.1, False),       # margin of a crossing trace: summed
+        _layer(3, 3.0, 0.2, False), _layer(3, 3.0, 0.4, False),       # two margins over one bar: their mean
+    ]
+    mb, n_spots, n_layers = M.merge_painted(shape, layers)
+    np.testing.assert_allclose(mb[:, 5], [3.0, 1.0, 1.1, 0.3], rtol=1e-6)
+    assert list(n_spots[:, 5]) == [2, 1, 2, 1]
+    assert np.all(n_layers == 2)
+
+
+def test_merge_painted_empty():
+    mb, n_spots, n_layers = M.merge_painted((3, 4), [])
+    assert mb.shape == (3, 4) and not mb.any() and not n_spots.any() and not n_layers.any()
+
+
+def test_failed_open_transmission():
+    rng = np.random.default_rng(1)
+    n = 500
+    val = np.full(n, 2.0)                      # the shutter's full-sky paint
+    base = np.full(n, 1.0)                     # everything else painted on those pixels
+    core = np.ones(n, bool)
+    rate = base + 0.4 * val + rng.normal(0, 0.01, n)
+    rate[:20] += 50.0                          # cosmic rays: the median ignores them
+    a, used, scale = M.failed_open_transmission(rate, base, val, core)
+    assert abs(a - 0.4) < 0.01 and used == n and scale == a
+    # more light than an empty shutter's sky (an object behind it): painted at 1
+    a, _, scale = M.failed_open_transmission(base + 1.5 * val, base, val, core)
+    assert abs(a - 1.5) < 1e-9 and scale == 1.0
+    # a shutter passing nothing: not painted
+    _, _, scale = M.failed_open_transmission(base - 0.05 * val, base, val, core)
+    assert scale == 0.0
+    # too few pixels to measure: painted at 1
+    few = np.zeros(n, bool)
+    few[:50] = True
+    a, used, scale = M.failed_open_transmission(rate, base, val, few)
+    assert np.isnan(a) and used == 50 and scale == 1.0
+
+
+def _fo(name, a, scale=None):
+    s = float(np.clip(a, 0, 1)) if np.isfinite(a) else 1.0
+    return dict(name=name, quadrant=3, a=a, scale=s if scale is None else scale)
+
+
+def test_merge_painted_is_linear_in_each_layer():
+    # layers sharing spots both ways: an open entry with another open entry at the same spot,
+    # a margin under another layer's open shutter, two margins together, and a crossing
+    rng = np.random.default_rng(3)
+    shape = (4, 6)
+    pix = np.arange(24)
+    lam = 1.0 + 0.01 * (pix % 6)
+    def layer(open_mask, dlam=0.0):
+        return (pix.copy(), lam + dlam, rng.uniform(1, 2, 24), open_mask)
+    layers = [layer(pix % 2 == 0), layer(pix % 3 == 0), layer(np.zeros(24, bool)), layer(pix % 4 == 0, dlam=0.5)]
+    total, _, _, wts = M.merge_painted(shape, layers, weights_of=[1])
+    w, alone = wts[1]
+    scaled = list(layers)
+    scaled[1] = (layers[1][0], layers[1][1], 0.3 * layers[1][2], layers[1][3])
+    total2 = M.merge_painted(shape, scaled)[0]
+    pred = total.ravel().astype(float)
+    np.add.at(pred, layers[1][0], (0.3 - 1.0) * layers[1][2] * w)
+    assert np.allclose(total2.ravel(), pred, rtol=1e-6)
+    assert not alone.any() and set(np.unique(w)) <= {0.0, 1 / 3, 0.5, 1.0}
+
+
+def test_combine_failed_open_over_nods():
+    nods = [f'jw01_05101_0000{k}' for k in (1, 2, 3)]
+    per = {f'{n}_nrs1': [_fo('14', a), _fo('19', b), _fo('5', c), _fo('7', d)]
+           for n, a, b, c, d in zip(nods, (0.34, 0.02, 0.03), (0.51, 0.52, 0.49),
+                                    (0.0, 0.5, 1.0), (0.4, np.nan, np.nan))}
+    per['jw01_05101_00001_nrs2'] = [_fo('14', 0.25)]
+    scales, report = M.combine_failed_open(per, tol=0.1)
+    # 14: an object behind it in nod 1, the other two agree: every nod takes their median
+    assert all(abs(scales[f'{n}_nrs1'][('14', 3)] - 0.025) < 1e-9 for n in nods)
+    # the other detector is not combined with it (one measurement: its own)
+    assert scales['jw01_05101_00001_nrs2'][('14', 3)] == 0.25
+    assert all(abs(scales[f'{n}_nrs1'][('19', 3)] - 0.51) < 1e-9 for n in nods)
+    # no majority within the tolerance: each nod keeps its own
+    assert [scales[f'{n}_nrs1'][('5', 3)] for n in nods] == [0.0, 0.5, 1.0]
+    # one measurement only: kept, and the unmeasured nods stay at 1
+    assert [scales[f'{n}_nrs1'][('7', 3)] for n in nods] == [0.4, 1.0, 1.0]
+    row = [r for r in report if r['name'] == '14' and r['detector'] == 'nrs1'][0]
+    assert row['n_measured'] == 3 and row['n_agree'] == 2
+
+
+def test_rescale_failed_open():
+    mb = np.zeros((2, 3), np.float32)
+    dq = np.zeros((2, 3), np.uint8)
+    cover = np.ones((2, 3), np.uint8)
+    pix = np.array([0, 1, 2])
+    val = np.array([2.0, 4.0, 6.0], np.float32)
+    mb.reshape(-1)[pix] += 0.5 * val                 # painted at 0.5
+    dq.reshape(-1)[pix] |= M.DQ_FAILED_OPEN
+    cover.reshape(-1)[pix] += 1
+    f = dict(name='14', quadrant=3, applied=0.5, pix=pix, val=val, w=np.ones(3, np.float32),
+             alone=np.ones(3, bool))
+    assert M.rescale_failed_open(mb, dq, cover, [f], {('14', 3): 0.25})
+    assert np.allclose(mb.reshape(-1)[:3], 0.25 * val) and f['applied'] == 0.25
+    assert M.rescale_failed_open(mb, dq, cover, [f], {('14', 3): 0.0})
+    assert np.allclose(mb, 0) and not (dq & M.DQ_FAILED_OPEN).any() and np.all(cover == 1)
+    assert M.rescale_failed_open(mb, dq, cover, [f], {('14', 3): 1.0})
+    assert np.allclose(mb.reshape(-1)[:3], val) and (dq.reshape(-1)[:3] == M.DQ_FAILED_OPEN).all()
+    assert cover.reshape(-1)[:3].tolist() == [2, 2, 2]
+    assert not M.rescale_failed_open(mb, dq, cover, [f], {('14', 3): 1.0})
+
+
+def test_failed_open_over_nods_rewrites_the_products(tmp_path, monkeypatch):
+    paths = {}
+    val = np.array([2.0, 4.0], np.float32)
+    fo_of = {}
+    for k, a in ((1, 0.34), (2, 0.02), (3, 0.03)):
+        base = f'jw01_05101_0000{k}_nrs1'
+        mb = np.ones((2, 2), np.float32)
+        mb.reshape(-1)[:2] += a * val
+        hdul = fits.HDUList([fits.PrimaryHDU(),
+                             fits.CompImageHDU(mb, name='MBKG2D', compression_type='GZIP_2', quantize_level=0),
+                             fits.CompImageHDU(np.full((2, 2), 2, np.uint8), name='MBKG2DN', compression_type='RICE_1'),
+                             fits.CompImageHDU(np.array([[8, 8], [0, 0]], np.uint8), name='MBKG2DDQ',
+                                               compression_type='RICE_1')])
+        hdul['MBKG2D'].header['BUNIT'] = 'DN/s'
+        paths[base] = str(tmp_path / f'{base}_mbkg.fits')
+        hdul.writeto(paths[base])
+        fo_of[base] = [dict(name='14', quadrant=3, a=a, scale=a, applied=a, pix=np.array([0, 1]), val=val,
+                            w=np.ones(2, np.float32), alone=np.zeros(2, bool))]
+    monkeypatch.setattr(M, 'product_path', lambda obs, base: paths[base])
+    M._failed_open_over_nods(None, fo_of, 0.1)
+    for base, p in paths.items():
+        with fits.open(p) as h:
+            assert np.allclose(h['MBKG2D'].data.reshape(-1)[:2], 1 + 0.025 * val, rtol=1e-6)
+            assert np.allclose(h['MBKG2D'].data.reshape(-1)[2:], 1.0)
+            assert h['MBKG2D'].header['BUNIT'] == 'DN/s'
+            assert h[0].header['MBKGFOSC'] == 'measured, nods' and h[0].header['MBKGNFO'] == 1
+            assert h['MBKG2DDQ'].data.tolist() == [[8, 8], [0, 0]] and (h['MBKG2DN'].data == 2).all()

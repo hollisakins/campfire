@@ -1317,11 +1317,13 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     physical shutter enters the selection once. (b) jwst's cutout includes the half pitch beyond the
     outer shutters; when the next slitlet in the MSA column is open, those margin pixels *are* its
     open shutter, so the margin model (the closed-shutter floor) must not be added to it: open-shutter
-    skies are summed where traces cross, margins count only where no open shutter was painted.
+    skies are summed where traces cross, margins count only where no open shutter was painted
+    (replaced in 1.6 by the same-MSA-spot rule, 2026-11-02 below: it also dropped crossing traces' margins).
     (c) The consumer masks, by default, the pixels where the total is incomplete by construction: a
     covering trace that was never painted (bit 2) and a trace's beyond-cutoff tail (bit 4). On G395M
     NRS1 the slits of 631564 and 632747 sit under five to six other traces with 74–100 % of their
-    pixels in those traces' tails, so they are masked rather than mis-subtracted. (d) The per-slitlet
+    pixels in those traces' tails, so they are masked rather than mis-subtracted. (d) [Removed
+    2026-11-02, see the decision below.] The per-slitlet
     term is available as an opt-in (`sky_for_slit(..., slitlet_scale_on=True)`: the slit's own
     contribution rescaled by the median scale of its own clean empty shutters from `SHUTTERS`); off by
     default, since whether to use it is a design choice (§9: no hybrid with the nods; this uses only
@@ -1413,3 +1415,91 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   tables' fall-off past an outer shutter says the same). Admitting them would bias the G395M master
   background about 1 % high, so the counter (same geometry pass, no second `assign_wcs`) stays.
   Script: `scratch/claude/mbkg_ship/tracemap/extra_pixels_clean.py`.
+- **2026-11-02, master background 1.6: every footprint painted, one MSA spot counted once,
+  failed-open shutters at their measured transmission.** The extraction-v2 session found the G395M
+  master background low against PRISM; measured on `ember_cosmos_p1` in count rate (rate / MBKG2D − 1
+  over pixels outside source shutters), failed-open pixels read +40-80 % and pixels under only
+  other slitlets' margins +28-52 %. Two causes, and Hollis's decision ("failed open shutters should
+  be modeled like any contamination", not treated as missing):
+  - *Failed-open shutters were never painted* (the coverage counter knew them). They are painted now
+    in count-rate units over their whole footprint, like a slitlet without a slit.
+  - *Rule (b) above dropped margins wherever an open shutter was painted*, meant for the next slitlet
+    in the same MSA column, but on G395M it also dropped the margins of crossing traces. It is
+    replaced by the physical rule in `merge_painted`: a detector pixel and a wavelength fix the spot
+    on the MSA the light came through, so layers within `master_bkg_same_spot_px` (1) columns of
+    dispersion in wavelength are one spot (the open shutter's sky if one is open there, else the
+    margins' mean) and different spots are summed. `MBKG2DN` counts MSA spots.
+  - *Failed-open shutters do not all pass an empty shutter's sky.* Painted at 1, a third of them came
+    out 20-90 % too bright. A row-offset scan (light vs the painted footprint shifted -20..+20 rows)
+    put every shutter's light exactly where the WCS puts it, but at 0 to 1 of an empty shutter's
+    sky, the same in every nod (12/q3 0.06-0.10, 19/q3 0.49-0.53, 23/q4 0; most 0.9-1.0); step 1's
+    joint shutter fit agrees on the dim ones. msaoper (0015 and 0016) lists them all open and
+    unvignetted, so nothing upstream predicts it. Each shutter is painted at its measured
+    transmission (`failed_open_transmission`): the median, over its open-shutter core outside source
+    shutters (the stored trace map), of (rate − everything else painted there) / its full-sky
+    paint, clipped to [0, 1]; light above 1 (an object behind it) is contamination. The joint fit's
+    amplitudes are not used: its templates cover only open-shutter rows, so the light beyond them is
+    shared with the constant and the neighbors differently (16/q3: 0.57 there, 1.04 here, and the
+    full paint leaves 16/q3 at +2 %).
+  - *msaoper's science state.* jwst flags a shutter open in any of `state` / `TA state` /
+    `Internal state`; 21/q4 and 24/q4 are open for the internal lamp only (science state closed,
+    vignetted) and are not painted. The bright band at rows 636-652 near 24/q4 (5× the sky, every
+    nod) is therefore not light through it and stays for the contamination model.
+  - *One value per shutter and detector over the nods* (Hollis: worth doing if genuinely
+    consistent). An object sits behind a failed-open shutter in one nod at most; the shutter's
+    transmission does not move. `combine_failed_open` takes the median of the nods within
+    `master_bkg_failed_open_nod_tol` (0.1) of their median when at least two, and more than half,
+    are; otherwise each nod keeps its own. The detectors are not combined (12/q3 0.09 on NRS1, 0.01
+    on NRS2; 5/q1 0.0 and 0.26), since they see different wavelengths. On p1: 19 shutter-detector
+    pairs combined, agreeing nods within ±0.03 (±0.06 at most); 14/q3 reads 0.35 in nod 1 and
+    0.02-0.03 in nods 2-3 (an object in nod 1), and is painted at 0.026 in all three; 3/q1 NRS2
+    (0.91 vs 0.18) keeps its own. The nods are painted in parallel, so the combination is applied
+    to the written products afterwards (`rescale_failed_open`): the spots depend on where the
+    layers fall, not on their values, so the total is linear in each layer and `merge_painted`
+    returns each failed-open entry's weight (1 / open entries at its spot, 0 for a margin where a
+    shutter is open, 1 / margins where none is); the change is exact (unit test against a full
+    merge). Card `MBKGFOSC` says whether a product holds the per-exposure or the over-nods values.
+  - Result on p1 G395M (scratch `mbkg_ship/paint16/`, `figs_n/`): failed-open pixels +40-80 % →
+    +3-6 % (per-shutter medians +1 to +4 %; +35 % on 00003 NRS1 from the 24/q4 band), margin-only
+    +28-52 % → 0-7 %, empty shutter plus another slitlet's margin +4-7 % → 0-3 %, empty shutters only
+    unchanged (+0.1 to +2.9 %); `MBKG2DDQ` bit 2 (a footprint not painted) from ~1.05 M to ~55 k
+    pixels per detector.
+- **2026-11-02, after the 1.6 rerun: no per-slitlet scale, no smooth field term; the flat past the
+  calibrated range deferred.** **Decision (Hollis, 2026-11-02): the master background is not
+  rescaled per slitlet or by any smooth function of position, on any disperser; the opt-in
+  (`sky_for_slit(..., slitlet_scale_on=)`, `slitlet_scale`, `sky_total_on_cutout(..., own_scale=)`)
+  is removed from the code so it is not raised again.** The quadrant scales stay (a measured
+  per-quadrant term, §9). The evidence: the extraction-v2 rerun of p1 on 1.6 still had 17/20 G395M
+  master-background spectra beyond 3σ of PRISM, and the per-slitlet scale (off since 2026-10-30)
+  was raised again. Measured read-only on the 1.6 products (scratch `mbkg_ship/repeat16/`): every
+  empty shutter in every nod, Σ(rate − MBKG2D) / Σ MBKG2D over its core on pixels only its slitlet
+  covers, outside source shutters, each exposure's median removed. These are self-consistency
+  tests (a measurement against itself in another nod, or against its neighbors); the few-per-cent
+  level itself depends on how it is measured (pixel selection, overlap, contamination; 2026-11-01:
+  +3.3 % from admitting pixels near a neighbor's open edge) and is not a defect to chase.
+  - *Repeats from nod to nod, mostly past the calibrated range.* Repeating / non-repeating part:
+    G395M NRS1 5.3 / 3.7 % inside the range, 13.9 / 11.6 % past it; NRS2 2.6 / 2.9 % and
+    16.9 / 4.1 %; PRISM 1.5 / 0.5 % and 7 / 0.8 %. Past the range the master background is painted
+    in count rate with no flat field, so each pixel's flat structure stays in the residual and
+    repeats wherever the same shutter lands.
+  - *Not a slitlet property on G395M.* Inside the range two empty shutters of one slitlet in one
+    nod differ by 10.3 % (NRS1) and 5.0 % (NRS2), unrelated shutters by 12.4 % and 7.3 %; PRISM
+    0.9 % against 2.4 %, a real slitlet term. A per-slitlet scale on G395M would remove little and
+    add the noise of one or two shutters, so it stays off (Hollis, 2026-11-02).
+  - *No smooth field term on G395M.* Each slitlet's offsets predicted from the other slitlets only
+    (polynomials of degree 1-3 in column and row, or a neighbor average of width 100-400 px):
+    G395M NRS1 7.4 % → 7.3 % at best (photon noise 3.6 %), NRS2 4.2 % → 4.3 % or worse (noise
+    1.7 %). The G395M scatter is specific to each shutter; only the same shutter in another nod
+    predicts it, which is the nod subtraction (no hybrid, 2026-10-28). PRISM's offsets are
+    predictable on a ~100 px scale (1.7 % → 1.0 %, 60 % of the non-noise variance), not by a
+    detector-wide polynomial (10-50 %).
+  - *Not a dispersion shift, not light between the slitlets.* A fitted per-shutter shift does not
+    repeat on G395M and does not reduce the scatter (PRISM shutters have ~0.9-column shifts that
+    repeat but do not move their offsets); light on uncovered pixels averages zero and does not
+    predict the offsets.
+  - *Deferred: a flat field past the calibrated range* (Hollis, 2026-11-02). Only needed if the
+    calibration for extraction is ever extended past the nominal range; until then the
+    count-rate painting there serves the contamination model, and its per-pixel structure
+    (above) is known.
+  - The adequacy test that needs no absolute level: the production extraction run on empty
+    shutters as if they held a source should give flux consistent with zero within its errors.

@@ -15,13 +15,17 @@ One product per rate file, ``<root>_<nod>_<nrsN>_mbkg.fits`` beside it:
   their whole footprints, so it reaches past the calibrated range to the disperser's
   wavelength cutoffs (``coverage.WAVELENGTH_CUTOFFS``);
 * ``MBKG2D`` / ``MBKG2DN`` / ``MBKG2DDQ`` — the sky painted back onto the detector in the
-  rate frame (DN/s), every covering slitlet's sky summed where footprints overlap (on the
-  gratings 38 % of the detector lies under more than one trace, §9): inside the
-  calibrated range through each slit's own calibration, past it (the columns before a
-  cutout's first calibrated column and beyond its last, out to the cutoffs) as
-  ``MBKG1DR`` times the bar shadow; the number of slits painted per pixel; and flags:
-  1 nothing covers the pixel, 2 a covering trace was not painted (its source was not
-  processed, or a failed-open shutter).
+  rate frame (DN/s), every covering footprint's sky summed where footprints overlap (on
+  the gratings 38 % of the detector lies under more than one trace, §9), the light of one
+  spot on the MSA counted once (``merge_painted``): inside the calibrated range through
+  each slit's own calibration, past it (the columns before a cutout's first calibrated
+  column and beyond its last, out to the cutoffs) as ``MBKG1DR`` times the bar shadow, and
+  any slitlet without a slit and the failed-open shutters the same way over their whole
+  footprint (each failed-open shutter at the fraction of the sky it is measured to pass;
+  none for one open only for the internal lamp); the number of MSA spots painted per
+  pixel; and flags: 1 nothing covers the
+  pixel, 2 a covering footprint was not painted, 8 a failed-open shutter's sky is painted
+  there (light above it, e.g. an object behind the shutter, is contamination).
 
 The inputs are what stage 2a already produced: the per-source canonicals (their empty
 shutters) and the background-only slitlets of the ``bkgslits/`` file. Pixels are read
@@ -69,13 +73,16 @@ from astropy.table import Table
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.nirspec import barshadow_calibration as B
 from campfire_pipeline.nirspec.coverage import (coverage_from_wcs, cutoffs_for, default_cache_dir, cache_path,
-                                                 slit_geometry_extended)
+                                                 geometry_cache_path, slit_geometry_extended)
 
-ALGORITHM_VERSION = '1.5'     # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
+ALGORITHM_VERSION = '1.6'    # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
 #                               1.3: equal shutter weights, sky divided to the open-shutter centre (2026-10-31)
 #                               1.4: the group pool painted unless the exposure differs (pool_check) (2026-10-31)
 #                               1.5: step-1 tables read from the rate file, no MBKG1DR copy, 2-D extensions
 #                                    compressed losslessly, shared shutters taken from the lowest source id (2026-11-01)
+#                               1.6: failed-open shutters (and slitlets without a slit) painted, each failed-open
+#                                    shutter at its measured transmission; overlapping light summed unless it
+#                                    comes through the same MSA spot (merge_painted) (2026-11-02)
 _PREFIX = 'master_bkg_'
 DEFAULTS = dict(
     master_bkg_source_pad_px=3.0,     # rows beyond the source shutter's edges dropped (§9: 3 px)
@@ -103,12 +110,17 @@ DEFAULTS = dict(
     master_bkg_quadrant_scales=True,
     master_bkg_model_check=True,      # compare with jwst_backgrounds when installed
     master_bkg_write_2d=True,
+    master_bkg_same_spot_px=1.0,      # 2-D: two slitlets' light on a pixel within this many columns of dispersion is one MSA spot
+    master_bkg_failed_open_scale='measured',  # 2-D: failed-open shutters painted at their measured transmission ('full': at 1)
+    master_bkg_failed_open_min_pixels=200,    # ... core pixels outside source shutters a measurement needs (else 1)
+    master_bkg_failed_open_nod_tol=0.1,       # ... nods within this of their median give one value per shutter and detector
     master_bkg_plot=True,
 )
 REASONS = ('clean', 'too_few_bins', 'low_throughput', 'continuum_excess', 'line_excess')
 DQ_UNCOVERED = 1          # no slitlet footprint on the pixel
 DQ_UNPAINTED = 2          # a footprint covers the pixel but no slit was painted for it
 DQ_TAIL = 4               # retired (products before 2026-10-30 flagged a trace's unpainted tail; tails are painted now)
+DQ_FAILED_OPEN = 8        # a failed-open shutter's sky is painted here (light above it is contamination)
 
 
 def options(stage_config):
@@ -742,8 +754,7 @@ def sky_on_geometry(prod, frame, g, table):
                 units=frame['bunit'], quadrant=g['quadrant'], shape=frame['sci'].shape, open=g['is_open'])
 
 
-def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0,
-                 slitlet_scale_on=False):
+def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0):
     """The master background on one slit's cutout, in that slit's own frame and units.
 
     ``product`` is a ``_mbkg.fits`` path or ``load_product`` output (pass the same dict
@@ -766,10 +777,8 @@ def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0,
     returns only the slit's own slitlet (the painter's input; also the fallback when the
     product has no ``MBKG2D`` or the rate file is not beside it). Nothing is masked by
     default: ``mask_bits`` (``DQ_UNPAINTED``: a covering trace that was not painted) is
-    opt-in, and pixels nothing covers are NaN. ``slitlet_scale_on`` rescales the slit's
-    own contribution by the median scale of its own clean empty shutters
-    (``slitlet_scale``), the per-slitlet term of §9; off by default, a design choice
-    rather than a correction.
+    opt-in, and pixels nothing covers are NaN. There is no per-slitlet or smooth rescaling
+    of the master background (decided 2026-11-02, design doc).
     """
     from jwst.datamodels import MultiSlitModel
     prod = load_product(product) if isinstance(product, str) else product
@@ -789,11 +798,7 @@ def sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0,
                       f'{prod["header"].get("MBKGRATE")} beside it; returning the slit\'s own slitlet only '
                       f'(mode="own"), not the painted total', RuntimeWarning, stacklevel=2)
         return own
-    scale = 1.0
-    if slitlet_scale_on:
-        name = os.path.basename(path)[:-5].split('_')[-1] if int(extver) == 1 else f'BKG{g["slitlet_id"]}'
-        scale = slitlet_scale(prod, name)
-    return sky_total_on_cutout(prod, own, frame, mask_bits=mask_bits, own_scale=scale)
+    return sky_total_on_cutout(prod, own, frame, mask_bits=mask_bits)
 
 
 def pixelwise_factor(sci, rate_box):
@@ -809,26 +814,13 @@ def pixelwise_factor(sci, rate_box):
     return np.where(np.isfinite(F), F, colmed[None, :])
 
 
-def slitlet_scale(prod, slit_name):
-    """The median scale of a slit's own clean empty shutters against the exposure's sky
-    (the per-slitlet term of §9), from the ``SHUTTERS`` table; 1 when it has none."""
-    t = prod.get('shutters')
-    if t is None or len(t) == 0:
-        return 1.0
-    sel = (np.char.strip(t['slit'].astype(str)) == str(slit_name)) & np.asarray(t['clean'], bool)
-    v = np.asarray(t['scale'], float)[sel]
-    v = v[np.isfinite(v)]
-    return float(np.median(v)) if v.size else 1.0
-
-
-def sky_total_on_cutout(prod, own, frame, mask_bits=0, own_scale=1.0):
+def sky_total_on_cutout(prod, own, frame, mask_bits=0):
     """What a consumer subtracts: the painted total (every covering slitlet's sky,
     ``MBKG2D``) on the slit's cutout, in the slit's frame through the pixelwise factor.
     ``own`` is ``sky_on_geometry`` output for the slit. Pixels carrying any of
     ``mask_bits`` (opt-in; ``DQ_UNPAINTED`` where a covering trace was not painted, the
-    total being incomplete there) and pixels nothing covers are NaN. ``own_scale``
-    rescales the slit's own contribution (``total + own * (s - 1)``), the per-slitlet
-    term from its own empty shutters. Returns the dict with ``sky``, ``var``, ``dq``
+    total being incomplete there) and pixels nothing covers are NaN. Returns the dict
+    with ``sky``, ``var``, ``dq``
     (the ``MBKG2DDQ`` cutout), ``n_cover``, ``own_sky`` (the slit's own slitlet),
     ``sky_rate`` (the painted total in DN/s, finite past the calibrated range too),
     ``rate`` (the rate cutout) and ``calibrated`` (where the slit's ``SCI`` is finite,
@@ -841,10 +833,7 @@ def sky_total_on_cutout(prod, own, frame, mask_bits=0, own_scale=1.0):
     F = pixelwise_factor(frame['sci'], rate_box)
     total = mb * F
     own_sky = own['sky']
-    if own_scale != 1.0:
-        add = np.where(np.isfinite(own_sky), own_sky * (own_scale - 1.0), 0.0)
-        total = total + add
-    masked = (dq & (DQ_UNCOVERED | int(mask_bits))) > 0
+    masked =(dq & (DQ_UNCOVERED | int(mask_bits))) > 0
     total[masked] = np.nan
     sky_rate = np.where(masked, np.nan, mb.astype(float))
     with np.errstate(invalid='ignore', divide='ignore'):
@@ -876,6 +865,118 @@ def _geometries(c):
     finally:
         m.close()
     return g, gx
+
+
+def failed_open_transmission(rate, base, val, core, n_min=200):
+    """The fraction of an empty shutter's sky a failed-open shutter passes, from its pixels:
+    ``rate`` the count rate, ``base`` everything else painted there, ``val`` the shutter's
+    full-sky paint, ``core`` the pixels that measure it (open-shutter core, good, outside
+    source shutters). Returns (a, n, scale): the median of (rate - base) / val over the
+    usable core pixels, their number, and the scale painted: a clipped to [0, 1], or 1
+    when fewer than ``n_min`` pixels measure it."""
+    use = core & np.isfinite(val) & (val > 0) & np.isfinite(rate) & np.isfinite(base)
+    n = int(use.sum())
+    if n < n_min:
+        return np.nan, n, 1.0
+    a = float(np.median((rate[use] - base[use]) / val[use]))
+    return a, n, float(np.clip(a, 0.0, 1.0))
+
+
+def combine_failed_open(per_rate, tol=0.1):
+    """One transmission per failed-open shutter per detector over the nods of a configuration.
+
+    ``per_rate``: {rate base: the painter's failed-open entries (``name``, ``quadrant``,
+    ``a``, ``scale``)}. A shutter's measurements over the nods (same root, same
+    detector: the same wavelengths) are combined when at least two of them, and more than
+    half, lie within ``tol`` of their median: the scale is then the median of those, clipped
+    to [0, 1], for every nod (an object behind the shutter in one nod is the outlier, and a
+    nod with too few pixels to measure takes it too). Otherwise each nod keeps its own.
+    The two detectors are not combined (5/q1 on p1 G395M: 0.0 on nrs1, 0.25 on nrs2).
+
+    Returns ({rate base: {(name, quadrant): scale}}, report rows)."""
+    groups = {}
+    for base, fos in per_rate.items():
+        root, det = base.rsplit('_', 2)[0], base.rsplit('_', 1)[-1]
+        for f in fos:
+            groups.setdefault((root, det, f['name'], f['quadrant']), []).append((base, f))
+    scales, report = {b: {} for b in per_rate}, []
+    for (root, det, name, quad), items in sorted(groups.items()):
+        a = np.array([f['a'] for _, f in items], float)
+        meas = a[np.isfinite(a)]
+        combined, agree_n = np.nan, 0
+        if meas.size >= 2:
+            agree = np.abs(meas - np.median(meas)) <= tol
+            agree_n = int(agree.sum())
+            if agree_n >= 2 and agree_n > meas.size / 2:
+                combined = float(np.clip(np.median(meas[agree]), 0.0, 1.0))
+        for base, f in items:
+            scales[base][(name, quad)] = combined if np.isfinite(combined) else f['scale']
+        report.append(dict(root=root, detector=det, name=name, quadrant=quad,
+                           a={base: f['a'] for base, f in items}, n_measured=int(meas.size),
+                           n_agree=agree_n, combined=combined))
+    return scales, report
+
+
+def rescale_failed_open(mb, dq, cover, fos, scales):
+    """Repaint each failed-open shutter of one rate file from the scale it was painted at
+    (``applied``) to ``scales[(name, quadrant)]`` in place. The total is linear in the
+    shutter's paint (``merge_painted``'s weights ``w``), so the change is
+    (new - old) x its full-sky paint x w on its pixels; ``MBKG2DN`` (where it is alone at its
+    MSA spot) and DQ bit 8 follow. Returns whether anything changed."""
+    changed = False
+    mflat, cflat, dflat = mb.reshape(-1), cover.reshape(-1), dq.reshape(-1)
+    for f in fos:
+        old = f['applied']
+        new = scales.get((f['name'], f['quadrant']), old)
+        if new == old:
+            continue
+        mflat[f['pix']] += ((new - old) * f['val'] * f['w']).astype(mb.dtype)
+        if old <= 0 < new:
+            cflat[f['pix'][f['alone']]] += 1
+        elif new <= 0 < old:
+            cflat[f['pix'][f['alone']]] -= 1
+        f['applied'] = new
+        changed = True
+    if changed:
+        dflat &= np.asarray(~DQ_FAILED_OPEN).astype(dq.dtype)
+        for f in fos:
+            if f['applied'] > 0:
+                dflat[f['pix']] |= DQ_FAILED_OPEN
+    return changed
+
+
+def _rate_dq(rate_path):
+    with fits.open(rate_path, memmap=False) as h:
+        return np.array(h['DQ'].data) if 'DQ' in h else np.zeros(h['SCI'].data.shape, np.uint32)
+
+
+def _source_shutter_pixels(rate_path, shape):
+    """Flat mask of the pixels in any slitlet's source shutter (the trace map step 1 stored
+    in the rate file); all False when the rate file holds none."""
+    from campfire_pipeline.nirspec import trace_overlap as TO
+    tm = TO.trace_map_from_rate(rate_path, set())
+    if tm is None:
+        return np.zeros(shape[0] * shape[1], bool)
+    kind = np.asarray(tm.slits['kind']).astype(str)
+    slit = (tm.index >= 0) & (kind[np.clip(tm.index, 0, None)] == 'slitlet')
+    return (slit & ((tm.flag & TO.IN_SOURCE) > 0)).any(0).ravel()
+
+
+def _failed_open_closed(rate_path):
+    """Names (``create_slitlets`` numbering) of the msaoper failed-open shutters whose science
+    ``state`` is not open: jwst flags a shutter open in any of state / TA state / Internal
+    state, and one open for the internal lamp only (e.g. vignetted) passes no sky."""
+    import json
+    from jwst.msaflagopen import MSAFlagOpenStep
+    from jwst.msaflagopen import msaflag_open as MF
+    try:
+        ref = MSAFlagOpenStep().get_reference_file(rate_path, 'msaoper')
+        with open(ref) as fh:
+            shutters = json.load(fh)['msaoper']
+    except Exception:                                        # noqa: BLE001
+        return set()
+    flagged = [s for s in shutters if any(s[k] == 'open' for k in MF.FLAGGABLE_STATES)]
+    return {str(i + 1) for i, s in enumerate(flagged) if s.get('state') != 'open'}
 
 
 def _rate_frame(rate_path, counter_path):
@@ -933,52 +1034,139 @@ def rate_sky_for(base, specs_of, clip_sigma, min_shutters=3, min_overlap=10, poo
     return sb, err, n, src
 
 
-def _worker_paint(args):
-    """Pass 2b for one rate file: every input slit's sky painted on the detector.
+def _flat_dispersion(pix, lam, ncols):
+    """|dλ/dx| (µm per column) at each of one slitlet's painted pixels (flat detector
+    index ``pix``), from the next column of the same row, else the previous; the block's
+    median where the row has neither."""
+    o = np.argsort(pix); ps = pix[o]; ls = lam[o]
+    d = np.full(ps.size, np.nan)
+    for step in (1, -1):
+        i = np.clip(np.searchsorted(ps, ps + step), 0, max(ps.size - 1, 0))
+        ok = ~np.isfinite(d) & (ps[i] == ps + step) & ((ps + step) // ncols == ps // ncols)
+        d[ok] = np.abs(ls[i[ok]] - ls[ok])
+    fin = np.isfinite(d) & (d > 0)
+    d[~fin] = np.median(d[fin]) if fin.any() else np.nan
+    out = np.empty_like(d); out[o] = d
+    return out
 
-    Inside the calibrated range (where the cutout's ``SCI`` is finite) each slit's sky is
-    evaluated in its own frame and brought back to the rate frame through the pixelwise
-    factor ``rate / SCI`` (exact wherever the calibration is a product of per-pixel
-    factors, §4.4). Past it, over the rest of the slitlet's footprint (the extended
-    geometry cut to the disperser's wavelength cutoffs: the columns before the cutout's
-    first calibrated column and beyond its last, and the columns jwst's bounding box
-    leaves outside the calibrated range), the sky is painted in count-rate units with no
-    flat or photometric calibration: the exposure's rate-unit sky at the open-shutter
+
+def merge_painted(shape, layers, lam_tol_px=1.0, weights_of=None):
+    """The painted total from every slitlet's layer (flat ``pix``, ``lam``, ``val``,
+    ``is_open``, one entry per slitlet per pixel), counting the light of one spot on the
+    MSA once.
+
+    A detector pixel and a wavelength fix the spot on the MSA the light came through
+    (the spectrograph maps MSA position × wavelength onto the detector), so two slitlets
+    whose layers reach a pixel at the same wavelength (within ``lam_tol_px`` columns of
+    dispersion; the next MSA column is ~2.7 columns away) are looking at the same spot:
+    a slitlet's margin row over the open shutter of the next slitlet in its MSA column, or
+    two slitlets' margins over the bar between them. That spot's light is the open
+    shutter's sky when one of them is open there, else the margins' mean. Different spots
+    on one pixel (traces crossing on the gratings, a margin under another slitlet's open
+    shutter) are summed. Returns ``(total, n_spots, n_layers)`` on ``shape``.
+
+    The spots depend on where the layers fall, not on their values, so the total is linear
+    in each layer: with ``weights_of`` (layer indices) a fourth element maps each of those
+    layers to ``(w, alone)`` per entry, ``w`` the total's change per unit of the entry's
+    value (1 / open entries at its spot if it is open; 0 for a margin where a shutter is
+    open; 1 / margins where none is) and ``alone`` whether it is the only entry at its spot."""
+    npx = int(np.prod(shape))
+    if not layers:
+        z = np.zeros(npx)
+        out = (z.reshape(shape).astype(np.float32), z.reshape(shape).astype(np.int16), z.reshape(shape).astype(np.int16))
+        return out + ({},) if weights_of is not None else out
+    pix = np.concatenate([lay[0] for lay in layers]); lam = np.concatenate([lay[1] for lay in layers])
+    val = np.concatenate([lay[2] for lay in layers]); op = np.concatenate([lay[3] for lay in layers])
+    disp = np.concatenate([_flat_dispersion(lay[0], lay[1], shape[1]) for lay in layers])
+    o = np.lexsort((lam, pix))
+    pix, lam, val, op, disp = pix[o], lam[o], val[o], op[o], disp[o]
+    new = np.ones(pix.size, bool)
+    with np.errstate(invalid='ignore'):
+        tol = lam_tol_px * np.fmax(disp[1:], disp[:-1])
+        new[1:] = ~((pix[1:] == pix[:-1]) & (np.abs(lam[1:] - lam[:-1]) < tol))
+    gid = np.cumsum(new) - 1
+    n_open = np.bincount(gid, op.astype(float)); s_open = np.bincount(gid, np.where(op, val, 0.0))
+    n_marg = np.bincount(gid, (~op).astype(float)); s_marg = np.bincount(gid, np.where(op, 0.0, val))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        spot = np.where(n_open > 0, s_open / np.maximum(n_open, 1), s_marg / np.maximum(n_marg, 1))
+    gpix = pix[new]
+    total = np.bincount(gpix, spot, minlength=npx)
+    n_spots = np.bincount(gpix, minlength=npx); n_layers = np.bincount(pix, minlength=npx)
+    out = (total.reshape(shape).astype(np.float32), n_spots.reshape(shape).astype(np.int16),
+           n_layers.reshape(shape).astype(np.int16))
+    if weights_of is None:
+        return out
+    has_open = n_open[gid] > 0
+    with np.errstate(invalid='ignore', divide='ignore'):
+        w_sorted = np.where(op, 1.0 / np.maximum(n_open[gid], 1),
+                            np.where(has_open, 0.0, 1.0 / np.maximum(n_marg[gid], 1)))
+    alone_sorted = (n_open + n_marg)[gid] == 1
+    w = np.empty_like(w_sorted); alone = np.empty_like(alone_sorted)
+    w[o] = w_sorted; alone[o] = alone_sorted
+    edges = np.cumsum([0] + [lay[0].size for lay in layers])
+    return out + ({i: (w[edges[i]:edges[i + 1]], alone[edges[i]:edges[i + 1]]) for i in weights_of},)
+
+
+def _rate_sky_through(lam, seg, yseg, j, n_state, q, centres, rate_sky, table, floor_bs):
+    """The count-rate sky through a slitlet at its pixels: the rate-unit sky at the
+    open-shutter centre times the quadrant scale and the bar shadow at the pixel's
+    slit-frame row (the closed-shutter floor on closed rows inside the slitlet)."""
+    fin = np.isfinite(rate_sky[0])
+    sb = np.interp(lam, centres[fin], rate_sky[0][fin], left=np.nan, right=np.nan)
+    if np.isfinite(q) and q > 0:
+        sb = sb * q
+    bs = np.full(lam.shape, np.nan)
+    inside = seg >= 0
+    if inside.any():
+        bs[inside] = B.evaluate_table(table, seg[inside], yseg[inside], lam[inside])
+    bs[~inside & (j >= 0) & (j < n_state)] = floor_bs
+    return sb * bs
+
+
+def _worker_paint(args):
+    """Pass 2b for one rate file: the sky of every slitlet footprint on the detector.
+
+    Inside the calibrated range (where the cutout's ``SCI`` is finite) each input slit's
+    sky is evaluated in its own frame and brought back to the rate frame through the
+    pixelwise factor ``rate / SCI`` (exact wherever the calibration is a product of
+    per-pixel factors, §4.4). Past it, over the rest of the slitlet's footprint (the
+    extended geometry cut to the disperser's wavelength cutoffs: the columns before the
+    cutout's first calibrated column and beyond its last, and the columns jwst's bounding
+    box leaves outside the calibrated range), the sky is painted in count-rate units with
+    no flat or photometric calibration: the exposure's rate-unit sky at the open-shutter
     centre ``rate_sky`` and its quadrant scales ``rate_q`` (step 1, ``master_bkg_rate``)
-    times the bar shadow at the pixel's
-    slit-frame row. Both are summed where footprints overlap; each slitlet is painted
-    once (two sources of one slitlet get cutouts a pixel apart).
+    times the bar shadow at the pixel's slit-frame row. Every other footprint of the
+    coverage counter (the rate file's ``RateGeometry`` at ``geometry_path``) is painted
+    the same way over its whole extent: any slitlet with neither a canonical nor a
+    background-slit entry, and the failed-open shutters open in science exposures, each
+    at the fraction of an empty shutter's sky it is measured to pass
+    (``failed_open_transmission``; light above it, an object behind the shutter, is
+    contamination).
+    Each slitlet is painted once (two sources of one slitlet get cutouts a pixel apart);
+    the layers are combined by ``merge_painted``.
     """
-    rate_path, product, canonicals, bs_path, counter_path, centres, rate_sky, opt, rate_q = args
+    (rate_path, product, canonicals, bs_path, counter_path, centres, rate_sky, opt, rate_q,
+     geometry_path) = args
     table = B.load_table(bs_path)
     prod = load_product(product)
     rate, _, _, counter = _rate_frame(rate_path, counter_path)
+    ny_d, nx_d = rate.shape
     core_frac = float(opt.get('core_frac', 0.2))
-    # Two layers. A pixel inside an open shutter of several slitlets (traces crossing on
-    # the gratings) receives every one's sky, so those are summed. A slit's margin and
-    # closed-shutter rows (the half pitch beyond its outer shutters, which jwst's cutout
-    # includes) carry only the closed-shutter leak -- unless they are the open shutter
-    # of the slitlet next to it in the same MSA column, in which case the light there is
-    # that neighbour's sky and the margin model must not be added to it. So margin
-    # pixels count only where no open shutter was painted.
-    mb_open = np.zeros(rate.shape, np.float32)
-    mb_margin = np.zeros(rate.shape, np.float32)
-    cover = np.zeros(rate.shape, np.int16)
-    cover_margin = np.zeros(rate.shape, np.int16)
-    n_painted, n_ext, failures = 0, 0, []
+    layers = []                         # one (pix, lam, val, is_open) per slitlet painting
+    n_painted, n_ext, n_failed_open, n_geometry, failures = 0, 0, 0, 0, []
     painted = set()
     check = []                          # (lam, in-range painted value) on core pixels, for the continuity check
     rs_fin = rate_sky is not None and centres is not None and np.isfinite(rate_sky[0]).any()
     floor_bs = float(np.nanmin(table['data1x1']))
+    failed_open = np.zeros(rate.size, bool)
 
-    def paint(block, val, is_open):
-        ok = np.isfinite(val)
-        op = ok & is_open
-        mb_open[block][op] += val[op].astype(np.float32)
-        cover[block][op] += 1
-        marg = ok & ~is_open
-        mb_margin[block][marg] += val[marg].astype(np.float32)
-        cover_margin[block][marg] += 1
+    def paint(rows, cols, lam, val, is_open):
+        """One slitlet's layer: ``lam`` / ``val`` / ``is_open`` on a block (``rows`` x
+        ``cols``) or on flat pixels (``rows`` and ``cols`` per pixel)."""
+        ok = np.isfinite(val) & np.isfinite(lam)
+        rr, cc = np.meshgrid(rows, cols, indexing='ij') if np.ndim(lam) == 2 else (rows, cols)
+        layers.append(((rr[ok] * nx_d + cc[ok]).astype(np.int64), lam[ok].astype(float),
+                       val[ok].astype(float), np.asarray(is_open)[ok]))
         return ok
 
     for c in canonicals:
@@ -1000,7 +1188,7 @@ def _worker_paint(args):
             continue
         with np.errstate(invalid='ignore', divide='ignore'):
             val = r['sky'] / pixelwise_factor(r['sci'], rbox)
-        ok = paint(box, val, r['open'])
+        ok = paint(np.arange(y0, y0 + ny), np.arange(x0, x0 + nx), g['lam'], val, r['open'])
         n_painted += 1
         ccore = ok & r['open'] & (np.abs(g['f']) <= core_frac) & (r['bs'] > 0)
         if ccore.any():
@@ -1017,21 +1205,59 @@ def _worker_paint(args):
         todo = foot & ~done
         if not todo.any():
             continue
-        lam = gx['lam']
-        fin = np.isfinite(rate_sky[0])
-        sb = np.interp(lam, centres[fin], rate_sky[0][fin], left=np.nan, right=np.nan)
         q = rate_q.get(int(gx.get('quadrant', 0)), np.nan)          # step 1's, in count rate
-        if np.isfinite(q) and q > 0:
-            sb = sb * q
-        bs = np.full(lam.shape, np.nan)
-        inside = gx['seg'] >= 0
-        if inside.any():
-            bs[inside] = B.evaluate_table(table, gx['seg'][inside], gx['yseg'][inside], lam[inside])
-        closed = ~inside & (gx['j'] >= 0) & (gx['j'] < len(gx['state']))
-        bs[closed] = floor_bs
-        valx = np.where(todo, sb * bs, np.nan)
-        blk = (slice(gx['row_lo'], gx['row_lo'] + foot.shape[0]), slice(0, rate.shape[1]))
-        n_ext += int(paint(blk, valx, gx['is_open']).sum())
+        valx = _rate_sky_through(gx['lam'], gx['seg'], gx['yseg'], gx['j'], len(gx['state']), q,
+                                 centres, rate_sky, table, floor_bs)
+        valx = np.where(todo, valx, np.nan)
+        rows = np.arange(gx['row_lo'], gx['row_lo'] + foot.shape[0])
+        n_ext += int(paint(rows, np.arange(nx_d), gx['lam'], valx, gx['is_open']).sum())
+
+    # every other footprint the coverage counter knows, in count-rate units over its
+    # whole extent: the failed-open shutters, and any slitlet stage 2a left no slit for
+    fo_layers, fo_amps = [], []
+    if rs_fin and geometry_path and os.path.exists(geometry_path):
+        from campfire_pipeline.nirspec.coverage import RateGeometry
+        geo = RateGeometry.load(geometry_path)
+        in_source = _source_shutter_pixels(rate_path, rate.shape)
+        closed = _failed_open_closed(rate_path)
+        for b in geo.blocks():
+            if b['kind'] == 'failed' and str(b['name']) in closed:
+                continue                  # failed open for the internal lamp only: no sky reaches it
+            if b['kind'] != 'failed' and (b['name'], b['quadrant']) in painted:
+                continue
+            val = _rate_sky_through(b['lam'], b['seg'], b['yseg'], b['j'], len(b['state']),
+                                    rate_q.get(int(b['quadrant']), np.nan), centres, rate_sky, table, floor_bs)
+            pix = b['pix']
+            if b['kind'] == 'failed':
+                fo_layers.append((b, val))
+                continue
+            paint(pix // nx_d, pix % nx_d, b['lam'], val, b['is_open'])
+            n_geometry += 1
+            painted.add((b['name'], b['quadrant']))
+    if fo_layers:
+        # a failed-open shutter passes anything from none to all of an empty shutter's sky
+        # (measured 2026-11-02, repeatable between nods), so it is painted at its own
+        # transmission: the median, over its open-shutter core outside source shutters, of
+        # (rate - everything else painted there) / its full-sky paint, clipped to [0, 1].
+        # Light above 1 (an object behind the shutter) is contamination.
+        measured = str(opt.get('failed_open_scale', 'measured')) == 'measured'
+        rate_good = np.isfinite(rate).ravel() & ((_rate_dq(rate_path) & 1) == 0).ravel()
+        base = merge_painted(rate.shape, layers, float(opt.get('same_spot_px', 1.0)))[0].ravel() if measured else None
+        n_min = int(opt.get('failed_open_min_pixels', 200))
+        for b, val in fo_layers:
+            pix = b['pix']
+            a, n, scale = np.nan, 0, 1.0
+            if measured:
+                core = b['is_open'] & (np.abs(b['f']) <= 0.3) & rate_good[pix] & ~in_source[pix]
+                a, n, scale = failed_open_transmission(rate.ravel()[pix], base[pix], val, core, n_min)
+            # painted even at 0, so the MSA spots on every pixel do not depend on the scale
+            ok = paint(pix // nx_d, pix % nx_d, b['lam'], val * scale, b['is_open'])
+            fo_amps.append(dict(name=str(b['name']), quadrant=int(b['quadrant']), a=a, n=n, scale=scale,
+                                layer=len(layers) - 1, pix=pix[ok].astype(np.int64),
+                                val=val[ok].astype(np.float32)))
+            if scale > 0:
+                n_failed_open += 1
+                failed_open[pix[ok]] = True
 
     ratio = np.nan
     if check and rs_fin:
@@ -1043,15 +1269,26 @@ def _worker_paint(args):
         rr = rr[np.isfinite(rr) & (model > 0)]
         ratio = float(np.median(rr)) if rr.size else np.nan
 
-    with np.errstate(invalid='ignore', divide='ignore'):
-        margin_only = (cover == 0) & (cover_margin > 0)
-        mb = np.where(cover > 0, mb_open, np.where(margin_only, mb_margin / np.maximum(cover_margin, 1), 0)).astype(np.float32)
-    cover = np.where(cover > 0, cover, np.where(margin_only, 1, 0)).astype(np.int16)
+    # the total is linear in each failed-open shutter's paint (merge_painted's weights), so
+    # run_master_bkg can rescale a shutter to its value over all nods afterwards, exactly
+    mb, cover, n_layers, weights = merge_painted(rate.shape, layers, float(opt.get('same_spot_px', 1.0)),
+                                                 weights_of=[f['layer'] for f in fo_amps])
+    for f in fo_amps:
+        w, alone = weights[f['layer']]
+        f['w'] = w.astype(np.float32)
+        f['alone'] = alone
     dq = np.zeros(rate.shape, np.uint8)
     dq[cover == 0] |= DQ_UNCOVERED
     if counter is not None:
-        dq[(counter > cover) & (counter > 0)] |= DQ_UNPAINTED
-    return rate_path, mb, dq, np.clip(cover, 0, 255).astype(np.uint8), n_painted, failures, n_ext, ratio
+        dq[(counter > n_layers) & (counter > 0)] |= DQ_UNPAINTED
+    dq[failed_open.reshape(rate.shape)] |= DQ_FAILED_OPEN
+    for f in fo_amps:
+        f['applied'] = f['scale']
+        if f['scale'] <= 0:
+            cover.ravel()[f['pix'][f['alone']]] -= 1    # painted at 0 alone at its spot: no light from there
+    counts = dict(slits=n_painted, extension_px=n_ext, failed_open=n_failed_open, geometry=n_geometry,
+                  failed_open_amps=fo_amps)
+    return rate_path, mb, dq, np.clip(cover, 0, 255).astype(np.uint8), counts, failures, ratio
 
 
 def _finite_cards(cards):
@@ -1193,6 +1430,38 @@ def plot_product(path, out_pdf, obs_name=''):
 # Driver
 # ---------------------------------------------------------------------------
 
+def _failed_open_over_nods(obs, fo_of, tol):
+    """After every rate file is painted: one transmission per failed-open shutter and
+    detector over the nods (``combine_failed_open``), written into the products already
+    on disk (``rescale_failed_open``)."""
+    scales, report = combine_failed_open(fo_of, tol)
+    for r in report:
+        vals = ' '.join(f'{v:.2f}' if np.isfinite(v) else '-' for _, v in sorted(r['a'].items()))
+        log(f'master background: failed-open {r["name"]}/q{r["quadrant"]} {r["root"]} {r["detector"]}: '
+            f'nods {vals} -> ' + (f'{r["combined"]:.2f}' if np.isfinite(r['combined'])
+                                  else f'each its own ({r["n_agree"]}/{r["n_measured"]} agree)'))
+    for base, fos in fo_of.items():
+        if not fos:
+            continue
+        out = product_path(obs, base)
+        with fits.open(out, memmap=False) as h:
+            hdul = fits.HDUList([x.copy() for x in h])
+        mb = np.array(hdul['MBKG2D'].data, np.float32)
+        cover = np.array(hdul['MBKG2DN'].data, np.uint8)
+        dq = np.array(hdul['MBKG2DDQ'].data, np.uint8)
+        rescale_failed_open(mb, dq, cover, fos, scales[base])
+        bunit = hdul['MBKG2D'].header.get('BUNIT', 'DN/s')
+        for name in ('MBKG2D', 'MBKG2DN', 'MBKG2DDQ'):
+            del hdul[name]
+        hdul.append(fits.CompImageHDU(mb, name='MBKG2D', compression_type='GZIP_2', quantize_level=0))
+        hdul[-1].header['BUNIT'] = bunit
+        hdul.append(fits.CompImageHDU(cover, name='MBKG2DN', compression_type='RICE_1'))
+        hdul.append(fits.CompImageHDU(dq, name='MBKG2DDQ', compression_type='RICE_1'))
+        hdul[0].header['MBKGNFO'] = (int(sum(f['applied'] > 0 for f in fos)), 'failed-open shutters painted')
+        hdul[0].header['MBKGFOSC'] = ('measured, nods', 'failed-open transmission: how, over what')
+        atomic_save(hdul, out)
+
+
 def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True):
     """Derive the ``_mbkg.fits`` product of every rate file of ``obs`` from its stage-2a
     canonicals and background slitlets. Skips a product whose inputs have not changed
@@ -1241,7 +1510,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         from campfire_pipeline.nirspec.extended_wavelength import build_extended_reference_files
         extended_refs = build_extended_reference_files(obs.rate_files) or {}
     cache_dir = default_cache_dir()
-    counters, cutoffs_of = {}, {}
+    counters, geometries, cutoffs_of = {}, {}, {}
     for base in sorted(sample):
         rate = os.path.join(obs.workspace_dir, f'{base}_rate.fits')
         if not os.path.exists(rate):
@@ -1253,6 +1522,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         cutoffs_of[rate] = cutoffs
         coverage_from_wcs(rate, cache_dir=cache_dir, cutoffs=cutoffs, wavelengthrange_override=wr)
         counters[rate] = cache_path(rate, cache_dir, cutoffs, wr)
+        geometries[rate] = geometry_cache_path(rate, cache_dir, cutoffs, wr)
     log(f'master background: {len(counters)} coverage counters')
 
     dispersers = sorted({(c.grating, c.filter) for c in canonicals})
@@ -1395,13 +1665,17 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             rate_q[base] = q
             step1_date[base] = str(h1.get('MBKGDATE'))
         paint_args = [(rate, out, cans, bs_path, counter, centres_of.get(rate_base_of(rate)),
-                       rate_skies.get(rate_base_of(rate)), o, rate_q.get(rate_base_of(rate), {}))
+                       rate_skies.get(rate_base_of(rate)), o, rate_q.get(rate_base_of(rate), {}), geometries.get(rate))
                       for (rate, out, cans, bs_path, counter, o), key in paint_args]
 
+        fo_of = {}
+
         def _finish(res):
-            rate, mb, dq, cover, n_painted, fails, n_ext, ratio = res
+            rate, mb, dq, cover, counts, fails, ratio = res
+            n_painted, n_ext = counts['slits'], counts['extension_px']
             base = rate_base_of(rate)
             out = product_path(obs, base)
+            fo_of[base] = counts.get('failed_open_amps', [])
             rate_sky = rate_skies.get(base)
             centres_ext = centres_of.get(base)
             with fits.open(out, memmap=False) as h:
@@ -1409,11 +1683,15 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             blue, red = cutoffs_of.get(rate, (None, None))
             hdul[0].header['MBKGN2D'] = (n_painted, 'slits painted into MBKG2D')
             hdul[0].header['MBKGNEXT'] = (int(n_ext), 'pixels painted past the calibrated range')
+            hdul[0].header['MBKGNFO'] = (int(counts['failed_open']), 'failed-open shutters painted')
+            hdul[0].header['MBKGFOSC'] = (str(opt.get('failed_open_scale', 'measured')) + ', exposure',
+                                          'failed-open transmission: how, over what')
+            hdul[0].header['MBKGNGEO'] = (int(counts['geometry']), 'slitlets painted with no slit (rate units)')
             hdul[0].header['MBKGCBLU'] = (float(blue) if blue is not None else 'edge', 'footprint blue cutoff [um]')
             hdul[0].header['MBKGCRED'] = (float(red) if red is not None else 'edge', 'footprint red cutoff [um]')
             if np.isfinite(ratio):
                 hdul[0].header['MBKGRRAT'] = (float(ratio), 'in-range painted / rate-unit sky, core, median')
-            hdul[0].header['MBKGDQ1'] = ('1 uncovered, 2 covering trace unpainted', 'MBKG2DDQ bits')
+            hdul[0].header['MBKGDQ1'] = ('1 uncovered, 2 trace unpainted, 8 failed-open', 'MBKG2DDQ bits')
             hdul[0].header['MBKGRDT'] = (step1_date.get(base, 'None'), 'step-1 tables (in the rate file) derivation date')
             if rate_sky is not None:                    # the table itself stays in the rate file (load_product reads it there)
                 srcs = np.bincount(np.asarray(rate_sky[3], int), minlength=5)
@@ -1424,7 +1702,8 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             hdul.append(fits.CompImageHDU(cover, name='MBKG2DN', compression_type='RICE_1'))
             hdul.append(fits.CompImageHDU(dq, name='MBKG2DDQ', compression_type='RICE_1'))
             atomic_save(hdul, out)
-            log(f'master background: {rate_base_of(rate)}: {n_painted} slits painted, {n_ext} pixels past the calibrated range'
+            log(f'master background: {rate_base_of(rate)}: {n_painted} slits painted, {n_ext} pixels past the calibrated range, '
+                f'{counts["failed_open"]} failed-open shutters, {counts["geometry"]} slitlets without a slit'
                 + (f', in-range / rate-unit sky {ratio:.3f}' if np.isfinite(ratio) else ''))
             if fails:
                 log(f'master background: {rate_base_of(rate)}: {len(fails)} slit(s) not painted, e.g. {fails[0]}')
@@ -1435,6 +1714,8 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         else:
             for a in paint_args:
                 _finish(_worker_paint(a))
+        if str(opt.get('failed_open_scale', 'measured')) == 'measured' and any(fo_of.values()):
+            _failed_open_over_nods(obs, fo_of, float(opt.get('failed_open_nod_tol', 0.1)))
 
     if plot:
         for out in written:

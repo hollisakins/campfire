@@ -60,7 +60,7 @@ leaves other sources' light in many spectra. The redesign does four things:
 | Step 2 reselects clean shutters in calibrated units | Decided (user, 2026-10-30) | MB session | 3.3 |
 | Step 1's tables inside the rate file, `_mbkgr.fits` retired; `_mbkg.fits` the only extra per-exposure file, compressed | Decided (user, 2026-11-01); Built (master background 1.5) | MB session | 3.4 |
 | One trace map per exposure, built in step 1 from every commanded shutter, stored in the rate file, stuck shutters removed when read; replaces the coverage counter and the stage-3 trace-map cache | Decided (user, 2026-11-01); builder Built (`trace_overlap.ShutterMap`, step 1 1.4; 99.7 % of pixel-slitlet pairs as `tracemaps/` on p1); stage 3 reads it (ecaf2f22, after the merge into extraction-v2, user 2026-11-01), `tracemaps/` kept as its working copy. The master background keeps its coverage counter (each slitlet's whole extent, from the same step-1 geometry pass): counting from the padded map admits 27-38 % more G395M empty-shutter pixels that read 3.3 ± 0.4 % high, a neighbour's light past `LIGHT_PAD` (MB study §9, 2026-11-01) | both | 3.4 |
-| Per-slitlet sky scale off permanently | Decided (user, 2026-10-30); Built (1bd8d7c6) | both | 3.3 |
+| No per-slitlet and no smooth (row/column) scaling of the master background, any disperser; the opt-in removed from the code | Decided (user, 2026-10-30; reconfirmed and extended to smooth scaling 2026-11-02 after the nod-repeatability and slitlet-left-out tests, MB design doc); Built (1bd8d7c6; opt-in removed on `claude/mbkg-paint`) | both | 3.3 |
 | Sky painted past both ends of the calibrated range, nothing masked | Decided (user, 2026-10-30); Built (65c1d825, 5b8d6851) | MB session | 3.3 |
 | Smoothing the per-exposure grating sky | Open: trial only, not approved (user, 2026-10-30) | MB session | 3.3 |
 | Stuck-closed shutters by a per-shutter template fit, all dispersers | Decided (user, 2026-10-30); fit module Built (8ae424bf on `claude/stuck-shutter-fit`, matches the prototype to 1e-7 on p1 G395M, same 21 calls); not wired into step 1 yet | MB + extraction | 3.5 |
@@ -231,7 +231,9 @@ correct the nodded spectra.
 - With `extend_g140m_g235m` on, the calibrated region out to 5.3 µm is covered (user,
   2026-10-29).
 - The per-slitlet sky scale is off permanently: "that's not master background at that point"
-  (user, 2026-10-30).
+  (user, 2026-10-30). 2026-11-02: no smooth row/column scaling either, on any disperser; on
+  G395M neither gains anything (the scatter is specific to each shutter) and both add noise
+  (MB design doc, 2026-11-02 entry). The opt-in code is removed.
 - No masking anywhere. The sky is painted past both ends of the calibrated range, in
   count-rate units, out to measured wavelength cutoffs (user, 2026-10-30). Past the calibrated
   range, work in count-rate units as much as possible.
@@ -543,7 +545,8 @@ user's two-pass idea (2026-10-29).
 - Two passes: first on master-background-subtracted single frames for every source, then the
   final nodded profile extraction (user, 2026-10-29).
 - No masking on the master sky in the first pass (user, 2026-10-30; Built 5b8d6851).
-- No per-slitlet sky scale (user, 2026-10-30; Built 1bd8d7c6).
+- No per-slitlet and no smooth row/column scaling of the master background (user, 2026-10-30,
+  extended 2026-11-02; Built 1bd8d7c6, opt-in code removed on `claude/mbkg-paint`).
 - The master-background noise enters only where contamination is subtracted or the
   master-background spectrum is used, never the nodded `fnu` (follows from the 2026-10-29
   decisions).
