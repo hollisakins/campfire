@@ -1578,7 +1578,18 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   trading. Decision (user, 2026-11-02): a fixed nod-offset law, measured from these stars
   and built into the model as fixed geometry like the centre law, no free parameter per
   source; then the PSF table is refitted with it. `PSF_TABLES` / `CENTRE_LAW` unchanged
-  until the user decides on the refit.
+  until the user decides on the refit. The law came out as each nod's own planned position
+  (SRCYPOS): the fitted source centre is shared, each exposure shifted by its SRCYPOS
+  minus the median (no free parameter; the 2026-11-01 decision against fitted per-nod
+  shifts stands). With each star's centre free in every exposure and its own width, a
+  symmetric core + wing (wing width 2.2 x core) fits the stack to about 1 % of the peak but
+  leaves a one-sided shoulder at +1 to +1.5 rows and a faint tail to +4 rows (about 1 %
+  of the light, in 63-86 % of the stars, independent of where the nod partners lie), and
+  the table's flat extrapolation beyond 4.70 µm makes the model too narrow above about
+  4.8 µm. Decision (user, 2026-11-02): more terms in the parametric PSF, at minimum the
+  wing's own width and offset, more for the asymmetry if needed; every parameter smooth
+  over the full NIRSpec range (no flat extrapolation); goal: agreement with the stacked
+  stars better than 1 % of the peak.
 - The 1D combination of several exposure groups did not carry the master-background
   spectrum (not built, no other reason); built (530bedb5): each group's `SPEC1D_MBKG`
   combined as the nodded columns are, the 2-D spectrum from one master-background Spec3
