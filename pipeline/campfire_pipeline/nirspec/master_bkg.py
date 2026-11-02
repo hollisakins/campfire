@@ -1196,7 +1196,9 @@ def plot_product(path, out_pdf, obs_name=''):
 def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True):
     """Derive the ``_mbkg.fits`` product of every rate file of ``obs`` from its stage-2a
     canonicals and background slitlets. Skips a product whose inputs have not changed
-    unless ``overwrite``. Returns the paths written."""
+    unless ``overwrite``, and a rate file that is not an MSA exposure (a standalone
+    fixed slit has no empty shutters; step 1 skips it too). Returns the paths written."""
+    from campfire_pipeline.nirspec.master_bkg_rate import has_master_background
     opt = options(stage_config)
     plot = plot and opt['plot']
     try:
@@ -1206,8 +1208,12 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
     inputs = discover_inputs(obs)
     stuck_mtime = obs.stuck_closed_shutters_mtime or 0.0
     todo, bs_name_of = {}, {}
+    skipped_non_msa = 0
     for rate in obs.rate_files:
         base = rate_base_of(rate)
+        if not has_master_background(fits.getheader(rate)):
+            skipped_non_msa += 1
+            continue
         cans = inputs.get(base, [])
         if not cans:
             log(f'master background: {base}: no stage-2a inputs, skipped')
@@ -1223,6 +1229,9 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             log(f'master background: {base}: current, skipped')
             continue
         todo[base] = (rate, cans)
+    if skipped_non_msa:
+        log(f'master background: {obs.name}: {skipped_non_msa} rate file(s) not MSA exposures '
+            f'(fixed slit), skipped')
     if not todo:
         return []
     log(f'master background for {obs.name}: {len(todo)} rate file(s), '

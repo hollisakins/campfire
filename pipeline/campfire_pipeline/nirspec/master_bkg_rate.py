@@ -375,6 +375,14 @@ def product_current(path, cards):
 # The step
 # ---------------------------------------------------------------------------
 
+def has_master_background(header):
+    """Whether a rate file gets a master background: an MSA exposure with its metafile.
+    A standalone fixed-slit exposure (``NRS_FIXEDSLIT``) has no empty shutters to build
+    one from; both steps skip it."""
+    return (str(header.get('EXP_TYPE', '')).upper() == 'NRS_MSASPEC'
+            and bool(header.get('OGMETFL') or header.get('MSAMETFL')))
+
+
 def run_before_stage2a(obs, stage_config, n_processes=1, overwrite=False):
     """Step 1 where stage 2a needs it, then what changed: ``(source_ids, roots)`` whose
     canonicals (sources) and background-slitlet files (roots) hold a shutter whose stuck
@@ -423,7 +431,7 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
     by_root = {}
     for rate in sorted(obs.rate_files):
         h = fits.getheader(rate)
-        if str(h.get('EXP_TYPE', '')).upper() != 'NRS_MSASPEC' or not (h.get('OGMETFL') or h.get('MSAMETFL')):
+        if not has_master_background(h):
             continue
         base = M.rate_base_of(rate)
         key = (str(h['GRATING']).strip().upper(), str(h['FILTER']).strip().upper())
