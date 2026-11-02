@@ -52,7 +52,7 @@ def test_threshold_and_the_flag_without_a_clean_partner():
     dec = {d.nod: d for d in SN.decide('r', sl, nbs, NOD_DITHER, PARTNERS, min_sky_frac=0.05)}
     assert dec[1].keep == [2, 3] and dec[1].why == 'faint'
     dec = {d.nod: d for d in SN.decide('r', sl, nbs, NOD_DITHER, PARTNERS, 0.02, max_distance=0.8)}
-    assert dec[2].keep == [1, 3] and dec[2].why == 'no clean partner'
+    assert dec[2].keep == [1, 3] and dec[2].why == 'no clear background'
 
 
 def test_unmeasured_neighbour_counts_as_bright():
@@ -106,12 +106,12 @@ def test_sky_to_msa_reproduces_the_plan_and_places_unlisted_sources():
 def test_layer_hand_then_catalogue_then_scan():
     effective = {'1': [3], '2': [3], '3': [2]}          # nod 1 by hand; nods 2, 3 from the scan's file
     scan = {'2', '3'}
-    slitlet = {'1': ([2], 'neighbour 9 at 0.030 of sky'), '2': ([1], 'neighbour 9 at 0.030 of sky')}
+    slitlet = {'1': ([2], 'neighbor 9 at 0.030 of background'), '2': ([1], 'neighbor 9 at 0.030 of background')}
     out, auto, why = SN.layer(effective, scan, slitlet)
     assert out['1'] == [3] and why['1'] == 'hand' and '1' not in auto
-    assert out['2'] == [1] and why['2'] == 'neighbour 9 at 0.030 of sky' and '2' in auto   # nothing both keep
+    assert out['2'] == [1] and why['2'] == 'neighbor 9 at 0.030 of background' and '2' in auto   # nothing both keep
     assert out['3'] == [2] and why['3'] == 'scan' and '3' in auto
-    out, _, why = SN.layer({'2': [1, 3]}, {'2'}, {'2': ([1], 'neighbour 9 at 0.030 of sky')})
+    out, _, why = SN.layer({'2': [1, 3]}, {'2'}, {'2': ([1], 'neighbor 9 at 0.030 of background')})
     assert out['2'] == [1] and why['2'].endswith('; scan')
 
 

@@ -113,7 +113,7 @@ class ScanResult:
                          'Neighbour / target mean flux'),
             'PFNBRX': (self.xdisp, 'Other disperser scan: single/agree/disagree/none'),
             'PFNBRDRP': (drp[:68], 'Proposed partners root:nod>nods'),
-            'PFNBRUNS': (len(self.unresolved), 'Contaminated nods with no clean partner'),
+            'PFNBRUNS': (len(self.unresolved), 'Contaminated nods with no clear background'),
             'PFNBRSUP': (self.suppressed[:68], 'Proposals withheld because'),
         }
 

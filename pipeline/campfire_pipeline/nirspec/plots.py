@@ -380,7 +380,7 @@ def _no_source_scales(paths):
 def _override_text(ax, why):
     """The reason an override chose a nod's background (or the flag of a nod that kept its
     partners), in the corner of its image."""
-    text = why if why.startswith('no clean partner') else f'override: {why}'
+    text = why if why.startswith('every background exposure') else f'override: {why}'
     ax.text(0.005, 0.96, text, transform=ax.transAxes, fontsize=5, fontname='monospace',
             va='top', ha='left', color='k', bbox=dict(facecolor='w', alpha=0.75, edgecolor='none', pad=1))
 

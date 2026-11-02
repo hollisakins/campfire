@@ -188,8 +188,8 @@ def bkg_nods_cards(nods, overridden, auto=False, why=''):
     nodded-background override chose them, ``BKGAUTO`` whether that override was
     chosen automatically (a catalogued neighbour of the slitlet, or stage 3's
     neighbour scan), ``BKGWHY`` why (``hand``, ``scan``, or the catalogued
-    neighbours and their light over the sky); on a nod with no override it holds
-    only a flag (``no clean partner: ...``: a bright neighbour from every partner).
+    neighbors and their light over the background); on a nod with no override it holds
+    only a flag (``every background exposure: ...``: a bright neighbor from each).
     Stage 3 copies them into the ``EXPOSURES`` table, so the background choice is
     recorded in every product."""
     value = ','.join(str(int(n)) for n in nods) if nods else 'excluded'

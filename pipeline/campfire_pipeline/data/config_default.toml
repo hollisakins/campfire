@@ -65,18 +65,18 @@
     empirical_barshadow = false
     rectify = true
     plot_bkgsub = true
-    # Stage 2b: a background partner whose frame puts another catalogue source (the MSA
-    # plan's SOURCE_INFO, placed along the slitlet at every dither point) within
-    # slitlet_neighbour_max_distance of a source's position in a nod (slit units: a
-    # shutter's open height is 1, the pitch 1.15) is dropped when that neighbour's light is
-    # at least slitlet_neighbour_min_sky of the sky (frame before subtraction against the
-    # master background, over one shutter height around it, median over the spectrum) and
-    # another partner remains; otherwise the nod keeps its partners and is flagged
-    # (BKGWHY "no clean partner"). With three nods a kept neighbour biases the source by
-    # half its light, negative. A hand override of the same nod wins. A very large
-    # min_sky keeps every partner.
-    slitlet_neighbour_min_sky = 0.02
-    slitlet_neighbour_max_distance = 0.75
+    # Stage 2b: a background exposure that puts another catalog source (the MSA plan's
+    # SOURCE_INFO, placed along the slitlet at every dither point) within
+    # slitlet_neighbor_max_distance of a source's position in an exposure (slit units: a
+    # shutter's open height is 1, the pitch 1.15) is not subtracted when that neighbor's
+    # light is at least slitlet_neighbor_min_background of the master background (frame
+    # before subtraction, over one shutter height around it, median over the spectrum) and
+    # another background exposure remains. Otherwise the exposure keeps them all and is
+    # flagged (BKGWHY "every background exposure: ..."). With three exposures a kept
+    # neighbor biases the source by half its light, negative. A hand override of the same
+    # exposure wins. A very large min_background keeps every background exposure.
+    slitlet_neighbor_min_background = 0.02
+    slitlet_neighbor_max_distance = 0.75
     empirical_wavecorr = false
     # Master background (docs/design-nirspec-master-background.md §4): the sky of each
     # exposure x detector from its empty shutters, written as <root>_<nod>_<nrsN>_mbkg.fits
@@ -264,7 +264,7 @@
     # on the nod differences as stage 2b made them, leaving out (not modelling) every pixel
     # another slitlet's source shutter lights in any frame of the difference (trace maps),
     # so the scan never depends on the joint model. Catalogued neighbours are stage 2b's
-    # (slitlet_neighbour_min_sky); the scan finds the uncatalogued ones.
+    # (slitlet_neighbor_min_background); the scan finds the uncatalogued ones.
     scan_neighbours = true
     scan_action = "report_only"              # "report_only" (proposed file) | "auto_override"
                                              # (auto file, applied by stage 2b on its next run)

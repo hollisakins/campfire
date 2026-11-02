@@ -425,8 +425,8 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
     # overrides win, the neighbour scan's file yields
     from campfire_pipeline.nirspec import slitlet_neighbours as SN
     slitlet, flags = slitlet_overrides(
-        obs, pending, stage_config.get('slitlet_neighbour_min_sky', SN.MIN_SKY_FRAC),
-        stage_config.get('slitlet_neighbour_max_distance', SN.MAX_DISTANCE), n_processes)
+        obs, pending, stage_config.get('slitlet_neighbor_min_background', SN.MIN_SKY_FRAC),
+        stage_config.get('slitlet_neighbor_max_distance', SN.MAX_DISTANCE), n_processes)
     for bg, bg_files, source_id, root, detector in pending:
         hand_scan = (effective.get(root) or {}).get(str(source_id)) or {}
         scan_nods = from_auto.get((root, str(source_id)), set())

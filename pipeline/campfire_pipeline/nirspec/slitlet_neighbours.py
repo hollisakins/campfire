@@ -17,7 +17,7 @@ provided
   the sky (the frame before subtraction against the master background, over one shutter
   height around it, median over the spectrum), and
 * another partner remains. Otherwise the nod keeps its partners and is flagged
-  (``no clean partner``).
+  (``no clear background``).
 
 Overlap with other slitlets' traces is not this module's job (the joint model's
 ``fnu_contam``). Neighbours the catalogue does not list are the residual scan's
@@ -181,7 +181,7 @@ class NodDecision:
     partners: list               # nods subtracted by default
     keep: list                   # nods kept
     dirty: dict = field(default_factory=dict)    # partner nod -> neighbours (ids) near the target there
-    why: str = ''                # 'dropped' | 'faint' | 'no clean partner' | ''
+    why: str = ''                # 'dropped' | 'faint' | 'no clear background' | ''
 
 
 def dirty_partners(slit, neighbours, nod_dither, partners, max_distance=MAX_DISTANCE):
@@ -209,7 +209,7 @@ BIN_COLS = 20                # columns per bin along the trace (a single column'
 
 
 def light_over_sky(sci, sky, ys, centre, bin_cols=BIN_COLS):
-    """A source's light over the sky in one shutter height (``|ys - centre| < 0.5``),
+    """A source's light over the background in one shutter height (``|ys - centre| < 0.5``),
     summed over those rows and over bins of ``bin_cols`` columns: (median, 90th
     percentile) over the bins where the sky is positive."""
     inside = np.isfinite(ys) & (np.abs(ys - centre) < OPEN_HALF) & np.isfinite(sci) & np.isfinite(sky)
@@ -255,7 +255,7 @@ def decide(root, slit, neighbours, nod_dither, partners, min_sky_frac=MIN_SKY_FR
     """``NodDecision`` per nod. A partner is dropped when it puts on the target a
     neighbour at or above ``min_sky_frac`` (or one whose brightness could not be
     measured) and a partner remains; when none would, the nod keeps its partners
-    (``no clean partner``)."""
+    (``no clear background``)."""
     bright = {n.source_id for n in neighbours if not (n.sky_frac < min_sky_frac)}   # NaN counts as bright
     dirty = dirty_partners(slit, neighbours, nod_dither, partners, max_distance)
     out = []
@@ -268,7 +268,7 @@ def decide(root, slit, neighbours, nod_dither, partners, min_sky_frac=MIN_SKY_FR
         if d and not bad:
             why = 'faint'
         elif bad and not keep:
-            keep, why = parts, 'no clean partner'
+            keep, why = parts, 'no clear background'
         elif bad:
             why = 'dropped'
         out.append(NodDecision(root=root, nod=nod, partners=parts, keep=keep, dirty=d, why=why))
@@ -286,7 +286,7 @@ class Group:
     neighbours: list             # [Neighbour], brightness filled where measurable
     nod_dither: dict             # nod -> dither point
     partners: dict               # nod -> nods subtracted by default
-    target_frac: float = np.nan  # the target's own light over the sky in its shutter
+    target_frac: float = np.nan  # the target's own light over the background in its shutter
 
 
 def scene_for(cal_file, msa_dir, source_id, cache):
@@ -401,8 +401,8 @@ def layer(effective, scan_nods, slitlet):
 
 
 def _names(ids, frac):
-    return 'neighbour ' + ','.join(f'{i} at {frac[i]:.3f}' if np.isfinite(frac[i]) else f'{i} unmeasured'
-                                   for i in ids) + ' of sky'
+    return 'neighbor ' + ','.join(f'{i} at {frac[i]:.3f}' if np.isfinite(frac[i]) else f'{i} unmeasured'
+                                   for i in ids) + ' of background'
 
 
 def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_distance=MAX_DISTANCE):
@@ -410,8 +410,8 @@ def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_
     (lists of canonical paths): (root, {nod (str): (kept nods, reason)} for the nods
     whose partners change, {nod (str): flag} for the nods with a bright neighbour from
     every partner, the combined ``Group`` or None). The reason names the neighbours and
-    their light over the sky, e.g. ``'neighbour 634547 at 0.031 of sky'``; the flag
-    starts ``'no clean partner: '``."""
+    their light over the background, e.g. ``'neighbor 634547 at 0.031 of background'``; the flag
+    starts ``'every background exposure: '``."""
     products, cache = {}, {}
     g = combine([measure_group(files, source_id, workspace, workspace, products, cache, max_distance)
                  for files in groups])
@@ -422,7 +422,7 @@ def root_overrides(groups, source_id, workspace, min_sky_frac=MIN_SKY_FRAC, max_
     for d in decide(g.root, g.slit, g.neighbours, g.nod_dither, g.partners, min_sky_frac, max_distance):
         if d.why == 'dropped':
             out[str(d.nod)] = (d.keep, _names(sorted({i for j in set(d.partners) - set(d.keep) for i in d.dirty[j]}), frac))
-        elif d.why == 'no clean partner':
-            flags[str(d.nod)] = 'no clean partner: ' + _names(sorted({i for ids in d.dirty.values() for i in ids
+        elif d.why == 'no clear background':
+            flags[str(d.nod)] = 'every background exposure: ' + _names(sorted({i for ids in d.dirty.values() for i in ids
                                                                       if not (frac[i] < min_sky_frac)}), frac)
     return g.root, out, flags, g
