@@ -1381,6 +1381,22 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
     1.9x the model. So the data measure counts other slitlets' light; the joint model
     separates it. Proposed: take the brightness from the joint model (needs the joint
     first pass before the stage-2b decision; see the open-decisions table).
+  - PRISM check (user's request; `e2e_pass1_prism.py`): for the 17 G395M neighbors with a
+    PRISM spectrum (integrated PRISM S/N > 5, 2.9-5.1 um), the joint pass's spectrum
+    against PRISM deviates by more than 3 sigma in 2 of 17; the shipped G395M `fnu_prof`
+    in 10 of 17, several strongly negative (629466 -51 sigma, 925550 -9 sigma, 880017
+    -8 sigma), and `fnu_prof - fnu_contam` also in 10 of 17. The joint pass's errors are
+    1.5-2.6x the shipped ones, which explains part of the difference but not 629466
+    (+0.006 against -0.136 uJy, PRISM positive). Open problem: why the shipped G395M
+    spectra of these crowded same-slitlet sources disagree with PRISM when their joint
+    pass does not.
+  - Built (cc135800; user approval 2026-11-01): after each disperser's joint first pass,
+    stage 3 redoes the same-slitlet decisions of the re-run sources with the neighbors'
+    modeled light (`slitlet_neighbours.model_light`; the 1-slit-unit separation limit
+    no longer applies, since the model holds none of the target's light) and runs stage
+    2b and the combined 2-D spectrum again for the groups whose choice changes
+    (`stage2.revise_slitlet_overrides`). Stage 2b keeps the data measure as its first
+    guess. `slitlet_neighbor_brightness = "model"` ("data" keeps stage 2b's choice).
 - Cleanup (user, 2026-11-01): the masked pass 1, pass 1b, the echo correction, the old
   group joint solve and `first_pass.py` removed (merge of `claude/extraction-v2-cleanup`,
   about 2,800 lines). End-to-end check on p1 (stage 3 only, the 74 sources,
