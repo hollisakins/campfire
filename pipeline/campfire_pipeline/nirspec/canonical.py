@@ -139,17 +139,18 @@ def _remove_matching(hdulist, name, ver):
         del hdulist[i]
 
 
-def read_slit_arrays(path, slit_extver=1, exts=SLIT_ARRAY_EXTS):
+def read_slit_arrays(path, slit_extver=1, exts=SLIT_ARRAY_EXTS, prefix=None):
     """Return ``{ext: ndarray copy}`` for one slit's data extensions.
 
     Used to capture the pre-bkgsub (cal-state) arrays before stage2b overwrites
-    the live slit. Missing extensions are skipped.
+    the live slit. Missing extensions are skipped. With ``prefix`` the
+    ``{prefix}_{ext}`` copies are read instead (e.g. ``PRE_BKGSUB_PREFIX``).
     """
     out = {}
     with fits.open(path, memmap=False) as hdul:
         for ext in exts:
             try:
-                out[ext] = np.array(hdul[(ext, slit_extver)].data)
+                out[ext] = np.array(hdul[(f'{prefix}_{ext}' if prefix else ext, slit_extver)].data)
             except KeyError:
                 pass
     return out

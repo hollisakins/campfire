@@ -179,9 +179,9 @@ class Exposure:
 
     Arrays are (ny, nx) on the common frame; NaN where the exposure has no data.
     ``diff`` is the nod difference with the path-loss correction removed; ``var`` is
-    this exposure's own frame variance (jwst's background subtraction does not
-    propagate the subtracted frames' variance, ``jwst.background.subtract_images``;
-    the model adds the partners' share, ``ProfileModel.diff_variance``). ``pl_applied`` is the correction stage 2b re-applied (point or
+    this exposure's own frame variance (``own_variance``, from before stage 2b, which
+    adds the subtracted frames' noise to the live arrays; the model adds the partners'
+    share itself, ``ProfileModel.diff_variance``). ``pl_applied`` is the correction stage 2b re-applied (point or
     uniform, per exposure), ``pl_point`` jwst's point-source path loss.
 
     ``has_source`` is False for a frame that does not contain the source (stage 2a's
@@ -245,6 +245,20 @@ def _pa_v3(path):
         return np.nan
 
 
+def own_variance(path, slit):
+    """The frame's own Poisson + read-noise variance, before stage 2b: the canonical's
+    ``PRE_BKGSUB_VAR_POISSON`` / ``_VAR_RNOISE`` when present (stage 2b adds the
+    subtracted frames' noise to the live arrays, ``stage2.background_variance``; the
+    model adds them itself, ``ProfileModel.diff_variance``), else the live arrays."""
+    from campfire_pipeline.nirspec import canonical as C
+    pre = C.read_slit_arrays(path, exts=('VAR_POISSON', 'VAR_RNOISE'), prefix=C.PRE_BKGSUB_PREFIX)
+    vp = pre.get('VAR_POISSON', np.asarray(slit.var_poisson, float))
+    vr = pre.get('VAR_RNOISE', np.asarray(slit.var_rnoise, float))
+    if np.shape(vp) != np.shape(slit.data) or np.shape(vr) != np.shape(slit.data):
+        vp, vr = np.asarray(slit.var_poisson, float), np.asarray(slit.var_rnoise, float)
+    return np.asarray(vp, float) + np.asarray(vr, float)
+
+
 def load_group(cal_files, bkg_overrides=None, science=None, group=0):
     """Exposures of one stage-2b background group, from the canonical files.
 
@@ -281,7 +295,7 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0):
             pl = np.asarray(s.pathloss_point, float)
         else:
             pl = np.ones((ny, nx))
-        var = (np.asarray(s.var_poisson, float) + np.asarray(s.var_rnoise, float)
+        var = (own_variance(f, s)
                + (np.asarray(s.var_flat, float) if s.var_flat is not None and np.size(s.var_flat) else 0.0))
         dq_bad = (np.asarray(s.dq) & DO_NOT_USE) > 0
         diff = np.asarray(s.data, float) * pl

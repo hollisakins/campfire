@@ -1584,6 +1584,25 @@ def slitlet_overrides(obs, pending, min_sky_frac, max_distance, n_processes=1):
     return out, flags
 
 
+def background_variance(bkgsub, bkg):
+    """Variance of a background-subtracted slit with the subtracted frames' noise added.
+
+    jwst's background step subtracts the mean of the ``bkg`` slits but keeps the science
+    frame's own variance (``jwst.background.subtract_images``). The mean of n frames adds
+    sum(var_j) / n**2 to each of ``var_poisson`` and ``var_rnoise``; a pixel where a
+    background frame has no variance keeps the frame's own. ``var_flat`` is unchanged.
+    Returns (var_poisson, var_rnoise, err)."""
+    n = len(bkg)
+    out = []
+    for name in ('var_poisson', 'var_rnoise'):
+        own = np.asarray(getattr(bkgsub, name), float)
+        add = sum(np.asarray(getattr(b, name), float) for b in bkg) / n ** 2
+        out.append(np.where(np.isfinite(add), own + add, own).astype(np.float32))
+    flat = getattr(bkgsub, 'var_flat', None)
+    total = out[0] + out[1] + (np.asarray(flat, float) if flat is not None and np.size(flat) else 0.0)
+    return out[0], out[1], np.sqrt(total).astype(np.float32)
+
+
 def run_stage2b_single_slitlet(
         cal_files: List,
         workspace_dir: str,
@@ -1679,15 +1698,16 @@ def run_stage2b_single_slitlet(
                 bkg_nods = [_nod_number(cal_files[j]) for j in partners[i]]
 
                 bkgsub = bkg_subtract.call(science, bkg)
+                var_poisson, var_rnoise, err = background_variance(bkgsub, bkg)
 
 
                 result = models[i].copy()
                 # # janky, but this is the best way I could find to ensure that all metadata gets retained through file I/O
                 result.slits[0].data = bkgsub.data
-                result.slits[0].err = bkgsub.err
+                result.slits[0].err = err
                 result.slits[0].dq = bkgsub.dq
-                result.slits[0].var_rnoise = bkgsub.var_rnoise
-                result.slits[0].var_poisson = bkgsub.var_poisson
+                result.slits[0].var_rnoise = var_rnoise
+                result.slits[0].var_poisson = var_poisson
                 result.meta.cal_step.bkg_subtract = 'COMPLETE'
                 result[0].meta.cal_step.bkg_subtract = 'COMPLETE'
 
