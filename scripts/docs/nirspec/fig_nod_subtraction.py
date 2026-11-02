@@ -21,6 +21,11 @@ p.add_argument('--bin', type=int, default=1,
                help='wavelength pixels averaged per displayed column, for faint sources (1: none)')
 p.add_argument('--grating-tag', default='prism_clear',
                help="the source's spec.fits grating tag, for the wavelength axis (e.g. 'g395m_f290lp')")
+p.add_argument('--stretch', type=float, nargs=2, default=(2.0, 92.0), metavar=('LO', 'HI'),
+               help='percentiles clipped in the calibrated frames (lower HI = harder stretch)')
+p.add_argument('--per-column', action='store_true',
+               help="show the calibrated frames divided by each column's median, so the background's rise "
+                    "with wavelength does not take the display range")
 p.add_argument('--mark', action='store_true',
                help='mark the source and the neighbors that caused a nod to be left out on the calibrated frames')
 args = p.parse_args()
@@ -138,7 +143,16 @@ handles = None
 for r, fr in enumerate(frames):
     others = [o for o in frames if o is not fr]
     ax = axes[r, 0]
-    ax.imshow(fr['before'], cmap='Greys', norm=C.asinh_norm(fr['before']), aspect='auto')
+    shown = fr['before']
+    if args.per_column:
+        lit = np.where(shown > 0, shown, np.nan)
+        shown = shown / np.nanmedian(lit, axis=0)[None, :]
+        inside = shown[np.isfinite(shown) & (shown > 0.5)]           # the open shutters, not the margins
+        from matplotlib.colors import Normalize
+        norm = Normalize(vmin=np.percentile(inside, args.stretch[0]), vmax=np.percentile(inside, args.stretch[1]))
+    else:
+        norm = C.asinh_norm(shown, *args.stretch, soft=0.02)
+    ax.imshow(shown, cmap='Greys', norm=norm, aspect='auto')
     C.label_panel(ax, f'nod {fr["nod"]}')
     nxd = fr['before'].shape[1]
     for s, color in marks.items():
@@ -177,7 +191,7 @@ for r, fr in enumerate(frames):
     if r < len(frames) - 1:
         for a in axes[r]:
             a.set_xticklabels([])
-axes[0, 0].set_title('Calibrated exposure')
+axes[0, 0].set_title('Calibrated exposure' + (' (each column / its median)' if args.per_column else ''))
 axes[0, 1].set_title('After nod subtraction')
 axes[0, 2].set_title('Along the slitlet')
 for r in range(len(frames)):
