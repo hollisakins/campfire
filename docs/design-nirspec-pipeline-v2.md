@@ -1659,7 +1659,11 @@ removed:
   detector with a usable value there, at least 2 (`HOT_SIGMA`, `HOT_MIN_EXPOSURES`). Sky,
   source and neighbors move on the detector between nods, so they are not high at one
   detector pixel in every exposure; a cosmic ray hits one. Pure noise passes 5 sigma in
-  every one of 2 exposures with probability ~1e-13 per pixel. With one exposure nothing
+  every one of 2 exposures with probability ~1e-13 per pixel. 5 sigma kept (user,
+  2026-11-02) over a higher threshold: 10 sigma would leave steady 5-10 sigma warm pixels
+  (629466 det (1794,1537) at +7 to +8, (1797,1517) at +5.5) and half of 924509's 2x2
+  hot cluster, whose bottom row reads +5 to +7.5 because its column neighbors include the
+  hot top row. With one exposure nothing
   tells a hot pixel from the source, so nothing is flagged (jwst's outlier detection skips a
   single exposure too); a product with no nod between its exposures could have a bright
   compact source feature flagged (not seen; noted).
