@@ -12,10 +12,11 @@ per product, built from the nodded Spec3 crf), before any 1-D extraction:
    live SCI before stage 2b) minus its master background (``stage2.master_background_on``),
    with the master background's variance added to the Poisson term and DO_NOT_USE where
    it has none. Nothing is written.
-2. ``drizzle_2d``: those frames drizzled as data onto the nodded grid, with the nodded
-   Spec3's outlier flags (``nodded_outlier_flags``: the choice is there), into
-   ``{workspace}/mbkg/{product}_mbkg_s2d.fits`` (SCI, ERR, WHT). The grid is the nodded
-   one by construction.
+2. ``drizzle_2d``: those frames drizzled as data onto the nodded grid, with their outlier
+   flags (``outlier_flags``: the choice is there): the nodded Spec3's, plus the pixels
+   fixed high on the detector in every exposure (``hot_pixels``), which cancel in the nod
+   differences. Into ``{workspace}/mbkg/{product}_mbkg_s2d.fits`` (SCI, ERR, WHT). The
+   grid is the nodded one by construction.
 3. ``fit_product``: the nodded fit's exposures with their frame minus master background
    in place of the nod difference, as single frames (``single_frame_exposures``: nothing
    subtracted from them), the forward model at the shape the nodded chain chose, the
@@ -44,6 +45,8 @@ fails the stage.
 
 import glob
 import os
+import warnings
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -69,12 +72,25 @@ def product_paths(workspace, product_name, source_id=0):
     return dict(s2d=os.path.join(d, f'{p}_s2d.fits'), pf=os.path.join(d, f'{p}_pf.fits'))
 
 
+@dataclass
+class Frame:
+    """One exposure's frame minus its master background (``frame_arrays``).
+
+    arrays : ``data``, ``dq``, ``err``, ``var_poisson``, ``var_rnoise`` (and ``var_flat``)
+        on the canonical's cutout, as the drizzle takes them (float32 / uint32).
+    live_dq : the canonical's live DQ (``outlier_flags``).
+    detector, origin : where the cutout sits: detector name and its (ystart, xstart),
+        1-based like jwst (``hot_pixels``)."""
+    arrays: dict
+    live_dq: np.ndarray
+    detector: str = ''
+    origin: tuple = (1, 1)
+
+
 def frame_arrays(canonical):
-    """One canonical's frame minus its master background, in memory (module doc, 1):
-    (frame, live_dq). ``frame`` holds ``data``, ``dq``, ``err``, ``var_poisson``,
-    ``var_rnoise`` and ``var_flat`` on the canonical's cutout, as the drizzle takes them
-    (float32 / uint32); ``live_dq`` is the canonical's live DQ (``nodded_outlier_flags``).
-    Raises ``NoMasterBackground`` when its exposure has no ``_mbkg.fits``."""
+    """One canonical's frame minus its master background, in memory (module doc, 1): a
+    ``Frame``. Raises ``NoMasterBackground`` when its exposure has no ``_mbkg.fits``."""
+    from astropy.io import fits
     from campfire_pipeline.nirspec import canonical as C
     from campfire_pipeline.nirspec.stage2 import master_background_on
 
@@ -97,41 +113,130 @@ def frame_arrays(canonical):
                  var_rnoise=vr.astype(np.float32), err=np.sqrt(vp + vr + vf).astype(np.float32))
     if np.size(live.get('VAR_FLAT', [])):
         frame['var_flat'] = np.asarray(live['VAR_FLAT']).astype(np.float32)
-    return frame, np.asarray(live['DQ']).astype(np.uint32)
+    h = fits.getheader(canonical, 'SCI')
+    return Frame(frame, np.asarray(live['DQ']).astype(np.uint32), str(fits.getheader(canonical).get('DETECTOR', '')),
+                 (int(h.get('SLTSTRT2', 1)), int(h.get('SLTSTRT1', 1))))
 
 
 def frames_for(canonicals):
-    """``frame_arrays`` of every canonical, keyed by file name: {name: (frame, live_dq)}.
-    Raises ``NoMasterBackground``."""
+    """``frame_arrays`` of every canonical, keyed by file name: {name: Frame}. Raises
+    ``NoMasterBackground``."""
     return {os.path.basename(c): frame_arrays(c) for c in canonicals}
 
 
-def nodded_outlier_flags(frame, live_dq, crf_dq):
-    """The master-background frame with its outlier flags: the decision of where they come
-    from is here, and only here.
+# ---------------------------------------------------------------------------
+# Outlier flags of the master-background frames: the choice is here, and only here
+# ---------------------------------------------------------------------------
+HOT_SIGMA = 5.0          # a hot pixel stands this many sigma above its row and its column neighbors ...
+HOT_MIN_EXPOSURES = 2    # ... in every exposure that sees the detector pixel, at least this many
+HOT_ROW_HALF = 3         # row neighbors: +-3 pixels along the dispersion
+HOT_COL_HALF = 2         # column neighbors: +-2 pixels across it
 
-    Taken from the nodded Spec3 (user decision pending, 2026-11-02): the pixels its outlier
-    detection flagged in this exposure (``OUTLIER`` in the nodded crf's DQ that the
-    canonical's live DQ does not have) are flagged ``OUTLIER`` and DO_NOT_USE in the frame,
-    on top of its own mask (no master background: DO_NOT_USE, ``frame_arrays``). Before,
-    the master-background frames had a Spec3 run of their own and its own outlier
-    detection on them."""
-    new = ((np.asarray(crf_dq) & OUTLIER) > 0) & ((np.asarray(live_dq) & OUTLIER) == 0)
-    out = dict(frame)
-    out['dq'] = (frame['dq'] | np.where(new, OUTLIER | DO_NOT_USE, 0)).astype(frame['dq'].dtype)
+
+def _shifted_median(a, axis, half):
+    """Per pixel, the median of its neighbors within +-``half`` along ``axis`` (itself
+    left out; NaN outside the array or unusable)."""
+    n = a.shape[axis]
+    stack = []
+    for s in range(-half, half + 1):
+        if s == 0:
+            continue
+        b = np.full(a.shape, np.nan)
+        src = [slice(None)] * 2
+        dst = [slice(None)] * 2
+        src[axis] = slice(max(s, 0), n + min(s, 0))
+        dst[axis] = slice(max(-s, 0), n + min(-s, 0))
+        b[tuple(dst)] = a[tuple(src)]
+        stack.append(b)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)          # all-NaN neighborhoods
+        return np.nanmedian(np.array(stack), axis=0)
+
+
+def local_contrast(frame):
+    """How far each pixel of a frame stands above its surroundings in that frame, in
+    sigma: the smaller of (value minus the median of its row neighbors within
+    ``HOT_ROW_HALF``) and (value minus the median of its column neighbors within
+    ``HOT_COL_HALF``), over its error. NaN where the frame is unusable.
+
+    A single hot pixel stands above both. Light smooth along the dispersion (a trace, a
+    failed-open shutter's band) does not stand above its row; light spread across a few
+    rows (an extended line, a band's edge rows) does not stand above its column."""
+    a = frame.arrays
+    d = np.where((a['dq'] & DO_NOT_USE) > 0, np.nan, np.asarray(a['data'], float))
+    rx = d - _shifted_median(d, 1, HOT_ROW_HALF)
+    ry = d - _shifted_median(d, 0, HOT_COL_HALF)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.minimum(rx, ry) / np.asarray(a['err'], float)
+
+
+def hot_pixels(frames):
+    """Pixels fixed high on the detector: {name: boolean mask on its cutout}.
+
+    A detector pixel is hot where ``local_contrast`` exceeds ``HOT_SIGMA`` in every
+    exposure (on the same detector) that has a usable value there, and at least
+    ``HOT_MIN_EXPOSURES`` do. Such a pixel cancels in the nod differences, so the nodded
+    outlier detection never flags it, but it stays in a frame minus master background.
+    Sky light, the source and neighbors move on the detector between nods, so they cannot
+    be high at one detector pixel in every exposure (the source of a product with no nod
+    at all could; its exposures would then count as one). With one exposure nothing tells
+    a hot pixel from the source: no pixel is flagged (jwst's outlier detection also skips
+    a single exposure). A cosmic ray hits one exposure and is not flagged here."""
+    names = list(frames)
+    out = {n: np.zeros(frames[n].arrays['data'].shape, bool) for n in names}
+    for det in sorted({frames[n].detector for n in names}):
+        mem = [n for n in names if frames[n].detector == det]
+        if len(mem) < HOT_MIN_EXPOSURES:
+            continue
+        y0 = min(frames[n].origin[0] for n in mem)
+        x0 = min(frames[n].origin[1] for n in mem)
+        y1 = max(frames[n].origin[0] + frames[n].arrays['data'].shape[0] for n in mem)
+        x1 = max(frames[n].origin[1] + frames[n].arrays['data'].shape[1] for n in mem)
+        seen = np.zeros((y1 - y0, x1 - x0), int)
+        high = np.zeros((y1 - y0, x1 - x0), int)
+        cut, usable = {}, {}
+        for n in mem:
+            f = frames[n]
+            r, c = f.origin[0] - y0, f.origin[1] - x0
+            ny, nx = f.arrays['data'].shape
+            cut[n] = (slice(r, r + ny), slice(c, c + nx))
+            s = local_contrast(f)
+            usable[n] = np.isfinite(s)
+            seen[cut[n]] += usable[n]
+            high[cut[n]] += usable[n] & (s > HOT_SIGMA)
+        hot = (seen >= HOT_MIN_EXPOSURES) & (high == seen)
+        for n in mem:
+            out[n] = hot[cut[n]] & usable[n]
+    return out
+
+
+def outlier_flags(frame, crf_dq, hot):
+    """A master-background frame's arrays with its outlier flags: the decision of where
+    they come from is here, and only here (user, 2026-11-02).
+
+    Flagged ``OUTLIER`` and DO_NOT_USE, on top of its own mask (no master background:
+    DO_NOT_USE, ``frame_arrays``):
+    - what the nodded Spec3's outlier detection flagged in this exposure (``OUTLIER`` in
+      the nodded crf's DQ that the canonical's live DQ does not have);
+    - its hot pixels (``hot``, ``hot_pixels``), which cancel in the nod differences.
+    jwst's outlier detection is not run on the frames. Before 2026-11-02 they had a Spec3
+    run of their own and its outlier detection on them."""
+    a = frame.arrays
+    new = ((np.asarray(crf_dq) & OUTLIER) > 0) & ((np.asarray(frame.live_dq) & OUTLIER) == 0)
+    out = dict(a)
+    out['dq'] = (a['dq'] | np.where(new | np.asarray(hot, bool), OUTLIER | DO_NOT_USE, 0)).astype(a['dq'].dtype)
     return out
 
 
 def drizzle_2d(dmap, frames):
-    """The master-background 2-D spectrum (module doc, 2): ``frames`` ({name: (frame,
-    live_dq)}, every exposure of the map) drizzled as data through ``dmap`` with the
-    nodded outlier flags. Returns dict(data, err, wht, ...) (``DrizzleMap.drizzle``)."""
-    inputs = {}
-    for x in dmap.exposures:
-        if x.name not in frames:
-            raise ValueError(f'master background: no frame for {x.name}')
-        frame, live_dq = frames[x.name]
-        inputs[x.name] = nodded_outlier_flags(frame, live_dq, x.arrays['dq'])
+    """The master-background 2-D spectrum (module doc, 2): ``frames`` ({name: Frame},
+    every exposure of the map) drizzled as data through ``dmap`` with their outlier flags
+    (``outlier_flags``). Returns dict(data, err, wht, ...) (``DrizzleMap.drizzle``)."""
+    missing = [x.name for x in dmap.exposures if x.name not in frames]
+    if missing:
+        raise ValueError(f'master background: no frame for {missing}')
+    hot = hot_pixels({x.name: frames[x.name] for x in dmap.exposures})
+    inputs = {x.name: outlier_flags(frames[x.name], x.arrays['dq'], hot[x.name]) for x in dmap.exposures}
     return dmap.drizzle(inputs, variances=True)
 
 
@@ -146,7 +251,7 @@ def write_2d_file(path, d2):
 def write_2d(product_name, workspace, source_id, dmap, log=None):
     """Steps 1-2 of the module doc for a product: its master-background 2-D through
     ``dmap`` (the frames of the map's exposures, the canonicals in ``workspace``).
-    Returns the frames ({name: (frame, live_dq)}), or None (logged) when an exposure has
+    Returns the frames ({name: Frame}), or None (logged) when an exposure has
     no master background (no master-background spectrum)."""
     log = log or (lambda *a: None)
     try:
@@ -192,7 +297,7 @@ def single_frame_exposures(exps, frames):
                 p = np.full(shape, fill, dtype=float)
                 p[r1:r1 + ny, c1:c1 + nx] = a
                 return p
-            frame = frames[e.name][0]
+            frame = frames[e.name].arrays
             pl = e.pl_applied[cut]
             var = e.var[cut]                      # var x pl^2: positive and finite where var is (pl > 0)
             diff = np.asarray(frame['data'], float) * pl

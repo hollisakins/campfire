@@ -108,8 +108,10 @@ def test_frame_arrays_subtract_the_master_background(tmp_path, monkeypatch):
     sky[0, 0] = np.nan                                     # a pixel the master background does not cover
     monkeypatch.setattr('campfire_pipeline.nirspec.stage2.master_background_on',
                         lambda path: (sky, np.full((ny, nx), 0.5)))
-    frame, live = MX.frame_arrays(canonical)
+    f = MX.frame_arrays(canonical)
+    frame, live = f.arrays, f.live_dq
     assert not os.path.exists(MX.subdir(str(tmp_path)))  # nothing written
+    assert len(f.origin) == 2
     np.testing.assert_allclose(frame['data'][1:, :], 2.0)  # the calibrated frame, not the nod difference
     assert np.isnan(frame['data'][0, 0]) and (frame['dq'][0, 0] & PF.DO_NOT_USE)
     assert frame['dq'][1, 1] == 0                          # the frame's own DQ, not the nod difference's
@@ -127,27 +129,108 @@ def test_frame_arrays_without_a_master_background(tmp_path, monkeypatch):
         MX.frame_arrays(str(tmp_path / 'jw07076001001_03101_00001_nrs1_7.fits'))
 
 
-def test_outlier_flags_come_from_the_nodded_crf():
-    """The one place of the choice: what the nodded Spec3 flagged in this exposure is
-    flagged in its master-background frame; flags the canonical already had are not
-    taken from the crf (the frame keeps its own DQ there)."""
-    frame = dict(data=np.ones((4, 5), np.float32), dq=np.zeros((4, 5), np.uint32))
-    frame['dq'][3, 4] = PF.DO_NOT_USE                      # no master background there
+def test_outlier_flags_are_the_nodded_crf_and_the_hot_pixels():
+    """The one place of the choice: what the nodded Spec3 flagged in this exposure and the
+    hot pixels are flagged in its master-background frame, on top of its own mask; flags
+    the canonical already had are not taken from the crf (the frame keeps its own DQ)."""
+    a = dict(data=np.ones((4, 5), np.float32), dq=np.zeros((4, 5), np.uint32))
+    a['dq'][3, 4] = PF.DO_NOT_USE                          # no master background there
     live = np.zeros((4, 5), np.uint32)
     live[0, 0] = MX.OUTLIER | PF.DO_NOT_USE                # in the nod difference before Spec3
     crf = live.copy()
     crf[2, 1] = MX.OUTLIER | PF.DO_NOT_USE                 # flagged by the nodded Spec3
     crf[1, 3] = 4                                          # another flag: not an outlier
-    out = MX.nodded_outlier_flags(frame, live, crf)
-    assert out['dq'][2, 1] == MX.OUTLIER | PF.DO_NOT_USE
+    hot = np.zeros((4, 5), bool)
+    hot[0, 4] = True
+    out = MX.outlier_flags(MX.Frame(a, live), crf, hot)
+    assert out['dq'][2, 1] == MX.OUTLIER | PF.DO_NOT_USE and out['dq'][0, 4] == MX.OUTLIER | PF.DO_NOT_USE
     assert out['dq'][0, 0] == 0 and out['dq'][1, 3] == 0 and out['dq'][3, 4] == PF.DO_NOT_USE
-    assert frame['dq'][2, 1] == 0                          # the frame itself is untouched
+    assert int(np.sum(out['dq'] > 0)) == 3
+    assert a['dq'][2, 1] == 0                              # the frame itself is untouched
     assert out['dq'].dtype == np.uint32
+
+
+# ---------------------------------------------------------------------------
+# the hot-pixel mask
+# ---------------------------------------------------------------------------
+def _scene(n_exp=3, hot=((10, 30),), cosmic=None, seed=4, origins=None):
+    """Frames of one detector region (err 1): noise, a smooth band fixed on the detector
+    (rows 3-6, 40 sigma, a slow ramp along the dispersion), a source trace that moves by 5
+    rows between exposures with a one-pixel emission line (60 sigma), hot pixels fixed on
+    the detector (30 sigma) and optionally a cosmic ray in one exposure."""
+    ny, nx = 24, 60
+    rng = np.random.default_rng(seed)
+    origins = origins or [(100, 200)] * n_exp
+    frames, truth = {}, {}
+    for k in range(n_exp):
+        oy, ox = origins[k]
+        yy, xx = np.mgrid[:ny, :nx]
+        dy, dx = yy + oy, xx + ox                          # detector pixel
+        d = rng.normal(0.0, 1.0, (ny, nx))
+        d += np.where((dy >= 103) & (dy <= 106), 40.0 * (1 + 0.01 * dx - 2.0), 0.0)   # the band
+        src = 110 + 5 * k
+        d += 20.0 * np.exp(-0.5 * ((dy - src) / 0.8) ** 2)
+        d[(dy == src) & (dx == 225)] += 60.0               # its emission line
+        for y, x in hot:
+            d[(dy == y + 100) & (dx == x + 200)] += 30.0
+        if cosmic is not None and k == cosmic[0]:
+            d[(dy == cosmic[1] + 100) & (dx == cosmic[2] + 200)] += 100.0
+        arrays = dict(data=d.astype(np.float32), dq=np.zeros((ny, nx), np.uint32), err=np.ones((ny, nx), np.float32))
+        frames[f'e{k}'] = MX.Frame(arrays, np.zeros((ny, nx), np.uint32), 'NRS1', (oy, ox))
+    return frames
+
+
+def test_a_hot_pixel_fixed_in_every_exposure_is_flagged():
+    frames = _scene()
+    hot = MX.hot_pixels(frames)
+    for n, m in hot.items():
+        assert m[10, 30] and int(m.sum()) == 1, n
+
+
+def test_a_fixed_smooth_band_and_a_moving_source_are_not_flagged():
+    """The band is fixed on the detector in every exposure but smooth along its rows; the
+    source (and its one-pixel line, 60 sigma above its row) moves between exposures."""
+    frames = _scene(hot=())
+    for n, f in frames.items():
+        s = MX.local_contrast(f)
+        assert np.nanmax(s) > MX.HOT_SIGMA                 # the line stands out in its own exposure
+    assert not any(m.any() for m in MX.hot_pixels(frames).values())
+
+
+def test_a_cosmic_ray_in_one_exposure_is_not_flagged():
+    frames = _scene(hot=(), cosmic=(1, 18, 45))
+    assert MX.local_contrast(frames['e1'])[18, 45] > 50
+    assert not any(m.any() for m in MX.hot_pixels(frames).values())
+
+
+def test_hot_pixels_are_matched_on_the_detector():
+    """Cutouts at different detector positions: the same detector pixel, at different
+    cutout pixels, is flagged in each; other detectors are separate."""
+    frames = _scene(origins=[(100, 200), (102, 199), (100, 200)])
+    hot = MX.hot_pixels(frames)
+    assert hot['e0'][10, 30] and hot['e2'][10, 30] and hot['e1'][8, 31]
+    assert sum(int(m.sum()) for m in hot.values()) == 3
+    frames['e2'].detector = 'NRS2'                         # two exposures left on NRS1: still every one
+    hot = MX.hot_pixels(frames)
+    assert hot['e0'][10, 30] and hot['e1'][8, 31] and not hot['e2'].any()
+
+
+def test_one_exposure_flags_nothing_two_must_agree():
+    one = _scene(n_exp=1)
+    assert not MX.hot_pixels(one)['e0'].any()               # nothing tells a hot pixel from the source
+    two = _scene(n_exp=2)
+    assert all(m[10, 30] for m in MX.hot_pixels(two).values())
+    two['e1'].arrays['data'][10, 30] = 0.0                 # high in one of two: not flagged
+    assert not any(m.any() for m in MX.hot_pixels(two).values())
+    three = _scene()
+    three['e2'].arrays['dq'][10, 30] = PF.DO_NOT_USE       # unusable in one: the other two decide
+    hot = MX.hot_pixels(three)
+    assert hot['e0'][10, 30] and hot['e1'][10, 30] and not hot['e2'][10, 30]
 
 
 def test_master_background_two_d_through_the_nodded_map():
     """``drizzle_2d``: the frames drizzled as data through the product's map, with the
-    nodded outlier flags masking their pixels."""
+    nodded outlier flags and the hot pixels masking their pixels."""
     from test_nirspec_drizzle_map import NX as DX, NY as DY, _exposures as _dexps, _map, _wcs
     exps = _dexps()
     out_wcs = _wcs(0.0, 0.0, shape=(DY, DX))
@@ -157,16 +240,19 @@ def test_master_background_two_d_through_the_nodded_map():
     for e in exps:
         frame = {k: np.array(e[k]) for k in ('data', 'err', 'var_poisson', 'var_rnoise', 'var_flat')}
         frame['data'] = np.full((DY, DX), 3.0, np.float32)
+        frame['data'][9, 14] = 3.0 + 50 * frame['err'][9, 14]          # a hot pixel, in both
         frame['dq'] = np.zeros((DY, DX), np.uint32)
-        frames[e['name']] = (frame, np.zeros((DY, DX), np.uint32))
+        frames[e['name']] = MX.Frame(frame, np.zeros((DY, DX), np.uint32), 'NRS1', (1, 1))
     out = MX.drizzle_2d(d, frames)
-    outlier = [np.where((x.arrays['dq'] & MX.OUTLIER) > 0, MX.OUTLIER | PF.DO_NOT_USE, 0) for x in d.exposures]
-    flagged = d.drizzle({e['name']: {**frames[e['name']][0], 'dq': (frames[e['name']][0]['dq'] | outlier[k])}
+    hot = np.zeros((DY, DX), int)
+    hot[9, 14] = MX.OUTLIER | PF.DO_NOT_USE
+    outlier = [np.where((x.arrays['dq'] & MX.OUTLIER) > 0, MX.OUTLIER | PF.DO_NOT_USE, 0) | hot for x in d.exposures]
+    flagged = d.drizzle({e['name']: {**frames[e['name']].arrays, 'dq': (frames[e['name']].arrays['dq'] | outlier[k])}
                          for k, e in enumerate(exps)}, variances=True)
-    clean = d.drizzle({e['name']: frames[e['name']][0] for e in exps}, variances=True)
+    clean = d.drizzle({e['name']: frames[e['name']].arrays for e in exps}, variances=True)
     np.testing.assert_array_equal(out['data'], flagged['data'])
     np.testing.assert_array_equal(out['err'], flagged['err'])
-    assert not np.array_equal(out['wht'], clean['wht'])   # the flag took the pixel's weight
+    assert not np.array_equal(out['wht'], clean['wht'])   # the flags took the pixels' weight
     np.testing.assert_allclose(out['data'][np.isfinite(out['data'])], 3.0, rtol=1e-6)
     with pytest.raises(ValueError):
         MX.drizzle_2d(d, {exps[0]['name']: frames[exps[0]['name']]})
@@ -196,7 +282,7 @@ def test_single_frame_exposures_from_the_nodded_load():
         dq = np.zeros((NY, NX), np.uint32)
         data[0, 0] = np.nan
         dq[1, 1] = PF.DO_NOT_USE
-        frames[e.name] = (dict(data=data, dq=dq), dq)
+        frames[e.name] = MX.Frame(dict(data=data, dq=dq), dq)
     out = MX.single_frame_exposures(exps, frames)
     assert [x.name for x in out] == [exps[1].name, exps[2].name]
     for x, e in zip(out, exps[1:]):
@@ -204,7 +290,7 @@ def test_single_frame_exposures_from_the_nodded_load():
         assert x.cutout == (0, 0, NY, NX) and x.origin == (11 + pad, 21) and x.diff.shape == (NY, NX)
         np.testing.assert_array_equal(x.var, e.var[pad:pad + NY])
         np.testing.assert_array_equal(x.wav, e.wav[pad:pad + NY])
-        np.testing.assert_array_equal(x.diff, np.asarray(frames[e.name][0]['data'], float) * e.pl_applied[pad:pad + NY])
+        np.testing.assert_array_equal(x.diff, np.asarray(frames[e.name].arrays['data'], float) * e.pl_applied[pad:pad + NY])
         assert not x.ok[0, 0] and not x.ok[1, 1] and x.ok[2, 2]
         assert e.partners and e.diff.shape == (NY + 2 * pad, NX)   # the nodded exposures are untouched
     assert not out[0].ok[3, 5] and out[1].ok[3, 5]

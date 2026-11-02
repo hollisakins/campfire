@@ -1643,10 +1643,26 @@ removed:
   2026-11-02 they were written as copies of the canonicals in `<workspace>/mbkg/` and read
   back.
 - 2-D: the frames drizzled as data through the nodded product's pixel maps
-  (`drizzle_map`, below), so on the nodded grid by construction, with the nodded Spec3's
-  outlier flags (`nodded_outlier_flags`, the one place of that choice; decision pending,
-  below). Until 2026-11-02: one extra Spec3 run per product on the copies, with its own
-  outlier detection (and its own grid, checked against the nodded one).
+  (`drizzle_map`, below), so on the nodded grid by construction. Outlier flags
+  (`outlier_flags`, the one place of that choice; user, 2026-11-02): the nodded Spec3's,
+  plus a hot-pixel mask (`hot_pixels`), plus the pixels without a master background; jwst's
+  outlier detection is not run on the frames. Until 2026-11-02: one extra Spec3 run per
+  product on the copies, with its own outlier detection (and its own grid, checked against
+  the nodded one).
+- Hot-pixel mask: a pixel that stays high at one detector pixel in every exposure cancels in
+  the nod differences, so the nodded detection never flags it. Per frame, `local_contrast` is
+  the smaller of (value minus the median of its row neighbors within +-3 pixels) and (value
+  minus the median of its column neighbors within +-2), over its error: a single hot pixel
+  stands above both, light smooth along the dispersion (a trace, a failed-open band) does
+  not stand above its row, light spread over a few rows (an extended line, a band's edge
+  rows) not above its column. Flagged where it exceeds 5 sigma in every exposure on that
+  detector with a usable value there, at least 2 (`HOT_SIGMA`, `HOT_MIN_EXPOSURES`). Sky,
+  source and neighbors move on the detector between nods, so they are not high at one
+  detector pixel in every exposure; a cosmic ray hits one. Pure noise passes 5 sigma in
+  every one of 2 exposures with probability ~1e-13 per pixel. With one exposure nothing
+  tells a hot pixel from the source, so nothing is flagged (jwst's outlier detection skips a
+  single exposure too); a product with no nod between its exposures could have a bright
+  compact source feature flagged (not seen; noted).
 - Fit: the nodded fit's exposures with the frames in place of the nod differences, as single
   frames (`single_frame_exposures`: geometry, variance and path loss from the nodded load;
   identical to `load_source(single_frames=True)` on the old copies, p1 629466 PRISM), the
@@ -1670,13 +1686,22 @@ scripts in `scratch/claude/drizzle-once/`):
   the old call bit for bit. The map uses the data's grid, the one the extraction reads.
   `fnu` moves by at most 1.5e-7 relative.
 - Master-background 2-D against its own Spec3: the grid alone changes it by 2e-9 of the
-  peak; the outlier flags change 32 of 12990 pixels. The master background's own outlier
-  detection flagged 20 of 23058 usable pixels, the nodded one 10 (9 shared, 11 lost, 1
-  new). Lost are two hot pixels at +69 sigma in one exposure: stationary on the detector,
-  they cancel in the nod differences, so the nodded detection does not flag them there,
-  and they stay in `SCI_MBKG` (two spikes, up to +540 sigma, outside the aperture rows).
-  `SPEC1D_MBKG.fnu` moved by at most 0.4 sigma in 4 of 433 columns. Whether the
-  master-background frames need outlier detection of their own is the user's decision.
+  peak; the rest is the outlier flags. Of 23058 usable pixels the master background's own
+  outlier detection flagged 20, the nodded one 10 (9 shared). Two hot pixels at +69 sigma
+  (detector 1792,1501 and 1794,1489) are stationary, cancel in the nod differences and are
+  missed by the nodded detection in one exposure each: with the nodded flags alone they
+  stayed in `SCI_MBKG` as spikes up to +540 sigma. With the hot-pixel mask (12 pixels: 4
+  detector pixels x 3 exposures, both +69 sigma pixels among them) the flags total 18 (14
+  shared with the old 20); the brightest `SCI_MBKG` pixel is 7 sigma (old run: 207 sigma,
+  its own detection missed one of the two hot pixels in one exposure, which is the largest
+  |new-old|/err left, -61 sigma, the new value the clean one; largest the other way +2.6).
+  `SPEC1D_MBKG.fnu` moves by at most 1.4 sigma in one column (0.906 um), under 1 sigma in 5
+  others. Figure: `scratch/claude/drizzle-once/hot_pixels_629466.png`.
+- Fixed smooth light (p1 924509 G395M, `PFFOPEN` 0.54): the mask flags 8 detector pixels in
+  each of the 3 NRS1 exposures (+5 to +48 sigma, a 2x2 cluster among them; the nodded crf
+  had 2 of the 24). With the master background added back to the frames (sky and
+  failed-open bands, 7000-9000 pixels above 5 sigma per exposure, fixed on the detector in
+  every one) it flags exactly the same pixels and nothing in the bands.
 - Without a crf (a rare named condition) there is no master-background spectrum: the old
   one had its own Spec3.
 - Time (machine under load): the master-background Spec3 (7.6 s) is gone; the nodded drizzles

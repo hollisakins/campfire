@@ -38,10 +38,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   on copies of the canonicals written to `mbkg/`). The master-background frames are built in
   memory and fitted on the nodded load's exposures. The crf's own arrays through the map
   reproduce Spec3's s2d bit for bit; the nodded model arrays move by 1-2 float32 ulps (the
-  data's grid instead of one built from each image). The master-background 2-D now takes the
-  nodded Spec3's outlier flags (`mbkg_extraction.nodded_outlier_flags`; decision pending): on
-  p1 629466 PRISM 32 of 12990 2-D pixels change, `SPEC1D_MBKG.fnu` by at most 0.4 sigma.
-  Without a crf there is no master-background spectrum. Same extensions, columns and cards.
+  data's grid instead of one built from each image). The master-background frames' outlier
+  flags (`mbkg_extraction.outlier_flags`) are the nodded Spec3's plus a hot-pixel mask
+  (`hot_pixels`: more than 5 sigma above both its row and its column neighbors in every
+  exposure, at least 2; they cancel in the nod differences) plus the pixels without a master
+  background; no outlier detection of their own. On p1 629466 PRISM: 18 flagged pixels
+  against the old run's 20 (14 shared), the brightest `SCI_MBKG` pixel 7 sigma (old run 207),
+  `SPEC1D_MBKG.fnu` within 1.4 sigma. Without a crf there is no master-background spectrum.
+  Same extensions, columns and cards.
 
 - **NIRSpec master background 1.6: every footprint painted, light from one MSA spot counted
   once.** The G395M master background read low (pixels on a failed-open shutter +54 %, pixels
