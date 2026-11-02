@@ -21,7 +21,7 @@ p.add_argument('--bin', type=int, default=1,
                help='wavelength pixels averaged per displayed column, for faint sources (1: none)')
 p.add_argument('--grating-tag', default='prism_clear',
                help="the source's spec.fits grating tag, for the wavelength axis (e.g. 'g395m_f290lp')")
-p.add_argument('--stretch', type=float, nargs=2, default=(2.0, 92.0), metavar=('LO', 'HI'),
+p.add_argument('--stretch', type=float, nargs=2, default=(1.0, 99.5), metavar=('LO', 'HI'),
                help='percentiles clipped in the calibrated frames (lower HI = harder stretch)')
 p.add_argument('--per-column', action='store_true',
                help="show the calibrated frames divided by each column's median, so the background's rise "
@@ -151,7 +151,7 @@ for r, fr in enumerate(frames):
         from matplotlib.colors import Normalize
         norm = Normalize(vmin=np.percentile(inside, args.stretch[0]), vmax=np.percentile(inside, args.stretch[1]))
     else:
-        norm = C.asinh_norm(shown, *args.stretch, soft=0.02)
+        norm = C.asinh_norm(shown, *args.stretch)
     ax.imshow(shown, cmap='Greys', norm=norm, aspect='auto')
     C.label_panel(ax, f'nod {fr["nod"]}')
     nxd = fr['before'].shape[1]
