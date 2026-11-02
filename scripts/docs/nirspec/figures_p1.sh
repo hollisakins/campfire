@@ -9,7 +9,7 @@ D=${0:A:h}
 OBS=ember_cosmos_p1
 PY=(conda run --no-capture-output -n campfire python)
 
-conda run --no-capture-output -n campfire-docs python $D/fig_flow.py   # needs Graphviz (see the script)
+$PY $D/fig_flow.py
 $PY $D/fig_overlap.py --root $ROOT --obs $OBS --exposure jw07076001001_05101_00001_nrs1
 $PY $D/fig_master_background.py --root $ROOT --obs $OBS --exposure jw07076001001_03101_00001_nrs1 \
     --region 680 1430 470 210
