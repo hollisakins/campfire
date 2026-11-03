@@ -242,7 +242,11 @@ background slitlets. The forward model's shutter: `profile_fit.SHUTTER`
   0.5-1.0 % inside, 0.5-1.2 % at 0.45-0.6 pitch. One structured residual: EGS p1's profile sits
   slightly toward +y of the training fields (ratio 1.07 at the upper edge, 0.95 at the lower),
   a field-to-field registration offset no single table removes, under 2 % of the open level.
-  G140M, G235M to follow (`scratch/claude/bs_heldout_b0c0/heldout_<disperser>.png`).
+  G140M (GOODS-S held out): inside the shutter 0.5 / 1.1 % at the outer edges (CRDS 3.9 /
+  4.7 %), interior bar 0.8 / 0.3 % (CRDS 13 / 1.4 %); absolute rms 0.3-0.7 % inside, max 1.8 %;
+  past the upper edge the ratio climbs to 1.1-1.25 at 0.55-0.75 pitch (at most 2.6 % of the open
+  level), the same small field-to-field offset toward +y as on PRISM. G235M to follow
+  (`scratch/claude/bs_heldout_b0c0/heldout_<disperser>.png`).
 - (Done, kept for the record.) Whether the forward model's shutter edge (clip at 0.50, blur split 50/50) agrees with the
   measured uniform-sky profile: edge 50 % point, narrowing with wavelength (open region ±0.45
   pitch at 1 µm, ±0.38 at 5 µm on the prism), floor under the bars (extraction session; merge
