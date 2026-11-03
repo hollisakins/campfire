@@ -1006,8 +1006,19 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
     `profile_contam`, `trace_overlap` and `slitlet_neighbours` keep the nominal +-0.50, which
     contains the open area whatever the shift. `psf_calibration` takes `--shutter` for its star
     fits.
-  - **Open.** The blue end against jwst's point loss; the held-out check of the b0c08026 grating
-    tables, which the gratings' T is fitted to; p1 stage 3 rerun with `FIT_VERSION` 5.
+  - **p1 stage 3 rerun with `FIT_VERSION` 5 (2026-11-03).** Stages 2a / 2b from the morning's
+    full rerun, stage 3 with `--overwrite -p 12` (`run_stage3_shutter5.log`): 681 products,
+    no failures; stage 3 took 65 min against 62 with the hard edge. Against the morning's
+    products (`extraction-v2/p1_before_shutter`, `FIT_VERSION` 4, same frames;
+    `extraction-v2/shutter_flux_fig.py`, figure `shutter_flux_change_p1.png`), integrated new/old
+    over pixels at S/N > 5: PRISM 62 sources median 0.998 (16-84 % 0.995-1.000), off-centre
+    (0.25 slit units or more from the shutter centre, 28) 0.984-1.009; G395M 25 sources median
+    0.997, off-centre 0.937-1.066. Per wavelength the median is -0.1 to -0.5 % (PRISM, most at
+    the red end) and -0.4 to -0.7 % (G395M). The largest moves are all sources whose fitted
+    centre is near or past the open edge (|offset| 0.29-0.57: G395M 920048 +6.6 %, 922891
+    +6.3 %, 880165 -6.3 %; PRISM 925660 and 925403 -1.5 %).
+  - **Open.** The blue end against jwst's point loss; the held-out check of the G140M / G235M
+    tables (G395M and PRISM done, section 3.2).
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
