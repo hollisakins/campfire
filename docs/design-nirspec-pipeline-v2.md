@@ -756,6 +756,62 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
   `table_test` compares candidates with the shipped table. A rerun of the calibration therefore
   starts from `fit` and `select`. The results above (selection, J, S) came from the
   two-component star fits, which were not rerun.
+- **Second round, everything from S (2026-11-03, user-approved).** The aim was to close the loop.
+  S's shape was fitted freely, but its star selection, variance floors, pixel masks and start
+  came from fits with the old table. In this round:
+  - every star was refitted with S (floor and mask from S, the core width free on S's core);
+  - the stars were selected again with the same cuts;
+  - the smooth joint fit was run per detector on all stars, starting from S's own spline
+    coefficients, giving table S2.
+
+  Outputs: `scratch/claude/psf_cal_s2/` (scripts in `scripts/`, `s2_compare.log`,
+  `psf_table_wing3_after_S2.json`, figures `psf_stack_tables_S2.png`,
+  `psf_parameters_S2.png`). Runtime: star fits 5 min (6 processes), smooth fits 9 min each,
+  stack test 3 min.
+  - Masks: unchanged. Of 7.7 million pixels in the star and range fits, the used-pixel counts
+    change by 285 in all, under 0.01 %. The 5-sigma clip on the floored variances removes
+    almost nothing with either table.
+  - Selection, as clean star-ranges:
+    - NRS1 641 to 609: 40 left (19 as star-wide width outliers, 13 as range outliers, 6 edge,
+      1 S/N, 1 width at its bound) and 8 entered.
+    - NRS2 524 to 513: 32 left (22 outliers, 4 range outliers, 5 edge, 1 S/N) and 21 entered
+      (19 former edge star-ranges, the edge test now reading the S fit's centre).
+
+    Why the outliers change: the width is now the core of S with S's wing and shoulder held, so
+    on NRS2 at 1.0-1.5 um the population's spread grows (MAD 0.045 against 0.023 rows) about a
+    lower median (0.310 against 0.376). Stars at both ends become outliers (cores 0.15-0.23 or
+    0.45-0.48 rows). Seven former outliers are back, among them the two widest (0.85 and
+    0.95 rows before). The bright subset the smooth fit uses barely moves: 269 star-ranges
+    from 50 stars on NRS1 (49 before), 238 from 58 on NRS2 (the same).
+  - How far S2 is from S: on NRS1 the two coincide, with every node value within its formal
+    error or a few hundredths of a row. The largest profile difference (PSF before shutter and
+    pixel, % of peak) is 0.16-0.61 % at 1.0-4.1 um and 1.06 % at both ends, where the data stop.
+    On NRS2 the share between wing and shoulder moves at 1.5-3 um: at 2.1 um the wing share goes
+    from 0.29 to 0.34 and the shoulder width from 1.08 to 1.42 rows; at 3.0 um the wing width
+    goes from 1.28 to 1.14 rows. These moves are many times the formal errors. The profile
+    differs by 1.1-2.2 % of peak (largest at 2.0-3.3 um).
+  - Free-centre stack test on the new selection (S2 / S / J, largest |median residual|, % of
+    peak):
+
+    | Detector | 0.7-1.0 | 1.0-1.5 | 1.5-2.0 | 2.0-2.6 | 2.6-3.3 | 3.3-4.1 | 4.1-5.3 um |
+    |---|---|---|---|---|---|---|---|
+    | NRS1 | 0.27 / 0.44 / 0.45 | 0.77 / 0.81 / 0.71 | 0.47 / 0.48 / 0.45 | 0.61 / 0.58 / 0.48 | 0.62 / 0.66 / 0.69 | 0.81 / 0.98 / 1.11 | 0.86 / 0.97 / 1.64 |
+    | NRS2 | 0.30 / 0.32 / 0.48 | 0.42 / 0.42 / 1.10 | 0.63 / 0.52 / 0.93 | 0.97 / 0.70 / 0.81 | 0.55 / 0.96 / 0.99 | 0.83 / 1.27 / 1.38 | 1.37 / 1.48 / 1.75 |
+
+    S2 is under 1 % in 13 of 14 ranges and S in 12. S2 is better at NRS2 2.6-4.1 um and worse
+    at NRS2 1.5-2.6 um. In the stack plots the residual curves of the two lie on top of each
+    other within their uncertainty bands.
+  - Verdict:
+    - NRS1: S is the self-consistent answer; the old floors, masks and selection did not bias
+      it.
+    - NRS2: the profile is fixed to about 1 % of peak in the data, but at 1.5-3 um the split
+      between wing and shoulder is not. It moved by up to 2 % of peak in the PSF itself when
+      the selection and floors changed. That is the size of the half-to-half differences of
+      the held-out test, and the stack test does not prefer one split overall.
+
+    S does not need replacing for accuracy. S2 is the self-consistent table and meets the 1 %
+    goal in one more range; adopting it is the user's call. A third round would show whether
+    NRS2 settles or keeps trading wing against shoulder.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
@@ -2110,7 +2166,7 @@ a fix or needs another field or disperser), **To make**.
 | Default galaxy width 0.15 vs 0.21 | user | |
 | Nod offset law (3.7, `NOD_OFFSET_LAW`: each nod at its own planned SRCYPOS): built, on by default | extraction session | |
 | Centre-law refit with the nod law (3.7, `psf_calibration.py` step `centre_law`): adopt or not (the two-component PSF refit is superseded by table S and its code removed) | user | |
-| Three-component PSF (3.7, `wing3_after`, general `psf_components` tables): table rule decided 2026-11-02 (smooth joint fit, table S); S adopted 2026-11-03 (`FIT_VERSION` 4). Left: the 3.3-5.3 um ranges (1.0-1.3 % of peak, few stars; more calibration stars), and the flux change on p1 | extraction session | |
+| Three-component PSF (3.7, `wing3_after`, general `psf_components` tables): table rule decided 2026-11-02 (smooth joint fit, table S); S adopted 2026-11-03 (`FIT_VERSION` 4); the self-consistent second round gives S2 (same on NRS1, NRS2 wing/shoulder split moved by up to 2 % of peak at 1.5-3 um, stack test equal overall): keep S or adopt S2. Left: the 3.3-5.3 um ranges (few stars; more calibration stars), and the flux change on p1 | user (S or S2); extraction session | |
 | Forward-model shutter edge vs measured bar shadow | extraction session | |
 | Stage 1 footprint past the calibrated range | MB session | user |
 | Runtime baseline on one full observation | both | |
@@ -2207,4 +2263,5 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   that the table is a smooth joint fit, and its result (table S, held-out test).
 - **2026-11-03.** Section 3.7: table S adopted as the extraction's PSF (`FIT_VERSION` 4), and
   the two tests that had depended on the old PSF. Later: the old two-Gaussian PSF removed from
-  the code (`profile_fit`, `psf_calibration`, tests); sections 3.7, 6 and 7 updated.
+  the code (`profile_fit`, `psf_calibration`, tests); sections 3.7, 6 and 7 updated. Then the
+  second, self-consistent round from S (table S2) and its verdict.
