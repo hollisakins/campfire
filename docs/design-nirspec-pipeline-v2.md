@@ -1048,7 +1048,57 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
     a model, between visits of one star on one detector (3982, NRS1 in c4_p3 and c4_p5); the
     NIRSpec path-loss calibration programs with stars at deliberate offsets in the shutter
     (1493, 4465, 9278) would settle it.
-  - **Open.** The blue end against jwst's point loss; check 1's edge-star excess. (The held-out
+- **A diffraction model of the PSF and the bars together (2026-11-03, in progress; user: keep going
+  until a model describes the combined PSF + bars for the forward model).** Scratch prototype in
+  `scratch/claude/extraction-v2/edge/` (`fourier1d.py`, `optics.py`); nothing in the pipeline yet.
+  - Why. Measured without a model (`raw_ratio.py`: the light of a repeated star in a fixed window,
+    path loss removed), stars near an edge keep more light than either jwst's point path loss or the
+    shipped model predict (3982 at -0.386: 0.91 of its central visit at 0.7-1 um; jwst 0.76, shipped
+    model at the fitted position 0.57). Their light really peaks where the fit puts them
+    (`edge_profiles.png`; chi2 10-35 x lower than at the planned position), and over 35 visits the
+    fitted position is 1.16 x SRCYPOS (rms 0.013 about 1.15 x, 0.036 without): SRCYPOS is in shutter
+    pitches, the model's slit position in open heights (1 pitch = 1.15). jwst's MOS1x3 path-loss
+    table's y axis also runs in pitches (-1.5..1.5). A constant pre/post split cannot satisfy the
+    bar shadow, the edge-star shapes and their transmitted light at once (`explore_split.py`):
+    the telescope's own image is much narrower than the observed PSF in the blue and as wide by
+    3 um, and light diffracted at the shutter edges is partly lost at the spectrograph's pupil stop
+    and partly spread under the bars, so a filled shutter and a point source lose light differently.
+  - Model. One-dimensional Fraunhofer optics along the slit: the telescope's field at the MSA (the
+    pupil's Fourier transform at each wavelength, D = 6.5 m), times the open shutters, through a
+    pupil stop rho x the telescope pupil, imaged on the detector with a Gaussian blur, integrated
+    over a row; uniform light is the incoherent sum over sources. Fitted to the bar-shadow tables
+    with three numbers shared by every wavelength: PRISM rho 0.976, blur 0.031" (-0.003"/um), no
+    obscuration, median misfit 0.015 (`fit_fourier_bs.py`, `fourier_bs_prism.png`); G395M rho 1.000,
+    blur 0.031", misfit 0.016. A round pupil fits 0.019 (rho 0.96). The centred point image from the
+    same numbers matches the measured star PSF's core at 1.5-4.5 um with nothing fitted to stars
+    (`fourier_vs_psf.png`). The rest of a star's PSF (blue width and wings: the telescope's
+    wavefront error and jitter; the one-sided shoulder) is an empirical kernel applied on the sky
+    before the shutter: placed on the detector instead it raises the bar-shadow misfit to 0.022-0.027,
+    placed before the shutter it leaves uniform light untouched. One kernel per detector, fitted to
+    the centred PSF S (`fit_kemp_det.py`, within 0.2-1.6 % of its peak), then corrected from the
+    star stack (`fit_kemp_iter.py`).
+  - Engine (`optics.py`). Tables of point images per open-shutter pattern (wavelength x source
+    position x detector position), a Gaussian galaxy as a Gauss-Hermite sum over them;
+    `OpticsModel` is `ProfileModel` with `image` and `transmission` from the tables. Throughput:
+    jwst's point path loss at the exposure's position, its own position dependence divided out
+    with its MOS1x3 table, our transmission at the centre in the denominator (`norm='model_y'`): the
+    absolute level and the dispersion-direction loss stay jwst's, the slit-direction loss is the
+    model's. Fit time about the shipped model's.
+  - Results so far.
+    - Check 1 (the same star at different positions): rms of ln(flux / central visit), bands
+      0.7-1 / 1-1.5 / 1.5-2.5 / 2.5-3.5 / 3.5-5 um, shipped 28 / 25 / 27 / 15 / 17 %, near-edge visits
+      38 / 32 / 34 / 15 / 20 %; optics 12 / 9 / 19 / 11 / 17 %, near-edge 7 / 10 / 24 / 9 / 21 %.
+      Fitted centres 1.144 x SRCYPOS, rms 0.013 about 1.15 x. 4461 (77 % at 1.5-2.5 um under every
+      model) and 2828 (two detectors, 43 % in the blue) are not position effects.
+    - The red-end scatter follows the position across the shutter (SRCXPOS): stars far off-centre
+      in x come out relatively bright, so jwst's dispersion-direction loss also falls too steeply.
+      The same diffraction model across the 0.20" width (SRCXPOS in 0.27" pitches) over-corrects
+      more (`norm='model_xy'`: 3.5-5 um 22 % against 17 %). Kept jwst's for now; the path-loss
+      calibration programs are the test.
+    - Star stack, free centres, all clean stars: per-detector kernel from S, within 1 % in 9 of 14
+      ranges (shipped PSF S 12; median worst residual 0.94 against 0.68 %); per star-range chi2/dof
+      the same as the shipped model (median ratio 1.001 over 1,127 star-ranges, better in 47 %).
+- **Open.** The blue end against jwst's point loss; check 1's edge-star excess. (The held-out
     check of the bar-shadow tables is done, section 3.2.)
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
