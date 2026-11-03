@@ -1098,6 +1098,67 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
     - Star stack, free centres, all clean stars: per-detector kernel from S, within 1 % in 9 of 14
       ranges (shipped PSF S 12; median worst residual 0.94 against 0.68 %); per star-range chi2/dof
       the same as the shipped model (median ratio 1.001 over 1,127 star-ranges, better in 47 %).
+      After one correction of the kernels from the stack residuals (`fit_kemp_iter.py`,
+      `kemp_slot_DET_it1.json`): 13 of 14 ranges within 1 %. Check 1 with those kernels:
+      12 / 8 / 9 / 11 / 16 % (4461 excluded).
+    - p1 PRISM fluxes (40 brightest clean sources, `p1_optics_flux.py`): centred compact sources come
+      out 0.995 / 1.001 / 1.023 / 1.033 / 1.039 x the shipped model in the five bands. The light of
+      each exposure's own source is the same in both models; the difference is how much of a
+      source's light lands in the other nods' rows, which the nod subtraction removes from the
+      trace. Light spread evenly across the slitlet subtracts like background, so nod differences
+      cannot measure it, and its amount sets the absolute flux (`debug_design.py`).
+    - The wide light measured directly (`mb_star_stack.py`): 232 clean stars, single frames with the
+      master background subtracted, profiles stacked about the fitted trace. Share of a star's light
+      beyond 0.8 slit units of its trace, five bands: data 0.8 / 0.9 / 1.1 / 1.5 / 2.2 %; shipped
+      model 0.4 / 0.3 / 0.05 / 0.2 / 0.6 %; slot-pupil optics 0.7 / 1.1 / 1.9 / 2.8 / 3.7 %. The
+      shipped model has almost no wide wing; the slot pupil has twice the real one in the red. The
+      excess is diffraction (the hard-edged 1-D pupil's 1/y^2 wing), not the kernel
+      (`wing_budget.py`). The faint p1 galaxies are too noisy for this test, and comparing the
+      nodded and master-background fluxes at a fixed shape does not separate the models (both move
+      together, within 1 %).
+    - Changed model (in progress). Telescope pupil amplitude (1 - u^2)^alpha across the slit
+      (alpha 0 the slot; 0.5 the chord of a round pupil seen through a narrow strip). The bar shadow
+      prefers alpha 0 (misfit 0.0137; 0.25: 0.0161; 0.5: 0.0193); at alpha 0.25 (rho 0.996, blur
+      0.034" - 0.0026"/um) the diffraction's wide light falls below the data at every wavelength, so
+      a non-negative kernel can supply the rest. The kernel is now a free table over source offset
+      (31 nodes, -2..2 slit units), fitted linearly (`fit_kernel_linear.py`): the image is linear
+      in the kernel, so per star R = model pixels per unit kernel weight at each offset (nod
+      differences and master-background single frames, the fitted spectrum and shape held), normal
+      equations summed per detector and band, a non-negative solve with a penalty on the wing's
+      second differences; three iterations with the stars refitted. The penalty and the symmetry
+      were chosen by fitting half the stars and scoring the other half (`klin_cv.py`): the wing
+      smoothed, the core free, not symmetric (forcing symmetry is clearly worse on held-out stars).
+      Fitted with the production centre law, the kernel took up the law's centring errors as a
+      shoulder one row out and the free-centre star stack failed it (5 of 14 ranges within 1 %).
+      So the fit now uses the stack test's own state (`fit_kernel_ranges.py`): every clean star
+      in every range where it is clean, the range fitted by `psf_calibration.RangeFit` with the
+      optics model (centre and drift free per range, an offset per exposure, no law, the S/N
+      floor), R built at that state; one kernel per detector and range, linear in ln(lambda)
+      between range centres. Two iterations converge (integrals 1.000 +- 0.006).
+    - Result (`klin_r2_DET.json`; alpha 0.25, rho 0.996, blur 0.034" - 0.0026"/um). The kernel: a
+      narrow core, a shoulder at 0.2-0.3 slit units (about one detector row; stronger on the + side),
+      and a wide wing (2-5 % of the light beyond 0.3 slit units, 0.4-0.9 % beyond 0.8).
+      - Star stack, free centres: 12 of 14 ranges within 1 % (median worst residual 0.77 %; shipped
+        12 of 14, 0.68 %); per star-range chi2/dof equal to the shipped model's (median ratio 1.000
+        over 1,127 star-ranges, better in 50 %; 0.993-0.997 at 2.6-5.3 um).
+      - Single frames (master background subtracted): mean wing residual within 0.04 % of the
+        peak in every band (shipped +0.05 to +0.16 %).
+      - Check 1: 12 / 8 / 8 / 12 / 15 % (shipped 28 / 25 / 22 / 15 / 17 %); edge visits
+        5 / 10 / 10 / 11 / 19 % (shipped 38 / 32 / 28 / 15 / 20 %), median edge-visit bias
+        +3 / -1 / +1 / -4 / -10 % (shipped +25 / +10 / +21 / +13 / -18 %). The red end's deficit is
+        the dispersion-direction loss (above), not this model.
+      - p1 PRISM, 40 brightest clean sources: centred compact sources 1.014 / 1.010 / 1.021 /
+        1.026 / 1.020 x the shipped flux (the wide light the shipped model lacks); near the edge
+        0.94 / 0.99 / 1.03 / 1.09 / 1.19; chi2/dof median 1.092 against 1.095, lower in 55 %.
+      - Engine fixes on the way: the tables now span +-5.5 slit units in source and detector
+        position (wide galaxies and long slitlets were cut at 2.8 / 3.0), and a wide galaxy is
+        summed over source positions at most 0.025 slit units apart (8 Gauss-Hermite nodes left
+        ripples at the bars: 925389, width 0.56, chi2/dof 1.31; now 1.098 against 1.101 shipped).
+    - Open. The bar shadow of uniform light is the alpha 0.25 diffraction's (misfit 0.016 against
+      the shipped edge transmission's 0.011), which matters for wide galaxies. The dispersion-
+      direction loss. G395M and the other dispersers (kernels and diffraction numbers per
+      disperser). The fit of a faint star can fall into a second minimum (2401 in check 1). Fit
+      time for wide galaxies. Pipeline integration (FIT_VERSION 6) waits for approval.
   - **Open (shipped shutter model).** The blue end against jwst's point loss; check 1's edge-star excess. (The held-out
     check of the bar-shadow tables is done, section 3.2.)
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
