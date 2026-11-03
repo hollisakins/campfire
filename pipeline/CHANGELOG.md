@@ -28,7 +28,50 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+
+- **NIRSpec: PSF calibration module for the profile fit (`nirspec/psf_calibration.py`).**
+  Re-derives the cross-dispersion PSF table (`profile_fit.PSF_TABLES`) and the trace centre
+  law (`CENTRE_LAW`) from calibration-field PRISM stars through the profile fit's own model
+  (the frames stage 3 reads, shutter clipping, pixel integration, throughput, nod partners),
+  with figures; CLI `python -m campfire_pipeline.nirspec.psf_calibration`. `ProfileModel`
+  takes optional `psf_tables` / `centre_law_tables` (default: the module tables, so the
+  extraction is unchanged); `NO_CENTRE_LAW` measures where the light is. The tables
+  themselves are not changed here. Also measures the per-exposure nod offsets (`offsets`,
+  `offset_law` steps) behind `NOD_OFFSET_LAW`.
+- **NIRSpec profile fit: general PSF tables.** `profile_fit.psf_components` reads a PSF table as
+  a list of Gaussian components per wavelength node (share, width, offset towards slit +y, the
+  share of the width before the shutter, offset before or after it); the legacy two-component
+  `PSF_TABLES` form is the special case and reproduces the previous model to 1e-12 (tested).
+  The extraction's default table is unchanged. `psf_calibration` fits stars with such PSFs
+  (`PSFForm`, `fit_form`) and builds candidate tables from them, including the smooth joint
+  fit (`smooth_joint_fit_all`: every PSF parameter a spline in wavelength over 0.6-5.3 um,
+  fitted per detector to the stars of all ranges at once, with the stars' centres and offsets
+  in the same problem) and its held-out test.
+
 ### Algorithm
+
+- **NIRSpec profile fit: each nod at its own planned position (`profile_fit.NOD_OFFSET_LAW`,
+  on by default).** The model placed a source at one slit position in every exposure; the MSA
+  planning metadata gives each exposure its own (SRCYPOS), and the nods differ by up to ~0.08
+  detector rows, in proportion to the nod step and linearly across the field. Each exposure's
+  image, and its negative copies in the other nods' differences, now sits at its own planned
+  position (`nod_shifts`; `ProfileModel(nod_law=False)` restores the old geometry). Measured on
+  465 calibration stars (PRISM and six gratings): the planned shifts take the rms of freely
+  fitted offsets from 0.010 to 0.004 slit units; the median chi2 of PRISM star fits falls to
+  0.37 of its value above peak S/N 100 and 0.62 at 30-100. On p1 galaxies the chi2 improves by
+  up to 7 % and the flux moves by < 0.3 %. A single exposure, or a placeholder SRCYPOS, is not
+  shifted.
+
+- **NIRSpec profile fit: three-component cross-dispersion PSF (`FIT_VERSION` 4).** The PSF is a
+  core, a wing with its own width and offset, and a one-sided shoulder toward slit +y, both
+  offsets acting after the shutter; every parameter varies smoothly with wavelength over
+  0.6-5.3 um. Fitted jointly per detector to the bright calibration-field stars, each star's
+  centre free in every exposure (`psf_calibration.smooth_joint_fit_all`), and shipped as
+  `data/nirspec_profile_psf.json`. Stacked stars match it to within 1 % of the peak in 11 of 14
+  detector-ranges (1.0-1.3 % at 3.3-5.3 um, few stars), against 1.1-4.3 % for the previous
+  two-Gaussian table (kept as `LEGACY_PSF_TABLES`); a fit on half the stars does as well on the
+  other half below 3.3 um.
 
 - **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
   run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint

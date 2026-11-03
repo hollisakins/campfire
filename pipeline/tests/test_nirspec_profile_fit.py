@@ -261,3 +261,135 @@ def test_fit_recovers_flux_when_a_partner_lacks_the_source():
     exps[2].has_source = True
     B = PF.fit(exps, chromatic=False)
     assert B.chi2_red > 2 * F.chi2_red
+
+
+# ---------------------------------------------------------------------------
+# general PSF (psf_components): the legacy table is the two-component special case
+# ---------------------------------------------------------------------------
+def _legacy_image(M, p, k, y, lam, dy):
+    """The image formula before the general PSF (core + wing at PSF_K x core, no offsets,
+    even split), written out."""
+    S_rows, f = PF.psf_params(lam, M.exps[k].detector)
+    a = S_rows * dy / np.sqrt(2.0)
+    c = M.centre(p, np.zeros(len(M.exps)), k, lam)
+    w = M.width(p, lam)
+    iv = PF.open_intervals(M.exps[k].open_k)
+    comps = [(1 - f, np.sqrt(a ** 2 + w ** 2), a), (f, np.sqrt((PF.PSF_K * a) ** 2 + w ** 2), PF.PSF_K * a)]
+    acc = 0.0
+    for xi, wi in zip(PF._GLX, PF._GLW):
+        yy = y + 0.5 * dy * xi
+        acc = acc + wi * sum(fr * PF._clipblur(yy, c, s1, s2, iv) for fr, s1, s2 in comps)
+    return 0.5 * dy * acc
+
+
+def _legacy_as_general(det_tables):
+    return {det: dict(lam=PF.PSF_LAM, components=[dict(sigma=t['S_rows']),
+                                                  dict(sigma=PF.PSF_K * np.asarray(t['S_rows']), frac=t['f'])])
+            for det, t in det_tables.items()}
+
+
+def test_legacy_table_reproduces_the_original_model():
+    exps = _exposures(src_y=0.12)
+    M = PF.ProfileModel(exps, psf_tables=PF.LEGACY_PSF_TABLES)
+    p = np.array([0.12, 0.01, np.log(0.08), 0.0])
+    e = exps[1]
+    y, lam, dy = e.y.ravel(), e.wav.ravel(), e.dy.ravel()
+    new = M.image(p, np.zeros(3), 1, y, lam, dy)
+    old = _legacy_image(M, p, 1, y, lam, dy)
+    assert np.allclose(new, old, rtol=1e-12, atol=1e-15)
+    # the same table written in the general layout gives the same design matrix
+    G = PF.ProfileModel(exps, psf_tables=_legacy_as_general(PF.LEGACY_PSF_TABLES))
+    assert np.allclose(G.design(p, np.zeros(3)).toarray(), M.design(p, np.zeros(3)).toarray(), rtol=1e-12, atol=1e-15)
+
+
+def test_general_psf_components_offsets_and_split():
+    """A component's offset moves its light; before the shutter it is clipped there, after
+    it the light lands beyond the shutter edge."""
+    exps = _exposures(src_y=0.0)
+    p = np.array([0.0, 0.0, np.log(PF.W_FLOOR), 0.0])
+    one = lambda off, pre: {'NRS1': dict(lam=[0.5, 6.0], components=[dict(sigma=0.4, offset=off, pre=pre)])}
+    lam = np.full(400, 2.0)
+    dy = np.full(400, DY)
+    y = np.linspace(-2.0, 2.0, 400)
+    for pre in (True, False):
+        M = PF.ProfileModel(exps, psf_tables=one(1.0, pre))
+        im = M.image(p, np.zeros(3), 0, y, lam, dy)
+        assert abs(np.sum(im * y) / np.sum(im) - 1.0 * DY) < 0.01      # light centred one row towards +y
+    # a source at the top edge of its shutter: an offset before the shutter is clipped, after it is not
+    t_pre = PF.ProfileModel(exps, psf_tables=one(1.5, True)).transmission(
+        np.array([0.4, 0.0, np.log(PF.W_FLOOR), 0.0]), np.zeros(3), 0, lam[:1], dy[:1], aperture=(0,), centre=0.4)
+    t_post = PF.ProfileModel(exps, psf_tables=one(1.5, False)).transmission(
+        np.array([0.4, 0.0, np.log(PF.W_FLOOR), 0.0]), np.zeros(3), 0, lam[:1], dy[:1], aperture=(0,), centre=0.4)
+    assert t_pre[0] < t_post[0]
+    comps = PF.psf_components(np.array([1.0, 3.0]), 'NRS1', {'NRS1': dict(lam=[0.6, 5.3], components=[
+        dict(sigma=[0.3, 0.6]), dict(sigma=1.0, frac=[0.2, 0.4], offset=0.5, pre=False)])})
+    assert np.allclose(comps[0]['frac'] + comps[1]['frac'], 1.0)
+    assert comps[1]['pre'] is False and np.allclose(comps[1]['offset'], 0.5)
+
+
+# ---------------------------------------------------------------------------
+# nod geometry (NOD_OFFSET_LAW): each exposure at its own planned position
+# ---------------------------------------------------------------------------
+def _nodded(src=(0.10, 0.115, 0.085)):
+    """The three nods with planned positions that differ between nods, as the MSA planning
+    metadata gives them (the nod step projected on the MSA varies across the field)."""
+    exps = _exposures(src_y=src[0])
+    for e, s in zip(exps, src):
+        e.src_y = s
+    return exps
+
+
+def test_nod_shifts_follow_each_exposures_planned_position():
+    exps = _nodded()
+    assert np.allclose(PF.nod_shifts(exps), [0.0, 0.015, -0.015])
+    assert np.allclose(PF.nod_shifts(exps, law=False), 0.0)
+    assert np.allclose(PF.nod_shifts(exps, law=dict(scale=2.0)), [0.0, 0.03, -0.03])
+    exps[2].src_y = 0.0                      # a placeholder next to real values: no shift
+    assert PF.nod_shifts(exps)[2] == 0.0
+    exps[1].has_source = False               # a frame without the source: no shift
+    assert PF.nod_shifts(exps)[1] == 0.0
+
+
+def test_a_single_exposure_is_not_shifted():
+    """With one exposure (no nod partners) the reference is its own planned position: the
+    law changes nothing."""
+    e = _nodded()[1]
+    e.partners = []
+    assert PF.nod_shifts([e])[0] == 0.0
+    M_on, M_off = PF.ProfileModel([e]), PF.ProfileModel([e], nod_law=False)
+    p = np.array([0.115, 0.0, np.log(0.1), 0.0])
+    assert np.allclose(M_on.design(p, np.zeros(1)).toarray(), M_off.design(p, np.zeros(1)).toarray())
+
+
+def test_partner_copies_move_with_their_own_exposure():
+    """Exposure k's model difference is its own frame minus its partners' frames, each at its
+    own planned position, and the law moves an exposure's image by its shift."""
+    exps = _nodded()
+    R = _truth_result(exps, TRUTH, [0, 0, 0], 100.0)
+    own = [PF.frame_image(R, j) for j in range(3)]
+    for k in range(3):
+        expect = own[k] - np.mean([own[j] for j in exps[k].partners], axis=0)
+        got = PF.model_frame(R, k, applied_pathloss=False, common=True)
+        inside = np.isfinite(got) & np.isfinite(expect)
+        for j, _ in PF.term_weights(exps, k):
+            inside &= (exps[j].wav > R.lam[0]) & (exps[j].wav < R.lam[-1])
+        assert np.nanmax(np.abs(got - expect)[inside]) < 1e-6 * np.nanmax(np.abs(expect))
+    p = np.array([TRUTH['centre'], 0.0, np.log(TRUTH['width']), 0.0])
+    lam = np.array([1.5, 3.0])
+    M_off = PF.ProfileModel(exps, nod_law=False)
+    for k, s in enumerate([0.0, 0.015, -0.015]):
+        dc = R.model.centre(p, np.zeros(3), k, lam) - M_off.centre(p, np.zeros(3), k, lam)
+        assert np.allclose(dc, s * (1 + PF.centre_law(lam, 'NRS1', 1)[1]))
+
+
+def test_known_nod_law_is_fitted_and_needed():
+    """Data made with the nods at their planned positions: the model with the law fits them
+    (chi2 ~ 1, centre recovered); one shared position cannot."""
+    exps = _nodded()
+    truth = dict(centre=0.10, drift=0.0, width=0.05, width_change=0.0)
+    _inject(exps, truth, [0, 0, 0], flux_scale=300.0, noise=1.0, seed=21)
+    R = PF.fit(exps, chromatic=False)
+    assert 0.9 < R.chi2_red < 1.1
+    assert abs(R.params['centre'] - 0.10) < 0.005
+    B = PF.fit(exps, chromatic=False, model=PF.ProfileModel(exps, chromatic=False, nod_law=False))
+    assert B.chi2_red > 1.2 * R.chi2_red

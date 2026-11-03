@@ -163,7 +163,7 @@ class ChainResult:
         """Primary-header cards of the chain (written to ``_pf.fits``, copied to ``_spec.fits``)."""
         p = self.result.params
         c = {
-            'PFVER': ('2', 'Profile-fit model version'),
+            'PFVER': (PF.FIT_VERSION, 'Profile-fit model version'),
             'PFSHAPE': (self.shape, 'Shape used: own / prism / default'),
             'PFCHAIN': (self.chain, 'Shape chain: gated / free / fixed'),
             'PFREASON': (self.reason[:68], 'Why this shape'),

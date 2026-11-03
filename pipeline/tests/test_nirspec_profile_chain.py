@@ -169,9 +169,12 @@ def test_map_shape_roundtrip():
     assert there['centre_offset'] == pytest.approx(0.15 + 0.03 * np.log2(4.2 / 3.0))
 
 
-def test_prism_transfer_uses_grating_shutters():
+def test_prism_transfer_uses_grating_shutters(monkeypatch):
     """A transferred shape is evaluated through the grating exposure's own open
     shutters: no model light where that exposure's slitlet is closed."""
+    # the narrow two-Gaussian PSF, so "beyond the blur" is a fixed margin; the
+    # three-component PSF's red wing (sigma up to ~3 rows, after the shutter) reaches it
+    monkeypatch.setattr(PF, 'PSF_TABLES', PF.LEGACY_PSF_TABLES)
     exps = _grating(T._exposures())
     exps[0].open_k = (0, 1)                 # bottom shutter closed in the grating configuration
     _fill(exps, dict(width=0.15), 20.0)
