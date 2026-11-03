@@ -1017,6 +1017,25 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
     the red end) and -0.4 to -0.7 % (G395M). The largest moves are all sources whose fitted
     centre is near or past the open edge (|offset| 0.29-0.57: G395M 920048 +6.6 %, 922891
     +6.3 %, 880165 -6.3 %; PRISM 925660 and 925403 -1.5 %).
+  - **Check 1: the same star at different positions in its shutter (2026-11-03, PRISM).** A point
+    source at its planned position gets jwst's point path loss whatever the shutter model (the
+    model's own transmission cancels in `throughput`), so stars cannot choose between shutter
+    models; they test the normalisation both share. 18 stars of program 12497 seen in more than
+    one MSA configuration (c4_p1..p5; IDs 10034, 10043, 10050 differ in spectral shape between
+    visits and are not the same object), each visit fitted as the extraction does
+    (`extraction-v2/star_repeat.py`, figure `star_repeat_per_star.png`). Near-centre visits agree
+    to 1-4 % (4210, five visits). Visits near an edge come out brighter, most in the blue: 3982 at
+    -0.386 against +0.018 is +80 % at 0.7-1.5 um, +62 % at 1.5-2.5, +24 % at 2.5-3.5; 6826 (+0.373
+    against -0.301) +73 % to -7 %; 3505 (-0.344 against -0.155) +28-31 %; 5209, 3018 +10-20 %.
+    Others go the other way (4887 at +0.229: -17 % at all wavelengths). The hard edge gives the
+    same. In every edge visit the fitted centre sits 0.05-0.09 slit units further out than
+    planned (3982: -0.477 against -0.386), so the fit corrects for more clipping than the planned
+    position implies. Not yet decided which is wrong: the fitted position of stars near the edge,
+    or jwst's point path loss there. Holding the star at its planned position is not a clean test
+    (near-centre visits then scatter by +-25 %). Next: the light in the shutter measured without
+    a model, between visits of one star on one detector (3982, NRS1 in c4_p3 and c4_p5); the
+    NIRSpec path-loss calibration programs with stars at deliberate offsets in the shutter
+    (1493, 4465, 9278) would settle it.
   - **Open.** The blue end against jwst's point loss; the held-out check of the G140M / G235M
     tables (G395M and PRISM done, section 3.2).
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
