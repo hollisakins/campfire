@@ -53,7 +53,7 @@ leaves other sources' light in many spectra. The redesign does four things:
 |---|---|---|---|
 | Release: MAJOR, merged only with the full re-reduction | Decided (user, 2026-10-24 and 2026-10-29) | both | section 8 |
 | Stage 2a single `Spec2Pipeline` call per rate file, `bkgslits/` | Built (loving-bell, in CHANGELOG Unreleased) | MB session | 3.1 |
-| Empirical bar-shadow tables, PRISM + G140M/G235M/G395M | Built (7ab786bf, 47d19c46, fea58a6e, b0c08026); not signed off by the user | MB session | 3.2 |
+| Empirical bar-shadow tables, PRISM + G140M/G235M/G395M | Built (7ab786bf, 47d19c46, fea58a6e, b0c08026); settled 2026-10-30 (user, in the MB session; the "not signed off" line here was a stale recap) | MB session | 3.2 |
 | No bar-shadow division of science frames | Decided (user, 2026-10-29) | both | 3.2 |
 | Master background, calibrated sky + painting (`_mbkg.fits`) | Built (0d9dd3c7, 53b1c5af, 2f898100, 65c1d825) | MB session | 3.3 |
 | Master background split into step 1 (before 2a) and step 2 (end of 2a) | Decided (user, 2026-10-30); Built (master background 1.2+) | MB session | 3.3, 3.4 |
@@ -202,7 +202,6 @@ tables `data/empirical_jwst_nirspec_barshadow_{prism,g140m,g235m,g395m}.fits`.
 background slitlets.
 
 **Open.**
-- User sign-off on the grating tables (MB session).
 - Held-out validation has not been rerun on the b0c08026 tables (MB session).
 - Whether the forward model's shutter edge (clip at 0.50, blur split 50/50) agrees with the
   measured uniform-sky profile: edge 50 % point, narrowing with wavelength (open region ±0.45
@@ -874,9 +873,10 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
   unchanged, point-source transmission against position close to jwst's point path loss above
   3 um, p1 median fluxes 0.2-0.5 % lower, fits 22-26 % slower. Before shipping: T capped at 1
   (it exceeded 1 by up to 5 % on G395M near 5.3 um), the measured-edge form removed,
-  `FIT_VERSION` 5; then p1 stage 3 rerun. Still with the user: the H-grating fallback (the M
-  grating with the same filter, provisional) and the sign-off of the grating bar-shadow tables
-  the default now depends on.
+  `FIT_VERSION` 5; then p1 stage 3 rerun. G140H / G235H / G395H use the M grating's
+  measurements with the same filter (user, 2026-11-03). The grating bar-shadow tables the
+  default now depends on were settled on 2026-10-30 (user, in the MB session); open: their
+  held-out check on the current (b0c08026) tables.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
