@@ -2,9 +2,8 @@
 Cross-dispersion PSF calibration for the profile fit, from calibration-field stars.
 
 ``profile_fit`` models a source as a Gaussian galaxy convolved with a star-measured
-PSF (``profile_fit.PSF_TABLES``: per detector, a core Gaussian of sigma ``S_rows``
-native rows plus a wing of fraction ``f`` and sigma ``PSF_K`` x core, both split
-evenly before and after the shutter) and moves its trace centre with wavelength by
+PSF (``profile_fit.PSF_TABLES``: per detector, Gaussian components per wavelength node,
+``profile_fit.psf_components``) and moves its trace centre with wavelength by
 ``profile_fit.CENTRE_LAW``. This module measures both on stars, in the profile fit's
 own terms: every star is fitted through ``profile_fit.ProfileModel`` on the frames
 stage 3 reads (``profile_fit.load_source``: the nod differences with the path-loss
@@ -13,35 +12,30 @@ clipping, pixel integration, point-source throughput and nod-partner terms. A st
 is a point source, so the galaxy width is held at ``W_FLOOR`` and the PSF is fitted
 instead (``ProfileModel``'s ``psf_tables`` / ``centre_law_tables``).
 
-Per detector (NRS1, NRS2) and wavelength range (``RANGES``, centred on
-``profile_fit.PSF_LAM``):
+Steps (``main``; per detector NRS1 / NRS2):
 
-1. every star and range (``fit_star``): the core sigma, the centre and its drift
-   within the range free, the wing fraction held (the current table's); the spectrum
-   solved linearly as in the extraction. Then the core sigma and centre again at
-   each wing fraction of ``F_GRID`` (the profile of the fit in f);
-2. the star selection (``select``): peak S/N, position in the shutter, outliers;
-3. the wing fraction shared by the clean stars (``joint_wing_fraction``): the minimum
-   of the summed profiles, each star's chi2 scaled by its own reduced chi2 so a bright
-   star counts as one star;
-4. every selected star refitted at the joint wing fraction (``fit_star`` with
-   ``wing``); the table (``build_table``): core sigma = 25th percentile of the clean
-   stars' widths, wing fraction = the joint one, wing sigma = ``PSF_K`` x core. The
-   lower quartile errs on the narrow side (a narrower PSF lets the galaxy width take
-   up the difference; a broader one cannot be undone);
-5. the trace centre law (``centre_law_refit``): each star's centre per range with no
-   law applied (``profile_fit.NO_CENTRE_LAW``), relative to its 1.0-2.6 um mean, fitted
-   per detector as a drift per MSA quadrant plus a slope with the star's position in
-   the shutter (the ``CENTRE_LAW`` layout).
+1. ``fit`` (``fit_star``): every star in every range of ``RANGES``: the centre and its
+   drift free, the PSF the shipped one with its core width free (``width_tables``); the
+   spectrum solved linearly as in the extraction;
+2. ``select`` (``select``): peak S/N, position in the shutter, width and chi2 outliers;
+3. ``centre_law`` (``centre_law_refit``): each star's centre per range with no law
+   applied (``profile_fit.NO_CENTRE_LAW``), relative to its 1.0-2.6 um mean, fitted per
+   detector as a drift per MSA quadrant plus a slope with the star's position in the
+   shutter (the ``CENTRE_LAW`` layout);
+4. the PSF: ``forms`` (which Gaussian components, ``PSFForm`` / ``fit_form``), per-range
+   fits of every clean star (``form_ranges``) and their median tables (``form_tables``),
+   joint fits per range (``joint``), and the table itself: one smooth joint fit per
+   detector over 0.6-5.3 um (``smooth_joint``, ``smooth_joint_fit_all``), with a held-out
+   test on random halves of the stars; ``table_test`` stacks the stars against candidate
+   tables and the shipped one;
+5. ``offsets`` / ``offset_law``: per-exposure nod offsets, the measurement behind
+   ``profile_fit.NOD_OFFSET_LAW``.
 
 Pixel weights are the extraction's variances (``ProfileModel.diff_variance``) plus a
 floor of (column peak / ``SN_CAP``)^2, fixed per star and range from a first fit with
-the current table: a star's misfit at the PSF's few-percent level would otherwise set
+the shipped PSF: a star's misfit at the PSF's few-percent level would otherwise set
 the fit by its brightest pixels, and the outlier clipping would remove its core. The
 floor keeps every pixel of the profile in play and caps what one bright star weighs.
-
-``run`` drives the whole calibration on a reduced root and writes the tables and
-the per-star fits; ``plot_*`` draw the figures.
 """
 
 import copy
@@ -57,7 +51,6 @@ from campfire_pipeline.nirspec import profile_fit as PF
 
 RANGES = ((0.7, 1.0), (1.0, 1.5), (1.5, 2.0), (2.0, 2.6), (2.6, 3.3), (3.3, 4.1), (4.1, 5.3))
 REF_RANGES = (1, 2, 3)             # 1.0-2.6 um: the centre law's zero point
-F_GRID = np.round(np.arange(0.0, 0.6001, 0.05), 3)
 SN_CAP = 30.0                      # per-pixel S/N cap of the weights (variance floor)
 CLIP = 5.0                         # outlier clipping, sigma (the extraction's)
 N_CLIP = 2
@@ -82,11 +75,27 @@ def range_centres():
     return np.array([0.5 * (a + b) for a, b in RANGES])
 
 
-def constant_tables(S_rows, f):
-    """A PSF table (``profile_fit.PSF_TABLES`` layout) with one core sigma and wing
-    fraction at every wavelength, on both detectors."""
-    one = dict(lam=np.array([0.0, 100.0]), S_rows=np.array([S_rows, S_rows], float), f=np.array([f, f], float))
-    return {'NRS1': one, 'NRS2': one}
+def width_tables(S, lam):
+    """The shipped PSF (``profile_fit.PSF_TABLES``) with each detector's core width scaled to
+    ``S`` rows at wavelength ``lam`` (its wavelength dependence and the other components kept)."""
+    out = {}
+    for det, t in PF.PSF_TABLES.items():
+        core = float(PF.psf_components(np.array([lam]), det)[0]['sigma'][0])
+        comps = [dict(c) for c in t['components']]
+        comps[0]['sigma'] = np.asarray(comps[0]['sigma'], float) * (S / core)
+        out[det] = dict(lam=t['lam'], components=comps)
+    return out
+
+
+def shipped_values(lam, det, form=None):
+    """The shipped PSF's parameters at wavelengths ``lam`` in ``PSFForm`` names (core, wing and,
+    for a three-component form or none given, shoulder)."""
+    comps = PF.psf_components(np.asarray(lam, float), det)
+    v = dict(core_sigma=comps[0]['sigma'], wing_frac=comps[1]['frac'], wing_sigma=comps[1]['sigma'],
+             wing_offset=comps[1]['offset'])
+    if (form is None or form.third) and len(comps) > 2:
+        v.update(third_frac=comps[2]['frac'], third_sigma=comps[2]['sigma'], third_offset=comps[2]['offset'])
+    return v
 
 
 def restrict(exps, lam_range):
@@ -196,8 +205,8 @@ class RangeFit:
 
     Shape: the galaxy width at ``W_FLOOR``, centre ``c0`` and drift (per octave about
     the model's pivot) free, no centre law (the centre is where the light is). PSF:
-    a constant core sigma and wing fraction over the range (``constant_tables``), or a
-    given table."""
+    the shipped one with its core width S (rows, at the range centre) free
+    (``width_tables``), or a given table."""
 
     def __init__(self, exps, lam_range, centre_law_tables=None, nod_law=None):
         self.lam_range = tuple(lam_range)
@@ -219,6 +228,13 @@ class RangeFit:
         self.colkey = np.concatenate(keys)
         self.own = np.array([M.exps[k].has_source for k in M.pix['e']])
         self.lam_c = 0.5 * (lam_range[0] + lam_range[1])
+        det = str(ex[0].detector).upper()
+        self.core0 = float(PF.psf_components(np.array([self.lam_c]), det if det in PF.PSF_TABLES else 'NRS1')[0]
+                           ['sigma'][0])        # the shipped core width at the range centre
+
+    def width_tables(self, S):
+        """The shipped PSF with its core width ``S`` rows at the range centre."""
+        return width_tables(S, self.lam_c)
 
     # -- model ---------------------------------------------------------------
     def shape(self, c0, drift):
@@ -254,11 +270,11 @@ class RangeFit:
         return c0 + drift * self.M._x(np.asarray(lam, float))
 
     # -- fitting -------------------------------------------------------------
-    def fit(self, f_wing=None, tables=None, x0=None, use=None, clip_rounds=N_CLIP):
+    def fit(self, tables=None, x0=None, use=None, clip_rounds=N_CLIP):
         """Least-squares fit of (c0, drift[, S]): with ``tables`` the PSF is that
-        table (S fixed); otherwise a constant core sigma S is free at wing fraction
-        ``f_wing``. ``use``: a fixed pixel mask (no clipping); else clipping at CLIP
-        sigma, ``clip_rounds`` times, from all pixels. Returns a dict."""
+        table; otherwise the shipped PSF with its core width S free (``width_tables``).
+        ``x0``: (c0, drift[, S]). ``use``: a fixed pixel mask (no clipping); else clipping
+        at CLIP sigma, ``clip_rounds`` times, from all pixels. Returns a dict."""
         M = self.M
         free_S = tables is None
         c_lo, c_hi = M.c_prior - CENTRE_BOUND, M.c_prior + CENTRE_BOUND
@@ -267,7 +283,7 @@ class RangeFit:
         lo, hi = np.array(lo), np.array(hi)
 
         def tab(x):
-            return constant_tables(x[2], f_wing) if free_S else tables
+            return self.width_tables(x[2]) if free_S else tables
 
         def resid(x):
             f, _, A = self.solve(x[0] - 1.0, x[1] - 1.0, tab(x))
@@ -276,7 +292,7 @@ class RangeFit:
 
         if x0 is None:
             best = None
-            S0 = [0.45] if free_S else []
+            S0 = [self.core0] if free_S else []
             for c in M.c_prior + np.arange(-0.2, 0.201, 0.05):
                 x = np.array([c + 1.0, 1.0] + S0)
                 M.use = np.ones(M.npix, bool) if use is None else use.copy()
@@ -285,7 +301,7 @@ class RangeFit:
                     best = (s, x)
             x = best[1]
         else:
-            x = np.array([x0[0] + 1.0, x0[1] + 1.0] + ([x0[2]] if free_S else []))
+            x = np.array([x0[0] + 1.0, x0[1] + 1.0] + ([x0[2] if len(x0) > 2 else self.core0] if free_S else []))
         x = np.clip(x, lo + 1e-6, hi - 1e-6)
         M.use = np.ones(M.npix, bool) if use is None else use.copy()
         nround = 0 if use is not None else clip_rounds
@@ -320,7 +336,7 @@ class RangeFit:
                    success=bool(res.success), peak_snr=self.peak_snr(model))
         if free_S:
             S = float(x[2])
-            out.update(S=S, e_S=float(err[2]), f=float(f_wing),
+            out.update(S=S, e_S=float(err[2]),
                        S_at_bound=bool(S <= S_BOUNDS[0] * 1.001 or S >= S_BOUNDS[1] * 0.999))
         out['_x'] = [float(c0), float(drift)] + ([float(x[2])] if free_S else [])
         out['_use'] = M.use.copy()
@@ -337,7 +353,7 @@ class RangeFit:
         M = self.M
         c0, drift = fitres['_x'][0], fitres['_x'][1]
         if tables is None:
-            tables = constant_tables(fitres['S'], fitres['f'])
+            tables = self.width_tables(fitres['S'])
         f, good, A = self.solve(c0, drift, tables)
         model = A @ f
         p = self.shape(c0, drift)
@@ -366,15 +382,15 @@ class RangeFit:
             out['lam'].append(lam[keep])
         return {k: (np.concatenate(v).astype('f4') if v else np.zeros(0, 'f4')) for k, v in out.items()}
 
-    def fit_centres(self, tables=None, S=0.4, f=0.25, free_S=False, free_f=False, x0=None, use=None,
-                    clip_rounds=N_CLIP):
+    def fit_centres(self, tables=None, S=None, free_S=False, x0=None, use=None, clip_rounds=N_CLIP):
         """Fit with the star's centre free in every exposure: the shared centre and drift plus
         a position offset per exposure that contains the star (the first held at zero), on top
-        of the model's nod geometry. The PSF is ``tables``, or a constant core sigma ``S`` and
-        wing fraction ``f``, each optionally free. For bright isolated stars only (the
-        extraction fits no per-exposure offsets). Leaves the offsets in ``self.eoff``.
-        Returns a dict like ``fit`` with ``offsets`` (slit units), ``S`` and ``f``."""
+        of the model's nod geometry. The PSF is ``tables``, or the shipped one with core width
+        ``S`` (default: the shipped width), optionally free (``width_tables``). For bright
+        isolated stars only (the extraction fits no per-exposure offsets). Leaves the offsets
+        in ``self.eoff``. Returns a dict like ``fit`` with ``offsets`` (slit units) and ``S``."""
         M = self.M
+        S = self.core0 if S is None else S
         src = [k for k, e in enumerate(M.exps) if e.has_source]
         free = src[1:]
         x0 = list(x0) if x0 is not None else [M.c_prior, 0.0]
@@ -383,25 +399,18 @@ class RangeFit:
         hi = [M.c_prior + CENTRE_BOUND + 1.0, 1.0 + DRIFT_BOUND]
         if tables is None and free_S:
             ps.append(S); lo.append(S_BOUNDS[0]); hi.append(S_BOUNDS[1])
-        if tables is None and free_f:
-            ps.append(f); lo.append(0.0); hi.append(0.8)
         nshape = len(ps)
         ps += [0.0] * len(free); lo += [-OFFSET_BOUND] * len(free); hi += [OFFSET_BOUND] * len(free)
         lo, hi = np.array(lo), np.array(hi)
 
         def unpack(x):
-            i = 2
-            S_, f_ = S, f
-            if tables is None and free_S:
-                S_, i = x[i], i + 1
-            if tables is None and free_f:
-                f_, i = x[i], i + 1
+            S_ = x[2] if (tables is None and free_S) else S
             e = np.zeros(len(M.exps))
             e[free] = x[nshape:]
-            return x[0] - 1.0, x[1] - 1.0, (tables if tables is not None else constant_tables(S_, f_)), e, S_, f_
+            return x[0] - 1.0, x[1] - 1.0, (tables if tables is not None else self.width_tables(S_)), e, S_
 
         def resid(x):
-            c0, dr, tab, e, _, _ = unpack(x)
+            c0, dr, tab, e, _ = unpack(x)
             self.eoff = e
             fl, _, A = self.solve(c0, dr, tab)
             return np.where(M.use, (M.pix['d'] - A @ fl) / np.sqrt(M.pix['v']), 0.0)
@@ -421,9 +430,9 @@ class RangeFit:
             if np.array_equal(new, M.use):
                 break
             M.use = new
-        c0, dr, tab, e, S_, f_ = unpack(x)
+        c0, dr, tab, e, S_ = unpack(x)
         if tables is not None:
-            S_ = f_ = np.nan                 # the PSF is the table's, not one constant
+            S_ = np.nan                      # the PSF is the table's
         self.eoff = e
         fl, good, A = self.solve(c0, dr, tab)
         model = A @ fl
@@ -432,7 +441,7 @@ class RangeFit:
         ndof = max(float(np.sum(M.dof_weight()[M.use])) - int(good.sum()) - x.size, 1.0)
         chi2 = float(np.sum(r[M.use] ** 2))
         return dict(c0=float(c0), drift=float(dr), c_node=float(self.centre_at(c0, dr, self.lam_c)), S=float(S_),
-                    f=float(f_), offsets=e.tolist(), chi2=chi2, chi2_raw=float(np.sum(rr[M.use] ** 2)), ndof=ndof,
+                    offsets=e.tolist(), chi2=chi2, chi2_raw=float(np.sum(rr[M.use] ** 2)), ndof=ndof,
                     chi2r=chi2 / ndof, chi2r_raw=float(np.sum(rr[M.use] ** 2)) / ndof, peak_snr=self.peak_snr(model),
                     _x=[float(c0), float(dr)], _use=M.use.copy(), _model=model, _tables=tab, _f=fl)
 
@@ -480,22 +489,17 @@ PARAM_START = dict(core_sigma=0.4, wing_frac=0.3, wing_sigma=0.9, wing_offset=0.
 class PSFForm:
     """A PSF of Gaussian components (``profile_fit.psf_components``) and which of its
     parameters a fit frees. Every component's width is split evenly before and after the
-    shutter (q = 0.5); an offset acts before the shutter (``*_pre``) or after it.
+    shutter (q = 0.5); an offset acts before the shutter (``*_pre``) or after it. Always a
+    core and a wing with its own share, width and offset.
 
-    legacy : core + wing of width ``PSF_K`` x core, no offset (the original form): free
-        core width and wing share.
-    wing_free : the wing's own width and offset are free.
     third : a third component with its own share, width and offset (the one-sided shoulder)."""
     name: str
-    wing_free: bool = True
     third: bool = False
     wing_pre: bool = True
     third_pre: bool = True
 
     def params(self):
-        out = ['core_sigma', 'wing_frac']
-        if self.wing_free:
-            out += ['wing_sigma', 'wing_offset']
+        out = ['core_sigma', 'wing_frac', 'wing_sigma', 'wing_offset']
         if self.third:
             out += ['third_frac', 'third_sigma', 'third_offset']
         return out
@@ -503,11 +507,8 @@ class PSFForm:
     def table(self, values, nodes, det):
         """General PSF table for detector ``det`` from parameter values at ``nodes``."""
         v = {k: np.asarray(x, float) for k, x in values.items()}
-        comps = [dict(sigma=v['core_sigma'])]
-        if self.wing_free:
-            comps.append(dict(sigma=v['wing_sigma'], frac=v['wing_frac'], offset=v['wing_offset'], pre=self.wing_pre))
-        else:
-            comps.append(dict(sigma=PF.PSF_K * v['core_sigma'], frac=v['wing_frac']))
+        comps = [dict(sigma=v['core_sigma']),
+                 dict(sigma=v['wing_sigma'], frac=v['wing_frac'], offset=v['wing_offset'], pre=self.wing_pre)]
         if self.third:
             comps.append(dict(sigma=v['third_sigma'], frac=v['third_frac'], offset=v['third_offset'],
                               pre=self.third_pre))
@@ -516,7 +517,6 @@ class PSFForm:
 
 
 FORMS = {
-    'legacy': PSFForm('legacy', wing_free=False),
     'wing': PSFForm('wing'),
     'wing_post': PSFForm('wing_post', wing_pre=False),
     'wing3': PSFForm('wing3', third=True),
@@ -624,26 +624,30 @@ THIRD_STARTS = (dict(third_offset=1.5, third_sigma=0.5, third_frac=0.02),
                 dict(third_offset=2.5, third_sigma=1.2, third_frac=0.02))
 
 
-def _range_start(RF, det, r, table=None, joint=None):
-    """Floor, clipping mask and starting values of a range from the legacy fits."""
-    fj = float(joint[(det, r)]['f']) if joint and (det, r) in joint else \
-        float(np.interp(0.5 * sum(RF.lam_range), PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['f']))
+def _range_start(RF):
+    """Floor, clipping mask and centre of a range: a fit with the shipped PSF (no clipping)
+    sets the floor, then the fit with its core width free (``RangeFit.fit``), clipped on the
+    floored variances. Returns that fit."""
     RF.set_floor(np.zeros(RF.M.npix))
-    ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
+    ref = RF.fit(tables=PF.PSF_TABLES, clip_rounds=0)
     RF.set_floor(ref['_model'])
-    fr = RF.fit(f_wing=fj, x0=ref['_x'] + [0.4])
-    return fr, fj
+    return RF.fit(x0=ref['_x'] + [RF.core0])
 
 
-def fit_forms_in_range(RF, forms, det, fr, fj):
+def fit_forms_in_range(RF, forms, det, fr):
     """Each form fitted in one range (parameters linear in wavelength across it), from the
-    legacy fit ``fr``. Returns {form name: fit}."""
+    width fit ``fr`` (``_range_start``): centre and mask from it, the PSF parameters from the
+    shipped PSF at the range's ends with its core scaled to the star's width (three-component
+    forms also from ``THIRD_STARTS``; the best fit kept). Returns {form name: fit}."""
     nodes = np.array(RF.lam_range)
     cstart = RF.centre_at(fr['_x'][0], fr['_x'][1], nodes)
-    base = dict(core_sigma=fr['S'], wing_frac=fj, wing_sigma=PF.PSF_K * fr['S'])
     out = {}
     for form in forms:
-        starts = [base] if not form.third else [dict(base, **s) for s in THIRD_STARTS]
+        base = shipped_values(nodes, det, form)
+        base['core_sigma'] = base['core_sigma'] * fr['S'] / RF.core0
+        starts = [base]
+        if form.third:
+            starts += [dict(base, **s) for s in THIRD_STARTS]
         best = None
         for s in starts:
             g = fit_form(RF, form, nodes, start=s, use=fr['_use'], centre_start=cstart, det=det)
@@ -656,16 +660,14 @@ def fit_forms_in_range(RF, forms, det, fr, fj):
     return out
 
 
-def step_forms(root, out_dir, observations, forms=('legacy', 'wing', 'wing_post', 'wing3', 'wing3_post'),
+def step_forms(root, out_dir, observations, forms=('wing', 'wing_post', 'wing3', 'wing3_post'),
                nbright=40, part=None, log=print, edge=False):
-    """Term selection: the brightest ``nbright`` clean stars per detector and range (pass 2
+    """Term selection: the brightest ``nbright`` clean stars per detector and range (the
     selection), each form fitted per range with the star's centre free in every exposure.
     Records in forms/, stacking samples in samples_forms/. ``edge``: the brightest usable
     stars off-centre (|centre| >= EDGE_MAX) instead, into forms_edge/ (where in the shutter a
     term acts shows on them)."""
-    sel, joint = read_selection(out_dir)
-    rec2 = {r['key']: r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']}
-    pool = clean_in_pass2(list(rec2.values()), sel)
+    sel, rec2, pool = clean_records(out_dir)
     if edge:
         pool = {k: [x for x in v if x in sel['edge'] and x in rec2 and 'free' in rec2[x]['ranges'][k[1]]
                     and range_ok(rec2[x]['ranges'][k[1]]['free'])] for k, v in sel['usable'].items()}
@@ -688,8 +690,8 @@ def step_forms(root, out_dir, observations, forms=('legacy', 'wing', 'wing_post'
         for r in sorted(ranges_of[t.key]):
             try:
                 RF = RangeFit(exps, RANGES[r])
-                fr, fj = _range_start(RF, t.detector, r, joint=joint)
-                fits_ = fit_forms_in_range(RF, fl, t.detector, fr, fj)
+                fr = _range_start(RF)
+                fits_ = fit_forms_in_range(RF, fl, t.detector, fr)
             except Exception as err:
                 log(f'{t.key} range {r}: failed: {type(err).__name__}: {err}')
                 continue
@@ -714,38 +716,36 @@ def range_of(lam):
 def fit_star_smooth(task, form, start=None, exps=None, nodes=STAR_NODES, snr_by_range=None):
     """One star over the whole range (0.6-5.3 um) with PSF ``form``: every free parameter and
     the trace centre piecewise linear in wavelength between ``nodes``, its centre free in every
-    exposure. ``start``: {param: values at nodes}. Starts from the current table with the centre
-    law; the pixels are those that fit kept (CLIP sigma on the floored weights, i.e. gross
-    outliers only). Returns (fit, RangeFit holding it)."""
+    exposure. ``start``: {param: values at nodes} (missing ones from the shipped PSF). Starts
+    from the shipped PSF with the centre law; the pixels are those that fit kept (CLIP sigma on
+    the floored weights, i.e. gross outliers only). Returns (fit, RangeFit holding it)."""
     exps = load_star(task) if exps is None else exps
     det = task.detector
     RF = RangeFit(exps, (nodes[0], nodes[-1]))
     RF.M.centre_law_tables = PF.CENTRE_LAW
     # the floor first, from a fit without clipping: clipped on the bare variances a bright star
-    # loses its core (the current table misses it by many sigma)
+    # loses its core (a PSF misfit of a few percent is many sigma there)
     RF.set_floor(np.zeros(RF.M.npix))
-    ref0 = RF.fit(tables=PF.LEGACY_PSF_TABLES, clip_rounds=0)
+    ref0 = RF.fit(tables=PF.PSF_TABLES, clip_rounds=0)
     RF.set_floor(ref0['_model'])
-    ref = RF.fit(tables=PF.LEGACY_PSF_TABLES, x0=ref0['_x'], clip_rounds=1)
+    ref = RF.fit(tables=PF.PSF_TABLES, x0=ref0['_x'], clip_rounds=1)
     RF.set_floor(ref['_model'])
     D, al = PF.centre_law(nodes, det, task.quadrant)
     cg = RF.centre_at(ref['_x'][0], ref['_x'][1], nodes)
     cstart = cg + D + al * cg
     st = {k: np.broadcast_to(np.asarray(v, float), nodes.shape).copy() for k, v in (start or {}).items()}
-    if 'core_sigma' not in st:
-        st['core_sigma'] = np.interp(nodes, PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['S_rows'])
+    for k, v in shipped_values(nodes, det, form).items():
+        st.setdefault(k, v)
     g = fit_form(RF, form, nodes, start=st, use=ref['_use'], centre_start=cstart, det=det, clip_rounds=0)
     g['node_snr'] = [float(snr_by_range[range_of(x)]) if snr_by_range is not None else np.nan for x in nodes]
     return g, RF
 
 
 def step_smooth(root, out_dir, observations, form_name, start=None, part=None, log=print):
-    """Every clean star (pass 2 selection, any range) fitted over the whole range with
+    """Every clean star (any range) fitted over the whole range with
     ``form_name`` (``fit_star_smooth``): records in smooth_<form>/, stacking samples split by
     range in samples_smooth_<form>/."""
-    sel, joint = read_selection(out_dir)
-    rec2 = {r['key']: r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']}
-    clean = clean_in_pass2(list(rec2.values()), sel)
+    sel, rec2, clean = clean_records(out_dir)
     keys = {k for v in clean.values() for k in v}
     form = FORMS[form_name]
     d = os.path.join(out_dir, f'smooth_{form_name}')
@@ -790,9 +790,7 @@ def step_form_ranges(root, out_dir, observations, form_name, part=None, log=prin
     in wavelength across the range (values at its two ends), the centre too, a free offset per
     exposure. Records in ranges_<form>/, stacking samples (split into ``RANGES``) in
     samples_ranges_<form>/."""
-    sel, joint = read_selection(out_dir)
-    rec2 = {r['key']: r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']}
-    clean = clean_in_pass2(list(rec2.values()), sel)
+    sel, rec2, clean = clean_records(out_dir)
     form = FORMS[form_name]
     ranges_of = {}
     for (det, r), keys in clean.items():
@@ -813,10 +811,10 @@ def step_form_ranges(root, out_dir, observations, form_name, part=None, log=prin
                 continue
             try:
                 RF = RangeFit(exps, (a, b))
-                fr, fj = _range_start(RF, t.detector, r7, joint=joint)
+                fr = _range_start(RF)
                 if fr['peak_snr'] < SNR_MIN:
                     continue
-                g = fit_forms_in_range(RF, [form], t.detector, fr, fj)[form_name]
+                g = fit_forms_in_range(RF, [form], t.detector, fr)[form_name]
             except Exception as err:
                 log(f'{t.key} {a}-{b}: failed: {type(err).__name__}: {err}')
                 continue
@@ -871,7 +869,7 @@ JOINT_SNR_MIN = 10.0
 def joint_shape_fit(stars, form, det, nodes, start, outer=2, log=print):
     """One PSF shared by many stars in a range: ``form``'s parameters at ``nodes`` (linear in
     wavelength across the range) fitted to every star at once, each star keeping its own centre
-    and drift, per-exposure offsets and spectrum. ``stars``: list of (RangeFit, legacy fit) with
+    and drift, per-exposure offsets and spectrum. ``stars``: list of (RangeFit, width fit ``_range_start``) with
     the floor and pixel mask set. Alternates: each star's centre and offsets at the current shape
     (``fit_centres``), then the shape with them held (spectra re-solved). Each star's chi2 is
     divided by its reduced chi2 at the start, so every star weighs by its pixels, not its
@@ -921,9 +919,7 @@ def step_joint(root, out_dir, observations, form_name, part=None, log=print):
     """Joint PSF per (detector, table range): the ``JOINT_NMAX`` brightest clean stars with peak
     S/N >= ``JOINT_SNR_MIN`` (``joint_shape_fit``), starting from the median table (B). One
     job per (detector, range); ``part`` splits the jobs. Results in joint_<form>/."""
-    sel, joint = read_selection(out_dir)
-    rec2 = {r['key']: r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']}
-    clean = clean_in_pass2(list(rec2.values()), sel)
+    sel, rec2, clean = clean_records(out_dir)
     form = FORMS[form_name]
     tabB = read_form_table(os.path.join(out_dir, f'psf_table_{form_name}_B.json'))
     jobs = [(det, i) for det in ('NRS1', 'NRS2') for i in range(len(TABLE_RANGES))]
@@ -944,7 +940,7 @@ def step_joint(root, out_dir, observations, form_name, part=None, log=print):
         for k in keys:
             try:
                 RF = RangeFit(load_star(tasks_all[k]), (a, b))
-                fr, fj = _range_start(RF, det, r7, joint=joint)
+                fr = _range_start(RF)
                 stars.append((RF, fr))
             except Exception as err:
                 log(f'{k} {a}-{b}: skipped: {type(err).__name__}: {err}')
@@ -999,9 +995,7 @@ def load_star_ranges(root, out_dir, observations, det, keys_allowed=None, nmax=S
     """Star-range units for a smooth joint fit on ``det``: per ``TABLE_RANGES`` entry the ``nmax``
     brightest clean stars (peak S/N >= JOINT_SNR_MIN; only ``keys_allowed`` when given), each a
     RangeFit with its floor and pixel mask set (``_range_start``)."""
-    sel, joint = read_selection(out_dir)
-    rec2 = {r['key']: r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']}
-    clean = clean_in_pass2(list(rec2.values()), sel)
+    sel, rec2, clean = clean_records(out_dir)
     want = {}
     for i, (a, b) in enumerate(TABLE_RANGES):
         r7 = range_of(0.5 * (a + b))
@@ -1017,7 +1011,7 @@ def load_star_ranges(root, out_dir, observations, det, keys_allowed=None, nmax=S
             a, b = TABLE_RANGES[i]
             try:
                 RF = RangeFit(exps, (a, b))
-                fr, _ = _range_start(RF, det, range_of(0.5 * (a + b)), joint=joint)
+                fr = _range_start(RF)
                 units.append(dict(key=k, range=i, RF=RF, use=fr['_use'], x=fr['_x'][:2],
                                   eoff=np.zeros(len(RF.M.exps)), scale=1.0))
             except Exception as err:
@@ -1199,9 +1193,8 @@ def step_smooth_joint(root, out_dir, observations, form_name, det, which='all', 
     stars' centres and offsets in one problem (``smooth_joint_fit_all``); result in
     smooth_joint_<form>/."""
     form = FORMS[form_name]
-    sel, _ = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    allk = {k for v in clean_in_pass2(rec2, sel).values() for k in v}
+    _, _, clean = clean_records(out_dir)
+    allk = {k for v in clean.values() for k in v}
     A, B = split_halves(allk)
     keys = None if which == 'all' else (A if which == 'A' else B)
     units = load_star_ranges(root, out_dir, observations, det, keys_allowed=keys, log=log)
@@ -1340,10 +1333,10 @@ def exposure_meta(exps):
     return out
 
 
-def _fit_offsets(RF, f_wing, x0, use):
-    """Core width, centre, drift and a free position offset per exposure that contains the
-    source (the first one held at zero; the shared centre absorbs it), on fixed pixels.
-    Returns (offsets relative to their mean over those exposures, their errors, chi2), slit units."""
+def _fit_offsets(RF, x0, use):
+    """Core width (of the shipped PSF, ``RangeFit.width_tables``), centre, drift and a free
+    position offset per exposure that contains the source (the first one held at zero; the
+    shared centre absorbs it), on fixed pixels, from ``x0`` = (c0, drift, S). Returns (offsets relative to their mean over those exposures, their errors, chi2), slit units."""
     M = RF.M
     src = [k for k, e in enumerate(M.exps) if e.has_source]
     free = src[1:]
@@ -1357,7 +1350,7 @@ def _fit_offsets(RF, f_wing, x0, use):
 
     def resid(x):
         RF.eoff = eoff_of(x)
-        f, _, A = RF.solve(x[0] - 1.0, x[1] - 1.0, constant_tables(x[2], f_wing))
+        f, _, A = RF.solve(x[0] - 1.0, x[1] - 1.0, RF.width_tables(x[2]))
         return np.where(use, (M.pix['d'] - A @ f) / np.sqrt(M.pix['v']), 0.0)
     x = np.clip(np.array([x0[0] + 1.0, x0[1] + 1.0, x0[2]] + [0.0] * len(free)), lo + 1e-6, hi - 1e-6)
     try:
@@ -1408,18 +1401,14 @@ def measure_offsets(task, ranges=None, snr_min=10.0, edge_max=0.45, exps=None):
             row['error'] = str(err)
             rec['ranges'].append(row)
             continue
-        f_wing = float(np.interp(0.5 * (a + b), PF.PSF_LAM, PF.LEGACY_PSF_TABLES[task.detector]['f']))
-        RF.set_floor(np.zeros(RF.M.npix))
-        ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
-        RF.set_floor(ref['_model'])
-        fr = RF.fit(f_wing=f_wing, x0=ref['_x'] + [0.45])
+        fr = _range_start(RF)
         row.update(peak_snr=fr['peak_snr'], c_node=fr['c_node'], S=fr.get('S'), chi2_zero=fr['chi2'], ndof=fr['ndof'])
         if fr['peak_snr'] < snr_min or abs(fr['c_node']) > edge_max:
             rec['ranges'].append(row)
             continue
-        off, err, chi2 = _fit_offsets(RF, f_wing, fr['_x'], fr['_use'])
+        off, err, chi2 = _fit_offsets(RF, fr['_x'], fr['_use'])
         RF.eoff = PF.nod_shifts(RF.M.exps)
-        fl = RF.fit(f_wing=f_wing, x0=fr['_x'], use=fr['_use'])
+        fl = RF.fit(x0=fr['_x'], use=fr['_use'])
         RF.eoff = np.zeros(len(RF.M.exps))
         row.update(offsets=off, errors=err, chi2_free=chi2, chi2_law=fl['chi2'],
                    law=PF.nod_shifts(RF.M.exps), dy=float(np.nanmedian(RF.M.exps[0].dy)))
@@ -1673,34 +1662,22 @@ def _public(d):
     return {k: v for k, v in d.items() if not k.startswith('_')}
 
 
-def current_wing(det):
-    return dict(zip(range(len(RANGES)), np.asarray(PF.LEGACY_PSF_TABLES[det]['f'], float)))
+def fit_star(task, exps=None, log=None, nod_law=None):
+    """Fit one star in every range of ``RANGES``: a fit with the shipped PSF (centre and drift
+    free, no clipping) sets the variance floor ('ref'); then the shipped PSF with its core width
+    free, clipped on the floored variances ('free': S, e_S, centre, chi2, peak S/N), which the
+    selection reads.
 
-
-def fit_star(task, exps=None, wing=None, f_grid=F_GRID, sample_tables=None, snr_floor=5.0, log=None, nod_law=None):
-    """Fit one star in every range.
-
-    Per range: a reference fit with the current table (centre and drift free), which
-    sets the variance floor; then the core sigma free at wing fraction ``wing[r]``
-    (default: the current table's at the range centre), with clipping; then, when
-    ``f_grid`` is given, the range's peak S/N reaches ``snr_floor`` and the star is not
-    clearly off-centre (``EDGE_MAX`` + 0.05: no use to the joint wing fit), the core
-    sigma and centre refitted at each wing fraction of the grid on the same pixels.
-
-    sample_tables : {name: PSF tables or None (the current table)}: also return the
-        stacking samples (``RangeFit.samples``) of a fit at each of these tables.
     nod_law : the model's nod geometry (``ProfileModel``): None for ``NOD_OFFSET_LAW``,
         False for one position shared by all exposures (the geometry before 2026-11-02).
-    Returns (record, samples): record = dict(star info, ranges=[per-range dicts]).
+    Returns the record: dict(star info, ranges=[per-range dicts]).
     """
     log = log or (lambda *a: None)
     exps = load_star(task) if exps is None else exps
     det = task.detector
-    f_cur = np.interp(range_centres(), PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['f'])
     rec = dict(key=task.key, obs=task.obs, source_id=task.source_id, detector=det, quadrant=task.quadrant,
                x_start=task.x_start, y_start=task.y_start, srcy=task.srcy, nexp=len(exps),
                nsci=int(sum(e.use_data for e in exps)), ranges=[])
-    samples = {}
     sat = None
     for r, (a, b) in enumerate(RANGES):
         row = dict(range=r, lam=[a, b])
@@ -1710,38 +1687,12 @@ def fit_star(task, exps=None, wing=None, f_grid=F_GRID, sample_tables=None, snr_
             row['error'] = str(err)
             rec['ranges'].append(row)
             continue
-        # reference: the current table; first the floor from a fit without it
         RF.set_floor(np.zeros(RF.M.npix))
-        ref0 = RF.fit(tables=PF.LEGACY_PSF_TABLES, clip_rounds=0)
-        RF.set_floor(ref0['_model'])
-        ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
+        ref = RF.fit(tables=PF.PSF_TABLES, clip_rounds=0)
         RF.set_floor(ref['_model'])
         row['ref'] = _public(ref)
-        fw = float(f_cur[r] if wing is None else wing[r])
-        fr = RF.fit(f_wing=fw, x0=ref['_x'] + [0.45])
+        fr = RF.fit(x0=ref['_x'] + [RF.core0])
         row['free'] = _public(fr)
-        if f_grid is not None and fr['peak_snr'] >= snr_floor and abs(fr['c_node']) < EDGE_MAX + 0.05:
-            prof = []
-            x = fr['_x']
-            order = np.argsort(np.abs(np.asarray(f_grid) - fw))       # outward from the start
-            res = {}
-            for i in order:
-                g = RF.fit(f_wing=float(f_grid[i]), x0=x, use=fr['_use'])
-                res[i] = g
-            for i in range(len(f_grid)):
-                g = res[i]
-                prof.append(dict(f=float(f_grid[i]), chi2=g['chi2'], S=g.get('S'), c_node=g['c_node']))
-            row['profile'] = prof
-        if sample_tables:
-            for name, tab in sample_tables.items():
-                if tab is None:
-                    g = fr
-                    samp = RF.samples(g, constant_tables(g['S'], g['f']))
-                else:
-                    g = RF.fit(tables=tab, x0=fr['_x'][:2], use=fr['_use'])
-                    row[f'fit_{name}'] = _public(g)
-                    samp = RF.samples(g, tab)
-                samples[(r, name)] = samp
         if sat is None:
             try:
                 sat = saturated_flags(exps)
@@ -1750,7 +1701,7 @@ def fit_star(task, exps=None, wing=None, f_grid=F_GRID, sample_tables=None, snr_
                 log(f'{task.key}: saturation check failed: {err}')
         row['sat_frac'] = saturated_fraction(exps, sat, fr['c_node'], (a, b))
         rec['ranges'].append(row)
-    return rec, samples
+    return rec
 
 
 # ---------------------------------------------------------------------------
@@ -1862,145 +1813,7 @@ def select(records, snr_min=SNR_MIN, edge_max=EDGE_MAX, stage='free', log=None):
                 centre=centre, by_key=by_key, range_outliers={f'{k}:{r}': v for (k, r), v in range_out.items()})
 
 
-def _profile_curve(row):
-    p = row.get('profile')
-    if not p:
-        return None
-    f = np.array([q['f'] for q in p])
-    c = np.array([q['chi2'] for q in p])
-    S = np.array([np.nan if q['S'] is None else q['S'] for q in p])
-    return f, c, S
-
-
-def _parabola_min(f, c):
-    i = int(np.argmin(c))
-    if i == 0 or i == len(f) - 1:
-        return float(f[i])
-    x, y = f[i - 1:i + 2], c[i - 1:i + 2]
-    A = np.polyfit(x, y, 2)
-    return float(-A[1] / (2 * A[0])) if A[0] > 0 else float(f[i])
-
-
-def joint_wing_fraction(records, clean, stage='free', rescale=False):
-    """Per (detector, range): the wing fraction minimising the clean stars' summed
-    chi2 profiles (``fit_star``'s ``profile``: each star's core width, centre and
-    spectrum refitted at every trial value), i.e. one least-squares fit of a shared
-    wing fraction with the weights of the per-star fits (the ``SN_CAP`` floor already
-    caps what one bright star weighs). ``rescale``: divide each star's chi2 by its
-    reduced chi2 first (gives the bright stars back their full weight; not the
-    default). Uncertainty: jackknife over the stars. Also the median of the stars'
-    own minima (``f_median``), as a cross-check that no few stars set the value.
-    Returns {(det, r): dict(f, f_err, f_median, n, curve=(f, chi2))}."""
-    by_key = {rec['key']: rec for rec in records}
-    out = {}
-    for (det, r), keys in clean.items():
-        curves, mins = [], []
-        for k in keys:
-            row = by_key[k]['ranges'][r]
-            cv = _profile_curve(row)
-            if cv is None:
-                continue
-            f, c, _ = cv
-            scale = max(np.min(c) / row[stage]['ndof'], 1e-6) if rescale else 1.0
-            curves.append(c / scale)
-            mins.append(_parabola_min(f, c))
-        if not curves:
-            continue
-        C = np.array(curves)
-        tot = C.sum(axis=0)
-        fj = _parabola_min(f, tot)
-        jk = np.array([_parabola_min(f, tot - C[i]) for i in range(len(C))]) if len(C) > 2 else np.array([fj])
-        n = len(C)
-        err = float(np.sqrt((n - 1) / n * np.sum((jk - jk.mean()) ** 2))) if n > 2 else np.nan
-        out[(det, r)] = dict(f=fj, f_err=err, f_median=float(np.median(mins)), n=n,
-                             curve=(f.tolist(), (tot - tot.min()).tolist()))
-    return out
-
-
-def build_table(records, clean, stage='joint', percentile=25.0, wing=None):
-    """The table: per detector, core sigma = ``percentile`` of the clean stars' core
-    widths at each range (fits at the joint wing fraction, ``stage``), wing fraction =
-    the joint one (``wing``: {(det, r): f}). Also the median and quartiles.
-    Returns {det: dict(lam, S_rows, f, n, S_p16, S_p50, S_p75)} (PSF_TABLES layout plus
-    statistics)."""
-    by_key = {rec['key']: rec for rec in records}
-    out = {}
-    for det in ('NRS1', 'NRS2'):
-        lam, S, F, N, P16, P50, P75 = [], [], [], [], [], [], []
-        for r in range(len(RANGES)):
-            v = np.array([by_key[k]['ranges'][r][stage]['S'] for k in clean.get((det, r), [])
-                          if stage in by_key[k]['ranges'][r]])
-            lam.append(float(range_centres()[r]))
-            N.append(int(v.size))
-            if v.size:
-                p16, p25, p50, p75 = np.percentile(v, [16, percentile, 50, 75])
-            else:
-                p16 = p25 = p50 = p75 = np.nan
-            S.append(float(p25)); P16.append(float(p16)); P50.append(float(p50)); P75.append(float(p75))
-            F.append(float(wing[(det, r)]) if wing and (det, r) in wing else np.nan)
-        out[det] = dict(lam=lam, S_rows=S, f=F, k=PF.PSF_K, n=N, S_p16=P16, S_p50=P50, S_p75=P75,
-                        percentile=percentile)
-    return out
-
-
-def fwhm_rows(S, f, k=None):
-    """FWHM [rows] of the core + wing profile (pre-shutter, no clipping, no pixel)."""
-    from scipy.optimize import brentq
-    k = PF.PSF_K if k is None else k
-
-    def p(y):
-        return (1 - f) / S * np.exp(-0.5 * (y / S) ** 2) + f / (k * S) * np.exp(-0.5 * (y / (k * S)) ** 2)
-    half = 0.5 * p(0.0)
-    return 2 * brentq(lambda y: p(y) - half, 0, 6 * S * k)
-
-
-def side_light(out_dir, name, edge=1.5, samples='samples'):
-    """From the stacking samples of the clean stars: per (detector, range), the light
-    beyond ``edge`` rows on each side of the trace and within it, data and model (``name``:
-    'old' or 'new' table), each as a share of the model's light over all sampled pixels;
-    median over stars. Returns {(det, r): dict(neg_d, neg_m, pos_d, pos_m, core_d, core_m, n)}."""
-    sel, _ = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    clean = clean_in_pass2(rec2, sel)
-    out = {}
-    for (det, r), keys in clean.items():
-        vals = []
-        for k in keys:
-            fn = os.path.join(out_dir, samples, f'{k}.npz')
-            if not os.path.exists(fn):
-                continue
-            z = np.load(fn)
-            pre = f'r{r}_{name}_'
-            if pre + 'u' not in z:
-                continue
-            u, d, m = z[pre + 'u'], z[pre + 'd'], z[pre + 'm']
-            ok = np.isfinite(d) & np.isfinite(m)
-            tot = np.sum(m[ok])
-            if not tot > 0:
-                continue
-            row = []
-            for sel_ in (u < -edge, u > edge, np.abs(u) <= edge):
-                s = ok & sel_
-                row += [np.sum(d[s]) / tot, np.sum(m[s]) / tot]
-            vals.append(row)
-        if vals:
-            V = np.array(vals)
-            v = np.median(V, axis=0)
-            # one-sidedness per star: (data - model) beyond +edge minus the same beyond -edge
-            asym = (V[:, 2] - V[:, 3]) - (V[:, 0] - V[:, 1])
-            out[(det, r)] = dict(neg_d=v[0], neg_m=v[1], pos_d=v[2], pos_m=v[3], core_d=v[4], core_m=v[5],
-                                 n=len(vals), asym=float(np.median(asym)),
-                                 asym_err=float(1.2533 * np.std(asym) / np.sqrt(len(asym))),
-                                 asym_frac_pos=float(np.mean(asym > 0)))
-    return out
-
-
-def tables_for_model(table):
-    """``PSF_TABLES`` layout (numpy arrays at ``PSF_LAM``) from ``build_table``'s output."""
-    return {det: dict(S_rows=np.asarray(t['S_rows'], float), f=np.asarray(t['f'], float)) for det, t in table.items()}
-
-
-def centre_rows(records, keys, stage='joint'):
+def centre_rows(records, keys, stage='free'):
     """Per star: detector, quadrant, position (centre in 1.0-2.6 um, slit units) and the
     centre change of each range from it (NaN where unmeasured), with errors."""
     by_key = {rec['key']: rec for rec in records}
@@ -2120,7 +1933,7 @@ def read_records(directory):
                 out.append(json.load(fh))
     for rec in out:                      # JSON nulls back to NaN in the numbers used
         for row in rec.get('ranges', []):
-            for st in ('ref', 'free', 'joint', 'fit_old', 'fit_new', 'fit_zero'):
+            for st in ('ref', 'free'):
                 x = row.get(st)
                 if x:
                     for k in ('e_S', 'e_c', 'S', 'c_node', 'chi2r', 'peak_snr'):
@@ -2129,56 +1942,32 @@ def read_records(directory):
     return out
 
 
-def fit_table(records, stages=('ref', 'free', 'joint', 'fit_old', 'fit_new', 'fit_zero')):
-    """Per-(star, range) table of the fits (astropy Table)."""
-    from astropy.table import Table
-    rows = []
-    for rec in records:
-        for row in rec['ranges']:
-            base = dict(key=rec['key'], obs=rec['obs'], source_id=rec['source_id'], detector=rec['detector'],
-                        quadrant=rec['quadrant'], x_start=rec['x_start'], srcy=rec['srcy'], range=row['range'],
-                        lam_lo=row['lam'][0], lam_hi=row['lam'][1],
-                        sat_frac=np.nan if row.get('sat_frac') is None else row['sat_frac'])
-            for st in stages:
-                x = row.get(st) or {}
-                for k in ('S', 'e_S', 'f', 'c_node', 'e_c', 'drift', 'chi2r', 'peak_snr', 'nuse', 'npix'):
-                    v = x.get(k, np.nan)
-                    base[f'{st}_{k}'] = np.nan if v is None else v
-            rows.append(base)
-    return Table(rows=rows)
-
-
-def run_stars(tasks, out_dir, wing_for=None, f_grid=F_GRID, sample_tables=None, sample_dir=None, overwrite=False,
-              log=print, nod_law=None):
+def run_stars(tasks, out_dir, overwrite=False, log=print, nod_law=None):
     """``fit_star`` over tasks, one JSON per star in ``out_dir`` (skipped when present
-    unless ``overwrite``); samples (``sample_tables``) to ``sample_dir`` as npz.
-    ``wing_for(det)`` gives the per-range wing fractions (default: the current table);
-    ``nod_law`` as in ``fit_star``."""
+    unless ``overwrite``); ``nod_law`` as in ``fit_star``."""
     os.makedirs(out_dir, exist_ok=True)
     for i, t in enumerate(tasks):
         path = os.path.join(out_dir, f'{t.key}.json')
         if os.path.exists(path) and not overwrite:
             continue
         try:
-            rec, samp = fit_star(t, wing=None if wing_for is None else wing_for(t.detector), f_grid=f_grid,
-                                 sample_tables=sample_tables, log=log, nod_law=nod_law)
+            rec = fit_star(t, log=log, nod_law=nod_law)
         except Exception as err:
             log(f'{t.key}: failed: {type(err).__name__}: {err}')
-            rec, samp = dict(key=t.key, obs=t.obs, source_id=t.source_id, detector=t.detector, quadrant=t.quadrant,
-                             x_start=t.x_start, y_start=t.y_start, srcy=t.srcy, error=str(err), ranges=[]), {}
+            rec = dict(key=t.key, obs=t.obs, source_id=t.source_id, detector=t.detector, quadrant=t.quadrant,
+                       x_start=t.x_start, y_start=t.y_start, srcy=t.srcy, error=str(err), ranges=[])
         write_json(path, rec)
-        if samp and sample_dir:
-            os.makedirs(sample_dir, exist_ok=True)
-            np.savez_compressed(os.path.join(sample_dir, f'{t.key}.npz'),
-                                **{f'r{r}_{name}_{k}': v for (r, name), s in samp.items() for k, v in s.items()})
         snr = [x.get('free', {}).get('peak_snr', 0) for x in rec['ranges']]
         log(f'[{i + 1}/{len(tasks)}] {t.key}: peak S/N ' + ' '.join(f'{s:.0f}' for s in snr))
 
 
 # ---------------------------------------------------------------------------
-# Steps: pass 1 (fit), selection and joint wing fraction, pass 2 (refit at the
-# joint wing fraction), the tables, pass 3 (stacking samples), figures
+# Steps: the star fits (stars/), the selection, the centre law; the PSF steps above
+# read the selection and the star records through ``clean_records``
 # ---------------------------------------------------------------------------
+STARS_DIR = 'stars'                 # the per-star fits (``fit`` step) under the output directory
+
+
 def tasks_for(root, observations, keys=None, part=None, dispersers=('prism_clear',)):
     """Star tasks of the observations (only ``keys`` when given); ``part`` = (i, n) keeps
     every n-th task from the i-th, to split a step over n processes."""
@@ -2201,62 +1990,39 @@ def _vk(d):
 
 
 def step_select(out_dir, snr_min=SNR_MIN, edge_max=EDGE_MAX, log=print):
-    """Selection and joint wing fraction from pass 1; writes selection.json, joint_wing.json."""
-    recs = [r for r in read_records(os.path.join(out_dir, 'pass1')) if r['ranges']]
+    """The star selection (``select``) from the star fits; writes selection.json and
+    selection.log."""
+    recs = [r for r in read_records(os.path.join(out_dir, STARS_DIR)) if r['ranges']]
     lines = []
 
     def both(*a):
         lines.append(' '.join(str(x) for x in a))
         log(*a)
-    both(f'{len(recs)} star groups (star x detector) in pass 1; peak S/N >= {snr_min} per range, '
+    both(f'{len(recs)} star groups (star x detector); peak S/N >= {snr_min} per range, '
          f'core-width error < {WIDTH_ERR_MAX} rows, |centre| < {edge_max} shutter for the table')
     sel = select(recs, snr_min=snr_min, edge_max=edge_max, log=both)
-    joint = joint_wing_fraction(recs, sel['clean'])
-    for (det, r), j in sorted(joint.items()):
-        both(f'joint wing fraction {det} {RANGES[r][0]}-{RANGES[r][1]} um: {j["f"]:.3f} +- {j["f_err"]:.3f} '
-             f'({j["n"]} stars; median of the stars\' own minima {j["f_median"]:.3f}; current '
-             f'{np.interp(range_centres()[r], PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]["f"]):.3f})')
     write_json(os.path.join(out_dir, 'selection.json'),
                dict(clean=_kv(sel['clean']), usable=_kv(sel['usable']), outliers=sel['outliers'],
                     range_outliers=sel['range_outliers'], edge=sorted(sel['edge']), centre=sel['centre'],
                     snr_min=snr_min, edge_max=edge_max))
-    write_json(os.path.join(out_dir, 'joint_wing.json'), _kv(joint))
     with open(os.path.join(out_dir, 'selection.log'), 'w') as fh:
         fh.write('\n'.join(lines) + '\n')
-    return sel, joint
+    return sel
 
 
 def read_selection(out_dir):
     with open(os.path.join(out_dir, 'selection.json')) as fh:
         sel = json.load(fh)
-    with open(os.path.join(out_dir, 'joint_wing.json')) as fh:
-        joint = _vk(json.load(fh))
     for k in ('clean', 'usable'):
         sel[k] = _vk(sel[k])
     sel['edge'] = set(sel['edge'])
-    return sel, joint
+    return sel
 
 
-def wing_for_joint(joint):
-    """det -> per-range wing fractions: the joint value, else the current table's."""
-    def f(det):
-        cur = np.interp(range_centres(), PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['f'])
-        return [joint[(det, r)]['f'] if (det, r) in joint else float(cur[r]) for r in range(len(RANGES))]
-    return f
-
-
-def step_refit(root, out_dir, observations, log=print, part=None, nod_law=None):
-    """Pass 2: every usable star (clean and edge) refitted at the joint wing fraction."""
-    sel, joint = read_selection(out_dir)
-    keys = {k for v in sel['usable'].values() for k in v}
-    tasks = tasks_for(root, observations, keys, part=part)
-    run_stars(tasks, os.path.join(out_dir, 'pass2'), wing_for=wing_for_joint(joint), f_grid=None, log=log,
-              nod_law=nod_law)
-
-
-def clean_in_pass2(records2, sel, snr_min=None):
-    """The pass-1 clean lists, each range kept only where pass 2 passes the range cuts."""
-    by_key = {r['key']: r for r in records2}
+def clean_stars(records, sel, snr_min=None):
+    """The selection's clean lists, each range kept only where the star's record passes the
+    range cuts (``range_ok``)."""
+    by_key = {r['key']: r for r in records}
     snr_min = sel.get('snr_min', SNR_MIN) if snr_min is None else snr_min
     out = {}
     for (det, r), keys in sel['clean'].items():
@@ -2265,151 +2031,34 @@ def clean_in_pass2(records2, sel, snr_min=None):
     return out
 
 
-def step_table(out_dir, percentile=25.0, log=print):
-    """The new PSF table and centre law from pass 2; writes psf_table_new.json,
-    centre_law_new.json, centre_law_new_srcy.json."""
-    sel, joint = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    clean = clean_in_pass2(rec2, sel)
-    table = build_table(rec2, clean, stage='free', percentile=percentile,
-                        wing={k: v['f'] for k, v in joint.items()})
-    for det in ('NRS1', 'NRS2'):
-        for r in range(len(RANGES)):
-            if not np.isfinite(table[det]['f'][r]):
-                table[det]['f'][r] = float(np.interp(range_centres()[r], PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['f']))
-        table[det]['f_err'] = [joint[(det, r)]['f_err'] if (det, r) in joint else None for r in range(len(RANGES))]
-    write_json(os.path.join(out_dir, 'psf_table_new.json'), table)
-    usable = sorted({k for v in sel['usable'].values() for k in v} & {r['key'] for r in rec2})
-    rows = centre_rows(rec2, usable, stage='free')
+def clean_records(out_dir):
+    """(selection, star records by key, clean lists {(det, range): keys}) of a calibration."""
+    sel = read_selection(out_dir)
+    recs = {r['key']: r for r in read_records(os.path.join(out_dir, STARS_DIR)) if r['ranges']}
+    return sel, recs, clean_stars(list(recs.values()), sel)
+
+
+def step_centre_law(out_dir, log=print):
+    """The trace centre law (``centre_law_refit``) from the usable stars' centres (each range's
+    width fit, no law applied): writes centre_law_new.json (regressor: the measured centre),
+    centre_law_new_srcy.json (the planned position) and centre_rows.json."""
+    sel, recs, _ = clean_records(out_dir)
+    usable = sorted({k for v in sel['usable'].values() for k in v} & set(recs))
+    rows = centre_rows(list(recs.values()), usable, stage='free')
     for reg, name in (('cref', 'centre_law_new.json'), ('srcy', 'centre_law_new_srcy.json')):
-        write_json(os.path.join(out_dir, name), centre_law_refit(rows, regressor=reg))
+        law = centre_law_refit(rows, regressor=reg)
+        write_json(os.path.join(out_dir, name), law)
+        for det in ('NRS1', 'NRS2'):
+            log(f'{name} {det} D ' + ' '.join(f'{x:+.4f}' for x in law[det]['D']) + ' | alpha '
+                + ' '.join(f'{x:+.4f}' for x in law[det]['alpha']))
     write_json(os.path.join(out_dir, 'centre_rows.json'), rows)
-    for det in ('NRS1', 'NRS2'):
-        t = table[det]
-        log(f'{det} new  S_rows ' + ' '.join(f'{x:.3f}' for x in t['S_rows']) + ' | f ' +
-            ' '.join(f'{x:.3f}' for x in t['f']) + ' | n ' + ' '.join(str(x) for x in t['n']))
-        log(f'{det} old  S_rows ' + ' '.join(f'{x:.3f}' for x in PF.LEGACY_PSF_TABLES[det]['S_rows']) + ' | f ' +
-            ' '.join(f'{x:.3f}' for x in PF.LEGACY_PSF_TABLES[det]['f']))
-    return table
-
-
-def read_table(out_dir):
-    with open(os.path.join(out_dir, 'psf_table_new.json')) as fh:
-        return json.load(fh)
-
-
-def step_samples(root, out_dir, observations, log=print, part=None, nod_law=None, extra_tables=None):
-    """Pass 3: every clean star fitted with the current and the new table (and
-    ``extra_tables``: {name: table directory}, e.g. an earlier refit), with the stacking
-    samples (``RangeFit.samples``) for the profile figure."""
-    sel, joint = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    clean = clean_in_pass2(rec2, sel)
-    keys = {k for v in clean.values() for k in v}
-    tabs = {'old': PF.LEGACY_PSF_TABLES, 'new': tables_for_model(read_table(out_dir))}
-    for name, d in (extra_tables or {}).items():
-        tabs[name] = tables_for_model(read_table(d))
-    run_stars(tasks_for(root, observations, keys, part=part), os.path.join(out_dir, 'pass3'),
-              wing_for=wing_for_joint(joint), f_grid=None, sample_tables=tabs,
-              sample_dir=os.path.join(out_dir, 'samples'), log=log, nod_law=nod_law)
-
-
-def free_centre_star(task, joint, table, ranges_of_star, exps=None):
-    """One star, each range in ``ranges_of_star``, its centre free in every exposure
-    (``RangeFit.fit_centres``): with (a) the PSF at the clean stars' median core width and the
-    joint wing fraction ('med'), (b) the new table ('p25'), (c) its own core width and wing
-    fraction ('own'). Returns (record, samples of 'med' and 'p25')."""
-    exps = load_star(task) if exps is None else exps
-    det = task.detector
-    newtab = tables_for_model(table)
-    rec = dict(key=task.key, obs=task.obs, detector=det, ranges=[])
-    samples = {}
-    for r in ranges_of_star:
-        a, b = RANGES[r]
-        try:
-            RF = RangeFit(exps, (a, b))
-        except (PF.ProfileFitFallback, ValueError) as err:
-            rec['ranges'].append(dict(range=r, error=str(err)))
-            continue
-        fj = float(joint[(det, r)]['f']) if (det, r) in joint else float(table[det]['f'][r])
-        RF.set_floor(np.zeros(RF.M.npix))
-        ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
-        RF.set_floor(ref['_model'])
-        fr = RF.fit(f_wing=fj, x0=ref['_x'] + [0.4])
-        row = dict(range=r, lam=[a, b])
-        for name, kw in (('med', dict(tables=constant_tables(table[det]['S_p50'][r], fj))),
-                         ('p25', dict(tables=newtab)),
-                         ('own', dict(S=fr['S'], f=fj, free_S=True, free_f=True))):
-            g = RF.fit_centres(x0=fr['_x'][:2], use=fr['_use'], **kw)
-            row[name] = {k: v for k, v in g.items() if not k.startswith('_')}
-            if name != 'own':
-                samples[(r, name)] = RF.samples(g, g['_tables'])
-        RF.eoff = np.zeros(len(RF.M.exps))
-        rec['ranges'].append(row)
-    return rec, samples
-
-
-def step_free_centres(root, out_dir, observations, part=None, log=print):
-    """Every clean star (pass 2 selection) through ``free_centre_star``: records in pass4/,
-    stacking samples in samples_free/."""
-    sel, joint = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    clean = clean_in_pass2(rec2, sel)
-    table = read_table(out_dir)
-    ranges_of = {}
-    for (det, r), keys in clean.items():
-        for k in keys:
-            ranges_of.setdefault(k, []).append(r)
-    tasks = tasks_for(root, observations, set(ranges_of), part=part)
-    d4, ds = os.path.join(out_dir, 'pass4'), os.path.join(out_dir, 'samples_free')
-    os.makedirs(d4, exist_ok=True)
-    os.makedirs(ds, exist_ok=True)
-    for i, t in enumerate(tasks):
-        path = os.path.join(d4, f'{t.key}.json')
-        if os.path.exists(path):
-            continue
-        try:
-            rec, samp = free_centre_star(t, joint, table, sorted(ranges_of[t.key]))
-        except Exception as err:
-            log(f'{t.key}: failed: {type(err).__name__}: {err}')
-            rec, samp = dict(key=t.key, error=str(err), ranges=[]), {}
-        write_json(path, rec)
-        if samp:
-            np.savez_compressed(os.path.join(ds, f'{t.key}.npz'),
-                                **{f'r{r}_{name}_{k}': v for (r, name), s in samp.items() for k, v in s.items()})
-        log(f'[{i + 1}/{len(tasks)}] {t.key}')
-
-
-def merged_records(out_dir):
-    """Pass 1 records with pass 2's fits as 'joint' and pass 3's table fits added."""
-    recs = {r['key']: r for r in read_records(os.path.join(out_dir, 'pass1'))}
-    for sub, pairs in (('pass2', (('free', 'joint'),)),
-                       ('pass3', (('fit_old', 'fit_old'), ('fit_new', 'fit_new'), ('fit_zero', 'fit_zero')))):
-        d = os.path.join(out_dir, sub)
-        if not os.path.isdir(d):
-            continue
-        for r2 in read_records(d):
-            r1 = recs.get(r2['key'])
-            if r1 is None:
-                continue
-            for row1, row2 in zip(r1['ranges'], r2['ranges']):
-                for a, b in pairs:
-                    if a in row2:
-                        row1[b] = row2[a]
-    return list(recs.values())
-
-
-def write_fit_table(out_dir):
-    t = fit_table(merged_records(out_dir))
-    t.write(os.path.join(out_dir, 'star_fits.ecsv'), overwrite=True)
-    return t
+    return rows
 
 
 # ---------------------------------------------------------------------------
 # Figures
 # ---------------------------------------------------------------------------
 NEW_C, OLD_C, STAR_C, EDGE_C, INK, MUTED = '#2a78d6', '#eb6834', '#9a9893', '#1baf7a', '#0b0b0b', '#52514e'
-COMPARE_LABELS = {'zero': 'refit without the nod law'}
 QUAD_C = {1: '#2a78d6', 2: '#eb6834', 3: '#1baf7a', 4: '#6250d6'}
 
 
@@ -2420,106 +2069,6 @@ def _style():
                          'ytick.color': MUTED, 'axes.grid': True, 'grid.color': '#e4e3df', 'grid.linewidth': 0.6,
                          'axes.spines.top': False, 'axes.spines.right': False, 'figure.facecolor': '#fcfcfb',
                          'axes.facecolor': '#fcfcfb', 'savefig.facecolor': '#fcfcfb'})
-
-
-def plot_widths(out_dir, path, compare=None):
-    """(a) Core width and wing fraction against wavelength per detector: every clean
-    star's width (at the joint wing fraction), their 25th percentile (the new table),
-    their median, the current table and (``compare``: {label: directory}) earlier refits."""
-    import matplotlib.pyplot as plt
-    _style()
-    sel, joint = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    by_key = {r['key']: r for r in rec2}
-    clean = clean_in_pass2(rec2, sel)
-    table = read_table(out_dir)
-    lamc = range_centres()
-    fig, axs = plt.subplots(3, 2, figsize=(10, 9.2), sharex=True, gridspec_kw=dict(height_ratios=[1.6, 1, 1]))
-    rng = np.random.default_rng(0)
-    for j, det in enumerate(('NRS1', 'NRS2')):
-        ax, axf, axw = axs[0, j], axs[1, j], axs[2, j]
-        for r in range(len(RANGES)):
-            v = [by_key[k]['ranges'][r]['free']['S'] for k in clean.get((det, r), [])]
-            ax.plot(lamc[r] * np.exp(rng.uniform(-0.05, 0.05, len(v))), v, 'o', ms=3.2, color=STAR_C, alpha=0.55,
-                    mec='none', label='one star' if r == 0 else None, zorder=1)
-            ax.text(lamc[r], 0.255, f'{len(v)}', ha='center', va='bottom', fontsize=8, color=MUTED)
-        t = table[det]
-        ax.plot(lamc, t['S_p50'], 'o', mfc='#fcfcfb', mec=NEW_C, ms=6, mew=1.5, ls='none', label='median of the stars',
-                zorder=3)
-        ax.plot(lamc, t['S_rows'], 'o-', color=NEW_C, ms=6, lw=2, label='new table (25th percentile)', zorder=4)
-        ax.plot(PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['S_rows'], 's--', color=OLD_C, ms=5, lw=1.6, label='current table',
-                zorder=4)
-        comp = {lab: read_table(d)[det] for lab, d in (compare or {}).items()}
-        for lab, ct in comp.items():
-            ax.plot(lamc, ct['S_rows'], '^:', color=EDGE_C, ms=5, lw=1.6, label=lab, zorder=4)
-        ax.set_title(f'{det}: core width (numbers: stars per range)', loc='left')
-        ax.set_ylim(0.25, 0.85)
-        if j == 0:
-            ax.set_ylabel('core sigma [detector rows]')
-            ax.legend(loc='upper left', frameon=False)
-        fj = [joint[(det, r)]['f'] if (det, r) in joint else np.nan for r in range(len(RANGES))]
-        fe = [joint[(det, r)]['f_err'] if (det, r) in joint else np.nan for r in range(len(RANGES))]
-        axf.errorbar(lamc, fj, yerr=fe, fmt='o-', color=NEW_C, ms=6, lw=2, capsize=3, label='new (joint fit of the stars)')
-        axf.plot(PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['f'], 's--', color=OLD_C, ms=5, lw=1.6, label='current table')
-        for lab, ct in comp.items():
-            axf.plot(lamc, ct['f'], '^:', color=EDGE_C, ms=5, lw=1.6, label=lab)
-        axf.set_title(f'{det}: share of light in the wide wing', loc='left')
-        axf.set_ylim(0, 0.6)
-        if j == 0:
-            axf.set_ylabel('wing fraction')
-            axf.legend(loc='upper left', frameon=False)
-        fw_new = [fwhm_rows(s, ff) if np.isfinite(s) and np.isfinite(ff) else np.nan
-                  for s, ff in zip(t['S_rows'], t['f'])]
-        fw_old = [fwhm_rows(s, ff) for s, ff in zip(PF.LEGACY_PSF_TABLES[det]['S_rows'], PF.LEGACY_PSF_TABLES[det]['f'])]
-        axw.plot(lamc, fw_new, 'o-', color=NEW_C, ms=6, lw=2, label='new table')
-        axw.plot(PF.PSF_LAM, fw_old, 's--', color=OLD_C, ms=5, lw=1.6, label='current table')
-        for lab, ct in comp.items():
-            axw.plot(lamc, [fwhm_rows(s, ff) for s, ff in zip(ct['S_rows'], ct['f'])], '^:', color=EDGE_C, ms=5,
-                     lw=1.6, label=lab)
-        axw.set_title(f'{det}: full width at half maximum of core + wing', loc='left')
-        axw.set_ylim(0.6, 1.8)
-        axw.set_xscale('log')
-        axw.set_xticks([0.7, 1, 1.5, 2, 3, 4, 5])
-        axw.set_xticklabels(['0.7', '1', '1.5', '2', '3', '4', '5'])
-        axw.set_xlabel('wavelength [µm]')
-        if j == 0:
-            axw.set_ylabel('FWHM [detector rows]')
-            axw.legend(loc='upper left', frameon=False)
-    fig.suptitle('Cross-dispersion PSF of the PRISM, measured on calibration-field stars', x=0.01, ha='left',
-                 fontsize=12)
-    fig.text(0.01, 0.95, f'Wing width = {PF.PSF_K} x core width. Stars fitted through the profile-fit model on the '
-             'nod differences stage 3 reads.', fontsize=9, color=MUTED)
-    fig.tight_layout(rect=(0, 0, 1, 0.945))
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-
-
-def _stack(samples_dir, keys, r, name, bins):
-    """Per-star binned mean of the own-image samples, then the median over stars:
-    every star counts once."""
-    per_d, per_m = [], []
-    for k in keys:
-        fn = os.path.join(samples_dir, f'{k}.npz')
-        if not os.path.exists(fn):
-            continue
-        z = np.load(fn)
-        pre = f'r{r}_{name}_'
-        if pre + 'u' not in z:
-            continue
-        u, d, m = z[pre + 'u'], z[pre + 'd'], z[pre + 'm']
-        idx = np.digitize(u, bins) - 1
-        ok = (idx >= 0) & (idx < bins.size - 1) & np.isfinite(d) & np.isfinite(m)
-        n = np.bincount(idx[ok], minlength=bins.size - 1)
-        sd = np.bincount(idx[ok], d[ok], minlength=bins.size - 1)
-        sm = np.bincount(idx[ok], m[ok], minlength=bins.size - 1)
-        with np.errstate(invalid='ignore', divide='ignore'):
-            per_d.append(np.where(n >= 3, sd / n, np.nan))
-            per_m.append(np.where(n >= 3, sm / n, np.nan))
-    if not per_d:
-        return None
-    D, M = np.array(per_d), np.array(per_m)
-    with np.errstate(invalid='ignore'):
-        return np.nanmedian(D, axis=0), np.nanmedian(M, axis=0), len(per_d)
 
 
 def _star_curves(samples_dir, keys, r, name, bins):
@@ -2544,98 +2093,6 @@ def _star_curves(samples_dir, keys, r, name, bins):
     return (np.array(D), np.array(M)) if D else None
 
 
-def plot_stack_free(out_dir, path, half=4.0, step=0.25):
-    """Stacked clean-star profiles with every star's centre free in every exposure, against
-    (a) the PSF at the median star width with the joint wing fraction and (b) the new table.
-    Residuals in % of the peak: the median over stars, the spread between stars (16-84 %) and
-    the uncertainty of the median."""
-    import matplotlib.pyplot as plt
-    _style()
-    sel, joint = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    clean = clean_in_pass2(rec2, sel)
-    sdir = os.path.join(out_dir, 'samples_free')
-    bins = np.arange(-half, half + 1e-9, step)
-    bc = 0.5 * (bins[1:] + bins[:-1])
-    nr = len(RANGES)
-    fig, axs = plt.subplots(4, nr, figsize=(2.2 * nr, 9.6), sharex=True,
-                            gridspec_kw=dict(height_ratios=[1.4, 1.0, 1.4, 1.0], hspace=0.14, wspace=0.12))
-    for j, det in enumerate(('NRS1', 'NRS2')):
-        for r in range(nr):
-            ax, axr = axs[2 * j, r], axs[2 * j + 1, r]
-            cm = _star_curves(sdir, clean.get((det, r), []), r, 'med', bins)
-            cp = _star_curves(sdir, clean.get((det, r), []), r, 'p25', bins)
-            if cm is None or cp is None:
-                ax.set_visible(False); axr.set_visible(False)
-                continue
-            with np.errstate(invalid='ignore'):
-                dmed = np.nanmedian(cm[0], axis=0)
-                pk = np.nanmax(np.nanmedian(cm[1], axis=0))
-                ax.semilogy(bc, np.clip(dmed, 1e-4, None), 'o', color=INK, ms=3, label='stars (median)')
-                ax.semilogy(bc, np.nanmedian(cm[1], axis=0), '-', color=NEW_C, lw=1.8,
-                            label='model: median star width')
-                ax.semilogy(bc, np.nanmedian(cp[1], axis=0), '--', color=OLD_C, lw=1.5,
-                            label='model: new table (25th percentile)')
-                ax.set_ylim(3e-4, 1.0)
-                axr.axhline(0, color=MUTED, lw=0.8)
-                for (D, Mm), col, ls, spread in ((cm, NEW_C, '-', True), (cp, OLD_C, '--', False)):
-                    R = 100 * (D - Mm) / pk
-                    med = np.nanmedian(R, axis=0)
-                    n = np.sum(np.isfinite(R), axis=0)
-                    err = 1.2533 * np.nanstd(R, axis=0) / np.sqrt(np.maximum(n, 1))
-                    if spread:
-                        axr.fill_between(bc, np.nanpercentile(R, 16, axis=0), np.nanpercentile(R, 84, axis=0),
-                                         color=col, alpha=0.15, lw=0, label='spread between stars (16-84 %)')
-                    axr.fill_between(bc, med - err, med + err, color=col, alpha=0.35, lw=0)
-                    axr.plot(bc, med, ls, color=col, lw=1.5)
-            axr.set_ylim(-6, 6)
-            ax.set_title(f'{det}  {RANGES[r][0]}–{RANGES[r][1]} µm\n{cm[0].shape[0]} stars', fontsize=9)
-            if r == 0:
-                ax.set_ylabel("share of the star's\nlight per pixel")
-                axr.set_ylabel('data − model\n[% of peak]')
-            else:
-                ax.set_yticklabels([]); axr.set_yticklabels([])
-            if j == 1:
-                axr.set_xlabel('rows from centre')
-    axs[0, 0].legend(loc='upper left', frameon=False, fontsize=6.5)
-    axs[1, 0].legend(loc='lower left', frameon=False, fontsize=7)
-    fig.suptitle('Stacked star profiles, each star\'s centre fitted in every exposure', x=0.01, ha='left', fontsize=12)
-    fig.text(0.01, 0.955, 'Residuals: median over stars (line), its uncertainty (dark band), spread between stars '
-             '(light band, median-width model). Positive rows = +y in the slit.', fontsize=8.5, color=MUTED)
-    fig.subplots_adjust(left=0.06, right=0.99, top=0.9, bottom=0.06)
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-
-
-def star_own_width(root, out_dir, key, exposure=0):
-    """One star, every range: its own core width and wing fraction and its centre in every
-    exposure fitted (``RangeFit.fit_centres``). Returns (task, exposures, per-range fits, per-range
-    pixels of ``exposure``)."""
-    sel, joint = read_selection(out_dir)
-    table = read_table(out_dir)
-    obs = '_'.join(key.split('_')[:-2])
-    task = tasks_for(root, [obs], {key})[0]
-    exps = load_star(task)
-    fits_, pix = {}, {}
-    for r, (a, b) in enumerate(RANGES):
-        try:
-            RF = RangeFit(exps, (a, b))
-        except (PF.ProfileFitFallback, ValueError):
-            continue
-        fj = float(joint[(task.detector, r)]['f']) if (task.detector, r) in joint else float(table[task.detector]['f'][r])
-        RF.set_floor(np.zeros(RF.M.npix))
-        ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
-        RF.set_floor(ref['_model'])
-        fr = RF.fit(f_wing=fj, x0=ref['_x'] + [0.4])
-        if fr['peak_snr'] < SNR_MIN:
-            continue
-        g = RF.fit_centres(S=fr['S'], f=fj, free_S=True, free_f=True, x0=fr['_x'][:2], use=fr['_use'])
-        px = RF.exposure_pixels(exposure, g)
-        if px is not None:
-            fits_[r], pix[r] = {k: v for k, v in g.items() if not k.startswith('_')}, px
-    return task, exps, fits_, pix
-
-
 def split_pixels(px, ranges=RANGES):
     """``RangeFit.exposure_pixels`` of a whole-range fit, split into the ``ranges``."""
     out = {}
@@ -2649,18 +2106,16 @@ def split_pixels(px, ranges=RANGES):
     return out
 
 
-def plot_star_own_width(root, out_dir, key, path, exposure=0, cuts=(1, 3, 5, 6), half=12.0, step=0.25,
-                        precomputed=None, model_label='own width, centre free per exposure', cut_title=None,
-                        title=None):
-    """One bright star at its own width: one exposure's nod difference, the model (own core
-    width and wing fraction per range, centre free in every exposure), the residual in % of the
-    column peak and in sigma; and cross-sections over a few ranges: data against model (each
-    pixel as a share of the star's light, against its distance from the trace centre), the
-    residual underneath with its 1-sigma errors. ``precomputed``: (task, exposures, fits by
-    range, pixels by range) of another fit, with ``cut_title(r)`` and ``title``."""
+def plot_star_fit(key, path, fit, exposure=0, cuts=(1, 3, 5, 6), half=12.0, step=0.25,
+                  model_label='centre free per exposure', cut_title=None, title=None):
+    """One bright star and a fit of it: one exposure's nod difference, the model, the residual
+    in % of the column peak and in sigma; and cross-sections over a few ranges: data against
+    model (each pixel as a share of the star's light, against its distance from the trace
+    centre), the residual underneath with its 1-sigma errors. ``fit``: (task, exposures, fits by
+    range, pixels by range ``RangeFit.exposure_pixels``); ``cut_title(r)`` titles a cross-section."""
     import matplotlib.pyplot as plt
     _style()
-    task, exps, fits_, pix = precomputed if precomputed is not None else star_own_width(root, out_dir, key, exposure)
+    task, exps, fits_, pix = fit
     e = exps[exposure]
     shape = e.y.shape
     img = {n: np.full(shape, np.nan) for n in ('d', 'm', 'sig', 'peak')}
@@ -2700,7 +2155,7 @@ def plot_star_own_width(root, out_dir, key, path, exposure=0, cuts=(1, 3, 5, 6),
     bins = np.arange(-half, half + 1e-9, step)
     bc = 0.5 * (bins[1:] + bins[:-1])
     for j, r in enumerate(cuts):
-        px, g = pix[r], fits_.get(r)
+        px = pix[r]
         u = px['u']
         keep = px['use'] & np.isfinite(px['norm']) & (px['norm'] > 0)
         idx = np.digitize(u[keep], bins) - 1
@@ -2718,9 +2173,7 @@ def plot_star_own_width(root, out_dir, key, path, exposure=0, cuts=(1, 3, 5, 6),
         ax.plot(bc[fin], Mo[fin], '-', color=NEW_C, lw=1.5, label='model')
         ax.errorbar(bc[fin], D[fin], yerr=E[fin], fmt='o', color=INK, ms=2.5, lw=0.6, label='data')
         ax.axhline(0, color=MUTED, lw=0.6)
-        ax.set_title(cut_title(r) if cut_title else
-                     f'{RANGES[r][0]}–{RANGES[r][1]} µm\ncore {g["S"]:.2f} rows, wing {g["f"]:.2f}\n'
-                     f'chi2/dof {g["chi2r_raw"]:.1f}', fontsize=8.5)
+        ax.set_title(cut_title(r) if cut_title else f'{RANGES[r][0]}–{RANGES[r][1]} µm', fontsize=8.5)
         axr.axhline(0, color=MUTED, lw=0.8)
         axr.errorbar(bc[fin], 100 * (D - Mo)[fin] / pk, yerr=100 * E[fin] / pk, fmt='o-', color=OLD_C, ms=2.5, lw=0.8)
         axr.set_ylim(-4, 4)
@@ -2732,7 +2185,7 @@ def plot_star_own_width(root, out_dir, key, path, exposure=0, cuts=(1, 3, 5, 6),
     c = np.nanmedian([g['c_node'] for g in fits_.values() if 'c_node' in g]) if fits_ else np.nan
     with np.errstate(invalid='ignore'):
         up = np.nanmedian(np.diff(e.y[sl], axis=0)) > 0         # does slit +y run up the image?
-    fig.suptitle(title or f'{key}: one star at its own width, exposure {e.name.split("_")[2]} (position in the '
+    fig.suptitle(title or f'{key}: one star, exposure {e.name.split("_")[2]} (position in the '
                  f'shutter {c:+.2f} of the pitch)', x=0.01, ha='left', fontsize=11.5)
     fig.text(0.01, 0.955, f'Model: {model_label}; negative traces are the nod partners. Slit +y runs '
              f'{"up" if up else "down"} the images. Cross-sections: this exposure, pixels averaged in 0.25-row bins '
@@ -2740,66 +2193,6 @@ def plot_star_own_width(root, out_dir, key, path, exposure=0, cuts=(1, 3, 5, 6),
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     return fits_
-
-
-def plot_profiles(out_dir, path, half=4.0, step=0.25, compare=None):
-    """(b) Per detector and range: the clean stars' own images stacked (each pixel as a
-    fraction of the star's light, against its distance from the fitted trace centre),
-    against the model with the current and the new table, and the residuals."""
-    import matplotlib.pyplot as plt
-    _style()
-    sel, joint = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    clean = clean_in_pass2(rec2, sel)
-    sdir = os.path.join(out_dir, 'samples')
-    bins = np.arange(-half, half + 1e-9, step)
-    bc = 0.5 * (bins[1:] + bins[:-1])
-    nr = len(RANGES)
-    fig, axs = plt.subplots(4, nr, figsize=(2.15 * nr, 9.2), sharex=True,
-                            gridspec_kw=dict(height_ratios=[1.5, 0.8, 1.5, 0.8], hspace=0.12, wspace=0.12))
-    for j, det in enumerate(('NRS1', 'NRS2')):
-        for r in range(nr):
-            ax, axr = axs[2 * j, r], axs[2 * j + 1, r]
-            new = _stack(sdir, clean.get((det, r), []), r, 'new', bins)
-            old = _stack(sdir, clean.get((det, r), []), r, 'old', bins)
-            if new is None or old is None:
-                ax.set_visible(False); axr.set_visible(False)
-                continue
-            dn, mn, n = new
-            do, mo, _ = old
-            ax.semilogy(bc, np.clip(dn, 1e-4, None), 'o', color=INK, ms=3, label='stars (median)')
-            ax.semilogy(bc, mo, '--', color=OLD_C, lw=1.6, label='model, current table')
-            for name, lab in (compare or {}).items():
-                z = _stack(sdir, clean.get((det, r), []), r, name, bins)
-                if z is not None:
-                    ax.semilogy(bc, z[1], ':', color=EDGE_C, lw=1.6, label=f'model, {lab}')
-            ax.semilogy(bc, mn, '-', color=NEW_C, lw=1.8, label='model, new table')
-            ax.set_ylim(3e-4, 1.0)
-            pk = np.nanmax(mn)
-            axr.axhline(0, color=MUTED, lw=0.8)
-            axr.plot(bc, 100 * (do - mo) / pk, '--', color=OLD_C, lw=1.4)
-            for name in (compare or {}):
-                z = _stack(sdir, clean.get((det, r), []), r, name, bins)
-                if z is not None:
-                    axr.plot(bc, 100 * (z[0] - z[1]) / pk, ':', color=EDGE_C, lw=1.4)
-            axr.plot(bc, 100 * (dn - mn) / pk, '-', color=NEW_C, lw=1.6)
-            axr.set_ylim(-4, 4)
-            ax.set_title(f'{det}  {RANGES[r][0]}–{RANGES[r][1]} µm\n{n} stars', fontsize=9)
-            if r == 0:
-                ax.set_ylabel('share of the star\'s\nlight per pixel')
-                axr.set_ylabel('data − model\n[% of peak]')
-            else:
-                ax.set_yticklabels([]); axr.set_yticklabels([])
-            if j == 1:
-                axr.set_xlabel('rows from centre')
-    axs[0, 0].legend(loc='lower center', frameon=False, fontsize=7.5)
-    fig.suptitle('Stacked star profiles against the model PSF', x=0.01, ha='left', fontsize=12)
-    fig.text(0.01, 0.955, 'Each star\'s nod difference less the model\'s negative copies, divided by its spectrum '
-             'and throughput; the model is the same pixels\' image. Shutter clipping and pixel integration included.',
-             fontsize=8.5, color=MUTED)
-    fig.subplots_adjust(left=0.06, right=0.99, top=0.9, bottom=0.06)
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
 
 
 def read_centre_law(out_dir):
@@ -2860,175 +2253,6 @@ def plot_centre_law(out_dir, path, dy=0.229, compare=None):
     plt.close(fig)
 
 
-def plot_position(out_dir, path, ranges=(1, 4, 6)):
-    """Diagnostic: each usable star's core width against its position in the shutter and
-    on the detector (clean, edge and outlier stars)."""
-    import matplotlib.pyplot as plt
-    _style()
-    sel, joint = read_selection(out_dir)
-    recs = merged_records(out_dir)
-    fig, axs = plt.subplots(2, len(ranges), figsize=(3.6 * len(ranges), 6.4))
-    for i, r in enumerate(ranges):
-        for j, (xkey, xlab) in enumerate((('pos', 'star position in the shutter [shutter pitch]'),
-                                          ('x_start', 'slit start on the detector [column]'))):
-            ax = axs[j, i]
-            for det, mk in (('NRS1', 'o'), ('NRS2', '^')):
-                for kind, col in (('clean', NEW_C), ('edge', EDGE_C), ('outlier', OLD_C)):
-                    xs, ys = [], []
-                    for rec in recs:
-                        if rec['detector'] != det or r >= len(rec['ranges']):
-                            continue
-                        x = rec['ranges'][r].get('joint') or rec['ranges'][r].get('free')
-                        if not x or not range_ok(x, sel['snr_min']):
-                            continue
-                        k = rec['key']
-                        kd = 'outlier' if k in sel['outliers'] else ('edge' if k in sel['edge'] else 'clean')
-                        if kd != kind:
-                            continue
-                        xs.append(sel['centre'].get(k, np.nan) if xkey == 'pos' else rec['x_start'])
-                        ys.append(x['S'])
-                    ax.plot(xs, ys, mk, color=col, ms=4, alpha=0.7, mec='none',
-                            label=f'{det} {kind}' if (i == 0 and j == 0) else None)
-            ax.set_xlabel(xlab)
-            if i == 0:
-                ax.set_ylabel('core sigma [rows]')
-            ax.set_title(f'{RANGES[r][0]}–{RANGES[r][1]} µm', loc='left')
-            ax.set_ylim(0.2, 1.0)
-    axs[0, 0].legend(frameon=False, fontsize=7.5, ncol=2)
-    fig.suptitle('Core width against position (diagnostic)', x=0.01, ha='left', fontsize=12)
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-
-
-def plot_star_residuals(root, out_dir, key, path, exposure=0):
-    """Diagnostic: one star's nod difference (one exposure) and its residuals with the
-    current and the new table, each pixel divided by its column's peak, over every
-    range (the fits of ``fit_star`` at each table, centre free)."""
-    import matplotlib.pyplot as plt
-    _style()
-    obs = '_'.join(key.split('_')[:-2])
-    task = tasks_for(root, [obs], {key})[0]
-    exps = load_star(task)
-    new = tables_for_model(read_table(out_dir))
-    e = exps[exposure]
-    img = {n: np.full(e.y.shape, np.nan) for n in ('data', 'old', 'new')}
-    peak = np.full(e.y.shape, np.nan)
-    for a, b in RANGES:
-        try:
-            RF = RangeFit(exps, (a, b))
-        except (PF.ProfileFitFallback, ValueError):
-            continue
-        RF.set_floor(np.zeros(RF.M.npix))
-        r0 = RF.fit(tables=PF.LEGACY_PSF_TABLES, clip_rounds=0)
-        RF.set_floor(r0['_model'])
-        for name, tab in (('old', PF.LEGACY_PSF_TABLES), ('new', new)):
-            g = RF.fit(tables=tab)
-            n = 0
-            for k, m in RF.M.pix_masks:
-                nk = int(m.sum())
-                if k == exposure:
-                    d = RF.M.pix['d'][n:n + nk]
-                    img['data'][m] = d
-                    img[name][m] = d - g['_model'][n:n + nk]
-                    pk = np.zeros(e.y.shape)
-                    pk[m] = np.abs(g['_model'][n:n + nk])
-                    colmax = pk.max(axis=0)
-                    peak[m] = np.broadcast_to(colmax, e.y.shape)[m]
-                n += nk
-    rows = np.flatnonzero(np.isfinite(img['data']).any(axis=1))
-    cols = np.flatnonzero(np.isfinite(img['data']).any(axis=0))
-    sl = (slice(rows.min(), rows.max() + 1), slice(cols.min(), cols.max() + 1))
-    lam_row = np.nanmedian(e.wav[sl], axis=0)
-    fig, axs = plt.subplots(3, 1, figsize=(11, 6.4), sharex=True)
-    with np.errstate(invalid='ignore', divide='ignore'):
-        panels = [('nod difference / column peak', img['data'] / peak, 1.0),
-                  ('residual, current table [% of column peak]', 100 * img['old'] / peak, 5.0),
-                  ('residual, new table [% of column peak]', 100 * img['new'] / peak, 5.0)]
-    for ax, (title, im, v) in zip(axs, panels):
-        h = ax.imshow(im[sl], origin='lower', aspect='auto', cmap='RdBu_r', vmin=-v, vmax=v, interpolation='nearest')
-        ax.set_title(title, loc='left')
-        ax.grid(False)
-        ax.set_ylabel('row')
-        fig.colorbar(h, ax=ax, pad=0.01)
-    ticks = [t for t in (0.8, 1, 1.5, 2, 3, 4, 5) if np.nanmin(lam_row) <= t <= np.nanmax(lam_row)]
-    ok = np.isfinite(lam_row)
-    o = np.argsort(lam_row[ok])
-    axs[-1].set_xticks(np.interp(ticks, lam_row[ok][o], np.arange(lam_row.size)[ok][o]))
-    axs[-1].set_xticklabels([str(t) for t in ticks])
-    axs[-1].set_xlabel('wavelength [µm]')
-    fig.suptitle(f'{key}, exposure {e.name.split("_")[2]}: data and residuals', x=0.01, ha='left', fontsize=11)
-    fig.text(0.01, 0.925, 'The star is the positive trace; the negative traces are the nod partners subtracted by '
-             'stage 2b.', fontsize=9, color=MUTED)
-    fig.tight_layout(rect=(0, 0, 1, 0.91))
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-
-
-def write_summary(out_dir, log=print, compare=None):
-    """Old against new per detector and range (core, wing, FWHM, light beyond 1.5 rows on
-    each side: data and both models); writes summary.json and summary.log."""
-    table = read_table(out_dir)
-    sides = {name: side_light(out_dir, name) for name in ('old', 'new')}
-    lines, out = [], {}
-    for det in ('NRS1', 'NRS2'):
-        t, o = table[det], PF.LEGACY_PSF_TABLES[det]
-        lines.append(f'== {det}')
-        lines.append(' lam   n | core old -> new (p50)    | wing old -> new        | FWHM old -> new rows | '
-                     'light < -1.5 rows: data / old / new | light > +1.5 rows: data / old / new')
-        for r in range(len(RANGES)):
-            fo, fn = fwhm_rows(o['S_rows'][r], o['f'][r]), fwhm_rows(t['S_rows'][r], t['f'][r])
-            s_o, s_n = sides['old'].get((det, r)), sides['new'].get((det, r))
-            rec = dict(lam=t['lam'][r], n=t['n'][r], S_old=float(o['S_rows'][r]), S_new=t['S_rows'][r],
-                       S_p50=t['S_p50'][r], f_old=float(o['f'][r]), f_new=t['f'][r], f_err=t['f_err'][r],
-                       fwhm_old=fo, fwhm_new=fn, sides_old=s_o, sides_new=s_n)
-            out[f'{det}:{r}'] = rec
-            fe = rec['f_err'] if rec['f_err'] is not None else np.nan
-            sd = (f"{100 * s_n['neg_d']:5.2f}% / {100 * s_o['neg_m']:5.2f}% / {100 * s_n['neg_m']:5.2f}% | "
-                  f"{100 * s_n['pos_d']:5.2f}% / {100 * s_o['pos_m']:5.2f}% / {100 * s_n['pos_m']:5.2f}%"
-                  if s_o and s_n else '-')
-            lines.append(f"{t['lam'][r]:4.2f} {t['n'][r]:3d} | {o['S_rows'][r]:.3f} -> {t['S_rows'][r]:.3f} "
-                         f"({t['S_p50'][r]:.3f}) {100 * (t['S_rows'][r] / o['S_rows'][r] - 1):+5.1f}% | "
-                         f"{o['f'][r]:.3f} -> {t['f'][r]:.3f}+-{fe:.3f} | {fo:.3f} -> {fn:.3f} "
-                         f"{100 * (fn / fo - 1):+5.1f}% | {sd}")
-    for name, d in (compare or {}).items():
-        ct = read_table(d)
-        lines.append(f'== against {name} ({d})')
-        lines.append('det  lam  | core: that -> new          | wing: that -> new | FWHM: that -> new')
-        for det in ('NRS1', 'NRS2'):
-            t, c = table[det], ct[det]
-            for r in range(len(RANGES)):
-                fc, fn = fwhm_rows(c['S_rows'][r], c['f'][r]), fwhm_rows(t['S_rows'][r], t['f'][r])
-                lines.append(f"{det} {t['lam'][r]:4.2f} | {c['S_rows'][r]:.3f} -> {t['S_rows'][r]:.3f} "
-                             f"{100 * (t['S_rows'][r] / c['S_rows'][r] - 1):+5.1f}% | {c['f'][r]:.3f} -> {t['f'][r]:.3f} | "
-                             f"{fc:.3f} -> {fn:.3f} {100 * (fn / fc - 1):+5.1f}%")
-    # summed chi2 of the clean stars with each table (pass 3: same pixels and weights, centre and drift free)
-    sel, _ = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    clean = clean_in_pass2(rec2, sel)
-    p3d = os.path.join(out_dir, 'pass3')
-    if os.path.isdir(p3d):
-        p3 = {r['key']: r for r in read_records(p3d)}
-        names = ['new'] + list(compare or {})
-        lines.append('== summed chi2 of the clean stars with each table, relative to the current table')
-        lines.append('det  range      n | ' + ' | '.join(f'{n:>8s}' for n in names))
-        for det in ('NRS1', 'NRS2'):
-            for r in range(len(RANGES)):
-                ks = [k for k in clean.get((det, r), []) if k in p3 and all(
-                    f'fit_{n}' in p3[k]['ranges'][r] for n in ['old'] + names)]
-                if not ks:
-                    continue
-                o = sum(p3[k]['ranges'][r]['fit_old']['chi2'] for k in ks)
-                vals = [sum(p3[k]['ranges'][r][f'fit_{n}']['chi2'] for k in ks) / o for n in names]
-                lines.append(f'{det} {RANGES[r][0]}-{RANGES[r][1]} {len(ks):4d} | ' + ' | '.join(f'{v:8.4f}' for v in vals))
-    write_json(os.path.join(out_dir, 'summary.json'), out)
-    with open(os.path.join(out_dir, 'summary.log'), 'w') as fh:
-        fh.write('\n'.join(lines) + '\n')
-    for x in lines:
-        log(x)
-    return out
-
-
 def forms_start(out_dir, form_name, nodes=STAR_NODES):
     """Starting values for the smooth fits: per detector and node, the median of the bright
     stars' per-range fits (``step_forms``) in the range holding the node; None without them."""
@@ -3061,9 +2285,7 @@ def step_table_test(root, out_dir, observations, tables, part=None, log=print, t
     ``tables`` ({name: table}) at fixed shape, its centre free in every exposure (centre linear
     in wavelength across the range): records in table_test<tag>/, stacking samples in
     samples_tables<tag>/."""
-    sel, joint = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    clean = clean_in_pass2(rec2, sel)
+    sel, rec2, clean = clean_records(out_dir)
     ranges_of = {}
     for (det, r), keys in clean.items():
         for k in keys:
@@ -3081,7 +2303,7 @@ def step_table_test(root, out_dir, observations, tables, part=None, log=print, t
         for r in sorted(ranges_of[t.key]):
             try:
                 RF = RangeFit(exps, RANGES[r])
-                fr, fj = _range_start(RF, t.detector, r, joint=joint)
+                fr = _range_start(RF)
                 row = dict(range=r)
                 for name, tab in tables.items():
                     g = RF.fit_centres(tables=tab, x0=fr['_x'][:2], use=fr['_use'])
@@ -3105,19 +2327,17 @@ TABLE_STYLE = {'A': (NEW_C, '-', 'new: core 25th percentile, the rest median'),
                'S': (NEW_C, '-', 'new: smooth joint fit (S)'),
                'SA': ('#1baf7a', ':', 'smooth joint fit, half A'),
                'SB': ('#6250d6', ':', 'smooth joint fit, half B'),
-               'current': (OLD_C, '--', 'current table')}
+               'shipped': (OLD_C, '--', 'shipped table (profile_fit.PSF_TABLES)')}
 
 
-def plot_stack_tables(out_dir, path, names=('A', 'B', 'current'), samples='samples_tables', half=4.0, step=0.25,
+def plot_stack_tables(out_dir, path, names=('S', 'shipped'), samples='samples_tables', half=4.0, step=0.25,
                       title='Stacked star profiles against the PSF tables'):
     """Per detector and range, the clean stars stacked (centre free in every exposure) against
     each table; residuals in % of the peak: the median over stars, its uncertainty, the spread
     between stars (first table), and the +-1 % goal."""
     import matplotlib.pyplot as plt
     _style()
-    sel, _ = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    clean = clean_in_pass2(rec2, sel)
+    sel, rec2, clean = clean_records(out_dir)
     sdirs = {n: os.path.join(out_dir, samples[n] if isinstance(samples, dict) else samples) for n in names}
     bins = np.arange(-half, half + 1e-9, step)
     bc = 0.5 * (bins[1:] + bins[:-1])
@@ -3179,9 +2399,7 @@ def heldout_metrics(out_dir, samples='samples_tables_S'):
     """Largest |median stack residual| per (detector, range): S on all clean stars (in sample),
     the half-A fit on half B and the half-B fit on half A (held out), each half's own fit on itself.
     Returns {label: {(det, r): value}} and the per-star counts."""
-    sel, _ = read_selection(out_dir)
-    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
-    clean = clean_in_pass2(rec2, sel)
+    sel, rec2, clean = clean_records(out_dir)
     A, B = split_halves({k for v in clean.values() for k in v})
     sub = lambda keys: {k: [x for x in v if x in keys] for k, v in clean.items()}   # noqa: E731
     sd = os.path.join(out_dir, samples)
@@ -3234,8 +2452,8 @@ PARAM_LABELS = dict(core_sigma='core width [rows]', wing_frac='wing share of the
 
 def plot_form_params(out_dir, form_name, path, tables):
     """Each PSF parameter against wavelength per detector: every clean star's fit in each range
-    (its values at the range's two ends, ``step_form_ranges``), the new tables and the current
-    one where comparable."""
+    (its values at the range's two ends, ``step_form_ranges``) and the tables given
+    ({name: general table})."""
     import matplotlib.pyplot as plt
     _style()
     form = FORMS[form_name]
@@ -3288,7 +2506,7 @@ def plot_form_params(out_dir, form_name, path, tables):
 
 def plot_star_smooth(root, out_dir, key, form_name, path, exposure=0):
     """One bright star at its own smooth PSF parameters (``fit_star_smooth``): 2-D data, model,
-    residual in % and in sigma, and cross-sections (``plot_star_own_width``)."""
+    residual in % and in sigma, and cross-sections (``plot_star_fit``)."""
     form = FORMS[form_name]
     obs = '_'.join(key.split('_')[:-2])
     task = tasks_for(root, [obs], {key})[0]
@@ -3312,55 +2530,57 @@ def plot_star_smooth(root, out_dir, key, form_name, path, exposure=0):
         if 'third_frac' in v:
             s += f'\nshoulder {100 * v["third_frac"]:.1f} % at {v["third_offset"]:+.1f}'
         return s
-    plot_star_own_width(root, out_dir, key, path, exposure=exposure, precomputed=(task, exps, {}, pix),
-                        model_label=f'own smooth PSF ({form_name}: core, wing with its own width and offset'
-                        + (', one-sided shoulder' if form.third else '') + f'), chi2/dof {g["chi2_raw"] / g["ndof"]:.1f}',
-                        cut_title=cut_title,
-                        title=f'{key}: one star at its own PSF parameters, exposure {exps[exposure].name.split("_")[2]}')
+    plot_star_fit(key, path, (task, exps, {}, pix), exposure=exposure,
+                  model_label=f'own smooth PSF ({form_name}: core, wing with its own width and offset'
+                  + (', one-sided shoulder' if form.third else '') + f'), chi2/dof {g["chi2_raw"] / g["ndof"]:.1f}',
+                  cut_title=cut_title,
+                  title=f'{key}: one star at its own PSF parameters, exposure {exps[exposure].name.split("_")[2]}')
     return g
-
-
-def brightest_clean(out_dir, det, r=3):
-    sel, _ = read_selection(out_dir)
-    rec2 = {x['key']: x for x in read_records(os.path.join(out_dir, 'pass2')) if x['ranges']}
-    keys = [k for k in clean_in_pass2(list(rec2.values()), sel).get((det, r), [])]
-    return max(keys, key=lambda k: rec2[k]['ranges'][r]['free']['peak_snr']) if keys else None
 
 
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description='PRISM cross-dispersion PSF calibration on calibration-field stars')
-    ap.add_argument('step', choices=['offsets', 'offset_law', 'fit', 'select', 'refit', 'table', 'samples', 'figures',
-                                     'free_centres', 'free_centre_figures', 'own_width', 'forms', 'forms_edge',
-                                     'forms_report',
-                                     'smooth', 'form_ranges', 'form_tables', 'joint', 'joint_tables', 'table_test',
-                                     'form_figures', 'smooth_joint', 'smooth_tables', 'smooth_figures'])
+    ap.add_argument('step', choices=['fit', 'select', 'centre_law', 'offsets', 'offset_law', 'forms', 'forms_edge',
+                                     'forms_report', 'smooth', 'form_ranges', 'form_tables', 'joint', 'joint_tables',
+                                     'smooth_joint', 'smooth_tables', 'table_test', 'form_figures', 'smooth_figures'])
     ap.add_argument('--det', default='NRS1', help='smooth_joint: detector')
     ap.add_argument('--which', default='all', help="smooth_joint: 'all' stars or half 'A' / 'B'")
-    ap.add_argument('--tables', nargs='*', default=['A', 'B'], help='table_test / form_figures: candidate tables')
+    ap.add_argument('--tables', nargs='*', default=['A', 'B'], help='table_test / form_figures: candidate tables '
+                    '(psf_table_<form>_<name>.json); table_test adds the shipped table')
     ap.add_argument('--tag', default='', help='table_test / form_figures: suffix of the test directories')
     ap.add_argument('--form', default='wing3_after', help='smooth / form_tables / form_figures: the PSF form')
-    ap.add_argument('--keys', nargs='*', default=[], help='own_width step: star keys')
+    ap.add_argument('--keys', nargs='*', default=[], help='form_figures: stars to draw at their own smooth PSF')
     ap.add_argument('--dispersers', nargs='*', default=['prism_clear'], help='offsets step: dispersers')
     ap.add_argument('--no-nod-law', action='store_true',
                     help='fit with one position shared by all exposures (the geometry before NOD_OFFSET_LAW)')
-    ap.add_argument('--compare', nargs='*', default=[], help='samples / figures: name=dir of an earlier refit '
-                    'to score and draw beside the current and the new table')
     ap.add_argument('--root', help='reduced CAMPFIRE root holding the observations')
     ap.add_argument('--out', required=True, help='output directory')
     ap.add_argument('--obs', nargs='*', default=[], help='observations')
     ap.add_argument('--snr-min', type=float, default=SNR_MIN)
     ap.add_argument('--edge-max', type=float, default=EDGE_MAX)
-    ap.add_argument('--part', default=None, help='i/n: this process takes every n-th star from the i-th (fit, '
-                    'refit, samples), to run a step as n processes')
+    ap.add_argument('--part', default=None, help='i/n: this process takes every n-th star (or job) from the i-th, '
+                    'to run a step as n processes')
     a = ap.parse_args(argv)
     part = tuple(int(x) for x in a.part.split('/')) if a.part else None
     law = False if a.no_nod_law else None
-    compare = dict(x.split('=', 1) for x in a.compare)
     log = lambda *x: print(*x, flush=True)          # noqa: E731
-    if a.step == 'offsets':
+    fd = os.path.join(a.out, 'figures')
+    if a.step == 'fit':
+        run_stars(tasks_for(a.root, a.obs, part=part), os.path.join(a.out, STARS_DIR), log=log, nod_law=law)
+    elif a.step == 'select':
+        step_select(a.out, snr_min=a.snr_min, edge_max=a.edge_max, log=log)
+    elif a.step == 'centre_law':
+        step_centre_law(a.out, log=log)
+        os.makedirs(fd, exist_ok=True)
+        plot_centre_law(a.out, os.path.join(fd, 'centre_law.png'))
+    elif a.step == 'offsets':
         run_offsets(tasks_for(a.root, a.obs, part=part, dispersers=a.dispersers), os.path.join(a.out, 'offsets'),
                     log=log)
+    elif a.step == 'offset_law':
+        step_offset_law(a.out, log=log)
+        os.makedirs(fd, exist_ok=True)
+        plot_offset_law(a.out, os.path.join(fd, 'nod_offset_law.png'))
     elif a.step == 'forms':
         step_forms(a.root, a.out, a.obs, part=part, log=log)
     elif a.step == 'forms_edge':
@@ -3412,47 +2632,6 @@ def main(argv=None):
                         + ' '.join(f'{q[1]:.3f}' for q in vals) + ' | p50 ' + ' '.join(f'{q[2]:.3f}' for q in vals))
     elif a.step == 'joint':
         step_joint(a.root, a.out, a.obs, a.form, part=part, log=log)
-    elif a.step == 'smooth_joint':
-        step_smooth_joint(a.root, a.out, a.obs, a.form, a.det, which=a.which, log=log)
-    elif a.step == 'smooth_figures':
-        fd = os.path.join(a.out, 'figures')
-        names = ('S', 'J', 'current')
-        plot_stack_tables(a.out, os.path.join(fd, 'psf_stack_smooth.png'), names=names,
-                          samples={'S': 'samples_tables_S', 'J': 'samples_tables_J', 'current': 'samples_tables_J'},
-                          title='Stacked star profiles against the smooth joint PSF (S), the per-range joint fit (J) '
-                                'and the current table')
-        tabs = {n: read_form_table(os.path.join(a.out, f'psf_table_{a.form}_{n}.json')) for n in ('S', 'J')}
-        tabs['current'] = {det: dict(lam=PF.PSF_LAM, components=[
-            dict(sigma=PF.LEGACY_PSF_TABLES[det]['S_rows']),
-            dict(sigma=PF.PSF_K * PF.LEGACY_PSF_TABLES[det]['S_rows'], frac=PF.LEGACY_PSF_TABLES[det]['f'])]) for det in ('NRS1', 'NRS2')}
-        plot_form_params(a.out, a.form, os.path.join(fd, 'psf_parameters_smooth.png'), tabs)
-        held = plot_heldout(a.out, os.path.join(fd, 'psf_heldout.png'))
-        sel, _ = read_selection(a.out)
-        rec2 = [r for r in read_records(os.path.join(a.out, 'pass2')) if r['ranges']]
-        clean = clean_in_pass2(rec2, sel)
-        lines = ['largest |median stack residual| [% of peak] per detector and range (all clean stars)',
-                 'det  range      | S      | J      | current | half A fit on B | half B fit on A | A on A | B on B']
-        mS = stack_metric(os.path.join(a.out, 'samples_tables_S'), clean, 'S')
-        mJ = stack_metric(os.path.join(a.out, 'samples_tables_J'), clean, 'J')
-        mC = stack_metric(os.path.join(a.out, 'samples_tables_J'), clean, 'current')
-        labs = list(held)
-        for key in sorted(mS):
-            det, r = key
-            hv = [held[l].get(key, np.nan) for l in labs[1:]]
-            lines.append(f'{det} {RANGES[r][0]}-{RANGES[r][1]} | {mS[key]["max"]:5.2f}  | {mJ.get(key, {}).get("max", np.nan):5.2f}  | '
-                         f'{mC.get(key, {}).get("max", np.nan):5.2f}   | {hv[0]:5.2f}           | {hv[1]:5.2f}           | '
-                         f'{hv[2]:5.2f}  | {hv[3]:5.2f}')
-        with open(os.path.join(a.out, 'smooth_test.log'), 'w') as fh:
-            fh.write('\n'.join(lines) + '\n')
-        for x in lines:
-            log(x)
-    elif a.step == 'smooth_tables':
-        for which, name in (('all', 'S'), ('A', 'SA'), ('B', 'SB')):
-            try:
-                write_json(os.path.join(a.out, f'psf_table_{a.form}_{name}.json'), smooth_joint_table(a.out, a.form, which))
-                log(f'wrote psf_table_{a.form}_{name}.json')
-            except OSError as err:
-                log(f'{name}: {err}')
     elif a.step == 'joint_tables':
         st = json.load(open(os.path.join(a.out, f'psf_table_{a.form}_B_stats.json')))
         narrow = {det: [q[1] / q[2] if q[2] else 1.0 for q in st[det]['core_sigma']['quantiles']]
@@ -3461,27 +2640,33 @@ def main(argv=None):
         write_json(os.path.join(a.out, f'psf_table_{a.form}_Jn.json'), joint_table(a.out, a.form, narrow=narrow))
         write_json(os.path.join(a.out, f'psf_table_{a.form}_Jn_factor.json'), narrow)
         log('narrow-side factor on the joint core (per-star core p25 / p50): ' + json.dumps(_jsonable(narrow)))
+    elif a.step == 'smooth_joint':
+        step_smooth_joint(a.root, a.out, a.obs, a.form, a.det, which=a.which, log=log)
+    elif a.step == 'smooth_tables':
+        for which, name in (('all', 'S'), ('A', 'SA'), ('B', 'SB')):
+            try:
+                write_json(os.path.join(a.out, f'psf_table_{a.form}_{name}.json'), smooth_joint_table(a.out, a.form, which))
+                log(f'wrote psf_table_{a.form}_{name}.json')
+            except OSError as err:
+                log(f'{name}: {err}')
     elif a.step == 'table_test':
-        tabs = {'current': PF.LEGACY_PSF_TABLES}
+        tabs = {'shipped': PF.PSF_TABLES}
         for name in a.tables:
             tabs[name] = read_form_table(os.path.join(a.out, f'psf_table_{a.form}_{name}.json'))
         step_table_test(a.root, a.out, a.obs, tabs, part=part, log=log, tag=a.tag)
     elif a.step == 'form_figures':
-        fd = os.path.join(a.out, 'figures')
+        os.makedirs(fd, exist_ok=True)
         tabs = {n: read_form_table(os.path.join(a.out, f'psf_table_{a.form}_{n}.json')) for n in a.tables}
-        tabs['current'] = {det: dict(lam=PF.PSF_LAM, components=[
-            dict(sigma=PF.LEGACY_PSF_TABLES[det]['S_rows']),
-            dict(sigma=PF.PSF_K * PF.LEGACY_PSF_TABLES[det]['S_rows'], frac=PF.LEGACY_PSF_TABLES[det]['f'])]) for det in ('NRS1', 'NRS2')}
-        names = tuple(a.tables) + ('current',)
+        tabs['shipped'] = PF.PSF_TABLES
+        names = tuple(a.tables) + ('shipped',)
         plot_stack_tables(a.out, os.path.join(fd, f'psf_stack_tables{a.tag}.png'), names=names,
                           samples=f'samples_tables{a.tag}')
         plot_form_params(a.out, a.form, os.path.join(fd, f'psf_parameters{a.tag}.png'), tabs)
-        sel, _ = read_selection(a.out)
-        rec2 = [r for r in read_records(os.path.join(a.out, 'pass2')) if r['ranges']]
+        _, _, clean = clean_records(a.out)
         lines = ['stack residual with each table (median over stars, % of peak, |u| <= 4 rows): largest | rms | '
                  'share of bins beyond 1 % (beyond 1 % and 2x its uncertainty)']
         for name in names:
-            m = stack_metric(os.path.join(a.out, f'samples_tables{a.tag}'), clean_in_pass2(rec2, sel), name)
+            m = stack_metric(os.path.join(a.out, f'samples_tables{a.tag}'), clean, name)
             for (det, r), v in sorted(m.items()):
                 lines.append(f'{name:8s} {det} {RANGES[r][0]}-{RANGES[r][1]} um n {v["n"]:3d}: max {v["max"]:5.2f} '
                              f'rms {v["rms"]:5.2f} beyond 1 % {100 * v["over1"]:4.0f} % ({100 * v["over1_sig"]:4.0f} %)')
@@ -3491,53 +2676,31 @@ def main(argv=None):
             log(x)
         for key in a.keys:
             plot_star_smooth(a.root, a.out, key, a.form, os.path.join(fd, f'star_own_psf_{key}.png'))
-    elif a.step == 'free_centres':
-        step_free_centres(a.root, a.out, a.obs, part=part, log=log)
-    elif a.step == 'free_centre_figures':
-        os.makedirs(os.path.join(a.out, 'figures'), exist_ok=True)
-        plot_stack_free(a.out, os.path.join(a.out, 'figures', 'psf_stack_free_centres.png'))
-        for name in ('med', 'p25'):
-            for (det, r), v in sorted(side_light(a.out, name, samples='samples_free').items()):
-                log(f'{name} {det} {RANGES[r][0]}-{RANGES[r][1]} um: beyond -1.5 rows data {100 * v["neg_d"]:.2f}% '
-                    f'model {100 * v["neg_m"]:.2f}% | beyond +1.5 rows data {100 * v["pos_d"]:.2f}% model '
-                    f'{100 * v["pos_m"]:.2f}% | one-sided excess {100 * v["asym"]:+.2f} +- {100 * v["asym_err"]:.2f}% '
-                    f'of the light, positive in {100 * v["asym_frac_pos"]:.0f}% of {v["n"]} stars')
-    elif a.step == 'own_width':
-        os.makedirs(os.path.join(a.out, 'figures'), exist_ok=True)
-        for key in a.keys:
-            f_ = plot_star_own_width(a.root, a.out, key, os.path.join(a.out, 'figures', f'star_own_width_{key}.png'))
-            write_json(os.path.join(a.out, 'own_width', f'{key}.json'), f_)
-            log(key + ': ' + ' | '.join(f"{RANGES[r][0]}-{RANGES[r][1]} S {g['S']:.3f} f {g['f']:.2f} "
-                                         f"chi2r {g['chi2r_raw']:.2f}" for r, g in sorted(f_.items())))
-    elif a.step == 'offset_law':
-        step_offset_law(a.out, log=log)
-        os.makedirs(os.path.join(a.out, 'figures'), exist_ok=True)
-        plot_offset_law(a.out, os.path.join(a.out, 'figures', 'nod_offset_law.png'))
-    elif a.step == 'fit':
-        run_stars(tasks_for(a.root, a.obs, part=part), os.path.join(a.out, 'pass1'), log=log, nod_law=law)
-    elif a.step == 'select':
-        step_select(a.out, snr_min=a.snr_min, edge_max=a.edge_max, log=log)
-    elif a.step == 'refit':
-        step_refit(a.root, a.out, a.obs, log=log, part=part, nod_law=law)
-    elif a.step == 'table':
-        step_table(a.out, log=log)
-    elif a.step == 'samples':
-        step_samples(a.root, a.out, a.obs, log=log, part=part, nod_law=law, extra_tables=compare)
-    elif a.step == 'figures':
-        write_fit_table(a.out)
-        fd = os.path.join(a.out, 'figures')
+    elif a.step == 'smooth_figures':
         os.makedirs(fd, exist_ok=True)
-        labels = {name: COMPARE_LABELS.get(name, name) for name in compare}
-        plot_widths(a.out, os.path.join(fd, 'psf_widths.png'), compare={labels[n]: d for n, d in compare.items()})
-        plot_profiles(a.out, os.path.join(fd, 'psf_profiles.png'), compare=labels)
-        plot_centre_law(a.out, os.path.join(fd, 'centre_law.png'), compare={labels[n]: d for n, d in compare.items()})
-        plot_position(a.out, os.path.join(fd, 'psf_position.png'))
-        write_summary(a.out, log=log, compare=compare)
-        if a.root:
-            for det in ('NRS1', 'NRS2'):
-                key = brightest_clean(a.out, det)
-                if key:
-                    plot_star_residuals(a.root, a.out, key, os.path.join(fd, f'star_residuals_{det}.png'))
+        names = ('S', 'J')
+        plot_stack_tables(a.out, os.path.join(fd, 'psf_stack_smooth.png'), names=names,
+                          samples={'S': 'samples_tables_S', 'J': 'samples_tables_J'},
+                          title='Stacked star profiles against the smooth joint PSF (S) and the per-range joint fit (J)')
+        tabs = {n: read_form_table(os.path.join(a.out, f'psf_table_{a.form}_{n}.json')) for n in names}
+        plot_form_params(a.out, a.form, os.path.join(fd, 'psf_parameters_smooth.png'), tabs)
+        held = plot_heldout(a.out, os.path.join(fd, 'psf_heldout.png'))
+        _, _, clean = clean_records(a.out)
+        lines = ['largest |median stack residual| [% of peak] per detector and range (all clean stars)',
+                 'det  range      | S      | J      | half A fit on B | half B fit on A | A on A | B on B']
+        mS = stack_metric(os.path.join(a.out, 'samples_tables_S'), clean, 'S')
+        mJ = stack_metric(os.path.join(a.out, 'samples_tables_J'), clean, 'J')
+        labs = list(held)
+        for key in sorted(mS):
+            det, r = key
+            hv = [held[lab].get(key, np.nan) for lab in labs[1:]]
+            lines.append(f'{det} {RANGES[r][0]}-{RANGES[r][1]} | {mS[key]["max"]:5.2f}  | '
+                         f'{mJ.get(key, {}).get("max", np.nan):5.2f}  | {hv[0]:5.2f}           | {hv[1]:5.2f}           | '
+                         f'{hv[2]:5.2f}  | {hv[3]:5.2f}')
+        with open(os.path.join(a.out, 'smooth_test.log'), 'w') as fh:
+            fh.write('\n'.join(lines) + '\n')
+        for x in lines:
+            log(x)
 
 
 if __name__ == '__main__':

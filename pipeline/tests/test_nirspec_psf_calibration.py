@@ -2,9 +2,8 @@
 
 Synthetic three-nod stars on a common detector frame (the slitlet fixed, the star
 moving one shutter between nods), generated with ``profile_fit``'s own image model
-from a known PSF: a star is a point source (galaxy width at the floor), the PSF a
-core of sigma S rows plus a wing of fraction f. The calibration must give that PSF
-back through the same model.
+from a known PSF (a general components table): a star is a point source (galaxy width
+at the floor). The calibration must give that PSF back through the same model.
 """
 
 import numpy as np
@@ -36,10 +35,17 @@ def _exposures(src_y=0.05, det='NRS1', quad=1):
     return exps
 
 
-def _inject(exps, S_rows, f, centre, drift=0.0, flux=3000.0, noise=1.0, seed=1):
-    """Nod differences of a point source with a known PSF, through the model; noise per
-    frame, differenced like the data. Centre law off: ``centre`` is where the light is."""
-    tabs = PC.constant_tables(S_rows, f) if np.isscalar(S_rows) else S_rows
+def _psf(core, wing_frac=0.25, wing_sigma=0.9):
+    """A general PSF table, the same at every wavelength and on both detectors: a core of
+    width ``core`` rows and a wing."""
+    t = dict(lam=[0.0, 100.0], components=[dict(sigma=core), dict(sigma=wing_sigma, frac=wing_frac)])
+    return {'NRS1': t, 'NRS2': t}
+
+
+def _inject(exps, tabs, centre, drift=0.0, flux=3000.0, noise=1.0, seed=1):
+    """Nod differences of a point source with a known PSF (``tabs``, general layout), through
+    the model; noise per frame, differenced like the data. Centre law off: ``centre`` is where
+    the light is."""
     M = PF.ProfileModel(exps, psf_tables=tabs, centre_law_tables=PF.NO_CENTRE_LAW)
     lam = M.lam_grid
     spec = flux * (1.0 + 0.3 * np.sin(2 * lam))
@@ -70,7 +76,7 @@ def test_model_tables_default_to_the_module_tables():
     A0 = PF.ProfileModel(exps).design(p, np.zeros(3))
     A1 = PF.ProfileModel(exps, psf_tables=PF.PSF_TABLES, centre_law_tables=PF.CENTRE_LAW).design(p, np.zeros(3))
     assert np.allclose(A0.toarray(), A1.toarray())
-    A2 = PF.ProfileModel(exps, psf_tables=PC.constant_tables(0.7, 0.1)).design(p, np.zeros(3))
+    A2 = PF.ProfileModel(exps, psf_tables=_psf(0.7, 0.1)).design(p, np.zeros(3))
     assert not np.allclose(A0.toarray(), A2.toarray())
 
 
@@ -81,101 +87,74 @@ def test_no_centre_law_puts_the_light_at_the_centre():
     assert np.allclose(c, 0.1)
 
 
+def test_width_tables_scale_the_shipped_core_only():
+    lam = np.array([0.8, 2.3, 4.5])
+    ship = PF.psf_components(lam, 'NRS1')
+    tab = PC.width_tables(0.5, 2.3)
+    comps = PF.psf_components(lam, 'NRS1', tab)
+    k = 0.5 / ship[0]['sigma'][1]
+    assert comps[0]['sigma'][1] == pytest.approx(0.5)
+    assert np.allclose(comps[0]['sigma'], k * ship[0]['sigma'])     # its wavelength dependence kept
+    for c, s in zip(comps[1:], ship[1:]):
+        for key in ('sigma', 'frac', 'offset'):
+            assert np.allclose(c[key], s[key])
+
+
 # ---------------------------------------------------------------------------
 # one star
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize('S_true,f_true,centre', [(0.40, 0.25, 0.05), (0.55, 0.15, -0.2), (0.33, 0.35, 0.25)])
-def test_core_width_and_centre_recovered_at_the_true_wing_fraction(S_true, f_true, centre):
+@pytest.mark.parametrize('S_true,centre', [(0.40, 0.05), (0.55, -0.2), (0.33, 0.25)])
+def test_core_width_and_centre_recovered(S_true, centre):
+    """A star made with the shipped PSF at a known core width: the width fit gives it back."""
     exps = _exposures(src_y=centre)
-    _inject(exps, S_true, f_true, centre)
+    _inject(exps, PC.width_tables(S_true, 2.3), centre)     # 2.3 um: the range centre
     RF = PC.RangeFit(exps, (2.0, 2.6))
-    RF.set_floor(np.zeros(RF.M.npix))
-    ref = RF.fit(tables=PF.PSF_TABLES)
-    RF.set_floor(ref['_model'])
-    fr = RF.fit(f_wing=f_true, x0=ref['_x'] + [0.45])
+    fr = PC._range_start(RF)
     assert abs(fr['S'] - S_true) < 0.01
     assert abs(fr['c_node'] - centre) < 0.005
     assert fr['peak_snr'] > 30
 
 
-def test_wrong_wing_fraction_trades_against_the_core_width():
-    """Held at a larger wing fraction, the fitted core is narrower (the degeneracy the
-    joint wing fit resolves), and the fit is worse."""
+def test_fit_star_records_width_and_centre_per_range():
     exps = _exposures()
-    _inject(exps, 0.42, 0.25, 0.05)
-    RF = PC.RangeFit(exps, (1.0, 1.5))
-    RF.set_floor(np.zeros(RF.M.npix))
-    ref = RF.fit(tables=PF.PSF_TABLES)
-    RF.set_floor(ref['_model'])
-    true = RF.fit(f_wing=0.25, x0=ref['_x'] + [0.45], use=ref['_use'])
-    wide = RF.fit(f_wing=0.45, x0=ref['_x'] + [0.45], use=ref['_use'])
-    assert wide['S'] < true['S'] - 0.02
-    assert wide['chi2'] > true['chi2']
-
-
-def test_fit_star_profile_minimum_at_the_true_wing_fraction():
-    exps = _exposures()
-    _inject(exps, 0.45, 0.2, 0.05, flux=6000.0)
-    rec, _ = PC.fit_star(_task(), exps=exps, f_grid=np.round(np.arange(0.05, 0.41, 0.05), 3))
+    _inject(exps, PF.PSF_TABLES, 0.05, flux=6000.0)
+    rec = PC.fit_star(_task(), exps=exps)
+    assert len(rec['ranges']) == len(PC.RANGES)
     for row in rec['ranges'][1:6]:
-        f, c, S = PC._profile_curve(row)
-        assert abs(PC._parabola_min(f, c) - 0.2) < 0.04
-        assert abs(S[np.argmin(np.abs(f - 0.2))] - 0.45) < 0.01     # the width at the true f
+        RF = PC.RangeFit(exps, tuple(row['lam']))
+        assert abs(row['free']['S'] - RF.core0) < 0.01             # the shipped width, as made
+        assert abs(row['free']['c_node'] - 0.05) < 0.005
+        assert PC.range_ok(row['free'])
 
 
 # ---------------------------------------------------------------------------
 # the population
 # ---------------------------------------------------------------------------
-def _population(n=8, S_mean=0.42, S_scatter=0.03, f_true=0.25, seed=3):
+def _population(n=6, scatter=0.03, seed=3):
+    """Stars made with the shipped PSF, each core scaled by its own factor."""
     rng = np.random.default_rng(seed)
-    recs, truth = [], []
+    recs = []
     for i in range(n):
-        S_i = S_mean + S_scatter * rng.normal()
+        k = 1.0 + scatter * rng.normal()
         c = rng.uniform(-0.2, 0.2)
         exps = _exposures(src_y=c)
-        _inject(exps, S_i, f_true, c, flux=4000.0, seed=10 + i)
-        rec, _ = PC.fit_star(_task(key=f'syn_{i + 1}_NRS1', srcy=c), exps=exps,
-                             f_grid=np.round(np.arange(0.1, 0.41, 0.05), 3))
-        recs.append(rec)
-        truth.append(S_i)
-    return recs, np.array(truth)
-
-
-@pytest.fixture(scope='module')
-def population():
-    return _population()
-
-
-def test_joint_wing_fraction_and_table(population):
-    recs, truth = population
-    sel = PC.select(recs)
-    assert not sel['outliers']
-    joint = PC.joint_wing_fraction(recs, sel['clean'])
-    for r in range(1, 6):
-        assert abs(joint[('NRS1', r)]['f'] - 0.25) < 0.03
-        assert joint[('NRS1', r)]['n'] == len(recs)
-    wing = {k: v['f'] for k, v in joint.items()}
-    table = PC.build_table(recs, sel['clean'], stage='free', wing=wing)
-    t = table['NRS1']
-    for r in range(1, 6):
-        assert t['f'][r] == pytest.approx(wing[('NRS1', r)])
-        assert t['S_rows'][r] == pytest.approx(np.percentile(
-            [rec['ranges'][r]['free']['S'] for rec in recs], 25))
-        # held at the current table's f (not 0.25) the widths trade off a little
-        assert abs(t['S_p50'][r] - np.median(truth)) < 0.04
+        core = PF.psf_components(np.array([1.75]), 'NRS1')[0]['sigma'][0]
+        _inject(exps, PC.width_tables(k * core, 1.75), c, flux=4000.0, seed=10 + i)
+        recs.append(PC.fit_star(_task(key=f'syn_{i + 1}_NRS1', srcy=c), exps=exps))
+    return recs
 
 
 def test_selection_rejects_faint_edge_and_odd_stars():
-    recs, _ = _population(n=6, seed=5)
+    recs = _population()
     faint = _exposures()
-    _inject(faint, 0.42, 0.25, 0.05, flux=30.0, seed=99)
-    rec_f, _ = PC.fit_star(_task(key='syn_90_NRS1'), exps=faint, f_grid=None)
+    _inject(faint, PF.PSF_TABLES, 0.05, flux=30.0, seed=99)
+    rec_f = PC.fit_star(_task(key='syn_90_NRS1'), exps=faint)
     edge = _exposures(src_y=0.38)
-    _inject(edge, 0.42, 0.25, 0.38, flux=4000.0, seed=98)
-    rec_e, _ = PC.fit_star(_task(key='syn_91_NRS1', srcy=0.38), exps=edge, f_grid=None)
+    _inject(edge, PF.PSF_TABLES, 0.38, flux=4000.0, seed=98)
+    rec_e = PC.fit_star(_task(key='syn_91_NRS1', srcy=0.38), exps=edge)
     broad = _exposures()
-    _inject(broad, 0.75, 0.25, 0.05, flux=4000.0, seed=97)
-    rec_b, _ = PC.fit_star(_task(key='syn_92_NRS1'), exps=broad, f_grid=None)
+    _inject(broad, PC.width_tables(0.75, 1.75), 0.05, flux=4000.0, seed=97)
+    rec_b = PC.fit_star(_task(key='syn_92_NRS1'), exps=broad)
     sel = PC.select(recs + [rec_f, rec_e, rec_b])
     clean = set(sel['clean'][('NRS1', 2)])
     assert 'syn_90_NRS1' not in clean and 'syn_90_NRS1' not in sel['usable'].get(('NRS1', 2), [])
@@ -190,13 +169,10 @@ def test_free_offsets_recover_the_nod_shifts():
     exps = _exposures(src_y=0.05)
     for e, s in zip(exps, (0.05, 0.066, 0.034)):
         e.src_y = s
-    _inject(exps, 0.42, 0.25, 0.05)                 # law on: each nod at its planned position
+    _inject(exps, PF.PSF_TABLES, 0.05)               # law on: each nod at its planned position
     RF = PC.RangeFit(exps, (1.0, 2.6), nod_law=False)
-    RF.set_floor(np.zeros(RF.M.npix))
-    ref = RF.fit(tables=PF.PSF_TABLES)
-    RF.set_floor(ref['_model'])
-    fr = RF.fit(f_wing=0.25, x0=ref['_x'] + [0.45])
-    off, err, chi2 = PC._fit_offsets(RF, 0.25, fr['_x'], fr['_use'])
+    fr = PC._range_start(RF)
+    off, err, chi2 = PC._fit_offsets(RF, fr['_x'], fr['_use'])
     assert np.allclose(off, [0.0, 0.016, -0.016], atol=0.002)
     assert chi2 < fr['chi2']
     rows = PC.offset_rows([dict(key='syn', obs='syn', detector='NRS1', grating='PRISM/CLEAR',
@@ -215,9 +191,9 @@ def test_three_component_psf_recovered():
                  third_sigma=0.8, third_offset=1.4)
     form = PC.FORMS['wing3_after']
     exps = _exposures(src_y=0.05)
-    _inject(exps, form.table(truth, [0.0, 100.0], None), None, 0.05, flux=20000.0)
+    _inject(exps, form.table(truth, [0.0, 100.0], None), 0.05, flux=20000.0)
     RF = PC.RangeFit(exps, (1.5, 2.6))
-    ref, _ = PC._range_start(RF, 'NRS1', 2)              # floor, then the mask (as the star fits do)
+    ref = PC._range_start(RF)                            # floor, then the mask (as the star fits do)
     start = dict(core_sigma=0.4, wing_frac=0.3, wing_sigma=0.9, wing_offset=0.0, third_frac=0.03, third_sigma=0.6,
                  third_offset=1.0)
     g = PC.fit_form(RF, form, np.array([1.5, 2.6]), start=start, use=ref['_use'],
@@ -253,10 +229,10 @@ def test_smooth_joint_fit_recovers_a_smooth_psf():
     units = []
     for i, c in enumerate((-0.1, 0.05, 0.15)):
         exps = _exposures(src_y=c)
-        _inject(exps, {'NRS1': tab_true['NRS1'], 'NRS2': tab_true['NRS1']}, None, c, flux=15000.0, seed=30 + i)
+        _inject(exps, {'NRS1': tab_true['NRS1'], 'NRS2': tab_true['NRS1']}, c, flux=15000.0, seed=30 + i)
         for rng in ((0.8, 1.6), (1.6, 3.0), (3.0, 5.2)):
             RF = PC.RangeFit(exps, rng)
-            fr, _ = PC._range_start(RF, 'NRS1', PC.range_of(0.5 * sum(rng)))   # floor, then the mask
+            fr = PC._range_start(RF)                     # floor, then the mask
             units.append(dict(key=f's{i}', range=rng, RF=RF, use=fr['_use'], x=fr['_x'][:2],
                               eoff=np.zeros(3), scale=1.0))
     start = {p: np.asarray(v) * 1.1 for p, v in truth.items()}

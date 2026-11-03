@@ -536,7 +536,8 @@ slit units from the planned position, width median 0.15), `nirspec/profile_chain
 - Re-run the injection and shape tests on the merged pipeline, since the old figures are lost
   (extraction session).
 
-**PSF and centre-law refit (2026-11-02; pending the user's decision, tables unchanged).** The
+**PSF and centre-law refit (2026-11-02; superseded by the three-component PSF below, and its
+two-component code removed 2026-11-03).** The
 October tables were measured on nod differences built with the path-loss correction still
 applied. `nirspec/psf_calibration.py` refits them through the profile fit's own model:
 `ProfileModel` (new optional `psf_tables` / `centre_law_tables`, defaults unchanged) on the
@@ -629,9 +630,9 @@ as above; 141 NRS1 / 138 NRS2 clean stars.
 the peak in every range; tables unchanged pending the user's decision).** `profile_fit` now reads
 a general PSF table (`psf_components`): a list of Gaussian components per wavelength node, each
 with a share, a width, an offset towards slit +y, the share of its width before the shutter (0.5)
-and whether its offset acts before or after the shutter. The legacy `PSF_TABLES` form is the
-two-component special case and reproduces the previous model to 1e-12 (test); the default is
-unchanged.
+and whether its offset acts before or after the shutter. The two-Gaussian form was then its
+special case and reproduced the previous model to 1e-12; the default was unchanged (both
+removed 2026-11-03, below).
 - What each term buys (40 brightest clean stars per detector and range, each at its own
   parameters linear across the range, centre free in every exposure; largest |median stack
   residual|, % of peak): core + wing at 2.2 x core 0.6-2.1 (8 of 14 ranges over 1 %); the wing with
@@ -726,10 +727,8 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
 - Proposed: adopt S (the user's call). Open: the 3.3-5.3 um ranges, which rest on 16-53 stars and
   whose shoulder width sits at or near its lower bound; the edge stars' blue residuals.
 - **Adopted 2026-11-03 (user decision).** S is the extraction's PSF: `PSF_TABLES` is read from
-  `campfire_pipeline/data/nirspec_profile_psf.json` (table S as fitted), `FIT_VERSION` 4. The
-  two-Gaussian table stays as `LEGACY_PSF_TABLES`, the starting point of `psf_calibration`'s
-  older two-component steps. No test uses it (user, 2026-11-03: no test runs with the old
-  table): the image test writes out the formula for the shipped file and checks the default
+  `campfire_pipeline/data/nirspec_profile_psf.json` (table S as fitted), `FIT_VERSION` 4. No
+  test runs with the old table (user, 2026-11-03): the image test writes out the formula for the shipped file and checks the default
   model against it; the calibration tests' reference fits use the shipped table. Two tests had
   depended on the old PSF. The shutter test of a PRISM shape transferred to a grating checked
   for no light beyond a fixed margin past the closed shutter; the three-component red wing
@@ -743,6 +742,20 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
   old PSF's starting grid happened to stay in the true basin, S's slides into the merged one.
   Next: the p1 rerun from stage 2a, and the flux change of bright sources against the previous
   p1 products.
+- **The old two-Gaussian PSF is removed from the code (2026-11-03, user: "remove the old
+  stuff").** `profile_fit` has no `LEGACY_PSF_TABLES`, `PSF_K` or `psf_params`, and
+  `psf_components` reads the general layout only; `PSF_LAM` stays as the nodes of `CENTRE_LAW`.
+  `psf_calibration` lost the steps whose only purpose was the two-component table (the wing
+  fraction scan and its joint fit, the percentile table `psf_table_new.json`, the refit at the
+  joint wing fraction, the old/new samples, summary and figures, the free-centre and own-width
+  steps). What stays now starts from the shipped PSF. The star fits (`fit`, records in
+  `stars/`) take the shipped PSF with a free core width (`width_tables`: the core scaled to S
+  rows at the range centre, the wing and shoulder kept). The selection reads that width with
+  the same cuts. The centre law is its own step (`centre_law`). The forms start from the shipped
+  parameters with the core scaled to the star's width. The nod offsets use the same width fit.
+  `table_test` compares candidates with the shipped table. A rerun of the calibration therefore
+  starts from `fit` and `select`. The results above (selection, J, S) came from the
+  two-component star fits, which were not rerun.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
@@ -2096,7 +2109,7 @@ a fix or needs another field or disperser), **To make**.
 | Master-background spectrum: end-to-end p1 run and review (built, section 4); the 1-D combine of several groups; the `extended` threshold | extraction session | user |
 | Default galaxy width 0.15 vs 0.21 | user | |
 | Nod offset law (3.7, `NOD_OFFSET_LAW`: each nod at its own planned SRCYPOS): built, on by default | extraction session | |
-| PSF table and centre-law refit with the nod law (3.7, `psf_calibration.py`): adopt or not | user | |
+| Centre-law refit with the nod law (3.7, `psf_calibration.py` step `centre_law`): adopt or not (the two-component PSF refit is superseded by table S and its code removed) | user | |
 | Three-component PSF (3.7, `wing3_after`, general `psf_components` tables): table rule decided 2026-11-02 (smooth joint fit, table S); S adopted 2026-11-03 (`FIT_VERSION` 4). Left: the 3.3-5.3 um ranges (1.0-1.3 % of peak, few stars; more calibration stars), and the flux change on p1 | extraction session | |
 | Forward-model shutter edge vs measured bar shadow | extraction session | |
 | Stage 1 footprint past the calibrated range | MB session | user |
@@ -2119,7 +2132,8 @@ a fix or needs another field or disperser), **To make**.
 | Trace maps | `nirspec/trace_overlap.py` |
 | First pass (joint, on nod differences) | `nirspec/joint_first_pass.py`; its linear system `nirspec/profile_joint.py` |
 | Prediction of other slitlets' light | `nirspec/profile_contam.py`, `nirspec/profile_extend.py` |
-| Profile model, shape chain | `nirspec/profile_fit.py`, `nirspec/profile_chain.py`, `nirspec/profile_product.py` |
+| Profile model, shape chain | `nirspec/profile_fit.py` (PSF: `data/nirspec_profile_psf.json`, general layout), `nirspec/profile_chain.py`, `nirspec/profile_product.py` |
+| PSF, centre law and nod offsets from calibration stars | `nirspec/psf_calibration.py` (CLI `python -m campfire_pipeline.nirspec.psf_calibration <step>`) |
 | Orchestration | `nirspec/stage3.py` (`run_profile_fit_phase`, `extract_columns`, `mbkg_spectrum_hdus`) |
 | Master-background spectrum | `nirspec/mbkg_extraction.py`; `stage2.master_background_on`; `metadata/science_hash.py` (MBKG left out) |
 | nods.pdf | `nirspec/plots.py` |
@@ -2192,4 +2206,5 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   general PSF and the three-component table candidates. Later the same day: the user's decision
   that the table is a smooth joint fit, and its result (table S, held-out test).
 - **2026-11-03.** Section 3.7: table S adopted as the extraction's PSF (`FIT_VERSION` 4), and
-  the two tests that had depended on the old PSF.
+  the two tests that had depended on the old PSF. Later: the old two-Gaussian PSF removed from
+  the code (`profile_fit`, `psf_calibration`, tests); sections 3.7, 6 and 7 updated.

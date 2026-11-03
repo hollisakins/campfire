@@ -80,20 +80,6 @@ class TooFewWavelengths(ProfileFitFallback):
     """Too few wavelength samples on the source row for a spectrum grid."""
     reason = 'too_few_wavelengths'
 
-# The two-Gaussian PSF used up to FIT_VERSION 3 (PRISM): core sigma in native rows and
-# wing fraction per detector, wing sigma = PSF_K * core. Lower quartile of per-star core
-# widths from 135 calibration-field stars (programs 12497, 6642), joint wing fraction.
-# Kept as the starting point and reference of ``psf_calibration``.
-PSF_LAM = np.array([0.85, 1.25, 1.75, 2.30, 2.95, 3.70, 4.70])
-LEGACY_PSF_TABLES = {
-    'NRS1': dict(S_rows=np.array([0.390, 0.400, 0.419, 0.427, 0.429, 0.479, 0.597]),
-                 f=np.array([0.234, 0.190, 0.187, 0.250, 0.299, 0.232, 0.118])),
-    'NRS2': dict(S_rows=np.array([0.333, 0.360, 0.393, 0.384, 0.399, 0.480, 0.621]),
-                 f=np.array([0.325, 0.259, 0.249, 0.337, 0.402, 0.295, 0.134])),
-}
-PSF_K = 2.2
-
-
 def _load_psf_tables(path):
     with open(path) as fh:
         raw = json.load(fh)
@@ -111,9 +97,11 @@ def _load_psf_tables(path):
 # here at 61 nodes (``psf_calibration.smooth_joint_fit_all``, table S, 2026-11-03).
 PSF_TABLES = _load_psf_tables(Path(__file__).parent.parent / 'data' / 'nirspec_profile_psf.json')
 
-# Trace-centre law from the same stars: centre(lambda) = c + D(lambda) + alpha(lambda) * c,
+# Trace-centre law from calibration-field stars: centre(lambda) = c + D(lambda) + alpha(lambda) * c,
 # D per MSA quadrant and detector (falling back to the same quadrant on the other
-# detector, then to the detector), alpha per detector.
+# detector, then to the detector), alpha per detector; values at the nodes PSF_LAM [um]
+# (the centres of the calibration's wavelength ranges).
+PSF_LAM = np.array([0.85, 1.25, 1.75, 2.30, 2.95, 3.70, 4.70])
 CENTRE_LAW = {
     'NRS1': dict(D=np.array([+0.0104, +0.0051, +0.0001, -0.0064, -0.0166, -0.0256, -0.0383]),
                  alpha=np.array([+0.0106, +0.0048, +0.0007, -0.0133, -0.0398, -0.0743, -0.1066])),
@@ -155,18 +143,6 @@ def open_intervals(open_k):
     return [(k * MSA_SLIT_PITCH - OPEN_HALF, k * MSA_SLIT_PITCH + OPEN_HALF) for k in open_k]
 
 
-def psf_params(lam, det, tables=None):
-    """Core sigma (native rows) and wing fraction at each wavelength, for a table in the
-    legacy two-Gaussian layout.
-
-    tables : replaces ``LEGACY_PSF_TABLES`` (same layout; an entry may carry its own
-        wavelength nodes as ``lam``, default ``PSF_LAM``), e.g. a PSF being
-        calibrated (``psf_calibration``)."""
-    tab = (LEGACY_PSF_TABLES if tables is None else tables)[det]
-    nodes = tab.get('lam', PSF_LAM)
-    return np.interp(lam, nodes, tab['S_rows']), np.interp(lam, nodes, tab['f'])
-
-
 def psf_components(lam, det, tables=None):
     """The PSF at each wavelength as a list of Gaussian components, each a dict of arrays
     (one value per wavelength):
@@ -179,25 +155,16 @@ def psf_components(lam, det, tables=None):
     pre       True: the offset acts before the shutter (the light enters it displaced and
               is clipped there); False: after it (displaced on the detector).
 
-    A detector's table (``PSF_TABLES`` layout, or ``tables``) is either
-
-    legacy  ``{'S_rows': [...], 'f': [...]}`` (optional ``'lam'``, default ``PSF_LAM``): a
-            core of sigma S_rows and share 1 - f, a wing of sigma ``PSF_K`` x S_rows and
-            share f, no offsets, q = 0.5 (the model as it was built); or
-    general ``{'lam': [...], 'components': [{'sigma': [...], 'frac': [...], 'offset': [...],
-            'q': 0.5, 'pre': True}, ...]}``: values per wavelength node; exactly one component
-            omits 'frac' and takes the remainder; 'offset' defaults to 0, 'q' to 0.5, 'pre'
-            to True; a scalar instead of a list holds at every wavelength.
+    A detector's table (``PSF_TABLES``, or ``tables[det]``) is
+    ``{'lam': [...], 'components': [{'sigma': [...], 'frac': [...], 'offset': [...], 'q': 0.5,
+    'pre': True}, ...]}``: values per wavelength node; exactly one component omits 'frac' and
+    takes the remainder; 'offset' defaults to 0, 'q' to 0.5, 'pre' to True; a scalar instead
+    of a list holds at every wavelength.
 
     Values are linear in wavelength between the nodes and held at the end nodes beyond them
-    (a general table should have nodes covering the whole range it is used over)."""
+    (a table should have nodes covering the whole range it is used over)."""
     tab = (PSF_TABLES if tables is None else tables)[det]
     lam = np.asarray(lam, float)
-    if 'components' not in tab:
-        S, f = psf_params(lam, det, tables)
-        zero = np.zeros_like(lam)
-        return [dict(frac=1 - f, sigma=S, offset=zero, q=0.5, pre=True),
-                dict(frac=f, sigma=PSF_K * S, offset=zero, q=0.5, pre=True)]
     nodes = np.asarray(tab['lam'], float)
 
     def val(v, default):
@@ -648,7 +615,7 @@ class ProfileModel:
     """Pixel table, spectrum grid and the linear model for a set of exposures.
 
     psf_tables / centre_law_tables : replace ``PSF_TABLES`` / ``CENTRE_LAW`` for this
-        model (``psf_params`` / ``centre_law``); None uses the module's tables. For
+        model (``psf_components`` / ``centre_law``); None uses the module's tables. For
         calibrating them on stars (``psf_calibration``), not for extraction.
     nod_law : the nod geometry (``nod_shifts``): None for ``NOD_OFFSET_LAW``, False for one
         position shared by every exposure (to measure the offsets themselves)."""
