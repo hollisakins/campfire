@@ -861,6 +861,13 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
   star stack, the bar shadow, the edge stars and the p1 flux change checked together; (4) a
   free-form PSF basis (fixed Gaussians after the shutter with smooth amplitudes) only if
   residuals beyond 1 % remain where stars are plentiful.
+- **Shutter edge: option (d) chosen (user, 2026-11-03).** The measured edge (fitted to the bar
+  shadow; built on `claude/psf-table` 7eb4ead8) fixes uniform light but makes edge stars 2.4 %
+  worse in median chi2, so uniform light and point sources disagree about the edge. The
+  shipped hard edge stays the default. Next: a geometric edge with a smooth transmission
+  across the shutter (light diffracted at the edges lost from the beam), fitted to the bar
+  shadow, checked against the edge stars, the centred stars and the p1 fluxes, speed measured
+  first.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
