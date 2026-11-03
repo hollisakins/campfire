@@ -264,6 +264,70 @@ def test_fit_recovers_flux_when_a_partner_lacks_the_source():
 
 
 # ---------------------------------------------------------------------------
+# general PSF (psf_components): the legacy table is the two-component special case
+# ---------------------------------------------------------------------------
+def _legacy_image(M, p, k, y, lam, dy):
+    """The image formula before the general PSF (core + wing at PSF_K x core, no offsets,
+    even split), written out."""
+    S_rows, f = PF.psf_params(lam, M.exps[k].detector)
+    a = S_rows * dy / np.sqrt(2.0)
+    c = M.centre(p, np.zeros(len(M.exps)), k, lam)
+    w = M.width(p, lam)
+    iv = PF.open_intervals(M.exps[k].open_k)
+    comps = [(1 - f, np.sqrt(a ** 2 + w ** 2), a), (f, np.sqrt((PF.PSF_K * a) ** 2 + w ** 2), PF.PSF_K * a)]
+    acc = 0.0
+    for xi, wi in zip(PF._GLX, PF._GLW):
+        yy = y + 0.5 * dy * xi
+        acc = acc + wi * sum(fr * PF._clipblur(yy, c, s1, s2, iv) for fr, s1, s2 in comps)
+    return 0.5 * dy * acc
+
+
+def _legacy_as_general(det_tables):
+    return {det: dict(lam=PF.PSF_LAM, components=[dict(sigma=t['S_rows']),
+                                                  dict(sigma=PF.PSF_K * np.asarray(t['S_rows']), frac=t['f'])])
+            for det, t in det_tables.items()}
+
+
+def test_legacy_table_reproduces_the_original_model():
+    exps = _exposures(src_y=0.12)
+    M = PF.ProfileModel(exps)
+    p = np.array([0.12, 0.01, np.log(0.08), 0.0])
+    e = exps[1]
+    y, lam, dy = e.y.ravel(), e.wav.ravel(), e.dy.ravel()
+    new = M.image(p, np.zeros(3), 1, y, lam, dy)
+    old = _legacy_image(M, p, 1, y, lam, dy)
+    assert np.allclose(new, old, rtol=1e-12, atol=1e-15)
+    # the same table written in the general layout gives the same design matrix
+    G = PF.ProfileModel(exps, psf_tables=_legacy_as_general(PF.PSF_TABLES))
+    assert np.allclose(G.design(p, np.zeros(3)).toarray(), M.design(p, np.zeros(3)).toarray(), rtol=1e-12, atol=1e-15)
+
+
+def test_general_psf_components_offsets_and_split():
+    """A component's offset moves its light; before the shutter it is clipped there, after
+    it the light lands beyond the shutter edge."""
+    exps = _exposures(src_y=0.0)
+    p = np.array([0.0, 0.0, np.log(PF.W_FLOOR), 0.0])
+    one = lambda off, pre: {'NRS1': dict(lam=[0.5, 6.0], components=[dict(sigma=0.4, offset=off, pre=pre)])}
+    lam = np.full(400, 2.0)
+    dy = np.full(400, DY)
+    y = np.linspace(-2.0, 2.0, 400)
+    for pre in (True, False):
+        M = PF.ProfileModel(exps, psf_tables=one(1.0, pre))
+        im = M.image(p, np.zeros(3), 0, y, lam, dy)
+        assert abs(np.sum(im * y) / np.sum(im) - 1.0 * DY) < 0.01      # light centred one row towards +y
+    # a source at the top edge of its shutter: an offset before the shutter is clipped, after it is not
+    t_pre = PF.ProfileModel(exps, psf_tables=one(1.5, True)).transmission(
+        np.array([0.4, 0.0, np.log(PF.W_FLOOR), 0.0]), np.zeros(3), 0, lam[:1], dy[:1], aperture=(0,), centre=0.4)
+    t_post = PF.ProfileModel(exps, psf_tables=one(1.5, False)).transmission(
+        np.array([0.4, 0.0, np.log(PF.W_FLOOR), 0.0]), np.zeros(3), 0, lam[:1], dy[:1], aperture=(0,), centre=0.4)
+    assert t_pre[0] < t_post[0]
+    comps = PF.psf_components(np.array([1.0, 3.0]), 'NRS1', {'NRS1': dict(lam=[0.6, 5.3], components=[
+        dict(sigma=[0.3, 0.6]), dict(sigma=1.0, frac=[0.2, 0.4], offset=0.5, pre=False)])})
+    assert np.allclose(comps[0]['frac'] + comps[1]['frac'], 1.0)
+    assert comps[1]['pre'] is False and np.allclose(comps[1]['offset'], 0.5)
+
+
+# ---------------------------------------------------------------------------
 # nod geometry (NOD_OFFSET_LAW): each exposure at its own planned position
 # ---------------------------------------------------------------------------
 def _nodded(src=(0.10, 0.115, 0.085)):

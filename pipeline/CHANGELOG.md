@@ -39,6 +39,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   extraction is unchanged); `NO_CENTRE_LAW` measures where the light is. The tables
   themselves are not changed here. Also measures the per-exposure nod offsets (`offsets`,
   `offset_law` steps) behind `NOD_OFFSET_LAW`.
+- **NIRSpec profile fit: general PSF tables.** `profile_fit.psf_components` reads a PSF table as
+  a list of Gaussian components per wavelength node (share, width, offset towards slit +y, the
+  share of the width before the shutter, offset before or after it); the legacy two-component
+  `PSF_TABLES` form is the special case and reproduces the previous model to 1e-12 (tested).
+  The extraction's default table is unchanged. `psf_calibration` fits stars with such PSFs
+  (`PSFForm`, `fit_form`) and builds candidate tables from them.
 
 ### Algorithm
 

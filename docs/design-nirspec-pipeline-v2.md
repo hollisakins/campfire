@@ -624,7 +624,51 @@ as above; 141 NRS1 / 138 NRS2 clean stars.
   The pattern above 4.5 um is the core widening across 4.1-5.3 um (0.585 to 0.661 rows on NRS1):
   splitting the range at 4.6 um removes about two thirds of it. The table's last node is at 4.70 um
   and is held flat beyond it.
-- Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_new.json`, `centre_law_new.json`,
+
+**A three-component PSF (2026-11-02; user: more terms, goal the free-centre stack within 1 % of
+the peak in every range; tables unchanged pending the user's decision).** `profile_fit` now reads
+a general PSF table (`psf_components`): a list of Gaussian components per wavelength node, each
+with a share, a width, an offset towards slit +y, the share of its width before the shutter (0.5)
+and whether its offset acts before or after the shutter. The legacy `PSF_TABLES` form is the
+two-component special case and reproduces the previous model to 1e-12 (test); the default is
+unchanged.
+- What each term buys (40 brightest clean stars per detector and range, each at its own
+  parameters linear across the range, centre free in every exposure; largest |median stack
+  residual|, % of peak): core + wing at 2.2 x core 0.6-2.1 (8 of 14 ranges over 1 %); the wing with
+  its own width and offset 0.2-0.7 (NRS2 4.1-5.3 um 1.1); plus a third component (the one-sided
+  shoulder: share, width, offset) 0.08-0.85, all under 1 %, noise-only chi2/dof down to 1.4-4.0
+  from 3-14. A skewed core was not needed.
+- Before or after the shutter: centred stars cannot tell (chi2/dof equal to 0.01). Edge stars
+  (|c| >= 0.3) prefer both offsets after the shutter (wing offset: chi2/dof 8.81 -> 8.08 at -y
+  edge, 3.53 -> 3.29 at +y edge), and the shoulder (+1 to +1.5 rows) is still present for stars at
+  the +y edge, where light displaced before the shutter would fall on the bar: the displacement
+  arises after the shutter (spectrograph or detector). Form `wing3_after`.
+- Fit: every clean star (279) in eight ranges over 0.6-5.3 um (the red end split at 4.7 um),
+  every parameter and the centre linear in wavelength across each range, a free offset per
+  exposure. A smooth fit of each star over the whole range (7 nodes, ~58 parameters) was tried:
+  90 s a star and the components trade (shoulder width at its bound, wing share jumping), so the
+  per-range fits feed the tables and the whole-range fit only the single-star figures.
+- Table rules tested on the free-centre stack (all clean stars): (A) core at the 25th percentile of
+  the stars, the rest median: 4.5-11 % (the narrowest cores are a trade with the shoulder, at the
+  0.25-row bound); (B) every parameter the median: 0.6-3.3 %; (J) one PSF per detector and range
+  fitted jointly to up to 60 bright stars (each with its own centre, offsets, spectrum; chi2 scaled
+  by its own reduced chi2), the ranges joined at their ends: 0.44-0.63 % on NRS1 at 0.7-3.3 um,
+  0.49-0.91 % on NRS2 at 0.7-1.0 and 2.0-3.3 um, 1.01-1.07 % on NRS2 at 1.0-2.0 um, 1.1-1.6 % at
+  3.3-5.3 um (16-53 stars); (Jn) J with the core narrowed by the stars' 25th / 50th percentile
+  (0.69-0.97): 1.8-8.5 %; the current table 1.1-4.3 %.
+- Proposed rule (the user's call): the shared shape (wing share, width, offset; shoulder share,
+  width, offset) by a joint fit, since the stars' individual values trade against each other and
+  their medians do not make a PSF; the core width joint as well, since in a three-component PSF
+  the narrow side of a per-star core percentile is the shoulder trade, not narrower stars (Jn
+  shows what the narrow-side rule costs). If the narrow-side rule is kept, it is better applied
+  to the whole profile (e.g. a FWHM percentile) than to the core alone.
+- Open: parameters at their bounds in J (shoulder width 3.0 rows on NRS1 at 2-2.6 um; wing offset
+  -1.5 rows at the 5.3 um node, few stars); the red end above 4.7 um rests on 8-19 bright fits and
+  the shape there pools both detectors; edge stars still leave several sigma in the blue.
+- Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{J,Jn,A,B}.json`,
+  `forms_report.log`, `edge_prepost.log`, `table_test.log`, `table_test_J.log`, figures
+  `psf_stack_tables_J.png`, `psf_parameters_J.png`, `star_own_psf_<key>.png`), and from the
+  previous rounds `psf_table_new.json`, `centre_law_new.json`,
   `offset_law.log`, `kappa_by_obs.log`, `p1_out_of_sample.json`, `summary.log`, `selection.log`,
   `figures/` with `nod_offset_law.png`); the shared-position refit in `scratch/claude/psf_cal/`.
 
@@ -1945,7 +1989,8 @@ a fix or needs another field or disperser), **To make**.
 | Master-background spectrum: end-to-end p1 run and review (built, section 4); the 1-D combine of several groups; the `extended` threshold | extraction session | user |
 | Default galaxy width 0.15 vs 0.21 | user | |
 | Nod offset law (3.7, `NOD_OFFSET_LAW`: each nod at its own planned SRCYPOS): built, on by default | extraction session | |
-| PSF table and centre-law refit with the nod law (3.7, `psf_calibration.py`): adopt or not; the +y PSF skew is not modelled | user | |
+| PSF table and centre-law refit with the nod law (3.7, `psf_calibration.py`): adopt or not | user | |
+| Three-component PSF (3.7, `wing3_after`, general `psf_components` tables): the table rule (joint fit J vs narrow-side Jn) and whether to adopt | user | |
 | Forward-model shutter edge vs measured bar shadow | extraction session | |
 | Stage 1 footprint past the calibrated range | MB session | user |
 | Runtime baseline on one full observation | both | |
@@ -2036,4 +2081,5 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   2026-10-30). The stuck-list loader and auto writer are recorded as proposed.
 - **2026-11-02.** Section 3.7: the PSF and centre-law refit through the profile model, with the
   nod-position mismatch and the skewed PSF it found; the nod offset law (each nod at its planned
-  SRCYPOS, built and on by default); the refit with the law, pending the user's decision.
+  SRCYPOS, built and on by default); the refit with the law, pending the user's decision; the
+  general PSF and the three-component table candidates.

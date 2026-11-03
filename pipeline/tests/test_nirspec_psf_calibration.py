@@ -208,6 +208,37 @@ def test_free_offsets_recover_the_nod_shifts():
     assert np.allclose([r['off'] for r in rows], [r['planned'] for r in rows], atol=0.002)
 
 
+def test_three_component_psf_recovered():
+    """A star made with a core, a wing of its own width and offset and a one-sided shoulder
+    after the shutter: ``fit_form`` gives the shape back."""
+    truth = dict(core_sigma=0.38, wing_frac=0.25, wing_sigma=0.95, wing_offset=0.10, third_frac=0.05,
+                 third_sigma=0.8, third_offset=1.4)
+    form = PC.FORMS['wing3_after']
+    exps = _exposures(src_y=0.05)
+    _inject(exps, form.table(truth, [0.0, 100.0], None), None, 0.05, flux=20000.0)
+    RF = PC.RangeFit(exps, (1.5, 2.6))
+    RF.set_floor(np.zeros(RF.M.npix))
+    ref = RF.fit(tables=PF.PSF_TABLES)
+    RF.set_floor(ref['_model'])
+    start = dict(core_sigma=0.4, wing_frac=0.3, wing_sigma=0.9, wing_offset=0.0, third_frac=0.03, third_sigma=0.6,
+                 third_offset=1.0)
+    g = PC.fit_form(RF, form, np.array([1.5, 2.6]), start=start, use=ref['_use'],
+                    centre_start=np.array([0.05, 0.05]), det='NRS1')
+    # the components trade against each other (shoulder share against wing share); what the data
+    # fix is the profile: compared at the range centre, to 1 % of its peak
+    lam = np.array([2.05])
+    u = np.linspace(-5, 5, 401)
+
+    def profile(table):
+        comps = PF.psf_components(lam, 'NRS1', table)
+        return sum(c['frac'][0] * np.exp(-0.5 * ((u - c['offset'][0]) / c['sigma'][0]) ** 2) / c['sigma'][0]
+                   for c in comps) / np.sqrt(2 * np.pi)
+    p_true, p_fit = profile(form.table(truth, [0.0, 100.0], None)), profile(g['_tables'])
+    assert np.max(np.abs(p_fit - p_true)) < 0.01 * p_true.max()
+    assert abs(np.mean(g['values']['core_sigma']) - truth['core_sigma']) < 0.03
+    assert np.allclose(g['centre'], 0.05, atol=0.005)
+
+
 def test_centre_law_recovered():
     """Stars in two quadrants with a known drift per quadrant and slope with position."""
     rng = np.random.default_rng(7)

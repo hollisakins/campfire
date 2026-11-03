@@ -83,6 +83,9 @@ class TooFewWavelengths(ProfileFitFallback):
 # 135 calibration-field stars (programs 12497, 6642), joint wing fraction.
 # NOTE: derived from nod differences built with the path-loss correction applied;
 # to be re-derived through this module (bright stars, small effect expected).
+# Layout: ``psf_components`` reads this legacy two-component form and a general list of
+# components (share, width, offset, before/after the shutter) per wavelength node; refits in
+# both layouts come from ``psf_calibration``.
 PSF_LAM = np.array([0.85, 1.25, 1.75, 2.30, 2.95, 3.70, 4.70])
 PSF_TABLES = {
     'NRS1': dict(S_rows=np.array([0.390, 0.400, 0.419, 0.427, 0.429, 0.479, 0.597]),
@@ -147,19 +150,74 @@ def psf_params(lam, det, tables=None):
     return np.interp(lam, nodes, tab['S_rows']), np.interp(lam, nodes, tab['f'])
 
 
+def psf_components(lam, det, tables=None):
+    """The PSF at each wavelength as a list of Gaussian components, each a dict of arrays
+    (one value per wavelength):
+
+    frac      share of the light;
+    sigma     width [native rows];
+    offset    displacement from the trace centre [native rows, towards slit +y];
+    q         share of sigma^2 that acts before the shutter (clipped by it); the rest blurs
+              the clipped light after it (0.5: the even split of the original model);
+    pre       True: the offset acts before the shutter (the light enters it displaced and
+              is clipped there); False: after it (displaced on the detector).
+
+    A detector's table (``PSF_TABLES`` layout, or ``tables``) is either
+
+    legacy  ``{'S_rows': [...], 'f': [...]}`` (optional ``'lam'``, default ``PSF_LAM``): a
+            core of sigma S_rows and share 1 - f, a wing of sigma ``PSF_K`` x S_rows and
+            share f, no offsets, q = 0.5 (the model as it was built); or
+    general ``{'lam': [...], 'components': [{'sigma': [...], 'frac': [...], 'offset': [...],
+            'q': 0.5, 'pre': True}, ...]}``: values per wavelength node; exactly one component
+            omits 'frac' and takes the remainder; 'offset' defaults to 0, 'q' to 0.5, 'pre'
+            to True; a scalar instead of a list holds at every wavelength.
+
+    Values are linear in wavelength between the nodes and held at the end nodes beyond them
+    (a general table should have nodes covering the whole range it is used over)."""
+    tab = (PSF_TABLES if tables is None else tables)[det]
+    lam = np.asarray(lam, float)
+    if 'components' not in tab:
+        S, f = psf_params(lam, det, tables)
+        zero = np.zeros_like(lam)
+        return [dict(frac=1 - f, sigma=S, offset=zero, q=0.5, pre=True),
+                dict(frac=f, sigma=PSF_K * S, offset=zero, q=0.5, pre=True)]
+    nodes = np.asarray(tab['lam'], float)
+
+    def val(v, default):
+        if v is None:
+            return np.full(lam.shape, default, float)
+        v = np.asarray(v, float)
+        return np.full(lam.shape, float(v)) if v.ndim == 0 else np.interp(lam, nodes, v)
+    out, rest = [], None
+    for i, c in enumerate(tab['components']):
+        d = dict(sigma=val(c['sigma'], 0.0), offset=val(c.get('offset'), 0.0), q=float(c.get('q', 0.5)),
+                 pre=bool(c.get('pre', True)))
+        if 'frac' in c:
+            d['frac'] = val(c['frac'], 0.0)
+        else:
+            rest = i
+        out.append(d)
+    if rest is None:
+        raise ValueError('a general PSF table needs one component without "frac" (the remainder)')
+    out[rest]['frac'] = 1.0 - sum(c['frac'] for i, c in enumerate(out) if i != rest)
+    return out
+
+
 def centre_law(lam, det, quad=None, law=None):
     """(D, alpha) per wavelength for a detector and MSA quadrant.
 
-    law : replaces ``CENTRE_LAW`` (same layout), e.g. ``NO_CENTRE_LAW`` to measure
-        the trace centre itself (``psf_calibration``)."""
+    law : replaces ``CENTRE_LAW`` (same layout; an entry may carry its own wavelength
+        nodes as ``lam``, default ``PSF_LAM``), e.g. ``NO_CENTRE_LAW`` to measure the trace
+        centre itself (``psf_calibration``)."""
     law = CENTRE_LAW if law is None else law
     other = 'NRS2' if det == 'NRS1' else 'NRS1'
-    D = law[det]['D']
+    entry = law[det]
     for key in (f'Q{quad}_{det}', f'Q{quad}_{other}'):
         if key in law:
-            D = law[key]['D']
+            entry = law[key]
             break
-    return np.interp(lam, PSF_LAM, D), np.interp(lam, PSF_LAM, law[det]['alpha'])
+    D = np.interp(lam, entry.get('lam', PSF_LAM), entry['D'])
+    return D, np.interp(lam, law[det].get('lam', PSF_LAM), law[det]['alpha'])
 
 
 # The centre law switched off: the fitted centre is where the light is.
@@ -775,24 +833,31 @@ class ProfileModel:
     def width(self, p, lam):
         return np.maximum(np.exp(p[2]) + p[3] * self._x(lam), W_FLOOR)
 
-    def _split(self, k, lam, dy):
-        S_rows, f = psf_params(lam, self.exps[k].detector, tables=self.psf_tables)
-        S = S_rows * dy
-        a = S / np.sqrt(2.0)
-        return a, a, f
+    def _components(self, k, lam, dy):
+        """Per PSF component (``psf_components``) in slit units: (share, sigma before the
+        shutter, sigma after it, offset before it, offset after it)."""
+        out = []
+        for c in psf_components(lam, self.exps[k].detector, tables=self.psf_tables):
+            s = c['sigma'] * dy
+            a = s / np.sqrt(2.0) if c['q'] == 0.5 else s * np.sqrt(c['q'])
+            b = s / np.sqrt(2.0) if c['q'] == 0.5 else s * np.sqrt(1.0 - c['q'])
+            off = c['offset'] * dy
+            out.append((c['frac'], a, b, off if c['pre'] else 0.0, 0.0 if c['pre'] else off))
+        return out
 
     def image(self, p, eoff, k, y, lam, dy):
         """Exposure k's source image at slit positions y (pixel-integrated, per unit
-        total flux, before the along-dispersion throughput)."""
+        total flux, before the along-dispersion throughput): per PSF component, the galaxy
+        convolved with the component's part before the shutter, clipped by the open
+        shutters, blurred by its part after the shutter, displaced before or after."""
         c = self.centre(p, eoff, k, lam)
         w = self.width(p, lam)
-        a, b, f = self._split(k, lam, dy)
         iv = open_intervals(self.exps[k].open_k)
-        comps = [(1 - f, np.sqrt(a ** 2 + w ** 2), b), (f, np.sqrt((PSF_K * a) ** 2 + w ** 2), PSF_K * b)]
+        comps = [(fr, np.sqrt(a ** 2 + w ** 2), b, o1, o2) for fr, a, b, o1, o2 in self._components(k, lam, dy)]
         acc = 0.0
         for xi, wi in zip(_GLX, _GLW):
             yy = y + 0.5 * dy * xi
-            acc = acc + wi * sum(fr * _clipblur(yy, c, s1, s2, iv) for fr, s1, s2 in comps)
+            acc = acc + wi * sum(fr * _clipblur(yy - o2, c + o1, s1, s2, iv) for fr, s1, s2, o1, o2 in comps)
         return 0.5 * dy * acc
 
     def transmission(self, p, eoff, k, lam, dy, width=None, aperture=REF_APERTURE, centre=None):
@@ -801,10 +866,9 @@ class ProfileModel:
         at the fitted centre or at a given slit position."""
         c = self.centre(p, eoff, k, lam) if centre is None else centre
         w = self.width(p, lam) if width is None else width
-        a, _, f = self._split(k, lam, dy)
         iv = open_intervals(aperture)
-        return ((1 - f) * _transmitted(c, np.sqrt(a ** 2 + w ** 2), iv)
-                + f * _transmitted(c, np.sqrt((PSF_K * a) ** 2 + w ** 2), iv))
+        return sum(fr * _transmitted(c + o1, np.sqrt(a ** 2 + w ** 2), iv)
+                   for fr, a, _, o1, _ in self._components(k, lam, dy))
 
     def throughput(self, p, eoff, k, lam, dy):
         """Along-dispersion throughput tau_k: jwst point-source path loss divided by
