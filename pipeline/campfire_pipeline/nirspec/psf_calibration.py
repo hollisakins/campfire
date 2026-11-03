@@ -48,6 +48,7 @@ import scipy.sparse as sp
 from scipy.optimize import least_squares
 
 from campfire_pipeline.nirspec import profile_fit as PF
+from campfire_pipeline.nirspec.constants import MSA_SLIT_PITCH
 
 RANGES = ((0.7, 1.0), (1.0, 1.5), (1.5, 2.0), (2.0, 2.6), (2.6, 3.3), (3.3, 4.1), (4.1, 5.3))
 REF_RANGES = (1, 2, 3)             # 1.0-2.6 um: the centre law's zero point
@@ -69,6 +70,9 @@ OUTLIER_MAD_MIN = 0.03             # rows
 OUTLIER_CHI2 = 5.0                 # x the detector's median reduced chi2
 CENTRE_MIN_STARS = 5               # per MSA quadrant for its own drift column
 SATURATED = 2                      # jwst DQ bit
+# shutter edges of every star fit (``profile_fit.load_shutter_edges``); None: the model's default
+# hard edge. The CLI's --edges sets it.
+SHUTTER_EDGES = None
 
 
 def range_centres():
@@ -206,18 +210,20 @@ class RangeFit:
     Shape: the galaxy width at ``W_FLOOR``, centre ``c0`` and drift (per octave about
     the model's pivot) free, no centre law (the centre is where the light is). PSF:
     the shipped one with its core width S (rows, at the range centre) free
-    (``width_tables``), or a given table."""
+    (``width_tables``), or a given table. Shutter edges: ``shutter_edges``, else the module's
+    ``SHUTTER_EDGES`` (None: the model's default hard edge; the CLI's ``--edges``)."""
 
-    def __init__(self, exps, lam_range, centre_law_tables=None, nod_law=None):
+    def __init__(self, exps, lam_range, centre_law_tables=None, nod_law=None, shutter_edges=None):
         self.lam_range = tuple(lam_range)
         law = PF.NO_CENTRE_LAW if centre_law_tables is None else centre_law_tables
+        edges = SHUTTER_EDGES if shutter_edges is None else shutter_edges
         ex = restrict(exps, lam_range)
         M0 = PF.ProfileModel(ex, centre_law_tables=law, nod_law=nod_law)
         g = M0.lam_grid
         g = g[(g > lam_range[0] - GRID_MARGIN) & (g < lam_range[1] + GRID_MARGIN)]
         if g.size < 3:
             raise PF.TooFewWavelengths('psf calibration: too few wavelengths in range')
-        self.M = PF.ProfileModel(ex, grid=g, centre_law_tables=law, nod_law=nod_law)
+        self.M = PF.ProfileModel(ex, grid=g, centre_law_tables=law, nod_law=nod_law, shutter_edges=edges)
         M = self.M
         self.eoff = np.zeros(len(ex))
         self.v_raw = M.pix['v'].copy()
@@ -1316,6 +1322,147 @@ def stack_metric(samples_dir, keys_by, name, half=4.0, step=0.25):
 
 
 # ---------------------------------------------------------------------------
+# Shutter edges from the empirical bar-shadow tables (profile_fit.load_shutter_edges)
+# ---------------------------------------------------------------------------
+BARSHADOW_FILE = 'empirical_jwst_nirspec_barshadow_{}.fits'
+EDGE_DISPERSERS = ('prism', 'g140m', 'g235m', 'g395m')
+# dispersers without their own table take the M grating with the same filter: the same MSA,
+# the same wavelengths and the same camera, so the same diffraction at the shutter edges
+EDGE_FALLBACK = {'g140h': 'g140m', 'g235h': 'g235m', 'g395h': 'g395m'}
+EDGE_BOUNDS = dict(half=(0.3, 0.6), shift=(-0.06, 0.06), after=(0.05, 0.98))
+# curvature penalty per node (as SMOOTH_TAU): gentle against ~1e5 residuals
+EDGE_TAU = dict(half=0.01, shift=0.01, after=0.1)
+EDGE_DY = 0.229             # slit-frame units per detector row when no measured curve is given
+
+
+def read_barshadow(disperser, data_dir=None):
+    """An empirical bar-shadow table: (y [shutter pitches], wavelength [um], DATA1X1 (one open
+    shutter), DATA1X3 (open shutters either side; the bar between them at y = +-0.5))."""
+    from astropy.io import fits
+    d = data_dir or os.path.join(os.path.dirname(PF.__file__), '..', 'data')
+    with fits.open(os.path.join(d, BARSHADOW_FILE.format(disperser))) as hd:
+        d11, d13 = hd['DATA1X1'].data.astype(float), hd['DATA1X3'].data.astype(float)
+        h = hd['DATA1X1'].header
+    y = h['CRVAL2'] + h['CDELT2'] * np.arange(d11.shape[0])
+    lam = (h['CRVAL1'] + h['CDELT1'] * np.arange(d11.shape[1])) * 1e6
+    return y, lam, d11, d13
+
+
+def uniform_profile(y_pitch, lam, det, dy, half, shift=0.0, after=None, n_open=1, psf_tables=None):
+    """The model's response to uniform light at table positions ``y_pitch`` and one wavelength:
+    the open area (one shutter, or three for ``n_open`` 3) with edges ``shift`` +- ``half``
+    (slit-frame units), blurred by each PSF component's part after the shutter (``after``: its
+    share of the width^2, None for the component's own; its offset if it acts there), averaged
+    over a detector row of height ``dy``; 1 at the shutter centre. The part before the shutter
+    does nothing to uniform light."""
+    from scipy.special import ndtr
+    y = np.asarray(y_pitch, float) * MSA_SLIT_PITCH
+    ks = (0,) if n_open == 1 else (-1, 0, 1)
+    out = np.zeros_like(y)
+    for c in PF.psf_components(np.array([lam]), det, psf_tables):
+        s = float(c['sigma'][0]) * dy
+        sh = after if after is not None else (1.0 - c['q'])
+        b = s * np.sqrt(sh)
+        o2 = 0.0 if c['pre'] else float(c['offset'][0]) * dy
+        for xi, wi in zip(PF._GLX, PF._GLW):
+            yy = y + 0.5 * dy * xi - o2
+            for k in ks:
+                lo, hi = k * MSA_SLIT_PITCH + shift - half, k * MSA_SLIT_PITCH + shift + half
+                out += 0.5 * wi * float(c['frac'][0]) * (ndtr((yy - lo) / b) - ndtr((yy - hi) / b))
+    return out / np.interp(0.0, y, out)
+
+
+def edge_nodes(lam_lo, lam_hi, n):
+    return np.exp(np.linspace(np.log(lam_lo), np.log(lam_hi), n))
+
+
+def _dy_of(dy, det, lam):
+    if dy is None:
+        return EDGE_DY
+    if callable(dy):
+        return float(dy(det, lam))
+    if isinstance(dy, dict):
+        L, D = dy[det]
+        return float(np.interp(lam, L, D))
+    return float(dy)
+
+
+def fit_shutter_edges(disperser, dy=None, nodes=None, psf_tables=None, dets=('NRS1', 'NRS2'), ystep=2,
+                      ymax=0.95, log=print, data_dir=None):
+    """The shutter edge of one disperser from its bar-shadow table: the open half-width, the
+    shift of the open area and the after-shutter share of every PSF component's width^2, each a
+    natural cubic spline in ln(lambda) through ``nodes`` (default: 7 for the PRISM, 4 for a
+    grating, over the table's wavelengths), fitted to both tables at once (one open shutter and
+    the bar between two open ones, |y| < ``ymax`` pitches, every ``ystep``-th row) with the PSF
+    ``psf_tables`` (None: the shipped one) averaged over ``dets``. ``dy``: slit units per row,
+    a number, {det: (lam, dy)} or a function (det, lam); default ``EDGE_DY``. Robust (soft L1)
+    residuals, a gentle curvature penalty (``EDGE_TAU``). Returns dict(nodes, coefs, errors,
+    rms_edge, rms_default per column, lam)."""
+    y, lam, d11, d13 = read_barshadow(disperser, data_dir)
+    sel = np.flatnonzero(np.abs(y) < ymax)[::ystep]
+    cols = [j for j in range(lam.size) if np.isfinite(d11[sel, j]).all() and np.isfinite(d13[sel, j]).all()]
+    lamc = lam[cols]
+    if nodes is None:
+        nodes = SMOOTH_NODES if disperser == 'prism' else edge_nodes(lamc[0], lamc[-1], 4)
+    nodes = np.asarray(nodes, float)
+    nn = nodes.size
+    names = ('half', 'shift', 'after')
+    yy = y[sel]
+
+    def unpack(x):
+        return {p: x[i * nn:(i + 1) * nn] for i, p in enumerate(names)}
+
+    def model_cols(c, n_open):
+        v = {p: spline_eval(c[p], lamc, nodes) for p in names}
+        return [np.mean([uniform_profile(yy, L, d, _dy_of(dy, d, L), v['half'][i], v['shift'][i], v['after'][i],
+                                         n_open, psf_tables) for d in dets], axis=0) for i, L in enumerate(lamc)]
+
+    def resid(x):
+        c = unpack(x)
+        m1, m3 = model_cols(c, 1), model_cols(c, 3)
+        r = [np.concatenate([a - d11[sel, j], b - d13[sel, j]]) for a, b, j in zip(m1, m3, cols)]
+        return np.concatenate(r + [curvature(c[p], nodes) / EDGE_TAU[p] for p in names])
+    x0 = np.concatenate([np.full(nn, PF.OPEN_HALF - 0.01), np.zeros(nn), np.full(nn, 0.5)])
+    lo = np.concatenate([np.full(nn, EDGE_BOUNDS[p][0]) for p in names])
+    hi = np.concatenate([np.full(nn, EDGE_BOUNDS[p][1]) for p in names])
+    res = least_squares(resid, x0, bounds=(lo, hi), x_scale='jac', loss='soft_l1', f_scale=0.02,
+                        ftol=1e-8, xtol=1e-8, gtol=1e-8)
+    c = unpack(res.x)
+    J = res.jac
+    try:
+        err = np.sqrt(np.abs(np.diag(np.linalg.pinv(J.T @ J))))
+    except np.linalg.LinAlgError:
+        err = np.full(res.x.size, np.nan)
+    m1, m3 = model_cols(c, 1), model_cols(c, 3)
+    rms_e = [float(np.sqrt(np.mean(np.concatenate([a - d11[sel, j], b - d13[sel, j]]) ** 2)))
+             for a, b, j in zip(m1, m3, cols)]
+    rms_d = []
+    for L, j in zip(lamc, cols):
+        a = np.mean([uniform_profile(yy, L, d, _dy_of(dy, d, L), PF.OPEN_HALF, 0.0, None, 1, psf_tables) for d in dets], axis=0)
+        b = np.mean([uniform_profile(yy, L, d, _dy_of(dy, d, L), PF.OPEN_HALF, 0.0, None, 3, psf_tables) for d in dets], axis=0)
+        rms_d.append(float(np.sqrt(np.mean(np.concatenate([a - d11[sel, j], b - d13[sel, j]]) ** 2))))
+    log(f'  edges {disperser}: {len(cols)} columns {lamc[0]:.2f}-{lamc[-1]:.2f} um, nodes {np.round(nodes, 2).tolist()}; '
+        f'median rms {np.median(rms_e):.4f} (hard edge {np.median(rms_d):.4f}); status {res.status}')
+    return dict(disperser=disperser, nodes=nodes.tolist(), coefs={p: v.tolist() for p, v in c.items()},
+                errors={p: v.tolist() for p, v in unpack(err).items()}, lam=lamc.tolist(), rms_edge=rms_e,
+                rms_default=rms_d, bounds_hit=[f'{p}@{nodes[i % nn]:.2f}' for p in names for i in range(nn)
+                                               if c[p][i] <= EDGE_BOUNDS[p][0] + 1e-4 or c[p][i] >= EDGE_BOUNDS[p][1] - 1e-4])
+
+
+def shutter_edge_table(fits_, n_dense=41):
+    """The ``profile_fit.load_shutter_edges`` layout from ``fit_shutter_edges`` results: each
+    curve sampled at ``n_dense`` log-spaced wavelengths over its nodes; the fallbacks added."""
+    out = {}
+    for f in fits_:
+        nodes = np.asarray(f['nodes'], float)
+        lam = edge_nodes(nodes[0], nodes[-1], n_dense)
+        out[f['disperser']] = dict(lam=lam.tolist(), **{p: np.clip(spline_eval(np.asarray(f['coefs'][p]), lam, nodes),
+                                                                   *EDGE_BOUNDS[p]).tolist() for p in ('half', 'shift', 'after')})
+    out['fallback'] = {k: v for k, v in EDGE_FALLBACK.items() if v in out}
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Nod offsets (the measurement behind profile_fit.NOD_OFFSET_LAW)
 # ---------------------------------------------------------------------------
 MSA_NCOL = 365          # shutters per row of an MSA quadrant: SHUTTRID = (row - 1) * 365 + column
@@ -2293,11 +2440,14 @@ def read_form_table(path):
         return json.load(fh)
 
 
-def step_table_test(root, out_dir, observations, tables, part=None, log=print, tag=''):
+def step_table_test(root, out_dir, observations, tables, part=None, log=print, tag='', edges_of=None):
     """Every clean star in every range where it is clean, fitted with each PSF table of
     ``tables`` ({name: table}) at fixed shape, its centre free in every exposure (centre linear
     in wavelength across the range): records in table_test<tag>/, stacking samples in
-    samples_tables<tag>/."""
+    samples_tables<tag>/. ``edges_of``: {name: shutter edges (None: the hard edge)} for tables
+    that go with their own edges; the others take ``SHUTTER_EDGES``. The floor and pixel mask
+    come from the star's width fit with ``SHUTTER_EDGES``."""
+    edges_of = edges_of or {}
     sel, rec2, clean = clean_records(out_dir)
     ranges_of = {}
     for (det, r), keys in clean.items():
@@ -2319,9 +2469,11 @@ def step_table_test(root, out_dir, observations, tables, part=None, log=print, t
                 fr = _range_start(RF)
                 row = dict(range=r)
                 for name, tab in tables.items():
+                    RF.M.shutter_edges = edges_of[name] if name in edges_of else SHUTTER_EDGES
                     g = RF.fit_centres(tables=tab, x0=fr['_x'][:2], use=fr['_use'])
                     row[name] = dict(chi2=g['chi2'], chi2_raw=g['chi2_raw'], ndof=g['ndof'])
                     samp[(r, name)] = RF.samples(g, tab)
+                RF.M.shutter_edges = SHUTTER_EDGES
                 RF.eoff = np.zeros(len(RF.M.exps))
                 rec['ranges'].append(row)
             except Exception as err:
@@ -2341,7 +2493,9 @@ TABLE_STYLE = {'A': (NEW_C, '-', 'new: core 25th percentile, the rest median'),
                'SA': ('#1baf7a', ':', 'smooth joint fit, half A'),
                'SB': ('#6250d6', ':', 'smooth joint fit, half B'),
                'S2': ('#6250d6', '-', 'smooth joint fit, second round (S2)'),
-               'shipped': (OLD_C, '--', 'shipped table (profile_fit.PSF_TABLES)')}
+               'SE': ('#2f6fd6', '-', 'measured edge, PSF refitted with it (SE)'),
+               'Sedge': ('#9a9893', ':', 'measured edge, PSF S'),
+               'shipped': (OLD_C, '--', 'shipped model (PSF_TABLES, hard shutter edge)')}
 
 
 def plot_stack_tables(out_dir, path, names=('S', 'shipped'), samples='samples_tables', half=4.0, step=0.25,
@@ -2577,7 +2731,13 @@ def main(argv=None):
     ap.add_argument('--edge-max', type=float, default=EDGE_MAX)
     ap.add_argument('--part', default=None, help='i/n: this process takes every n-th star (or job) from the i-th, '
                     'to run a step as n processes')
+    ap.add_argument('--edges', default=None, help='shutter-edge file (profile_fit.load_shutter_edges layout) for '
+                    'every star fit; default the model\'s hard edge. table_test fits the shipped table with '
+                    'the hard edge whatever this is')
     a = ap.parse_args(argv)
+    global SHUTTER_EDGES
+    if a.edges:
+        SHUTTER_EDGES = PF.load_shutter_edges(a.edges)
     part = tuple(int(x) for x in a.part.split('/')) if a.part else None
     law = False if a.no_nod_law else None
     log = lambda *x: print(*x, flush=True)          # noqa: E731
@@ -2669,7 +2829,7 @@ def main(argv=None):
         tabs = {'shipped': PF.PSF_TABLES}
         for name in a.tables:
             tabs[name] = read_form_table(os.path.join(a.out, f'psf_table_{a.form}_{name}.json'))
-        step_table_test(a.root, a.out, a.obs, tabs, part=part, log=log, tag=a.tag)
+        step_table_test(a.root, a.out, a.obs, tabs, part=part, log=log, tag=a.tag, edges_of={'shipped': None})
     elif a.step == 'form_figures':
         os.makedirs(fd, exist_ok=True)
         tabs = {n: read_form_table(os.path.join(a.out, f'psf_table_{a.form}_{n}.json')) for n in a.tables}

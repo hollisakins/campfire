@@ -139,8 +139,58 @@ def open_shutters(shutter_state, slit_ymin, slit_ymax):
     return tuple(k for k in range(lo, hi + 1) if k not in closed)
 
 
-def open_intervals(open_k):
-    return [(k * MSA_SLIT_PITCH - OPEN_HALF, k * MSA_SLIT_PITCH + OPEN_HALF) for k in open_k]
+def open_intervals(open_k, half=OPEN_HALF, shift=0.0):
+    """The open intervals (slit-frame units) of shutters ``open_k``: each shutter's open area
+    is ``half`` either side of its centre moved by ``shift``. ``half`` and ``shift`` may be
+    arrays (one value per pixel, ``shutter_edge``), then so are the interval ends."""
+    return [(k * MSA_SLIT_PITCH + shift - half, k * MSA_SLIT_PITCH + shift + half) for k in open_k]
+
+
+# ---------------------------------------------------------------------------
+# Shutter edge: the default is a hard edge at +-OPEN_HALF with each PSF component's width split
+# evenly before and after the shutter (q = 0.5). A measured edge (``load_shutter_edges``, a model
+# input like ``psf_tables``) gives, per disperser and wavelength, the open half-width, a shift of
+# the open area and the share of every PSF component's width^2 acting after the shutter, fitted to
+# the empirical bar-shadow tables (``psf_calibration.fit_shutter_edges``).
+# ---------------------------------------------------------------------------
+SHUTTER_EDGE_FILE = Path(__file__).parent.parent / 'data' / 'nirspec_shutter_edges.json'
+
+
+def load_shutter_edges(path=SHUTTER_EDGE_FILE):
+    """Measured shutter edges: {disperser: dict(lam, half, shift, after)} (wavelength nodes
+    [um]; open half-width and shift [slit-frame units]; after-shutter share of each PSF
+    component's width^2), plus 'fallback': {disperser: disperser with a table}."""
+    with open(path) as fh:
+        raw = json.load(fh)
+    out = {'fallback': dict(raw.get('fallback', {}))}
+    for name, t in raw.items():
+        if name in ('fallback', 'meta'):
+            continue
+        out[name] = {k: np.asarray(t[k], float) for k in ('lam', 'half', 'shift', 'after')}
+    return out
+
+
+def disperser_key(grating):
+    """'PRISM/CLEAR' or 'G395M/F290LP' -> 'prism', 'g395m'."""
+    return str(grating).split('/')[0].strip().lower()
+
+
+def shutter_edge(edges, grating, lam):
+    """(half, shift, after) at wavelengths ``lam`` for an exposure's grating from measured
+    ``edges`` (``load_shutter_edges``; a disperser without its own table takes its
+    'fallback'), held at the end nodes beyond them. ``edges`` None: the default hard edge,
+    (OPEN_HALF, 0, None) with None meaning each PSF component's own share."""
+    if edges is None:
+        return OPEN_HALF, 0.0, None
+    d = disperser_key(grating)
+    if d not in edges:
+        d = edges.get('fallback', {}).get(d, d)
+    if d not in edges:
+        raise KeyError(f'shutter edges: no table for disperser {grating!r}')
+    t = edges[d]
+    lam = np.asarray(lam, float)
+    return (np.interp(lam, t['lam'], t['half']), np.interp(lam, t['lam'], t['shift']),
+            np.interp(lam, t['lam'], t['after']))
 
 
 def psf_components(lam, det, tables=None):
@@ -583,7 +633,9 @@ class FitResult:
 
 def fit_pixel_masks(exps):
     """(exposure index, pixel mask) of the pixels a fit uses: usable data inside an open
-    shutter (plus ``FIT_MARGIN``), covered by every subtracted frame."""
+    shutter (plus ``FIT_MARGIN``), covered by every subtracted frame. The shutter here is the
+    nominal one (+-OPEN_HALF) whatever shutter edges the model uses: it contains the measured
+    open area, and fits with either edge then use the same pixels."""
     rows = []
     for k, e in enumerate(exps):
         if not e.use_data:
@@ -618,18 +670,24 @@ class ProfileModel:
         model (``psf_components`` / ``centre_law``); None uses the module's tables. For
         calibrating them on stars (``psf_calibration``), not for extraction.
     nod_law : the nod geometry (``nod_shifts``): None for ``NOD_OFFSET_LAW``, False for one
-        position shared by every exposure (to measure the offsets themselves)."""
+        position shared by every exposure (to measure the offsets themselves).
+    shutter_edges : measured shutter edges (``load_shutter_edges``) instead of the hard edge
+        at +-OPEN_HALF with an even split of each PSF component before and after the shutter
+        (``shutter_edge``). Not the extraction's default. The fitted pixels do not depend on
+        it (``fit_pixel_masks`` uses the nominal shutter, which contains the measured one)."""
 
     psf_tables = None
     centre_law_tables = None
     nod_shift = None
+    shutter_edges = None
 
     def __init__(self, exps, chromatic=True, priors=None, grid=None, bounds=None, c_prior=None,
-                 psf_tables=None, centre_law_tables=None, nod_law=None):
+                 psf_tables=None, centre_law_tables=None, nod_law=None, shutter_edges=None):
         self.exps = exps
         self.chromatic = chromatic
         self.psf_tables = psf_tables
         self.centre_law_tables = centre_law_tables
+        self.shutter_edges = shutter_edges
         self.nod_shift = nod_shifts(exps, nod_law)
         self.priors = priors or Priors()
         self.bounds_cfg = bounds or Bounds()
@@ -754,13 +812,14 @@ class ProfileModel:
         self._pl_curves()
 
     @classmethod
-    def for_placement(cls, exps, grid, priors=None, bounds=None):
+    def for_placement(cls, exps, grid, priors=None, bounds=None, psf_tables=None, shutter_edges=None):
         """A model that only places a given spectrum on the exposures (``frame_image``,
         ``throughput``, ``transmission``): no pixel table and no data, so it exists for a
         source without a usable pixel of its own (a contaminant predicted from its
         3-pixel boxcar, ``profile_contam.boxcar_pass1``). ``grid`` is the spectrum grid."""
         M = cls.__new__(cls)
         M.exps, M.chromatic = exps, True
+        M.psf_tables, M.shutter_edges = psf_tables, shutter_edges
         M.nod_shift = nod_shifts(exps)
         M.priors, M.bounds_cfg = priors or Priors(), bounds or Bounds()
         M.c_prior, M.srcy_flag = planned_position(exps)
@@ -817,17 +876,26 @@ class ProfileModel:
     def width(self, p, lam):
         return np.maximum(np.exp(p[2]) + p[3] * self._x(lam), W_FLOOR)
 
-    def _components(self, k, lam, dy):
+    def _components(self, k, lam, dy, after=None):
         """Per PSF component (``psf_components``) in slit units: (share, sigma before the
-        shutter, sigma after it, offset before it, offset after it)."""
+        shutter, sigma after it, offset before it, offset after it). ``after``: the share of
+        every component's width^2 acting after the shutter (measured shutter edges), else
+        each component's own (1 - q)."""
         out = []
         for c in psf_components(lam, self.exps[k].detector, tables=self.psf_tables):
             s = c['sigma'] * dy
-            a = s / np.sqrt(2.0) if c['q'] == 0.5 else s * np.sqrt(c['q'])
-            b = s / np.sqrt(2.0) if c['q'] == 0.5 else s * np.sqrt(1.0 - c['q'])
+            if after is not None:
+                a, b = s * np.sqrt(1.0 - after), s * np.sqrt(after)
+            else:
+                a = s / np.sqrt(2.0) if c['q'] == 0.5 else s * np.sqrt(c['q'])
+                b = s / np.sqrt(2.0) if c['q'] == 0.5 else s * np.sqrt(1.0 - c['q'])
             off = c['offset'] * dy
             out.append((c['frac'], a, b, off if c['pre'] else 0.0, 0.0 if c['pre'] else off))
         return out
+
+    def _edge(self, k, lam):
+        """(half, shift, after) of exposure k's shutters at wavelengths lam (``shutter_edge``)."""
+        return shutter_edge(self.shutter_edges, self.exps[k].grating, lam)
 
     def image(self, p, eoff, k, y, lam, dy):
         """Exposure k's source image at slit positions y (pixel-integrated, per unit
@@ -836,8 +904,9 @@ class ProfileModel:
         shutters, blurred by its part after the shutter, displaced before or after."""
         c = self.centre(p, eoff, k, lam)
         w = self.width(p, lam)
-        iv = open_intervals(self.exps[k].open_k)
-        comps = [(fr, np.sqrt(a ** 2 + w ** 2), b, o1, o2) for fr, a, b, o1, o2 in self._components(k, lam, dy)]
+        half, shift, after = self._edge(k, lam)
+        iv = open_intervals(self.exps[k].open_k, half, shift)
+        comps = [(fr, np.sqrt(a ** 2 + w ** 2), b, o1, o2) for fr, a, b, o1, o2 in self._components(k, lam, dy, after)]
         acc = 0.0
         for xi, wi in zip(_GLX, _GLW):
             yy = y + 0.5 * dy * xi
@@ -850,9 +919,10 @@ class ProfileModel:
         at the fitted centre or at a given slit position."""
         c = self.centre(p, eoff, k, lam) if centre is None else centre
         w = self.width(p, lam) if width is None else width
-        iv = open_intervals(aperture)
+        half, shift, after = self._edge(k, lam)
+        iv = open_intervals(aperture, half, shift)
         return sum(fr * _transmitted(c + o1, np.sqrt(a ** 2 + w ** 2), iv)
-                   for fr, a, _, o1, _ in self._components(k, lam, dy))
+                   for fr, a, _, o1, _ in self._components(k, lam, dy, after))
 
     def throughput(self, p, eoff, k, lam, dy):
         """Along-dispersion throughput tau_k: jwst point-source path loss divided by

@@ -49,6 +49,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   fit (`smooth_joint_fit_all`: every PSF parameter a spline in wavelength over 0.6-5.3 um,
   fitted per detector to the stars of all ranges at once, with the stars' centres and offsets
   in the same problem) and its held-out test.
+- **NIRSpec profile fit: a measured shutter edge as a model input (not the default).**
+  - `ProfileModel(shutter_edges=...)` and `profile_fit.load_shutter_edges` /
+    `shutter_edge` describe the edge per disperser and wavelength: the open half-width, a shift
+    of the open area, and the share of each PSF component's width acting after the shutter.
+  - The values come from the empirical bar-shadow tables (`data/nirspec_shutter_edges.json`,
+    fitted by `psf_calibration.fit_shutter_edges`). The H gratings take the M grating with the
+    same filter.
+  - The default stays the hard edge at +-0.50 slit units with an even split, so the extraction
+    is unchanged. Fitted pixels use the nominal shutter either way.
+  - `psf_calibration` takes `--edges` for its star fits.
 
 ### Algorithm
 

@@ -275,3 +275,107 @@ def test_centre_law_recovered():
         assert np.allclose(got - got[2], D[q] - D[q][2], atol=0.004)
     a = np.array(law['NRS1']['alpha'])
     assert np.allclose(a - np.mean(a[list(PC.REF_RANGES)]), alpha - np.mean(alpha[list(PC.REF_RANGES)]), atol=0.006)
+
+
+# ---------------------------------------------------------------------------
+# shutter edges
+# ---------------------------------------------------------------------------
+def _edges(half=0.5, shift=0.0, after=0.5, disp='prism', lam=(0.5, 6.0)):
+    n = len(lam)
+    t = dict(lam=np.array(lam, float), half=np.broadcast_to(np.asarray(half, float), (n,)).copy(),
+             shift=np.broadcast_to(np.asarray(shift, float), (n,)).copy(),
+             after=np.broadcast_to(np.asarray(after, float), (n,)).copy())
+    return {disp: t, 'fallback': {}}
+
+
+def test_hard_edge_as_measured_edges_is_the_default_model():
+    """The default (no edges) is the hard edge at +-OPEN_HALF with an even split; written as
+    measured edges it gives the same image and transmission."""
+    exps = _exposures()
+    p = np.array([0.08, 0.02, np.log(0.12), 0.0])
+    A0 = PF.ProfileModel(exps).design(p, np.zeros(3)).toarray()
+    A1 = PF.ProfileModel(exps, shutter_edges=_edges(PF.OPEN_HALF, 0.0, 0.5)).design(p, np.zeros(3)).toarray()
+    assert np.allclose(A0, A1, rtol=1e-12, atol=1e-14)
+    assert PF.shutter_edge(None, 'PRISM/CLEAR', np.array([1.0]))[0] == PF.OPEN_HALF
+
+
+def test_measured_edge_is_what_uniform_light_sees():
+    """A very wide source (uniform light) through the model with a measured edge is
+    ``psf_calibration.uniform_profile``, the bar-shadow model the edge is fitted with: the
+    open area at shift +- half, blurred after the shutter by the share ``after`` of the PSF."""
+    exps = _exposures()
+    E = _edges(0.46, 0.01, 0.62)
+    M = PF.ProfileModel(exps, shutter_edges=E)
+    e = exps[0]                                       # open shutters -1, 0, +1
+    y = np.linspace(-1.0, 1.0, 201) * MSA_SLIT_PITCH
+    for lam in (1.0, 4.0):
+        L, D = np.full(y.size, lam), np.full(y.size, DY)
+        p = np.array([0.0, 0.0, np.log(40.0), 0.0])   # a 40-slit-unit galaxy: uniform over the slitlet
+        img = M.image(p, np.zeros(3), 0, y, L, D)
+        img = img / np.interp(0.0, y, img)
+        ref = PC.uniform_profile(y / MSA_SLIT_PITCH, lam, e.detector, DY, 0.46, 0.01, 0.62, n_open=3)
+        assert np.max(np.abs(img - ref)) < 2e-3, lam
+
+
+def test_measured_edge_narrows_the_opening():
+    """A narrower opening passes less of a centred point source and moves the 50 % point of
+    uniform light inward by the change of half-width."""
+    exps = _exposures()
+    p = np.array([0.0, 0.0, np.log(PF.W_FLOOR), 0.0])
+    lam, dy = np.array([4.0]), np.array([DY])
+    t_hard = PF.ProfileModel(exps).transmission(p, np.zeros(3), 0, lam, dy, width=0.0, aperture=(0,), centre=0.3)
+    t_new = PF.ProfileModel(exps, shutter_edges=_edges(0.45, 0.0, 0.5)).transmission(
+        p, np.zeros(3), 0, lam, dy, width=0.0, aperture=(0,), centre=0.3)
+    assert t_new < t_hard
+    y = np.linspace(0.0, 0.9, 901)
+    for half in (0.5, 0.45):
+        u = PC.uniform_profile(y, 4.0, 'NRS1', DY, half, 0.0, 0.5)
+        y50 = y[np.argmin(np.abs(u - 0.5))] * MSA_SLIT_PITCH
+        assert abs(y50 - half) < 0.01
+
+
+def test_shutter_edge_fallback_and_unknown_disperser():
+    E = _edges(0.47, 0.0, 0.6, disp='g395m')
+    E['fallback'] = {'g395h': 'g395m'}
+    lam = np.array([3.0, 4.5])
+    assert np.allclose(PF.shutter_edge(E, 'G395H/F290LP', lam)[0], PF.shutter_edge(E, 'G395M/F290LP', lam)[0])
+    with pytest.raises(KeyError):
+        PF.shutter_edge(E, 'G140M/F100LP', lam)
+
+
+def test_fit_shutter_edges_recovers_a_known_edge(tmp_path):
+    """Bar-shadow tables made with a known edge (half-width falling with wavelength, a shift, an
+    after-shutter share) through ``uniform_profile``: ``fit_shutter_edges`` gives them back."""
+    from astropy.io import fits
+    lam = np.linspace(1.0, 4.0, 7)
+    y = np.round(np.arange(-1.0, 1.0001, 0.01), 4)
+    half = 0.49 - 0.012 * np.log(lam)
+    d11 = np.array([PC.uniform_profile(y, L, 'NRS1', DY, h, 0.006, 0.62, 1) for L, h in zip(lam, half)]).T
+    d13 = np.array([PC.uniform_profile(y, L, 'NRS1', DY, h, 0.006, 0.62, 3) for L, h in zip(lam, half)]).T
+    hdus = [fits.PrimaryHDU()]
+    for name, d in (('DATA1X1', d11), ('DATA1X3', d13)):
+        h = fits.ImageHDU(d.astype('f4'), name=name)
+        h.header.update(CRVAL1=lam[0] * 1e-6, CDELT1=(lam[1] - lam[0]) * 1e-6, CRVAL2=-1.0, CDELT2=0.01)
+        hdus.append(h)
+    fits.HDUList(hdus).writeto(tmp_path / PC.BARSHADOW_FILE.format('prism'))
+    r = PC.fit_shutter_edges('prism', dy=DY, nodes=[1.0, 2.0, 4.0], dets=('NRS1',), ystep=1,
+                             data_dir=str(tmp_path), log=lambda *a: None)
+    got = PC.spline_eval(np.array(r['coefs']['half']), lam, np.array(r['nodes']))
+    assert np.max(np.abs(got - half)) < 0.003
+    assert np.allclose(r['coefs']['shift'], 0.006, atol=0.002)
+    assert np.allclose(r['coefs']['after'], 0.62, atol=0.05)
+    assert max(r['rms_edge']) < 2e-3 < min(r['rms_default'])
+
+
+def test_shipped_shutter_edge_file_is_sane():
+    """The measured-edge data file (not the extraction's default): every disperser with a table
+    has an opening narrower than the nominal shutter, a small shift, an after-shutter share in
+    (0, 1), and the H gratings resolve to their M grating."""
+    E = PF.load_shutter_edges()
+    for d in ('prism', 'g140m', 'g235m', 'g395m'):
+        t = E[d]
+        assert np.all((t['half'] > 0.40) & (t['half'] <= PF.OPEN_HALF))
+        assert np.all(np.abs(t['shift']) < 0.03)
+        assert np.all((t['after'] > 0.0) & (t['after'] < 1.0))
+    for h, m in (('G140H/F100LP', 'g140m'), ('G235H/F170LP', 'g235m'), ('G395H/F290LP', 'g395m')):
+        assert np.allclose(PF.shutter_edge(E, h, np.array([2.0]))[0], np.interp(2.0, E[m]['lam'], E[m]['half']))
