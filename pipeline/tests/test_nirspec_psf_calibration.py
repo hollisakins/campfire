@@ -379,3 +379,124 @@ def test_shipped_shutter_edge_file_is_sane():
         assert np.all((t['after'] > 0.0) & (t['after'] < 1.0))
     for h, m in (('G140H/F100LP', 'g140m'), ('G235H/F170LP', 'g235m'), ('G395H/F290LP', 'g395m')):
         assert np.allclose(PF.shutter_edge(E, h, np.array([2.0]))[0], np.interp(2.0, E[m]['lam'], E[m]['half']))
+
+
+# ---------------------------------------------------------------------------
+# shutter transmission T (geometric edge, T = 1 - c2 x^2 - c4 x^4 inside each shutter)
+# ---------------------------------------------------------------------------
+def _T_edges(c2=-0.3, c4=0.8, after=0.5, shift=0.0, disp='prism', lam=(0.5, 6.0)):
+    E = _edges(PF.OPEN_HALF, shift, after, disp=disp, lam=lam)
+    E[disp]['c2'] = np.full(len(lam), float(c2))
+    E[disp]['c4'] = np.full(len(lam), float(c4))
+    return E
+
+
+def test_transmission_window_is_the_integral_of_T():
+    """``_window`` with a polynomial transmission is the integral of T(u) N(u; m, s) over the open
+    shutters, from Gaussians far outside to ones straddling an edge or a bar."""
+    from scipy.stats import norm
+    iv = PF.open_intervals((-1, 0, 1), PF.OPEN_HALF, 0.0)
+    tp = {2: -0.3, 4: 0.8}
+    m = np.array([-2.5, -1.1, -0.66, -0.48, 0.0, 0.3, 0.52, 0.9, 1.7])
+    s = np.array([0.05, 0.03, 0.05, 0.08, 0.04, 0.06, 0.2, 0.1, 0.07])
+    got = PF._window(m, s, iv, tp)
+    for mm, ss, g in zip(m, s, got):
+        ref = 0.0
+        for lo, hi in iv:
+            u = np.linspace(lo, hi, 100001)
+            x = (u - 0.5 * (lo + hi)) / (0.5 * (hi - lo))
+            ref += np.trapezoid((1 + 0.3 * x ** 2 - 0.8 * x ** 4) * norm.pdf(u, mm, ss), u)
+        assert g == pytest.approx(ref, abs=1e-8)
+
+
+def test_flat_transmission_is_the_hard_edge():
+    """T = 1 (all coefficients zero) through the compiled path gives the default model's image."""
+    exps = _exposures()
+    p = np.array([0.08, 0.02, np.log(0.12), 0.0])
+    A0 = PF.ProfileModel(exps).design(p, np.zeros(3)).toarray()
+    A1 = PF.ProfileModel(exps, shutter_edges=_T_edges(0.0, 0.0, 0.5)).design(p, np.zeros(3)).toarray()
+    assert np.allclose(A0, A1, rtol=1e-10, atol=1e-13)
+
+
+def test_transmission_is_what_uniform_light_sees():
+    """A very wide source through the model with T is ``uniform_profile`` with the same T: the
+    bar-shadow model T is fitted with."""
+    exps = _exposures()
+    E = _T_edges(-0.3, 0.8, 0.55, 0.005)
+    M = PF.ProfileModel(exps, shutter_edges=E)
+    y = np.linspace(-1.0, 1.0, 201) * MSA_SLIT_PITCH
+    for lam in (1.0, 4.0):
+        L, D = np.full(y.size, lam), np.full(y.size, DY)
+        img = M.image(np.array([0.0, 0.0, np.log(40.0), 0.0]), np.zeros(3), 0, y, L, D)
+        img = img / np.interp(0.0, y, img)
+        ref = PC.uniform_profile(y / MSA_SLIT_PITCH, lam, exps[0].detector, DY, PF.OPEN_HALF, 0.005, 0.55, 3,
+                                 None, {2: -0.3, 4: 0.8})
+        assert np.max(np.abs(img - ref)) < 2e-3, lam
+
+
+def test_transmission_lowers_an_edge_source_more_than_a_centred_one():
+    exps = _exposures()
+    p = np.array([0.0, 0.0, np.log(PF.W_FLOOR), 0.0])
+    lam, dy = np.array([3.0]), np.array([DY])
+    hard, T = PF.ProfileModel(exps), PF.ProfileModel(exps, shutter_edges=_T_edges(-0.2, 0.9, 0.5))
+    t = {n: [M.transmission(p, np.zeros(3), 0, lam, dy, width=0.0, aperture=(0,), centre=c)[0] for c in (0.0, 0.4)]
+         for n, M in (('hard', hard), ('T', T))}
+    assert t['T'][0] / t['hard'][0] > 0.98                  # centre: T(0) = 1
+    assert t['T'][1] / t['hard'][1] < 0.9                   # near the edge: T < 1
+
+
+def test_model_follows_a_change_of_shutter_edges():
+    """The per-exposure shutter cache follows the model's edges: the same model with another set of
+    edges gives another image."""
+    exps = _exposures()
+    M = PF.ProfileModel(exps, shutter_edges=_edges(0.46, 0.0, 0.6))
+    p = np.array([0.3, 0.0, np.log(0.12), 0.0])
+    A1 = M.design(p, np.zeros(3)).toarray()
+    M.shutter_edges = _T_edges(-0.3, 0.8, 0.5)
+    A2 = M.design(p, np.zeros(3)).toarray()
+    M.shutter_edges = None
+    A3 = M.design(p, np.zeros(3)).toarray()
+    assert not np.allclose(A1, A2) and not np.allclose(A2, A3)
+    assert np.allclose(A3, PF.ProfileModel(exps).design(p, np.zeros(3)).toarray())
+
+
+def test_fit_shutter_edges_recovers_a_known_transmission(tmp_path):
+    """Bar-shadow tables made with the geometric edge and a known T and after-shutter share:
+    ``fit_shutter_edges(form='T')`` gives them back."""
+    from astropy.io import fits
+    lam = np.linspace(1.0, 4.0, 7)
+    y = np.round(np.arange(-1.0, 1.0001, 0.01), 4)
+    tp = {2: -0.25, 4: 0.7}
+    d11 = np.array([PC.uniform_profile(y, L, 'NRS1', DY, PF.OPEN_HALF, 0.004, 0.55, 1, None, tp) for L in lam]).T
+    d13 = np.array([PC.uniform_profile(y, L, 'NRS1', DY, PF.OPEN_HALF, 0.004, 0.55, 3, None, tp) for L in lam]).T
+    hdus = [fits.PrimaryHDU()]
+    for name, d in (('DATA1X1', d11), ('DATA1X3', d13)):
+        h = fits.ImageHDU(d.astype('f4'), name=name)
+        h.header.update(CRVAL1=lam[0] * 1e-6, CDELT1=(lam[1] - lam[0]) * 1e-6, CRVAL2=-1.0, CDELT2=0.01)
+        hdus.append(h)
+    fits.HDUList(hdus).writeto(tmp_path / PC.BARSHADOW_FILE.format('prism'))
+    r = PC.fit_shutter_edges('prism', dy=DY, nodes=[1.0, 2.0, 4.0], dets=('NRS1',), ystep=1,
+                             data_dir=str(tmp_path), log=lambda *a: None, form='T')
+    x = np.linspace(0, 1, 11)
+    T_true = 1 - tp[2] * x ** 2 - tp[4] * x ** 4
+    for L in lam:
+        c2 = PC.spline_eval(np.array(r['coefs']['c2']), L, np.array(r['nodes']))
+        c4 = PC.spline_eval(np.array(r['coefs']['c4']), L, np.array(r['nodes']))
+        assert np.max(np.abs(1 - c2 * x ** 2 - c4 * x ** 4 - T_true)) < 0.03
+    assert np.allclose(r['coefs']['after'], 0.55, atol=0.05)
+    assert max(r['rms_edge']) < 3e-3 < min(r['rms_default'])
+
+
+def test_shipped_shutter_transmission_file_is_sane():
+    """The shutter-transmission data file (not the extraction's default): the geometric half-width,
+    T between 0 and a few percent above 1 across every shutter, and the H gratings resolved."""
+    E = PF.load_shutter_edges(PF.SHUTTER_TRANSMISSION_FILE)
+    x = np.linspace(0, 1, 21)
+    for d in ('prism', 'g140m', 'g235m', 'g395m'):
+        t = E[d]
+        assert np.allclose(t['half'], PF.OPEN_HALF)
+        assert np.all((t['after'] > 0.0) & (t['after'] < 1.0))
+        T = 1 - t['c2'][:, None] * x ** 2 - t['c4'][:, None] * x ** 4
+        assert np.all(T >= 0.0) and np.all(T <= 1.1)
+    W = PF.shutter_window(E, 'G395H/F290LP', np.array([4.0]))
+    assert W['tpoly'] is not None and np.allclose(W['half'], PF.OPEN_HALF)

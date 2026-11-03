@@ -59,6 +59,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   - The default stays the hard edge at +-0.50 slit units with an even split, so the extraction
     is unchanged. Fitted pixels use the nominal shutter either way.
   - `psf_calibration` takes `--edges` for its star fits.
+- **NIRSpec profile fit: a shutter transmission T as a model input (not the default).**
+  - The same `shutter_edges` input can carry T = 1 - c2 x^2 - c4 x^4 inside each geometric shutter
+    (`data/nirspec_shutter_transmission.json`, fitted by `fit_shutter_edges(form='T')`).
+  - `_window` integrates it in closed form, as a numba kernel. It costs 22-26 % more per fit, and
+    the default path is unchanged.
+  - The model's per-exposure shutter values are cached per wavelength array and per edge set.
 
 ### Algorithm
 

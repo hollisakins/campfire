@@ -1329,9 +1329,9 @@ EDGE_DISPERSERS = ('prism', 'g140m', 'g235m', 'g395m')
 # dispersers without their own table take the M grating with the same filter: the same MSA,
 # the same wavelengths and the same camera, so the same diffraction at the shutter edges
 EDGE_FALLBACK = {'g140h': 'g140m', 'g235h': 'g235m', 'g395h': 'g395m'}
-EDGE_BOUNDS = dict(half=(0.3, 0.6), shift=(-0.06, 0.06), after=(0.05, 0.98))
+EDGE_BOUNDS = dict(half=(0.3, 0.6), shift=(-0.06, 0.06), after=(0.05, 0.98), c2=(-0.5, 1.5), c4=(-0.5, 1.5))
 # curvature penalty per node (as SMOOTH_TAU): gentle against ~1e5 residuals
-EDGE_TAU = dict(half=0.01, shift=0.01, after=0.1)
+EDGE_TAU = dict(half=0.01, shift=0.01, after=0.1, c2=0.1, c4=0.1)
 EDGE_DY = 0.229             # slit-frame units per detector row when no measured curve is given
 
 
@@ -1348,16 +1348,17 @@ def read_barshadow(disperser, data_dir=None):
     return y, lam, d11, d13
 
 
-def uniform_profile(y_pitch, lam, det, dy, half, shift=0.0, after=None, n_open=1, psf_tables=None):
+def uniform_profile(y_pitch, lam, det, dy, half, shift=0.0, after=None, n_open=1, psf_tables=None, tpoly=None):
     """The model's response to uniform light at table positions ``y_pitch`` and one wavelength:
     the open area (one shutter, or three for ``n_open`` 3) with edges ``shift`` +- ``half``
-    (slit-frame units), blurred by each PSF component's part after the shutter (``after``: its
-    share of the width^2, None for the component's own; its offset if it acts there), averaged
-    over a detector row of height ``dy``; 1 at the shutter centre. The part before the shutter
-    does nothing to uniform light."""
-    from scipy.special import ndtr
+    (slit-frame units) and transmission ``tpoly`` inside it ({n: c_n}, ``profile_fit._window``;
+    None: even), blurred by each PSF component's part after the shutter (``after``: its share of
+    the width^2, None for the component's own; its offset if it acts there), averaged over a
+    detector row of height ``dy``; 1 at the shutter centre. The part before the shutter does
+    nothing to uniform light."""
     y = np.asarray(y_pitch, float) * MSA_SLIT_PITCH
     ks = (0,) if n_open == 1 else (-1, 0, 1)
+    iv = PF.open_intervals(ks, half, shift)
     out = np.zeros_like(y)
     for c in PF.psf_components(np.array([lam]), det, psf_tables):
         s = float(c['sigma'][0]) * dy
@@ -1365,10 +1366,7 @@ def uniform_profile(y_pitch, lam, det, dy, half, shift=0.0, after=None, n_open=1
         b = s * np.sqrt(sh)
         o2 = 0.0 if c['pre'] else float(c['offset'][0]) * dy
         for xi, wi in zip(PF._GLX, PF._GLW):
-            yy = y + 0.5 * dy * xi - o2
-            for k in ks:
-                lo, hi = k * MSA_SLIT_PITCH + shift - half, k * MSA_SLIT_PITCH + shift + half
-                out += 0.5 * wi * float(c['frac'][0]) * (ndtr((yy - lo) / b) - ndtr((yy - hi) / b))
+            out = out + 0.5 * wi * float(c['frac'][0]) * PF._window(y + 0.5 * dy * xi - o2, b, iv, tpoly)
     return out / np.interp(0.0, y, out)
 
 
@@ -1387,17 +1385,29 @@ def _dy_of(dy, det, lam):
     return float(dy)
 
 
+EDGE_FORMS = {
+    # the open area narrowed: half-width, shift and after-shutter share free
+    'edge': ('half', 'shift', 'after'),
+    # the geometric shutter (OPEN_HALF) with a transmission T = 1 - c2 x^2 - c4 x^4 inside it
+    'T': ('shift', 'after', 'c2', 'c4'),
+}
+EDGE_START = dict(half=PF.OPEN_HALF - 0.01, shift=0.0, after=0.5, c2=0.2, c4=0.2)
+
+
 def fit_shutter_edges(disperser, dy=None, nodes=None, psf_tables=None, dets=('NRS1', 'NRS2'), ystep=2,
-                      ymax=0.95, log=print, data_dir=None):
-    """The shutter edge of one disperser from its bar-shadow table: the open half-width, the
-    shift of the open area and the after-shutter share of every PSF component's width^2, each a
-    natural cubic spline in ln(lambda) through ``nodes`` (default: 7 for the PRISM, 4 for a
-    grating, over the table's wavelengths), fitted to both tables at once (one open shutter and
-    the bar between two open ones, |y| < ``ymax`` pitches, every ``ystep``-th row) with the PSF
-    ``psf_tables`` (None: the shipped one) averaged over ``dets``. ``dy``: slit units per row,
-    a number, {det: (lam, dy)} or a function (det, lam); default ``EDGE_DY``. Robust (soft L1)
-    residuals, a gentle curvature penalty (``EDGE_TAU``). Returns dict(nodes, coefs, errors,
-    rms_edge, rms_default per column, lam)."""
+                      ymax=0.95, log=print, data_dir=None, form='edge'):
+    """The shutter of one disperser from its bar-shadow table, each parameter of ``form``
+    (``EDGE_FORMS``: 'edge', the open half-width, the shift of the open area and the
+    after-shutter share of every PSF component's width^2; 'T', the geometric half-width
+    ``OPEN_HALF`` with the shift, the after-shutter share and a transmission
+    T = 1 - c2 x^2 - c4 x^4 across the shutter) a natural cubic spline in ln(lambda) through
+    ``nodes`` (default: 7 for the PRISM, 4 for a grating, over the table's wavelengths), fitted
+    to both tables at once (one open shutter and the bar between two open ones, |y| < ``ymax``
+    pitches, every ``ystep``-th row) with the PSF ``psf_tables`` (None: the shipped one)
+    averaged over ``dets``. ``dy``: slit units per row, a number, {det: (lam, dy)} or a
+    function (det, lam); default ``EDGE_DY``. Robust (soft L1) residuals, a gentle curvature
+    penalty (``EDGE_TAU``). Returns dict(form, nodes, coefs, errors, rms_edge, rms_default per
+    column, lam)."""
     y, lam, d11, d13 = read_barshadow(disperser, data_dir)
     sel = np.flatnonzero(np.abs(y) < ymax)[::ystep]
     cols = [j for j in range(lam.size) if np.isfinite(d11[sel, j]).all() and np.isfinite(d13[sel, j]).all()]
@@ -1406,7 +1416,7 @@ def fit_shutter_edges(disperser, dy=None, nodes=None, psf_tables=None, dets=('NR
         nodes = SMOOTH_NODES if disperser == 'prism' else edge_nodes(lamc[0], lamc[-1], 4)
     nodes = np.asarray(nodes, float)
     nn = nodes.size
-    names = ('half', 'shift', 'after')
+    names = EDGE_FORMS[form]
     yy = y[sel]
 
     def unpack(x):
@@ -1414,15 +1424,20 @@ def fit_shutter_edges(disperser, dy=None, nodes=None, psf_tables=None, dets=('NR
 
     def model_cols(c, n_open):
         v = {p: spline_eval(c[p], lamc, nodes) for p in names}
-        return [np.mean([uniform_profile(yy, L, d, _dy_of(dy, d, L), v['half'][i], v['shift'][i], v['after'][i],
-                                         n_open, psf_tables) for d in dets], axis=0) for i, L in enumerate(lamc)]
+        half = v.get('half', np.full(lamc.size, PF.OPEN_HALF))
+        out = []
+        for i, L in enumerate(lamc):
+            tp = {2: v['c2'][i], 4: v['c4'][i]} if 'c2' in v else None
+            out.append(np.mean([uniform_profile(yy, L, d, _dy_of(dy, d, L), half[i], v['shift'][i], v['after'][i],
+                                                n_open, psf_tables, tp) for d in dets], axis=0))
+        return out
 
     def resid(x):
         c = unpack(x)
         m1, m3 = model_cols(c, 1), model_cols(c, 3)
         r = [np.concatenate([a - d11[sel, j], b - d13[sel, j]]) for a, b, j in zip(m1, m3, cols)]
         return np.concatenate(r + [curvature(c[p], nodes) / EDGE_TAU[p] for p in names])
-    x0 = np.concatenate([np.full(nn, PF.OPEN_HALF - 0.01), np.zeros(nn), np.full(nn, 0.5)])
+    x0 = np.concatenate([np.full(nn, EDGE_START[p]) for p in names])
     lo = np.concatenate([np.full(nn, EDGE_BOUNDS[p][0]) for p in names])
     hi = np.concatenate([np.full(nn, EDGE_BOUNDS[p][1]) for p in names])
     res = least_squares(resid, x0, bounds=(lo, hi), x_scale='jac', loss='soft_l1', f_scale=0.02,
@@ -1441,9 +1456,10 @@ def fit_shutter_edges(disperser, dy=None, nodes=None, psf_tables=None, dets=('NR
         a = np.mean([uniform_profile(yy, L, d, _dy_of(dy, d, L), PF.OPEN_HALF, 0.0, None, 1, psf_tables) for d in dets], axis=0)
         b = np.mean([uniform_profile(yy, L, d, _dy_of(dy, d, L), PF.OPEN_HALF, 0.0, None, 3, psf_tables) for d in dets], axis=0)
         rms_d.append(float(np.sqrt(np.mean(np.concatenate([a - d11[sel, j], b - d13[sel, j]]) ** 2))))
-    log(f'  edges {disperser}: {len(cols)} columns {lamc[0]:.2f}-{lamc[-1]:.2f} um, nodes {np.round(nodes, 2).tolist()}; '
-        f'median rms {np.median(rms_e):.4f} (hard edge {np.median(rms_d):.4f}); status {res.status}')
-    return dict(disperser=disperser, nodes=nodes.tolist(), coefs={p: v.tolist() for p, v in c.items()},
+    log(f'  shutter ({form}) {disperser}: {len(cols)} columns {lamc[0]:.2f}-{lamc[-1]:.2f} um, nodes '
+        f'{np.round(nodes, 2).tolist()}; median rms {np.median(rms_e):.4f} (hard edge {np.median(rms_d):.4f}); '
+        f'status {res.status}')
+    return dict(disperser=disperser, form=form, nodes=nodes.tolist(), coefs={p: v.tolist() for p, v in c.items()},
                 errors={p: v.tolist() for p, v in unpack(err).items()}, lam=lamc.tolist(), rms_edge=rms_e,
                 rms_default=rms_d, bounds_hit=[f'{p}@{nodes[i % nn]:.2f}' for p in names for i in range(nn)
                                                if c[p][i] <= EDGE_BOUNDS[p][0] + 1e-4 or c[p][i] >= EDGE_BOUNDS[p][1] - 1e-4])
@@ -1451,13 +1467,16 @@ def fit_shutter_edges(disperser, dy=None, nodes=None, psf_tables=None, dets=('NR
 
 def shutter_edge_table(fits_, n_dense=41):
     """The ``profile_fit.load_shutter_edges`` layout from ``fit_shutter_edges`` results: each
-    curve sampled at ``n_dense`` log-spaced wavelengths over its nodes; the fallbacks added."""
+    curve sampled at ``n_dense`` log-spaced wavelengths over its nodes (a 'T' fit: the
+    half-width ``OPEN_HALF`` and the transmission coefficients c2, c4); the fallbacks added."""
     out = {}
     for f in fits_:
         nodes = np.asarray(f['nodes'], float)
         lam = edge_nodes(nodes[0], nodes[-1], n_dense)
-        out[f['disperser']] = dict(lam=lam.tolist(), **{p: np.clip(spline_eval(np.asarray(f['coefs'][p]), lam, nodes),
-                                                                   *EDGE_BOUNDS[p]).tolist() for p in ('half', 'shift', 'after')})
+        t = dict(lam=lam.tolist(), **{p: np.clip(spline_eval(np.asarray(v), lam, nodes), *EDGE_BOUNDS[p]).tolist()
+                                      for p, v in f['coefs'].items()})
+        t.setdefault('half', [PF.OPEN_HALF] * lam.size)
+        out[f['disperser']] = t
     out['fallback'] = {k: v for k, v in EDGE_FALLBACK.items() if v in out}
     return out
 
@@ -2495,6 +2514,7 @@ TABLE_STYLE = {'A': (NEW_C, '-', 'new: core 25th percentile, the rest median'),
                'S2': ('#6250d6', '-', 'smooth joint fit, second round (S2)'),
                'SE': ('#2f6fd6', '-', 'measured edge, PSF refitted with it (SE)'),
                'Sedge': ('#9a9893', ':', 'measured edge, PSF S'),
+               'ST': ('#2f6fd6', '-', 'shutter transmission T, PSF S'),
                'shipped': (OLD_C, '--', 'shipped model (PSF_TABLES, hard shutter edge)')}
 
 

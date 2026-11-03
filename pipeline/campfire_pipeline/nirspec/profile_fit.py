@@ -31,11 +31,13 @@ position and the extraction becomes a fixed-template optimal extraction.
 """
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
+from numba import njit
 from scipy.sparse.linalg import splu
 from scipy.optimize import least_squares
 from scipy.special import ndtr
@@ -154,19 +156,27 @@ def open_intervals(open_k, half=OPEN_HALF, shift=0.0):
 # the empirical bar-shadow tables (``psf_calibration.fit_shutter_edges``).
 # ---------------------------------------------------------------------------
 SHUTTER_EDGE_FILE = Path(__file__).parent.parent / 'data' / 'nirspec_shutter_edges.json'
+# the geometric shutter (+-OPEN_HALF) with a transmission T falling towards its edges, fitted to the
+# same tables (``psf_calibration.fit_shutter_edges(form='T')``); also not the default
+SHUTTER_TRANSMISSION_FILE = Path(__file__).parent.parent / 'data' / 'nirspec_shutter_transmission.json'
+
+
+TPOLY_KEYS = ('c2', 'c4', 'c6', 'c8')          # coefficients of x^2 .. x^8 in the transmission T
 
 
 def load_shutter_edges(path=SHUTTER_EDGE_FILE):
-    """Measured shutter edges: {disperser: dict(lam, half, shift, after)} (wavelength nodes
-    [um]; open half-width and shift [slit-frame units]; after-shutter share of each PSF
-    component's width^2), plus 'fallback': {disperser: disperser with a table}."""
+    """Measured shutter edges: {disperser: dict(lam, half, shift, after[, c2, c4, c6, c8])}
+    (wavelength nodes [um]; open half-width and shift [slit-frame units]; after-shutter share
+    of each PSF component's width^2; optionally a transmission inside the shutter,
+    T = 1 - sum_n c_n x^n with x the position across the shutter over its half-width,
+    ``shutter_window``), plus 'fallback': {disperser: disperser with a table}."""
     with open(path) as fh:
         raw = json.load(fh)
     out = {'fallback': dict(raw.get('fallback', {}))}
     for name, t in raw.items():
         if name in ('fallback', 'meta'):
             continue
-        out[name] = {k: np.asarray(t[k], float) for k in ('lam', 'half', 'shift', 'after')}
+        out[name] = {k: np.asarray(t[k], float) for k in ('lam', 'half', 'shift', 'after') + TPOLY_KEYS if k in t}
     return out
 
 
@@ -180,8 +190,16 @@ def shutter_edge(edges, grating, lam):
     ``edges`` (``load_shutter_edges``; a disperser without its own table takes its
     'fallback'), held at the end nodes beyond them. ``edges`` None: the default hard edge,
     (OPEN_HALF, 0, None) with None meaning each PSF component's own share."""
+    w = shutter_window(edges, grating, lam)
+    return w['half'], w['shift'], w['after']
+
+
+def shutter_window(edges, grating, lam):
+    """The shutter at wavelengths ``lam`` for an exposure's grating: dict(half, shift, after,
+    tpoly) (``shutter_edge``; ``tpoly`` {n: c_n at lam} of the transmission inside the
+    shutter, ``_window``, or None for a shutter that transmits evenly up to its edge)."""
     if edges is None:
-        return OPEN_HALF, 0.0, None
+        return dict(half=OPEN_HALF, shift=0.0, after=None, tpoly=None)
     d = disperser_key(grating)
     if d not in edges:
         d = edges.get('fallback', {}).get(d, d)
@@ -189,8 +207,10 @@ def shutter_edge(edges, grating, lam):
         raise KeyError(f'shutter edges: no table for disperser {grating!r}')
     t = edges[d]
     lam = np.asarray(lam, float)
-    return (np.interp(lam, t['lam'], t['half']), np.interp(lam, t['lam'], t['shift']),
-            np.interp(lam, t['lam'], t['after']))
+    out = {k: np.interp(lam, t['lam'], t[k]) for k in ('half', 'shift', 'after')}
+    tp = {int(k[1:]): np.interp(lam, t['lam'], t[k]) for k in TPOLY_KEYS if k in t}
+    out['tpoly'] = tp or None
+    return out
 
 
 def psf_components(lam, det, tables=None):
@@ -293,21 +313,95 @@ def nod_shifts(exps, law=None, c_ref=None):
     return out
 
 
-def _transmitted(o, s, intervals):
-    """Fraction of N(o, s) inside the intervals."""
-    return sum(ndtr((hi - o) / s) - ndtr((lo - o) / s) for lo, hi in intervals)
+_SQRT2PI = np.sqrt(2 * np.pi)
+_SQRT2PI_F = math.sqrt(2 * math.pi)
+_SQRT2 = math.sqrt(2.0)
 
 
-def _clipblur(y, o, s1, s2, intervals):
-    """Density at y of N(o, s1) clipped to the intervals, then blurred by N(0, s2).
-    Integrates to the transmitted fraction."""
+def _window(m, s, intervals, tpoly=None):
+    """Integral of T(u) N(u; m, s) over the open intervals. T = 1 (``tpoly`` None: the hard
+    edge), or a transmission falling from the middle of each interval towards its ends,
+    T = 1 - sum_n c_n x^n with x = (u - interval centre) / interval half-width and
+    ``tpoly`` = {n: c_n} (even n; light diffracted at the shutter edges and lost from the
+    beam, ``shutter_window``). A Gaussian times a polynomial integrates in closed form: the
+    truncated-normal moments from Phi and phi at the interval ends only."""
+    if not tpoly:
+        return sum(ndtr((hi - m) / s) - ndtr((lo - m) / s) for lo, hi in intervals)
+    shape = np.broadcast_shapes(np.shape(m), np.shape(s), *[np.shape(v) for v in tpoly.values()],
+                                *[np.shape(x) for iv in intervals for x in iv])
+    flat = lambda x: np.ascontiguousarray(np.broadcast_to(np.asarray(x, float), shape)).ravel()   # noqa: E731
+    mm, ss = flat(m), flat(s)
+    if any(n not in (2, 4, 6, 8) for n in tpoly):
+        raise ValueError(f'shutter transmission: powers {sorted(tpoly)} not among 2, 4, 6, 8')
+    cs = np.zeros((4, mm.size)) if len(tpoly) > 1 or np.ndim(next(iter(tpoly.values()))) else None
+    if cs is None:                                 # one power, one value: no per-element table
+        cs = np.zeros((4, 1))
+        n, cn = next(iter(tpoly.items()))
+        cs[n // 2 - 1, 0] = float(cn)
+        per = 0
+    else:
+        for n, cn in tpoly.items():
+            cs[n // 2 - 1] = flat(cn)
+        per = 1
+    out = np.zeros(mm.size)
+    for lo, hi in intervals:
+        _window_poly(mm, ss, flat(lo), flat(hi), cs, per, max(tpoly), out)
+    return out.reshape(shape) if shape else float(out[0])
+
+
+@njit(cache=True)
+def _window_poly(m, s, lo, hi, cs, per, nmax, out):
+    """``_window`` for one interval with T = 1 - sum c_n x^n (n = 2, 4, 6, 8; ``cs`` rows, one
+    column per element when ``per`` else one shared column), added into ``out``: the
+    truncated-normal moments I_n of v = u - centre from Phi and phi at the interval ends,
+    I_n = mu I_(n-1) + (n-1) s^2 I_(n-2) - s [v^(n-1) phi]_ends."""
+    for i in range(m.size):
+        c = 0.5 * (lo[i] + hi[i])
+        h = 0.5 * (hi[i] - lo[i])
+        si = s[i]
+        mu = m[i] - c
+        za = (lo[i] - m[i]) / si
+        zb = (hi[i] - m[i]) / si
+        if za > 8.0 or zb < -8.0:                  # the Gaussian is nowhere near this interval
+            continue
+        if za < -8.0:                              # an end beyond 8 sigma: Phi 0 or 1, phi 0
+            Pa, fa = 0.0, 0.0
+        else:
+            Pa = 0.5 * math.erfc(-za / _SQRT2)
+            fa = math.exp(-0.5 * za * za) / _SQRT2PI_F
+        if zb > 8.0:
+            Pb, fb = 1.0, 0.0
+        else:
+            Pb = 0.5 * math.erfc(-zb / _SQRT2)
+            fb = math.exp(-0.5 * zb * zb) / _SQRT2PI_F
+        i0 = Pb - Pa
+        i1 = mu * i0 - si * (fb - fa)
+        acc = i0
+        im2, im1 = i0, i1
+        pa, pb = -h, h                            # v^(n-1) at the ends
+        for n in range(2, nmax + 1):
+            In = mu * im1 + (n - 1) * si * si * im2 - si * (pb * fb - pa * fa)
+            if n % 2 == 0:
+                acc -= cs[n // 2 - 1, i * per] * In / h ** n
+            im2, im1 = im1, In
+            pa, pb = pa * (-h), pb * h
+        out[i] += acc
+
+
+def _transmitted(o, s, intervals, tpoly=None):
+    """Fraction of N(o, s) transmitted through the intervals (``_window``)."""
+    return _window(o, s, intervals, tpoly)
+
+
+def _clipblur(y, o, s1, s2, intervals, tpoly=None):
+    """Density at y of N(o, s1) clipped to the intervals (times the shutter transmission,
+    ``_window``), then blurred by N(0, s2). Integrates to the transmitted fraction."""
     S2 = s1 ** 2 + s2 ** 2
     S = np.sqrt(S2)
     m = (o * s2 ** 2 + y * s1 ** 2) / S2
     sm = s1 * s2 / S
-    core = np.exp(-0.5 * (y - o) ** 2 / S2) / (np.sqrt(2 * np.pi) * S)
-    clip = sum(ndtr((hi - m) / sm) - ndtr((lo - m) / sm) for lo, hi in intervals)
-    return core * clip
+    core = np.exp(-0.5 * (y - o) ** 2 / S2) / (_SQRT2PI * S)
+    return core * _window(m, sm, intervals, tpoly)
 
 
 # ---------------------------------------------------------------------------
@@ -894,23 +988,36 @@ class ProfileModel:
         return out
 
     def _edge(self, k, lam):
-        """(half, shift, after) of exposure k's shutters at wavelengths lam (``shutter_edge``)."""
-        return shutter_edge(self.shutter_edges, self.exps[k].grating, lam)
+        """Exposure k's shutters at wavelengths lam (``shutter_window``), kept per exposure and
+        wavelength array: a fit evaluates the image at the same pixels many times."""
+        if self.shutter_edges is None:
+            return shutter_window(None, self.exps[k].grating, lam)
+        cache = self.__dict__.setdefault('_edge_cache', {})
+        key = (k, id(lam), id(self.shutter_edges))
+        hit = cache.get(key)
+        if hit is not None and hit[0] is lam and hit[1] is self.shutter_edges:
+            return hit[2]
+        S = shutter_window(self.shutter_edges, self.exps[k].grating, lam)
+        cache[key] = (lam, self.shutter_edges, S)
+        return S
 
     def image(self, p, eoff, k, y, lam, dy):
         """Exposure k's source image at slit positions y (pixel-integrated, per unit
         total flux, before the along-dispersion throughput): per PSF component, the galaxy
         convolved with the component's part before the shutter, clipped by the open
-        shutters, blurred by its part after the shutter, displaced before or after."""
+        shutters (times their transmission), blurred by its part after the shutter, displaced
+        before or after."""
         c = self.centre(p, eoff, k, lam)
         w = self.width(p, lam)
-        half, shift, after = self._edge(k, lam)
-        iv = open_intervals(self.exps[k].open_k, half, shift)
-        comps = [(fr, np.sqrt(a ** 2 + w ** 2), b, o1, o2) for fr, a, b, o1, o2 in self._components(k, lam, dy, after)]
+        S = self._edge(k, lam)
+        iv = open_intervals(self.exps[k].open_k, S['half'], S['shift'])
+        comps = [(fr, np.sqrt(a ** 2 + w ** 2), b, o1, o2)
+                 for fr, a, b, o1, o2 in self._components(k, lam, dy, S['after'])]
         acc = 0.0
         for xi, wi in zip(_GLX, _GLW):
             yy = y + 0.5 * dy * xi
-            acc = acc + wi * sum(fr * _clipblur(yy - o2, c + o1, s1, s2, iv) for fr, s1, s2, o1, o2 in comps)
+            acc = acc + wi * sum(fr * _clipblur(yy - o2, c + o1, s1, s2, iv, S['tpoly'])
+                                 for fr, s1, s2, o1, o2 in comps)
         return 0.5 * dy * acc
 
     def transmission(self, p, eoff, k, lam, dy, width=None, aperture=REF_APERTURE, centre=None):
@@ -919,10 +1026,10 @@ class ProfileModel:
         at the fitted centre or at a given slit position."""
         c = self.centre(p, eoff, k, lam) if centre is None else centre
         w = self.width(p, lam) if width is None else width
-        half, shift, after = self._edge(k, lam)
-        iv = open_intervals(aperture, half, shift)
-        return sum(fr * _transmitted(c + o1, np.sqrt(a ** 2 + w ** 2), iv)
-                   for fr, a, _, o1, _ in self._components(k, lam, dy, after))
+        S = self._edge(k, lam)
+        iv = open_intervals(aperture, S['half'], S['shift'])
+        return sum(fr * _transmitted(c + o1, np.sqrt(a ** 2 + w ** 2), iv, S['tpoly'])
+                   for fr, a, _, o1, _ in self._components(k, lam, dy, S['after']))
 
     def throughput(self, p, eoff, k, lam, dy):
         """Along-dispersion throughput tau_k: jwst point-source path loss divided by
