@@ -81,7 +81,8 @@ SEGMENT_DOC = {
     'bar_lower': 'interior bar, lower shutter side (reference open_open: DATA1X3 rows -1..-0.5)',
     'bar_upper': 'interior bar, upper shutter side (reference open_open: DATA1X3 rows -0.5..0)',
 }
-CANONICAL_RE = re.compile(r'^(jw\d+_\d+)_(\d+)_(nrs[12])_(\d+)\.fits$')
+# the exposure sequence (visit group, parallel sequence, activity) counts its activity in base 36: 04101 .. 0410f ..
+CANONICAL_RE = re.compile(r'^(jw\d+_[0-9a-z]+)_(\d+)_(nrs[12])_(\d+)\.fits$')
 
 
 # ---------------------------------------------------------------------------

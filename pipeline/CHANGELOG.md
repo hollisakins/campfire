@@ -30,6 +30,12 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Infrastructure
 
+- **NIRSpec: exposure sequences counted past 9 (`0410b`, `0410f`, ...) are found.** The
+  activity of a JWST exposure sequence counts 1..9, a..z; the canonical-name pattern of
+  `barshadow_calibration` (the master background's and the bar-shadow derivation's input
+  discovery) and the exposure key of `profile_contam` took digits only, so an observation
+  with more than nine sequences got no master background for the later ones ("no stage-2a
+  inputs, skipped") and no contamination keys.
 - **NIRSpec: PSF calibration module for the profile fit (`nirspec/psf_calibration.py`).**
   Re-derives the cross-dispersion PSF table (`profile_fit.PSF_TABLES`) and the trace centre
   law (`CENTRE_LAW`) from calibration-field PRISM stars through the profile fit's own model

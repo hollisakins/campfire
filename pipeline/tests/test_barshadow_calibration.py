@@ -172,3 +172,12 @@ def test_write_reference_roundtrip(tmp_path):
     assert back['grid'].n_w == grid.n_w
     assert np.allclose(back['data1x1'], t['data1x1'], atol=1e-6)
 
+
+
+def test_canonical_names_with_a_base36_sequence():
+    # the activity counts 1..9, a..z: an observation with more than nine exposure sequences has 0410b, 0410f, ...
+    for name, root in (('jw12497004001_04109_00001_nrs1_10059.fits', 'jw12497004001_04109'),
+                       ('jw12497004001_0410f_00003_nrs2_4210.fits', 'jw12497004001_0410f')):
+        m = B.CANONICAL_RE.match(name)
+        assert m is not None and m.group(1) == root
+    assert B.CANONICAL_RE.match('jw12497004001_0410f_00001_nrs1_rate.fits') is None

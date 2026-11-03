@@ -648,3 +648,11 @@ def test_spec3_boxcar3_is_stage3_fnu_3px(tmp_path):
     np.testing.assert_allclose(w, wave)
     np.testing.assert_allclose(f, expect)
     assert S3.spec3_boxcar3(str(tmp_path), 'none') is None
+
+
+def test_exposure_keys_with_a_base36_sequence():
+    # the activity of the exposure sequence counts 1..9, a..z (0410f after 04109)
+    p = '/x/jw12497004001_0410f_00002_nrs1_10059.fits'
+    assert CT.exposure_key(p) == 'jw12497004001_0410f_00002_nrs1'
+    assert CT.nod_key(p) == ('00002', 'nrs1')
+    assert CT.exposure_key('jw07076014001_03101_00001_nrs2_rate.fits') == 'jw07076014001_03101_00001_nrs2'
