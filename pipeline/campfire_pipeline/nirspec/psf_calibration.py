@@ -494,8 +494,8 @@ PARAM_START = dict(core_sigma=0.4, wing_frac=0.3, wing_sigma=0.9, wing_offset=0.
 @dataclass
 class PSFForm:
     """A PSF of Gaussian components (``profile_fit.psf_components``) and which of its
-    parameters a fit frees. Every component's width is split before and after the shutter by
-    the shutter model's after-shutter share (``profile_fit.SHUTTER``); an offset acts before the
+    parameters a fit frees. Every component's width^2 is split evenly before and after the
+    shutter (``profile_fit.AFTER_SHARE``); an offset acts before the
     shutter (``*_pre``) or after it. Always a
     core and a wing with its own share, width and offset.
 
@@ -1331,13 +1331,14 @@ SHUTTER_DISPERSERS = ('prism', 'g140m', 'g235m', 'g395m')
 # same wavelengths and the same camera, so the same diffraction at the shutter edges (decided, user
 # 2026-11-03)
 SHUTTER_FALLBACK = {'g140h': 'g140m', 'g235h': 'g235m', 'g395h': 'g395m'}
-# fitted per disperser: the shift of the open area, the after-shutter share and T at the shutter edge,
-# tedge in [0, 1] (T = 1 - (1 - tedge) x^8: never above 1, falling monotonically to tedge)
-SHUTTER_PARAMS = ('shift', 'after', 'tedge')
-SHUTTER_BOUNDS = dict(shift=(-0.06, 0.06), after=(0.05, 0.98), tedge=(0.0, 1.0))
-SHUTTER_START = dict(shift=0.0, after=0.5, tedge=0.7)
+# fitted per disperser: the shift of the open area and T at the shutter edge, tedge in [0, 1]
+# (T = 1 - (1 - tedge) x^8: never above 1, falling monotonically to tedge); the split of the PSF
+# before and after the shutter is profile_fit.AFTER_SHARE, the one the PSF table was fitted with
+SHUTTER_PARAMS = ('shift', 'tedge')
+SHUTTER_BOUNDS = dict(shift=(-0.06, 0.06), tedge=(0.0, 1.0))
+SHUTTER_START = dict(shift=0.0, tedge=0.7)
 # curvature penalty per node (as SMOOTH_TAU): gentle against ~1e5 residuals
-SHUTTER_TAU = dict(shift=0.01, after=0.1, tedge=0.1)
+SHUTTER_TAU = dict(shift=0.01, tedge=0.1)
 SHUTTER_DY = 0.229          # slit-frame units per detector row when no measured curve is given
 
 
@@ -1354,19 +1355,19 @@ def read_barshadow(disperser, data_dir=None):
     return y, lam, d11, d13
 
 
-def uniform_profile(y_pitch, lam, det, dy, shift, after, tedge, n_open=1, psf_tables=None):
+def uniform_profile(y_pitch, lam, det, dy, shift, tedge, n_open=1, psf_tables=None):
     """The model's response to uniform light at table positions ``y_pitch`` and one wavelength:
     the open shutters (one, or three for ``n_open`` 3; +-OPEN_HALF about centres moved by
     ``shift``) with the transmission T = 1 - (1 - tedge) x^8 inside each (``profile_fit._window``),
-    blurred by each PSF component's part after the shutter (``after``, its share of the width^2;
-    its offset if it acts there), averaged over a detector row of height ``dy``; 1 at the shutter
-    centre. The part before the shutter does nothing to uniform light."""
+    blurred by each PSF component's part after the shutter (``profile_fit.AFTER_SHARE`` of its
+    width^2; its offset if it acts there), averaged over a detector row of height ``dy``; 1 at the
+    shutter centre. The part before the shutter does nothing to uniform light."""
     y = np.asarray(y_pitch, float) * MSA_SLIT_PITCH
     ks = (0,) if n_open == 1 else (-1, 0, 1)
     iv = PF.open_intervals(ks, shift)
     out = np.zeros_like(y)
     for c in PF.psf_components(np.array([lam]), det, psf_tables):
-        b = float(c['sigma'][0]) * dy * np.sqrt(after)
+        b = float(c['sigma'][0]) * dy * np.sqrt(PF.AFTER_SHARE)
         o2 = 0.0 if c['pre'] else float(c['offset'][0]) * dy
         for xi, wi in zip(PF._GLX, PF._GLW):
             out = out + 0.5 * wi * float(c['frac'][0]) * PF._window(y + 0.5 * dy * xi - o2, b, iv, tedge)
@@ -1390,16 +1391,16 @@ def _dy_of(dy, det, lam):
 
 def fit_shutter(disperser, dy=None, nodes=None, psf_tables=None, dets=('NRS1', 'NRS2'), ystep=2,
                 ymax=0.95, log=print, data_dir=None):
-    """The shutter model of one disperser from its bar-shadow table: the shift of the open area,
-    the after-shutter share of every PSF component's width^2 and the transmission T across the
-    shutter (``SHUTTER_PARAMS``: T at the edge, clipped to [0, 1] between nodes), each a natural
+    """The shutter model of one disperser from its bar-shadow table: the shift of the open area
+    and the transmission T across the shutter (``SHUTTER_PARAMS``: T at the edge, clipped to
+    [0, 1] between nodes), each a natural
     cubic spline in ln(lambda) through ``nodes`` (default: 7 for the PRISM, 4 for a grating, over
     the table's wavelengths), fitted to both tables at once (one open shutter and the bar between
     two open ones, |y| < ``ymax`` pitches, every ``ystep``-th row) with the PSF ``psf_tables``
     (None: the shipped one) averaged over ``dets``. ``dy``: slit units per row, a number,
     {det: (lam, dy)} or a function (det, lam); default ``SHUTTER_DY``. Robust (soft L1) residuals,
     a gentle curvature penalty (``SHUTTER_TAU``). Returns dict(nodes, coefs, errors, lam, rms per
-    column, rms_flat per column: the same shutter with T = 1 and an even split)."""
+    column, rms_flat per column: the same shutter with T = 1)."""
     y, lam, d11, d13 = read_barshadow(disperser, data_dir)
     sel = np.flatnonzero(np.abs(y) < ymax)[::ystep]
     cols = [j for j in range(lam.size) if np.isfinite(d11[sel, j]).all() and np.isfinite(d13[sel, j]).all()]
@@ -1416,8 +1417,8 @@ def fit_shutter(disperser, dy=None, nodes=None, psf_tables=None, dets=('NRS1', '
 
     def model_cols(v, n_open):
         te = np.clip(v['tedge'], *SHUTTER_BOUNDS['tedge'])
-        return [np.mean([uniform_profile(yy, L, d, _dy_of(dy, d, L), v['shift'][i], v['after'][i], te[i],
-                                         n_open, psf_tables) for d in dets], axis=0) for i, L in enumerate(lamc)]
+        return [np.mean([uniform_profile(yy, L, d, _dy_of(dy, d, L), v['shift'][i], te[i], n_open, psf_tables)
+                         for d in dets], axis=0) for i, L in enumerate(lamc)]
 
     def misfit(v):
         m1, m3 = model_cols(v, 1), model_cols(v, 3)
@@ -1439,10 +1440,10 @@ def fit_shutter(disperser, dy=None, nodes=None, psf_tables=None, dets=('NRS1', '
         err = np.full(res.x.size, np.nan)
     v = {p: spline_eval(c[p], lamc, nodes) for p in names}
     rms = [float(np.sqrt(np.mean(r ** 2))) for r in misfit(v)]
-    flat = dict(shift=np.zeros(lamc.size), after=np.full(lamc.size, 0.5), tedge=np.ones(lamc.size))
+    flat = dict(shift=np.zeros(lamc.size), tedge=np.ones(lamc.size))
     rms_flat = [float(np.sqrt(np.mean(r ** 2))) for r in misfit(flat)]
     log(f'  shutter {disperser}: {len(cols)} columns {lamc[0]:.2f}-{lamc[-1]:.2f} um, nodes '
-        f'{np.round(nodes, 2).tolist()}; median rms {np.median(rms):.4f} (T = 1, even split {np.median(rms_flat):.4f}); '
+        f'{np.round(nodes, 2).tolist()}; median rms {np.median(rms):.4f} (T = 1: {np.median(rms_flat):.4f}); '
         f'status {res.status}')
     return dict(disperser=disperser, nodes=nodes.tolist(), coefs={p: q.tolist() for p, q in c.items()},
                 errors={p: q.tolist() for p, q in unpack(err).items()}, lam=lamc.tolist(), rms=rms, rms_flat=rms_flat,
@@ -1451,8 +1452,8 @@ def fit_shutter(disperser, dy=None, nodes=None, psf_tables=None, dets=('NRS1', '
 
 
 def shutter_table(fits_, n_dense=41, version=None):
-    """The ``profile_fit.load_shutter`` layout from ``fit_shutter`` results: shift, after and T at
-    the edge sampled at ``n_dense`` log-spaced wavelengths over each disperser's nodes; the
+    """The ``profile_fit.load_shutter`` layout from ``fit_shutter`` results: shift and T at the
+    edge sampled at ``n_dense`` log-spaced wavelengths over each disperser's nodes; the
     fallbacks and ``version`` (the header name) added."""
     out = {}
     for f in fits_:

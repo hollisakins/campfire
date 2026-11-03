@@ -153,30 +153,33 @@ def open_intervals(open_k, shift=0.0):
 # and falls monotonically to tedge at the edges, never above 1): light diffracted at the shutter
 # edges leaves the spectrograph beam and is lost. (The tables want T flat over the middle: with a
 # free mix of x^4 and x^8 the fit took x^8 alone at every node of every disperser.)
-# ``after`` is the share of every PSF component's width^2 that acts after the shutter (the rest is
-# clipped by it). Per disperser and wavelength, fitted to the empirical bar-shadow tables (one
-# open shutter and the bar between two; ``psf_calibration.fit_shutter``): for uniform light the
-# response is T convolved with the after-shutter PSF, so the tables constrain T and ``after``
-# directly. The image of a source is [(source x PSF before) x T within the open shutters] x PSF
-# after; a point source feels T mostly in its total, which the throughput normalisation carries
-# (``transmission``).
+# Per disperser and wavelength, the shift and tedge are fitted to the empirical bar-shadow tables
+# (one open shutter and the bar between two; ``psf_calibration.fit_shutter``): for uniform light
+# the response is T convolved with the after-shutter PSF. The image of a source is
+# [(source x PSF before) x T within the open shutters] x PSF after; a point source feels T mostly
+# in its total, which the throughput normalisation carries (``transmission``).
+# Half of every PSF component's width^2 acts before the shutter and half after (AFTER_SHARE), the
+# split the PSF table was fitted with. Left free, the bar-shadow fit moves it to 0.44-0.57 and the
+# stars near the shutter edges fit 1.8 % worse in median chi2; held at 0.5 they fit 0.7 % worse
+# than with the hard edge, and the tables as well (2026-11-03).
 # Gratings without a table of their own (G140H, G235H, G395H) use the M grating with the same
 # filter (decided, user 2026-11-03).
 # ---------------------------------------------------------------------------
 SHUTTER_FILE = Path(__file__).parent.parent / 'data' / 'nirspec_shutter_transmission.json'
+AFTER_SHARE = 0.5
 
 
 def load_shutter(path=SHUTTER_FILE):
-    """The shutter model: {disperser: dict(lam, shift, after, tedge)} (wavelength nodes [um];
-    shift [slit-frame units]; after-shutter share; transmission at the edge), plus 'fallback'
-    ({disperser: disperser with a table}) and 'version' (its name, for headers)."""
+    """The shutter model: {disperser: dict(lam, shift, tedge)} (wavelength nodes [um]; shift
+    [slit-frame units]; transmission at the edge), plus 'fallback' ({disperser: disperser with
+    a table}) and 'version' (its name, for headers)."""
     with open(path) as fh:
         raw = json.load(fh)
     out = {'fallback': dict(raw.get('fallback', {})), 'version': str(raw.get('meta', {}).get('version', '?'))}
     for name, t in raw.items():
         if name in ('fallback', 'meta'):
             continue
-        out[name] = {k: np.asarray(t[k], float) for k in ('lam', 'shift', 'after', 'tedge')}
+        out[name] = {k: np.asarray(t[k], float) for k in ('lam', 'shift', 'tedge')}
     return out
 
 
@@ -189,7 +192,7 @@ def disperser_key(grating):
 
 
 def shutter_at(grating, lam, shutter=None):
-    """dict(shift, after, tedge) at wavelengths ``lam`` for an exposure's grating from the
+    """dict(shift, tedge) at wavelengths ``lam`` for an exposure's grating from the
     shutter model (``SHUTTER``, or ``shutter`` in its layout; a disperser without its own table
     takes its 'fallback'), held at the end nodes beyond them."""
     sh = SHUTTER if shutter is None else shutter
@@ -200,7 +203,7 @@ def shutter_at(grating, lam, shutter=None):
         raise KeyError(f'shutter model: no table for disperser {grating!r}')
     t = sh[d]
     lam = np.asarray(lam, float)
-    return {k: np.interp(lam, t['lam'], t[k]) for k in ('shift', 'after', 'tedge')}
+    return {k: np.interp(lam, t['lam'], t[k]) for k in ('shift', 'tedge')}
 
 
 def psf_components(lam, det, tables=None):
@@ -213,8 +216,7 @@ def psf_components(lam, det, tables=None):
     pre       True: the offset acts before the shutter (the light enters it displaced and
               is clipped there); False: after it (displaced on the detector).
 
-    How much of each width acts before and after the shutter is the shutter model's
-    (``SHUTTER``, ``after``).
+    Half of each width^2 acts before the shutter and half after it (``AFTER_SHARE``).
 
     A detector's table (``PSF_TABLES``, or ``tables[det]``) is
     ``{'lam': [...], 'components': [{'sigma': [...], 'frac': [...], 'offset': [...],
@@ -963,14 +965,14 @@ class ProfileModel:
     def width(self, p, lam):
         return np.maximum(np.exp(p[2]) + p[3] * self._x(lam), W_FLOOR)
 
-    def _components(self, k, lam, dy, after):
+    def _components(self, k, lam, dy):
         """Per PSF component (``psf_components``) in slit units: (share, sigma before the
-        shutter, sigma after it, offset before it, offset after it); ``after`` is the share of
-        every component's width^2 acting after the shutter (the shutter model's)."""
+        shutter, sigma after it, offset before it, offset after it); ``AFTER_SHARE`` of every
+        component's width^2 acts after the shutter."""
         out = []
         for c in psf_components(lam, self.exps[k].detector, tables=self.psf_tables):
             s = c['sigma'] * dy
-            a, b = s * np.sqrt(1.0 - after), s * np.sqrt(after)
+            a, b = s * np.sqrt(1.0 - AFTER_SHARE), s * np.sqrt(AFTER_SHARE)
             off = c['offset'] * dy
             out.append((c['frac'], a, b, off if c['pre'] else 0.0, 0.0 if c['pre'] else off))
         return out
@@ -999,7 +1001,7 @@ class ProfileModel:
         S = self._shutter(k, lam)
         iv = open_intervals(self.exps[k].open_k, S['shift'])
         comps = [(fr, np.sqrt(a ** 2 + w ** 2), b, o1, o2)
-                 for fr, a, b, o1, o2 in self._components(k, lam, dy, S['after'])]
+                 for fr, a, b, o1, o2 in self._components(k, lam, dy)]
         acc = 0.0
         for xi, wi in zip(_GLX, _GLW):
             yy = y + 0.5 * dy * xi
@@ -1016,7 +1018,7 @@ class ProfileModel:
         S = self._shutter(k, lam)
         iv = open_intervals(aperture, S['shift'])
         return sum(fr * _transmitted(c + o1, np.sqrt(a ** 2 + w ** 2), iv, S['tedge'])
-                   for fr, a, _, o1, _ in self._components(k, lam, dy, S['after']))
+                   for fr, a, _, o1, _ in self._components(k, lam, dy))
 
     def throughput(self, p, eoff, k, lam, dy):
         """Along-dispersion throughput tau_k: jwst point-source path loss divided by

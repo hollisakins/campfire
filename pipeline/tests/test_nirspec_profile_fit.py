@@ -275,12 +275,13 @@ SHUTTER_FILE = Path(PF.__file__).parent.parent / 'data' / 'nirspec_shutter_trans
 
 def _image_written_out(M, p, k, y, lam, dy):
     """The image formula for the shipped PSF and shutter files, written out: per component,
-    the galaxy convolved with the part of its variance before the shutter (1 - after),
-    clipped by the open shutters (+-0.50 about their centres moved by the shift) times the
-    transmission T = 1 - (1 - tedge) x^8, blurred by the rest after it; offsets before or
-    after the shutter; the component without a share takes the remainder."""
+    the galaxy convolved with half its variance before the shutter, clipped by the open shutters
+    (+-0.50 about their centres moved by the shift) times the transmission
+    T = 1 - (1 - tedge) x^8, blurred by the other half after it; offsets before or after the
+    shutter; the component without a share takes the remainder."""
     sh = json.loads(SHUTTER_FILE.read_text())['prism']             # the exposures are PRISM
-    after, shift, tedge = (np.interp(lam, sh['lam'], sh[key]) for key in ('after', 'shift', 'tedge'))
+    shift, tedge = (np.interp(lam, sh['lam'], sh[key]) for key in ('shift', 'tedge'))
+    after = 0.5
     raw = json.loads(PSF_FILE.read_text())[M.exps[k].detector]
     comps = []
     for c in raw['components']:
