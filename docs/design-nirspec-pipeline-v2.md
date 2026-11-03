@@ -727,12 +727,17 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
   whose shoulder width sits at or near its lower bound; the edge stars' blue residuals.
 - **Adopted 2026-11-03 (user decision).** S is the extraction's PSF: `PSF_TABLES` is read from
   `campfire_pipeline/data/nirspec_profile_psf.json` (table S as fitted), `FIT_VERSION` 4. The
-  two-Gaussian table stays as `LEGACY_PSF_TABLES`, the starting point and reference of
-  `psf_calibration` and of the legacy-reproduction test. Two tests had depended on the old PSF:
-  the shutter-geometry test of a PRISM shape transferred to a grating now runs with the legacy
-  table (the three-component red wing, sigma up to ~3 rows after the shutter, reaches its fixed
-  "beyond the blur" margin), and the neighbour-scan test now fits the target at its true shape.
-  The latter is not a PSF effect: with an equally bright, unmodelled neighbour one shutter
+  two-Gaussian table stays as `LEGACY_PSF_TABLES`, the starting point of `psf_calibration`'s
+  older two-component steps. No test uses it (user, 2026-11-03: no test runs with the old
+  table): the image test writes out the formula for the shipped file and checks the default
+  model against it; the calibration tests' reference fits use the shipped table. Two tests had
+  depended on the old PSF. The shutter test of a PRISM shape transferred to a grating checked
+  for no light beyond a fixed margin past the closed shutter; the three-component red wing
+  (sigma up to ~3 rows, after the shutter) puts 0.18 % of the peak there. It now checks what
+  holds for any PSF: the image with the bottom shutter closed plus the image through that
+  shutter alone equals the image with all three open (clipping comes before the blur), and the
+  missing light is not negligible. The neighbour-scan test now fits the target at its true
+  shape. That is not a PSF effect: with an equally bright, unmodelled neighbour one shutter
   away, a free target fit has its lowest chi2 merged with the neighbour (centre +0.6, width 0.9)
   under both PSFs (chi2 92k merged vs 150k true with the legacy table, 85k vs 143k with S); the
   old PSF's starting grid happened to stay in the true basin, S's slides into the merged one.

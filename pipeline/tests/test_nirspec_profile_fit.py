@@ -7,6 +7,9 @@ known shape and spectrum, so these tests lock the solver, the priors and the
 nod bookkeeping; the physics is validated on real data separately.
 """
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -264,42 +267,56 @@ def test_fit_recovers_flux_when_a_partner_lacks_the_source():
 
 
 # ---------------------------------------------------------------------------
-# general PSF (psf_components): the legacy table is the two-component special case
+# general PSF (psf_components): the shipped table, read and written out independently
 # ---------------------------------------------------------------------------
-def _legacy_image(M, p, k, y, lam, dy):
-    """The image formula before the general PSF (core + wing at PSF_K x core, no offsets,
-    even split), written out."""
-    S_rows, f = PF.psf_params(lam, M.exps[k].detector)
-    a = S_rows * dy / np.sqrt(2.0)
-    c = M.centre(p, np.zeros(len(M.exps)), k, lam)
+PSF_FILE = Path(PF.__file__).parent.parent / 'data' / 'nirspec_profile_psf.json'
+
+
+def _image_written_out(M, p, k, y, lam, dy):
+    """The image formula for the shipped PSF file, written out: per component, the
+    galaxy convolved with half its variance before the shutter, clipped by the open
+    shutters, blurred by the other half after it; offsets before or after the shutter;
+    the component without a share takes the remainder."""
+    raw = json.loads(PSF_FILE.read_text())[M.exps[k].detector]
+    comps = []
+    for c in raw['components']:
+        comps.append(dict(sigma=np.interp(lam, raw['lam'], c['sigma']),
+                          frac=np.interp(lam, raw['lam'], c['frac']) if 'frac' in c else None,
+                          offset=np.interp(lam, raw['lam'], c['offset']) if 'offset' in c else 0.0,
+                          pre=c.get('pre', True)))
+    rest = 1.0 - sum(c['frac'] for c in comps if c['frac'] is not None)
+    c0 = M.centre(p, np.zeros(len(M.exps)), k, lam)
     w = M.width(p, lam)
     iv = PF.open_intervals(M.exps[k].open_k)
-    comps = [(1 - f, np.sqrt(a ** 2 + w ** 2), a), (f, np.sqrt((PF.PSF_K * a) ** 2 + w ** 2), PF.PSF_K * a)]
     acc = 0.0
     for xi, wi in zip(PF._GLX, PF._GLW):
         yy = y + 0.5 * dy * xi
-        acc = acc + wi * sum(fr * PF._clipblur(yy, c, s1, s2, iv) for fr, s1, s2 in comps)
+        for c in comps:
+            half = c['sigma'] * dy / np.sqrt(2.0)
+            off = c['offset'] * dy
+            fr = rest if c['frac'] is None else c['frac']
+            if c['pre']:
+                acc = acc + wi * fr * PF._clipblur(yy, c0 + off, np.sqrt(half ** 2 + w ** 2), half, iv)
+            else:
+                acc = acc + wi * fr * PF._clipblur(yy - off, c0, np.sqrt(half ** 2 + w ** 2), half, iv)
     return 0.5 * dy * acc
 
 
-def _legacy_as_general(det_tables):
-    return {det: dict(lam=PF.PSF_LAM, components=[dict(sigma=t['S_rows']),
-                                                  dict(sigma=PF.PSF_K * np.asarray(t['S_rows']), frac=t['f'])])
-            for det, t in det_tables.items()}
-
-
-def test_legacy_table_reproduces_the_original_model():
+def test_default_psf_is_the_shipped_table():
     exps = _exposures(src_y=0.12)
-    M = PF.ProfileModel(exps, psf_tables=PF.LEGACY_PSF_TABLES)
+    M = PF.ProfileModel(exps)
     p = np.array([0.12, 0.01, np.log(0.08), 0.0])
-    e = exps[1]
-    y, lam, dy = e.y.ravel(), e.wav.ravel(), e.dy.ravel()
-    new = M.image(p, np.zeros(3), 1, y, lam, dy)
-    old = _legacy_image(M, p, 1, y, lam, dy)
-    assert np.allclose(new, old, rtol=1e-12, atol=1e-15)
-    # the same table written in the general layout gives the same design matrix
-    G = PF.ProfileModel(exps, psf_tables=_legacy_as_general(PF.LEGACY_PSF_TABLES))
-    assert np.allclose(G.design(p, np.zeros(3)).toarray(), M.design(p, np.zeros(3)).toarray(), rtol=1e-12, atol=1e-15)
+    for k in range(3):
+        e = exps[k]
+        y, lam, dy = e.y.ravel(), e.wav.ravel(), e.dy.ravel()
+        assert np.allclose(M.image(p, np.zeros(3), k, y, lam, dy), _image_written_out(M, p, k, y, lam, dy),
+                           rtol=1e-12, atol=1e-15)
+    # three components, the wing and the shoulder displaced after the shutter, over 0.6-5.3 um
+    comps = PF.psf_components(np.array([0.6, 2.0, 5.3]), 'NRS2')
+    assert len(comps) == 3 and [c['pre'] for c in comps[1:]] == [False, False]
+    assert np.allclose(sum(c['frac'] for c in comps), 1.0)
+    for det in ('NRS1', 'NRS2'):
+        assert PF.PSF_TABLES[det]['lam'][0] <= 0.6 and PF.PSF_TABLES[det]['lam'][-1] >= 5.3
 
 
 def test_general_psf_components_offsets_and_split():
