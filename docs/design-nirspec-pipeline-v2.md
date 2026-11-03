@@ -756,6 +756,36 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
   `table_test` compares candidates with the shipped table. A rerun of the calibration therefore
   starts from `fit` and `select`. The results above (selection, J, S) came from the
   two-component star fits, which were not rerun.
+- **S's inputs from the old PSF; one self-consistent round (2026-11-03, user approved).** S's
+  shape was fitted freely, but its star selection, the per-pixel variance floor (column peak /
+  30, the peak from an old-table model), the 5-sigma pixel mask and its start (J) came from the
+  two-Gaussian fits. Expected small (the floor depends on the peak height only; at 5 sigma of
+  that floor a bright star's mask cuts at ~17 % of the column peak, far above the old PSF's
+  1-4 % misfit), but circular; the round redoes selection, floors and masks with S and refits
+  (`scratch/claude/psf_cal_s2/`).
+- **p1 full rerun with S (2026-11-03).** `cfpipe nirspec run --stage2a --stage2b --stage3
+  --overwrite -p 12` on `scratch/claude/e2e_p1`, all merged changes (master background 1.7 in
+  stage 2a, drizzle-once, background revision, nod law, S): 681 products, no failures; stage 3
+  took 62 min. The previous products (all `PFVER` 2) are in
+  `scratch/claude/extraction-v2/p1_before_psf`. The master-background session's failed-open
+  edge check on these products passes (PRISM full-transmission shutters within +-2 % across
+  the shutter, against +15-22 % at the edges in 1.6; partial shutters up to 14 % over-painted on
+  one edge, the one-number limit; PRISM nrs1 failed-open shutter 16 reads 18-25 % above MBKG2D
+  in its core, light in the shutter for the contamination side).
+  Flux change from the PSF alone (`psf_flux_check.py`: the brightest clean sources fitted with
+  `profile_fit.fit` on the same frames with S and with the two-Gaussian table rebuilt for the
+  comparison; figure `extraction-v2/psf_flux_change_p1.png`): S raises the flux of all of them.
+  PRISM (20): median +4 % at 0.7 um, +2 % at 1-1.5 um, ~0 at 2.5 um, +3.5 % at 5 um (sources
+  +1.2 to +3.4 % integrated); G395M (4 with S/N > 5 pixels): +0.7 % at 2.9 um rising to +3.5 % at
+  5.2 um. The fits' chi2 hardly changes on galaxies (common-pixel ratio 0.89-1.04, most within
+  1 %); fitted widths shrink by 0.005-0.015 slit units. Against the PSF-free 5-pixel box in the
+  same products the profile flux went from 1.000 / 1.010 / 1.016 (PRISM median, 0.7-1.5 /
+  1.5-3 / 3-5.3 um) to 1.014 / 1.013 / 1.036. Cause: the stars put light 2.5-4 rows from the
+  centre (the wide red wing, the blue shoulder) that the old PSF did not have, and the fit now
+  counts it. All products against the saved ones (all changes together): bright PRISM +1.5 %,
+  G395M +2.1 % (median), so the PSF is most of this rerun's flux change. Open (user): whether
+  jwst's flux calibration counts all the light through the shutter (then S's fluxes are right)
+  or was set with a narrower extraction (then part of the 2 % is counted twice).
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
