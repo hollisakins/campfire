@@ -217,9 +217,7 @@ def test_three_component_psf_recovered():
     exps = _exposures(src_y=0.05)
     _inject(exps, form.table(truth, [0.0, 100.0], None), None, 0.05, flux=20000.0)
     RF = PC.RangeFit(exps, (1.5, 2.6))
-    RF.set_floor(np.zeros(RF.M.npix))
-    ref = RF.fit(tables=PF.PSF_TABLES)
-    RF.set_floor(ref['_model'])
+    ref, _ = PC._range_start(RF, 'NRS1', 2)              # floor, then the mask (as the star fits do)
     start = dict(core_sigma=0.4, wing_frac=0.3, wing_sigma=0.9, wing_offset=0.0, third_frac=0.03, third_sigma=0.6,
                  third_offset=1.0)
     g = PC.fit_form(RF, form, np.array([1.5, 2.6]), start=start, use=ref['_use'],
@@ -237,6 +235,49 @@ def test_three_component_psf_recovered():
     assert np.max(np.abs(p_fit - p_true)) < 0.01 * p_true.max()
     assert abs(np.mean(g['values']['core_sigma']) - truth['core_sigma']) < 0.03
     assert np.allclose(g['centre'], 0.05, atol=0.005)
+
+
+def test_smooth_joint_fit_recovers_a_smooth_psf():
+    """Stars made with a PSF whose parameters vary smoothly with wavelength (a spline over the
+    nodes): the joint fit of all stars and ranges at once gives the profile back across the range,
+    from a start off the truth (spline coefficients and the stars' centres and offsets in one problem)."""
+    # the machinery (splines over the nodes, all ranges at once, per-star centres and offsets) on the
+    # core + wing form with its own width and offset; the shoulder's trade with the wing is a property
+    # of the data, tested on the stars by the held-out test
+    form = PC.FORMS['wing']
+    nodes = PC.SMOOTH_NODES
+    x = np.log(nodes / 2.0)
+    truth = dict(core_sigma=0.38 + 0.06 * x + 0.04 * x ** 2, wing_frac=0.25 - 0.05 * x,
+                 wing_sigma=0.9 + 0.2 * x, wing_offset=0.08 + 0.0 * x)
+    tab_true = PC.smooth_table(form, truth, 'NRS1')
+    units = []
+    for i, c in enumerate((-0.1, 0.05, 0.15)):
+        exps = _exposures(src_y=c)
+        _inject(exps, {'NRS1': tab_true['NRS1'], 'NRS2': tab_true['NRS1']}, None, c, flux=15000.0, seed=30 + i)
+        for rng in ((0.8, 1.6), (1.6, 3.0), (3.0, 5.2)):
+            RF = PC.RangeFit(exps, rng)
+            fr, _ = PC._range_start(RF, 'NRS1', PC.range_of(0.5 * sum(rng)))   # floor, then the mask
+            units.append(dict(key=f's{i}', range=rng, RF=RF, use=fr['_use'], x=fr['_x'][:2],
+                              eoff=np.zeros(3), scale=1.0))
+    start = {p: np.asarray(v) * 1.1 for p, v in truth.items()}
+    start['wing_offset'] = np.zeros(nodes.size)
+    out = PC.smooth_joint_fit_all(units, form, "NRS1", start, log=lambda *a: None, tol=1e-6, passes=1)
+    fit = PC.smooth_table(form, {p: np.array(v) for p, v in out['coefs'].items()}, 'NRS1')
+    u = np.linspace(-5, 5, 401)
+    for lam in (1.0, 2.0, 4.0):
+        def profile(table):
+            comps = PF.psf_components(np.array([lam]), 'NRS1', table)
+            return sum(c['frac'][0] * np.exp(-0.5 * ((u - c['offset'][0]) / c['sigma'][0]) ** 2) / c['sigma'][0]
+                       for c in comps) / np.sqrt(2 * np.pi)
+        p_true, p_fit = profile(tab_true), profile(fit)
+        assert np.max(np.abs(p_fit - p_true)) < 0.01 * p_true.max(), lam
+
+
+def test_split_halves_is_fixed_and_disjoint():
+    keys = [f'k{i}' for i in range(21)]
+    a1, b1 = PC.split_halves(keys)
+    a2, b2 = PC.split_halves(list(reversed(keys)))
+    assert a1 == a2 and b1 == b2 and not (a1 & b1) and len(a1 | b1) == 21
 
 
 def test_centre_law_recovered():

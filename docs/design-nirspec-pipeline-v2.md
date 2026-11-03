@@ -665,7 +665,70 @@ unchanged.
 - Open: parameters at their bounds in J (shoulder width 3.0 rows on NRS1 at 2-2.6 um; wing offset
   -1.5 rows at the 5.3 um node, few stars); the red end above 4.7 um rests on 8-19 bright fits and
   the shape there pools both detectors; edge stars still leave several sigma in the blue.
-- Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{J,Jn,A,B}.json`,
+
+**The PSF table is a smooth joint fit (2026-11-02; user decision: a joint fit of the whole profile
+to the stars, not a percentile rule, every parameter smooth in wavelength over 0.6-5.3 um; form
+`wing3_after`; tables and extraction defaults unchanged pending adoption).** Candidate table S,
+`psf_table_wing3_after_S.json` (general layout, 61 log-spaced nodes).
+- Fit (`smooth_joint_fit_all`, `step_smooth_joint`): one PSF per detector, no pooling. Each of the
+  seven parameters (core width; wing share, width, offset; shoulder share, width, offset) is a
+  natural cubic spline in ln(lambda) through 7 nodes (0.6, 0.9, 1.4, 2.1, 3.0, 4.1, 5.3 um), fitted
+  to all bright clean stars of every range at once (up to 40 per range at peak S/N >= 10: 269
+  star-ranges from 49 stars on NRS1, 238 from 58 on NRS2). Each star-range keeps its own centre,
+  drift and per-exposure offsets, solved in the same least-squares problem as the splines (sparse
+  Jacobian), and its own spectrum (linear). Weights: the floored variances, no per-star rescaling.
+  Start: table J at the nodes. Curvature penalty on the second differences of the node values
+  (`SMOOTH_TAU`): 307 (NRS1) and 164 (NRS2) against chi2 1.5 and 1.9 x 10^5, so the data set the
+  shape. Bounds widened for the fit (shoulder width 0.15-6 rows, wing offset +-3, wing width
+  0.4-6).
+- Why one problem: alternating the centres and the shape converged slowly, because a star's
+  centre trades with the wing and shoulder offsets. On synthetic stars made with a known smooth
+  PSF, after four alternations the profile was still off by 1.6-5 % of the peak; the one-problem
+  fit recovers it to 0.1 % (unit test). The per-star chi2 rescaling of the per-range J fits held
+  that fit near its start, which biased the earlier smooth runs; J itself was fitted that way.
+- Runtime: 7-17 min per fit (10-19 iterations), six fits (both detectors x all / half A /
+  half B) in parallel, as long as the alternating version took (7-15 min).
+- Bounds: NRS1 shoulder width at the lower bound 0.15 rows at the 5.3 um node (also in half A and
+  half B); half B also has the shoulder share at 0 at 4.1 um on NRS1 and the shoulder width at
+  0.15 at 4.1 and 5.3 um on NRS2; half A has the NRS2 core at 0.25 rows at the 0.6 um node (no
+  data below 0.7 um). NRS2 on all stars hits none. In the red the shoulder is a narrow feature
+  2-2.8 rows towards +y (width 0.15-0.4 rows, about 1-3 % of the light), narrower than a pixel,
+  so the pixel integration leaves its width poorly constrained; the bound was not widened further.
+- Free-centre stack test, all clean stars, largest |median residual| in % of peak (S / J /
+  current table): NRS1 0.41 / 0.45 / 1.40 (0.7-1.0 um), 0.80 / 0.63 / 1.88, 0.47 / 0.44 / 1.27,
+  0.35 / 0.45 / 2.00, 0.54 / 0.60 / 2.42, 1.02 / 1.12 / 2.62, 0.87 / 1.63 / 4.26 (4.1-5.3 um);
+  NRS2 0.35 / 0.49 / 1.14, 0.42 / 1.07 / 1.52, 0.58 / 1.01 / 2.37, 0.74 / 0.82 / 3.01,
+  0.96 / 0.91 / 2.33, 1.31 / 1.25 / 2.10, 1.31 / 1.57 / 2.59. S is under 1 % in 11 of 14 ranges;
+  over in NRS1 3.3-4.1 um (1.02) and NRS2 3.3-5.3 um (1.31 in both): a dip of about -1.3 % at
+  +2 rows on NRS2 3.3-4.1 um, where the shoulder turns from a broad halo into the narrow red
+  feature.
+- Held-out test (clean stars split at random by star, seed 20261102; fit on one half, stack-test
+  on the other; in-sample for comparison): fit A on B / fit B on A / A on A / B on B. NRS1 0.66 /
+  0.41 / 0.33 / 0.52 (0.7-1.0 um), 1.11 / 0.48 / 0.86 / 0.78, 0.93 / 0.54 / 0.50 / 0.74,
+  0.34 / 0.83 / 0.58 / 0.41, 0.76 / 1.22 / 0.84 / 0.66, 1.19 / 1.49 / 0.91 / 0.95,
+  1.76 / 1.56 / 1.10 / 0.96 (4.1-5.3 um); NRS2 0.61 / 0.37 / 0.45 / 0.36, 0.42 / 0.51 / 0.46 /
+  0.53, 0.73 / 0.61 / 0.92 / 0.81, 0.65 / 0.99 / 0.87 / 0.75, 0.88 / 1.09 / 0.89 / 0.63,
+  1.49 / 1.15 / 1.25 / 1.27, 1.86 / 2.86 / 1.88 / 3.04. Below 3.3 um the held-out numbers are
+  within 0.4 % of peak of the in-sample ones (largest held-out 1.22 %, NRS1 2.6-3.3 um): the table
+  describes the stars, not the sample. Above 3.3 um a half has 8-27 stars per range and both held-out and in-sample numbers
+  rise to 1.2-3 %: the stack there is limited by the number of stars, and half B's red end is
+  fitted with its shoulder at the bounds.
+- Pooling the detectors above 4.1 um: not needed for the fit to converge or stay off its bounds
+  (NRS2 all-stars hits no bound; NRS2 wing width at 5.3 um 2.60 +- 0.13 rows, NRS1 2.89 +- 0.11;
+  formal errors at fixed star parameters, not scaled by chi2/dof). The two detectors' red-end
+  shapes agree within those errors on the wing, the shoulder offset (2.82 vs 2.64 rows) and the core
+  (0.71 vs 0.70 rows). Pooling would reduce the held-out noise there but cannot be tested with
+  this sample; S keeps the detectors separate.
+- Single stars at their own smooth PSF (`star_own_psf_<key>.png`; regenerated after fixing a
+  reference fit that clipped the bright cores on the unfloored variance): chi2/dof 4.4, 1.3 and
+  13 for the three stars shown; a single star's components still trade (shoulder width at its
+  bounds), so the single-star fits are figures only.
+- Proposed: adopt S (the user's call). Open: the 3.3-5.3 um ranges, which rest on 16-53 stars and
+  whose shoulder width sits at or near its lower bound; the edge stars' blue residuals.
+- Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
+  `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
+  `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
+  `superseded_alternating/`); `psf_table_wing3_after_{J,Jn,A,B}.json`,
   `forms_report.log`, `edge_prepost.log`, `table_test.log`, `table_test_J.log`, figures
   `psf_stack_tables_J.png`, `psf_parameters_J.png`, `star_own_psf_<key>.png`), and from the
   previous rounds `psf_table_new.json`, `centre_law_new.json`,
@@ -1990,7 +2053,7 @@ a fix or needs another field or disperser), **To make**.
 | Default galaxy width 0.15 vs 0.21 | user | |
 | Nod offset law (3.7, `NOD_OFFSET_LAW`: each nod at its own planned SRCYPOS): built, on by default | extraction session | |
 | PSF table and centre-law refit with the nod law (3.7, `psf_calibration.py`): adopt or not | user | |
-| Three-component PSF (3.7, `wing3_after`, general `psf_components` tables): the table rule (joint fit J vs narrow-side Jn) and whether to adopt | user | |
+| Three-component PSF (3.7, `wing3_after`, general `psf_components` tables): table rule decided 2026-11-02 (smooth joint fit, table S); left: whether to adopt S, and the 3.3-5.3 um ranges (1.0-1.3 % of peak, few stars) | user | |
 | Forward-model shutter edge vs measured bar shadow | extraction session | |
 | Stage 1 footprint past the calibrated range | MB session | user |
 | Runtime baseline on one full observation | both | |
@@ -2082,4 +2145,5 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
 - **2026-11-02.** Section 3.7: the PSF and centre-law refit through the profile model, with the
   nod-position mismatch and the skewed PSF it found; the nod offset law (each nod at its planned
   SRCYPOS, built and on by default); the refit with the law, pending the user's decision; the
-  general PSF and the three-component table candidates.
+  general PSF and the three-component table candidates. Later the same day: the user's decision
+  that the table is a smooth joint fit, and its result (table S, held-out test).

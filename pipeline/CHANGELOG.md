@@ -44,7 +44,10 @@ Release procedure: edit the `## Unreleased` section below, then run
   share of the width before the shutter, offset before or after it); the legacy two-component
   `PSF_TABLES` form is the special case and reproduces the previous model to 1e-12 (tested).
   The extraction's default table is unchanged. `psf_calibration` fits stars with such PSFs
-  (`PSFForm`, `fit_form`) and builds candidate tables from them.
+  (`PSFForm`, `fit_form`) and builds candidate tables from them, including the smooth joint
+  fit (`smooth_joint_fit_all`: every PSF parameter a spline in wavelength over 0.6-5.3 um,
+  fitted per detector to the stars of all ranges at once, with the stars' centres and offsets
+  in the same problem) and its held-out test.
 
 ### Algorithm
 

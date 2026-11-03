@@ -721,8 +721,12 @@ def fit_star_smooth(task, form, start=None, exps=None, nodes=STAR_NODES, snr_by_
     det = task.detector
     RF = RangeFit(exps, (nodes[0], nodes[-1]))
     RF.M.centre_law_tables = PF.CENTRE_LAW
+    # the floor first, from a fit without clipping: clipped on the bare variances a bright star
+    # loses its core (the current table misses it by many sigma)
     RF.set_floor(np.zeros(RF.M.npix))
-    ref = RF.fit(tables=PF.PSF_TABLES, clip_rounds=1)
+    ref0 = RF.fit(tables=PF.PSF_TABLES, clip_rounds=0)
+    RF.set_floor(ref0['_model'])
+    ref = RF.fit(tables=PF.PSF_TABLES, x0=ref0['_x'], clip_rounds=1)
     RF.set_floor(ref['_model'])
     D, al = PF.centre_law(nodes, det, task.quadrant)
     cg = RF.centre_at(ref['_x'][0], ref['_x'][1], nodes)
@@ -952,6 +956,279 @@ def step_joint(root, out_dir, observations, form_name, part=None, log=print):
         log(f'{det} {a}-{b} um: {len(stars)} stars')
         vals, _ = joint_shape_fit(stars, form, det, np.array([a, b]), start, log=log)
         write_json(path, dict(det=det, lam=[a, b], n=len(stars), values=vals))
+
+
+# ---------------------------------------------------------------------------
+# Smooth joint fit: one PSF per detector, every parameter a spline in log wavelength
+# ---------------------------------------------------------------------------
+SMOOTH_NODES = STAR_NODES                                        # spline control points [um]
+SMOOTH_DENSE = np.exp(np.linspace(np.log(0.6), np.log(5.3), 61))  # table nodes the spline is written on
+# the bounds J sat on are widened for the smooth fit (shoulder width, wing offset); the shoulder's
+# lower width 0.3 rows was reached at 4.1-5.3 um in a first run (2026-11-02), hence 0.15
+SMOOTH_BOUNDS = dict(PARAM_BOUNDS, third_sigma=(0.15, 6.0), wing_offset=(-3.0, 3.0), wing_sigma=(0.4, 6.0))
+# curvature penalty: a change of slope of tau per unit ln(lambda) between neighbouring nodes costs 1
+# (in units of the stars' scaled chi2): gentle against a total of ~1e5
+SMOOTH_TAU = dict(core_sigma=0.05, wing_frac=0.1, wing_sigma=0.5, wing_offset=0.3, third_frac=0.03,
+                  third_sigma=0.5, third_offset=0.5)
+SMOOTH_NMAX = 40            # brightest stars per (detector, range)
+
+
+def spline_eval(coef, lam, nodes=SMOOTH_NODES):
+    """Natural cubic spline in ln(lambda) through ``coef`` at ``nodes``, held at the end values
+    beyond them."""
+    from scipy.interpolate import CubicSpline
+    x = np.log(np.clip(np.asarray(lam, float), nodes[0], nodes[-1]))
+    return CubicSpline(np.log(nodes), np.asarray(coef, float), bc_type='natural')(x)
+
+
+def smooth_table(form, coefs, det, nodes=SMOOTH_NODES, dense=SMOOTH_DENSE):
+    """General PSF table for ``det`` from spline coefficients {param: values at ``nodes``},
+    written on ``dense`` (linear between them, which reproduces the spline closely), each value
+    held within ``SMOOTH_BOUNDS``."""
+    vals = {p: np.clip(spline_eval(c, dense, nodes), *SMOOTH_BOUNDS[p]) for p, c in coefs.items()}
+    return form.table(vals, dense, det)
+
+
+def curvature(coef, nodes=SMOOTH_NODES):
+    x = np.log(nodes)
+    s = np.diff(coef) / np.diff(x)
+    return np.diff(s)
+
+
+def load_star_ranges(root, out_dir, observations, det, keys_allowed=None, nmax=SMOOTH_NMAX, log=print):
+    """Star-range units for a smooth joint fit on ``det``: per ``TABLE_RANGES`` entry the ``nmax``
+    brightest clean stars (peak S/N >= JOINT_SNR_MIN; only ``keys_allowed`` when given), each a
+    RangeFit with its floor and pixel mask set (``_range_start``)."""
+    sel, joint = read_selection(out_dir)
+    rec2 = {r['key']: r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']}
+    clean = clean_in_pass2(list(rec2.values()), sel)
+    want = {}
+    for i, (a, b) in enumerate(TABLE_RANGES):
+        r7 = range_of(0.5 * (a + b))
+        keys = [k for k in clean.get((det, r7), []) if rec2[k]['ranges'][r7]['free']['peak_snr'] >= JOINT_SNR_MIN
+                and (keys_allowed is None or k in keys_allowed)]
+        for k in sorted(keys, key=lambda k: -rec2[k]['ranges'][r7]['free']['peak_snr'])[:nmax]:
+            want.setdefault(k, []).append(i)
+    tasks = {t.key: t for t in tasks_for(root, observations, set(want))}
+    units = []
+    for k, idx in sorted(want.items()):
+        exps = load_star(tasks[k])
+        for i in idx:
+            a, b = TABLE_RANGES[i]
+            try:
+                RF = RangeFit(exps, (a, b))
+                fr, _ = _range_start(RF, det, range_of(0.5 * (a + b)), joint=joint)
+                units.append(dict(key=k, range=i, RF=RF, use=fr['_use'], x=fr['_x'][:2],
+                                  eoff=np.zeros(len(RF.M.exps)), scale=1.0))
+            except Exception as err:
+                log(f'{k} {a}-{b}: skipped: {type(err).__name__}: {err}')
+    log(f'{det}: {len(units)} star-ranges from {len(want)} stars')
+    return units
+
+
+def smooth_joint_fit(units, form, det, start, outer=2, log=print, max_nfev=None, rescale=False, tol=1e-5):
+    """One PSF for ``det``: every free parameter of ``form`` a natural cubic spline in ln(lambda)
+    through ``SMOOTH_NODES``, fitted to all star-ranges at once. Alternates: each star-range's
+    centre, drift and per-exposure offsets at the current PSF (``fit_centres``), then the spline
+    coefficients with those held (spectra re-solved), with the curvature penalty ``SMOOTH_TAU``.
+    Weights: the floored variances of the star fits (the ``SN_CAP`` floor already caps what one
+    bright star weighs). ``rescale``: also divide each unit's chi2 by its reduced chi2 at the start
+    (the scheme of ``joint_shape_fit``; it down-weights the units the starting PSF fits worst and
+    so holds the result near the start). ``tol``: ftol / xtol / gtol of each round.
+    Returns dict(coefs, errors, penalty, chi2, bounds_hit). Kept for comparison: the alternation
+    converges slowly (on synthetic stars it leaves 2-5 % of peak after four rounds, where
+    ``smooth_joint_fit_all`` recovers the PSF to 0.1 %)."""
+    names = form.params()
+    nn = len(SMOOTH_NODES)
+    coefs ={p: np.asarray(start[p], float).copy() for p in names}
+    lo = np.concatenate([np.full(nn, SMOOTH_BOUNDS[p][0]) for p in names])
+    hi = np.concatenate([np.full(nn, SMOOTH_BOUNDS[p][1]) for p in names])
+
+    def unpack(x):
+        return {p: x[i * nn:(i + 1) * nn] for i, p in enumerate(names)}
+    res = None
+    for it in range(outer):
+        tab = smooth_table(form, coefs, det)
+        for u in units:
+            RF = u['RF']
+            RF.M.centre_law_tables = PF.NO_CENTRE_LAW
+            g = RF.fit_centres(tables=tab, x0=u['x'], use=u['use'])
+            u.update(x=g['_x'], eoff=RF.eoff.copy())
+            if it == 0:
+                u['scale'] = max(g['chi2'] / g['ndof'], 1e-6) if rescale else 1.0
+
+        def resid(x):
+            c = unpack(x)
+            tab = smooth_table(form, c, det)
+            out = []
+            for u in units:
+                RF = u['RF']
+                RF.eoff = u['eoff']
+                f, _, A = RF.solve(u['x'][0], u['x'][1], tab)
+                out.append(np.where(u['use'], (RF.M.pix['d'] - A @ f) / np.sqrt(RF.M.pix['v'] * u['scale']), 0.0))
+            out += [curvature(c[p]) / SMOOTH_TAU[p] for p in names]
+            return np.concatenate(out)
+        x0 = np.clip(np.concatenate([coefs[p] for p in names]), lo + 1e-6, hi - 1e-6)
+        kw = dict(max_nfev=max_nfev) if max_nfev else {}
+        res = least_squares(resid, x0, bounds=(lo, hi), x_scale='jac', ftol=tol, xtol=tol, gtol=tol, **kw)
+        coefs = unpack(res.x)
+        pen = float(np.sum(np.concatenate([curvature(coefs[p]) / SMOOTH_TAU[p] for p in names]) ** 2))
+        log(f'  smooth {det}: outer {it}: chi2 {float(np.sum(res.fun ** 2)):.1f} (curvature penalty {pen:.2f}), '
+            f'{res.nfev} evaluations')
+    J = res.jac
+    try:
+        cov = np.linalg.pinv(J.T @ J)
+        err = np.sqrt(np.abs(np.diag(cov)))
+    except np.linalg.LinAlgError:
+        err = np.full(res.x.size, np.nan)
+    tol = 1e-3 * (hi - lo)
+    hit = [f'{names[i // nn]}@{SMOOTH_NODES[i % nn]:.2f}um:{"low" if res.x[i] <= lo[i] + tol[i] else "high"}'
+           for i in range(res.x.size) if res.x[i] <= lo[i] + tol[i] or res.x[i] >= hi[i] - tol[i]]
+    for u in units:
+        u['RF'].eoff = np.zeros(len(u['RF'].M.exps))
+    return dict(coefs={p: v.tolist() for p, v in coefs.items()},
+                errors={p: v.tolist() for p, v in unpack(err).items()}, penalty=pen,
+                chi2=float(np.sum(res.fun ** 2)), bounds_hit=hit, nunits=len(units))
+
+
+SMOOTH_MAX_NFEV = 60    # iterations of the real-data smooth fit (each one Jacobian of ~50 evaluations)
+
+
+def smooth_joint_fit_all(units, form, det, start, log=print, max_nfev=None, tol=1e-6, passes=2):
+    """As ``smooth_joint_fit``, but the spline coefficients and every unit's centre, drift and
+    per-exposure offsets in one least-squares problem: a unit's own parameters reach only its own
+    pixels, so the Jacobian is sparse and all units' parameters of one kind are perturbed together
+    (about as many evaluations per Jacobian as the shape alone). Alternating the two instead
+    zigzags, since a unit's centre trades with the wing and shoulder offsets. Weights: the floored
+    variances. ``passes``: the problem is re-solved from its own answer this many times (each unit's
+    pixel mask held). Returns as ``smooth_joint_fit``."""
+    names = form.params()
+    nn = len(SMOOTH_NODES)
+    nshape = nn * len(names)
+    tab = smooth_table(form, {p: np.asarray(start[p], float) for p in names}, det)
+    for u in units:                                          # unit parameters at the start PSF
+        RF = u['RF']
+        RF.M.centre_law_tables = PF.NO_CENTRE_LAW
+        g = RF.fit_centres(tables=tab, x0=u['x'], use=u['use'])
+        u['src'] = [k for k, e in enumerate(RF.M.exps) if e.has_source]
+        u.update(x=g['_x'], eoff=RF.eoff.copy(), scale=1.0)
+    x0 = [np.concatenate([np.asarray(start[p], float) for p in names])]
+    lo = [np.concatenate([np.full(nn, SMOOTH_BOUNDS[p][0]) for p in names])]
+    hi = [np.concatenate([np.full(nn, SMOOTH_BOUNDS[p][1]) for p in names])]
+    idx, n = [], nshape
+    for u in units:
+        free = u['src'][1:]
+        k = 2 + len(free)
+        idx.append(np.arange(n, n + k))
+        n += k
+        cp = u['RF'].M.c_prior
+        x0.append(np.concatenate([[u['x'][0] + 1.0, u['x'][1] + 1.0], u['eoff'][free]]))
+        lo.append(np.concatenate([[cp - CENTRE_BOUND + 1.0, 1.0 - DRIFT_BOUND], np.full(len(free), -OFFSET_BOUND)]))
+        hi.append(np.concatenate([[cp + CENTRE_BOUND + 1.0, 1.0 + DRIFT_BOUND], np.full(len(free), OFFSET_BOUND)]))
+    x0, lo, hi = (np.concatenate(v) for v in (x0, lo, hi))
+    x0 = np.clip(x0, lo + 1e-6, hi - 1e-6)
+    npen = sum(nn - 2 for _ in names)
+    rows = [u['RF'].M.npix for u in units]
+    # sparsity: unit rows reach the shape and that unit's own parameters; penalty rows the shape
+    S = sp.lil_matrix((sum(rows) + npen, n), dtype=bool)
+    r0 = 0
+    for u, nr, ix in zip(units, rows, idx):
+        S[r0:r0 + nr, :nshape] = True
+        S[r0:r0 + nr, ix[0]:ix[-1] + 1] = True
+        r0 += nr
+    for i, p in enumerate(names):
+        S[r0:r0 + nn - 2, i * nn:(i + 1) * nn] = True
+        r0 += nn - 2
+
+    def unpack(x):
+        return {p: x[i * nn:(i + 1) * nn] for i, p in enumerate(names)}
+
+    def resid(x):
+        c = unpack(x[:nshape])
+        tab = smooth_table(form, c, det)
+        out = []
+        for u, ix in zip(units, idx):
+            RF = u['RF']
+            e = np.zeros(len(RF.M.exps))
+            e[u['src'][1:]] = x[ix[2:]]
+            RF.eoff = e
+            f, _, A = RF.solve(x[ix[0]] - 1.0, x[ix[1]] - 1.0, tab)
+            out.append(np.where(u['use'], (RF.M.pix['d'] - A @ f) / np.sqrt(RF.M.pix['v']), 0.0))
+        out += [curvature(c[p]) / SMOOTH_TAU[p] for p in names]
+        return np.concatenate(out)
+    kw = dict(max_nfev=max_nfev) if max_nfev else {}
+    x = x0
+    for k in range(passes):
+        res = least_squares(resid, x, bounds=(lo, hi), x_scale='jac', ftol=tol, xtol=tol, gtol=tol,
+                            jac_sparsity=S.tocsr(), tr_solver='lsmr', **kw)
+        x = res.x
+        coefs = unpack(x[:nshape])
+        pen = float(np.sum(np.concatenate([curvature(coefs[p]) / SMOOTH_TAU[p] for p in names]) ** 2))
+        log(f'  smooth (joint) {det}: pass {k}: chi2 {float(np.sum(res.fun ** 2)):.1f} (curvature penalty {pen:.2f}), '
+            f'{res.nfev} evaluations, {res.njev} Jacobians, status {res.status}')
+    Jc = res.jac[:, :nshape]
+    Jc = Jc.toarray() if sp.issparse(Jc) else Jc
+    try:
+        err = np.sqrt(np.abs(np.diag(np.linalg.pinv(Jc.T @ Jc))))
+    except np.linalg.LinAlgError:
+        err = np.full(nshape, np.nan)
+    tolb = 1e-3 * (hi[:nshape] - lo[:nshape])
+    xs = x[:nshape]
+    hit = [f'{names[i // nn]}@{SMOOTH_NODES[i % nn]:.2f}um:{"low" if xs[i] <= lo[i] + tolb[i] else "high"}'
+           for i in range(nshape) if xs[i] <= lo[i] + tolb[i] or xs[i] >= hi[i] - tolb[i]]
+    for u, ix in zip(units, idx):
+        u['x'] = [float(x[ix[0]] - 1.0), float(x[ix[1]] - 1.0)]
+        u['RF'].eoff = np.zeros(len(u['RF'].M.exps))
+    return dict(coefs={p: v.tolist() for p, v in coefs.items()}, errors={p: v.tolist() for p, v in unpack(err).items()},
+                penalty=pen, chi2=float(np.sum(res.fun ** 2)), bounds_hit=hit, nunits=len(units),
+                nfev=int(res.nfev), njev=int(res.njev) if res.njev is not None else None, status=int(res.status))
+
+
+def split_halves(keys, seed=20261102):
+    """The clean stars split in two at random (by star), fixed seed."""
+    keys = sorted(keys)
+    rng = np.random.default_rng(seed)
+    pick = rng.permutation(len(keys))
+    half = set(keys[i] for i in pick[:len(keys) // 2])
+    return half, set(keys) - half
+
+
+def step_smooth_joint(root, out_dir, observations, form_name, det, which='all', log=print):
+    """The smooth joint fit of ``det`` on all clean stars ('all') or on one random half ('A',
+    'B'), from the joint per-range table J at the spline nodes, the spline coefficients and the
+    stars' centres and offsets in one problem (``smooth_joint_fit_all``); result in
+    smooth_joint_<form>/."""
+    form = FORMS[form_name]
+    sel, _ = read_selection(out_dir)
+    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
+    allk = {k for v in clean_in_pass2(rec2, sel).values() for k in v}
+    A, B = split_halves(allk)
+    keys = None if which == 'all' else (A if which == 'A' else B)
+    units = load_star_ranges(root, out_dir, observations, det, keys_allowed=keys, log=log)
+    tabJ = read_form_table(os.path.join(out_dir, f'psf_table_{form_name}_J.json'))
+    comps = PF.psf_components(SMOOTH_NODES, det, tabJ)
+    start = dict(core_sigma=comps[0]['sigma'], wing_frac=comps[1]['frac'], wing_sigma=comps[1]['sigma'],
+                 wing_offset=comps[1]['offset'], third_frac=comps[2]['frac'], third_sigma=comps[2]['sigma'],
+                 third_offset=comps[2]['offset'])
+    start = {p: np.clip(v, SMOOTH_BOUNDS[p][0] + 1e-3, SMOOTH_BOUNDS[p][1] - 1e-3) for p, v in start.items()}
+    import time
+    t0 = time.time()
+    out = smooth_joint_fit_all(units, form, det, start, log=log, max_nfev=SMOOTH_MAX_NFEV, passes=1)
+    out.update(det=det, which=which, method='joint (shape and unit parameters in one problem)', nodes=SMOOTH_NODES.tolist(), seconds=time.time() - t0,
+               keys=sorted({u['key'] for u in units}), tau=SMOOTH_TAU, bounds=SMOOTH_BOUNDS)
+    write_json(os.path.join(out_dir, f'smooth_joint_{form_name}', f'{det}_{which}.json'), out)
+    log(f'{det} {which}: done in {out["seconds"] / 60:.1f} min; bounds hit: {out["bounds_hit"] or "none"}')
+
+
+def smooth_joint_table(out_dir, form_name, which='all'):
+    """The general table from the smooth joint fits of both detectors (``which``: 'all', 'A', 'B')."""
+    form = FORMS[form_name]
+    out = {}
+    for det in ('NRS1', 'NRS2'):
+        with open(os.path.join(out_dir, f'smooth_joint_{form_name}', f'{det}_{which}.json')) as fh:
+            r = json.load(fh)
+        out[det] = smooth_table(form, {p: np.array(v) for p, v in r['coefs'].items()}, det)[det]
+    return out
 
 
 def joint_table(out_dir, form_name, narrow=None):
@@ -2823,8 +3100,11 @@ def step_table_test(root, out_dir, observations, tables, part=None, log=print, t
 
 TABLE_STYLE = {'A': (NEW_C, '-', 'new: core 25th percentile, the rest median'),
                'B': (EDGE_C, '-.', 'new: every parameter median'),
-               'J': (NEW_C, '-', 'new: joint fit of the stars'),
+               'J': ('#1baf7a', '-.', 'per-range joint fit (J)'),
                'Jn': ('#6250d6', '-.', 'new: joint, narrow core (25th pct)'),
+               'S': (NEW_C, '-', 'new: smooth joint fit (S)'),
+               'SA': ('#1baf7a', ':', 'smooth joint fit, half A'),
+               'SB': ('#6250d6', ':', 'smooth joint fit, half B'),
                'current': (OLD_C, '--', 'current table')}
 
 
@@ -2838,7 +3118,7 @@ def plot_stack_tables(out_dir, path, names=('A', 'B', 'current'), samples='sampl
     sel, _ = read_selection(out_dir)
     rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
     clean = clean_in_pass2(rec2, sel)
-    sdir = os.path.join(out_dir, samples)
+    sdirs = {n: os.path.join(out_dir, samples[n] if isinstance(samples, dict) else samples) for n in names}
     bins = np.arange(-half, half + 1e-9, step)
     bc = 0.5 * (bins[1:] + bins[:-1])
     nr = len(RANGES)
@@ -2847,7 +3127,7 @@ def plot_stack_tables(out_dir, path, names=('A', 'B', 'current'), samples='sampl
     for j, det in enumerate(('NRS1', 'NRS2')):
         for r in range(nr):
             ax, axr = axs[2 * j, r], axs[2 * j + 1, r]
-            cur = {n: _star_curves(sdir, clean.get((det, r), []), r, n, bins) for n in names}
+            cur = {n: _star_curves(sdirs[n], clean.get((det, r), []), r, n, bins) for n in names}
             cur = {n: c for n, c in cur.items() if c is not None}
             if not cur:
                 ax.set_visible(False); axr.set_visible(False)
@@ -2885,7 +3165,7 @@ def plot_stack_tables(out_dir, path, names=('A', 'B', 'current'), samples='sampl
             if j == 1:
                 axr.set_xlabel('rows from centre (+ = slit +y)')
     axs[0, 0].legend(loc='upper left', frameon=False, fontsize=6.5)
-    axs[1, 0].legend(loc='lower left', frameon=False, fontsize=6.5)
+    axs[1, 0].legend(loc='lower left', frameon=False, fontsize=6.5, ncol=2, bbox_to_anchor=(0, 0.02))
     fig.suptitle(title, x=0.01, ha='left', fontsize=12)
     fig.text(0.01, 0.955, 'Each star\'s centre fitted in every exposure. Residuals: median over stars (line), its '
              'uncertainty (dark band), spread between stars (light band); grey: the ±1 % of peak goal.',
@@ -2893,6 +3173,58 @@ def plot_stack_tables(out_dir, path, names=('A', 'B', 'current'), samples='sampl
     fig.subplots_adjust(left=0.06, right=0.99, top=0.9, bottom=0.06)
     fig.savefig(path, dpi=150)
     plt.close(fig)
+
+
+def heldout_metrics(out_dir, samples='samples_tables_S'):
+    """Largest |median stack residual| per (detector, range): S on all clean stars (in sample),
+    the half-A fit on half B and the half-B fit on half A (held out), each half's own fit on itself.
+    Returns {label: {(det, r): value}} and the per-star counts."""
+    sel, _ = read_selection(out_dir)
+    rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
+    clean = clean_in_pass2(rec2, sel)
+    A, B = split_halves({k for v in clean.values() for k in v})
+    sub = lambda keys: {k: [x for x in v if x in keys] for k, v in clean.items()}   # noqa: E731
+    sd = os.path.join(out_dir, samples)
+    out = {'S, all stars (in sample)': stack_metric(sd, clean, 'S'),
+           'half A fit, on half B (held out)': stack_metric(sd, sub(B), 'SA'),
+           'half B fit, on half A (held out)': stack_metric(sd, sub(A), 'SB'),
+           'half A fit, on half A (in sample)': stack_metric(sd, sub(A), 'SA'),
+           'half B fit, on half B (in sample)': stack_metric(sd, sub(B), 'SB')}
+    return {k: {kk: vv['max'] for kk, vv in v.items()} for k, v in out.items()}
+
+
+def plot_heldout(out_dir, path, samples='samples_tables_S'):
+    """Held-out test: per detector and range, the largest |median stack residual| (% of peak) of
+    the smooth joint fit in sample and on the held-out half, with the 1 % goal."""
+    import matplotlib.pyplot as plt
+    _style()
+    m = heldout_metrics(out_dir, samples)
+    styles = {'S, all stars (in sample)': (NEW_C, 'o', 0.0), 'half A fit, on half B (held out)': (OLD_C, 's', -0.12),
+              'half B fit, on half A (held out)': ('#6250d6', 'D', 0.12),
+              'half A fit, on half A (in sample)': (OLD_C, 's', -0.24), 'half B fit, on half B (in sample)': ('#6250d6', 'D', 0.24)}
+    fig, axs = plt.subplots(1, 2, figsize=(11, 4.2), sharey=True)
+    for j, det in enumerate(('NRS1', 'NRS2')):
+        ax = axs[j]
+        for lab, vals in m.items():
+            col, mk, dx = styles[lab]
+            rs = sorted(r for (d, r) in vals if d == det)
+            filled = 'held out' in lab or lab.startswith('S,')
+            ax.plot(np.array(rs) + dx, [vals[(det, r)] for r in rs], mk, color=col, ms=6,
+                    mfc=col if filled else 'none', label=lab if j == 0 else None)
+        ax.axhline(1.0, color=INK, lw=1, ls='--')
+        ax.text(len(RANGES) - 0.6, 1.03, '1 % goal', fontsize=8, color=INK, ha='right')
+        ax.set_xticks(range(len(RANGES)))
+        ax.set_xticklabels([f'{a}–{b}' for a, b in RANGES], rotation=30, fontsize=8)
+        ax.set_xlabel('wavelength range [µm]')
+        ax.set_title(det, loc='left')
+    axs[0].set_ylabel('largest |median residual| [% of peak]')
+    axs[0].legend(frameon=False, fontsize=7.5)
+    fig.suptitle('Held-out test: the smooth joint PSF fitted on one random half of the stars, tested on the other',
+                 x=0.01, ha='left', fontsize=11.5)
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return m
 
 
 PARAM_LABELS = dict(core_sigma='core width [rows]', wing_frac='wing share of the light', wing_sigma='wing width [rows]',
@@ -2938,6 +3270,7 @@ def plot_form_params(out_dir, form_name, path, tables):
             if i == 0:
                 ax.set_title(det, loc='left')
             lo, hi = PARAM_BOUNDS[p]
+            lo = min(lo, SMOOTH_BOUNDS[p][0]) if p == 'third_sigma' else lo   # the smooth fit's wider bound
             if ys:
                 ax.set_ylim(max(lo, np.percentile(ys, 1) - 0.1 * abs(np.percentile(ys, 1))),
                             min(hi, np.percentile(ys, 99) * 1.15 + 0.02))
@@ -3001,7 +3334,9 @@ def main(argv=None):
                                      'free_centres', 'free_centre_figures', 'own_width', 'forms', 'forms_edge',
                                      'forms_report',
                                      'smooth', 'form_ranges', 'form_tables', 'joint', 'joint_tables', 'table_test',
-                                     'form_figures'])
+                                     'form_figures', 'smooth_joint', 'smooth_tables', 'smooth_figures'])
+    ap.add_argument('--det', default='NRS1', help='smooth_joint: detector')
+    ap.add_argument('--which', default='all', help="smooth_joint: 'all' stars or half 'A' / 'B'")
     ap.add_argument('--tables', nargs='*', default=['A', 'B'], help='table_test / form_figures: candidate tables')
     ap.add_argument('--tag', default='', help='table_test / form_figures: suffix of the test directories')
     ap.add_argument('--form', default='wing3_after', help='smooth / form_tables / form_figures: the PSF form')
@@ -3077,6 +3412,47 @@ def main(argv=None):
                         + ' '.join(f'{q[1]:.3f}' for q in vals) + ' | p50 ' + ' '.join(f'{q[2]:.3f}' for q in vals))
     elif a.step == 'joint':
         step_joint(a.root, a.out, a.obs, a.form, part=part, log=log)
+    elif a.step == 'smooth_joint':
+        step_smooth_joint(a.root, a.out, a.obs, a.form, a.det, which=a.which, log=log)
+    elif a.step == 'smooth_figures':
+        fd = os.path.join(a.out, 'figures')
+        names = ('S', 'J', 'current')
+        plot_stack_tables(a.out, os.path.join(fd, 'psf_stack_smooth.png'), names=names,
+                          samples={'S': 'samples_tables_S', 'J': 'samples_tables_J', 'current': 'samples_tables_J'},
+                          title='Stacked star profiles against the smooth joint PSF (S), the per-range joint fit (J) '
+                                'and the current table')
+        tabs = {n: read_form_table(os.path.join(a.out, f'psf_table_{a.form}_{n}.json')) for n in ('S', 'J')}
+        tabs['current'] = {det: dict(lam=PF.PSF_LAM, components=[
+            dict(sigma=PF.PSF_TABLES[det]['S_rows']),
+            dict(sigma=PF.PSF_K * PF.PSF_TABLES[det]['S_rows'], frac=PF.PSF_TABLES[det]['f'])]) for det in ('NRS1', 'NRS2')}
+        plot_form_params(a.out, a.form, os.path.join(fd, 'psf_parameters_smooth.png'), tabs)
+        held = plot_heldout(a.out, os.path.join(fd, 'psf_heldout.png'))
+        sel, _ = read_selection(a.out)
+        rec2 = [r for r in read_records(os.path.join(a.out, 'pass2')) if r['ranges']]
+        clean = clean_in_pass2(rec2, sel)
+        lines = ['largest |median stack residual| [% of peak] per detector and range (all clean stars)',
+                 'det  range      | S      | J      | current | half A fit on B | half B fit on A | A on A | B on B']
+        mS = stack_metric(os.path.join(a.out, 'samples_tables_S'), clean, 'S')
+        mJ = stack_metric(os.path.join(a.out, 'samples_tables_J'), clean, 'J')
+        mC = stack_metric(os.path.join(a.out, 'samples_tables_J'), clean, 'current')
+        labs = list(held)
+        for key in sorted(mS):
+            det, r = key
+            hv = [held[l].get(key, np.nan) for l in labs[1:]]
+            lines.append(f'{det} {RANGES[r][0]}-{RANGES[r][1]} | {mS[key]["max"]:5.2f}  | {mJ.get(key, {}).get("max", np.nan):5.2f}  | '
+                         f'{mC.get(key, {}).get("max", np.nan):5.2f}   | {hv[0]:5.2f}           | {hv[1]:5.2f}           | '
+                         f'{hv[2]:5.2f}  | {hv[3]:5.2f}')
+        with open(os.path.join(a.out, 'smooth_test.log'), 'w') as fh:
+            fh.write('\n'.join(lines) + '\n')
+        for x in lines:
+            log(x)
+    elif a.step == 'smooth_tables':
+        for which, name in (('all', 'S'), ('A', 'SA'), ('B', 'SB')):
+            try:
+                write_json(os.path.join(a.out, f'psf_table_{a.form}_{name}.json'), smooth_joint_table(a.out, a.form, which))
+                log(f'wrote psf_table_{a.form}_{name}.json')
+            except OSError as err:
+                log(f'{name}: {err}')
     elif a.step == 'joint_tables':
         st = json.load(open(os.path.join(a.out, f'psf_table_{a.form}_B_stats.json')))
         narrow = {det: [q[1] / q[2] if q[2] else 1.0 for q in st[det]['core_sigma']['quantiles']]
