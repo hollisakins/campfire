@@ -53,7 +53,7 @@ leaves other sources' light in many spectra. The redesign does four things:
 |---|---|---|---|
 | Release: MAJOR, merged only with the full re-reduction | Decided (user, 2026-10-24 and 2026-10-29) | both | section 8 |
 | Stage 2a single `Spec2Pipeline` call per rate file, `bkgslits/` | Built (loving-bell, in CHANGELOG Unreleased) | MB session | 3.1 |
-| Empirical bar-shadow tables, PRISM + G140M/G235M/G395M | Built (7ab786bf, 47d19c46, fea58a6e, b0c08026); not signed off by the user | MB session | 3.2 |
+| Empirical bar-shadow tables, PRISM + G140M/G235M/G395M | Built (7ab786bf, 47d19c46, fea58a6e, b0c08026); settled (user, 2026-10-30) | MB session | 3.2 |
 | No bar-shadow division of science frames | Decided (user, 2026-10-29) | both | 3.2 |
 | Master background, calibrated sky + painting (`_mbkg.fits`) | Built (0d9dd3c7, 53b1c5af, 2f898100, 65c1d825) | MB session | 3.3 |
 | Master background split into step 1 (before 2a) and step 2 (end of 2a) | Decided (user, 2026-10-30); Built (master background 1.2+) | MB session | 3.3, 3.4 |
@@ -177,6 +177,9 @@ pixels instead.
   user said the correction should "eventually" reach the science frames; the later ruling is the
   one recorded, see section 9.)
 - The measured table is used where one exists, CRDS otherwise (user, 2026-10-29).
+- The forward model's shutter is the geometric shutter with the smooth transmission T, capped at
+  1, fitted to these tables (user, 2026-11-03; `FIT_VERSION` 5; evidence below, section 3.7).
+  G140H, G235H and G395H use the M grating with the same filter (user, 2026-11-03).
 
 **Evidence.**
 - PRISM table from the seven EMBER prism pointings (8,474 clean shutters, 11.0 M pixels). With
@@ -194,68 +197,42 @@ pixels instead.
   `~/campfire-data/scratch/claude/bs_v5/empirical_barshadow_<disperser>_qa.pdf`.
 - Calibration-star result that the forward model already handles the shutter edge (2026-10-17):
   a hard clip at the nominal half-width 0.50 with an even blur split fits off-centre stars best;
-  no separate bar-shadow model is needed for point sources.
+  no separate bar-shadow model is needed for point sources. Superseded for uniform light on
+  2026-11-03 (below): the hard clip does not reproduce the bar shadow in the red.
+- **The forward model against the bar shadow (V7, 2026-11-03).** For uniform light the model's
+  image is the open area blurred by the after-shutter part of the PSF and averaged over a row
+  (dy 0.227-0.230 slit units per row from p1).
+  - With the hard clip at +-0.50 slit-frame units (= +-0.435 pitch, `FIT_VERSION` 4) the 50 %
+    half-width stays at 0.435-0.439 pitch at every wavelength. The measured one falls from 0.429
+    (PRISM 0.6 um) to 0.388 (5 um), and on G395M from 0.414 (2.9 um) to 0.387 (5.2 um): up to
+    0.05 pitch (0.25 rows) off in the red. Under the bar between two open shutters the model's
+    floor is 0.49-0.61 of the open level against a measured 0.40-0.46. The model passed too much
+    light near the shutter edges in the red (`scratch/claude/extraction-v2/bs_model_compare.py`,
+    `v7_barshadow_{profiles,edges}.png`).
+  - A narrower opening (the measured edge, tried and removed) fixes uniform light but makes the
+    images of edge stars worse: uniform light and point sources disagree about where the edge is.
+  - What fits uniform light and keeps the geometric edge the stars want is a loss across the
+    shutter: the geometric shutter (+-0.50, a small fitted
+    shift) transmitting T(x) = 1 - (1 - tedge) x^8 (x = position over the half-width), flat
+    over the middle and falling to tedge at the edges. Light diffracted at the shutter edges
+    leaves the spectrograph beam and is lost. Uniform light sees the loss as a narrower opening;
+    a point source feels it mainly in its total, which the throughput normalisation carries.
+    Fitted per disperser with the after-shutter share (section 3.7), the median misfit per
+    wavelength is 0.0105 / 0.0183 / 0.0129 / 0.0133 (PRISM / G140M / G235M / G395M) against
+    0.061 / 0.035 / 0.043 / 0.082 with the hard clip.
+  - T is capped at 1 (never above the centre's value). Without the cap the fit wanted T up to
+    5 % above 1 off-centre (G395M) and fitted the bar shadow 3-8 % better (0.0097 / 0.0177 /
+    0.0121 / 0.0124). Figures: `scratch/claude/psf_cal_T/figures/v7_T4_{edges,profiles}.png`.
 
 **Implementation.** `nirspec/barshadow_calibration.py`, `data/Generate_Barshadow_Cals.py`,
 tables `data/empirical_jwst_nirspec_barshadow_{prism,g140m,g235m,g395m}.fits`.
 `[nirspec.stage2].empirical_barshadow` (default off) passes a table to `BarShadowStep` for the
-background slitlets.
+background slitlets. The forward model's shutter: `profile_fit.SHUTTER`
+(`data/nirspec_shutter_transmission.json`, fitted by `psf_calibration.fit_shutter`).
 
 **Open.**
-- User sign-off on the grating tables (MB session).
-- Held-out validation has not been rerun on the b0c08026 tables (MB session).
-- Whether the forward model's shutter edge (clip at 0.50, blur split 50/50) agrees with the
-  measured uniform-sky profile: edge 50 % point, narrowing with wavelength (open region ±0.45
-  pitch at 1 µm, ±0.38 at 5 µm on the prism), floor under the bars (extraction session; merge
-  plan T0 item). **Checked 2026-11-03 (V7, `scratch/claude/extraction-v2/bs_model_compare.py`,
-  figures `v7_barshadow_{profiles,edges}.png`): it does not agree in the red.** For uniform
-  light the model is the open area (hard edges at ±0.50 slit-frame units = ±0.435 pitch)
-  blurred by the after-shutter part of the shipped PSF and averaged over a row (dy 0.227-0.230
-  slit units per row from p1). Its 50 % half-width stays at 0.435-0.439 pitch at every
-  wavelength; the measured one falls from 0.429 (PRISM 0.6 um) to 0.388 (5 um), and on G395M
-  from 0.414 (2.9 um) to 0.387 (5.2 um). The edge slopes match; the edge positions do not, by
-  up to 0.05 pitch (about 0.25 rows) in the red. Under the bar between two open shutters the
-  model's floor is 0.49-0.61 of the open level against a measured 0.40-0.46. The 2026-10-17
-  star test chose h = 0.50 over 0.44 slit units on blue-dominated chi2; the measured edge is
-  0.49 slit units in the blue and 0.45 at 5 um, so a single h was the wrong question: the
-  effective opening narrows with wavelength. Consequences: the model passes too much light
-  near the shutter edges in the red, for off-centre and extended sources, and its point-source
-  transmission (the throughput normalisation) uses the too-wide edge; the star PSF was fitted
-  with this edge, so the after-shutter PSF may be absorbing part of it.
-  **Follow-up, 2026-11-03 (measured edge built; not the default).** A measured shutter edge per
-  disperser now exists as a model input (`ProfileModel(shutter_edges=...)`,
-  `data/nirspec_shutter_edges.json`, section 3.7). It gives the open half-width, a shift of the
-  open area and the share of every PSF component's width^2 acting after the shutter, each smooth
-  in ln(lambda). It is fitted to both bar-shadow tables at once (one open shutter and the bar
-  between two).
-  - The edge position alone fixes the 50 % edges but leaves the floor under the bar 0.02-0.06
-    too low in the red. The floor needs, in addition, about 60 % of each component's width^2
-    after the shutter instead of 50 %.
-  - The measured asymmetry of the edges is a shift of the whole open area: -0.013 slit units on
-    G140M, -0.008 on G235M, within +-0.005 on the PRISM and G395M. It is modelled as a shift,
-    which lowers the misfit by 5-25 %.
-  - With the edge, the median misfit per wavelength falls from 0.061 to 0.010 (PRISM), 0.035
-    to 0.018 (G140M), 0.043 to 0.012 (G235M) and 0.082 to 0.013 (G395M). The 50 % half-width
-    is matched to within 0.001-0.007 pitch and the floor to within 0.01-0.02 (rerun:
-    `scratch/claude/psf_cal_edge/figures/v7_edge_{edges,profiles}.png`).
-  - Keeping the edge at 0.50 and fitting only the after-shutter share does not help the bar
-    shadow (PRISM misfit 0.064).
-  - The grating tables are not yet signed off and their held-out check has not been rerun.
-  **Second follow-up, 2026-11-03 (user's choice (d): the hard edge stays the default; the
-  smooth-transmission model built).**
-  - The shutter stays geometric (+-0.50 slit units, plus a small fitted shift). Inside it the
-    light is transmitted with T(x) = 1 - c2 x^2 - c4 x^4 (x = position over the half-width),
-    falling toward the edges: light diffracted at the edges leaves the beam and is lost.
-  - For uniform light the response is T convolved with the after-shutter PSF, so the bar
-    shadow fixes T and the after-shutter share.
-  - The bar shadow is fitted as well as with the narrowed edge (a), or slightly better: median
-    misfit 0.0097 / 0.0177 / 0.0121 / 0.0124 (PRISM / G140M / G235M / G395M) against
-    0.0102 / 0.0180 / 0.0123 / 0.0132 for (a) and 0.061 / 0.035 / 0.043 / 0.082 for the
-    shipped model.
-  - The after-shutter share comes back at 0.47-0.56, essentially the default 0.5: with T, the
-    floor under the bar needs no extra blur.
-  - The edge stars are no longer worse than with the shipped model (section 3.7). Figures:
-    `scratch/claude/psf_cal_T/figures/v7_T_{edges,profiles}.png`.
+- Held-out validation has not been rerun on the b0c08026 tables (MB session). The forward
+  model's shutter is fitted to them.
 - The forward model must not count the shutter edges twice once the measured profile feeds it.
 
 ### 3.3 Master background (calibrated sky and painting)
@@ -574,13 +551,12 @@ lost in the wipe; only the numbers in the session notes survive. The real-data j
 (section 3.9) shows the joint solve failing with default shapes and working with chain shapes,
 so the chain is required.
 
-**Implementation.** `nirspec/profile_fit.py` (`PSF_TABLES`, `CENTRE_LAW`, priors: centre 0.15
+**Implementation.** `nirspec/profile_fit.py` (`PSF_TABLES`, `SHUTTER`, `CENTRE_LAW`, priors: centre 0.15
 slit units from the planned position, width median 0.15), `nirspec/profile_chain.py`
 (`choose_shape`, `ChainConfig`), `nirspec/profile_product.py`, `stage3.run_profile_fit_phase`.
 
 **Open.**
 - Default width 0.15 vs 0.21 slit units (user to decide; raised 2026-10-23).
-- Whether the shutter edge needs revising against the measured bar shadow (section 3.2).
 - Re-run the injection and shape tests on the merged pipeline, since the old figures are lost
   (extraction session).
 
@@ -895,152 +871,80 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
   star stack, the bar shadow, the edge stars and the p1 flux change checked together; (4) a
   free-form PSF basis (fixed Gaussians after the shutter with smooth amplitudes) only if
   residuals beyond 1 % remain where stars are plentiful.
-- **The measured shutter edge and the stars refitted with it (2026-11-03, user-approved; not
-  adopted: the default model is unchanged).** Outputs: `scratch/claude/psf_cal_edge/`
-  (scripts in `scripts/`).
-  - **Edge model** (`profile_fit.load_shutter_edges`, `shutter_edge`; fitted by
-    `psf_calibration.fit_shutter_edges`):
-    - Per disperser: the open half-width `half`, a shift of the open area `shift` (slit-frame
-      units) and the after-shutter share `after` of every PSF component's width^2, which
-      replaces q = 0.5.
-    - Each is a natural cubic spline in ln(lambda): 7 nodes for the PRISM and 4 over each
-      grating table, with a gentle curvature penalty. It is fitted to the bar-shadow tables
-      (single shutter and bar) with the PSF's after-shutter part.
-    - PRISM `half` falls from 0.490 (0.6 um) through 0.479 (2.1 um) to 0.446 slit units
-      (5.3 um), and `after` rises from 0.56 to 0.65. G395M `half` falls from 0.469 to 0.448,
-      `after` 0.60-0.67. G140M and G235M have `half` 0.486-0.489 and 0.479-0.484, `after`
-      0.56-0.66, and shifts of -0.013 and -0.008.
-    - Gratings without a table (G140H, G235H, G395H) take the M grating with the same filter:
-      the same MSA, wavelengths and camera, hence the same diffraction at the shutter edges.
-    - Refitted with the PSF SE (below), the curves move by under 0.001 in `half` and 0.01 in
-      `after`, so the edge and the PSF are consistent with each other.
-    - File: `data/nirspec_shutter_edges.json` (with its provenance).
-  - **Code.**
-    - `ProfileModel` takes `shutter_edges` (None: the hard edge at +-0.50 with q = 0.5, as
-      before). `open_intervals` takes per-pixel `half` and `shift`; `image`, `transmission`
-      and so `throughput`, `main_shutter_factor` and `boxcar_factor` use the edge at each
-      pixel's wavelength.
-    - The models that `profile_product` and `mbkg_extraction` derive from the chain's model
-      carry its `psf_tables` and `shutter_edges`; `for_placement` takes both.
-    - The fitted pixels (`fit_pixel_masks`, `_region`), `nod_scan.delta_grid` and the row
-      selections in `nod_scan`, `profile_contam`, `trace_overlap` and `slitlet_neighbours` keep
-      the nominal +-0.50. It contains the measured opening, so fits with either edge use the
-      same pixels.
-    - Speed: 5 % more time per fit (PRISM 1.34 to 1.41 s, G395M 4.31 to 4.53 s).
-    - `psf_calibration` takes `--edges` for every star fit; `table_test` fits the shipped table
-      with the hard edge whatever `--edges` is.
-  - **Stars refitted with the edge.** Fit, select, then the smooth joint fit per detector from
-    S, giving table SE (`psf_table_wing3_after_SE.json`). Runtime: 5 + 9 min.
-    - On NRS1, SE is S within a few hundredths at every node, except a wider red wing (3.10
-      against 2.89 rows at 5.3 um).
-    - On NRS2 the wing/shoulder split at 2-3 um moves as in round 2 (a selection effect).
-    - The narrow red shoulder (0.15-0.3 rows wide, 2.1-2.8 rows towards +y) stays: it is not
-      an artefact of the edge (`figures/psf_parameters_SE2.png`).
-  - **Free-centre stack, clean centred stars** (`figures/psf_stack_tables_SE2.png`): SE with
-    the edge is under 1 % of peak in 13 of 14 ranges (NRS2 4.1-5.3 um 1.36 %). S with the edge
-    and the shipped model are under 1 % in 12. Centred stars barely feel the edge.
-  - **Edge stars** (|c| >= 0.3 of the pitch; 64 stars, 312 star-ranges; same pixels and floors;
-    `figures/edge_stars.png`). Median chi2/dof against the shipped model:
+- **The measured shutter edge (2026-11-03; tried, not adopted, removed).** A narrower opening
+  per disperser and wavelength (half-width 0.49 slit units in the blue to 0.45 at 5.3 um, a
+  shift, a larger after-shutter share), fitted to the bar shadow, matched uniform light (median
+  misfit 0.010 / 0.018 / 0.012 / 0.013, PRISM / G140M / G235M / G395M) but made the images of
+  edge stars worse (median chi2/dof 1.015 of the hard edge's, 1.051 with the half-width alone),
+  and the stars refitted with it (table SE) changed little. Uniform light and point sources
+  disagreed about where the edge is. The edge, its file and its code were removed when the
+  transmission below was adopted (outputs in `scratch/claude/psf_cal_edge/`).
+- **The shutter model: the geometric shutter with a smooth transmission T (adopted 2026-11-03,
+  user; `FIT_VERSION` 5).** Outputs: `scratch/claude/psf_cal_T/` (scripts in `scripts/`).
+  - **Model** (`profile_fit.SHUTTER`, `shutter_at`; file `data/nirspec_shutter_transmission.json`
+    with its provenance; header card `PFSHUT` names its version next to `PFVER`). The shutter is
+    geometric, +-0.50 slit units about its centre moved by a small fitted `shift`. Inside it
+    light is transmitted with T(x) = 1 - (1 - tedge) x^8, x the position over the half-width:
+    1 at the centre, flat over the middle, falling to `tedge` at the edges and never above 1.
+    `after` is the share of every PSF component's width^2 that acts after the shutter (it
+    replaces the fixed even split). The image is [(galaxy x PSF before) x T, within the open
+    shutters] convolved with the PSF after, then pixel-integrated. The point transmission in
+    the throughput normalisation (`transmission`, hence `throughput`, `main_shutter_factor`,
+    `boxcar_factor`) includes T, so the jwst point path loss and the model stay consistent.
+    Physically: light diffracted at the shutter edges leaves the spectrograph beam and is lost.
+    Uniform light sees that loss as a narrower opening; a point source feels it mainly in its
+    total, which the normalisation carries. G140H, G235H and G395H use the M grating with the
+    same filter (decided, user 2026-11-03).
+  - **Fit** (`psf_calibration.fit_shutter`, `shutter_table`): `shift`, `after` and `tedge`, each
+    a natural cubic spline in ln(lambda) (7 nodes for the PRISM, 4 per grating), fitted to both
+    bar-shadow tables at once (one open shutter and the bar between two) with the shipped PSF S,
+    soft-L1 residuals and a gentle curvature penalty. No parameter is at a bound.
+    - PRISM: `tedge` falls from 0.85 (0.6 um) through 0.62 (2.1 um) to 0.01 (5.3 um); `after`
+      0.45-0.55; `shift` within +-0.005.
+    - G395M: `tedge` 0.47 (2.9 um) to 0.03 (5.3 um); `after` 0.44-0.57.
+    - G140M: `tedge` 0.80-0.75, `after` 0.56-0.50, `shift` -0.013 to -0.016.
+    - G235M: `tedge` 0.70-0.61, `after` 0.49-0.44, `shift` -0.007 to -0.009.
+  - **Why x^8, capped.** T may not exceed 1. Uncapped, a quadratic + quartic form fitted the bar
+    shadow best but rose up to 5 % above 1 off-centre (G395M). Capped, in that form the quadratic
+    went to zero at every node; with a free mix of x^4 and x^8 (T monotone, at most 1) the fit took
+    x^8 alone at every node of every disperser, so the shape parameter was dropped. Per column,
+    x^12 fits slightly better below 3.5 um but reaches T(1) = 0 from 4 um and fits worse there.
+  - **What the cap costs** (PSF S throughout; same tests and stars as the uncapped round):
 
-    | Model | Median chi2/dof |
-    |---|---|
-    | SE + edge, by range and side | 1.00-1.11 |
-    | S + edge, by range and side | 0.99-1.07 |
-    | Half-width alone | 1.051 |
-    | After-shutter share alone | 0.995 |
-    | Both, no shift | 1.016 |
-    | All three | 1.015 |
-
-    The edge stars want the opening at the geometric 0.50: narrowing it makes the shapes of
-    their images worse, and the larger after-shutter share helps them slightly.
-  - **p1 flux change** (20 PRISM and 4 G395M bright clean sources; same frames;
-    `figures/edge_flux_change_p1.png`):
-    - The median over sources stays within +-0.4 % at every wavelength, for the edge alone,
-      for the edge with SE, and for the after-shutter share alone. The G395M red end is at
-      -0.7 % with SE.
-    - Single sources move by up to 2-4 % (off-centre ones), and one by -7 % at 1.8 um.
-    - Integrated per source: 0.983-1.019 (SE with the edge) and 0.986-1.018 (S with the edge).
-  - **Reading.** Uniform light and point sources disagree about the edge. The bar shadow
-    needs the opening narrowed to 0.45-0.49 slit units, growing narrower with wavelength. The
-    images of edge stars want 0.50. This looks like a loss that grows towards the shutter edges
-    for light that fills the shutter (diffraction at the edges taking light out of the
-    spectrograph beam), not a clip at a different place. A point source feels such a loss in
-    its total throughput, which the jwst point-source path loss in the normalisation already
-    carries, and hardly at all in the shape of its image. The model that would test this is
-    the geometric edge with a smooth transmission across the shutter fitted to the bar shadow.
-    It has no closed-form integral in the model, so it would cost speed.
-  - **Decisions for the user.**
-    - Adopt the measured edge with SE: it fits uniform light (and extended sources near the
-      edges) and costs edge stars 2.4 % in median chi2 (1.5 % with S).
-    - Or keep the shipped model.
-    - Or adopt only the after-shutter share: edge stars slightly better, the bar shadow not.
-    - Or build the transmission model first.
-    - Sign off the grating tables in any case.
-- **The shutter transmission T (2026-11-03; user's choice (d); the hard edge stays the default).**
-  Outputs: `scratch/claude/psf_cal_T/` (scripts in `scripts/`).
-  - **Model.** The geometric shutter (+-0.50 slit units, the small fitted shift kept) with a
-    transmission T(x) = 1 - c2 x^2 - c4 x^4 inside each shutter (x = position over the
-    half-width). The image is [(galaxy x PSF before) x T, within the open shutters] convolved
-    with the PSF after, then pixel-integrated. The point transmission in the throughput
-    normalisation (`transmission`, hence `throughput`, `main_shutter_factor`, `boxcar_factor`)
-    includes T, so the jwst point path loss and the model stay consistent.
-  - **Speed.** A Gaussian times a polynomial integrates in closed form: the truncated-normal
-    moments, from Phi and phi at the shutter ends only. It runs as a numba kernel
-    (`profile_fit._window_poly`; numba is already a pipeline dependency) that skips shutters more
-    than 8 sigma away. Fit time against the hard edge:
-
-    | Shutter model | PRISM | G395M |
-    |---|---|---|
-    | Hard edge (shipped) | 1.34 s | 4.32 s |
-    | T, numba kernel | 1.69 s (1.26x) | 5.29 s (1.22x) |
-    | T, plain numpy (rejected) | about 2.0x | — |
-    | Linear ramp at the edges (rejected) | 2.6x | — |
-
-    The default path is the unchanged numpy code.
-  - **Fit** (`psf_calibration.fit_shutter_edges(form='T')`): the shift, the after-shutter
-    share, c2 and c4, each a spline in ln(lambda) per disperser, fitted to both bar-shadow
-    tables with the shipped PSF. File: `data/nirspec_shutter_transmission.json` (not the
-    default).
-    - Per-column trials preferred x^2 + x^4: x^4 alone fits worse, x^4 + x^8 makes T negative
-      in the red, and x^2 + x^4 + x^8 gains nothing.
-    - PRISM: T at the edge falls from 0.88 (0.6 um) to 0.25 (5.3 um); the after-shutter share is
-      0.47-0.52.
-    - G395M: T at the edge is about 0.24 at 5.3 um. c2 is at its bound there, so T rises 5 %
-      above 1 near x = 0.45 before falling.
-    - G140M and G235M: T at the edge is 0.79 and 0.65-0.75.
-    - The shifts are the same as in (a) (G140M -0.013, G235M -0.008 slit units).
-  - **jwst's path-loss reference** (`pathloss_0010`, MOS1x1; `figures/pathloss_check.png`).
-    - Its uniform loss depends on wavelength only (and carries its own normalisation), so it
-      cannot give a uniform/point ratio against position.
-    - Its point loss against position, PS(y)/PS(0), falls much more steeply toward the edges than
-      the shipped model. At y = +-0.40 it is 0.67-0.73, against 0.82-0.91 for the shipped model.
-    - T moves the model toward it at every wavelength and matches it within 0.04 at 4-5 um
-      (0.66-0.70). In the blue jwst's PS is steeper than T (0.70 against 0.86 at 0.9 um).
-  - **What each data set says** (PSF S throughout):
-
-    | Data set | Shipped (hard edge) | (a) measured edge | (d) T |
+    | Data set | Hard edge (`FIT_VERSION` 4) | T uncapped (x^2 + x^4) | T capped (x^8, `FIT_VERSION` 5) |
     |---|---|---|---|
-    | Bar shadow, median misfit (PRISM / G395M) | 0.061 / 0.082 | 0.010 / 0.013 | 0.010 / 0.012 |
-    | Edge stars, median chi2/dof against shipped (312 star-ranges) | 1 | 1.015 (half-width alone 1.051) | 1.004 (45 % of star-ranges better; per range and side 0.95-1.07) |
-    | Centred stars, free-centre stack under 1 % of peak | 12 of 14 | 12 of 14 | 12 of 14 (lower rms in most ranges) |
-    | p1 flux, median over sources | — | within +-0.4 % | 0.2-0.4 % lower (PRISM), 0.5 % lower (G395M) |
-    | p1 flux, integrated per source | — | 0.986-1.018 | 0.983-1.014 |
+    | Bar shadow, median misfit, PRISM / G140M / G235M / G395M | 0.061 / 0.035 / 0.043 / 0.082 | 0.0097 / 0.0177 / 0.0121 / 0.0124 | 0.0105 / 0.0183 / 0.0129 / 0.0133 |
+    | Edge stars, median chi2/dof against the hard edge (312 star-ranges) | 1 | 1.004 (45 % better) | 1.018 (38 % better; per range and side 0.95-1.09) |
+    | p1 flux against the hard edge, median over sources | — | 0.2-0.4 % lower (PRISM), 0.5 % (G395M) | 0.1-0.4 % lower (PRISM), 0.1-0.7 % (G395M) |
+    | p1 flux, integrated per source (20 PRISM, 4 G395M) | — | 0.983-1.014 | 0.984-1.014 |
+    | Fit time, PRISM / G395M source | 1.34 / 4.07 s | 1.26x / 1.22x | 1.76 / 5.24 s (1.31x / 1.29x) |
 
-    For centred stars, T needs no refit of the PSF: its after-shutter share is the 0.5 that S
-    was fitted with. The off-centre sources that moved most under (a) land in the same places
-    with T, a little closer to the shipped model at the worst wavelength: 921035 (c +0.42)
-    -11.0 % to -8.7 %, 919995 +1.8 % to +1.4 %, 879604 (c +0.43) -1.4 % to -1.4 %, 632554
-    (c -0.42) -1.2 % to -1.7 % integrated (`figures/t_flux_change_p1.png`,
-    `figures/t_edge_stars.png`, `figures/psf_stack_tables_T.png`).
-  - **Reading.** One model now fits both the bar shadow and the point sources at the edges:
-    uniform light sees the loss towards the edges as a narrower opening, and a point source sees
-    it in its total, which the normalisation carries.
-  - **Decision for the user.**
-    - Adopt T (`nirspec_shutter_transmission.json` as the model's default shutter) or keep the
-      hard edge. T changes fluxes by -0.2 to -0.5 % in the median and by a few percent for
-      sources near the shutter edges, and costs 22-26 % in fit time.
-    - Sign off the grating bar-shadow tables first; their held-out check has not been rerun.
-    - The blue end, where jwst's point loss is steeper than T, is open.
+    - The 50 % half-width of the open region and the floor under the bar follow the measured
+      ones as closely as uncapped (`figures/v7_T4_{edges,profiles}.png`).
+    - Edge stars: the cap costs 1.4 % in median chi2/dof, mostly at 1-3.3 um toward -y (up to
+      1.09 on NRS2 1.5-2.0 um); at the red end the capped and uncapped models agree
+      (`figures/t4_edge_stars.png`). With the uncapped T the stars were as well fitted as with
+      the hard edge; capped they are about where the measured edge left them.
+    - Fluxes: the off-centre sources move as before (879604 -1.4 %, 632554 -1.6 %, 919995
+      +1.4 % integrated; `figures/t4_flux_change_p1.png`). Centred stars need no PSF refit:
+      the after-shutter share stays near the 0.5 S was fitted with.
+    - The extra time is the eighth moment of the truncated normal (the recursion to n = 8 in
+      `profile_fit._window_kernel`, numba); a Gaussian wider than the half-width takes 16-point
+      Gauss-Legendre instead, where the recursion loses precision.
+  - **jwst's path-loss reference** (`pathloss_0010`, MOS1x1; `figures/pathloss_check.png`, made
+    with the uncapped T): its point loss against position, PS(y)/PS(0), falls more steeply
+    toward the edges than the hard edge (0.67-0.73 at y = +-0.40 against 0.82-0.91). T moves the
+    model toward it at every wavelength and matches it within 0.04 at 4-5 um; in the blue jwst's
+    PS stays steeper than T (0.70 against 0.86 at 0.9 um).
+  - **Code.** `ProfileModel(shutter=...)` (None: `SHUTTER`) and `for_placement` take a shutter
+    model in `load_shutter`'s layout; the models `profile_product` and `mbkg_extraction` derive
+    from the chain's model carry its `psf_tables` and `shutter`. The fitted pixels
+    (`fit_pixel_masks`, `_region`), `nod_scan.delta_grid` and the row selections in `nod_scan`,
+    `profile_contam`, `trace_overlap` and `slitlet_neighbours` keep the nominal +-0.50, which
+    contains the open area whatever the shift. `psf_calibration` takes `--shutter` for its star
+    fits.
+  - **Open.** The blue end against jwst's point loss; the held-out check of the b0c08026 grating
+    tables, which the gratings' T is fitted to; p1 stage 3 rerun with `FIT_VERSION` 5.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
@@ -2341,7 +2245,7 @@ a fix or needs another field or disperser), **To make**.
 | V4 | Residual across the shutter | painted own-slitlet sky vs rate against position in the shutter, incl. the margin rows | table and data agree to 0.01-0.02 of the open level | Exists (GOODS-S, p1) | `bs_v5/residual_vs_f_clean_{before,after}.png`, `mbkg_p1/residual_vs_f_clean.png` |
 | V5 | Trace ends and wavelength cutoffs | rate along the trace past each calibrated end, per disperser and filter, with the cutoffs | cutoffs at the 2 % level of the in-band light | Exists | `bs_v3/cutoffs.png`, `bs_v3/trace_ends.png`, `bs_v3/dispersion_edges_*.png` |
 | V6 | Bar-shadow tables vs CRDS, held out | per-segment residual of a held-out field divided by each table | empirical 1-4 % rms vs CRDS 10-23 % | Redo on the b0c08026 tables | `bs_gratings/bs_<grating>_heldout_qa.pdf`, `bs_prism7_all/empirical_barshadow_prism_qa.pdf`, `bs_v5/empirical_barshadow_<disperser>_qa.pdf` |
-| V7 | Forward-model shutter edge vs measured bar shadow | the model's response to uniform light against the table | edge, narrowing and floor consistent, or a stated revision | Made 2026-11-03: the hard edge fails in the red. The measured edge (a) passes but edge stars prefer the hard edge; the transmission T (3.7) passes and leaves the edge stars as they were | `scratch/claude/psf_cal_T/figures/v7_T_*.png` |
+| V7 | Forward-model shutter edge vs measured bar shadow | the model's response to uniform light against the table | edge, narrowing and floor consistent, or a stated revision | Made 2026-11-03: the hard edge fails in the red. A narrower measured edge passes but edge stars prefer the geometric edge; the geometric shutter with the transmission T capped at 1 (3.7, the default from `FIT_VERSION` 5) passes, with edge stars 1.8 % worse in median chi2 | `scratch/claude/psf_cal_T/figures/v7_T4_*.png` |
 | V8 | Per-exposure sky vs pool, quadrant scales | `MBKG1D` per exposure against the pool; `MBKGSCL` / `MBKGOFF`; quadrant scales | scales and offsets recorded; outliers explained | Exists (product QA) | `<base>_mbkg_qa.pdf` in each workspace; `bs_v3/mbkg_qa_p1_g395m_nrs1.png` |
 | V9 | Grating sky vs PRISM sky, same field | G395M `MBKG1D` against PRISM in bands | agree within 1-5 % | Exists (P0) | `docs/figures/master-bkg-prototype/ember_cosmos_p1_g395m_sky_tailaware.png` |
 | V10 | Stuck-shutter amplitude histograms per disperser | distribution of a per measurement and per shutter, live vs dark | clean gap between 0.3 and 0.8; live 1 % quantile above 0.8 | Exists (PRISM, G395M); To make (G140M, G235M) | `stuck_shutters/amp_hist.png` |
@@ -2382,7 +2286,7 @@ a fix or needs another field or disperser), **To make**.
 | Stuck fit on G140M and G235M | extraction session | |
 | Build step 1 and the physical-key stuck list, migration, web, deploy | both, per split | approvals above |
 | Remeasure the +2.5 % in-range offset and G395M blue extension after b0c08026 | MB session | |
-| Held-out validation of the b0c08026 tables; user sign-off on grating tables | MB session | user |
+| Held-out validation of the b0c08026 tables | MB session | |
 | Grating sky smoothing trial | MB session | user |
 | Retire `tracemaps/` once pass-1 validity keys on the rate files (the superseded passes are removed) | extraction session | |
 | Error propagation: write the variance including the subtracted sky exposures in stage 2b (profile fit reads the frame's own from `PRE_BKGSUB_VAR_*`); before V26 | extraction session | user (when) |
@@ -2396,7 +2300,7 @@ a fix or needs another field or disperser), **To make**.
 | Nod offset law (3.7, `NOD_OFFSET_LAW`: each nod at its own planned SRCYPOS): built, on by default | extraction session | |
 | Centre-law refit with the nod law (3.7, `psf_calibration.py` step `centre_law`): adopt or not (the two-component PSF refit is superseded by table S and its code removed) | user | |
 | Three-component PSF (3.7, `wing3_after`, general `psf_components` tables): table rule decided 2026-11-02 (smooth joint fit, table S); S adopted 2026-11-03 (`FIT_VERSION` 4); the self-consistent second round gives S2 (same on NRS1, NRS2 wing/shoulder split moved by up to 2 % of peak at 1.5-3 um, stack test equal overall): keep S or adopt S2. Left: the 3.3-5.3 um ranges (few stars; more calibration stars), and the flux change on p1 | user (S or S2); extraction session | |
-| Shutter (3.2, 3.7): the user chose (d), the hard edge stays the default; the transmission T is built (`data/nirspec_shutter_transmission.json`) and fits the bar shadow and the edge stars together. Adopt T or keep the hard edge; sign off the grating bar-shadow tables; the blue end against jwst's point path loss is open | user | extraction session |
+| Shutter (3.2, 3.7): the geometric shutter with the smooth transmission T, capped at 1, is the default (user, 2026-11-03; `FIT_VERSION` 5, card `PFSHUT`); the H gratings use the M grating with the same filter (user, 2026-11-03). Left: p1 stage 3 rerun with it; the blue end against jwst's point path loss; the held-out check of the b0c08026 grating tables, which T is fitted to | extraction session | |
 | Stage 1 footprint past the calibrated range | MB session | user |
 | Runtime baseline on one full observation | both | |
 | Speed up stage 2's per-source work (user goal, 2026-10-31). First profile one stage-2b group and one rectification: in stage 2b the log line "Inverting the pathloss" only marks the start of a group, which also subtracts the nods, reapplies the pathloss and rectifies again, so the slow part is not yet known. Candidate fixes once measured: rectify once instead of in both 2a and 2b, invert the pathloss arithmetically from the stored correction instead of a `PathLossStep` call, and batch per exposure instead of per source | extraction session | |
@@ -2497,3 +2401,7 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   edge (sections 3.2 V7 follow-up, 3.7, 5 V7, 6): its model, the stars refitted with it (SE),
   the checks (stack, V7, edge stars, p1 flux) and the decisions they leave. Then the user's choice
   (d) and the shutter transmission T built and checked the same way (3.2, 3.7, V7 row, 6).
+  Then T adopted as the default (`FIT_VERSION` 5, card `PFSHUT`; 3.2, 3.7, V7 row, 6): capped
+  at 1, which leaves the form T = 1 - (1 - tedge) x^8, and what the cap costs; the measured edge
+  and its file removed; the H-grating fallback recorded as decided; the bar-shadow tables'
+  sign-off caveat dropped (settled 2026-10-30).
