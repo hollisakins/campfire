@@ -1187,27 +1187,40 @@ def split_halves(keys, seed=20261102):
     return half, set(keys) - half
 
 
-def step_smooth_joint(root, out_dir, observations, form_name, det, which='all', log=print):
+def smooth_start(out_dir, form_name, det, start='J'):
+    """Starting spline coefficients for ``step_smooth_joint``: 'J' (the joint per-range table
+    in ``out_dir``) or 'shipped' (``PF.PSF_TABLES``) read at the spline nodes, or the path of a
+    smooth joint fit record (its coefficients as they are; '{det}' in it is the detector)."""
+    form = FORMS[form_name]
+    if start.endswith('.json'):
+        with open(start.format(det=det)) as fh:
+            c = json.load(fh)['coefs']
+        return {p: np.asarray(c[p], float) for p in form.params()}
+    tab = PF.PSF_TABLES if start == 'shipped' else \
+        read_form_table(os.path.join(out_dir, f'psf_table_{form_name}_{start}.json'))
+    comps = PF.psf_components(SMOOTH_NODES, det, tab)
+    v = dict(core_sigma=comps[0]['sigma'], wing_frac=comps[1]['frac'], wing_sigma=comps[1]['sigma'],
+             wing_offset=comps[1]['offset'], third_frac=comps[2]['frac'], third_sigma=comps[2]['sigma'],
+             third_offset=comps[2]['offset'])
+    return {p: np.clip(v[p], SMOOTH_BOUNDS[p][0] + 1e-3, SMOOTH_BOUNDS[p][1] - 1e-3) for p in form.params()}
+
+
+def step_smooth_joint(root, out_dir, observations, form_name, det, which='all', start='J', log=print):
     """The smooth joint fit of ``det`` on all clean stars ('all') or on one random half ('A',
-    'B'), from the joint per-range table J at the spline nodes, the spline coefficients and the
-    stars' centres and offsets in one problem (``smooth_joint_fit_all``); result in
-    smooth_joint_<form>/."""
+    'B'), from ``start`` (``smooth_start``; default the joint per-range table J at the spline
+    nodes), the spline coefficients and the stars' centres and offsets in one problem
+    (``smooth_joint_fit_all``); result in smooth_joint_<form>/."""
     form = FORMS[form_name]
     _, _, clean = clean_records(out_dir)
     allk = {k for v in clean.values() for k in v}
     A, B = split_halves(allk)
     keys = None if which == 'all' else (A if which == 'A' else B)
     units = load_star_ranges(root, out_dir, observations, det, keys_allowed=keys, log=log)
-    tabJ = read_form_table(os.path.join(out_dir, f'psf_table_{form_name}_J.json'))
-    comps = PF.psf_components(SMOOTH_NODES, det, tabJ)
-    start = dict(core_sigma=comps[0]['sigma'], wing_frac=comps[1]['frac'], wing_sigma=comps[1]['sigma'],
-                 wing_offset=comps[1]['offset'], third_frac=comps[2]['frac'], third_sigma=comps[2]['sigma'],
-                 third_offset=comps[2]['offset'])
-    start = {p: np.clip(v, SMOOTH_BOUNDS[p][0] + 1e-3, SMOOTH_BOUNDS[p][1] - 1e-3) for p, v in start.items()}
+    start = smooth_start(out_dir, form_name, det, start)
     import time
     t0 = time.time()
     out = smooth_joint_fit_all(units, form, det, start, log=log, max_nfev=SMOOTH_MAX_NFEV, passes=1)
-    out.update(det=det, which=which, method='joint (shape and unit parameters in one problem)', nodes=SMOOTH_NODES.tolist(), seconds=time.time() - t0,
+    out.update(det=det, which=which, start={p: np.asarray(v).tolist() for p, v in start.items()}, method='joint (shape and unit parameters in one problem)', nodes=SMOOTH_NODES.tolist(), seconds=time.time() - t0,
                keys=sorted({u['key'] for u in units}), tau=SMOOTH_TAU, bounds=SMOOTH_BOUNDS)
     write_json(os.path.join(out_dir, f'smooth_joint_{form_name}', f'{det}_{which}.json'), out)
     log(f'{det} {which}: done in {out["seconds"] / 60:.1f} min; bounds hit: {out["bounds_hit"] or "none"}')
@@ -2327,6 +2340,7 @@ TABLE_STYLE = {'A': (NEW_C, '-', 'new: core 25th percentile, the rest median'),
                'S': (NEW_C, '-', 'new: smooth joint fit (S)'),
                'SA': ('#1baf7a', ':', 'smooth joint fit, half A'),
                'SB': ('#6250d6', ':', 'smooth joint fit, half B'),
+               'S2': ('#6250d6', '-', 'smooth joint fit, second round (S2)'),
                'shipped': (OLD_C, '--', 'shipped table (profile_fit.PSF_TABLES)')}
 
 
@@ -2546,6 +2560,8 @@ def main(argv=None):
                                      'smooth_joint', 'smooth_tables', 'table_test', 'form_figures', 'smooth_figures'])
     ap.add_argument('--det', default='NRS1', help='smooth_joint: detector')
     ap.add_argument('--which', default='all', help="smooth_joint: 'all' stars or half 'A' / 'B'")
+    ap.add_argument('--start', default='J', help="smooth_joint: start from table 'J', 'shipped', or a smooth "
+                    'joint fit record (.json)')
     ap.add_argument('--tables', nargs='*', default=['A', 'B'], help='table_test / form_figures: candidate tables '
                     '(psf_table_<form>_<name>.json); table_test adds the shipped table')
     ap.add_argument('--tag', default='', help='table_test / form_figures: suffix of the test directories')
@@ -2641,7 +2657,7 @@ def main(argv=None):
         write_json(os.path.join(a.out, f'psf_table_{a.form}_Jn_factor.json'), narrow)
         log('narrow-side factor on the joint core (per-star core p25 / p50): ' + json.dumps(_jsonable(narrow)))
     elif a.step == 'smooth_joint':
-        step_smooth_joint(a.root, a.out, a.obs, a.form, a.det, which=a.which, log=log)
+        step_smooth_joint(a.root, a.out, a.obs, a.form, a.det, which=a.which, start=a.start, log=log)
     elif a.step == 'smooth_tables':
         for which, name in (('all', 'S'), ('A', 'SA'), ('B', 'SB')):
             try:
