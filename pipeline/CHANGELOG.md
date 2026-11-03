@@ -63,6 +63,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   up to 7 % and the flux moves by < 0.3 %. A single exposure, or a placeholder SRCYPOS, is not
   shifted.
 
+- **NIRSpec profile fit: three-component cross-dispersion PSF (`FIT_VERSION` 4).** The PSF is a
+  core, a wing with its own width and offset, and a one-sided shoulder toward slit +y, both
+  offsets acting after the shutter; every parameter varies smoothly with wavelength over
+  0.6-5.3 um. Fitted jointly per detector to the bright calibration-field stars, each star's
+  centre free in every exposure (`psf_calibration.smooth_joint_fit_all`), and shipped as
+  `data/nirspec_profile_psf.json`. Stacked stars match it to within 1 % of the peak in 11 of 14
+  detector-ranges (1.0-1.3 % at 3.3-5.3 um, few stars), against 1.1-4.3 % for the previous
+  two-Gaussian table (kept as `LEGACY_PSF_TABLES`); a fit on half the stars does as well on the
+  other half below 3.3 um.
+
 - **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
   run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint
   first pass's model of each neighbor. That pass fitted every source on the nod differences

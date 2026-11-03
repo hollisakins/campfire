@@ -30,7 +30,9 @@ population), so at low S/N the fit settles on a compact source at the planned
 position and the extraction becomes a fixed-template optimal extraction.
 """
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
@@ -78,22 +80,36 @@ class TooFewWavelengths(ProfileFitFallback):
     """Too few wavelength samples on the source row for a spectrum grid."""
     reason = 'too_few_wavelengths'
 
-# Cross-dispersion PSF (PRISM): core sigma in native rows and wing fraction per
-# detector, wing sigma = PSF_K * core. Lower quartile of per-star core widths from
-# 135 calibration-field stars (programs 12497, 6642), joint wing fraction.
-# NOTE: derived from nod differences built with the path-loss correction applied;
-# to be re-derived through this module (bright stars, small effect expected).
-# Layout: ``psf_components`` reads this legacy two-component form and a general list of
-# components (share, width, offset, before/after the shutter) per wavelength node; refits in
-# both layouts come from ``psf_calibration``.
+# The two-Gaussian PSF used up to FIT_VERSION 3 (PRISM): core sigma in native rows and
+# wing fraction per detector, wing sigma = PSF_K * core. Lower quartile of per-star core
+# widths from 135 calibration-field stars (programs 12497, 6642), joint wing fraction.
+# Kept as the starting point and reference of ``psf_calibration``.
 PSF_LAM = np.array([0.85, 1.25, 1.75, 2.30, 2.95, 3.70, 4.70])
-PSF_TABLES = {
+LEGACY_PSF_TABLES = {
     'NRS1': dict(S_rows=np.array([0.390, 0.400, 0.419, 0.427, 0.429, 0.479, 0.597]),
                  f=np.array([0.234, 0.190, 0.187, 0.250, 0.299, 0.232, 0.118])),
     'NRS2': dict(S_rows=np.array([0.333, 0.360, 0.393, 0.384, 0.399, 0.480, 0.621]),
                  f=np.array([0.325, 0.259, 0.249, 0.337, 0.402, 0.295, 0.134])),
 }
 PSF_K = 2.2
+
+
+def _load_psf_tables(path):
+    with open(path) as fh:
+        raw = json.load(fh)
+    return {det: dict(lam=np.asarray(t['lam'], float),
+                      components=[{k: (np.asarray(v, float) if isinstance(v, list) else v)
+                                   for k, v in c.items()} for c in t['components']])
+            for det, t in raw.items()}
+
+
+# Cross-dispersion PSF (from FIT_VERSION 4): per detector, a core, a wing with its own width
+# and offset, and a one-sided shoulder toward slit +y, both offsets after the shutter
+# (``psf_components`` general layout). Every parameter a natural cubic spline in log
+# wavelength over 0.6-5.3 um (nodes 0.6, 0.9, 1.4, 2.1, 3.0, 4.1, 5.3), fitted jointly to the
+# bright calibration-field stars with each star's centre free per exposure, and sampled
+# here at 61 nodes (``psf_calibration.smooth_joint_fit_all``, table S, 2026-11-03).
+PSF_TABLES = _load_psf_tables(Path(__file__).parent.parent / 'data' / 'nirspec_profile_psf.json')
 
 # Trace-centre law from the same stars: centre(lambda) = c + D(lambda) + alpha(lambda) * c,
 # D per MSA quadrant and detector (falling back to the same quadrant on the other
@@ -140,12 +156,13 @@ def open_intervals(open_k):
 
 
 def psf_params(lam, det, tables=None):
-    """Core sigma (native rows) and wing fraction at each wavelength.
+    """Core sigma (native rows) and wing fraction at each wavelength, for a table in the
+    legacy two-Gaussian layout.
 
-    tables : replaces ``PSF_TABLES`` (same layout; an entry may carry its own
+    tables : replaces ``LEGACY_PSF_TABLES`` (same layout; an entry may carry its own
         wavelength nodes as ``lam``, default ``PSF_LAM``), e.g. a PSF being
         calibrated (``psf_calibration``)."""
-    tab = (PSF_TABLES if tables is None else tables)[det]
+    tab = (LEGACY_PSF_TABLES if tables is None else tables)[det]
     nodes = tab.get('lam', PSF_LAM)
     return np.interp(lam, nodes, tab['S_rows']), np.interp(lam, nodes, tab['f'])
 
@@ -1409,7 +1426,7 @@ def drizzle_arrays(frame_of, dmap):
     return dmap.drizzle({name: frame_of(name) for name in dmap.names})['data']
 
 
-FIT_VERSION = '3'                     # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position
+FIT_VERSION = '4'                     # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF
 
 
 def run_single_source(product_name, workspace_dir, groups, bkg_overrides, science,

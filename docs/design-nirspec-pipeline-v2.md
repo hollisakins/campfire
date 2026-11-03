@@ -725,6 +725,19 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
   bounds), so the single-star fits are figures only.
 - Proposed: adopt S (the user's call). Open: the 3.3-5.3 um ranges, which rest on 16-53 stars and
   whose shoulder width sits at or near its lower bound; the edge stars' blue residuals.
+- **Adopted 2026-11-03 (user decision).** S is the extraction's PSF: `PSF_TABLES` is read from
+  `campfire_pipeline/data/nirspec_profile_psf.json` (table S as fitted), `FIT_VERSION` 4. The
+  two-Gaussian table stays as `LEGACY_PSF_TABLES`, the starting point and reference of
+  `psf_calibration` and of the legacy-reproduction test. Two tests had depended on the old PSF:
+  the shutter-geometry test of a PRISM shape transferred to a grating now runs with the legacy
+  table (the three-component red wing, sigma up to ~3 rows after the shutter, reaches its fixed
+  "beyond the blur" margin), and the neighbour-scan test now fits the target at its true shape.
+  The latter is not a PSF effect: with an equally bright, unmodelled neighbour one shutter
+  away, a free target fit has its lowest chi2 merged with the neighbour (centre +0.6, width 0.9)
+  under both PSFs (chi2 92k merged vs 150k true with the legacy table, 85k vs 143k with S); the
+  old PSF's starting grid happened to stay in the true basin, S's slides into the merged one.
+  Next: the p1 rerun from stage 2a, and the flux change of bright sources against the previous
+  p1 products.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
@@ -2053,7 +2066,7 @@ a fix or needs another field or disperser), **To make**.
 | Default galaxy width 0.15 vs 0.21 | user | |
 | Nod offset law (3.7, `NOD_OFFSET_LAW`: each nod at its own planned SRCYPOS): built, on by default | extraction session | |
 | PSF table and centre-law refit with the nod law (3.7, `psf_calibration.py`): adopt or not | user | |
-| Three-component PSF (3.7, `wing3_after`, general `psf_components` tables): table rule decided 2026-11-02 (smooth joint fit, table S); left: whether to adopt S, and the 3.3-5.3 um ranges (1.0-1.3 % of peak, few stars) | user | |
+| Three-component PSF (3.7, `wing3_after`, general `psf_components` tables): table rule decided 2026-11-02 (smooth joint fit, table S); S adopted 2026-11-03 (`FIT_VERSION` 4). Left: the 3.3-5.3 um ranges (1.0-1.3 % of peak, few stars; more calibration stars), and the flux change on p1 | extraction session | |
 | Forward-model shutter edge vs measured bar shadow | extraction session | |
 | Stage 1 footprint past the calibrated range | MB session | user |
 | Runtime baseline on one full observation | both | |
@@ -2147,3 +2160,5 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   SRCYPOS, built and on by default); the refit with the law, pending the user's decision; the
   general PSF and the three-component table candidates. Later the same day: the user's decision
   that the table is a smooth joint fit, and its result (table S, held-out test).
+- **2026-11-03.** Section 3.7: table S adopted as the extraction's PSF (`FIT_VERSION` 4), and
+  the two tests that had depended on the old PSF.

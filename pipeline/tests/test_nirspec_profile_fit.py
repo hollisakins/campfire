@@ -290,7 +290,7 @@ def _legacy_as_general(det_tables):
 
 def test_legacy_table_reproduces_the_original_model():
     exps = _exposures(src_y=0.12)
-    M = PF.ProfileModel(exps)
+    M = PF.ProfileModel(exps, psf_tables=PF.LEGACY_PSF_TABLES)
     p = np.array([0.12, 0.01, np.log(0.08), 0.0])
     e = exps[1]
     y, lam, dy = e.y.ravel(), e.wav.ravel(), e.dy.ravel()
@@ -298,7 +298,7 @@ def test_legacy_table_reproduces_the_original_model():
     old = _legacy_image(M, p, 1, y, lam, dy)
     assert np.allclose(new, old, rtol=1e-12, atol=1e-15)
     # the same table written in the general layout gives the same design matrix
-    G = PF.ProfileModel(exps, psf_tables=_legacy_as_general(PF.PSF_TABLES))
+    G = PF.ProfileModel(exps, psf_tables=_legacy_as_general(PF.LEGACY_PSF_TABLES))
     assert np.allclose(G.design(p, np.zeros(3)).toarray(), M.design(p, np.zeros(3)).toarray(), rtol=1e-12, atol=1e-15)
 
 

@@ -44,7 +44,12 @@ def _data(exps, target_scale, nbr_scale, delta, seed=1):
 def test_scan_recovers_injected_neighbour_delta_and_partner():
     exps = T._exposures(src_y=0.0)
     _data(exps, 30.0, 30.0, MSA_SLIT_PITCH)
-    R = PF.fit(exps, chromatic=False)
+    # the target at its true shape: a free fit of a target with an equally bright,
+    # unmodelled neighbour one shutter away has its lowest chi2 merged with the neighbour
+    # (centre +0.6, width 0.9), under any PSF; which basin a free fit ends in depends
+    # on its starting grid, and this test is about the scan
+    R = PF.fit_fixed(exps=exps, shape=dict(centre_offset=0.0, width=0.1, drift=0.0, width_change=0.0),
+                     chromatic=False)
     S = NS.run(R, dchi2_min=60.0)
     assert S.detected, (S.dchi2, S.dchi2_null)
     assert S.delta == pytest.approx(MSA_SLIT_PITCH, abs=0.1)

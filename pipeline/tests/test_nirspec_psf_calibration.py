@@ -90,7 +90,7 @@ def test_core_width_and_centre_recovered_at_the_true_wing_fraction(S_true, f_tru
     _inject(exps, S_true, f_true, centre)
     RF = PC.RangeFit(exps, (2.0, 2.6))
     RF.set_floor(np.zeros(RF.M.npix))
-    ref = RF.fit(tables=PF.PSF_TABLES)
+    ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
     RF.set_floor(ref['_model'])
     fr = RF.fit(f_wing=f_true, x0=ref['_x'] + [0.45])
     assert abs(fr['S'] - S_true) < 0.01
@@ -105,7 +105,7 @@ def test_wrong_wing_fraction_trades_against_the_core_width():
     _inject(exps, 0.42, 0.25, 0.05)
     RF = PC.RangeFit(exps, (1.0, 1.5))
     RF.set_floor(np.zeros(RF.M.npix))
-    ref = RF.fit(tables=PF.PSF_TABLES)
+    ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
     RF.set_floor(ref['_model'])
     true = RF.fit(f_wing=0.25, x0=ref['_x'] + [0.45], use=ref['_use'])
     wide = RF.fit(f_wing=0.45, x0=ref['_x'] + [0.45], use=ref['_use'])
@@ -193,7 +193,7 @@ def test_free_offsets_recover_the_nod_shifts():
     _inject(exps, 0.42, 0.25, 0.05)                 # law on: each nod at its planned position
     RF = PC.RangeFit(exps, (1.0, 2.6), nod_law=False)
     RF.set_floor(np.zeros(RF.M.npix))
-    ref = RF.fit(tables=PF.PSF_TABLES)
+    ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
     RF.set_floor(ref['_model'])
     fr = RF.fit(f_wing=0.25, x0=ref['_x'] + [0.45])
     off, err, chi2 = PC._fit_offsets(RF, 0.25, fr['_x'], fr['_use'])

@@ -53,7 +53,7 @@ campfire-nircam = "campfire_pipeline.nircam.cli:main"
 include = ["campfire_pipeline*"]
 
 [tool.setuptools.package-data]
-campfire_pipeline = ["data/*.fits", "data/*.toml", "data/*.hdf5"]
+campfire_pipeline = ["data/*.fits", "data/*.toml", "data/*.hdf5", "data/*.json"]
 
 [build-system]
 requires = ["setuptools>=68", "wheel", "setuptools-scm>=8"]

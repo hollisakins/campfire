@@ -627,9 +627,9 @@ THIRD_STARTS = (dict(third_offset=1.5, third_sigma=0.5, third_frac=0.02),
 def _range_start(RF, det, r, table=None, joint=None):
     """Floor, clipping mask and starting values of a range from the legacy fits."""
     fj = float(joint[(det, r)]['f']) if joint and (det, r) in joint else \
-        float(np.interp(0.5 * sum(RF.lam_range), PF.PSF_LAM, PF.PSF_TABLES[det]['f']))
+        float(np.interp(0.5 * sum(RF.lam_range), PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['f']))
     RF.set_floor(np.zeros(RF.M.npix))
-    ref = RF.fit(tables=PF.PSF_TABLES)
+    ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
     RF.set_floor(ref['_model'])
     fr = RF.fit(f_wing=fj, x0=ref['_x'] + [0.4])
     return fr, fj
@@ -724,16 +724,16 @@ def fit_star_smooth(task, form, start=None, exps=None, nodes=STAR_NODES, snr_by_
     # the floor first, from a fit without clipping: clipped on the bare variances a bright star
     # loses its core (the current table misses it by many sigma)
     RF.set_floor(np.zeros(RF.M.npix))
-    ref0 = RF.fit(tables=PF.PSF_TABLES, clip_rounds=0)
+    ref0 = RF.fit(tables=PF.LEGACY_PSF_TABLES, clip_rounds=0)
     RF.set_floor(ref0['_model'])
-    ref = RF.fit(tables=PF.PSF_TABLES, x0=ref0['_x'], clip_rounds=1)
+    ref = RF.fit(tables=PF.LEGACY_PSF_TABLES, x0=ref0['_x'], clip_rounds=1)
     RF.set_floor(ref['_model'])
     D, al = PF.centre_law(nodes, det, task.quadrant)
     cg = RF.centre_at(ref['_x'][0], ref['_x'][1], nodes)
     cstart = cg + D + al * cg
     st = {k: np.broadcast_to(np.asarray(v, float), nodes.shape).copy() for k, v in (start or {}).items()}
     if 'core_sigma' not in st:
-        st['core_sigma'] = np.interp(nodes, PF.PSF_LAM, PF.PSF_TABLES[det]['S_rows'])
+        st['core_sigma'] = np.interp(nodes, PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['S_rows'])
     g = fit_form(RF, form, nodes, start=st, use=ref['_use'], centre_start=cstart, det=det, clip_rounds=0)
     g['node_snr'] = [float(snr_by_range[range_of(x)]) if snr_by_range is not None else np.nan for x in nodes]
     return g, RF
@@ -1408,9 +1408,9 @@ def measure_offsets(task, ranges=None, snr_min=10.0, edge_max=0.45, exps=None):
             row['error'] = str(err)
             rec['ranges'].append(row)
             continue
-        f_wing = float(np.interp(0.5 * (a + b), PF.PSF_LAM, PF.PSF_TABLES[task.detector]['f']))
+        f_wing = float(np.interp(0.5 * (a + b), PF.PSF_LAM, PF.LEGACY_PSF_TABLES[task.detector]['f']))
         RF.set_floor(np.zeros(RF.M.npix))
-        ref = RF.fit(tables=PF.PSF_TABLES)
+        ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
         RF.set_floor(ref['_model'])
         fr = RF.fit(f_wing=f_wing, x0=ref['_x'] + [0.45])
         row.update(peak_snr=fr['peak_snr'], c_node=fr['c_node'], S=fr.get('S'), chi2_zero=fr['chi2'], ndof=fr['ndof'])
@@ -1674,7 +1674,7 @@ def _public(d):
 
 
 def current_wing(det):
-    return dict(zip(range(len(RANGES)), np.asarray(PF.PSF_TABLES[det]['f'], float)))
+    return dict(zip(range(len(RANGES)), np.asarray(PF.LEGACY_PSF_TABLES[det]['f'], float)))
 
 
 def fit_star(task, exps=None, wing=None, f_grid=F_GRID, sample_tables=None, snr_floor=5.0, log=None, nod_law=None):
@@ -1696,7 +1696,7 @@ def fit_star(task, exps=None, wing=None, f_grid=F_GRID, sample_tables=None, snr_
     log = log or (lambda *a: None)
     exps = load_star(task) if exps is None else exps
     det = task.detector
-    f_cur = np.interp(range_centres(), PF.PSF_LAM, PF.PSF_TABLES[det]['f'])
+    f_cur = np.interp(range_centres(), PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['f'])
     rec = dict(key=task.key, obs=task.obs, source_id=task.source_id, detector=det, quadrant=task.quadrant,
                x_start=task.x_start, y_start=task.y_start, srcy=task.srcy, nexp=len(exps),
                nsci=int(sum(e.use_data for e in exps)), ranges=[])
@@ -1712,9 +1712,9 @@ def fit_star(task, exps=None, wing=None, f_grid=F_GRID, sample_tables=None, snr_
             continue
         # reference: the current table; first the floor from a fit without it
         RF.set_floor(np.zeros(RF.M.npix))
-        ref0 = RF.fit(tables=PF.PSF_TABLES, clip_rounds=0)
+        ref0 = RF.fit(tables=PF.LEGACY_PSF_TABLES, clip_rounds=0)
         RF.set_floor(ref0['_model'])
-        ref = RF.fit(tables=PF.PSF_TABLES)
+        ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
         RF.set_floor(ref['_model'])
         row['ref'] = _public(ref)
         fw = float(f_cur[r] if wing is None else wing[r])
@@ -2215,7 +2215,7 @@ def step_select(out_dir, snr_min=SNR_MIN, edge_max=EDGE_MAX, log=print):
     for (det, r), j in sorted(joint.items()):
         both(f'joint wing fraction {det} {RANGES[r][0]}-{RANGES[r][1]} um: {j["f"]:.3f} +- {j["f_err"]:.3f} '
              f'({j["n"]} stars; median of the stars\' own minima {j["f_median"]:.3f}; current '
-             f'{np.interp(range_centres()[r], PF.PSF_LAM, PF.PSF_TABLES[det]["f"]):.3f})')
+             f'{np.interp(range_centres()[r], PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]["f"]):.3f})')
     write_json(os.path.join(out_dir, 'selection.json'),
                dict(clean=_kv(sel['clean']), usable=_kv(sel['usable']), outliers=sel['outliers'],
                     range_outliers=sel['range_outliers'], edge=sorted(sel['edge']), centre=sel['centre'],
@@ -2240,7 +2240,7 @@ def read_selection(out_dir):
 def wing_for_joint(joint):
     """det -> per-range wing fractions: the joint value, else the current table's."""
     def f(det):
-        cur = np.interp(range_centres(), PF.PSF_LAM, PF.PSF_TABLES[det]['f'])
+        cur = np.interp(range_centres(), PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['f'])
         return [joint[(det, r)]['f'] if (det, r) in joint else float(cur[r]) for r in range(len(RANGES))]
     return f
 
@@ -2276,7 +2276,7 @@ def step_table(out_dir, percentile=25.0, log=print):
     for det in ('NRS1', 'NRS2'):
         for r in range(len(RANGES)):
             if not np.isfinite(table[det]['f'][r]):
-                table[det]['f'][r] = float(np.interp(range_centres()[r], PF.PSF_LAM, PF.PSF_TABLES[det]['f']))
+                table[det]['f'][r] = float(np.interp(range_centres()[r], PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['f']))
         table[det]['f_err'] = [joint[(det, r)]['f_err'] if (det, r) in joint else None for r in range(len(RANGES))]
     write_json(os.path.join(out_dir, 'psf_table_new.json'), table)
     usable = sorted({k for v in sel['usable'].values() for k in v} & {r['key'] for r in rec2})
@@ -2288,8 +2288,8 @@ def step_table(out_dir, percentile=25.0, log=print):
         t = table[det]
         log(f'{det} new  S_rows ' + ' '.join(f'{x:.3f}' for x in t['S_rows']) + ' | f ' +
             ' '.join(f'{x:.3f}' for x in t['f']) + ' | n ' + ' '.join(str(x) for x in t['n']))
-        log(f'{det} old  S_rows ' + ' '.join(f'{x:.3f}' for x in PF.PSF_TABLES[det]['S_rows']) + ' | f ' +
-            ' '.join(f'{x:.3f}' for x in PF.PSF_TABLES[det]['f']))
+        log(f'{det} old  S_rows ' + ' '.join(f'{x:.3f}' for x in PF.LEGACY_PSF_TABLES[det]['S_rows']) + ' | f ' +
+            ' '.join(f'{x:.3f}' for x in PF.LEGACY_PSF_TABLES[det]['f']))
     return table
 
 
@@ -2306,7 +2306,7 @@ def step_samples(root, out_dir, observations, log=print, part=None, nod_law=None
     rec2 = [r for r in read_records(os.path.join(out_dir, 'pass2')) if r['ranges']]
     clean = clean_in_pass2(rec2, sel)
     keys = {k for v in clean.values() for k in v}
-    tabs = {'old': PF.PSF_TABLES, 'new': tables_for_model(read_table(out_dir))}
+    tabs = {'old': PF.LEGACY_PSF_TABLES, 'new': tables_for_model(read_table(out_dir))}
     for name, d in (extra_tables or {}).items():
         tabs[name] = tables_for_model(read_table(d))
     run_stars(tasks_for(root, observations, keys, part=part), os.path.join(out_dir, 'pass3'),
@@ -2333,7 +2333,7 @@ def free_centre_star(task, joint, table, ranges_of_star, exps=None):
             continue
         fj = float(joint[(det, r)]['f']) if (det, r) in joint else float(table[det]['f'][r])
         RF.set_floor(np.zeros(RF.M.npix))
-        ref = RF.fit(tables=PF.PSF_TABLES)
+        ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
         RF.set_floor(ref['_model'])
         fr = RF.fit(f_wing=fj, x0=ref['_x'] + [0.4])
         row = dict(range=r, lam=[a, b])
@@ -2447,7 +2447,7 @@ def plot_widths(out_dir, path, compare=None):
         ax.plot(lamc, t['S_p50'], 'o', mfc='#fcfcfb', mec=NEW_C, ms=6, mew=1.5, ls='none', label='median of the stars',
                 zorder=3)
         ax.plot(lamc, t['S_rows'], 'o-', color=NEW_C, ms=6, lw=2, label='new table (25th percentile)', zorder=4)
-        ax.plot(PF.PSF_LAM, PF.PSF_TABLES[det]['S_rows'], 's--', color=OLD_C, ms=5, lw=1.6, label='current table',
+        ax.plot(PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['S_rows'], 's--', color=OLD_C, ms=5, lw=1.6, label='current table',
                 zorder=4)
         comp = {lab: read_table(d)[det] for lab, d in (compare or {}).items()}
         for lab, ct in comp.items():
@@ -2460,7 +2460,7 @@ def plot_widths(out_dir, path, compare=None):
         fj = [joint[(det, r)]['f'] if (det, r) in joint else np.nan for r in range(len(RANGES))]
         fe = [joint[(det, r)]['f_err'] if (det, r) in joint else np.nan for r in range(len(RANGES))]
         axf.errorbar(lamc, fj, yerr=fe, fmt='o-', color=NEW_C, ms=6, lw=2, capsize=3, label='new (joint fit of the stars)')
-        axf.plot(PF.PSF_LAM, PF.PSF_TABLES[det]['f'], 's--', color=OLD_C, ms=5, lw=1.6, label='current table')
+        axf.plot(PF.PSF_LAM, PF.LEGACY_PSF_TABLES[det]['f'], 's--', color=OLD_C, ms=5, lw=1.6, label='current table')
         for lab, ct in comp.items():
             axf.plot(lamc, ct['f'], '^:', color=EDGE_C, ms=5, lw=1.6, label=lab)
         axf.set_title(f'{det}: share of light in the wide wing', loc='left')
@@ -2470,7 +2470,7 @@ def plot_widths(out_dir, path, compare=None):
             axf.legend(loc='upper left', frameon=False)
         fw_new = [fwhm_rows(s, ff) if np.isfinite(s) and np.isfinite(ff) else np.nan
                   for s, ff in zip(t['S_rows'], t['f'])]
-        fw_old = [fwhm_rows(s, ff) for s, ff in zip(PF.PSF_TABLES[det]['S_rows'], PF.PSF_TABLES[det]['f'])]
+        fw_old = [fwhm_rows(s, ff) for s, ff in zip(PF.LEGACY_PSF_TABLES[det]['S_rows'], PF.LEGACY_PSF_TABLES[det]['f'])]
         axw.plot(lamc, fw_new, 'o-', color=NEW_C, ms=6, lw=2, label='new table')
         axw.plot(PF.PSF_LAM, fw_old, 's--', color=OLD_C, ms=5, lw=1.6, label='current table')
         for lab, ct in comp.items():
@@ -2624,7 +2624,7 @@ def star_own_width(root, out_dir, key, exposure=0):
             continue
         fj = float(joint[(task.detector, r)]['f']) if (task.detector, r) in joint else float(table[task.detector]['f'][r])
         RF.set_floor(np.zeros(RF.M.npix))
-        ref = RF.fit(tables=PF.PSF_TABLES)
+        ref = RF.fit(tables=PF.LEGACY_PSF_TABLES)
         RF.set_floor(ref['_model'])
         fr = RF.fit(f_wing=fj, x0=ref['_x'] + [0.4])
         if fr['peak_snr'] < SNR_MIN:
@@ -2920,9 +2920,9 @@ def plot_star_residuals(root, out_dir, key, path, exposure=0):
         except (PF.ProfileFitFallback, ValueError):
             continue
         RF.set_floor(np.zeros(RF.M.npix))
-        r0 = RF.fit(tables=PF.PSF_TABLES, clip_rounds=0)
+        r0 = RF.fit(tables=PF.LEGACY_PSF_TABLES, clip_rounds=0)
         RF.set_floor(r0['_model'])
-        for name, tab in (('old', PF.PSF_TABLES), ('new', new)):
+        for name, tab in (('old', PF.LEGACY_PSF_TABLES), ('new', new)):
             g = RF.fit(tables=tab)
             n = 0
             for k, m in RF.M.pix_masks:
@@ -2972,7 +2972,7 @@ def write_summary(out_dir, log=print, compare=None):
     sides = {name: side_light(out_dir, name) for name in ('old', 'new')}
     lines, out = [], {}
     for det in ('NRS1', 'NRS2'):
-        t, o = table[det], PF.PSF_TABLES[det]
+        t, o = table[det], PF.LEGACY_PSF_TABLES[det]
         lines.append(f'== {det}')
         lines.append(' lam   n | core old -> new (p50)    | wing old -> new        | FWHM old -> new rows | '
                      'light < -1.5 rows: data / old / new | light > +1.5 rows: data / old / new')
@@ -3423,8 +3423,8 @@ def main(argv=None):
                                 'and the current table')
         tabs = {n: read_form_table(os.path.join(a.out, f'psf_table_{a.form}_{n}.json')) for n in ('S', 'J')}
         tabs['current'] = {det: dict(lam=PF.PSF_LAM, components=[
-            dict(sigma=PF.PSF_TABLES[det]['S_rows']),
-            dict(sigma=PF.PSF_K * PF.PSF_TABLES[det]['S_rows'], frac=PF.PSF_TABLES[det]['f'])]) for det in ('NRS1', 'NRS2')}
+            dict(sigma=PF.LEGACY_PSF_TABLES[det]['S_rows']),
+            dict(sigma=PF.PSF_K * PF.LEGACY_PSF_TABLES[det]['S_rows'], frac=PF.LEGACY_PSF_TABLES[det]['f'])]) for det in ('NRS1', 'NRS2')}
         plot_form_params(a.out, a.form, os.path.join(fd, 'psf_parameters_smooth.png'), tabs)
         held = plot_heldout(a.out, os.path.join(fd, 'psf_heldout.png'))
         sel, _ = read_selection(a.out)
@@ -3462,7 +3462,7 @@ def main(argv=None):
         write_json(os.path.join(a.out, f'psf_table_{a.form}_Jn_factor.json'), narrow)
         log('narrow-side factor on the joint core (per-star core p25 / p50): ' + json.dumps(_jsonable(narrow)))
     elif a.step == 'table_test':
-        tabs = {'current': PF.PSF_TABLES}
+        tabs = {'current': PF.LEGACY_PSF_TABLES}
         for name in a.tables:
             tabs[name] = read_form_table(os.path.join(a.out, f'psf_table_{a.form}_{name}.json'))
         step_table_test(a.root, a.out, a.obs, tabs, part=part, log=log, tag=a.tag)
@@ -3470,8 +3470,8 @@ def main(argv=None):
         fd = os.path.join(a.out, 'figures')
         tabs = {n: read_form_table(os.path.join(a.out, f'psf_table_{a.form}_{n}.json')) for n in a.tables}
         tabs['current'] = {det: dict(lam=PF.PSF_LAM, components=[
-            dict(sigma=PF.PSF_TABLES[det]['S_rows']),
-            dict(sigma=PF.PSF_K * PF.PSF_TABLES[det]['S_rows'], frac=PF.PSF_TABLES[det]['f'])]) for det in ('NRS1', 'NRS2')}
+            dict(sigma=PF.LEGACY_PSF_TABLES[det]['S_rows']),
+            dict(sigma=PF.PSF_K * PF.LEGACY_PSF_TABLES[det]['S_rows'], frac=PF.LEGACY_PSF_TABLES[det]['f'])]) for det in ('NRS1', 'NRS2')}
         names = tuple(a.tables) + ('current',)
         plot_stack_tables(a.out, os.path.join(fd, f'psf_stack_tables{a.tag}.png'), names=names,
                           samples=f'samples_tables{a.tag}')
