@@ -1098,7 +1098,7 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
     - Star stack, free centres, all clean stars: per-detector kernel from S, within 1 % in 9 of 14
       ranges (shipped PSF S 12; median worst residual 0.94 against 0.68 %); per star-range chi2/dof
       the same as the shipped model (median ratio 1.001 over 1,127 star-ranges, better in 47 %).
-- **Open.** The blue end against jwst's point loss; check 1's edge-star excess. (The held-out
+  - **Open (shipped shutter model).** The blue end against jwst's point loss; check 1's edge-star excess. (The held-out
     check of the bar-shadow tables is done, section 3.2.)
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
