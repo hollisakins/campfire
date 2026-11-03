@@ -74,6 +74,31 @@ Release procedure: edit the `## Unreleased` section below, then run
   two-Gaussian table, which is removed; a fit on half the stars does as well on the other half
   below 3.3 um.
 
+- **NIRSpec profile fit: the geometric shutter with a smooth transmission (`FIT_VERSION` 5).**
+  The model clipped light hard at the shutter edges (+-0.50 slit units) with the PSF's width
+  split evenly before and after the shutter. Against the empirical bar-shadow tables that
+  passes too much light near the edges in the red (the 50 % edge 0.05 pitch too wide at 5 um,
+  the floor under a bar 0.49-0.61 of the open level against a measured 0.40-0.46).
+  - The shutter is still geometric (with a small fitted shift), but inside it light is
+    transmitted with T(x) = 1 - (1 - tedge) x^8 (x the position over the half-width: flat over
+    the middle, falling to `tedge` at the edges, never above 1). Half of every PSF component's
+    width^2 acts before the shutter and half after (`profile_fit.AFTER_SHARE`), the split the
+    PSF table was fitted with. T and the throughput normalisation go together, so jwst's point
+    path loss and the model stay consistent.
+  - `shift` and `tedge` are fitted per disperser as smooth functions of wavelength to both
+    bar-shadow tables (`psf_calibration.fit_shutter`) and shipped as
+    `data/nirspec_shutter_transmission.json` (`profile_fit.SHUTTER`; `ProfileModel(shutter=...)`
+    overrides it). `tedge` falls from 0.85 to 0.02 over the PRISM range. G140H / G235H / G395H
+    use the M grating with the same filter. Header card `PFSHUT` names the shutter model
+    (`geomT-2026-11-03b`).
+  - The bar-shadow misfit drops from 0.061 / 0.035 / 0.043 / 0.082 to 0.011 / 0.018 / 0.013 /
+    0.014 (PRISM / G140M / G235M / G395M). Stars near a shutter edge are fitted 0.7 % worse in
+    median chi2 than with the hard edge (1.8 % with the split left free in the fit).
+  - Fluxes move: the median over bright p1 sources is 0.1-0.4 % lower on the PRISM and 0.1-0.7 %
+    lower on G395M, and sources near a shutter edge move by a few percent (integrated per source
+    0.984-1.014; measured with the split free, to be remeasured on the p1 rerun). Fits are about
+    30 % slower.
+
 - **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
   run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint
   first pass's model of each neighbor. That pass fitted every source on the nod differences

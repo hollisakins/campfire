@@ -48,6 +48,7 @@ import scipy.sparse as sp
 from scipy.optimize import least_squares
 
 from campfire_pipeline.nirspec import profile_fit as PF
+from campfire_pipeline.nirspec.constants import MSA_SLIT_PITCH
 
 RANGES = ((0.7, 1.0), (1.0, 1.5), (1.5, 2.0), (2.0, 2.6), (2.6, 3.3), (3.3, 4.1), (4.1, 5.3))
 REF_RANGES = (1, 2, 3)             # 1.0-2.6 um: the centre law's zero point
@@ -69,6 +70,9 @@ OUTLIER_MAD_MIN = 0.03             # rows
 OUTLIER_CHI2 = 5.0                 # x the detector's median reduced chi2
 CENTRE_MIN_STARS = 5               # per MSA quadrant for its own drift column
 SATURATED = 2                      # jwst DQ bit
+# shutter model of every star fit (``profile_fit.load_shutter`` layout); None: the shipped one
+# (``profile_fit.SHUTTER``). The CLI's --shutter sets it, e.g. to test a new fit.
+SHUTTER = None
 
 
 def range_centres():
@@ -206,18 +210,20 @@ class RangeFit:
     Shape: the galaxy width at ``W_FLOOR``, centre ``c0`` and drift (per octave about
     the model's pivot) free, no centre law (the centre is where the light is). PSF:
     the shipped one with its core width S (rows, at the range centre) free
-    (``width_tables``), or a given table."""
+    (``width_tables``), or a given table. Shutter model: ``shutter``, else the module's
+    ``SHUTTER`` (None: the shipped one; the CLI's ``--shutter``)."""
 
-    def __init__(self, exps, lam_range, centre_law_tables=None, nod_law=None):
+    def __init__(self, exps, lam_range, centre_law_tables=None, nod_law=None, shutter=None):
         self.lam_range = tuple(lam_range)
         law = PF.NO_CENTRE_LAW if centre_law_tables is None else centre_law_tables
+        shut = SHUTTER if shutter is None else shutter
         ex = restrict(exps, lam_range)
         M0 = PF.ProfileModel(ex, centre_law_tables=law, nod_law=nod_law)
         g = M0.lam_grid
         g = g[(g > lam_range[0] - GRID_MARGIN) & (g < lam_range[1] + GRID_MARGIN)]
         if g.size < 3:
             raise PF.TooFewWavelengths('psf calibration: too few wavelengths in range')
-        self.M = PF.ProfileModel(ex, grid=g, centre_law_tables=law, nod_law=nod_law)
+        self.M = PF.ProfileModel(ex, grid=g, centre_law_tables=law, nod_law=nod_law, shutter=shut)
         M = self.M
         self.eoff = np.zeros(len(ex))
         self.v_raw = M.pix['v'].copy()
@@ -488,8 +494,9 @@ PARAM_START = dict(core_sigma=0.4, wing_frac=0.3, wing_sigma=0.9, wing_offset=0.
 @dataclass
 class PSFForm:
     """A PSF of Gaussian components (``profile_fit.psf_components``) and which of its
-    parameters a fit frees. Every component's width is split evenly before and after the
-    shutter (q = 0.5); an offset acts before the shutter (``*_pre``) or after it. Always a
+    parameters a fit frees. Every component's width^2 is split evenly before and after the
+    shutter (``profile_fit.AFTER_SHARE``); an offset acts before the
+    shutter (``*_pre``) or after it. Always a
     core and a wing with its own share, width and offset.
 
     third : a third component with its own share, width and offset (the one-sided shoulder)."""
@@ -1312,6 +1319,150 @@ def stack_metric(samples_dir, keys_by, name, half=4.0, step=0.25):
                              over1=float(np.mean(np.abs(med[ok]) > 1.0)),
                              over1_sig=float(np.mean((np.abs(med[ok]) > 1.0) & (np.abs(med[ok]) > 2 * err[ok]))),
                              n=int(D.shape[0]), curve=med.tolist(), err=err.tolist())
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The shutter model from the empirical bar-shadow tables (profile_fit.SHUTTER)
+# ---------------------------------------------------------------------------
+BARSHADOW_FILE = 'empirical_jwst_nirspec_barshadow_{}.fits'
+SHUTTER_DISPERSERS = ('prism', 'g140m', 'g235m', 'g395m')
+# dispersers without their own table take the M grating with the same filter: the same MSA, the
+# same wavelengths and the same camera, so the same diffraction at the shutter edges (decided, user
+# 2026-11-03)
+SHUTTER_FALLBACK = {'g140h': 'g140m', 'g235h': 'g235m', 'g395h': 'g395m'}
+# fitted per disperser: the shift of the open area and T at the shutter edge, tedge in [0, 1]
+# (T = 1 - (1 - tedge) x^8: never above 1, falling monotonically to tedge); the split of the PSF
+# before and after the shutter is profile_fit.AFTER_SHARE, the one the PSF table was fitted with
+SHUTTER_PARAMS = ('shift', 'tedge')
+SHUTTER_BOUNDS = dict(shift=(-0.06, 0.06), tedge=(0.0, 1.0))
+SHUTTER_START = dict(shift=0.0, tedge=0.7)
+# curvature penalty per node (as SMOOTH_TAU): gentle against ~1e5 residuals
+SHUTTER_TAU = dict(shift=0.01, tedge=0.1)
+SHUTTER_DY = 0.229          # slit-frame units per detector row when no measured curve is given
+
+
+def read_barshadow(disperser, data_dir=None):
+    """An empirical bar-shadow table: (y [shutter pitches], wavelength [um], DATA1X1 (one open
+    shutter), DATA1X3 (open shutters either side; the bar between them at y = +-0.5))."""
+    from astropy.io import fits
+    d = data_dir or os.path.join(os.path.dirname(PF.__file__), '..', 'data')
+    with fits.open(os.path.join(d, BARSHADOW_FILE.format(disperser))) as hd:
+        d11, d13 = hd['DATA1X1'].data.astype(float), hd['DATA1X3'].data.astype(float)
+        h = hd['DATA1X1'].header
+    y = h['CRVAL2'] + h['CDELT2'] * np.arange(d11.shape[0])
+    lam = (h['CRVAL1'] + h['CDELT1'] * np.arange(d11.shape[1])) * 1e6
+    return y, lam, d11, d13
+
+
+def uniform_profile(y_pitch, lam, det, dy, shift, tedge, n_open=1, psf_tables=None):
+    """The model's response to uniform light at table positions ``y_pitch`` and one wavelength:
+    the open shutters (one, or three for ``n_open`` 3; +-OPEN_HALF about centres moved by
+    ``shift``) with the transmission T = 1 - (1 - tedge) x^8 inside each (``profile_fit._window``),
+    blurred by each PSF component's part after the shutter (``profile_fit.AFTER_SHARE`` of its
+    width^2; its offset if it acts there), averaged over a detector row of height ``dy``; 1 at the
+    shutter centre. The part before the shutter does nothing to uniform light."""
+    y = np.asarray(y_pitch, float) * MSA_SLIT_PITCH
+    ks = (0,) if n_open == 1 else (-1, 0, 1)
+    iv = PF.open_intervals(ks, shift)
+    out = np.zeros_like(y)
+    for c in PF.psf_components(np.array([lam]), det, psf_tables):
+        b = float(c['sigma'][0]) * dy * np.sqrt(PF.AFTER_SHARE)
+        o2 = 0.0 if c['pre'] else float(c['offset'][0]) * dy
+        for xi, wi in zip(PF._GLX, PF._GLW):
+            out = out + 0.5 * wi * float(c['frac'][0]) * PF._window(y + 0.5 * dy * xi - o2, b, iv, tedge)
+    return out / np.interp(0.0, y, out)
+
+
+def shutter_nodes(lam_lo, lam_hi, n):
+    return np.exp(np.linspace(np.log(lam_lo), np.log(lam_hi), n))
+
+
+def _dy_of(dy, det, lam):
+    if dy is None:
+        return SHUTTER_DY
+    if callable(dy):
+        return float(dy(det, lam))
+    if isinstance(dy, dict):
+        L, D = dy[det]
+        return float(np.interp(lam, L, D))
+    return float(dy)
+
+
+def fit_shutter(disperser, dy=None, nodes=None, psf_tables=None, dets=('NRS1', 'NRS2'), ystep=2,
+                ymax=0.95, log=print, data_dir=None):
+    """The shutter model of one disperser from its bar-shadow table: the shift of the open area
+    and the transmission T across the shutter (``SHUTTER_PARAMS``: T at the edge, clipped to
+    [0, 1] between nodes), each a natural
+    cubic spline in ln(lambda) through ``nodes`` (default: 7 for the PRISM, 4 for a grating, over
+    the table's wavelengths), fitted to both tables at once (one open shutter and the bar between
+    two open ones, |y| < ``ymax`` pitches, every ``ystep``-th row) with the PSF ``psf_tables``
+    (None: the shipped one) averaged over ``dets``. ``dy``: slit units per row, a number,
+    {det: (lam, dy)} or a function (det, lam); default ``SHUTTER_DY``. Robust (soft L1) residuals,
+    a gentle curvature penalty (``SHUTTER_TAU``). Returns dict(nodes, coefs, errors, lam, rms per
+    column, rms_flat per column: the same shutter with T = 1)."""
+    y, lam, d11, d13 = read_barshadow(disperser, data_dir)
+    sel = np.flatnonzero(np.abs(y) < ymax)[::ystep]
+    cols = [j for j in range(lam.size) if np.isfinite(d11[sel, j]).all() and np.isfinite(d13[sel, j]).all()]
+    lamc = lam[cols]
+    if nodes is None:
+        nodes = SMOOTH_NODES if disperser == 'prism' else shutter_nodes(lamc[0], lamc[-1], 4)
+    nodes = np.asarray(nodes, float)
+    nn = nodes.size
+    names = SHUTTER_PARAMS
+    yy = y[sel]
+
+    def unpack(x):
+        return {p: x[i * nn:(i + 1) * nn] for i, p in enumerate(names)}
+
+    def model_cols(v, n_open):
+        te = np.clip(v['tedge'], *SHUTTER_BOUNDS['tedge'])
+        return [np.mean([uniform_profile(yy, L, d, _dy_of(dy, d, L), v['shift'][i], te[i], n_open, psf_tables)
+                         for d in dets], axis=0) for i, L in enumerate(lamc)]
+
+    def misfit(v):
+        m1, m3 = model_cols(v, 1), model_cols(v, 3)
+        return [np.concatenate([a - d11[sel, j], b - d13[sel, j]]) for a, b, j in zip(m1, m3, cols)]
+
+    def resid(x):
+        c = unpack(x)
+        v = {p: spline_eval(c[p], lamc, nodes) for p in names}
+        return np.concatenate(misfit(v) + [curvature(c[p], nodes) / SHUTTER_TAU[p] for p in names])
+    x0 = np.concatenate([np.full(nn, SHUTTER_START[p]) for p in names])
+    lo = np.concatenate([np.full(nn, SHUTTER_BOUNDS[p][0]) for p in names])
+    hi = np.concatenate([np.full(nn, SHUTTER_BOUNDS[p][1]) for p in names])
+    res = least_squares(resid, x0, bounds=(lo, hi), x_scale='jac', loss='soft_l1', f_scale=0.02,
+                        ftol=1e-8, xtol=1e-8, gtol=1e-8)
+    c = unpack(res.x)
+    try:
+        err = np.sqrt(np.abs(np.diag(np.linalg.pinv(res.jac.T @ res.jac))))
+    except np.linalg.LinAlgError:
+        err = np.full(res.x.size, np.nan)
+    v = {p: spline_eval(c[p], lamc, nodes) for p in names}
+    rms = [float(np.sqrt(np.mean(r ** 2))) for r in misfit(v)]
+    flat = dict(shift=np.zeros(lamc.size), tedge=np.ones(lamc.size))
+    rms_flat = [float(np.sqrt(np.mean(r ** 2))) for r in misfit(flat)]
+    log(f'  shutter {disperser}: {len(cols)} columns {lamc[0]:.2f}-{lamc[-1]:.2f} um, nodes '
+        f'{np.round(nodes, 2).tolist()}; median rms {np.median(rms):.4f} (T = 1: {np.median(rms_flat):.4f}); '
+        f'status {res.status}')
+    return dict(disperser=disperser, nodes=nodes.tolist(), coefs={p: q.tolist() for p, q in c.items()},
+                errors={p: q.tolist() for p, q in unpack(err).items()}, lam=lamc.tolist(), rms=rms, rms_flat=rms_flat,
+                bounds_hit=[f'{p}@{nodes[i % nn]:.2f}' for p in names for i in range(nn)
+                            if c[p][i] <= SHUTTER_BOUNDS[p][0] + 1e-4 or c[p][i] >= SHUTTER_BOUNDS[p][1] - 1e-4])
+
+
+def shutter_table(fits_, n_dense=41, version=None):
+    """The ``profile_fit.load_shutter`` layout from ``fit_shutter`` results: shift and T at the
+    edge sampled at ``n_dense`` log-spaced wavelengths over each disperser's nodes; the
+    fallbacks and ``version`` (the header name) added."""
+    out = {}
+    for f in fits_:
+        nodes = np.asarray(f['nodes'], float)
+        lam = shutter_nodes(nodes[0], nodes[-1], n_dense)
+        v = {p: np.clip(spline_eval(np.asarray(f['coefs'][p]), lam, nodes), *SHUTTER_BOUNDS[p]) for p in SHUTTER_PARAMS}
+        out[f['disperser']] = {'lam': lam.tolist(), **{p: v[p].tolist() for p in SHUTTER_PARAMS}}
+    out['fallback'] = {k: d for k, d in SHUTTER_FALLBACK.items() if d in out}
+    out['meta'] = dict(version=version or 'geomT')
     return out
 
 
@@ -2297,7 +2448,7 @@ def step_table_test(root, out_dir, observations, tables, part=None, log=print, t
     """Every clean star in every range where it is clean, fitted with each PSF table of
     ``tables`` ({name: table}) at fixed shape, its centre free in every exposure (centre linear
     in wavelength across the range): records in table_test<tag>/, stacking samples in
-    samples_tables<tag>/."""
+    samples_tables<tag>/. The shutter model is ``SHUTTER`` throughout."""
     sel, rec2, clean = clean_records(out_dir)
     ranges_of = {}
     for (det, r), keys in clean.items():
@@ -2341,7 +2492,7 @@ TABLE_STYLE = {'A': (NEW_C, '-', 'new: core 25th percentile, the rest median'),
                'SA': ('#1baf7a', ':', 'smooth joint fit, half A'),
                'SB': ('#6250d6', ':', 'smooth joint fit, half B'),
                'S2': ('#6250d6', '-', 'smooth joint fit, second round (S2)'),
-               'shipped': (OLD_C, '--', 'shipped table (profile_fit.PSF_TABLES)')}
+               'shipped': (OLD_C, '--', 'shipped PSF (PSF_TABLES)')}
 
 
 def plot_stack_tables(out_dir, path, names=('S', 'shipped'), samples='samples_tables', half=4.0, step=0.25,
@@ -2577,7 +2728,12 @@ def main(argv=None):
     ap.add_argument('--edge-max', type=float, default=EDGE_MAX)
     ap.add_argument('--part', default=None, help='i/n: this process takes every n-th star (or job) from the i-th, '
                     'to run a step as n processes')
+    ap.add_argument('--shutter', default=None, help='shutter-model file (profile_fit.load_shutter layout) for every '
+                    'star fit; default the shipped one')
     a = ap.parse_args(argv)
+    global SHUTTER
+    if a.shutter:
+        SHUTTER = PF.load_shutter(a.shutter)
     part = tuple(int(x) for x in a.part.split('/')) if a.part else None
     law = False if a.no_nod_law else None
     log = lambda *x: print(*x, flush=True)          # noqa: E731

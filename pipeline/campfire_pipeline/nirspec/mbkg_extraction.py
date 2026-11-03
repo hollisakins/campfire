@@ -444,6 +444,7 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
             raise PF.NoUsablePixels('master background: no science exposure')
         M0 = chain.result.model
         M = PF.ProfileModel(mexps, chromatic=M0.chromatic, priors=M0.priors, bounds=M0.bounds_cfg,
+                            psf_tables=M0.psf_tables, shutter=M0.shutter,
                             c_prior=M0.c_prior, grid=M0.lam_grid)
         M.pivot = M0.pivot                    # the chain's shape is defined at its own pivot
         p = chain.result.params

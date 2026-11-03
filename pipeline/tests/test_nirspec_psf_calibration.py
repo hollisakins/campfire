@@ -275,3 +275,128 @@ def test_centre_law_recovered():
         assert np.allclose(got - got[2], D[q] - D[q][2], atol=0.004)
     a = np.array(law['NRS1']['alpha'])
     assert np.allclose(a - np.mean(a[list(PC.REF_RANGES)]), alpha - np.mean(alpha[list(PC.REF_RANGES)]), atol=0.006)
+
+
+# ---------------------------------------------------------------------------
+# the shutter model: geometric shutter, transmission T = 1 - (1 - tedge) x^8 inside it
+# ---------------------------------------------------------------------------
+def _shutter(tedge=0.3, shift=0.0, disp='prism', lam=(0.5, 6.0)):
+    n = len(lam)
+    t = {k: np.full(n, float(v)) for k, v in dict(shift=shift, tedge=tedge).items()}
+    t['lam'] = np.array(lam, float)
+    return {disp: t, 'fallback': {}, 'version': 'test'}
+
+
+def test_window_is_the_integral_of_T():
+    """``_window`` is the integral of T(u) N(u; m, s) over the open shutters, from Gaussians far
+    outside to ones straddling an edge or a bar, and ones many shutters wide (the moment
+    recursion stays accurate there)."""
+    from scipy.stats import norm
+    iv = PF.open_intervals((-1, 0, 1), 0.01)
+    tedge = 0.25
+    m = np.array([-2.5, -1.1, -0.66, -0.48, 0.0, 0.3, 0.52, 0.9, 1.7, 0.1, -0.4, 0.2, -0.7, 3.0])
+    s = np.array([0.05, 0.03, 0.05, 0.08, 0.04, 0.06, 0.2, 0.1, 0.07, 0.49, 0.51, 1.0, 5.0, 20.0])
+    got = PF._window(m, s, iv, tedge)
+    for mm, ss, g in zip(m, s, got):
+        ref = 0.0
+        for lo, hi in iv:
+            u = np.linspace(lo, hi, 100001)
+            x = (u - 0.5 * (lo + hi)) / (0.5 * (hi - lo))
+            ref += np.trapezoid((1 - (1 - tedge) * x ** 8) * norm.pdf(u, mm, ss), u)
+        assert g == pytest.approx(ref, abs=1e-8)
+
+
+def test_window_with_T_one_is_the_clipped_gaussian():
+    """With T = 1 the window is the Gaussian's mass inside the open shutters (the machinery's
+    plain clip)."""
+    from scipy.special import ndtr
+    iv = PF.open_intervals((-1, 0, 1))
+    m, s = np.linspace(-2.0, 2.0, 81), np.full(81, 0.07)
+    ref = sum(ndtr((hi - m) / s) - ndtr((lo - m) / s) for lo, hi in iv)
+    assert np.allclose(PF._window(m, s, iv, 1.0), ref, atol=1e-12)
+
+
+def test_default_model_uses_the_shipped_shutter():
+    exps = _exposures()
+    p = np.array([0.3, 0.02, np.log(0.12), 0.0])
+    A0 = PF.ProfileModel(exps).design(p, np.zeros(3)).toarray()
+    A1 = PF.ProfileModel(exps, shutter=PF.SHUTTER).design(p, np.zeros(3)).toarray()
+    A2 = PF.ProfileModel(exps, shutter=_shutter(1.0)).design(p, np.zeros(3)).toarray()
+    assert np.array_equal(A0, A1)
+    assert not np.allclose(A0, A2)
+
+
+def test_uniform_light_through_the_model_is_uniform_profile():
+    """A very wide source through the model is ``psf_calibration.uniform_profile``, the bar-shadow
+    model the shutter is fitted with: T convolved with the after-shutter PSF."""
+    exps = _exposures()
+    M = PF.ProfileModel(exps, shutter=_shutter(0.35, 0.005))
+    y = np.linspace(-1.0, 1.0, 201) * MSA_SLIT_PITCH
+    for lam in (1.0, 4.0):
+        L, D = np.full(y.size, lam), np.full(y.size, DY)
+        img = M.image(np.array([0.0, 0.0, np.log(40.0), 0.0]), np.zeros(3), 0, y, L, D)
+        img = img / np.interp(0.0, y, img)
+        ref = PC.uniform_profile(y / MSA_SLIT_PITCH, lam, exps[0].detector, DY, 0.005, 0.35, n_open=3)
+        assert np.max(np.abs(img - ref)) < 2e-3, lam
+
+
+def test_transmission_lowers_an_edge_source_more_than_a_centred_one():
+    exps = _exposures()
+    p = np.array([0.0, 0.0, np.log(PF.W_FLOOR), 0.0])
+    lam, dy = np.array([3.0]), np.array([DY])
+    flat, T = PF.ProfileModel(exps, shutter=_shutter(1.0)), PF.ProfileModel(exps, shutter=_shutter(0.2))
+    t = {n: [M.transmission(p, np.zeros(3), 0, lam, dy, width=0.0, aperture=(0,), centre=c)[0] for c in (0.0, 0.4)]
+         for n, M in (('flat', flat), ('T', T))}
+    assert t['T'][0] / t['flat'][0] > 0.98                 # centre: T(0) = 1
+    assert t['T'][1] / t['flat'][1] < 0.85                 # near the edge: T < 1
+
+
+def test_model_follows_a_change_of_shutter():
+    """The per-exposure shutter cache follows the model's shutter."""
+    exps = _exposures()
+    M = PF.ProfileModel(exps, shutter=_shutter(0.3))
+    p = np.array([0.3, 0.0, np.log(0.12), 0.0])
+    A1 = M.design(p, np.zeros(3)).toarray()
+    M.shutter = _shutter(1.0)
+    A2 = M.design(p, np.zeros(3)).toarray()
+    M.shutter = None
+    A3 = M.design(p, np.zeros(3)).toarray()
+    assert not np.allclose(A1, A2) and not np.allclose(A2, A3)
+    assert np.allclose(A3, PF.ProfileModel(exps).design(p, np.zeros(3)).toarray())
+
+
+def test_fit_shutter_recovers_a_known_transmission(tmp_path):
+    """Bar-shadow tables made with a known transmission and shift: ``fit_shutter`` gives them
+    back."""
+    from astropy.io import fits
+    lam = np.linspace(1.0, 4.0, 7)
+    y = np.round(np.arange(-1.0, 1.0001, 0.01), 4)
+    d11 = np.array([PC.uniform_profile(y, L, 'NRS1', DY, 0.004, 0.45, 1) for L in lam]).T
+    d13 = np.array([PC.uniform_profile(y, L, 'NRS1', DY, 0.004, 0.45, 3) for L in lam]).T
+    hdus = [fits.PrimaryHDU()]
+    for name, d in (('DATA1X1', d11), ('DATA1X3', d13)):
+        h = fits.ImageHDU(d.astype('f4'), name=name)
+        h.header.update(CRVAL1=lam[0] * 1e-6, CDELT1=(lam[1] - lam[0]) * 1e-6, CRVAL2=-1.0, CDELT2=0.01)
+        hdus.append(h)
+    fits.HDUList(hdus).writeto(tmp_path / PC.BARSHADOW_FILE.format('prism'))
+    r = PC.fit_shutter('prism', dy=DY, nodes=[1.0, 2.0, 4.0], dets=('NRS1',), ystep=1, data_dir=str(tmp_path),
+                       log=lambda *a: None)
+    assert np.allclose(r['coefs']['tedge'], 0.45, atol=0.03)
+    assert np.allclose(r['coefs']['shift'], 0.004, atol=0.002)
+    assert max(r['rms']) < 3e-3 < min(r['rms_flat'])
+
+
+def test_shipped_shutter_file_is_sane():
+    """The shipped shutter model: for every disperser with a bar-shadow table, T at the edge in
+    [0, 1] (so T never exceeds 1 and falls from the centre to the edge) and below 1 somewhere, a
+    small shift; the H gratings use the M grating with the same filter; a version for the
+    headers."""
+    S = PF.load_shutter()
+    for d in ('prism', 'g140m', 'g235m', 'g395m'):
+        t = S[d]
+        assert np.all((t['tedge'] >= 0.0) & (t['tedge'] <= 1.0)) and np.min(t['tedge']) < 0.9
+        assert np.all(np.abs(t['shift']) < 0.03)
+    for h, m in (('G140H/F100LP', 'g140m'), ('G235H/F170LP', 'g235m'), ('G395H/F290LP', 'g395m')):
+        a, b = PF.shutter_at(h, np.array([2.0])), PF.shutter_at(m.upper() + '/X', np.array([2.0]))
+        assert all(np.allclose(a[k], b[k]) for k in a)
+    assert S['version'] and S['version'] != '?'

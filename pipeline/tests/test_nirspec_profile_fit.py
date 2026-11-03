@@ -270,13 +270,18 @@ def test_fit_recovers_flux_when_a_partner_lacks_the_source():
 # general PSF (psf_components): the shipped table, read and written out independently
 # ---------------------------------------------------------------------------
 PSF_FILE = Path(PF.__file__).parent.parent / 'data' / 'nirspec_profile_psf.json'
+SHUTTER_FILE = Path(PF.__file__).parent.parent / 'data' / 'nirspec_shutter_transmission.json'
 
 
 def _image_written_out(M, p, k, y, lam, dy):
-    """The image formula for the shipped PSF file, written out: per component, the
-    galaxy convolved with half its variance before the shutter, clipped by the open
-    shutters, blurred by the other half after it; offsets before or after the shutter;
-    the component without a share takes the remainder."""
+    """The image formula for the shipped PSF and shutter files, written out: per component,
+    the galaxy convolved with half its variance before the shutter, clipped by the open shutters
+    (+-0.50 about their centres moved by the shift) times the transmission
+    T = 1 - (1 - tedge) x^8, blurred by the other half after it; offsets before or after the
+    shutter; the component without a share takes the remainder."""
+    sh = json.loads(SHUTTER_FILE.read_text())['prism']             # the exposures are PRISM
+    shift, tedge = (np.interp(lam, sh['lam'], sh[key]) for key in ('shift', 'tedge'))
+    after = 0.5
     raw = json.loads(PSF_FILE.read_text())[M.exps[k].detector]
     comps = []
     for c in raw['components']:
@@ -287,22 +292,23 @@ def _image_written_out(M, p, k, y, lam, dy):
     rest = 1.0 - sum(c['frac'] for c in comps if c['frac'] is not None)
     c0 = M.centre(p, np.zeros(len(M.exps)), k, lam)
     w = M.width(p, lam)
-    iv = PF.open_intervals(M.exps[k].open_k)
+    iv = [(kk * 1.15 + shift - 0.5, kk * 1.15 + shift + 0.5) for kk in M.exps[k].open_k]
     acc = 0.0
     for xi, wi in zip(PF._GLX, PF._GLW):
         yy = y + 0.5 * dy * xi
         for c in comps:
-            half = c['sigma'] * dy / np.sqrt(2.0)
+            before = c['sigma'] * dy * np.sqrt(1.0 - after)
+            past = c['sigma'] * dy * np.sqrt(after)
             off = c['offset'] * dy
             fr = rest if c['frac'] is None else c['frac']
             if c['pre']:
-                acc = acc + wi * fr * PF._clipblur(yy, c0 + off, np.sqrt(half ** 2 + w ** 2), half, iv)
+                acc = acc + wi * fr * PF._clipblur(yy, c0 + off, np.sqrt(before ** 2 + w ** 2), past, iv, tedge)
             else:
-                acc = acc + wi * fr * PF._clipblur(yy - off, c0, np.sqrt(half ** 2 + w ** 2), half, iv)
+                acc = acc + wi * fr * PF._clipblur(yy - off, c0, np.sqrt(before ** 2 + w ** 2), past, iv, tedge)
     return 0.5 * dy * acc
 
 
-def test_default_psf_is_the_shipped_table():
+def test_default_model_is_the_shipped_psf_and_shutter():
     exps = _exposures(src_y=0.12)
     M = PF.ProfileModel(exps)
     p = np.array([0.12, 0.01, np.log(0.08), 0.0])

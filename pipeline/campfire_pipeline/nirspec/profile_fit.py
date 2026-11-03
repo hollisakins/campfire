@@ -31,14 +31,15 @@ position and the extraction becomes a fixed-template optimal extraction.
 """
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
+from numba import njit
 from scipy.sparse.linalg import splu
 from scipy.optimize import least_squares
-from scipy.special import ndtr
 
 from campfire_pipeline.nirspec.constants import MSA_SLIT_MARGIN, MSA_SLIT_PITCH
 
@@ -139,8 +140,70 @@ def open_shutters(shutter_state, slit_ymin, slit_ymax):
     return tuple(k for k in range(lo, hi + 1) if k not in closed)
 
 
-def open_intervals(open_k):
-    return [(k * MSA_SLIT_PITCH - OPEN_HALF, k * MSA_SLIT_PITCH + OPEN_HALF) for k in open_k]
+def open_intervals(open_k, shift=0.0):
+    """The open intervals (slit-frame units) of shutters ``open_k``: each +-OPEN_HALF about its
+    centre moved by ``shift`` (a number, or an array with one value per pixel, ``shutter_at``)."""
+    return [(k * MSA_SLIT_PITCH + shift - OPEN_HALF, k * MSA_SLIT_PITCH + shift + OPEN_HALF) for k in open_k]
+
+
+# ---------------------------------------------------------------------------
+# Shutter model (from FIT_VERSION 5): the geometric shutter, +-OPEN_HALF about its centre moved by
+# a small ``shift``, transmitting light with T(x) = 1 - (1 - tedge) x^8 across it (x = position
+# over the half-width; ``tedge`` = T(1) in [0, 1], so T is 1 at the centre, flat over the middle
+# and falls monotonically to tedge at the edges, never above 1): light diffracted at the shutter
+# edges leaves the spectrograph beam and is lost. (The tables want T flat over the middle: with a
+# free mix of x^4 and x^8 the fit took x^8 alone at every node of every disperser.)
+# Per disperser and wavelength, the shift and tedge are fitted to the empirical bar-shadow tables
+# (one open shutter and the bar between two; ``psf_calibration.fit_shutter``): for uniform light
+# the response is T convolved with the after-shutter PSF. The image of a source is
+# [(source x PSF before) x T within the open shutters] x PSF after; a point source feels T mostly
+# in its total, which the throughput normalisation carries (``transmission``).
+# Half of every PSF component's width^2 acts before the shutter and half after (AFTER_SHARE), the
+# split the PSF table was fitted with. Left free, the bar-shadow fit moves it to 0.44-0.57 and the
+# stars near the shutter edges fit 1.8 % worse in median chi2; held at 0.5 they fit 0.7 % worse
+# than with the hard edge, and the tables as well (2026-11-03).
+# Gratings without a table of their own (G140H, G235H, G395H) use the M grating with the same
+# filter (decided, user 2026-11-03).
+# ---------------------------------------------------------------------------
+SHUTTER_FILE = Path(__file__).parent.parent / 'data' / 'nirspec_shutter_transmission.json'
+AFTER_SHARE = 0.5
+
+
+def load_shutter(path=SHUTTER_FILE):
+    """The shutter model: {disperser: dict(lam, shift, tedge)} (wavelength nodes [um]; shift
+    [slit-frame units]; transmission at the edge), plus 'fallback' ({disperser: disperser with
+    a table}) and 'version' (its name, for headers)."""
+    with open(path) as fh:
+        raw = json.load(fh)
+    out = {'fallback': dict(raw.get('fallback', {})), 'version': str(raw.get('meta', {}).get('version', '?'))}
+    for name, t in raw.items():
+        if name in ('fallback', 'meta'):
+            continue
+        out[name] = {k: np.asarray(t[k], float) for k in ('lam', 'shift', 'tedge')}
+    return out
+
+
+SHUTTER = load_shutter()
+
+
+def disperser_key(grating):
+    """'PRISM/CLEAR' or 'G395M/F290LP' -> 'prism', 'g395m'."""
+    return str(grating).split('/')[0].strip().lower()
+
+
+def shutter_at(grating, lam, shutter=None):
+    """dict(shift, tedge) at wavelengths ``lam`` for an exposure's grating from the
+    shutter model (``SHUTTER``, or ``shutter`` in its layout; a disperser without its own table
+    takes its 'fallback'), held at the end nodes beyond them."""
+    sh = SHUTTER if shutter is None else shutter
+    d = disperser_key(grating)
+    if d not in sh:
+        d = sh.get('fallback', {}).get(d, d)
+    if d not in sh:
+        raise KeyError(f'shutter model: no table for disperser {grating!r}')
+    t = sh[d]
+    lam = np.asarray(lam, float)
+    return {k: np.interp(lam, t['lam'], t[k]) for k in ('shift', 'tedge')}
 
 
 def psf_components(lam, det, tables=None):
@@ -150,16 +213,16 @@ def psf_components(lam, det, tables=None):
     frac      share of the light;
     sigma     width [native rows];
     offset    displacement from the trace centre [native rows, towards slit +y];
-    q         share of sigma^2 that acts before the shutter (clipped by it); the rest blurs
-              the clipped light after it (0.5: the even split of the original model);
     pre       True: the offset acts before the shutter (the light enters it displaced and
               is clipped there); False: after it (displaced on the detector).
 
+    Half of each width^2 acts before the shutter and half after it (``AFTER_SHARE``).
+
     A detector's table (``PSF_TABLES``, or ``tables[det]``) is
-    ``{'lam': [...], 'components': [{'sigma': [...], 'frac': [...], 'offset': [...], 'q': 0.5,
+    ``{'lam': [...], 'components': [{'sigma': [...], 'frac': [...], 'offset': [...],
     'pre': True}, ...]}``: values per wavelength node; exactly one component omits 'frac' and
-    takes the remainder; 'offset' defaults to 0, 'q' to 0.5, 'pre' to True; a scalar instead
-    of a list holds at every wavelength.
+    takes the remainder; 'offset' defaults to 0, 'pre' to True; a scalar instead of a list
+    holds at every wavelength.
 
     Values are linear in wavelength between the nodes and held at the end nodes beyond them
     (a table should have nodes covering the whole range it is used over)."""
@@ -174,8 +237,7 @@ def psf_components(lam, det, tables=None):
         return np.full(lam.shape, float(v)) if v.ndim == 0 else np.interp(lam, nodes, v)
     out, rest = [], None
     for i, c in enumerate(tab['components']):
-        d = dict(sigma=val(c['sigma'], 0.0), offset=val(c.get('offset'), 0.0), q=float(c.get('q', 0.5)),
-                 pre=bool(c.get('pre', True)))
+        d = dict(sigma=val(c['sigma'], 0.0), offset=val(c.get('offset'), 0.0), pre=bool(c.get('pre', True)))
         if 'frac' in c:
             d['frac'] = val(c['frac'], 0.0)
         else:
@@ -243,21 +305,101 @@ def nod_shifts(exps, law=None, c_ref=None):
     return out
 
 
-def _transmitted(o, s, intervals):
-    """Fraction of N(o, s) inside the intervals."""
-    return sum(ndtr((hi - o) / s) - ndtr((lo - o) / s) for lo, hi in intervals)
+_SQRT2PI = np.sqrt(2 * np.pi)
+_SQRT2PI_F = math.sqrt(2 * math.pi)
+_SQRT2 = math.sqrt(2.0)
+_GL16X, _GL16W = np.polynomial.legendre.leggauss(16)
 
 
-def _clipblur(y, o, s1, s2, intervals):
-    """Density at y of N(o, s1) clipped to the intervals, then blurred by N(0, s2).
-    Integrates to the transmitted fraction."""
+def _window(m, s, intervals, tedge=1.0):
+    """Integral of T(u) N(u; m, s) over the open intervals, with the shutter transmission
+    T = 1 - (1 - tedge) x^8 across each interval (x = (u - its centre) / its half-width;
+    ``SHUTTER``). A Gaussian times a polynomial integrates in closed form: the truncated-normal
+    moments from Phi and phi at the interval ends (``_window_kernel``). Every argument may be an
+    array; they broadcast together."""
+    shape = np.broadcast_shapes(np.shape(m), np.shape(s), np.shape(tedge),
+                                *[np.shape(x) for iv in intervals for x in iv])
+    flat = lambda x: np.ascontiguousarray(np.broadcast_to(np.asarray(x, float), shape)).ravel()   # noqa: E731
+    mm, ss, loss = flat(m), flat(s), 1.0 - flat(tedge)
+    out = np.zeros(mm.size)
+    for lo, hi in intervals:
+        _window_kernel(mm, ss, flat(lo), flat(hi), loss, out)
+    return out.reshape(shape) if shape else float(out[0])
+
+
+@njit(cache=True)
+def _window_kernel(m, s, lo, hi, loss, out):
+    """``_window`` for one interval, added into ``out``: with v = u - centre, mu = m - centre,
+    I_n = int v^n N(v; mu, s) over the interval from the recursion
+    I_n = mu I_(n-1) + (n-1) s^2 I_(n-2) - s [v^(n-1) phi]_ends, and
+    int T N = I_0 - loss I_8 / h^8 (loss = 1 - tedge; for a Gaussian wider than h, I_8 by
+    quadrature instead). A Gaussian more than 8 sigma from the interval contributes nothing and is
+    skipped."""
+    for i in range(m.size):
+        c = 0.5 * (lo[i] + hi[i])
+        h = 0.5 * (hi[i] - lo[i])
+        si = s[i]
+        mu = m[i] - c
+        za = (lo[i] - m[i]) / si
+        zb = (hi[i] - m[i]) / si
+        if za > 8.0 or zb < -8.0:
+            continue
+        if za < -8.0:                              # an end beyond 8 sigma: Phi 0 or 1, phi 0
+            Pa, fa = 0.0, 0.0
+        else:
+            Pa = 0.5 * math.erfc(-za / _SQRT2)
+            fa = math.exp(-0.5 * za * za) / _SQRT2PI_F
+        if zb > 8.0:
+            Pb, fb = 1.0, 0.0
+        else:
+            Pb = 0.5 * math.erfc(-zb / _SQRT2)
+            fb = math.exp(-0.5 * zb * zb) / _SQRT2PI_F
+        # in units of the half-width: J_n = I_n / h^n, ends at -1 and +1
+        r = si / h
+        q = mu / h
+        j0 = Pb - Pa
+        if loss[i] == 0.0:
+            out[i] += j0
+            continue
+        if r > 1.0:
+            # a Gaussian wider than the half-width: the recursion cancels (its error grows like r^n),
+            # but the integrand is smooth over the interval, so Gauss-Legendre is exact enough
+            j8 = 0.0
+            for g in range(_GL16X.size):
+                w = _GL16X[g]
+                w4 = w * w * w * w
+                z = (w - q) / r
+                j8 += _GL16W[g] * w4 * w4 * math.exp(-0.5 * z * z)
+            out[i] += j0 - loss[i] * j8 / (r * _SQRT2PI_F)
+            continue
+        r2 = r * r
+        dm = r * (fb - fa)                                          # r [w^n phi]_ends, n even
+        dp = r * (fb + fa)                                          # n odd
+        j1 = q * j0 - dm
+        j2 = q * j1 + r2 * j0 - dp
+        j3 = q * j2 + 2.0 * r2 * j1 - dm
+        j4 = q * j3 + 3.0 * r2 * j2 - dp
+        j5 = q * j4 + 4.0 * r2 * j3 - dm
+        j6 = q * j5 + 5.0 * r2 * j4 - dp
+        j7 = q * j6 + 6.0 * r2 * j5 - dm
+        j8 = q * j7 + 7.0 * r2 * j6 - dp
+        out[i] += j0 - loss[i] * j8
+
+
+def _transmitted(o, s, intervals, tedge=1.0):
+    """Fraction of N(o, s) transmitted through the intervals (``_window``)."""
+    return _window(o, s, intervals, tedge)
+
+
+def _clipblur(y, o, s1, s2, intervals, tedge=1.0):
+    """Density at y of N(o, s1) clipped to the intervals times the shutter transmission
+    (``_window``), then blurred by N(0, s2). Integrates to the transmitted fraction."""
     S2 = s1 ** 2 + s2 ** 2
     S = np.sqrt(S2)
     m = (o * s2 ** 2 + y * s1 ** 2) / S2
     sm = s1 * s2 / S
-    core = np.exp(-0.5 * (y - o) ** 2 / S2) / (np.sqrt(2 * np.pi) * S)
-    clip = sum(ndtr((hi - m) / sm) - ndtr((lo - m) / sm) for lo, hi in intervals)
-    return core * clip
+    core = np.exp(-0.5 * (y - o) ** 2 / S2) / (_SQRT2PI * S)
+    return core * _window(m, sm, intervals, tedge)
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +725,8 @@ class FitResult:
 
 def fit_pixel_masks(exps):
     """(exposure index, pixel mask) of the pixels a fit uses: usable data inside an open
-    shutter (plus ``FIT_MARGIN``), covered by every subtracted frame."""
+    shutter (plus ``FIT_MARGIN``), covered by every subtracted frame. The shutter here is the
+    geometric one (+-OPEN_HALF, without the model's small shift)."""
     rows = []
     for k, e in enumerate(exps):
         if not e.use_data:
@@ -618,18 +761,22 @@ class ProfileModel:
         model (``psf_components`` / ``centre_law``); None uses the module's tables. For
         calibrating them on stars (``psf_calibration``), not for extraction.
     nod_law : the nod geometry (``nod_shifts``): None for ``NOD_OFFSET_LAW``, False for one
-        position shared by every exposure (to measure the offsets themselves)."""
+        position shared by every exposure (to measure the offsets themselves).
+    shutter : replaces the shutter model ``SHUTTER`` (``load_shutter`` layout) for this model,
+        e.g. one being calibrated; None uses ``SHUTTER``."""
 
     psf_tables = None
     centre_law_tables = None
     nod_shift = None
+    shutter = None
 
     def __init__(self, exps, chromatic=True, priors=None, grid=None, bounds=None, c_prior=None,
-                 psf_tables=None, centre_law_tables=None, nod_law=None):
+                 psf_tables=None, centre_law_tables=None, nod_law=None, shutter=None):
         self.exps = exps
         self.chromatic = chromatic
         self.psf_tables = psf_tables
         self.centre_law_tables = centre_law_tables
+        self.shutter = shutter
         self.nod_shift = nod_shifts(exps, nod_law)
         self.priors = priors or Priors()
         self.bounds_cfg = bounds or Bounds()
@@ -754,13 +901,14 @@ class ProfileModel:
         self._pl_curves()
 
     @classmethod
-    def for_placement(cls, exps, grid, priors=None, bounds=None):
+    def for_placement(cls, exps, grid, priors=None, bounds=None, psf_tables=None, shutter=None):
         """A model that only places a given spectrum on the exposures (``frame_image``,
         ``throughput``, ``transmission``): no pixel table and no data, so it exists for a
         source without a usable pixel of its own (a contaminant predicted from its
         3-pixel boxcar, ``profile_contam.boxcar_pass1``). ``grid`` is the spectrum grid."""
         M = cls.__new__(cls)
         M.exps, M.chromatic = exps, True
+        M.psf_tables, M.shutter = psf_tables, shutter
         M.nod_shift = nod_shifts(exps)
         M.priors, M.bounds_cfg = priors or Priors(), bounds or Bounds()
         M.c_prior, M.srcy_flag = planned_position(exps)
@@ -819,39 +967,57 @@ class ProfileModel:
 
     def _components(self, k, lam, dy):
         """Per PSF component (``psf_components``) in slit units: (share, sigma before the
-        shutter, sigma after it, offset before it, offset after it)."""
+        shutter, sigma after it, offset before it, offset after it); ``AFTER_SHARE`` of every
+        component's width^2 acts after the shutter."""
         out = []
         for c in psf_components(lam, self.exps[k].detector, tables=self.psf_tables):
             s = c['sigma'] * dy
-            a = s / np.sqrt(2.0) if c['q'] == 0.5 else s * np.sqrt(c['q'])
-            b = s / np.sqrt(2.0) if c['q'] == 0.5 else s * np.sqrt(1.0 - c['q'])
+            a, b = s * np.sqrt(1.0 - AFTER_SHARE), s * np.sqrt(AFTER_SHARE)
             off = c['offset'] * dy
             out.append((c['frac'], a, b, off if c['pre'] else 0.0, 0.0 if c['pre'] else off))
         return out
+
+    def _shutter(self, k, lam):
+        """Exposure k's shutter model at wavelengths lam (``shutter_at``), kept per exposure,
+        wavelength array and shutter model: a fit evaluates the image at the same pixels many
+        times."""
+        cache = self.__dict__.setdefault('_shutter_cache', {})
+        key = (k, id(lam), id(self.shutter))
+        hit = cache.get(key)
+        if hit is not None and hit[0] is lam and hit[1] is self.shutter:
+            return hit[2]
+        S = shutter_at(self.exps[k].grating, lam, self.shutter)
+        cache[key] = (lam, self.shutter, S)
+        return S
 
     def image(self, p, eoff, k, y, lam, dy):
         """Exposure k's source image at slit positions y (pixel-integrated, per unit
         total flux, before the along-dispersion throughput): per PSF component, the galaxy
         convolved with the component's part before the shutter, clipped by the open
-        shutters, blurred by its part after the shutter, displaced before or after."""
+        shutters times their transmission (``SHUTTER``), blurred by its part after the
+        shutter, displaced before or after."""
         c = self.centre(p, eoff, k, lam)
         w = self.width(p, lam)
-        iv = open_intervals(self.exps[k].open_k)
-        comps = [(fr, np.sqrt(a ** 2 + w ** 2), b, o1, o2) for fr, a, b, o1, o2 in self._components(k, lam, dy)]
+        S = self._shutter(k, lam)
+        iv = open_intervals(self.exps[k].open_k, S['shift'])
+        comps = [(fr, np.sqrt(a ** 2 + w ** 2), b, o1, o2)
+                 for fr, a, b, o1, o2 in self._components(k, lam, dy)]
         acc = 0.0
         for xi, wi in zip(_GLX, _GLW):
             yy = y + 0.5 * dy * xi
-            acc = acc + wi * sum(fr * _clipblur(yy - o2, c + o1, s1, s2, iv) for fr, s1, s2, o1, o2 in comps)
+            acc = acc + wi * sum(fr * _clipblur(yy - o2, c + o1, s1, s2, iv, S['tedge'])
+                                 for fr, s1, s2, o1, o2 in comps)
         return 0.5 * dy * acc
 
     def transmission(self, p, eoff, k, lam, dy, width=None, aperture=REF_APERTURE, centre=None):
-        """Cross-slit transmission (pre-shutter clipping) through an aperture of
-        shutters, for the fitted source (width=None) or a point source (width=0),
-        at the fitted centre or at a given slit position."""
+        """Cross-slit transmission (clipping and the shutter transmission before the shutter's
+        exit) through an aperture of shutters, for the fitted source (width=None) or a point
+        source (width=0), at the fitted centre or at a given slit position."""
         c = self.centre(p, eoff, k, lam) if centre is None else centre
         w = self.width(p, lam) if width is None else width
-        iv = open_intervals(aperture)
-        return sum(fr * _transmitted(c + o1, np.sqrt(a ** 2 + w ** 2), iv)
+        S = self._shutter(k, lam)
+        iv = open_intervals(aperture, S['shift'])
+        return sum(fr * _transmitted(c + o1, np.sqrt(a ** 2 + w ** 2), iv, S['tedge'])
                    for fr, a, _, o1, _ in self._components(k, lam, dy))
 
     def throughput(self, p, eoff, k, lam, dy):
@@ -1393,7 +1559,7 @@ def drizzle_arrays(frame_of, dmap):
     return dmap.drizzle({name: frame_of(name) for name in dmap.names})['data']
 
 
-FIT_VERSION = '4'                     # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF
+FIT_VERSION = '5'                     # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission
 
 
 def run_single_source(product_name, workspace_dir, groups, bkg_overrides, science,
@@ -1418,6 +1584,7 @@ def run_single_source(product_name, workspace_dir, groups, bkg_overrides, scienc
 
     hdr = fits.Header()
     hdr['PFVER'] = (FIT_VERSION, 'Profile-fit model version')
+    hdr['PFSHUT'] = (SHUTTER['version'], 'Shutter model: geometric, smooth transmission')
     hdr['PFCHROM'] = (bool(chromatic), 'Centre and width vary with wavelength')
     hdr['PFCEN'] = (p['centre'], 'Source centre at the pivot [slit units]')
     hdr['PFCENPR'] = (p['centre_prior'], 'Planned source position (prior centre)')
