@@ -35,7 +35,9 @@ Release procedure: edit the `## Unreleased` section below, then run
   `barshadow_calibration` (the master background's and the bar-shadow derivation's input
   discovery) and the exposure key of `profile_contam` took digits only, so an observation
   with more than nine sequences got no master background for the later ones ("no stage-2a
-  inputs, skipped") and no contamination keys.
+  inputs, skipped") and no contamination keys. Also: `nirspec run` with stage 1 and stage 2a
+  together no longer fails when stage 1 writes no rate file for an exposure (no open slit on
+  that detector, e.g. program 4465's NRS2): stage 2a skips it and says so.
 - **NIRSpec: PSF calibration module for the profile fit (`nirspec/psf_calibration.py`).**
   Re-derives the cross-dispersion PSF table (`profile_fit.PSF_TABLES`) and the trace centre
   law (`CENTRE_LAW`) from calibration-field PRISM stars through the profile fit's own model
