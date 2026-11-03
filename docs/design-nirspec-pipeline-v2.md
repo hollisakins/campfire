@@ -868,6 +868,15 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
   across the shutter (light diffracted at the edges lost from the beam), fitted to the bar
   shadow, checked against the edge stars, the centred stars and the p1 fluxes, speed measured
   first.
+- **Smooth transmission T adopted as the default shutter model (user, 2026-11-03).** Built on
+  `claude/psf-table` a0457e16: bar-shadow misfit as low as the measured edge (PRISM 0.010,
+  G395M 0.012), edge stars neutral (median chi2/dof 1.004 of the shipped model), centred stack
+  unchanged, point-source transmission against position close to jwst's point path loss above
+  3 um, p1 median fluxes 0.2-0.5 % lower, fits 22-26 % slower. Before shipping: T capped at 1
+  (it exceeded 1 by up to 5 % on G395M near 5.3 um), the measured-edge form removed,
+  `FIT_VERSION` 5; then p1 stage 3 rerun. Still with the user: the H-grating fallback (the M
+  grating with the same filter, provisional) and the sign-off of the grating bar-shadow tables
+  the default now depends on.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
