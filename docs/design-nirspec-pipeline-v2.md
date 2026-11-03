@@ -207,7 +207,21 @@ background slitlets.
 - Whether the forward model's shutter edge (clip at 0.50, blur split 50/50) agrees with the
   measured uniform-sky profile: edge 50 % point, narrowing with wavelength (open region ±0.45
   pitch at 1 µm, ±0.38 at 5 µm on the prism), floor under the bars (extraction session; merge
-  plan T0 item).
+  plan T0 item). **Checked 2026-11-03 (V7, `scratch/claude/extraction-v2/bs_model_compare.py`,
+  figures `v7_barshadow_{profiles,edges}.png`): it does not agree in the red.** For uniform
+  light the model is the open area (hard edges at ±0.50 slit-frame units = ±0.435 pitch)
+  blurred by the after-shutter part of the shipped PSF and averaged over a row (dy 0.227-0.230
+  slit units per row from p1). Its 50 % half-width stays at 0.435-0.439 pitch at every
+  wavelength; the measured one falls from 0.429 (PRISM 0.6 um) to 0.388 (5 um), and on G395M
+  from 0.414 (2.9 um) to 0.387 (5.2 um). The edge slopes match; the edge positions do not, by
+  up to 0.05 pitch (about 0.25 rows) in the red. Under the bar between two open shutters the
+  model's floor is 0.49-0.61 of the open level against a measured 0.40-0.46. The 2026-10-17
+  star test chose h = 0.50 over 0.44 slit units on blue-dominated chi2; the measured edge is
+  0.49 slit units in the blue and 0.45 at 5 um, so a single h was the wrong question: the
+  effective opening narrows with wavelength. Consequences: the model passes too much light
+  near the shutter edges in the red, for off-centre and extended sources, and its point-source
+  transmission (the throughput normalisation) uses the too-wide edge; the star PSF was fitted
+  with this edge, so the after-shutter PSF may be absorbing part of it.
 - The forward model must not count the shutter edges twice once the measured profile feeds it.
 
 ### 3.3 Master background (calibrated sky and painting)
