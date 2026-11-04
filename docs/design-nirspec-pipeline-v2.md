@@ -1154,11 +1154,58 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
         position (wide galaxies and long slitlets were cut at 2.8 / 3.0), and a wide galaxy is
         summed over source positions at most 0.025 slit units apart (8 Gauss-Hermite nodes left
         ripples at the bars: 925389, width 0.56, chi2/dof 1.31; now 1.098 against 1.101 shipped).
+    - New calibration stars (2026-11-03). NGC 2506 (program 1493, 10 PRISM visits, 3-shutter
+      nods) reduced in the scratch root: 317 clean stars no fit had seen, 79-162 per range,
+      95 / 79 at 4.1-5.3 um (21 / 17 before).
+      - Star stack, free centres, `klin_r2` on all 317: 12 of 14 ranges within 1 % (median worst
+        0.81 %, rms 0.29); shipped model on the same stars 10 of 14 (0.76 %); 4.1-5.3 um
+        0.83 / 0.73 % against 1.46 % on NRS2.
+      - Wide light (master-background single frames): the faintest third of either star set has a
+        negative wide share (-1 to -10 %), flat in distance: a master background a little too
+        high, not a wing. The brightest third agrees between the two sets at 0.7-3 um (1.0-1.2 %
+        of the light beyond 0.8 slit units). At 3-4 / 4-5.2 um the old set had S/N 16 / 5 and gave
+        1.6 / 2.5 %; NGC 2506's brightest third (S/N 95 / 52) gives 1.3 / 1.5 % (about 1.5 / 1.6 %
+        after the background bias seen in the fainter thirds). `klin_r2` predicts 1.5 / 2.2 %.
+      - Refit with the new stars (`klin_r4`: old stars + all NGC 2506, plain normals). Held-out
+        test first (old stars + NGC 2506 half A, scored on half B): 12 of 14 within 1 %, median
+        worst 0.73 % (`klin_r2` on the same stars 11 of 14, 0.80 %; shipped 12 of 14, 0.86 %);
+        4.1-5.3 um 0.62 / 0.51 % (`klin_r2` 0.93 / 0.82 %). A free master-background scale per
+        frame (`KLIN_SKY_NUISANCE`) scores the same on the stack but raises the red wing (2.5 %
+        beyond 0.8 at 4-5.2 um): a slowly falling wing and a background offset trade off across a
+        3-shutter slitlet, so it is not used. The red wide light stays too strong (2.1 % against
+        about 1.6 %): it is the diffraction's own (alpha 0.25), which the kernel, non-negative,
+        cannot remove.
+    - Program 4465 (one star stepped across its shutter). MPT "virtual" sources: negative source
+      IDs (the pipeline skips them as background) and the default planned position. The open
+      column is row 250, columns 1-171, in quadrants 3 and 4. Star A sits in quadrant 4 column 25;
+      the data place it at the shutter centre, near -0.33 pitch (5 configurations) and +0.34 to
+      +0.43 pitch, against the bar (5). In the scratch root its MSA file is rewritten
+      (`msa_rewrite_4465.py`, original kept as `.orig`): a 7-shutter slitlet per star (all 7 are
+      open), a positive ID per configuration, the planned y from the measured centroid. Caveat:
+      the rewritten slitlet moves with the nod; the pipeline differences nods on the common
+      detector frame, so the differences are right. Star B (86-87 shutters along) is 17 x
+      fainter and too faint to use. Pipeline fix found on the way: the profile fit's row height
+      was NaN on a slit's end rows, which slitlets longer than three shutters reach (every fit
+      failed); fixed with a test (commit f5edf189). Fits per range, centre free (`test_4465.py`,
+      `test_4465_r2.png`): centred, the two models are equal (chi2/dof ratio 0.98); against the
+      bar the optics model is better (median 0.75; at 2-3.3 um 0.87 -> 0.42, 1.34 -> 0.72) but
+      worse at 0.7-1 um, a +-4 % residual pair at the core; at -0.33 pitch the same pattern
+      (median 1.14). The blue core of an off-centre star is the open shape problem. Fluxes need
+      each configuration's position across the shutter (dispersion direction), which the
+      program steps too (peak rate varies 3x at the same y); not measured yet.
+    - Review findings (independent review of the prototype, 2026-11-03). No double counting in
+      the throughput normalisation. The shipped model in check 1 ran with unscaled positions;
+      with 1.15 x SRCYPOS it scores 22.8 / 19.3 / 13.5 / 11.7 / 22.3 % against the optics model's
+      11.5 / 8.3 / 8.1 / 12.1 / 15.2 %. Hazards for integration: the table cache keyed by the
+      kernel's file path (to key by content), `for_placement`, where `scale_positions` is
+      applied, long slitlets, and the PL_REF / MOS1x1 normalisation.
     - Open. The bar shadow of uniform light is the alpha 0.25 diffraction's (misfit 0.016 against
-      the shipped edge transmission's 0.011), which matters for wide galaxies. The dispersion-
-      direction loss. G395M and the other dispersers (kernels and diffraction numbers per
-      disperser). The fit of a faint star can fall into a second minimum (2401 in check 1). Fit
-      time for wide galaxies. Pipeline integration (FIT_VERSION 6) waits for approval.
+      the shipped edge transmission's 0.011), which matters for wide galaxies; the same alpha
+      gives too much wide light at 4-5.2 um (2.1 % against about 1.6 %). The blue core of an
+      off-centre star (4465). The dispersion-direction loss. G395M and the other dispersers
+      (kernels and diffraction numbers per disperser). The fit of a faint star can fall into a
+      second minimum (2401 in check 1). Fit time for wide galaxies. Pipeline integration
+      (FIT_VERSION 6) waits for approval.
   - **Open (shipped shutter model).** The blue end against jwst's point loss; check 1's edge-star excess. (The held-out
     check of the bar-shadow tables is done, section 3.2.)
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
