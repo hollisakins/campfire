@@ -165,6 +165,7 @@ class ChainResult:
         c = {
             'PFVER': (PF.FIT_VERSION, 'Profile-fit model version'),
             'PFOPTIC': (PF.optics_version(), 'Diffraction model of the MSA (data/nirspec_optics.json)'),
+            'PFAPER': (PF.REPORT_APERTURE, 'Reported-flux aperture diameter [arcsec]'),
             'PFSHAPE': (self.shape, 'Shape used: own / prism / default'),
             'PFCHAIN': (self.chain, 'Shape chain: gated / free / fixed'),
             'PFREASON': (self.reason[:68], 'Why this shape'),

@@ -111,8 +111,22 @@ Release procedure: edit the `## Unreleased` section below, then run
     0.008-0.024 to 0.004-0.011 slit units, the same held out by observation; the slope with the
     position in the shutter is near zero now (the old PSF needed -0.11 at 4.7 um). The nod law
     is unchanged (planned shifts, scale 1).
-  - `Exposure.src_x_jwst` (SRCXPOS) and `Optics.x_correction`: a factor on jwst's
-    along-dispersion point loss from the model file's `x_loss` (none in the shipped file yet).
+  - Along the dispersion: jwst's point loss times a correction fitted to 93 NGC 2506 stars,
+    exp(-0.572 (lambda - 2 um)+ SRCXPOS^2) (model file `x_loss`, version `2026.11-w2x`;
+    `Optics.x_correction`, `Exposure.src_x_jwst`; held out, the star scatter at 3.5-5 um falls
+    from 12.7 / 12.5 % to 10.7 / 10.8 %, unchanged below 2.5 um), times the model's ratio for
+    the fitted source over a point (`Optics.x_extended_ratio`: one shutter 0.22 arcsec wide, the
+    same pupil, stop and kernel, a 0.03 arcsec scatter of the true position about the planned
+    one, the source round). The fitted spectrum is the source's total light. Check 1 on NGC 2506
+    with both in the fit: 8.0 / 11.5 / 6.5 / 6.1 / 9.4 % (was 7.0 / 12.2 / 6.3 / 7.3 / 12.6 %).
+  - **The reported flux changes meaning for extended sources.** `fnu_prof` is the fitted
+    source's light inside a circle 0.8 arcsec across (1.5 shutter lengths;
+    `profile_fit.REPORT_APERTURE`, `reported_factor`, header `PFAPER`), where it was the light
+    in the shutter on jwst's point-source calibration (`main_shutter_factor`, removed). Point
+    sources are unchanged; extended ones rise. On 92 p1 PRISM sources against COSMOS auto
+    photometry, by fitted size from compact to wide: before 0.87 / 0.65 / 0.58 / 0.55 / 0.44 /
+    0.32 x the photometry, now 0.93 / 0.77 / 0.77 / 0.75 / 0.68 / 1.03, scatter 0.20 -> 0.16 dex.
+    The 3-pixel boxcar and `fnu_opt` stay on jwst's calibration.
 
 - **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
   run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint

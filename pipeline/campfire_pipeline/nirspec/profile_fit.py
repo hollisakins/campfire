@@ -102,6 +102,7 @@ CENTRE_LAW = {
 }
 
 W_FLOOR = 0.003
+REPORT_APERTURE = 0.8      # arcsec across (1.5 shutter lengths): the reported flux is the source's light inside it
 
 
 def open_shutters(shutter_state, slit_ymin, slit_ymax):
@@ -819,16 +820,18 @@ class ProfileModel:
         dependence, with its slit-direction dependence replaced by the model's. jwst's
         point-source path loss at the planned position is moved to the shutter centre
         (``optics.jwst_point_y_ratio``), times the model's correction to its
-        along-dispersion dependence (``x_correction``, at SRCXPOS), and divided by the
-        model's transmission of a point source at the centre through the MOS1X3 aperture."""
+        along-dispersion dependence (``x_correction``, at SRCXPOS) and the model's ratio for
+        the fitted source over a point there (``x_extended_ratio``: a round source), and
+        divided by the model's transmission of a point source at the centre through the
+        MOS1X3 aperture. The fitted spectrum is then the source's total light."""
         from campfire_pipeline.nirspec.optics import jwst_point_y_ratio
         L, P = self.pl_curve[k]
         pl = np.interp(lam, L, P)
         e = self.exps[k]
+        o = self.optics[k]
         if e.pl_ref and np.isfinite(e.src_y_jwst):
             pl = pl * jwst_point_y_ratio(e.pl_ref, lam, e.src_y_jwst)
-        if np.isfinite(e.src_x_jwst):
-            pl = pl * self.optics[k].x_correction(lam, e.src_x_jwst)
+        pl = pl * o.x_correction(lam, e.src_x_jwst) * o.x_extended_ratio(lam, e.src_x_jwst, self.width(p, lam))
         t = self.transmission(p, eoff, k, lam, dy, width=0.0, centre=0.0)
         return pl / np.maximum(t, 1e-6)
 
@@ -1248,8 +1251,8 @@ def model_frame(result, k, unit=False, applied_pathloss=True, common=False):
     common frame with ``common``).
 
     unit : the profile per unit reported flux instead of the fitted model: the true
-        spectrum is set to 1 / main_shutter_factor, so a profile-weighted fit of
-        the data with this frame returns the reported flux directly.
+        spectrum is set to 1 / reported_factor, so a profile-weighted fit of the data
+        with this frame returns the reported flux directly.
     applied_pathloss : divide by the path loss stage 2b re-applied, so the frame is
         in the units of the live canonical SCI.
     """
@@ -1264,7 +1267,7 @@ def model_frame(result, k, unit=False, applied_pathloss=True, common=False):
     out = np.full(e.y.shape, np.nan)
     terms = term_weights(M.exps, k)
     if unit:
-        f = main_shutter_factor(result, result.lam)
+        f = reported_factor(result, result.lam)
         true_spec = np.where(f > 0, 1.0 / np.maximum(f, 1e-6), 0.0)
     else:
         true_spec = np.nan_to_num(result.flux)
@@ -1280,43 +1283,19 @@ def model_frame(result, k, unit=False, applied_pathloss=True, common=False):
     return out if common else out[sl]
 
 
-def main_shutter_factor(result, lam):
-    """Reported-flux factor: the fitted source's transmission through the main
-    shutter, divided by a point source's at the planned position (SRCYPOS).
+def reported_factor(result, lam):
+    """Reported-flux factor: the share of the fitted source's light inside a circle
+    REPORT_APERTURE across, centred on it, 1 - exp(-R^2 / 2 sigma^2) for the round Gaussian
+    of the fitted width (sigma in arcsec at each wavelength).
 
-    The true spectrum times this factor is the light in the main shutter on jwst's
-    point-source path-loss calibration, which is what cfpipe's optimal extraction
-    measures. For a point source at its planned position it equals the true spectrum.
-
-    An exposure without usable pixels (``ok`` empty, e.g. everything masked) has no
-    row scale of its own; it is left out of the average (the others carry the
-    factor), and only if every exposure is empty the row scale comes from all its
-    pixels. Before, its NaN row scale made the whole factor NaN."""
+    The true spectrum (the source's total light) times this factor is the reported flux:
+    the whole source up to a bound, so a wide or nearly uniform source does not depend on
+    the model far beyond the slitlet (user, 2026-11-04). For a point source it is one."""
+    from campfire_pipeline.nirspec.optics import SLIT
     M = result.model
-    p, eoff = _qvec(result)
-    lam = np.asarray(lam, float)
-    sci = ([i for i, e in enumerate(M.exps) if e.use_data and e.has_source]
-           or [i for i, e in enumerate(M.exps) if e.use_data])
-
-    def _row_scale(e, usable):
-        dy = np.asarray(e.dy, float)
-        sel = np.isfinite(dy) & (np.asarray(e.ok, bool) if usable else np.isfinite(dy))
-        return float(np.median(dy[sel])) if sel.any() else np.nan
-    dys = {k: _row_scale(M.exps[k], True) for k in sci}
-    keep = [k for k in sci if np.isfinite(dys[k])]
-    if not keep:
-        dys = {k: _row_scale(M.exps[k], False) for k in sci}
-        keep = [k for k in sci if np.isfinite(dys[k])]
-    if not keep:
-        return np.full(lam.shape, np.nan)
-    sci = keep
-    out = 0.0
-    for k in sci:
-        dy = np.full_like(lam, dys[k])
-        tg = M.transmission(p, eoff, k, lam, dy, aperture=(0,))
-        tp = M.transmission(p, eoff, k, lam, dy, width=0.0, aperture=(0,), centre=M.exps[k].src_y)
-        out = out + tg / np.maximum(tp, 1e-6)
-    return out / len(sci)
+    p, _ = _qvec(result)
+    sigma = M.width(p, np.asarray(lam, float)) * SLIT
+    return 1.0 - np.exp(-(0.5 * REPORT_APERTURE) ** 2 / (2.0 * sigma ** 2))
 
 
 def boxcar_factor(result, lam):
@@ -1370,7 +1349,7 @@ def run_single_source(product_name, workspace_dir, groups, bkg_overrides, scienc
     """Fit one source and write ``{product_name}_pf.fits``: the fitted shape (header)
     and the drizzled 2D profile per unit reported flux (PROF2D) on the stage-3 s2d
     grid. The profile is not normalised: weighting the s2d with it returns the
-    reported flux (main-shutter light on the point-source path-loss calibration)."""
+    reported flux (the source's light inside REPORT_APERTURE, ``reported_factor``)."""
     import os
     from astropy.io import fits
     from campfire_pipeline.common.io import log

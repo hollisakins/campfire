@@ -172,6 +172,7 @@ def test_x_loss_fit_recovers_b_and_the_correction_undoes_it():
     opt = O.Optics(0.996, 0.0344, -0.0026, 0.25, [], x_loss=dict(b=b, lam0=2.0))
     lam = np.array([1.0, 2.0, 4.0])
     assert np.allclose(opt.x_correction(lam, 0.0), 1.0)
+    assert np.allclose(opt.x_correction(lam, np.nan), 1.0)              # no SRCXPOS: no correction
     assert np.allclose(opt.x_correction(lam, 0.3), [1.0, 1.0, np.exp(-b * 2.0 * 0.09)])
     assert np.allclose(O.Optics(0.996, 0.0344, -0.0026, 0.25, []).x_correction(lam, 0.3), 1.0)
 

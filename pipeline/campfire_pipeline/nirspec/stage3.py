@@ -1285,8 +1285,10 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     PROF2D is the drizzled source model per unit reported flux (uJy, against the s2d
     SCI in MJy): it is not normalised per column, so its in-aperture sum carries
     the aperture and path-loss correction. The weighted fit of the data on the
-    aperture rows, sum(P D / V) / sum(P^2 / V), is the reported flux directly:
-    main-shutter light on the point-source path-loss calibration, as for ``fnu_opt``.
+    aperture rows, sum(P D / V) / sum(P^2 / V), is the reported flux directly: the
+    source's light inside ``profile_fit.REPORT_APERTURE`` (``reported_factor``). For a
+    point source it is the same as ``fnu_opt``; an extended source's ``fnu_opt`` is the
+    light in its shutter on jwst's point-source calibration.
 
     ``rows``: which rows ``fnu_prof`` uses: ``aperture`` (the x1d aperture rows) or
     ``model`` (every row where PROF2D is significant, including the negative nod

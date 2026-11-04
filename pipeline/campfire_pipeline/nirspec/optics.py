@@ -18,6 +18,11 @@ the PRISM calibration stars' nod differences and master-background single frames
 The gratings use the same model: the light before the shutter is the same, and the gratings' bar
 shadow and calibration stars fit it as well as their own tables did.
 
+Along the dispersion the data do not show the source's shape, so only the light passed is
+modelled: jwst's point-source path loss times a correction fitted to stars (``x_correction``),
+times the model's ratio for an extended source over a point there (``x_extended_ratio``: the
+same diffraction through one shutter X_HALF wide each side, the source taken to be round).
+
 A Gaussian source of width w (the profile fit's galaxy) is the sum of point images across it:
 for w <= W_COMPACT exactly over the tables interpolated linearly in source position
 (``_compact_weights``), above it in uniform steps.
@@ -50,6 +55,14 @@ LAM = np.exp(np.linspace(np.log(0.55), np.log(5.5), 30))       # table wavelengt
 C = np.round(np.arange(-5.5, 5.5001, 0.0125), 5)               # source positions
 Y = np.round(np.arange(-5.5, 5.5001, 0.025), 5)                # detector positions
 DY_ROW = ROW / SLIT
+# Along the dispersion, fitted to the NGC 2506 stars' fluxes against SRCXPOS (design doc, check 1): the open
+# half-width, and the scatter of a source's true position about its planned one (acquisition, catalogue
+# astrometry). Without that scatter a point's transmission falls from 0.9 to 0.3 within 0.05 arcsec of the edge,
+# and the ratio for an extended source there swings by factors of two.
+X_HALF = 0.110                # open half-width of a shutter along the dispersion [arcsec]
+X_BLUR = 0.030                # a source's position scatter along the dispersion [arcsec]
+X_PITCH = 0.27                # shutter pitch along the dispersion [arcsec] (the unit of SRCXPOS)
+XC = np.round(np.arange(-2.5, 2.5001, 0.005), 4)               # source x [arcsec]
 W_COMPACT = 0.06              # widths up to this: exact weights over the tables (``_compact_weights``)
 K_MAX = 5                     # shutters beyond this offset do not change the tables' +-5.5 range
 ENGINE_VERSION = '1'          # part of the cache key: bump when the table computation changes
@@ -146,7 +159,7 @@ class Optics:
                        for n in kernel]
         self.x_loss = None if x_loss is None else dict(b=float(x_loss['b']), lam0=float(x_loss['lam0']))
         self.cache_dir = cache_dir
-        self._img, self._tr = {}, {}
+        self._img, self._tr, self._tx = {}, {}, None
 
     # -- along the dispersion -------------------------------------------------
     def x_correction(self, lam, srcx):
@@ -158,6 +171,63 @@ class Optics:
         if self.x_loss is None or not np.isfinite(srcx):
             return np.ones(lam.shape)
         return np.exp(-self.x_loss['b'] * np.maximum(lam - self.x_loss['lam0'], 0.0) * float(srcx) ** 2)
+
+    def _raw_x_transmission(self):
+        p = self.params
+        y, f = _grid(n=8192, step=0.00125)
+        mask = (np.abs(y) < X_HALF).astype(float)
+        tab = np.zeros((LAM.size, XC.size))
+        for i, L in enumerate(LAM):
+            fmax = D_TEL / (2 * L * 1e-6)
+            pupil = np.clip(1.0 - (f / fmax) ** 2, 0.0, None) ** p['alpha'] if p['alpha'] > 0 \
+                else (np.abs(f) < fmax).astype(float)
+            for j, x in enumerate(XC):
+                field = np.fft.fftshift(np.fft.ifft(pupil * np.exp(-2j * np.pi * f * (x * RAD))))
+                spec = np.fft.fft(np.fft.ifftshift(field * mask))
+                spec[np.abs(f) > p['rho'] * fmax] = 0.0
+                tab[i, j] = np.sum(np.abs(np.fft.ifft(spec)) ** 2) / np.sum(np.abs(field) ** 2)
+        return tab
+
+    def x_transmission_table(self):
+        """(LAM, XC) the light of a point source planned at x (arcsec from the shutter centre
+        along the dispersion) one shutter passes: the same pupil and stop as in the slit
+        direction, the shutter X_HALF wide each side, spread before the shutter by the kernel
+        (the telescope's blur, taken to be round) and by the position scatter X_BLUR. Its
+        neighbours along the dispersion belong to other slitlets."""
+        if self._tx is None:
+            kind = f'xtr{X_HALF:g}_{XC[0]:g}_{XC.size}'
+
+            def smear():
+                raw = np.asarray(_cached(self._path(kind, (0,), False), self._raw_x_transmission), float)
+                offs = np.round(np.arange(-2.0, 2.0001, C[1] - C[0]), 5)
+                g = np.exp(-0.5 * (XC / X_BLUR) ** 2)
+                out = np.empty(raw.shape)
+                for i, L in enumerate(LAM):
+                    k = np.interp(XC, offs * SLIT, self.kernel_at(L, offs), left=0.0, right=0.0)
+                    k = np.convolve(k, g, mode='same')
+                    out[i] = np.convolve(raw[i], k / k.sum(), mode='same')
+                return out
+            self._tx = _cached(self._path(f'{kind}_b{X_BLUR:g}', (0,), True), smear)
+        return self._tx
+
+    def x_extended_ratio(self, lam, srcx, width):
+        """The light a Gaussian source of ``width`` (slit units, per ``lam``, taken as its width
+        along the dispersion too: a round source) at SRCXPOS ``srcx`` passes along the
+        dispersion, over a point source's there (``x_transmission_table``). One for a point."""
+        lam = np.asarray(lam, float)
+        if lam.size == 0:
+            return np.ones(lam.shape)
+        tab = self.x_transmission_table()
+        x = (float(srcx) if np.isfinite(srcx) else 0.0) * X_PITCH
+        o = np.argsort(lam)
+        sig = np.interp(np.log(LAM), np.log(lam[o]), np.broadcast_to(np.asarray(width, float), lam.shape)[o]) * SLIT
+        r = np.ones(LAM.size)
+        for i in range(LAM.size):
+            if sig[i] < 2 * (XC[1] - XC[0]):          # narrower than the grid resolves: a point
+                continue
+            g = np.exp(-0.5 * ((x - XC) / sig[i]) ** 2)
+            r[i] = (g @ tab[i] / g.sum()) / max(np.interp(x, XC, tab[i]), 1e-9)
+        return np.interp(np.log(lam), np.log(LAM), r)
 
     # -- the kernel before the shutter -------------------------------------
     def kernel_at(self, lam, offsets):

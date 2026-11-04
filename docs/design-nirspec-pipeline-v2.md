@@ -563,11 +563,22 @@ extended with `coverage.geometry_on_block` and `WAVELENGTH_CUTOFFS` (e3af87b0). 
 **What and why.** The final spectrum is a fit of a physical model to every nod difference: a
 Gaussian galaxy convolved with the star-measured PSF, clipped by the open shutters, with the nod
 partners modelled as negative copies at their own WCS positions. One true spectrum is shared by
-all exposures. The reported flux is the light that entered the target's shutter. This replaces
-the fixed optimal profile, which loses light for extended and off-centre sources.
+all exposures. The reported flux is the source's light inside a circle 0.8 arcsec across (1.5
+shutter lengths) centred on it (user, 2026-11-04; before, the light that entered the target's
+shutter). This replaces the fixed optimal profile, which loses light for extended and
+off-centre sources.
 
 **Decisions.**
 - On by default (user, 2026-10-29).
+- The reported flux (`fnu_prof`) is the fitted source's light inside a circle
+  `profile_fit.REPORT_APERTURE` = 0.8 arcsec across, the round Gaussian of the fitted width
+  (`reported_factor`, header `PFAPER`): the whole of a point source, and a bound on how far a
+  wide or nearly uniform source is extrapolated. No second column (user, 2026-11-04: "I think
+  the 1.5 shutter bound is the right choice"). The fit's spectrum is the source's total light:
+  along the slit from the model at the fitted width, along the dispersion jwst's point loss
+  times the stars' correction (`x_correction`) times the model's ratio for the fitted source
+  (`x_extended_ratio`, the source taken as round). The 3-pixel boxcar, `fnu_opt` and the cal /
+  s2d files stay on jwst's point-source calibration.
 - The instrument model (PSF table, shutter geometry, centre law) is fixed and never a fit
   parameter, "not even as a suggestion" (user, 2026-10-24).
 - PSF: star-measured, per detector, lower-quartile width ("err on the side of a
@@ -1386,6 +1397,24 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
       higher) or SRCYPOS; it is lower for sources measured in more bands (0.77 against 0.86), so
       it looks like a calibration difference with wavelength between the PRISM and the
       photometry, not a loss the model misses. Open.
+    - Adopted: 0.8 arcsec (user, 2026-11-04). End to end with the shipped code (`endtoend_x.zsh`,
+      `xsize_pipeline.py`, figure `xsize_pipeline.png`): the p1 sources' reported flux over the
+      photometry by size sextile, before 0.87 / 0.65 / 0.58 / 0.55 / 0.44 / 0.32 (scatter 0.20
+      dex), now 0.93 / 0.77 / 0.77 / 0.75 / 0.68 / 1.03 (0.16 dex).
+    - The first end-to-end run found the along-dispersion ratio unstable at the shutter edge: the
+      model's point transmission fell from 0.90 to 0.33 between 0.05 and 0.10 arcsec from the
+      centre, and stars planned there (SRCXPOS up to 0.45) with fitted widths of 0.03 arcsec got
+      factors up to 2.2 (`xratio_probe.py`; check 1 at 0.7-1 um 7.0 -> 9.9 %). The x model now
+      takes the half-width and position scatter the stars' x loss fitted (`xfit.py`: 0.110 and
+      0.030 arcsec): at the edge the ratio is 1.02-1.05 for small widths, near the centre about
+      as before (0.71 -> 0.73 for 0.09 arcsec).
+    - Check 1 on NGC 2506 with the x correction and the ratio in the fit (`check1_ngc_spec_x.log`),
+      clipped rms per band 0.7-1 / 1-1.5 / 1.5-2.5 / 2.5-3.5 / 3.5-5 um: 8.0 / 11.5 / 6.5 / 6.1 /
+      9.4 % (before 7.0 / 12.2 / 6.3 / 7.3 / 12.6 %); the trend with |x| at 3.5-5 um -47 -> -7 %
+      per unit. The 0.7-1 um band is a little worse (MAD-sigma 5.1 -> 5.5 %, about 1.5 sigma):
+      stars with fitted widths of 0.02-0.05 arcsec come out 6 % higher there, the width taken
+      as the star's size along the dispersion. For a bright star part of that width is the
+      core's broadening with brightness, which may not happen before the shutter. Open.
     - Open. The bar shadow of uniform light is the alpha 0.25 diffraction's (misfit 0.016 against
       the FIT_VERSION 5 edge transmission's 0.011), which matters for wide galaxies, and the blur
       it wants is larger than the stars allow; the model's wide light at 4-5.2 um is 2.1 % against

@@ -97,6 +97,26 @@ def test_tables_cached_by_model_and_kernel(small_grids, tmp_path, monkeypatch):
     assert O.Optics._mask((-7, -1, 0, 1, 6)) == (-1, 0, 1)        # shutters beyond the tables' reach dropped
 
 
+def test_x_extended_ratio(small_grids, tmp_path, monkeypatch):
+    """Along the dispersion: one for a point, falling as the source widens, and a wide source
+    (flat over the shutter) passes the integral of a point's transmission over its Gaussian's
+    peak, 1 / sqrt(2 pi) sigma: less than the shutter's geometric width 2 X_HALF, the more so
+    in the red, where light diffracted at the narrow shutter misses the stop."""
+    monkeypatch.setattr(O, 'XC', np.round(np.arange(-1.5, 1.5001, 0.005), 4))
+    opt = O.Optics(0.996, 0.0344, -0.0026, 0.25, _kernel(), cache_dir=str(tmp_path))
+    lam = np.array([1.0, 3.0])
+    assert np.allclose(opt.x_extended_ratio(lam, 0.1, 0.003), 1.0)
+    r = [opt.x_extended_ratio(lam, 0.0, w) for w in (0.1, 0.3, 0.9)]
+    assert np.all(r[0] < 1.0) and np.all(r[1] < r[0]) and np.all(r[2] < r[1])
+    tab = np.asarray(opt.x_transmission_table())
+    point = np.array([np.interp(0.0, O.XC, t) for t in tab])
+    s = 0.9 * O.SLIT
+    area = tab.sum(axis=1) * (O.XC[1] - O.XC[0])
+    assert np.allclose(r[2] * point, area / (np.sqrt(2 * np.pi) * s), rtol=0.03)
+    assert area[1] < area[0] < 2 * O.X_HALF
+    assert np.isfinite(opt.x_extended_ratio(lam, np.nan, 0.3)).all()       # no SRCXPOS: the centre
+
+
 def test_kernel_spreads_the_image(small_grids, tmp_path):
     opt = O.Optics(0.996, 0.0344, -0.0026, 0.25, _kernel(), cache_dir=str(tmp_path))
     y = np.linspace(-0.6, 0.6, 241)
@@ -154,8 +174,8 @@ def test_model_image_and_throughput_from_the_optics(monkeypatch):
 
 def test_throughput_takes_the_x_correction_at_srcxpos():
     class Corrected(Analytic):
-        def x_correction(self, lam, srcx):
-            return np.full(np.shape(lam), 1.0 - srcx)
+        def x_correction(self, lam, srcx):           # one without SRCXPOS, as Optics.x_correction
+            return np.full(np.shape(lam), 1.0 - srcx if np.isfinite(srcx) else 1.0)
     exps = _exposures()
     for e, x in zip(exps, (0.0, 0.1, np.nan)):
         e.src_x_jwst = x

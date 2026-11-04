@@ -1,7 +1,7 @@
 {
  "meta": {
-  "version": "2026.11-w2",
-  "source": "kernel fitted to 593 calibration stars (programs 6642, 12497, NGC 2506 in 1493), stars at peak S/N >= 63 with their own width (the core broadens with brightness), two linearisations from klin_s1 (klin_w2); one model for every disperser (the gratings checked on 6642 obs 2 stars and the G395M bar shadow)",
+  "version": "2026.11-w2x",
+  "source": "kernel fitted to 593 calibration stars (programs 6642, 12497, NGC 2506 in 1493), stars at peak S/N >= 63 with their own width (the core broadens with brightness), two linearisations from klin_s1 (klin_w2); one model for every disperser (the gratings checked on 6642 obs 2 stars and the G395M bar shadow); along-dispersion correction exp(-b (lambda - lam0)+ SRCXPOS^2) on jwst's point path loss, b fitted to 93 NGC 2506 stars seen at several positions (optics_calibration.fit_x_loss)",
   "units": "kernel: delta in slit-frame units (open height 0.46 arcsec), k per node; diffraction: rho (stop over telescope pupil image), s0 / s1 detector blur [arcsec] at 3 um and per um, alpha pupil amplitude profile"
  },
  "diffraction": {
@@ -9,6 +9,10 @@
   "s0": 0.0344,
   "s1": -0.0026,
   "alpha": 0.25
+ },
+ "x_loss": {
+  "b": 0.572,
+  "lam0": 2.0
  },
  "NRS1": [
   {

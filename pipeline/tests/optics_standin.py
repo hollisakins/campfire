@@ -29,6 +29,9 @@ class Analytic:
     def x_correction(self, lam, srcx):
         return np.ones(np.shape(lam))
 
+    def x_extended_ratio(self, lam, srcx, width):
+        return np.ones(np.shape(lam))
+
     def transmission(self, mask, lam, centre, width):
         lam, centre, width = np.broadcast_arrays(lam, centre, width)
         s = self._s(width) * np.sqrt(2)

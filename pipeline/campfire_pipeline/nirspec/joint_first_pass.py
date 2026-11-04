@@ -674,7 +674,7 @@ def pass1_of(target, sol, maps, stage_config):
     P1.clean, P1.why, P1.shape_src, P1.spec_src = 1.0, 'joint', target.shape_src, SPEC_SRC
     P1.snr_det = np.nan
     P1.flux_raw, P1.err_raw = sol['flux'], sol['err']
-    rep = np.abs(sol['flux'] * PF.main_shutter_factor(R, R.lam)) * 1e12
+    rep = np.abs(sol['flux'] * PF.reported_factor(R, R.lam)) * 1e12
     rep = rep[np.isfinite(rep)]
     P1.rep_p95 = float(np.percentile(rep, 95)) if rep.size > 10 else np.nan
     P1.ref_p95, P1.n_lines = np.nan, 0

@@ -214,27 +214,29 @@ def test_outlier_pixels_are_masked():
     assert abs(np.median(R.flux[good] / (50.0 * _spectrum(R.lam[good]))) - 1) < 0.03
 
 
-def test_main_shutter_factor_is_one_for_centred_point_like_source():
-    exps = _exposures(src_y=0.0)
-    R = _truth_result(exps, dict(centre=0.0, drift=0.0, width=PF.W_FLOOR, width_change=0.0), [0, 0, 0], 1.0)
-    f = PF.main_shutter_factor(R, np.array([1.0, 2.0, 4.0]))
-    assert np.allclose(f, 1.0, atol=0.03)
+def test_reported_factor_is_one_for_a_point_source_anywhere():
+    """The reported flux is the source's light inside REPORT_APERTURE: all of a point
+    source's, wherever it sits in the shutter."""
+    for y in (0.0, 0.3):
+        exps = _exposures(src_y=y)
+        R = _truth_result(exps, dict(centre=y, drift=0.0, width=PF.W_FLOOR, width_change=0.0), [0, 0, 0], 1.0)
+        assert np.allclose(PF.reported_factor(R, np.array([1.0, 2.0, 4.0])), 1.0)
 
 
-def test_main_shutter_factor_ignores_an_exposure_without_usable_pixels():
-    """An exposure with every pixel masked used to make the factor NaN (its row scale
-    was the median of nothing), which switched off the pass-1 guard for that source."""
-    exps = _exposures(src_y=0.1)
-    R = _truth_result(exps, TRUTH, [0, 0, 0], 1.0)
+def test_reported_factor_bounds_a_wide_source():
+    """A round Gaussian of sigma s arcsec keeps 1 - exp(-R^2 / 2 s^2) inside the circle of
+    radius R = REPORT_APERTURE / 2, and the share falls as the source widens."""
+    from campfire_pipeline.nirspec.optics import SLIT
+    exps = _exposures()
     lam = np.array([1.0, 2.0, 4.0])
-    f_all = PF.main_shutter_factor(R, lam)
-    exps[1].ok[:] = False
-    f = PF.main_shutter_factor(R, lam)
-    assert np.all(np.isfinite(f))
-    assert np.allclose(f, f_all, rtol=0.05)
-    for e in exps:                                   # nothing usable anywhere: still finite
-        e.ok[:] = False
-    assert np.all(np.isfinite(PF.main_shutter_factor(R, lam)))
+    shares = []
+    for w in (0.1, 0.4, 1.5):
+        R = _truth_result(exps, dict(centre=0.0, drift=0.0, width=w, width_change=0.0), [0, 0, 0], 1.0)
+        f = PF.reported_factor(R, lam)
+        s = w * SLIT
+        assert np.allclose(f, 1.0 - np.exp(-(0.5 * PF.REPORT_APERTURE) ** 2 / (2 * s ** 2)))
+        shares.append(f[0])
+    assert shares[0] > 0.99 > shares[1] > shares[2] > 0.1
 
 
 # ---------------------------------------------------------------------------

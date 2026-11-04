@@ -497,7 +497,7 @@ def boxcar_pass1(exps, sid, maps, workspace, is_prism, stage_config, box):
     if n_smooth > 1:
         R.flux, R.flux_err, _ = smooth_spectrum(R.flux, R.flux_err, n=n_smooth, keep_lines=st['lines'])
         n_lines = int(np.sum(np.isfinite(raw) & (R.flux == raw)))
-    rep = np.abs(R.flux * PF.main_shutter_factor(R, R.lam)) * 1e12
+    rep = np.abs(R.flux * PF.reported_factor(R, R.lam)) * 1e12
     rep = rep[np.isfinite(rep)]
     frames, nosrc, ext = _frames(R, exps, sid, maps, workspace, n_smooth, st['lines'])
     P1 = Pass1(sid=int(sid), lam=R.lam, flux=R.flux, flux_err=R.flux_err, frames=frames, reliable=True,
