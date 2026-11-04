@@ -1368,6 +1368,24 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
       flips sign between the halves below 2.5 um (noise). On the 12497 repeat stars it is
       neutral: their x barely changes between visits (rms change of x^2 0.04). At 4.5 um and
       x = 0.3 it raises a flux by 13 %. Wired into the throughput; not yet in the shipped file.
+    - What the product should report for an extended source (user, 2026-11-04: open to revisiting
+      "the light that entered the target's shutter"; no second column, a bounded aperture instead
+      of the shutter, 1.5 or 3 shutter lengths). Test on p1 PRISM (`xsize_p1.py`,
+      `xsize_analyze.py`, figure `xsize_p1.png`): the 106 clean sources fitted with FIT_VERSION 6,
+      92 with COSMOS v1.2 auto fluxes at S/N >= 10 in f150w-f444w; spectrum / photometry per
+      source (median over bands, top-hat bands), medians in sextiles of the fitted width at 2 um
+      (sigma 0.03 to 0.3 arcsec):
+      - in the shutter (today): 0.87 / 0.67 / 0.60 / 0.55 / 0.46 / 0.33, scatter 0.21 dex;
+      - total with the slit-direction model only: 0.87 / 0.67 / 0.62 / 0.62 / 0.54 / 0.54;
+      - total with the along-dispersion transmission of an extended source as well (the model in
+        x: one shutter 0.20 arcsec wide, pupil, stop, kernel; the source round, its x width the
+        fitted width): 0.95 / 0.78 / 0.78 / 0.81 / 0.70 / 1.09, scatter 0.145 dex, no trend;
+      - inside a circle 0.8 or 1.6 arcsec across (1.5 or 3 shutter lengths) of the fitted
+        Gaussian: the same except the widest sextile (1.03, 1.09).
+      The level of about 0.8 does not follow SRCXPOS (correlation +0.20, the off-centre half
+      higher) or SRCYPOS; it is lower for sources measured in more bands (0.77 against 0.86), so
+      it looks like a calibration difference with wavelength between the PRISM and the
+      photometry, not a loss the model misses. Open.
     - Open. The bar shadow of uniform light is the alpha 0.25 diffraction's (misfit 0.016 against
       the FIT_VERSION 5 edge transmission's 0.011), which matters for wide galaxies, and the blur
       it wants is larger than the stars allow; the model's wide light at 4-5.2 um is 2.1 % against
