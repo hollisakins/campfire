@@ -443,6 +443,8 @@ class Exposure:
     origin: tuple = None           # (ystart, xstart) of the common frame on the detector, 1-based like jwst
     has_source: bool = True        # the source is in this frame (SRCFLUX != F)
     pa_v3: float = np.nan          # telescope roll [deg]
+    src_y_jwst: float = np.nan     # SRCYPOS as jwst wrote it (shutter pitches; ``source_position``)
+    pl_ref: str = ''               # jwst's path-loss reference file, as the cal file names it
 
     @property
     def dy(self):
@@ -509,6 +511,23 @@ def _applied_pathloss(m, s):
     if applied:
         return np.asarray(s.pathloss_point, float)
     return np.ones(s.data.shape)
+
+
+def _pathloss_ref(m):
+    """jwst's path-loss reference file of model ``m`` ('' when none is recorded)."""
+    try:
+        return str(m.meta.ref_file.pathloss.name or '')
+    except AttributeError:
+        return ''
+
+
+def source_position(srcypos, grating, detector):
+    """The source's planned position in slit-frame units (one unit = the open height) from
+    jwst's SRCYPOS, which is in shutter pitches: x MSA_SLIT_PITCH for a disperser with the
+    diffraction model (``optics``, FIT_VERSION 6). Dispersers on the FIT_VERSION 5 model keep
+    SRCYPOS as it is, the value their PSF and shutter tables were fitted with."""
+    from campfire_pipeline.nirspec import optics as O
+    return srcypos * MSA_SLIT_PITCH if O.optics_for(grating, detector) is not None else srcypos
 
 
 def rebuild_nod_differences(frames, dqs, partners):
@@ -623,18 +642,20 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
         dq_bad = (np.asarray(dq) & DO_NOT_USE) > 0
         ok = np.isfinite(diff) & np.isfinite(var) & (var > 0) & ~dq_bad & np.isfinite(ys) & np.isfinite(s.wavelength) & np.isfinite(pl) & (pl > 0)
         name = str(f).split('/')[-1]
+        grating = f'{m.meta.instrument.grating}/{m.meta.instrument.filter}'.upper()
+        detector = str(m.meta.instrument.detector).upper()
         exps.append(Exposure(
-            name=name, group=group, detector=str(m.meta.instrument.detector).upper(),
-            grating=f'{m.meta.instrument.grating}/{m.meta.instrument.filter}'.upper(),
+            name=name, group=group, detector=detector, grating=grating,
             quadrant=int(s.quadrant) if s.quadrant is not None else None,
             diff=_place(diff, s, y0, x0, shape), var=_place(var * pl ** 2, s, y0, x0, shape),
             ok=_place(ok.astype(float), s, y0, x0, shape, fill=0.0) > 0,
             wav=_place(np.asarray(s.wavelength, float), s, y0, x0, shape), y=_place(ys, s, y0, x0, shape),
             pl_applied=_place(pl, s, y0, x0, shape), pl_point=_place(np.asarray(s.pathloss_point, float), s, y0, x0, shape),
-            src_y=float(s.source_ypos), open_k=open_shutters(s.shutter_state, s.slit_ymin, s.slit_ymax),
+            src_y=source_position(float(s.source_ypos), grating, detector), src_y_jwst=float(s.source_ypos),
+            open_k=open_shutters(s.shutter_state, s.slit_ymin, s.slit_ymax),
             partners=part, use_data=(part is not None) and (science is None or name in science),
             cutout=(s.ystart - y0, s.xstart - x0, ny, nx), path=str(f), origin=(y0, x0),
-            has_source=bool(has_src), pa_v3=_pa_v3(f)))
+            has_source=bool(has_src), pa_v3=_pa_v3(f), pl_ref=_pathloss_ref(m)))
     for m in models:
         m.close()
     return exps
@@ -763,6 +784,29 @@ def term_weights(exps, k):
     return out
 
 
+def model_optics(exps, psf_tables=None, shutter=None, optics=None):
+    """The diffraction models of a ``ProfileModel`` (one ``optics.Optics`` per exposure), or None
+    for the PSF and shutter tables: ``optics`` None takes the model when every exposure's
+    disperser has one and no PSF or shutter table is given (those calibrate the tables)."""
+    if optics is False:
+        return None
+    if optics is not None:
+        return list(optics)
+    if psf_tables is not None or shutter is not None or not exps:
+        return None
+    from campfire_pipeline.nirspec import optics as O
+    out = [O.optics_for(e.grating, e.detector) for e in exps]
+    return out if all(o is not None for o in out) else None
+
+
+def optics_version(model):
+    """The diffraction model's version for headers, 'none' for the PSF and shutter tables."""
+    if model is None or getattr(model, 'optics', None) is None:
+        return 'none'
+    from campfire_pipeline.nirspec import optics as O
+    return O.version()
+
+
 class ProfileModel:
     """Pixel table, spectrum grid and the linear model for a set of exposures.
 
@@ -772,20 +816,26 @@ class ProfileModel:
     nod_law : the nod geometry (``nod_shifts``): None for ``NOD_OFFSET_LAW``, False for one
         position shared by every exposure (to measure the offsets themselves).
     shutter : replaces the shutter model ``SHUTTER`` (``load_shutter`` layout) for this model,
-        e.g. one being calibrated; None uses ``SHUTTER``."""
+        e.g. one being calibrated; None uses ``SHUTTER``.
+    optics : the diffraction model (``optics``, FIT_VERSION 6) in place of the PSF and shutter
+        tables: None takes it for every exposure whose disperser has one (``model_optics``)
+        unless ``psf_tables`` or ``shutter`` is given; False never; or a list with one
+        ``optics.Optics`` per exposure."""
 
     psf_tables = None
     centre_law_tables = None
     nod_shift = None
     shutter = None
+    optics = None
 
     def __init__(self, exps, chromatic=True, priors=None, grid=None, bounds=None, c_prior=None,
-                 psf_tables=None, centre_law_tables=None, nod_law=None, shutter=None):
+                 psf_tables=None, centre_law_tables=None, nod_law=None, shutter=None, optics=None):
         self.exps = exps
         self.chromatic = chromatic
         self.psf_tables = psf_tables
         self.centre_law_tables = centre_law_tables
         self.shutter = shutter
+        self.optics = model_optics(exps, psf_tables, shutter, optics)
         self.nod_shift = nod_shifts(exps, nod_law)
         self.priors = priors or Priors()
         self.bounds_cfg = bounds or Bounds()
@@ -910,7 +960,7 @@ class ProfileModel:
         self._pl_curves()
 
     @classmethod
-    def for_placement(cls, exps, grid, priors=None, bounds=None, psf_tables=None, shutter=None):
+    def for_placement(cls, exps, grid, priors=None, bounds=None, psf_tables=None, shutter=None, optics=None):
         """A model that only places a given spectrum on the exposures (``frame_image``,
         ``throughput``, ``transmission``): no pixel table and no data, so it exists for a
         source without a usable pixel of its own (a contaminant predicted from its
@@ -918,6 +968,7 @@ class ProfileModel:
         M = cls.__new__(cls)
         M.exps, M.chromatic = exps, True
         M.psf_tables, M.shutter = psf_tables, shutter
+        M.optics = model_optics(exps, psf_tables, shutter, optics)
         M.nod_shift = nod_shifts(exps)
         M.priors, M.bounds_cfg = priors or Priors(), bounds or Bounds()
         M.c_prior, M.srcy_flag = planned_position(exps)
@@ -1004,9 +1055,14 @@ class ProfileModel:
         total flux, before the along-dispersion throughput): per PSF component, the galaxy
         convolved with the component's part before the shutter, clipped by the open
         shutters times their transmission (``SHUTTER``), blurred by its part after the
-        shutter, displaced before or after."""
+        shutter, displaced before or after. With the diffraction model (``optics``), the
+        galaxy's image through the open shutters from its tables, scaled from their row height
+        to this pixel's."""
         c = self.centre(p, eoff, k, lam)
         w = self.width(p, lam)
+        if self.optics is not None:
+            from campfire_pipeline.nirspec.optics import DY_ROW
+            return self.optics[k].image(self.exps[k].open_k, y, lam, c, w) * (np.asarray(dy, float) / DY_ROW)
         S = self._shutter(k, lam)
         iv = open_intervals(self.exps[k].open_k, S['shift'])
         comps = [(fr, np.sqrt(a ** 2 + w ** 2), b, o1, o2)
@@ -1024,6 +1080,8 @@ class ProfileModel:
         source (width=0), at the fitted centre or at a given slit position."""
         c = self.centre(p, eoff, k, lam) if centre is None else centre
         w = self.width(p, lam) if width is None else width
+        if self.optics is not None:
+            return self.optics[k].transmission(aperture, lam, c, np.maximum(np.asarray(w, float), W_FLOOR))
         S = self._shutter(k, lam)
         iv = open_intervals(aperture, S['shift'])
         return sum(fr * _transmitted(c + o1, np.sqrt(a ** 2 + w ** 2), iv, S['tedge'])
@@ -1032,10 +1090,22 @@ class ProfileModel:
     def throughput(self, p, eoff, k, lam, dy):
         """Along-dispersion throughput tau_k: jwst point-source path loss divided by
         the model's point-source cross-slit transmission through the MOS1X3 aperture,
-        both at the position jwst used (the exposure's planned source position)."""
+        both at the position jwst used (the exposure's planned source position).
+
+        With the diffraction model: jwst's level and its along-dispersion dependence are kept,
+        its slit-direction dependence replaced by the model's. jwst's path loss is moved from
+        the planned position to the shutter centre (``optics.jwst_point_y_ratio``) and divided
+        by the model's transmission of a point source there."""
         L, P = self.pl_curve[k]
         pl = np.interp(lam, L, P)
-        t = self.transmission(p, eoff, k, lam, dy, width=0.0, centre=self.exps[k].src_y)
+        e = self.exps[k]
+        if self.optics is not None:
+            from campfire_pipeline.nirspec.optics import jwst_point_y_ratio
+            if e.pl_ref and np.isfinite(e.src_y_jwst):
+                pl = pl * jwst_point_y_ratio(e.pl_ref, lam, e.src_y_jwst)
+            t = self.transmission(p, eoff, k, lam, dy, width=0.0, centre=0.0)
+            return pl / np.maximum(t, 1e-6)
+        t = self.transmission(p, eoff, k, lam, dy, width=0.0, centre=e.src_y)
         return pl / np.maximum(t, 1e-6)
 
     def design(self, p, eoff):
@@ -1568,7 +1638,7 @@ def drizzle_arrays(frame_of, dmap):
     return dmap.drizzle({name: frame_of(name) for name in dmap.names})['data']
 
 
-FIT_VERSION = '5'                     # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission
+FIT_VERSION = '6'                     # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: PRISM through the diffraction model (optics), other dispersers as 5
 
 
 def run_single_source(product_name, workspace_dir, groups, bkg_overrides, science,
@@ -1594,6 +1664,7 @@ def run_single_source(product_name, workspace_dir, groups, bkg_overrides, scienc
     hdr = fits.Header()
     hdr['PFVER'] = (FIT_VERSION, 'Profile-fit model version')
     hdr['PFSHUT'] = (SHUTTER['version'], 'Shutter model: geometric, smooth transmission')
+    hdr['PFOPTIC'] = (optics_version(R.model), 'Diffraction model (none: PSF and shutter)')
     hdr['PFCHROM'] = (bool(chromatic), 'Centre and width vary with wavelength')
     hdr['PFCEN'] = (p['centre'], 'Source centre at the pivot [slit units]')
     hdr['PFCENPR'] = (p['centre_prior'], 'Planned source position (prior centre)')

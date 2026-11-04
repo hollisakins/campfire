@@ -1230,13 +1230,74 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
       kernel's file path (now keyed by content), `for_placement`, where `scale_positions` is
       applied, long slitlets (the profile fit's end-row bug now fixed), and the PL_REF / MOS1x1
       normalisation.
+    - The PSF core broadens with brightness, not with the visit (2026-11-03). Decision (user): a
+      kernel for the sharper core with each source's free width taking up the rest. Within every
+      visit a brighter star has a broader core: the shipped PSF's fitted core width grows 0.026
+      rows per dex of peak S/N at 0.7-2.6 um on NRS1 (0.054 at 0.7-1 um on NRS2), 4-5 sigma, and
+      the visit means move together once that trend is removed (`core_vs_snr.py`). NGC 2506's
+      stars are 5-8 x brighter than the original ones, which is most of the "4 % broader". The
+      optics model's free source width shows the same with the wing in the model
+      (`w_vs_snr.py`): at 0.7-2.6 um stars above peak S/N 63 need 0.02-0.03 slit units, stars
+      below none; no trend in the red. Charge spreading in bright pixels fits that. Galaxies are
+      faint, so the kernel is the faint stars' core.
+      - The free width could not move at first: a star needs 0.01-0.03 slit units, under two steps
+        of the tables' source grid, and the 8 Gauss-Hermite nodes over the linearly interpolated
+        table give a non-smooth function of the width. Compact sources (width <= 0.06) are now
+        summed exactly over the interpolated table (a triangle convolved with a Gaussian,
+        `_compact_weights`; equal to a brute-force sum within 1e-5).
+      - Kernels tried, all scored with each star's width free (`optics_table_test_w.py`): from
+        the sharper visits below 2.6 um (`klin_s1`): original stars 10 of 14 within 1 %; from
+        stars below S/N 63 alone (`klin_f1`): loses the wide wing (nothing beyond 0.8 slit units
+        at 2.3 um), not used; all stars with each star at peak S/N >= 63 fitted with its own width
+        carried into its normal equations (`fit_kernel_ranges.py`, `KLIN_FREE_W_SNR=63`; the
+        width convolves the kernel, `freew.gauss_matrix`), two linearisations from `klin_s1`
+        (`klin_w2`, integrals within 0.3 %, 0.7 % of the light beyond 0.8 slit units in the
+        blue).
+      - `klin_w2`: NGC 2506 14 of 14 ranges within 1 % (median worst 0.44 %; `klin_r5` 0.59 %;
+        shipped 10 of 14, 0.76 %); the original stars 12 of 14 (0.75 %; `klin_r5` 6 of 14,
+        1.03 %; shipped, fitted on them, 12 of 14, 0.68 %). The two misses (NRS1 1.0-1.5 um
+        1.5 %, 4.1-5.3 um 1.2 % with 21 stars) are single-bin dips the shipped model shares,
+        absent from the larger NGC 2506 set. The shipped model's NRS2 red shoulder (-1.5 % at
+        +1.8 rows, 3.3-5.3 um) is gone (`w2_stacks_NRS1.png`, `w2_stacks_NRS2.png`).
+    - The path-loss normalisation and partial slitlets (review hazard). jwst uses MOS1x1 for a
+      slitlet with both neighbours closed and MOS1x3 otherwise, at y -+ 1 when the source sits in
+      an end shutter; both tables repeat the same profile in every shutter, so jwst's point path
+      loss has no loss to closed neighbours (MOS1x3 at y - 1 / y 0 = 1.0000, MOS1x1 / MOS1x3 at
+      the centre = 1.0000; `endshutter_loss.py`). The model takes that loss once, through each
+      exposure's own open shutters (0.7-1.2 % for an end shutter, 1.8-3.4 % for a single one):
+      nothing is counted twice, no change.
+    - G395M. The PRISM diffraction numbers fit the G395M bar-shadow tables with misfit 0.017
+      (PRISM 0.016); refitted to G395M, no better (`barshadow_g395m.py`). The same 6642 stars in
+      G395M (`test_g395m.py`) are too faint for the kernel: 4-7 stars per range at peak S/N >= 8;
+      chi2 equal to the shipped model's (median ratio 0.98-1.00), stacks within their noise. The
+      gratings keep FIT_VERSION 5 until bright grating stars test the kernel.
+    - Pipeline (FIT_VERSION 6, approved by the user 2026-11-03). `nirspec/optics.py`: the engine,
+      `Optics` per disperser and detector, tables cached under `$CAMPFIRE_ROOT/cache/optics`
+      (keyed by the model's numbers and the kernel, built under a lock file, memory-mapped),
+      `jwst_point_y_ratio` from the path-loss file the cal file names. `ProfileModel` takes it for
+      every exposure whose disperser has a model unless PSF or shutter tables are given
+      (`model_optics`; `for_placement` too), so the fit, contamination placement, the
+      master-background extraction and the joint pass all use it. PRISM positions in slit units
+      at load (`source_position`, `Exposure.src_y_jwst`, `Exposure.pl_ref`). Header card
+      `PFOPTIC`. The model file `data/nirspec_optics.json` is written from the scratch kernel by
+      `ship_optics.py`; the port reproduces the prototype's tables exactly (`check_port.py`).
+      Tests: `test_nirspec_optics.py`; the suite runs the PSF tables unless a test asks for the
+      model (`tests/conftest.py`), so no test builds real tables.
+      - Check 1 with `klin_w2`: 11.5 / 8.4 / 7.6 / 12.0 / 15.5 % (edge visits 5.2 / 10.5 / 9.3 /
+        11.0 / 18.9 %), as `klin_r5`: the kernel choice moves core shapes, not fluxes.
+      - The pipeline on real data (`p1_pipeline_v6.py`, the 20 brightest p1 PRISM sources, read
+        only, production fit): the pipeline's model equals the prototype's to 2e-7 on every
+        exposure (image, throughput, design matrix; the shipped file's rounding); fitted centres
+        agree within 0.003, which is the optimiser's stopping point, not the model. FIT_VERSION 6
+        over 5, median per band 0.6-1 / 1-1.8 / 1.8-3 / 3-4.2 / 4.2-5.3 um: centred sources
+        (|SRCYPOS| < 0.2, 12) 1.006 / 1.011 / 1.023 / 1.024 / 1.016; off centre (8) 0.93 / 0.99 /
+        1.06 / 1.12 / 1.25; chi2/dof 0.3-0.7 % lower.
     - Open. The bar shadow of uniform light is the alpha 0.25 diffraction's (misfit 0.016 against
       the shipped edge transmission's 0.011), which matters for wide galaxies, and the blur it
       wants is larger than the stars allow; the model's wide light at 4-5.2 um is 2.1 % against
-      about 1.6 %. The visit-to-visit PSF core (decision above). The blue core of 4465's star. The dispersion-direction loss. G395M and the other dispersers
-      (kernels and diffraction numbers per disperser). The fit of a faint star can fall into a
-      second minimum (2401 in check 1). Fit time for wide galaxies. Pipeline integration
-      (FIT_VERSION 6) waits for approval.
+      about 1.6 %. The blue core of 4465's star. The dispersion-direction loss. A kernel test on
+      bright grating stars. The fit of a faint star can fall into a second minimum (2401 in check
+      1). Fit time for wide galaxies.
   - **Open (shipped shutter model).** The blue end against jwst's point loss; check 1's edge-star excess. (The held-out
     check of the bar-shadow tables is done, section 3.2.)
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,

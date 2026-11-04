@@ -112,6 +112,41 @@ Release procedure: edit the `## Unreleased` section below, then run
     0.984-1.014; measured with the split free, to be remeasured on the p1 rerun). Fits are about
     30 % slower.
 
+- **NIRSpec profile fit: the PRISM through a diffraction model of the MSA (`FIT_VERSION` 6).**
+  For the PRISM the Gaussian PSF tables and the smooth shutter give way to a physical model in
+  the slit direction (`nirspec/optics.py`): the telescope's field at the MSA (pupil amplitude
+  (1 - u^2)^0.25), cut by the open shutters, the spectrograph's pupil stop (0.996 of the
+  telescope pupil's image) removing the light diffracted at the shutter edges, a detector blur of
+  0.034" - 0.0026"/um (lambda - 3 um), row integration; before the shutter an empirical kernel
+  (a non-negative table over source offset per detector, linear in ln lambda between seven
+  nodes) for the telescope's wavefront error and pointing jitter. A Gaussian source is summed over
+  point images (exactly over the tables for widths up to 0.06 slit units, so a compact source's
+  width can move below the table step).
+  - Calibrated on 593 stars (12497, 6642 obs 2, and NGC 2506 in 1493): the diffraction numbers on
+    the PRISM bar-shadow tables, the kernel on the stars' nod differences and master-background
+    single frames. The core of a bright star is broader (charge spreading: 0.02-0.03 slit units
+    of extra width above peak S/N 63, below 2.6 um), so the kernel is the faint stars' core and
+    each source's free width takes up the rest; brighter stars enter the kernel fit with their own
+    width. Shipped as `data/nirspec_optics.json` (`PFOPTIC` names it, `prism-2026.11-w2`).
+  - Star stack, free centres and widths: NGC 2506 14 of 14 ranges within 1 % (median worst
+    0.44 %; FIT_VERSION 5 10 of 14, 0.76 %), the original stars 12 of 14 (0.75 %; 5: 12 of 14,
+    0.68 %, fitted on them). The red shoulder of FIT_VERSION 5 on NRS2 (-1.5 % at 3.3-5.3 um) is
+    gone.
+  - Fluxes move. The same star at different positions in its shutter (calibration programs,
+    49 visits) scatters by 11.5 / 8.4 / 7.6 / 12.0 / 15.5 % in five bands from 0.6 to 5.3 um
+    (FIT_VERSION 5: 27.8 / 25.4 / 21.8 / 15.0 / 16.6 %). On the 20 brightest p1 PRISM sources,
+    centred ones come out 1.006 / 1.011 / 1.023 / 1.024 / 1.016 x their FIT_VERSION 5 flux (the
+    wide light the old PSF lacked), sources 0.2-0.4 pitch off centre 0.93 / 0.99 / 1.06 / 1.12 /
+    1.25 x; chi2 0.3-0.7 % lower.
+  - PRISM source positions are in slit-frame units (1.15 x SRCYPOS; `profile_fit.source_position`,
+    `Exposure.src_y_jwst` keeps jwst's). The throughput keeps jwst's point path loss level and its
+    along-dispersion dependence, with its slit-direction dependence replaced by the model's
+    (`optics.jwst_point_y_ratio`, from the path-loss reference the cal file names).
+  - Tables (one per open-shutter pattern and detector, about a minute each) are built on first use
+    and cached under `$CAMPFIRE_ROOT/cache/optics`, memory-mapped across workers. Other dispersers
+    keep FIT_VERSION 5 unchanged (G395M: the bar shadow fits the PRISM numbers as well, misfit
+    0.017, but its calibration stars are too faint to test the kernel).
+
 - **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
   run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint
   first pass's model of each neighbor. That pass fitted every source on the nod differences
