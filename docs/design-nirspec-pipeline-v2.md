@@ -1203,7 +1203,8 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
       visit has 0.65. Pointing jitter or small wavefront changes between visits, most visible in
       the narrow blue core. Open decision (to the user): one kernel for all, a kernel from the
       sharper visits with each source's free width taking up the blur of the others, or a kernel
-      per observation.
+      per observation. Fluxes do not depend on it: check 1 with `klin_r5` is 11.6 / 8.3 / 8.1 /
+      12.0 / 15.3 % (edge visits 5.7 / 10.3 / 10.0 / 10.9 / 18.7 %), as `klin_r2`.
     - Edge stars (`test_edge.py`, 142 NGC 2506 stars with |centre| >= 0.3, `klin_r4`): optics /
       shipped chi2/dof per range at the bar 0.88 / 0.71 / 0.83 / 0.83 / 0.89 / 0.67 / 0.52, better in
       61-96 %; at peak S/N >= 80 0.50 / 0.59 / 0.62 / 0.66 / 0.73 / 0.87 (78-89 %). The blue misfit
