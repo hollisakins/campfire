@@ -1193,16 +1193,46 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
       (median 1.14). The blue core of an off-centre star is the open shape problem. Fluxes need
       each configuration's position across the shutter (dispersion direction), which the
       program steps too (peak rate varies 3x at the same y); not measured yet.
+    - Converged kernel on all stars (`klin_r5`, one more linearisation of `klin_r4`; integrals
+      within 0.2 %). Star stack: NGC 2506 14 of 14 within 1 % (median worst 0.59 %), the original
+      stars 6 of 14 (1.03 %, up to 1.75 % at 1.0-1.5 um; `klin_r2`, fitted on them alone, 12 of
+      14). The original stars' residual has data above the model at the centre and below it one
+      row out: their cores are sharper. The fitted core width S per observation (`core_by_obs.py`)
+      spreads about +-3 % between visits at 0.7-2 um and NGC 2506 is about 4 % broader than the
+      original visits (NRS1 0.7-1 um: 0.365-0.386 against 0.347-0.368 rows); at 4.1-5.3 um every
+      visit has 0.65. Pointing jitter or small wavefront changes between visits, most visible in
+      the narrow blue core. Open decision (to the user): one kernel for all, a kernel from the
+      sharper visits with each source's free width taking up the blur of the others, or a kernel
+      per observation.
+    - Edge stars (`test_edge.py`, 142 NGC 2506 stars with |centre| >= 0.3, `klin_r4`): optics /
+      shipped chi2/dof per range at the bar 0.88 / 0.71 / 0.83 / 0.83 / 0.89 / 0.67 / 0.52, better in
+      61-96 %; at peak S/N >= 80 0.50 / 0.59 / 0.62 / 0.66 / 0.73 / 0.87 (78-89 %). The blue misfit
+      of 4465's star is not seen here: it belongs to that program's setup.
+    - A softer spectrograph stop (amplitude (1 - (f / rho f_max)^2)^beta) tried for the uniform bar
+      shadow and the red wide light (`fit_fourier_ab.py`). Fitted to the bar shadow with the blur
+      free, alpha 0.25 / beta 1 gives misfit 0.0120 (hard stop 0.0161) and little wide diffraction,
+      but its blur is 0.044" growing to the red (0.030" before); the kernel, before the shutter,
+      cannot sharpen it, and the held-out star stack fails (4 of 14 within 1 %, up to 4.9 %).
+      With the blur held at the stars' value a softer stop only worsens the bar shadow (0.0162 ->
+      0.0195). So the hard stop stays, and the tension is the blur itself: the uniform bar shadow
+      wants about 0.044", point-source cores about 0.03" in the red (perhaps smoothing within the
+      empirical bar-shadow tables). With the blur written as fitted (s0 + s1 (lam - 3)), the
+      diffraction alone puts 1.52 % of a centred star's light beyond 0.8 slit units at 4.6 um,
+      about what the bright stars show; the kernel's 0.3 % wing on top makes the model's 2.1 %:
+      compact-source fluxes about 0.5 % high at 4-5 um. Every kernel now carries its diffraction
+      numbers beside it (`<prefix>_diffraction.json`, from the normals; `optics.diffraction_params`),
+      and the table cache is keyed by the kernel file's content (a review hazard).
     - Review findings (independent review of the prototype, 2026-11-03). No double counting in
       the throughput normalisation. The shipped model in check 1 ran with unscaled positions;
       with 1.15 x SRCYPOS it scores 22.8 / 19.3 / 13.5 / 11.7 / 22.3 % against the optics model's
       11.5 / 8.3 / 8.1 / 12.1 / 15.2 %. Hazards for integration: the table cache keyed by the
-      kernel's file path (to key by content), `for_placement`, where `scale_positions` is
-      applied, long slitlets, and the PL_REF / MOS1x1 normalisation.
+      kernel's file path (now keyed by content), `for_placement`, where `scale_positions` is
+      applied, long slitlets (the profile fit's end-row bug now fixed), and the PL_REF / MOS1x1
+      normalisation.
     - Open. The bar shadow of uniform light is the alpha 0.25 diffraction's (misfit 0.016 against
-      the shipped edge transmission's 0.011), which matters for wide galaxies; the same alpha
-      gives too much wide light at 4-5.2 um (2.1 % against about 1.6 %). The blue core of an
-      off-centre star (4465). The dispersion-direction loss. G395M and the other dispersers
+      the shipped edge transmission's 0.011), which matters for wide galaxies, and the blur it
+      wants is larger than the stars allow; the model's wide light at 4-5.2 um is 2.1 % against
+      about 1.6 %. The visit-to-visit PSF core (decision above). The blue core of 4465's star. The dispersion-direction loss. G395M and the other dispersers
       (kernels and diffraction numbers per disperser). The fit of a faint star can fall into a
       second minimum (2401 in check 1). Fit time for wide galaxies. Pipeline integration
       (FIT_VERSION 6) waits for approval.
