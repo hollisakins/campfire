@@ -141,6 +141,51 @@ def test_recovers_shape_and_spectrum_at_high_snr():
     assert 0.9 < R.chi2_red < 1.1
 
 
+def _long_slitlet_exposures(half=3, ny=56):
+    """Three nods of a (2 half + 1)-shutter slitlet on a common frame, y NaN outside each
+    exposure's slit (+-half pitches + margin), as jwst leaves the rows beyond a slit's ends."""
+    rows = np.arange(ny)[:, None] * np.ones((1, NX))
+    lam = np.linspace(0.8, 5.0, NX)[None, :] * np.ones((ny, 1)) + 0.002 * (rows - ny / 2)
+    shift = MSA_SLIT_PITCH / DY
+    open_k = tuple(range(-half, half + 1))
+    edge = half * MSA_SLIT_PITCH + MSA_SLIT_MARGIN
+    exps = []
+    for i, r_src in enumerate((ny / 2, ny / 2 - shift, ny / 2 + shift)):
+        y = (rows - r_src) * DY
+        y = np.where(np.abs(y + (r_src - ny / 2) * DY) <= edge, y, np.nan)
+        exps.append(PF.Exposure(
+            name=f'jw00000001001_03101_0000{i + 1}_nrs1_1.fits', group=0, detector='NRS1', grating='PRISM/CLEAR',
+            quadrant=1, diff=np.zeros((ny, NX)), var=np.ones((ny, NX)), ok=np.isfinite(y), wav=lam.copy(), y=y,
+            pl_applied=np.full((ny, NX), 0.8), pl_point=np.full((ny, NX), 0.8), src_y=0.1, open_k=open_k,
+            partners=[j for j in range(3) if j != i], use_data=True, cutout=(0, 0, ny, NX)))
+    return exps
+
+
+def test_long_slitlet_row_height_at_slit_ends():
+    """The row height is defined on every row of the slit, its first and last included (a
+    central difference there reaches outside the slit), and equals the row pitch."""
+    for e in _long_slitlet_exposures():
+        inside = np.isfinite(e.y)
+        assert np.all(np.isfinite(e.dy[inside]))
+        assert np.allclose(e.dy[inside], DY)
+
+
+def test_long_slitlet_fit():
+    """A seven-shutter slitlet (one long open column, as in program 4465): the partner terms
+    reach the slit's end rows and the fit still recovers the shape and the spectrum."""
+    exps = _long_slitlet_exposures()
+    R0 = _truth_result(exps, TRUTH, [0.0, 0.0, 0.0], 200.0)
+    rng = np.random.default_rng(5)
+    noise = [rng.normal(size=exps[0].y.shape) for _ in exps]
+    for k, e in enumerate(exps):
+        e.diff = PF.model_frame(R0, k, applied_pathloss=False) + noise[k] - np.mean([noise[j] for j in e.partners], axis=0)
+    R = PF.fit(exps, chromatic=True)
+    assert abs(R.params['centre'] - TRUTH['centre']) < 0.02
+    assert abs(R.params['width'] - TRUTH['width']) < 0.02
+    good = np.isfinite(R.flux) & (R.lam > 1.0) & (R.lam < 4.8)
+    assert abs(np.median(R.flux[good] / (200.0 * _spectrum(R.lam[good]))) - 1) < 0.01
+
+
 def test_faint_source_falls_back_to_prior_shape():
     """With little signal the shape settles on the prior: a compact source at the
     planned position, not a wide or displaced one."""

@@ -446,8 +446,17 @@ class Exposure:
 
     @property
     def dy(self):
-        """Pixel height in slit_frame units."""
-        return np.abs(np.gradient(self.y, axis=0))
+        """Pixel height in slit_frame units: the central difference of y down each column, one-sided
+        at a slit's first and last row (the row beyond is outside the slit, y NaN; slitlets longer
+        than three shutters put partner terms on those rows)."""
+        y = np.asarray(self.y, float)
+        d = np.abs(np.gradient(y, axis=0))
+        edge = np.isnan(d) & np.isfinite(y)
+        if edge.any():
+            up = np.abs(np.diff(y, axis=0, append=np.nan))
+            down = np.abs(np.diff(y, axis=0, prepend=np.nan))
+            d = np.where(edge, np.where(np.isfinite(up), up, down), d)
+        return d
 
 
 def _common_frame(slits):

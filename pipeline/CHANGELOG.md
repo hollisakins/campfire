@@ -37,7 +37,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   with more than nine sequences got no master background for the later ones ("no stage-2a
   inputs, skipped") and no contamination keys. Also: `nirspec run` with stage 1 and stage 2a
   together no longer fails when stage 1 writes no rate file for an exposure (no open slit on
-  that detector, e.g. program 4465's NRS2): stage 2a skips it and says so.
+  that detector, e.g. program 4465's NRS2): stage 2a skips it and says so. And the profile
+  fit's row height (`Exposure.dy`) is now defined on a slit's first and last row (one-sided
+  difference): in slitlets longer than three shutters the other nods' terms reach those rows,
+  where the central difference was NaN and the fit failed ("Residuals are not finite"). Fits
+  that succeeded before are unchanged (category uncertain: it gives a profile fit to sources
+  that had none, which is closer to Algorithm).
 - **NIRSpec: PSF calibration module for the profile fit (`nirspec/psf_calibration.py`).**
   Re-derives the cross-dispersion PSF table (`profile_fit.PSF_TABLES`) and the trace centre
   law (`CENTRE_LAW`) from calibration-field PRISM stars through the profile fit's own model
