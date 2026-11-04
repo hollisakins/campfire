@@ -55,10 +55,12 @@ def test_samples_match_the_model_without_noise():
 
 
 def test_clean_keys_and_stack_metric(tmp_path):
-    rec = lambda key, snr, c, sat: dict(key=key, detector='NRS1', ranges=[dict(range=2, lam=[1.5, 2.0], peak_snr=snr,  # noqa: E731
-                                                                               c_node=c, sat=sat)])
-    recs = [rec('a', 50, 0.1, 0.0), rec('b', 40, -0.2, 0.0), rec('c', 30, 0.0, 0.0),
-            rec('faint', 5, 0.0, 0.0), rec('edge', 50, 0.4, 0.0), rec('saturated', 50, 0.0, 0.02)]
+    def rec(key, snr=50, c=0.0, sat=0.0, w=0.01, chi2r=1.0):
+        return dict(key=key, detector='NRS1', ranges=[dict(range=2, lam=[1.5, 2.0], peak_snr=snr, c_node=c, sat=sat,
+                                                           w=w, chi2=chi2r * 100.0, ndof=100.0)])
+    recs = [rec('a', c=0.1), rec('b', snr=40, c=-0.2, chi2r=1.3), rec('c', snr=30, chi2r=0.8),
+            rec('faint', snr=5), rec('edge', c=0.4), rec('saturated', sat=0.02),
+            rec('galaxy', w=0.15), rec('odd', chi2r=8.0)]
     keys = OC.clean_keys(recs)
     assert keys == {('NRS1', 2): ['a', 'b', 'c']}
     os.makedirs(tmp_path / 'samples')

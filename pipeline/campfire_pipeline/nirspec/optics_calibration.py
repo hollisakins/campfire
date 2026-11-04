@@ -45,6 +45,8 @@ SATURATED = 2                      # jwst DQ bit
 SNR_MIN = 20.0                     # peak-pixel S/N
 EDGE_MAX = 0.35                    # |centre| [slit units]
 SAT_MAX = 0.0                      # saturated share of the trace pixels
+W_STAR_MAX = 0.06                  # a star's median width over its ranges [slit units]: wider is not a point source
+CHI2_OUTLIER = 5.0                 # chi2/dof over the detector-range's median
 
 
 def restrict(exps, lam_range):
@@ -335,15 +337,26 @@ def fit_star(task, ranges=None, optics=None):
 # ---------------------------------------------------------------------------
 # The stack test
 # ---------------------------------------------------------------------------
-def clean_keys(records, snr_min=SNR_MIN, edge_max=EDGE_MAX, sat_max=SAT_MAX):
+def clean_keys(records, snr_min=SNR_MIN, edge_max=EDGE_MAX, sat_max=SAT_MAX, w_max=W_STAR_MAX,
+               chi2_outlier=CHI2_OUTLIER):
     """{(detector, range): [star keys]} of the star-ranges the stack test uses: peak S/N at
     least ``snr_min``, the centre within ``edge_max`` of the shutter centre, no saturated pixel
-    on the trace."""
-    out = {}
+    on the trace; of stars whose median width over their ranges is at most ``w_max`` (a
+    galaxy, a pair or a contaminated star fits wider), and with chi2/dof at most
+    ``chi2_outlier`` x the median of the detector-range's candidates."""
+    cand = {}
     for rec in records:
+        if not rec['ranges'] or np.median([row['w'] for row in rec['ranges']]) > w_max:
+            continue
         for row in rec['ranges']:
             if row['peak_snr'] >= snr_min and abs(row['c_node']) < edge_max and row['sat'] <= sat_max:
-                out.setdefault((rec['detector'], row['range']), []).append(rec['key'])
+                cand.setdefault((rec['detector'], row['range']), []).append((rec['key'], row['chi2'] / row['ndof']))
+    out = {}
+    for k, rows in cand.items():
+        med = np.median([c for _, c in rows])
+        keep = [key for key, c in rows if c <= chi2_outlier * med]
+        if keep:
+            out[k] = keep
     return out
 
 
