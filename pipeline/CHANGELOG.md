@@ -103,7 +103,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   - Removed: the PSF and shutter tables (`data/nirspec_profile_psf.json`,
     `data/nirspec_shutter_transmission.json`), the code that fitted them (`psf_calibration`) and
     the `PFSHUT` header card. `nirspec/optics_calibration.py` fits calibration stars through the
-    model and runs the stack test.
+    model, runs the stack test, fits the kernel (`kernel` / `solve`; it reproduces the shipped
+    kernel, and a further pass on 547 stars changes a point image by at most 0.4 % of its peak)
+    and the centre and nod laws (`laws`).
+  - The centre law (`profile_fit.CENTRE_LAW`) is remeasured through the model on 497 stars
+    (NGC 2506 added): the scatter of the trace's change with wavelength at 3-5.3 um falls from
+    0.008-0.024 to 0.004-0.011 slit units, the same held out by observation; the slope with the
+    position in the shutter is near zero now (the old PSF needed -0.11 at 4.7 um). The nod law
+    is unchanged (planned shifts, scale 1).
+  - `Exposure.src_x_jwst` (SRCXPOS) and `Optics.x_correction`: a factor on jwst's
+    along-dispersion point loss from the model file's `x_loss` (none in the shipped file yet).
 
 - **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
   run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint

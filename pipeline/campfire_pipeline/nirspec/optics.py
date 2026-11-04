@@ -136,14 +136,28 @@ class Optics:
     """The model for one disperser and detector: diffraction numbers ``rho`` (stop size over the
     telescope pupil's image), ``s0`` / ``s1`` (detector blur [arcsec] at 3 um and per um),
     ``alpha`` (pupil amplitude profile), and ``kernel`` (list of dict(lam [um], delta [slit
-    units], k): the table before the shutter at each wavelength node)."""
+    units], k): the table before the shutter at each wavelength node), and ``x_loss``
+    (dict(b, lam0), or None: the correction to jwst's along-dispersion point loss,
+    ``x_correction``)."""
 
-    def __init__(self, rho, s0, s1, alpha, kernel, cache_dir=None):
+    def __init__(self, rho, s0, s1, alpha, kernel, cache_dir=None, x_loss=None):
         self.params = dict(rho=float(rho), s0=float(s0), s1=float(s1), alpha=float(alpha))
         self.kernel = [dict(lam=float(n['lam']), delta=[float(x) for x in n['delta']], k=[float(x) for x in n['k']])
                        for n in kernel]
+        self.x_loss = None if x_loss is None else dict(b=float(x_loss['b']), lam0=float(x_loss['lam0']))
         self.cache_dir = cache_dir
         self._img, self._tr = {}, {}
+
+    # -- along the dispersion -------------------------------------------------
+    def x_correction(self, lam, srcx):
+        """The factor on jwst's point-source path loss for a source at SRCXPOS ``srcx`` (shutter
+        pitches along the dispersion): exp(-b (lambda - lam0)+ srcx^2), one at the centre and
+        below lam0. jwst's table loses too little light off centre in the red; fitted to the
+        NGC 2506 stars seen at several positions (design doc). One without ``x_loss``."""
+        lam = np.asarray(lam, float)
+        if self.x_loss is None or not np.isfinite(srcx):
+            return np.ones(lam.shape)
+        return np.exp(-self.x_loss['b'] * np.maximum(lam - self.x_loss['lam0'], 0.0) * float(srcx) ** 2)
 
     # -- the kernel before the shutter -------------------------------------
     def kernel_at(self, lam, offsets):
@@ -207,12 +221,17 @@ class Optics:
         return np.array([[point_image(c * SLIT, L, mask, p['rho'], max(p['s0'] + p['s1'] * (L - 3.0), 1e-4),
                                       p['alpha'], y, f)[1] for c in C] for L in LAM])
 
+    def raw_image_table(self, mask):
+        """``image_table`` without the kernel: a point source's light through the diffraction
+        alone (what the kernel calibration spreads, ``optics_calibration``)."""
+        mask = self._mask(mask)
+        return _cached(self._path('img', mask, False), lambda: self._raw_image(mask))
+
     def image_table(self, mask):
         """(LAM, C, Y) light per detector row (DY_ROW slit units high) of a point source."""
         mask = self._mask(mask)
         if mask not in self._img:
-            raw = lambda: _cached(self._path('img', mask, False), lambda: self._raw_image(mask))  # noqa: E731
-            self._img[mask] = _cached(self._path('img', mask, True), lambda: self._smear(raw()))
+            self._img[mask] = _cached(self._path('img', mask, True), lambda: self._smear(self.raw_image_table(mask)))
         return self._img[mask]
 
     def transmission_table(self, mask):
@@ -315,13 +334,13 @@ _MODELS = {}
 
 def load_optics(path=OPTICS_FILE):
     """{'version': str, detector: Optics} from the model file (layout: 'meta' with 'version',
-    'diffraction' (rho, s0, s1, alpha) and a kernel per detector)."""
+    'diffraction' (rho, s0, s1, alpha), a kernel per detector and, optionally, 'x_loss')."""
     with open(path) as fh:
         raw = json.load(fh)
     d = raw['diffraction']
     out = {'version': str(raw.get('meta', {}).get('version', '?'))}
     for det in ('NRS1', 'NRS2'):
-        out[det] = Optics(d['rho'], d['s0'], d['s1'], d['alpha'], raw[det])
+        out[det] = Optics(d['rho'], d['s0'], d['s1'], d['alpha'], raw[det], x_loss=raw.get('x_loss'))
     return out
 
 

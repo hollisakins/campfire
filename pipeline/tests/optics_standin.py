@@ -26,6 +26,9 @@ class Analytic:
             inside |= np.abs(y - k * MSA_SLIT_PITCH) < PF.OPEN_HALF
         return g * inside * O.DY_ROW
 
+    def x_correction(self, lam, srcx):
+        return np.ones(np.shape(lam))
+
     def transmission(self, mask, lam, centre, width):
         lam, centre, width = np.broadcast_arrays(lam, centre, width)
         s = self._s(width) * np.sqrt(2)

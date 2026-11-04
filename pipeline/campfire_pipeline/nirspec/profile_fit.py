@@ -81,21 +81,24 @@ class TooFewWavelengths(ProfileFitFallback):
 
 
 # Trace-centre law from calibration-field stars: centre(lambda) = c + D(lambda) + alpha(lambda) * c,
-# D per MSA quadrant and detector (falling back to the same quadrant on the other
-# detector, then to the detector), alpha per detector; values at the nodes PSF_LAM [um]
-# (the centres of the calibration's wavelength ranges; 2026-10-17). The diffraction model's
-# kernel was fitted with it in place.
+# relative to the trace at 1.0-2.6 um; D per MSA quadrant and detector (falling back to the same
+# quadrant on the other detector, then to the detector), alpha per detector; values at the nodes
+# PSF_LAM [um] (the centres of the calibration's wavelength ranges). Measured through the
+# diffraction model (``optics_calibration.step_laws``; 497 stars of 12497 obs 1-5, 6642 obs 2 and
+# NGC 2506, 2026-11-04): with the model the slope with position (alpha) is near zero (the old PSF
+# needed -0.11 at 4.7 um). Q1_NRS1 at 4.7 um (too few stars) is Q1_NRS2's: the two agree within
+# 0.001 at every other node.
 PSF_LAM = np.array([0.85, 1.25, 1.75, 2.30, 2.95, 3.70, 4.70])
 CENTRE_LAW = {
-    'NRS1': dict(D=np.array([+0.0104, +0.0051, +0.0001, -0.0064, -0.0166, -0.0256, -0.0383]),
-                 alpha=np.array([+0.0106, +0.0048, +0.0007, -0.0133, -0.0398, -0.0743, -0.1066])),
-    'NRS2': dict(D=np.array([+0.0109, +0.0060, +0.0015, -0.0088, -0.0178, -0.0305, -0.0457]),
-                 alpha=np.array([+0.0092, +0.0017, +0.0021, -0.0076, -0.0141, -0.0319, -0.0691])),
-    'Q1_NRS1': dict(D=np.array([+0.0060, +0.0018, +0.0001, -0.0053, -0.0104, -0.0130, -0.0204])),
-    'Q1_NRS2': dict(D=np.array([+0.0037, +0.0018, +0.0018, -0.0036, -0.0072, -0.0135, -0.0204])),
-    'Q2_NRS2': dict(D=np.array([+0.0140, +0.0073, +0.0014, -0.0108, -0.0219, -0.0392, -0.0573])),
-    'Q3_NRS1': dict(D=np.array([+0.0071, +0.0032, +0.0001, -0.0036, -0.0085, -0.0149, -0.0225])),
-    'Q4_NRS1': dict(D=np.array([+0.0149, +0.0075, +0.0002, -0.0087, -0.0220, -0.0339, -0.0484])),
+    'NRS1': dict(D=np.array([+0.0103, +0.0048, +0.0004, -0.0052, -0.0133, -0.0239, -0.0400]),
+                 alpha=np.array([+0.0032, +0.0026, +0.0007, -0.0022, -0.0014, +0.0008, -0.0011])),
+    'NRS2': dict(D=np.array([+0.0114, +0.0047, +0.0006, -0.0055, -0.0141, -0.0252, -0.0443]),
+                 alpha=np.array([+0.0015, +0.0024, +0.0013, -0.0039, -0.0054, -0.0017, -0.0128])),
+    'Q1_NRS1': dict(D=np.array([+0.0065, +0.0021, +0.0001, -0.0033, -0.0085, -0.0151, -0.0273])),
+    'Q1_NRS2': dict(D=np.array([+0.0060, +0.0028, +0.0000, -0.0030, -0.0083, -0.0152, -0.0273])),
+    'Q2_NRS2': dict(D=np.array([+0.0149, +0.0060, +0.0010, -0.0072, -0.0184, -0.0328, -0.0589])),
+    'Q3_NRS1': dict(D=np.array([+0.0068, +0.0037, +0.0005, -0.0035, -0.0090, -0.0162, -0.0269])),
+    'Q4_NRS1': dict(D=np.array([+0.0144, +0.0062, +0.0005, -0.0073, -0.0191, -0.0335, -0.0616])),
 }
 
 W_FLOOR = 0.003
@@ -158,7 +161,9 @@ NO_CENTRE_LAW = {det: dict(D=np.zeros(PSF_LAM.size), alpha=np.zeros(PSF_LAM.size
 # row or MSA-row law in sample and better for a held-out observation; nothing is left against
 # detector column, row or wavelength. The scale measured / planned is 1.03 overall but varies
 # per visit (PRISM 0.85-1.21; the gratings of 6642 obs 2, 0.5-0.88, with that visit's PRISM), so
-# the planned shifts are used as they stand (scale 1).
+# the planned shifts are used as they stand (scale 1). Through the diffraction model (2026-11-04,
+# ``optics_calibration.step_laws``, PRISM, NGC 2506 added): rms 0.0137 -> 0.0060 with the planned
+# shifts, scale 0.95-1.10 per visit (one visit of 26 star-exposures 0.68): unchanged.
 NOD_OFFSET_LAW = dict(scale=1.0)
 
 
@@ -226,6 +231,7 @@ class Exposure:
     pa_v3: float = np.nan          # telescope roll [deg]
     src_y_jwst: float = np.nan     # SRCYPOS as jwst wrote it (shutter pitches; ``source_position``)
     pl_ref: str = ''               # jwst's path-loss reference file, as the cal file names it
+    src_x_jwst: float = np.nan     # SRCXPOS as jwst wrote it (shutter pitches along the dispersion)
 
     @property
     def dy(self):
@@ -257,6 +263,10 @@ def _place(a, s, y0, x0, shape, fill=np.nan):
     r, c = s.ystart - y0, s.xstart - x0
     out[r:r + a.shape[0], c:c + a.shape[1]] = a
     return out
+
+
+def _float_or_nan(v):
+    return float(v) if v is not None else np.nan
 
 
 def _pa_v3(path):
@@ -433,7 +443,8 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
             open_k=open_shutters(s.shutter_state, s.slit_ymin, s.slit_ymax),
             partners=part, use_data=(part is not None) and (science is None or name in science),
             cutout=(s.ystart - y0, s.xstart - x0, ny, nx), path=str(f), origin=(y0, x0),
-            has_source=bool(has_src), pa_v3=_pa_v3(f), pl_ref=_pathloss_ref(m)))
+            has_source=bool(has_src), pa_v3=_pa_v3(f), pl_ref=_pathloss_ref(m),
+            src_x_jwst=_float_or_nan(getattr(s, 'source_xpos', None))))
     for m in models:
         m.close()
     return exps
@@ -807,14 +818,17 @@ class ProfileModel:
         """Along-dispersion throughput tau_k: jwst's level and its along-dispersion
         dependence, with its slit-direction dependence replaced by the model's. jwst's
         point-source path loss at the planned position is moved to the shutter centre
-        (``optics.jwst_point_y_ratio``) and divided by the model's transmission of a point
-        source there through the MOS1X3 aperture."""
+        (``optics.jwst_point_y_ratio``), times the model's correction to its
+        along-dispersion dependence (``x_correction``, at SRCXPOS), and divided by the
+        model's transmission of a point source at the centre through the MOS1X3 aperture."""
         from campfire_pipeline.nirspec.optics import jwst_point_y_ratio
         L, P = self.pl_curve[k]
         pl = np.interp(lam, L, P)
         e = self.exps[k]
         if e.pl_ref and np.isfinite(e.src_y_jwst):
             pl = pl * jwst_point_y_ratio(e.pl_ref, lam, e.src_y_jwst)
+        if np.isfinite(e.src_x_jwst):
+            pl = pl * self.optics[k].x_correction(lam, e.src_x_jwst)
         t = self.transmission(p, eoff, k, lam, dy, width=0.0, centre=0.0)
         return pl / np.maximum(t, 1e-6)
 

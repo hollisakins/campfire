@@ -3,6 +3,7 @@ a synthetic star through the closed-form stand-in (``optics_standin``) is recove
 per-range fit, its stacking samples match the model on noiseless data, and the stack metric
 reads a known residual."""
 
+import json
 import os
 
 import numpy as np
@@ -52,6 +53,127 @@ def test_samples_match_the_model_without_noise():
     core = np.abs(s['u']) < 1.5
     assert s['u'].size > 100
     assert np.allclose(s['d'][core], s['m'][core], rtol=1e-3, atol=1e-5 * s['m'].max())
+
+
+@pytest.fixture
+def small_optics(monkeypatch, tmp_path):
+    """A real diffraction model on small grids (a table builds in a second), with a kernel
+    linear between nodes 0.05 apart, zero at +-0.15 (so the calibration's nodes, which
+    include these, represent it exactly)."""
+    from campfire_pipeline.nirspec import optics as O
+    monkeypatch.setattr(O, 'LAM', np.array([1.0, 3.0]))
+    monkeypatch.setattr(O, 'C', np.round(np.arange(-0.375, 0.3751, 0.0125), 5))
+    monkeypatch.setattr(O, 'Y', np.round(np.arange(-1.0, 1.0001, 0.025), 5))
+    delta = np.linspace(-0.15, 0.15, 7)
+    k = np.exp(-0.5 * (delta / 0.04) ** 2) * (np.abs(delta) < 0.12)
+    opt = O.Optics(0.996, 0.0344, -0.0026, 0.25, [dict(lam=1.0, delta=delta, k=k)], cache_dir=str(tmp_path / 'optics'))
+    # the same kernel on the calibration's nodes, scaled as kernel_response reads it (light per unit offset)
+    offsets = (np.arange(O.C.size) - O.C.size // 2) * (O.C[1] - O.C[0])
+    kvec = np.interp(OC.DELTA, delta, k, left=0.0, right=0.0)
+    kvec /= (OC.FINE[1] - OC.FINE[0]) * np.interp(offsets, delta, k, left=0.0, right=0.0).sum()
+    return opt, kvec
+
+
+@pytest.mark.parametrize('width', [PF.W_FLOOR, 0.03])
+def test_kernel_response_is_the_model_linear_in_the_kernel(small_optics, width):
+    opt, kvec = small_optics
+    exps = _exposures()
+    M = PF.ProfileModel(exps, centre_law_tables=PF.NO_CENTRE_LAW, optics=[opt] * len(exps))
+    p = np.array([0.0, 0.0, np.log(width), 0.0])
+    f = 300.0 * _spectrum(M.lam_grid)
+    eoff = np.zeros(len(exps))
+    want = M.design(p, eoff) @ f
+    got = OC.kernel_response(M, p, f, eoff, width) @ kvec
+    # exact for a resolved width; a point is the floor width in the model, a delta in the response
+    tol = 1e-6 if width > 1.5 * PF.W_FLOOR else 2e-3
+    assert np.max(np.abs(got - want)) < tol * np.max(np.abs(want))
+
+
+def test_kernel_solve_recovers_a_kernel(small_optics, tmp_path):
+    from campfire_pipeline.nirspec import optics as O
+    opt, kvec = small_optics
+    exps = _exposures()
+    M = PF.ProfileModel(exps, centre_law_tables=PF.NO_CENTRE_LAW, optics=[opt] * len(exps))
+    p = np.array([0.0, 0.0, np.log(0.03), 0.0])
+    R = OC.kernel_response(M, p, 300.0 * _spectrum(M.lam_grid), np.zeros(len(exps)), 0.03)
+    d = R @ kvec
+    AtA, Atd = R.T @ R, R.T @ d
+    k = OC.solve_kernel(AtA, Atd)
+    # neighbouring core nodes are nearly interchangeable once the PSF blurs them, so the test is
+    # the data the kernel makes and the light it carries, not each node
+    assert np.max(np.abs(R @ k - d)) < 1e-3 * d.max()
+    light = OC.HAT.sum(axis=0)
+    assert light @ k == pytest.approx(light @ kvec, rel=1e-3)
+    assert np.all(k[np.abs(OC.DELTA) > 0.15] < 1e-6 * k.max())          # nothing where the kernel has nothing
+    # two stars' files summed per detector and range, then a model file the pipeline reads
+    os.makedirs(tmp_path / 'kernel')
+    for key in ('a_1_NRS1', 'b_2_NRS1'):
+        np.savez(tmp_path / 'kernel' / f'{key}.npz', detector='NRS1', widths='{}', r2_AtA=AtA / 2, r2_Atd=Atd / 2, r2_n=10)
+    tot = OC.sum_normals(str(tmp_path / 'kernel'))
+    assert set(tot) == {('NRS1', 2)} and tot[('NRS1', 2)][2] == 20
+    base = tmp_path / 'base.json'
+    base.write_text(json.dumps({'meta': {'version': 'base'}, 'diffraction': dict(rho=0.996, s0=0.0344, s1=-0.0026,
+                                                                                 alpha=0.25),
+                                'NRS1': [], 'NRS2': []}))
+    np.savez(tmp_path / 'kernel' / 'c_3_NRS2.npz', detector='NRS2', widths='{}', r2_AtA=AtA, r2_Atd=Atd, r2_n=10)
+    OC.step_solve(str(tmp_path / 'kernel'), str(base), str(tmp_path / 'new.json'), 'test-1', log=lambda s: None)
+    new = O.load_optics(str(tmp_path / 'new.json'))
+    assert new['version'] == 'test-1'
+    node = new['NRS1'].kernel[0]
+    assert node['lam'] == pytest.approx(np.sqrt(OC.RANGES[2][0] * OC.RANGES[2][1]))
+    assert np.allclose(node['k'], k)                 # the summed normals are the one star's
+
+
+def test_laws_recover_a_known_centre_law_and_nod_scale():
+    """Stars whose centre moves with wavelength by D_quadrant + alpha x position (relative to
+    1.0-2.6 um), and whose second exposure sits 1.1 x its planned shift away: the law fit gets
+    D and alpha back, and the nod rows the scale."""
+    rng = np.random.default_rng(1)
+    lam = np.array([0.5 * (a + b) for a, b in OC.RANGES])
+    D = {1: 0.02 * (lam - 2.0), 2: -0.01 * (lam - 2.0)}
+    alpha = -0.03 * (lam - 2.0)
+    recs = []
+    for i in range(60):
+        q, c = 1 + i % 2, rng.uniform(-0.3, 0.3)
+        true = D[q] + alpha * c
+        true = true - np.mean(true[list(OC.REF_RANGES)])
+        plan = rng.uniform(-0.02, 0.02)
+        recs.append(dict(key=f's{i}_NRS1', obs=f'o{i % 3}', detector='NRS1', quadrant=q, has_source=[True, True],
+                         ranges=[dict(range=r, c_node=c + true[r] + 1e-4 * rng.normal(), e_c=1e-3,
+                                      offsets=[0.0, 0.1 * plan], shifts=[0.0, plan]) for r in range(len(OC.RANGES))]))
+    keys = {('NRS1', r): [x['key'] for x in recs] for r in range(len(OC.RANGES))}
+    fit = OC.centre_law_fit(OC.centre_rows(recs, keys))
+    # D is defined against the reference ranges' mean, so compare changes from it
+    for q in (1, 2):
+        got = np.array(fit[f'Q{q}_NRS1']['D'])
+        want = D[q] - np.mean(D[q][list(OC.REF_RANGES)])
+        assert np.allclose(got - np.mean(got[list(OC.REF_RANGES)]), want, atol=2e-3)
+    assert np.allclose(fit['NRS1']['alpha'], alpha - np.mean(alpha[list(OC.REF_RANGES)]), atol=2e-3)
+    res = OC.centre_law_residuals(OC.centre_rows(recs, keys), OC.law_table(fit))
+    assert np.nanmax(np.abs(res)) < 2e-3
+    nods = OC.nod_rows(recs, keys)
+    plan, off = np.array([x['plan'] for x in nods]), np.array([x['off'] for x in nods])
+    assert np.sum(plan * off) / np.sum(plan ** 2) == pytest.approx(0.1, abs=1e-6)
+
+
+def test_x_loss_fit_recovers_b_and_the_correction_undoes_it():
+    """Visits whose fluxes carry an x loss jwst's table missed, exp(-0.6 (lambda - 2)+ x^2):
+    fit_x_loss finds 0.6, and x_correction with it is that loss."""
+    from campfire_pipeline.nirspec import optics as O
+    rng = np.random.default_rng(2)
+    pairs = []
+    for i in range(200):
+        lam = rng.choice([0.85, 1.25, 2.0, 3.0, 4.25])
+        xv, xr = rng.uniform(-0.45, 0.45), rng.uniform(-0.1, 0.1)
+        lnr = -0.6 * max(lam - 2.0, 0.0) * (xv ** 2 - xr ** 2) + 0.01 * rng.normal()
+        pairs.append(dict(lnr=lnr, lam=lam, xv=xv, xr=xr, band=lam))
+    b = OC.fit_x_loss(pairs)
+    assert b == pytest.approx(0.6, abs=0.02)
+    opt = O.Optics(0.996, 0.0344, -0.0026, 0.25, [], x_loss=dict(b=b, lam0=2.0))
+    lam = np.array([1.0, 2.0, 4.0])
+    assert np.allclose(opt.x_correction(lam, 0.0), 1.0)
+    assert np.allclose(opt.x_correction(lam, 0.3), [1.0, 1.0, np.exp(-b * 2.0 * 0.09)])
+    assert np.allclose(O.Optics(0.996, 0.0344, -0.0026, 0.25, []).x_correction(lam, 0.3), 1.0)
 
 
 def test_clean_keys_and_stack_metric(tmp_path):

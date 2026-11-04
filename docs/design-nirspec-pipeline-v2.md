@@ -1341,15 +1341,41 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
         centred, wide, 0.45 off centre) and two G395M sources fit with chi2/dof 0.94-1.14, noise-
         like residuals in the continuum; emission lines leave residuals where the line emission
         sits differently from the continuum (one shape for both).
+    - The kernel calibration in the repo (`optics_calibration` `kernel` / `solve`, 2026-11-04).
+      On 29 star-ranges it gives the scratch fit's normal equations to rounding, and its solve
+      gives the shipped kernel from the scratch normals to 1e-11. A further pass at the shipped
+      model on all 16 PRISM calibration visits (547 stars, 2158 star-ranges, the stack run's
+      clean selection; `oc_kernel/`) holds 0.996-1.003 of the light per range and changes a
+      point source's image by at most 0.37 % of its peak (0.06-0.2 % in most ranges): the shipped
+      kernel has converged and stays. Neighbouring core nodes in the red move by up to half
+      their value between passes without changing the image (the PSF blurs them together).
+    - The centre law and nod law remeasured through the model (`optics_calibration laws`,
+      `oc_laws/`; 497 stars). The scatter of each star's centre change from its 1.0-2.6 um
+      centre, per range 0.85 ... 4.7 um, NRS1: no law 0.015 / 0.007 / 0.002 / 0.007 / 0.018 /
+      0.033 / 0.052, the old law 0.004 / 0.002 / 0.001 / 0.002 / 0.008 / 0.018 / 0.024, the new
+      law held out by observation 0.003 / 0.002 / 0.001 / 0.002 / 0.004 / 0.006 / 0.011; NRS2
+      at 2.95-4.7 um 0.004 / 0.010 / 0.013 -> 0.004 / 0.007 / 0.010. In sample and held out agree.
+      The slope with the star's position (alpha) is near zero now: the old PSF needed -0.11 at
+      4.7 um to stand in for what the diffraction does. Adopted (`profile_fit.CENTRE_LAW`). The
+      planned nod shifts take the exposure offsets' rms from 0.0137 to 0.0060; the scale measured
+      / planned is 0.95-1.10 per visit (one visit 0.68 on 26 star-exposures): scale 1 stays.
+    - A correction to jwst's along-dispersion point loss (`Optics.x_correction`, a model-file
+      `x_loss`): exp(-b (lambda - 2 um)+ x^2), x = SRCXPOS. Fitted to the NGC 2506 pairs of check 1
+      (`optics_calibration.fit_x_loss`, `xcorr_ramp.py`): b 0.592 / 0.559 on the even / odd stars,
+      0.572 on all. Held out, per band 0.7-1 / 1-1.5 / 1.5-2.5 / 2.5-3.5 / 3.5-5 um: unchanged
+      below 2.5 um; 7.1 -> 6.0 and 5.6 -> 5.3 % at 2.5-3.5 um; 12.7 -> 10.7 and 12.5 -> 10.8 % at
+      3.5-5 um; the trend with |x| from -28 / -54 % per unit to within +-13 %. A free b per band
+      flips sign between the halves below 2.5 um (noise). On the 12497 repeat stars it is
+      neutral: their x barely changes between visits (rms change of x^2 0.04). At 4.5 um and
+      x = 0.3 it raises a flux by 13 %. Wired into the throughput; not yet in the shipped file.
     - Open. The bar shadow of uniform light is the alpha 0.25 diffraction's (misfit 0.016 against
       the FIT_VERSION 5 edge transmission's 0.011), which matters for wide galaxies, and the blur
       it wants is larger than the stars allow; the model's wide light at 4-5.2 um is 2.1 % against
       about 1.6 %. The along-dispersion loss at 3.5-5 um. G140H NRS2 cores (a per-disperser
       after-shutter blur or kernel, needs more bright grating stars). The blue core of 4465's
       star. The fit of a faint star can fall into a second minimum (2401 in check 1). Fit time
-      for wide galaxies. The kernel calibration (`fit_kernel_ranges.py`, `fit_kernel_linear.py`,
-      `freew.py`) is still scratch on the old module: port it to `optics_calibration`. The
-      centre law and nod law were measured with the old PSF: remeasure under the model.
+      for wide galaxies. Check 1 itself (`check1_ngc2506.py`, `check1_ngc_spec.py`) is still
+      scratch. What the product reports for an extended source (below, 2026-11-04).
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in

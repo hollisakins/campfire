@@ -16,8 +16,25 @@ light, against the distance from its fitted centre in detector rows, data and mo
 per detector and range the median over the clean stars of (data - model) in % of the peak. A
 model passes a range when its largest |median| is under 1 %.
 
+The kernel before the shutter (``kernel`` / ``solve``): the model is linear in the kernel, so
+per clean star-range (at the fit the stack test makes, the width free only for stars at peak
+S/N >= ``FREE_W_SNR``: the faint stars set the core) the model's pixels per unit kernel weight
+at each node (``kernel_response``), for the nod differences and the single frames less the
+master background; their normal equations summed per detector and range and solved for a
+non-negative kernel with a penalty on the wing's curvature (``solve_kernel``). One pass is one
+linearisation about the model it starts from; the shipped kernel took two (design doc).
+
+The centre law and nod law (``laws``): from a stack run's clean star-ranges, each star's centre
+per range against its 1.0-2.6 um centre, fitted per detector as a drift per MSA quadrant plus a
+slope with the star's position (``profile_fit.CENTRE_LAW``), with the scatter held out by
+observation; and the exposures' fitted offsets against their planned shifts
+(``profile_fit.NOD_OFFSET_LAW``).
+
     python -m campfire_pipeline.nirspec.optics_calibration stack --root R --obs a,b --out D
     python -m campfire_pipeline.nirspec.optics_calibration score --out D
+    python -m campfire_pipeline.nirspec.optics_calibration kernel --root R --obs a,b --select D --out K
+    python -m campfire_pipeline.nirspec.optics_calibration solve --out K --model-out new.json --version V
+    python -m campfire_pipeline.nirspec.optics_calibration laws --out D
 """
 
 import copy
@@ -265,7 +282,15 @@ class RangeFit:
         rr = (M.pix['d'] - model) / np.sqrt(self.v_raw)
         ndof = max(float(np.sum(M.dof_weight()[M.use])) - int(good.sum()) - x.size, 1.0)
         chi2 = float(np.sum(r[M.use] ** 2))
-        return dict(c0=float(c0), drift=float(dr), c_node=float(self.centre_at(c0, dr, self.lam_c)),
+        # the centre's error at the range's centre, from the last solve's Jacobian (chi2/dof >= 1)
+        grad = np.zeros(x.size)
+        grad[0], grad[1] = 1.0, float(M._x(np.array([self.lam_c]))[0])
+        try:
+            cov = np.linalg.pinv(res.jac.T @ res.jac) * max(chi2 / ndof, 1.0)
+            e_c = float(np.sqrt(max(grad @ cov @ grad, 0.0)))
+        except np.linalg.LinAlgError:
+            e_c = np.nan
+        return dict(c0=float(c0), drift=float(dr), c_node=float(self.centre_at(c0, dr, self.lam_c)), e_c=e_c,
                     w=float(np.exp(self.logw)), offsets=self.eoff.tolist(), chi2=chi2,
                     chi2_raw=float(np.sum(rr[M.use] ** 2)), ndof=ndof, chi2r=chi2 / ndof,
                     peak_snr=self.peak_snr(model), _x=[float(c0), float(dr)], _use=M.use.copy(), _model=model, _f=f)
@@ -319,7 +344,9 @@ def fit_star(task, ranges=None, optics=None):
     if ranges is None:
         ranges = RANGES if task.disperser == 'prism_clear' else grating_ranges(exps)
     flags = saturated_flags(exps)
-    rec, samp = dict(key=task.key, detector=task.detector, ranges=[]), {}
+    rec = dict(key=task.key, obs=task.obs, detector=task.detector, quadrant=task.quadrant, srcy=task.srcy,
+               exposures=[e.name for e in exps], has_source=[bool(e.has_source) for e in exps], ranges=[])
+    samp = {}
     for r, rng in enumerate(ranges):
         try:
             RF = RangeFit(exps, rng, optics=optics)
@@ -327,8 +354,10 @@ def fit_star(task, ranges=None, optics=None):
             g = RF.fit(x0=s['_x'], use=s['_use'])
         except PF.ProfileFitFallback:
             continue
-        rec['ranges'].append(dict(range=r, lam=list(rng), peak_snr=g['peak_snr'], c_node=g['c_node'], w=g['w'],
-                                  chi2=g['chi2'], ndof=g['ndof'],
+        shifts = RF.M.nod_shift if RF.M.nod_shift is not None else np.zeros(len(exps))
+        rec['ranges'].append(dict(range=r, lam=list(rng), peak_snr=g['peak_snr'], c_node=g['c_node'], e_c=g['e_c'],
+                                  w=g['w'], chi2=g['chi2'], ndof=g['ndof'], offsets=g['offsets'],
+                                  shifts=[float(v) for v in shifts],
                                   sat=saturated_fraction(exps, flags, g['c_node'], rng)))
         samp[r] = RF.samples(g)
     return rec, samp
@@ -460,22 +489,481 @@ def step_score(out_dir, log=print, **cuts):
     return met
 
 
+# ---------------------------------------------------------------------------
+# The kernel before the shutter
+# ---------------------------------------------------------------------------
+_HALF = (0.0, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.65, 0.8, 1.0, 1.25, 1.5, 2.0)
+DELTA = np.array(sorted({-d for d in _HALF} | set(_HALF)))     # kernel nodes [slit units]
+FINE = np.round(np.arange(-2.0, 2.0001, 0.0125), 5)          # offsets the point images are taken at (the tables' step)
+FREE_W_SNR = 63.0                  # star-ranges at this peak S/N or above fit their own width; fainter ones are points
+S_DELTA = 1e-2                     # the solve's penalty on the wing's second differences (relative to the data)
+WING = 0.3                         # the penalty applies beyond this offset [slit units]; the core is free
+
+
+def _hat():
+    """FINE x DELTA: a kernel linear between its nodes, as weights on FINE, times the step."""
+    H = np.zeros((FINE.size, DELTA.size))
+    for i, x in enumerate(FINE):
+        j = int(np.clip(np.searchsorted(DELTA, x) - 1, 0, DELTA.size - 2))
+        t = (x - DELTA[j]) / (DELTA[j + 1] - DELTA[j])
+        H[i, j] += 1 - t
+        H[i, j + 1] += t
+    return H * (FINE[1] - FINE[0])
+
+
+HAT = _hat()
+
+
+def gauss_matrix(grid, w):
+    """(n x n): a Gaussian source of width ``w`` centred at each point of the evenly spaced
+    ``grid``, as weights on the grid, exact for values linear between the points (the
+    profile fit's compact source, ``optics.Optics._compact_weights``)."""
+    from scipy.special import ndtr
+    h = grid[1] - grid[0]
+    u = grid[:, None] - grid[None, :]
+
+    def R(x):
+        z = x / w
+        return x * ndtr(z) + w * np.exp(-0.5 * z * z) / np.sqrt(2.0 * np.pi)
+    return (R(u + h) - 2.0 * R(u) + R(u - h)) / h
+
+
+def kernel_response(M, p, f, eoff, width=None):
+    """(npix x DELTA) the model's pixels per unit kernel weight at each node: the model ``M``
+    at shape ``p``, offsets ``eoff`` and spectrum ``f`` (on M.lam_grid), with each exposure's
+    point images taken from the diffraction alone (``Optics.raw_image_table``) at the source
+    centre plus FINE, spread by the source's own width (``width``; None or the floor: a point
+    source), through the nod-difference terms and M's throughput. The model is linear in the
+    kernel, so R k is the model with kernel k."""
+    from scipy.ndimage import map_coordinates
+    from campfire_pipeline.nirspec import optics as O
+    H = HAT if width is None or width <= 1.5 * PF.W_FLOOR else gauss_matrix(FINE, width) @ HAT
+    G = {}
+    for j, q in M.image_pix.items():
+        e = M.exps[j]
+        tab = M.optics[j].raw_image_table(e.open_k)
+        c = M.centre(p, eoff, j, q['lam'])
+        tau = M.throughput(p, eoff, j, q['lam'], q['dy'])
+        li, yi = O.Optics._li(q['lam']), (q['y'] - O.Y[0]) / (O.Y[1] - O.Y[0])
+        img = np.empty((q['lam'].size, FINE.size))
+        for m, dd in enumerate(FINE):
+            img[:, m] = map_coordinates(tab, np.vstack([li, O.Optics._ci(c + dd), yi]), order=1, mode='constant',
+                                        cval=0.0)
+        G[j] = (tau * q['dy'] / O.DY_ROW)[:, None] * (img @ H)
+    R = np.zeros((M.npix, DELTA.size))
+    for T in M.terms:
+        g = T['w'] * G[T['j']][T['upos']]
+        fv = f[T['idx']] * (1 - T['t']) + f[T['idx'] + 1] * T['t']
+        np.add.at(R, T['rows'], np.where(T['inside'][:, None], g * fv[:, None], 0.0))
+    return R
+
+
+def _add_normal(out, key, R, d, v, use):
+    ok = use & np.isfinite(d) & np.isfinite(v) & (v > 0) & np.all(np.isfinite(R), axis=1)
+    if ok.sum() < 20:
+        return
+    w = 1.0 / v[ok]
+    A = R[ok]
+    AtA, Atd, n = out.get(key, (0.0, 0.0, 0))
+    out[key] = (AtA + A.T @ (A * w[:, None]), Atd + A.T @ (w * d[ok]), n + int(ok.sum()))
+
+
+def kernel_star(task, ranges, optics=None, free_w_snr=FREE_W_SNR):
+    """One star's normal equations for the kernel in each of its ``ranges`` (indices into
+    RANGES): the range fitted as the stack test fits it (``RangeFit.start``, then centre,
+    drift and exposure offsets free, the width free only at peak S/N >= ``free_w_snr``), then
+    ``kernel_response`` at that state for the nod differences and for the single frames less
+    the master background (which keep the light nodding removes; same shape, offsets and
+    spectrum, the same variance floor, pixels beyond CLIP sigma of the model dropped).
+    Returns {range: (AtA, Atd, npix)} and {range: width}."""
+    from campfire_pipeline.nirspec import mbkg_extraction as MB
+    exps = load_star(task)
+    sci = [e for e in exps if e.use_data]
+    try:
+        frames = MB.frames_for([e.path for e in sci])
+    except MB.NoMasterBackground:
+        frames = None
+    out, widths = {}, {}
+    for r in ranges:
+        rng = RANGES[r]
+        try:
+            RF = RangeFit(exps, rng, optics=optics)
+            s = RF.start()
+            g = RF.fit(x0=s['_x'], use=s['_use'], width=s['peak_snr'] >= free_w_snr)
+        except PF.ProfileFitFallback:
+            continue
+        M = RF.M
+        p, eoff, f = RF.shape(g['c0'], g['drift']), RF.eoff.copy(), np.nan_to_num(g['_f'])
+        widths[r] = g['w']
+        _add_normal(out, r, kernel_response(M, p, f, eoff, g['w']), M.pix['d'], M.pix['v'], g['_use'])
+        if frames is None:
+            continue
+        mexps = restrict(MB.single_frame_exposures(sci, frames), rng)
+        opt = None if optics is None else [optics[e.detector] for e in mexps]
+        Mm = PF.ProfileModel(mexps, grid=M.lam_grid, centre_law_tables=PF.NO_CENTRE_LAW, c_prior=M.c_prior, optics=opt)
+        Mm.pivot = M.pivot
+        off = {e.name: eoff[k] for k, e in enumerate(M.exps)}
+        em = np.array([off.get(e.name, 0.0) for e in Mm.exps])
+        mm = Mm.design(p, em) @ f
+        colkey = np.concatenate([k * 100000 + np.nonzero(msk)[1] for k, msk in Mm.pix_masks])
+        u, inv = np.unique(colkey, return_inverse=True)
+        mx = np.zeros(u.size)
+        np.maximum.at(mx, inv, np.abs(mm))
+        vf = Mm.pix['v'] + (mx[inv] / SN_CAP) ** 2
+        use = np.abs(Mm.pix['d'] - mm) < CLIP * np.sqrt(vf)
+        _add_normal(out, r, kernel_response(Mm, p, f, em, g['w']), Mm.pix['d'], vf, use)
+    return out, widths
+
+
+def _kernel_one(args):
+    task, ranges, out_dir, optics_path = args
+    optics = None
+    if optics_path:
+        from campfire_pipeline.nirspec import optics as O
+        optics = {d: o for d, o in O.load_optics(optics_path).items() if d != 'version'}
+    try:
+        out, widths = kernel_star(task, ranges, optics=optics)
+    except Exception as err:          # one star's failure is reported, the others go on
+        return task.key, f'{type(err).__name__}: {err}'
+    np.savez(os.path.join(out_dir, 'kernel', f'{task.key}.npz'), widths=json.dumps(widths), detector=task.detector,
+             **{f'r{r}_AtA': a for r, (a, b, n) in out.items()}, **{f'r{r}_Atd': b for r, (a, b, n) in out.items()},
+             **{f'r{r}_n': n for r, (a, b, n) in out.items()})
+    return task.key, len(out)
+
+
+def step_kernel(root, observations, select_dir, out_dir, optics_path=None, processes=1, log=print):
+    """The kernel's normal equations of every clean star-range of a stack run (``select_dir``,
+    ``clean_keys``), at the model ``optics_path`` (the shipped one by default): one file per
+    star under ``out_dir``/kernel."""
+    from multiprocessing import Pool
+    from campfire_pipeline.nirspec import optics as O
+    os.makedirs(os.path.join(out_dir, 'kernel'), exist_ok=True)
+    ranges_of = {}
+    for (det, r), keys in clean_keys(read_records(select_dir)).items():
+        for k in keys:
+            ranges_of.setdefault(k, []).append(r)
+    tasks = [t for t in tasks_for(root, observations) if t.key in ranges_of]
+    log(f'{len(tasks)} stars, {sum(len(ranges_of[t.key]) for t in tasks)} star-ranges')
+    model = O.load_optics(optics_path) if optics_path else O.models()
+    for det in ('NRS1', 'NRS2'):      # the shared tables once, before the workers
+        for mask in ((-1, 0, 1), (0, 1, 2), (-2, -1, 0)):
+            model[det].raw_image_table(mask)
+            model[det].image_table(mask)
+            model[det].transmission_table(PF.REF_APERTURE)
+    args = [(t, sorted(ranges_of[t.key]), out_dir, optics_path) for t in sorted(tasks, key=lambda t: t.key)]
+    if processes <= 1:
+        for key, res in map(_kernel_one, args):
+            log(f'{key} {res}')
+        return
+    with Pool(processes) as pool:
+        for key, res in pool.imap_unordered(_kernel_one, args):
+            log(f'{key} {res}')
+
+
+def sum_normals(kernel_dir, keys=None):
+    """{(detector, range): (AtA, Atd, npix)} summed over the stars' files (``step_kernel``),
+    or over ``keys`` only."""
+    tot = {}
+    for fn in sorted(os.listdir(kernel_dir)):
+        key = fn[:-4]
+        if not fn.endswith('.npz') or (keys is not None and key not in keys):
+            continue
+        z = np.load(os.path.join(kernel_dir, fn))
+        det = str(z['detector'])
+        for name in z.files:
+            if not name.endswith('_AtA'):
+                continue
+            r = int(name[1:-4])
+            AtA, Atd, n = tot.get((det, r), (0.0, 0.0, 0))
+            tot[(det, r)] = (AtA + z[name], Atd + z[f'r{r}_Atd'], n + int(z[f'r{r}_n']))
+    return tot
+
+
+def solve_kernel(AtA, Atd, s_delta=S_DELTA):
+    """The non-negative kernel minimising chi2 + s_delta x (the data's scale) x |second
+    differences beyond WING|^2."""
+    from scipy.linalg import cholesky, solve_triangular
+    from scipy.optimize import lsq_linear
+    n = DELTA.size
+    D2 = np.diff(np.eye(n), n=2, axis=0)[np.abs(DELTA[1:-1]) > WING]
+    scale = np.trace(AtA) / n
+    U = cholesky(AtA + s_delta * scale * D2.T @ D2 + 1e-9 * scale * np.eye(n), lower=False)
+    return lsq_linear(U, solve_triangular(U, Atd, trans='T', lower=False), bounds=(0.0, np.inf), method='bvls').x
+
+
+def step_solve(kernel_dir, optics_path, out_path, version, keys=None, s_delta=S_DELTA, log=print):
+    """A model file from the stars' normal equations: the kernel per detector and range (at
+    the range's centre, ln-mean), on the diffraction numbers of the model the normals were
+    built at (``optics_path``; the shipped file by default)."""
+    from campfire_pipeline.nirspec import optics as O
+    with open(optics_path or O.OPTICS_FILE) as fh:
+        base = json.load(fh)
+    tot = sum_normals(kernel_dir, keys)
+    out = {'meta': dict(base['meta'], version=version,
+                        source=f'kernel fitted by optics_calibration from {kernel_dir} at the model '
+                               f'{base["meta"]["version"]}'), 'diffraction': base['diffraction']}
+    for det in ('NRS1', 'NRS2'):
+        nodes = []
+        for r in sorted(r for d, r in tot if d == det):
+            AtA, Atd, n = tot[(det, r)]
+            k = solve_kernel(AtA, Atd, s_delta)
+            wk = HAT.sum(axis=0) * k
+            lam = float(np.sqrt(RANGES[r][0] * RANGES[r][1]))
+            nodes.append(dict(lam=lam, delta=DELTA.tolist(), k=k.tolist()))
+            log(f'{det} {lam:.2f} um: integral {wk.sum():.4f}, beyond 0.3 {wk[np.abs(DELTA) > 0.3].sum() / wk.sum():.4f}, '
+                f'beyond 0.8 {wk[np.abs(DELTA) > 0.8].sum() / wk.sum():.4f}, {n} pixels')
+        out[det] = nodes
+    with open(out_path, 'w') as fh:
+        json.dump(out, fh, indent=1)
+    log(f'wrote {out_path}')
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The centre law and the nod law (profile_fit.CENTRE_LAW, NOD_OFFSET_LAW)
+# ---------------------------------------------------------------------------
+REF_RANGES = (1, 2, 3)             # 1.0-2.6 um: a star's reference centre
+CENTRE_MIN_STARS = 5               # per MSA quadrant for its own drift column
+
+
+def centre_rows(records, keys_by):
+    """Per star with a clean reference range: detector, quadrant, observation, its reference
+    centre (inverse-variance mean of the clean ranges in REF_RANGES) and each clean range's
+    centre change from it, with errors (NaN where not clean)."""
+    clean = {(k, r) for (det, r), keys in keys_by.items() for k in keys}
+    out = []
+    for rec in records:
+        rows = {row['range']: row for row in rec['ranges'] if (rec['key'], row['range']) in clean
+                and np.isfinite(row.get('e_c', np.nan)) and row['e_c'] > 0}
+        ref = [rows[r] for r in REF_RANGES if r in rows]
+        if not ref:
+            continue
+        w = np.array([1.0 / max(x['e_c'], 1e-3) ** 2 for x in ref])
+        cref = float(np.sum(w * [x['c_node'] for x in ref]) / w.sum())
+        dc, err = np.full(len(RANGES), np.nan), np.full(len(RANGES), np.nan)
+        for r, x in rows.items():
+            dc[r], err[r] = x['c_node'] - cref, x['e_c']
+        out.append(dict(key=rec['key'], obs=rec['obs'], det=rec['detector'], quad=rec['quadrant'], cref=cref, dc=dc,
+                        err=err))
+    return out
+
+
+def _robust_lsq(X, y, e, nit=4):
+    """Weighted least squares with 4-sigma clipping (errors floored at 0.003): (parameters,
+    errors, robust scatter, number used)."""
+    ok = np.isfinite(y) & np.isfinite(e)
+    p = np.full(X.shape[1], np.nan)
+    A = b = None
+    for _ in range(nit):
+        if ok.sum() <= X.shape[1]:
+            break
+        w = 1 / np.maximum(e[ok], 0.003) ** 2
+        A, b = X[ok] * np.sqrt(w)[:, None], y[ok] * np.sqrt(w)
+        p, *_ = np.linalg.lstsq(A, b, rcond=None)
+        res = y - X @ p
+        s = 1.4826 * np.nanmedian(np.abs(res[ok]))
+        ok = ok & (np.abs(res) < 4 * max(s, 0.004))
+    if A is None:
+        return p, np.full(X.shape[1], np.nan), np.nan, 0
+    cov = np.linalg.pinv(A.T @ A) * max(np.sum((A @ p - b) ** 2) / max(ok.sum() - len(p), 1), 1)
+    res = y - X @ p
+    return p, np.sqrt(np.diag(cov)), float(1.4826 * np.nanmedian(np.abs(res[ok]))), int(ok.sum())
+
+
+def centre_law_fit(rows):
+    """``CENTRE_LAW`` from star centres (``centre_rows``): per detector and range, the centre
+    change dc = D_quadrant + alpha x the star's reference centre (one drift column per MSA
+    quadrant with at least CENTRE_MIN_STARS stars, alpha shared), and the detector's own D from
+    every star (the fallback). Values at the ranges' centres; unmeasured entries NaN."""
+    lam = [0.5 * (a + b) for a, b in RANGES]
+    out = {}
+    for det in ('NRS1', 'NRS2'):
+        g = [x for x in rows if x['det'] == det]
+        quads = [q for q in (1, 2, 3, 4) if sum(x['quad'] == q for x in g) >= CENTRE_MIN_STARS]
+        out[det] = dict(lam=lam, D=[], alpha=[], eD=[], ealpha=[], scatter=[], n=[])
+        for q in quads:
+            out[f'Q{q}_{det}'] = dict(lam=lam, D=[], eD=[])
+        for r in range(len(RANGES)):
+            pos = np.array([x['cref'] for x in g])
+            y, e = np.array([x['dc'][r] for x in g]), np.array([x['err'][r] for x in g])
+            p0, pe0, sc, n = _robust_lsq(np.column_stack([np.ones_like(pos), pos]), y, e)
+            out[det]['D'].append(float(p0[0]))
+            out[det]['eD'].append(float(pe0[0]))
+            out[det]['scatter'].append(sc)
+            out[det]['n'].append(n)
+            have = [q for q in quads if np.sum([(x['quad'] == q) and np.isfinite(v) for x, v in zip(g, y)])
+                    >= CENTRE_MIN_STARS]
+            if not have:
+                out[det]['alpha'].append(float(p0[1]))
+                out[det]['ealpha'].append(float(pe0[1]))
+                for q in quads:
+                    out[f'Q{q}_{det}']['D'].append(np.nan)
+                    out[f'Q{q}_{det}']['eD'].append(np.nan)
+                continue
+            sub = np.array([x['quad'] in have for x in g])
+            X = np.column_stack([np.array([x['quad'] == q for x in g], float) for q in have] + [pos])
+            p, pe, _, _ = _robust_lsq(X[sub], y[sub], e[sub])
+            out[det]['alpha'].append(float(p[-1]))
+            out[det]['ealpha'].append(float(pe[-1]))
+            for q in quads:
+                i = have.index(q) if q in have else None
+                out[f'Q{q}_{det}']['D'].append(float(p[i]) if i is not None else np.nan)
+                out[f'Q{q}_{det}']['eD'].append(float(pe[i]) if i is not None else np.nan)
+    return out
+
+
+def law_table(fit):
+    """A ``centre_law_fit`` result as a ``profile_fit.centre_law`` table: unmeasured quadrant
+    values take the detector's D."""
+    out = {}
+    for name, v in fit.items():
+        det = name.split('_')[-1]
+        D = np.array(v['D'], float)
+        D = np.where(np.isfinite(D), D, np.array(fit[det]['D'], float))
+        out[name] = dict(lam=np.array(v['lam']), D=D)
+        if 'alpha' in v:
+            out[name]['alpha'] = np.array(v['alpha'], float)
+    return out
+
+
+def centre_law_residuals(rows, law):
+    """Per row and range: dc minus the law's prediction (``profile_fit.centre_law`` with
+    ``law``; None for no law) relative to its value at the reference centre, as the fit
+    applies it."""
+    lam = np.array([0.5 * (a + b) for a, b in RANGES])
+    res = np.full((len(rows), len(RANGES)), np.nan)
+    for i, x in enumerate(rows):
+        if law is None:
+            pred = np.zeros(lam.size)
+        else:
+            D, a = PF.centre_law(lam, x['det'], x['quad'], law=law)
+            pred = D + a * x['cref']
+            ref = [r for r in REF_RANGES if np.isfinite(x['dc'][r])]
+            pred = pred - np.mean(pred[ref])
+        res[i] = x['dc'] - pred
+    return res
+
+
+def nod_rows(records, keys_by):
+    """Per star and exposure with the source (but the first, whose offset is held at zero):
+    its observation, planned shift from the first (``nod_shifts`` difference) and fitted extra
+    offset, medians over the star's clean ranges."""
+    clean = {(k, r) for (det, r), keys in keys_by.items() for k in keys}
+    out = []
+    for rec in records:
+        rows = [row for row in rec['ranges'] if (rec['key'], row['range']) in clean and 'offsets' in row]
+        src = [k for k, h in enumerate(rec.get('has_source', [])) if h]
+        if not rows or len(src) < 2:
+            continue
+        for k in src[1:]:
+            plan = np.median([row['shifts'][k] - row['shifts'][src[0]] for row in rows])
+            off = np.median([row['offsets'][k] for row in rows])
+            out.append(dict(key=rec['key'], obs=rec['obs'], plan=float(plan), off=float(off)))
+    return out
+
+
+def step_laws(out_dir, log=print):
+    """The centre law and the nod law from a stack run's clean star-ranges (``step_stack``):
+    the new law, the scatter of the centre changes with no law / the shipped law / the new
+    law fitted on the other observations (held out by observation), and the nod offsets with
+    and without the planned shifts, with the fitted scale of the planned shifts per
+    observation. Writes ``out_dir``/laws.json."""
+    recs = read_records(out_dir)
+    keys = clean_keys(recs)
+    rows = centre_rows(recs, keys)
+    fit = centre_law_fit(rows)
+    obs = sorted({x['obs'] for x in rows})
+    held = np.full((len(rows), len(RANGES)), np.nan)
+    for o in obs:
+        law_o = law_table(centre_law_fit([x for x in rows if x['obs'] != o]))
+        idx = [i for i, x in enumerate(rows) if x['obs'] == o]
+        held[idx] = centre_law_residuals([rows[i] for i in idx], law_o)
+    cases = dict(none=centre_law_residuals(rows, None), shipped=centre_law_residuals(rows, PF.CENTRE_LAW),
+                 new=centre_law_residuals(rows, law_table(fit)), new_held_out=held)
+    det = np.array([x['det'] for x in rows])
+    scat = {}
+    for name, res in cases.items():
+        for d in ('NRS1', 'NRS2'):
+            s = res[det == d]
+            scat[f'{name}:{d}'] = [float(1.4826 * np.nanmedian(np.abs(c[np.isfinite(c)]))) if np.isfinite(c).sum() > 5
+                                   else np.nan for c in s.T]
+    for d in ('NRS1', 'NRS2'):
+        log(f'centre change scatter, {d} (slit units, per range 0.7-5.3 um; {int(np.sum(det == d))} stars):')
+        for name in cases:
+            log(f'  {name:13s} ' + ' '.join(f'{v:.4f}' for v in scat[f'{name}:{d}']))
+        log('  new D  ' + ' '.join(f'{v:+.4f}' for v in fit[d]['D']))
+        log('  new a  ' + ' '.join(f'{v:+.4f}' for v in fit[d]['alpha']))
+    nods = nod_rows(recs, keys)
+    plan, off = np.array([x['plan'] for x in nods]), np.array([x['off'] for x in nods])
+    rms = lambda v: float(np.sqrt(np.mean(v ** 2)))      # noqa: E731
+    nod = dict(n=len(nods), rms_with_plan=rms(off), rms_without=rms(off + plan), per_obs={})
+    log(f'nod offsets ({len(nods)} star-exposures): rms {nod["rms_with_plan"]:.4f} with the planned shifts, '
+        f'{nod["rms_without"]:.4f} without')
+    for o in sorted({x['obs'] for x in nods}):
+        s = np.array([x['obs'] == o for x in nods])
+        if np.sum(s) < 5 or np.ptp(plan[s]) < 1e-3:
+            continue
+        slope = float(np.sum(plan[s] * off[s]) / np.sum(plan[s] ** 2))     # off = (scale - 1) x plan
+        nod['per_obs'][o] = dict(n=int(s.sum()), scale=1.0 + slope, rms=rms(off[s]))
+        log(f'  {o}: {int(s.sum())} star-exposures, scale measured / planned {1.0 + slope:.3f}, rms {rms(off[s]):.4f}')
+    with open(os.path.join(out_dir, 'laws.json'), 'w') as fh:
+        json.dump(dict(centre_law=fit, scatter=scat, nod=nod), fh, indent=1)
+    return fit, scat, nod
+
+
+# ---------------------------------------------------------------------------
+# The along-dispersion correction (optics.Optics.x_correction)
+# ---------------------------------------------------------------------------
+X_LAM0 = 2.0                       # um: below it jwst's x dependence stands (no trend in the stars)
+
+
+def fit_x_loss(pairs, lam0=X_LAM0, nit=4):
+    """b of ``Optics.x_correction`` from stars seen at several positions: ``pairs`` of a
+    star's flux in a band in one visit over its reference visit (dict lnr = ln ratio, lam =
+    the band's centre [um], xv / xr = SRCXPOS of the visit and of the reference, band = an
+    id), fluxes with jwst's x dependence. The corrected ratio is lnr + b (lam - lam0)+ (xv^2 -
+    xr^2); b by least squares, clipped at 4 sigma per band. Returns b."""
+    lnr = np.array([p['lnr'] for p in pairs], float)
+    band = np.array([p['band'] for p in pairs])
+    g = np.array([max(p['lam'] - lam0, 0.0) * (p['xv'] ** 2 - p['xr'] ** 2) for p in pairs], float)
+    keep = np.ones(lnr.size, bool)
+    b = 0.0
+    for _ in range(nit):
+        b = -np.sum(lnr[keep] * g[keep]) / np.sum(g[keep] ** 2)
+        v = lnr + b * g
+        keep = np.zeros(lnr.size, bool)
+        for bi in np.unique(band):
+            s = band == bi
+            mad = 1.4826 * np.median(np.abs(v[s] - np.median(v[s])))
+            keep[s] = np.abs(v[s] - np.median(v[s])) < 4 * max(mad, 1e-3)
+    return float(b)
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[1], formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('step', choices=('stack', 'score'))
+    ap.add_argument('step', choices=('stack', 'score', 'kernel', 'solve', 'laws'))
     ap.add_argument('--root', help='CAMPFIRE root of the reduced calibration observations')
     ap.add_argument('--obs', help='comma-separated observations')
     ap.add_argument('--out', required=True, help='output directory')
     ap.add_argument('--dispersers', default='prism_clear', help='comma-separated, e.g. prism_clear,g395m_f290lp')
     ap.add_argument('--optics', default=None, help='a model file in place of the shipped data/nirspec_optics.json')
+    ap.add_argument('--select', help='kernel: the stack run whose clean star-ranges are fitted')
+    ap.add_argument('--model-out', help='solve: the model file to write')
+    ap.add_argument('--version', help='solve: the new model\'s version')
     ap.add_argument('--processes', type=int, default=1)
     a = ap.parse_args(argv)
     if a.step == 'stack':
         step_stack(a.root, a.obs.split(','), a.out, dispersers=tuple(a.dispersers.split(',')), optics_path=a.optics,
                    processes=a.processes)
-    else:
+    elif a.step == 'score':
         step_score(a.out)
+    elif a.step == 'kernel':
+        step_kernel(a.root, a.obs.split(','), a.select, a.out, optics_path=a.optics, processes=a.processes)
+    elif a.step == 'laws':
+        step_laws(a.out)
+    else:
+        step_solve(os.path.join(a.out, 'kernel'), a.optics, a.model_out, a.version)
 
 
 if __name__ == '__main__':

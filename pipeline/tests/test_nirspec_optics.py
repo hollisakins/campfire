@@ -152,6 +152,22 @@ def test_model_image_and_throughput_from_the_optics(monkeypatch):
     assert np.allclose(tau, 0.8 * 1.25 / t0)          # jwst's level moved to the centre, over the model's there
 
 
+def test_throughput_takes_the_x_correction_at_srcxpos():
+    class Corrected(Analytic):
+        def x_correction(self, lam, srcx):
+            return np.full(np.shape(lam), 1.0 - srcx)
+    exps = _exposures()
+    for e, x in zip(exps, (0.0, 0.1, np.nan)):
+        e.src_x_jwst = x
+    p = np.array([0.0, 0.0, np.log(0.05), 0.0])
+    lam, dy = exps[0].wav[:, 40], exps[0].dy[:, 40]
+    plain = PF.ProfileModel(exps, optics=[Analytic()] * 3)
+    corr = PF.ProfileModel(exps, optics=[Corrected()] * 3)
+    for k, want in enumerate((1.0, 0.9, 1.0)):       # no SRCXPOS: no correction
+        a, b = plain.throughput(p, np.zeros(3), k, lam, dy), corr.throughput(p, np.zeros(3), k, lam, dy)
+        assert np.allclose(b, want * a)
+
+
 def test_fit_through_the_optics_recovers_shape_and_flux(monkeypatch):
     monkeypatch.setattr(O, 'jwst_point_y_ratio', lambda ref, lam, srcy: np.ones(np.shape(lam)))
     exps = _exposures()
