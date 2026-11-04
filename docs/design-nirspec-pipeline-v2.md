@@ -1300,6 +1300,14 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
       loading, the per-range star fit through the model (centre, drift, exposure offsets and width
       free) and the stack test (`stack` / `score`). Tests run a closed-form stand-in
       (`tests/optics_standin.py`) unless they ask for the shipped model.
+      - The module's stack test on all 16 PRISM calibration visits (12497 obs 1-5, 6642 obs 2,
+        NGC 2506; 1155 star-detectors; `oc_full/`): every range within 1 % of the peak, worst
+        |median residual| NRS1 0.41 / 0.37 / 0.26 / 0.40 / 0.42 / 0.60 / 0.46 %, NRS2 0.49 / 0.59
+        / 0.45 / 0.53 / 0.70 / 0.78 / 0.43 % over 0.7-5.3 um (84-223 stars per range). Clean
+        star-ranges: peak S/N >= 20, |centre| < 0.35, no saturated trace pixel, the star's median
+        width <= 0.06 slit units (wider: a galaxy, a pair or a contaminated star) and chi2/dof
+        within 5 x the range's median. On the stars it shares with the scratch test the samples
+        are identical.
       - Gratings on 6642 obs 2 (`test_gratings.py`, `grat_w2/`, figure `final_gratings.png`):
         the shared model against each grating's FIT_VERSION 5 tables, chi2/dof ratio per
         detector-range 0.95-1.03 in 18 of 20 ranges (3-7 stars each, peak S/N >= 20); worst
