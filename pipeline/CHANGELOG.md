@@ -43,25 +43,6 @@ Release procedure: edit the `## Unreleased` section below, then run
   where the central difference was NaN and the fit failed ("Residuals are not finite"). Fits
   that succeeded before are unchanged (category uncertain: it gives a profile fit to sources
   that had none, which is closer to Algorithm).
-- **NIRSpec: PSF calibration module for the profile fit (`nirspec/psf_calibration.py`).**
-  Re-derives the cross-dispersion PSF table (`profile_fit.PSF_TABLES`) and the trace centre
-  law (`CENTRE_LAW`) from calibration-field PRISM stars through the profile fit's own model
-  (the frames stage 3 reads, shutter clipping, pixel integration, throughput, nod partners),
-  with figures; CLI `python -m campfire_pipeline.nirspec.psf_calibration`. `ProfileModel`
-  takes optional `psf_tables` / `centre_law_tables` (default: the module tables);
-  `NO_CENTRE_LAW` measures where the light is. Star fits and selection use the shipped PSF
-  with a free core width (`width_tables`). Also measures the per-exposure nod offsets
-  (`offsets`, `offset_law` steps) behind `NOD_OFFSET_LAW`.
-- **NIRSpec profile fit: general PSF tables only.** `profile_fit.psf_components` reads a PSF
-  table as a list of Gaussian components per wavelength node (share, width, offset towards slit
-  +y, the share of the width before the shutter, offset before or after it). The old
-  two-Gaussian table and its layout are removed (`LEGACY_PSF_TABLES`, `PSF_K`, `psf_params`,
-  and the two-component steps of `psf_calibration`); `PSF_LAM` remains as the nodes of
-  `CENTRE_LAW`. `psf_calibration` fits stars with general PSFs
-  (`PSFForm`, `fit_form`) and builds candidate tables from them, including the smooth joint
-  fit (`smooth_joint_fit_all`: every PSF parameter a spline in wavelength over 0.6-5.3 um,
-  fitted per detector to the stars of all ranges at once, with the stars' centres and offsets
-  in the same problem) and its held-out test.
 
 ### Algorithm
 
@@ -77,44 +58,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   up to 7 % and the flux moves by < 0.3 %. A single exposure, or a placeholder SRCYPOS, is not
   shifted.
 
-- **NIRSpec profile fit: three-component cross-dispersion PSF (`FIT_VERSION` 4).** The PSF is a
-  core, a wing with its own width and offset, and a one-sided shoulder toward slit +y, both
-  offsets acting after the shutter; every parameter varies smoothly with wavelength over
-  0.6-5.3 um. Fitted jointly per detector to the bright calibration-field stars, each star's
-  centre free in every exposure (`psf_calibration.smooth_joint_fit_all`), and shipped as
-  `data/nirspec_profile_psf.json`. Stacked stars match it to within 1 % of the peak in 11 of 14
-  detector-ranges (1.0-1.3 % at 3.3-5.3 um, few stars), against 1.1-4.3 % for the previous
-  two-Gaussian table, which is removed; a fit on half the stars does as well on the other half
-  below 3.3 um.
-
-- **NIRSpec profile fit: the geometric shutter with a smooth transmission (`FIT_VERSION` 5).**
-  The model clipped light hard at the shutter edges (+-0.50 slit units) with the PSF's width
-  split evenly before and after the shutter. Against the empirical bar-shadow tables that
-  passes too much light near the edges in the red (the 50 % edge 0.05 pitch too wide at 5 um,
-  the floor under a bar 0.49-0.61 of the open level against a measured 0.40-0.46).
-  - The shutter is still geometric (with a small fitted shift), but inside it light is
-    transmitted with T(x) = 1 - (1 - tedge) x^8 (x the position over the half-width: flat over
-    the middle, falling to `tedge` at the edges, never above 1). Half of every PSF component's
-    width^2 acts before the shutter and half after (`profile_fit.AFTER_SHARE`), the split the
-    PSF table was fitted with. T and the throughput normalisation go together, so jwst's point
-    path loss and the model stay consistent.
-  - `shift` and `tedge` are fitted per disperser as smooth functions of wavelength to both
-    bar-shadow tables (`psf_calibration.fit_shutter`) and shipped as
-    `data/nirspec_shutter_transmission.json` (`profile_fit.SHUTTER`; `ProfileModel(shutter=...)`
-    overrides it). `tedge` falls from 0.85 to 0.02 over the PRISM range. G140H / G235H / G395H
-    use the M grating with the same filter. Header card `PFSHUT` names the shutter model
-    (`geomT-2026-11-03b`).
-  - The bar-shadow misfit drops from 0.061 / 0.035 / 0.043 / 0.082 to 0.011 / 0.018 / 0.013 /
-    0.014 (PRISM / G140M / G235M / G395M). Stars near a shutter edge are fitted 0.7 % worse in
-    median chi2 than with the hard edge (1.8 % with the split left free in the fit).
-  - Fluxes move: the median over bright p1 sources is 0.1-0.4 % lower on the PRISM and 0.1-0.7 %
-    lower on G395M, and sources near a shutter edge move by a few percent (integrated per source
-    0.984-1.014; measured with the split free, to be remeasured on the p1 rerun). Fits are about
-    30 % slower.
-
-- **NIRSpec profile fit: the PRISM through a diffraction model of the MSA (`FIT_VERSION` 6).**
-  For the PRISM the Gaussian PSF tables and the smooth shutter give way to a physical model in
-  the slit direction (`nirspec/optics.py`): the telescope's field at the MSA (pupil amplitude
+- **NIRSpec profile fit: every disperser through a diffraction model of the MSA (`FIT_VERSION` 6).**
+  The released two-Gaussian PSF with its hard shutter edge gives way to one physical model in the
+  slit direction for every disperser (`nirspec/optics.py`; the unreleased FIT_VERSION 4 and 5,
+  Gaussian PSF tables with a smooth shutter, are the comparison below and are dropped with their
+  fitting code): the telescope's field at the MSA (pupil amplitude
   (1 - u^2)^0.25), cut by the open shutters, the spectrograph's pupil stop (0.996 of the
   telescope pupil's image) removing the light diffracted at the shutter edges, a detector blur of
   0.034" - 0.0026"/um (lambda - 3 um), row integration; before the shutter an empirical kernel
@@ -127,25 +75,35 @@ Release procedure: edit the `## Unreleased` section below, then run
     single frames. The core of a bright star is broader (charge spreading: 0.02-0.03 slit units
     of extra width above peak S/N 63, below 2.6 um), so the kernel is the faint stars' core and
     each source's free width takes up the rest; brighter stars enter the kernel fit with their own
-    width. Shipped as `data/nirspec_optics.json` (`PFOPTIC` names it, `prism-2026.11-w2`).
+    width. Shipped as `data/nirspec_optics.json` (`PFOPTIC` names it, `2026.11-w2`).
   - Star stack, free centres and widths: NGC 2506 14 of 14 ranges within 1 % (median worst
     0.44 %; FIT_VERSION 5 10 of 14, 0.76 %), the original stars 12 of 14 (0.75 %; 5: 12 of 14,
     0.68 %, fitted on them). The red shoulder of FIT_VERSION 5 on NRS2 (-1.5 % at 3.3-5.3 um) is
     gone.
-  - Fluxes move. The same star at different positions in its shutter (calibration programs,
-    49 visits) scatters by 11.5 / 8.4 / 7.6 / 12.0 / 15.5 % in five bands from 0.6 to 5.3 um
-    (FIT_VERSION 5: 27.8 / 25.4 / 21.8 / 15.0 / 16.6 %). On the 20 brightest p1 PRISM sources,
+  - Fluxes move. The same star at different positions in its shutter scatters by 11.5 / 8.4 /
+    7.6 / 12.0 / 15.5 % in five bands from 0.6 to 5.3 um (calibration programs, 49 visits;
+    FIT_VERSION 5: 27.8 / 25.4 / 21.8 / 15.0 / 16.6 %), and on 93 NGC 2506 stars (245 visits,
+    shared wavelengths) by 7.0 / 12.2 / 6.3 / 7.3 / 12.6 % (FIT_VERSION 5: 18.3 / 19.3 / 17.9 /
+    12.9 / 13.2 %, rising by about 7 % per 0.1 slit units off centre; now no trend with the
+    position along the slit). On the 20 brightest p1 PRISM sources,
     centred ones come out 1.006 / 1.011 / 1.023 / 1.024 / 1.016 x their FIT_VERSION 5 flux (the
     wide light the old PSF lacked), sources 0.2-0.4 pitch off centre 0.93 / 0.99 / 1.06 / 1.12 /
     1.25 x; chi2 0.3-0.7 % lower.
-  - PRISM source positions are in slit-frame units (1.15 x SRCYPOS; `profile_fit.source_position`,
+  - Source positions are in slit-frame units (1.15 x SRCYPOS; `profile_fit.source_position`,
     `Exposure.src_y_jwst` keeps jwst's). The throughput keeps jwst's point path loss level and its
     along-dispersion dependence, with its slit-direction dependence replaced by the model's
     (`optics.jwst_point_y_ratio`, from the path-loss reference the cal file names).
+  - The gratings take the same model: the light before the shutter is the same, the G395M bar
+    shadow fits the PRISM numbers (misfit 0.017; its own table 0.016), and on the 6642 obs 2 stars
+    the six gratings fit with chi2 within -5 to +3 % of their FIT_VERSION 5 tables in 18 of 20
+    detector-ranges; G140H on NRS2 above 1.4 um fits worse (+7 %, +22 %; its stars' cores are
+    sharper than the shared kernel).
   - Tables (one per open-shutter pattern and detector, about a minute each) are built on first use
-    and cached under `$CAMPFIRE_ROOT/cache/optics`, memory-mapped across workers. Other dispersers
-    keep FIT_VERSION 5 unchanged (G395M: the bar shadow fits the PRISM numbers as well, misfit
-    0.017, but its calibration stars are too faint to test the kernel).
+    and cached under `$CAMPFIRE_ROOT/cache/optics`, memory-mapped across workers.
+  - Removed: the PSF and shutter tables (`data/nirspec_profile_psf.json`,
+    `data/nirspec_shutter_transmission.json`), the code that fitted them (`psf_calibration`) and
+    the `PFSHUT` header card. `nirspec/optics_calibration.py` fits calibration stars through the
+    model and runs the stack test.
 
 - **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
   run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint

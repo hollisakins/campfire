@@ -1,16 +1,16 @@
 """Tests for the diffraction model of the MSA (``nirspec.optics``, FIT_VERSION 6) and its use in the
 profile fit. The physics was validated on calibration stars (design doc); these lock the engine's
-arithmetic, the table cache, which exposures take the model, and the model's wiring into
-``ProfileModel`` (through a small analytic stand-in, so no table is built)."""
+arithmetic, the table cache, the model every exposure takes, and the model's wiring into
+``ProfileModel`` (through the closed-form stand-in, ``optics_standin``, so no table is built)."""
 
 import numpy as np
 import pytest
-from scipy.special import erf
 
 from campfire_pipeline.nirspec import optics as O
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec.constants import MSA_SLIT_PITCH
 
+from optics_standin import Analytic
 from test_nirspec_profile_fit import DY, NX, NY, TRUTH, _exposures, _spectrum
 
 
@@ -110,55 +110,31 @@ def test_kernel_spreads_the_image(small_grids, tmp_path):
 # ---------------------------------------------------------------------------
 # which exposures take the model
 # ---------------------------------------------------------------------------
-def test_prism_takes_the_model_and_gratings_do_not(optics_model):
-    assert O.optics_for('PRISM/CLEAR', 'NRS1') is not None
-    assert O.optics_for('PRISM/CLEAR', 'nrs2') is not None
-    assert O.optics_for('G395M/F290LP', 'NRS1') is None
+def test_every_disperser_takes_the_shipped_model(optics_model):
+    shipped = O.load_optics()
+    assert set(shipped) == {'version', 'NRS1', 'NRS2'}
+    assert O.optics_for('nrs2').params == shipped['NRS2'].params
     exps = _exposures()
-    assert PF.model_optics(exps) is not None
-    assert PF.model_optics(exps, optics=False) is None
-    assert PF.model_optics(exps, shutter=PF.SHUTTER) is None          # calibrating the shutter tables
-    for e in exps:
-        e.grating = 'G395M/F290LP'
-    assert PF.model_optics(exps) is None
+    for grating in ('PRISM/CLEAR', 'G395M/F290LP', 'G140H/F100LP'):
+        for e in exps:
+            e.grating = grating
+        assert PF.model_optics(exps) == [O.optics_for('NRS1')] * 3
+    mine = [Analytic()] * 3
+    assert PF.model_optics(exps, optics=mine) == mine               # a model being calibrated
 
 
-def test_positions_in_slit_units_for_the_model(optics_model):
-    assert PF.source_position(0.2, 'PRISM/CLEAR', 'NRS1') == pytest.approx(0.2 * MSA_SLIT_PITCH)
-    assert PF.source_position(0.2, 'G395M/F290LP', 'NRS1') == pytest.approx(0.2)
+def test_positions_in_slit_units():
+    assert PF.source_position(0.2) == pytest.approx(0.2 * MSA_SLIT_PITCH)
 
 
-def test_tests_run_the_tables_by_default():
-    assert O.optics_for('PRISM/CLEAR', 'NRS1') is None
-    assert PF.ProfileModel(_exposures()).optics is None
+def test_tests_run_the_standin_by_default():
+    assert isinstance(O.optics_for('NRS1'), Analytic)
+    assert all(isinstance(o, Analytic) for o in PF.ProfileModel(_exposures()).optics)
 
 
 # ---------------------------------------------------------------------------
 # wiring into the profile fit (an analytic stand-in for the tables)
 # ---------------------------------------------------------------------------
-class Analytic:
-    """A Gaussian PSF of SIGMA (slit units) cut by the open shutters (hard edges, no diffraction)."""
-    SIGMA = 0.12
-
-    def _s(self, width):
-        return np.sqrt(self.SIGMA ** 2 + np.asarray(width, float) ** 2)
-
-    def image(self, mask, y, lam, centre, width):
-        y, lam, centre, width = np.broadcast_arrays(y, lam, centre, width)
-        s = self._s(width)
-        g = np.exp(-0.5 * ((y - centre) / s) ** 2) / (np.sqrt(2 * np.pi) * s)
-        inside = np.zeros(y.shape, bool)
-        for k in mask:
-            inside |= np.abs(y - k * MSA_SLIT_PITCH) < PF.OPEN_HALF
-        return g * inside * O.DY_ROW
-
-    def transmission(self, mask, lam, centre, width):
-        lam, centre, width = np.broadcast_arrays(lam, centre, width)
-        s = self._s(width) * np.sqrt(2)
-        return sum(0.5 * (erf((k * MSA_SLIT_PITCH + PF.OPEN_HALF - centre) / s)
-                          - erf((k * MSA_SLIT_PITCH - PF.OPEN_HALF - centre) / s)) for k in mask)
-
-
 def test_model_image_and_throughput_from_the_optics(monkeypatch):
     exps = _exposures(src_y=0.1)
     for e in exps:
@@ -194,4 +170,4 @@ def test_fit_through_the_optics_recovers_shape_and_flux(monkeypatch):
     assert R.params['width'] == pytest.approx(TRUTH['width'], abs=0.02)
     good = np.isfinite(R.flux) & (R.lam > 1.0) & (R.lam < 4.8)
     assert np.median(R.flux[good] / (200 * _spectrum(R.lam[good]))) == pytest.approx(1.0, abs=0.01)
-    assert PF.optics_version(R.model) == O.version()
+    assert PF.optics_version() == O.version()

@@ -85,7 +85,6 @@ def scan_input(exps, chain_result, maps, source_id):
         return None, share
     M0 = chain_result.model
     M = PF.ProfileModel(ex, chromatic=M0.chromatic, priors=M0.priors, bounds=M0.bounds_cfg, c_prior=M0.c_prior,
-                        psf_tables=M0.psf_tables, shutter=M0.shutter,
                         grid=M0.lam_grid)
     M.pivot = M0.pivot                       # the chain's shape is defined at its own pivot
     p = chain_result.params

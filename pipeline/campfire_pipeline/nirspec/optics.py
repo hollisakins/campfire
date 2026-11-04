@@ -1,5 +1,5 @@
-"""Diffraction model of the MSA in the slit direction: the profile fit's PSF and shutter for
-dispersers with a calibrated kernel (FIT_VERSION 6; PRISM).
+"""Diffraction model of the MSA in the slit direction: the profile fit's PSF and shutter for every
+disperser (FIT_VERSION 6).
 
 A point source at slit position c: the telescope's field at the MSA is the Fourier transform of
 its pupil, whose amplitude across the slit direction is (1 - u^2)^ALPHA (u the pupil coordinate
@@ -13,9 +13,10 @@ Before the shutter, each point is spread by an empirical kernel: a non-negative 
 offsets (31 points within +-2 slit units) per detector at the centres of the calibration's
 wavelength ranges, linear in ln(lambda) between them (the telescope's wavefront error and pointing
 jitter, which uniform light does not feel). The kernel and the diffraction numbers were fitted to
-the calibration stars' nod differences and master-background single frames
-(``data/nirspec_optics.json``; the scratch prototype and its tests are in the design doc,
-docs/design-nirspec-pipeline-v2.md).
+the PRISM calibration stars' nod differences and master-background single frames
+(``data/nirspec_optics.json``; the tests are in the design doc, docs/design-nirspec-pipeline-v2.md).
+The gratings use the same model: the light before the shutter is the same, and the gratings' bar
+shadow and calibration stars fit it as well as their own tables did.
 
 A Gaussian source of width w (the profile fit's galaxy) is the sum of point images across it:
 for w <= W_COMPACT exactly over the tables interpolated linearly in source position
@@ -313,16 +314,14 @@ _MODELS = {}
 
 
 def load_optics(path=OPTICS_FILE):
-    """{'version': str, disperser: {detector: Optics}} from the model file (layout: 'meta'
-    with 'version'; per disperser 'diffraction' (rho, s0, s1, alpha) and a kernel per detector)."""
+    """{'version': str, detector: Optics} from the model file (layout: 'meta' with 'version',
+    'diffraction' (rho, s0, s1, alpha) and a kernel per detector)."""
     with open(path) as fh:
         raw = json.load(fh)
+    d = raw['diffraction']
     out = {'version': str(raw.get('meta', {}).get('version', '?'))}
-    for name, t in raw.items():
-        if name == 'meta':
-            continue
-        d = t['diffraction']
-        out[name] = {det: Optics(d['rho'], d['s0'], d['s1'], d['alpha'], t[det]) for det in ('NRS1', 'NRS2') if det in t}
+    for det in ('NRS1', 'NRS2'):
+        out[det] = Optics(d['rho'], d['s0'], d['s1'], d['alpha'], raw[det])
     return out
 
 
@@ -332,11 +331,9 @@ def models():
     return _MODELS['default']
 
 
-def optics_for(grating, detector):
-    """The Optics of an exposure's grating ('PRISM/CLEAR') and detector, or None when the
-    disperser has no calibrated model (it keeps the FIT_VERSION 5 PSF and shutter)."""
-    d = str(grating).split('/')[0].strip().lower()
-    return models().get(d, {}).get(str(detector).upper())
+def optics_for(detector):
+    """The shipped model of an exposure's detector ('NRS1' / 'NRS2')."""
+    return models()[str(detector).upper()]
 
 
 def version():

@@ -164,8 +164,7 @@ class ChainResult:
         p = self.result.params
         c = {
             'PFVER': (PF.FIT_VERSION, 'Profile-fit model version'),
-            'PFSHUT': (PF.SHUTTER['version'], 'Shutter model: geometric, smooth transmission'),
-            'PFOPTIC': (PF.optics_version(self.result.model), 'Diffraction model (none: PSF and shutter)'),
+            'PFOPTIC': (PF.optics_version(), 'Diffraction model of the MSA (data/nirspec_optics.json)'),
             'PFSHAPE': (self.shape, 'Shape used: own / prism / default'),
             'PFCHAIN': (self.chain, 'Shape chain: gated / free / fixed'),
             'PFREASON': (self.reason[:68], 'Why this shape'),

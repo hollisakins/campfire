@@ -1269,8 +1269,8 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
     - G395M. The PRISM diffraction numbers fit the G395M bar-shadow tables with misfit 0.017
       (PRISM 0.016); refitted to G395M, no better (`barshadow_g395m.py`). The same 6642 stars in
       G395M (`test_g395m.py`) are too faint for the kernel: 4-7 stars per range at peak S/N >= 8;
-      chi2 equal to the shipped model's (median ratio 0.98-1.00), stacks within their noise. The
-      gratings keep FIT_VERSION 5 until bright grating stars test the kernel.
+      chi2 equal to the shipped model's (median ratio 0.98-1.00), stacks within their noise. (The
+      gratings first kept FIT_VERSION 5; since 2026-11-04 they take the same model, below.)
     - Pipeline (FIT_VERSION 6, approved by the user 2026-11-03). `nirspec/optics.py`: the engine,
       `Optics` per disperser and detector, tables cached under `$CAMPFIRE_ROOT/cache/optics`
       (keyed by the model's numbers and the kernel, built under a lock file, memory-mapped),
@@ -1292,14 +1292,56 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
         over 5, median per band 0.6-1 / 1-1.8 / 1.8-3 / 3-4.2 / 4.2-5.3 um: centred sources
         (|SRCYPOS| < 0.2, 12) 1.006 / 1.011 / 1.023 / 1.024 / 1.016; off centre (8) 0.93 / 0.99 /
         1.06 / 1.12 / 1.25; chi2/dof 0.3-0.7 % lower.
+    - One model for every disperser (user, 2026-11-04: "gratings should not be on a different
+      version"). `optics.optics_for(detector)`; the model file has one `diffraction` block and a
+      kernel per detector (version `2026.11-w2`, same numbers). Removed: the PSF and shutter
+      tables, `psf_calibration` and its tests, `PFSHUT`; the FIT_VERSION 4 / 5 CHANGELOG entries
+      folded into FIT_VERSION 6's (never released). `nirspec/optics_calibration.py` keeps the star
+      loading, the per-range star fit through the model (centre, drift, exposure offsets and width
+      free) and the stack test (`stack` / `score`). Tests run a closed-form stand-in
+      (`tests/optics_standin.py`) unless they ask for the shipped model.
+      - Gratings on 6642 obs 2 (`test_gratings.py`, `grat_w2/`, figure `final_gratings.png`):
+        the shared model against each grating's FIT_VERSION 5 tables, chi2/dof ratio per
+        detector-range 0.95-1.03 in 18 of 20 ranges (3-7 stars each, peak S/N >= 20); worst
+        stacked residual 0.8-2.0 % against 0.7-1.9 %. G140H NRS2 above 1.4 um fits worse (1.07,
+        1.22; worst residual 3.2 %): those stars' cores are sharper than the PRISM kernel and the
+        free width can only broaden it. The FIT_VERSION 5 tables lack the red wings there as on the
+        PRISM (G235M NRS2 3 um).
+      - Check 1 on NGC 2506 (`check1_ngc2506.py`, `check1_ngc_spec.py`; 93 stars in two or more of
+        the ten configurations, 245 visits, each visit against the star's most central one on the
+        wavelengths both cover; saturated and gap-split bands left out; figure `final_check1.png`):
+        clipped scatter 7.0 / 12.2 / 6.3 / 7.3 / 12.6 % in 0.7-1 / 1-1.5 / 1.5-2.5 / 2.5-3.5 /
+        3.5-5 um, no trend with the position along the slit (correlation <= 0.13). FIT_VERSION 5 on
+        the same frames: 18.3 / 19.3 / 17.9 / 12.9 / 13.2 %, flux rising with distance from the
+        shutter centre by 4-7 % per 0.1 slit units (correlation 0.41-0.49) below 3.5 um.
+      - The along-dispersion loss (jwst's point path loss, x dependence). At 3.5-5 um jwst's table
+        under-corrects off-centre stars: -47 % per unit SRCXPOS (correlation -0.51; a star 0.3 of
+        the x pitch off centre comes out ~14 % low); below 2.5 um no trend. The diffraction model
+        in x (one open shutter of half-width HX, the pupil, the stop, the slit-direction kernel
+        and an extra blur SX, the acquisition / astrometry error) fits the whole sample best at HX
+        0.110", SX ~0.03" (`xfit.py`; clipped scatter 9.3 -> 7.9 %, the red trend gone), but fitted
+        on half the stars it predicts the other half worse than jwst's table (9.9 / 9.8 % against
+        9.5 / 7.4 %); only 3.5-5 um improves in both halves (12.7 -> 10.4, 12.5 -> 10.8 %). On the
+        12497 stars it is neutral. Not adopted: jwst's x dependence stays.
+      - jwst's path loss in the fit: stage 2 types every source as a point source
+        (`set_stellarity = 1.0`), so jwst's point / uniform choice never applies to a science
+        source; the fit divides the applied correction out of the data and keeps only jwst's
+        point table's level at the shutter centre (0.98-1.00, paired with the photom calibration)
+        and its x dependence. The cal / s2d files and the 3-pixel boxcar still carry jwst's point
+        correction at the planned position.
+      - Galaxies (`fig_final_galaxies.py`, `final_galaxies.png`): three p1 PRISM sources (compact
+        centred, wide, 0.45 off centre) and two G395M sources fit with chi2/dof 0.94-1.14, noise-
+        like residuals in the continuum; emission lines leave residuals where the line emission
+        sits differently from the continuum (one shape for both).
     - Open. The bar shadow of uniform light is the alpha 0.25 diffraction's (misfit 0.016 against
-      the shipped edge transmission's 0.011), which matters for wide galaxies, and the blur it
-      wants is larger than the stars allow; the model's wide light at 4-5.2 um is 2.1 % against
-      about 1.6 %. The blue core of 4465's star. The dispersion-direction loss. A kernel test on
-      bright grating stars. The fit of a faint star can fall into a second minimum (2401 in check
-      1). Fit time for wide galaxies.
-  - **Open (shipped shutter model).** The blue end against jwst's point loss; check 1's edge-star excess. (The held-out
-    check of the bar-shadow tables is done, section 3.2.)
+      the FIT_VERSION 5 edge transmission's 0.011), which matters for wide galaxies, and the blur
+      it wants is larger than the stars allow; the model's wide light at 4-5.2 um is 2.1 % against
+      about 1.6 %. The along-dispersion loss at 3.5-5 um. G140H NRS2 cores (a per-disperser
+      after-shutter blur or kernel, needs more bright grating stars). The blue core of 4465's
+      star. The fit of a faint star can fall into a second minimum (2401 in check 1). Fit time
+      for wide galaxies. The kernel calibration (`fit_kernel_ranges.py`, `fit_kernel_linear.py`,
+      `freew.py`) is still scratch on the old module: port it to `optics_calibration`. The
+      centre law and nod law were measured with the old PSF: remeasure under the model.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in

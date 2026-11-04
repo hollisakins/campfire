@@ -2,13 +2,11 @@
 
 Synthetic three-nod slitlets on a common detector frame: the slitlet is fixed on
 the detector and the source moves one shutter between nods, as in a real
-3-shutter nod pattern. Data are generated with the module's own image model from a
-known shape and spectrum, so these tests lock the solver, the priors and the
-nod bookkeeping; the physics is validated on real data separately.
+3-shutter nod pattern. Data are generated with the module's own image model (the
+diffraction model's closed-form stand-in, ``optics_standin``) from a known shape and
+spectrum, so these tests lock the solver, the priors and the nod bookkeeping; the
+physics is validated on real data separately.
 """
-
-import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -305,94 +303,11 @@ def test_fit_recovers_flux_when_a_partner_lacks_the_source():
     good = np.isfinite(F.flux) & (F.lam > 1.0) & (F.lam < 4.8)
     assert abs(np.median(F.flux[good] / (100.0 * _spectrum(F.lam[good]))) - 1) < 0.02
     assert F.chi2_red < 1.2
-    # the old behaviour (the placeholder frame treated as containing the source) cannot fit these data
+    # the old behaviour (the placeholder frame treated as containing the source) cannot fit these
+    # data: chi2/dof ~1.7 over ~3000 pixels
     exps[2].has_source = True
     B = PF.fit(exps, chromatic=False)
-    assert B.chi2_red > 2 * F.chi2_red
-
-
-# ---------------------------------------------------------------------------
-# general PSF (psf_components): the shipped table, read and written out independently
-# ---------------------------------------------------------------------------
-PSF_FILE = Path(PF.__file__).parent.parent / 'data' / 'nirspec_profile_psf.json'
-SHUTTER_FILE = Path(PF.__file__).parent.parent / 'data' / 'nirspec_shutter_transmission.json'
-
-
-def _image_written_out(M, p, k, y, lam, dy):
-    """The image formula for the shipped PSF and shutter files, written out: per component,
-    the galaxy convolved with half its variance before the shutter, clipped by the open shutters
-    (+-0.50 about their centres moved by the shift) times the transmission
-    T = 1 - (1 - tedge) x^8, blurred by the other half after it; offsets before or after the
-    shutter; the component without a share takes the remainder."""
-    sh = json.loads(SHUTTER_FILE.read_text())['prism']             # the exposures are PRISM
-    shift, tedge = (np.interp(lam, sh['lam'], sh[key]) for key in ('shift', 'tedge'))
-    after = 0.5
-    raw = json.loads(PSF_FILE.read_text())[M.exps[k].detector]
-    comps = []
-    for c in raw['components']:
-        comps.append(dict(sigma=np.interp(lam, raw['lam'], c['sigma']),
-                          frac=np.interp(lam, raw['lam'], c['frac']) if 'frac' in c else None,
-                          offset=np.interp(lam, raw['lam'], c['offset']) if 'offset' in c else 0.0,
-                          pre=c.get('pre', True)))
-    rest = 1.0 - sum(c['frac'] for c in comps if c['frac'] is not None)
-    c0 = M.centre(p, np.zeros(len(M.exps)), k, lam)
-    w = M.width(p, lam)
-    iv = [(kk * 1.15 + shift - 0.5, kk * 1.15 + shift + 0.5) for kk in M.exps[k].open_k]
-    acc = 0.0
-    for xi, wi in zip(PF._GLX, PF._GLW):
-        yy = y + 0.5 * dy * xi
-        for c in comps:
-            before = c['sigma'] * dy * np.sqrt(1.0 - after)
-            past = c['sigma'] * dy * np.sqrt(after)
-            off = c['offset'] * dy
-            fr = rest if c['frac'] is None else c['frac']
-            if c['pre']:
-                acc = acc + wi * fr * PF._clipblur(yy, c0 + off, np.sqrt(before ** 2 + w ** 2), past, iv, tedge)
-            else:
-                acc = acc + wi * fr * PF._clipblur(yy - off, c0, np.sqrt(before ** 2 + w ** 2), past, iv, tedge)
-    return 0.5 * dy * acc
-
-
-def test_default_model_is_the_shipped_psf_and_shutter():
-    exps = _exposures(src_y=0.12)
-    M = PF.ProfileModel(exps)
-    p = np.array([0.12, 0.01, np.log(0.08), 0.0])
-    for k in range(3):
-        e = exps[k]
-        y, lam, dy = e.y.ravel(), e.wav.ravel(), e.dy.ravel()
-        assert np.allclose(M.image(p, np.zeros(3), k, y, lam, dy), _image_written_out(M, p, k, y, lam, dy),
-                           rtol=1e-12, atol=1e-15)
-    # three components, the wing and the shoulder displaced after the shutter, over 0.6-5.3 um
-    comps = PF.psf_components(np.array([0.6, 2.0, 5.3]), 'NRS2')
-    assert len(comps) == 3 and [c['pre'] for c in comps[1:]] == [False, False]
-    assert np.allclose(sum(c['frac'] for c in comps), 1.0)
-    for det in ('NRS1', 'NRS2'):
-        assert PF.PSF_TABLES[det]['lam'][0] <= 0.6 and PF.PSF_TABLES[det]['lam'][-1] >= 5.3
-
-
-def test_general_psf_components_offsets_and_split():
-    """A component's offset moves its light; before the shutter it is clipped there, after
-    it the light lands beyond the shutter edge."""
-    exps = _exposures(src_y=0.0)
-    p = np.array([0.0, 0.0, np.log(PF.W_FLOOR), 0.0])
-    one = lambda off, pre: {'NRS1': dict(lam=[0.5, 6.0], components=[dict(sigma=0.4, offset=off, pre=pre)])}
-    lam = np.full(400, 2.0)
-    dy = np.full(400, DY)
-    y = np.linspace(-2.0, 2.0, 400)
-    for pre in (True, False):
-        M = PF.ProfileModel(exps, psf_tables=one(1.0, pre))
-        im = M.image(p, np.zeros(3), 0, y, lam, dy)
-        assert abs(np.sum(im * y) / np.sum(im) - 1.0 * DY) < 0.01      # light centred one row towards +y
-    # a source at the top edge of its shutter: an offset before the shutter is clipped, after it is not
-    t_pre = PF.ProfileModel(exps, psf_tables=one(1.5, True)).transmission(
-        np.array([0.4, 0.0, np.log(PF.W_FLOOR), 0.0]), np.zeros(3), 0, lam[:1], dy[:1], aperture=(0,), centre=0.4)
-    t_post = PF.ProfileModel(exps, psf_tables=one(1.5, False)).transmission(
-        np.array([0.4, 0.0, np.log(PF.W_FLOOR), 0.0]), np.zeros(3), 0, lam[:1], dy[:1], aperture=(0,), centre=0.4)
-    assert t_pre[0] < t_post[0]
-    comps = PF.psf_components(np.array([1.0, 3.0]), 'NRS1', {'NRS1': dict(lam=[0.6, 5.3], components=[
-        dict(sigma=[0.3, 0.6]), dict(sigma=1.0, frac=[0.2, 0.4], offset=0.5, pre=False)])})
-    assert np.allclose(comps[0]['frac'] + comps[1]['frac'], 1.0)
-    assert comps[1]['pre'] is False and np.allclose(comps[1]['offset'], 0.5)
+    assert B.chi2_red > 1.5 * F.chi2_red
 
 
 # ---------------------------------------------------------------------------
