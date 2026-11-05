@@ -22,6 +22,9 @@ OUT_DIRS = {'docs': os.path.join(REPO, 'web', 'public', 'docs', 'nirspec'),
 
 # Okabe-Ito: distinguishable with the common forms of color blindness, in a fixed order.
 PALETTE = ['#0072B2', '#E69F00', '#009E73', '#CC79A7', '#56B4E9', '#D55E00', '#F0E442', '#000000']
+# Wavelength colors, blue to red, the same in every figure that compares wavelengths: 1, 3, 5 µm (or the
+# nearest the figure uses). Kept apart from the colors that mark kinds of source or of model.
+WAVE_COLORS = ['#0072B2', '#009E73', '#D55E00']
 INK = '#222222'
 MUTED = '#777777'
 

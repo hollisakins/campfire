@@ -2,24 +2,26 @@
 
 The profile fit's model of the MSA (``nirspec/optics.py``) follows the light of a point source through
 three steps, drawn here top to bottom for a source sitting off center in its shutter, at a blue and a
-red wavelength:
+red wavelength in the same panels:
 
-1. the telescope's image of the source as it arrives at the MSA (wider in the red: diffraction);
-2. the part of it the open shutters let through (the bars and the closed shutters beyond the slitlet
-   block the rest);
-3. what reaches the detector: cutting the image at the shutter edges spreads light sideways, the
-   spectrograph's pupil stop removes the part spread furthest, and the detector blurs the rest.
+1. the telescope's diffraction pattern at the MSA: the image of a point source through the telescope's
+   pupil (its amplitude across the slit direction tapered as (1 - u^2)^0.25, fitted), wider in the red;
+2. the part of it the MSA's open shutters transmit: the image cut sharply at the shutter edges (the
+   bars and the closed shutters beyond the slitlet block the rest);
+3. what reaches the detector: the sharp cut diffracts light sideways, the spectrograph's pupil stop
+   (0.996 of the telescope pupil's image) removes the part diffracted furthest, the detector blurs
+   the rest (a Gaussian of 0.034" - 0.0026" per micron from 3 µm) and sums it in 0.1" pixels.
 
-The fitted numbers of steps 1 and 3 (pupil shape, stop size, detector blur) come from calibration
-stars and empty shutters (``data/nirspec_optics.json``). An empirical blur before the shutter
-(telescope wavefront error and pointing jitter) is applied on top and is left out here.
+The fitted numbers come from calibration stars and empty shutters (``data/nirspec_optics.json``). An
+empirical blur before the shutter (telescope wavefront error and pointing jitter) is applied on top in
+the pipeline and is left out here.
 
     python scripts/docs/nirspec/fig_optics_steps.py --root <root>
 """
 import common as C
 
 p = C.parser(__doc__.splitlines()[0], obs=False)
-p.add_argument('--wavelengths', type=float, nargs=2, default=[1.2, 4.5], help='µm, blue and red')
+p.add_argument('--wavelengths', type=float, nargs=2, default=[1.0, 5.0], help='µm, blue and red')
 p.add_argument('--position', type=float, default=0.3, help='source position, shutter widths from the center')
 args = p.parse_args()
 C.setup_root(args.root)
@@ -49,53 +51,40 @@ def arriving(lam):
     return inten / inten.sum() / (y[1] - y[0])
 
 
-xlim = (-0.95, 0.95)
-fig, axes = plt.subplots(3, 2, figsize=(10.5, 7.6), sharex=True, constrained_layout=True)
-for col, lam in enumerate(args.wavelengths):
+curves = {}
+for lam in args.wavelengths:
     a = arriving(lam)
-    passed = a * mask
     det, frac = O.point_image(c, lam, shutters, par['rho'], max(par['s0'] + par['s1'] * (lam - 3.0), 1e-4),
                               par['alpha'], y, f)
-    det = O.row_integrate(y, det)
-    top = a.max() * 1.12
-    color = C.PALETTE[0] if col == 0 else C.PALETTE[5]
-    for row, (ax, curve, title) in enumerate(zip(
-            axes[:, col],
-            (a, passed, det),
-            ('1. arriving at the shutters', '2. let through by the open shutters',
-             '3. reaching the detector (blurred and summed in 0.1" detector pixels)'))):
-        # the MSA: bars between the open shutters, closed shutters beyond them
-        for k in (-1.5, -0.5, 0.5, 1.5):
-            lo, hi = k * O.PITCH_AS - (O.PITCH_AS / 2 - O.H_OPEN), k * O.PITCH_AS + (O.PITCH_AS / 2 - O.H_OPEN)
-            ax.axvspan(lo, hi, color='#d9d9d9', lw=0, zorder=0)
-        for side in (-1, 1):
-            ax.axvspan(side * (1.5 * O.PITCH_AS + (O.PITCH_AS / 2 - O.H_OPEN)), side * 2.0, color='#d9d9d9',
-                       lw=0, zorder=0)
-        if row == 2:
-            ax.plot(y, passed, color=C.MUTED, lw=1.0, ls='--', label='step 2, for comparison')
-        ax.fill_between(y, 0, curve, color=color, alpha=0.25, lw=0)
-        ax.plot(y, curve, color=color, lw=1.8)
-        ax.set_ylim(0, top)
-        ax.set_xlim(*xlim)
-        ax.set_yticklabels([])
-        ax.set_title(title if col == 0 else '', fontsize=11)
-        if row == 0:
-            ax.text(0.99, 0.95, f'{lam:g} µm', transform=ax.transAxes, ha='right', va='top', fontsize=12,
-                    fontweight='bold', color=color)
-        if row == 1:
-            ax.text(0.99, 0.95, f'{100 * passed.sum() * (y[1] - y[0]):.0f}% of the light gets through',
-                    transform=ax.transAxes, ha='right', va='top', fontsize=9.5)
-        if row == 2:
-            ax.text(0.99, 0.95, f'{100 * frac:.0f}% reaches the detector', transform=ax.transAxes, ha='right',
-                    va='top', fontsize=9.5)
-            ax.legend(loc='upper left', fontsize=8.5)
-    axes[-1, col].set_xlabel('position along the slit (arcsec)')
-for ax in axes[:, 0]:
-    ax.set_ylabel('light per arcsec')
-axes[0, 0].text(0.94, 0.5 * axes[0, 0].get_ylim()[1], 'closed\nshutter', ha='right', fontsize=8.5,
-                color=C.MUTED)
-axes[0, 0].text(0.5 * O.PITCH_AS, 0.75 * axes[0, 0].get_ylim()[1], 'bar', ha='center', fontsize=8.5,
-                color=C.MUTED)
+    curves[lam] = (a, a * mask, O.row_integrate(y, det), frac)
+
+titles = ('1. Arriving at the MSA: the telescope\'s diffraction pattern',
+          '2. Transmitted by the MSA shutters: a sharp cut at the shutter edges',
+          '3. Reaching the detector: edge diffraction partly lost at the pupil stop, detector blur, 0.1" pixels')
+fig, axes = plt.subplots(3, 1, figsize=(9.5, 8.2), sharex=True, constrained_layout=True)
+top = 1.12
+for row, (ax, title) in enumerate(zip(axes, titles)):
+    for k in (-1.5, -0.5, 0.5, 1.5):                                 # the bars, and closed shutters beyond
+        lo, hi = k * O.PITCH_AS - (O.PITCH_AS / 2 - O.H_OPEN), k * O.PITCH_AS + (O.PITCH_AS / 2 - O.H_OPEN)
+        ax.axvspan(lo, hi, color='#d9d9d9', lw=0, zorder=0)
+    for side in (-1, 1):
+        ax.axvspan(side * (1.5 * O.PITCH_AS + (O.PITCH_AS / 2 - O.H_OPEN)), side * 2.0, color='#d9d9d9', lw=0,
+                   zorder=0)
+    for lam, color in zip(args.wavelengths, (C.WAVE_COLORS[0], C.WAVE_COLORS[-1])):
+        a, passed, det, frac = curves[lam]
+        curve = (a, passed, det)[row] / a.max()                      # each wavelength in units of its step-1 peak
+        share = {0: None, 1: passed.sum() * (y[1] - y[0]), 2: frac}[row]
+        label = f'{lam:g} µm' + (f': {100 * share:.0f}% of the light' if share is not None else '')
+        ax.fill_between(y, 0, curve, color=color, alpha=0.18, lw=0)
+        ax.plot(y, curve, color=color, lw=1.8, label=label)
+    ax.set_ylim(0, top)
+    ax.set_xlim(-0.95, 0.95)
+    ax.set_ylabel('light per arcsec\n(1 = peak in step 1)')
+    ax.set_title(title, fontsize=10.5)
+    ax.legend(loc='upper left', fontsize=9)
+axes[0].text(0.5 * O.PITCH_AS, 0.82 * top, 'bar', ha='center', fontsize=8.5, color=C.MUTED)
+axes[0].text(0.94, 0.5 * top, 'closed\nshutter', ha='right', fontsize=8.5, color=C.MUTED)
+axes[-1].set_xlabel('position along the slit (arcsec)')
 fig.suptitle(f'A point source {args.position:g} shutter widths from the center of the middle shutter of a '
              'three-shutter slitlet', x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'optics_steps.png')
