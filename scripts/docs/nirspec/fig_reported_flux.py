@@ -21,6 +21,10 @@ p.add_argument('--catalog-db', default='~/campfire-data/meta/campfire.db',
 p.add_argument('--field', default='cosmos')
 p.add_argument('--bands', nargs='+', default=['f150w', 'f200w', 'f277w', 'f356w', 'f444w'])
 p.add_argument('--min-snr', type=float, default=10.0)
+p.add_argument('--aperture-json', default=None,
+               help="the catalog's aperture fluxes per source and band ({'diam': [...], 'sources': {sid: {band: "
+                    "{'aper': [...], 'auto': ...}}}}): compare with the 0.8\" aperture flux (linear in diameter) "
+                    'instead of the total (Kron) flux')
 args = p.parse_args()
 root = C.setup_root(args.root)
 
@@ -46,19 +50,39 @@ def photometry():
     return {int(t.rsplit('_', 1)[1]): json.loads(ph)['bands'] for t, ph in rows}
 
 
-def ratio(lam, f, e, bands):
+APER = None
+if args.aperture_json:
+    with open(os.path.expanduser(args.aperture_json)) as fh:
+        APER = json.load(fh)
+
+
+def reference_flux(sid, b, pb):
+    """The photometry the spectrum is compared with: the catalog's 0.8" aperture flux when an aperture file is
+    given (None when it has no entry), else the total flux."""
+    if APER is None:
+        return pb['flux']
+    rec = APER['sources'].get(str(sid), {}).get(b)
+    if not rec:
+        return None
+    return float(np.interp(0.8, APER['diam'], rec['aper']))
+
+
+def ratio(lam, f, e, bands, sid):
     out = []
     for b in args.bands:
         pb = bands.get(b)
         if not pb or not np.isfinite(pb.get('flux', np.nan)) or pb['flux'] <= 0 or \
                 pb['flux'] / pb['flux_err'] < args.min_snr:
             continue
+        ref = reference_flux(sid, b, pb)
+        if ref is None or not np.isfinite(ref) or ref <= 0:
+            continue
         s = (lam >= pb['wav_min']) & (lam <= pb['wav_max']) & np.isfinite(f)
         if s.sum() < 5 or lam[s].min() > pb['wav_min'] + 0.05 or lam[s].max() < pb['wav_max'] - 0.05:
             continue
         if np.mean(f[s]) / (np.sqrt(np.nansum(e[s] ** 2)) / s.sum()) < args.min_snr:
             continue
-        out.append(np.mean(f[s]) / pb['flux'])
+        out.append(np.mean(f[s]) / ref)
     return float(np.median(out)) if out else np.nan
 
 
@@ -73,8 +97,8 @@ for path in sorted(glob.glob(os.path.join(C.workspace(root, args.obs), f'{args.o
         if H.get('PFSHAPE') != 'own':                       # the fitted width is the source's own
             continue
         lam = np.asarray(t['wave'], float)
-        rep = ratio(lam, np.asarray(t['fnu'], float), np.asarray(t['fnu_err'], float), phot[sid])
-        opt = ratio(lam, np.asarray(t['fnu_opt'], float), np.asarray(t['fnu_opt_err'], float), phot[sid])
+        rep = ratio(lam, np.asarray(t['fnu'], float), np.asarray(t['fnu_err'], float), phot[sid], sid)
+        opt = ratio(lam, np.asarray(t['fnu_opt'], float), np.asarray(t['fnu_opt_err'], float), phot[sid], sid)
         w2 = max(H['PFWIDTH'] + H['PFDWIDTH'] * np.log2(2.0 / H['PFPIVOT']), 0.003) * SLIT
     if np.isfinite(rep) and np.isfinite(opt) and rep > 0 and opt > 0:
         rows.append((2.355 * w2, opt, rep))
@@ -122,8 +146,8 @@ for axis, ticks in ((b.xaxis, [0.03, 0.05, 0.1, 0.2, 0.5, 1.0]), (b.yaxis, [0.2,
     axis.set_major_locator(FixedLocator(ticks))
     axis.set_major_formatter(FormatStrFormatter('%g'))
     axis.set_minor_locator(NullLocator())
-b.set_xlabel('fitted source size at 2 µm (FWHM, arcsec)')
-b.set_ylabel('spectrum / imaging photometry')
+b.set_xlabel('fitted source size at 2 µm (FWHM of the fitted Gaussian, arcsec)')
+b.set_ylabel('spectrum / imaging photometry in a 0.8" aperture' if APER else 'spectrum / total imaging photometry')
 b.set_title(f'{len(fwhm)} galaxies with their own fitted shape')
 b.legend(loc='lower left', fontsize=8.5)
 fig.suptitle(f'{args.obs} {args.grating.split("_")[0].upper()}: what the reported flux means (photometry: '

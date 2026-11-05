@@ -22,7 +22,7 @@ import common as C
 
 p = C.parser(__doc__.splitlines()[0], obs=False)
 p.add_argument('--wavelengths', type=float, nargs=2, default=[1.0, 5.0], help='µm, blue and red')
-p.add_argument('--position', type=float, default=0.3, help='source position, shutter widths from the center')
+p.add_argument('--position', type=float, default=0.3, help='source position, shutter pitches from the center')
 args = p.parse_args()
 C.setup_root(args.root)
 
@@ -84,7 +84,7 @@ for row, (ax, title) in enumerate(zip(axes, titles)):
     ax.legend(loc='upper left', fontsize=9)
 axes[0].text(0.5 * O.PITCH_AS, 0.82 * top, 'bar', ha='center', fontsize=8.5, color=C.MUTED)
 axes[0].text(0.94, 0.5 * top, 'closed\nshutter', ha='right', fontsize=8.5, color=C.MUTED)
-axes[-1].set_xlabel('position along the slit (arcsec)')
-fig.suptitle(f'A point source {args.position:g} shutter widths from the center of the middle shutter of a '
+axes[-1].set_xlabel("position along the slit (arcsec; 0 = center of the source's shutter)")
+fig.suptitle(f'A point source {args.position * 0.53:.2f}" ({args.position:g} of a shutter pitch) from the center of the middle shutter of a '
              'three-shutter slitlet', x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'optics_steps.png')

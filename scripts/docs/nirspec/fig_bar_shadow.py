@@ -1,12 +1,11 @@
-"""How the MSA dims light across a shutter: the measured bar-shadow profile against the
+"""How the MSA dims light along a slitlet: the measured bar-shadow profile against the
 calibration reference.
 
 The MSA's bars and shutter edges block part of the light of a uniformly lit shutter, more
 toward its edges. CAMPFIRE measures that profile from the empty shutters of many
 observations (the background is the uniform light source) instead of using the CRDS
-reference. Left: an open shutter whose neighbors are closed. Right: the bar between two
-open shutters. Each at three wavelengths; solid lines are the measured profile, dashed lines
-the CRDS reference.
+reference. Shown for a slitlet of three open shutters at three wavelengths; solid lines are
+the measured profile, dashed lines the CRDS reference.
 
     python scripts/docs/nirspec/fig_bar_shadow.py --root <root> --disperser prism
 """
@@ -80,7 +79,7 @@ for k, wl in enumerate(waves):
 ax.axhline(1.0, color='#bbbbbb', lw=0.8, zorder=0)
 ax.set_xlim(-2, 2)
 ax.set_ylim(-0.03, 1.32)
-ax.set_xlabel('position across the slitlet (shutter widths from its center)')
+ax.set_xlabel('position along the slitlet (shutter pitches from its center)')
 ax.set_ylabel('transmission (1 = open shutter center)')
 ax.set_title('Bar shadow for a three-shutter slitlet')
 ax.legend(loc='upper center', ncol=3, fontsize=8.5, columnspacing=1.2, handlelength=2.2)

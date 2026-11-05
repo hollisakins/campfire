@@ -134,6 +134,6 @@ for r, ex in enumerate(args.example):
     ax.set_xlabel('count rate')
     ax.text(0.97, 0.02, f'columns {cs.start}-{cs.stop - 1}', transform=ax.transAxes, ha='right', va='bottom',
             fontsize=8.5, color=C.MUTED)
-fig.suptitle(f'{args.obs}: stuck shutter outlined in orange, the other shutters of its slitlet in blue',
+fig.suptitle(f'{args.obs}: closed shutter outlined in orange, the other shutters of its slitlet in blue',
              x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'stuck_shutters.png')

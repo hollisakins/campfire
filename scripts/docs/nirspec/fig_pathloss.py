@@ -206,7 +206,7 @@ for row, (band, color) in enumerate(zip(BANDS, row_colors)):
     axes[row, 0].set_ylabel(f'{band[0]:g}-{band[1]:g} µm\n\nlight reaching the detector /\nlight on the open shutters')
     axes[row, 0].yaxis.label.set_color(color)
 for ax in axes[-1]:
-    ax.set_xlabel('source position\n(shutter widths from center)')
+    ax.set_xlabel('position along the slit\n(shutter pitches)')
 for row in range(len(BANDS)):
     axes[row, 0].set_ylim(0.3, 1.15)
 fig.suptitle(f'The light the MSA lets through, from a point source to uniform light (jwst references: {ref}, '

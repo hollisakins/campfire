@@ -107,6 +107,11 @@ export const docsNav: DocPage[] = [
         description: 'The model of the MSA optics and how it was derived',
       },
       {
+        title: 'NIRSpec: Extraction',
+        slug: 'reduction/nirspec/extraction',
+        description: 'The source model, overlapping spectra, the reported flux',
+      },
+      {
         title: 'NIRCam Pipeline',
         slug: 'reduction/nircam',
         description: 'Imaging reduction and mosaics',
