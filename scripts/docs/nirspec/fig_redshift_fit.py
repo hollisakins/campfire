@@ -28,7 +28,7 @@ LINES = {'Lyα': 1215.67, 'CIII]': 1908.7, '[OII]': 3728.5, 'Hβ': 4862.7, '[OII
 ws = C.workspace(root, args.obs)
 plt = C.style()
 n = len(args.source)
-fig = plt.figure(figsize=(14, 3.4 * n), constrained_layout=True)
+fig = plt.figure(figsize=(11, 3.3 * n), constrained_layout=True)
 gs = fig.add_gridspec(n, 2, width_ratios=[2.6, 1])
 for k, sid in enumerate(args.source):
     base = os.path.join(ws, f'{args.obs}_{args.grating}_{sid}')
@@ -42,15 +42,19 @@ for k, sid in enumerate(args.source):
     ax = fig.add_subplot(gs[k, 0])
     good = np.isfinite(fnu)
     ax.fill_between(wave, fnu - err, fnu + err, color='#bbbbbb', lw=0, step='mid')
-    ax.step(wave, fnu, where='mid', color=C.INK, lw=0.8, label='spectrum (fnu)')
+    ax.step(wave, fnu, where='mid', color=C.INK, lw=0.8, label='spectrum')
     ax.plot(mw, mf, color=C.PALETTE[5], lw=1.4, label='best-fit templates')
     top = np.nanpercentile(fnu[good], 99.5) * 1.25
     lo, hi = np.nanmin(wave[good]), np.nanmax(wave[good])
+    last, level = -1.0, 0
     for name, rest in LINES.items():
         lam = rest * (1 + z) / 1e4
         if lo < lam < hi:
+            level = level + 1 if lam - last < 0.06 * (hi - lo) else 0     # stagger labels that would touch
+            last = lam
             ax.axvline(lam, color=C.PALETTE[0], lw=0.6, ls=':')
-            ax.text(lam, top * 0.97, name, rotation=90, ha='right', va='top', fontsize=8, color=C.PALETTE[0])
+            ax.text(lam, top * (0.97 - 0.12 * (level % 3)), name, ha='center', va='top', fontsize=9,
+                    color=C.PALETTE[0], bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none'))
     ax.set_xlim(lo, hi)
     ax.set_ylim(min(-0.05 * top, np.nanpercentile(fnu[good], 0.5)), top)
     ax.axhline(0, color=C.MUTED, lw=0.6)
@@ -62,12 +66,13 @@ for k, sid in enumerate(args.source):
         ax.legend(loc='lower right', fontsize=8.5)
     ax = fig.add_subplot(gs[k, 1])
     o = np.argsort(zg)
-    ax.plot(zg[o], chi2[o] - np.nanmin(chi2), color=C.INK, lw=0.9)
-    ax.axvline(z, color=C.PALETTE[5], lw=1.0)
-    ax.set_yscale('symlog', linthresh=10)
-    ax.set_ylim(0, None)
-    ax.set_ylabel('χ² - minimum')
-    ax.set_title('fit quality at every redshift', loc='left', fontsize=11)
+    ax.plot(zg[o], chi2[o] - np.nanmin(chi2) + 1, color=C.INK, lw=0.9)
+    ax.plot([z], [1], 'o', color=C.PALETTE[5], ms=7, zorder=5)
+    ax.set_yscale('log')
+    ax.set_ylim(0.6, None)
+    ax.set_ylabel('how much worse the fit is\n(Δχ² + 1)')
+    if k == 0:
+        ax.set_title('against redshift', loc='left', fontsize=11)
     if k == n - 1:
         ax.set_xlabel('redshift')
 fig.suptitle(f'{args.obs} {args.grating.split("_")[0].upper()}: template redshift fits', x=0.01, ha='left',
