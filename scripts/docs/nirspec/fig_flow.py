@@ -32,7 +32,7 @@ VERM = '#D55E00'
 FILL = {'jwst': '#e6e6e6', 'cf': '#fdf1e1', 'file': 'white'}    # stock jwst step | CAMPFIRE step | file
 EDGE = {'jwst': '#555555', 'cf': '#b07800', 'file': '#888888'}
 # steps an option turns on or off (dashed); every other option line only changes how a step runs
-SWITCH = {'cfn', 'bkg2d', 'joint', 'recheck', 'pfit', 'mbs', 'comb'}
+SWITCH = {'cfn', 'bkg2d', 'joint', 'recheck', 'pfit', 'mbs', 'comb', 'baroff'}
 W, ROW = 2.5, 1.0                       # box width, row spacing (data units)
 STAGES = [  # title, column x (left edge), width, color, fill
     ('Stage 1: detector', 0.0, 2.9, '#0072B2', '#f5f9fd'),
@@ -75,7 +75,10 @@ N = {
     'opt':    (c3b, 1.2, 'optimal and boxcar\nextractions', 'cf', ()),
     'dmap':   (c3a, 2.2, 'pixel map\n(each 2-D drizzled once)', 'cf', ()),
     'shape':  (c3a, 3.2, 'source shape selection', 'cf', (knob('stage3', 'profile_fit_shape'),)),
-    'pfit':   (c3a, 4.2, 'profile extraction\n(galaxy x star-measured PSF)', 'cf', (knob('stage3', 'profile_fit'),)),
+    'pfit':   (c3a, 4.2, 'profile extraction (galaxy\nthrough a model of the MSA optics)', 'cf',
+               (knob('stage3', 'profile_fit'), knob('stage3', 'slit_loss_y'), knob('stage3', 'slit_loss_x'))),
+    'baroff': (c3b, 2.75, 'bar offset measurement\n(edges of the empty shutters)', 'cf',
+               (knob('stage3', 'bar_offset'),)),
     'mbs':    (c3b, 4.2, 'master-background spectrum\n(cutouts minus master background)', 'cf',
                (knob('stage3', 'mbkg_spectrum'),)),
     'contam': (c3a, 5.3, 'contamination prediction', 'cf', ()),
@@ -190,6 +193,7 @@ route('stuck', 'spec2', [], sa='bottom', sb='right', **G)
 arrow('spec3', 'opt', 'right', 'left')
 arrow('joint', 'recheck', 'right', 'left')
 arrow('pfit', 'mbs', 'right', 'left')
+route('baroff', 'pfit', [('x', 15.4)], sa='left', sb='right', dashed=True, dy=0.22)   # moves the model's shutters
 _o, _s = anchor('opt', 'right'), anchor('spec', 'top')     # into the spectrum file's top, right of centre
 _xe, _ye = boxes['spec'][0] + 0.8 * W, _s[1]
 ax.plot([_o[0], 18.08, 18.08, _xe], [_o[1], _o[1], _ye + 0.25, _ye + 0.25], color='#555555', lw=1.1, zorder=2)
