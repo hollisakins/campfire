@@ -42,7 +42,7 @@ from campfire_pipeline.nirspec import barshadow_calibration as B
 from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec import optics as O
 
-MEASURE_VERSION = '2'                 # 2: shutters above SCALE_CUT (1.05 x the background) left out
+MEASURE_VERSION = '3'                 # 2: shutters above SCALE_CUT (1.05 x the background) left out; 3: exact shutter edges (optics engine 2)
 OFFSET_FILE = 'bar_offset.json'
 SHIFTS = np.round(np.arange(-0.10, 0.1001, 0.005), 4)  # trial offsets [slit units]
 U_LO, U_HI = 0.2, 0.75       # the steep part of a shutter's edge [pitches from its centre]

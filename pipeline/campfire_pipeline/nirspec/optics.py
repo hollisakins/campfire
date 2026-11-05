@@ -33,10 +33,10 @@ point source sends through the pattern. They are built on first use (about a min
 cached under ``$CAMPFIRE_ROOT/cache/optics``, keyed by the model's numbers and the kernel's
 content, and read memory-mapped so parallel workers share them.
 
-The openings are not symmetric: every opening's upper edge (+y) sits lower than the symmetric opening of
-half-height H_OPEN by the model file's 'shutter' upper value (the same in every shutter; measured from the
-empty-shutter background of five survey fields, where the lower and upper halves of the edges disagree by
-that much in every field, and agreed by the 1133 stars near the +y bar; design doc 3.7).
+The openings are symmetric, of half-height H_OPEN. A model file may move every opening's lower and upper edge
+('shutter'); the shipped one does not: the empty-shutter background of five survey fields and 1133 puts the two
+edges where the symmetric opening has them, to 0.002 slit units (design doc 3.7). The cache key carries
+ENGINE_VERSION: bump it whenever the computation of a table changes, or old tables are read back unchanged.
 
 Units: slit-frame units (one unit = the open height, 0.46 arcsec) unless noted.
 """
@@ -70,7 +70,7 @@ X_PITCH = 0.27                # shutter pitch along the dispersion [arcsec] (the
 XC = np.round(np.arange(-2.5, 2.5001, 0.005), 4)               # source x [arcsec]
 W_COMPACT = 0.06              # widths up to this: exact weights over the tables (``_compact_weights``)
 K_MAX = 5                     # shutters beyond this offset do not change the tables' +-5.5 range
-ENGINE_VERSION = '1'          # part of the cache key: bump when the table computation changes
+ENGINE_VERSION = '2'          # part of the cache key: bump when the table computation changes (2: continuous edges)
 OPTICS_FILE = Path(__file__).parent.parent / 'data' / 'nirspec_optics.json'
 LOCK_WAIT = 900.0             # seconds to wait for another process building the same table
 
@@ -90,6 +90,20 @@ def _grid(n=4096, step=0.0025):
     return y, f
 
 
+def opening_mask(y, shutters, edges=(0.0, 0.0)):
+    """The open area of shutters ``shutters`` (offsets from the source's shutter) on the grid ``y`` [arcsec]: 1 between
+    each opening's edges, ramping linearly over the one grid step an edge falls in, so an edge moves the light
+    continuously and every opening passes the same light wherever it falls on the grid (an edge on a grid point gives
+    the plain 0 / 1 mask). ``edges`` as in ``point_image``."""
+    mask = np.zeros_like(y)
+    lo, hi = edges
+    dy = y[1] - y[0]
+    for k in shutters:
+        a, b = k * PITCH_AS - H_OPEN + lo, k * PITCH_AS + H_OPEN + hi
+        mask = np.maximum(mask, np.clip((y - a) / dy, 0.0, 1.0) * np.clip((b - y) / dy, 0.0, 1.0))
+    return mask
+
+
 def point_image(c, lam_um, shutters, rho, sigma_det, alpha, y, f, edges=(0.0, 0.0)):
     """Detector intensity per arcsec (before row integration) of a point source at ``c`` arcsec
     with unit light entering the telescope, through open shutters ``shutters`` (offsets from the
@@ -99,11 +113,7 @@ def point_image(c, lam_um, shutters, rho, sigma_det, alpha, y, f, edges=(0.0, 0.
     pupil = np.clip(1.0 - (f / fmax) ** 2, 0.0, None) ** alpha if alpha > 0 else (np.abs(f) < fmax).astype(float)
     field = np.fft.fftshift(np.fft.ifft(pupil * np.exp(-2j * np.pi * f * (c * RAD))))
     norm = np.sum(np.abs(field) ** 2)
-    mask = np.zeros_like(y)
-    lo, hi = edges
-    for k in shutters:
-        mask[(y > k * PITCH_AS - H_OPEN + lo) & (y < k * PITCH_AS + H_OPEN + hi)] = 1.0
-    spec = np.fft.fft(np.fft.ifftshift(field * mask))
+    spec = np.fft.fft(np.fft.ifftshift(field * opening_mask(y, shutters, edges)))
     spec[np.abs(f) > rho * fmax] = 0.0
     inten = np.abs(np.fft.fftshift(np.fft.ifft(spec))) ** 2 / norm
     if sigma_det > 0:

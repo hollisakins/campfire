@@ -1643,8 +1643,9 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
           survey; the survey alone 0.0058 +- 0.0003): the two references agree between observations and differ only in where zero
           is. The edges' half-light points of the table and the model differ by under 0.004
           (`edges_table_vs_optics.py`); the table's edges are slightly lopsided (more light past
-          the upper edge than the lower), the model's are symmetric, which is also why the two
-          halves fitted against the model differ (lower minus upper -0.014 in the survey).
+          the upper edge than the lower), the model's are symmetric. (The two halves fitted
+          against the model differed by -0.014 in the survey; that was the model's rounding error,
+          gone with exact edges: below, "The one-sided edge was a rounding error".)
         - Which zero the stars want (`stars_at_bg.py`: each edge visit's chi2 from the refits at
           trial offsets, interpolated at the background offset plus a constant c): NGC 2506, the
           median visit is best at c = -0.004 (change against no offset: -26.9; at c = 0 -21.4, at
@@ -1790,10 +1791,44 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
             common zero point: within 0.35 pitch the model holds without one, and stars on a bar
             (6 % of sources have |SRCYPOS| >= 0.40) are poorly described and dominate any fit that
             includes them.
-          - What both datasets agree on: every opening's upper edge sits about 0.014 slit units
-            lower than the symmetric model (`onesided_test.py`: background lower minus upper
-            -0.014 in the survey and in 1133's faint third; the stars' +y deficit near the bar goes
-            from -2.6 to -0.6 % at 4.5 um with the upper edges moved by -0.010 to -0.015).
+          - ~~What both datasets agree on: every opening's upper edge sits about 0.014 slit units
+            lower than the symmetric model.~~ Withdrawn: the lopsided background halves were the
+            model's own error (next item). The stars' +y deficit near the bar stands on its own and
+            belongs with the stars on a bar.
+          - The one-sided edge was a rounding error in the model (2026-11-05, latest;
+            `stale_table_check*.py`, `exact_edges_bg.zsh`, `bo8_*.json`). The diffraction model drew
+            the open shutters on its 0.0025 arcsec grid with `|y - centre| < half height`. Every
+            shutter edge falls exactly on a grid point, and floating-point rounding opened some of
+            them: the source's own shutter was exact, shutters +-1 were one grid step (0.0054 slit
+            units) too tall at their outer edges, shutters +-2 and +-3 at both. The bar-offset halves
+            read exactly the outer halves of the neighboring shutters, so the model's openings were
+            too tall there, and lower minus upper came out about 0.011 too negative. The tables were
+            cached under a key that did not change when the mask code did, so the error stayed
+            hidden: the first sign was that edge moves smaller than one grid step changed nothing,
+            and larger ones changed the halves unevenly. `optics.opening_mask` now places each edge
+            exactly (ramping over the grid step it falls in; engine 2 rebuilds the tables;
+            `FIT_VERSION` 8, `MEASURE_VERSION` 3). With exact edges, lower minus upper [slit units]:
+
+            | Observation | Before | Exact edges | Offset before -> after |
+            |---|---|---|---|
+            | ember_cosmos_p14 | -0.0134 | -0.0020 | -0.0012 -> -0.0012 |
+            | uncover2 | -0.0112 | +0.0011 | -0.0073 -> -0.0080 |
+            | ember_egs_p1 | -0.0126 | -0.0013 | -0.0095 -> -0.0096 |
+            | capers_uds_p8 | -0.0144 | -0.0031 | -0.0043 -> -0.0044 |
+            | venus_pg004 | -0.0142 | -0.0027 | -0.0149 -> -0.0152 |
+            | 1133 | -0.0135 | -0.0004 | +0.0096 -> +0.0095 |
+            | NGC 2506 v3b | -0.0192 | -0.0078 | -0.0169 -> -0.0169 |
+            | NGC 2506 v6 | -0.0424 | -0.0311 | -0.0115 -> -0.0114 |
+
+            The survey's halves agree to -0.0016 +- 0.0008 (under 1 mas) and 1133's to 0.0004, so no
+            edge is moved in the shipped model (`optics` keeps the 'shutter' parameter, at zero).
+            The offsets move by at most 0.0007, so the quadrant pattern and the zero point stand.
+            NGC 2506 v6 keeps a large difference with few pixels and bright stars, as before. The
+            numbers above this item that quote lower minus upper (the survey's -0.014, 1133's
+            brightness thirds) carry the same -0.011 and are kept as they were measured. The kernel
+            calibration was fitted against the old tables; their difference is a few per cent of
+            the light at the outer edges of the neighboring shutters, where a star sends little,
+            and is checked when the kernel is refitted.
       - Stocktake of the whole optics work against what STScI provides and plans (2026-11-05):
         `scratch/claude/extraction-v2/review/stocktake.md` (duplication, ranked risks, how to keep
         the boundary with CRDS clean).
@@ -3357,4 +3392,7 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   min), the master-background spectrum's end-to-end run (uncover2) and the same-slitlet
   CHANGELOG line (folded into the one extraction entry). Earlier the same day: 3.7 gained the bar
   offset from the background (measurement, references, stars, galaxies, gratings) and 3.10 the
-  boundary with jwst's references.
+  boundary with jwst's references. Later still: 3.7 the decomposition of the point-source /
+  uniform-light discrepancy and the brightness cut (`SCALE_CUT` 1.05); then the one-sided upper
+  edge withdrawn: it was a rounding error in the model's shutter mask, now exact (`FIT_VERSION` 8,
+  optics engine 2, `MEASURE_VERSION` 3), with the halves of six fields before and after.

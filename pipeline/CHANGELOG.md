@@ -61,6 +61,21 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec optics model: every shutter opening is exactly its height (`optics.ENGINE_VERSION` 2,
+  `FIT_VERSION` 8, bar offset `MEASURE_VERSION` 3).**
+  The diffraction model drew the open shutters on a 0.0025 arcsec grid with `|y - centre| < half
+  height`. Shutter edges fall exactly on grid points, and floating-point rounding opened some of
+  those points: the source's own shutter was exact, but shutters +-1 were one grid step
+  (0.0054 slit units) too tall at their outer edges and shutters +-2, +-3 one step too tall at both.
+  `optics.opening_mask` now places each edge exactly, ramping over the grid step an edge falls in,
+  so an edge between grid points moves the light continuously. The tables are rebuilt once (the
+  cache key changes). Effect: a few per cent of the light near the outer edges of the neighbouring
+  shutters. The bar-offset measurement reads exactly those edges: the offsets move by at most
+  0.0007 slit units (the error was symmetric), and the lower and upper halves no longer disagree by
+  -0.011 to -0.014 (five survey fields and 1133; now -0.003 to +0.001), which had looked like the
+  upper edge of every opening sitting lower than the lower edge. No edge is moved in the shipped
+  model.
+
 - **NIRSpec profile fit: the observation's bar offset, measured from its background (`FIT_VERSION` 7,
   `bar_offset = "measure"` in `[nirspec.stage3]`, on by default).** An observation's MSA bars sit
   up to about 0.02 slit units (9 mas) from where the model puts them in jwst's slit frame, by a

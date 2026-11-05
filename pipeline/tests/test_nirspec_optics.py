@@ -66,6 +66,29 @@ def test_an_upper_edge_moved_down_cuts_light_near_the_upper_bar_only():
     assert t(0.35, (0.0, 0.0)) == pytest.approx(t(-0.35, (0.0, 0.0)), rel=1e-6)   # symmetric without it
 
 
+def test_every_opening_is_exactly_its_height_wherever_it_falls_on_the_grid():
+    # the light of a flat field through each shutter is the same for every shutter, and moves by exactly the edge
+    # move, so no shutter gains a grid step by rounding (engine 1 opened shutters +-1 to +-3 one 0.0025 arcsec step
+    # too far at edges that fall on grid points)
+    y, _ = O._grid()
+    dy = y[1] - y[0]
+    open0 = O.opening_mask(y, (0,)).sum() * dy
+    for k in range(-3, 4):
+        for lo, hi in ((0.0, 0.0), (0.0, -0.3 * dy), (0.2 * dy, -1.7 * dy)):
+            area = O.opening_mask(y, (k,), (lo, hi)).sum() * dy
+            assert area == pytest.approx(open0 - lo + hi, abs=1e-9)
+
+
+def test_an_edge_moves_the_light_continuously_below_one_grid_step():
+    y, f = O._grid()
+    dy = y[1] - y[0]
+    ts = [O.point_image(0.15, 4.5, (-1, 0, 1), 0.996, 0.03, 0.25, y, f, edges=(0.0, -e))[1]
+          for e in np.linspace(0.0, 2 * dy, 9)]
+    steps = np.diff(ts)
+    assert np.all(steps < 0)                         # every quarter step cuts light, none is lost to the grid
+    assert steps.max() / steps.min() < 1.5           # and about equally
+
+
 def test_edges_enter_the_cache_key_only_when_set(small_grids, tmp_path):
     a = O.Optics(0.996, 0.0344, -0.0026, 0.25, _kernel(), cache_dir=str(tmp_path))
     b = O.Optics(0.996, 0.0344, -0.0026, 0.25, _kernel(), cache_dir=str(tmp_path), edges=(0.0, 0.0))
