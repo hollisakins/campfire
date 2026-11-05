@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from . import crds_refs as CR
 from .constants import MSA_SLIT_PITCH
 
 OPEN_HALF = 0.5
@@ -393,9 +394,7 @@ def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, cache=
         sl = m.slits[0]
         yy, xx = np.mgrid[:sl.data.shape[0], :sl.data.shape[1]]
         _, ys, _ = sl.meta.wcs.get_transform('detector', 'slit_frame')(xx, yy)
-        geo[g.nod_dither[n]] = (ek, int(sl.ystart) - 1, int(sl.xstart) - 1, sl.data.shape,
-                                np.asarray(sl.pathloss_point, float) if sl.pathloss_point is not None
-                                and np.size(sl.pathloss_point) else np.ones(sl.data.shape))
+        geo[g.nod_dither[n]] = (ek, int(sl.ystart) - 1, int(sl.xstart) - 1, sl.data.shape, CR.point_pathloss(sl))
         m.close()
         frames[g.nod_dither[n]] = (np.asarray(s['sci'], float), np.asarray(s['sky'], float), np.asarray(ys, float),
                                    str(h.get('SRCFLUX', 'T')).strip().upper() != 'F')

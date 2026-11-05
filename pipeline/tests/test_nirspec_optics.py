@@ -6,6 +6,7 @@ arithmetic, the table cache, the model every exposure takes, and the model's wir
 import numpy as np
 import pytest
 
+from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec import optics as O
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec.constants import MSA_SLIT_PITCH
@@ -159,7 +160,7 @@ def test_model_image_and_throughput_from_the_optics(monkeypatch):
     exps = _exposures(src_y=0.1)
     for e in exps:
         e.src_y_jwst, e.pl_ref = 0.1 / MSA_SLIT_PITCH, 'jwst_nirspec_pathloss_0010.fits'
-    monkeypatch.setattr(O, 'jwst_point_y_ratio', lambda ref, lam, srcy: np.full(np.shape(lam), 1.25))
+    monkeypatch.setattr(CR, 'point_y_ratio', lambda ref, lam, srcy: np.full(np.shape(lam), 1.25))
     M = PF.ProfileModel(exps, optics=[Analytic()] * 3)
     p = np.array([0.1, 0.0, np.log(0.05), 0.0])
     e = exps[0]
@@ -189,7 +190,7 @@ def test_throughput_takes_the_x_correction_at_srcxpos():
 
 
 def test_fit_through_the_optics_recovers_shape_and_flux(monkeypatch):
-    monkeypatch.setattr(O, 'jwst_point_y_ratio', lambda ref, lam, srcy: np.ones(np.shape(lam)))
+    monkeypatch.setattr(CR, 'point_y_ratio', lambda ref, lam, srcy: np.ones(np.shape(lam)))
     exps = _exposures()
     M = PF.ProfileModel(exps, chromatic=True, optics=[Analytic()] * 3)
     lam = M.lam_grid

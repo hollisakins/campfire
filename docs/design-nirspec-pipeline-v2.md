@@ -2835,6 +2835,61 @@ Tests (copies with the chosen partners in scratch, `e2e_auto_make.py`; only `SCI
 - Same-slitlet neighbours (not in the trace maps) stay with the neighbour scan
   (`scan_action = "report_only"`).
 
+### 3.10 The boundary with jwst's references (2026-11-05)
+
+CAMPFIRE replaces parts of two CRDS references: the path loss (the slit direction, with the model of
+3.7, and a correction along the dispersion) and the bar shadow (the empirical tables of 3.2, used by
+the master background; science slits skip the step). The stocktake of that work against what STScI
+provides (`scratch/claude/extraction-v2/review/stocktake.md`) found most of it not duplicated, and
+asked for the boundary to be explicit, so that a better reference from STScI can be taken up by a
+setting and measured by a command. The pieces:
+
+- **One reader.** `nirspec/crds_refs.py` is the only code that reads the path-loss or bar-shadow
+  reference, or interprets what jwst wrote from them into a cal file (`applied_pathloss`,
+  `point_pathloss`, `pathloss_arrays` / `point_to_uniform`, `pathloss_ref`, `barshadow_path`,
+  `point_y_ratio`, `slit_position`). The profile fit, the master background, the bar-shadow
+  calibration, the bar offset and the same-slitlet decisions call it. The reader of the path-loss
+  reference checks the assumptions the profile fit makes (`pathloss_cube`: a PS extension with
+  APERTURE = MOS1x3, three axes, y over three shutter pitches and x over one, wavelengths in metres)
+  and names the one that fails; the extension is chosen by its APERTURE card, no longer by its
+  version number. Every other CRDS read (stage 1, stage 2, the extended-wavelength flats) is a
+  calibration used as delivered and stays where it was.
+- **One switch per replaced part.** `[nirspec.stage3]`: `slit_loss_y = "optics"` (the model's
+  slit-direction loss for the source's width and fitted position) or `"jwst"` (jwst's point path loss
+  at the planned position, divided by the model's point transmission there, so a point source at its
+  planned position gets jwst's loss exactly and the model only shapes the image);
+  `slit_loss_x = "corrected"` (jwst's along the dispersion times `x_correction`) or `"jwst"`;
+  `bar_offset = "measure"` or `"off"`. `[nirspec.stage2] empirical_barshadow` for the master
+  background, as before. The product records `PFSLY`, `PFSLX`, `PFBAROFF` and `PFPLREF` (the path-loss
+  reference the model starts from). The defaults reproduce FIT_VERSION 7 exactly (two 1133 stars refit
+  to the same chi2 to 0.1 before and after).
+- **A manifest.** `data/nirspec_calibrations.toml` lists every shipped calibration (the optics model,
+  the four bar-shadow tables, the bar offset): its file and sha256, version, what it replaces or
+  corrects, its inputs, the CRDS context of the reduction it was fitted on, the references it was
+  fitted against or whose layout it assumes (`depends_on`), the switch that turns it off, its code,
+  tests and record. Tests fail when a file changes without its entry, when an entry's version is not
+  the file's own, or when a named switch is not in the default config. When a cal file names another
+  path-loss reference than one a calibration depends on, the loader warns once
+  (`check_references`).
+- **A standing comparison.** `cfpipe nirspec crds-compare` (`crds_refs.report`) prints, for the
+  active context: which path-loss and bar-shadow reference each MOS disperser gets and whether the
+  calibrations were derived against them; how far the path-loss reference departs from an x part
+  times a y part (which `point_y_ratio` assumes); jwst's point loss along y against the model's at
+  0.1-0.4 pitch and three wavelengths; jwst's dependence along the dispersion against `x_correction`;
+  and the half-light edges of each empirical bar-shadow table against its CRDS reference. A test
+  (`test_live_reference_meets_the_assumptions`) runs the reference side wherever the file is in the
+  local CRDS cache. Run the command whenever `CRDS_CONTEXT` changes (AGENTS.md).
+- Its output for `jwst_1481.pmap` (2026-11-05): every disperser gets `pathloss_0010` and the bar
+  shadow the tables were derived against. `pathloss_0010` is an exact product of x and y parts. A point
+  source 0.4 pitch off centre loses, relative to the centre, 0.697 / 0.673 / 0.729 of its light in
+  jwst's table at 1 / 3 / 5 um, and 0.857 / 0.609 / 0.563 in the model (0.3 pitch: 0.965 / 0.941 /
+  0.922 against 0.969 / 0.936 / 0.843). The model's correction along the dispersion at SRCXPOS 0.3 is
+  1.00 / 0.95 / 0.86. The empirical bar-shadow tables put a 1x3 slitlet's outer edges 0.010-0.058
+  pitch per side inside CRDS's (narrower); CRDS's interior bars are centred 0.026-0.038 pitch from
+  the tables' (lower in PRISM, G140M and G235M, higher in G395M) and their shadows are 0.18 pitch
+  wide in PRISM against the table's 0.10, 0.04 in G395M against 0.14 (half-light widths at 1-3 um).
+  A new CRDS bar shadow would show up as a change in these numbers.
+
 ---
 
 ## 4. Products and units
@@ -3062,8 +3117,10 @@ a fix or needs another field or disperser), **To make**.
 | Trace maps | `nirspec/trace_overlap.py` |
 | First pass (joint, on nod differences) | `nirspec/joint_first_pass.py`; its linear system `nirspec/profile_joint.py` |
 | Prediction of other slitlets' light | `nirspec/profile_contam.py`, `nirspec/profile_extend.py` |
-| Profile model, shape chain | `nirspec/profile_fit.py` (PSF: `data/nirspec_profile_psf.json`, general layout), `nirspec/profile_chain.py`, `nirspec/profile_product.py` |
-| PSF, centre law and nod offsets from calibration stars | `nirspec/psf_calibration.py` (CLI `python -m campfire_pipeline.nirspec.psf_calibration <step>`) |
+| Profile model, shape chain | `nirspec/profile_fit.py`, `nirspec/profile_chain.py`, `nirspec/profile_product.py` |
+| Diffraction model of the MSA; its calibration on stars (kernel, x correction, centre law, nod offsets) | `nirspec/optics.py`, `data/nirspec_optics.json`; `nirspec/optics_calibration.py` |
+| Bar offset per observation | `nirspec/bar_offset.py` (workspace `bar_offset.json`) |
+| Boundary with jwst's path-loss and bar-shadow references; manifest of CAMPFIRE's calibrations | `nirspec/crds_refs.py`, `data/nirspec_calibrations.toml`, `cfpipe nirspec crds-compare` (3.10) |
 | Orchestration | `nirspec/stage3.py` (`run_profile_fit_phase`, `extract_columns`, `mbkg_spectrum_hdus`) |
 | Master-background spectrum | `nirspec/mbkg_extraction.py`; `stage2.master_background_on`; `metadata/science_hash.py` (MBKG left out) |
 | nods.pdf | `nirspec/plots.py` |

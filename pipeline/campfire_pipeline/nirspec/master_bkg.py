@@ -72,6 +72,7 @@ from astropy.table import Table
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.nirspec import barshadow_calibration as B
+from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec.coverage import (coverage_from_wcs, cutoffs_for, default_cache_dir, cache_path,
                                                  geometry_cache_path, slit_geometry_extended)
 
@@ -628,7 +629,7 @@ def _barshadow_reference(grating, example_path):
     from campfire_pipeline.config import get_empirical_barshadow_path
     p = get_empirical_barshadow_path(grating)
     if p is None:
-        p = B.crds_barshadow_path(example_path)
+        p = CR.barshadow_path(example_path)
     return os.path.basename(p), p
 
 
@@ -648,7 +649,7 @@ def resolve_barshadow_table(bs_ref, slit_path):
         from campfire_pipeline import config as cfg
         path = os.path.join(os.path.dirname(cfg.__file__), 'data', bs_ref)
     else:
-        path = B.crds_barshadow_path(slit_path)
+        path = CR.barshadow_path(slit_path)
     return B.load_table(path)
 
 
@@ -703,9 +704,10 @@ def frame_factor(bunit, pix_sr, pthloss, pu, pp, bar):
     f = np.ones_like(np.asarray(bar if bar is not None else (pu if pu is not None else pix_sr), float)) \
         if bar is not None or pu is not None else 1.0
     f = f * (1.0 if 'sr' in str(bunit).lower() else float(pix_sr))
-    if str(pthloss).upper() == 'POINT' and pu is not None and pp is not None:
-        with np.errstate(invalid='ignore', divide='ignore'):
-            f = f * (pu / pp)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        to_uniform = CR.point_to_uniform(str(pthloss).upper(), pp, pu)
+        if to_uniform is not None:
+            f = f / to_uniform
     if bar is not None:
         with np.errstate(invalid='ignore', divide='ignore'):
             f = f / bar
@@ -722,12 +724,11 @@ def read_slit_frame(path, extver=1):
         hs = h['SCI', v].header; ph = h[0].header
         pre = B._hdu(h, 'PRE_BKGSUB_SCI', v) is not None
         sci = np.array(h['PRE_BKGSUB_SCI' if pre else 'SCI', v].data, float)
-        pu = B._hdu(h, 'PATHLOSS_UN', v); pu = np.array(pu.data, float) if pu is not None else None
-        pp = B._hdu(h, 'PATHLOSS_PS', v); pp = np.array(pp.data, float) if pp is not None else None
+        pthloss, pp, pu = CR.pathloss_arrays(h, v)
         bar = B._hdu(h, 'BARSHADOW', v) if str(ph.get('S_BARSHA', '')).upper() == 'COMPLETE' else None
         bar = np.array(bar.data, float) if bar is not None else None
         return dict(sci=sci, bunit=str(hs.get('BUNIT', 'MJy')), pix_sr=float(hs['PIXAR_SR']),
-                    pthloss=str(hs.get('PTHLOSS', 'POINT')), pu=pu, pp=pp, bar=bar,
+                    pthloss=pthloss, pu=pu, pp=pp, bar=bar,
                     x0=int(hs['SLTSTRT1']) - 1, y0=int(hs['SLTSTRT2']) - 1)
 
 

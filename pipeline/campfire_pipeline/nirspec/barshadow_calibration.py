@@ -58,6 +58,7 @@ from datetime import datetime, timezone
 import numpy as np
 from astropy.io import fits
 
+from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec.coverage import coverage_from_wcs, cache_path, cutoffs_for
 
 CENTRE_FRAC = 0.15          # |f| below which a pixel is "shutter centre" (shadow == 1)
@@ -151,15 +152,8 @@ def discover_workspace(workspace, grating=None, filter_name=None, obs_name=None)
     return out
 
 
-def crds_barshadow_path(canonical_path):
-    """The CRDS bar-shadow reference the pipeline would use for this exposure."""
-    import crds
-    hdr = fits.getheader(canonical_path)
-    params = {'INSTRUME': 'NIRSPEC', 'DETECTOR': hdr['DETECTOR'], 'EXP_TYPE': hdr.get('EXP_TYPE', 'NRS_MSASPEC'),
-              'FILTER': hdr['FILTER'], 'GRATING': hdr['GRATING'],
-              'DATE-OBS': hdr.get('DATE-OBS', '2023-01-01'), 'TIME-OBS': hdr.get('TIME-OBS', '00:00:00')}
-    refs = crds.getreferences(params, reftypes=['barshadow'], observatory='jwst')
-    return refs['barshadow']
+# The CRDS bar-shadow reference the pipeline would use for an exposure (read in ``crds_refs``)
+crds_barshadow_path = CR.barshadow_path
 
 
 @dataclass
@@ -345,8 +339,7 @@ def pixel_samples(c, counter, source_pad_px=2.0):
         hs = h['SCI', v].header
         ph = h[0].header
         pix_sr = float(hs['PIXAR_SR'])
-        pu = _hdu(h, 'PATHLOSS_UN', v); pu = np.array(pu.data, float) if pu is not None else None
-        pp = _hdu(h, 'PATHLOSS_PS', v); pp = np.array(pp.data, float) if pp is not None else None
+        to_uniform = CR.point_to_uniform(*CR.pathloss_arrays(h, v))
         bar_applied = str(ph.get('S_BARSHA', '')).upper() == 'COMPLETE'
         bar = _hdu(h, 'BARSHADOW', v) if bar_applied else None
         bar = np.array(bar.data, float) if bar is not None else None
@@ -359,8 +352,8 @@ def pixel_samples(c, counter, source_pad_px=2.0):
     planned = s.source_ypos is not None and abs(float(s.source_ypos)) > 0
 
     factor = np.full(sci.shape, 1.0 / pix_sr)
-    if pu is not None and pp is not None and str(hs.get('PTHLOSS', 'POINT')).upper() == 'POINT':
-        factor *= pp / pu
+    if to_uniform is not None:
+        factor *= to_uniform
     if bar is not None:
         factor *= bar                     # undo the division jwst applied
     sb = sci * factor

@@ -30,6 +30,21 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Infrastructure
 
+- **NIRSpec: an explicit boundary with jwst's path-loss and bar-shadow references.** CAMPFIRE's own
+  MSA calibrations replace parts of those two CRDS references; the boundary is now one module and one
+  file. `nirspec/crds_refs.py` is the only code that reads either reference or interprets what jwst
+  wrote from them into a cal file (moved there from `profile_fit`, `optics`, `barshadow_calibration`,
+  `master_bkg` and `slitlet_neighbours`); its path-loss reader picks the MOS1x3 extension by its
+  APERTURE card and checks the grid and units the profile fit assumes. `data/nirspec_calibrations.toml`
+  lists each shipped calibration with its sha256, version, inputs, the references it was derived
+  against, the switch that turns it off, its code and tests (tests fail on a file changed without its
+  entry); the loader warns when an exposure's path-loss reference is not the one a calibration was
+  derived against. New `[nirspec.stage3]` switches `slit_loss_y = "optics" | "jwst"` and
+  `slit_loss_x = "corrected" | "jwst"` hand either direction of the path loss back to jwst (defaults
+  unchanged: the same fits to 0.1 in chi2), recorded with the reference's name as `PFSLY`, `PFSLX`,
+  `PFPLREF`. `cfpipe nirspec crds-compare` prints the standing comparison of the active context's
+  references with the calibrations; run it with every `CRDS_CONTEXT` bump.
+
 - **NIRSpec: exposure sequences counted past 9 (`0410b`, `0410f`, ...) are found.** The
   activity of a JWST exposure sequence counts 1..9, a..z; the canonical-name pattern of
   `barshadow_calibration` (the master background's and the bar-shadow derivation's input
@@ -115,7 +130,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   - Source positions are in slit-frame units (1.15 x SRCYPOS; `profile_fit.source_position`,
     `Exposure.src_y_jwst` keeps jwst's). The throughput keeps jwst's point path loss level and its
     along-dispersion dependence, with its slit-direction dependence replaced by the model's
-    (`optics.jwst_point_y_ratio`, from the path-loss reference the cal file names).
+    (`crds_refs.point_y_ratio`, from the path-loss reference the cal file names).
   - The gratings take the same model: the light before the shutter is the same, the G395M bar
     shadow fits the PRISM numbers (misfit 0.017; its own table 0.016), and on the 6642 obs 2 stars
     the six gratings fit with chi2 within -5 to +3 % of their FIT_VERSION 5 tables in 18 of 20

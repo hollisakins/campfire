@@ -40,6 +40,7 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import splu
 from scipy.optimize import least_squares
 
+from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec.constants import MSA_SLIT_MARGIN, MSA_SLIT_PITCH
 
 # ---------------------------------------------------------------------------
@@ -236,6 +237,7 @@ class Exposure:
     src_x_jwst: float = np.nan     # SRCXPOS as jwst wrote it (shutter pitches along the dispersion)
     bar_offset: float = 0.0        # added to ``y`` and ``src_y`` (slit units): where the observation's bars sit
                                    # against jwst's slit frame (``bar_offset``)
+    slit_loss: CR.SlitLoss = CR.SlitLoss()   # whose path loss the model takes, per direction (``throughput``)
 
     @property
     def dy(self):
@@ -308,30 +310,17 @@ def own_variance(path, slit):
     return np.asarray(vp, float) + np.asarray(vr, float)
 
 
-def _applied_pathloss(m, s):
-    """The path-loss correction applied to slit ``s`` of model ``m`` (point or uniform, as
-    jwst's ``do_correction_mos`` chose it), or ones when none was applied."""
-    pl_type = str(getattr(s, 'pathloss_correction_type', '') or '').upper()
-    applied = 'COMPLETE' in str(m.meta.cal_step.pathloss).upper()
-    if applied and pl_type == 'UNIFORM':
-        return np.asarray(s.pathloss_uniform, float)
-    if applied:
-        return np.asarray(s.pathloss_point, float)
-    return np.ones(s.data.shape)
+# what jwst wrote into a cal file, read through the boundary module (``crds_refs``)
+_applied_pathloss = CR.applied_pathloss
+_pathloss_ref = CR.pathloss_ref
+source_position = CR.slit_position          # the planned position in slit-frame units from SRCYPOS
 
 
-def _pathloss_ref(m):
-    """jwst's path-loss reference file of model ``m`` ('' when none is recorded)."""
-    try:
-        return str(m.meta.ref_file.pathloss.name or '')
-    except AttributeError:
-        return ''
-
-
-def source_position(srcypos):
-    """The source's planned position in slit-frame units (one unit = the open height) from
-    jwst's SRCYPOS, which is in shutter pitches."""
-    return srcypos * MSA_SLIT_PITCH
+def load_options(stage_config):
+    """The loader's keyword arguments from ``[nirspec.stage3]`` as stage 3 resolved it: the measured
+    bar offsets (``bar_offset``) and whose path loss the model takes (``crds_refs.SlitLoss``)."""
+    sc = stage_config or {}
+    return dict(bar_offsets=sc.get('bar_offsets'), slit_loss=CR.SlitLoss.from_config(sc))
 
 
 def rebuild_nod_differences(frames, dqs, partners):
@@ -388,7 +377,7 @@ def _pre_bkgsub_differences(cal_files, heads, models, slits, partners, y0, x0, s
 
 
 def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_frames=False, pre_bkgsub=False,
-               bar_offsets=None):
+               bar_offsets=None, slit_loss=None):
     """Exposures of one stage-2b background group, from the canonical files.
 
     The live SCI is stage 2b's nod difference with the path loss re-applied; this
@@ -399,6 +388,7 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
         None for none: the offset is added to every pixel's slit y and to the source's planned
         position, so the model's shutters sit where the observation's background puts its bars.
         jwst's own path-loss position (``src_y_jwst``) is not moved.
+    slit_loss : whose path loss the model takes (``crds_refs.SlitLoss``); None for the default.
 
     science : set of file names that stage 3 combines (default: all with a partner list).
     single_frames : the files are single frames with their background removed some other
@@ -466,7 +456,7 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
             open_k=open_shutters(s.shutter_state, s.slit_ymin, s.slit_ymax),
             partners=part, use_data=(part is not None) and (science is None or name in science),
             cutout=(s.ystart - y0, s.xstart - x0, ny, nx), path=str(f), origin=(y0, x0),
-            has_source=bool(has_src), pa_v3=_pa_v3(f), pl_ref=_pathloss_ref(m),
+            has_source=bool(has_src), pa_v3=_pa_v3(f), pl_ref=_pathloss_ref(m), slit_loss=slit_loss or CR.SlitLoss(),
             src_x_jwst=_float_or_nan(getattr(s, 'source_xpos', None))))
     for m in models:
         m.close()
@@ -474,6 +464,8 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
         if not e.pl_ref:
             warnings.warn(f'profile fit: {e.name} names no path-loss reference; jwst\'s loss along the slit '
                           'stays in its data and the model applies its own as well')
+    for ref in sorted({e.pl_ref for e in exps if e.pl_ref}):
+        CR.check_references(pathloss=ref)          # warns once when a calibration was derived against another file
     return exps
 
 
@@ -502,16 +494,18 @@ def partners_from_headers(cal_files, heads):
     return out
 
 
-def load_source(groups, bkg_overrides=None, science=None, single_frames=False, pre_bkgsub=False, bar_offsets=None):
+def load_source(groups, bkg_overrides=None, science=None, single_frames=False, pre_bkgsub=False, bar_offsets=None,
+                slit_loss=None):
     """All exposures of a source: ``groups`` is a list of canonical-file lists, one per
     stage-2b background group, and ``bkg_overrides`` the matching list of that group's
     nod overrides (or None). Partner indices are made global. ``single_frames``,
-    ``pre_bkgsub`` and ``bar_offsets``: see ``load_group``."""
+    ``pre_bkgsub``, ``bar_offsets`` and ``slit_loss``: see ``load_group`` (``load_options``
+    gives the last two from the stage config)."""
     out = []
     overrides = bkg_overrides if isinstance(bkg_overrides, (list, tuple)) else [bkg_overrides] * len(groups)
     for g, files in enumerate(groups):
         exps = load_group(files, bkg_overrides=overrides[g], science=science, group=g, single_frames=single_frames,
-                          pre_bkgsub=pre_bkgsub, bar_offsets=bar_offsets)
+                          pre_bkgsub=pre_bkgsub, bar_offsets=bar_offsets, slit_loss=slit_loss)
         base = len(out)
         for e in exps:
             if e.partners is not None:
@@ -837,20 +831,32 @@ class ProfileModel:
         """Along-dispersion throughput tau_k: jwst's level and its along-dispersion
         dependence, with its slit-direction dependence replaced by the model's. jwst's
         point-source path loss at the planned position is moved to the shutter centre
-        (``optics.jwst_point_y_ratio``), times the model's correction to its
+        (``crds_refs.point_y_ratio``), times the model's correction to its
         along-dispersion dependence (``x_correction``, at SRCXPOS) and the model's ratio for
         the fitted source over a point there (``x_extended_ratio``: a round source), and
         divided by the model's transmission of a point source at the centre through the
-        MOS1X3 aperture. The fitted spectrum is then the source's total light."""
-        from campfire_pipeline.nirspec.optics import jwst_point_y_ratio
+        MOS1X3 aperture. The fitted spectrum is then the source's total light.
+
+        The exposure's ``slit_loss`` (``crds_refs.SlitLoss``) can hand either direction back to
+        jwst: y = "jwst" keeps jwst's point path loss at the planned position and divides by the
+        model's point transmission there instead (the model then shapes the image and its change
+        with the fitted position and width; a point source at the planned position gets jwst's
+        loss exactly); x = "jwst" leaves out ``x_correction``."""
         L, P = self.pl_curve[k]
         pl = np.interp(lam, L, P)
         e = self.exps[k]
         o = self.optics[k]
-        if e.pl_ref and np.isfinite(e.src_y_jwst):
-            pl = pl * jwst_point_y_ratio(e.pl_ref, lam, e.src_y_jwst)
-        pl = pl * o.x_correction(lam, e.src_x_jwst) * o.x_extended_ratio(lam, e.src_x_jwst, self.width(p, lam))
-        t = self.transmission(p, eoff, k, lam, dy, width=0.0, centre=0.0)
+        sl = e.slit_loss
+        if sl.y == 'optics':
+            if e.pl_ref and np.isfinite(e.src_y_jwst):
+                pl = pl * CR.point_y_ratio(e.pl_ref, lam, e.src_y_jwst)
+            c_ref = 0.0
+        else:
+            c_ref = e.src_y if np.isfinite(e.src_y) else 0.0
+        if sl.x == 'corrected':
+            pl = pl * o.x_correction(lam, e.src_x_jwst)
+        pl = pl * o.x_extended_ratio(lam, e.src_x_jwst, self.width(p, lam))
+        t = self.transmission(p, eoff, k, lam, dy, width=0.0, centre=np.full(np.shape(lam), c_ref))
         return pl / np.maximum(t, 1e-6)
 
     def design(self, p, eoff):

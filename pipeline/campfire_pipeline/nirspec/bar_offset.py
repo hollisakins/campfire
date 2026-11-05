@@ -39,6 +39,7 @@ import numpy as np
 from scipy.ndimage import map_coordinates
 
 from campfire_pipeline.nirspec import barshadow_calibration as B
+from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec import optics as O
 
 MEASURE_VERSION = '1'
@@ -165,7 +166,7 @@ def samples(canonicals, workspace, processes=1, cache_dir=None, log=None):
     from campfire_pipeline.nirspec.coverage import cache_path, coverage_from_wcs, cutoffs_for, default_cache_dir
     log = log or (lambda *a: None)
     cache_dir = cache_dir or default_cache_dir()
-    grid = B.reference_grid(B.crds_barshadow_path(canonicals[0].path))
+    grid = B.reference_grid(CR.barshadow_path(canonicals[0].path))
     edges = _band_edges(grid)
     cut = cutoffs_for(canonicals[0].grating, canonicals[0].filter)
     counters = {}

@@ -427,30 +427,3 @@ def optics_for(detector):
 
 def version():
     return models()['version']
-
-
-# ---------------------------------------------------------------------------
-# jwst's point-source path loss in the slit direction
-# ---------------------------------------------------------------------------
-_PS = {}
-
-
-def jwst_point_y_ratio(ref_name, lam, srcy):
-    """jwst's MOS1x3 point-source path loss (reference ``ref_name``, as the cal file names it)
-    at the shutter centre over its value at ``srcy`` (SRCYPOS, shutter pitches), at the central
-    x: divides jwst's slit-direction dependence out of the exposure's applied path loss, so the
-    model's own takes its place (its level at the centre and its x dependence stay jwst's)."""
-    name = os.path.basename(str(ref_name).replace('crds://', ''))
-    if name not in _PS:
-        import crds
-        from astropy.io import fits
-        with fits.open(crds.locate_file(name, 'jwst')) as h:
-            ps = h['PS', 2].data.astype(float)
-            hd = h['PS', 2].header
-        lam_ps = (hd['CRVAL3'] + hd['CDELT3'] * np.arange(ps.shape[0])) * 1e6
-        yref = hd['CRVAL2'] + hd['CDELT2'] * np.arange(ps.shape[1])
-        _PS[name] = (lam_ps, yref, ps[:, :, ps.shape[2] // 2])
-    lam_ps, yref, prof = _PS[name]
-    at0 = np.array([np.interp(0.0, yref, p) for p in prof])
-    aty = np.array([np.interp(srcy, yref, p) for p in prof])
-    return np.interp(np.asarray(lam, float), lam_ps, at0 / aty)

@@ -1,0 +1,100 @@
+# CAMPFIRE's own NIRSpec MSA calibrations: what each replaces or corrects in jwst's reference products,
+# what it was derived from, which CRDS references it depends on, and how to turn it off.
+#
+# Rules (tests/test_nirspec_calibration_manifest.py enforces the first three):
+# - Every shipped calibration file is listed here, with the sha256 of its bytes. A file changed without
+#   its entry fails the tests: re-derive, then update `sha256`, `version`, `derived` and `inputs` together.
+# - `version` matches the version the file carries itself (nirspec_optics.json `meta.version`; the bar-shadow
+#   tables' CFBSDATE).
+# - `depends_on` names the CRDS reference files the calibration was fitted against or whose layout it
+#   assumes. `crds_refs.check_references` warns when an exposure was reduced with another file;
+#   `cfpipe nirspec crds-compare` measures the new file against the model.
+# - `switch` is the setting that hands the replaced part back to jwst's reference.
+# The boundary itself (the only code that reads these references) is nirspec/crds_refs.py.
+
+[optics]
+file = "nirspec_optics.json"
+sha256 = "17969c976e5cf3698681a906339f938ff8a2b4442e2d908b9a4232093d6c911c"
+version = "2026.11-w2x"
+replaces = """jwst's slit-direction path loss (pathloss PS / UNI along y) and its implicit point-source image: a \
+diffraction model of the MSA (pupil, shutters, spectrograph stop, detector blur) with an empirical kernel \
+before the shutter, for a source of any width and position along the slit"""
+corrects = """jwst's point path loss along the dispersion: x_loss, exp(-b (lambda - lam0)+ SRCXPOS^2), b = 0.572 \
+(two star sets give 0.38-0.80); the extended-source ratio along the dispersion is the model's own"""
+inputs = """kernel and diffraction numbers: 593 calibration stars (programs 6642 obs 2, 12497 obs 1-5, 1493 NGC 2506) \
+and master-background single frames, PRISM; x_loss: 93 NGC 2506 stars seen at several positions"""
+derived = "2026-11-04"
+crds_context = "jwst_1481.pmap"
+depends_on = { pathloss = "jwst_nirspec_pathloss_0010.fits" }
+assumes = """the MOS1x3 point path loss is a product of an x part and a y part (point_y_ratio divides out its y \
+dependence at the central x); y in shutter pitches over three shutters"""
+switch = "[nirspec.stage3] slit_loss_y = \"jwst\" (slit direction), slit_loss_x = \"jwst\" (x_loss)"
+code = ["nirspec/optics.py", "nirspec/optics_calibration.py", "nirspec/profile_fit.py"]
+tests = ["tests/test_nirspec_optics.py", "tests/test_nirspec_optics_calibration.py"]
+record = "docs/design-nirspec-pipeline-v2.md section 3.7"
+
+[bar_offset]
+file = ""                     # measured per observation into the workspace's bar_offset.json
+version = "1"                 # bar_offset.MEASURE_VERSION
+replaces = "the registration of the MSA bars in jwst's slit frame, per observation and disperser"
+inputs = """measured from each observation's own empty shutters against the optics model; the fixed quadrant \
+pattern (bar_offset.QUADRANT_PATTERN) from 11 survey PRISM observations"""
+derived = "2026-11-05"
+depends_on = {}
+switch = "[nirspec.stage3] bar_offset = \"off\""
+code = ["nirspec/bar_offset.py"]
+tests = ["tests/test_nirspec_bar_offset.py"]
+record = "docs/design-nirspec-pipeline-v2.md section 3.7"
+
+[barshadow_prism]
+file = "empirical_jwst_nirspec_barshadow_prism.fits"
+sha256 = "8ac8dd6ee7701613ce9b213e1f86e25e0e0f3a17304a6c3e6e3bc691e099ed15"
+version = "2026-10-30T20:15:37"
+replaces = "jwst_nirspec_barshadow_0006.fits for the master background (CRDS layout; science slits skip the step)"
+inputs = "empty shutters of ember_cosmos_p1, p2, p3, p5, p6, ember_egs_p1, ember_uds_p2 (8459 shutters)"
+derived = "2026-10-30"
+depends_on = { barshadow = "jwst_nirspec_barshadow_0006.fits" }
+assumes = "the reference's layout (DATA1X1 / DATA1X3, 1001 rows over +-1 pitch), copied from the template"
+switch = "[nirspec.stage2] empirical_barshadow = false"
+code = ["nirspec/barshadow_calibration.py", "data/Generate_Barshadow_Cals.py"]
+tests = ["tests/test_barshadow_calibration.py"]
+record = "docs/design-nirspec-master-background.md section 9"
+
+[barshadow_g140m]
+file = "empirical_jwst_nirspec_barshadow_g140m.fits"
+sha256 = "6e6e3c7a4f90376776f56315ce03b24524e1164d6ff9bbdd6670883451330620"
+version = "2026-10-30T20:08:42"
+replaces = "jwst_nirspec_barshadow_0003.fits for the master background"
+inputs = "empty shutters of spurs_a2744, spurs_egs, spurs_gdn, spurs_gds (6925 shutters)"
+derived = "2026-10-30"
+depends_on = { barshadow = "jwst_nirspec_barshadow_0003.fits" }
+switch = "[nirspec.stage2] empirical_barshadow = false"
+code = ["nirspec/barshadow_calibration.py", "data/Generate_Barshadow_Cals.py"]
+tests = ["tests/test_barshadow_calibration.py"]
+record = "docs/design-nirspec-master-background.md section 9"
+
+[barshadow_g235m]
+file = "empirical_jwst_nirspec_barshadow_g235m.fits"
+sha256 = "c3aa202cee758f4252b6f72719cf00c1adecc0d887fd87e7981c018c71469b4c"
+version = "2026-10-30T20:01:08"
+replaces = "jwst_nirspec_barshadow_0005.fits for the master background"
+inputs = "empty shutters of spurs_a2744, spurs_egs, spurs_gdn, spurs_gds (1589 shutters)"
+derived = "2026-10-30"
+depends_on = { barshadow = "jwst_nirspec_barshadow_0005.fits" }
+switch = "[nirspec.stage2] empirical_barshadow = false"
+code = ["nirspec/barshadow_calibration.py", "data/Generate_Barshadow_Cals.py"]
+tests = ["tests/test_barshadow_calibration.py"]
+record = "docs/design-nirspec-master-background.md section 9"
+
+[barshadow_g395m]
+file = "empirical_jwst_nirspec_barshadow_g395m.fits"
+sha256 = "c6494154c2c659d50ee37faafb81cd6921bfe58c885ae4cc206f8c5e98070dc3"
+version = "2026-10-30T19:59:03"
+replaces = "jwst_nirspec_barshadow_0008.fits for the master background"
+inputs = "empty shutters of spurs_a2744, spurs_egs, spurs_gdn, spurs_gds (1780 shutters)"
+derived = "2026-10-30"
+depends_on = { barshadow = "jwst_nirspec_barshadow_0008.fits" }
+switch = "[nirspec.stage2] empirical_barshadow = false"
+code = ["nirspec/barshadow_calibration.py", "data/Generate_Barshadow_Cals.py"]
+tests = ["tests/test_barshadow_calibration.py"]
+record = "docs/design-nirspec-master-background.md section 9"

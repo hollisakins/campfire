@@ -537,6 +537,19 @@ def run(config, obs, source_ids, processes, overwrite,
 # Utility commands
 # ---------------------------------------------------------------------------
 
+@main.command('crds-compare')
+@click.option('--config', default=None, help='Path to configuration file.')
+@click.option('--pathloss', default=None, help='Path-loss reference to compare (default: the active context\'s).')
+def crds_compare(config, pathloss):
+    """Compare the active CRDS path-loss and bar-shadow references with CAMPFIRE's own calibrations
+    (data/nirspec_calibrations.toml). Run it when CRDS_CONTEXT changes."""
+    from campfire_pipeline.nirspec import crds_refs as CR
+    cfg = load_config(config)
+    setup_environment(cfg)
+    for line in CR.report(pathloss):
+        click.echo(line)
+
+
 @main.command('make-templates')
 @click.option('--config', default=None, help='Path to configuration file.')
 def make_templates(config):

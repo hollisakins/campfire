@@ -331,6 +331,10 @@ def pass1_settings(stage_config):
         # the measured bar offsets (``bar_offset.table``): a new measurement redoes pass 1
         out['bars'] = ';'.join(f'{d}:' + ','.join(f'{q}={v:.4f}' for q, v in sorted(qs.items()))
                                for d, qs in sorted(bars.items()))
+    from campfire_pipeline.nirspec.crds_refs import SlitLoss
+    sl = SlitLoss.from_config(stage_config)
+    if not sl.is_default:
+        out['slit_loss'] = f'y={sl.y},x={sl.x}'      # whose path loss the model took
     return out
 
 

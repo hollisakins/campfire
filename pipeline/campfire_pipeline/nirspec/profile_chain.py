@@ -196,6 +196,13 @@ class ChainResult:
             'PFBAROFF': (_f(np.median([e.bar_offset for e in self.result.model.exps])),
                          'Bar offset added to slit y [slit units]'),
         }
+        exps = self.result.model.exps
+        sl = exps[0].slit_loss if exps else None
+        if sl is not None:
+            c['PFSLY'] = (sl.y, 'Slit-direction path loss: optics / jwst')
+            c['PFSLX'] = (sl.x, 'Along-dispersion path loss: corrected / jwst')
+        refs = sorted({e.pl_ref for e in exps if e.pl_ref})
+        c['PFPLREF'] = (','.join(refs)[:68] or 'none', 'jwst path-loss reference the model starts from')
         return c
 
 
