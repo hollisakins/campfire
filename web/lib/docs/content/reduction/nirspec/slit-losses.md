@@ -6,13 +6,16 @@ An MSA shutter is about 0.2″ wide and 0.46″ tall on the sky, smaller than th
 
 ## How the model makes a source's image
 
-The model follows the light through the instrument in three steps.
+The model follows the light through the instrument in four steps.
 
-![The light of one point source, 0.16″ (0.3 of a shutter pitch) from the center of the middle shutter of a three-shutter slitlet, along the slit at 1 µm (blue) and 5 µm (orange). 1: the telescope's image arriving at the MSA; at 5 µm it is several times wider and reaches the bar. 2: the shutter cuts it sharply at its edges. 3: on the detector, after the light diffracted at the shutter edges is partly lost at the pupil stop, and after the detector's blur. At 1 µm almost all the light arrives; at 5 µm a fifth is lost. The small kernel before the MSA (step 1 in the text) is left out of the figure.](/docs/nirspec/optics_steps.png)
+![The light of one point source, 0.16″ (0.3 of a shutter pitch) from the center of the middle shutter of a three-shutter slitlet, along the slit at 1 µm (blue) and 5 µm (orange). 1: the telescope's diffraction pattern arriving at the MSA; at 5 µm it is several times wider and reaches the bar. 2: the same image spread by the kernel (dashed: step 1). At 1 µm the kernel lowers the peak and moves some light onto the bar; at 5 µm the image is already wide and barely changes. Right: how much of the light the kernel moves farther than a given distance. 3: the shutter cuts the image sharply at its edges. 4: on the detector, after the light diffracted at the shutter edges is partly lost at the pupil stop, and after the detector's blur.](/docs/nirspec/optics_steps.png)
 
-1. **Arriving at the MSA.** The telescope's diffraction pattern, computed from its 6.5 m pupil for each wavelength. Each point is also spread by a small measured kernel: the telescope's wavefront error and pointing jitter. A galaxy is the sum of such images over its shape (a round Gaussian of fitted width).
-2. **Transmitted by the MSA.** The open area of each shutter passes light; the bars block it, cutting the image sharply at the shutter edges.
-3. **Reaching the detector.** Light diffracted at the shutter edges spreads out of the spectrograph's beam, and the spectrograph's pupil stop removes part of it. The detector blurs what is left before it is sampled by 0.1″ pixels.
+1. **Arriving at the MSA.** The telescope's diffraction pattern, computed from its 6.5 m pupil for each wavelength.
+2. **Spread by the kernel.** The telescope's wavefront error and the pointing jitter during an exposure move a source's light by small amounts before it reaches the MSA. The kernel says how much light lands at each shift; it is a table measured from calibration stars, one per detector, changing smoothly with wavelength. Every shifted copy of the image then goes through the next two steps on its own. Uniform light does not feel the kernel (shifting uniform light changes nothing), so the stars, not the empty shutters, fix it.
+3. **Transmitted by the MSA.** The open area of each shutter passes light; the bars block it, cutting the image sharply at the shutter edges.
+4. **Reaching the detector.** Light diffracted at the shutter edges spreads out of the spectrograph's beam, and the spectrograph's pupil stop removes part of it. The detector blurs what is left before it is sampled by 0.1″ pixels.
+
+A galaxy is the sum of such images over its shape: a round Gaussian of fitted width, centered at its fitted position.
 
 Each exposure's own open shutters enter the model, so a source in the end shutter of a slitlet, or in a slitlet of one shutter, loses the light that falls on the closed neighbors.
 
