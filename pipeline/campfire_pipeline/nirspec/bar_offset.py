@@ -146,13 +146,18 @@ def _worker(args):
     sel &= (np.abs(u) > U_LO) & (np.abs(u) < U_HI) & np.isfinite(norm) & (norm > 0) & (scale < SCALE_MAX)
     if not sel.any():
         return None, None
-    prof = uniform_profile(c.detector, open_mask(p['state']))
+    mask = open_mask(p['state'])
+    prof = uniform_profile(c.detector, mask)
     pitch = float(p['pitch'])
     T = model_ratio(prof, p['y'][sel] * pitch, p['lam'][sel], kk[sel], pitch)
     n = int(sel.sum())
+    # the edge each pixel looks at: inner when the shutter beyond it is open too (a bar between two open
+    # shutters), outer when it is closed (the slitlet's end)
+    beyond = kk[sel] + np.sign(u[sel]).astype(int)
+    inner = np.isin(beyond, np.array(mask))
     return dict(u=u[sel].astype(np.float32), band=band[sel].astype(np.int8),
                 r=(ratio[sel] / norm[sel]).astype(np.float32), T=T,
-                quadrant=np.full(n, p['quadrant'], np.int8),
+                quadrant=np.full(n, p['quadrant'], np.int8), inner=inner,
                 exposure=np.full(n, f'{c.root}_{c.nod}')), None
 
 
@@ -277,10 +282,15 @@ def measure(canonicals, workspace, processes=1, cache_dir=None, max_canonicals=M
             out['quadrants'][str(q)] = v
     # the two halves per wavelength band (the band edges of ``_band_edges``): where the lower and the upper edges
     # sit against the model at each wavelength, for the calibration of the shutter edges (optics_calibration)
+    # and apart for the edges between two open shutters (inner) and the slitlet's ends (outer)
     out['bands'] = {}
     for b in range(N_BANDS):
-        _, lo, hi = fit(s, s['band'] == b, MIN_PIXELS // N_BANDS)
-        out['bands'][str(b)] = dict(lower=lo, upper=hi)
+        rec = {}
+        for lab, sel in (('all', s['band'] == b), ('inner', (s['band'] == b) & s['inner']),
+                         ('outer', (s['band'] == b) & ~s['inner'])):
+            _, lo, hi = fit(s, sel, MIN_PIXELS // N_BANDS)
+            rec[lab] = dict(lower=lo, upper=hi, n=int(sel.sum()))
+        out['bands'][str(b)] = rec
     if np.isfinite(out['offset']):
         out['applied'] = {str(q): out['offset'] + QUADRANT_PATTERN[q] for q in (1, 2, 3, 4)}
     return out

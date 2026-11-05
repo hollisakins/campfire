@@ -1750,6 +1750,50 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
           next to a closed shutter, which the background measures, may differ. Next: the background
           halves per band for every calibration observation (`bo_set_bands.zsh`, `bo2_*.json`),
           then one joint fit.
+        - What it turned out to be (2026-11-05, later; scripts in `scratch/claude/extraction-v2/edge/`).
+          Tests, in order, of what could make point sources and uniform light disagree:
+          - Inner against outer edges (`bar_offset` now records each pixel's edge type; 20
+            observations, `edges_summary.py`): inner edges sit 0.002-0.005 slit units from outer
+            ones (1133 within 0.003). Not the explanation.
+          - The detector blur, the stop size, and the kernel's lopsided half placed after the
+            shutter (`split_test.py`, `combined_test.py`, `lopsided_test.py`): none produces the
+            background's narrowing (edge positions do not move with a symmetric blur); the
+            lopsided half after the shutter gives inner minus outer +0.0045 as measured, but does
+            not change the stars; a more lopsided kernel does nothing. A stop off centre cannot by
+            symmetry (a real, symmetric pupil gives T(c) = T(-c)).
+          - The model's open shutters per exposure (`mask_check_1133.py`): right in every nod.
+          - Nod differences against single frames less the master background
+            (`mbkg_vs_nod_1133.py`, all 680 visits fitted both ways): the same pattern. Not the
+            nod model.
+          - Brightness of the stars (`edge_bright.py`): the stars' shift is the same in every
+            third.
+          - What 1133's design hides: its configurations step the stars diagonally (stars near
+            -y sit at SRCXPOS +0.14, near +y at -0.08), and each configuration carries its own
+            flux offset that follows SRCXPOS (blue +-2 %, the 1133 ramp; red -6 to -11 % in the
+            corner configurations; `config_check_1133.py`). Stars within a configuration spread
+            over 0.13-0.15 pitch, so position and configuration separate: with one level per
+            star and one per configuration (`config_free_fit.py`) the dependence on position along
+            the slit is flat to about 1-3 % within 0.35 pitch at 1, 3 and 4.5-5.3 um (4.5-5.3: +4.3
+            / +2.4 % at -0.3 / -0.2 pitch, -0.8 to +2.0 % elsewhere). The one-sided +-7 % was mostly
+            the dispersion direction leaking in. The 4.2-4.8 um band alone shows a gradient along
+            the whole slit (+26 % at -0.4 through +-1 % at +-0.1 to -8.5 % at +0.4) that the
+            overlapping 4.5-5.3 band does not: spectral (the stars' features at 4.2-4.5 um with a
+            small wavelength shift along the slit, or the detector gap), not the bars.
+          - Bright stars bias the background measurement (`bo_brightness.zsh`, 1133's slitlets
+            split by their star's brightness): bar offset +0.0060 from the faintest third, +0.0120
+            from the brightest (all +0.0105); lower minus upper -0.013 against -0.035. The faint
+            third's lopsidedness matches the survey's (-0.014), so the one-sided edge below is the
+            instrument's, and calibration fields with bright stars need a brightness cut.
+          - The edge fit with the configuration terms (`edge_config_fit.py`): 1.0 um shift -0.005,
+            widen -0.020; 3.0 um shift -0.025, widen 0, driven by the 22 visits on the -y bar
+            (0.35-0.45 pitch, +30 % against the model); 4.5-5.3 um shift -0.010, widen +0.005. No
+            common zero point: within 0.35 pitch the model holds without one, and stars on a bar
+            (6 % of sources have |SRCYPOS| >= 0.40) are poorly described and dominate any fit that
+            includes them.
+          - What both datasets agree on: every opening's upper edge sits about 0.014 slit units
+            lower than the symmetric model (`onesided_test.py`: background lower minus upper
+            -0.014 in the survey and in 1133's faint third; the stars' +y deficit near the bar goes
+            from -2.6 to -0.6 % at 4.5 um with the upper edges moved by -0.010 to -0.015).
       - Stocktake of the whole optics work against what STScI provides and plans (2026-11-05):
         `scratch/claude/extraction-v2/review/stocktake.md` (duplication, ranked risks, how to keep
         the boundary with CRDS clean).
