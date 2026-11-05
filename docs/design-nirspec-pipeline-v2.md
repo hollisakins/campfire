@@ -2,15 +2,19 @@
 
 **What this is.** The one maintained design document for the redesigned CAMPFIRE NIRSpec
 reduction. It covers the master background, the empirical bar shadow, stuck-shutter detection,
-the trace maps, the first pass, contamination and the final profile extraction, and the plots the
+the trace maps, the first pass, contamination, the final profile extraction with its diffraction
+model of the MSA and the bar offset, the boundary with jwst's references, and the plots the
 eventual pull request must carry. Much earlier documentation was lost when `/private/tmp` was
 wiped at a reboot (the extraction report's LaTeX sources, the round 1 to 8 findings, the
 calibration-star scripts). This document replaces all of it. Keep it current: every decision,
 result and figure path goes here.
 
-**Branch.** `claude/extraction-v2` (worktree `.claude/worktrees/extraction-v2-work`), which merges
-`claude/loving-bell-cpxlbg` repeatedly. Merges to `main` only as a MAJOR pipeline release,
-together with the full-archive re-reduction.
+**Branch.** `claude/extraction-v2` (worktree `.claude/worktrees/extraction-v2-work`), which holds
+all of the master-background, stuck-shutter, optics and extraction work (every `claude/mbkg-*`,
+`stuck-shutter-fit`, `loving-bell-cpxlbg`, `psf-table`, `bkg-revision` and `drizzle-once` branch
+is merged into it). The web documentation is on `claude/extraction-v2-docs`, merged before the
+PR. Merges to `main` only as a MAJOR pipeline release, together with the full-archive
+re-reduction.
 
 **Related.** [Master-background feasibility study and results](design-nirspec-master-background.md)
 (owned by the master-background session; its section 9 holds the measurements this document
@@ -35,115 +39,107 @@ used and the conflict is listed in section 9.
 
 ## 1. Purpose and status summary
 
-The pipeline today extracts each source from nod differences with a fixed optimal profile, treats
-every source as a point source, and ignores light from other slitlets. On the gratings, traces
-sit edge to edge (38 % of each G395M detector is under more than one slitlet's light), so this
-leaves other sources' light in many spectra. The redesign does four things:
+The released pipeline extracts each source from nod differences with a fixed optimal profile,
+treats every source as a point source, and ignores light from other slitlets. On the gratings,
+traces sit edge to edge (38 % of each G395M detector is under more than one slitlet's light), so
+this leaves other sources' light in many spectra. The redesign does five things:
 
-1. It measures the sky of every exposure from its empty shutters (the master background) and
-   paints it back onto the detector, including where several slitlets overlap and past the
+1. It measures the background of every exposure from its empty shutters (the master background)
+   and paints it back onto the detector, including where several slitlets overlap and past the
    calibrated wavelength range.
-2. It finds stuck-closed shutters with a per-shutter fit to that sky, on every disperser.
-3. It fits every source with a physical forward model (a Gaussian galaxy blurred by the
-   star-measured PSF) whose shape is fixed by a chain of rules, not left free.
+2. It finds stuck-closed shutters with a per-shutter fit to that background, on every disperser.
+3. It fits every source with a forward model: a Gaussian galaxy through a diffraction model of
+   the MSA (the telescope's pupil, an empirical kernel before the shutter, the open shutters, the
+   spectrograph's stop, the detector blur), its shape fixed by a chain of rules, not left free.
 4. It separates overlapping sources with a joint linear solve over small neighbourhoods, and
    reports the other sources' light as its own column instead of hiding it.
+5. It keeps its own MSA calibrations (the diffraction model, the bar offset of each observation,
+   the empirical bar-shadow tables) at an explicit boundary with jwst's path-loss and bar-shadow
+   references, each with a switch back to jwst's (3.10).
 
-| Component | Status | Owner | Where |
-|---|---|---|---|
-| Release: MAJOR, merged only with the full re-reduction | Decided (user, 2026-10-24 and 2026-10-29) | both | section 8 |
-| Stage 2a single `Spec2Pipeline` call per rate file, `bkgslits/` | Built (loving-bell, in CHANGELOG Unreleased) | MB session | 3.1 |
-| Empirical bar-shadow tables, PRISM + G140M/G235M/G395M | Built (7ab786bf, 47d19c46, fea58a6e, b0c08026); settled 2026-10-30 (user, in the MB session; the "not signed off" line here was a stale recap) | MB session | 3.2 |
-| No bar-shadow division of science frames | Decided (user, 2026-10-29) | both | 3.2 |
-| Master background, calibrated sky + painting (`_mbkg.fits`) | Built (0d9dd3c7, 53b1c5af, 2f898100, 65c1d825) | MB session | 3.3 |
-| Master background split into step 1 (before 2a) and step 2 (end of 2a) | Decided (user, 2026-10-30); Built (master background 1.2+) | MB session | 3.3, 3.4 |
-| Step 2 reselects clean shutters in calibrated units | Decided (user, 2026-10-30) | MB session | 3.3 |
-| Step 1's tables inside the rate file, `_mbkgr.fits` retired; `_mbkg.fits` the only extra per-exposure file, compressed | Decided (user, 2026-11-01); Built (master background 1.5) | MB session | 3.4 |
-| One trace map per exposure, built in step 1 from every commanded shutter, stored in the rate file, stuck shutters removed when read; replaces the coverage counter and the stage-3 trace-map cache | Decided (user, 2026-11-01); builder Built (`trace_overlap.ShutterMap`, step 1 1.4; 99.7 % of pixel-slitlet pairs as `tracemaps/` on p1); stage 3 reads it (ecaf2f22, after the merge into extraction-v2, user 2026-11-01), `tracemaps/` kept as its working copy. The master background keeps its coverage counter (each slitlet's whole extent, from the same step-1 geometry pass): counting from the padded map admits 27-38 % more G395M empty-shutter pixels that read 3.3 ± 0.4 % high, a neighbour's light past `LIGHT_PAD` (MB study §9, 2026-11-01) | both | 3.4 |
-| No per-slitlet and no smooth (row/column) scaling of the master background, any disperser; the opt-in removed from the code | Decided (user, 2026-10-30; reconfirmed and extended to smooth scaling 2026-11-02 after the nod-repeatability and slitlet-left-out tests, MB design doc); Built (1bd8d7c6; opt-in removed on `claude/mbkg-paint`) | both | 3.3 |
-| Sky painted past both ends of the calibrated range, nothing masked | Decided (user, 2026-10-30); Built (65c1d825, 5b8d6851) | MB session | 3.3 |
-| Smoothing the per-exposure grating sky | Open: trial only, not approved (user, 2026-10-30) | MB session | 3.3 |
-| Stuck-closed shutters by a per-shutter template fit, all dispersers | Decided (user, 2026-10-30); fit module Built (8ae424bf on `claude/stuck-shutter-fit`, matches the prototype to 1e-7 on p1 G395M, same 21 calls); not wired into step 1 yet | MB + extraction | 3.5 |
-| Stuck list keyed by physical shutter everywhere, table-form entries, origins manual / web / auto | Decided (user, 2026-10-30), incl. the ownership split; loader and writer details Proposed | MB + extraction | 3.5 |
-| Deploy pull mirrors the web: a mark cleared on the web clears the local web entry (manual and auto never touched; kept when the DB has no web rows for the observation) | Decided (user, 2026-10-30); Built (36cf3b5e) | extraction session | 3.5 |
-| `spectrum_exposures.msa_shutters`, filled by deploy and by the backfill for older rows | Decided (user, 2026-10-30); Built (36cf3b5e, backfill extended) | extraction session | 3.5 |
-| nods.pdf prints each shutter's physical label and the fit's call | Decided (user, 2026-10-30); Built (93cb2aea, ffa50361); the fit's calls appear once step 1 writes them | extraction session | 3.5 |
-| Trace maps (version 7) followed past both ends of the calibrated range | Built (1d946bb3, e3af87b0) | extraction session | 3.6 |
-| Forward-model profile extraction on by default | Decided (user, 2026-10-29); Built (4ca99b5a) | extraction session | 3.7 |
-| Shape chain: own fit above the gate, else PRISM shape, else default | Decided (user, 2026-10-22/23); Built (49d0fe83 and earlier) | extraction session | 3.7 |
-| Instrument model (PSF, shutter geometry) fixed, never fitted | Decided (user, 2026-10-24) | extraction session | 3.7 |
-| First pass on master-background-subtracted single frames | Decided (user, 2026-10-29); Built as a module (c72d10cb, 0f466d6c, 5b8d6851), never wired into stage 3; removed (user, 2026-11-01: superseded by the joint first pass; in the git history) | extraction session | 3.8 |
-| Pass-1 contamination mask | Replaced (user, 2026-10-30): it is circular on G395M | extraction session | 3.9 |
-| Joint linear solve of local neighbourhoods | Decided (user, 2026-10-30); Built as the joint first pass, the only pass 1 (0a746f33, 8792506e, 45db22af). The masked pass 1, pass 1b, the echo correction and the old group solve (`contam_joint`) are removed (user, 2026-11-01) | extraction session | 3.9 |
-| No per-exposure pointing offsets in the profile fit | Built (b6e62302) | extraction session | 3.7 |
-| Same-slitlet overrides in stage 2b, by position from `SOURCE_INFO` (0.75 slit units, 0.02 of the sky, unmeasurable neighbours count as bright, no clean partner: keep both and flag) | Decided (user, 2026-11-01); Built (3795e228, 7e7c160f); p1 rerun and PRISM check done | extraction session | 3.9 |
-| Stage 3's same-slitlet decision independent of the previous run (joint pass on the override files' nod differences, rebuilt from the frames before subtraction); Spec3 and every drizzle after the revision | Built (2026-11-02, `claude/bkg-revision`; p1 922323); p1 end-to-end check pending | extraction session | 3.9 |
-| Shipped errors include the subtracted sky exposures' noise (today about 20 % low with three exposures) | Follow-up (user, 2026-11-01); not built; blocks a fair V26 | extraction session | 3.9 |
-| Contamination past the calibrated range fitted in count-rate units | Decided (user, 2026-10-30); Built in part (`profile_extend.py`, e3af87b0) | extraction session | 3.9 |
-| `fnu` not contamination-subtracted; `fnu_contam` separate, NaN where inseparable | Decided (user, 2026-10-30); Built (af58617f: `contam_1d = "report"` default, `"subtract"` opt-in) | extraction session | 4 |
-| Column set `fnu`, `fnu_opt`, `fnu_3px/4px/5px`, `fnu_prof`, `fnu_contam` | Decided (user, 2026-10-29); Built (686eedaf) | extraction session | 4 |
-| `_pf.fits` deleted; `PROF2D` + `CONTAM2D` kept in `spec.fits` | Decided (user, 2026-10-29); Built (4ca99b5a, 2916c182) | extraction session | 4 |
-| "Unpredicted light" removed | Decided (user, 2026-10-29); Built (dbe63ef0, bca17510) | extraction session | 3.9 |
-| No per-exposure sky-difference term in nodded products | Decided (user, 2026-10-29) | both | 3.3 |
-| Master-background spectrum as a secondary product, archive-wide | Decided (user, 2026-10-29 and 2026-11-01); Built on `claude/mbkg-extraction` (`mbkg_extraction.py`; `SPEC1D_MBKG`, `SCI_MBKG`, `ERR_MBKG`, `PROF1D_MBKG`, `MBKGPREF` / `MBKGWHY`, `NEXP` / `NEXPBKG`); end-to-end p1 run pending | extraction session | 4 |
-| Per-source runs give the same products as full runs | Decided (user, 2026-10-29); Built (a7094d9e) | extraction session | 3.9 |
-| Stage 1 detector-background mask extended past the calibrated range | Open (recommended in the merge plan) | MB session | 3.1 |
-| Speed up stage 2's per-source work: the rectification after stage 2a and the nodded subtraction in stage 2b | Goal (user, 2026-10-31); not started; profile first | extraction session | 5 (V30) |
+Status on 2026-11-05. Everything below is on `claude/extraction-v2` (local commits, not pushed;
+about 290 commits ahead of `origin/main`, 30 behind). **Built** means in the code and tested; the
+last column says where it is described.
+
+| Component | Status | Where |
+|---|---|---|
+| Release: MAJOR, merged only with the full re-reduction | Decided (user, 2026-10-24 and 2026-10-29) | 8 |
+| Stage 2a: one `Spec2Pipeline` call per rate file, background-only slitlets in `bkgslits/` | Built | 3.1 |
+| Empirical bar-shadow tables, PRISM, G140M, G235M, G395M; no bar-shadow division of science frames | Built; settled (user, 2026-10-30); held-out check done (2026-11-03) | 3.2 |
+| Master background: step 1 (count rate, before 2a; tables in the rate file) and step 2 (calibrated, end of 2a; `_mbkg.fits`); painted past both ends of the calibrated range; no per-slitlet or smooth scaling | Built (master background 1.7); deploy, database columns and web built (32a5226c) | 3.3, 3.4 |
+| Smoothing the per-exposure grating background | Open: trial only, not approved | 3.3 |
+| Stuck-closed shutters by a per-shutter template fit, every disperser | Built: step 1 fits and calls every shutter (`SHUTAMP`, `CALLS`), `cfpipe nirspec detect-stuck` merges the calls into the stuck list; physical keys everywhere (`stuck_list.py`, database, web, deploy). Open: the user's verdict on the G395M review packet; G140M / G235M not yet checked | 3.5 |
+| Trace maps: one per exposure, built in step 1 from every commanded shutter, stored in the rate file, followed past both ends of the calibrated range | Built; stage 3 reads them (`tracemaps/` is its working copy) | 3.4, 3.6 |
+| Forward-model profile extraction on by default; shape chain (own fit above the gate, else the PRISM shape, else the default); instrument model fixed, never fitted; no per-exposure pointing offsets; each nod at its planned position | Built | 3.7 |
+| Diffraction model of the MSA for every disperser (`FIT_VERSION` 6, `optics.py`, `data/nirspec_optics.json` 2026.11-w2x), with a correction along the dispersion fitted to stars | Built (2026-11-04) | 3.7 |
+| Bar offset of each observation, measured per disperser from its empty shutters (`FIT_VERSION` 7, `bar_offset.py`) | Built (2026-11-05) | 3.7 |
+| Boundary with jwst's references: one reader (`crds_refs.py`), the calibration manifest, `slit_loss_y` / `slit_loss_x` switches, `cfpipe nirspec crds-compare` | Built (2026-11-05) | 3.10 |
+| Joint first pass (every source solved with its neighbours on its nod differences, light past the cutouts in count rate), the only pass 1; the masked pass 1, pass 1b, the echo correction and the master-background first pass removed | Built | 3.8, 3.9 |
+| Same-slitlet overrides by position in stage 2b; stage 3 redoes the decisions from the joint pass on the override files' nod differences and reruns stage 2b where they change, then Spec3 and every drizzle | Built | 3.9 |
+| Errors include the subtracted exposures' noise | Built (2b0b9dd3, 2026-11-01) | 3.9 |
+| `fnu` not contamination-subtracted; `fnu_contam` separate, NaN where inseparable; columns `fnu`, `fnu_opt`, `fnu_3px/4px/5px`, `fnu_prof`, `fnu_contam`; `PROF2D`, `CONTAM2D` in `spec.fits`, `_pf.fits` deleted | Built | 4 |
+| Master-background spectrum as a secondary product, also through the 1-D combine of several exposure groups | Built (530bedb5 for the combine) | 4 |
+| Per-source runs give the same products as full runs | Built | 3.9 |
+| Optimal extraction's 3-pixel boxcar fallback normalised (it returned a third of the flux) | Built (merged 207bd0dc) | 4 |
+| End-to-end runs | p1 (2026-10-31, 3 h 14 min, 6 workers) and uncover2 (2026-11-02, 4 h 45 min), both before `FIT_VERSION` 6. Stage 3 of p1 on `FIT_VERSION` 7 running (2026-11-05, docs session, `scratch/claude/e2e_p1/run_stage3_fv7_docs.log`) | 3.9, 5 (V30) |
+| Stage 1 detector-background mask extended past the calibrated range | Open | 3.1 |
+| Speed up stage 2's per-source work (on p1: rectification 25 min, stage 2b about 60 min) | Goal (user, 2026-10-31); not started; profile first | 5 (V30) |
 
 ---
 
 ## 2. Pipeline order, end to end
 
-Each step lists what it reads and what it writes. "Target" is the agreed design. "Today" says
-what the branch does now where it differs.
+Each step lists what it reads and what it writes, as the branch runs it.
 
 1. **Stage 1 (detector).** Reads the uncal files. Writes `<root>_<nod>_<nrsN>_rate.fits` with
    the detector background removed outside every open shutter's footprint (`CFBKG`,
    `CFBKGMASK`). Unchanged by this redesign, except the open item of extending that footprint
-   past the calibrated range (section 3.1).
+   past the calibrated range (3.1).
 2. **Master background, step 1 (count-rate units, before stage 2a).** Per exposure group. Reads
    the rate files, the original MSA metafile, the failed-open shutter list (msaoper) and the
-   bar-shadow table. Does one `assign_wcs` pass per rate file, shared with the overlap counter.
-   Measures the count-rate sky (`MBKG1DR`) from empty shutters lit by one slitlet only, and
-   count-rate quadrant scales. Fits every commanded-open shutter's sky template to find
-   stuck-closed shutters. Writes its tables into the rate file itself (`MBKG1DR`, `MBKGQSR`,
-   `MBKGSHR`, `SHUTAMP`, `CALLS`; since 1.5) and auto entries in the stuck-shutter list.
-3. **Stage 2a (calibration).** Reads the rate files and the stuck list (already including step
-   1's calls). One `Spec2Pipeline` call per rate file. Writes one canonical cutout per source
-   (`<root>_<nod>_<nrsN>_<sid>.fits`, point-source calibration, MJy) and the MSA plan's
-   background-only slitlets (`bkgslits/<root>_<nrsN>_bkgslits.fits`, MJy/sr).
-4. **Master background, step 2 (calibrated units, end of stage 2a).** Reads step 1's
-   `MBKG1DR` and quadrant scales, the canonicals and `bkgslits/`. Sees the stuck state only
-   through the canonicals' shutter state. Reselects its clean shutters in calibrated units,
-   measures the calibrated sky (`MBKG1D`), paints the sky onto the detector (`MBKG2D`), writes
-   QA. Writes `<base>_mbkg.fits`.
-5. **Stage 2b (nod subtraction).** Unchanged: each nod minus the mean of its partners. The
-   master background is never used to correct the nodded frames.
-6. **Trace maps.** Per exposure and detector: which source's light falls on which pixel, at
-   which wavelength, including past both ends of the calibrated range. Reads the rate file's
-   WCS and the stuck list. Cached. Target: share step 1's cached `assign_wcs` model. Today:
-   built at the start of the stage-3 profile phase (`stage3.py:450`), `trace_overlap.py`.
-7. **First pass.** Every source, from single exposures with the master background subtracted
-   (no nod differences, so no negative copies). Gives each source's spectrum and shape for
-   the contamination model and seeds the final shape. Today: `first_pass.py` exists and is
-   tested on p1, but stage 3 still runs the old nod-difference pass 1 (`profile_contam.run_pass1`).
-8. **Contamination (joint local solve).** For each source, its neighbours on the trace maps
-   (sources whose light shares its pixels) are solved together with it in one linear fit, with
-   every shape fixed. Gives each source's own spectrum free of its neighbours, and each
-   neighbour's predicted light on the target. Flags wavelengths where two sources cannot be
-   told apart. Today: the masked one-pass prediction (`profile_contam.predict`) with a
-   gated group solve (`profile_joint`, off).
-9. **Final extraction.** The same-slitlet decisions redone from step 8, stage 2b again where
-   they change (section 3.9), then stage 3 resampling (`Spec3Pipeline`) and every drizzle,
-   then the nodded profile extraction of each source (`profile_fit.py`), with the neighbours'
-   light known from step 8.
+   bar-shadow table. One `assign_wcs` pass per rate file. Measures the count-rate background
+   (`MBKG1DR`) from empty shutters lit by one slitlet only, and count-rate quadrant scales. Fits
+   every commanded-open shutter's background template to find stuck-closed shutters. Builds the
+   exposure's trace map from every commanded shutter. Writes all of it into the rate file
+   (`MBKG1DR`, `MBKGQSR`, `MBKGSHR`, `SHUTAMP`, `CALLS`, the trace-map extensions);
+   `cfpipe nirspec detect-stuck` merges the calls into the stuck list as auto entries.
+3. **Stage 2a (calibration).** Reads the rate files and the stuck list. One `Spec2Pipeline` call
+   per rate file. Writes one canonical cutout per source (`<root>_<nod>_<nrsN>_<sid>.fits`,
+   point-source calibration, MJy) and the MSA plan's background-only slitlets
+   (`bkgslits/<root>_<nrsN>_bkgslits.fits`, MJy/sr).
+4. **Master background, step 2 (calibrated units, end of stage 2a).** Reads step 1's tables, the
+   canonicals and `bkgslits/`. Reselects its clean shutters in calibrated units, measures the
+   calibrated background (`MBKG1D`), paints it onto the detector (`MBKG2D`), writes QA. Writes
+   `<base>_mbkg.fits`.
+5. **Stage 2b (nod subtraction).** Each nod minus the mean of its partners, the partners chosen
+   by the same-slitlet rule (a catalogued neighbour within 0.75 slit units of the source's position
+   in a partner frame, brighter than 0.02 of the background, drops that partner; with no clean
+   partner both are kept and flagged; 3.9). The variance includes the subtracted frames' noise. The master background
+   is never used to correct the nodded frames.
+6. **Stage 3, before the extraction.** Per observation: the bar offset of each disperser from its
+   empty shutters (`bar_offset.json`, measured once; 3.7), and the trace maps read from the rate
+   files into `tracemaps/`.
+7. **Joint first pass** (per disperser, PRISM first). Every source solved together with the
+   sources whose light shares its pixels (trace maps), each at its fixed shape, on the nod
+   differences, with its light past the cutouts in count rate (`profile_extend`). Gives each
+   source's spectrum and each neighbour's predicted light on it (3.8, 3.9).
+8. **Same-slitlet revision.** The stage-2b decisions redone with each neighbour's brightness from
+   the joint pass (on the override files' nod differences, rebuilt from the frames before
+   subtraction); stage 2b again where they change, and the joint pass again for the sources whose
+   own partners differ (3.9).
+9. **Final extraction.** Spec3 (s2d, crf and `EXPOSURES` table from the canonicals as subtracted)
+   and every drizzle, then per source the profile fit (`profile_fit`, the shape chain of
+   `profile_chain`, the other slitlets' light from step 7 masked or subtracted for the shape fit),
+   the neighbour scan on the residuals (report only by default), and the master-background
+   spectrum on the same exposures with their master background subtracted (`mbkg_extraction`).
    Writes `<obs>_<grating>_<sid>_spec.fits`.
-10. **Products.** `fnu` (best), the boxcars, `fnu_prof`, `fnu_contam` (NaN where inseparable),
-    `PROF2D`, `CONTAM2D`, and the master-background spectrum as extra extensions (section 4).
+10. **Products.** `fnu` (best), `fnu_opt`, the boxcars, `fnu_prof`, `fnu_contam` (NaN where
+    inseparable), `PROF2D`, `CONTAM2D`, the `PF*` cards (shape, `PFBAROFF`, `PFSLY` / `PFSLX`,
+    `PFPLREF`) and the master-background spectrum as extra extensions (4).
 
-Nothing is computed twice (user, 2026-10-30): the count-rate sky step 1 needs is the master
-background without calibration; the `assign_wcs` pass is shared by the overlap counter, step 1,
-step 2 and (target) the trace maps.
+Nothing is computed twice (user, 2026-10-30): the count-rate background step 1 needs is the master
+background without calibration, and the `assign_wcs` pass of step 1 serves the overlap counter,
+the stuck-shutter fit and the trace maps.
 
 ---
 
@@ -3070,39 +3066,60 @@ a fix or needs another field or disperser), **To make**.
 
 ## 6. Open decisions and next steps
 
+As of 2026-11-05. Items done or superseded since the last version of this list are recorded in
+the change log (10).
+
+**Before the release (section 8).**
+
 | Item | Owner | Waiting on |
 |---|---|---|
-| Approve the step 1 / step 2 interface (3.4 A, B, D, E) | MB session | user |
-| Stuck-list loader and auto writer (3.5): approved in substance (user, 2026-10-30); Built on loving-bell (`stuck_list.py`, 75b654b0; `write_origin`, f4343bc2) | MB session | |
-| Physical-key stuck list in the database (`nirspec_stuck_shutters`, migration 20261031011741), web nods review, deploy push/pull, physical deployment snapshot, deploy TOML writers routed through `stuck_list`: Built (36cf3b5e) | extraction session | |
-| Run `scripts/backfill_stuck_shutters_physical.py` after the migration is live (dry run first): it writes the physical stuck rows and fills `spectrum_exposures.msa_shutters` for rows deployed before the column (approved by the user, 2026-10-30) | user | migration |
-| `nirspec_mbkg` product type missing from the `storage_objects` CHECK (`test_registry` fails) | MB session | |
-| One-off command converting legacy stuck entries to physical keys | MB session | |
-| Verdict on the G395M stuck review packet; thresholds | extraction session | user |
-| Stuck fit on G140M and G235M | extraction session | |
-| Build step 1 and the physical-key stuck list, migration, web, deploy | both, per split | approvals above |
-| Remeasure the +2.5 % in-range offset and G395M blue extension after b0c08026 | MB session | |
-| Held-out validation of the b0c08026 tables | MB session | |
-| Grating sky smoothing trial | MB session | user |
-| Retire `tracemaps/` once pass-1 validity keys on the rate files (the superseded passes are removed) | extraction session | |
-| Error propagation: write the variance including the subtracted sky exposures in stage 2b (profile fit reads the frame's own from `PRE_BKGSUB_VAR_*`); before V26 | extraction session | user (when) |
-| Update the CHANGELOG extraction entry (joint first pass, no per-exposure offsets, same-slitlet overrides, maps from the rate file) | extraction session | |
-| Neighbour scan: stay `report_only` or apply (`auto_override`) | user | |
-| Second field (a spurs observation) and G140M / G235M end to end | extraction session | |
-| Full-field separability count (477 p1 G395M sources) | extraction session | |
-| Same-row inseparability cause | extraction session | |
-| Master-background spectrum: end-to-end p1 run and review (built, section 4); the 1-D combine of several groups; the `extended` threshold | extraction session | user |
-| Default galaxy width 0.15 vs 0.21 | user | |
-| Nod offset law (3.7, `NOD_OFFSET_LAW`: each nod at its own planned SRCYPOS): built, on by default | extraction session | |
-| Centre-law refit with the nod law (3.7, `psf_calibration.py` step `centre_law`): adopt or not (the two-component PSF refit is superseded by table S and its code removed) | user | |
-| Three-component PSF (3.7, `wing3_after`, general `psf_components` tables): table rule decided 2026-11-02 (smooth joint fit, table S); S adopted 2026-11-03 (`FIT_VERSION` 4); the self-consistent second round gives S2 (same on NRS1, NRS2 wing/shoulder split moved by up to 2 % of peak at 1.5-3 um, stack test equal overall): keep S or adopt S2. Left: the 3.3-5.3 um ranges (few stars; more calibration stars), and the flux change on p1 | user (S or S2); extraction session | |
-| Shutter (3.2, 3.7): the geometric shutter with the smooth transmission T, capped at 1, the PSF split evenly before and after it, is the default (user, 2026-11-03; `FIT_VERSION` 5, card `PFSHUT` `geomT-2026-11-03b`); the H gratings use the M grating with the same filter (user, 2026-11-03). Left: p1 stage 3 rerun with it; the blue end against jwst's point path loss; the held-out check of the b0c08026 grating tables, which T is fitted to | extraction session | |
-| Stage 1 footprint past the calibrated range | MB session | user |
-| Runtime baseline on one full observation | both | |
-| Speed up stage 2's per-source work (user goal, 2026-10-31). First profile one stage-2b group and one rectification: in stage 2b the log line "Inverting the pathloss" only marks the start of a group, which also subtracts the nods, reapplies the pathloss and rectifies again, so the slow part is not yet known. Candidate fixes once measured: rectify once instead of in both 2a and 2b, invert the pathloss arithmetically from the stored correction instead of a `PathLossStep` call, and batch per exposure instead of per source | extraction session | |
-| Rebuild the extraction report as final documentation (main text = what ships; appendices = explored and rejected) | extraction session | |
-| Same-slitlet overrides by position (3.9, `slitlet_neighbours.py`, built in stage 2b): decided 2026-11-01 (0.75 slit units, 0.02 of the sky, unmeasurable neighbours count as bright, no clean partner: keep both and flag); p1 rerun and PRISM check done. Left: the CHANGELOG entry before a PR | extraction session | |
-| Informational "master background likely better" columns (archive products, 3.9) | extraction session | user |
+| p1 on `FIT_VERSION` 7: review the stage 3 rerun (running, docs session) as the end-to-end check of the current model; the stage 1-2 products there are from 2026-10-31 | extraction session | the run |
+| A second field (a spurs observation) and G140M / G235M end to end | extraction session | |
+| Validation plots still to make or redo (5): V22 (joint vs PRISM, 2-D first), V23-V25, V26 (delivered S/N against the archive), V27 (injections), V28 (shape tests on bright sources), V29 (master-background spectrum against `fnu`); V1, V3, V6 redone on the current tables | extraction session (V1, V3, V6: MB session) | |
+| Merge `origin/main` (30 commits) into the branch | extraction session | |
+| One CHANGELOG entry for the extraction (joint first pass, no per-exposure offsets, same-slitlet overrides, maps from the rate file, `FIT_VERSION` 6 and 7, the CRDS boundary) | extraction session | |
+| Merge `claude/extraction-v2-docs` (web documentation and its figures) | docs session | |
+| Rebuild this document as final documentation (main text = what ships; appendices = explored and rejected) | extraction session | |
+| Run `scripts/backfill_stuck_shutters_physical.py` once the migration is live (dry run first) | user | migration |
+
+**Model accuracy (3.7; the stocktake's ranked risks, `scratch/claude/extraction-v2/review/stocktake.md`).**
+
+| Item | Owner | Waiting on |
+|---|---|---|
+| Fit jitter near a bar: refits 0.006 slit units apart move a galaxy's 1.5-2.5 um flux by a median 3.8 % (90 %: 23 %) on p1 | extraction session | |
+| Position along the dispersion: a pointing offset of 0.03-0.065 pitch per visit, not seen by the model; the correction coefficient differs between star sets (NGC 2506 0.38, 1133 0.74, shipped 0.572); jwst's table misses by 20-30 % at 0.4 pitch or more off centre. Test: one x offset per 1133 visit, then whether target-acquisition images give it for survey fields | extraction session | |
+| Gratings on the PRISM-fitted model: score it on grating stars (12497 obs 4 G140H, 1117 G140M); G140H on NRS2 already fits worse; gratings may sit 0.002-0.005 higher in bar offset (two observations) | extraction session | |
+| Epoch: the kernel fitted per visit, the core width by visit at fixed brightness | extraction session | |
+| Bar-offset zero point (uncertain by about 0.01): no further work without new data | | |
+| Smaller: the 1133 blue ramp in x, blue star widths, the faint-star second minimum, fit time for wide galaxies, the shoulder of the x table | extraction session | |
+
+**Master background and stuck shutters (3.3, 3.5).**
+
+| Item | Owner | Waiting on |
+|---|---|---|
+| The +2.5 % in-range offset and the +7 % G395M blue extension, remeasured on the current tables | MB session | |
+| Bimodal clean-shutter scales on G395M NRS1 (0.95 / 1.15) | MB session | |
+| Stuck fit on one G140M and one G235M observation; a plot for background-only slitlets; how to report partly open shutters (0.61-0.78) | extraction / MB session | |
+| Whether stage 2a's column removal reaches background-only slitlets | MB session | |
+
+**Decisions for the user.**
+
+| Item | Notes |
+|---|---|
+| Verdict on the G395M stuck review packet (27 shutters) and the thresholds | `scratch/claude/stuck_shutters/p1_g395m_stuck_review.pdf` |
+| Default galaxy width | 0.15 today; the population says 0.143 (stocktake: close it at 0.15 and state the +-15 %) |
+| Neighbour scan: `report_only` or `auto_override` | |
+| "Master background likely better" columns in archive products | 3.9 |
+| Grating background smoothing | trial only |
+| Stage 1 footprint past the calibrated range | 3.1 |
+
+**Speed and cleanup.**
+
+| Item | Owner |
+|---|---|
+| Stage 2's per-source work: profile one stage-2b group and one rectification first (p1: rectification 25 min, stage 2b about 60 min of 3 h 14 min); candidates: rectify once instead of in 2a and 2b, invert the path loss arithmetically, batch per exposure | extraction session |
+| Retire the `tracemaps/` working copy once pass-1 validity keys on the rate files | extraction session |
+| Turn the scratch validation scripts (the NGC 2506 check, the 1133 scan, the bar-shadow model comparison) into `optics_calibration` subcommands | extraction session |
 
 ---
 
@@ -3205,3 +3222,20 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   sign-off caveat dropped (settled 2026-10-30). Then the PSF split held at 0.5 in the shutter
   model (`geomT-2026-11-03b`, 3.2, 3.7, V7 row, 6): edge stars 0.7 % worse than the hard edge
   instead of 1.8 %.
+- **2026-11-05.** Sections 1, 2 and 6 rewritten to the branch as it stands (they predated
+  `FIT_VERSION` 6 and 7). Section 1: a fifth aim (the boundary with jwst's references); rows for
+  the diffraction model, the bar offset, the CRDS boundary, the optimal-extraction fix and the
+  end-to-end runs; corrected rows that were out of date (errors with the subtracted exposures'
+  noise built on 2026-11-01; the stuck-shutter fit wired into step 1; the master-background
+  spectrum, its 1-D combine and its deploy built; the bar-shadow held-out check done). Section 2:
+  the order as stage 3 runs it now (bar offset and maps, joint first pass, same-slitlet revision,
+  final extraction), no "Today" lines. Section 6: grouped into release, model accuracy (with the
+  stocktake's risks and the fit jitter near a bar), master background and stuck shutters,
+  decisions for the user, and speed and cleanup; dropped as done or superseded: the step 1 / step
+  2 interface approval, the stuck-list loader, writer and database work, the `nirspec_mbkg`
+  registry type, the PSF table S / S2 and centre-law refit choices, the shutter transmission T
+  (all replaced by the diffraction model), the runtime baseline (p1 3 h 14 min, uncover2 4 h 45
+  min), the master-background spectrum's end-to-end run (uncover2) and the same-slitlet
+  CHANGELOG line (folded into the one extraction entry). Earlier the same day: 3.7 gained the bar
+  offset from the background (measurement, references, stars, galaxies, gratings) and 3.10 the
+  boundary with jwst's references.
