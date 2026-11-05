@@ -3,8 +3,9 @@
 For every source the profile fit models its 2-D spectrum as a galaxy (a round Gaussian whose center and width
 may change slowly with wavelength) seen through the optics model of the MSA, in every exposure at once, and
 solves for one spectrum. The product file holds the result on the combined 2-D grid: ``PROF2D`` (the model
-per unit reported flux), the profile flux ``fnu_prof`` and ``CONTAM2D`` (other sources' predicted light), so
-the model is PROF2D x fnu_prof + CONTAM2D. One row per source: the data, the model and data - model, all three
+per unit reported flux), the profile flux ``fnu_prof`` (extracted with nothing subtracted), the other sources'
+predicted light in 2-D (``CONTAM2D``) and in the extraction (``fnu_contam``), so the model is
+PROF2D x (fnu_prof - fnu_contam) + CONTAM2D. One row per source: the data, the model and data - model, all three
 on the same color scale, symmetric about zero (so the residual shows how much of the light is left), and the
 profile along the slit summed over wavelength (data as filled steps, model as a line). Rows below the slitlet's middle are negative: the nod subtraction puts each source's light, negative,
 where the other nods had it.
@@ -32,9 +33,11 @@ def load(sid):
         wav = np.asarray(h['WAVELENGTH'].data, float)
         prof = np.asarray(h['PROF2D'].data, float)
         cont = np.asarray(h['CONTAM2D'].data, float) if 'CONTAM2D' in h else np.zeros_like(sci)
-        fnu = np.asarray(h['SPEC1D'].data['fnu_prof'], float)
+        t = h['SPEC1D'].data
+        # fnu_prof is extracted with nothing subtracted: the source's own flux is fnu_prof - fnu_contam
+        own = np.asarray(t['fnu_prof'], float) - np.nan_to_num(np.asarray(t['fnu_contam'], float))
         hdr = h[0].header
-    model = prof * np.nan_to_num(fnu)[None, :] + np.nan_to_num(cont)
+    model = prof * np.nan_to_num(own)[None, :] + np.nan_to_num(cont)
     ok = np.isfinite(sci) & np.isfinite(err) & (err > 0) & np.isfinite(prof)
     return dict(sci=np.where(ok, sci, np.nan), model=np.where(ok, model, np.nan),
                 res=np.where(ok, sci - model, np.nan), wav=wav, hdr=hdr)
