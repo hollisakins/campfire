@@ -1496,8 +1496,27 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
       - No use: 9278 ("MOS Pathlosses Extension") and 10208 are in MAST but not executed; 4465
         has virtual sources at the default position (x must be measured from the data); 1128,
         1492, 6154, 6643, 2640 and 5437 have no source at two x positions.
-      No program steps stars along the dispersion in a red grating; the archive's G395M galaxies
-      are the only red grating data.
+      No program steps stars along the dispersion in a red grating. The archive's galaxies are not
+      used (user, 2026-11-04): repeat observations are often at different position angles, so an
+      extended source crosses the shutter differently between visits. Next: 12497 obs 4 and 1133.
+    - 12497 obs 4, G140H (`xscan_12497.py`, `xscan_analyze.py`, `xtilt.py`, `xscan_window.py`,
+      `xscan_window_analyze.py`, `xscan_shift.py`; figures `xscan_12497.png`, `xscan_window_12497.png`):
+      51 stars, 447 visits (seven configurations, the same y, x stepped by 0.13 shutter units).
+      - FIT_VERSION 6 fluxes over each star's most central visit fall linearly with SRCXPOS: +22 % at
+        -0.42, -12 % at +0.28 (0.97-1.2 um; the same at 1.2-1.7 um). Each star's own slope is negative
+        (median -0.40 to -0.58 per unit x, spread 0.15-0.35). NGC 2506 shows no such term (-0.06 to
+        +0.01 +- 0.03 in every band; ten configurations, each acquired separately).
+      - Without a model (the calibrated nod difference, stage 2b's path loss removed, summed over a
+        window of rows around the star; y is fixed so only x changes): the light in the shutter is
+        flat within 3 % over x -0.15 to +0.05 and symmetric about x = -0.050 / -0.045 / -0.050 in the
+        three bands (per star, 32 stars, quartiles -0.07 to -0.01); jwst's curve is centred on 0. The
+        stars sat about 0.05 shutter units (about 0.013 arcsec) further along +x than planned: one
+        offset for the visit (one acquisition), a few hundredths per star on top.
+      - jwst's G140H point loss evaluated at the shifted position: rms of the visit ratios 28 -> 15 %
+        (0.97-1.2 um), 25 -> 16 %, 22 -> 9 %; a free scale on its log shape gives 1.2 and little
+        further gain. jwst's G140H x dependence is about right; the tilt is the pointing. Near the
+        edge a 0.05 offset moves a flux by tens of per cent (planned +0.35: light 0.37 of the centre
+        against jwst's 0.57), so the planned position's error is the largest along-dispersion term.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
