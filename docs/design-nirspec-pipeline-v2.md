@@ -1709,6 +1709,24 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
           central one): near +0.37 pitch at 3.5-5 um they deliver 0.62 of the centred light, the
           model 0.62, jwst 0.82; at 0.7-1.0 um near +0.38, 0.91 against the model's 0.97 and jwst's
           0.85; on the -y side at 3.5-5 um 1.03-1.06 at -0.2 to -0.27 pitch, a rise like the 2-D one.
+      - The stars against position (2026-11-05; `star_trans.py`, `star_trans_shift.py`, figure
+        `star_trans.png`; input the docs session's refit of 1133 and NGC 2506 with `FIT_VERSION` 7 and
+        the bar offsets, `extraction-v2-docs/star_positions.json`, four bands 0.8-1.2, 2.7-3.3,
+        4.2-4.8, 4.5-5.3 um). Each visit's flux has the model's transmission divided out, so against
+        the same star's most central visit it is flat if the model is right; |SRCXPOS| <= 0.2,
+        unsaturated. NGC 2506 cannot test this: a star sits at nearly the same position in every
+        observation (about 20 pairs, all near the centre). 1133 is the only constraint (about 400
+        pairs per band).
+        - Inside 0.2 pitch of the centre (0.25 at 3 um) the 1133 stars follow the model to about 1 %
+          at every wavelength, and not the 2-D pupil's pure diffraction, whose dip at 3 um and peaks
+          at 4.5 um they do not show (the kernel, jitter and wavefront drift, smooths them).
+        - Near the bars they do not: at 3-4.9 um the -y side keeps 3-9 % more light than the model
+          at 0.25-0.35 pitch and the +y side 1-4 % less (10-20 % at 0.4); at 1 um both sides lose
+          7-10 % more than the model at 0.35-0.4. One extra bar shift does not explain it: the best
+          shift differs by band (+0.046, +0.019, +0.010, -0.007 slit units) and in the red the -y
+          excess survives it. The edges differ from each other and change with wavelength, as the
+          two halves of the background edges did (3.7, the bar offset: lower minus upper -0.014 in
+          the survey) and as the empirical bar-shadow table's lopsided edges do (3.10).
       - Stocktake of the whole optics work against what STScI provides and plans (2026-11-05):
         `scratch/claude/extraction-v2/review/stocktake.md` (duplication, ranked risks, how to keep
         the boundary with CRDS clean).
