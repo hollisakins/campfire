@@ -11,15 +11,11 @@ This page is the map. Each part of the reduction has its own page, with figures 
 - [Redshifts and lines](/docs/reduction/nirspec/redshifts): template redshifts and emission-line fluxes
 - [Describing the reduction](/docs/reduction/nirspec/describing): versions to quote, a paragraph to adapt, the choices that are yours
 
-## Describing the reduction in a paper
+## Before you use a spectrum
 
-A paragraph you can adapt. The values in brackets are in each spectrum file's header (see [What each spectrum file records](#what-each-spectrum-file-records)).
+[Describing the reduction](/docs/reduction/nirspec/describing) has a paragraph to adapt for a paper, the versions to quote and the choices to state. Two of those choices matter for every spectrum:
 
-> The NIRSpec data were reduced with the CAMPFIRE pipeline (version [`CMPFRVER`]), built on the STScI `jwst` pipeline (version [`CAL_VER`], CRDS context [`CRDS_CTX`]). After ramp fitting, the detector's background and 1/f noise were fitted and removed outside every open shutter's footprint. The background was removed by nod subtraction, leaving out any nod in which a neighboring source fell at the target's position. Sources whose spectra overlap on the detector were fitted together; the light of the neighbors is reported separately and was [not] subtracted. Each source's 2-D spectrum was fitted with a model of the galaxy seen through the MSA's optics, and the reported flux is the source's light within a circle 0.8″ across. Redshifts were fitted with templates and inspected visually.
-
-Two choices in that paragraph are yours, not the pipeline's:
-
-- **The neighbors' light is not subtracted from `fnu`.** It is written as its own column, `fnu_contam`. The source alone is `fnu - fnu_contam`. Subtract it when your science needs the source alone.
+- **The neighbors' light is not subtracted from `fnu`.** It is written as its own column, `fnu_contam`. The source alone is `fnu_prof - fnu_contam`. Subtract it when your science needs the source alone.
 - **Each file holds two spectra.** `fnu` comes from nod subtraction. `SPEC1D_MBKG` comes from the same exposures with the master background subtracted instead. The header card `MBKGPREF` says when the second is likely the better one (an extended source, a single exposure, or no clean nod), and `MBKGWHY` says why.
 
 ## How the pipeline runs

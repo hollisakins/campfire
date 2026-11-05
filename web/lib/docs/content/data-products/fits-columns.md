@@ -6,9 +6,9 @@ The NIRSpec pipeline writes three files per source and disperser:
 |---|---|
 | `<obs>_<grating>_<filter>_<source>_spec.fits` | The spectrum: 1-D and 2-D, both background versions, the model, the exposures |
 | `<obs>_<grating>_<filter>_<source>_zfit.fits` | The automatic template redshift |
-| `<obs>_<grating>_<filter>_<source>_lines.fits` | Emission-line fluxes at the inspected redshift |
+| `<obs>_<grating>_<filter>_<source>_lines.fits` | Emission-line fluxes at the inspected redshift, written after inspection by `cfpipe nirspec linefit` |
 
-Read extensions by name, not by number: the order can change between pipeline versions.
+Read extensions by name, not by number: the order can change between pipeline versions. Other files beside them (`_s2d.fits`, `_x1d.fits`, and the `.pdf` plots) are intermediates and quick-look plots.
 
 ## The spectrum file
 
@@ -50,12 +50,14 @@ The source with other sources' light removed is `fnu_prof - fnu_contam`. See [Ex
 | Column | What it is |
 |---|---|
 | `filename` | The calibrated exposure |
-| `nod_number`, `nod_type`, `dither_number`, `dither_type` | Where the exposure sits in the nod and dither pattern |
+| `nod_number` | The number of nod positions in the pattern (the same in every row) |
+| `dither_number`, `dither_type`, `nod_type` | Which exposure of the pattern this is, and the pattern's names |
 | `exptime` | Exposure time, s |
-| `bkg_nods` | Which exposures were subtracted from it |
-| `bkg_override`, `bkg_auto` | Whether that choice was set by hand, or by the pipeline because of a neighbor |
-| `bkg_why` | Why an exposure was left out, if any was |
-| `shutter_state` | The slitlet's open (1) and closed (x) shutters, with the source's shutter marked |
+| `bkg_nods` | Which exposures were subtracted from it (`excluded` when none was) |
+| `bkg_override` | Whether that choice came from an override, by hand or automatic |
+| `bkg_auto` | Whether the override was automatic (a cataloged neighbor, or the neighbor scan) |
+| `bkg_why` | Why: `hand`, `scan`, or the neighbor that caused it; a flag when every background exposure had a neighbor and all were kept |
+| `shutter_state` | The slitlet's shutters, one character each: `1` open, `0` closed, `x` the source's shutter |
 | `stuck_shutter_list` | Shutters treated as closed |
 | `source_ra`, `source_dec` | The source's planned position |
 | `source_xpos`, `source_ypos` | Its planned position in the shutter, across and along |
@@ -69,7 +71,8 @@ The primary header keeps the cards `jwst` writes, including the versions and eve
 | Card | What it records |
 |---|---|
 | `CMPFRVER`, `CMPFRTIM` | The CAMPFIRE pipeline version, and when the spectrum was made |
-| `EXTRACT`, `EXTRWHY` | Which extraction `fnu` is, and why |
+| `EXTRACT`, `EXTRWHY` | Which extraction `fnu` is (`profile`, `profile_decontam`, `boxcar3`, `optimal`), and why |
+| `CMPFROPT` | Whether `fnu_opt` is the optimal extraction (`optimal`) or fell back to a boxcar |
 | `CONTSTAT` | Whether other sources' light was predicted (`off`, `none`, `predicted`) |
 | `NEXP`, `NEXPBKG` | Exposures combined; fewest exposures subtracted from any one |
 | `MBKGPREF`, `MBKGWHY` | Whether the master-background spectrum is likely the better one, and why |
@@ -78,19 +81,19 @@ The primary header keeps the cards `jwst` writes, including the versions and eve
 | `PFAPER` | The diameter of the circle the reported flux refers to, arcsec |
 | `PFSHAPE`, `PFREASON` | Which shape the source took (`own`, `prism`, `default`) and why |
 | `PFWIDTH`, `PFCEN` | The fitted Gaussian width (σ) and center at `PFPIVOT`, in units of the shutter's open height (0.46″) |
-| `PFSLY`, `PFSLX` | Whose slit loss was used along and across the shutter |
+| `PFSLY`, `PFSLX` | Which slit-loss model was used along the slit (`optics` / `jwst`) and across it (`corrected` / `jwst`) |
 | `PFPLREF` | The `jwst` path-loss reference the model starts from |
-| `PFBAROFF` | The bar offset applied |
+| `PFBAROFF` | The bar offset applied, in the same units as `PFWIDTH` |
 | `PFCONTAM`, `PFCONSIG` | Other sources' predicted light relative to the spectrum, and relative to its noise |
 | `PFNBR` | A neighbor not in the catalog may sit in the slitlet (a flag for review) |
 
-Further `PF*` cards record the details of the fit (the detection statistic, the χ² of each shape tried, the masked fraction of the shutter) for diagnosing a spectrum.
+The `SPEC1D_MBKG` extension's header carries the same cards for the master-background spectrum's own fit; the primary header's are the nod-subtracted spectrum's. Further `PF*` cards record the details of the fit (the detection statistic, the χ² of each shape tried, the masked fraction of the shutter) for diagnosing a spectrum.
 
 ## The redshift file
 
 | Extension | Contents |
 |---|---|
-| Primary | `ZBEST` (the best redshift), `ZCONF` (the share of the fit's probability within 0.03 of it, %), `CHI2MIN` |
+| Primary | `ZBEST` (the best redshift), `ZBEST_C` (the best on the coarse grid), `ZCONF` (the share of the fit's probability within 0.03 of it, %), `CHI2MIN`. `ZQUAL` is always 0 here: quality is set at inspection |
 | `MODEL` | The best-fit template combination: `wav` (µm), `fnu` (µJy) |
 | `CHI2` | The fit at every trial redshift: `z`, `chi2` |
 
@@ -101,7 +104,7 @@ This is the automatic redshift. The inspected redshift lives in the portal's cat
 | Extension | Contents |
 |---|---|
 | Primary | The redshift used (`ZUSED`) and its source and quality, the spectrum's global velocity offset and width, the input spectrum's hash (`SPECHASH`) |
-| `LINES` | One row per line or doublet total: rest and observed wavelength, flux and error (erg s⁻¹ cm⁻²), continuum, rest-frame equivalent width, signal-to-noise, velocity and width, flags (`BLEND`, `BLENDED`, `RESOLVED`, ...) |
+| `LINES` | One row per line, per accepted broad component (for example `Halpha_broad`) and per doublet total; `component` says which. Rest and observed wavelength, flux and error (erg s⁻¹ cm⁻²), continuum, rest-frame equivalent width, signal-to-noise, velocity and width, and a bitmask of flags (blend, blended, resolved, edge, masked, ...) |
 | `MODEL` | The fitted model and continuum on the spectrum's wavelength grid (erg s⁻¹ cm⁻² Å⁻¹) |
 | `COMPLEXES` | The groups of lines fitted together, and their χ² |
 
