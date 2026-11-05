@@ -234,6 +234,8 @@ class Exposure:
     src_y_jwst: float = np.nan     # SRCYPOS as jwst wrote it (shutter pitches; ``source_position``)
     pl_ref: str = ''               # jwst's path-loss reference file, as the cal file names it
     src_x_jwst: float = np.nan     # SRCXPOS as jwst wrote it (shutter pitches along the dispersion)
+    bar_offset: float = 0.0        # added to ``y`` and ``src_y`` (slit units): where the observation's bars sit
+                                   # against jwst's slit frame (``bar_offset``)
 
     @property
     def dy(self):
@@ -385,12 +387,18 @@ def _pre_bkgsub_differences(cal_files, heads, models, slits, partners, y0, x0, s
     return out
 
 
-def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_frames=False, pre_bkgsub=False):
+def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_frames=False, pre_bkgsub=False,
+               bar_offsets=None):
     """Exposures of one stage-2b background group, from the canonical files.
 
     The live SCI is stage 2b's nod difference with the path loss re-applied; this
     removes the applied correction again (the inverse of jwst's ``do_correction_mos``),
     which recovers the frame jwst's background step produced.
+
+    bar_offsets : {disperser ('PRISM/CLEAR'): {quadrant: offset}} (``bar_offset.table``), or
+        None for none: the offset is added to every pixel's slit y and to the source's planned
+        position, so the model's shutters sit where the observation's background puts its bars.
+        jwst's own path-loss position (``src_y_jwst``) is not moved.
 
     science : set of file names that stage 3 combines (default: all with a partner list).
     single_frames : the files are single frames with their background removed some other
@@ -446,14 +454,15 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
         name = str(f).split('/')[-1]
         grating = f'{m.meta.instrument.grating}/{m.meta.instrument.filter}'.upper()
         detector = str(m.meta.instrument.detector).upper()
+        quadrant = int(s.quadrant) if s.quadrant is not None else None
+        bar = float((bar_offsets or {}).get(grating, {}).get(quadrant, 0.0))
         exps.append(Exposure(
-            name=name, group=group, detector=detector, grating=grating,
-            quadrant=int(s.quadrant) if s.quadrant is not None else None,
+            name=name, group=group, detector=detector, grating=grating, quadrant=quadrant,
             diff=_place(diff, s, y0, x0, shape), var=_place(var * pl ** 2, s, y0, x0, shape),
             ok=_place(ok.astype(float), s, y0, x0, shape, fill=0.0) > 0,
-            wav=_place(np.asarray(s.wavelength, float), s, y0, x0, shape), y=_place(ys, s, y0, x0, shape),
+            wav=_place(np.asarray(s.wavelength, float), s, y0, x0, shape), y=_place(ys + bar, s, y0, x0, shape),
             pl_applied=_place(pl, s, y0, x0, shape), pl_point=_place(np.asarray(s.pathloss_point, float), s, y0, x0, shape),
-            src_y=source_position(float(s.source_ypos)), src_y_jwst=float(s.source_ypos),
+            src_y=source_position(float(s.source_ypos)) + bar, src_y_jwst=float(s.source_ypos), bar_offset=bar,
             open_k=open_shutters(s.shutter_state, s.slit_ymin, s.slit_ymax),
             partners=part, use_data=(part is not None) and (science is None or name in science),
             cutout=(s.ystart - y0, s.xstart - x0, ny, nx), path=str(f), origin=(y0, x0),
@@ -493,16 +502,16 @@ def partners_from_headers(cal_files, heads):
     return out
 
 
-def load_source(groups, bkg_overrides=None, science=None, single_frames=False, pre_bkgsub=False):
+def load_source(groups, bkg_overrides=None, science=None, single_frames=False, pre_bkgsub=False, bar_offsets=None):
     """All exposures of a source: ``groups`` is a list of canonical-file lists, one per
     stage-2b background group, and ``bkg_overrides`` the matching list of that group's
-    nod overrides (or None). Partner indices are made global. ``single_frames`` and
-    ``pre_bkgsub``: see ``load_group``."""
+    nod overrides (or None). Partner indices are made global. ``single_frames``,
+    ``pre_bkgsub`` and ``bar_offsets``: see ``load_group``."""
     out = []
     overrides = bkg_overrides if isinstance(bkg_overrides, (list, tuple)) else [bkg_overrides] * len(groups)
     for g, files in enumerate(groups):
         exps = load_group(files, bkg_overrides=overrides[g], science=science, group=g, single_frames=single_frames,
-                          pre_bkgsub=pre_bkgsub)
+                          pre_bkgsub=pre_bkgsub, bar_offsets=bar_offsets)
         base = len(out)
         for e in exps:
             if e.partners is not None:
@@ -1353,7 +1362,7 @@ def drizzle_arrays(frame_of, dmap):
     return dmap.drizzle({name: frame_of(name) for name in dmap.names})['data']
 
 
-FIT_VERSION = '6'                     # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics)
+FIT_VERSION = '7'                     # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset)
 
 
 def run_single_source(product_name, workspace_dir, groups, bkg_overrides, science,

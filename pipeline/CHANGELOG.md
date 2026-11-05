@@ -46,6 +46,29 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec profile fit: the observation's bar offset, measured from its background (`FIT_VERSION` 7,
+  `bar_offset = "measure"` in `[nirspec.stage3]`, on by default).** An observation's MSA bars sit
+  up to about 0.02 slit units (9 mas) from where the model puts them in jwst's slit frame, by a
+  different amount in each observation (observations hours apart differ by 0.016); the grating-wheel
+  tilt readings and the date do not predict it. For a source near a bar that is several per cent of
+  its flux. Stage 3 now measures it per disperser before the profile fit (`nirspec/bar_offset.py`),
+  from the background in the observation's empty shutters: their edge profiles (the half facing
+  away from the source, 0.2-0.75 pitch from the centre, each pixel over its exposure's background
+  and its shutter's centre level) against the model's own profile for uniform light, the two halves
+  fitted apart so a wider or narrower profile does not move the offset. Kept in the workspace's
+  `bar_offset.json`, measured again only when the canonicals, the module or the optics model change;
+  one value per observation plus a fixed pattern by MSA quadrant (-0.004 to +0.005). The profile
+  fit adds it to every pixel's slit y and the planned position (`profile_fit.load_group`'s
+  `bar_offsets`; the light past the cutouts too), records it as `PFBAROFF`, and a new measurement
+  redoes the joint first pass. A disperser with too few empty-shutter pixels gets none.
+  - Measured: survey -0.015 to -0.001 (venus_pg004, ember_egs_p1, uncover2, capers_uds_p8,
+    ember_cosmos_p14), calibration -0.019 to +0.010; between exposures of one observation
+    0.0004-0.003. G395M of ember_cosmos_p14 +0.0012 against its PRISM -0.0012.
+  - Stars near a bar fit better at the background's offset: 1133 summed chi2 -104,600 (125 of 158
+    edge visits better), NGC 2506 -23,300 over ten observations. The zero point is uncertain by
+    about 0.01 (NGC 2506's stars want 0.004 less, 1133's 0.012 more).
+  - About 3-4 minutes per disperser of an observation (800 canonicals at most).
+
 - **NIRSpec profile fit: each nod at its own planned position (`profile_fit.NOD_OFFSET_LAW`,
   on by default).** The model placed a source at one slit position in every exposure; the MSA
   planning metadata gives each exposure its own (SRCYPOS), and the nods differ by up to ~0.08

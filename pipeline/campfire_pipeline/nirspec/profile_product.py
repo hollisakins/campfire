@@ -125,7 +125,8 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
     cfg = PC.ChainConfig.from_stage_config(stage_config)
     if exps is None:
         with TM.step('load'):
-            exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science))
+            exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science),
+                                  bar_offsets=stage_config.get('bar_offsets'))
     raw = [copy.copy(e) for e in exps]      # as stage 2b made them: the same-slitlet scan's data
     P, clean, cstate = None, None, 'off'
     t_mark = TM.start()

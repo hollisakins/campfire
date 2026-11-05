@@ -1629,12 +1629,45 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
         - What the survey offsets do (`dy_flux_census.py` with 0.009): over 2 % flux change for
           10 / 23 / 32 % of sources at 1 / 3 / 5 um, over 5 % for 8 / 11 / 0 %, the large ones
           on the bar itself (|centre| >= 0.45).
+      - In the model (FIT_VERSION 7, `nirspec/bar_offset.py`): stage 3 measures each disperser's
+        offset from the observation's own empty shutters before the profile fit and keeps it in the
+        workspace's `bar_offset.json` (measured again only when the canonicals, the module's version
+        or the optics model change); `profile_fit.load_group` adds it to every pixel's slit y and to
+        the planned position (jwst's SRCYPOS, which only undoes jwst's own path loss, stays), and the
+        light past the cutouts takes the same frame (`profile_extend.past_geometry`). `PFBAROFF`
+        records it; `bar_offset = "off"` in `[nirspec.stage3]` turns it off. A disperser with too few
+        empty-shutter pixels (under 3000 per half) gets none. Checked on real 1133 canonicals
+        (`load_check.py`): y and the planned position move by the quadrant's value, SRCYPOS does
+        not, and the fit equals the refit with the shutters moved by hand.
+        - The reference is the model's own profile for uniform light: its point images summed over
+          every source position (the kernel left out: it moves light between source positions,
+          which uniform light does not feel). Against it the offsets are the table's minus
+          0.0055 +- 0.0007 in every one of 20 observations (1133, NGC 2506 x 10, 12497 x 4, 5
+          survey; the survey alone 0.0058 +- 0.0003): the two references agree between observations and differ only in where zero
+          is. The edges' half-light points of the table and the model differ by under 0.004
+          (`edges_table_vs_optics.py`); the table's edges are slightly lopsided (more light past
+          the upper edge than the lower), the model's are symmetric, which is also why the two
+          halves fitted against the model differ (lower minus upper -0.014 in the survey).
+        - Which zero the stars want (`stars_at_bg.py`: each edge visit's chi2 from the refits at
+          trial offsets, interpolated at the background offset plus a constant c): NGC 2506, the
+          median visit is best at c = -0.004 (change against no offset: -26.9; at c = 0 -21.4, at
+          the table's +0.006 -4.2); 1133 at c = +0.012 (-891 per visit; at 0 -610). Every c in
+          that range improves the edge visits over no offset (summed over both: -127,900 at c = 0,
+          -150,800 at +0.006). The model's own zero (c = 0) is kept: it needs no fitted constant
+          and the ten NGC 2506 observations agree with it. The zero is uncertain by about 0.01.
+        - Values against the model: 1133 +0.0105; NGC 2506 -0.019 (v3b) to -0.005; 12497 -0.009,
+          +0.007, +0.005, +0.002; survey -0.015 (venus_pg004), -0.010 (ember_egs_p1), -0.007
+          (uncover2), -0.004 (capers_uds_p8), -0.001 (ember_cosmos_p14). Quadrant pattern -0.0042 / +0.0003 / -0.0009 / +0.0047
+          (`QUADRANT_PATTERN`, the same against either reference).
+        - A grating sees the same offset: G395M of ember_cosmos_p14 +0.0012 against its PRISM
+          -0.0012. So the offset belongs to the observation (where the MSA and the telescope put
+          the slits), not to the grating wheel; each disperser is measured anyway.
       - So, as the model stands: compact sources inside |x| < 0.3 and |centre| < 0.3 are described to
         1.4-1.6 % (0.7-3.5 um) and 2.5 % (3.5-5 um) with the observation's pointing offset in x;
-        near a bar (|centre| >= 0.35) the observation's own bar offset (survey -0.009 to +0.004,
-        calibration up to +0.017) adds a few percent and up to 10 % at 3 um, more on the bar; it
-        can be measured from each observation's own background to about 0.002. At |x| >= 0.4
-        jwst's table misses by up to 20-30 %.
+        near a bar (|centre| >= 0.35) the observation's own bar offset is now in the model, measured
+        from its background to about 0.002 between observations; what remains is the zero point
+        (about 0.01, from the two groups of stars), which moves a source near a bar by a few per
+        cent in the red. At |x| >= 0.4 jwst's table misses by up to 20-30 %.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in

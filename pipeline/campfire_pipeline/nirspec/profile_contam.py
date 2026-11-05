@@ -322,10 +322,16 @@ def pass1_settings(stage_config):
     else:
         sm_p = smooth_points(g('contam_pass1_smooth_prism', 7.5))
         sm_g = smooth_points(g('contam_pass1_smooth_grating', 15.0))
-    return dict(smooth_prism=sm_p, smooth_grating=sm_g,
-                lines=bool(g('contam_pass1_lines', True)),
-                gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
-                gate_noise=str(g('gate_noise', 'mean_square')).lower())
+    out = dict(smooth_prism=sm_p, smooth_grating=sm_g,
+               lines=bool(g('contam_pass1_lines', True)),
+               gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
+               gate_noise=str(g('gate_noise', 'mean_square')).lower())
+    bars = g('bar_offsets', None)
+    if bars:
+        # the measured bar offsets (``bar_offset.table``): a new measurement redoes pass 1
+        out['bars'] = ';'.join(f'{d}:' + ','.join(f'{q}={v:.4f}' for q, v in sorted(qs.items()))
+                               for d, qs in sorted(bars.items()))
+    return out
 
 
 def _signature(s):

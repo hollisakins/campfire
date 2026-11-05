@@ -193,6 +193,8 @@ class ChainResult:
             'PFCHROM': (bool(self.result.chromatic), 'Centre and width vary with wavelength'),
             'PFCHI2': (float(self.result.chi2_red), 'Reduced chi2 of the chosen fit'),
             'PFNPIX': (int(self.result.npix), 'Pixels in the fit'),
+            'PFBAROFF': (_f(np.median([e.bar_offset for e in self.result.model.exps])),
+                         'Bar offset added to slit y [slit units]'),
         }
         return c
 

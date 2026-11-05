@@ -207,6 +207,7 @@ class MemberCache:
         self.is_prism = is_prism
         self.size = size
         self.pre_bkgsub = pre_bkgsub            # nod differences of the override files (profile_fit.load_group)
+        self.bar_offsets = stage_config.get('bar_offsets')    # bar_offset.table, set by stage 3
         self._m = OrderedDict()
         self._shape = {}                        # sid -> (shape, label, eoff): kept when a member is evicted
         self._failed = {}                       # sid -> the ProfileFitFallback its build raised
@@ -245,7 +246,7 @@ class MemberCache:
     def _build(self, sid):
         t = self.tasks[sid]
         exps = PF.load_source(t['groups'], bkg_overrides=t['overrides'], science=set(t['science']),
-                              pre_bkgsub=self.pre_bkgsub)
+                              pre_bkgsub=self.pre_bkgsub, bar_offsets=self.bar_offsets)
         cfg = self.cfg
         M = PF.ProfileModel(exps, chromatic=True, priors=cfg.priors, bounds=cfg.bounds)
         if sid not in self._shape:
@@ -874,7 +875,8 @@ def _boxcar(sid, t, cache, maps, stage_config, err):
         raise type(err)(f'{err}; no stage-3 s2d or spectrum to take its 3-pixel boxcar from '
                         f'(no science exposure reached stage 3)') from err
     exps = PF.load_source(t['groups'], bkg_overrides=t['overrides'], science=set(t['science']),
-                          pre_bkgsub=getattr(cache, 'pre_bkgsub', False))
+                          pre_bkgsub=getattr(cache, 'pre_bkgsub', False),
+                          bar_offsets=stage_config.get('bar_offsets'))
     return CT.boxcar_pass1(exps, sid, maps, cache.workspace, cache.is_prism, stage_config, box[:3]), box[3]
 
 

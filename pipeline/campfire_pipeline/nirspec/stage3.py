@@ -517,6 +517,13 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     from campfire_pipeline.nirspec.profile_product import run_product, stage_flags
     from campfire_pipeline.nirspec import profile_timing as TM
 
+    if str(stage_config.get('bar_offset', 'measure')).lower() == 'measure':
+        # where this observation's bars sit against jwst's slit frame, from its empty shutters (measured
+        # once per disperser, kept in the workspace's bar_offset.json); every loader of this phase applies it
+        from campfire_pipeline.nirspec import bar_offset as BO
+        with TM.phase('bar offset'):
+            bars = BO.ensure(obs.workspace_dir, processes=n_processes, log=log)
+        stage_config = dict(stage_config, bar_offsets=bars)
     fl = stage_flags(stage_config)
     shape = str(stage_config.get('profile_fit_shape', 'gated')).lower()
     contam = fl['contam'] and shape != 'free'

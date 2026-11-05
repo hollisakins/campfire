@@ -127,7 +127,12 @@ class Canonical:
 def discover(obs_name, grating, products_dir, filter_name=None):
     """The stage-2a canonicals of one observation for one grating (and filter);
     ``grating=None`` takes every disperser."""
-    workspace = os.path.join(products_dir, 'nirspec', obs_name)
+    return discover_workspace(os.path.join(products_dir, 'nirspec', obs_name), grating, filter_name, obs_name)
+
+
+def discover_workspace(workspace, grating=None, filter_name=None, obs_name=None):
+    """``discover`` on a workspace directory (the observation's name defaults to its own)."""
+    obs_name = obs_name or os.path.basename(os.path.abspath(workspace))
     out = []
     for name in sorted(os.listdir(workspace)):
         m = CANONICAL_RE.match(name)
