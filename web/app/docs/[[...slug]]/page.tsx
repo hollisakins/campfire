@@ -22,6 +22,7 @@ import spectralFeaturesContent from '@/lib/docs/content/inspection/spectral-feat
 import flagsContent from '@/lib/docs/content/inspection/flags.md';
 import reductionContent from '@/lib/docs/content/reduction/index.md';
 import nirspecContent from '@/lib/docs/content/reduction/nirspec.md';
+import nirspecDetectorContent from '@/lib/docs/content/reduction/nirspec/detector-calibration.md';
 import nircamContent from '@/lib/docs/content/reduction/nircam.md';
 import dataProductsContent from '@/lib/docs/content/data-products/index.md';
 import fitsColumnsContent from '@/lib/docs/content/data-products/fits-columns.md';
@@ -43,6 +44,7 @@ const contentMap: Record<string, string> = {
   'inspection/flags': flagsContent,
   'reduction': reductionContent,
   'reduction/nirspec': nirspecContent,
+  'reduction/nirspec/detector-calibration': nirspecDetectorContent,
   'reduction/nircam': nircamContent,
   'data-products': dataProductsContent,
   'data-products/fits-columns': fitsColumnsContent,

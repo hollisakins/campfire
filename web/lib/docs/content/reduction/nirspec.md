@@ -1,186 +1,86 @@
 # NIRSpec Pipeline
 
-The CAMPFIRE NIRSpec pipeline reduces raw JWST/NIRSpec multi-object spectroscopy (MOS) observations into calibrated 1D spectra with automated redshift estimates. It processes data source-by-source, extracting spectra for every object that falls within a slitlet — not just primary targets. Detailed API documentation will be available soon; this document summarizes the pipeline and key changes relative to the default JWST science calibration pipeline. 
+The CAMPFIRE NIRSpec pipeline turns raw JWST/NIRSpec exposures taken with the micro-shutter assembly (MSA) into calibrated 1-D spectra and redshifts for every source in every slitlet. It is built on the STScI [JWST calibration pipeline](https://jwst-pipeline.readthedocs.io/) (`jwst`). CAMPFIRE runs `jwst` where it does well and replaces it in three places: the background, the way spectra are extracted, and the correction for light lost at the shutter edges (the path loss, or slit loss).
 
-## Pipeline Stages
+This page is the map. Each part of the reduction has its own page, with figures that show what the step does to real data:
 
-The reduction proceeds through four stages plus redshift fitting:
+- [Detector and calibration](/docs/reduction/nirspec/detector-calibration): from raw exposures to calibrated 2-D spectra
+- [Background estimation and subtraction](/docs/reduction/nirspec/backgrounds): the master background, stuck and failed-open shutters, nod subtraction
+- [Slit losses and the MSA optics](/docs/reduction/nirspec/slit-losses): how much of a source's light the shutters let through, and how CAMPFIRE models it
+- [Extraction](/docs/reduction/nirspec/extraction): fitting each source's 2-D spectrum, overlapping spectra, what the reported flux means
+- [Redshifts and lines](/docs/reduction/nirspec/redshifts): template redshifts and emission-line fluxes
 
-| Stage | Input | Output | Description |
-|-------|-------|--------|-------------|
-| **Stage 1** | `_uncal.fits` | `_rate.fits` | Detector processing + iterative background, 1/f subtraction |
-| **Stage 2a** | `_rate.fits` | `_cal.fits` | WCS assignment, flat-fielding, flux/wavelength calibration (per-source extraction) |
-| **Stuck shutter masking** | — | — | Manual flagging of disobedient stuck-closed shutters |
-| **Stage 2b** | `_cal.fits` | `_cal_bkgsub.fits` | Nodded background subtraction |
-| **Stage 3** | `_cal_bkgsub.fits` | `_spec.fits` | Combination, optimal extraction |
-| **Redshift fitting** | `_spec.fits` | `_zfit.fits` | Template-based chi-squared redshift fitting |
+## Describing the reduction in a paper
 
-Each stage can be run independently or chained together. Stages automatically skip sources whose output products already exist unless `--overwrite` is specified.
+A paragraph you can adapt. The values in brackets are in each spectrum file's header (see [What each spectrum file records](#what-each-spectrum-file-records)).
 
-## Stage 1: Detector Processing & Background Subtraction
+> The NIRSpec data were reduced with the CAMPFIRE pipeline (version [`CMPFRVER`]), built on the STScI `jwst` pipeline (version [`CAL_VER`], CRDS context [`CRDS_CTX`]). After ramp fitting, the detector's background and 1/f noise were fitted and removed outside every open shutter's footprint. The background was removed by nod subtraction, leaving out any nod in which a neighboring source fell at the target's position. Sources whose spectra overlap on the detector were fitted together; the light of the neighbors is reported separately and was [not] subtracted. Each source's 2-D spectrum was fitted with a model of the galaxy seen through the MSA's optics, and the reported flux is the source's light within a circle 0.8″ across. Redshifts were fitted with templates and inspected visually.
 
-Stage 1 converts raw uncalibrated exposures into flux-rate images with clean backgrounds. This starts by running the stock STScI `Detector1Pipeline` on each `_uncal.fits` file, producing `_rate.fits` count-rate images.
+Two choices in that paragraph are yours, not the pipeline's:
 
-### Iterative Background Subtraction
+- **The neighbors' light is not subtracted from `fnu`.** It is written as its own column, `fnu_contam`. The source alone is `fnu - fnu_contam`. Subtract it when your science needs the source alone.
+- **Each file holds two spectra.** `fnu` comes from nod subtraction. `SPEC1D_MBKG` comes from the same exposures with the master background subtracted instead. The header card `MBKGPREF` says when the second is likely the better one (an extended source, a single exposure, or no clean nod), and `MBKGWHY` says why.
 
-The CAMPFIRE pipeline implements subtraction of a custom multi-component background model to each rate file. This is the most significant departure from the stock pipeline at the detector level. Where the stock JWST pipeline can subtract 1/f noise via the `clean_flicker_noise` step (which can be enabled in the CAMPFIRE pipeline) this step doesn't perform adequately when there are substantial inhomogeneities in the background, i.e. due to the "picture frame" effect. Furthermore, the `mask_science_regions` option in the `clean_flicker_noise` step inadequately masks spectral traces, particularly for medium or high-resolution spectra. 
+## How the pipeline runs
 
-For the CAMPFIRE reduction pipeline, an iterative background subtraction step is run on each rate file. Each pass (5 by default) subtracts four components in sequence:
+![The NIRSpec pipeline, one column per stage. Each stage's output feeds the top of the next. Gray boxes are jwst pipeline steps, orange boxes are CAMPFIRE steps, white boxes are files written. A dashed outline marks a step that a configuration option turns on or off, with the option and its default.](/docs/nirspec/flow.png)
 
-1. **Picture-frame template** — The thermal "[picture frame](https://jwst-pipeline.readthedocs.io/en/latest/api/jwst.picture_frame.PictureFrameStep.html)" effect (characteristic pedestal offsets at the detector edges) is subtracted using the picture frame reference file provided by STScI, scaling per detector amp-row (512 pixels).
+Read the diagram one column at a time:
 
-2. **2D background** — A smooth two-dimensional background is estimated using `photutils.Background2D` with a configurable grid size (default 8x8 pixels), sigma-clipped median statistics, and a `BkgZoomInterpolator`. This captures large-scale spatial variations across the detector.
+1. **Stage 1** fits the detector ramps with `jwst`, including its 1/f cleaning. CAMPFIRE then removes the rest of the detector's own background and 1/f noise, keeping every spectrum's footprint out of the estimate.
+2. **Stage 2a** first maps where every shutter's spectrum falls on the detector (the trace maps; Stage 3 uses them to find overlapping spectra). It measures the background spectrum from the empty shutters of every exposure, finds shutters that were commanded open but stayed closed, and calibrates each source's 2-D spectrum with `jwst`. It ends by building the **master background**: the background spectrum laid out on the detector, shutter by shutter.
+3. **Stage 2b** subtracts the background by nodding. Each exposure has subtracted from it the mean of the other nods of the same sequence, in which the source sat in a different shutter. A nod in which a bright neighbor sits at the source's position is left out.
+4. **Stage 3** extracts the spectra. It first measures where the MSA's bars sit in this observation. It fits every source together with the sources whose light falls on the same pixels, combines the exposures, and fits each source's 2-D spectrum with a model of the galaxy seen through the MSA. Once every neighbor's brightness is known from that fit, the nod choices of Stage 2b are checked again, and sources whose nods change run again (the orange loop). Stage 3 writes one spectrum file per source and disperser.
+5. **Redshifts and lines** fits each spectrum with templates. After visual inspection, it measures the emission lines at the inspected redshift.
 
-3. **Column 1/f noise** — The median of each column is subtracted.
+## What is different from the standard jwst reduction
 
-4. **Row 1/f noise** — The median of each row is subtracted (note: row 1/f is only applied to PRISM data).
+| What | The standard `jwst` reduction | CAMPFIRE |
+|---|---|---|
+| Detector background | 1/f cleaning (optional) | The `jwst` cleaning, then a fit of the detector's background pattern and the remaining 1/f stripes, outside every open shutter's footprint |
+| Background | Nod subtraction, or a master background from dedicated background shutters | Nod subtraction, leaving out a nod where a neighbor would be subtracted; a master background measured from every empty shutter, written as a second spectrum |
+| Shutters that misbehave | Failed-open shutters from the operations list; stuck-closed shutters not handled | Stuck-closed shutters found from each exposure's own data; failed-open shutters from the operations list, with the light each one passes measured from the data |
+| Overlapping spectra | Not modeled | Every source fitted together with its neighbors; their light on each spectrum reported separately, not subtracted |
+| Light lost at the shutter edges (path loss) | Point-source or uniform reference | Along the slit, a model of the MSA's optics for a source of any size and position. Along the dispersion (across the shutter), the `jwst` reference with a correction measured from stars |
+| Bar shadow | CRDS bar-shadow reference | In the master background, measured from empty shutters; in the spectra, part of the optics model |
+| Wavelengths | `jwst` wavelength calibration | The same. A zero-point correction measured by JADES is available and off by default |
+| 1-D extraction | Boxcar | A fit of each source's 2-D spectrum; boxcar and optimal extractions kept alongside |
 
-For all background estimation, the spectral traces of real sources are masked using the slitlet WCS solutions (accounting for the trace curvature) so that source flux does not bias the background model. The fixed slit region is also always masked.
+## What CAMPFIRE replaces, and how to switch it back
 
-After background subtraction, the **variance is rescaled** by comparing the observed pixel-to-pixel scatter with the pipeline's noise model. This corrects for cases where the pipeline over- or under-estimates the read noise contribution.
+CAMPFIRE's own calibrations replace parts of two `jwst` reference files, the MSA path loss and the bar shadow. Each spectrum records which were used.
 
-## Stage 2a: Spec2Pipeline Calibration
+| CAMPFIRE calibration | Replaces | How to use the `jwst` reference instead |
+|---|---|---|
+| Optics model, along the slit | The path-loss reference's dependence on position along the slit | `[nirspec.stage3] slit_loss_y = "jwst"` |
+| Correction along the dispersion (across the shutter) | Part of the path-loss reference's dependence on position across the shutter | `[nirspec.stage3] slit_loss_x = "jwst"` |
+| Bar offset per observation | Where the bars sit relative to `jwst`'s slit coordinates | `[nirspec.stage3] bar_offset = "off"` |
+| Measured bar-shadow tables | The bar-shadow reference, in the master background | No setting: the measured table is used for every disperser that has one (PRISM, G140M, G235M, G395M); the high-resolution gratings use the CRDS reference |
 
-Stage 2a runs the STScI `Spec2Pipeline` on each source individually, performing WCS assignment, flat-fielding, pathloss correction, and flux/wavelength calibration.
+The calibration files, what they were derived from, and the reference files they were derived against are listed in `pipeline/campfire_pipeline/data/nirspec_calibrations.toml`. The [Slit losses and the MSA optics](/docs/reduction/nirspec/slit-losses) page shows how each was derived.
 
-### Source-by-Source Processing
+## What each spectrum file records
 
-A key aspect of the CAMPFIRE approach is that Stage 2a processes each source independently. For every rate file and every source, the pipeline:
+Every spectrum file says how it was made, in its primary header:
 
-1. Creates a **source-specific MSA metadata file** filtered to contain only the shutters relevant to that source
-2. Builds an association file pointing the Spec2Pipeline to the correct rate file and metafile
-3. Runs `Spec2Pipeline` with the following steps disabled: background subtraction (handled in Stage 2b), bar shadow correction, spectral resampling, and 1D extraction (handled in Stage 3)
+| Card | What it records |
+|---|---|
+| `CMPFRVER` | The CAMPFIRE pipeline version |
+| `CAL_VER`, `CRDS_CTX` | The `jwst` pipeline version and the CRDS context |
+| `PFVER` | The version of the extraction model |
+| `PFOPTIC` | The version of the optics model |
+| `PFPLREF` | The `jwst` path-loss reference the model starts from |
+| `PFSLY`, `PFSLX` | Whose slit loss was used, along the slit and along the dispersion |
+| `PFBAROFF` | The bar offset applied |
+| `EXTRACT`, `EXTRWHY` | Which extraction the best spectrum (`fnu`) is, and why |
+| `MBKGPREF`, `MBKGWHY` | Whether the master-background spectrum is likely the better one, and why |
 
-This produces per-source `_cal.fits` files with WCS, flat-field, pathloss, and photometric calibrations applied. Bar shadow correction is disabled by default.
+The [FITS reference](/docs/data-products/fits-columns) lists every column and extension.
 
-### Empirical Wavelength Correction
+## Running it
 
-The pipeline optionally applies the **JADES DR4 empirical wavelength zero-point correction** from Scholtz et al. (2025). This correction accounts for a systematic wavelength offset that depends on the source position within the shutter. When enabled (`empirical_wavecorr = true` in configuration), the pipeline augments the CRDS `wavecorr` reference file with the JADES correction and passes it as an override to Spec2Pipeline's `wavecorr` step.
+```bash
+cfpipe nirspec run --obs <observation> --all --processes 8
+```
 
-### Unit Correction
-
-There is a bug in the JWST pipeline where the output units are wrong for slitlets that the pipeline thinks don't have a source in them. This can happen when there are stuck closed shutters or if a source is too close to the edge of the slit. The CAMPFIRE pipeline corrects the units and fixes the pathloss correction for these edge cases. 
-
-## Stuck Shutter Masking
-
-Between Stages 2a and 2b, stuck-closed shutters are identified and flagged. The MSA has shutters that occasionally fail to open; these are identified manually by examining 2D spectra. Stuck shutters are recorded per-observation and are flagged as closed in the MSA metafiles before nodded background subtraction.
-
-## Stage 2b: Nodded Background Subtraction
-
-Stage 2b performs nodded background subtraction using the multiple dithered exposures within each observation.
-
-### Nod Subtraction
-
-For each science exposure, the pipeline:
-
-1. Groups exposures into **background groups** by detector and nod pattern
-2. **Inverts the pathloss correction** on both science and background exposures (since pathloss depends on source position, which differs between nods)
-3. Subtracts the median of the background exposures using JWST's `BackgroundStep`
-4. **Re-applies the pathloss correction** to the background-subtracted result
-
-### Exposure Group Support
-
-The pipeline supports observations with 2, 3, or 5 nod positions. For each science exposure, all other exposures in the background group serve as backgrounds. **Background overrides** can be configured per-observation to allow selective nod pairing when certain exposures are compromised.
-
-## Stage 3: Spectral Extraction
-
-Stage 3 stacks exposures and produces the final 1D spectra through optimal extraction.
-
-### Exposure Stacking
-
-The STScI `Spec3Pipeline` is run first to combine the background-subtracted 2D spectra from multiple exposures into a single stacked 2D spectrum (`_s2d.fits`). The pipeline also records an **exposures table** in the output FITS file documenting the contributing exposures, their dither positions, effective exposure times, and stuck shutter lists.
-
-### Optimal Extraction
-
-The CAMPFIRE pipeline replaces JWST's default boxcar extraction with **optimal extraction** (Horne 1986). The extraction proceeds as follows:
-
-1. The stacked 2D spectrum is **collapsed along the wavelength axis** (median) to build a spatial profile of the source
-2. The spatial profile is restricted to the extraction aperture, negative values are zeroed, and the profile is **normalized to unit integral**
-3. The 1D spectrum is extracted using **inverse-variance weighted** summation:
-
-| Method | Description | Best for |
-|--------|-------------|----------|
-| **Optimal** | Profile-weighted, inverse-variance weighted | Faint sources, maximizing S/N |
-| **3px boxcar** | Uniform weights, +/-1.5 pixel aperture | Compact sources |
-| **4px boxcar** | Uniform weights, +/-2.0 pixel aperture | Slightly extended sources |
-| **5px boxcar** | Uniform weights, +/-2.5 pixel aperture | Extended sources |
-
-All four extractions are stored in the output `_spec.fits` file. The optimal extraction is the recommended default for most science applications, as it provides the highest signal-to-noise for unresolved or marginally resolved sources.
-
-### Combining multiple dithers
-
-When an observation has multiple exposure groups (e.g., from separate visits/dithers or MSA configurations), the per-group 1D spectra are combined into a single spectrum:
-
-1. Each per-group spectrum is **resampled** onto a common wavelength grid using `spectres` 
-2. Spectra are combined with **exposure-time weighting** 
-3. Optional **sigma clipping** (default 3-sigma, 5 iterations) rejects outlier pixels when three or more spectra are available
-
-Combining the 1D spectra avoids inaccuracies from combining 2D spectra with different intra-shutter positions. The 2D spectra are still produced, but the 1D is derived by stacking the component 1D spectra, not directly extracted from the 2D. 
-
-## Redshift Fitting
-
-After extraction, the pipeline performs automated redshift fitting using a chi-squared template-fitting approach.
-
-### Fitting Strategy
-
-The fitting uses a **two-stage approach**:
-
-1. **Coarse pass** — The spectrum is fitted against templates on a velocity-spaced redshift grid (e.g., 500 km/s spacing for prism, 100 km/s for medium-resolution gratings) spanning the full redshift range. This identifies the approximate best-fit redshift.
-
-2. **Fine refinement** — A high-resolution grid is constructed in a narrow window (typically +/-3000 km/s) around the coarse best-fit, with much finer velocity spacing (e.g., 30 km/s for prism, 10 km/s for medium-resolution). This refines the redshift to higher precision.
-
-The velocity spacing and refinement parameters are configured per grating to match their spectral resolution.
-
-### Template Library
-
-The fitting uses a comprehensive template library that includes:
-
-**Continuum templates (16 models)** — Stellar population synthesis models generated with `bagpipes`, spanning a range of star-formation histories, ages, metallicities, and dust attenuation laws. The templates use delayed-tau star formation histories with ages from 0.01 Gyr to ~0.95x the age of the universe. 
-
-The templates incorporate **redshift-dependent evolution**: metallicity decreases by a factor of 2 from z=0 to z=10, and dust attenuation peaks around z~2.8 (near the peak of cosmic star formation) following a Gaussian profile.
-
-**Emission line templates (20 lines)** — Rest-frame emission lines including Lyman-alpha, CIV, CIII], [OII], H-beta, [OIII] doublet, H-alpha, [NII] doublet, and others. Several groups of lines are tied together in order to constrain the parameter space (e.g., the H-beta template includes some H-alpha). Lines are placed with sub-pixel precision using linear interpolation.
-
-**Broadline templates (4 models)** — Gaussian emission line profiles for H-alpha and H-beta at two velocity widths (1500 and 3000 km/s), enabling identification of broad-line AGN.
-
-**Blackbody and modified blackbody templates (4 models)** — Planck functions at 500K, 2500K, and 5000K, plus a modified blackbody model. These capture the spectral shapes of dust-dominated or featureless sources that stellar population models may not adequately describe.
-
-### NNLS Fitting
-
-At each trial redshift, the observed spectrum is fitted as a **non-negative linear combination** of templates using the Lawson-Hanson NNLS (non-negative least squares) algorithm. The non-negativity constraint ensures physically meaningful template coefficients (no negative flux contributions).
-
-The fitting operates on **Gram matrices** (A^T A and A^T b) rather than the full template matrix, reducing memory usage and enabling efficient parallelization across redshifts using numba. A small ridge regularization term prevents numerical issues from nearly-collinear templates.
-
-After fitting, a **confidence metric** is computed from the chi-squared curve. The chi-squared values are converted to relative probabilities via p(z) = exp(-(chi2 - chi2_min)), and the confidence is defined as the fraction of total probability within +/-0.03 of the best-fit redshift. Higher confidence indicates a well-constrained, isolated chi-squared minimum; lower confidence suggests multiple competing redshift solutions.
-
-This automated confidence is a starting point — all redshifts are subsequently [visually inspected](/docs/inspection) and assigned human quality ratings.
-
-## Output Products
-
-The pipeline produces two primary output files per source per grating:
-
-### Spectrum File (`_spec.fits`)
-
-| HDU | Name | Contents |
-|-----|------|----------|
-| 0 | PRIMARY | Header with observation metadata |
-| 1 | SPEC1D | 1D spectrum table: wavelength, optimal and boxcar flux/error in f_nu and f_lambda units |
-| 2 | SCI | 2D spectrum (flux in microjansky) |
-| 3 | ERR | 2D error array |
-| 4 | WAVELENGTH | 2D wavelength map |
-| 5 | WHT | 2D weight map |
-| 6 | PROF1D | Spatial profile weights for each extraction method |
-| 7 | EXPOSURES | Per-exposure metadata (filenames, dither info, exposure times) |
-
-### Redshift Fit File (`_zfit.fits`)
-
-| HDU | Name | Contents |
-|-----|------|----------|
-| 0 | PRIMARY | Header with `ZBEST`, `ZQUAL`, `ZCONF`, `CHI2MIN` |
-| 1 | MODEL | Best-fit model spectrum (wavelength, flux) |
-| 2 | CHI2 | Chi-squared vs. redshift curve |
-
-## Next Steps
-
-- [Visual Inspection](/docs/inspection) — How reduced spectra are inspected and quality-assessed
-- [Data Products](/docs/data-products) — Detailed column definitions and file formats
+`--all` runs the four stages and the redshift fit. Each stage can also run alone (`stage1`, `stage2a`, `stage2b`, `stage3`, `zfit`). A stage skips sources whose products already exist unless `--overwrite` is given. Emission lines are fitted after inspection, with `cfpipe nirspec linefit --obs <observation>` (see [Redshifts and lines](/docs/reduction/nirspec/redshifts)). `cfpipe config` prints the default configuration.

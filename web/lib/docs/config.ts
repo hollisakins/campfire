@@ -92,6 +92,11 @@ export const docsNav: DocPage[] = [
         description: 'Spectral extraction and calibration',
       },
       {
+        title: 'NIRSpec: Detector and calibration',
+        slug: 'reduction/nirspec/detector-calibration',
+        description: 'Count rates, the detector background, calibrated 2-D spectra',
+      },
+      {
         title: 'NIRCam Pipeline',
         slug: 'reduction/nircam',
         description: 'Imaging reduction and mosaics',
