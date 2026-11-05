@@ -1593,11 +1593,22 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
       - Reading: the model's bars are where the average observation has them, and an observation's
         bars sit within about +-0.03 slit units (+-14 mas) of jwst's slit frame, the same for its
         visits (1133) and perhaps different between stars of one observation (v2 improves both
-        ways). 1133's +0.02 is inside that range. At |centre| >= 0.35 an offset of 0.03 changes
-        the flux by 5-15 % (more in the red); inside |centre| < 0.3 by under 0.3 %.
+        ways). 1133's +0.02 is inside that range. The flux a point source loses to an offset of
+        0.03, from the model's three-nod transmission (`dy_flux_census.py`): at 1 um under 1 %
+        out to |centre| 0.4, then 33 % at 0.45 and 95 % at 0.5; at 3 um about 1 % to 0.3, 5.5 %
+        at 0.35, 14 % at 0.4, 25 % at 0.45; at 5 um 1.5 % at 0.2, 3.5 % at 0.25, 6 % at 0.3,
+        9-15 % beyond. The central controls (|centre| < 0.12) move by under 0.4 %.
+      - How many sources this touches: the planned positions of the 165,000 sources in the 318
+        production metafiles (`srcpos_census.py`) are close to uniform in y, median |SRCYPOS|
+        0.21; 28 % have |SRCYPOS| >= 0.30 (|centre| >= 0.35) and 6 % >= 0.40. With the table
+        above, an offset of 0.03 changes the flux of a point source by more than 5 % for 13 % of
+        sources at 1 um, 28 % at 3 um and 41 % at 5 um. Extended sources feel less.
+      - The offset does not follow the grating-wheel tilt readings (`gwa_tilt.py`): v4 and 1133 have
+        nearly the same GWA_XTIL (0.3366, 0.3364) and want -0.03 and +0.02.
       - So, as the model stands: compact sources inside |x| < 0.3 and |centre| < 0.3 are described to
         1.4-1.6 % (0.7-3.5 um) and 2.5 % (3.5-5 um) with the observation's pointing offset in x;
-        near a bar (|centre| >= 0.35) the observation's own registration adds 5-15 %, and at
+        near a bar (|centre| >= 0.35) the observation's own registration adds 5-15 % or more, and
+        in the red already from |centre| 0.25 (3-6 % at 5 um), and at
         |x| >= 0.4 jwst's table misses by up to 20-30 %.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
