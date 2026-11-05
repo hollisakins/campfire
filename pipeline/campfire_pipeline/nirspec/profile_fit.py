@@ -32,6 +32,7 @@ population), so at low S/N the fit settles on a compact source at the planned
 position and the extraction becomes a fixed-template optimal extraction.
 """
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -270,6 +271,18 @@ def _float_or_nan(v):
     return float(v) if v is not None else np.nan
 
 
+def _row_curve(e, a):
+    """(wavelength, value) of the per-pixel array ``a`` along the row nearest the
+    source's planned position, sorted by wavelength, finite and positive only."""
+    yy = np.where(np.isfinite(e.y), e.y, np.inf)
+    r = np.argmin(np.abs(yy - e.src_y), axis=0)
+    cols = np.arange(e.wav.shape[1])
+    lam, v = e.wav[r, cols], np.asarray(a, float)[r, cols]
+    ok = np.isfinite(lam) & np.isfinite(v) & (v > 0)
+    o = np.argsort(lam[ok])
+    return lam[ok][o], v[ok][o]
+
+
 def _pa_v3(path):
     from astropy.io import fits
     try:
@@ -448,6 +461,10 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
             src_x_jwst=_float_or_nan(getattr(s, 'source_xpos', None))))
     for m in models:
         m.close()
+    for e in exps:
+        if not e.pl_ref:
+            warnings.warn(f'profile fit: {e.name} names no path-loss reference; jwst\'s loss along the slit '
+                          'stays in its data and the model applies its own as well')
     return exps
 
 
@@ -754,15 +771,7 @@ class ProfileModel:
     def _pl_curves(self):
         # along-dispersion throughput per exposure: jwst point-source path loss along
         # the trace, as a function of wavelength
-        self.pl_curve = []
-        for e in self.exps:
-            yy = np.where(np.isfinite(e.y), e.y, np.inf)
-            r = np.argmin(np.abs(yy - e.src_y), axis=0)
-            cols = np.arange(e.wav.shape[1])
-            lam, pl = e.wav[r, cols], e.pl_point[r, cols]
-            ok = np.isfinite(lam) & np.isfinite(pl) & (pl > 0)
-            o = np.argsort(lam[ok])
-            self.pl_curve.append((lam[ok][o], pl[ok][o]))
+        self.pl_curve = [_row_curve(e, e.pl_point) for e in self.exps]
         good = [c for c in self.pl_curve if c[0].size > 3]
         for i, c in enumerate(self.pl_curve):     # source off the shutter in this exposure: borrow
             if c[0].size <= 3 and good:
@@ -1301,10 +1310,10 @@ def reported_factor(result, lam):
 def boxcar_factor(result, lam):
     """What stage 3's 3-pixel boxcar (``fnu_3px``) measures of the source, per unit true
     spectrum: the source's light within +- 1.5 detector rows of its planned
-    position (SRCYPOS, where Spec3 centres the extraction aperture), on jwst's
-    point-source calibration (the s2d is the frame divided by the point-source path
-    loss, so a pixel holds f S / T_point, ``throughput``). Averaged over the science
-    exposures that contain the source; a row is the exposure's median pixel height."""
+    position (SRCYPOS, where Spec3 centres the extraction aperture), in the s2d's units:
+    the forward model (``throughput`` times the image) divided by the path loss stage 2b
+    applied, as ``model_frame`` writes it. Averaged over the science exposures that
+    contain the source; a row is the exposure's median pixel height."""
     M = result.model
     p, eoff = _qvec(result)
     lam = np.asarray(lam, float)
@@ -1319,9 +1328,12 @@ def boxcar_factor(result, lam):
             continue
         d = np.full_like(lam, dy)
         # the window as three pixel-integrated rows of height dy
+        L, P = _row_curve(e, e.pl_applied)
+        if L.size <= 3:
+            continue
         box = sum(M.image(p, eoff, k, np.full_like(lam, e.src_y + r * dy), lam, d) for r in (-1, 0, 1))
-        tp = M.transmission(p, eoff, k, lam, d, width=0.0, centre=e.src_y)
-        out, n = out + box / np.maximum(tp, 1e-6), n + 1
+        tau = M.throughput(p, eoff, k, lam, d)
+        out, n = out + box * tau / np.interp(lam, L, P), n + 1
     return out / n if n else np.full(lam.shape, np.nan)
 
 

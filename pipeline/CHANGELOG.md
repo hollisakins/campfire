@@ -126,7 +126,15 @@ Release procedure: edit the `## Unreleased` section below, then run
     sources are unchanged; extended ones rise. On 92 p1 PRISM sources against COSMOS auto
     photometry, by fitted size from compact to wide: before 0.87 / 0.65 / 0.58 / 0.55 / 0.44 /
     0.32 x the photometry, now 0.93 / 0.77 / 0.77 / 0.75 / 0.68 / 1.03, scatter 0.20 -> 0.16 dex.
-    The 3-pixel boxcar and `fnu_opt` stay on jwst's calibration.
+    Against the catalog's own aperture flux at 0.8 arcsec the 106 own-fit sources come out at
+    0.96 +- 0.04 (per band f115w-f444w 0.91-0.96; scatter 0.12 dex): the level of about 0.8 above
+    is light in 0.8 arcsec against a Kron total. The 3-pixel boxcar and `fnu_opt` stay on jwst's
+    calibration. A source below the shape gate takes the default width (0.15 slit units, the p1
+    own-fit median 0.143) for its along-dispersion extrapolation, which raises its flux by 19-28 %.
+  - A neighbour's pass 1 from its 3-pixel boxcar (`profile_fit.boxcar_factor`) is now on the
+    s2d's units (the forward model over the path loss stage 2b applied), where it was on the
+    model's point transmission at the planned position (about 20 % off near the shutter edge).
+    An exposure that names no path-loss reference warns at load.
 
 - **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
   run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint

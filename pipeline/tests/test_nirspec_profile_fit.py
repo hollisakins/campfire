@@ -239,6 +239,31 @@ def test_reported_factor_bounds_a_wide_source():
     assert shares[0] > 0.99 > shares[1] > shares[2] > 0.1
 
 
+def test_boxcar_factor_is_what_the_model_frames_hold():
+    """``boxcar_factor`` per unit true spectrum is the three rows around the planned
+    position of the model frames in the s2d's units (divided by the path loss stage 2b
+    applied), so a boxcar turned into a true spectrum is placed back at the same level.
+    The applied path loss differs from jwst's point loss here, and the source sits off
+    centre, so a factor on any other calibration would not match."""
+    rows = np.arange(NY)[:, None] * np.ones((1, NX))
+    exps = _exposures(src_y=DY, pl=0.8)
+    for e in exps:
+        r_src = np.round(-e.y[0, 0] / DY)
+        e.y = (rows - r_src) * DY                # rows land on the planned position
+        e.wav = np.repeat(e.wav[NY // 2][None, :], NY, axis=0)
+        e.pl_applied = np.full((NY, NX), 0.6)
+        e.partners = []
+    R = _truth_result(exps, dict(centre=DY, drift=0.0, width=0.2, width_change=0.0), [0, 0, 0], 1.0)
+    lam = exps[0].wav[0, 20:-20]
+    spec = np.interp(lam, R.lam, R.flux)
+    want = []
+    for k, e in enumerate(exps):
+        frame = PF.model_frame(R, k, applied_pathloss=True)
+        r0 = int(np.argmin(np.abs(e.y[:, 0] - e.src_y)))
+        want.append(frame[r0 - 1:r0 + 2, 20:-20].sum(axis=0) / spec)
+    assert np.allclose(PF.boxcar_factor(R, lam), np.mean(want, axis=0), rtol=1e-6)
+
+
 # ---------------------------------------------------------------------------
 # frames without the source (SRCFLUX = F)
 # ---------------------------------------------------------------------------

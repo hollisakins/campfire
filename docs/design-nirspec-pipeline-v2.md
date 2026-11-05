@@ -608,7 +608,10 @@ slit units from the planned position, width median 0.15), `nirspec/profile_chain
 (`choose_shape`, `ChainConfig`), `nirspec/profile_product.py`, `stage3.run_profile_fit_phase`.
 
 **Open.**
-- Default width 0.15 vs 0.21 slit units (user to decide; raised 2026-10-23).
+- Default width 0.15 vs 0.21 slit units (user to decide; raised 2026-10-23). Since FIT_VERSION
+  6 it sets a faint source's flux scale (19-28 % at 0.15). p1 own fits have median 0.143 and
+  nothing supports 0.21 (review round, 2026-11-04); whether the width's spread goes into the
+  error of a default-shape source is open.
 - Re-run the injection and shape tests on the merged pipeline, since the old figures are lost
   (extraction session).
 
@@ -1396,7 +1399,8 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
       The level of about 0.8 does not follow SRCXPOS (correlation +0.20, the off-centre half
       higher) or SRCYPOS; it is lower for sources measured in more bands (0.77 against 0.86), so
       it looks like a calibration difference with wavelength between the PRISM and the
-      photometry, not a loss the model misses. Open.
+      photometry, not a loss the model misses. (Resolved below, review round 2026-11-04: it is
+      the comparison, light in 0.8 arcsec against a Kron total.)
     - Adopted: 0.8 arcsec (user, 2026-11-04). End to end with the shipped code (`endtoend_x.zsh`,
       `xsize_pipeline.py`, figure `xsize_pipeline.png`): the p1 sources' reported flux over the
       photometry by size sextile, before 0.87 / 0.65 / 0.58 / 0.55 / 0.44 / 0.32 (scatter 0.20
@@ -1423,6 +1427,51 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
       star. The fit of a faint star can fall into a second minimum (2401 in check 1). Fit time
       for wide galaxies. Check 1 itself (`check1_ngc2506.py`, `check1_ngc_spec.py`) is still
       scratch. What the product reports for an extended source (below, 2026-11-04).
+    - Review round (2026-11-04). An independent read of the model (a separate review agent, asked
+      for logical consistency and reliability, given the code and this document, not our
+      conclusions) found the slit-direction model coherent and counted once (jwst's y loss moved
+      to the centre exactly; its table is separable and repeats per shutter; jwst's bar-shadow
+      step skipped for science slits) and the weak side along the dispersion. Its findings and
+      what was done:
+      - `boxcar_factor` (a neighbour's pass 1 from its 3-pixel boxcar when its own fit failed)
+        divided by the model's point transmission at the planned position, while the s2d holds
+        the forward model divided by the path loss stage 2b applied; the two differ by jwst's y
+        loss against the model's (about 20 % near the shutter edge) times the along-dispersion
+        terms. Fixed: it is now the three rows of the model frames in the s2d's units (test
+        `test_boxcar_factor_is_what_the_model_frames_hold`).
+      - An exposure naming no path-loss reference keeps jwst's y loss in its data while the
+        model applies its own: now a warning at load. Docstrings that said `fnu_prof` equals
+        `fnu_opt` for a point source corrected (only at the shutter centre).
+      - The ~0.8 level against photometry (`cat_extract.py`, `phot_match.py`, figure
+        `phot_match.png`; the catalog's native-PSF apertures 0.05-1.0 arcsec,
+        `~/cosmos_v1.2/aperate_config.toml`). In the catalog itself the light inside 0.75 / 1.0
+        arcsec is 0.75-0.82 / 0.81-0.89 of the Kron total. Against the catalog's own 0.8 arcsec
+        aperture flux (between 0.75 and 1.0) the 106 own-fit sources come out at 0.96 +- 0.04
+        (median per source; per band f115w-f444w 0.95 / 0.91 / 0.96 / 0.93 / 0.92 / 0.94),
+        scatter 0.15 -> 0.12 dex; the sum over sources 0.96 +- 0.02. The aperture flux holds the
+        PSF-blurred source and ours the source before the PSF, so a point source would sit a few
+        per cent above 1. The level was the comparison, not a calibration difference.
+      - Fitted width against the catalog's half-light radius (`size_vs_rh.py`, figure
+        `size_vs_rh.png`): rank correlation +0.73 (F200W, 60 sources) / +0.75 (F444W, 33), the
+        measured radius 1.6 x what a Gaussian of the fitted width blurred by a Gaussian PSF
+        predicts. The fitted width follows the source's size but describes its core, not its
+        half-light radius (the PSF approximation without wings explains part of the factor).
+      - Default width (finding: the reported flux of a source below the gate scales with the
+        assumed width through `x_extended_ratio`, by 19-28 % at 0.15 and 40-50 % at 0.21 over
+        0.8-4.5 um). `dwidth_p1.py`: the 43 cleanest default-shape PRISM sources of p1, refitted
+        at 0.15, 0.21 and free. Against the 0.8 arcsec aperture flux, median per source 0.87 +-
+        0.15 at 0.15 and 1.17 +- 0.20 at 0.21 (the own-fit sources 0.96); too few and too faint
+        to decide alone. Own-fit widths at 2 um (`width_by_snr.py`): median 0.143 slit units, no
+        trend with S/N (0.160 / 0.135 / 0.139 for gate S/N 25-40 / 40-80 / >80, quartiles about
+        0.10-0.22); free fits below the gate 0.133. Nothing in p1 supports 0.21. The spread
+        (quartiles 0.10-0.22) is the real uncertainty of a source without a measured size: about
+        +-15 % in flux, not in the error column.
+      - Not yet addressed: the x correction was fitted and checked on the same NGC 2506 pairs
+        (held out by star, but pairs share reference visits) and never tested on the gratings;
+        the FIT_VERSION 5 check-1 numbers in the CHANGELOG mix the SRCYPOS unit fix with the
+        model change; `fnu_prof_err` is statistical only (no shape, kernel, centre-law or x-loss
+        term; check 1 measures 6-12 % for the same star at different positions); the x
+        transmission reuses the kernel's one-sided slit-direction shoulder.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
