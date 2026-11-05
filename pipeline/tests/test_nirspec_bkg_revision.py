@@ -19,6 +19,7 @@ from astropy.io import fits
 from astropy.table import Table
 
 from campfire_pipeline.common import cfp
+from campfire_pipeline.nirspec import bar_offset as BO
 from campfire_pipeline.nirspec import canonical as C
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec import slitlet_neighbours as SN
@@ -251,6 +252,7 @@ def phase(monkeypatch, fake_models):
     monkeypatch.setattr(CT, 'stuck_keys_by_root', lambda *a: {})
     monkeypatch.setattr(S3, 'run_stage3_single_source', lambda *a, **k: calls.append(('spec3', a[2])))
     monkeypatch.setattr(PP, 'run_product', lambda *a: calls.append(('product', a[0])) or None)
+    monkeypatch.setattr(BO, 'ensure', lambda *a, **k: {})
     return calls, state
 
 
@@ -339,6 +341,7 @@ def test_exposures_table_of_a_revised_source_is_what_was_subtracted(tmp_path, mo
     monkeypatch.setattr(CT, 'stuck_by_root', lambda *a: {})
     monkeypatch.setattr(CT, 'stuck_keys_by_root', lambda *a: {})
     monkeypatch.setattr(PP, 'run_product', product)
+    monkeypatch.setattr(BO, 'ensure', lambda *a, **k: {})
     monkeypatch.setattr(S3, 'opt_ext_single_source', lambda *a, **k: None)
     monkeypatch.setattr('campfire_pipeline.config.get_stage_config', lambda *a, **k: {})
     sc = dict(method='nodded', combine_method='1d', profile_fit=True, contam_predict=True, scan_neighbours=False,

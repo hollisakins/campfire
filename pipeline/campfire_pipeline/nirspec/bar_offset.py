@@ -1,0 +1,369 @@
+"""Where an observation's MSA bars sit against jwst's slit frame, measured from the background in its
+empty shutters.
+
+The profile fit's shutters (``optics``) sit at fixed positions in jwst's slit frame. A star fitted
+near a bar shows that the real bars of one observation can sit up to about 0.02 slit units (9 mas)
+away from them, by a different amount in each observation, and that this moves the flux of a source
+near a bar by several per cent (docs/design-nirspec-pipeline-v2.md, §3.7). The amount does not follow
+the grating-wheel tilt readings or the date, so it is measured per observation, here, from light
+every observation has: the background in the shutters of its slitlets that hold no source.
+
+The background lights an empty shutter evenly, so the shutter's profile across the slit is the
+open area blurred by the optics: flat in the middle, falling over the bars. The model's profile for
+uniform light is its point images summed over every source position (``uniform_profile``). For
+every empty open shutter of the observation's canonicals (``barshadow_calibration.pixel_samples``:
+the source's shutter, other catalogued sources and pixels under two slitlets left out), each
+pixel's surface brightness over its exposure's pooled background, divided by the shutter's own
+centre level in each of three wavelength bands, is compared with the model's profile at the
+pixel's slit y plus a trial offset. Only the half of each shutter that faces away from the source
+is used (the source's wings brighten the near half) and only its steep part, 0.2 to 0.75 pitches
+from the shutter centre. The two halves are fitted apart: an offset moves both the same way, a
+profile wider or narrower than the model moves them opposite, so their mean is the offset whatever
+the width. The score of a trial offset is the chi2 of binned medians (half, band, distance from
+the centre); the minimum is a parabola through the best three.
+
+The offset has the profile fit's sign: it is added to every pixel's slit y and to the source's
+planned position (``profile_fit.load_group``), so the model's shutters sit where the background
+says the bars are. Within an observation it is one number plus a small pattern by MSA quadrant
+that is the same in every observation (``QUADRANT_PATTERN``).
+
+The result is written per disperser to ``bar_offset.json`` in the observation's workspace and
+measured again only when it is missing, from an older version of this module, or from a different
+set of canonicals (``ensure``).
+"""
+import json
+import os
+import warnings
+
+import numpy as np
+from scipy.ndimage import map_coordinates
+
+from campfire_pipeline.nirspec import barshadow_calibration as B
+from campfire_pipeline.nirspec import crds_refs as CR
+from campfire_pipeline.nirspec import optics as O
+
+MEASURE_VERSION = '1'
+OFFSET_FILE = 'bar_offset.json'
+SHIFTS = np.round(np.arange(-0.10, 0.1001, 0.005), 4)  # trial offsets [slit units]
+U_LO, U_HI = 0.2, 0.75       # the steep part of a shutter's edge [pitches from its centre]
+U_BIN = 0.025
+CENTRE = 0.15                # a shutter's own level from |u| below this [pitches] (B.CENTRE_FRAC)
+N_BANDS = 3
+MAX_K = 2                    # shutters up to this many from the source (the optics tables end at +-5.5 slit units)
+SCALE_MAX = 1.5              # a shutter whose centre reads more than this x its exposure's background holds other light
+MIN_PIXELS = 3000            # per half, for an offset
+MIN_EXPOSURE_PIXELS = 2000   # per half, for one exposure's own offset (the spread between exposures)
+MIN_BIN = 30
+PAD_PX = 2.0                 # detector rows past the source's shutter left out (``pixel_samples``)
+MAX_CANONICALS = 800         # a random subset of sources above this many canonicals, every exposure of each
+# Each quadrant's offset from its observation's, the same in every observation: the mean over eleven survey
+# PRISM observations (uncover2, eight EMBER pointings, capers_uds_p8, venus_pg004; scatter 0.0006-0.0009 per
+# quadrant, the same against the empirical bar-shadow table and against the optics model; 2026-11-05).
+QUADRANT_PATTERN = {1: -0.0042, 2: 0.0003, 3: -0.0009, 4: 0.0047}
+
+
+# ---------------------------------------------------------------------------
+# The model's profile for uniform light
+# ---------------------------------------------------------------------------
+_UNIFORM = {}
+
+
+def uniform_profile(detector, mask):
+    """(LAM, Y) light per detector row of a uniform background of unit surface brightness (per slit
+    unit) through the open shutters ``mask`` (offsets from the source's shutter): the model's point
+    images summed over every source position. The kernel before the shutter is left out: it moves
+    light between source positions, which uniform light does not feel."""
+    key = (str(detector).upper(), tuple(int(k) for k in mask))
+    if key not in _UNIFORM:
+        tab = O.optics_for(key[0]).raw_image_table(key[1])
+        _UNIFORM[key] = np.asarray(tab, float).sum(axis=1) * (O.C[1] - O.C[0])
+    return _UNIFORM[key]
+
+
+def uniform_at(prof, y, lam):
+    """``uniform_profile`` at slit positions ``y`` and wavelengths ``lam`` [um]."""
+    li = O.Optics._li(np.asarray(lam, float))
+    yi = (np.asarray(y, float) - O.Y[0]) / (O.Y[1] - O.Y[0])
+    return map_coordinates(prof, np.vstack([li, yi]), order=1, mode='nearest')
+
+
+def open_mask(state):
+    """The open shutters of a shutter-state string as offsets from its 'x' shutter."""
+    state = str(state or '')
+    kx = max(state.find('x'), 0)
+    return tuple(j - kx for j, ch in enumerate(state) if ch != '0')
+
+
+def model_ratio(prof, y, lam, kk, pitch, shifts=SHIFTS):
+    """(n_shift, n) the model's profile at each pixel's slit y (``y``, slit units) plus each trial
+    offset, over its value at the centre of the pixel's shutter ``kk`` moved the same way (the data
+    are divided by that shutter's own centre level)."""
+    cu = np.linspace(-CENTRE, CENTRE, 7) * pitch
+    out = np.empty((len(shifts), y.size), np.float32)
+    for i, d in enumerate(shifts):
+        num = uniform_at(prof, y + d, lam)
+        den = np.mean([uniform_at(prof, kk * pitch + c + d, lam) for c in cu], axis=0)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            out[i] = num / den
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Samples
+# ---------------------------------------------------------------------------
+def _band_edges(grid):
+    lam = grid.wavelengths_um
+    lo, hi = max(float(lam.min()), O.LAM[0]), min(float(lam.max()), O.LAM[-1])
+    return np.geomspace(lo, hi, N_BANDS + 1)
+
+
+def _worker(args):
+    c, counter_path, grid, sky, scale_k, edges = args
+    counter = np.load(counter_path) if counter_path else None
+    try:
+        p = B.pixel_samples(c, counter, PAD_PX)
+    except Exception as e:                    # noqa: BLE001 - one slit's failure leaves the rest
+        return None, f'{os.path.basename(c.path)}: {type(e).__name__}: {e}'
+    col = grid.column_of(p['lam'])
+    sel = B.profile_selection(p, col, set(scale_k)) & (p['lam'] > edges[0]) & (p['lam'] < edges[-1])
+    kk = np.asarray(p['k'], int).copy()
+    j = np.asarray(p['j'], int)
+    n_sh = len(p['state'])
+    kk[j == -1] += 1                          # a margin pixel measures the open shutter it borders
+    kk[j == n_sh] -= 1
+    u = p['y'] - kk
+    with np.errstate(invalid='ignore', divide='ignore'):
+        ratio = p['sb'] / np.interp(p['lam'], grid.wavelengths_um, sky)
+    band = np.digitize(p['lam'], edges) - 1
+    norm = np.full(u.size, np.nan)
+    for k in np.unique(kk[sel]):
+        for b in range(N_BANDS):
+            m = (kk == k) & (band == b) & (np.abs(u) < CENTRE) & np.isfinite(ratio)
+            if m.sum() >= 20:
+                norm[(kk == k) & (band == b)] = np.median(ratio[m])
+    scale = np.array([scale_k.get(int(k), np.nan) for k in kk])
+    sel &= (np.sign(u) == np.sign(kk)) & (kk != 0) & (np.abs(kk) <= MAX_K)
+    sel &= (np.abs(u) > U_LO) & (np.abs(u) < U_HI) & np.isfinite(norm) & (norm > 0) & (scale < SCALE_MAX)
+    if not sel.any():
+        return None, None
+    prof = uniform_profile(c.detector, open_mask(p['state']))
+    pitch = float(p['pitch'])
+    T = model_ratio(prof, p['y'][sel] * pitch, p['lam'][sel], kk[sel], pitch)
+    n = int(sel.sum())
+    return dict(u=u[sel].astype(np.float32), band=band[sel].astype(np.int8),
+                r=(ratio[sel] / norm[sel]).astype(np.float32), T=T,
+                quadrant=np.full(n, p['quadrant'], np.int8),
+                exposure=np.full(n, f'{c.root}_{c.nod}')), None
+
+
+def samples(canonicals, workspace, processes=1, cache_dir=None, log=None):
+    """Every usable pixel of the empty shutters of ``canonicals`` (one disperser of one
+    observation): dict of flat arrays ``u`` (pitches from the shutter centre), ``band``, ``r``
+    (surface brightness over the exposure's background and the shutter's centre level),
+    ``T`` (n_shift, n: the model's at each of ``SHIFTS``), ``quadrant``, ``exposure``; None
+    when there is none."""
+    from multiprocessing import Pool
+    from campfire_pipeline.nirspec.coverage import cache_path, coverage_from_wcs, cutoffs_for, default_cache_dir
+    log = log or (lambda *a: None)
+    cache_dir = cache_dir or default_cache_dir()
+    grid = B.reference_grid(CR.barshadow_path(canonicals[0].path))
+    edges = _band_edges(grid)
+    cut = cutoffs_for(canonicals[0].grating, canonicals[0].filter)
+    counters = {}
+    for rate in sorted({c.rate_path for c in canonicals}):
+        if os.path.exists(rate):
+            coverage_from_wcs(rate, cache_dir=cache_dir, cutoffs=cut)
+            counters[rate] = cache_path(rate, cache_dir, cut)
+    shutters, fails = B.centre_spectra(canonicals, counters, grid, PAD_PX, processes)
+    skies, _, scales = B.pool_sky_per_observation(shutters, grid)
+    scale_by = {}
+    for key, (a, _) in scales.items():
+        if np.isfinite(a):
+            scale_by.setdefault(key[:-1], {})[key[-1]] = a
+    args = [(c, counters.get(c.rate_path), grid, skies[(c.obs, c.root, c.nod)], scale_by[c.key], edges)
+            for c in canonicals if scale_by.get(c.key) and (c.obs, c.root, c.nod) in skies]
+    res, errs = [], list(fails)
+    with Pool(max(int(processes), 1)) as pool:
+        for r, e in pool.imap_unordered(_worker, args, chunksize=2):
+            if e:
+                errs.append(e)
+            if r is not None:
+                res.append(r)
+    if errs:
+        log(f'bar offset: {len(errs)} slits could not be sampled (first: {errs[0]})')
+    if not res:
+        return None
+    return {k: np.concatenate([r[k] for r in res], axis=-1) for k in res[0]}
+
+
+# ---------------------------------------------------------------------------
+# The fit
+# ---------------------------------------------------------------------------
+def _best(r, T, key):
+    """Best trial offset for pixels ``r`` with model ``T``: chi2 of the binned medians (bins
+    ``key``) against the model's, minimum of a parabola through the best three; NaN with fewer
+    than five bins."""
+    chi = np.zeros(SHIFTS.size)
+    nb = 0
+    order = np.argsort(key, kind='stable')
+    ks, r, T = key[order], r[order], T[:, order]
+    starts = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]])
+    for a, b in zip(starts, np.r_[starts[1:], ks.size]):
+        if b - a < MIN_BIN:
+            continue
+        med = np.median(r[a:b])
+        var = 0.5 * np.pi * (1.4826 * np.median(np.abs(r[a:b] - med))) ** 2 / (b - a)
+        if not var > 0:
+            continue
+        chi += (med - np.median(T[:, a:b], axis=1)) ** 2 / var
+        nb += 1
+    if nb < 5:
+        return np.nan
+    i = int(np.argmin(chi))
+    j = int(np.clip(i, 1, SHIFTS.size - 2))
+    a, b, _ = np.polyfit(SHIFTS[j - 1:j + 2], chi[j - 1:j + 2], 2)
+    return float(np.clip(-b / (2 * a), SHIFTS[0], SHIFTS[-1])) if a > 0 else float(SHIFTS[i])
+
+
+def fit(s, sel=None, min_pixels=MIN_PIXELS):
+    """(offset, lower, upper) [slit units] from samples ``s`` (``samples``), restricted to
+    ``sel``: each half fitted alone, the offset their mean; NaNs when a half has fewer than
+    ``min_pixels``."""
+    ok = np.isfinite(s['r']) & np.all(np.isfinite(s['T']), axis=0)
+    if sel is not None:
+        ok &= sel
+    up = s['u'] > 0
+    ub = np.digitize(np.abs(s['u']), np.arange(U_LO, U_HI + 1e-6, U_BIN)) - 1
+    key = s['band'].astype(int) * 1000 + ub
+    out = []
+    for half in (ok & ~up, ok & up):
+        out.append(_best(s['r'][half], s['T'][:, half], key[half]) if half.sum() >= min_pixels else np.nan)
+    lo, hi = out
+    return 0.5 * (lo + hi), lo, hi
+
+
+def measure(canonicals, workspace, processes=1, cache_dir=None, max_canonicals=MAX_CANONICALS, log=None):
+    """The bar offset of one disperser of one observation from the canonicals' empty shutters:
+    a dict with ``offset`` (slit units; NaN when too few pixels), the two halves (``lower`` /
+    ``upper``), ``exposures`` (each exposure's own offset where it has enough pixels) and their
+    ``spread``, the offset measured in each quadrant (``quadrants``, a check), the offsets the
+    profile fit applies per quadrant (``applied``: the offset plus ``QUADRANT_PATTERN``), and the
+    counts."""
+    log = log or (lambda *a: None)
+    cans = list(canonicals)
+    n_all = len(cans)
+    if max_canonicals and len(cans) > max_canonicals:
+        sids = sorted({c.source_id for c in cans})
+        keep = set(np.random.default_rng(1).choice(sids, size=max(1, int(len(sids) * max_canonicals / len(cans))),
+                                                   replace=False).tolist())
+        cans = [c for c in cans if c.source_id in keep]
+    out = dict(version=MEASURE_VERSION, optics=O.version(), n_canonicals=n_all, n_sampled=len(cans),
+               offset=np.nan, lower=np.nan, upper=np.nan, n_pixels=0, exposures={}, spread=np.nan,
+               quadrants={}, applied={})
+    s = samples(cans, workspace, processes=processes, cache_dir=cache_dir, log=log) if cans else None
+    if s is None:
+        return out
+    out['n_pixels'] = int(s['r'].size)
+    out['offset'], out['lower'], out['upper'] = fit(s)
+    for ex in np.unique(s['exposure']):
+        v = fit(s, s['exposure'] == ex, MIN_EXPOSURE_PIXELS)[0]
+        if np.isfinite(v):
+            out['exposures'][str(ex)] = v
+    vals = list(out['exposures'].values())
+    out['spread'] = float(np.std(vals)) if len(vals) > 2 else np.nan
+    for q in (1, 2, 3, 4):
+        v = fit(s, s['quadrant'] == q)[0]
+        if np.isfinite(v):
+            out['quadrants'][str(q)] = v
+    if np.isfinite(out['offset']):
+        out['applied'] = {str(q): out['offset'] + QUADRANT_PATTERN[q] for q in (1, 2, 3, 4)}
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The file
+# ---------------------------------------------------------------------------
+def disperser_key(grating, filter_name):
+    """'PRISM/CLEAR', the key of ``bar_offset.json`` and ``profile_fit.Exposure.grating``."""
+    return f'{grating}/{filter_name}'.upper()
+
+
+def offset_path(workspace):
+    return os.path.join(workspace, OFFSET_FILE)
+
+
+def _clean(v):
+    if isinstance(v, dict):
+        return {k: _clean(x) for k, x in v.items()}
+    if isinstance(v, (float, np.floating)):
+        return None if not np.isfinite(v) else round(float(v), 5)
+    if isinstance(v, np.integer):
+        return int(v)
+    return v
+
+
+def read(workspace):
+    """{disperser key: measurement} from the workspace's file ({} when there is none)."""
+    try:
+        with open(offset_path(workspace)) as fh:
+            return json.load(fh).get('dispersers', {})
+    except (OSError, ValueError):
+        return {}
+
+
+def write(workspace, dispersers):
+    path = offset_path(workspace)
+    tmp = f'{path}.{os.getpid()}.tmp'
+    with open(tmp, 'w') as fh:
+        json.dump(dict(dispersers={k: _clean(v) for k, v in sorted(dispersers.items())}), fh, indent=1)
+    os.replace(tmp, path)
+
+
+def table(workspace):
+    """{disperser key: {quadrant: offset}} of the measured dispersers, for ``profile_fit.load_group``."""
+    out = {}
+    for key, m in read(workspace).items():
+        ap = m.get('applied') or {}
+        if ap:
+            out[key] = {int(q): float(v) for q, v in ap.items() if v is not None}
+    return out
+
+
+def ensure(workspace, processes=1, cache_dir=None, log=None, overwrite=False):
+    """Measure every disperser of the observation in ``workspace`` whose entry in
+    ``bar_offset.json`` is missing, from another ``MEASURE_VERSION`` or optics model, or from
+    another number of canonicals; returns ``table``."""
+    log = log or (lambda *a: None)
+    workspace = os.path.abspath(workspace)
+    obs_name = os.path.basename(workspace)
+    cans = B.discover_workspace(workspace)
+    by = {}
+    for c in cans:
+        by.setdefault(disperser_key(c.grating, c.filter), []).append(c)
+    have = read(workspace)
+    changed = False
+    for key, cs in sorted(by.items()):
+        old = have.get(key) or {}
+        if (not overwrite and old.get('version') == MEASURE_VERSION and old.get('optics') == O.version()
+                and old.get('n_canonicals') == len(cs)):
+            continue
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                m = measure(cs, workspace, processes=processes, cache_dir=cache_dir, log=log)
+        except Exception as e:                 # noqa: BLE001 - no offset is the model as it was; tried again next run
+            log(f'bar offset {obs_name} {key}: not measured ({type(e).__name__}: {e}); none applied')
+            have.pop(key, None)
+            changed = True
+            continue
+        if np.isfinite(m['offset']):
+            log(f"bar offset {obs_name} {key}: {m['offset']:+.4f} slit units (halves {m['lower']:+.4f} / "
+                f"{m['upper']:+.4f}, {m['n_pixels']} pixels, {len(m['exposures'])} exposures, spread "
+                f"{m['spread']:.4f})")
+        else:
+            log(f'bar offset {obs_name} {key}: too few empty-shutter pixels ({m["n_pixels"]}); none applied')
+        have[key] = m
+        changed = True
+    if changed:
+        write(workspace, have)
+    return table(workspace)

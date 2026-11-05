@@ -171,15 +171,23 @@ def test_map_shape_roundtrip():
 
 def test_prism_transfer_uses_grating_shutters():
     """A transferred shape is evaluated through the grating exposure's own open
-    shutters: no model light where that exposure's slitlet is closed."""
+    shutters: the light that the closed bottom shutter would have passed is missing.
+    The shutters clip before the post-shutter blur, so an image is the sum of its open
+    shutters' images; what lands on the closed shutter's rows is only the blur from the
+    open ones."""
     exps = _grating(T._exposures())
     exps[0].open_k = (0, 1)                 # bottom shutter closed in the grating configuration
     _fill(exps, dict(width=0.15), 20.0)
     R = PF.fit_fixed(exps=exps, shape=dict(centre_offset=0.05, width=0.3, drift=0.0, width_change=0.0))
-    img = PF.frame_image(R, 0)
-    y = exps[0].y
-    closed = (y < -0.5 - 0.6)               # below the open area, beyond the PSF blur
-    assert np.nanmax(np.abs(img[closed])) < 1e-3 * np.nanmax(img)
+    closed = PF.frame_image(R, 0)
+    e = R.model.exps[0]
+    e.open_k = (-1,)
+    bottom = PF.frame_image(R, 0)
+    e.open_k = (-1, 0, 1)
+    full = PF.frame_image(R, 0)
+    assert np.allclose(closed + bottom, full, rtol=1e-10, atol=1e-12 * np.nanmax(full), equal_nan=True)
+    rows = (e.y > -1.5) & (e.y < -0.5)
+    assert np.nansum(bottom[rows]) > 0.5 * np.nansum(closed[rows])   # the missing light is not negligible
 
 
 def test_fits_take_no_pointing_offsets():

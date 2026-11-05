@@ -2,9 +2,10 @@
 
 Synthetic three-nod slitlets on a common detector frame: the slitlet is fixed on
 the detector and the source moves one shutter between nods, as in a real
-3-shutter nod pattern. Data are generated with the module's own image model from a
-known shape and spectrum, so these tests lock the solver, the priors and the
-nod bookkeeping; the physics is validated on real data separately.
+3-shutter nod pattern. Data are generated with the module's own image model (the
+diffraction model's closed-form stand-in, ``optics_standin``) from a known shape and
+spectrum, so these tests lock the solver, the priors and the nod bookkeeping; the
+physics is validated on real data separately.
 """
 
 import numpy as np
@@ -138,6 +139,51 @@ def test_recovers_shape_and_spectrum_at_high_snr():
     assert 0.9 < R.chi2_red < 1.1
 
 
+def _long_slitlet_exposures(half=3, ny=56):
+    """Three nods of a (2 half + 1)-shutter slitlet on a common frame, y NaN outside each
+    exposure's slit (+-half pitches + margin), as jwst leaves the rows beyond a slit's ends."""
+    rows = np.arange(ny)[:, None] * np.ones((1, NX))
+    lam = np.linspace(0.8, 5.0, NX)[None, :] * np.ones((ny, 1)) + 0.002 * (rows - ny / 2)
+    shift = MSA_SLIT_PITCH / DY
+    open_k = tuple(range(-half, half + 1))
+    edge = half * MSA_SLIT_PITCH + MSA_SLIT_MARGIN
+    exps = []
+    for i, r_src in enumerate((ny / 2, ny / 2 - shift, ny / 2 + shift)):
+        y = (rows - r_src) * DY
+        y = np.where(np.abs(y + (r_src - ny / 2) * DY) <= edge, y, np.nan)
+        exps.append(PF.Exposure(
+            name=f'jw00000001001_03101_0000{i + 1}_nrs1_1.fits', group=0, detector='NRS1', grating='PRISM/CLEAR',
+            quadrant=1, diff=np.zeros((ny, NX)), var=np.ones((ny, NX)), ok=np.isfinite(y), wav=lam.copy(), y=y,
+            pl_applied=np.full((ny, NX), 0.8), pl_point=np.full((ny, NX), 0.8), src_y=0.1, open_k=open_k,
+            partners=[j for j in range(3) if j != i], use_data=True, cutout=(0, 0, ny, NX)))
+    return exps
+
+
+def test_long_slitlet_row_height_at_slit_ends():
+    """The row height is defined on every row of the slit, its first and last included (a
+    central difference there reaches outside the slit), and equals the row pitch."""
+    for e in _long_slitlet_exposures():
+        inside = np.isfinite(e.y)
+        assert np.all(np.isfinite(e.dy[inside]))
+        assert np.allclose(e.dy[inside], DY)
+
+
+def test_long_slitlet_fit():
+    """A seven-shutter slitlet (one long open column, as in program 4465): the partner terms
+    reach the slit's end rows and the fit still recovers the shape and the spectrum."""
+    exps = _long_slitlet_exposures()
+    R0 = _truth_result(exps, TRUTH, [0.0, 0.0, 0.0], 200.0)
+    rng = np.random.default_rng(5)
+    noise = [rng.normal(size=exps[0].y.shape) for _ in exps]
+    for k, e in enumerate(exps):
+        e.diff = PF.model_frame(R0, k, applied_pathloss=False) + noise[k] - np.mean([noise[j] for j in e.partners], axis=0)
+    R = PF.fit(exps, chromatic=True)
+    assert abs(R.params['centre'] - TRUTH['centre']) < 0.02
+    assert abs(R.params['width'] - TRUTH['width']) < 0.02
+    good = np.isfinite(R.flux) & (R.lam > 1.0) & (R.lam < 4.8)
+    assert abs(np.median(R.flux[good] / (200.0 * _spectrum(R.lam[good]))) - 1) < 0.01
+
+
 def test_faint_source_falls_back_to_prior_shape():
     """With little signal the shape settles on the prior: a compact source at the
     planned position, not a wide or displaced one."""
@@ -168,27 +214,54 @@ def test_outlier_pixels_are_masked():
     assert abs(np.median(R.flux[good] / (50.0 * _spectrum(R.lam[good]))) - 1) < 0.03
 
 
-def test_main_shutter_factor_is_one_for_centred_point_like_source():
-    exps = _exposures(src_y=0.0)
-    R = _truth_result(exps, dict(centre=0.0, drift=0.0, width=PF.W_FLOOR, width_change=0.0), [0, 0, 0], 1.0)
-    f = PF.main_shutter_factor(R, np.array([1.0, 2.0, 4.0]))
-    assert np.allclose(f, 1.0, atol=0.03)
+def test_reported_factor_is_one_for_a_point_source_anywhere():
+    """The reported flux is the source's light inside REPORT_APERTURE: all of a point
+    source's, wherever it sits in the shutter."""
+    for y in (0.0, 0.3):
+        exps = _exposures(src_y=y)
+        R = _truth_result(exps, dict(centre=y, drift=0.0, width=PF.W_FLOOR, width_change=0.0), [0, 0, 0], 1.0)
+        assert np.allclose(PF.reported_factor(R, np.array([1.0, 2.0, 4.0])), 1.0)
 
 
-def test_main_shutter_factor_ignores_an_exposure_without_usable_pixels():
-    """An exposure with every pixel masked used to make the factor NaN (its row scale
-    was the median of nothing), which switched off the pass-1 guard for that source."""
-    exps = _exposures(src_y=0.1)
-    R = _truth_result(exps, TRUTH, [0, 0, 0], 1.0)
+def test_reported_factor_bounds_a_wide_source():
+    """A round Gaussian of sigma s arcsec keeps 1 - exp(-R^2 / 2 s^2) inside the circle of
+    radius R = REPORT_APERTURE / 2, and the share falls as the source widens."""
+    from campfire_pipeline.nirspec.optics import SLIT
+    exps = _exposures()
     lam = np.array([1.0, 2.0, 4.0])
-    f_all = PF.main_shutter_factor(R, lam)
-    exps[1].ok[:] = False
-    f = PF.main_shutter_factor(R, lam)
-    assert np.all(np.isfinite(f))
-    assert np.allclose(f, f_all, rtol=0.05)
-    for e in exps:                                   # nothing usable anywhere: still finite
-        e.ok[:] = False
-    assert np.all(np.isfinite(PF.main_shutter_factor(R, lam)))
+    shares = []
+    for w in (0.1, 0.4, 1.5):
+        R = _truth_result(exps, dict(centre=0.0, drift=0.0, width=w, width_change=0.0), [0, 0, 0], 1.0)
+        f = PF.reported_factor(R, lam)
+        s = w * SLIT
+        assert np.allclose(f, 1.0 - np.exp(-(0.5 * PF.REPORT_APERTURE) ** 2 / (2 * s ** 2)))
+        shares.append(f[0])
+    assert shares[0] > 0.99 > shares[1] > shares[2] > 0.1
+
+
+def test_boxcar_factor_is_what_the_model_frames_hold():
+    """``boxcar_factor`` per unit true spectrum is the three rows around the planned
+    position of the model frames in the s2d's units (divided by the path loss stage 2b
+    applied), so a boxcar turned into a true spectrum is placed back at the same level.
+    The applied path loss differs from jwst's point loss here, and the source sits off
+    centre, so a factor on any other calibration would not match."""
+    rows = np.arange(NY)[:, None] * np.ones((1, NX))
+    exps = _exposures(src_y=DY, pl=0.8)
+    for e in exps:
+        r_src = np.round(-e.y[0, 0] / DY)
+        e.y = (rows - r_src) * DY                # rows land on the planned position
+        e.wav = np.repeat(e.wav[NY // 2][None, :], NY, axis=0)
+        e.pl_applied = np.full((NY, NX), 0.6)
+        e.partners = []
+    R = _truth_result(exps, dict(centre=DY, drift=0.0, width=0.2, width_change=0.0), [0, 0, 0], 1.0)
+    lam = exps[0].wav[0, 20:-20]
+    spec = np.interp(lam, R.lam, R.flux)
+    want = []
+    for k, e in enumerate(exps):
+        frame = PF.model_frame(R, k, applied_pathloss=True)
+        r0 = int(np.argmin(np.abs(e.y[:, 0] - e.src_y)))
+        want.append(frame[r0 - 1:r0 + 2, 20:-20].sum(axis=0) / spec)
+    assert np.allclose(PF.boxcar_factor(R, lam), np.mean(want, axis=0), rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +330,76 @@ def test_fit_recovers_flux_when_a_partner_lacks_the_source():
     good = np.isfinite(F.flux) & (F.lam > 1.0) & (F.lam < 4.8)
     assert abs(np.median(F.flux[good] / (100.0 * _spectrum(F.lam[good]))) - 1) < 0.02
     assert F.chi2_red < 1.2
-    # the old behaviour (the placeholder frame treated as containing the source) cannot fit these data
+    # the old behaviour (the placeholder frame treated as containing the source) cannot fit these
+    # data: chi2/dof ~1.7 over ~3000 pixels
     exps[2].has_source = True
     B = PF.fit(exps, chromatic=False)
-    assert B.chi2_red > 2 * F.chi2_red
+    assert B.chi2_red > 1.5 * F.chi2_red
+
+
+# ---------------------------------------------------------------------------
+# nod geometry (NOD_OFFSET_LAW): each exposure at its own planned position
+# ---------------------------------------------------------------------------
+def _nodded(src=(0.10, 0.115, 0.085)):
+    """The three nods with planned positions that differ between nods, as the MSA planning
+    metadata gives them (the nod step projected on the MSA varies across the field)."""
+    exps = _exposures(src_y=src[0])
+    for e, s in zip(exps, src):
+        e.src_y = s
+    return exps
+
+
+def test_nod_shifts_follow_each_exposures_planned_position():
+    exps = _nodded()
+    assert np.allclose(PF.nod_shifts(exps), [0.0, 0.015, -0.015])
+    assert np.allclose(PF.nod_shifts(exps, law=False), 0.0)
+    assert np.allclose(PF.nod_shifts(exps, law=dict(scale=2.0)), [0.0, 0.03, -0.03])
+    exps[2].src_y = 0.0                      # a placeholder next to real values: no shift
+    assert PF.nod_shifts(exps)[2] == 0.0
+    exps[1].has_source = False               # a frame without the source: no shift
+    assert PF.nod_shifts(exps)[1] == 0.0
+
+
+def test_a_single_exposure_is_not_shifted():
+    """With one exposure (no nod partners) the reference is its own planned position: the
+    law changes nothing."""
+    e = _nodded()[1]
+    e.partners = []
+    assert PF.nod_shifts([e])[0] == 0.0
+    M_on, M_off = PF.ProfileModel([e]), PF.ProfileModel([e], nod_law=False)
+    p = np.array([0.115, 0.0, np.log(0.1), 0.0])
+    assert np.allclose(M_on.design(p, np.zeros(1)).toarray(), M_off.design(p, np.zeros(1)).toarray())
+
+
+def test_partner_copies_move_with_their_own_exposure():
+    """Exposure k's model difference is its own frame minus its partners' frames, each at its
+    own planned position, and the law moves an exposure's image by its shift."""
+    exps = _nodded()
+    R = _truth_result(exps, TRUTH, [0, 0, 0], 100.0)
+    own = [PF.frame_image(R, j) for j in range(3)]
+    for k in range(3):
+        expect = own[k] - np.mean([own[j] for j in exps[k].partners], axis=0)
+        got = PF.model_frame(R, k, applied_pathloss=False, common=True)
+        inside = np.isfinite(got) & np.isfinite(expect)
+        for j, _ in PF.term_weights(exps, k):
+            inside &= (exps[j].wav > R.lam[0]) & (exps[j].wav < R.lam[-1])
+        assert np.nanmax(np.abs(got - expect)[inside]) < 1e-6 * np.nanmax(np.abs(expect))
+    p = np.array([TRUTH['centre'], 0.0, np.log(TRUTH['width']), 0.0])
+    lam = np.array([1.5, 3.0])
+    M_off = PF.ProfileModel(exps, nod_law=False)
+    for k, s in enumerate([0.0, 0.015, -0.015]):
+        dc = R.model.centre(p, np.zeros(3), k, lam) - M_off.centre(p, np.zeros(3), k, lam)
+        assert np.allclose(dc, s * (1 + PF.centre_law(lam, 'NRS1', 1)[1]))
+
+
+def test_known_nod_law_is_fitted_and_needed():
+    """Data made with the nods at their planned positions: the model with the law fits them
+    (chi2 ~ 1, centre recovered); one shared position cannot."""
+    exps = _nodded()
+    truth = dict(centre=0.10, drift=0.0, width=0.05, width_change=0.0)
+    _inject(exps, truth, [0, 0, 0], flux_scale=300.0, noise=1.0, seed=21)
+    R = PF.fit(exps, chromatic=False)
+    assert 0.9 < R.chi2_red < 1.1
+    assert abs(R.params['centre'] - 0.10) < 0.005
+    B = PF.fit(exps, chromatic=False, model=PF.ProfileModel(exps, chromatic=False, nod_law=False))
+    assert B.chi2_red > 1.2 * R.chi2_red

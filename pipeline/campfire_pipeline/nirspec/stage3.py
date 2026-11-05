@@ -517,6 +517,13 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     from campfire_pipeline.nirspec.profile_product import run_product, stage_flags
     from campfire_pipeline.nirspec import profile_timing as TM
 
+    if str(stage_config.get('bar_offset', 'measure')).lower() == 'measure':
+        # where this observation's bars sit against jwst's slit frame, from its empty shutters (measured
+        # once per disperser, kept in the workspace's bar_offset.json); every loader of this phase applies it
+        from campfire_pipeline.nirspec import bar_offset as BO
+        with TM.phase('bar offset'):
+            bars = BO.ensure(obs.workspace_dir, processes=n_processes, log=log)
+        stage_config = dict(stage_config, bar_offsets=bars)
     fl = stage_flags(stage_config)
     shape = str(stage_config.get('profile_fit_shape', 'gated')).lower()
     contam = fl['contam'] and shape != 'free'
@@ -1285,8 +1292,13 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     PROF2D is the drizzled source model per unit reported flux (uJy, against the s2d
     SCI in MJy): it is not normalised per column, so its in-aperture sum carries
     the aperture and path-loss correction. The weighted fit of the data on the
-    aperture rows, sum(P D / V) / sum(P^2 / V), is the reported flux directly:
-    main-shutter light on the point-source path-loss calibration, as for ``fnu_opt``.
+    aperture rows, sum(P D / V) / sum(P^2 / V), is the reported flux directly: the
+    source's light inside ``profile_fit.REPORT_APERTURE`` (``reported_factor``), with the
+    model's loss across the slit and its along-dispersion correction. ``fnu_opt`` stays on
+    jwst's point-source calibration: for a point source at the shutter centre the two
+    agree up to the along-dispersion correction; off centre they differ by the ratio of
+    jwst's loss across the slit to the model's (about 20 % for a source planned 0.4
+    shutter pitches from the centre); an extended source's ``fnu_opt`` is the light in its shutter.
 
     ``rows``: which rows ``fnu_prof`` uses: ``aperture`` (the x1d aperture rows) or
     ``model`` (every row where PROF2D is significant, including the negative nod

@@ -43,7 +43,7 @@ Config is parametric only — controls *how* stages run, not *whether*. `--overw
 
 Observations defined in `$CAMPFIRE_ROOT/config/observations.toml`, fields in `fields.toml`.
 
-The `[environment].CRDS_CONTEXT` value in `config_default.toml` is the canonical CRDS context for the current `cfpipe` release. Bumping it always implies a MINOR release (CRDS changes are scientifically equivalent to a calibration update). PRs that change this line must categorize the changelog entry as **Calibration**.
+The `[environment].CRDS_CONTEXT` value in `config_default.toml` is the canonical CRDS context for the current `cfpipe` release. Bumping it always implies a MINOR release (CRDS changes are scientifically equivalent to a calibration update). PRs that change this line must categorize the changelog entry as **Calibration**. NIRSpec's own MSA calibrations (the profile fit's optics model, the empirical bar-shadow tables, the bar offset) replace parts of the CRDS path-loss and bar-shadow references and are listed with what they depend on in `pipeline/campfire_pipeline/data/nirspec_calibrations.toml`; `nirspec/crds_refs.py` is the only code that reads those two references. With a context bump, run `cfpipe nirspec crds-compare` and put what it reports (references changed, calibrations derived against an older file) in the changelog entry.
 
 ### Emission-line fluxes (post-inspection loop)
 

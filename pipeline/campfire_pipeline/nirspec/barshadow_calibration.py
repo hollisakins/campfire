@@ -58,6 +58,7 @@ from datetime import datetime, timezone
 import numpy as np
 from astropy.io import fits
 
+from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec.coverage import coverage_from_wcs, cache_path, cutoffs_for
 
 CENTRE_FRAC = 0.15          # |f| below which a pixel is "shutter centre" (shadow == 1)
@@ -81,7 +82,8 @@ SEGMENT_DOC = {
     'bar_lower': 'interior bar, lower shutter side (reference open_open: DATA1X3 rows -1..-0.5)',
     'bar_upper': 'interior bar, upper shutter side (reference open_open: DATA1X3 rows -0.5..0)',
 }
-CANONICAL_RE = re.compile(r'^(jw\d+_\d+)_(\d+)_(nrs[12])_(\d+)\.fits$')
+# the exposure sequence (visit group, parallel sequence, activity) counts its activity in base 36: 04101 .. 0410f ..
+CANONICAL_RE = re.compile(r'^(jw\d+_[0-9a-z]+)_(\d+)_(nrs[12])_(\d+)\.fits$')
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +128,12 @@ class Canonical:
 def discover(obs_name, grating, products_dir, filter_name=None):
     """The stage-2a canonicals of one observation for one grating (and filter);
     ``grating=None`` takes every disperser."""
-    workspace = os.path.join(products_dir, 'nirspec', obs_name)
+    return discover_workspace(os.path.join(products_dir, 'nirspec', obs_name), grating, filter_name, obs_name)
+
+
+def discover_workspace(workspace, grating=None, filter_name=None, obs_name=None):
+    """``discover`` on a workspace directory (the observation's name defaults to its own)."""
+    obs_name = obs_name or os.path.basename(os.path.abspath(workspace))
     out = []
     for name in sorted(os.listdir(workspace)):
         m = CANONICAL_RE.match(name)
@@ -145,15 +152,8 @@ def discover(obs_name, grating, products_dir, filter_name=None):
     return out
 
 
-def crds_barshadow_path(canonical_path):
-    """The CRDS bar-shadow reference the pipeline would use for this exposure."""
-    import crds
-    hdr = fits.getheader(canonical_path)
-    params = {'INSTRUME': 'NIRSPEC', 'DETECTOR': hdr['DETECTOR'], 'EXP_TYPE': hdr.get('EXP_TYPE', 'NRS_MSASPEC'),
-              'FILTER': hdr['FILTER'], 'GRATING': hdr['GRATING'],
-              'DATE-OBS': hdr.get('DATE-OBS', '2023-01-01'), 'TIME-OBS': hdr.get('TIME-OBS', '00:00:00')}
-    refs = crds.getreferences(params, reftypes=['barshadow'], observatory='jwst')
-    return refs['barshadow']
+# The CRDS bar-shadow reference the pipeline would use for an exposure (read in ``crds_refs``)
+crds_barshadow_path = CR.barshadow_path
 
 
 @dataclass
@@ -339,8 +339,7 @@ def pixel_samples(c, counter, source_pad_px=2.0):
         hs = h['SCI', v].header
         ph = h[0].header
         pix_sr = float(hs['PIXAR_SR'])
-        pu = _hdu(h, 'PATHLOSS_UN', v); pu = np.array(pu.data, float) if pu is not None else None
-        pp = _hdu(h, 'PATHLOSS_PS', v); pp = np.array(pp.data, float) if pp is not None else None
+        to_uniform = CR.point_to_uniform(*CR.pathloss_arrays(h, v))
         bar_applied = str(ph.get('S_BARSHA', '')).upper() == 'COMPLETE'
         bar = _hdu(h, 'BARSHADOW', v) if bar_applied else None
         bar = np.array(bar.data, float) if bar is not None else None
@@ -353,8 +352,8 @@ def pixel_samples(c, counter, source_pad_px=2.0):
     planned = s.source_ypos is not None and abs(float(s.source_ypos)) > 0
 
     factor = np.full(sci.shape, 1.0 / pix_sr)
-    if pu is not None and pp is not None and str(hs.get('PTHLOSS', 'POINT')).upper() == 'POINT':
-        factor *= pp / pu
+    if to_uniform is not None:
+        factor *= to_uniform
     if bar is not None:
         factor *= bar                     # undo the division jwst applied
     sb = sci * factor

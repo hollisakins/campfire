@@ -201,6 +201,17 @@
     bound_drift = 0.3
     bound_width_change = 0.3
     srcypos_tolerance = 0.05
+    # Where the observation's MSA bars sit against jwst's slit frame, measured per disperser from the
+    # background in its empty shutters (nirspec/bar_offset.py, kept in the workspace's bar_offset.json) and
+    # added to every pixel's slit y and the planned source position: "measure" | "off"
+    bar_offset = "measure"
+    # Whose path loss the profile fit takes (nirspec/crds_refs.py; data/nirspec_calibrations.toml lists what
+    # each replaces). slit_loss_y: "optics" (the diffraction model's, for the source's width and position)
+    # | "jwst" (jwst's point path loss at the planned position; the model shapes the image only).
+    # slit_loss_x: "corrected" (jwst's along the dispersion times the model's correction fitted to stars)
+    # | "jwst" (as delivered).
+    slit_loss_y = "optics"
+    slit_loss_x = "corrected"
     # Other slitlets' light (trace maps + prediction from pass-1 spectra). Pass 1: each source
     # solved with its neighbours on its nod differences, nothing masked or smoothed
     # (joint_first_pass), its light past its cutout too (count rate, no calibration;

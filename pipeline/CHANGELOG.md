@@ -28,7 +28,151 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+
+- **NIRSpec: an explicit boundary with jwst's path-loss and bar-shadow references.** CAMPFIRE's own
+  MSA calibrations replace parts of those two CRDS references; the boundary is now one module and one
+  file. `nirspec/crds_refs.py` is the only code that reads either reference or interprets what jwst
+  wrote from them into a cal file (moved there from `profile_fit`, `optics`, `barshadow_calibration`,
+  `master_bkg` and `slitlet_neighbours`); its path-loss reader picks the MOS1x3 extension by its
+  APERTURE card and checks the grid and units the profile fit assumes. `data/nirspec_calibrations.toml`
+  lists each shipped calibration with its sha256, version, inputs, the references it was derived
+  against, the switch that turns it off, its code and tests (tests fail on a file changed without its
+  entry); the loader warns when an exposure's path-loss reference is not the one a calibration was
+  derived against. New `[nirspec.stage3]` switches `slit_loss_y = "optics" | "jwst"` and
+  `slit_loss_x = "corrected" | "jwst"` hand either direction of the path loss back to jwst (defaults
+  unchanged: the same fits to 0.1 in chi2), recorded with the reference's name as `PFSLY`, `PFSLX`,
+  `PFPLREF`. `cfpipe nirspec crds-compare` prints the standing comparison of the active context's
+  references with the calibrations; run it with every `CRDS_CONTEXT` bump.
+
+- **NIRSpec: exposure sequences counted past 9 (`0410b`, `0410f`, ...) are found.** The
+  activity of a JWST exposure sequence counts 1..9, a..z; the canonical-name pattern of
+  `barshadow_calibration` (the master background's and the bar-shadow derivation's input
+  discovery) and the exposure key of `profile_contam` took digits only, so an observation
+  with more than nine sequences got no master background for the later ones ("no stage-2a
+  inputs, skipped") and no contamination keys. Also: `nirspec run` with stage 1 and stage 2a
+  together no longer fails when stage 1 writes no rate file for an exposure (no open slit on
+  that detector, e.g. program 4465's NRS2): stage 2a skips it and says so. And the profile
+  fit's row height (`Exposure.dy`) is now defined on a slit's first and last row (one-sided
+  difference): in slitlets longer than three shutters the other nods' terms reach those rows,
+  where the central difference was NaN and the fit failed ("Residuals are not finite"). Fits
+  that succeeded before are unchanged (category uncertain: it gives a profile fit to sources
+  that had none, which is closer to Algorithm).
+
 ### Algorithm
+
+- **NIRSpec profile fit: the observation's bar offset, measured from its background (`FIT_VERSION` 7,
+  `bar_offset = "measure"` in `[nirspec.stage3]`, on by default).** An observation's MSA bars sit
+  up to about 0.02 slit units (9 mas) from where the model puts them in jwst's slit frame, by a
+  different amount in each observation (observations hours apart differ by 0.016); the grating-wheel
+  tilt readings and the date do not predict it. For a source near a bar that is several per cent of
+  its flux. Stage 3 now measures it per disperser before the profile fit (`nirspec/bar_offset.py`),
+  from the background in the observation's empty shutters: their edge profiles (the half facing
+  away from the source, 0.2-0.75 pitch from the centre, each pixel over its exposure's background
+  and its shutter's centre level) against the model's own profile for uniform light, the two halves
+  fitted apart so a wider or narrower profile does not move the offset. Kept in the workspace's
+  `bar_offset.json`, measured again only when the canonicals, the module or the optics model change;
+  one value per observation plus a fixed pattern by MSA quadrant (-0.004 to +0.005). The profile
+  fit adds it to every pixel's slit y and the planned position (`profile_fit.load_group`'s
+  `bar_offsets`; the light past the cutouts too), records it as `PFBAROFF`, and a new measurement
+  redoes the joint first pass. A disperser with too few empty-shutter pixels gets none.
+  - Measured: survey -0.015 to -0.001 (venus_pg004, ember_egs_p1, uncover2, capers_uds_p8,
+    ember_cosmos_p14), calibration -0.019 to +0.010; between exposures of one observation
+    0.0004-0.003. G395M of ember_cosmos_p14 +0.0012 against its PRISM -0.0012.
+  - Stars near a bar fit better at the background's offset: 1133 summed chi2 -104,600 (125 of 158
+    edge visits better), NGC 2506 -23,300 over ten observations. The zero point is uncertain by
+    about 0.01 (NGC 2506's stars want 0.004 less, 1133's 0.012 more).
+  - About 3-4 minutes per disperser of an observation (800 canonicals at most).
+
+- **NIRSpec profile fit: each nod at its own planned position (`profile_fit.NOD_OFFSET_LAW`,
+  on by default).** The model placed a source at one slit position in every exposure; the MSA
+  planning metadata gives each exposure its own (SRCYPOS), and the nods differ by up to ~0.08
+  detector rows, in proportion to the nod step and linearly across the field. Each exposure's
+  image, and its negative copies in the other nods' differences, now sits at its own planned
+  position (`nod_shifts`; `ProfileModel(nod_law=False)` restores the old geometry). Measured on
+  465 calibration stars (PRISM and six gratings): the planned shifts take the rms of freely
+  fitted offsets from 0.010 to 0.004 slit units; the median chi2 of PRISM star fits falls to
+  0.37 of its value above peak S/N 100 and 0.62 at 30-100. On p1 galaxies the chi2 improves by
+  up to 7 % and the flux moves by < 0.3 %. A single exposure, or a placeholder SRCYPOS, is not
+  shifted.
+
+- **NIRSpec profile fit: every disperser through a diffraction model of the MSA (`FIT_VERSION` 6).**
+  The released two-Gaussian PSF with its hard shutter edge gives way to one physical model in the
+  slit direction for every disperser (`nirspec/optics.py`; the unreleased FIT_VERSION 4 and 5,
+  Gaussian PSF tables with a smooth shutter, are the comparison below and are dropped with their
+  fitting code): the telescope's field at the MSA (pupil amplitude
+  (1 - u^2)^0.25), cut by the open shutters, the spectrograph's pupil stop (0.996 of the
+  telescope pupil's image) removing the light diffracted at the shutter edges, a detector blur of
+  0.034" - 0.0026"/um (lambda - 3 um), row integration; before the shutter an empirical kernel
+  (a non-negative table over source offset per detector, linear in ln lambda between seven
+  nodes) for the telescope's wavefront error and pointing jitter. A Gaussian source is summed over
+  point images (exactly over the tables for widths up to 0.06 slit units, so a compact source's
+  width can move below the table step).
+  - Calibrated on 593 stars (12497, 6642 obs 2, and NGC 2506 in 1493): the diffraction numbers on
+    the PRISM bar-shadow tables, the kernel on the stars' nod differences and master-background
+    single frames. The core of a bright star is broader (charge spreading: 0.02-0.03 slit units
+    of extra width above peak S/N 63, below 2.6 um), so the kernel is the faint stars' core and
+    each source's free width takes up the rest; brighter stars enter the kernel fit with their own
+    width. Shipped as `data/nirspec_optics.json` (`PFOPTIC` names it, `2026.11-w2`).
+  - Star stack, free centres and widths: NGC 2506 14 of 14 ranges within 1 % (median worst
+    0.44 %; FIT_VERSION 5 10 of 14, 0.76 %), the original stars 12 of 14 (0.75 %; 5: 12 of 14,
+    0.68 %, fitted on them). The red shoulder of FIT_VERSION 5 on NRS2 (-1.5 % at 3.3-5.3 um) is
+    gone.
+  - Fluxes move. The same star at different positions in its shutter scatters by 11.5 / 8.4 /
+    7.6 / 12.0 / 15.5 % in five bands from 0.6 to 5.3 um (calibration programs, 49 visits;
+    FIT_VERSION 5: 27.8 / 25.4 / 21.8 / 15.0 / 16.6 %), and on 93 NGC 2506 stars (245 visits,
+    shared wavelengths) by 7.0 / 12.2 / 6.3 / 7.3 / 12.6 % (FIT_VERSION 5: 18.3 / 19.3 / 17.9 /
+    12.9 / 13.2 %, rising by about 7 % per 0.1 slit units off centre; now no trend with the
+    position along the slit). On the 20 brightest p1 PRISM sources,
+    centred ones come out 1.006 / 1.011 / 1.023 / 1.024 / 1.016 x their FIT_VERSION 5 flux (the
+    wide light the old PSF lacked), sources 0.2-0.4 pitch off centre 0.93 / 0.99 / 1.06 / 1.12 /
+    1.25 x; chi2 0.3-0.7 % lower.
+  - Source positions are in slit-frame units (1.15 x SRCYPOS; `profile_fit.source_position`,
+    `Exposure.src_y_jwst` keeps jwst's). The throughput keeps jwst's point path loss level and its
+    along-dispersion dependence, with its slit-direction dependence replaced by the model's
+    (`crds_refs.point_y_ratio`, from the path-loss reference the cal file names).
+  - The gratings take the same model: the light before the shutter is the same, the G395M bar
+    shadow fits the PRISM numbers (misfit 0.017; its own table 0.016), and on the 6642 obs 2 stars
+    the six gratings fit with chi2 within -5 to +3 % of their FIT_VERSION 5 tables in 18 of 20
+    detector-ranges; G140H on NRS2 above 1.4 um fits worse (+7 %, +22 %; its stars' cores are
+    sharper than the shared kernel).
+  - Tables (one per open-shutter pattern and detector, about a minute each) are built on first use
+    and cached under `$CAMPFIRE_ROOT/cache/optics`, memory-mapped across workers.
+  - Removed: the PSF and shutter tables (`data/nirspec_profile_psf.json`,
+    `data/nirspec_shutter_transmission.json`), the code that fitted them (`psf_calibration`) and
+    the `PFSHUT` header card. `nirspec/optics_calibration.py` fits calibration stars through the
+    model, runs the stack test, fits the kernel (`kernel` / `solve`; it reproduces the shipped
+    kernel, and a further pass on 547 stars changes a point image by at most 0.4 % of its peak)
+    and the centre and nod laws (`laws`).
+  - The centre law (`profile_fit.CENTRE_LAW`) is remeasured through the model on 497 stars
+    (NGC 2506 added): the scatter of the trace's change with wavelength at 3-5.3 um falls from
+    0.008-0.024 to 0.004-0.011 slit units, the same held out by observation; the slope with the
+    position in the shutter is near zero now (the old PSF needed -0.11 at 4.7 um). The nod law
+    is unchanged (planned shifts, scale 1).
+  - Along the dispersion: jwst's point loss times a correction fitted to 93 NGC 2506 stars,
+    exp(-0.572 (lambda - 2 um)+ SRCXPOS^2) (model file `x_loss`, version `2026.11-w2x`;
+    `Optics.x_correction`, `Exposure.src_x_jwst`; held out, the star scatter at 3.5-5 um falls
+    from 12.7 / 12.5 % to 10.7 / 10.8 %, unchanged below 2.5 um), times the model's ratio for
+    the fitted source over a point (`Optics.x_extended_ratio`: one shutter 0.22 arcsec wide, the
+    same pupil, stop and kernel, a 0.03 arcsec scatter of the true position about the planned
+    one, the source round). The fitted spectrum is the source's total light. Check 1 on NGC 2506
+    with both in the fit: 8.0 / 11.5 / 6.5 / 6.1 / 9.4 % (was 7.0 / 12.2 / 6.3 / 7.3 / 12.6 %).
+  - **The reported flux changes meaning for extended sources.** `fnu_prof` is the fitted
+    source's light inside a circle 0.8 arcsec across (1.5 shutter lengths;
+    `profile_fit.REPORT_APERTURE`, `reported_factor`, header `PFAPER`), where it was the light
+    in the shutter on jwst's point-source calibration (`main_shutter_factor`, removed). Point
+    sources are unchanged; extended ones rise. On 92 p1 PRISM sources against COSMOS auto
+    photometry, by fitted size from compact to wide: before 0.87 / 0.65 / 0.58 / 0.55 / 0.44 /
+    0.32 x the photometry, now 0.93 / 0.77 / 0.77 / 0.75 / 0.68 / 1.03, scatter 0.20 -> 0.16 dex.
+    Against the catalog's own aperture flux at 0.8 arcsec the 106 own-fit sources come out at
+    0.96 +- 0.04 (per band f115w-f444w 0.91-0.96; scatter 0.12 dex): the level of about 0.8 above
+    is light in 0.8 arcsec against a Kron total. The 3-pixel boxcar and `fnu_opt` stay on jwst's
+    calibration. A source below the shape gate takes the default width (0.15 slit units, the p1
+    own-fit median 0.143) for its along-dispersion extrapolation, which raises its flux by 19-28 %.
+  - A neighbour's pass 1 from its 3-pixel boxcar (`profile_fit.boxcar_factor`) is now on the
+    s2d's units (the forward model over the path loss stage 2b applied), where it was on the
+    model's point transmission at the planned position (about 20 % off near the shutter edge).
+    An exposure that names no path-loss reference warns at load.
 
 - **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
   run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint
@@ -404,6 +548,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   only); `PROF2D` and `CONTAM2D` extensions, placed after `WHT` beside the 2-D data (readers now find every spec.fits extension by name); `PF*` / `CONTSTAT` cards. With `profile_fit`
   off, `fnu` stays the optimal extraction (`EXTRACT = optimal`) and `fnu_opt` is added.
   The `_pf.fits` intermediate is deleted once the `_spec.fits` is written.
+- **Optimal extraction's 3-px boxcar fallback reported a third of the flux.** When the
+  optimal profile is judged corrupted (`CMPFROPT = 'boxcar-3px'`), stage 3 extracts with an
+  unnormalised 3-px boxcar, and the inverse-variance formula in `extract_with_profile`
+  returns the profile's amplitude, i.e. the flux per row: the optimal extraction (`fnu` in
+  released products; `fnu_opt` now, and `fnu` with `profile_fit` off) was about 1/3 of the
+  source flux and the S/N understated by about √3 (16 % of the local products that record
+  `CMPFROPT`; median `fnu / fnu_3px` 0.40). `extract_with_profile` now normalises the
+  profile when weighting, which leaves normalised (true optimal) profiles unchanged.
+  Affected products need stage 3 rerun and redeploying.
 - **`resample` now writes a per-tile exposure map, `<mosaic>_exp.fits`, next to
   the split `_sci/_err/_wht`.** It is the full-resolution, per-tile member of the
   `exp` family; the field-wide `expmap_<field>_<filter>.fits` is the coarse member.

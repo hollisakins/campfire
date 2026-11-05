@@ -16,28 +16,31 @@ subtracted in ``stage2.run_stage2b_single_slitlet``.
 
 S_k is the source's cross-dispersion image per unit total flux: a Gaussian galaxy
 along the slit (centre and width, each optionally linear in log2 wavelength)
-convolved with the star-measured pre-shutter PSF, clipped by the slitlet's open
-shutters, blurred by the post-shutter PSF and integrated over each pixel.
+through the diffraction model of the MSA (``optics``: the telescope's pupil and an
+empirical kernel before the shutter, the slitlet's open shutters, the spectrograph's
+pupil stop and the detector blur), integrated over each pixel. One model serves every
+disperser.
 
 tau_k is the along-dispersion throughput: the point-source path loss jwst computed
-for exposure k (``pathloss_point``, which covers a 3-shutter aperture centred on the
-source, MOS1X3) divided by the model's own cross-slit transmission of a point source
-through that aperture. Cross-slit losses are modelled for the actual source width;
-the along-dispersion loss is the point-source one.
+for exposure k (``pathloss_point``) moved to the shutter centre in the slit direction,
+divided by the model's transmission of a point source there through the MOS1X3
+aperture. Slit-direction losses are the model's, for the actual source width and
+position; the along-dispersion loss and the level are jwst's.
 
 Shape parameters have Gaussian priors (width: log-normal on the bright-galaxy
 population), so at low S/N the fit settles on a compact source at the planned
 position and the extraction becomes a fixed-template optimal extraction.
 """
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import splu
 from scipy.optimize import least_squares
-from scipy.special import ndtr
 
+from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec.constants import MSA_SLIT_MARGIN, MSA_SLIT_PITCH
 
 # ---------------------------------------------------------------------------
@@ -78,37 +81,30 @@ class TooFewWavelengths(ProfileFitFallback):
     """Too few wavelength samples on the source row for a spectrum grid."""
     reason = 'too_few_wavelengths'
 
-# Cross-dispersion PSF (PRISM): core sigma in native rows and wing fraction per
-# detector, wing sigma = PSF_K * core. Lower quartile of per-star core widths from
-# 135 calibration-field stars (programs 12497, 6642), joint wing fraction.
-# NOTE: derived from nod differences built with the path-loss correction applied;
-# to be re-derived through this module (bright stars, small effect expected).
+
+# Trace-centre law from calibration-field stars: centre(lambda) = c + D(lambda) + alpha(lambda) * c,
+# relative to the trace at 1.0-2.6 um; D per MSA quadrant and detector (falling back to the same
+# quadrant on the other detector, then to the detector), alpha per detector; values at the nodes
+# PSF_LAM [um] (the centres of the calibration's wavelength ranges). Measured through the
+# diffraction model (``optics_calibration.step_laws``; 497 stars of 12497 obs 1-5, 6642 obs 2 and
+# NGC 2506, 2026-11-04): with the model the slope with position (alpha) is near zero (the old PSF
+# needed -0.11 at 4.7 um). Q1_NRS1 at 4.7 um (too few stars) is Q1_NRS2's: the two agree within
+# 0.001 at every other node.
 PSF_LAM = np.array([0.85, 1.25, 1.75, 2.30, 2.95, 3.70, 4.70])
-PSF_TABLES = {
-    'NRS1': dict(S_rows=np.array([0.390, 0.400, 0.419, 0.427, 0.429, 0.479, 0.597]),
-                 f=np.array([0.234, 0.190, 0.187, 0.250, 0.299, 0.232, 0.118])),
-    'NRS2': dict(S_rows=np.array([0.333, 0.360, 0.393, 0.384, 0.399, 0.480, 0.621]),
-                 f=np.array([0.325, 0.259, 0.249, 0.337, 0.402, 0.295, 0.134])),
-}
-PSF_K = 2.2
-
-# Trace-centre law from the same stars: centre(lambda) = c + D(lambda) + alpha(lambda) * c,
-# D per MSA quadrant and detector (falling back to the same quadrant on the other
-# detector, then to the detector), alpha per detector.
 CENTRE_LAW = {
-    'NRS1': dict(D=np.array([+0.0104, +0.0051, +0.0001, -0.0064, -0.0166, -0.0256, -0.0383]),
-                 alpha=np.array([+0.0106, +0.0048, +0.0007, -0.0133, -0.0398, -0.0743, -0.1066])),
-    'NRS2': dict(D=np.array([+0.0109, +0.0060, +0.0015, -0.0088, -0.0178, -0.0305, -0.0457]),
-                 alpha=np.array([+0.0092, +0.0017, +0.0021, -0.0076, -0.0141, -0.0319, -0.0691])),
-    'Q1_NRS1': dict(D=np.array([+0.0060, +0.0018, +0.0001, -0.0053, -0.0104, -0.0130, -0.0204])),
-    'Q1_NRS2': dict(D=np.array([+0.0037, +0.0018, +0.0018, -0.0036, -0.0072, -0.0135, -0.0204])),
-    'Q2_NRS2': dict(D=np.array([+0.0140, +0.0073, +0.0014, -0.0108, -0.0219, -0.0392, -0.0573])),
-    'Q3_NRS1': dict(D=np.array([+0.0071, +0.0032, +0.0001, -0.0036, -0.0085, -0.0149, -0.0225])),
-    'Q4_NRS1': dict(D=np.array([+0.0149, +0.0075, +0.0002, -0.0087, -0.0220, -0.0339, -0.0484])),
+    'NRS1': dict(D=np.array([+0.0103, +0.0048, +0.0004, -0.0052, -0.0133, -0.0239, -0.0400]),
+                 alpha=np.array([+0.0032, +0.0026, +0.0007, -0.0022, -0.0014, +0.0008, -0.0011])),
+    'NRS2': dict(D=np.array([+0.0114, +0.0047, +0.0006, -0.0055, -0.0141, -0.0252, -0.0443]),
+                 alpha=np.array([+0.0015, +0.0024, +0.0013, -0.0039, -0.0054, -0.0017, -0.0128])),
+    'Q1_NRS1': dict(D=np.array([+0.0065, +0.0021, +0.0001, -0.0033, -0.0085, -0.0151, -0.0273])),
+    'Q1_NRS2': dict(D=np.array([+0.0060, +0.0028, +0.0000, -0.0030, -0.0083, -0.0152, -0.0273])),
+    'Q2_NRS2': dict(D=np.array([+0.0149, +0.0060, +0.0010, -0.0072, -0.0184, -0.0328, -0.0589])),
+    'Q3_NRS1': dict(D=np.array([+0.0068, +0.0037, +0.0005, -0.0035, -0.0090, -0.0162, -0.0269])),
+    'Q4_NRS1': dict(D=np.array([+0.0144, +0.0062, +0.0005, -0.0073, -0.0191, -0.0335, -0.0616])),
 }
 
-_GLX, _GLW = np.polynomial.legendre.leggauss(4)   # pixel integral, < 1e-4 of the peak
 W_FLOOR = 0.003
+REPORT_APERTURE = 0.8      # arcsec across (1.5 shutter lengths): the reported flux is the source's light inside it
 
 
 def open_shutters(shutter_state, slit_ymin, slit_ymax):
@@ -133,41 +129,66 @@ def open_shutters(shutter_state, slit_ymin, slit_ymax):
 
 
 def open_intervals(open_k):
+    """The open intervals (slit-frame units) of shutters ``open_k``: each +-OPEN_HALF about its
+    centre."""
     return [(k * MSA_SLIT_PITCH - OPEN_HALF, k * MSA_SLIT_PITCH + OPEN_HALF) for k in open_k]
 
 
-def psf_params(lam, det):
-    """Core sigma (native rows) and wing fraction at each wavelength."""
-    tab = PSF_TABLES[det]
-    return np.interp(lam, PSF_LAM, tab['S_rows']), np.interp(lam, PSF_LAM, tab['f'])
+def centre_law(lam, det, quad=None, law=None):
+    """(D, alpha) per wavelength for a detector and MSA quadrant.
 
-
-def centre_law(lam, det, quad=None):
-    """(D, alpha) per wavelength for a detector and MSA quadrant."""
+    law : replaces ``CENTRE_LAW`` (same layout; an entry may carry its own wavelength
+        nodes as ``lam``, default ``PSF_LAM``), e.g. ``NO_CENTRE_LAW`` to measure the trace
+        centre itself."""
+    law = CENTRE_LAW if law is None else law
     other = 'NRS2' if det == 'NRS1' else 'NRS1'
-    D = CENTRE_LAW[det]['D']
+    entry = law[det]
     for key in (f'Q{quad}_{det}', f'Q{quad}_{other}'):
-        if key in CENTRE_LAW:
-            D = CENTRE_LAW[key]['D']
+        if key in law:
+            entry = law[key]
             break
-    return np.interp(lam, PSF_LAM, D), np.interp(lam, PSF_LAM, CENTRE_LAW[det]['alpha'])
+    D = np.interp(lam, entry.get('lam', PSF_LAM), entry['D'])
+    return D, np.interp(lam, law[det].get('lam', PSF_LAM), law[det]['alpha'])
 
 
-def _transmitted(o, s, intervals):
-    """Fraction of N(o, s) inside the intervals."""
-    return sum(ndtr((hi - o) / s) - ndtr((lo - o) / s) for lo, hi in intervals)
+# The centre law switched off: the fitted centre is where the light is.
+NO_CENTRE_LAW = {det: dict(D=np.zeros(PSF_LAM.size), alpha=np.zeros(PSF_LAM.size)) for det in ('NRS1', 'NRS2')}
+
+# Nod geometry: each exposure's image of the source sits at the source's planned position in
+# that exposure (its own SRCYPOS, from the MSA planning metadata), not at one position shared by
+# all nods. The planned positions of a source differ between nods by up to ~0.02 slit units
+# (~0.08 detector rows), in proportion to the nod step and linearly with the slitlet's detector
+# row, because the nod step projected on the MSA varies across the field. Measured on 465
+# calibration-field stars, 5091 exposure offsets fitted freely (2026-11-02; programs 12497 obs 1-5 and 6642 obs 2, PRISM and six gratings): the planned
+# shifts take the rms of the offsets from 0.0100 to 0.0043 slit units, as well as a fitted
+# row or MSA-row law in sample and better for a held-out observation; nothing is left against
+# detector column, row or wavelength. The scale measured / planned is 1.03 overall but varies
+# per visit (PRISM 0.85-1.21; the gratings of 6642 obs 2, 0.5-0.88, with that visit's PRISM), so
+# the planned shifts are used as they stand (scale 1). Through the diffraction model (2026-11-04,
+# ``optics_calibration.step_laws``, PRISM, NGC 2506 added): rms 0.0137 -> 0.0060 with the planned
+# shifts, scale 0.95-1.10 per visit (one visit of 26 star-exposures 0.68): unchanged.
+NOD_OFFSET_LAW = dict(scale=1.0)
 
 
-def _clipblur(y, o, s1, s2, intervals):
-    """Density at y of N(o, s1) clipped to the intervals, then blurred by N(0, s2).
-    Integrates to the transmitted fraction."""
-    S2 = s1 ** 2 + s2 ** 2
-    S = np.sqrt(S2)
-    m = (o * s2 ** 2 + y * s1 ** 2) / S2
-    sm = s1 * s2 / S
-    core = np.exp(-0.5 * (y - o) ** 2 / S2) / (np.sqrt(2 * np.pi) * S)
-    clip = sum(ndtr((hi - m) / sm) - ndtr((lo - m) / sm) for lo, hi in intervals)
-    return core * clip
+def nod_shifts(exps, law=None, c_ref=None):
+    """Per exposure: the shift of its source image from the shared centre, slit units:
+    ``law['scale']`` x (its SRCYPOS - the reference position ``c_ref``, default the planned
+    position of ``planned_position``). Zero for an exposure whose SRCYPOS is a placeholder
+    (exactly 0.000 next to nonzero values) or that does not contain the source.
+    law : None for ``NOD_OFFSET_LAW``, False for no shifts."""
+    exps = list(exps)
+    if law is False or not exps:
+        return np.zeros(len(exps))
+    law = NOD_OFFSET_LAW if law is None else law
+    c = planned_position(exps)[0] if c_ref is None else float(c_ref)
+    vals = [e.src_y for e in exps if e.has_source]
+    placeholder = any(v != 0.0 for v in vals)
+    out = np.zeros(len(exps))
+    for k, e in enumerate(exps):
+        if not e.has_source or not np.isfinite(e.src_y) or (placeholder and e.src_y == 0.0):
+            continue
+        out[k] = float(law['scale']) * (e.src_y - c)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -211,11 +232,26 @@ class Exposure:
     origin: tuple = None           # (ystart, xstart) of the common frame on the detector, 1-based like jwst
     has_source: bool = True        # the source is in this frame (SRCFLUX != F)
     pa_v3: float = np.nan          # telescope roll [deg]
+    src_y_jwst: float = np.nan     # SRCYPOS as jwst wrote it (shutter pitches; ``source_position``)
+    pl_ref: str = ''               # jwst's path-loss reference file, as the cal file names it
+    src_x_jwst: float = np.nan     # SRCXPOS as jwst wrote it (shutter pitches along the dispersion)
+    bar_offset: float = 0.0        # added to ``y`` and ``src_y`` (slit units): where the observation's bars sit
+                                   # against jwst's slit frame (``bar_offset``)
+    slit_loss: CR.SlitLoss = CR.SlitLoss()   # whose path loss the model takes, per direction (``throughput``)
 
     @property
     def dy(self):
-        """Pixel height in slit_frame units."""
-        return np.abs(np.gradient(self.y, axis=0))
+        """Pixel height in slit_frame units: the central difference of y down each column, one-sided
+        at a slit's first and last row (the row beyond is outside the slit, y NaN; slitlets longer
+        than three shutters put partner terms on those rows)."""
+        y = np.asarray(self.y, float)
+        d = np.abs(np.gradient(y, axis=0))
+        edge = np.isnan(d) & np.isfinite(y)
+        if edge.any():
+            up = np.abs(np.diff(y, axis=0, append=np.nan))
+            down = np.abs(np.diff(y, axis=0, prepend=np.nan))
+            d = np.where(edge, np.where(np.isfinite(up), up, down), d)
+        return d
 
 
 def _common_frame(slits):
@@ -233,6 +269,22 @@ def _place(a, s, y0, x0, shape, fill=np.nan):
     r, c = s.ystart - y0, s.xstart - x0
     out[r:r + a.shape[0], c:c + a.shape[1]] = a
     return out
+
+
+def _float_or_nan(v):
+    return float(v) if v is not None else np.nan
+
+
+def _row_curve(e, a):
+    """(wavelength, value) of the per-pixel array ``a`` along the row nearest the
+    source's planned position, sorted by wavelength, finite and positive only."""
+    yy = np.where(np.isfinite(e.y), e.y, np.inf)
+    r = np.argmin(np.abs(yy - e.src_y), axis=0)
+    cols = np.arange(e.wav.shape[1])
+    lam, v = e.wav[r, cols], np.asarray(a, float)[r, cols]
+    ok = np.isfinite(lam) & np.isfinite(v) & (v > 0)
+    o = np.argsort(lam[ok])
+    return lam[ok][o], v[ok][o]
 
 
 def _pa_v3(path):
@@ -258,16 +310,17 @@ def own_variance(path, slit):
     return np.asarray(vp, float) + np.asarray(vr, float)
 
 
-def _applied_pathloss(m, s):
-    """The path-loss correction applied to slit ``s`` of model ``m`` (point or uniform, as
-    jwst's ``do_correction_mos`` chose it), or ones when none was applied."""
-    pl_type = str(getattr(s, 'pathloss_correction_type', '') or '').upper()
-    applied = 'COMPLETE' in str(m.meta.cal_step.pathloss).upper()
-    if applied and pl_type == 'UNIFORM':
-        return np.asarray(s.pathloss_uniform, float)
-    if applied:
-        return np.asarray(s.pathloss_point, float)
-    return np.ones(s.data.shape)
+# what jwst wrote into a cal file, read through the boundary module (``crds_refs``)
+_applied_pathloss = CR.applied_pathloss
+_pathloss_ref = CR.pathloss_ref
+source_position = CR.slit_position          # the planned position in slit-frame units from SRCYPOS
+
+
+def load_options(stage_config):
+    """The loader's keyword arguments from ``[nirspec.stage3]`` as stage 3 resolved it: the measured
+    bar offsets (``bar_offset``) and whose path loss the model takes (``crds_refs.SlitLoss``)."""
+    sc = stage_config or {}
+    return dict(bar_offsets=sc.get('bar_offsets'), slit_loss=CR.SlitLoss.from_config(sc))
 
 
 def rebuild_nod_differences(frames, dqs, partners):
@@ -323,12 +376,19 @@ def _pre_bkgsub_differences(cal_files, heads, models, slits, partners, y0, x0, s
     return out
 
 
-def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_frames=False, pre_bkgsub=False):
+def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_frames=False, pre_bkgsub=False,
+               bar_offsets=None, slit_loss=None):
     """Exposures of one stage-2b background group, from the canonical files.
 
     The live SCI is stage 2b's nod difference with the path loss re-applied; this
     removes the applied correction again (the inverse of jwst's ``do_correction_mos``),
     which recovers the frame jwst's background step produced.
+
+    bar_offsets : {disperser ('PRISM/CLEAR'): {quadrant: offset}} (``bar_offset.table``), or
+        None for none: the offset is added to every pixel's slit y and to the source's planned
+        position, so the model's shutters sit where the observation's background puts its bars.
+        jwst's own path-loss position (``src_y_jwst``) is not moved.
+    slit_loss : whose path loss the model takes (``crds_refs.SlitLoss``); None for the default.
 
     science : set of file names that stage 3 combines (default: all with a partner list).
     single_frames : the files are single frames with their background removed some other
@@ -382,20 +442,30 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
         dq_bad = (np.asarray(dq) & DO_NOT_USE) > 0
         ok = np.isfinite(diff) & np.isfinite(var) & (var > 0) & ~dq_bad & np.isfinite(ys) & np.isfinite(s.wavelength) & np.isfinite(pl) & (pl > 0)
         name = str(f).split('/')[-1]
+        grating = f'{m.meta.instrument.grating}/{m.meta.instrument.filter}'.upper()
+        detector = str(m.meta.instrument.detector).upper()
+        quadrant = int(s.quadrant) if s.quadrant is not None else None
+        bar = float((bar_offsets or {}).get(grating, {}).get(quadrant, 0.0))
         exps.append(Exposure(
-            name=name, group=group, detector=str(m.meta.instrument.detector).upper(),
-            grating=f'{m.meta.instrument.grating}/{m.meta.instrument.filter}'.upper(),
-            quadrant=int(s.quadrant) if s.quadrant is not None else None,
+            name=name, group=group, detector=detector, grating=grating, quadrant=quadrant,
             diff=_place(diff, s, y0, x0, shape), var=_place(var * pl ** 2, s, y0, x0, shape),
             ok=_place(ok.astype(float), s, y0, x0, shape, fill=0.0) > 0,
-            wav=_place(np.asarray(s.wavelength, float), s, y0, x0, shape), y=_place(ys, s, y0, x0, shape),
+            wav=_place(np.asarray(s.wavelength, float), s, y0, x0, shape), y=_place(ys + bar, s, y0, x0, shape),
             pl_applied=_place(pl, s, y0, x0, shape), pl_point=_place(np.asarray(s.pathloss_point, float), s, y0, x0, shape),
-            src_y=float(s.source_ypos), open_k=open_shutters(s.shutter_state, s.slit_ymin, s.slit_ymax),
+            src_y=source_position(float(s.source_ypos)) + bar, src_y_jwst=float(s.source_ypos), bar_offset=bar,
+            open_k=open_shutters(s.shutter_state, s.slit_ymin, s.slit_ymax),
             partners=part, use_data=(part is not None) and (science is None or name in science),
             cutout=(s.ystart - y0, s.xstart - x0, ny, nx), path=str(f), origin=(y0, x0),
-            has_source=bool(has_src), pa_v3=_pa_v3(f)))
+            has_source=bool(has_src), pa_v3=_pa_v3(f), pl_ref=_pathloss_ref(m), slit_loss=slit_loss or CR.SlitLoss(),
+            src_x_jwst=_float_or_nan(getattr(s, 'source_xpos', None))))
     for m in models:
         m.close()
+    for e in exps:
+        if not e.pl_ref:
+            warnings.warn(f'profile fit: {e.name} names no path-loss reference; jwst\'s loss along the slit '
+                          'stays in its data and the model applies its own as well')
+    for ref in sorted({e.pl_ref for e in exps if e.pl_ref}):
+        CR.check_references(pathloss=ref)          # warns once when a calibration was derived against another file
     return exps
 
 
@@ -424,16 +494,18 @@ def partners_from_headers(cal_files, heads):
     return out
 
 
-def load_source(groups, bkg_overrides=None, science=None, single_frames=False, pre_bkgsub=False):
+def load_source(groups, bkg_overrides=None, science=None, single_frames=False, pre_bkgsub=False, bar_offsets=None,
+                slit_loss=None):
     """All exposures of a source: ``groups`` is a list of canonical-file lists, one per
     stage-2b background group, and ``bkg_overrides`` the matching list of that group's
-    nod overrides (or None). Partner indices are made global. ``single_frames`` and
-    ``pre_bkgsub``: see ``load_group``."""
+    nod overrides (or None). Partner indices are made global. ``single_frames``,
+    ``pre_bkgsub``, ``bar_offsets`` and ``slit_loss``: see ``load_group`` (``load_options``
+    gives the last two from the stage config)."""
     out = []
     overrides = bkg_overrides if isinstance(bkg_overrides, (list, tuple)) else [bkg_overrides] * len(groups)
     for g, files in enumerate(groups):
         exps = load_group(files, bkg_overrides=overrides[g], science=science, group=g, single_frames=single_frames,
-                          pre_bkgsub=pre_bkgsub)
+                          pre_bkgsub=pre_bkgsub, bar_offsets=bar_offsets, slit_loss=slit_loss)
         base = len(out)
         for e in exps:
             if e.partners is not None:
@@ -493,7 +565,7 @@ class FitResult:
 
 def fit_pixel_masks(exps):
     """(exposure index, pixel mask) of the pixels a fit uses: usable data inside an open
-    shutter (plus ``FIT_MARGIN``), covered by every subtracted frame."""
+    shutter (+-OPEN_HALF, plus ``FIT_MARGIN``), covered by every subtracted frame."""
     rows = []
     for k, e in enumerate(exps):
         if not e.use_data:
@@ -521,12 +593,43 @@ def term_weights(exps, k):
     return out
 
 
-class ProfileModel:
-    """Pixel table, spectrum grid and the linear model for a set of exposures."""
+def model_optics(exps, optics=None):
+    """The diffraction model of each exposure of a ``ProfileModel`` (``optics.optics_for`` its
+    detector), or ``optics`` as given (a list, one per exposure)."""
+    if optics is not None:
+        return list(optics)
+    from campfire_pipeline.nirspec import optics as O
+    return [O.optics_for(e.detector) for e in exps]
 
-    def __init__(self, exps, chromatic=True, priors=None, grid=None, bounds=None, c_prior=None):
+
+def optics_version():
+    """The diffraction model's version, for headers."""
+    from campfire_pipeline.nirspec import optics as O
+    return O.version()
+
+
+class ProfileModel:
+    """Pixel table, spectrum grid and the linear model for a set of exposures.
+
+    centre_law_tables : replaces ``CENTRE_LAW`` for this model (``centre_law``), e.g.
+        ``NO_CENTRE_LAW`` to measure the trace centre on stars; None uses the module's.
+    nod_law : the nod geometry (``nod_shifts``): None for ``NOD_OFFSET_LAW``, False for one
+        position shared by every exposure (to measure the offsets themselves).
+    optics : the diffraction model, a list with one ``optics.Optics`` (or an object with its
+        ``image`` and ``transmission``) per exposure, e.g. one being calibrated; None takes
+        the shipped model of each exposure's detector (``model_optics``)."""
+
+    centre_law_tables = None
+    nod_shift = None
+    optics = None
+
+    def __init__(self, exps, chromatic=True, priors=None, grid=None, bounds=None, c_prior=None,
+                 centre_law_tables=None, nod_law=None, optics=None):
         self.exps = exps
         self.chromatic = chromatic
+        self.centre_law_tables = centre_law_tables
+        self.optics = model_optics(exps, optics)
+        self.nod_shift = nod_shifts(exps, nod_law)
         self.priors = priors or Priors()
         self.bounds_cfg = bounds or Bounds()
         self.c_prior, self.srcy_flag = planned_position(exps)
@@ -650,13 +753,15 @@ class ProfileModel:
         self._pl_curves()
 
     @classmethod
-    def for_placement(cls, exps, grid, priors=None, bounds=None):
+    def for_placement(cls, exps, grid, priors=None, bounds=None, optics=None):
         """A model that only places a given spectrum on the exposures (``frame_image``,
         ``throughput``, ``transmission``): no pixel table and no data, so it exists for a
         source without a usable pixel of its own (a contaminant predicted from its
         3-pixel boxcar, ``profile_contam.boxcar_pass1``). ``grid`` is the spectrum grid."""
         M = cls.__new__(cls)
         M.exps, M.chromatic = exps, True
+        M.optics = model_optics(exps, optics)
+        M.nod_shift = nod_shifts(exps)
         M.priors, M.bounds_cfg = priors or Priors(), bounds or Bounds()
         M.c_prior, M.srcy_flag = planned_position(exps)
         M.lam_grid = np.asarray(grid, float)
@@ -669,15 +774,7 @@ class ProfileModel:
     def _pl_curves(self):
         # along-dispersion throughput per exposure: jwst point-source path loss along
         # the trace, as a function of wavelength
-        self.pl_curve = []
-        for e in self.exps:
-            yy = np.where(np.isfinite(e.y), e.y, np.inf)
-            r = np.argmin(np.abs(yy - e.src_y), axis=0)
-            cols = np.arange(e.wav.shape[1])
-            lam, pl = e.wav[r, cols], e.pl_point[r, cols]
-            ok = np.isfinite(lam) & np.isfinite(pl) & (pl > 0)
-            o = np.argsort(lam[ok])
-            self.pl_curve.append((lam[ok][o], pl[ok][o]))
+        self.pl_curve = [_row_curve(e, e.pl_point) for e in self.exps]
         good = [c for c in self.pl_curve if c[0].size > 3]
         for i, c in enumerate(self.pl_curve):     # source off the shutter in this exposure: borrow
             if c[0].size <= 3 and good:
@@ -700,52 +797,66 @@ class ProfileModel:
         return np.clip(np.log2(lam / self.pivot), lo, hi)
 
     def centre(self, p, eoff, k, lam):
+        """Exposure k's trace centre: the shared source centre moved to the source's planned
+        position in exposure k (``nod_shift``), plus k's offset, then the centre law."""
         e = self.exps[k]
         cg = p[0] + p[1] * self._x(lam)
-        D, a = centre_law(lam, e.detector, e.quadrant)
+        if self.nod_shift is not None:
+            cg = cg + self.nod_shift[k]
+        D, a = centre_law(lam, e.detector, e.quadrant, law=self.centre_law_tables)
         return cg + eoff[k] + D + a * cg
 
     def width(self, p, lam):
         return np.maximum(np.exp(p[2]) + p[3] * self._x(lam), W_FLOOR)
 
-    def _split(self, k, lam, dy):
-        S_rows, f = psf_params(lam, self.exps[k].detector)
-        S = S_rows * dy
-        a = S / np.sqrt(2.0)
-        return a, a, f
-
     def image(self, p, eoff, k, y, lam, dy):
         """Exposure k's source image at slit positions y (pixel-integrated, per unit
-        total flux, before the along-dispersion throughput)."""
+        total flux, before the along-dispersion throughput): the galaxy through the
+        diffraction model (``optics``) and the open shutters, from its tables, scaled from
+        their row height to this pixel's."""
+        from campfire_pipeline.nirspec.optics import DY_ROW
         c = self.centre(p, eoff, k, lam)
         w = self.width(p, lam)
-        a, b, f = self._split(k, lam, dy)
-        iv = open_intervals(self.exps[k].open_k)
-        comps = [(1 - f, np.sqrt(a ** 2 + w ** 2), b), (f, np.sqrt((PSF_K * a) ** 2 + w ** 2), PSF_K * b)]
-        acc = 0.0
-        for xi, wi in zip(_GLX, _GLW):
-            yy = y + 0.5 * dy * xi
-            acc = acc + wi * sum(fr * _clipblur(yy, c, s1, s2, iv) for fr, s1, s2 in comps)
-        return 0.5 * dy * acc
+        return self.optics[k].image(self.exps[k].open_k, y, lam, c, w) * (np.asarray(dy, float) / DY_ROW)
 
     def transmission(self, p, eoff, k, lam, dy, width=None, aperture=REF_APERTURE, centre=None):
-        """Cross-slit transmission (pre-shutter clipping) through an aperture of
-        shutters, for the fitted source (width=None) or a point source (width=0),
-        at the fitted centre or at a given slit position."""
+        """Cross-slit transmission (the light that passes the shutters and the spectrograph's
+        stop) through an aperture of shutters, for the fitted source (width=None) or a point
+        source (width=0), at the fitted centre or at a given slit position."""
         c = self.centre(p, eoff, k, lam) if centre is None else centre
         w = self.width(p, lam) if width is None else width
-        a, _, f = self._split(k, lam, dy)
-        iv = open_intervals(aperture)
-        return ((1 - f) * _transmitted(c, np.sqrt(a ** 2 + w ** 2), iv)
-                + f * _transmitted(c, np.sqrt((PSF_K * a) ** 2 + w ** 2), iv))
+        return self.optics[k].transmission(aperture, lam, c, np.maximum(np.asarray(w, float), W_FLOOR))
 
     def throughput(self, p, eoff, k, lam, dy):
-        """Along-dispersion throughput tau_k: jwst point-source path loss divided by
-        the model's point-source cross-slit transmission through the MOS1X3 aperture,
-        both at the position jwst used (the exposure's planned source position)."""
+        """Along-dispersion throughput tau_k: jwst's level and its along-dispersion
+        dependence, with its slit-direction dependence replaced by the model's. jwst's
+        point-source path loss at the planned position is moved to the shutter centre
+        (``crds_refs.point_y_ratio``), times the model's correction to its
+        along-dispersion dependence (``x_correction``, at SRCXPOS) and the model's ratio for
+        the fitted source over a point there (``x_extended_ratio``: a round source), and
+        divided by the model's transmission of a point source at the centre through the
+        MOS1X3 aperture. The fitted spectrum is then the source's total light.
+
+        The exposure's ``slit_loss`` (``crds_refs.SlitLoss``) can hand either direction back to
+        jwst: y = "jwst" keeps jwst's point path loss at the planned position and divides by the
+        model's point transmission there instead (the model then shapes the image and its change
+        with the fitted position and width; a point source at the planned position gets jwst's
+        loss exactly); x = "jwst" leaves out ``x_correction``."""
         L, P = self.pl_curve[k]
         pl = np.interp(lam, L, P)
-        t = self.transmission(p, eoff, k, lam, dy, width=0.0, centre=self.exps[k].src_y)
+        e = self.exps[k]
+        o = self.optics[k]
+        sl = e.slit_loss
+        if sl.y == 'optics':
+            if e.pl_ref and np.isfinite(e.src_y_jwst):
+                pl = pl * CR.point_y_ratio(e.pl_ref, lam, e.src_y_jwst)
+            c_ref = 0.0
+        else:
+            c_ref = e.src_y if np.isfinite(e.src_y) else 0.0
+        if sl.x == 'corrected':
+            pl = pl * o.x_correction(lam, e.src_x_jwst)
+        pl = pl * o.x_extended_ratio(lam, e.src_x_jwst, self.width(p, lam))
+        t = self.transmission(p, eoff, k, lam, dy, width=0.0, centre=np.full(np.shape(lam), c_ref))
         return pl / np.maximum(t, 1e-6)
 
     def design(self, p, eoff):
@@ -1164,8 +1275,8 @@ def model_frame(result, k, unit=False, applied_pathloss=True, common=False):
     common frame with ``common``).
 
     unit : the profile per unit reported flux instead of the fitted model: the true
-        spectrum is set to 1 / main_shutter_factor, so a profile-weighted fit of
-        the data with this frame returns the reported flux directly.
+        spectrum is set to 1 / reported_factor, so a profile-weighted fit of the data
+        with this frame returns the reported flux directly.
     applied_pathloss : divide by the path loss stage 2b re-applied, so the frame is
         in the units of the live canonical SCI.
     """
@@ -1180,7 +1291,7 @@ def model_frame(result, k, unit=False, applied_pathloss=True, common=False):
     out = np.full(e.y.shape, np.nan)
     terms = term_weights(M.exps, k)
     if unit:
-        f = main_shutter_factor(result, result.lam)
+        f = reported_factor(result, result.lam)
         true_spec = np.where(f > 0, 1.0 / np.maximum(f, 1e-6), 0.0)
     else:
         true_spec = np.nan_to_num(result.flux)
@@ -1196,52 +1307,28 @@ def model_frame(result, k, unit=False, applied_pathloss=True, common=False):
     return out if common else out[sl]
 
 
-def main_shutter_factor(result, lam):
-    """Reported-flux factor: the fitted source's transmission through the main
-    shutter, divided by a point source's at the planned position (SRCYPOS).
+def reported_factor(result, lam):
+    """Reported-flux factor: the share of the fitted source's light inside a circle
+    REPORT_APERTURE across, centred on it, 1 - exp(-R^2 / 2 sigma^2) for the round Gaussian
+    of the fitted width (sigma in arcsec at each wavelength).
 
-    The true spectrum times this factor is the light in the main shutter on jwst's
-    point-source path-loss calibration, which is what cfpipe's optimal extraction
-    measures. For a point source at its planned position it equals the true spectrum.
-
-    An exposure without usable pixels (``ok`` empty, e.g. everything masked) has no
-    row scale of its own; it is left out of the average (the others carry the
-    factor), and only if every exposure is empty the row scale comes from all its
-    pixels. Before, its NaN row scale made the whole factor NaN."""
+    The true spectrum (the source's total light) times this factor is the reported flux:
+    the whole source up to a bound, so a wide or nearly uniform source does not depend on
+    the model far beyond the slitlet (user, 2026-11-04). For a point source it is one."""
+    from campfire_pipeline.nirspec.optics import SLIT
     M = result.model
-    p, eoff = _qvec(result)
-    lam = np.asarray(lam, float)
-    sci = ([i for i, e in enumerate(M.exps) if e.use_data and e.has_source]
-           or [i for i, e in enumerate(M.exps) if e.use_data])
-
-    def _row_scale(e, usable):
-        dy = np.asarray(e.dy, float)
-        sel = np.isfinite(dy) & (np.asarray(e.ok, bool) if usable else np.isfinite(dy))
-        return float(np.median(dy[sel])) if sel.any() else np.nan
-    dys = {k: _row_scale(M.exps[k], True) for k in sci}
-    keep = [k for k in sci if np.isfinite(dys[k])]
-    if not keep:
-        dys = {k: _row_scale(M.exps[k], False) for k in sci}
-        keep = [k for k in sci if np.isfinite(dys[k])]
-    if not keep:
-        return np.full(lam.shape, np.nan)
-    sci = keep
-    out = 0.0
-    for k in sci:
-        dy = np.full_like(lam, dys[k])
-        tg = M.transmission(p, eoff, k, lam, dy, aperture=(0,))
-        tp = M.transmission(p, eoff, k, lam, dy, width=0.0, aperture=(0,), centre=M.exps[k].src_y)
-        out = out + tg / np.maximum(tp, 1e-6)
-    return out / len(sci)
+    p, _ = _qvec(result)
+    sigma = M.width(p, np.asarray(lam, float)) * SLIT
+    return 1.0 - np.exp(-(0.5 * REPORT_APERTURE) ** 2 / (2.0 * sigma ** 2))
 
 
 def boxcar_factor(result, lam):
     """What stage 3's 3-pixel boxcar (``fnu_3px``) measures of the source, per unit true
     spectrum: the source's light within +- 1.5 detector rows of its planned
-    position (SRCYPOS, where Spec3 centres the extraction aperture), on jwst's
-    point-source calibration (the s2d is the frame divided by the point-source path
-    loss, so a pixel holds f S / T_point, ``throughput``). Averaged over the science
-    exposures that contain the source; a row is the exposure's median pixel height."""
+    position (SRCYPOS, where Spec3 centres the extraction aperture), in the s2d's units:
+    the forward model (``throughput`` times the image) divided by the path loss stage 2b
+    applied, as ``model_frame`` writes it. Averaged over the science exposures that
+    contain the source; a row is the exposure's median pixel height."""
     M = result.model
     p, eoff = _qvec(result)
     lam = np.asarray(lam, float)
@@ -1256,9 +1343,12 @@ def boxcar_factor(result, lam):
             continue
         d = np.full_like(lam, dy)
         # the window as three pixel-integrated rows of height dy
+        L, P = _row_curve(e, e.pl_applied)
+        if L.size <= 3:
+            continue
         box = sum(M.image(p, eoff, k, np.full_like(lam, e.src_y + r * dy), lam, d) for r in (-1, 0, 1))
-        tp = M.transmission(p, eoff, k, lam, d, width=0.0, centre=e.src_y)
-        out, n = out + box / np.maximum(tp, 1e-6), n + 1
+        tau = M.throughput(p, eoff, k, lam, d)
+        out, n = out + box * tau / np.interp(lam, L, P), n + 1
     return out / n if n else np.full(lam.shape, np.nan)
 
 
@@ -1278,7 +1368,7 @@ def drizzle_arrays(frame_of, dmap):
     return dmap.drizzle({name: frame_of(name) for name in dmap.names})['data']
 
 
-FIT_VERSION = '2'                     # 2: no per-exposure pointing offsets fitted
+FIT_VERSION = '7'                     # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset)
 
 
 def run_single_source(product_name, workspace_dir, groups, bkg_overrides, science,
@@ -1286,7 +1376,7 @@ def run_single_source(product_name, workspace_dir, groups, bkg_overrides, scienc
     """Fit one source and write ``{product_name}_pf.fits``: the fitted shape (header)
     and the drizzled 2D profile per unit reported flux (PROF2D) on the stage-3 s2d
     grid. The profile is not normalised: weighting the s2d with it returns the
-    reported flux (main-shutter light on the point-source path-loss calibration)."""
+    reported flux (the source's light inside REPORT_APERTURE, ``reported_factor``)."""
     import os
     from astropy.io import fits
     from campfire_pipeline.common.io import log
@@ -1303,6 +1393,7 @@ def run_single_source(product_name, workspace_dir, groups, bkg_overrides, scienc
 
     hdr = fits.Header()
     hdr['PFVER'] = (FIT_VERSION, 'Profile-fit model version')
+    hdr['PFOPTIC'] = (optics_version(), 'Diffraction model of the MSA (data/nirspec_optics.json)')
     hdr['PFCHROM'] = (bool(chromatic), 'Centre and width vary with wavelength')
     hdr['PFCEN'] = (p['centre'], 'Source centre at the pivot [slit units]')
     hdr['PFCENPR'] = (p['centre_prior'], 'Planned source position (prior centre)')

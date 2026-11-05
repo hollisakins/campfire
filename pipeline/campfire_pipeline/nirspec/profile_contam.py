@@ -62,7 +62,7 @@ PASS1_SUBDIR = 'pass1'
 PASS1_VERSION = '11'
 MIN_EXPOSURE_PIXELS = 100  # per-exposure clean fractions only for exposures with this many main-shutter pixels
 DPRED_FLOOR = 0.1          # prediction uncertainty floor, fraction of the prediction (ASSUMED, to be measured)
-_NOD = re.compile(r'^(jw\d+_\d{5})_(\d{5})_(nrs[12])')
+_NOD = re.compile(r'^(jw\d+_[0-9a-z]{5})_(\d{5})_(nrs[12])')     # the sequence's activity is base 36 (0410f)
 
 
 def exposure_key(path):
@@ -322,10 +322,20 @@ def pass1_settings(stage_config):
     else:
         sm_p = smooth_points(g('contam_pass1_smooth_prism', 7.5))
         sm_g = smooth_points(g('contam_pass1_smooth_grating', 15.0))
-    return dict(smooth_prism=sm_p, smooth_grating=sm_g,
-                lines=bool(g('contam_pass1_lines', True)),
-                gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
-                gate_noise=str(g('gate_noise', 'mean_square')).lower())
+    out = dict(smooth_prism=sm_p, smooth_grating=sm_g,
+               lines=bool(g('contam_pass1_lines', True)),
+               gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
+               gate_noise=str(g('gate_noise', 'mean_square')).lower())
+    bars = g('bar_offsets', None)
+    if bars:
+        # the measured bar offsets (``bar_offset.table``): a new measurement redoes pass 1
+        out['bars'] = ';'.join(f'{d}:' + ','.join(f'{q}={v:.4f}' for q, v in sorted(qs.items()))
+                               for d, qs in sorted(bars.items()))
+    from campfire_pipeline.nirspec.crds_refs import SlitLoss
+    sl = SlitLoss.from_config(stage_config)
+    if not sl.is_default:
+        out['slit_loss'] = f'y={sl.y},x={sl.x}'      # whose path loss the model took
+    return out
 
 
 def _signature(s):
@@ -497,7 +507,7 @@ def boxcar_pass1(exps, sid, maps, workspace, is_prism, stage_config, box):
     if n_smooth > 1:
         R.flux, R.flux_err, _ = smooth_spectrum(R.flux, R.flux_err, n=n_smooth, keep_lines=st['lines'])
         n_lines = int(np.sum(np.isfinite(raw) & (R.flux == raw)))
-    rep = np.abs(R.flux * PF.main_shutter_factor(R, R.lam)) * 1e12
+    rep = np.abs(R.flux * PF.reported_factor(R, R.lam)) * 1e12
     rep = rep[np.isfinite(rep)]
     frames, nosrc, ext = _frames(R, exps, sid, maps, workspace, n_smooth, st['lines'])
     P1 = Pass1(sid=int(sid), lam=R.lam, flux=R.flux, flux_err=R.flux_err, frames=frames, reliable=True,

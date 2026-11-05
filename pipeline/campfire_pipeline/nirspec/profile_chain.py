@@ -163,7 +163,9 @@ class ChainResult:
         """Primary-header cards of the chain (written to ``_pf.fits``, copied to ``_spec.fits``)."""
         p = self.result.params
         c = {
-            'PFVER': ('2', 'Profile-fit model version'),
+            'PFVER': (PF.FIT_VERSION, 'Profile-fit model version'),
+            'PFOPTIC': (PF.optics_version(), 'Diffraction model of the MSA (data/nirspec_optics.json)'),
+            'PFAPER': (PF.REPORT_APERTURE, 'Reported-flux aperture diameter [arcsec]'),
             'PFSHAPE': (self.shape, 'Shape used: own / prism / default'),
             'PFCHAIN': (self.chain, 'Shape chain: gated / free / fixed'),
             'PFREASON': (self.reason[:68], 'Why this shape'),
@@ -191,7 +193,16 @@ class ChainResult:
             'PFCHROM': (bool(self.result.chromatic), 'Centre and width vary with wavelength'),
             'PFCHI2': (float(self.result.chi2_red), 'Reduced chi2 of the chosen fit'),
             'PFNPIX': (int(self.result.npix), 'Pixels in the fit'),
+            'PFBAROFF': (_f(np.median([e.bar_offset for e in self.result.model.exps])),
+                         'Bar offset added to slit y [slit units]'),
         }
+        exps = self.result.model.exps
+        sl = exps[0].slit_loss if exps else None
+        if sl is not None:
+            c['PFSLY'] = (sl.y, 'Slit-direction path loss: optics / jwst')
+            c['PFSLX'] = (sl.x, 'Along-dispersion path loss: corrected / jwst')
+        refs = sorted({e.pl_ref for e in exps if e.pl_ref})
+        c['PFPLREF'] = (','.join(refs)[:68] or 'none', 'jwst path-loss reference the model starts from')
         return c
 
 

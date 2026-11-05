@@ -223,6 +223,7 @@ def past_geometry(M, p, eoff, lam_min_in, lam_max_in):
                 ys, lam, foot, _ = _wcs_on(e.path, rows, cols)
             except Exception:                        # noqa: BLE001 - no WCS, no extension for this exposure
                 continue
+            ys = ys + e.bar_offset                   # the model's slit frame, as ``load_group`` places e.y
             with np.errstate(invalid='ignore'):
                 past = foot & ((lam > lam_max_in) | (lam < lam_min_in))
             dy = np.abs(np.gradient(np.where(np.isfinite(ys), ys, 0.0), axis=0))

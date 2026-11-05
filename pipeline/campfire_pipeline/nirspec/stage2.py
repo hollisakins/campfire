@@ -273,6 +273,13 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
 
     if not obs.directories_setup:
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=False)
+    # after stage 1 in the same run the list holds the rate file of every raw file; an exposure stage 1
+    # wrote nothing for (no open slit on that detector) has none
+    missing = [f for f in obs.rate_files if not os.path.exists(f)]
+    if missing:
+        log(f'stage 2a: {len(missing)} exposure(s) without a rate file (stage 1 wrote none), skipped: '
+            + ', '.join(os.path.basename(f) for f in missing))
+        obs.rate_files = [f for f in obs.rate_files if os.path.exists(f)]
 
     # Mask staleness check: if any rate file's stamped CFMASKSH disagrees with
     # the current observations.toml, restore and re-apply before stage2a runs.

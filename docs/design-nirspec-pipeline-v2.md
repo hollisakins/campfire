@@ -53,7 +53,7 @@ leaves other sources' light in many spectra. The redesign does four things:
 |---|---|---|---|
 | Release: MAJOR, merged only with the full re-reduction | Decided (user, 2026-10-24 and 2026-10-29) | both | section 8 |
 | Stage 2a single `Spec2Pipeline` call per rate file, `bkgslits/` | Built (loving-bell, in CHANGELOG Unreleased) | MB session | 3.1 |
-| Empirical bar-shadow tables, PRISM + G140M/G235M/G395M | Built (7ab786bf, 47d19c46, fea58a6e, b0c08026); not signed off by the user | MB session | 3.2 |
+| Empirical bar-shadow tables, PRISM + G140M/G235M/G395M | Built (7ab786bf, 47d19c46, fea58a6e, b0c08026); settled 2026-10-30 (user, in the MB session; the "not signed off" line here was a stale recap) | MB session | 3.2 |
 | No bar-shadow division of science frames | Decided (user, 2026-10-29) | both | 3.2 |
 | Master background, calibrated sky + painting (`_mbkg.fits`) | Built (0d9dd3c7, 53b1c5af, 2f898100, 65c1d825) | MB session | 3.3 |
 | Master background split into step 1 (before 2a) and step 2 (end of 2a) | Decided (user, 2026-10-30); Built (master background 1.2+) | MB session | 3.3, 3.4 |
@@ -177,6 +177,9 @@ pixels instead.
   user said the correction should "eventually" reach the science frames; the later ruling is the
   one recorded, see section 9.)
 - The measured table is used where one exists, CRDS otherwise (user, 2026-10-29).
+- The forward model's shutter is the geometric shutter with the smooth transmission T, capped at
+  1, fitted to these tables (user, 2026-11-03; `FIT_VERSION` 5; evidence below, section 3.7).
+  G140H, G235H and G395H use the M grating with the same filter (user, 2026-11-03).
 
 **Evidence.**
 - PRISM table from the seven EMBER prism pointings (8,474 clean shutters, 11.0 M pixels). With
@@ -194,20 +197,83 @@ pixels instead.
   `~/campfire-data/scratch/claude/bs_v5/empirical_barshadow_<disperser>_qa.pdf`.
 - Calibration-star result that the forward model already handles the shutter edge (2026-10-17):
   a hard clip at the nominal half-width 0.50 with an even blur split fits off-centre stars best;
-  no separate bar-shadow model is needed for point sources.
+  no separate bar-shadow model is needed for point sources. Superseded for uniform light on
+  2026-11-03 (below): the hard clip does not reproduce the bar shadow in the red.
+- **The forward model against the bar shadow (V7, 2026-11-03).** For uniform light the model's
+  image is the open area blurred by the after-shutter part of the PSF and averaged over a row
+  (dy 0.227-0.230 slit units per row from p1).
+  - With the hard clip at +-0.50 slit-frame units (= +-0.435 pitch, `FIT_VERSION` 4) the 50 %
+    half-width stays at 0.435-0.439 pitch at every wavelength. The measured one falls from 0.429
+    (PRISM 0.6 um) to 0.388 (5 um), and on G395M from 0.414 (2.9 um) to 0.387 (5.2 um): up to
+    0.05 pitch (0.25 rows) off in the red. Under the bar between two open shutters the model's
+    floor is 0.49-0.61 of the open level against a measured 0.40-0.46. The model passed too much
+    light near the shutter edges in the red (`scratch/claude/extraction-v2/bs_model_compare.py`,
+    `v7_barshadow_{profiles,edges}.png`).
+  - A narrower opening (the measured edge, tried and removed) fixes uniform light but makes the
+    images of edge stars worse: uniform light and point sources disagree about where the edge is.
+  - What fits uniform light and keeps the geometric edge the stars want is a loss across the
+    shutter: the geometric shutter (+-0.50, a small fitted
+    shift) transmitting T(x) = 1 - (1 - tedge) x^8 (x = position over the half-width), flat
+    over the middle and falling to tedge at the edges. Light diffracted at the shutter edges
+    leaves the spectrograph beam and is lost. Uniform light sees the loss as a narrower opening;
+    a point source feels it mainly in its total, which the throughput normalisation carries.
+    Fitted per disperser with the PSF split evenly before and after the shutter (section 3.7),
+    the median misfit per wavelength is 0.0109 / 0.0184 / 0.0129 / 0.0137 (PRISM / G140M /
+    G235M / G395M) against 0.061 / 0.035 / 0.043 / 0.082 with the hard clip.
+  - T is capped at 1 (never above the centre's value). Without the cap the fit wanted T up to
+    5 % above 1 off-centre (G395M) and fitted the bar shadow 3-8 % better (0.0097 / 0.0177 /
+    0.0121 / 0.0124). Figures: `scratch/claude/psf_cal_T/figures/v7_T4_{edges,profiles}.png`.
 
 **Implementation.** `nirspec/barshadow_calibration.py`, `data/Generate_Barshadow_Cals.py`,
 tables `data/empirical_jwst_nirspec_barshadow_{prism,g140m,g235m,g395m}.fits`.
 `[nirspec.stage2].empirical_barshadow` (default off) passes a table to `BarShadowStep` for the
-background slitlets.
+background slitlets. The forward model's shutter: `profile_fit.SHUTTER`
+(`data/nirspec_shutter_transmission.json`, fitted by `psf_calibration.fit_shutter`).
 
 **Open.**
-- User sign-off on the grating tables (MB session).
-- Held-out validation has not been rerun on the b0c08026 tables (MB session).
-- Whether the forward model's shutter edge (clip at 0.50, blur split 50/50) agrees with the
+- (Done 2026-11-03, MB session.) Held-out check on the current b0c08026 tables, which the
+  forward model's shutter is fitted to: each table derived without one field, with the code that
+  made the shipped tables, and tested on it (gratings: spurs_egs, spurs_a2744, spurs_gdn
+  trained, spurs_gds left out; PRISM: ember_egs_p1 left out, the other six pointings trained).
+  Absolute difference inside the open area (|y| < 0.45 pitch), % of the open-shutter level:
+
+  | Disperser | Empirical rms | Empirical max | CRDS rms |
+  |---|---|---|---|
+  | G140M | 0.3-0.7 | 1.8 | 1.1-2.3 |
+  | G395M | 0.7-0.8 | 1.8 | 3-6 |
+  | PRISM | 0.5-1.0 | 1.8 | 1.3-4.6 |
+  | G235M (fewest training shutters) | 0.9-1.7 | 3.6 | 1.8-3.9 |
+
+  As ratios at the outer edges inside the shutter: G140M 0.5 / 1.1 % (CRDS 3.9 / 4.7), PRISM
+  1.2 / 1.6 % (9.0 / 2.5), G395M 1.1 % (9-11), G235M 2.6 / 2.2 %; the lower side of the interior
+  bar 0.8-3.1 % against CRDS 13-28 %. On every disperser the left-out field sits slightly toward
+  +y of the training fields: a flank of up to 7 % (PRISM, G395M), 10-25 % (G140M) or 13 %
+  (G235M) as a ratio in the outermost 0.1-0.2 pitch, 1-4 % of the open level in absolute terms,
+  a field-to-field registration difference no single table removes. So about 1 % of the open
+  level (2 % on G235M) is the field-to-field limit inside the shutter for the shutter
+  transmission. The QA-page rms (cut at |y| < 0.6) is not comparable with the 2026-10-30 values:
+  since b0c08026 each cell is a median, and a ratio to the near-zero profile at 0.5-0.6 pitch is
+  no longer bounded. Plots `heldout_{g140m,g235m,g395m,prism}.png`, QA PDFs, profiles and logs in
+  `scratch/claude/bs_heldout_b0c0/`.
+- (Done, kept for the record.) Whether the forward model's shutter edge (clip at 0.50, blur split 50/50) agrees with the
   measured uniform-sky profile: edge 50 % point, narrowing with wavelength (open region ±0.45
   pitch at 1 µm, ±0.38 at 5 µm on the prism), floor under the bars (extraction session; merge
-  plan T0 item).
+  plan T0 item). **Checked 2026-11-03 (V7, `scratch/claude/extraction-v2/bs_model_compare.py`,
+  figures `v7_barshadow_{profiles,edges}.png`): it does not agree in the red.** For uniform
+  light the model is the open area (hard edges at ±0.50 slit-frame units = ±0.435 pitch)
+  blurred by the after-shutter part of the shipped PSF and averaged over a row (dy 0.227-0.230
+  slit units per row from p1). Its 50 % half-width stays at 0.435-0.439 pitch at every
+  wavelength; the measured one falls from 0.429 (PRISM 0.6 um) to 0.388 (5 um), and on G395M
+  from 0.414 (2.9 um) to 0.387 (5.2 um). The edge slopes match; the edge positions do not, by
+  up to 0.05 pitch (about 0.25 rows) in the red. Under the bar between two open shutters the
+  model's floor is 0.49-0.61 of the open level against a measured 0.40-0.46. The 2026-10-17
+  star test chose h = 0.50 over 0.44 slit units on blue-dominated chi2; the measured edge is
+  0.49 slit units in the blue and 0.45 at 5 um, so a single h was the wrong question: the
+  effective opening narrows with wavelength. Consequences: the model passes too much light
+  near the shutter edges in the red, for off-centre and extended sources, and its point-source
+  transmission (the throughput normalisation) uses the too-wide edge; the star PSF was fitted
+  with this edge, so the after-shutter PSF may be absorbing part of it. Resolved by the
+  shutter transmission (Evidence above, section 3.7).
 - The forward model must not count the shutter edges twice once the measured profile feeds it.
 
 ### 3.3 Master background (calibrated sky and painting)
@@ -497,11 +563,22 @@ extended with `coverage.geometry_on_block` and `WAVELENGTH_CUTOFFS` (e3af87b0). 
 **What and why.** The final spectrum is a fit of a physical model to every nod difference: a
 Gaussian galaxy convolved with the star-measured PSF, clipped by the open shutters, with the nod
 partners modelled as negative copies at their own WCS positions. One true spectrum is shared by
-all exposures. The reported flux is the light that entered the target's shutter. This replaces
-the fixed optimal profile, which loses light for extended and off-centre sources.
+all exposures. The reported flux is the source's light inside a circle 0.8 arcsec across (1.5
+shutter lengths) centred on it (user, 2026-11-04; before, the light that entered the target's
+shutter). This replaces the fixed optimal profile, which loses light for extended and
+off-centre sources.
 
 **Decisions.**
 - On by default (user, 2026-10-29).
+- The reported flux (`fnu_prof`) is the fitted source's light inside a circle
+  `profile_fit.REPORT_APERTURE` = 0.8 arcsec across, the round Gaussian of the fitted width
+  (`reported_factor`, header `PFAPER`): the whole of a point source, and a bound on how far a
+  wide or nearly uniform source is extrapolated. No second column (user, 2026-11-04: "I think
+  the 1.5 shutter bound is the right choice"). The fit's spectrum is the source's total light:
+  along the slit from the model at the fitted width, along the dispersion jwst's point loss
+  times the stars' correction (`x_correction`) times the model's ratio for the fitted source
+  (`x_extended_ratio`, the source taken as round). The 3-pixel boxcar, `fnu_opt` and the cal /
+  s2d files stay on jwst's point-source calibration.
 - The instrument model (PSF table, shutter geometry, centre law) is fixed and never a fit
   parameter, "not even as a suggestion" (user, 2026-10-24).
 - PSF: star-measured, per detector, lower-quartile width ("err on the side of a
@@ -526,15 +603,1098 @@ lost in the wipe; only the numbers in the session notes survive. The real-data j
 (section 3.9) shows the joint solve failing with default shapes and working with chain shapes,
 so the chain is required.
 
-**Implementation.** `nirspec/profile_fit.py` (`PSF_TABLES`, `CENTRE_LAW`, priors: centre 0.15
+**Implementation.** `nirspec/profile_fit.py` (`PSF_TABLES`, `SHUTTER`, `CENTRE_LAW`, priors: centre 0.15
 slit units from the planned position, width median 0.15), `nirspec/profile_chain.py`
 (`choose_shape`, `ChainConfig`), `nirspec/profile_product.py`, `stage3.run_profile_fit_phase`.
 
 **Open.**
-- Default width 0.15 vs 0.21 slit units (user to decide; raised 2026-10-23).
-- Whether the shutter edge needs revising against the measured bar shadow (section 3.2).
+- Default width 0.15 vs 0.21 slit units (user to decide; raised 2026-10-23). Since FIT_VERSION
+  6 it sets a faint source's flux scale (19-28 % at 0.15). p1 own fits have median 0.143 and
+  nothing supports 0.21 (review round, 2026-11-04). The width's spread (about +-15 % in flux)
+  stays out of the reported error (user, 2026-11-04): `fnu_prof_err` is statistical only.
 - Re-run the injection and shape tests on the merged pipeline, since the old figures are lost
   (extraction session).
+
+**PSF and centre-law refit (2026-11-02; superseded by the three-component PSF below, and its
+two-component code removed 2026-11-03).** The
+October tables were measured on nod differences built with the path-loss correction still
+applied. `nirspec/psf_calibration.py` refits them through the profile fit's own model:
+`ProfileModel` (new optional `psf_tables` / `centre_law_tables`, defaults unchanged) on the
+frames stage 3 reads, galaxy width at `W_FLOOR`, centre law off (`NO_CENTRE_LAW`). Data: the six
+calibration fields of programs 12497 and 6642 reduced with the current stages 2a/2b
+(`scratch/claude/e2e_nrscal`), PRISM only, 586 star x detector groups.
+- Method: per star and range (the seven `PSF_LAM` ranges), core sigma, centre and drift free at
+  a fixed wing fraction; then the chi2 profile over the wing fraction (0-0.6) with each star's
+  width and centre refitted; the joint wing fraction minimises the clean stars' summed profiles
+  (jackknife errors); stars refitted at it; core = 25th percentile. Weights: the extraction's
+  variances plus a floor of (column peak / 30)^2, as in October.
+- Selection: peak-pixel S/N >= 6 per range in the nod difference, width error < 0.1 rows, centre
+  within 0.3 of the shutter pitch from the shutter centre, 3-MAD width outliers (per range, and
+  star-wide from 1.0-1.5 and 2.6-3.3 um), reduced chi2 > 5 x median. 131 NRS1 / 133 NRS2 clean
+  stars (October: 73 / 59; 66 / 49 in common; the rest of October's are outliers or edge stars
+  here, `selection_vs_october.log`).
+- First refit, nods at one shared position (superseded below): NRS1 core 0.322, 0.313, 0.332, 0.351, 0.376, 0.441, 0.609 rows, wing 0.341, 0.357,
+  0.364, 0.384, 0.396, 0.344, 0.137; NRS2 core 0.323, 0.315, 0.318, 0.336, 0.395, 0.472, 0.586,
+  wing 0.349, 0.373, 0.434, 0.459, 0.395, 0.295, 0.174. FWHM of core + wing 8-16 % narrower than
+  the current table on NRS1 at 0.85-2.95 um, 1-12 % on NRS2, within 5 % in the red.
+- But the stars do not prefer it: summed chi2 of the clean stars with the new table is 0-5 % above
+  the current one at 0.7-3.3 um (1-7 % below it on NRS1 at 3.3-5.3 um), the narrow-side rule's
+  price; a median-core table with the same wing fits
+  0-1 % better than the current one in the blue, 5-10 % on NRS1 in the red. In the module's terms
+  the current table sits near the population median, not on the narrow side.
+- That refit found the nods misplaced: with a free position offset per exposure, bright stars'
+  chi2 fell to 0.2-0.7 of its value, the offsets linear in the slitlet's detector row (+-0.08 rows
+  at the edges, mirror-image for the two outer nods), and freeing them lowered the joint wing
+  fraction by 0.05-0.11. The user chose a fixed offset law, no free parameter per source
+  (2026-11-02).
+
+**Nod offset law (2026-11-02, built, on by default: `profile_fit.NOD_OFFSET_LAW`).** Each
+exposure's image of the source, and its negative copies in the other nods' differences, sits at
+the source's planned position in that exposure (its own SRCYPOS), not at one shared position
+(`nod_shifts`; shift = scale x (SRCYPOS_k - planned position), applied in `ProfileModel.centre`
+before the centre law; `ProfileModel(nod_law=False)` is the old geometry).
+- Measurement: per-exposure offsets fitted freely (no law) on 465 calibration stars, 5091
+  exposure x range values, PRISM in all six fields and six gratings of 6642 obs 2
+  (`psf_calibration.measure_offsets`; c4_p4 G140H too faint per exposure).
+- Which description: the planned SRCYPOS differences (no parameter) take the weighted rms from
+  0.0100 to 0.0043 slit units; a fitted (a + b x detector row) x nod step or (quadrant + b x MSA
+  shutter row) x nod step does as well in sample (0.0043) but predicts a held-out observation worse
+  (0.0048-0.0049 vs 0.0043); a law not proportional to the nod step is worse (0.0067). Nothing is
+  left against detector column, row or wavelength (slopes 0 +- 1e-4 slit units). The planning
+  metadata already carries the field-dependent nod step; the model dropped it.
+- Scale: measured / planned = 1.03 overall, but per visit 0.85-1.21 for the PRISM, and the six
+  gratings of 6642 obs 2 (0.5-0.88) follow that visit's PRISM (0.85): a visit effect, not a
+  disperser effect, which a fixed law cannot follow. Scale 1 (the planned shifts as they stand).
+- Effect: median chi2 of PRISM star fits 0.37 of the shared-position value above peak S/N 100,
+  0.62 at 30-100, 0.93 at 10-30 (free offsets: 0.32 / 0.58 / 0.93); bright grating ranges of
+  6642 obs 2 do not gain (1.01, 39 ranges). Out of sample (ember_cosmos_p1, six bright compact
+  isolated PRISM sources and three G395M with < 2 % predicted contamination): chi2 on common pixels
+  0.93-1.00 of without (brightest gains most), reported flux changes <= 0.3 %.
+- A single exposure (no nod partners) is not shifted (its own SRCYPOS is the reference); frames
+  with a placeholder SRCYPOS (0.000 next to real values) or without the source are not shifted.
+
+**PSF refit with the law (pending the user's decision, tables unchanged).** Same method and cuts
+as above; 141 NRS1 / 138 NRS2 clean stars.
+- NRS1 core 0.334, 0.343, 0.367, 0.373, 0.393, 0.472, 0.607 rows, wing 0.315, 0.283, 0.281, 0.328,
+  0.360, 0.294, 0.138; NRS2 core 0.338, 0.338, 0.360, 0.390, 0.406, 0.464, 0.571, wing 0.314, 0.317,
+  0.324, 0.319, 0.366, 0.315, 0.221.
+- Against the current table: FWHM of core + wing 6-12 % narrower on NRS1 at 0.85-2.95 um, within
+  +-6 % elsewhere (NRS2 -5.8 to +1.1 %). Against the shared-position refit, at 0.7-3.3 um: the
+  wing fraction 0.03-0.14 lower, the core 3-16 % wider, FWHM 1-8 % wider (closer to the current
+  table); in the red within a few percent either way.
+- Summed chi2 of the clean stars with the new table is 0-5 % above the current one at 0.7-3.3 um
+  and 1-4 % above on NRS2 at 3.3-5.3 um (the narrow-side rule's price), 4-8 % below on NRS1 at
+  3.3-5.3 um; the shared-position refit's table fits worse than or as well as the new one in
+  every range.
+- The PSF skew towards +y remains with the law: beyond +1.5 rows the stars carry 0.6-2 % of their
+  light more than beyond -1.5 rows, where the symmetric model gives about the same on both sides.
+- Centre law (no law applied, regressor the measured centre) unchanged by the nod law: within
+  ~0.02 rows of `CENTRE_LAW` below 3 um; at 4.7 um NRS2 quadrant 2 -0.36 vs -0.25 rows, NRS1
+  quadrant 4 -0.26 vs -0.21, slope with source position NRS1 -0.087 vs -0.107; NRS1 quadrant 1
+  has no stars at 3.7-4.7 um (NaN; fill from the detector value before use).
+- What a symmetric PSF leaves (each star's centre free in every exposure, `fit_centres`; figures
+  `psf_stack_free_centres.png`, `star_own_width_<key>.png`): at the median star width the stack
+  fits the core within ~1 % of the peak, but the star's own image is skewed towards slit +y on
+  both detectors and at all wavelengths: a shoulder of +0.6-0.9 % of the light per pixel at +1.25 to
+  +1.75 rows, a deficit of 0.3-0.8 % at -1.25 to -1.75, a tail of 0.2-0.5 % per pixel to +4 rows;
+  the same whichever side the nod partners are on (so not their copies), at +-1.5 rows rather than
+  on the core's steep sides (so not centring); about 1 % of the light in all. In bright stars it is
+  beyond 5 sigma per pixel along the trace (own-width chi2/dof 5-60, edge stars up to 200, falling
+  to 1-6 in the red); in a star of peak S/N 60, 3-5 sigma below 2.5 um and noise above 3 um.
+  The pattern above 4.5 um is the core widening across 4.1-5.3 um (0.585 to 0.661 rows on NRS1):
+  splitting the range at 4.6 um removes about two thirds of it. The table's last node is at 4.70 um
+  and is held flat beyond it.
+
+**A three-component PSF (2026-11-02; user: more terms, goal the free-centre stack within 1 % of
+the peak in every range; tables unchanged pending the user's decision).** `profile_fit` now reads
+a general PSF table (`psf_components`): a list of Gaussian components per wavelength node, each
+with a share, a width, an offset towards slit +y, the share of its width before the shutter (0.5)
+and whether its offset acts before or after the shutter. The two-Gaussian form was then its
+special case and reproduced the previous model to 1e-12; the default was unchanged (both
+removed 2026-11-03, below).
+- What each term buys (40 brightest clean stars per detector and range, each at its own
+  parameters linear across the range, centre free in every exposure; largest |median stack
+  residual|, % of peak): core + wing at 2.2 x core 0.6-2.1 (8 of 14 ranges over 1 %); the wing with
+  its own width and offset 0.2-0.7 (NRS2 4.1-5.3 um 1.1); plus a third component (the one-sided
+  shoulder: share, width, offset) 0.08-0.85, all under 1 %, noise-only chi2/dof down to 1.4-4.0
+  from 3-14. A skewed core was not needed.
+- Before or after the shutter: centred stars cannot tell (chi2/dof equal to 0.01). Edge stars
+  (|c| >= 0.3) prefer both offsets after the shutter (wing offset: chi2/dof 8.81 -> 8.08 at -y
+  edge, 3.53 -> 3.29 at +y edge), and the shoulder (+1 to +1.5 rows) is still present for stars at
+  the +y edge, where light displaced before the shutter would fall on the bar: the displacement
+  arises after the shutter (spectrograph or detector). Form `wing3_after`.
+- Fit: every clean star (279) in eight ranges over 0.6-5.3 um (the red end split at 4.7 um),
+  every parameter and the centre linear in wavelength across each range, a free offset per
+  exposure. A smooth fit of each star over the whole range (7 nodes, ~58 parameters) was tried:
+  90 s a star and the components trade (shoulder width at its bound, wing share jumping), so the
+  per-range fits feed the tables and the whole-range fit only the single-star figures.
+- Table rules tested on the free-centre stack (all clean stars): (A) core at the 25th percentile of
+  the stars, the rest median: 4.5-11 % (the narrowest cores are a trade with the shoulder, at the
+  0.25-row bound); (B) every parameter the median: 0.6-3.3 %; (J) one PSF per detector and range
+  fitted jointly to up to 60 bright stars (each with its own centre, offsets, spectrum; chi2 scaled
+  by its own reduced chi2), the ranges joined at their ends: 0.44-0.63 % on NRS1 at 0.7-3.3 um,
+  0.49-0.91 % on NRS2 at 0.7-1.0 and 2.0-3.3 um, 1.01-1.07 % on NRS2 at 1.0-2.0 um, 1.1-1.6 % at
+  3.3-5.3 um (16-53 stars); (Jn) J with the core narrowed by the stars' 25th / 50th percentile
+  (0.69-0.97): 1.8-8.5 %; the current table 1.1-4.3 %.
+- Proposed rule (the user's call): the shared shape (wing share, width, offset; shoulder share,
+  width, offset) by a joint fit, since the stars' individual values trade against each other and
+  their medians do not make a PSF; the core width joint as well, since in a three-component PSF
+  the narrow side of a per-star core percentile is the shoulder trade, not narrower stars (Jn
+  shows what the narrow-side rule costs). If the narrow-side rule is kept, it is better applied
+  to the whole profile (e.g. a FWHM percentile) than to the core alone.
+- Open: parameters at their bounds in J (shoulder width 3.0 rows on NRS1 at 2-2.6 um; wing offset
+  -1.5 rows at the 5.3 um node, few stars); the red end above 4.7 um rests on 8-19 bright fits and
+  the shape there pools both detectors; edge stars still leave several sigma in the blue.
+
+**The PSF table is a smooth joint fit (2026-11-02; user decision: a joint fit of the whole profile
+to the stars, not a percentile rule, every parameter smooth in wavelength over 0.6-5.3 um; form
+`wing3_after`; tables and extraction defaults unchanged pending adoption).** Candidate table S,
+`psf_table_wing3_after_S.json` (general layout, 61 log-spaced nodes).
+- Fit (`smooth_joint_fit_all`, `step_smooth_joint`): one PSF per detector, no pooling. Each of the
+  seven parameters (core width; wing share, width, offset; shoulder share, width, offset) is a
+  natural cubic spline in ln(lambda) through 7 nodes (0.6, 0.9, 1.4, 2.1, 3.0, 4.1, 5.3 um), fitted
+  to all bright clean stars of every range at once (up to 40 per range at peak S/N >= 10: 269
+  star-ranges from 49 stars on NRS1, 238 from 58 on NRS2). Each star-range keeps its own centre,
+  drift and per-exposure offsets, solved in the same least-squares problem as the splines (sparse
+  Jacobian), and its own spectrum (linear). Weights: the floored variances, no per-star rescaling.
+  Start: table J at the nodes. Curvature penalty on the second differences of the node values
+  (`SMOOTH_TAU`): 307 (NRS1) and 164 (NRS2) against chi2 1.5 and 1.9 x 10^5, so the data set the
+  shape. Bounds widened for the fit (shoulder width 0.15-6 rows, wing offset +-3, wing width
+  0.4-6).
+- Why one problem: alternating the centres and the shape converged slowly, because a star's
+  centre trades with the wing and shoulder offsets. On synthetic stars made with a known smooth
+  PSF, after four alternations the profile was still off by 1.6-5 % of the peak; the one-problem
+  fit recovers it to 0.1 % (unit test). The per-star chi2 rescaling of the per-range J fits held
+  that fit near its start, which biased the earlier smooth runs; J itself was fitted that way.
+- Runtime: 7-17 min per fit (10-19 iterations), six fits (both detectors x all / half A /
+  half B) in parallel, as long as the alternating version took (7-15 min).
+- Bounds: NRS1 shoulder width at the lower bound 0.15 rows at the 5.3 um node (also in half A and
+  half B); half B also has the shoulder share at 0 at 4.1 um on NRS1 and the shoulder width at
+  0.15 at 4.1 and 5.3 um on NRS2; half A has the NRS2 core at 0.25 rows at the 0.6 um node (no
+  data below 0.7 um). NRS2 on all stars hits none. In the red the shoulder is a narrow feature
+  2-2.8 rows towards +y (width 0.15-0.4 rows, about 1-3 % of the light), narrower than a pixel,
+  so the pixel integration leaves its width poorly constrained; the bound was not widened further.
+- Free-centre stack test, all clean stars, largest |median residual| in % of peak (S / J /
+  current table): NRS1 0.41 / 0.45 / 1.40 (0.7-1.0 um), 0.80 / 0.63 / 1.88, 0.47 / 0.44 / 1.27,
+  0.35 / 0.45 / 2.00, 0.54 / 0.60 / 2.42, 1.02 / 1.12 / 2.62, 0.87 / 1.63 / 4.26 (4.1-5.3 um);
+  NRS2 0.35 / 0.49 / 1.14, 0.42 / 1.07 / 1.52, 0.58 / 1.01 / 2.37, 0.74 / 0.82 / 3.01,
+  0.96 / 0.91 / 2.33, 1.31 / 1.25 / 2.10, 1.31 / 1.57 / 2.59. S is under 1 % in 11 of 14 ranges;
+  over in NRS1 3.3-4.1 um (1.02) and NRS2 3.3-5.3 um (1.31 in both): a dip of about -1.3 % at
+  +2 rows on NRS2 3.3-4.1 um, where the shoulder turns from a broad halo into the narrow red
+  feature.
+- Held-out test (clean stars split at random by star, seed 20261102; fit on one half, stack-test
+  on the other; in-sample for comparison): fit A on B / fit B on A / A on A / B on B. NRS1 0.66 /
+  0.41 / 0.33 / 0.52 (0.7-1.0 um), 1.11 / 0.48 / 0.86 / 0.78, 0.93 / 0.54 / 0.50 / 0.74,
+  0.34 / 0.83 / 0.58 / 0.41, 0.76 / 1.22 / 0.84 / 0.66, 1.19 / 1.49 / 0.91 / 0.95,
+  1.76 / 1.56 / 1.10 / 0.96 (4.1-5.3 um); NRS2 0.61 / 0.37 / 0.45 / 0.36, 0.42 / 0.51 / 0.46 /
+  0.53, 0.73 / 0.61 / 0.92 / 0.81, 0.65 / 0.99 / 0.87 / 0.75, 0.88 / 1.09 / 0.89 / 0.63,
+  1.49 / 1.15 / 1.25 / 1.27, 1.86 / 2.86 / 1.88 / 3.04. Below 3.3 um the held-out numbers are
+  within 0.4 % of peak of the in-sample ones (largest held-out 1.22 %, NRS1 2.6-3.3 um): the table
+  describes the stars, not the sample. Above 3.3 um a half has 8-27 stars per range and both held-out and in-sample numbers
+  rise to 1.2-3 %: the stack there is limited by the number of stars, and half B's red end is
+  fitted with its shoulder at the bounds.
+- Pooling the detectors above 4.1 um: not needed for the fit to converge or stay off its bounds
+  (NRS2 all-stars hits no bound; NRS2 wing width at 5.3 um 2.60 +- 0.13 rows, NRS1 2.89 +- 0.11;
+  formal errors at fixed star parameters, not scaled by chi2/dof). The two detectors' red-end
+  shapes agree within those errors on the wing, the shoulder offset (2.82 vs 2.64 rows) and the core
+  (0.71 vs 0.70 rows). Pooling would reduce the held-out noise there but cannot be tested with
+  this sample; S keeps the detectors separate.
+- Single stars at their own smooth PSF (`star_own_psf_<key>.png`; regenerated after fixing a
+  reference fit that clipped the bright cores on the unfloored variance): chi2/dof 4.4, 1.3 and
+  13 for the three stars shown; a single star's components still trade (shoulder width at its
+  bounds), so the single-star fits are figures only.
+- Proposed: adopt S (the user's call). Open: the 3.3-5.3 um ranges, which rest on 16-53 stars and
+  whose shoulder width sits at or near its lower bound; the edge stars' blue residuals.
+- **Adopted 2026-11-03 (user decision).** S is the extraction's PSF: `PSF_TABLES` is read from
+  `campfire_pipeline/data/nirspec_profile_psf.json` (table S as fitted), `FIT_VERSION` 4. No
+  test runs with the old table (user, 2026-11-03): the image test writes out the formula for the shipped file and checks the default
+  model against it; the calibration tests' reference fits use the shipped table. Two tests had
+  depended on the old PSF. The shutter test of a PRISM shape transferred to a grating checked
+  for no light beyond a fixed margin past the closed shutter; the three-component red wing
+  (sigma up to ~3 rows, after the shutter) puts 0.18 % of the peak there. It now checks what
+  holds for any PSF: the image with the bottom shutter closed plus the image through that
+  shutter alone equals the image with all three open (clipping comes before the blur), and the
+  missing light is not negligible. The neighbour-scan test now fits the target at its true
+  shape. That is not a PSF effect: with an equally bright, unmodelled neighbour one shutter
+  away, a free target fit has its lowest chi2 merged with the neighbour (centre +0.6, width 0.9)
+  under both PSFs (chi2 92k merged vs 150k true with the legacy table, 85k vs 143k with S); the
+  old PSF's starting grid happened to stay in the true basin, S's slides into the merged one.
+  Next: the p1 rerun from stage 2a, and the flux change of bright sources against the previous
+  p1 products.
+- **The old two-Gaussian PSF is removed from the code (2026-11-03, user: "remove the old
+  stuff").** `profile_fit` has no `LEGACY_PSF_TABLES`, `PSF_K` or `psf_params`, and
+  `psf_components` reads the general layout only; `PSF_LAM` stays as the nodes of `CENTRE_LAW`.
+  `psf_calibration` lost the steps whose only purpose was the two-component table (the wing
+  fraction scan and its joint fit, the percentile table `psf_table_new.json`, the refit at the
+  joint wing fraction, the old/new samples, summary and figures, the free-centre and own-width
+  steps). What stays now starts from the shipped PSF. The star fits (`fit`, records in
+  `stars/`) take the shipped PSF with a free core width (`width_tables`: the core scaled to S
+  rows at the range centre, the wing and shoulder kept). The selection reads that width with
+  the same cuts. The centre law is its own step (`centre_law`). The forms start from the shipped
+  parameters with the core scaled to the star's width. The nod offsets use the same width fit.
+  `table_test` compares candidates with the shipped table. A rerun of the calibration therefore
+  starts from `fit` and `select`. The results above (selection, J, S) came from the
+  two-component star fits, which were not rerun.
+- **p1 full rerun with S (2026-11-03).** `cfpipe nirspec run --stage2a --stage2b --stage3
+  --overwrite -p 12` on `scratch/claude/e2e_p1`, all merged changes (master background 1.7 in
+  stage 2a, drizzle-once, background revision, nod law, S): 681 products, no failures; stage 3
+  took 62 min. The previous products (all `PFVER` 2) are in
+  `scratch/claude/extraction-v2/p1_before_psf`. The master-background session's failed-open
+  edge check on these products passes (PRISM full-transmission shutters within +-2 % across
+  the shutter, against +15-22 % at the edges in 1.6; partial shutters up to 14 % over-painted on
+  one edge, the one-number limit; PRISM nrs1 failed-open shutter 16 reads 18-25 % above MBKG2D
+  in its core, light in the shutter for the contamination side).
+  Flux change from the PSF alone (`psf_flux_check.py`: the brightest clean sources fitted with
+  `profile_fit.fit` on the same frames with S and with the two-Gaussian table rebuilt for the
+  comparison; figure `extraction-v2/psf_flux_change_p1.png`): S raises the flux of all of them.
+  PRISM (20): median +4 % at 0.7 um, +2 % at 1-1.5 um, ~0 at 2.5 um, +3.5 % at 5 um (sources
+  +1.2 to +3.4 % integrated); G395M (4 with S/N > 5 pixels): +0.7 % at 2.9 um rising to +3.5 % at
+  5.2 um. The fits' chi2 hardly changes on galaxies (common-pixel ratio 0.89-1.04, most within
+  1 %); fitted widths shrink by 0.005-0.015 slit units. Against the PSF-free 5-pixel box in the
+  same products the profile flux went from 1.000 / 1.010 / 1.016 (PRISM median, 0.7-1.5 /
+  1.5-3 / 3-5.3 um) to 1.014 / 1.013 / 1.036. Cause: the stars put light 2.5-4 rows from the
+  centre (the wide red wing, the blue shoulder) that the old PSF did not have, and the fit now
+  counts it. All products against the saved ones (all changes together): bright PRISM +1.5 %,
+  G395M +2.1 % (median), so the PSF is most of this rerun's flux change. Open (user): whether
+  jwst's flux calibration counts all the light through the shutter (then S's fluxes are right)
+  or was set with a narrower extraction (then part of the 2 % is counted twice).
+- **Second round, everything from S (2026-11-03, user-approved).** The aim was to close the loop.
+  S's shape was fitted freely, but its star selection, variance floors, pixel masks and start
+  came from fits with the old table. In this round:
+  - every star was refitted with S (floor and mask from S, the core width free on S's core);
+  - the stars were selected again with the same cuts;
+  - the smooth joint fit was run per detector on all stars, starting from S's own spline
+    coefficients, giving table S2.
+
+  Outputs: `scratch/claude/psf_cal_s2/` (scripts in `scripts/`, `s2_compare.log`,
+  `psf_table_wing3_after_S2.json`, figures `psf_stack_tables_S2.png`,
+  `psf_parameters_S2.png`). Runtime: star fits 5 min (6 processes), smooth fits 9 min each,
+  stack test 3 min.
+  - Masks: unchanged. Of 7.7 million pixels in the star and range fits, the used-pixel counts
+    change by 285 in all, under 0.01 %. The 5-sigma clip on the floored variances removes
+    almost nothing with either table.
+  - Selection, as clean star-ranges:
+    - NRS1 641 to 609: 40 left (19 as star-wide width outliers, 13 as range outliers, 6 edge,
+      1 S/N, 1 width at its bound) and 8 entered.
+    - NRS2 524 to 513: 32 left (22 outliers, 4 range outliers, 5 edge, 1 S/N) and 21 entered
+      (19 former edge star-ranges, the edge test now reading the S fit's centre).
+
+    Why the outliers change: the width is now the core of S with S's wing and shoulder held, so
+    on NRS2 at 1.0-1.5 um the population's spread grows (MAD 0.045 against 0.023 rows) about a
+    lower median (0.310 against 0.376). Stars at both ends become outliers (cores 0.15-0.23 or
+    0.45-0.48 rows). Seven former outliers are back, among them the two widest (0.85 and
+    0.95 rows before). The bright subset the smooth fit uses barely moves: 269 star-ranges
+    from 50 stars on NRS1 (49 before), 238 from 58 on NRS2 (the same).
+  - How far S2 is from S: on NRS1 the two coincide, with every node value within its formal
+    error or a few hundredths of a row. The largest profile difference (PSF before shutter and
+    pixel, % of peak) is 0.16-0.61 % at 1.0-4.1 um and 1.06 % at both ends, where the data stop.
+    On NRS2 the share between wing and shoulder moves at 1.5-3 um: at 2.1 um the wing share goes
+    from 0.29 to 0.34 and the shoulder width from 1.08 to 1.42 rows; at 3.0 um the wing width
+    goes from 1.28 to 1.14 rows. These moves are many times the formal errors. The profile
+    differs by 1.1-2.2 % of peak (largest at 2.0-3.3 um).
+  - Free-centre stack test on the new selection (S2 / S / J, largest |median residual|, % of
+    peak):
+
+    | Detector | 0.7-1.0 | 1.0-1.5 | 1.5-2.0 | 2.0-2.6 | 2.6-3.3 | 3.3-4.1 | 4.1-5.3 um |
+    |---|---|---|---|---|---|---|---|
+    | NRS1 | 0.27 / 0.44 / 0.45 | 0.77 / 0.81 / 0.71 | 0.47 / 0.48 / 0.45 | 0.61 / 0.58 / 0.48 | 0.62 / 0.66 / 0.69 | 0.81 / 0.98 / 1.11 | 0.86 / 0.97 / 1.64 |
+    | NRS2 | 0.30 / 0.32 / 0.48 | 0.42 / 0.42 / 1.10 | 0.63 / 0.52 / 0.93 | 0.97 / 0.70 / 0.81 | 0.55 / 0.96 / 0.99 | 0.83 / 1.27 / 1.38 | 1.37 / 1.48 / 1.75 |
+
+    S2 is under 1 % in 13 of 14 ranges and S in 12. S2 is better at NRS2 2.6-4.1 um and worse
+    at NRS2 1.5-2.6 um. In the stack plots the residual curves of the two lie on top of each
+    other within their uncertainty bands.
+  - Verdict:
+    - NRS1: S is the self-consistent answer; the old floors, masks and selection did not bias
+      it.
+    - NRS2: the profile is fixed to about 1 % of peak in the data, but at 1.5-3 um the split
+      between wing and shoulder is not. It moved by up to 2 % of peak in the PSF itself when
+      the selection and floors changed. That is the size of the half-to-half differences of
+      the held-out test, and the stack test does not prefer one split overall.
+
+    S does not need replacing for accuracy. S2 is the self-consistent table and meets the 1 %
+    goal in one more range; adopting it is the user's call. A third round would show whether
+    NRS2 settles or keeps trading wing against shoulder.
+- **What the PSF is for, and the order of work (user, 2026-11-03).** The split between core,
+  wing and shoulder does not matter; what matters is a smooth description of the profile with
+  wavelength that brings the residuals down, because the PSF is only used to convolve source
+  profiles. What does matter is the part that acts before the shutter and the shutter edge
+  itself, which set the clipping and the throughput normalisation. Neither S2 nor a third round
+  is adopted. The bar-shadow check (V7, section 3.2) found the model's shutter opening too wide
+  in the red, so the next round is, in order: (1) the edge position a smooth function of
+  wavelength, fitted with the after-shutter blur to the measured bar-shadow tables per
+  disperser; (2) the stars refitted with that edge, keeping the three-component form; (3) the
+  star stack, the bar shadow, the edge stars and the p1 flux change checked together; (4) a
+  free-form PSF basis (fixed Gaussians after the shutter with smooth amplitudes) only if
+  residuals beyond 1 % remain where stars are plentiful.
+- **Shutter edge: option (d) chosen (user, 2026-11-03).** The measured edge (fitted to the bar
+  shadow; built on `claude/psf-table` 7eb4ead8) fixes uniform light but makes edge stars 2.4 %
+  worse in median chi2, so uniform light and point sources disagree about the edge. The
+  shipped hard edge stays the default. Next: a geometric edge with a smooth transmission
+  across the shutter (light diffracted at the edges lost from the beam), fitted to the bar
+  shadow, checked against the edge stars, the centred stars and the p1 fluxes, speed measured
+  first.
+- **Smooth transmission T adopted as the default shutter model (user, 2026-11-03).** Built on
+  `claude/psf-table` a0457e16: bar-shadow misfit as low as the measured edge (PRISM 0.010,
+  G395M 0.012), edge stars neutral (median chi2/dof 1.004 of the shipped model), centred stack
+  unchanged, point-source transmission against position close to jwst's point path loss above
+  3 um, p1 median fluxes 0.2-0.5 % lower, fits 22-26 % slower. Before shipping: T capped at 1
+  (it exceeded 1 by up to 5 % on G395M near 5.3 um), the measured-edge form removed,
+  `FIT_VERSION` 5; then p1 stage 3 rerun. G140H / G235H / G395H use the M grating's
+  measurements with the same filter (user, 2026-11-03). The grating bar-shadow tables the
+  default now depends on were settled on 2026-10-30 (user, in the MB session); open: their
+  held-out check on the current (b0c08026) tables.
+- **The measured shutter edge (2026-11-03; tried, not adopted, removed).** A narrower opening
+  per disperser and wavelength (half-width 0.49 slit units in the blue to 0.45 at 5.3 um, a
+  shift, a larger after-shutter share), fitted to the bar shadow, matched uniform light (median
+  misfit 0.010 / 0.018 / 0.012 / 0.013, PRISM / G140M / G235M / G395M) but made the images of
+  edge stars worse (median chi2/dof 1.015 of the hard edge's, 1.051 with the half-width alone),
+  and the stars refitted with it (table SE) changed little. Uniform light and point sources
+  disagreed about where the edge is. The edge, its file and its code were removed when the
+  transmission below was adopted (outputs in `scratch/claude/psf_cal_edge/`).
+- **The shutter model: the geometric shutter with a smooth transmission T (adopted 2026-11-03,
+  user; `FIT_VERSION` 5).** Outputs: `scratch/claude/psf_cal_T/` (scripts in `scripts/`).
+  - **Model** (`profile_fit.SHUTTER`, `shutter_at`; file `data/nirspec_shutter_transmission.json`
+    with its provenance; header card `PFSHUT` names its version next to `PFVER`). The shutter is
+    geometric, +-0.50 slit units about its centre moved by a small fitted `shift`. Inside it
+    light is transmitted with T(x) = 1 - (1 - tedge) x^8, x the position over the half-width:
+    1 at the centre, flat over the middle, falling to `tedge` at the edges and never above 1.
+    Half of every PSF component's width^2 acts before the shutter and half after
+    (`AFTER_SHARE`, the split S was fitted with; the first version fitted this share as `after`,
+    see below). The image is [(galaxy x PSF before) x T, within the open
+    shutters] convolved with the PSF after, then pixel-integrated. The point transmission in
+    the throughput normalisation (`transmission`, hence `throughput`, `main_shutter_factor`,
+    `boxcar_factor`) includes T, so the jwst point path loss and the model stay consistent.
+    Physically: light diffracted at the shutter edges leaves the spectrograph beam and is lost.
+    Uniform light sees that loss as a narrower opening; a point source feels it mainly in its
+    total, which the normalisation carries. G140H, G235H and G395H use the M grating with the
+    same filter (decided, user 2026-11-03).
+  - **Fit, first version** (`psf_calibration.fit_shutter`, `shutter_table`; the shipped refit with
+    the share held at 0.5 is below): `shift`, `after` and `tedge`, each
+    a natural cubic spline in ln(lambda) (7 nodes for the PRISM, 4 per grating), fitted to both
+    bar-shadow tables at once (one open shutter and the bar between two) with the shipped PSF S,
+    soft-L1 residuals and a gentle curvature penalty. No parameter is at a bound.
+    - PRISM: `tedge` falls from 0.85 (0.6 um) through 0.62 (2.1 um) to 0.01 (5.3 um); `after`
+      0.45-0.55; `shift` within +-0.005.
+    - G395M: `tedge` 0.47 (2.9 um) to 0.03 (5.3 um); `after` 0.44-0.57.
+    - G140M: `tedge` 0.80-0.75, `after` 0.56-0.50, `shift` -0.013 to -0.016.
+    - G235M: `tedge` 0.70-0.61, `after` 0.49-0.44, `shift` -0.007 to -0.009.
+  - **Why x^8, capped.** T may not exceed 1. Uncapped, a quadratic + quartic form fitted the bar
+    shadow best but rose up to 5 % above 1 off-centre (G395M). Capped, in that form the quadratic
+    went to zero at every node; with a free mix of x^4 and x^8 (T monotone, at most 1) the fit took
+    x^8 alone at every node of every disperser, so the shape parameter was dropped. Per column,
+    x^12 fits slightly better below 3.5 um but reaches T(1) = 0 from 4 um and fits worse there.
+  - **What the cap costs** (PSF S throughout; same tests and stars as the uncapped round):
+
+    | Data set | Hard edge (`FIT_VERSION` 4) | T uncapped (x^2 + x^4) | T capped (x^8, `FIT_VERSION` 5) |
+    |---|---|---|---|
+    | Bar shadow, median misfit, PRISM / G140M / G235M / G395M | 0.061 / 0.035 / 0.043 / 0.082 | 0.0097 / 0.0177 / 0.0121 / 0.0124 | 0.0105 / 0.0183 / 0.0129 / 0.0133 |
+    | Edge stars, median chi2/dof against the hard edge (312 star-ranges) | 1 | 1.004 (45 % better) | 1.018 (38 % better; per range and side 0.95-1.09) |
+    | p1 flux against the hard edge, median over sources | — | 0.2-0.4 % lower (PRISM), 0.5 % (G395M) | 0.1-0.4 % lower (PRISM), 0.1-0.7 % (G395M) |
+    | p1 flux, integrated per source (20 PRISM, 4 G395M) | — | 0.983-1.014 | 0.984-1.014 |
+    | Fit time, PRISM / G395M source | 1.34 / 4.07 s | 1.26x / 1.22x | 1.76 / 5.24 s (1.31x / 1.29x) |
+
+    - The 50 % half-width of the open region and the floor under the bar follow the measured
+      ones as closely as uncapped (`figures/v7_T4_{edges,profiles}.png`).
+    - Edge stars: the cap costs 1.4 % in median chi2/dof, mostly at 1-3.3 um toward -y (up to
+      1.09 on NRS2 1.5-2.0 um); at the red end the capped and uncapped models agree
+      (`figures/t4_edge_stars.png`). With the uncapped T the stars were as well fitted as with
+      the hard edge; capped they are about where the measured edge left them.
+    - Fluxes: the off-centre sources move as before (879604 -1.4 %, 632554 -1.6 %, 919995
+      +1.4 % integrated; `figures/t4_flux_change_p1.png`). Centred stars need no PSF refit:
+      the after-shutter share stays near the 0.5 S was fitted with.
+    - The extra time is the eighth moment of the truncated normal (the recursion to n = 8 in
+      `profile_fit._window_kernel`, numba); a Gaussian wider than the half-width takes 16-point
+      Gauss-Legendre instead, where the recursion loses precision.
+  - **The split fixed at 0.5 (user, 2026-11-03; the shipped model, `geomT-2026-11-03b`).** What
+    the edge stars dislike (`figures/t5_worst_edge_stars.png`): the worst cases are stars whose
+    centre is only 0.4-0.7 rows from the shutter edge, so the peak sits on the edge; the capped
+    T dims the light just inside the edge more than the data show (one model peak at 0.8 where
+    the star reaches 1.0, residuals of 2-4 % of the peak at the edge), up to 35-47 % worse chi2
+    for those few. The bar-shadow fit had moved the after-shutter share to 0.44-0.57, away from
+    the 0.5 PSF S was fitted with. With the share held at 0.5 (`profile_fit.AFTER_SHARE`; only
+    `shift` and `tedge` fitted; `scripts/fit_T5.py`, `t5_stars.py`): bar shadow 0.0109 / 0.0184 /
+    0.0129 / 0.0137, edge stars median 1.007 (better than the hard edge in 41 % of star-ranges;
+    left: about 3 % worse toward -y at 2.6-3.3 um on both detectors, and 1.08 on NRS2 4.1-5.3 um
+    -y from 5 star-ranges). `tedge`: PRISM 0.85 to 0.02, G140M 0.81-0.75, G235M 0.70-0.60, G395M
+    0.45-0.04. The share is no longer a parameter of the shutter file or of `fit_shutter`.
+    Possible reason the edge stars and uniform light still differ: the light lost to diffraction
+    at an edge may depend on how the shutter is lit (filled, or one bright spot at the edge),
+    which one T for every source cannot carry. Not tested.
+  - **jwst's path-loss reference** (`pathloss_0010`, MOS1x1; `figures/pathloss_check.png`, made
+    with the uncapped T): its point loss against position, PS(y)/PS(0), falls more steeply
+    toward the edges than the hard edge (0.67-0.73 at y = +-0.40 against 0.82-0.91). T moves the
+    model toward it at every wavelength and matches it within 0.04 at 4-5 um; in the blue jwst's
+    PS stays steeper than T (0.70 against 0.86 at 0.9 um).
+  - **Code.** `ProfileModel(shutter=...)` (None: `SHUTTER`) and `for_placement` take a shutter
+    model in `load_shutter`'s layout; the models `profile_product` and `mbkg_extraction` derive
+    from the chain's model carry its `psf_tables` and `shutter`. The fitted pixels
+    (`fit_pixel_masks`, `_region`), `nod_scan.delta_grid` and the row selections in `nod_scan`,
+    `profile_contam`, `trace_overlap` and `slitlet_neighbours` keep the nominal +-0.50, which
+    contains the open area whatever the shift. `psf_calibration` takes `--shutter` for its star
+    fits.
+  - **p1 stage 3 rerun with `FIT_VERSION` 5 (2026-11-03).** Stages 2a / 2b from the morning's
+    full rerun, stage 3 with `--overwrite -p 12` (`run_stage3_shutter5.log`): 681 products,
+    no failures; stage 3 took 65 min against 62 with the hard edge. Against the morning's
+    products (`extraction-v2/p1_before_shutter`, `FIT_VERSION` 4, same frames;
+    `extraction-v2/shutter_flux_fig.py`, figure `shutter_flux_change_p1.png`), integrated new/old
+    over pixels at S/N > 5: PRISM 62 sources median 0.998 (16-84 % 0.995-1.000), off-centre
+    (0.25 slit units or more from the shutter centre, 28) 0.984-1.009; G395M 25 sources median
+    0.997, off-centre 0.937-1.066. Per wavelength the median is -0.1 to -0.5 % (PRISM, most at
+    the red end) and -0.4 to -0.7 % (G395M). The largest moves are all sources whose fitted
+    centre is near or past the open edge (|offset| 0.29-0.57: G395M 920048 +6.6 %, 922891
+    +6.3 %, 880165 -6.3 %; PRISM 925660 and 925403 -1.5 %).
+  - **Check 1: the same star at different positions in its shutter (2026-11-03, PRISM).** A point
+    source at its planned position gets jwst's point path loss whatever the shutter model (the
+    model's own transmission cancels in `throughput`), so stars cannot choose between shutter
+    models; they test the normalisation both share. 18 stars of program 12497 seen in more than
+    one MSA configuration (c4_p1..p5; IDs 10034, 10043, 10050 differ in spectral shape between
+    visits and are not the same object), each visit fitted as the extraction does
+    (`extraction-v2/star_repeat.py`, figure `star_repeat_per_star.png`). Near-centre visits agree
+    to 1-4 % (4210, five visits). Visits near an edge come out brighter, most in the blue: 3982 at
+    -0.386 against +0.018 is +80 % at 0.7-1.5 um, +62 % at 1.5-2.5, +24 % at 2.5-3.5; 6826 (+0.373
+    against -0.301) +73 % to -7 %; 3505 (-0.344 against -0.155) +28-31 %; 5209, 3018 +10-20 %.
+    Others go the other way (4887 at +0.229: -17 % at all wavelengths). The hard edge gives the
+    same. In every edge visit the fitted centre sits 0.05-0.09 slit units further out than
+    planned (3982: -0.477 against -0.386), so the fit corrects for more clipping than the planned
+    position implies. Not yet decided which is wrong: the fitted position of stars near the edge,
+    or jwst's point path loss there. Holding the star at its planned position is not a clean test
+    (near-centre visits then scatter by +-25 %). Next: the light in the shutter measured without
+    a model, between visits of one star on one detector (3982, NRS1 in c4_p3 and c4_p5); the
+    NIRSpec path-loss calibration programs with stars at deliberate offsets in the shutter
+    (1493, 4465, 9278) would settle it.
+- **A diffraction model of the PSF and the bars together (2026-11-03, in progress; user: keep going
+  until a model describes the combined PSF + bars for the forward model).** Scratch prototype in
+  `scratch/claude/extraction-v2/edge/` (`fourier1d.py`, `optics.py`); nothing in the pipeline yet.
+  - Why. Measured without a model (`raw_ratio.py`: the light of a repeated star in a fixed window,
+    path loss removed), stars near an edge keep more light than either jwst's point path loss or the
+    shipped model predict (3982 at -0.386: 0.91 of its central visit at 0.7-1 um; jwst 0.76, shipped
+    model at the fitted position 0.57). Their light really peaks where the fit puts them
+    (`edge_profiles.png`; chi2 10-35 x lower than at the planned position), and over 35 visits the
+    fitted position is 1.16 x SRCYPOS (rms 0.013 about 1.15 x, 0.036 without): SRCYPOS is in shutter
+    pitches, the model's slit position in open heights (1 pitch = 1.15). jwst's MOS1x3 path-loss
+    table's y axis also runs in pitches (-1.5..1.5). A constant pre/post split cannot satisfy the
+    bar shadow, the edge-star shapes and their transmitted light at once (`explore_split.py`):
+    the telescope's own image is much narrower than the observed PSF in the blue and as wide by
+    3 um, and light diffracted at the shutter edges is partly lost at the spectrograph's pupil stop
+    and partly spread under the bars, so a filled shutter and a point source lose light differently.
+  - Model. One-dimensional Fraunhofer optics along the slit: the telescope's field at the MSA (the
+    pupil's Fourier transform at each wavelength, D = 6.5 m), times the open shutters, through a
+    pupil stop rho x the telescope pupil, imaged on the detector with a Gaussian blur, integrated
+    over a row; uniform light is the incoherent sum over sources. Fitted to the bar-shadow tables
+    with three numbers shared by every wavelength: PRISM rho 0.976, blur 0.031" (-0.003"/um), no
+    obscuration, median misfit 0.015 (`fit_fourier_bs.py`, `fourier_bs_prism.png`); G395M rho 1.000,
+    blur 0.031", misfit 0.016. A round pupil fits 0.019 (rho 0.96). The centred point image from the
+    same numbers matches the measured star PSF's core at 1.5-4.5 um with nothing fitted to stars
+    (`fourier_vs_psf.png`). The rest of a star's PSF (blue width and wings: the telescope's
+    wavefront error and jitter; the one-sided shoulder) is an empirical kernel applied on the sky
+    before the shutter: placed on the detector instead it raises the bar-shadow misfit to 0.022-0.027,
+    placed before the shutter it leaves uniform light untouched. One kernel per detector, fitted to
+    the centred PSF S (`fit_kemp_det.py`, within 0.2-1.6 % of its peak), then corrected from the
+    star stack (`fit_kemp_iter.py`).
+  - Engine (`optics.py`). Tables of point images per open-shutter pattern (wavelength x source
+    position x detector position), a Gaussian galaxy as a Gauss-Hermite sum over them;
+    `OpticsModel` is `ProfileModel` with `image` and `transmission` from the tables. Throughput:
+    jwst's point path loss at the exposure's position, its own position dependence divided out
+    with its MOS1x3 table, our transmission at the centre in the denominator (`norm='model_y'`): the
+    absolute level and the dispersion-direction loss stay jwst's, the slit-direction loss is the
+    model's. Fit time about the shipped model's.
+  - Results so far.
+    - Check 1 (the same star at different positions): rms of ln(flux / central visit), bands
+      0.7-1 / 1-1.5 / 1.5-2.5 / 2.5-3.5 / 3.5-5 um, shipped 28 / 25 / 27 / 15 / 17 %, near-edge visits
+      38 / 32 / 34 / 15 / 20 %; optics 12 / 9 / 19 / 11 / 17 %, near-edge 7 / 10 / 24 / 9 / 21 %.
+      Fitted centres 1.144 x SRCYPOS, rms 0.013 about 1.15 x. 4461 (77 % at 1.5-2.5 um under every
+      model) and 2828 (two detectors, 43 % in the blue) are not position effects.
+    - The red-end scatter follows the position across the shutter (SRCXPOS): stars far off-centre
+      in x come out relatively bright, so jwst's dispersion-direction loss also falls too steeply.
+      The same diffraction model across the 0.20" width (SRCXPOS in 0.27" pitches) over-corrects
+      more (`norm='model_xy'`: 3.5-5 um 22 % against 17 %). Kept jwst's for now; the path-loss
+      calibration programs are the test.
+    - Star stack, free centres, all clean stars: per-detector kernel from S, within 1 % in 9 of 14
+      ranges (shipped PSF S 12; median worst residual 0.94 against 0.68 %); per star-range chi2/dof
+      the same as the shipped model (median ratio 1.001 over 1,127 star-ranges, better in 47 %).
+      After one correction of the kernels from the stack residuals (`fit_kemp_iter.py`,
+      `kemp_slot_DET_it1.json`): 13 of 14 ranges within 1 %. Check 1 with those kernels:
+      12 / 8 / 9 / 11 / 16 % (4461 excluded).
+    - p1 PRISM fluxes (40 brightest clean sources, `p1_optics_flux.py`): centred compact sources come
+      out 0.995 / 1.001 / 1.023 / 1.033 / 1.039 x the shipped model in the five bands. The light of
+      each exposure's own source is the same in both models; the difference is how much of a
+      source's light lands in the other nods' rows, which the nod subtraction removes from the
+      trace. Light spread evenly across the slitlet subtracts like background, so nod differences
+      cannot measure it, and its amount sets the absolute flux (`debug_design.py`).
+    - The wide light measured directly (`mb_star_stack.py`): 232 clean stars, single frames with the
+      master background subtracted, profiles stacked about the fitted trace. Share of a star's light
+      beyond 0.8 slit units of its trace, five bands: data 0.8 / 0.9 / 1.1 / 1.5 / 2.2 %; shipped
+      model 0.4 / 0.3 / 0.05 / 0.2 / 0.6 %; slot-pupil optics 0.7 / 1.1 / 1.9 / 2.8 / 3.7 %. The
+      shipped model has almost no wide wing; the slot pupil has twice the real one in the red. The
+      excess is diffraction (the hard-edged 1-D pupil's 1/y^2 wing), not the kernel
+      (`wing_budget.py`). The faint p1 galaxies are too noisy for this test, and comparing the
+      nodded and master-background fluxes at a fixed shape does not separate the models (both move
+      together, within 1 %).
+    - Changed model (in progress). Telescope pupil amplitude (1 - u^2)^alpha across the slit
+      (alpha 0 the slot; 0.5 the chord of a round pupil seen through a narrow strip). The bar shadow
+      prefers alpha 0 (misfit 0.0137; 0.25: 0.0161; 0.5: 0.0193); at alpha 0.25 (rho 0.996, blur
+      0.034" - 0.0026"/um) the diffraction's wide light falls below the data at every wavelength, so
+      a non-negative kernel can supply the rest. The kernel is now a free table over source offset
+      (31 nodes, -2..2 slit units), fitted linearly (`fit_kernel_linear.py`): the image is linear
+      in the kernel, so per star R = model pixels per unit kernel weight at each offset (nod
+      differences and master-background single frames, the fitted spectrum and shape held), normal
+      equations summed per detector and band, a non-negative solve with a penalty on the wing's
+      second differences; three iterations with the stars refitted. The penalty and the symmetry
+      were chosen by fitting half the stars and scoring the other half (`klin_cv.py`): the wing
+      smoothed, the core free, not symmetric (forcing symmetry is clearly worse on held-out stars).
+      Fitted with the production centre law, the kernel took up the law's centring errors as a
+      shoulder one row out and the free-centre star stack failed it (5 of 14 ranges within 1 %).
+      So the fit now uses the stack test's own state (`fit_kernel_ranges.py`): every clean star
+      in every range where it is clean, the range fitted by `psf_calibration.RangeFit` with the
+      optics model (centre and drift free per range, an offset per exposure, no law, the S/N
+      floor), R built at that state; one kernel per detector and range, linear in ln(lambda)
+      between range centres. Two iterations converge (integrals 1.000 +- 0.006).
+    - Result (`klin_r2_DET.json`; alpha 0.25, rho 0.996, blur 0.034" - 0.0026"/um). The kernel: a
+      narrow core, a shoulder at 0.2-0.3 slit units (about one detector row; stronger on the + side),
+      and a wide wing (2-5 % of the light beyond 0.3 slit units, 0.4-0.9 % beyond 0.8).
+      - Star stack, free centres: 12 of 14 ranges within 1 % (median worst residual 0.77 %; shipped
+        12 of 14, 0.68 %); per star-range chi2/dof equal to the shipped model's (median ratio 1.000
+        over 1,127 star-ranges, better in 50 %; 0.993-0.997 at 2.6-5.3 um).
+      - Single frames (master background subtracted): mean wing residual within 0.04 % of the
+        peak in every band (shipped +0.05 to +0.16 %).
+      - Check 1: 12 / 8 / 8 / 12 / 15 % (shipped 28 / 25 / 22 / 15 / 17 %); edge visits
+        5 / 10 / 10 / 11 / 19 % (shipped 38 / 32 / 28 / 15 / 20 %), median edge-visit bias
+        +3 / -1 / +1 / -4 / -10 % (shipped +25 / +10 / +21 / +13 / -18 %). The red end's deficit is
+        the dispersion-direction loss (above), not this model.
+      - p1 PRISM, 40 brightest clean sources: centred compact sources 1.014 / 1.010 / 1.021 /
+        1.026 / 1.020 x the shipped flux (the wide light the shipped model lacks); near the edge
+        0.94 / 0.99 / 1.03 / 1.09 / 1.19; chi2/dof median 1.092 against 1.095, lower in 55 %.
+      - Engine fixes on the way: the tables now span +-5.5 slit units in source and detector
+        position (wide galaxies and long slitlets were cut at 2.8 / 3.0), and a wide galaxy is
+        summed over source positions at most 0.025 slit units apart (8 Gauss-Hermite nodes left
+        ripples at the bars: 925389, width 0.56, chi2/dof 1.31; now 1.098 against 1.101 shipped).
+    - New calibration stars (2026-11-03). NGC 2506 (program 1493, 10 PRISM visits, 3-shutter
+      nods) reduced in the scratch root: 317 clean stars no fit had seen, 79-162 per range,
+      95 / 79 at 4.1-5.3 um (21 / 17 before).
+      - Star stack, free centres, `klin_r2` on all 317: 12 of 14 ranges within 1 % (median worst
+        0.81 %, rms 0.29); shipped model on the same stars 10 of 14 (0.76 %); 4.1-5.3 um
+        0.83 / 0.73 % against 1.46 % on NRS2.
+      - Wide light (master-background single frames): the faintest third of either star set has a
+        negative wide share (-1 to -10 %), flat in distance: a master background a little too
+        high, not a wing. The brightest third agrees between the two sets at 0.7-3 um (1.0-1.2 %
+        of the light beyond 0.8 slit units). At 3-4 / 4-5.2 um the old set had S/N 16 / 5 and gave
+        1.6 / 2.5 %; NGC 2506's brightest third (S/N 95 / 52) gives 1.3 / 1.5 % (about 1.5 / 1.6 %
+        after the background bias seen in the fainter thirds). `klin_r2` predicts 1.5 / 2.2 %.
+      - Refit with the new stars (`klin_r4`: old stars + all NGC 2506, plain normals). Held-out
+        test first (old stars + NGC 2506 half A, scored on half B): 12 of 14 within 1 %, median
+        worst 0.73 % (`klin_r2` on the same stars 11 of 14, 0.80 %; shipped 12 of 14, 0.86 %);
+        4.1-5.3 um 0.62 / 0.51 % (`klin_r2` 0.93 / 0.82 %). A free master-background scale per
+        frame (`KLIN_SKY_NUISANCE`) scores the same on the stack but raises the red wing (2.5 %
+        beyond 0.8 at 4-5.2 um): a slowly falling wing and a background offset trade off across a
+        3-shutter slitlet, so it is not used. The red wide light stays too strong (2.1 % against
+        about 1.6 %): it is the diffraction's own (alpha 0.25), which the kernel, non-negative,
+        cannot remove.
+    - Program 4465 (one star stepped across its shutter). MPT "virtual" sources: negative source
+      IDs (the pipeline skips them as background) and the default planned position. The open
+      column is row 250, columns 1-171, in quadrants 3 and 4. Star A sits in quadrant 4 column 25;
+      the data place it at the shutter centre, near -0.33 pitch (5 configurations) and +0.34 to
+      +0.43 pitch, against the bar (5). In the scratch root its MSA file is rewritten
+      (`msa_rewrite_4465.py`, original kept as `.orig`): a 7-shutter slitlet per star (all 7 are
+      open), a positive ID per configuration, the planned y from the measured centroid. Caveat:
+      the rewritten slitlet moves with the nod; the pipeline differences nods on the common
+      detector frame, so the differences are right. Star B (86-87 shutters along) is 17 x
+      fainter and too faint to use. Pipeline fix found on the way: the profile fit's row height
+      was NaN on a slit's end rows, which slitlets longer than three shutters reach (every fit
+      failed); fixed with a test (commit f5edf189). Fits per range, centre free (`test_4465.py`,
+      `test_4465_r2.png`): centred, the two models are equal (chi2/dof ratio 0.98); against the
+      bar the optics model is better (median 0.75; at 2-3.3 um 0.87 -> 0.42, 1.34 -> 0.72) but
+      worse at 0.7-1 um, a +-4 % residual pair at the core; at -0.33 pitch the same pattern
+      (median 1.14). The blue core of an off-centre star is the open shape problem. Fluxes need
+      each configuration's position across the shutter (dispersion direction), which the
+      program steps too (peak rate varies 3x at the same y); not measured yet.
+    - Converged kernel on all stars (`klin_r5`, one more linearisation of `klin_r4`; integrals
+      within 0.2 %). Star stack: NGC 2506 14 of 14 within 1 % (median worst 0.59 %), the original
+      stars 6 of 14 (1.03 %, up to 1.75 % at 1.0-1.5 um; `klin_r2`, fitted on them alone, 12 of
+      14). The original stars' residual has data above the model at the centre and below it one
+      row out: their cores are sharper. The fitted core width S per observation (`core_by_obs.py`)
+      spreads about +-3 % between visits at 0.7-2 um and NGC 2506 is about 4 % broader than the
+      original visits (NRS1 0.7-1 um: 0.365-0.386 against 0.347-0.368 rows); at 4.1-5.3 um every
+      visit has 0.65. Pointing jitter or small wavefront changes between visits, most visible in
+      the narrow blue core. Open decision (to the user): one kernel for all, a kernel from the
+      sharper visits with each source's free width taking up the blur of the others, or a kernel
+      per observation. Fluxes do not depend on it: check 1 with `klin_r5` is 11.6 / 8.3 / 8.1 /
+      12.0 / 15.3 % (edge visits 5.7 / 10.3 / 10.0 / 10.9 / 18.7 %), as `klin_r2`.
+    - Edge stars (`test_edge.py`, 142 NGC 2506 stars with |centre| >= 0.3, `klin_r4`): optics /
+      shipped chi2/dof per range at the bar 0.88 / 0.71 / 0.83 / 0.83 / 0.89 / 0.67 / 0.52, better in
+      61-96 %; at peak S/N >= 80 0.50 / 0.59 / 0.62 / 0.66 / 0.73 / 0.87 (78-89 %). The blue misfit
+      of 4465's star is not seen here: it belongs to that program's setup.
+    - A softer spectrograph stop (amplitude (1 - (f / rho f_max)^2)^beta) tried for the uniform bar
+      shadow and the red wide light (`fit_fourier_ab.py`). Fitted to the bar shadow with the blur
+      free, alpha 0.25 / beta 1 gives misfit 0.0120 (hard stop 0.0161) and little wide diffraction,
+      but its blur is 0.044" growing to the red (0.030" before); the kernel, before the shutter,
+      cannot sharpen it, and the held-out star stack fails (4 of 14 within 1 %, up to 4.9 %).
+      With the blur held at the stars' value a softer stop only worsens the bar shadow (0.0162 ->
+      0.0195). So the hard stop stays, and the tension is the blur itself: the uniform bar shadow
+      wants about 0.044", point-source cores about 0.03" in the red (perhaps smoothing within the
+      empirical bar-shadow tables). With the blur written as fitted (s0 + s1 (lam - 3)), the
+      diffraction alone puts 1.52 % of a centred star's light beyond 0.8 slit units at 4.6 um,
+      about what the bright stars show; the kernel's 0.3 % wing on top makes the model's 2.1 %:
+      compact-source fluxes about 0.5 % high at 4-5 um. Every kernel now carries its diffraction
+      numbers beside it (`<prefix>_diffraction.json`, from the normals; `optics.diffraction_params`),
+      and the table cache is keyed by the kernel file's content (a review hazard).
+    - Review findings (independent review of the prototype, 2026-11-03). No double counting in
+      the throughput normalisation. The shipped model in check 1 ran with unscaled positions;
+      with 1.15 x SRCYPOS it scores 22.8 / 19.3 / 13.5 / 11.7 / 22.3 % against the optics model's
+      11.5 / 8.3 / 8.1 / 12.1 / 15.2 %. Hazards for integration: the table cache keyed by the
+      kernel's file path (now keyed by content), `for_placement`, where `scale_positions` is
+      applied, long slitlets (the profile fit's end-row bug now fixed), and the PL_REF / MOS1x1
+      normalisation.
+    - The PSF core broadens with brightness, not with the visit (2026-11-03). Decision (user): a
+      kernel for the sharper core with each source's free width taking up the rest. Within every
+      visit a brighter star has a broader core: the shipped PSF's fitted core width grows 0.026
+      rows per dex of peak S/N at 0.7-2.6 um on NRS1 (0.054 at 0.7-1 um on NRS2), 4-5 sigma, and
+      the visit means move together once that trend is removed (`core_vs_snr.py`). NGC 2506's
+      stars are 5-8 x brighter than the original ones, which is most of the "4 % broader". The
+      optics model's free source width shows the same with the wing in the model
+      (`w_vs_snr.py`): at 0.7-2.6 um stars above peak S/N 63 need 0.02-0.03 slit units, stars
+      below none; no trend in the red. Charge spreading in bright pixels fits that. Galaxies are
+      faint, so the kernel is the faint stars' core.
+      - The free width could not move at first: a star needs 0.01-0.03 slit units, under two steps
+        of the tables' source grid, and the 8 Gauss-Hermite nodes over the linearly interpolated
+        table give a non-smooth function of the width. Compact sources (width <= 0.06) are now
+        summed exactly over the interpolated table (a triangle convolved with a Gaussian,
+        `_compact_weights`; equal to a brute-force sum within 1e-5).
+      - Kernels tried, all scored with each star's width free (`optics_table_test_w.py`): from
+        the sharper visits below 2.6 um (`klin_s1`): original stars 10 of 14 within 1 %; from
+        stars below S/N 63 alone (`klin_f1`): loses the wide wing (nothing beyond 0.8 slit units
+        at 2.3 um), not used; all stars with each star at peak S/N >= 63 fitted with its own width
+        carried into its normal equations (`fit_kernel_ranges.py`, `KLIN_FREE_W_SNR=63`; the
+        width convolves the kernel, `freew.gauss_matrix`), two linearisations from `klin_s1`
+        (`klin_w2`, integrals within 0.3 %, 0.7 % of the light beyond 0.8 slit units in the
+        blue).
+      - `klin_w2`: NGC 2506 14 of 14 ranges within 1 % (median worst 0.44 %; `klin_r5` 0.59 %;
+        shipped 10 of 14, 0.76 %); the original stars 12 of 14 (0.75 %; `klin_r5` 6 of 14,
+        1.03 %; shipped, fitted on them, 12 of 14, 0.68 %). The two misses (NRS1 1.0-1.5 um
+        1.5 %, 4.1-5.3 um 1.2 % with 21 stars) are single-bin dips the shipped model shares,
+        absent from the larger NGC 2506 set. The shipped model's NRS2 red shoulder (-1.5 % at
+        +1.8 rows, 3.3-5.3 um) is gone (`w2_stacks_NRS1.png`, `w2_stacks_NRS2.png`).
+    - The path-loss normalisation and partial slitlets (review hazard). jwst uses MOS1x1 for a
+      slitlet with both neighbours closed and MOS1x3 otherwise, at y -+ 1 when the source sits in
+      an end shutter; both tables repeat the same profile in every shutter, so jwst's point path
+      loss has no loss to closed neighbours (MOS1x3 at y - 1 / y 0 = 1.0000, MOS1x1 / MOS1x3 at
+      the centre = 1.0000; `endshutter_loss.py`). The model takes that loss once, through each
+      exposure's own open shutters (0.7-1.2 % for an end shutter, 1.8-3.4 % for a single one):
+      nothing is counted twice, no change.
+    - G395M. The PRISM diffraction numbers fit the G395M bar-shadow tables with misfit 0.017
+      (PRISM 0.016); refitted to G395M, no better (`barshadow_g395m.py`). The same 6642 stars in
+      G395M (`test_g395m.py`) are too faint for the kernel: 4-7 stars per range at peak S/N >= 8;
+      chi2 equal to the shipped model's (median ratio 0.98-1.00), stacks within their noise. (The
+      gratings first kept FIT_VERSION 5; since 2026-11-04 they take the same model, below.)
+    - Pipeline (FIT_VERSION 6, approved by the user 2026-11-03). `nirspec/optics.py`: the engine,
+      `Optics` per disperser and detector, tables cached under `$CAMPFIRE_ROOT/cache/optics`
+      (keyed by the model's numbers and the kernel, built under a lock file, memory-mapped),
+      `jwst_point_y_ratio` from the path-loss file the cal file names. `ProfileModel` takes it for
+      every exposure whose disperser has a model unless PSF or shutter tables are given
+      (`model_optics`; `for_placement` too), so the fit, contamination placement, the
+      master-background extraction and the joint pass all use it. PRISM positions in slit units
+      at load (`source_position`, `Exposure.src_y_jwst`, `Exposure.pl_ref`). Header card
+      `PFOPTIC`. The model file `data/nirspec_optics.json` is written from the scratch kernel by
+      `ship_optics.py`; the port reproduces the prototype's tables exactly (`check_port.py`).
+      Tests: `test_nirspec_optics.py`; the suite runs the PSF tables unless a test asks for the
+      model (`tests/conftest.py`), so no test builds real tables.
+      - Check 1 with `klin_w2`: 11.5 / 8.4 / 7.6 / 12.0 / 15.5 % (edge visits 5.2 / 10.5 / 9.3 /
+        11.0 / 18.9 %), as `klin_r5`: the kernel choice moves core shapes, not fluxes.
+      - The pipeline on real data (`p1_pipeline_v6.py`, the 20 brightest p1 PRISM sources, read
+        only, production fit): the pipeline's model equals the prototype's to 2e-7 on every
+        exposure (image, throughput, design matrix; the shipped file's rounding); fitted centres
+        agree within 0.003, which is the optimiser's stopping point, not the model. FIT_VERSION 6
+        over 5, median per band 0.6-1 / 1-1.8 / 1.8-3 / 3-4.2 / 4.2-5.3 um: centred sources
+        (|SRCYPOS| < 0.2, 12) 1.006 / 1.011 / 1.023 / 1.024 / 1.016; off centre (8) 0.93 / 0.99 /
+        1.06 / 1.12 / 1.25; chi2/dof 0.3-0.7 % lower.
+    - One model for every disperser (user, 2026-11-04: "gratings should not be on a different
+      version"). `optics.optics_for(detector)`; the model file has one `diffraction` block and a
+      kernel per detector (version `2026.11-w2`, same numbers). Removed: the PSF and shutter
+      tables, `psf_calibration` and its tests, `PFSHUT`; the FIT_VERSION 4 / 5 CHANGELOG entries
+      folded into FIT_VERSION 6's (never released). `nirspec/optics_calibration.py` keeps the star
+      loading, the per-range star fit through the model (centre, drift, exposure offsets and width
+      free) and the stack test (`stack` / `score`). Tests run a closed-form stand-in
+      (`tests/optics_standin.py`) unless they ask for the shipped model.
+      - The module's stack test on all 16 PRISM calibration visits (12497 obs 1-5, 6642 obs 2,
+        NGC 2506; 1155 star-detectors; `oc_full/`): every range within 1 % of the peak, worst
+        |median residual| NRS1 0.41 / 0.37 / 0.26 / 0.40 / 0.42 / 0.60 / 0.46 %, NRS2 0.49 / 0.59
+        / 0.45 / 0.53 / 0.70 / 0.78 / 0.43 % over 0.7-5.3 um (84-223 stars per range). Clean
+        star-ranges: peak S/N >= 20, |centre| < 0.35, no saturated trace pixel, the star's median
+        width <= 0.06 slit units (wider: a galaxy, a pair or a contaminated star) and chi2/dof
+        within 5 x the range's median. On the stars it shares with the scratch test the samples
+        are identical.
+      - Gratings on 6642 obs 2 (`test_gratings.py`, `grat_w2/`, figure `final_gratings.png`):
+        the shared model against each grating's FIT_VERSION 5 tables, chi2/dof ratio per
+        detector-range 0.95-1.03 in 18 of 20 ranges (3-7 stars each, peak S/N >= 20); worst
+        stacked residual 0.8-2.0 % against 0.7-1.9 %. G140H NRS2 above 1.4 um fits worse (1.07,
+        1.22; worst residual 3.2 %): those stars' cores are sharper than the PRISM kernel and the
+        free width can only broaden it. The FIT_VERSION 5 tables lack the red wings there as on the
+        PRISM (G235M NRS2 3 um).
+      - Check 1 on NGC 2506 (`check1_ngc2506.py`, `check1_ngc_spec.py`; 93 stars in two or more of
+        the ten configurations, 245 visits, each visit against the star's most central one on the
+        wavelengths both cover; saturated and gap-split bands left out; figure `final_check1.png`):
+        clipped scatter 7.0 / 12.2 / 6.3 / 7.3 / 12.6 % in 0.7-1 / 1-1.5 / 1.5-2.5 / 2.5-3.5 /
+        3.5-5 um, no trend with the position along the slit (correlation <= 0.13). FIT_VERSION 5 on
+        the same frames: 18.3 / 19.3 / 17.9 / 12.9 / 13.2 %, flux rising with distance from the
+        shutter centre by 4-7 % per 0.1 slit units (correlation 0.41-0.49) below 3.5 um.
+      - The along-dispersion loss (jwst's point path loss, x dependence). At 3.5-5 um jwst's table
+        under-corrects off-centre stars: -47 % per unit SRCXPOS (correlation -0.51; a star 0.3 of
+        the x pitch off centre comes out ~14 % low); below 2.5 um no trend. The diffraction model
+        in x (one open shutter of half-width HX, the pupil, the stop, the slit-direction kernel
+        and an extra blur SX, the acquisition / astrometry error) fits the whole sample best at HX
+        0.110", SX ~0.03" (`xfit.py`; clipped scatter 9.3 -> 7.9 %, the red trend gone), but fitted
+        on half the stars it predicts the other half worse than jwst's table (9.9 / 9.8 % against
+        9.5 / 7.4 %); only 3.5-5 um improves in both halves (12.7 -> 10.4, 12.5 -> 10.8 %). On the
+        12497 stars it is neutral. Not adopted: jwst's x dependence stays.
+      - jwst's path loss in the fit: stage 2 types every source as a point source
+        (`set_stellarity = 1.0`), so jwst's point / uniform choice never applies to a science
+        source; the fit divides the applied correction out of the data and keeps only jwst's
+        point table's level at the shutter centre (0.98-1.00, paired with the photom calibration)
+        and its x dependence. The cal / s2d files and the 3-pixel boxcar still carry jwst's point
+        correction at the planned position.
+      - Galaxies (`fig_final_galaxies.py`, `final_galaxies.png`): three p1 PRISM sources (compact
+        centred, wide, 0.45 off centre) and two G395M sources fit with chi2/dof 0.94-1.14, noise-
+        like residuals in the continuum; emission lines leave residuals where the line emission
+        sits differently from the continuum (one shape for both).
+    - The kernel calibration in the repo (`optics_calibration` `kernel` / `solve`, 2026-11-04).
+      On 29 star-ranges it gives the scratch fit's normal equations to rounding, and its solve
+      gives the shipped kernel from the scratch normals to 1e-11. A further pass at the shipped
+      model on all 16 PRISM calibration visits (547 stars, 2158 star-ranges, the stack run's
+      clean selection; `oc_kernel/`) holds 0.996-1.003 of the light per range and changes a
+      point source's image by at most 0.37 % of its peak (0.06-0.2 % in most ranges): the shipped
+      kernel has converged and stays. Neighbouring core nodes in the red move by up to half
+      their value between passes without changing the image (the PSF blurs them together).
+    - The centre law and nod law remeasured through the model (`optics_calibration laws`,
+      `oc_laws/`; 497 stars). The scatter of each star's centre change from its 1.0-2.6 um
+      centre, per range 0.85 ... 4.7 um, NRS1: no law 0.015 / 0.007 / 0.002 / 0.007 / 0.018 /
+      0.033 / 0.052, the old law 0.004 / 0.002 / 0.001 / 0.002 / 0.008 / 0.018 / 0.024, the new
+      law held out by observation 0.003 / 0.002 / 0.001 / 0.002 / 0.004 / 0.006 / 0.011; NRS2
+      at 2.95-4.7 um 0.004 / 0.010 / 0.013 -> 0.004 / 0.007 / 0.010. In sample and held out agree.
+      The slope with the star's position (alpha) is near zero now: the old PSF needed -0.11 at
+      4.7 um to stand in for what the diffraction does. Adopted (`profile_fit.CENTRE_LAW`). The
+      planned nod shifts take the exposure offsets' rms from 0.0137 to 0.0060; the scale measured
+      / planned is 0.95-1.10 per visit (one visit 0.68 on 26 star-exposures): scale 1 stays.
+    - A correction to jwst's along-dispersion point loss (`Optics.x_correction`, a model-file
+      `x_loss`): exp(-b (lambda - 2 um)+ x^2), x = SRCXPOS. Fitted to the NGC 2506 pairs of check 1
+      (`optics_calibration.fit_x_loss`, `xcorr_ramp.py`): b 0.592 / 0.559 on the even / odd stars,
+      0.572 on all. Held out, per band 0.7-1 / 1-1.5 / 1.5-2.5 / 2.5-3.5 / 3.5-5 um: unchanged
+      below 2.5 um; 7.1 -> 6.0 and 5.6 -> 5.3 % at 2.5-3.5 um; 12.7 -> 10.7 and 12.5 -> 10.8 % at
+      3.5-5 um; the trend with |x| from -28 / -54 % per unit to within +-13 %. A free b per band
+      flips sign between the halves below 2.5 um (noise). On the 12497 repeat stars it is
+      neutral: their x barely changes between visits (rms change of x^2 0.04). At 4.5 um and
+      x = 0.3 it raises a flux by 13 %. Wired into the throughput; not yet in the shipped file.
+    - What the product should report for an extended source (user, 2026-11-04: open to revisiting
+      "the light that entered the target's shutter"; no second column, a bounded aperture instead
+      of the shutter, 1.5 or 3 shutter lengths). Test on p1 PRISM (`xsize_p1.py`,
+      `xsize_analyze.py`, figure `xsize_p1.png`): the 106 clean sources fitted with FIT_VERSION 6,
+      92 with COSMOS v1.2 auto fluxes at S/N >= 10 in f150w-f444w; spectrum / photometry per
+      source (median over bands, top-hat bands), medians in sextiles of the fitted width at 2 um
+      (sigma 0.03 to 0.3 arcsec):
+      - in the shutter (today): 0.87 / 0.67 / 0.60 / 0.55 / 0.46 / 0.33, scatter 0.21 dex;
+      - total with the slit-direction model only: 0.87 / 0.67 / 0.62 / 0.62 / 0.54 / 0.54;
+      - total with the along-dispersion transmission of an extended source as well (the model in
+        x: one shutter 0.20 arcsec wide, pupil, stop, kernel; the source round, its x width the
+        fitted width): 0.95 / 0.78 / 0.78 / 0.81 / 0.70 / 1.09, scatter 0.145 dex, no trend;
+      - inside a circle 0.8 or 1.6 arcsec across (1.5 or 3 shutter lengths) of the fitted
+        Gaussian: the same except the widest sextile (1.03, 1.09).
+      The level of about 0.8 does not follow SRCXPOS (correlation +0.20, the off-centre half
+      higher) or SRCYPOS; it is lower for sources measured in more bands (0.77 against 0.86), so
+      it looks like a calibration difference with wavelength between the PRISM and the
+      photometry, not a loss the model misses. (Resolved below, review round 2026-11-04: it is
+      the comparison, light in 0.8 arcsec against a Kron total.)
+    - Adopted: 0.8 arcsec (user, 2026-11-04). End to end with the shipped code (`endtoend_x.zsh`,
+      `xsize_pipeline.py`, figure `xsize_pipeline.png`): the p1 sources' reported flux over the
+      photometry by size sextile, before 0.87 / 0.65 / 0.58 / 0.55 / 0.44 / 0.32 (scatter 0.20
+      dex), now 0.93 / 0.77 / 0.77 / 0.75 / 0.68 / 1.03 (0.16 dex).
+    - The first end-to-end run found the along-dispersion ratio unstable at the shutter edge: the
+      model's point transmission fell from 0.90 to 0.33 between 0.05 and 0.10 arcsec from the
+      centre, and stars planned there (SRCXPOS up to 0.45) with fitted widths of 0.03 arcsec got
+      factors up to 2.2 (`xratio_probe.py`; check 1 at 0.7-1 um 7.0 -> 9.9 %). The x model now
+      takes the half-width and position scatter the stars' x loss fitted (`xfit.py`: 0.110 and
+      0.030 arcsec): at the edge the ratio is 1.02-1.05 for small widths, near the centre about
+      as before (0.71 -> 0.73 for 0.09 arcsec).
+    - Check 1 on NGC 2506 with the x correction and the ratio in the fit (`check1_ngc_spec_x.log`),
+      clipped rms per band 0.7-1 / 1-1.5 / 1.5-2.5 / 2.5-3.5 / 3.5-5 um: 8.0 / 11.5 / 6.5 / 6.1 /
+      9.4 % (before 7.0 / 12.2 / 6.3 / 7.3 / 12.6 %); the trend with |x| at 3.5-5 um -47 -> -7 %
+      per unit. The 0.7-1 um band is a little worse (MAD-sigma 5.1 -> 5.5 %, about 1.5 sigma):
+      stars with fitted widths of 0.02-0.05 arcsec come out 6 % higher there, the width taken
+      as the star's size along the dispersion. For a bright star part of that width is the
+      core's broadening with brightness, which may not happen before the shutter. Open.
+    - Open. The bar shadow of uniform light is the alpha 0.25 diffraction's (misfit 0.016 against
+      the FIT_VERSION 5 edge transmission's 0.011), which matters for wide galaxies, and the blur
+      it wants is larger than the stars allow; the model's wide light at 4-5.2 um is 2.1 % against
+      about 1.6 %. The along-dispersion loss at 3.5-5 um. G140H NRS2 cores (a per-disperser
+      after-shutter blur or kernel, needs more bright grating stars). The blue core of 4465's
+      star. The fit of a faint star can fall into a second minimum (2401 in check 1). Fit time
+      for wide galaxies. Check 1 itself (`check1_ngc2506.py`, `check1_ngc_spec.py`) is still
+      scratch. What the product reports for an extended source (below, 2026-11-04).
+    - Review round (2026-11-04). An independent read of the model (a separate review agent, asked
+      for logical consistency and reliability, given the code and this document, not our
+      conclusions) found the slit-direction model coherent and counted once (jwst's y loss moved
+      to the centre exactly; its table is separable and repeats per shutter; jwst's bar-shadow
+      step skipped for science slits) and the weak side along the dispersion. Its findings and
+      what was done:
+      - `boxcar_factor` (a neighbour's pass 1 from its 3-pixel boxcar when its own fit failed)
+        divided by the model's point transmission at the planned position, while the s2d holds
+        the forward model divided by the path loss stage 2b applied; the two differ by jwst's y
+        loss against the model's (about 20 % near the shutter edge) times the along-dispersion
+        terms. Fixed: it is now the three rows of the model frames in the s2d's units (test
+        `test_boxcar_factor_is_what_the_model_frames_hold`).
+      - An exposure naming no path-loss reference keeps jwst's y loss in its data while the
+        model applies its own: now a warning at load. Docstrings that said `fnu_prof` equals
+        `fnu_opt` for a point source corrected (only at the shutter centre).
+      - The ~0.8 level against photometry (`cat_extract.py`, `phot_match.py`, figure
+        `phot_match.png`; the catalog's native-PSF apertures 0.05-1.0 arcsec,
+        `~/cosmos_v1.2/aperate_config.toml`). In the catalog itself the light inside 0.75 / 1.0
+        arcsec is 0.75-0.82 / 0.81-0.89 of the Kron total. Against the catalog's own 0.8 arcsec
+        aperture flux (between 0.75 and 1.0) the 106 own-fit sources come out at 0.96 +- 0.04
+        (median per source; per band f115w-f444w 0.95 / 0.91 / 0.96 / 0.93 / 0.92 / 0.94),
+        scatter 0.15 -> 0.12 dex; the sum over sources 0.96 +- 0.02. The aperture flux holds the
+        PSF-blurred source and ours the source before the PSF, so a point source would sit a few
+        per cent above 1. The level was the comparison, not a calibration difference.
+      - Fitted width against the catalog's half-light radius (`size_vs_rh.py`, figure
+        `size_vs_rh.png`): rank correlation +0.73 (F200W, 60 sources) / +0.75 (F444W, 33), the
+        measured radius 1.6 x what a Gaussian of the fitted width blurred by a Gaussian PSF
+        predicts. The fitted width follows the source's size but describes its core, not its
+        half-light radius (the PSF approximation without wings explains part of the factor).
+      - Default width (finding: the reported flux of a source below the gate scales with the
+        assumed width through `x_extended_ratio`, by 19-28 % at 0.15 and 40-50 % at 0.21 over
+        0.8-4.5 um). `dwidth_p1.py`: the 43 cleanest default-shape PRISM sources of p1, refitted
+        at 0.15, 0.21 and free. Against the 0.8 arcsec aperture flux, median per source 0.87 +-
+        0.15 at 0.15 and 1.17 +- 0.20 at 0.21 (the own-fit sources 0.96); too few and too faint
+        to decide alone. Own-fit widths at 2 um (`width_by_snr.py`): median 0.143 slit units, no
+        trend with S/N (0.160 / 0.135 / 0.139 for gate S/N 25-40 / 40-80 / >80, quartiles about
+        0.10-0.22); free fits below the gate 0.133. Nothing in p1 supports 0.21. The spread
+        (quartiles 0.10-0.22) is the real uncertainty of a source without a measured size: about
+        +-15 % in flux. It stays out of the error column (user, 2026-11-04).
+      - Not yet addressed: the x correction was fitted and checked on the same NGC 2506 pairs
+        (held out by star, but pairs share reference visits) and never tested on the gratings;
+        the FIT_VERSION 5 check-1 numbers in the CHANGELOG mix the SRCYPOS unit fix with the
+        model change; `fnu_prof_err` is statistical only by decision (user, 2026-11-04: no
+        shape, kernel, centre-law or x-loss term; check 1 measures 6-12 % for the same star at
+        different positions); the x
+        transmission reuses the kernel's one-sided slit-direction shoulder.
+    - Data for the along-dispersion loss (search, 2026-11-04; `xcal_mast_search.py`,
+      `xcal_keywords.py`, `xcal_msa_repeats.py`, `xcal_pattern.py`, `xcal_archive.py`; MSA files
+      in `scratch/claude/extraction-v2/xcal_msa/`). Sources planned at two or more positions
+      across the shutter, from the MSA files:
+      - 1133 (commissioning, "Slit Loss Characterization for MSA shutters", PRISM, June 2022):
+        34 stars, each at 20 positions on a grid x 0.15-0.85, y 0.3-0.9 of the shutter (0.5 the
+        centre); 128 uncal files, 40 GB, not downloaded.
+      - 12497 obs 4 (G140H): 45 stars stepped along the dispersion at fixed y, x 0.02-0.94 in steps
+        of 0.13, plus one PRISM configuration; on disk and through stage 2 in the scratch root
+        (`nrscal_wavecal_c4_p4`). Below 1.9 um only.
+      - 1117 (target acquisition tests, three roll angles): G140M 66 stars repeated, 37 over more
+        than 0.2 in x; PRISM 13. 22.5 GB.
+      - 2136 (slit-stepping galaxies, G140H): 43 galaxies at 14 positions, x 0.2-0.95. 27 GB.
+      - 6642: PRISM 46 stars repeated across its seven configurations (22 over more than 0.2; only
+        obs 2 is on disk); each grating 6 stars, 2 over 0.2.
+      - The local archive (S/N >= 10, same grating in two or more observations, x from each
+        product's EXPOSURES table): PRISM 1073 objects (550 over 0.2 in x), G395M 320 (177),
+        G235M 92 (51), G395H 49 (23), G140M 28 (16), G235H 20 (4); mostly JADES and RUBIES.
+        Galaxies, so a joint test of the x correction and the extended-source ratio; the per-
+        exposure files are in the product tarballs.
+      - No use: 9278 ("MOS Pathlosses Extension") and 10208 are in MAST but not executed; 4465
+        has virtual sources at the default position (x must be measured from the data); 1128,
+        1492, 6154, 6643, 2640 and 5437 have no source at two x positions.
+      No program steps stars along the dispersion in a red grating. The archive's galaxies are not
+      used (user, 2026-11-04): repeat observations are often at different position angles, so an
+      extended source crosses the shutter differently between visits. Next: 12497 obs 4 and 1133.
+    - 12497 obs 4, G140H (`xscan_12497.py`, `xscan_analyze.py`, `xtilt.py`, `xscan_window.py`,
+      `xscan_window_analyze.py`, `xscan_shift.py`; figures `xscan_12497.png`, `xscan_window_12497.png`):
+      51 stars, 447 visits (seven configurations, the same y, x stepped by 0.13 shutter units).
+      - FIT_VERSION 6 fluxes over each star's most central visit fall linearly with SRCXPOS: +22 % at
+        -0.42, -12 % at +0.28 (0.97-1.2 um; the same at 1.2-1.7 um). Each star's own slope is negative
+        (median -0.40 to -0.58 per unit x, spread 0.15-0.35). NGC 2506 shows no such term (-0.06 to
+        +0.01 +- 0.03 in every band; ten configurations, each acquired separately).
+      - Without a model (the calibrated nod difference, stage 2b's path loss removed, summed over a
+        window of rows around the star; y is fixed so only x changes): the light in the shutter is
+        flat within 3 % over x -0.15 to +0.05 and symmetric about x = -0.050 / -0.045 / -0.050 in the
+        three bands (per star, 32 stars, quartiles -0.07 to -0.01); jwst's curve is centred on 0. The
+        stars sat about 0.05 shutter units (about 0.013 arcsec) further along +x than planned: one
+        offset for the visit (one acquisition), a few hundredths per star on top.
+      - jwst's G140H point loss evaluated at the shifted position: rms of the visit ratios 28 -> 15 %
+        (0.97-1.2 um), 25 -> 16 %, 22 -> 9 %; a free scale on its log shape gives 1.2 and little
+        further gain. jwst's G140H x dependence is about right; the tilt is the pointing. Near the
+        edge a 0.05 offset moves a flux by tens of per cent (planned +0.35: light 0.37 of the centre
+        against jwst's 0.57), so the planned position's error is the largest along-dispersion term.
+      - The same with the model (`xgrid_fit.py`: ln F = A_star + ln P(x + dx) - ln P(x) + ln C(x + dx;
+        b) - ln C(x; 0.572), P jwst's MOS1x3 point loss at y = 0 from `pathloss_0010`, C the x
+        correction; F the FIT_VERSION 6 flux, whose y the fit measures): one dx +0.0475 for the
+        visit takes the residual rms per band from 8.5 / 9.7 / 9.2 % to 3.4 / 3.4 / 3.1 %; per
+        configuration +0.033 to +0.065.
+    - NGC 2506 with an offset per configuration (`check1_to_scan.py`, `xgrid_fit.py`, 245 visits,
+      stars in two or more configurations): offsets -0.015 to +0.038 (one +0.085), rms 0.029;
+      residual rms 5.7 / 5.8 / 4.9 / 4.5 / 4.6 % -> 2.6 / 2.5 / 3.2 / 2.4 / 4.3 %. b with the
+      offsets free 0.38 (per band 0.22 at 2.5-3.5 um, 0.42 at 3.5-5 um) against 0.48 with one
+      offset and 0.572 shipped: part of the shipped b took up the configurations' pointing. Most
+      stars have two visits, so offsets and b are not well separated here; 1133 (20 positions per
+      star) will be.
+    - jwst's MOS1x3 point loss (`pathloss_0010`, PS version 2) is exactly an x part times a y part
+      (`ps_separable.py`: |ln P(x, y) + ln P(0, 0) - ln P(0, y) - ln P(x, 0)| is 0.0 % over the
+      shutter at every wavelength), so the y = 0 cut `xgrid_fit.py` uses holds at any y.
+    - 1133 obs 3 (`nrscal_slitgrid_1133`, PRISM, 20 configurations, 3-shutter slitlets nodded, 34
+      stars; 422 visits = star x detector x configuration). The first reduction had almost every
+      band flux negative: master background step 1 called 11-85 of 102 open shutters per visit
+      stuck closed (fitted amplitudes 0.06-0.28), the per-source metafile dropped those shutters,
+      and where a dither's primary shutter was dropped jwst wrote a background slit (SRCXPOS =
+      SRCYPOS = 0, shutter state `x`), so the exposure holding the star became the background of
+      the others. Rerun with `detect_stuck_shutters = false` for this observation (the wrong calls
+      kept as `stuck_closed_shutters_wrong_auto.toml.bak`): the fluxes stayed negative (median
+      band S/N -80 to -125), with the fitted width on its upper bound. The cause is the metafile:
+      in every visit the telescope nodded the other way from its dither order (`nodsign_1133.py`:
+      PATT_NUM 2 at YOFFSET -0.529", PATT_NUM 3 at +0.529"; NGC 2506 has +0.529" / -0.529",
+      matching its metafile). So the headers put the star of nods 2 and 3 in the shutter at the
+      wrong end of the slitlet, and the model's source term lay on the data's subtracted copies
+      (`model1_1133.py`: the data peak at nod-1-frame slit y +0.88 and -1.21, the swap predicts
+      +0.80 and -1.20). Fixed in the scratch reduction by swapping dither points 2 and 3 in the
+      workspace metafile (`swapnods_1133.py`; original kept as `_msa_original.fits.bak`), stage 2
+      rerun. The wrong stuck calls were the same error: with the corrected metafile step 1 calls
+      2 of 102 shutters stuck in every visit (11-85 before), and the model of a visit matches its
+      data row by row in all three nods (`model1_1133.py`, star 23294 NRS2, configuration 36).
+      Any other program whose nods go the other way from its metafile would fail the same way
+      (why 1133 does is not known); the sign check is cheap (YOFFSET of PATT_NUM 2 against the
+      metafile's dither-2 shutter).
+    - 1133 results (680 visits, 34 star-detectors x 20 configurations, band S/N about 1000;
+      `xscan_1133.json`). Residual = ln flux minus the star's median over its visits.
+      - As shipped, all visits: rms 3.1 / 2.5 / 2.2 / 2.5 / 5.1 %; away from the y edges (|fitted
+        centre| < 0.3, 521 visits) 2.3 / 1.9 / 1.5 / 1.6 / 3.3 %, and with one x offset per
+        configuration 1.6 / 1.4 / 1.4 / 1.4 / 2.5 % (`xgrid_1133_ymid.png`). The 16 central
+        configurations' offsets are -0.002 to -0.027 (mean -0.011): the pointing, consistent to
+        0.006. The corner configurations 53 and 54 take +0.15, which no pointing explains.
+      - b: 0.80 jointly with one offset; bootstrap over stars (all visits) 0.72 [0.56, 0.87], with
+        an offset per configuration 0.74 [0.64, 0.88]. NGC 2506 gave 0.38 with offsets free and the
+        shipped value is 0.572: the two calibration sets differ by about 2 sigma, and b moves the
+        red flux only beyond |x| = 0.25.
+      - x edges (|x| >= 0.4, away from the y edges): 1.5-2.5 um 20-30 % below the model on both
+        sides, 2.5-3.5 um -15 % at -0.45, 3.5-5 um +10-13 % on both sides. jwst's table (exactly
+        symmetric, ln P(+-0.45) / P(0) = -1.2 to -0.8) is not accurate there to better than 20 %.
+      - Blue ramp in x (0.7-1.5 um): -9 % at x = -0.25 and +8 % at +0.25, rising to -15 / +12 % at
+        +-0.35; about +-2 % at 2 um. Not a wavelength error: one star's spectra across its 20 visits
+        (`spec_vs_x.py`) differ smoothly in wavelength, with no structure where the PRISM response
+        is steep, and no wavelength shift follows x. It reads as the blue light sitting about 0.05
+        pitches (13 mas) toward -x of the red. NGC 2506 shows no such ramp (within +-4 %), so it
+        belongs to 1133 (commissioning, June 2022); not put in the model.
+      - y edges (|fitted centre| >= 0.35, 115 visits): antisymmetric, data above the model at the
+        -y edge (+1 / +1 / +7 / +15 / +16 % in the five bands) and below at +y (-4 / -2 / -6 / -7
+        / -5 %). Refitting those visits with the model's shutters moved by delta along the slit
+        relative to jwst's slit frame (`xscan_dy.py`, every pixel's slit y and the planned position
+        + delta): delta +0.03 brings the -y edge to within 1 % in every band and the +y edge to
+        -3 / -1 / +4 / +5 / +7 %, and lowers the edge visits' summed chi2 by 64,000 (better in 70 of
+        115); -0.03 and +0.05 are worse. The central control visits' chi2 rises slightly at any
+        delta (+11,000 at +0.03). Every configuration prefers +0.03 over 0 (53: about +0.015) and
+        rejects -0.03 (`dy_by_cfg.py`); a parabola through the summed chi2 puts the minimum at
+        +0.020. One offset for the whole observation.
+      - NGC 2506, the same test (`ngc_dy.py`: 166 visits with |centre| >= 0.3 in ten observations,
+        60 central controls, delta -0.03 to +0.03): the observations disagree (`ngc_dy_by_obs.py`,
+        `dy_obs.png`). v1a and v2 improve at +0.03, v1b and v5 sit near 0, v3b and v7b near
+        -0.015, v3a, v4 and v6 at -0.03 or beyond; over all, 87 of 166 visits are better at -0.015,
+        74 at -0.03, 45 at +0.03 (median chi2 ratio at -0.015: 1.006 at -y, 0.999 at +y).
+        Controls rise by 0.15-0.4 % in chi2 at any delta.
+      - Reading: the model's bars are where the average observation has them, and an observation's
+        bars sit within about +-0.03 slit units (+-14 mas) of jwst's slit frame, the same for its
+        visits (1133) and perhaps different between stars of one observation (v2 improves both
+        ways). 1133's +0.02 is inside that range. The flux a point source loses to an offset of
+        0.03, from the model's three-nod transmission (`dy_flux_census.py`): at 1 um under 1 %
+        out to |centre| 0.4, then 33 % at 0.45 and 95 % at 0.5; at 3 um about 1 % to 0.3, 5.5 %
+        at 0.35, 14 % at 0.4, 25 % at 0.45; at 5 um 1.5 % at 0.2, 3.5 % at 0.25, 6 % at 0.3,
+        9-15 % beyond. The central controls (|centre| < 0.12) move by under 0.4 %.
+      - How many sources this touches: the planned positions of the 165,000 sources in the 318
+        production metafiles (`srcpos_census.py`) are close to uniform in y, median |SRCYPOS|
+        0.21; 28 % have |SRCYPOS| >= 0.30 (|centre| >= 0.35) and 6 % >= 0.40. With the table
+        above, an offset of 0.03 changes the flux of a point source by more than 5 % for 13 % of
+        sources at 1 um, 28 % at 3 um and 41 % at 5 um. Extended sources feel less.
+      - The offset measured from the background, with no star (`bg_edge.py`, `bg_edge_fit.py`,
+        `bg_vs_tilt.py`, `bg_edge_quads.py`, figure `bg_vs_tilt.png`): in every empty shutter the
+        background lights the shutter evenly, so its profile across the slit is the open area
+        blurred by the optics. Each pixel's surface brightness over its exposure's background,
+        divided by the shutter's own centre level per band, is compared with the shipped prism
+        bar-shadow table at the pixel's slit y plus a trial shift. Only the half facing away from
+        the star and the steep part (0.2-0.75 pitch from the centre) are used; the two halves are
+        fitted apart, so a shift moves both the same way and a width change moves them opposite.
+        Moving the data by +0.020 pitch through the table is recovered as +0.022 / +0.023.
+        - 1133 +0.017 slit units (the stars said +0.020), the same in all four quadrants (+0.014 to
+          +0.020) and the three bands. NGC 2506 between -0.014 and 0 (v3b -0.014, v3a -0.009, v4
+          -0.007, v2 -0.006, the rest within 0.003); the stars' spread there (+-0.03) is not the bars.
+        - Survey observations (uncover2, eight EMBER pointings, capers_uds_p8, venus_pg004;
+          hundreds of empty shutters each, the two halves agree to 0.001, exposures to 0.001-0.003):
+          -0.009 (venus_pg004) to +0.004, rms 0.004. The EMBER pointings trained the table, so
+          their mean is 0 by construction; their spread is not. Five calibration pointings on one
+          day (12497, 2026-01-06) give -0.004, +0.012, +0.009, +0.008: the offset changes between
+          observations hours apart.
+        - Across the MSA: one number per observation plus a fixed quadrant pattern, the same in
+          every survey observation: quadrant 1 -0.004, 2 +0.000, 3 -0.001, 4 +0.005 from the
+          observation's value (scatter 0.001). Small next to the per-observation term.
+        - Not predicted by the grating-wheel tilt readings or the date: fitting the 27 shifts on
+          GWA_XTIL, GWA_YTIL or both leaves the rms at 0.0064 (r = -0.10 and -0.03).
+        - What the survey offsets do (`dy_flux_census.py` with 0.009): over 2 % flux change for
+          10 / 23 / 32 % of sources at 1 / 3 / 5 um, over 5 % for 8 / 11 / 0 %, the large ones
+          on the bar itself (|centre| >= 0.45).
+      - In the model (FIT_VERSION 7, `nirspec/bar_offset.py`): stage 3 measures each disperser's
+        offset from the observation's own empty shutters before the profile fit and keeps it in the
+        workspace's `bar_offset.json` (measured again only when the canonicals, the module's version
+        or the optics model change); `profile_fit.load_group` adds it to every pixel's slit y and to
+        the planned position (jwst's SRCYPOS, which only undoes jwst's own path loss, stays), and the
+        light past the cutouts takes the same frame (`profile_extend.past_geometry`). `PFBAROFF`
+        records it; `bar_offset = "off"` in `[nirspec.stage3]` turns it off. A disperser with too few
+        empty-shutter pixels (under 3000 per half) gets none. Checked on real 1133 canonicals
+        (`load_check.py`): y and the planned position move by the quadrant's value, SRCYPOS does
+        not, and the fit equals the refit with the shutters moved by hand.
+        - The reference is the model's own profile for uniform light: its point images summed over
+          every source position (the kernel left out: it moves light between source positions,
+          which uniform light does not feel). Against it the offsets are the table's minus
+          0.0055 +- 0.0007 in every one of 20 observations (1133, NGC 2506 x 10, 12497 x 4, 5
+          survey; the survey alone 0.0058 +- 0.0003): the two references agree between observations and differ only in where zero
+          is. The edges' half-light points of the table and the model differ by under 0.004
+          (`edges_table_vs_optics.py`); the table's edges are slightly lopsided (more light past
+          the upper edge than the lower), the model's are symmetric, which is also why the two
+          halves fitted against the model differ (lower minus upper -0.014 in the survey).
+        - Which zero the stars want (`stars_at_bg.py`: each edge visit's chi2 from the refits at
+          trial offsets, interpolated at the background offset plus a constant c): NGC 2506, the
+          median visit is best at c = -0.004 (change against no offset: -26.9; at c = 0 -21.4, at
+          the table's +0.006 -4.2); 1133 at c = +0.012 (-891 per visit; at 0 -610). Every c in
+          that range improves the edge visits over no offset (summed over both: -127,900 at c = 0,
+          -150,800 at +0.006). The model's own zero (c = 0) is kept: it needs no fitted constant
+          and the ten NGC 2506 observations agree with it. The zero is uncertain by about 0.01.
+        - Values against the model: 1133 +0.0105; NGC 2506 -0.019 (v3b) to -0.005; 12497 -0.009,
+          +0.007, +0.005, +0.002; survey -0.015 (venus_pg004), -0.010 (ember_egs_p1), -0.007
+          (uncover2), -0.004 (capers_uds_p8), -0.001 (ember_cosmos_p14). Quadrant pattern -0.0042 / +0.0003 / -0.0009 / +0.0047
+          (`QUADRANT_PATTERN`, the same against either reference).
+        - Galaxies (`galaxy_ab.py`, `galaxy_scan.py`, `galaxy_scan_sum.py`; ember_cosmos_p1 PRISM in
+          the isolated e2e_p1 root, offset -0.0056, quadrants -0.010 to -0.001; 67 sources with
+          |SRCYPOS| >= 0.26 and 40 central ones through the production shape chain, other slitlets'
+          light off, with and without the offset): no source changes shape; central sources move
+          by under 0.3 %. Default-shape sources near a bar (26; centre at the planned position, so
+          the offset moves them against the model's bars) move by a median +0.2 to +0.9 % in the
+          five bands, 10-90 % within +-3 %, the size the census predicts. A fitted centre follows
+          the offset (1.07-1.14 x), so an own-shape source keeps its place against the bars and its
+          flux moves by -0.1 % per 0.01 on average. The galaxies cannot test the offset or its zero
+          point: refitted at the measured offset plus c = -0.012 to +0.018, the summed chi2 near a
+          bar jumps by thousands between neighboring c without a trend, and a source's 1.5-2.5 um
+          flux moves by a median 3.8 % (90 %: 23 %) between fits 0.006 apart. That jitter is the
+          fit near a bar, not the offset, and is its own open item.
+        - A grating sees the same offset: G395M of ember_cosmos_p14 +0.0012 against its PRISM
+          -0.0012; ember_cosmos_p1 G395M -0.0011 against PRISM -0.0056 (the gratings may sit
+          0.002-0.005 higher; two observations). So most of the offset belongs to the observation
+          (where the MSA and the telescope put the slits), with perhaps a small part from the
+          grating wheel; each disperser is measured anyway.
+      - Stocktake of the whole optics work against what STScI provides and plans (2026-11-05):
+        `scratch/claude/extraction-v2/review/stocktake.md` (duplication, ranked risks, how to keep
+        the boundary with CRDS clean).
+      - So, as the model stands: compact sources inside |x| < 0.3 and |centre| < 0.3 are described to
+        1.4-1.6 % (0.7-3.5 um) and 2.5 % (3.5-5 um) with the observation's pointing offset in x;
+        near a bar (|centre| >= 0.35) the observation's own bar offset is now in the model, measured
+        from its background to about 0.002 between observations; what remains is the zero point
+        (about 0.01, from the two groups of stars), which moves a source near a bar by a few per
+        cent in the red. At |x| >= 0.4 jwst's table misses by up to 20-30 %.
+- Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
+  `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
+  `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
+  `superseded_alternating/`); `psf_table_wing3_after_{J,Jn,A,B}.json`,
+  `forms_report.log`, `edge_prepost.log`, `table_test.log`, `table_test_J.log`, figures
+  `psf_stack_tables_J.png`, `psf_parameters_J.png`, `star_own_psf_<key>.png`), and from the
+  previous rounds `psf_table_new.json`, `centre_law_new.json`,
+  `offset_law.log`, `kappa_by_obs.log`, `p1_out_of_sample.json`, `summary.log`, `selection.log`,
+  `figures/` with `nod_offset_law.png`); the shared-position refit in `scratch/claude/psf_cal/`.
 
 ### 3.8 First pass
 
@@ -1564,6 +2724,32 @@ are such pairs (634547/634522, 880045/880017, 921026/921027, 666978/632454,
   exposures and is not rerun, so a revised source's 2-D and `EXPOSURES` show the choice
   from before (922323's product says nods 1,2 while its log says nod 3 used nod 1 only).
   `claude/drizzle-once` merged (user, 2026-11-02).
+- PSF table re-derived from the six calibration fields (2026-11-02; stage 2a/2b rerun with
+  this branch in `scratch/claude/e2e_nrscal`; module `psf_calibration.py` on
+  `claude/psf-table`; outputs and figures `scratch/claude/psf_cal/`). 131 / 133 clean NRS1
+  / NRS2 PRISM stars, fitted through the profile model on the nod differences stage 3
+  reads. Found: each nod sits off its WCS position by an amount linear in the slitlet's
+  detector row, zero near row 1000 and +-0.08 rows at the edges, the two outer nods mirror
+  images, NRS1 and NRS2 on one line (`figures/nod_offsets.png`); the model has held the
+  per-exposure offsets at zero since 2026-11-01, and with them free the bright stars' chi2
+  falls 2-5x and the NRS1 joint wing fraction by 0.05-0.11, the core widths by <= 0.003
+  rows. With offsets at zero the refit gives a narrower core (NRS1 0.32 against 0.39 rows
+  in the blue) and a larger wing fraction (0.34-0.40 against 0.19-0.30), core and wing
+  trading. Decision (user, 2026-11-02): a fixed nod-offset law, measured from these stars
+  and built into the model as fixed geometry like the centre law, no free parameter per
+  source; then the PSF table is refitted with it. `PSF_TABLES` / `CENTRE_LAW` unchanged
+  until the user decides on the refit. The law came out as each nod's own planned position
+  (SRCYPOS): the fitted source centre is shared, each exposure shifted by its SRCYPOS
+  minus the median (no free parameter; the 2026-11-01 decision against fitted per-nod
+  shifts stands). With each star's centre free in every exposure and its own width, a
+  symmetric core + wing (wing width 2.2 x core) fits the stack to about 1 % of the peak but
+  leaves a one-sided shoulder at +1 to +1.5 rows and a faint tail to +4 rows (about 1 %
+  of the light, in 63-86 % of the stars, independent of where the nod partners lie), and
+  the table's flat extrapolation beyond 4.70 µm makes the model too narrow above about
+  4.8 µm. Decision (user, 2026-11-02): more terms in the parametric PSF, at minimum the
+  wing's own width and offset, more for the asymmetry if needed; every parameter smooth
+  over the full NIRSpec range (no flat extrapolation); goal: agreement with the stacked
+  stars better than 1 % of the peak.
 - The 1D combination of several exposure groups did not carry the master-background
   spectrum (not built, no other reason); built (530bedb5): each group's `SPEC1D_MBKG`
   combined as the nodded columns are, the 2-D spectrum from one master-background Spec3
@@ -1648,6 +2834,61 @@ Tests (copies with the chosen partners in scratch, `e2e_auto_make.py`; only `SCI
   in simulation so far.
 - Same-slitlet neighbours (not in the trace maps) stay with the neighbour scan
   (`scan_action = "report_only"`).
+
+### 3.10 The boundary with jwst's references (2026-11-05)
+
+CAMPFIRE replaces parts of two CRDS references: the path loss (the slit direction, with the model of
+3.7, and a correction along the dispersion) and the bar shadow (the empirical tables of 3.2, used by
+the master background; science slits skip the step). The stocktake of that work against what STScI
+provides (`scratch/claude/extraction-v2/review/stocktake.md`) found most of it not duplicated, and
+asked for the boundary to be explicit, so that a better reference from STScI can be taken up by a
+setting and measured by a command. The pieces:
+
+- **One reader.** `nirspec/crds_refs.py` is the only code that reads the path-loss or bar-shadow
+  reference, or interprets what jwst wrote from them into a cal file (`applied_pathloss`,
+  `point_pathloss`, `pathloss_arrays` / `point_to_uniform`, `pathloss_ref`, `barshadow_path`,
+  `point_y_ratio`, `slit_position`). The profile fit, the master background, the bar-shadow
+  calibration, the bar offset and the same-slitlet decisions call it. The reader of the path-loss
+  reference checks the assumptions the profile fit makes (`pathloss_cube`: a PS extension with
+  APERTURE = MOS1x3, three axes, y over three shutter pitches and x over one, wavelengths in metres)
+  and names the one that fails; the extension is chosen by its APERTURE card, no longer by its
+  version number. Every other CRDS read (stage 1, stage 2, the extended-wavelength flats) is a
+  calibration used as delivered and stays where it was.
+- **One switch per replaced part.** `[nirspec.stage3]`: `slit_loss_y = "optics"` (the model's
+  slit-direction loss for the source's width and fitted position) or `"jwst"` (jwst's point path loss
+  at the planned position, divided by the model's point transmission there, so a point source at its
+  planned position gets jwst's loss exactly and the model only shapes the image);
+  `slit_loss_x = "corrected"` (jwst's along the dispersion times `x_correction`) or `"jwst"`;
+  `bar_offset = "measure"` or `"off"`. `[nirspec.stage2] empirical_barshadow` for the master
+  background, as before. The product records `PFSLY`, `PFSLX`, `PFBAROFF` and `PFPLREF` (the path-loss
+  reference the model starts from). The defaults reproduce FIT_VERSION 7 exactly (two 1133 stars refit
+  to the same chi2 to 0.1 before and after).
+- **A manifest.** `data/nirspec_calibrations.toml` lists every shipped calibration (the optics model,
+  the four bar-shadow tables, the bar offset): its file and sha256, version, what it replaces or
+  corrects, its inputs, the CRDS context of the reduction it was fitted on, the references it was
+  fitted against or whose layout it assumes (`depends_on`), the switch that turns it off, its code,
+  tests and record. Tests fail when a file changes without its entry, when an entry's version is not
+  the file's own, or when a named switch is not in the default config. When a cal file names another
+  path-loss reference than one a calibration depends on, the loader warns once
+  (`check_references`).
+- **A standing comparison.** `cfpipe nirspec crds-compare` (`crds_refs.report`) prints, for the
+  active context: which path-loss and bar-shadow reference each MOS disperser gets and whether the
+  calibrations were derived against them; how far the path-loss reference departs from an x part
+  times a y part (which `point_y_ratio` assumes); jwst's point loss along y against the model's at
+  0.1-0.4 pitch and three wavelengths; jwst's dependence along the dispersion against `x_correction`;
+  and the half-light edges of each empirical bar-shadow table against its CRDS reference. A test
+  (`test_live_reference_meets_the_assumptions`) runs the reference side wherever the file is in the
+  local CRDS cache. Run the command whenever `CRDS_CONTEXT` changes (AGENTS.md).
+- Its output for `jwst_1481.pmap` (2026-11-05): every disperser gets `pathloss_0010` and the bar
+  shadow the tables were derived against. `pathloss_0010` is an exact product of x and y parts. A point
+  source 0.4 pitch off centre loses, relative to the centre, 0.697 / 0.673 / 0.729 of its light in
+  jwst's table at 1 / 3 / 5 um, and 0.857 / 0.609 / 0.563 in the model (0.3 pitch: 0.965 / 0.941 /
+  0.922 against 0.969 / 0.936 / 0.843). The model's correction along the dispersion at SRCXPOS 0.3 is
+  1.00 / 0.95 / 0.86. The empirical bar-shadow tables put a 1x3 slitlet's outer edges 0.010-0.058
+  pitch per side inside CRDS's (narrower); CRDS's interior bars are centred 0.026-0.038 pitch from
+  the tables' (lower in PRISM, G140M and G235M, higher in G395M) and their shadows are 0.18 pitch
+  wide in PRISM against the table's 0.10, 0.04 in G395M against 0.14 (half-light widths at 1-3 um).
+  A new CRDS bar shadow would show up as a change in these numbers.
 
 ---
 
@@ -1800,7 +3041,7 @@ a fix or needs another field or disperser), **To make**.
 | V4 | Residual across the shutter | painted own-slitlet sky vs rate against position in the shutter, incl. the margin rows | table and data agree to 0.01-0.02 of the open level | Exists (GOODS-S, p1) | `bs_v5/residual_vs_f_clean_{before,after}.png`, `mbkg_p1/residual_vs_f_clean.png` |
 | V5 | Trace ends and wavelength cutoffs | rate along the trace past each calibrated end, per disperser and filter, with the cutoffs | cutoffs at the 2 % level of the in-band light | Exists | `bs_v3/cutoffs.png`, `bs_v3/trace_ends.png`, `bs_v3/dispersion_edges_*.png` |
 | V6 | Bar-shadow tables vs CRDS, held out | per-segment residual of a held-out field divided by each table | empirical 1-4 % rms vs CRDS 10-23 % | Redo on the b0c08026 tables | `bs_gratings/bs_<grating>_heldout_qa.pdf`, `bs_prism7_all/empirical_barshadow_prism_qa.pdf`, `bs_v5/empirical_barshadow_<disperser>_qa.pdf` |
-| V7 | Forward-model shutter edge vs measured bar shadow | the model's response to uniform light against the table | edge, narrowing and floor consistent, or a stated revision | To make | none |
+| V7 | Forward-model shutter edge vs measured bar shadow | the model's response to uniform light against the table | edge, narrowing and floor consistent, or a stated revision | Made 2026-11-03: the hard edge fails in the red. A narrower measured edge passes but edge stars prefer the geometric edge; the geometric shutter with the transmission T capped at 1 and the PSF split evenly (3.7, the default from `FIT_VERSION` 5) passes, with edge stars 0.7 % worse in median chi2 | `scratch/claude/psf_cal_T/figures/v7_T4_*.png` |
 | V8 | Per-exposure sky vs pool, quadrant scales | `MBKG1D` per exposure against the pool; `MBKGSCL` / `MBKGOFF`; quadrant scales | scales and offsets recorded; outliers explained | Exists (product QA) | `<base>_mbkg_qa.pdf` in each workspace; `bs_v3/mbkg_qa_p1_g395m_nrs1.png` |
 | V9 | Grating sky vs PRISM sky, same field | G395M `MBKG1D` against PRISM in bands | agree within 1-5 % | Exists (P0) | `docs/figures/master-bkg-prototype/ember_cosmos_p1_g395m_sky_tailaware.png` |
 | V10 | Stuck-shutter amplitude histograms per disperser | distribution of a per measurement and per shutter, live vs dark | clean gap between 0.3 and 0.8; live 1 % quantile above 0.8 | Exists (PRISM, G395M); To make (G140M, G235M) | `stuck_shutters/amp_hist.png` |
@@ -1841,7 +3082,7 @@ a fix or needs another field or disperser), **To make**.
 | Stuck fit on G140M and G235M | extraction session | |
 | Build step 1 and the physical-key stuck list, migration, web, deploy | both, per split | approvals above |
 | Remeasure the +2.5 % in-range offset and G395M blue extension after b0c08026 | MB session | |
-| Held-out validation of the b0c08026 tables; user sign-off on grating tables | MB session | user |
+| Held-out validation of the b0c08026 tables | MB session | |
 | Grating sky smoothing trial | MB session | user |
 | Retire `tracemaps/` once pass-1 validity keys on the rate files (the superseded passes are removed) | extraction session | |
 | Error propagation: write the variance including the subtracted sky exposures in stage 2b (profile fit reads the frame's own from `PRE_BKGSUB_VAR_*`); before V26 | extraction session | user (when) |
@@ -1852,7 +3093,10 @@ a fix or needs another field or disperser), **To make**.
 | Same-row inseparability cause | extraction session | |
 | Master-background spectrum: end-to-end p1 run and review (built, section 4); the 1-D combine of several groups; the `extended` threshold | extraction session | user |
 | Default galaxy width 0.15 vs 0.21 | user | |
-| Forward-model shutter edge vs measured bar shadow | extraction session | |
+| Nod offset law (3.7, `NOD_OFFSET_LAW`: each nod at its own planned SRCYPOS): built, on by default | extraction session | |
+| Centre-law refit with the nod law (3.7, `psf_calibration.py` step `centre_law`): adopt or not (the two-component PSF refit is superseded by table S and its code removed) | user | |
+| Three-component PSF (3.7, `wing3_after`, general `psf_components` tables): table rule decided 2026-11-02 (smooth joint fit, table S); S adopted 2026-11-03 (`FIT_VERSION` 4); the self-consistent second round gives S2 (same on NRS1, NRS2 wing/shoulder split moved by up to 2 % of peak at 1.5-3 um, stack test equal overall): keep S or adopt S2. Left: the 3.3-5.3 um ranges (few stars; more calibration stars), and the flux change on p1 | user (S or S2); extraction session | |
+| Shutter (3.2, 3.7): the geometric shutter with the smooth transmission T, capped at 1, the PSF split evenly before and after it, is the default (user, 2026-11-03; `FIT_VERSION` 5, card `PFSHUT` `geomT-2026-11-03b`); the H gratings use the M grating with the same filter (user, 2026-11-03). Left: p1 stage 3 rerun with it; the blue end against jwst's point path loss; the held-out check of the b0c08026 grating tables, which T is fitted to | extraction session | |
 | Stage 1 footprint past the calibrated range | MB session | user |
 | Runtime baseline on one full observation | both | |
 | Speed up stage 2's per-source work (user goal, 2026-10-31). First profile one stage-2b group and one rectification: in stage 2b the log line "Inverting the pathloss" only marks the start of a group, which also subtracts the nods, reapplies the pathloss and rectifies again, so the slow part is not yet known. Candidate fixes once measured: rectify once instead of in both 2a and 2b, invert the pathloss arithmetically from the stored correction instead of a `PathLossStep` call, and batch per exposure instead of per source | extraction session | |
@@ -1874,6 +3118,9 @@ a fix or needs another field or disperser), **To make**.
 | First pass (joint, on nod differences) | `nirspec/joint_first_pass.py`; its linear system `nirspec/profile_joint.py` |
 | Prediction of other slitlets' light | `nirspec/profile_contam.py`, `nirspec/profile_extend.py` |
 | Profile model, shape chain | `nirspec/profile_fit.py`, `nirspec/profile_chain.py`, `nirspec/profile_product.py` |
+| Diffraction model of the MSA; its calibration on stars (kernel, x correction, centre law, nod offsets) | `nirspec/optics.py`, `data/nirspec_optics.json`; `nirspec/optics_calibration.py` |
+| Bar offset per observation | `nirspec/bar_offset.py` (workspace `bar_offset.json`) |
+| Boundary with jwst's path-loss and bar-shadow references; manifest of CAMPFIRE's calibrations | `nirspec/crds_refs.py`, `data/nirspec_calibrations.toml`, `cfpipe nirspec crds-compare` (3.10) |
 | Orchestration | `nirspec/stage3.py` (`run_profile_fit_phase`, `extract_columns`, `mbkg_spectrum_hdus`) |
 | Master-background spectrum | `nirspec/mbkg_extraction.py`; `stage2.master_background_on`; `metadata/science_hash.py` (MBKG left out) |
 | nods.pdf | `nirspec/plots.py` |
@@ -1940,3 +3187,21 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   reboot wipe. Includes the MB session's proposed step 1 / step 2 interface, and the user's
   decisions on physical-shutter keys, the stuck-list format and its ownership split (all
   2026-10-30). The stuck-list loader and auto writer are recorded as proposed.
+- **2026-11-02.** Section 3.7: the PSF and centre-law refit through the profile model, with the
+  nod-position mismatch and the skewed PSF it found; the nod offset law (each nod at its planned
+  SRCYPOS, built and on by default); the refit with the law, pending the user's decision; the
+  general PSF and the three-component table candidates. Later the same day: the user's decision
+  that the table is a smooth joint fit, and its result (table S, held-out test).
+- **2026-11-03.** Section 3.7: table S adopted as the extraction's PSF (`FIT_VERSION` 4), and
+  the two tests that had depended on the old PSF. Later: the old two-Gaussian PSF removed from
+  the code (`profile_fit`, `psf_calibration`, tests); sections 3.7, 6 and 7 updated. Then the
+  second, self-consistent round from S (table S2) and its verdict. Then the measured shutter
+  edge (sections 3.2 V7 follow-up, 3.7, 5 V7, 6): its model, the stars refitted with it (SE),
+  the checks (stack, V7, edge stars, p1 flux) and the decisions they leave. Then the user's choice
+  (d) and the shutter transmission T built and checked the same way (3.2, 3.7, V7 row, 6).
+  Then T adopted as the default (`FIT_VERSION` 5, card `PFSHUT`; 3.2, 3.7, V7 row, 6): capped
+  at 1, which leaves the form T = 1 - (1 - tedge) x^8, and what the cap costs; the measured edge
+  and its file removed; the H-grating fallback recorded as decided; the bar-shadow tables'
+  sign-off caveat dropped (settled 2026-10-30). Then the PSF split held at 0.5 in the shutter
+  model (`geomT-2026-11-03b`, 3.2, 3.7, V7 row, 6): edge stars 0.7 % worse than the hard edge
+  instead of 1.8 %.
