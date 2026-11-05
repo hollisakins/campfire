@@ -1674,6 +1674,41 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
           0.002-0.005 higher; two observations). So most of the offset belongs to the observation
           (where the MSA and the telescope put the slits), with perhaps a small part from the
           grating wheel; each disperser is measured anyway.
+      - Is the rise of a compact source's transmission off centre in the red real (2026-11-05,
+        asked by the user through the docs session)? In `FIT_VERSION` 7 a point source 0.11-0.16
+        pitch off centre passes 1.1-1.3 % more light than at the centre at 4.5 um and 2.1-2.3 % more
+        at 5.0-5.3 um (both detectors; at most 0.4 % at 4 um and below); `FIT_VERSION` 5 had capped
+        it, `FIT_VERSION` 6 did not. Test (`pupil2d_check.py`, figure `pupil2d_check.png`): the same
+        transmission with the real 2-D JWST pupil (`jwst_pupil_RevW_npix1024`, segments and struts),
+        the field at the MSA by matrix Fourier transforms, three open shutters (0.46" x 0.22", 0.53"
+        pitch), the stop at rho = 0.996 of the pupil's image, against the model's own 1-D
+        diffraction (no kernel in either). Variants: four pupil orientations (NIRSpec's is not in
+        the data at hand), the stop shaped as the pupil's outline or a circle, the cycle-1 wavefront
+        error map, and without the shutters' cut across the slit. Ratio to the centre, mean of
+        +-0.15 pitch, after the stop:
+
+        | | 3.0 um | 4.5 um | 5.0 um |
+        |---|---|---|---|
+        | 1-D model | 0.997 | 1.005 | 1.021 |
+        | 2-D pupil, four orientations, both stops | 0.948-0.972 | 1.029-1.058 | 1.012-1.032 |
+        | 2-D pupil, no cut across the slit | 0.981-0.982 | 1.003 | 1.001-1.005 |
+
+        - The rise is real: the 2-D pupil gives it at 4.5 and 5 um in every variant (with the
+          wavefront error too), and the shutters alone already pass 1.7-2.6 % more light there (the
+          stop adds the rest). It comes from the 2-D pattern meeting the shutter's narrow width:
+          without the cut across the slit the 2-D pupil gives at most 0.7 %, so the 1-D model's
+          +2.1 % at 5 um matches the 2-D answer by coincidence of size, not by the same path.
+        - The 1-D model is too flat at 3 um (2-D: 3-5 % less light at 0.15-0.2 pitch, the model
+          about 1 %) and rises too little at 4.5 um (2-D +3-6 %, the model +0.5 %). The 2-D numbers
+          spread by 1-4 % with orientation and stop shape and leave out the kernel (pointing jitter
+          and wavefront drift), which smooths them; the stars remain the test.
+        - Near a bar the 2-D pupil agrees with the model, not with jwst's reference: at 0.35 / 0.40
+          pitch and 5 um, 0.70-0.73 / 0.54-0.57 (2-D) and 0.71 / 0.52 (model), against jwst's 0.85 /
+          0.73. The 1133 stars agree (docs session, `extraction-v2-docs/star_transmission_preview.py`,
+          from `xscan_1133.json`, fits before the bar offset, each visit against the same star's most
+          central one): near +0.37 pitch at 3.5-5 um they deliver 0.62 of the centred light, the
+          model 0.62, jwst 0.82; at 0.7-1.0 um near +0.38, 0.91 against the model's 0.97 and jwst's
+          0.85; on the -y side at 3.5-5 um 1.03-1.06 at -0.2 to -0.27 pitch, a rise like the 2-D one.
       - Stocktake of the whole optics work against what STScI provides and plans (2026-11-05):
         `scratch/claude/extraction-v2/review/stocktake.md` (duplication, ranked risks, how to keep
         the boundary with CRDS clean).
