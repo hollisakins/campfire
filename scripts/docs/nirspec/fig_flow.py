@@ -32,7 +32,7 @@ VERM = '#D55E00'
 FILL = {'jwst': '#e6e6e6', 'cf': '#fdf1e1', 'file': 'white'}    # stock jwst step | CAMPFIRE step | file
 EDGE = {'jwst': '#555555', 'cf': '#b07800', 'file': '#888888'}
 # steps an option turns on or off (dashed); every other option line only changes how a step runs
-SWITCH = {'cfn', 'bkg2d', 'joint', 'recheck', 'pfit', 'mbs', 'comb', 'baroff'}
+SWITCH = {'cfn', 'joint', 'recheck', 'pfit', 'mbs', 'comb', 'baroff'}
 W, ROW = 2.5, 1.0                       # box width, row spacing (data units)
 STAGES = [  # title, column x (left edge), width, color, fill
     ('Stage 1: detector', 0.0, 2.9, '#0072B2', '#f5f9fd'),
@@ -48,10 +48,10 @@ N = {
     'uncal':  (c1, 0, 'raw exposures', 'file', ()),
     'det1':   (c1, 1, 'ramp fitting (jwst Detector1)', 'jwst', ()),
     'cfn':    (c1, 2, 'flicker-noise cleaning (jwst)', 'jwst', (knob('stage1', 'do_clean_flicker_noise'),)),
-    'bkg1':   (c1, 3, 'detector background and\n1/f noise subtraction', 'cf', ()),
-    'bkg2d':  (c1, 4, 'smooth 2-D background\nsubtraction', 'cf', (knob('stage1', 'subtract_2d'),)),
-    'mask':   (c1, 5, 'manual masking', 'cf', ()),
-    'rate':   (c1, 6, 'count-rate frames', 'file', ()),
+    'mask':   (c1, 3, 'manual masks (drawn by hand)', 'file', ()),
+    'bkg1':   (c1, 4.3, 'detector background and\n1/f noise subtraction\n(spectra kept out of the fit)', 'cf',
+               (knob('stage1', 'subtract_2d') + ' (smooth 2-D part)',)),
+    'rate':   (c1, 5.6, 'count-rate frames', 'file', ()),
 
     'geo':    (c2a, 0, 'slitlet footprint mapping', 'cf', ()),
     'tmap':   (c2b, 0, 'trace maps', 'file', ()),
@@ -178,8 +178,7 @@ for title, x0, wd, col, fill in STAGES:
     ax.text(x0 + 0.15, 0.55, title, fontsize=11, fontweight='bold', color=col, va='center')
 
 # within the stages
-for a, b in [('uncal', 'det1'), ('det1', 'cfn'), ('cfn', 'bkg1'), ('bkg1', 'bkg2d'), ('bkg2d', 'mask'),
-             ('mask', 'rate'),
+for a, b in [('uncal', 'det1'), ('det1', 'cfn'), ('cfn', 'mask'), ('mask', 'bkg1'), ('bkg1', 'rate'),
              ('geo', 'mb1'), ('mb1', 'sfit'), ('spec2', 'canon'), ('canon', 'mb2'), ('mb2', 'mbkg'),
              ('nbr', 'sub'), ('sub', 'bsub'),
              ('joint', 'spec3'), ('spec3', 'dmap'), ('dmap', 'shape'), ('shape', 'pfit'), ('pfit', 'contam'),
