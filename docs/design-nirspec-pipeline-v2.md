@@ -1517,6 +1517,88 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
         further gain. jwst's G140H x dependence is about right; the tilt is the pointing. Near the
         edge a 0.05 offset moves a flux by tens of per cent (planned +0.35: light 0.37 of the centre
         against jwst's 0.57), so the planned position's error is the largest along-dispersion term.
+      - The same with the model (`xgrid_fit.py`: ln F = A_star + ln P(x + dx) - ln P(x) + ln C(x + dx;
+        b) - ln C(x; 0.572), P jwst's MOS1x3 point loss at y = 0 from `pathloss_0010`, C the x
+        correction; F the FIT_VERSION 6 flux, whose y the fit measures): one dx +0.0475 for the
+        visit takes the residual rms per band from 8.5 / 9.7 / 9.2 % to 3.4 / 3.4 / 3.1 %; per
+        configuration +0.033 to +0.065.
+    - NGC 2506 with an offset per configuration (`check1_to_scan.py`, `xgrid_fit.py`, 245 visits,
+      stars in two or more configurations): offsets -0.015 to +0.038 (one +0.085), rms 0.029;
+      residual rms 5.7 / 5.8 / 4.9 / 4.5 / 4.6 % -> 2.6 / 2.5 / 3.2 / 2.4 / 4.3 %. b with the
+      offsets free 0.38 (per band 0.22 at 2.5-3.5 um, 0.42 at 3.5-5 um) against 0.48 with one
+      offset and 0.572 shipped: part of the shipped b took up the configurations' pointing. Most
+      stars have two visits, so offsets and b are not well separated here; 1133 (20 positions per
+      star) will be.
+    - jwst's MOS1x3 point loss (`pathloss_0010`, PS version 2) is exactly an x part times a y part
+      (`ps_separable.py`: |ln P(x, y) + ln P(0, 0) - ln P(0, y) - ln P(x, 0)| is 0.0 % over the
+      shutter at every wavelength), so the y = 0 cut `xgrid_fit.py` uses holds at any y.
+    - 1133 obs 3 (`nrscal_slitgrid_1133`, PRISM, 20 configurations, 3-shutter slitlets nodded, 34
+      stars; 422 visits = star x detector x configuration). The first reduction had almost every
+      band flux negative: master background step 1 called 11-85 of 102 open shutters per visit
+      stuck closed (fitted amplitudes 0.06-0.28), the per-source metafile dropped those shutters,
+      and where a dither's primary shutter was dropped jwst wrote a background slit (SRCXPOS =
+      SRCYPOS = 0, shutter state `x`), so the exposure holding the star became the background of
+      the others. Rerun with `detect_stuck_shutters = false` for this observation (the wrong calls
+      kept as `stuck_closed_shutters_wrong_auto.toml.bak`): the fluxes stayed negative (median
+      band S/N -80 to -125), with the fitted width on its upper bound. The cause is the metafile:
+      in every visit the telescope nodded the other way from its dither order (`nodsign_1133.py`:
+      PATT_NUM 2 at YOFFSET -0.529", PATT_NUM 3 at +0.529"; NGC 2506 has +0.529" / -0.529",
+      matching its metafile). So the headers put the star of nods 2 and 3 in the shutter at the
+      wrong end of the slitlet, and the model's source term lay on the data's subtracted copies
+      (`model1_1133.py`: the data peak at nod-1-frame slit y +0.88 and -1.21, the swap predicts
+      +0.80 and -1.20). Fixed in the scratch reduction by swapping dither points 2 and 3 in the
+      workspace metafile (`swapnods_1133.py`; original kept as `_msa_original.fits.bak`), stage 2
+      rerun. The wrong stuck calls were the same error: with the corrected metafile step 1 calls
+      2 of 102 shutters stuck in every visit (11-85 before), and the model of a visit matches its
+      data row by row in all three nods (`model1_1133.py`, star 23294 NRS2, configuration 36).
+      Any other program whose nods go the other way from its metafile would fail the same way
+      (why 1133 does is not known); the sign check is cheap (YOFFSET of PATT_NUM 2 against the
+      metafile's dither-2 shutter).
+    - 1133 results (680 visits, 34 star-detectors x 20 configurations, band S/N about 1000;
+      `xscan_1133.json`). Residual = ln flux minus the star's median over its visits.
+      - As shipped, all visits: rms 3.1 / 2.5 / 2.2 / 2.5 / 5.1 %; away from the y edges (|fitted
+        centre| < 0.3, 521 visits) 2.3 / 1.9 / 1.5 / 1.6 / 3.3 %, and with one x offset per
+        configuration 1.6 / 1.4 / 1.4 / 1.4 / 2.5 % (`xgrid_1133_ymid.png`). The 16 central
+        configurations' offsets are -0.002 to -0.027 (mean -0.011): the pointing, consistent to
+        0.006. The corner configurations 53 and 54 take +0.15, which no pointing explains.
+      - b: 0.80 jointly with one offset; bootstrap over stars (all visits) 0.72 [0.56, 0.87], with
+        an offset per configuration 0.74 [0.64, 0.88]. NGC 2506 gave 0.38 with offsets free and the
+        shipped value is 0.572: the two calibration sets differ by about 2 sigma, and b moves the
+        red flux only beyond |x| = 0.25.
+      - x edges (|x| >= 0.4, away from the y edges): 1.5-2.5 um 20-30 % below the model on both
+        sides, 2.5-3.5 um -15 % at -0.45, 3.5-5 um +10-13 % on both sides. jwst's table (exactly
+        symmetric, ln P(+-0.45) / P(0) = -1.2 to -0.8) is not accurate there to better than 20 %.
+      - Blue ramp in x (0.7-1.5 um): -9 % at x = -0.25 and +8 % at +0.25, rising to -15 / +12 % at
+        +-0.35; about +-2 % at 2 um. Not a wavelength error: one star's spectra across its 20 visits
+        (`spec_vs_x.py`) differ smoothly in wavelength, with no structure where the PRISM response
+        is steep, and no wavelength shift follows x. It reads as the blue light sitting about 0.05
+        pitches (13 mas) toward -x of the red. NGC 2506 shows no such ramp (within +-4 %), so it
+        belongs to 1133 (commissioning, June 2022); not put in the model.
+      - y edges (|fitted centre| >= 0.35, 115 visits): antisymmetric, data above the model at the
+        -y edge (+1 / +1 / +7 / +15 / +16 % in the five bands) and below at +y (-4 / -2 / -6 / -7
+        / -5 %). Refitting those visits with the model's shutters moved by delta along the slit
+        relative to jwst's slit frame (`xscan_dy.py`, every pixel's slit y and the planned position
+        + delta): delta +0.03 brings the -y edge to within 1 % in every band and the +y edge to
+        -3 / -1 / +4 / +5 / +7 %, and lowers the edge visits' summed chi2 by 64,000 (better in 70 of
+        115); -0.03 and +0.05 are worse. The central control visits' chi2 rises slightly at any
+        delta (+11,000 at +0.03). Every configuration prefers +0.03 over 0 (53: about +0.015) and
+        rejects -0.03 (`dy_by_cfg.py`); a parabola through the summed chi2 puts the minimum at
+        +0.020. One offset for the whole observation.
+      - NGC 2506, the same test (`ngc_dy.py`: 166 visits with |centre| >= 0.3 in ten observations,
+        60 central controls, delta -0.03 to +0.03): the observations disagree (`ngc_dy_by_obs.py`,
+        `dy_obs.png`). v1a and v2 improve at +0.03, v1b and v5 sit near 0, v3b and v7b near
+        -0.015, v3a, v4 and v6 at -0.03 or beyond; over all, 87 of 166 visits are better at -0.015,
+        74 at -0.03, 45 at +0.03 (median chi2 ratio at -0.015: 1.006 at -y, 0.999 at +y).
+        Controls rise by 0.15-0.4 % in chi2 at any delta.
+      - Reading: the model's bars are where the average observation has them, and an observation's
+        bars sit within about +-0.03 slit units (+-14 mas) of jwst's slit frame, the same for its
+        visits (1133) and perhaps different between stars of one observation (v2 improves both
+        ways). 1133's +0.02 is inside that range. At |centre| >= 0.35 an offset of 0.03 changes
+        the flux by 5-15 % (more in the red); inside |centre| < 0.3 by under 0.3 %.
+      - So, as the model stands: compact sources inside |x| < 0.3 and |centre| < 0.3 are described to
+        1.4-1.6 % (0.7-3.5 um) and 2.5 % (3.5-5 um) with the observation's pointing offset in x;
+        near a bar (|centre| >= 0.35) the observation's own registration adds 5-15 %, and at
+        |x| >= 0.4 jwst's table misses by up to 20-30 %.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
