@@ -30,6 +30,11 @@ slope with the star's position (``profile_fit.CENTRE_LAW``), with the scatter he
 observation; and the exposures' fitted offsets against their planned shifts
 (``profile_fit.NOD_OFFSET_LAW``).
 
+The stars are loaded with each observation's bar offset (``bars``: ``bar_offset.ensure`` on each
+calibration workspace), as stage 3 loads a source. Every calibration observation enters every step;
+none is held out (user, 2026-11-05).
+
+    python -m campfire_pipeline.nirspec.optics_calibration bars --root R --obs a,b
     python -m campfire_pipeline.nirspec.optics_calibration stack --root R --obs a,b --out D
     python -m campfire_pipeline.nirspec.optics_calibration score --out D
     python -m campfire_pipeline.nirspec.optics_calibration kernel --root R --obs a,b --select D --out K
@@ -103,6 +108,7 @@ class StarTask:
     quadrant: int = None
     srcy: float = np.nan
     disperser: str = 'prism_clear'
+    bar_offsets: dict = None           # the observation's bar offsets (``bar_offset.table``), as stage 3 applies them
 
     @property
     def key(self):
@@ -112,8 +118,11 @@ class StarTask:
 
 def star_tasks(root, obs_name, disperser='prism_clear', observations_file=None):
     """Every source of a reduced observation with a stage-3 science exposure in the
-    disperser, one task per detector. Reads the root only (no workspace set-up)."""
+    disperser, one task per detector, with the observation's bar offsets (``bar_offset.json``
+    in its workspace, measured by the ``bars`` step; without it the stars are loaded with
+    none, and a warning says so). Reads the root only (no workspace set-up)."""
     from astropy.io import fits
+    from campfire_pipeline.nirspec import bar_offset as BO
     from campfire_pipeline.nirspec.observation import Observation
     from campfire_pipeline.nirspec import stage3 as S3
 
@@ -125,6 +134,10 @@ def star_tasks(root, obs_name, disperser='prism_clear', observations_file=None):
     every = every[every['filter_grating'] == disperser]
     if len(every) == 0:
         return []
+    bars = BO.table(obs.workspace_dir)
+    if disperser.replace('_', '/').upper() not in bars:
+        import warnings
+        warnings.warn(f'{obs_name} {disperser}: no bar offset measured (optics_calibration bars); loaded without one')
     sci = S3._science_files(every)
     out = []
     for sid in np.unique(sci['source_id']):
@@ -135,8 +148,19 @@ def star_tasks(root, obs_name, disperser='prism_clear', observations_file=None):
             out.append(StarTask(obs=obs_name, source_id=int(sid), detector=str(det).upper(),
                                 groups=[[str(p) for p in g] for g in t['groups']], overrides=t['overrides'],
                                 science=[str(n) for n in t['science']], quadrant=int(h.get('MSAQUAD', 0)),
-                                srcy=float(h.get('SRCYPOS', np.nan)), disperser=disperser))
+                                srcy=float(h.get('SRCYPOS', np.nan)), disperser=disperser, bar_offsets=bars or None))
     return out
+
+
+def step_bars(root, observations, processes=1, log=print):
+    """Measure the bar offset of every disperser of the calibration observations
+    (``bar_offset.ensure``: kept in each workspace's ``bar_offset.json``, measured again only
+    when stale), so the stars are loaded as stage 3 loads a source."""
+    from campfire_pipeline.nirspec import bar_offset as BO
+    for name in observations:
+        bars = BO.ensure(os.path.join(root, 'products', 'nirspec', name), processes=processes, log=log)
+        log(f'{name}: ' + '; '.join(f'{d} ' + ' '.join(f'q{q} {v:+.4f}' for q, v in sorted(qs.items()))
+                                    for d, qs in sorted(bars.items())))
 
 
 def tasks_for(root, observations, dispersers=('prism_clear',)):
@@ -145,7 +169,8 @@ def tasks_for(root, observations, dispersers=('prism_clear',)):
 
 
 def load_star(task):
-    return PF.load_source(task.groups, bkg_overrides=task.overrides, science=set(task.science))
+    return PF.load_source(task.groups, bkg_overrides=task.overrides, science=set(task.science),
+                          bar_offsets=task.bar_offsets)
 
 
 def saturated_flags(exps):
@@ -942,10 +967,10 @@ def fit_x_loss(pairs, lam0=X_LAM0, nit=4):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[1], formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('step', choices=('stack', 'score', 'kernel', 'solve', 'laws'))
+    ap.add_argument('step', choices=('bars', 'stack', 'score', 'kernel', 'solve', 'laws'))
     ap.add_argument('--root', help='CAMPFIRE root of the reduced calibration observations')
     ap.add_argument('--obs', help='comma-separated observations')
-    ap.add_argument('--out', required=True, help='output directory')
+    ap.add_argument('--out', help='output directory (every step but bars)')
     ap.add_argument('--dispersers', default='prism_clear', help='comma-separated, e.g. prism_clear,g395m_f290lp')
     ap.add_argument('--optics', default=None, help='a model file in place of the shipped data/nirspec_optics.json')
     ap.add_argument('--select', help='kernel: the stack run whose clean star-ranges are fitted')
@@ -953,7 +978,11 @@ def main(argv=None):
     ap.add_argument('--version', help='solve: the new model\'s version')
     ap.add_argument('--processes', type=int, default=1)
     a = ap.parse_args(argv)
-    if a.step == 'stack':
+    if a.step != 'bars' and not a.out:
+        ap.error(f'{a.step} needs --out')
+    if a.step == 'bars':
+        step_bars(a.root, a.obs.split(','), processes=a.processes)
+    elif a.step == 'stack':
         step_stack(a.root, a.obs.split(','), a.out, dispersers=tuple(a.dispersers.split(',')), optics_path=a.optics,
                    processes=a.processes)
     elif a.step == 'score':
