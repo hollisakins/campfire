@@ -82,7 +82,7 @@ last column says where it is described.
 | Master-background spectrum as a secondary product, also through the 1-D combine of several exposure groups | Built (530bedb5 for the combine) | 4 |
 | Per-source runs give the same products as full runs | Built | 3.9 |
 | Optimal extraction's 3-pixel boxcar fallback normalised (it returned a third of the flux) | Built (merged 207bd0dc) | 4 |
-| End-to-end runs | p1 (2026-10-31, 3 h 14 min, 6 workers) and uncover2 (2026-11-02, 4 h 45 min), both before `FIT_VERSION` 6. Stage 3 of p1 on `FIT_VERSION` 7 running (2026-11-05, docs session, `scratch/claude/e2e_p1/run_stage3_fv7_docs.log`) | 3.9, 5 (V30) |
+| End-to-end runs | p1 (2026-10-31, 3 h 14 min, 6 workers) and uncover2 (2026-11-02, 4 h 45 min), both before `FIT_VERSION` 6. Stage 3 of p1 on `FIT_VERSION` 7 (2026-11-05, docs session, 207bd0dc, 12 workers): 83.8 min, 681 products, no errors (`scratch/claude/e2e_p1/run_stage3_fv7_docs.log`); its products not yet reviewed | 3.9, 5 (V30) |
 | Stage 1 detector-background mask extended past the calibrated range | Open | 3.1 |
 | Speed up stage 2's per-source work (on p1: rectification 25 min, stage 2b about 60 min) | Goal (user, 2026-10-31); not started; profile first | 5 (V30) |
 
@@ -3096,7 +3096,7 @@ a fix or needs another field or disperser), **To make**.
 | V27 | Injection tests | recovered vs injected flux, bias and scatter against S/N | bias within about 1 % | To make (earlier results lost in the wipe) | none |
 | V28 | Shape tests on bright sources | 5-pixel boxcar shape test; stars against the PSF table | shape within about 1 % | To make (earlier results lost) | none |
 | V29 | Master-background spectrum vs nodded spectrum | the secondary spectrum against `fnu` for sources with clean nods | agree within the expected 3-5 % extra noise | To make | none |
-| V30 | Runtime per exposure | wall time per phase (step 1, 2a, step 2, maps, first pass, joint, final) | no step adds an hour per exposure | In progress. End-to-end p1 run (2026-10-31, isolated root `scratch/claude/e2e_p1`, 6 workers, 12 rate files, 2,886 cutouts): step 1 1 min; stage 2a `Spec2Pipeline` 24 min; `fix_units` 7 s; rectification of every cutout (`resample_single_exposure`) 25 min; plots 1 min; step 2 9 min; stage 2b about 60 min for 962 groups (about 22 s per group per worker); stage 3 pending. The rectification and stage 2b are the two largest pieces and neither is new in v2 | `scratch/claude/e2e_p1/run.log` |
+| V30 | Runtime per exposure | wall time per phase (step 1, 2a, step 2, maps, first pass, joint, final) | no step adds an hour per exposure | In progress. End-to-end p1 run (2026-10-31, isolated root `scratch/claude/e2e_p1`, 6 workers, 12 rate files, 2,886 cutouts): step 1 1 min; stage 2a `Spec2Pipeline` 24 min; `fix_units` 7 s; rectification of every cutout (`resample_single_exposure`) 25 min; plots 1 min; step 2 9 min; stage 2b about 60 min for 962 groups (about 22 s per group per worker). Stage 3 on `FIT_VERSION` 7 (2026-11-05, 12 workers, 681 products, `run_stage3_fv7_docs.log`): 83.8 min; bar offset 2 s (reused); PRISM joint pass 212 s, same-slitlet revision 34 s, joint pass again 58 s (16 sources), Spec3 106 s, products 310 s; G395M joint pass 1771 s, revision 72 s, joint pass again 621 s (19 sources), Spec3 403 s, products 1363 s; final extraction 45 s. The rectification and stage 2b are the two largest pieces and neither is new in v2 | `scratch/claude/e2e_p1/run.log` |
 
 ---
 
