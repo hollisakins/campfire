@@ -97,6 +97,16 @@ export const docsNav: DocPage[] = [
         description: 'Count rates, the detector background, calibrated 2-D spectra',
       },
       {
+        title: 'NIRSpec: Backgrounds',
+        slug: 'reduction/nirspec/backgrounds',
+        description: 'Master background, closed and open shutters, nod subtraction',
+      },
+      {
+        title: 'NIRSpec: Slit losses',
+        slug: 'reduction/nirspec/slit-losses',
+        description: 'The model of the MSA optics and how it was derived',
+      },
+      {
         title: 'NIRCam Pipeline',
         slug: 'reduction/nircam',
         description: 'Imaging reduction and mosaics',
