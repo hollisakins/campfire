@@ -1727,6 +1727,29 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
           excess survives it. The edges differ from each other and change with wavelength, as the
           two halves of the background edges did (3.7, the bar offset: lower minus upper -0.014 in
           the survey) and as the empirical bar-shadow table's lopsided edges do (3.10).
+        - What the edges would have to do (`edge_grid.py`, `edge_grid.json`; the user asked for the
+          fit, 2026-11-05). The model's MOS1x3 point transmission rebuilt with every opening moved
+          by a shift and widened on both sides (the shipped tables' own diffraction and kernel;
+          unchanged it reproduces them to 0.4 %), on a grid of -0.03 to +0.03 slit units, against
+          the 1133 residuals within 0.37 pitch:
+
+          | Band | Shift | Widen per side | Residual -y / +y at 0.25-0.37 pitch, before -> after |
+          |---|---|---|---|
+          | 1.0 um | -0.030 (grid edge) | -0.004 | +0.4 / -1.8 -> +0.1 / -1.0 % |
+          | 3.0 um | -0.019 | +0.004 | +3.2 / -0.1 -> +0.3 / +0.3 % |
+          | 4.5 um | -0.025 | +0.009 | +6.9 / -2.6 -> +1.1 / -0.8 % |
+          | 4.9 um | -0.019 | +0.008 | +6.7 / -1.6 -> +0.7 / -0.6 % |
+
+          A shift of the openings against the model's frame is the same as a bar offset larger by
+          that much: the 1133 stars want about 0.02 slit units more than the background measured
+          (+0.0099), the zero-point question of the bar offset again, now from fluxes. A pure shift
+          cannot go into the optics (the background measurement would move with it); it is a
+          constant between the background's offset and the stars'. The widening in the red runs the
+          other way from 1133's background edges (its outer openings 0.0125 narrower per side), so
+          the edges between two open shutters, which the stars sit next to, and the outer edges
+          next to a closed shutter, which the background measures, may differ. Next: the background
+          halves per band for every calibration observation (`bo_set_bands.zsh`, `bo2_*.json`),
+          then one joint fit.
       - Stocktake of the whole optics work against what STScI provides and plans (2026-11-05):
         `scratch/claude/extraction-v2/review/stocktake.md` (duplication, ranked risks, how to keep
         the boundary with CRDS clean).

@@ -275,6 +275,12 @@ def measure(canonicals, workspace, processes=1, cache_dir=None, max_canonicals=M
         v = fit(s, s['quadrant'] == q)[0]
         if np.isfinite(v):
             out['quadrants'][str(q)] = v
+    # the two halves per wavelength band (the band edges of ``_band_edges``): where the lower and the upper edges
+    # sit against the model at each wavelength, for the calibration of the shutter edges (optics_calibration)
+    out['bands'] = {}
+    for b in range(N_BANDS):
+        _, lo, hi = fit(s, s['band'] == b, MIN_PIXELS // N_BANDS)
+        out['bands'][str(b)] = dict(lower=lo, upper=hi)
     if np.isfinite(out['offset']):
         out['applied'] = {str(q): out['offset'] + QUADRANT_PATTERN[q] for q in (1, 2, 3, 4)}
     return out
