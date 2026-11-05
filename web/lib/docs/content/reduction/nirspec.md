@@ -9,6 +9,7 @@ This page is the map. Each part of the reduction has its own page, with figures 
 - [Slit losses and the MSA optics](/docs/reduction/nirspec/slit-losses): how much of a source's light the shutters let through, and how CAMPFIRE models it
 - [Extraction](/docs/reduction/nirspec/extraction): fitting each source's 2-D spectrum, overlapping spectra, what the reported flux means
 - [Redshifts and lines](/docs/reduction/nirspec/redshifts): template redshifts and emission-line fluxes
+- [Describing the reduction](/docs/reduction/nirspec/describing): versions to quote, a paragraph to adapt, the choices that are yours
 
 ## Describing the reduction in a paper
 

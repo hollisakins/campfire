@@ -112,6 +112,16 @@ export const docsNav: DocPage[] = [
         description: 'The source model, overlapping spectra, the reported flux',
       },
       {
+        title: 'NIRSpec: Redshifts and lines',
+        slug: 'reduction/nirspec/redshifts',
+        description: 'Template redshifts and emission-line fluxes',
+      },
+      {
+        title: 'NIRSpec: Describing the reduction',
+        slug: 'reduction/nirspec/describing',
+        description: 'Versions to quote, a paragraph to adapt, choices to state',
+      },
+      {
         title: 'NIRCam Pipeline',
         slug: 'reduction/nircam',
         description: 'Imaging reduction and mosaics',
