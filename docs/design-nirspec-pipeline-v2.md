@@ -610,8 +610,8 @@ slit units from the planned position, width median 0.15), `nirspec/profile_chain
 **Open.**
 - Default width 0.15 vs 0.21 slit units (user to decide; raised 2026-10-23). Since FIT_VERSION
   6 it sets a faint source's flux scale (19-28 % at 0.15). p1 own fits have median 0.143 and
-  nothing supports 0.21 (review round, 2026-11-04); whether the width's spread goes into the
-  error of a default-shape source is open.
+  nothing supports 0.21 (review round, 2026-11-04). The width's spread (about +-15 % in flux)
+  stays out of the reported error (user, 2026-11-04): `fnu_prof_err` is statistical only.
 - Re-run the injection and shape tests on the merged pipeline, since the old figures are lost
   (extraction session).
 
@@ -1465,13 +1465,39 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
         trend with S/N (0.160 / 0.135 / 0.139 for gate S/N 25-40 / 40-80 / >80, quartiles about
         0.10-0.22); free fits below the gate 0.133. Nothing in p1 supports 0.21. The spread
         (quartiles 0.10-0.22) is the real uncertainty of a source without a measured size: about
-        +-15 % in flux, not in the error column.
+        +-15 % in flux. It stays out of the error column (user, 2026-11-04).
       - Not yet addressed: the x correction was fitted and checked on the same NGC 2506 pairs
         (held out by star, but pairs share reference visits) and never tested on the gratings;
         the FIT_VERSION 5 check-1 numbers in the CHANGELOG mix the SRCYPOS unit fix with the
-        model change; `fnu_prof_err` is statistical only (no shape, kernel, centre-law or x-loss
-        term; check 1 measures 6-12 % for the same star at different positions); the x
+        model change; `fnu_prof_err` is statistical only by decision (user, 2026-11-04: no
+        shape, kernel, centre-law or x-loss term; check 1 measures 6-12 % for the same star at
+        different positions); the x
         transmission reuses the kernel's one-sided slit-direction shoulder.
+    - Data for the along-dispersion loss (search, 2026-11-04; `xcal_mast_search.py`,
+      `xcal_keywords.py`, `xcal_msa_repeats.py`, `xcal_pattern.py`, `xcal_archive.py`; MSA files
+      in `scratch/claude/extraction-v2/xcal_msa/`). Sources planned at two or more positions
+      across the shutter, from the MSA files:
+      - 1133 (commissioning, "Slit Loss Characterization for MSA shutters", PRISM, June 2022):
+        34 stars, each at 20 positions on a grid x 0.15-0.85, y 0.3-0.9 of the shutter (0.5 the
+        centre); 128 uncal files, 40 GB, not downloaded.
+      - 12497 obs 4 (G140H): 45 stars stepped along the dispersion at fixed y, x 0.02-0.94 in steps
+        of 0.13, plus one PRISM configuration; on disk and through stage 2 in the scratch root
+        (`nrscal_wavecal_c4_p4`). Below 1.9 um only.
+      - 1117 (target acquisition tests, three roll angles): G140M 66 stars repeated, 37 over more
+        than 0.2 in x; PRISM 13. 22.5 GB.
+      - 2136 (slit-stepping galaxies, G140H): 43 galaxies at 14 positions, x 0.2-0.95. 27 GB.
+      - 6642: PRISM 46 stars repeated across its seven configurations (22 over more than 0.2; only
+        obs 2 is on disk); each grating 6 stars, 2 over 0.2.
+      - The local archive (S/N >= 10, same grating in two or more observations, x from each
+        product's EXPOSURES table): PRISM 1073 objects (550 over 0.2 in x), G395M 320 (177),
+        G235M 92 (51), G395H 49 (23), G140M 28 (16), G235H 20 (4); mostly JADES and RUBIES.
+        Galaxies, so a joint test of the x correction and the extended-source ratio; the per-
+        exposure files are in the product tarballs.
+      - No use: 9278 ("MOS Pathlosses Extension") and 10208 are in MAST but not executed; 4465
+        has virtual sources at the default position (x must be measured from the data); 1128,
+        1492, 6154, 6643, 2640 and 5437 have no source at two x positions.
+      No program steps stars along the dispersion in a red grating; the archive's G395M galaxies
+      are the only red grating data.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
