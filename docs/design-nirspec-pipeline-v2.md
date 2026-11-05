@@ -1659,9 +1659,27 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
           +0.007, +0.005, +0.002; survey -0.015 (venus_pg004), -0.010 (ember_egs_p1), -0.007
           (uncover2), -0.004 (capers_uds_p8), -0.001 (ember_cosmos_p14). Quadrant pattern -0.0042 / +0.0003 / -0.0009 / +0.0047
           (`QUADRANT_PATTERN`, the same against either reference).
+        - Galaxies (`galaxy_ab.py`, `galaxy_scan.py`, `galaxy_scan_sum.py`; ember_cosmos_p1 PRISM in
+          the isolated e2e_p1 root, offset -0.0056, quadrants -0.010 to -0.001; 67 sources with
+          |SRCYPOS| >= 0.26 and 40 central ones through the production shape chain, other slitlets'
+          light off, with and without the offset): no source changes shape; central sources move
+          by under 0.3 %. Default-shape sources near a bar (26; centre at the planned position, so
+          the offset moves them against the model's bars) move by a median +0.2 to +0.9 % in the
+          five bands, 10-90 % within +-3 %, the size the census predicts. A fitted centre follows
+          the offset (1.07-1.14 x), so an own-shape source keeps its place against the bars and its
+          flux moves by -0.1 % per 0.01 on average. The galaxies cannot test the offset or its zero
+          point: refitted at the measured offset plus c = -0.012 to +0.018, the summed chi2 near a
+          bar jumps by thousands between neighboring c without a trend, and a source's 1.5-2.5 um
+          flux moves by a median 3.8 % (90 %: 23 %) between fits 0.006 apart. That jitter is the
+          fit near a bar, not the offset, and is its own open item.
         - A grating sees the same offset: G395M of ember_cosmos_p14 +0.0012 against its PRISM
-          -0.0012. So the offset belongs to the observation (where the MSA and the telescope put
-          the slits), not to the grating wheel; each disperser is measured anyway.
+          -0.0012; ember_cosmos_p1 G395M -0.0011 against PRISM -0.0056 (the gratings may sit
+          0.002-0.005 higher; two observations). So most of the offset belongs to the observation
+          (where the MSA and the telescope put the slits), with perhaps a small part from the
+          grating wheel; each disperser is measured anyway.
+      - Stocktake of the whole optics work against what STScI provides and plans (2026-11-05):
+        `scratch/claude/extraction-v2/review/stocktake.md` (duplication, ranked risks, how to keep
+        the boundary with CRDS clean).
       - So, as the model stands: compact sources inside |x| < 0.3 and |centre| < 0.3 are described to
         1.4-1.6 % (0.7-3.5 um) and 2.5 % (3.5-5 um) with the observation's pointing offset in x;
         near a bar (|centre| >= 0.35) the observation's own bar offset is now in the model, measured
