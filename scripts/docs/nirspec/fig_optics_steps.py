@@ -81,11 +81,8 @@ titles = ("1. Arriving at the MSA: the telescope's diffraction pattern",
           "2. Spread by the telescope's wavefront error and pointing jitter (the kernel, measured from stars)",
           '3. Transmitted by the MSA: a sharp cut at the shutter edges',
           '4. Reaching the detector: edge diffraction partly lost at the pupil stop, detector blur, 0.1" pixels')
-fig = plt.figure(figsize=(11.5, 10.4), constrained_layout=True)
-gs = fig.add_gridspec(4, 2, width_ratios=[4.2, 1])
-axes = [fig.add_subplot(gs[0, 0])]
-axes += [fig.add_subplot(gs[r, 0], sharex=axes[0]) for r in (1, 2, 3)]
-top = 1.12
+fig, axes = plt.subplots(4, 1, figsize=(10, 10.4), sharex=True, constrained_layout=True)
+top, floor = 3.0, 1e-4                                                # log axis: room above the peak for the legend
 for row, (ax, title) in enumerate(zip(axes, titles)):
     for kk in (-1.5, -0.5, 0.5, 1.5):                                # the bars, and closed shutters beyond
         lo, hi = kk * O.PITCH_AS - (O.PITCH_AS / 2 - O.H_OPEN), kk * O.PITCH_AS + (O.PITCH_AS / 2 - O.H_OPEN)
@@ -101,35 +98,38 @@ for row, (ax, title) in enumerate(zip(axes, titles)):
         label = f'{lam:g} µm' + (f': {100 * share:.0f}% of the light' if share is not None else '')
         if row == 1:                                                 # step 1 for comparison
             ax.plot(y, cv['raw'] / peak, color=color, lw=0.9, ls='--', alpha=0.8)
-        ax.fill_between(y, 0, curve, color=color, alpha=0.18, lw=0)
+        curve = np.maximum(curve, floor * 0.5)
+        ax.fill_between(y, floor * 0.5, curve, color=color, alpha=0.18, lw=0)
         ax.plot(y, curve, color=color, lw=1.8, label=label)
-    ax.set_ylim(0, top)
+    ax.set_yscale('log')
+    ax.set_ylim(floor, top)
     ax.set_xlim(-0.95, 0.95)
     ax.set_ylabel('light per arcsec\n(1 = peak in step 1)')
     ax.set_title(title, fontsize=10.5, loc='left')
     ax.legend(loc='upper left', fontsize=9)
-    if row < 3:
-        ax.tick_params(labelbottom=False)
 axes[1].plot([], [], color=C.MUTED, lw=0.9, ls='--', label='step 1, for comparison')
 axes[1].legend(loc='upper left', fontsize=9)
-axes[0].text(0.5 * O.PITCH_AS, 0.82 * top, 'bar', ha='center', fontsize=8.5, color=C.MUTED)
-axes[0].text(0.94, 0.5 * top, 'closed\nshutter', ha='right', fontsize=8.5, color=C.MUTED)
+axes[0].text(0.5 * O.PITCH_AS, 0.93, 'bar', ha='center', va='top', fontsize=8.5, color=C.MUTED,
+             transform=axes[0].get_xaxis_transform())
+axes[0].text(0.94, 0.93, 'closed\nshutter', ha='right', va='top', fontsize=8.5, color=C.MUTED,
+             transform=axes[0].get_xaxis_transform())
 axes[-1].set_xlabel("position along the slit (arcsec; 0 = center of the source's shutter)")
 
-kx = fig.add_subplot(gs[1, 1])
+kx = axes[1].inset_axes([0.765, 0.47, 0.215, 0.36])                   # the kernel, inside step 2
 dist = np.abs(offs * O.SLIT)                                          # how far each shift moves the light
 s = np.linspace(0.0, 0.6, 241)
 for lam, color in zip(args.wavelengths, (C.WAVE_COLORS[0], C.WAVE_COLORS[-1])):
     k = curves[lam]['kernel']                                         # on the pipeline's uniform grid, sum 1
     beyond = np.array([k[dist > v].sum() for v in s])
-    kx.plot(s, np.maximum(beyond, 1e-5), color=color, lw=1.8, label=f'{lam:g} µm')
+    kx.plot(s, np.maximum(beyond, 1e-5), color=color, lw=1.5)
 kx.set_yscale('log')
 kx.set_ylim(1e-3, 1.2)
 kx.set_xlim(0, 0.6)
-kx.set_xlabel('distance (arcsec)')
-kx.set_ylabel('share of the light moved\nfarther than that')
-kx.set_title(f'the kernel ({args.detector})', fontsize=10.5, loc='left')
-kx.legend(loc='upper right', fontsize=8.5)
+kx.tick_params(labelsize=7.5)
+kx.set_xlabel('distance (arcsec)', fontsize=8, labelpad=1)
+kx.set_title(f'kernel ({args.detector}): share of the light\nmoved farther than a distance', fontsize=8,
+             loc='left')
+kx.patch.set_facecolor('white')
 fig.suptitle(f'A point source {args.position * O.PITCH_AS:.2f}" ({args.position:g} of a shutter pitch) from the '
              'center of the middle shutter of a three-shutter slitlet', x=0.01, ha='left', fontsize=10,
              color=C.MUTED)
