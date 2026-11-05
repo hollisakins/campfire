@@ -1603,13 +1603,38 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
         0.21; 28 % have |SRCYPOS| >= 0.30 (|centre| >= 0.35) and 6 % >= 0.40. With the table
         above, an offset of 0.03 changes the flux of a point source by more than 5 % for 13 % of
         sources at 1 um, 28 % at 3 um and 41 % at 5 um. Extended sources feel less.
-      - The offset does not follow the grating-wheel tilt readings (`gwa_tilt.py`): v4 and 1133 have
-        nearly the same GWA_XTIL (0.3366, 0.3364) and want -0.03 and +0.02.
+      - The offset measured from the background, with no star (`bg_edge.py`, `bg_edge_fit.py`,
+        `bg_vs_tilt.py`, `bg_edge_quads.py`, figure `bg_vs_tilt.png`): in every empty shutter the
+        background lights the shutter evenly, so its profile across the slit is the open area
+        blurred by the optics. Each pixel's surface brightness over its exposure's background,
+        divided by the shutter's own centre level per band, is compared with the shipped prism
+        bar-shadow table at the pixel's slit y plus a trial shift. Only the half facing away from
+        the star and the steep part (0.2-0.75 pitch from the centre) are used; the two halves are
+        fitted apart, so a shift moves both the same way and a width change moves them opposite.
+        Moving the data by +0.020 pitch through the table is recovered as +0.022 / +0.023.
+        - 1133 +0.017 slit units (the stars said +0.020), the same in all four quadrants (+0.014 to
+          +0.020) and the three bands. NGC 2506 between -0.014 and 0 (v3b -0.014, v3a -0.009, v4
+          -0.007, v2 -0.006, the rest within 0.003); the stars' spread there (+-0.03) is not the bars.
+        - Survey observations (uncover2, eight EMBER pointings, capers_uds_p8, venus_pg004;
+          hundreds of empty shutters each, the two halves agree to 0.001, exposures to 0.001-0.003):
+          -0.009 (venus_pg004) to +0.004, rms 0.004. The EMBER pointings trained the table, so
+          their mean is 0 by construction; their spread is not. Five calibration pointings on one
+          day (12497, 2026-01-06) give -0.004, +0.012, +0.009, +0.008: the offset changes between
+          observations hours apart.
+        - Across the MSA: one number per observation plus a fixed quadrant pattern, the same in
+          every survey observation: quadrant 1 -0.004, 2 +0.000, 3 -0.001, 4 +0.005 from the
+          observation's value (scatter 0.001). Small next to the per-observation term.
+        - Not predicted by the grating-wheel tilt readings or the date: fitting the 27 shifts on
+          GWA_XTIL, GWA_YTIL or both leaves the rms at 0.0064 (r = -0.10 and -0.03).
+        - What the survey offsets do (`dy_flux_census.py` with 0.009): over 2 % flux change for
+          10 / 23 / 32 % of sources at 1 / 3 / 5 um, over 5 % for 8 / 11 / 0 %, the large ones
+          on the bar itself (|centre| >= 0.45).
       - So, as the model stands: compact sources inside |x| < 0.3 and |centre| < 0.3 are described to
         1.4-1.6 % (0.7-3.5 um) and 2.5 % (3.5-5 um) with the observation's pointing offset in x;
-        near a bar (|centre| >= 0.35) the observation's own registration adds 5-15 % or more, and
-        in the red already from |centre| 0.25 (3-6 % at 5 um), and at
-        |x| >= 0.4 jwst's table misses by up to 20-30 %.
+        near a bar (|centre| >= 0.35) the observation's own bar offset (survey -0.009 to +0.004,
+        calibration up to +0.017) adds a few percent and up to 10 % at 3 um, more on the bar; it
+        can be measured from each observation's own background to about 0.002. At |x| >= 0.4
+        jwst's table misses by up to 20-30 %.
 - Outputs and figures: `scratch/claude/psf_cal_law/` (`psf_table_wing3_after_{S,SA,SB}.json`,
   `smooth_joint_wing3_after/`, `smooth_coefs.log`, `smooth_test.log`, figures `psf_stack_smooth.png`,
   `psf_parameters_smooth.png`, `psf_heldout.png`; the alternating-fit runs in
