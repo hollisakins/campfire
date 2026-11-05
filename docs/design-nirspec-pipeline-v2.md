@@ -67,7 +67,8 @@ last column says where it is described.
 | Stage 2a: one `Spec2Pipeline` call per rate file, background-only slitlets in `bkgslits/` | Built | 3.1 |
 | Empirical bar-shadow tables, PRISM, G140M, G235M, G395M; no bar-shadow division of science frames | Built; settled (user, 2026-10-30); held-out check done (2026-11-03) | 3.2 |
 | Master background: step 1 (count rate, before 2a; tables in the rate file) and step 2 (calibrated, end of 2a; `_mbkg.fits`); painted past both ends of the calibrated range; no per-slitlet or smooth scaling | Built (master background 1.7); deploy, database columns and web built (32a5226c) | 3.3, 3.4 |
-| Smoothing the per-exposure grating background | Open: trial only, not approved | 3.3 |
+| Smoothing the per-exposure grating background | Not approved (user, 2026-10-30: some master-background noise is expected); a trial only if asked | 3.3 |
+| "Master background likely better" marks (`MBKGPREF` / `MBKGWHY`; spectra columns `mbkg_preferred`, `mbkg_reason`, `n_exp`, `n_exp_bkg`) | Decided (user, 2026-11-01: the rule approved, informational reasons made quantitative); Built | 4 |
 | Stuck-closed shutters by a per-shutter template fit, every disperser | Built: step 1 fits and calls every shutter (`SHUTAMP`, `CALLS`), `cfpipe nirspec detect-stuck` merges the calls into the stuck list; physical keys everywhere (`stuck_list.py`, database, web, deploy). Open: the user's verdict on the G395M review packet; G140M / G235M not yet checked | 3.5 |
 | Trace maps: one per exposure, built in step 1 from every commanded shutter, stored in the rate file, followed past both ends of the calibrated range | Built; stage 3 reads them (`tracemaps/` is its working copy) | 3.4, 3.6 |
 | Forward-model profile extraction on by default; shape chain (own fit above the gate, else the PRISM shape, else the default); instrument model fixed, never fitted; no per-exposure pointing offsets; each nod at its planned position | Built | 3.7 |
@@ -3109,8 +3110,6 @@ the change log (10).
 | Verdict on the G395M stuck review packet (27 shutters) and the thresholds | `scratch/claude/stuck_shutters/p1_g395m_stuck_review.pdf` |
 | Default galaxy width | 0.15 today; the population says 0.143 (stocktake: close it at 0.15 and state the +-15 %) |
 | Neighbour scan: `report_only` or `auto_override` | |
-| "Master background likely better" columns in archive products | 3.9 |
-| Grating background smoothing | trial only |
 | Stage 1 footprint past the calibrated range | 3.1 |
 
 **Speed and cleanup.**
