@@ -29,6 +29,9 @@ p = C.parser(__doc__.splitlines()[0], obs=False)
 p.add_argument('--wavelengths', type=float, nargs=2, default=[1.0, 5.0], help='µm, blue and red')
 p.add_argument('--position', type=float, default=0.3, help='source position, shutter pitches from the center')
 p.add_argument('--detector', default='NRS1', choices=['NRS1', 'NRS2'], help='whose kernel')
+p.add_argument('--stars', default=None,
+               help="star_profiles.py's JSON: calibration stars' light along the slit, drawn on step 4 (its bands "
+                    'must be the figure\'s wavelengths; the first band goes with the first wavelength)')
 args = p.parse_args()
 C.setup_root(args.root)
 
@@ -107,6 +110,28 @@ for row, (ax, title) in enumerate(zip(axes, titles)):
     ax.set_ylabel('light per arcsec\n(1 = peak in step 1)')
     ax.set_title(title, fontsize=10.5, loc='left')
     ax.legend(loc='upper left', fontsize=9)
+if args.stars:                                                        # calibration stars on step 4
+    with open(args.stars) as fh:
+        S = json.load(fh)
+    win = 1.6 * 1.15 * 0.46                                           # the stars' columns were summed over |y| < 1.6 pitch
+    edges = np.arange(-0.95, 0.9501, 0.02)
+    mid = 0.5 * (edges[1:] + edges[:-1])
+    for (key, band), lam, color in zip(S['bands'].items(), args.wavelengths, (C.WAVE_COLORS[0], C.WAVE_COLORS[-1])):
+        ys, vs = np.asarray(band['y'], float), np.asarray(band['v'], float)
+        if ys.size == 0:
+            continue
+        cv = curves[lam]
+        total = cv['det'][np.abs(y) < win].sum() * dy / cv['raw'].max()   # the model's light over the same rows
+        med, lo, hi = (np.full(mid.size, np.nan) for _ in range(3))
+        for i in range(mid.size):
+            s = (ys >= edges[i]) & (ys < edges[i + 1])
+            if s.sum() >= 20:
+                med[i], lo[i], hi[i] = np.percentile(vs[s], [50, 25, 75]) * total
+        good = np.isfinite(med) & (med > 0)
+        axes[3].vlines(mid[good], np.maximum(lo[good], 1e-4), hi[good], color=color, lw=0.8, alpha=0.6, zorder=6)
+        axes[3].plot(mid[good], med[good], 'o', ms=3.6, mfc='white', mec=color, mew=1.1, zorder=7,
+                     label=f'calibration stars, {key.replace(":", "-")} µm ({band["n_visits"]} visits)')
+    axes[3].legend(loc='upper left', fontsize=9)
 axes[1].plot([], [], color=C.MUTED, lw=0.9, ls='--', label='step 1, for comparison')
 axes[1].legend(loc='upper left', fontsize=9)
 axes[0].text(0.5 * O.PITCH_AS, 0.93, 'bar', ha='center', va='top', fontsize=8.5, color=C.MUTED,
