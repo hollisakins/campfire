@@ -299,6 +299,33 @@ def resolve_programs_file(explicit_path=None):
 # Stage config getters
 # ---------------------------------------------------------------------------
 
+# Options removed from [nirspec.<stage>] (2026-11-06 configuration audit): a config that still
+# sets one is told once that it has no effect.
+REMOVED_OPTIONS = {
+    'stage2': {
+        'single_call': 'stage 2a always runs one Spec2Pipeline per rate file (per source only as the fallback)',
+        'extract_bkgslits': 'the background-only slitlets are always extracted',
+        'empirical_barshadow': 'the empirical bar-shadow tables are always used (CRDS for a grating without one)',
+        **{f'master_bkg_{k}': 'fixed in master_bkg.SETTINGS' for k in (
+            'source_pad_px', 'core_frac', 'bin_pixels', 'min_pixels', 'min_bins', 'clip_sigma', 'line_sigma',
+            'line_min_bins', 'excess_min', 'low_min', 'n_iter', 'min_shutters', 'prefer_pool', 'pool_tol',
+            'pool_nsigma', 'pool_bands', 'rate_excess_min', 'rate_low_min', 'stuck_a_cut', 'stuck_min_n',
+            'stuck_guard', 'error_floor', 'quadrant_scales', 'model_check', 'write_2d', 'same_spot_px',
+            'failed_open_scale', 'failed_open_min_pixels', 'failed_open_nod_tol')},
+    },
+}
+_WARNED_REMOVED = set()
+
+
+def _warn_removed(stage_name, merged):
+    from campfire_pipeline.common.io import log
+    for key in sorted(set(merged) & set(REMOVED_OPTIONS.get(stage_name, {}))):
+        if (stage_name, key) not in _WARNED_REMOVED:
+            _WARNED_REMOVED.add((stage_name, key))
+            log(f'config: [nirspec.{stage_name}].{key} was removed and has no effect: '
+                f'{REMOVED_OPTIONS[stage_name][key]}')
+
+
 def get_stage_config(stage_name, config, obs):
     """Build effective config for a NIRSpec pipeline stage.
 
@@ -313,6 +340,7 @@ def get_stage_config(stage_name, config, obs):
     """
     merged = dict(config.get('nirspec', {}).get(stage_name, {}))
     merged.update(obs.stage_overrides.get(stage_name, {}))
+    _warn_removed(stage_name, merged)
     return merged
 
 
@@ -386,8 +414,8 @@ def get_empirical_barshadow_path(grating):
     Derived from CAMPFIRE stage-2a canonicals by
     ``campfire_pipeline/data/Generate_Barshadow_Cals.py`` in the CRDS ``barshadow``
     layout, so ``BarShadowStep`` takes it as ``override_barshadow``; used for the
-    background slitlets of stage 2a when ``[nirspec.stage2].empirical_barshadow`` is on,
-    and by the master background. The H gratings have no table and fall back to CRDS.
+    background slitlets of stage 2a and by the master background. The H gratings have no
+    table and fall back to CRDS.
     """
     name = f"empirical_jwst_nirspec_barshadow_{str(grating).strip().lower()}.fits"
     path = os.path.join(os.path.dirname(__file__), "data", name)

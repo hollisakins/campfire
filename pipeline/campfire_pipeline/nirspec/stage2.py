@@ -266,9 +266,6 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
         overwrite=overwrite,
         wavecorr_override=wavecorr_override,
         extended_refs=extended_refs,
-        single_call=stage_config.get('single_call', True),
-        extract_bkgslits=stage_config.get('extract_bkgslits', True),
-        empirical_barshadow=stage_config.get('empirical_barshadow', False),
     )
 
     if not obs.directories_setup:
@@ -626,8 +623,8 @@ def _run_stage2a_fixedslit(
 #   * Any other failure of the single call falls back to the per-source loop
 #     (``_run_spec2_per_source``, the pre-rework code path kept verbatim) for the
 #     sources the call did not produce, so a pathological slitlet costs time, not
-#     the rate file. ``[nirspec.stage2].single_call = false`` selects that loop
-#     outright (the bit-identity reference).
+#     the rate file. The loop is only that fallback (the ``single_call`` option that
+#     selected it outright was removed in the 2026-11-06 configuration audit).
 
 _ROUND_METAFILE = '{base}_msa_r{index}.fits'
 _ROUND_PRODUCT = '{base}_spec2r{index}'
@@ -1088,20 +1085,17 @@ def run_stage2a_single_rate(
         overwrite: bool = False,
         wavecorr_override=None,
         extended_refs=None,
-        single_call: bool = True,
-        extract_bkgslits: bool = True,
-        empirical_barshadow: bool = False,
         rerun_source_ids=frozenset(),
         rerun_roots=frozenset(),
         **kwargs
     ):
     """Stage 2a for one rate file: every source's canonical, plus the exposure's
-    background-only slitlets (``bkgslits/``) when ``extract_bkgslits``.
+    background-only slitlets (``bkgslits/``).
 
-    ``single_call`` runs one ``Spec2Pipeline`` over an edited full metafile and
-    splits the result (see the module comment above); ``False`` runs the original
-    one-call-per-source loop. Returns the source ids with a canonical (existing
-    or new).
+    One ``Spec2Pipeline`` runs over an edited full metafile and its result is split
+    (see the module comment above); when that call fails, the one-call-per-source
+    loop makes the sources it did not (no background slitlets then). Returns the
+    source ids with a canonical (existing or new).
     """
 
     log(f'Starting stage2a for {os.path.basename(rate_file)}')
@@ -1164,16 +1158,15 @@ def run_stage2a_single_rate(
 
     # The empirical bar-shadow table (campfire_pipeline/data, derived by
     # Generate_Barshadow_Cals.py) replaces the CRDS reference for the background
-    # slitlets when configured and available for this grating; the science slits
-    # never get a bar-shadow correction here (POINT sources, step skipped).
-    barshadow_override = None
-    if empirical_barshadow:
-        from campfire_pipeline.config import get_empirical_barshadow_path
-        _grating = str(fits.getheader(rate_file).get('GRATING', '')).strip()
-        barshadow_override = get_empirical_barshadow_path(_grating)
-        if barshadow_override is None:
-            log(f'No empirical bar-shadow table for {_grating}; the background slitlets of '
-                f'{base} use the CRDS reference')
+    # slitlets of every grating that has one; the others (the H gratings) keep CRDS.
+    # The science slits never get a bar-shadow correction here (POINT sources, step
+    # skipped).
+    from campfire_pipeline.config import get_empirical_barshadow_path
+    _grating = str(fits.getheader(rate_file).get('GRATING', '')).strip()
+    barshadow_override = get_empirical_barshadow_path(_grating)
+    if barshadow_override is None:
+        log(f'No empirical bar-shadow table for {_grating}; the background slitlets of '
+            f'{base} use the CRDS reference')
 
     source_ids_processed = []
     try:
@@ -1196,36 +1189,31 @@ def run_stage2a_single_rate(
             pending.append(source_id)
 
         bkgslits_path = os.path.join(obs.bkgslits_dir, f'{base}_bkgslits.fits')
-        bkg_needed = bool(extract_bkgslits and single_call
-                          and (overwrite or not os.path.exists(bkgslits_path) or root in rerun_roots))
+        bkg_needed = bool(overwrite or not os.path.exists(bkgslits_path) or root in rerun_roots)
 
         if not pending and not bkg_needed:
             log('No source IDs to process, exiting...')
             return source_ids_processed
 
-        if single_call:
-            try:
-                source_ids_processed += _run_spec2_single_call(
-                    rate_file, obs, main_metafile, pending,
-                    bkgslits_path if bkg_needed else None,
-                    msametfl=main_metafile.filename, barshadow_override=barshadow_override,
-                    **common)
-            except KeyboardInterrupt:
-                raise
-            except Exception as e:
-                log(f'Single-call stage2a failed for {base}; falling back to one '
-                    f'Spec2Pipeline call per source', e)
-                _cleanup_round_files(base)
-                remaining = [
-                    sid for sid in pending
-                    if not (os.path.exists(f'{base}_{sid}.fits')
-                            or os.path.exists(_nodata_marker(f'{base}_{sid}')))
-                ]
-                source_ids_processed += _run_spec2_per_source(
-                    rate_file, obs, main_metafile, remaining, **common)
-        else:
+        try:
+            source_ids_processed += _run_spec2_single_call(
+                rate_file, obs, main_metafile, pending,
+                bkgslits_path if bkg_needed else None,
+                msametfl=main_metafile.filename, barshadow_override=barshadow_override,
+                **common)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            log(f'Single-call stage2a failed for {base}; falling back to one '
+                f'Spec2Pipeline call per source', e)
+            _cleanup_round_files(base)
+            remaining = [
+                sid for sid in pending
+                if not (os.path.exists(f'{base}_{sid}.fits')
+                        or os.path.exists(_nodata_marker(f'{base}_{sid}')))
+            ]
             source_ids_processed += _run_spec2_per_source(
-                rate_file, obs, main_metafile, pending, **common)
+                rate_file, obs, main_metafile, remaining, **common)
 
     except KeyboardInterrupt:
         return source_ids_processed

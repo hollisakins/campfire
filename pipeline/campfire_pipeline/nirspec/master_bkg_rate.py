@@ -301,9 +301,8 @@ def _skies(clean_of, centres, opt):
     members, checks = set(), {}
     for det in sorted({b.rsplit('_', 2)[2] for b in clean_of}):
         of_det = {b: sp for b, sp in clean_of.items() if b.endswith(det)}
-        if opt['prefer_pool']:
-            m, c = M.pool_members(of_det, centres[next(iter(of_det))], opt)
-            members |= m; checks.update(c)
+        m, c = M.pool_members(of_det, centres[next(iter(of_det))], opt)
+        members |= m; checks.update(c)
     out = {}
     for base in clean_of:
         det = base.rsplit('_', 2)[2]

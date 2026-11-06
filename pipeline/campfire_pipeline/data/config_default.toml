@@ -49,21 +49,10 @@
 
 [nirspec.stage2]
     set_stellarity = 1.0
-    # One Spec2Pipeline call per rate file over an edited full metafile, split into
-    # the per-source canonicals afterwards (same per-slit arrays as one call per
-    # source, for one CRDS/WCS set-up instead of one per source). false runs the
-    # original one-call-per-source loop, which is also the fallback when the
-    # single call fails.
-    single_call = true
-    # Also extract the MSA plan's background-only slitlets (no catalog source) into
-    # products/nirspec/<obs>/bkgslits/<root>_<nrsN>_bkgslits.fits, calibrated as
-    # extended sources (uniform pathloss, MJy/sr, bar shadow applied). Input of the
-    # master-background derivation; regenerable, never deployed. Needs single_call.
-    extract_bkgslits = true
-    # Use the empirical bar-shadow table (campfire_pipeline/data/empirical_jwst_nirspec_barshadow_<grating>.fits,
-    # derived from our own empty shutters by Generate_Barshadow_Cals.py) instead of the CRDS reference for the
-    # background slitlets; gratings without a table fall back to CRDS. Off until the tables are validated.
-    empirical_barshadow = false
+    # Stage 2a runs one Spec2Pipeline per rate file (the per-source loop only as the
+    # fallback when that call fails), always extracts the MSA plan's background-only
+    # slitlets (bkgslits/), and gives those the empirical bar-shadow tables (CRDS for a
+    # grating without one); none of this is configurable since the 2026-11-06 audit.
     rectify = true
     plot_bkgsub = true
     # Stage 2b: a background exposure that puts another catalog source (the MSA plan's
@@ -79,64 +68,24 @@
     slitlet_neighbor_min_background = 0.02
     slitlet_neighbor_max_distance = 0.75
     empirical_wavecorr = false
-    # Master background (docs/design-nirspec-master-background.md §4): the sky of each
-    # exposure x detector from its empty shutters, written as <root>_<nod>_<nrsN>_mbkg.fits
-    # at the end of stage 2a (always; these knobs set how, never whether). The 1-D sky
-    # comes from the shutter core |f| <= master_bkg_core_frac with master_bkg_bin_pixels
-    # detector pixels per bin; a shutter is rejected when its scale against the sky is
-    # above 1 + master_bkg_excess_min or below 1 - master_bkg_low_min (both at 3 sigma),
-    # or when master_bkg_line_min_bins consecutive bins exceed master_bkg_line_sigma.
-    # Below master_bkg_min_shutters clean shutters the exposure takes its group's pooled
-    # sky. master_bkg_error_floor is the fractional systematic sky_for_slit adds in
-    # quadrature; master_bkg_model_check compares with jwst_backgrounds when installed;
-    # master_bkg_write_2d paints the sky back onto the detector (MBKG2D, 16 MB per file).
-    master_bkg_source_pad_px = 3.0
-    master_bkg_core_frac = 0.2
-    master_bkg_bin_pixels = 2.0
-    master_bkg_min_pixels = 20
-    master_bkg_min_bins = 10
-    master_bkg_clip_sigma = 3.0
-    master_bkg_line_sigma = 4.0
-    master_bkg_line_min_bins = 3
-    master_bkg_excess_min = 0.05
-    master_bkg_low_min = 0.30
-    master_bkg_n_iter = 3
-    master_bkg_min_shutters = 5
-    # Pool unless different: each exposure x detector is painted with the pooled sky of its
-    # exposure group (step 2: every exposure; step 1, in count rate: the same detector),
-    # unless its own clean shutters differ from the pool of the other exposures in one of
-    # master_bkg_pool_bands wavelength bands by more than master_bkg_pool_tol AND
-    # master_bkg_pool_nsigma sigma (shutter-to-shutter scatter); then it keeps its own sky.
-    # The decision and the worst band are recorded (MBKGSRC / MBKGPSRC, MBKGPDEC ...), and
-    # the exposure's own sky is kept in the product either way.
-    master_bkg_prefer_pool = true
-    master_bkg_pool_tol = 0.02
-    master_bkg_pool_nsigma = 3.0
-    master_bkg_pool_bands = 8
-    # step 1 (count rate, before stage 2a): no flat field, so slitlets scatter ~7 % grey
-    # and the selection's thresholds are wider; the stuck call is per exposure root
-    master_bkg_rate_excess_min = 0.15
-    master_bkg_rate_low_min = 0.30
-    master_bkg_stuck_a_cut = 0.3                       # median sky amplitude below this ...
-    master_bkg_stuck_min_n = 2                         # ... from this many nods x detectors ...
-    master_bkg_stuck_guard = 0.5                       # ... with the two detectors' medians this close
-    master_bkg_error_floor = 0.03
-    master_bkg_quadrant_scales = true
-    master_bkg_model_check = true
-    master_bkg_write_2d = true
+    # Master background (docs/design-nirspec-master-background.md §4): the background of
+    # each exposure x detector from its empty shutters, its tables in the rate file (step 1,
+    # before stage 2a) and <root>_<nod>_<nrsN>_mbkg.fits with the background painted back
+    # onto the detector (step 2, end of stage 2a). Always made; its settings are fixed in
+    # the code (master_bkg.SETTINGS) and recorded in each product's header.
+    # master_bkg_plot writes the QA PDF of every exposure x detector (no product depends on it).
     master_bkg_plot = true
     # Extend G140M/F100LP and G235M/F170LP past their nominal red cutoff, using the
     # next-redder grating's calibration: a committed extended photom reference plus
     # extended fflat/sflat/wavelengthrange generated on the fly. Opt-in per observation
     # ([<obs>.stage2]). Only those two grating/filter combos are affected; every other
-    # config runs normally. When true, stage 1's background-subtraction mask auto-widens
-    # for these gratings (see config.get_stage_config) so the extended-order flux is not
-    # subtracted as background before stage 2 can recover it.
+    # config runs normally. Stage 1's mask and the master background follow those traces
+    # to 5.3 um whatever this says.
     extend_g140m_g235m = false
 
     # Stuck-closed shutters: master-background step 1 (before stage 2a) fits every
-    # commanded-open shutter's sky in each rate frame (nirspec/shutter_fit.py), calls the
-    # stuck ones per exposure root (master_bkg_stuck_* above) and merges them into the
+    # commanded-open shutter's background in each rate frame (nirspec/shutter_fit.py), calls
+    # the stuck ones per exposure root (master_bkg.SETTINGS stuck_*) and merges them into the
     # observation's stuck list as auto entries, every disperser. false: the calls are still
     # made and stored (the rate file's CALLS table) but not written to the list.
     detect_stuck_shutters = true
