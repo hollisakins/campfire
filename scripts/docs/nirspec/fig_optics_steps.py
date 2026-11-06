@@ -151,9 +151,8 @@ kx.set_yscale('log')
 kx.set_ylim(1e-3, 1.2)
 kx.set_xlim(0, 0.6)
 kx.tick_params(labelsize=7.5)
-kx.set_xlabel('distance (arcsec)', fontsize=8, labelpad=1)
-kx.set_title(f'cumulative kernel ({args.detector})', fontsize=8.5, loc='left')
-kx.set_ylabel('fraction beyond', fontsize=7.5, labelpad=1)
+kx.set_xlabel('x (arcsec)', fontsize=8, labelpad=1)
+kx.set_title('kernel: light shifted beyond x', fontsize=8.5, loc='left')
 kx.patch.set_facecolor('white')
 fig.suptitle(f'A point source {args.position * O.PITCH_AS:.2f}" ({args.position:g} of a shutter pitch) from the '
              'center of the middle shutter of a three-shutter slitlet', x=0.01, ha='left', fontsize=10,
