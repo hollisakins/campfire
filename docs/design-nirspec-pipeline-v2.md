@@ -83,7 +83,7 @@ last column says where it is described.
 | Per-source runs give the same products as full runs | Built | 3.9 |
 | Optimal extraction's 3-pixel boxcar fallback normalised (it returned a third of the flux) | Built (merged 207bd0dc) | 4 |
 | End-to-end runs | p1 (2026-10-31, 3 h 14 min, 6 workers) and uncover2 (2026-11-02, 4 h 45 min), both before `FIT_VERSION` 6. Stage 3 of p1 on `FIT_VERSION` 7 (2026-11-05, docs session, 207bd0dc, 12 workers): 83.8 min, 681 products, no errors (`scratch/claude/e2e_p1/run_stage3_fv7_docs.log`); its products not yet reviewed | 3.9, 5 (V30) |
-| Stage 1 detector-background mask extended past the calibrated range | Open | 3.1 |
+| Stage 1 detector-background mask extended past the calibrated range | Decided 2026-11-06 for G140M / G235M (always to the extended range); MB session building it | 3.1 |
 | Speed up stage 2's per-source work (on p1: rectification 25 min, stage 2b about 60 min) | Goal (user, 2026-10-31); not started; profile first | 5 (V30) |
 
 ---
@@ -155,9 +155,12 @@ call extracts the MSA plan's background-only slitlets, which the master backgrou
 - Built: loving-bell, CHANGELOG Unreleased ("Stage 2a runs one `Spec2Pipeline` call per rate
   file"). Checked array-for-array against the per-source loop on `ember_cosmos_p1`.
 - `bkgslits/` is a regenerable local intermediate (layout kind `nirspec_bkgslits`).
-- Open (MB session): extend stage 1's `mask_slits` footprint past the calibrated range, so the
-  detector background is not fitted on sky that runs past a trace's calibrated end. Recommended
-  in the merge plan (decision 10); not decided.
+- Stage 1's slit mask for the 1/f fit covers G140M/F100LP and G235M/F170LP traces (and the H
+  gratings with those filters) out to the extended range, whether or not `extend_g140m_g235m` is
+  on (user, 2026-11-06: "yes, always mask the extended traces"). Before, the mask stopped at
+  `override_wavelength_range` (G140M 2.5 um, G235M 4.0 um) and the red tails on NRS2 (to about
+  3.5 / 5.05 um) were fitted as detector background. MB session implements it with the
+  always-extended geometry (3.6).
 
 ### 3.2 Empirical bar shadow
 
@@ -3326,7 +3329,6 @@ the change log (10).
 | Verdict on the G395M stuck review packet (27 shutters) and the thresholds | `scratch/claude/stuck_shutters/p1_g395m_stuck_review.pdf` |
 | Default galaxy width | 0.15 today; the population says 0.143 (stocktake: close it at 0.15 and state the +-15 %) |
 | Neighbour scan: `report_only` or `auto_override` | |
-| Stage 1 footprint past the calibrated range | 3.1 |
 
 **Speed and cleanup.**
 
