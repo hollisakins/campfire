@@ -3283,7 +3283,8 @@ the change log (10).
 | Item | Owner | Waiting on |
 |---|---|---|
 | p1 end to end on the current model (`FIT_VERSION` 8, optics `2026.11-r8`): the docs session's stage 3 rerun used `FIT_VERSION` 7 and `2026.11-w2x`, so it is a check of the earlier model; the stage 1-2 products there are from 2026-10-31 | extraction session | a rerun |
-| A second field (a spurs observation) and G140M / G235M end to end | extraction session | |
+| G140M / G235M bar-shadow tables stop at 1.495 / 2.492 um (the CRDS templates' wavelength axis); every lookup holds the last column (`evaluate_table`, `mode='nearest'`), off by 1.4 / 2.4 % at the nominal red ends and 4-14 % over the `extend_g140m_g235m` range (diffraction model, `extraction-v2/bs_hold_error.py`). Re-derive from SPURS on an axis out to 5.3 um (user, 2026-11-06) | MB session | |
+| A second field (a spurs observation, `extend_g140m_g235m` on) and G140M / G235M end to end: master background, stuck fit, trace maps, contamination and extraction over the extended range; never run through v2 | extraction session | the new G140M / G235M tables; p1 done |
 | Validation plots still to make or redo (5): V22 (joint vs PRISM, 2-D first), V23-V25, V26 (delivered S/N against the archive), V27 (injections), V28 (shape tests on bright sources), V29 (master-background spectrum against `fnu`); V1, V3, V6 redone on the current tables | extraction session (V1, V3, V6: MB session) | |
 | Merge `origin/main` (30 commits) into the branch | extraction session | |
 | One CHANGELOG entry for the extraction (joint first pass, no per-exposure offsets, same-slitlet overrides, maps from the rate file, `FIT_VERSION` 6 and 7, the CRDS boundary) | extraction session | |
