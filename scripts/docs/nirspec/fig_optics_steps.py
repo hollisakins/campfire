@@ -166,10 +166,10 @@ ugs = ufig.add_gridspec(2, 1, height_ratios=[1, 0.42])
 R = [ufig.add_subplot(ugs[0])]
 R.append(ufig.add_subplot(ugs[1], sharex=R[0]))
 top, floor = 3.0, 1e-4
-titles = ("1. Arriving at the MSA: the telescope's diffraction pattern",
-          "2. Convolved with the kernel: the telescope's wavefront error and pointing jitter",
-          '3. Transmitted by the MSA: a sharp cut at the shutter edges',
-          '4. Reaching the detector: edge diffraction partly lost at the pupil stop, detector blur, 0.1" pixels')
+titles = ('1. Telescope PSF at the MSA plane',
+          '2. Convolution with the kernel (wavefront error and pointing jitter)',
+          '3. Truncation by the MSA shutters',
+          '4. Detector plane: pupil-stop loss of edge-diffracted light, detector response, 0.1" pixels')
 
 # --- left: a point source -------------------------------------------------------------------------------
 for row in range(4):
@@ -182,16 +182,16 @@ for row in range(4):
             share = {2: st['passed_frac']}.get(row)
             if row == 1:
                 ax.plot(y, np.maximum(st['raw'], floor * 0.5), color=color, lw=0.9, ls='--', alpha=0.8)
-            curve(ax, vals, color, f'{lam:g} µm' + (f': {100 * share:.0f}% of the light' if share else ''), floor)
+            curve(ax, vals, color, f'{lam:g} µm' + (f': {100 * share:.0f}% transmitted' if share else ''), floor)
     else:
         for (lo, hi), bp, color in zip(BANDS, band_point, COLORS):
-            curve(ax, bp['det'], color, f'model, {lo:g}-{hi:g} µm: {100 * bp["frac"]:.0f}% of the light', floor)
+            curve(ax, bp['det'], color, f'model, {lo:g}-{hi:g} µm: {100 * bp["frac"]:.0f}% transmitted', floor)
     ax.set_yscale('log')
     ax.set_ylim(floor, top)
-    ax.set_ylabel('light per arcsec\n(1 = peak in step 1)')
+    ax.set_ylabel('flux per arcsec\n(normalized to stage-1 peak)')
     ax.set_title(titles[row], fontsize=10.5, loc='left')
     ax.tick_params(labelbottom=False)
-L[1].plot([], [], color=C.MUTED, lw=0.9, ls='--', label='step 1, for comparison')
+L[1].plot([], [], color=C.MUTED, lw=0.9, ls='--', label='stage 1')
 L[0].text(0.5 * O.PITCH_AS, 0.93, 'bar', ha='center', va='top', fontsize=8.5, color=C.MUTED,
           transform=L[0].get_xaxis_transform())
 L[0].text(0.94, 0.93, 'closed\nshutter', ha='right', va='top', fontsize=8.5, color=C.MUTED,
@@ -249,8 +249,8 @@ for (lo, hi), u, color in zip(BANDS, band_uniform, COLORS):
 ax.plot([], [], 'o', ms=3.4, mfc='white', mec='#555555', mew=1.1, label='measured from empty shutters')
 ax.set_yscale('log')
 ax.set_ylim(1e-3, 3.0)
-ax.set_ylabel('light per arcsec\n(1 = open shutter center)')
-ax.set_title('Uniform light through a three-shutter slitlet, on the detector', fontsize=10.5, loc='left')
+ax.set_ylabel('flux per arcsec\n(normalized at shutter center)')
+ax.set_title('Uniform illumination of a three-shutter slitlet, detector plane', fontsize=10.5, loc='left')
 ax.legend(loc='lower center', fontsize=9)
 ax.tick_params(labelbottom=False)
 ax.text(0.5 * O.PITCH_AS, 0.93, 'bar', ha='center', va='top', fontsize=8.5, color=C.MUTED,
@@ -265,9 +265,9 @@ for ax, what in ((L[4], 'stars / model'), (R[1], 'measured / model')):
     ax.set_ylabel(what)
     ax.set_xlim(-0.95, 0.95)
     ax.set_xlabel("position along the slit (arcsec; 0 = center of the middle shutter)")
-fig.suptitle(f'A point source {args.position * O.PITCH_AS:.2f}" ({args.position:g} of a shutter pitch) from the center '
+fig.suptitle(f'Point source {args.position * O.PITCH_AS:.2f}" ({args.position:g} shutter pitches) from the center '
              'of the middle shutter of a three-shutter slitlet', x=0.01, ha='left', fontsize=10, color=C.MUTED)
-ufig.suptitle('The same model for uniform light, against the bar shadow measured from empty shutters (PRISM)',
+ufig.suptitle('Optics model for uniform illumination compared with the measured PRISM bar shadow',
               x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'optics_steps.png')
 C.save(ufig, args, 'optics_uniform.png')

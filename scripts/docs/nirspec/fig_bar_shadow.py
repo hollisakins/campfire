@@ -81,7 +81,7 @@ ax.set_xlim(-2, 2)
 ax.set_ylim(-0.03, 1.32)
 ax.set_xlabel('position along the slitlet (shutter pitches from its center)')
 ax.set_ylabel('transmission (1 = open shutter center)')
-ax.set_title('Bar shadow for a three-shutter slitlet')
+ax.set_title('Bar shadow, three-shutter slitlet')
 ax.legend(loc='upper center', ncol=3, fontsize=8.5, columnspacing=1.2, handlelength=2.2)
 fig.suptitle(f'{args.disperser.upper()}: measured profile ({os.path.basename(measured)}) and '
              f'{os.path.basename(crds)}', x=0.01, ha='left', fontsize=10, color=C.MUTED)

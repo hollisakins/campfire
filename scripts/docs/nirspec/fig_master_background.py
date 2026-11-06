@@ -83,7 +83,7 @@ fig = plt.figure(figsize=(12, 8.2), constrained_layout=True)
 gs = fig.add_gridspec(2, 3, height_ratios=[1, 0.95])
 norm = C.asinh_norm(d)
 for k, (img, title) in enumerate([(d, 'Data (count rate)'), (m, 'Master background'),
-                                  (d - np.nan_to_num(m), 'Data minus master background')]):
+                                  (d - np.nan_to_num(m), 'Residual')]):
     ax = fig.add_subplot(gs[0, k])
     if k < 2:
         ax.imshow(img, extent=ext, cmap='Greys', norm=norm, aspect='auto')
@@ -118,14 +118,14 @@ w = np.asarray(t1['wavelength'], float)
 sb, se = np.asarray(t1['surf_bright'], float), np.asarray(t1['surf_bright_err'], float)
 ok = np.isfinite(sb)
 ax.fill_between(w[ok], (sb - se)[ok], (sb + se)[ok], color=C.PALETTE[0], alpha=0.25, lw=0)
-ax.plot(w[ok], sb[ok], color=C.PALETTE[0], label='measured from the empty shutters')
+ax.plot(w[ok], sb[ok], color=C.PALETTE[0], label='measured (empty shutters)')
 if 'model_surf_bright' in t1.columns.names:
     mod = np.asarray(t1['model_surf_bright'], float)
     if np.any(np.isfinite(mod)):
-        ax.plot(w, mod, color=C.PALETTE[1], ls='--', label='zodiacal light predicted for this pointing and date')
+        ax.plot(w, mod, color=C.PALETTE[1], ls='--', label='zodiacal model for this pointing and epoch')
 ax.set_xlabel('wavelength (µm)')
 ax.set_ylabel('background (MJy/sr)')
-ax.set_title('The background spectrum of this exposure')
+ax.set_title('Background spectrum')
 ax.legend(loc='upper left')
 
 ax = fig.add_subplot(gs[1, 2])
@@ -134,11 +134,11 @@ clean = np.asarray(sh['clean'], bool)
 bins = np.linspace(0.8, 1.2, 41)
 ax.hist(np.clip(scale[clean], bins[0], bins[-1]), bins=bins, color=C.PALETTE[0], label=f'used ({clean.sum()})')
 ax.hist(np.clip(scale[~clean], bins[0], bins[-1]), bins=bins, color=C.PALETTE[5], alpha=0.8,
-        label=f'left out ({(~clean).sum()})')
+        label=f'rejected ({(~clean).sum()})')
 ax.axvline(1.0, color=C.MUTED, lw=0.8)
-ax.set_xlabel('empty shutter / background spectrum')
+ax.set_xlabel('shutter flux / ensemble spectrum')
 ax.set_ylabel('shutters')
-ax.set_title('Each empty shutter against the spectrum')
+ax.set_title('Empty-shutter flux relative to the ensemble')
 ax.legend(loc='upper right')
 fig.suptitle(f'{args.obs}  {args.exposure}  ({grating})', x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'master_background.png')

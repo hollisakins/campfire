@@ -57,8 +57,8 @@ norm = AsinhNorm(linear_width=0.05 * v, vmin=-v, vmax=v)
 lam = np.nanmedian(wav, axis=0)
 good = np.isfinite(lam)
 cols = np.arange(lam.size)
-for k, (img, title) in enumerate(((data, 'data'), (mine, 'this source (model)'),
-                                  (others, "other sources' predicted light"), (left, 'data - both'))):
+for k, (img, title) in enumerate(((data, 'data'), (mine, 'target model'),
+                                  (others, 'predicted contamination'), (left, 'residual'))):
     ax = fig.add_subplot(gs[0, k])
     ax.imshow(img, aspect='auto', cmap='RdBu_r', norm=norm)
     ax.set_title(title, fontsize=11)
@@ -71,10 +71,10 @@ for k, (img, title) in enumerate(((data, 'data'), (mine, 'this source (model)'),
 ax = fig.add_subplot(gs[1, :])
 sm = lambda y: median_filter(np.nan_to_num(y), args.smooth, mode='nearest')   # noqa: E731
 okl = np.isfinite(fprof)
-ax.plot(lam1[okl], sm(fprof)[okl], color='#555555', lw=1.3, label='spectrum with nothing subtracted (fnu_prof)')
+ax.plot(lam1[okl], sm(fprof)[okl], color='#555555', lw=1.3, label='uncorrected (fnu_prof)')
 ax.plot(lam1[okl], sm(np.nan_to_num(fcont))[okl], color=C.PALETTE[1], lw=1.3,
-        label="other sources' predicted light in it (fnu_contam)")
-ax.plot(lam1[okl], sm(own)[okl], color=C.PALETTE[0], lw=1.8, label='this source alone (fnu_prof - fnu_contam)')
+        label='predicted contamination (fnu_contam)')
+ax.plot(lam1[okl], sm(own)[okl], color=C.PALETTE[0], lw=1.8, label='decontaminated (fnu_prof - fnu_contam)')
 if args.prism:
     pp = C.spec_file(ws, args.obs, args.prism, args.source)
     if os.path.exists(pp):
@@ -83,13 +83,13 @@ if args.prism:
             lp, fp = np.asarray(tp['wave'], float), np.asarray(tp['fnu_prof'], float) - np.nan_to_num(
                 np.asarray(tp['fnu_contam'], float))
         sel = (lp >= np.nanmin(lam1)) & (lp <= np.nanmax(lam1)) & np.isfinite(fp)
-        ax.plot(lp[sel], fp[sel], color=C.INK, ls='--', lw=1.4, label='the same source in the PRISM')
+        ax.plot(lp[sel], fp[sel], color=C.INK, ls='--', lw=1.4, label='PRISM spectrum')
 ax.axhline(0, color=C.MUTED, lw=0.7)
 ax.set_xlim(np.nanmin(lam1[okl]), np.nanmax(lam1[okl]))
 ax.set_xlabel('wavelength (µm)')
 ax.set_ylabel('flux density (µJy)')
 ax.legend(loc='upper right', fontsize=9)
-fig.suptitle(f'{args.obs} {args.grating.split("_")[0].upper()}, source {args.source}: light of '
-             f'{int(hdr.get("PFNCONT", 0))} other sources falls on its spectrum', x=0.01, ha='left', fontsize=10,
+fig.suptitle(f'{args.obs} {args.grating.split("_")[0].upper()}, source {args.source}: contamination from '
+             f'{int(hdr.get("PFNCONT", 0))} overlapping sources', x=0.01, ha='left', fontsize=10,
              color=C.MUTED)
 C.save(fig, args, f'contamination_{args.grating.split("_")[0]}.png')

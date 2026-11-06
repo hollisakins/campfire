@@ -91,7 +91,7 @@ for r, ex in enumerate(args.example):
     norm = C.asinh_norm(rate[sl])
     a_t = a_of.get((q, row, col), np.nan)
     a_txt = f'{a_t:.2f}'.replace('-0.00', '0.00')
-    for k, (img, title) in enumerate([(rate, 'Data (count rate)'), (open_model, 'Model: every shutter open'),
+    for k, (img, title) in enumerate([(rate, 'Data (count rate)'), (open_model, 'Model: all shutters open'),
                                       (fit_model, 'Model: fitted amplitudes')]):
         ax = fig.add_subplot(gs[r, k])
         ax.imshow(img[sl], extent=ext, cmap='Greys', norm=norm, aspect='auto')
@@ -121,7 +121,7 @@ for r, ex in enumerate(args.example):
     ax.axvline(0, color='#999999', lw=0.8)
     C.profile_step(ax, np.nanmean(rate[y0:y1, cs], axis=1), rows, '#555555', vertical=True, label='data')
     C.profile_step(ax, np.nanmean(open_model[y0:y1, cs], axis=1), rows, C.PALETTE[0], vertical=True,
-                   fill_alpha=0, ls='--', label='every shutter open')
+                   fill_alpha=0, ls='--', label='all shutters open')
     C.profile_step(ax, np.nanmean(fit_model[y0:y1, cs], axis=1), rows, C.PALETTE[5], vertical=True,
                    fill_alpha=0, label='fitted amplitudes')
     yy, _ = np.unravel_index(pix[target[0]], (NY, NX))
@@ -129,11 +129,11 @@ for r, ex in enumerate(args.example):
     ax.set_ylim(ext[2], ext[3])
     ax.set_yticklabels([])
     if r == 0:
-        ax.set_title('Across the slitlet')
+        ax.set_title('Spatial profile')
         ax.legend(loc='upper right', fontsize=8.5)
     ax.set_xlabel('count rate')
     ax.text(0.97, 0.02, f'columns {cs.start}-{cs.stop - 1}', transform=ax.transAxes, ha='right', va='bottom',
             fontsize=8.5, color=C.MUTED)
-fig.suptitle(f'{args.obs}: closed shutter outlined in orange, the other shutters of its slitlet in blue',
+fig.suptitle(f'{args.obs}: stuck-closed shutter outlined in orange, other shutters of the slitlet in blue',
              x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'stuck_shutters.png')

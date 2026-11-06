@@ -207,18 +207,18 @@ for row, (band, color) in enumerate(zip(BANDS, row_colors)):
         if fwhm is None:
             ax.axhline(ju, color=C.INK, ls='--', lw=1.5, label='jwst uniform reference')
         if row == 0:
-            ax.set_title('point source' if fwhm == 0 else ('uniform light' if fwhm is None else f'FWHM {fwhm:g}"'),
+            ax.set_title('point source' if fwhm == 0 else ('uniform illumination' if fwhm is None else f'FWHM {fwhm:g}"'),
                          fontsize=11)
         if col in (0, len(cols) - 1):
             ax.legend(loc='lower center', fontsize=7.2)
         ax.set_xlim(-open_half, open_half)
-    denominator = "all of the source's light" if args.per_total else 'light on the open shutters'
-    axes[row, 0].set_ylabel(f'{band[0]:g}-{band[1]:g} µm\n\nlight reaching the detector /\n{denominator}')
+    denominator = 'total source flux' if args.per_total else 'flux on the open shutters'
+    axes[row, 0].set_ylabel(f'{band[0]:g}-{band[1]:g} µm\n\ntransmitted flux /\n{denominator}')
     axes[row, 0].yaxis.label.set_color(color)
 for ax in axes[-1]:
     ax.set_xlabel('position along the slit\n(shutter pitches)')
 for row in range(len(BANDS)):
     axes[row, 0].set_ylim(0.0 if args.per_total else 0.3, 1.15)
-fig.suptitle(f'The light the MSA lets through, from a point source to uniform light (jwst references: {ref}, '
+fig.suptitle(f'MSA transmission from point source to uniform illumination (jwst references: {ref}, '
              f'{bs_name})', x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'pathloss.png' if args.per_total else 'pathloss_open.png')

@@ -43,7 +43,7 @@ for k, sid in enumerate(args.source):
     good = np.isfinite(fnu)
     ax.fill_between(wave, fnu - err, fnu + err, color='#bbbbbb', lw=0, step='mid')
     ax.step(wave, fnu, where='mid', color=C.INK, lw=0.8, label='spectrum')
-    ax.plot(mw, mf, color=C.PALETTE[5], lw=1.4, label='best-fit templates')
+    ax.plot(mw, mf, color=C.PALETTE[5], lw=1.4, label='best-fit template combination')
     top = np.nanpercentile(fnu[good], 99.5) * 1.25
     lo, hi = np.nanmin(wave[good]), np.nanmax(wave[good])
     last, level = -1.0, 0
@@ -70,9 +70,9 @@ for k, sid in enumerate(args.source):
     ax.plot([z], [1], 'o', color=C.PALETTE[5], ms=7, zorder=5)
     ax.set_yscale('log')
     ax.set_ylim(0.6, None)
-    ax.set_ylabel('how much worse the fit is\n(Δχ² + 1)')
+    ax.set_ylabel('Δχ² + 1')
     if k == 0:
-        ax.set_title('against redshift', loc='left', fontsize=11)
+        ax.set_title('χ² over the redshift grid', loc='left', fontsize=11)
     if k == n - 1:
         ax.set_xlabel('redshift')
 fig.suptitle(f'{args.obs} {args.grating.split("_")[0].upper()}: template redshift fits', x=0.01, ha='left',

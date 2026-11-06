@@ -117,17 +117,17 @@ for k in (-1, 0, 1):
     a.add_patch(Rectangle((-OPEN_W / 2, k * PITCH_Y - OPEN_H / 2), OPEN_W, OPEN_H, fill=False,
                           ec=C.PALETTE[0] if k == 0 else '#8fb8d8', lw=2.0 if k == 0 else 1.0, ls='-' if k == 0 else '--'))
 a.add_patch(Circle((0, 0), 0.4, fill=False, ec=C.PALETTE[5], lw=2.0))
-a.text(0.0, -0.58, 'the circle the reported\nflux refers to (0.8")', ha='center', fontsize=9, color=C.PALETTE[5])
-a.text(0.13, 0.05, 'the open\nshutter', ha='left', fontsize=9, color=C.PALETTE[0])
+a.text(0.0, -0.58, '0.8" reporting\naperture', ha='center', fontsize=9, color=C.PALETTE[5])
+a.text(0.13, 0.05, 'open\nshutter', ha='left', fontsize=9, color=C.PALETTE[0])
 a.set_xlim(g[0], g[-1])
 a.set_ylim(g[0], g[-1])
 a.set_xlabel('along the dispersion (arcsec)')
 a.set_ylabel('along the slit (arcsec)')
-a.set_title('A galaxy (FWHM 0.4") and the shutter')
+a.set_title('Shutter and reporting aperture')
 
 bins = np.quantile(fwhm, np.linspace(0, 1, 7))
-for v, color, label in ((opt, '#9a9a9a', 'optimal extraction: the light in the shutter (fnu_opt)'),
-                        (rep, C.PALETTE[0], 'reported flux: the light in the 0.8" circle (fnu)')):
+for v, color, label in ((opt, '#9a9a9a', 'optimal extraction, flux in the shutter (fnu_opt)'),
+                        (rep, C.PALETTE[0], 'reported flux, 0.8" aperture (fnu)')):
     b.scatter(fwhm, v, s=12, color=color, alpha=0.45, lw=0)
     lv = np.log10(v)
     mids, med, err = [], [], []
@@ -146,11 +146,11 @@ for axis, ticks in ((b.xaxis, [0.03, 0.05, 0.1, 0.2, 0.5, 1.0]), (b.yaxis, [0.2,
     axis.set_major_locator(FixedLocator(ticks))
     axis.set_major_formatter(FormatStrFormatter('%g'))
     axis.set_minor_locator(NullLocator())
-b.set_xlabel('fitted source size at 2 µm (FWHM of the fitted Gaussian, arcsec)')
-b.set_ylabel('spectrum / imaging photometry in a 0.8" aperture' if APER else 'spectrum / total imaging photometry')
-b.set_title(f'{len(fwhm)} galaxies with their own fitted shape')
+b.set_xlabel('fitted FWHM at 2 µm (arcsec)')
+b.set_ylabel('spectroscopic / 0.8" aperture photometry' if APER else 'spectroscopic / total photometry')
+b.set_title(f'{len(fwhm)} galaxies with fitted profiles')
 b.legend(loc='lower left', fontsize=8.5)
-fig.suptitle(f'{args.obs} {args.grating.split("_")[0].upper()}: what the reported flux means (photometry: '
+fig.suptitle(f'{args.obs} {args.grating.split("_")[0].upper()}: spectroscopic vs imaging flux (photometry: '
              f'{args.field.upper()} catalog, bands {", ".join(x.upper() for x in args.bands)})', x=0.01,
              ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'reported_flux.png')

@@ -39,7 +39,7 @@ norm = AsinhNorm(linear_width=0.05 * v, vmin=-v, vmax=v)
 lam = np.nanmedian(wav, axis=0)
 good = np.isfinite(lam)
 cols = np.arange(lam.size)
-for k, (img, title) in enumerate(((nod, 'nod subtraction'), (mb, 'master background subtracted'))):
+for k, (img, title) in enumerate(((nod, 'nod-subtracted'), (mb, 'master-background-subtracted'))):
     ax = fig.add_subplot(gs[k, 0])
     ax.imshow(img, aspect='auto', cmap='RdBu_r', norm=norm)
     C.label_panel(ax, title)
@@ -51,22 +51,22 @@ for k, (img, title) in enumerate(((nod, 'nod subtraction'), (mb, 'master backgro
         ax.set_xlabel('wavelength (µm)')
 ax = fig.add_subplot(gs[:, 1])
 rows = np.arange(nod.shape[0])
-C.profile_step(ax, np.nansum(mb, axis=1), rows, C.PALETTE[0], vertical=True, label='master background')
-C.profile_step(ax, np.nansum(nod, axis=1), rows, C.PALETTE[5], vertical=True, fill_alpha=0.15, label='nods')
+C.profile_step(ax, np.nansum(mb, axis=1), rows, C.PALETTE[0], vertical=True, label='master-background-subtracted')
+C.profile_step(ax, np.nansum(nod, axis=1), rows, C.PALETTE[5], vertical=True, fill_alpha=0.15, label='nod-subtracted')
 ax.axvline(0, color=C.MUTED, lw=0.6)
 ax.set_ylim(rows[0] - 0.5, rows[-1] + 0.5)                      # row 0 at the bottom, as in the images
 ax.set_yticks([])
 ax.set_xticks([])
-ax.set_title('along the slit')
+ax.set_title('spatial profile')
 ax.legend(loc='lower right', fontsize=7.5)
 ax = fig.add_subplot(gs[:, 2])
 sm = lambda y: median_filter(np.nan_to_num(np.asarray(y, float)), args.smooth, mode='nearest')   # noqa: E731
-ax.plot(t['wave'], sm(t['fnu']), color=C.PALETTE[5], lw=1.4, label='nod-subtracted spectrum (fnu)')
-ax.plot(tm['wave'], sm(tm['fnu']), color=C.PALETTE[0], lw=1.6, label='master-background spectrum (SPEC1D_MBKG)')
+ax.plot(t['wave'], sm(t['fnu']), color=C.PALETTE[5], lw=1.4, label='nod-subtracted (fnu)')
+ax.plot(tm['wave'], sm(tm['fnu']), color=C.PALETTE[0], lw=1.6, label='master-background-subtracted (SPEC1D_MBKG)')
 ax.axhline(0, color=C.MUTED, lw=0.7)
 ax.set_xlabel('wavelength (µm)')
 ax.set_ylabel('flux density (µJy)')
-ax.set_title('the two spectra')
+ax.set_title('1-D spectra')
 ax.legend(loc='upper left', fontsize=8.5)
 fig.suptitle(f'{args.obs} {args.grating.split("_")[0].upper()}, source {args.source} (FWHM '
              f'{2.355 * 0.46 * float(H.get("PFWIDTH", np.nan)):.2f}"): nod subtraction removes part of the '

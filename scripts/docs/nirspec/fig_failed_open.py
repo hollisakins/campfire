@@ -52,7 +52,7 @@ for r, num in enumerate(args.shutters):
     resid = d - b
     lim = np.nanpercentile(np.abs(resid), 98)
     for k, (img, title) in enumerate([(d, 'Data (count rate)'), (b, 'Master background'),
-                                      (resid, 'Data minus master background')]):
+                                      (resid, 'Residual')]):
         ax = axes[r, k]
         if k < 2:
             ax.imshow(img, extent=ext, cmap='Greys', norm=norm, aspect='auto')
@@ -73,6 +73,6 @@ for r, num in enumerate(args.shutters):
             ax.set_yticklabels([])
         if r == n - 1:
             ax.set_xlabel('detector column')
-fig.suptitle(f'{args.obs}  {args.exposure}  ({grating}); orange outline: the failed-open shutter\'s trace',
+fig.suptitle(f'{args.obs}  {args.exposure}  ({grating}); outlined: failed-open shutter trace',
              x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'failed_open.png')

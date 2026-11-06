@@ -56,14 +56,14 @@ lo, hi = np.nanpercentile(smooth_model, [0.5, 99.5])
 ax.imshow(smooth_model, cmap='Greys_r', vmin=lo, vmax=hi, origin='lower')
 ax.add_patch(Rectangle((x0, y0), w, hgt, fill=False, ec=C.PALETTE[1], lw=1.8))
 ax.axhspan(924, 1124, fill=False, hatch='///', ec=C.PALETTE[0], lw=0)
-ax.set_title('background model, whole detector\n(smoothed; hatched: fixed slits)', fontsize=10.5)
+ax.set_title('Background model, full detector\n(smoothed; hatched: fixed-slit region)', fontsize=10.5)
 ax.set_xlabel('detector column')
 ax.set_ylabel('detector row')
 
 tint = np.zeros(used.shape + (4,))
 tint[~used] = (0.90, 0.62, 0.0, 0.55)
-for k, (img, title) in enumerate(((before, 'before (orange: kept out of the fit)'), (model, 'background model'),
-                                  (after, 'after'))):
+for k, (img, title) in enumerate(((before, 'Before (orange: excluded from fit)'), (model, 'Background model'),
+                                  (after, 'After'))):
     ax = fig.add_subplot(gs[0, k + 1])
     im = ax.imshow(img, cmap='Greys_r', vmin=-v, vmax=v, extent=extent, aspect='auto', origin='lower')
     if k == 0:
@@ -87,8 +87,8 @@ for img, color, label in ((before, '#9a9a9a', 'before'), (after, C.PALETTE[0], '
 ax.axhline(0, color=C.MUTED, lw=0.7)
 ax.set_xlim(x0, x0 + w)
 ax.set_xlabel('detector column')
-ax.set_ylabel('median of the fitted\npixels (DN/s)')
+ax.set_ylabel('median of fitted\npixels (DN/s)')
 ax.legend(loc='center right', fontsize=9, framealpha=0.9)
-fig.suptitle(f'{args.obs} {grating}, {args.exposure}: the detector background removed in stage 1',
+fig.suptitle(f'{args.obs} {grating}, {args.exposure}: Stage 1 detector background subtraction',
              x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'detector_background.png')

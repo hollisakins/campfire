@@ -141,9 +141,9 @@ for k, t in enumerate(order):
               va='center', ha='left', bbox=dict(boxstyle='round,pad=0.15', fc='white', ec=color, lw=0.8, alpha=0.9))
 ax_f.set_ylim(y0 - 0.5, y0 + ny - 0.5)
 ax_f.set_ylabel('row')
-ax_f.set_xlabel('detector column (wavelength increases to the right)')
+ax_f.set_xlabel('detector column (wavelength increasing to the right)')
 C.label_panel(ax_r, 'count rate')
-C.label_panel(ax_f, "each slitlet's footprint, labeled with its source")
+C.label_panel(ax_f, 'slitlet footprints, labeled by source')
 fig.suptitle(f'{args.obs}  {exp1[:-5]}  ({tm1.meta.get("GRATING", "")}/{tm1.meta.get("FILTER", "")}): '
-             'most pixels receive light from more than one slitlet', x=0.07, ha='left', fontsize=11, color=C.INK)
+             'overlapping slitlet traces', x=0.07, ha='left', fontsize=11, color=C.INK)
 C.save(fig, args, 'overlap.png')

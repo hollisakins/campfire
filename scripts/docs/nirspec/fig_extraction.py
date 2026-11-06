@@ -58,7 +58,7 @@ for row, (sid, label) in enumerate(args.source):
     cols = np.arange(lam.size)
     for ax, img, title, kw in ((axes[row, 0], sci, 'data', dict(cmap='RdBu_r', norm=norm)),
                                (axes[row, 1], model, 'model', dict(cmap='RdBu_r', norm=norm)),
-                               (axes[row, 2], res, 'data - model (same scale)', dict(cmap='RdBu_r', norm=norm))):
+                               (axes[row, 2], res, 'residual (same scale)', dict(cmap='RdBu_r', norm=norm))):
         ax.imshow(img, aspect='auto', **kw)
         if row == 0:
             ax.set_title(title)
@@ -68,7 +68,7 @@ for row, (sid, label) in enumerate(args.source):
         ax.set_yticks([])
     C.label_panel(axes[row, 0], f'{sid}: {label}')
     h = d['hdr']
-    shape = {'own': 'its own fitted shape', 'prism': 'its PRISM shape', 'default': 'the default shape'}.get(
+    shape = {'own': 'own profile', 'prism': 'PRISM profile', 'default': 'default profile'}.get(
         str(h.get('PFSHAPE')), str(h.get('PFSHAPE')))
     axes[row, 1].text(0.99, 0.04, f'{shape}; FWHM {2.355 * float(h.get("PFWIDTH", np.nan)) * 0.46:.2f}"',
                       transform=axes[row, 1].transAxes, ha='right', va='bottom', fontsize=8.5,
@@ -84,11 +84,11 @@ for row, (sid, label) in enumerate(args.source):
     ax.set_yticks([])
     ax.set_xticks([])
     if row == 0:
-        ax.set_title('along the slit')
+        ax.set_title('spatial profile')
         ax.legend(loc='lower right', fontsize=7.5)
 for ax in axes[-1, :3]:
     ax.set_xlabel('wavelength (µm)')
 fig.suptitle(f'{args.obs} {args.grating.split("_")[0].upper()}: combined 2-D spectra (rows = position along the '
-             'slitlet), the profile-extraction model, and the residual', x=0.01, ha='left', fontsize=10,
+             'slitlet), forward model, and residual', x=0.01, ha='left', fontsize=10,
              color=C.MUTED)
 C.save(fig, args, f'extraction_{args.grating.split("_")[0]}.png')
