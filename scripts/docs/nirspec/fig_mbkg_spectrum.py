@@ -69,6 +69,6 @@ ax.set_ylabel('flux density (µJy)')
 ax.set_title('the two spectra')
 ax.legend(loc='upper left', fontsize=8.5)
 fig.suptitle(f'{args.obs} {args.grating.split("_")[0].upper()}, source {args.source} (FWHM '
-             f'{2.355 * 0.46 * float(H.get("PFWIDTH", np.nan)):.2f}"): the nods subtract part of the galaxy; '
-             'the profile fit accounts for it, and the master-background spectrum does not need to', x=0.01, ha='left', fontsize=10, color=C.MUTED)
+             f'{2.355 * 0.46 * float(H.get("PFWIDTH", np.nan)):.2f}"): nod subtraction removes part of the '
+             'galaxy (self-subtraction), which the extraction models; master-background subtraction avoids it', x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'mbkg_spectrum.png')
