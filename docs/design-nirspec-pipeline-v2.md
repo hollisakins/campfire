@@ -539,6 +539,13 @@ first pass need it. Maps follow each trace past both ends of the calibrated rang
 source light continues there just as the sky does.
 
 **Decisions.**
+- G140M/F100LP and G235M/F170LP geometry (counters, stored trace maps) is always built with the
+  extended wavelength range, whether or not `extend_g140m_g235m` is on; the setting only decides
+  what stage 2a calibrates (user, 2026-11-06). With the standard range jwst gives a slitlet whose
+  nominal range lies wholly on NRS1 no NRS2 WCS, so its red tail vanished: on spurs_gds 21 of 116
+  slitlets, coverage wrong on 17.0 % (G140M) / 13.2 % (G235M) of NRS2 (MB session,
+  `scratch/claude/bs_wide/compare_geom.py`). MB session implements it with the wider bar-shadow
+  tables.
 - Traces fully extended; gaps inside the range do not matter, because a chip gap in the
   contaminant is the same chip gap on the spectrum it contaminates; a contaminant without a
   spectrum means something is wrong (user, 2026-10-29).
