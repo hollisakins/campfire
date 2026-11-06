@@ -3270,14 +3270,14 @@ a fix or needs another field or disperser), **To make**.
 
 ## 6. Open decisions and next steps
 
-As of 2026-11-05. Items done or superseded since the last version of this list are recorded in
+As of 2026-11-06. Items done or superseded since the last version of this list are recorded in
 the change log (10).
 
 **Before the release (section 8).**
 
 | Item | Owner | Waiting on |
 |---|---|---|
-| p1 on `FIT_VERSION` 7: review the stage 3 rerun (running, docs session) as the end-to-end check of the current model; the stage 1-2 products there are from 2026-10-31 | extraction session | the run |
+| p1 end to end on the current model (`FIT_VERSION` 8, optics `2026.11-r8`): the docs session's stage 3 rerun used `FIT_VERSION` 7 and `2026.11-w2x`, so it is a check of the earlier model; the stage 1-2 products there are from 2026-10-31 | extraction session | a rerun |
 | A second field (a spurs observation) and G140M / G235M end to end | extraction session | |
 | Validation plots still to make or redo (5): V22 (joint vs PRISM, 2-D first), V23-V25, V26 (delivered S/N against the archive), V27 (injections), V28 (shape tests on bright sources), V29 (master-background spectrum against `fnu`); V1, V3, V6 redone on the current tables | extraction session (V1, V3, V6: MB session) | |
 | Merge `origin/main` (30 commits) into the branch | extraction session | |
@@ -3446,4 +3446,5 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   optics engine 2, `MEASURE_VERSION` 3), with the halves of six fields before and after.
 - **2026-11-06.** Section 3.7 (and the status row in section 1): the kernel refit with the bar
   offsets, the exact edges and 1133 included; why weighting by pixel let a few 1133 stars with a
-  neighbor set the wing, the per-star weighting, and the shipped model `2026.11-r8`.
+  neighbor set the wing, the per-star weighting, and the shipped model `2026.11-r8`. Section 6:
+  the p1 end-to-end check now has to be on `FIT_VERSION` 8 and `2026.11-r8`.
