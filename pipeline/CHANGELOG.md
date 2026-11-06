@@ -597,7 +597,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   bound is kept only when the centre alone is on its bound and the fallback fits clearly
   worse (a real large offset, flagged); a width or drift on its bound falls back (on p1 one
   source, 629668, whose fit had run to the centre, width and drift bounds at once beside a
-  same-slitlet neighbour: `fnu_prof` 4.6 x its 3-pixel boxcar). Other slitlets' light is
+  same-slitlet neighbour: `fnu_prof` 4.6 x its 3-pixel boxcar). Without a PRISM shape, a
+  grating product that fell to the default shape is redone, once every grating has run, with
+  the shape of the source's grating that took its own fit (its centre offset and width,
+  held over the wavelengths; `PFSHAPE` `grating`, `stage3.grating_transfer_plan`,
+  `profile_fit_grating_transfer`). On spurs_gds 29 of 240 products (3 min, 6 % of the
+  profile fit): their width 0.15 -> 0.074, flux x 0.80, delivered S/N unchanged, and the
+  line-flux ratios between gratings 0.93-1.05 / 0.90-1.09 (16-84 %) where they were
+  0.93-1.18 / 0.92-1.43; the other 211 products unchanged. Other slitlets' light is
   predicted in one pass from every source's pass-1 spectrum over per-exposure trace maps
   (`trace_overlap.py`, `profile_contam.py`), masked or subtracted for the shape fit and
   reported in 1-D as `fnu_contam`; `fnu` is not contamination-subtracted by default
