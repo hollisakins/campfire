@@ -3,15 +3,14 @@
 Two slitlets on a small detector: the target's trace and a contaminant's trace
 share detector rows over half of the columns. Between nods both sources move one
 shutter along their slitlets, so their source shutters move together on the
-detector, as in a real nod pattern. The geometry (jwst WCS) is validated on real
-data separately.
+detector, as in a real nod pattern. The map stored in the rate file (``ShutterMap``)
+is tested on a synthetic geometry below; on real data it is checked against p1.
 """
 
 import numpy as np
-import pytest
 
 from campfire_pipeline.nirspec import trace_overlap as TO
-from campfire_pipeline.nirspec.constants import MSA_SLIT_MARGIN, MSA_SLIT_PITCH
+from campfire_pipeline.nirspec.constants import MSA_SLIT_PITCH
 
 NY, NX = 40, 100
 DY = 0.23                      # slit-frame units per detector row
@@ -41,18 +40,6 @@ def _maps():
     return maps
 
 
-@pytest.mark.parametrize('state,ymin,ymax,expect', [
-    ('1x1', -2.2, 2.2, (-1, 0, 1)),
-    ('x11', -1.05, 3.35, (0, 1, 2)),
-    ('11x', -3.35, 1.05, (-2, -1, 0)),
-    ('10x11', -3.35, 3.35, (-2, 0, 1, 2)),
-    ('111', -2.2, 2.2, (-1, 0, 1)),            # no source shutter: reference from ymin
-])
-def test_open_shutter_centres(state, ymin, ymax, expect):
-    c = TO.open_shutter_centres(state, ymin, ymax)
-    assert np.allclose(c, np.array(expect) * MSA_SLIT_PITCH)
-
-
 def test_map_counts_and_shared_table():
     m = _maps()[0]
     assert m.count.max() == 2
@@ -64,16 +51,6 @@ def test_map_counts_and_shared_table():
     # only the contaminant's columns are shared
     cols = np.nonzero(shared.any(axis=0))[0]
     assert cols.min() >= 50
-
-
-def test_write_read_roundtrip(tmp_path):
-    m = _maps()[0]
-    m.meta = dict(MAPVER=TO.MAP_VERSION, EXPOSURE='x_rate.fits', DETECTOR='NRS1')
-    p = tmp_path / 'x_tracemap.fits'
-    m.write(str(p))
-    r = TO.TraceMap.read(str(p))
-    assert np.array_equal(r.index, m.index) and np.array_equal(r.flag, m.flag)
-    assert list(r.slits['source_id']) == [1, 2]
 
 
 def test_traces_in_returns_every_trace_on_a_region():
@@ -205,45 +182,6 @@ def test_slitlet_sources_names_each_slitlet_by_its_source(tmp_path):
         assert s[33] == (15944, lit33)
         assert s[40] == (500, True)                       # the duplicate entry 501 is never the name
         assert s[9] == (None, False)                      # sky only
-
-
-def test_stuck_closed_shutters_leave_the_configuration(tmp_path):
-    """Stuck-closed shutters (numbered along the source's slitlet from 1, as stage 2
-    numbers them) go at every dither point: the slitlet's source is out of it where its
-    shutter is closed, and a slitlet with every shutter closed is gone."""
-    from astropy.table import Table
-    path = _p14_like(tmp_path)
-    out = str(tmp_path / 'stuck_msa.fits')
-    n = TO.drop_stuck_shutters(path, 1, {500: [2]}, out_file=out)
-    assert n == 3                                         # column 61 at three dither points
-    t = Table.read(out, hdu='SHUTTER_INFO')
-    assert 61 not in t['shutter_column'][t['slitlet_id'] == 40]
-    s = TO.slitlet_sources(out, 1, 1, catalogue_file=path)
-    assert s[40] == (None, False)                       # its only source shutter passes no light: sky
-    n = TO.drop_stuck_shutters(path, 1, {15944: [1, 2]}, out_file=out)
-    t = Table.read(out, hdu='SHUTTER_INFO')
-    assert n == 6 and not (t['slitlet_id'] == 33).any()
-    assert TO.stuck_signature({}) == '' and TO.stuck_signature({1: [2, 1]}) == TO.stuck_signature({1: [1, 2]})
-    assert TO.stuck_signature({1: [1]}) != TO.stuck_signature({1: [2]})
-
-
-def test_stuck_primary_shutter_beside_a_second_source(tmp_path):
-    """ember_cosmos_p9 slitlet 52: a second catalogue source (877752) sits in another
-    shutter of 825646's slitlet. Where 825646's shutter is stuck closed, that dither
-    point has no primary left: its other main shutter becomes background (jwst needs a
-    primary for a main shutter), and the map has no source in the slitlet there."""
-    from astropy.table import Table
-    rows = [(52, 7, 1, 877752, 'N', 'N'), (52, 8, 1, 825646, 'N', 'Y'), (52, 9, 1, 825646, 'Y', 'N'),
-            (52, 7, 2, 825646, 'N', 'Y'), (52, 8, 2, 825646, 'Y', 'N'), (52, 9, 2, 877752, 'N', 'N')]
-    path = str(tmp_path / 'm_msa.fits')
-    _msa(path, rows, [(825646, 150.0, 2.0), (877752, 150.0, 2.01)])
-    out = str(tmp_path / 'm_stuck.fits')
-    assert TO.drop_stuck_shutters(path, 1, {825646: [2]}, out_file=out) == 2
-    t = Table.read(out, hdu='SHUTTER_INFO')
-    d1 = t[t['dither_point_index'] == 1]
-    assert list(d1['background']) == ['Y', 'Y']
-    assert TO.slitlet_sources(out, 1, 1, catalogue_file=path)[52] == (825646, False)
-    assert TO.slitlet_sources(out, 1, 2, catalogue_file=path)[52] == (825646, True)
 
 
 def test_shared_signal_recovers_injected_light():

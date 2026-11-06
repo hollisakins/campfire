@@ -292,7 +292,7 @@ def pass1_settings(stage_config):
 
 
 def _signature(s):
-    return f"{PASS1_VERSION}|{TO.MAP_VERSION}|" + '|'.join(f'{k}={s[k]}' for k in sorted(s))
+    return f"{PASS1_VERSION}|{TO.SHUTTER_MAP_VERSION}|" + '|'.join(f'{k}={s[k]}' for k in sorted(s))
 
 
 def _pass1_valid(out, groups, n_maps, sig):

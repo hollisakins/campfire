@@ -557,8 +557,8 @@ names the stuck shutters). A rate file without a stored map (reduced before 2026
 map: stage 3 logs the exposures; every observation is rerun from stage 1 before the release
 (user, 2026-11-06). The `tracemaps/` folder and the jwst-built maps (`get_trace_map`) are gone;
 on p1 the maps read from the rate files equal the last `tracemaps/` copies in all 12 exposures
-(`extraction-v2/maps_equal_p1.py`). `TraceMap.build` (the jwst-built map) is still in
-`trace_overlap.py`, unused by the pipeline.
+(`extraction-v2/maps_equal_p1.py`). The jwst-built map (`TraceMap.build`, `full_mask_model`,
+`drop_stuck_shutters`) and the map file format are removed from `trace_overlap.py`.
 
 ### 3.7 Profile extraction and the shape chain
 
@@ -3325,7 +3325,6 @@ the change log (10).
 | Item | Owner |
 |---|---|
 | Stage 2's per-source work: profile one stage-2b group and one rectification first (p1: rectification 25 min, stage 2b about 60 min of 3 h 14 min); candidates: rectify once instead of in 2a and 2b, invert the path loss arithmetically, batch per exposure | extraction session |
-| Remove `TraceMap.build` (the jwst-built map, unused since `tracemaps/` was retired) and its tests | extraction session |
 | Run the checks on the shipped model (`scripts/nirspec_optics_checks.py visits` + `repeat`): NGC 2506 (check 1, y) and 1133 by background group (x; refits `x_loss` with 1133) | extraction session, after the p1 run |
 
 ---
@@ -3460,4 +3459,4 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   (G395M) rms on the exact-edge tables. Then, on the user's word, the checks became a script
   (`pipeline/scripts/nirspec_optics_checks.py`) rather than steps, and `tracemaps/` was retired
   (1, 2 item 6, 3.6, 6): every observation is rerun from stage 1 before the release, so stage 3
-  reads the maps from the rate files only.
+  reads the maps from the rate files only; the jwst-built map code is removed.
