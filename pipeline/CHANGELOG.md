@@ -324,8 +324,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   (a second source shares its slitlet as its own). On `ember_cosmos_p1` it agrees with the
   stage-3 `tracemaps/` maps on 99.7 % of (pixel, slitlet) pairs with the same layer depth (7-8
   on G395M); the rest are pixels 0.750-0.78 slit units from a shutter centre, one row at the
-  padded edge. The consumers still read `tracemaps/` until the extraction session switches
-  them. `CFMB1VER` 1.4.
+  padded edge. Stage 3 reads the maps from the rate files with the observation's stuck list
+  (`profile_contam.trace_maps`, kept in memory per worker); the `tracemaps/` folder and the
+  jwst-built maps are gone, so a rate file reduced before step 1 stored a map has none (stage 3
+  logs it; rerun stage 1). A pass 1 is redone when a rate file it read is newer or the stuck list
+  changed. On p1 the maps read this way equal the last `tracemaps/` copies in all 12 exposures.
+  `CFMB1VER` 1.4.
 - **NIRSpec master background 1.4: the group's pooled sky is painted unless an exposure
   differs.** Each exposure × detector's clean shutters are tested against the pooled sky of
   the other exposures of its group (`master_bkg.pool_check`): in each of 8 wavelength bands

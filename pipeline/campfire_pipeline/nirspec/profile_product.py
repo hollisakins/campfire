@@ -106,9 +106,9 @@ class Analysis:
 
 def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                     prism_product='', pass1_products=None, log=None, exps=None, pass1_for=None, maps=None,
-                    prism=None):
+                    prism=None, stuck_keys=None):
     """Load, predict and apply other slitlets' light, choose the shape, scan for a
-    same-slitlet neighbour. No files are written.
+    same-slitlet neighbour. No files are written. ``stuck_keys``: as ``run_product``.
 
     For tests: ``exps`` (preloaded exposures, modified in place), ``pass1_for``
     (sid -> ``Pass1``), ``maps`` and ``prism`` (a ``PrismShape``) replace what is
@@ -131,7 +131,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
     P, clean, cstate = None, None, 'off'
     t_mark = TM.start()
     if fl['contam'] and cfg.shape != 'free':
-        maps = CT.maps_for_exposures(workspace_dir, exps) if maps is None else maps
+        maps = CT.maps_for_exposures(workspace_dir, exps, stuck_keys) if maps is None else maps
         if not maps:
             cstate = 'no_maps'
         else:
@@ -188,7 +188,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
         # the scan never sees other slitlets' light: their pixels are left out, not modelled
         with TM.step('scan_input'):
             if maps is None:
-                maps = CT.maps_for_exposures(workspace_dir, exps)
+                maps = CT.maps_for_exposures(workspace_dir, exps, stuck_keys)
             R_scan, share = scan_input(raw, C.result, maps, source_id)
         S = NS.run(R_scan if R_scan is not None else C.result, nbins=fl['scan_nbins'], width=fl['scan_width'],
                    dchi2_min=fl['scan_dchi2'],
@@ -292,7 +292,7 @@ def shape_header(C, exps):
 
 
 def run_product(product_name, workspace_dir, groups, overrides, science, source_id, stage_config,
-                is_prism, prism_product='', pass1_products=None, cleanup_crfs=True):
+                is_prism, prism_product='', pass1_products=None, cleanup_crfs=True, stuck_keys=None):
     """Build ``{product_name}_pf.fits`` and, with ``mbkg_spectrum``, the master-background
     files (module doc). Returns a dict summary (for the driver).
 
@@ -303,7 +303,9 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
     master-background spectrum too; without a crf there is none). Any other
     exception propagates: the stage fails.
 
-    pass1_products : {source id: pass-1 product name} of the configuration (contamination)."""
+    pass1_products : {source id: pass-1 product name} of the configuration (contamination).
+    stuck_keys : the observation's stuck physical shutters by root, left out of the trace
+    maps (``profile_contam.trace_maps``)."""
     from astropy.io import fits
     from campfire_pipeline.common.io import log
     from campfire_pipeline.nirspec import drizzle_map as DM
@@ -334,7 +336,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         try:
             A = analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                                 prism_product=prism_product, pass1_products=pass1_products,
-                                log=lambda m: log(f'{product_name}: {m}'))
+                                log=lambda m: log(f'{product_name}: {m}'), stuck_keys=stuck_keys)
         except PF.ProfileFitFallback as e:
             log(f"{product_name}: {e}; 3-pixel boxcar ({e.reason})")
             write_fallback(path, e.reason)
@@ -408,7 +410,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             # the same pixel maps (mbkg_extraction)
             with TM.step('mbkg'):
                 MX.fit_product(product_name, workspace_dir, exps, science, source_id, C, stage_config, dmap,
-                               pass1_products=pass1_products, log=log)
+                               pass1_products=pass1_products, log=log, stuck_keys=stuck_keys)
         TM.report(f'product {product_name}', log=log)
         return dict(product=product_name, source_id=int(source_id), shape=C.shape, reason=C.reason,
                     is_prism=bool(is_prism),

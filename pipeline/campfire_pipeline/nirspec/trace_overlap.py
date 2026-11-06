@@ -461,43 +461,6 @@ class TraceMap:
         return (np.asarray(flag) & IN_SOURCE) > 0
 
 
-def trace_map_path(cache_dir, exposure_name):
-    root = os.path.basename(exposure_name).replace('_rate.fits', '').replace('.fits', '')
-    return os.path.join(cache_dir, f'{root}_tracemap.fits')
-
-
-def map_is_current(path, stuck=None, rate_file=None):
-    """A cached map exists, was built by this map version and, when ``stuck`` is given,
-    with that stuck-closed list (``stuck_signature``). With ``rate_file`` (one holding a
-    stored map, ``ShutterMap.present``) the cached map must be a copy of it
-    (``MAPSRC = 'rate'``) written after the rate file was."""
-    from astropy.io import fits
-    if not os.path.exists(path):
-        return False
-    try:
-        h = fits.getheader(path)
-    except OSError:
-        return False
-    if str(h.get('MAPVER', '')) != MAP_VERSION:
-        return False
-    if rate_file is not None and (h.get('MAPSRC') != 'rate' or os.path.getmtime(path) < os.path.getmtime(rate_file)):
-        return False
-    return stuck is None or str(h.get('STUCK', '')) == stuck_signature(stuck)
-
-
-def get_trace_map(rate_file, cache_dir, workdir=None, exposure_name=None, **build_kw):
-    """Cached ``TraceMap`` of one exposure: read it if present, else build and write it.
-
-    ``exposure_name`` names the cache file when ``rate_file`` is a template."""
-    path = trace_map_path(cache_dir, exposure_name or rate_file)
-    if map_is_current(path, stuck=build_kw.get('stuck') or {}):
-        return TraceMap.read(path)
-    os.makedirs(cache_dir, exist_ok=True)
-    tm = TraceMap.build(rate_file, workdir or os.path.join(cache_dir, 'work'), **build_kw)
-    tm.write(path)
-    return tm
-
-
 # ---------------------------------------------------------------------------
 # The stored map: per shutter, built once from the rate file's geometry
 # ---------------------------------------------------------------------------

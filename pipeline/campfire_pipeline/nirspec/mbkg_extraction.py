@@ -419,13 +419,15 @@ def write_fallback(product_name, workspace, source_id, reason, dmap, log=None):
 
 
 def fit_product(product_name, workspace, exps, science, source_id, chain, stage_config, dmap,
-                pass1_products=None, log=None):
+                pass1_products=None, log=None, stuck_keys=None):
     """The master-background 2-D and ``{product}_mbkg_pf.fits`` of a product (module doc,
     1-3), after its nodded chain ``chain`` (``profile_chain.ChainResult``) chose the shape
     on the nodded exposures ``exps``; everything drizzled through the product's map
     ``dmap``. A profile-fit fallback writes a fallback file (the master-background
     ``fnu`` is then its 3-pixel boxcar). Returns the file's path, or None when an
-    exposure has no master background (no master-background spectrum at all)."""
+    exposure has no master background (no master-background spectrum at all).
+    ``stuck_keys``: the stuck physical shutters left out of the trace maps
+    (``profile_contam.trace_maps``)."""
     from astropy.io import fits
     from campfire_pipeline.nirspec import failed_open as FO
     from campfire_pipeline.nirspec import profile_contam as CT
@@ -461,7 +463,7 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
     fo_cards = (0, 0.0)
     fl = PP.stage_flags(stage_config)
     if fl['contam']:
-        maps = CT.maps_for_exposures(workspace, mexps)
+        maps = CT.maps_for_exposures(workspace, mexps, stuck_keys)
         if maps:
             pass1_products = pass1_products or {}
 

@@ -17,7 +17,8 @@ The order of work, per disperser of an observation (``stage3.run_profile_fit_pha
 
 Nothing is iterated: each step reads only the output of the steps before it.
 
-* **Trace maps** (phase 0): one per exposure, cached under ``{workspace}/tracemaps``.
+* **Trace maps**: one per exposure, read from its rate file (master background step 1 stores it
+  there) with the stuck-closed shutters removed (``trace_maps``); nothing is written.
 * **Pass 1**: each exposure's model frame of the source (its light alone, path loss
   removed) and the pixel calibration of that exposure, sparse, in
   ``{workspace}/pass1/{obs}_{disperser}_{sid}_pass1.npz`` (``Pass1``, ``write_pass1``).
@@ -57,7 +58,8 @@ import numpy as np
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec import trace_overlap as TO
 
-MAPS_SUBDIR = 'tracemaps'
+MAPS_KEPT = 64             # trace maps a process keeps in memory (``trace_maps``)
+_MAPS = {}
 PASS1_SUBDIR = 'pass1'
 PASS1_VERSION = '11'
 MIN_EXPOSURE_PIXELS = 100  # per-exposure clean fractions only for exposures with this many main-shutter pixels
@@ -80,17 +82,6 @@ def nod_key(path):
 # ---------------------------------------------------------------------------
 # Phase 0: trace maps
 # ---------------------------------------------------------------------------
-def stuck_by_root(table):
-    """The observation's stuck-closed shutters (``Observation.stuck_closed_shutters``:
-    root, source_id, shutters) as {root: {source id: [shutter numbers]}}."""
-    out = {}
-    if table is None:
-        return out
-    for row in table:
-        out.setdefault(str(row['root']), {})[int(row['source_id'])] = [int(n) for n in row['shutters']]
-    return out
-
-
 def stuck_keys_by_root(obs):
     """The observation's stuck-closed physical shutters, {root: {(q, row, col)}}
     (``stuck_list``; what a map read from a rate file leaves out)."""
@@ -99,104 +90,66 @@ def stuck_keys_by_root(obs):
     return {root: stuck_list.stuck_set(resolved, root) for root in resolved}
 
 
-def map_tasks(workspace, canonical_paths, log=None, stuck=None, stuck_keys=None):
-    """One task per exposure of the canonicals: (rate or template rate, cache dir,
-    full metafile, metadata id, dither position, exposure name, stuck-closed shutters).
-
-    An exposure whose rate file holds the map master background step 1 stored there
-    (``TO.ShutterMap``) takes it from there (``build_map`` with the root's stuck physical
-    shutters, ``stuck_keys``: {root: {(q, row, col)}}, ``stuck_keys_by_root``), with no
-    jwst run; its cached copy is redone when the rate file is newer.
-
-    The full metafile (every slitlet of the configuration) is the one the rate
-    file names; the canonicals name their per-source copy. An exposure without its
-    own rate file uses a rate file of the same detector, disperser and filter as a
-    template (``trace_overlap.full_mask_model``) and the only full metafile of its
-    visit; when there is none, or several, it gets no map (its contaminants are
-    then not predicted). ``stuck`` ({root: {source id: [shutter numbers]}},
-    ``stuck_by_root``): those shutters are left out of the map of every exposure of
-    the root (``jw07076009001_03101``); a map built with another list is rebuilt."""
-    from astropy.io import fits
-
-    log = log or (lambda *a: None)
-    stuck = stuck or {}
-    cache = os.path.join(workspace, MAPS_SUBDIR)
-    rates = {exposure_key(r): r for r in glob.glob(os.path.join(workspace, 'jw*_rate.fits'))}
-    rate_meta = {}
-    for k, r in rates.items():
-        h = fits.getheader(r)
-        rate_meta[k] = (str(h.get('DETECTOR')).upper(), str(h.get('GRATING')).upper(), str(h.get('FILTER')).upper(),
-                        str(h.get('MSAMETFL', '')), h.get('MSAMETID'), h.get('PATT_NUM'))
-    full_msa = [f for f in glob.glob(os.path.join(workspace, 'jw*_msa.fits'))]
-    seen, tasks = set(), []
-    for p in canonical_paths:
-        key = exposure_key(p)
-        if key is None or key in seen:
-            continue
-        seen.add(key)
-        name = f'{key}_rate.fits'
-        st = stuck.get(key[:19], {})
-        stored = key in rates and TO.ShutterMap.present(rates[key])
-        if TO.map_is_current(TO.trace_map_path(cache, name), stuck=st, rate_file=rates[key] if stored else None):
-            continue
-        h = fits.getheader(p)
-        if stored:
-            tasks.append((rates[key], cache, None, None, None, name, st, sorted((stuck_keys or {}).get(key[:19], ()))))
-            continue
-        if key in rates:
-            det, grat, filt, msa_name, msa_id, patt = rate_meta[key]
-            tasks.append((rates[key], cache, os.path.join(workspace, msa_name), int(msa_id), int(patt), name, st))
-            continue
-        want = (str(h.get('DETECTOR')).upper(), str(h.get('GRATING')).upper(), str(h.get('FILTER')).upper())
-        rate = next((r for k, r in sorted(rates.items()) if rate_meta[k][:3] == want), None)
-        visit = os.path.basename(p)[:13]
-        msas = [f for f in full_msa if os.path.basename(f).startswith(visit)]
-        if rate is None or len(msas) != 1:
-            log(f'trace map {key}: no rate template or no unique full metafile ({len(msas)}); no map')
-            continue
-        tasks.append((rate, cache, msas[0], int(h['MSAMETID']), int(h['PATT_NUM']), name, st))
-    return tasks
+def rate_path(workspace, key):
+    """The rate file of exposure ``key`` in a workspace."""
+    return os.path.join(workspace, f'{key}_rate.fits')
 
 
-def build_map(rate, cache, msa, msa_id, patt, name, stuck=None, stuck_keys=None):
-    """Write one exposure's map to the cache: the map master background step 1 stored in
-    its rate file, with ``stuck_keys`` (the root's stuck physical shutters) removed, when
-    ``stuck_keys`` is given; else built with jwst (``TO.get_trace_map``)."""
-    from campfire_pipeline.common.io import log
-    if stuck_keys is not None:
-        try:
-            tm = TO.trace_map_from_rate(rate, {tuple(int(v) for v in k) for k in stuck_keys})
-            os.makedirs(cache, exist_ok=True)
-            tm.meta.update(MAPVER=TO.MAP_VERSION, STUCK=TO.stuck_signature(stuck), MAPSRC='rate')
-            tm.write(TO.trace_map_path(cache, name))
-            return name
-        except Exception as e:                   # noqa: BLE001 - as below
-            log(f'trace map {name}: not read from the rate file ({type(e).__name__}: {e})')
-            return None
-    work = os.path.join(cache, f'work_{name[:-10]}')
-    try:
-        TO.get_trace_map(rate, cache, workdir=work, exposure_name=name,
-                         msa_file=msa, msa_metadata_id=msa_id, dither_position=patt, stuck=stuck or {})
-        try:
-            os.rmdir(work)                      # the build removes its staged copies; drop the empty dir
-        except OSError:
-            pass
-        return name
-    except Exception as e:                       # noqa: BLE001 - no map means no prediction, not a failed stage
-        log(f'trace map {name}: failed ({type(e).__name__}: {e})')
-        return None
+def _stuck_of(stuck_keys, key):
+    from campfire_pipeline.nirspec import stuck_list
+    return frozenset(tuple(int(v) for v in k) for k in (stuck_keys or {}).get(stuck_list.root_of(key), ()))
 
 
-def maps_for_exposures(workspace, exps):
-    """Trace maps of the exposures' configurations, keyed by exposure key."""
-    cache = os.path.join(workspace, MAPS_SUBDIR)
+def trace_maps(workspace, keys, stuck_keys=None):
+    """{exposure key: ``TraceMap``} of the exposures ``keys`` ('jw07076014001_03101_00001_nrs1'),
+    read from their rate files in ``workspace``, where master background step 1 stores them
+    (``TO.ShutterMap``), with the root's stuck-closed physical shutters removed as they are read
+    (``stuck_keys``: {root: {(q, row, col)}}, ``stuck_keys_by_root``; the list can change after
+    step 1). An exposure whose rate file holds no map is left out (its neighbours' light is then
+    not predicted; ``exposures_without_maps``). Each process keeps the last ``MAPS_KEPT`` it read,
+    keyed on the rate file's time and the stuck list."""
     out = {}
-    for e in exps:
-        key = exposure_key(e.name)
-        path = TO.trace_map_path(cache, f'{key}_rate.fits')
-        if key not in out and TO.map_is_current(path):
-            out[key] = TO.TraceMap.read(path)
+    for key in keys:
+        if key is None or key in out:
+            continue
+        rate = rate_path(workspace, key)
+        if not os.path.exists(rate):
+            continue
+        stuck = _stuck_of(stuck_keys, key)
+        memo = (rate, os.path.getmtime(rate), TO.stuck_signature_keys(stuck))
+        tm = _MAPS.pop(memo, None)
+        if tm is None:
+            tm = TO.trace_map_from_rate(rate, set(stuck))
+            if tm is None:
+                continue
+        _MAPS[memo] = tm                          # most recent last
+        while len(_MAPS) > MAPS_KEPT:
+            _MAPS.pop(next(iter(_MAPS)))
+        out[key] = tm
     return out
+
+
+def maps_for_exposures(workspace, exps, stuck_keys=None):
+    """Trace maps of the exposures' configurations, keyed by exposure key (``trace_maps``)."""
+    return trace_maps(workspace, [exposure_key(e.name) for e in exps], stuck_keys)
+
+
+def maps_signature(keys, stuck_keys=None):
+    """The stuck shutters the maps of ``keys`` were read with, as a string (a pass 1 built on
+    other ones is redone; the rate files' times are checked beside it)."""
+    from campfire_pipeline.nirspec import stuck_list
+    roots = {}
+    for k in keys:
+        if k is not None:
+            roots.setdefault(stuck_list.root_of(k), _stuck_of(stuck_keys, k))
+    return ';'.join(f'{r}:{TO.stuck_signature_keys(s)}' for r, s in sorted(roots.items()) if s)
+
+
+def exposures_without_maps(workspace, paths):
+    """Exposure keys of ``paths`` (canonicals) whose rate file holds no trace map (reduced
+    before master background step 1 stored one: rerun stage 1)."""
+    keys = sorted({exposure_key(p) for p in paths} - {None})
+    return [k for k in keys if not TO.ShutterMap.present(rate_path(workspace, k))]
 
 
 # ---------------------------------------------------------------------------

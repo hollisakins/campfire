@@ -540,18 +540,17 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
             dispatch(run_stage3_single_source, rest, n_processes=n_processes, use_starmap=True, **s3_kwargs)
     all_fg = set(by_fg)
     sci_all = None
+    stuck_keys = None
     if contam:
         every = Observation.group_files(obs.discover_files(ext='canonical', source_ids='all'))
         sci_all = _science_files(every)
         all_fg |= set(np.unique(every['filter_grating']))
-        # stuck-closed shutters pass no light: left out of the maps
-        mt = CT.map_tasks(obs.workspace_dir, list(every['path']), log=log,
-                          stuck=CT.stuck_by_root(obs.stuck_closed_shutters),
-                          stuck_keys=CT.stuck_keys_by_root(obs))
-        if mt:
-            log(f"Profile fit: building {len(mt)} trace maps")
-            with TM.phase(f'trace_maps ({len(mt)})'):
-                dispatch(CT.build_map, mt, n_processes=n_processes, use_starmap=True)
+        # the trace maps are read from the rate files; stuck-closed shutters pass no light and are left out
+        stuck_keys = CT.stuck_keys_by_root(obs)
+        no_map = CT.exposures_without_maps(obs.workspace_dir, list(every['path']))
+        if no_map:
+            log(f"Profile fit: {len(no_map)} exposures have no trace map in their rate file (rerun stage 1); "
+                f"the light of their neighbours is not predicted: {', '.join(no_map)}")
     prism_fg = _prism_fg(all_fg)
     order = sorted(by_fg, key=lambda fg: (0 if fg == prism_fg else 1, fg))
     run_sids = {t['source_id'] for t in pf_tasks}
@@ -580,7 +579,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
             with TM.phase(f'pass1 joint {fg} ({len(jtasks)})'):
                 JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
                        overwrite={s for s in jtasks if s in run_sids} if overwrite else False,
-                       cache_size=int(stage_config.get('contam_joint_cache', 60)), pre_bkgsub=revise)
+                       cache_size=int(stage_config.get('contam_joint_cache', 60)), pre_bkgsub=revise,
+                       stuck_keys=stuck_keys)
             if revise:
                 from campfire_pipeline.nirspec.stage2 import revise_slitlet_overrides
                 with TM.phase(f'slitlet revision {fg}'):
@@ -591,7 +591,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                         f"exposures")
                     with TM.phase(f'pass1 joint own {fg} ({len(own)})'):
                         JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
-                               cache_size=int(stage_config.get('contam_joint_cache', 60)), targets=own)
+                               cache_size=int(stage_config.get('contam_joint_cache', 60)), targets=own,
+                               stuck_keys=stuck_keys)
         # Spec3 from the canonicals as (now) subtracted: the s2d, crf and EXPOSURES table
         s3 = [s3_of[t['product_name']] for t in by_fg[fg] if t['product_name'] in s3_of]
         if s3:
@@ -601,7 +602,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
         for t in by_fg[fg]:
             prism_product = f"{obs.name}_{prism_fg}_{t['source_id']}" if (prism_fg and not is_prism) else ''
             tasks.append((t['product_name'], t['workspace_dir'], t['groups'], t['overrides'], t['science'],
-                          t['source_id'], stage_config, is_prism, prism_product, pass1_products, cleanup_crfs))
+                          t['source_id'], stage_config, is_prism, prism_product, pass1_products, cleanup_crfs,
+                          stuck_keys))
         log(f"Profile fit: {len(tasks)} {fg} products")
         with TM.phase(f'products {fg} ({len(tasks)})'):
             res = [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]

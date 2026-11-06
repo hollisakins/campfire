@@ -246,15 +246,6 @@ def test_stuck_primary_shutter_beside_a_second_source(tmp_path):
     assert TO.slitlet_sources(out, 1, 2, catalogue_file=path)[52] == (825646, True)
 
 
-def test_map_is_current_follows_the_stuck_list(tmp_path):
-    m = _maps()[0]
-    m.meta = dict(MAPVER=TO.MAP_VERSION, STUCK=TO.stuck_signature({5: [1]}))
-    p = str(tmp_path / 'x_tracemap.fits')
-    m.write(p)
-    assert TO.map_is_current(p) and TO.map_is_current(p, stuck={5: [1]})
-    assert not TO.map_is_current(p, stuck={}) and not TO.map_is_current(p, stuck={5: [2]})
-
-
 def test_shared_signal_recovers_injected_light():
     maps = _maps()
     recs = TO.nod_contamination(maps, 1, (0, 0, NX, NY))
@@ -382,24 +373,28 @@ def test_shutter_map_round_trips_through_the_rate_file(tmp_path):
     assert TO.trace_map_from_rate(empty) is None
 
 
-def test_stage3_cache_takes_the_map_stored_in_the_rate_file(tmp_path):
+def test_stage3_reads_the_map_stored_in_the_rate_file(tmp_path):
     import os
     from astropy.io import fits
     from campfire_pipeline.nirspec import profile_contam as CT
     _, sm = _two_slitlets()
-    rate = str(tmp_path / 'jw07076001001_03101_00001_nrs1_rate.fits')
+    key = 'jw07076001001_03101_00001_nrs1'
+    rate = CT.rate_path(str(tmp_path), key)
     fits.HDUList([fits.PrimaryHDU()] + sm.hdus()).writeto(rate)
-    assert TO.ShutterMap.present(rate)
-    cache = str(tmp_path / CT.MAPS_SUBDIR)
-    name = os.path.basename(rate)
-    st = {1007: [2]}
-    assert CT.build_map(rate, cache, None, None, None, name, st, [(2, 107, 11)]) == name
-    path = TO.trace_map_path(cache, name)
-    back = TO.TraceMap.read(path)
+    stuck = {'jw07076001001_03101': {(2, 107, 11)}}
+    maps = CT.trace_maps(str(tmp_path), [key, None], stuck)
     ref = sm.trace_map(stuck={(2, 107, 11)})
-    assert np.array_equal(back.index, ref.index) and np.array_equal(back.flag, ref.flag)
-    assert back.meta['MAPSRC'] == 'rate' and list(back.rows_of(2001)) == list(ref.rows_of(2001))
-    assert TO.map_is_current(path, stuck=st, rate_file=rate)
-    assert not TO.map_is_current(path, stuck={1007: [1]}, rate_file=rate)     # another stuck list
-    os.utime(rate, (os.path.getmtime(path) + 10,) * 2)                        # step 1 rewrote the rate file
-    assert not TO.map_is_current(path, stuck=st, rate_file=rate)
+    assert set(maps) == {key}
+    assert np.array_equal(maps[key].index, ref.index) and np.array_equal(maps[key].flag, ref.flag)
+    assert list(maps[key].rows_of(2001)) == list(ref.rows_of(2001))
+    assert CT.trace_maps(str(tmp_path), [key], stuck)[key] is maps[key]           # kept in memory
+    other = CT.trace_maps(str(tmp_path), [key], {})[key]                          # another stuck list: read again
+    assert not np.array_equal(other.index, ref.index)
+    os.utime(rate, (os.path.getmtime(rate) + 10,) * 2)                            # step 1 rewrote the rate file
+    assert CT.trace_maps(str(tmp_path), [key], stuck)[key] is not maps[key]
+    assert CT.maps_signature([key], stuck) != CT.maps_signature([key], {}) and CT.maps_signature([key], {}) == ''
+    # a rate file without a stored map (reduced before step 1 stored one): no map, reported
+    old = 'jw07076001001_03101_00002_nrs1'
+    fits.HDUList([fits.PrimaryHDU()] + TO.ShutterMap.empty_hdus()).writeto(CT.rate_path(str(tmp_path), old))
+    assert CT.trace_maps(str(tmp_path), [old]) == {}
+    assert CT.exposures_without_maps(str(tmp_path), [f'{old}_s000001_cal.fits', f'{key}_s000001_cal.fits']) == [old]

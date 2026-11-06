@@ -70,7 +70,7 @@ last column says where it is described.
 | Smoothing the per-exposure grating background | Not approved (user, 2026-10-30: some master-background noise is expected); a trial only if asked | 3.3 |
 | "Master background likely better" marks (`MBKGPREF` / `MBKGWHY`; spectra columns `mbkg_preferred`, `mbkg_reason`, `n_exp`, `n_exp_bkg`) | Decided (user, 2026-11-01: the rule approved, informational reasons made quantitative); Built | 4 |
 | Stuck-closed shutters by a per-shutter template fit, every disperser | Built: step 1 fits and calls every shutter (`SHUTAMP`, `CALLS`), `cfpipe nirspec detect-stuck` merges the calls into the stuck list; physical keys everywhere (`stuck_list.py`, database, web, deploy). Open: the user's verdict on the G395M review packet; G140M / G235M not yet checked | 3.5 |
-| Trace maps: one per exposure, built in step 1 from every commanded shutter, stored in the rate file, followed past both ends of the calibrated range | Built; stage 3 reads them (`tracemaps/` is its working copy) | 3.4, 3.6 |
+| Trace maps: one per exposure, built in step 1 from every commanded shutter, stored in the rate file, followed past both ends of the calibrated range | Built; stage 3 reads them from the rate files (`tracemaps/` retired 2026-11-06) | 3.4, 3.6 |
 | Forward-model profile extraction on by default; shape chain (own fit above the gate, else the PRISM shape, else the default); instrument model fixed, never fitted; no per-exposure pointing offsets; each nod at its planned position | Built | 3.7 |
 | Diffraction model of the MSA for every disperser (`FIT_VERSION` 6, `optics.py`, `data/nirspec_optics.json` 2026.11-r8), with a correction along the dispersion fitted to stars | Built (2026-11-04; kernel refitted on all calibration stars 2026-11-06) | 3.7 |
 | Bar offset of each observation, measured per disperser from its empty shutters (`FIT_VERSION` 7, `bar_offset.py`) | Built (2026-11-05) | 3.7 |
@@ -118,8 +118,8 @@ Each step lists what it reads and what it writes, as the branch runs it.
    partner both are kept and flagged; 3.9). The variance includes the subtracted frames' noise. The master background
    is never used to correct the nodded frames.
 6. **Stage 3, before the extraction.** Per observation: the bar offset of each disperser from its
-   empty shutters (`bar_offset.json`, measured once; 3.7), and the trace maps read from the rate
-   files into `tracemaps/`.
+   empty shutters (`bar_offset.json`, measured once; 3.7), and the stuck list resolved once; the
+   trace maps are read from the rate files as they are needed (nothing is written).
 7. **Joint first pass** (per disperser, PRISM first). Every source solved together with the
    sources whose light shares its pixels (trace maps), each at its fixed shape, on the nod
    differences, with its light past the cutouts in count rate (`profile_extend`). Gives each
@@ -548,12 +548,17 @@ source light continues there just as the sky does.
 **Evidence.** p1 maps `~/campfire-data/scratch/claude/extraction-v2/maps_p1/` (`traces_per_pixel.png`,
 `named_<sid>.png`).
 
-**Implementation.** `nirspec/trace_overlap.py` (`TraceMap`, `get_trace_map`, map version 7),
-extended with `coverage.geometry_on_block` and `WAVELENGTH_CUTOFFS` (e3af87b0). Built in
-`stage3.run_profile_fit_phase` today.
-
-**Open (extraction session).** Build from step 1's cached `assign_wcs` model; register
-`tracemaps/` as a regenerable layout kind.
+**Implementation.** Built in master background step 1 from the rate file's geometry and stored in
+the rate file (`trace_overlap.ShutterMap`, `TMSH1` / `TMSH2` / `TMFLAG` / `TMSLITS` / `TMSHUT`).
+Stage 3 reads it with the observation's stuck list (`profile_contam.trace_maps`: stuck shutters
+removed on read, the last 64 kept in memory per worker); nothing is written per exposure. A pass 1
+is redone when a rate file it read a map from is newer or the stuck list changed (its signature
+names the stuck shutters). A rate file without a stored map (reduced before 2026-11-01) has no
+map: stage 3 logs the exposures; every observation is rerun from stage 1 before the release
+(user, 2026-11-06). The `tracemaps/` folder and the jwst-built maps (`get_trace_map`) are gone;
+on p1 the maps read from the rate files equal the last `tracemaps/` copies in all 12 exposures
+(`extraction-v2/maps_equal_p1.py`). `TraceMap.build` (the jwst-built map) is still in
+`trace_overlap.py`, unused by the pipeline.
 
 ### 3.7 Profile extraction and the shape chain
 
@@ -3320,8 +3325,8 @@ the change log (10).
 | Item | Owner |
 |---|---|
 | Stage 2's per-source work: profile one stage-2b group and one rectification first (p1: rectification 25 min, stage 2b about 60 min of 3 h 14 min); candidates: rectify once instead of in 2a and 2b, invert the path loss arithmetically, batch per exposure | extraction session |
-| Retire the `tracemaps/` working copy once pass-1 validity keys on the rate files. Low value as it stands (12 MB on p1; one staleness rule): reading the maps straight from the rate files needs the stuck list in four consumers (joint first pass, products, master-background spectrum, stage 3), and the jwst-built maps of rate files reduced before 2026-11-01 still need the folder unless every observation is rerun from stage 1 | extraction session (user: whether old rate files are always rerun) |
-| Run the new checks on the shipped model: `visits` + `repeat` on NGC 2506 (check 1, y) and on 1133 by background group (x; refits `x_loss` with 1133) | extraction session, after the p1 run |
+| Remove `TraceMap.build` (the jwst-built map, unused since `tracemaps/` was retired) and its tests | extraction session |
+| Run the checks on the shipped model (`scripts/nirspec_optics_checks.py visits` + `repeat`): NGC 2506 (check 1, y) and 1133 by background group (x; refits `x_loss` with 1133) | extraction session, after the p1 run |
 
 ---
 
@@ -3452,4 +3457,7 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   `optics_calibration` steps (`score --groups`, `compare`, `visits`, `repeat`, `barshadow`; 0e5202de):
   the per-dataset score and the comparison reproduce the scratch numbers, and the shipped model's
   uniform light misses the empirical bar-shadow tables by a median 0.0176 (PRISM) and 0.0190
-  (G395M) rms on the exact-edge tables; the `tracemaps/` item is held (section 6).
+  (G395M) rms on the exact-edge tables. Then, on the user's word, the checks became a script
+  (`pipeline/scripts/nirspec_optics_checks.py`) rather than steps, and `tracemaps/` was retired
+  (1, 2 item 6, 3.6, 6): every observation is rerun from stage 1 before the release, so stage 3
+  reads the maps from the rate files only.
