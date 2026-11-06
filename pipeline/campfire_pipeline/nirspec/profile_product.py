@@ -413,7 +413,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
                                pass1_products=pass1_products, log=log, stuck_keys=stuck_keys)
         TM.report(f'product {product_name}', log=log)
         return dict(product=product_name, source_id=int(source_id), shape=C.shape, reason=C.reason,
-                    is_prism=bool(is_prism),
+                    is_prism=bool(is_prism), snr_det=float(C.snr_det), transfer=C.transfer,
                     scan=(None if S is None else dict(detected=S.detected, candidate=S.candidate, delta=S.delta,
                                                       dchi2=S.dchi2, proposals=S.proposals,
                                                       unresolved=S.unresolved, xdisp=S.xdisp)),

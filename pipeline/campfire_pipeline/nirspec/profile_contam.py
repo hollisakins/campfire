@@ -561,9 +561,15 @@ class Pass1:
         return P
 
 
+def is_prism_product(product):
+    """Whether a product name ('<obs>_<filter_grating>_<sid>') is a PRISM product."""
+    return '_prism_' in os.path.basename(str(product)).lower()
+
+
 def read_prism_shape(workspace, prism_product):
-    """``PrismShape`` of a PRISM product: from its ``_pf.fits`` (this run) or its
-    ``_spec.fits`` (an earlier run)."""
+    """``PrismShape`` of the product a grating takes its shape from: from its ``_pf.fits``
+    (this run) or its ``_spec.fits`` (an earlier run). A PRISM product's shape is
+    chromatic, a grating product's is not (``PrismShape``)."""
     from astropy.io import fits
     from campfire_pipeline.nirspec import profile_chain as PC
 
@@ -572,7 +578,8 @@ def read_prism_shape(workspace, prism_product):
     for p in cands:
         if os.path.exists(p):
             try:
-                return PC.PrismShape.from_header(prism_product, fits.getheader(p))
+                return PC.PrismShape.from_header(prism_product, fits.getheader(p),
+                                                 chromatic=is_prism_product(prism_product))
             except (KeyError, OSError, ValueError):
                 continue
     return None

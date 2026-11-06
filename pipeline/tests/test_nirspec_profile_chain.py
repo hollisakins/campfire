@@ -242,6 +242,47 @@ def test_chain_picks_prism_when_own_not_better():
     assert C.shdis == 0
 
 
+def test_sibling_grating_shape_is_held_over_the_wavelengths_and_labelled_grating():
+    """Below the gate a grating takes the shape of its source's other grating that passed its
+    gate: its centre offset and width at that grating's pivot, without the chromatic terms
+    (they would be extrapolated an octave), labelled 'grating'."""
+    from campfire_pipeline.nirspec import profile_contam as CT
+    truth = dict(centre_offset=0.12, width=0.08, drift=0.0, width_change=0.0)
+    exps = _grating(T._exposures(src_y=0.05))
+    _fill(exps, truth, 8.0, seed=11)
+    h = fits.Header()
+    h.update(PFSHAPE='own', PFCEN=0.05 + 0.12, PFCENPR=0.05, PFDRIFT=0.25, PFWIDTH=0.08, PFDWIDTH=0.2,
+             PFPIVOT=2.3)
+    ref = PC.PrismShape.from_header('obs_g235m_f170lp_7', h, chromatic=CT.is_prism_product('obs_g235m_f170lp_7'))
+    assert not ref.chromatic and ref.params['drift'] == 0.0 and ref.params['width_change'] == 0.0
+    assert PC.PrismShape.from_header('obs_prism_clear_7', h, chromatic=True).params['drift'] == 0.25
+    M = PF.ProfileModel(exps)
+    x = PF.map_shape(ref.params, 2 * M.pivot)                # held, wherever the target's pivot is
+    assert x['centre_offset'] == pytest.approx(0.12) and x['width'] == pytest.approx(0.08)
+    C = PC.choose_shape(exps, _cfg(gate_snr_grating=1e6), is_prism=False, prism=ref)
+    assert C.transfer == 'used' and C.shape == 'grating' and C.reason == 'below_gate;prism'
+    assert C.result.params['width'] == pytest.approx(0.08)
+    assert C.header_cards()['PFPRISM'][0] == 'obs_g235m_f170lp_7'
+
+
+def test_grating_transfer_plan():
+    """A source's grating products that fell to the default take the shape of its grating that
+    took its own fit (the highest detection S/N when several did); not where a PRISM shape was
+    used, a product fell back, or no grating took its own fit."""
+    from campfire_pipeline.nirspec.stage3 import grating_transfer_plan
+
+    def r(prod, sid, shape, snr=10.0, transfer='no_prism', prism=False, fallback=None):
+        return dict(product=prod, source_id=sid, shape=shape, snr_det=snr, transfer=transfer, is_prism=prism,
+                    fallback=fallback)
+    results = [r('o_g140m_1', 1, 'default'), r('o_g235m_1', 1, 'own', 80), r('o_g395m_1', 1, 'own', 120),
+               r('o_g140m_2', 2, 'default'), r('o_g235m_2', 2, 'default'),                      # no reference
+               r('o_g140m_3', 3, 'default', transfer='prism_not_own'), r('o_g235m_3', 3, 'own', 90),
+               r('o_prism_3', 3, 'default', prism=True),
+               r('o_g140m_4', 4, 'prism', transfer='used'), r('o_g235m_4', 4, 'own', 90),       # PRISM shape used
+               r('o_g140m_5', 5, None, fallback='no_crf'), r('o_g235m_5', 5, 'own', 90)]
+    assert grating_transfer_plan(results) == {'o_g140m_1': 'o_g395m_1', 'o_g140m_3': 'o_g235m_3'}
+
+
 def test_chain_picks_own_when_significantly_better():
     truth = dict(centre_offset=0.2, width=0.12, drift=0.0, width_change=0.0)
     exps = _grating(T._exposures(src_y=0.05))

@@ -488,7 +488,10 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     (extraction v2), every 2-D image of them drizzled before stage 3 extracts anything.
 
     Dispersers run PRISM first, so a grating can take the PRISM shape of the same
-    source. With ``contam_predict``, trace maps for every exposure of the observation
+    source. Where it has none, a grating product that fell to the default shape is redone
+    once every grating has run, with the shape of the source's grating that took its own fit
+    (``grating_transfer_plan``, ``profile_fit_grating_transfer``; the gratings keep their
+    Spec3 crf until then). With ``contam_predict``, trace maps for every exposure of the observation
     (cached), then per disperser:
 
     1. the joint first pass of every source of the configuration (also the ones not
@@ -554,6 +557,11 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     prism_fg = _prism_fg(all_fg)
     order = sorted(by_fg, key=lambda fg: (0 if fg == prism_fg else 1, fg))
     run_sids = {t['source_id'] for t in pf_tasks}
+    # the grating shape transfer redoes some grating products once every grating has run, through
+    # their Spec3 crf, which a product otherwise removes when it is done
+    gxfer = (bool(stage_config.get('profile_fit_grating_transfer', True)) and shape == 'gated'
+             and sum(fg != prism_fg for fg in by_fg) >= 2)
+    task_of = {}
     results = []
     for fg in order:
         is_prism = fg == prism_fg
@@ -599,20 +607,77 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
             with TM.phase(f'spec3 {fg} ({len(s3)} products)'):
                 dispatch(run_stage3_single_source, s3, n_processes=n_processes, use_starmap=True, **s3_kwargs)
         tasks = []
+        keep_crfs = gxfer and not is_prism
         for t in by_fg[fg]:
             prism_product = f"{obs.name}_{prism_fg}_{t['source_id']}" if (prism_fg and not is_prism) else ''
             tasks.append((t['product_name'], t['workspace_dir'], t['groups'], t['overrides'], t['science'],
-                          t['source_id'], stage_config, is_prism, prism_product, pass1_products, cleanup_crfs,
-                          stuck_keys))
+                          t['source_id'], stage_config, is_prism, prism_product, pass1_products,
+                          cleanup_crfs and not keep_crfs, stuck_keys))
+            if keep_crfs:
+                task_of[t['product_name']] = tasks[-1]
         log(f"Profile fit: {len(tasks)} {fg} products")
         with TM.phase(f'products {fg} ({len(tasks)})'):
             res = [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]
         results += res
+    if gxfer:
+        # a source's gratings take the shape of the one that passed its gate where they fell to the default
+        plan = {p: ref for p, ref in grating_transfer_plan(results).items() if p in task_of}
+        if plan:
+            redo = []
+            for prod, ref in sorted(plan.items()):
+                t = list(task_of[prod])
+                t[8], t[10] = ref, cleanup_crfs
+                redo.append(tuple(t))
+            log(f"Profile fit: {len(redo)} grating products again with the shape of their source's grating that "
+                f"passed its gate")
+            with TM.phase(f'products grating transfer ({len(redo)})'):
+                res = [r for r in dispatch(run_product, redo, n_processes=n_processes, use_starmap=True) or [] if r]
+            again = {r['product']: r for r in res}
+            results = [again.get(r['product'], r) for r in results]
+        if cleanup_crfs:
+            for prod, t in task_of.items():
+                if prod not in plan:
+                    _cleanup_in(t[1], t[4], prod)
     log_fallbacks(results)
     if fl['scan']:
         write_scan_proposals(obs, results, run_sids, str(stage_config.get('scan_action', 'report_only')).lower(),
                              xdisp_tol=fl['scan_xdisp_tol'])
     return results
+
+
+def grating_transfer_plan(results):
+    """The products the grating shape transfer redoes: {grating product: the product whose
+    shape it takes}. A source's reference is its grating product that took its own fit (the
+    highest detection S/N when several did); every other grating product of that source that
+    fell to the default shape, and took no PRISM shape, is redone with the reference's shape
+    as its transferred candidate (``profile_chain.PrismShape``, not chromatic). ``results``:
+    the ``run_product`` summaries of every disperser."""
+    ref = {}
+    for r in results:
+        if r.get('is_prism') or r.get('fallback') or r.get('shape') != 'own':
+            continue
+        s, snr = int(r['source_id']), float(r.get('snr_det', -np.inf))
+        if s not in ref or snr > ref[s][0]:
+            ref[s] = (snr, r['product'])
+    plan = {}
+    for r in results:
+        if (r.get('is_prism') or r.get('fallback') or r.get('shape') != 'default'
+                or r.get('transfer') == 'used'):
+            continue
+        s = int(r['source_id'])
+        if s in ref and ref[s][1] != r['product']:
+            plan[r['product']] = ref[s][1]
+    return plan
+
+
+def _cleanup_in(workspace, science, product_name):
+    """``_cleanup_spec3_intermediates`` from the workspace (its paths are relative)."""
+    prev = os.getcwd()
+    os.chdir(workspace)
+    try:
+        _cleanup_spec3_intermediates(list(science), product_name)
+    finally:
+        os.chdir(prev)
 
 
 def log_fallbacks(results):

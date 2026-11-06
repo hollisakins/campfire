@@ -13,7 +13,11 @@ which shape builds the extraction profile:
    source in the same observation, mapped to the grating's wavelengths by its
    chromatic terms (``profile_fit.map_shape``), keeping its offset from the planned
    position. Only when the PRISM product took its own shape and the two were taken
-   at the same telescope roll.
+   at the same telescope roll. **grating**: where there is no PRISM shape, the same
+   candidate from the source's other grating that took its own fit (its centre offset
+   and width, held over the wavelengths; ``PrismShape``); stage 3 gives it to the
+   products that fell to the default shape, once every grating has run
+   (``stage3.grating_transfer_plan``).
 3. **default**: the star-measured PSF times a Gaussian of the prior median width (or
    ``default_shape_width``) at the planned position. Optionally, between ``gate_partial_snr_*`` and the gate,
    an own fit of the width (or centre) only (``profile_fit_partial``).
@@ -124,19 +128,28 @@ class ChainConfig:
 
 @dataclass
 class PrismShape:
-    """What a grating needs from the PRISM product of the same source."""
+    """What a grating needs from another product of the same source to take its shape: the
+    PRISM product (``chromatic``: its drift and width change are measured over the whole
+    range, so they map to any grating), or, where there is no PRISM shape, the source's
+    grating product that took its own fit (not chromatic: its centre offset and width at its
+    pivot, held at every wavelength, since a grating's chromatic terms do not extrapolate an
+    octave or more to another grating's range)."""
     product: str
-    shape: str                      # PFSHAPE of the PRISM product
+    shape: str                      # PFSHAPE of that product
     params: dict                    # centre, centre_prior, drift, width, width_change, pivot
     pa_v3: float = np.nan
+    chromatic: bool = True
 
     @classmethod
-    def from_header(cls, product, h):
+    def from_header(cls, product, h, chromatic=True):
         if 'PFSHAPE' not in h:
             return None
         params = dict(centre=float(h['PFCEN']), centre_prior=float(h['PFCENPR']), drift=float(h['PFDRIFT']),
                       width=float(h['PFWIDTH']), width_change=float(h['PFDWIDTH']), pivot=float(h['PFPIVOT']))
-        return cls(product=product, shape=str(h['PFSHAPE']), params=params, pa_v3=float(h.get('PFPAV3', np.nan)))
+        if not chromatic:
+            params.update(drift=0.0, width_change=0.0)
+        return cls(product=product, shape=str(h['PFSHAPE']), params=params, pa_v3=float(h.get('PFPAV3', np.nan)),
+                   chromatic=chromatic)
 
 
 @dataclass
@@ -166,7 +179,7 @@ class ChainResult:
             'PFVER': (PF.FIT_VERSION, 'Profile-fit model version'),
             'PFOPTIC': (PF.optics_version(), 'Diffraction model of the MSA (data/nirspec_optics.json)'),
             'PFAPER': (PF.REPORT_APERTURE, 'Reported-flux aperture diameter [arcsec]'),
-            'PFSHAPE': (self.shape, 'Shape used: own / prism / default'),
+            'PFSHAPE': (self.shape, 'Shape used: own / prism / grating / default'),
             'PFCHAIN': (self.chain, 'Shape chain: gated / free / fixed'),
             'PFREASON': (self.reason[:68], 'Why this shape'),
             'PFGATE': (_f(self.snr_det), 'Detection S/N (gate statistic)'),
@@ -181,8 +194,8 @@ class ChainResult:
             'PFBOUND': (int(self.bound_bits), 'Own fit on a bound: 1 cen 2 wid 4 drift 8 dwid'),
             'PFSRCY': (int(self.srcy_flag), 'SRCYPOS: 0 ok, 1 placeholder ignored, 2 disagree'),
             'PFSHDIS': (int(self.shdis), 'PRISM and own grating shapes disagree'),
-            'PFPRISM': (self.prism_product[:68], 'PRISM product the shape came from'),
-            'PFXFER': (self.transfer, 'PRISM transfer: used/none/no_prism/...'),
+            'PFPRISM': (self.prism_product[:68], 'Product the transferred shape came from'),
+            'PFXFER': (self.transfer, 'Shape transfer: used/none/no_prism/...'),
             'PFPAV3': (_f(self.pa_v3), 'PA_V3 of the science exposures [deg]'),
             'PFCEN': (p['centre'], 'Source centre at the pivot [slit units]'),
             'PFCENPR': (p['centre_prior'], 'Planned source position (prior centre)'),
@@ -376,7 +389,8 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
     if choice == 'prism' and (reason in ('below_gate', 'fit_failed') or reason.startswith(('masked', 'dominated'))):
         reason = f'{reason};prism'
     R = cands[choice]
-    shape = 'own' if choice == 'own' else choice
+    # a shape transferred from a sibling grating is labelled apart from one from PRISM
+    shape = 'grating' if (choice == 'prism' and prism is not None and not prism.chromatic) else choice
     return ChainResult(result=R, shape=shape, chain='gated', reason=reason, snr_det=snr, gate=gate, detection=det,
                        chi2=chi2, npix_common=npix_common, bound_bits=bits, srcy_flag=srcy, shdis=shdis,
                        prism_product=prism.product if (prism is not None and transfer == 'used') else '',
