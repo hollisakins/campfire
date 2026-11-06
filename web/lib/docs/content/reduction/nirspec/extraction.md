@@ -50,7 +50,7 @@ In the 2-D extensions, `PROF2D` is the source's model per µJy of reported flux 
 
 ### Neighbors in the same slitlet
 
-A neighbor in the source's own slitlet also affects the nod subtraction (see [Leaving out a nod](/docs/reduction/nirspec/backgrounds#leaving-out-a-nod)). After the first pass, CAMPFIRE redoes those choices with every neighbor's fitted brightness, redoes the nod subtraction for the sources whose choice changes, and fits them again. It then looks for neighbors that are not in the catalog: it refits each source with a second source added along the slitlet, and reports a position where the fit improves strongly. These reports are proposals for review; they do not change the spectrum.
+A neighbor in the source's own slitlet also affects the nod subtraction (see [Exclusion of contaminated background exposures](/docs/reduction/nirspec/backgrounds#exclusion-of-contaminated-background-exposures)). After the first pass, CAMPFIRE redoes those choices with every neighbor's fitted brightness, redoes the nod subtraction for the sources whose choice changes, and fits them again. It then looks for neighbors that are not in the catalog: it refits each source with a second source added along the slitlet, and reports a position where the fit improves strongly. These reports are proposals for review; they do not change the spectrum.
 
 ## Combining exposures
 
@@ -62,7 +62,7 @@ All exposures of a source in one disperser go into one fit. When an observation 
 
 ## The master-background spectrum
 
-Every file also carries a second spectrum, extracted the same way from the same exposures with the master background subtracted instead of the other nods. See [Two spectra in every file](/docs/reduction/nirspec/backgrounds#two-spectra-in-every-file) for when it is the better one.
+Every file also carries a second spectrum, extracted the same way from the same exposures with the master background subtracted instead of the other nods. See [Master-background spectra](/docs/reduction/nirspec/backgrounds#master-background-spectra) for when it is the better one.
 
 ## Describing it in a paper
 

@@ -40,7 +40,7 @@ Each page of the reduction has its own sentence for the step it covers: [slit lo
 CAMPFIRE replaces parts of two CRDS references:
 
 - **Path loss along the slit**: replaced by the optics model for the source's fitted size and position ([Slit losses](/docs/reduction/nirspec/slit-losses)). Across the shutter, the CRDS point-source path loss is used, with a correction measured from stars.
-- **Bar shadow**: replaced by tables measured from empty shutters, in building the master background ([Backgrounds](/docs/reduction/nirspec/backgrounds#the-bar-shadow)); the high-resolution gratings keep the CRDS reference there. The spectra themselves, both versions, take the bar shadow from the optics model; science frames are never divided by one.
+- **Bar shadow**: replaced by tables measured from empty shutters, in building the master background ([Backgrounds](/docs/reduction/nirspec/backgrounds#bar-shadow-calibration)); the high-resolution gratings keep the CRDS reference there. The spectra themselves, both versions, take the bar shadow from the optics model; science frames are never divided by one.
 - **Where the bars sit**: measured once per observation from the empty shutters and applied in the optics model (`PFBAROFF`; `bar_offset = "off"` turns it off).
 
 Everything else (flat fields, wavelength solution, flux calibration) is the CRDS reference as delivered, unless the observation turned on one of the options on the [Detector and calibration](/docs/reduction/nirspec/detector-calibration#options-that-change-the-calibration) page. The reference-file cards of the spectrum file (`R_WAVCOR`, `R_FFLAT`, `R_PHOTOM`) record which.
