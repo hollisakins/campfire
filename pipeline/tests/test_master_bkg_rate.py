@@ -1,6 +1,8 @@
 """Master-background step 1: the compact rate-file geometry (``coverage.RateGeometry``) and
 the step's own pieces (the grid rows, the judged/sky split of the selection, the CALLS
 reader), on fake slit transforms and synthetic spectra."""
+import os
+
 import numpy as np
 from astropy.io import fits
 from astropy.table import Table
@@ -60,9 +62,54 @@ def test_the_counter_is_the_sum_of_the_footprints():
 
 
 def test_geometry_cache_sits_beside_the_counter_with_its_own_name():
-    a = C.cache_path('/x/jw_rate.fits', '/c', (2.6, 5.7))
-    g = C.geometry_cache_path('/x/jw_rate.fits', '/c', (2.6, 5.7))
+    a = C.cache_path('/x/jw_rate.fits', '/c', (2.6, 5.7), None)
+    g = C.geometry_cache_path('/x/jw_rate.fits', '/c', (2.6, 5.7), None)
     assert g != a and g.endswith('.npz') and '/geometry_jw_rate_' in g and '_cut' in g
+
+
+def test_step1_builds_g140m_geometry_on_the_extended_range_with_the_extension_off(tmp_path, monkeypatch):
+    """A G140M/F100LP rate file of an observation reduced without the extension: step 1
+    hands its geometry workers the extended wavelengthrange (and records it in the
+    product's cards), so the trace maps and counters carry the neighbours' red tails."""
+    from types import SimpleNamespace
+    from campfire_pipeline.nirspec import extended_wavelength as E
+    ws = tmp_path / 'products' / 'nirspec' / 'obs'
+    ws.mkdir(parents=True)
+    rates = []
+    for det, grating, filt in (('NRS2', 'G140M', 'F100LP'), ('NRS2', 'G395M', 'F290LP')):
+        p = ws / f'jw01_0310{len(rates) + 1}_00001_{det.lower()}_rate.fits'
+        hdu = fits.PrimaryHDU()
+        for k, v in dict(EXP_TYPE='NRS_MSASPEC', MSAMETFL='jw01_msa.fits', DETECTOR=det, GRATING=grating, FILTER=filt).items():
+            hdu.header[k] = v
+        hdu.writeto(p)
+        rates.append(str(p))
+    ext_wr = str(tmp_path / 'extended_jwst_nirspec_wavelengthrange_0008.asdf')
+    monkeypatch.setattr(E, 'geometry_wavelengthrange',
+                        lambda rate: ext_wr if fits.getheader(rate)['GRATING'] in ('G140M', 'G235M') else None)
+    monkeypatch.setattr(R.S, 'root_metafiles', lambda obs, roots=None: {})
+    monkeypatch.setattr(R.S, 'load', lambda path, metafiles: {})
+    monkeypatch.setattr(M, '_barshadow_reference', lambda grating, rate: (None, '/t/bs.fits'))
+    monkeypatch.setattr(M, 'barshadow_stamp', lambda path: 'x')
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_geometry(args):
+        rate, cache_dir, cutoffs, wr = args
+        seen[os.path.basename(rate)] = wr
+        raise Stop()
+    monkeypatch.setattr(R, '_worker_geometry', fake_geometry)
+    obs = SimpleNamespace(name='obs', rate_files=rates, workspace_dir=str(ws),
+                          stuck_closed_shutters_file=str(ws / 'stuck.toml'), stuck_closed_shutters={})
+    try:
+        R.run_step1(obs, {'extend_g140m_g235m': False}, write_calls=False)
+    except Stop:
+        pass
+    assert seen.get(os.path.basename(rates[0])) == ext_wr
+    cards = R._inputs_cards(rates[0], '/t/bs.fits', (0.96, None), 'h', ext_wr)
+    assert cards['MBKGWR'][0] == os.path.basename(ext_wr)
+    assert R._inputs_cards(rates[1], '/t/bs.fits', (2.6, 5.7), 'h', None)['MBKGWR'][0] == 'CRDS'
 
 
 def test_central_rows_take_one_pixel_per_column_nearest_the_source_row():

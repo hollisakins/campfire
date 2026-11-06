@@ -30,7 +30,19 @@ import os
 
 import numpy as np
 
-COVERAGE_VERSION = 3          # 2: footprints over the extended geometry (both ends); 3: failed-open margins
+COVERAGE_VERSION = 4          # 2: footprints over the extended geometry (both ends); 3: failed-open margins;
+                              # 4: G140M/G235M always on the extended wavelengthrange
+AUTO = 'auto'                 # wavelengthrange_override default: ``resolve_wavelengthrange``
+
+
+def resolve_wavelengthrange(rate_path, override=AUTO):
+    """The ``wavelengthrange`` reference a rate file's geometry is built with: ``override``
+    when given (None = the CRDS one), else ``extended_wavelength.geometry_wavelengthrange``
+    (the extended range for G140M/F100LP and G235M/F170LP whatever the reduction does)."""
+    if override != AUTO:
+        return override
+    from campfire_pipeline.nirspec.extended_wavelength import geometry_wavelengthrange
+    return geometry_wavelengthrange(rate_path)
 ROW_PAD = 12                 # rows beyond the cutout the block covers: the trace drifts ~6 rows over the extension
 
 # Where the sky light past the calibrated range ends, per (grating, filter), in µm, as
@@ -73,8 +85,9 @@ def _cutoff_tag(cutoffs):
     return '_cut' + hashlib.sha1(repr(tuple(None if c is None else round(float(c), 4) for c in cutoffs)).encode()).hexdigest()[:6]
 
 
-def cache_path(rate_path, cache_dir, cutoffs=None, wavelengthrange_override=None):
+def cache_path(rate_path, cache_dir, cutoffs=None, wavelengthrange_override=AUTO):
     """The cache file ``coverage_from_wcs`` writes for ``rate_path``."""
+    wavelengthrange_override = resolve_wavelengthrange(rate_path, wavelengthrange_override)
     key = hashlib.sha1(os.path.abspath(rate_path).encode()).hexdigest()[:12]
     tag = f'_v{COVERAGE_VERSION}' + _cutoff_tag(cutoffs)
     if wavelengthrange_override:
@@ -190,7 +203,7 @@ def add_block(frame, g, values=None):
 # One rate file's slitlets: the geometry cache and the counter
 # ---------------------------------------------------------------------------
 
-GEOMETRY_VERSION = 2          # 2: failed-open shutters carry the margin of a commanded slitlet
+GEOMETRY_VERSION = 3          # 2: failed-open shutters carry the margin of a commanded slitlet; 3: G140M/G235M on the extended wavelengthrange
 FIXED_SLITS = ('S200A1', 'S200A2', 'S400A1', 'S1600A1', 'S200B1')
 FAILED_OPEN_Y = 1.0           # slit-frame half extent of a failed-open shutter (open heights)
 
@@ -215,7 +228,7 @@ def failed_open_slitlets(msaoper):
                        slit_yscale=MSA_SLIT_SCALES[1]) for s in create_slitlets(msaoper)]
 
 
-def geometry_cache_path(rate_path, cache_dir, cutoffs=None, wavelengthrange_override=None):
+def geometry_cache_path(rate_path, cache_dir, cutoffs=None, wavelengthrange_override=AUTO):
     """The ``RateGeometry`` cache of ``rate_path``, keyed like the counter's."""
     p = cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override)
     head, tail = os.path.split(p)
@@ -269,7 +282,7 @@ class RateGeometry:
         self.offsets, self.meta, self.shape = offsets, meta, tuple(shape)
 
     @classmethod
-    def from_rate(cls, rate_path, cutoffs=None, wavelengthrange_override=None):
+    def from_rate(cls, rate_path, cutoffs=None, wavelengthrange_override=AUTO):
         from astropy.io import fits
         h = fits.getheader(rate_path)
         if cutoffs is None:
@@ -277,7 +290,7 @@ class RateGeometry:
         shape = fits.getheader(rate_path, 'SCI')
         shape = (int(shape['NAXIS2']), int(shape['NAXIS1']))
         pix, lam, ys, meta = [], [], [], []
-        for holder, slits, kind in _assign_wcs(rate_path, wavelengthrange_override):
+        for holder, slits, kind in _assign_wcs(rate_path, resolve_wavelengthrange(rate_path, wavelengthrange_override)):
             for rec in slits:
                 if str(rec.name) in FIXED_SLITS:
                     continue
@@ -335,13 +348,14 @@ class RateGeometry:
             yield b
 
 
-def rate_geometry(rate_path, cache_dir=None, cutoffs=None, wavelengthrange_override=None):
+def rate_geometry(rate_path, cache_dir=None, cutoffs=None, wavelengthrange_override=AUTO):
     """The ``RateGeometry`` of ``rate_path``, from its cache under ``cache_dir`` when there
     is one (built and written otherwise, with the coverage counter beside it)."""
     from astropy.io import fits
     if cutoffs is None:
         ph = fits.getheader(rate_path)
         cutoffs = cutoffs_for(ph.get('GRATING', ''), ph.get('FILTER', ''))
+    wavelengthrange_override = resolve_wavelengthrange(rate_path, wavelengthrange_override)
     path = geometry_cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override) if cache_dir else None
     if path and os.path.exists(path):
         return RateGeometry.load(path)
@@ -352,23 +366,25 @@ def rate_geometry(rate_path, cache_dir=None, cutoffs=None, wavelengthrange_overr
     return geo
 
 
-def coverage_from_wcs(rate_path, cache_dir=None, cutoffs=None, wavelengthrange_override=None):
+def coverage_from_wcs(rate_path, cache_dir=None, cutoffs=None, wavelengthrange_override=AUTO):
     """Count of slitlet footprints per pixel of ``rate_path`` (int16, detector shape).
 
     Every open slitlet in the metafile the rate file points at, plus the failed-open
     shutters of the ``msaoper`` reference; fixed slits are skipped (always masked
     elsewhere). Each footprint is the slitlet's extended geometry cut to ``cutoffs``
-    (default: the disperser's ``WAVELENGTH_CUTOFFS``). ``wavelengthrange_override`` is the
-    extended ``wavelengthrange`` reference of the extended-wavelength reduction, so the
-    slit transforms' wavelength domain matches that reduction's. Cached as
-    ``coverage_<rate>_<hash>_v2[_cut<hash>][_wr<hash>].npy`` under ``cache_dir``, from the
-    same pass as the ``rate_geometry`` cache.
+    (default: the disperser's ``WAVELENGTH_CUTOFFS``). The slit transforms' wavelength
+    domain comes from ``wavelengthrange_override`` (default ``resolve_wavelengthrange``:
+    the extended range for G140M/F100LP and G235M/F170LP whether or not the reduction
+    extends them, since their first-order light reaches the detector either way). Cached
+    as ``coverage_<rate>_<hash>_v<N>[_cut<hash>][_wr<hash>].npy`` under ``cache_dir``, from
+    the same pass as the ``rate_geometry`` cache.
     """
     from astropy.io import fits
     if cutoffs is None:
         ph = fits.getheader(rate_path)
         cutoffs = cutoffs_for(ph.get('GRATING', ''), ph.get('FILTER', ''))
-    cache = cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override) if cache_dir else None
+    wavelengthrange_override = resolve_wavelengthrange(rate_path, wavelengthrange_override)
+    cache =cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override) if cache_dir else None
     if cache and os.path.exists(cache):
         return np.load(cache)
     return rate_geometry(rate_path, cache_dir, cutoffs, wavelengthrange_override).counter()

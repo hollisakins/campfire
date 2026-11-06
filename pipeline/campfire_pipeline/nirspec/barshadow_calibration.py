@@ -187,6 +187,20 @@ def reference_grid(path):
                 y0=float(hd['CRVAL2']), dy=float(hd['CDELT2']), n_y=int(hd['NAXIS2']))
 
 
+def widened_grid(grid, max_um):
+    """``grid`` with its wavelength axis stretched to end at ``max_um``, over the same
+    number of columns from the same first column: jwst's bar-shadow step builds its shadow
+    array 101 columns wide whatever the reference holds, so a table it can read keeps the
+    template's column count and only ``CDELT1`` changes. The G140M and G235M templates
+    stop at 1.495 and 2.492 µm, short of the light on the detector (to 3.3 and 5.05 µm)
+    and of the extended-wavelength reduction's 5.3 µm. Unchanged when the template
+    already reaches ``max_um`` (or ``max_um`` is None)."""
+    if max_um is None or grid.wavelengths_um[-1] >= max_um - 1e-6:
+        return grid
+    return Grid(w0=grid.w0, dw=(max_um * 1e-6 - grid.w0) / (grid.n_w - 1), n_w=grid.n_w,
+                y0=grid.y0, dy=grid.dy, n_y=grid.n_y)
+
+
 # ---------------------------------------------------------------------------
 # Per-canonical samples
 # ---------------------------------------------------------------------------
@@ -645,7 +659,91 @@ def cell_stats(acc, n_min=20):
 # Tables
 # ---------------------------------------------------------------------------
 
-def _fill_and_smooth(prof, var, smooth_cols, floor_rows=None, collapsed=None):
+def _weighted_smooth(out, measured, var, smooth_cols):
+    """Gaussian along wavelength with each cell weighted by its inverse variance (filled,
+    unmeasured cells weigh nothing); past the last column with weight the row holds its
+    last smoothed value. Rows with no measured cell are returned as they are."""
+    from scipy import ndimage
+    with np.errstate(invalid='ignore', divide='ignore'):
+        w = np.where(measured & (var > 0), 1.0 / var, 0.0)
+    num = ndimage.gaussian_filter1d(np.where(w > 0, out, 0.0) * w, smooth_cols, axis=1, mode='constant')
+    den = ndimage.gaussian_filter1d(w, smooth_cols, axis=1, mode='constant')
+    res = out.copy()
+    for r in range(out.shape[0]):
+        if not measured[r].any():
+            continue
+        # a column counts while its kernel reaches measured cells with at least 1 % of the row's best weight
+        ok = den[r] > 1e-2 * den[r].max()
+        idx = np.flatnonzero(ok)
+        sm = np.where(ok, num[r] / np.where(ok, den[r], 1.0), np.nan)
+        res[r] = np.interp(np.arange(out.shape[1]), idx, sm[idx])            # held at both ends
+    return res
+
+
+def _low_rank_lambda(prof, var, rank=1, deg=3, row_frac=0.5, err_floor=0.005):
+    """One segment's measured (row, column) medians as a mean profile plus ``rank`` fixed
+    changes of shape, each with one amplitude per column, the amplitudes a weighted
+    polynomial of degree ``deg`` in the column index (held past the first and last measured
+    column). Along wavelength the profile changes in essentially one way, its edges
+    broadening slowly as diffraction grows, so a column's amplitude is fitted from all its
+    rows at once and the noise of the faint red columns does not reach the table row by row.
+
+    Rows measured in at least ``row_frac`` of the measured columns are modelled; the
+    others are returned as they are, for the fill. The weights floor each cell's error at
+    ``err_floor`` (of the open level), so every well-measured column counts alike in the
+    mean profile and the shape change and only the noisy ones count less (without the
+    floor the bluest columns, ten times more precise, would be the mean profile and the
+    change would be sought where it is smallest). Returns ``(prof, var, modelled_rows)``."""
+    from numpy.polynomial import polynomial as P
+    meas = np.isfinite(prof) & np.isfinite(var) & (var > 0)
+    var = np.where(meas, np.maximum(var, err_floor ** 2), var)
+    cols_any = np.flatnonzero(meas.any(axis=0))
+    if cols_any.size < deg + 2:
+        return prof, var, np.zeros(prof.shape[0], bool)
+    rows = meas[:, cols_any].mean(axis=1) >= row_frac
+    if rows.sum() < rank + 3:
+        return prof, var, np.zeros(prof.shape[0], bool)
+    M, V, ok = prof[rows], var[rows], meas[rows]
+    with np.errstate(invalid='ignore', divide='ignore'):
+        W = np.where(ok, 1.0 / V, 0.0)
+    # the mean profile, and the shape changes from the well-measured columns (most rows present)
+    T0 = np.nansum(np.where(ok, M, 0) * W, axis=1) / np.maximum(W.sum(axis=1), 1e-30)
+    D = np.where(ok, M - T0[:, None], 0.0)
+    good_cols = ok.mean(axis=0) >= 0.9
+    wc = np.zeros(M.shape[1])
+    with np.errstate(invalid='ignore', divide='ignore'):
+        wc[good_cols] = 1.0 / np.nanmedian(np.where(ok, V, np.nan)[:, good_cols], axis=0)
+    U, _, _ = np.linalg.svd(D[:, good_cols] * np.sqrt(wc[good_cols])[None, :], full_matrices=False)
+    comps = U[:, :rank]                                             # (rows, rank)
+    # each column's amplitudes from its own rows, weighted per cell
+    amp = np.full((M.shape[1], rank), np.nan); amp_var = np.full((M.shape[1], rank), np.nan)
+    for c in cols_any:
+        m = ok[:, c]
+        if m.sum() < rank + 2:
+            continue
+        A = comps[m] * np.sqrt(W[m, c])[:, None]
+        b = D[m, c] * np.sqrt(W[m, c])
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+        amp[c] = sol
+        amp_var[c] = np.diag(np.linalg.pinv(A.T @ A))
+    # the smooth curve: each amplitude a weighted polynomial in the column index, held past the data
+    idx = np.arange(M.shape[1])
+    fitted = np.flatnonzero(np.isfinite(amp[:, 0]))
+    lo, hi = fitted[0], fitted[-1]
+    x = np.clip((idx - lo) / max(hi - lo, 1) * 2 - 1, -1, 1)
+    smooth_amp = np.zeros((M.shape[1], rank))
+    for k in range(rank):
+        coef = P.polyfit(x[fitted], amp[fitted, k], deg, w=1.0 / np.sqrt(amp_var[fitted, k]))
+        smooth_amp[:, k] = P.polyval(x, coef)
+    model = T0[:, None] + comps @ smooth_amp.T                      # (rows, columns)
+    out = prof.copy(); vout = var.copy()
+    out[rows] = model
+    # the model's cells are as uncertain as a row's mean over its measured columns
+    vout[rows] = (1.0 / np.maximum(W.sum(axis=1), 1e-30))[:, None] * np.ones(M.shape[1])[None, :]
+    return out, vout, rows
+
+
+def _fill_and_smooth(prof, var, smooth_cols, floor_rows=None, collapsed=None, weighted=False):
     """Fill the unmeasured cells of one segment's (y, wavelength) array and smooth it.
 
     Inside each column, gaps between measured rows are interpolated; rows outside the
@@ -661,6 +759,8 @@ def _fill_and_smooth(prof, var, smooth_cols, floor_rows=None, collapsed=None):
     """
     from scipy import ndimage
     out = prof.copy(); vout = var.copy()
+    measured = np.isfinite(prof) & np.isfinite(var)
+    var_measured = var.copy()
     for i in range(out.shape[1]):
         fin = np.isfinite(out[:, i])
         if fin.sum() < 2:
@@ -694,17 +794,38 @@ def _fill_and_smooth(prof, var, smooth_cols, floor_rows=None, collapsed=None):
         fill = np.where(np.isfinite(c), c, floor)
     out[never] = fill[never, None]; vout[never] = np.nanmax(vout) if np.isfinite(vout).any() else 0.0
     out[~np.isfinite(out)] = floor; vout[~np.isfinite(vout)] = 0.0
-    if smooth_cols and smooth_cols > 0:
+    if smooth_cols and smooth_cols > 0 and weighted:
+        out = _weighted_smooth(out, measured, var_measured, smooth_cols)
+        vout = ndimage.gaussian_filter1d(vout, smooth_cols, axis=1, mode='nearest') / max(1.0, smooth_cols)
+    elif smooth_cols and smooth_cols > 0:
         out = ndimage.gaussian_filter1d(out, smooth_cols, axis=1, mode='nearest')
         vout = ndimage.gaussian_filter1d(vout, smooth_cols, axis=1, mode='nearest') / max(1.0, smooth_cols)
     return np.clip(out, 0.0, 1.5), vout
 
 
-def build_tables(total, grid, smooth_cols=2.0, n_min=20):
+def build_tables(total, grid, smooth_cols=2.0, n_min=20, weighted=False, lowrank=None):
     """The ``DATA1X1`` / ``DATA1X3`` images (and variances) on the reference grid from the
     accumulated cells. Returns a dict with the arrays and the per-segment measured
-    profiles on the Y_CENTRES bins (for the QA)."""
+    profiles on the Y_CENTRES bins (for the QA).
+
+    On the G140M / G235M extended range the background per pixel fades and the spread of a
+    pixel's ratio to it grows (interquartile range 0.25 at 1.1 µm, 2 at 2.5 µm, 3.5 past
+    2.8 µm on G140M), so a red column's cells are uncertain by 5-10 % each. Two options
+    keep that noise out of the table: ``lowrank = (rank, deg)`` replaces each segment's
+    well-measured rows by the smooth model of ``_low_rank_lambda`` (a mean profile plus
+    ``rank`` shape changes whose amplitudes are degree-``deg`` polynomials in wavelength)
+    before the fill, and ``weighted`` smooths what remains along wavelength with
+    inverse-variance weights (``_weighted_smooth``), so the noisy columns and the filled
+    ones past the data take their shape from the better-measured columns around them."""
     mean, var = cell_stats(total, n_min)          # (seg, ybin, col)
+    if lowrank:
+        for si in range(len(SEGMENTS)):
+            mean[si], var[si], modelled = _low_rank_lambda(mean[si], var[si], *lowrank)
+            # rows too sparse to model (measured in few columns: the last bins inside the
+            # slitlet ends) take the wavelength-collapsed profile in the fill, not their
+            # few noisy cells
+            if modelled.any():
+                mean[si][~modelled] = np.nan; var[si][~modelled] = np.nan
     seg_i = {name: i for i, name in enumerate(SEGMENTS)}
     rows = grid.rows
     # measured profiles per segment on the coarse bins, filled and smoothed
@@ -717,7 +838,8 @@ def build_tables(total, grid, smooth_cols=2.0, n_min=20):
     cmean, _ = cell_stats(coll, n_min)
     for name in SEGMENTS:
         filled[name], vfilled[name] = _fill_and_smooth(mean[seg_i[name]], var[seg_i[name]], smooth_cols,
-                                                       floor_rows=beyond[name], collapsed=cmean[seg_i[name]])
+                                                       floor_rows=beyond[name], collapsed=cmean[seg_i[name]],
+                                                       weighted=weighted)
 
     def onto_rows(prof, vprof, lo, hi):
         """Interpolate a coarse-bin profile onto the rows in [lo, hi], from the bins of
@@ -758,7 +880,7 @@ def build_tables(total, grid, smooth_cols=2.0, n_min=20):
     for arr in (v1, v3):
         arr[np.isnan(arr)] = np.nanmax(arr) if np.isfinite(np.nanmax(arr)) else 0.0
     return dict(data1x1=d1, var1x1=v1, data1x3=d3, var1x3=v3, measured=mean, measured_var=var,
-                filled=filled, n_cells=cell_counts(total))
+                filled=filled, n_cells=cell_counts(total), grid=grid)
 
 
 def load_table(path):
@@ -790,10 +912,16 @@ def evaluate_table(table, seg, yseg, lam_um):
 # ---------------------------------------------------------------------------
 
 def write_reference(tables, template_path, out_path, provenance):
-    """Write the empirical reference in the CRDS layout, copying the template's cards."""
+    """Write the empirical reference in the CRDS layout, copying the template's cards
+    (the wavelength axis ``CRVAL1`` / ``CDELT1`` from the tables' grid when it differs)."""
     with fits.open(template_path) as t:
         phdr = t[0].header.copy()
         ext_hdrs = {name: t[name].header.copy() for name in ('DATA1X1', 'VAR1X1', 'DATA1X3', 'VAR1X3')}
+    g = tables.get('grid')
+    widened = g is not None and not np.isclose(g.dw, float(ext_hdrs['DATA1X1']['CDELT1']), rtol=1e-6)
+    if g is not None:
+        for h in ext_hdrs.values():
+            h['CRVAL1'] = g.w0; h['CDELT1'] = g.dw
     phdr['DESCRIP'] = 'CAMPFIRE empirical NIRSpec MSA bar-shadow profile from empty shutters'
     phdr['AUTHOR'] = 'CAMPFIRE (campfire_pipeline.nirspec.barshadow_calibration)'
     phdr['PEDIGREE'] = provenance.get('pedigree', phdr.get('PEDIGREE', 'INFLIGHT'))
@@ -809,6 +937,9 @@ def write_reference(tables, template_path, out_path, provenance):
     phdr['HISTORY'] = 'canonicals: the empty shutters of every slitlet, pixels divided by the pooled sky'
     phdr['HISTORY'] = 'measured at the shutter centres, binned per reference segment, row and column;'
     phdr['HISTORY'] = 'see docs/design-nirspec-master-background.md section 9.'
+    if widened:
+        phdr['HISTORY'] = (f'wavelength axis widened to {g.wavelengths_um[0]:.3f}-{g.wavelengths_um[-1]:.3f} um '
+                           f'over the template\'s {g.n_w} columns (CDELT1 {g.dw:.4e} m)')
     for obs in provenance.get('observations', []):
         phdr['HISTORY'] = f'observation: {obs}'
     for k, v in provenance.get('options', {}).items():
@@ -827,8 +958,14 @@ def write_reference(tables, template_path, out_path, provenance):
 # ---------------------------------------------------------------------------
 
 def derive(obs_names, grating, products_dir, cache_dir, filter_name=None, source_pad_px=2.0,
-           processes=4, smooth_cols=2.0, n_min=20, held_out=None, log=print):
+           processes=4, smooth_cols=2.0, n_min=20, held_out=None, wavelength_max_um=None, weighted=False, lowrank=None,
+           log=print):
     """Run the derivation for one grating over several observations.
+
+    ``wavelength_max_um`` widens the template's wavelength axis to end there
+    (``widened_grid``). The overlap counters reach as far as the light does: for G140M
+    and G235M the geometry is always built on the extended ``wavelengthrange``
+    (``coverage.resolve_wavelengthrange``).
 
     Returns a dict with the tables, the sky, the per-observation cells, the CRDS
     template path, the provenance, and (if ``held_out``) the held-out stacks against
@@ -842,9 +979,9 @@ def derive(obs_names, grating, products_dir, cache_dir, filter_name=None, source
     if not canonicals:
         raise SystemExit('no canonicals found')
     template = crds_barshadow_path(canonicals[0].path)
-    grid = reference_grid(template)
+    grid = widened_grid(reference_grid(template), wavelength_max_um)
     cutoffs = cutoffs_for(grating, filter_name or canonicals[0].filter)
-    log(f'template {os.path.basename(template)}: {grid.n_w} columns {grid.wavelengths_um[0]:.3f}-{grid.wavelengths_um[-1]:.3f} um, '
+    log(f'template {os.path.basename(template)}; grid {grid.n_w} columns {grid.wavelengths_um[0]:.3f}-{grid.wavelengths_um[-1]:.3f} um, '
         f'{grid.n_y} rows; footprint cutoffs {cutoffs} um')
 
     counters = {}
@@ -874,13 +1011,15 @@ def derive(obs_names, grating, products_dir, cache_dir, filter_name=None, source
         log(f'{len(fails)} canonicals failed in pass 2, e.g. {fails[0]}')
     n_pixels = int(total.sum())
     log(f'pass 2: {n_pixels} pixels in the profile cells')
-    tables = build_tables(total, grid, smooth_cols=smooth_cols, n_min=n_min)
+    tables = build_tables(total, grid, smooth_cols=smooth_cols, n_min=n_min, weighted=weighted, lowrank=lowrank)
 
     result = dict(tables=tables, grid=grid, sky=sky, skies=skies, n_per_col=n_per_col, scales=scales, per_obs=per_obs, shutters=shutters,
                   template=template, canonicals=canonicals, total=total,
                   provenance=dict(observations=sorted({c.obs for c in train}), n_pixels=n_pixels, n_shutters=n_clean,
                                   options=dict(grating=grating, filter=filter_name or 'any', source_pad_px=source_pad_px,
-                                               cutoffs_um=f'{cutoffs[0]}-{cutoffs[1]}', smooth_cols=smooth_cols, n_min=n_min, held_out=held_out or 'none')))
+                                               cutoffs_um=f'{cutoffs[0]}-{cutoffs[1]}', smooth_cols=smooth_cols, n_min=n_min, held_out=held_out or 'none',
+                                               wavelength_max_um=wavelength_max_um or 'template',
+                                               weighted_smoothing=bool(weighted), lowrank=str(lowrank or 'none'))))
     if test:
         # the held-out observation: its own sky and selection, its pixels against both tables
         sh_t, _ = centre_spectra(test, counters, grid, source_pad_px, processes)

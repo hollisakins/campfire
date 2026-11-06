@@ -172,6 +172,57 @@ def test_write_reference_roundtrip(tmp_path):
     assert back['grid'].n_w == grid.n_w
     assert np.allclose(back['data1x1'], t['data1x1'], atol=1e-6)
 
+    # a widened axis: same columns and first wavelength, CDELT1 stretched to the new red end,
+    # written into every image's header so lookups (and jwst) read the new wavelengths
+    wide = B.widened_grid(grid, 5.3)
+    assert wide.n_w == grid.n_w and wide.w0 == grid.w0
+    assert wide.wavelengths_um[-1] == pytest.approx(5.3)
+    assert B.widened_grid(grid, 1.5) is grid                     # the template already reaches it
+    t = B.build_tables(_synthetic_cells(wide, _trapezoid), wide, smooth_cols=0)
+    B.write_reference(t, str(template), str(out), dict(observations=['obs_a'], options={}))
+    with fits.open(out) as h:
+        for name in ('DATA1X1', 'VAR1X1', 'DATA1X3', 'VAR1X3'):
+            assert h[name].header['CDELT1'] == pytest.approx(wide.dw) and h[name].header['NAXIS1'] == grid.n_w
+        assert any('widened' in str(c) for c in h[0].header['HISTORY'])
+    assert B.load_table(str(out))['grid'].wavelengths_um[-1] == pytest.approx(5.3)
+
+
+
+def _broadening_profile(n_rows=40, n_cols=60, noise_red=0.08, seed=1):
+    """A segment's cells whose edge broadens with wavelength (one shape change, amplitude
+    linear in the column), measured to column 45 with the noise growing as on G140M's
+    extended range (0.3 % of the open level in the blue, ~8 % at the last column)."""
+    rng = np.random.default_rng(seed)
+    y = np.linspace(-0.5, 0.5, n_rows)
+    t0 = 1 / (1 + np.exp(-y / 0.08)); t1 = np.exp(-0.5 * (y / 0.08) ** 2)
+    amp = np.linspace(0.0, 0.1, n_cols)
+    truth = t0[:, None] + t1[:, None] * amp[None, :]
+    sigma = 0.003 + noise_red * (np.arange(n_cols) / 45.0) ** 2
+    var = np.broadcast_to(sigma ** 2, truth.shape).copy()
+    prof = truth + rng.normal(0, 1, truth.shape) * np.sqrt(var)
+    prof[:, 46:] = np.nan; var[:, 46:] = np.nan
+    return prof, var, truth
+
+
+def test_low_rank_fit_keeps_the_red_noise_out_and_holds_past_the_data():
+    prof, var, truth = _broadening_profile()
+    out, vout, rows = B._low_rank_lambda(prof, var, rank=1, deg=3)
+    assert rows.all()
+    red = slice(35, 46)
+    rms = lambda a: np.sqrt(np.nanmean(a ** 2))                              # noqa: E731
+    assert rms(out[:, red] - truth[:, red]) < 0.15 * rms(prof[:, red] - truth[:, red])
+    assert np.allclose(out[:, 46:], out[:, [45]])                             # held, not extrapolated
+    assert np.abs(out[:, :30] - truth[:, :30]).max() < 0.015
+
+
+def test_weighted_smoothing_ignores_a_noisy_last_column():
+    prof = np.full((3, 20), 0.8); var = np.full((3, 20), 1e-4)
+    prof[:, 15] = 2.0; var[:, 15] = 1.0                                       # one bad, uncertain column
+    prof[:, 16:] = np.nan; var[:, 16:] = np.nan                               # nothing measured past it
+    plain, _ = B._fill_and_smooth(prof, var, 2.0)
+    weighted, _ = B._fill_and_smooth(prof, var, 2.0, weighted=True)
+    assert np.allclose(weighted, 0.8, atol=0.01)
+    assert plain[:, -1].min() > 1.4                                           # the fill repeats the bad column
 
 
 def test_canonical_names_with_a_base36_sequence():

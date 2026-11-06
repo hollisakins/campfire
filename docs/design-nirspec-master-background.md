@@ -1189,6 +1189,66 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   (not committed). GOODS-N, EGS and A2744 got their 36 master-background products each from
   `cfpipe nirspec master-bkg` with these tables in the expansion (69–180 clean of 58–211 shutters per
   exposure × detector; scale vs pool 0.97–1.02; data/model 0.99–1.09).
+- **G140M / G235M tables widened to 5.3 µm, and their geometry always on the extended range
+  (2026-11-06).** The tables above kept the CRDS templates' wavelength axis (0003: 0.970–1.495 µm,
+  0005: 1.650–2.492 µm), and every lookup (`evaluate_table`, `map_coordinates(mode='nearest')`: master
+  background steps 1 and 2, the stuck-shutter fit) held the last column's shape beyond, though the light
+  reaches 3.3 µm (G140M) and 5.05 µm (G235M) on the detector and the extended reduction calibrates to
+  5.3 µm. Three findings and the changes they led to:
+  - *The layout jwst reads.* `BarShadowStep` builds its shadow array 101 columns wide whatever the
+    reference holds (`create_empty_shadow_array`), and stage 2 hands it our table when
+    `[nirspec.stage2].empirical_barshadow` is on. So the widened tables keep the template's 101 columns
+    and first wavelength and change only `CDELT1` (G140M 0.00525 → 0.0433 µm, G235M 0.00842 →
+    0.0365 µm; the prism's is 0.047). `barshadow_calibration.widened_grid`, `write_reference` writes the
+    axis into all four images; jwst reads both files (a 101-column shadow, 0.97 / 1.65–5.30 µm).
+  - *The footprints stopped short.* The overlap counter was built with the CRDS wavelengthrange, under
+    which `assign_wcs` gives no WCS on a detector to a slitlet whose nominal range lies wholly on the other
+    one; its red tail still lands there. On a spurs_gds exposure (`jw09214007001_03101_00001`, NRS2) 21
+    of 116 G140M slitlets had no footprint (1.90–3.46 µm on NRS2); the coverage count changed on 17.0 %
+    of NRS2 (13.7 % from empty to covered, 3.1 % from one footprint to shared, 6.4 % of the
+    single-covered pixels) and on 13.2 % for G235M (11.0 % / 2.1 %); NRS1 unchanged for both. Slitlets
+    present either way already ran to the detector edge (92 of 95 identical). User decision 2026-11-06:
+    the geometry of G140M/F100LP and G235M/F170LP (counters, `RateGeometry`, the stored trace maps) is
+    always built on the extended wavelengthrange, and the extension setting only decides what stage 2a
+    calibrates (`extended_wavelength.geometry_wavelengthrange`, the default of every `coverage` builder;
+    `COVERAGE_VERSION` 4, `GEOMETRY_VERSION` 3, `SHUTTER_MAP_VERSION` '3', card `MBKGWR`). Stage 1's 1/f
+    slit mask follows the same traces to 5.3 µm (`EXTENDED_TRACE_GRATING_FILTERS`, user decision
+    2026-11-06). On NRS2 of the same exposures that masks another 4.5 % (G140M) / 4.4 % (G235M) of the
+    detector, every pixel the extended geometry added (the configured 2.5 / 4.0 µm edge already covered
+    86–87 % of them), and halves the background the column fit keeps: median per column 159 → 91 and
+    166 → 80 pixels, columns with fewer than 100 from 495 → 1451 and 484 → 1624 of 2040; NRS1 unchanged.
+  - *The red end is noisy, and partly second order.* Re-derived from the four SPURS fields with the
+    extended footprints: G140M 7309 clean shutters, 55.1 M pixels (14.1 M before), G235M 1902 and 13.1 M.
+    A pixel's ratio to the background spreads as the background per pixel fades (interquartile range 0.25
+    at 1.1 µm, 2 at 2.5 µm, 3.5 past 2.8 µm on G140M), so a red column's cells are uncertain by 5–10 %;
+    smoothing column by column carried that noise into the table and, through the fill, past the data to
+    5.3 µm. Each segment is now a mean profile plus one shape change whose amplitude is a cubic in
+    wavelength (`_low_rank_lambda`, weights with a 0.5 % floor so every well-measured column counts
+    alike), held past the data; rows too sparse to model take the wavelength-collapsed profile. The
+    background spectrum shows why the G140M shadow barely changes past 1.9 µm: it steps up at 1.95 and
+    2.9 µm, twice and three times F100LP's 0.97 µm cut-on, where second- and third-order light (diffracting
+    like half and a third the wavelength) joins; G235M's steps at 3.25 µm (2 × 1.66 µm). Change of the
+    table from the bluest column inside the open area, the edges moving in: G140M up to 2–5 % by 1.9 µm and
+    5–7 % by 3.2 µm, then held; G235M up to 2 % by 2.8 µm and 6–12 % by 5.2 µm.
+  - *Held-out check* (spurs_gds left out, open area |y| < 0.45 of the nearest shutter, rms of
+    data − table in % of the open level; the old short table had seen spurs_gds):
+
+    | band (µm) | new | old, held at its last column | CRDS |
+    |---|---|---|---|
+    | G140M 0.97–1.50 | 0.3–0.9 | 0.2–0.6 | 1.0–2.7 |
+    | G140M 1.50–1.89 | 0.5–0.8 | 0.9–1.3 | 1.5–3.2 |
+    | G140M 1.89–2.50 | 0.8–1.7 | 1.5–1.9 | 2.2–3.6 |
+    | G140M 2.50–3.40 | 2.8–3.2 | 3.5–4.5 | 4.6–5.5 |
+    | G235M 1.65–2.50 | 0.9–1.8 | 0.9–1.2 | 2.1–4.7 |
+    | G235M 2.50–3.17 | 1.4–2.6 | 2.4–3.2 | 2.1–5.7 |
+    | G235M 3.17–4.20 | 1.5–2.4 | 3.4–3.7 | 3.2–6.5 |
+    | G235M 4.20–5.05 | 2.5–3.5 | 4.7–6.9 | 5.9–10.2 |
+
+    Past 2.5 µm (G140M) and 3 µm (G235M) the held-out field's own noise is 2–4 % per band, so the
+    differences there are upper limits on the table's error. Bins of three columns could not tell the
+    smoothing variants apart (7–15 % per bin past 2.5 µm on G140M). One feature is in the data, not the fit:
+    the last row bin inside each slitlet end (|y| ≈ 0.93) rises with wavelength, to ~0.15 of the open level
+    at the red end. Scripts and figures: `scratch/claude/bs_wide/` (not committed).
 - **The margin rows beyond the outer shutters were painted too bright (found 2026-10-30, fixed in
   the derivation).** With the empirical tables in the expansion, `(rate − MBKG2D) / MBKG2D` over the
   DQ-clean covered pixels had a median of −4 to −6 % on the deep SPURS fields and −1 % on COSMOS p1,

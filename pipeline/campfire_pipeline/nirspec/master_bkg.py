@@ -1515,12 +1515,9 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
     sample = {base: inputs[base] for base in inputs if base.rsplit('_', 2)[0] in groups and inputs[base]}
     canonicals = [c for cans in sample.values() for c in cans]
 
-    # with the extended-wavelength reduction on, the footprints must reach the extended
-    # red end too, so the counter's assign_wcs takes the same wavelengthrange override
-    extended_refs = {}
-    if stage_config.get('extend_g140m_g235m'):
-        from campfire_pipeline.nirspec.extended_wavelength import build_extended_reference_files
-        extended_refs = build_extended_reference_files(obs.rate_files) or {}
+    # the footprints reach as far as the light does: G140M / G235M geometry is always built
+    # on the extended wavelengthrange, whatever the reduction calibrates
+    # (coverage.resolve_wavelengthrange)
     cache_dir = default_cache_dir()
     counters, geometries, cutoffs_of = {}, {}, {}
     for base in sorted(sample):
@@ -1528,13 +1525,11 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         if not os.path.exists(rate):
             continue
         c0 = sample[base][0]
-        ext = extended_refs.get((c0.detector.upper(), c0.grating, c0.filter))
-        wr = ext.get('wavelengthrange') if ext else None
         cutoffs = cutoffs_for(c0.grating, c0.filter)
         cutoffs_of[rate] = cutoffs
-        coverage_from_wcs(rate, cache_dir=cache_dir, cutoffs=cutoffs, wavelengthrange_override=wr)
-        counters[rate] = cache_path(rate, cache_dir, cutoffs, wr)
-        geometries[rate] = geometry_cache_path(rate, cache_dir, cutoffs, wr)
+        coverage_from_wcs(rate, cache_dir=cache_dir, cutoffs=cutoffs)
+        counters[rate] = cache_path(rate, cache_dir, cutoffs)
+        geometries[rate] = geometry_cache_path(rate, cache_dir, cutoffs)
     log(f'master background: {len(counters)} coverage counters')
 
     dispersers = sorted({(c.grating, c.filter) for c in canonicals})
