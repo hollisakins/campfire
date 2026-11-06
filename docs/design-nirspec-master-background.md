@@ -1213,10 +1213,13 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
     calibrates (`extended_wavelength.geometry_wavelengthrange`, the default of every `coverage` builder;
     `COVERAGE_VERSION` 4, `GEOMETRY_VERSION` 3, `SHUTTER_MAP_VERSION` '3', card `MBKGWR`). Stage 1's 1/f
     slit mask follows the same traces to 5.3 µm (`EXTENDED_TRACE_GRATING_FILTERS`, user decision
-    2026-11-06). On NRS2 of the same exposures that masks another 4.5 % (G140M) / 4.4 % (G235M) of the
-    detector, every pixel the extended geometry added (the configured 2.5 / 4.0 µm edge already covered
-    86–87 % of them), and halves the background the column fit keeps: median per column 159 → 91 and
-    166 → 80 pixels, columns with fewer than 100 from 495 → 1451 and 484 → 1624 of 2040; NRS1 unchanged.
+    2026-11-06). For an observation with the extension off, on NRS2 of the same exposures that masks
+    another 4.5 % (G140M) / 4.4 % (G235M) of the detector, every pixel the extended geometry added (the
+    configured 2.5 / 4.0 µm edge already covered 86–87 % of them), and halves the background the column
+    fit keeps: median per column 159 → 91 and 166 → 80 pixels, columns with fewer than 100 from
+    495 → 1451 and 484 → 1624 of 2040; NRS1 unchanged. With the extension on nothing changes: the old
+    `config._widen_stage1_ranges_for_extension` already raised the red edge to 5.3 µm (see the spurs_gds
+    end-to-end entry below for what the change does to an extension-off rate).
   - *The red end is noisy, and partly second order.* Re-derived from the four SPURS fields with the
     extended footprints: G140M 7309 clean shutters, 55.1 M pixels (14.1 M before), G235M 1902 and 13.1 M.
     A pixel's ratio to the background spreads as the background per pixel fades (interquartile range 0.25
@@ -1623,3 +1626,67 @@ core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215
   The step-1 shutter fit (`shutter_fit.build_templates`) models each shutter on its own rows
   only, so the margin rows are in no template. That is harmless for the amplitudes; the
   master background paints those rows.
+- **2026-11-06, spurs_gds end to end with the extension (code 40bafa5e): the master-background
+  side.** Observation 007002 (G140M/F100LP, G235M/F170LP, G395M/F290LP), 18 rate files, run by the
+  extraction-v2 session in its own root. Measured: rate − `MBKG2D` over the cores (|f| < 0.3) of
+  empty shutters at least two shutters from the source, one footprint per pixel, DQ clean, with each
+  pixel's wavelength and in-shutter coordinate from the run's cached geometry. Nods 2 and 3 only: in
+  nod 1 every source sits in the middle shutter, so no shutter is two away. Scratch
+  `e2e_review/` and `mask_test/` (not committed).
+  - *Rate against the painted background (V1 / V3).* NRS1 over the nominal range: G140M −0.1 %,
+    G235M +0.5 %, G395M +0.4 %. NRS2: G140M +1.6 % nominal, +0.7 % over the extension
+    (1.89–2.73 µm), −0.5 % past the calibrated range (2.73–3.37 µm); G235M +5.2 %, +2.9 %
+    (3.17–4.59 µm), −1.1 % (4.59–5.06 µm); G395M +1.5 %. The extensions are inside the ±5 % target,
+    so the widened tables and the always-extended geometry hold up in a full run. spurs_gds is one of
+    the four fields they were derived from.
+  - *Stuck shutters.* Step 1 called q2r166c159, q2r364c148 and q2r364c150 stuck closed in all three
+    groups: fitted transmission under 0.08 in every exposure × detector, the next-lowest shutter
+    0.83–0.87, the cut 0.3. The same physical shutters in three gratings, as a mechanical failure should
+    be. 148 and 150 are the two outer shutters of source 867's slitlet; 159 is source 2003's nod-3
+    shutter. Production's list for spurs_gds was empty, so production extracted 867 in nods 2–3 and 2003
+    in nod 3 through closed shutters. The extraction side confirmed 867 now combines nod 1 only and 2003
+    nods 1–2, the stuck exposures entering as background only.
+  - *Stage 1's slit mask.* spurs_gds has the extension on, so its rates are bit-identical to
+    production's (the old code had widened the mask already). To see the change on an extension-off
+    rate, one G140M and one G235M NRS2 exposure were restored to before the 1/f subtraction
+    (`masks.restore_pre_bkgsub`) and subtracted again with the default stage-1 options, the red edge at
+    the configured 2.5 / 4.0 µm (old) or at 5.3 µm (new); the new result reproduces the e2e rate to
+    3e-8 DN/s. Column scatter is the robust scatter of the per-column median of rate − `MBKG2D` on the
+    empty-shutter pixels after a 51-column running median, less the pixel noise in quadrature:
+
+    | | G140M old | G140M new | G235M old | G235M new |
+    |---|---|---|---|---|
+    | column fit keeps (% of NRS2) | 8.3 | 4.1 | 8.5 | 4.0 |
+    | pixels per column: median / 5th percentile | 160 / 63 | 84 / 55 | 173 / 68 | 82 / 47 |
+    | columns under 100 pixels (of 2048) | 556 | 1684 | 513 | 1661 |
+    | column scatter above pixel noise (1e-5 DN/s) | 17 | 23 | 24 | 32 |
+
+    The new mask covers another 4.3 % (G140M) / 4.5 % (G235M) of NRS2. With the old mask the column fit
+    takes the unmasked light past the old red edge for detector background and subtracts it from the
+    whole column: on empty-shutter pixels past the edge the rate drops by 35e-5 (G140M) / 94e-5 DN/s
+    (G235M), 66 % of the background there, and below it by 8 % / 35 % of the background; per column over
+    the detector the median drop is 21e-5 / 63e-5 DN/s, 64e-5 / 142e-5 at the 5th percentile. The new
+    mask adds 15e-5 / 21e-5 DN/s of column noise (in quadrature) and removes a bias several times larger.
+    Figure `mask_test/old_vs_new.png`.
+
+  Open, deferred with the extraction-v2 session (2026-11-06):
+  - *NRS2 reads above `MBKG2D` by a constant level.* G395M NRS2 +8 to +11e-5 DN/s at every background
+    level from 0.0015 to 0.011 DN/s; G235M NRS2 +5 to +18e-5; NRS1 within 4e-5. It is large in per cent
+    only where NRS2's background is faint (G140M NRS2 is ~4× fainter than NRS1). Production's painting of
+    the same exposures (1.5, the old tables, identical rates) shows it too (−0.3 to +3.4 % against +0.9 to
+    +5.8 % now); the two paintings differ slitlet by slitlet (5th–95th percentile of the change −15 to
+    +6 % on G140M NRS2), so the 1–2 % median shift between them is not a clean systematic. Cause not
+    known; a leftover dark or pedestal on NRS2 would look like this. A constant cancels in the nod
+    differences the nodded spectra come from; it reaches the master-background spectrum and the 2-D. The
+    slow ±2e-4 DN/s structure along the NRS2 columns repeats between nods 2 and 3, so it is a fixed
+    pattern, not 1/f.
+  - *The last rows past the outer shutter edge are painted low in G140M's red.* At |y| 0.86–1.0 of the
+    1×1 table over 1.89–2.73 µm the rate is 0.070 of the open level and the paint 0.036 (+0.035; +0.008
+    inside the open shutter); past the calibrated range +0.026; over the nominal range +0.006 at most.
+    These are the rows too sparse to model, which take the profile collapsed over wavelength; the blue
+    dominates it, so they cannot rise in the red. G235M shows nothing beyond its NRS2 level, G395M
+    nothing. About 8e-5 DN/s, outside every open shutter: left as it is.
+  - *Source 867's stuck shutters fit below zero on G235M NRS2* (2.43–4.61 µm): −0.08 to −0.26 ± 0.01
+    in all three nods, while NRS1 and G140M / G395M stay within ±0.08. The rate on those shutters is below
+    the closed-shutter model; the call is unaffected. A positive NRS2 level would raise these fits, not
+    lower them, unless the fit's reference carries the same level; not looked into.
