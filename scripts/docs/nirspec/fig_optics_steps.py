@@ -1,5 +1,5 @@
-"""How the CAMPFIRE optics model turns light into what the detector sees, along the slit: a point source (left)
-and uniform light (right), each against real data.
+"""How the CAMPFIRE optics model turns light into what the detector sees, along the slit: a point source step by
+step (optics_steps.png) and uniform light (optics_uniform.png), each against real data.
 
 The profile fit's model of the MSA (``nirspec/optics.py``) follows the light through four steps, drawn top to
 bottom for a three-shutter slitlet:
@@ -15,12 +15,12 @@ bottom for a three-shutter slitlet:
 4. what reaches the detector: the cut diffracts light sideways, the spectrograph's pupil stop removes the part
    diffracted furthest, the detector blurs the rest and sums it in 0.1" pixels.
 
-Left, a point source 0.3 of a shutter pitch from the center of the middle shutter. Steps 1-3 at 1 and 5 µm;
+optics_steps.png: a point source 0.3 of a shutter pitch from the center of the middle shutter. Steps 1-3 at 1 and 5 µm;
 step 4 averaged over the bands the calibration stars are measured in (``--bands``), with the stars
 (``star_profiles.py``, ``--stars``) scaled to the model's total, and their ratio to the model below.
 
-Right, uniform light filling the slitlet: the sum of point-source images at every position across it. Step 4 is
-scaled to one at the middle shutter's center and compared with the bar shadow measured from empty shutters
+optics_uniform.png: uniform light filling the slitlet, the sum of point-source images at every position across
+it, on the detector (step 4; steps 1 and 2 leave uniform light unchanged and step 3 is the open shutters), scaled to one at the middle shutter's center and compared with the bar shadow measured from empty shutters
 (``data/empirical_jwst_nirspec_barshadow_prism.fits``, averaged over the same bands), with their ratio below.
 
     python scripts/docs/nirspec/fig_optics_steps.py --root <root> [--stars <star_profiles.json>]
@@ -157,12 +157,14 @@ def binned(ys, vs, edges, scale):
     return mid, med, lo, hi
 
 
-fig = plt.figure(figsize=(17, 13.2), constrained_layout=True)
-gs = fig.add_gridspec(5, 2, height_ratios=[1, 1, 1, 1, 0.5], width_ratios=[1.45, 1])
-L = [fig.add_subplot(gs[0, 0])]
-L += [fig.add_subplot(gs[r, 0], sharex=L[0]) for r in range(1, 5)]
-R = [fig.add_subplot(gs[0, 1], sharex=L[0])]
-R += [fig.add_subplot(gs[r, 1], sharex=L[0]) for r in range(1, 5)]
+fig = plt.figure(figsize=(11, 13.2), constrained_layout=True)
+gs = fig.add_gridspec(5, 1, height_ratios=[1, 1, 1, 1, 0.5])
+L = [fig.add_subplot(gs[0])]
+L += [fig.add_subplot(gs[r], sharex=L[0]) for r in range(1, 5)]
+ufig = plt.figure(figsize=(10, 5.6), constrained_layout=True)          # uniform light: its own figure
+ugs = ufig.add_gridspec(2, 1, height_ratios=[1, 0.42])
+R = [ufig.add_subplot(ugs[0])]
+R.append(ufig.add_subplot(ugs[1], sharex=R[0]))
 top, floor = 3.0, 1e-4
 titles = ("1. Arriving at the MSA: the telescope's diffraction pattern",
           "2. Convolved with the kernel: the telescope's wavefront error and pointing jitter",
@@ -233,37 +235,29 @@ if args.stars:
 for ax in L[:4]:
     ax.legend(loc='upper left', fontsize=9)
 
-# --- right: uniform light -------------------------------------------------------------------------------
-flat = np.ones_like(y)
-for row in range(4):
-    ax = R[row]
-    shade(ax)
-    if row < 2:
-        curve(ax, flat, '#888888', 'both wavelengths', floor, fill=False)
-        if row == 1:
-            ax.text(0.5, 0.25, 'unchanged: shifted uniform light is still uniform', transform=ax.transAxes,
-                    ha='center', fontsize=9.5, color=C.INK, bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none'))
-    elif row == 2:
-        curve(ax, mask, '#888888', 'both wavelengths', floor, fill=False)
-    else:
-        for (lo, hi), u, color in zip(BANDS, band_uniform, COLORS):
-            curve(ax, u, color, f'model, {lo:g}-{hi:g} µm', floor, fill=False)
-            yb, tb = measured_bar_shadow(lo, hi)
-            pick = slice(None, None, 8)                               # every 0.02"
-            ax.plot(yb[pick], np.maximum(tb[pick], floor), 'o', ms=3.4, mfc='white', mec=color, mew=1.1, zorder=7)
-            m = np.interp(yb, y, u)
-            ok = np.isfinite(tb) & (np.abs(yb) < O.PITCH_AS + O.H_OPEN)   # inside the slitlet's outer edges
-            R[4].plot(yb[ok][::8], tb[ok][::8] / m[ok][::8], 'o', ms=3.4, mfc='white', mec=color, mew=1.1, zorder=7)
-        ax.plot([], [], 'o', ms=3.4, mfc='white', mec='#555555', mew=1.1, label='measured from empty shutters')
-    ax.set_yscale('log')
-    ax.set_ylim(floor, top)
-    ax.set_ylabel('light per arcsec\n(1 = open shutter center)' if row == 3 else 'light per arcsec')
-    ax.set_title(('Uniform light filling the slitlet', '', '', '')[row], fontsize=10.5, loc='left')
-    ax.legend(loc='lower center' if row == 3 else 'upper left', fontsize=9)
-    ax.tick_params(labelbottom=False)
+# --- uniform light, its own figure ------------------------------------------------------------------------
+ax = R[0]
+shade(ax)
+for (lo, hi), u, color in zip(BANDS, band_uniform, COLORS):
+    curve(ax, u, color, f'model, {lo:g}-{hi:g} µm', floor, fill=False)
+    yb, tb = measured_bar_shadow(lo, hi)
+    pick = slice(None, None, 8)                                       # every 0.02"
+    ax.plot(yb[pick], np.maximum(tb[pick], floor), 'o', ms=3.4, mfc='white', mec=color, mew=1.1, zorder=7)
+    m = np.interp(yb, y, u)
+    ok = np.isfinite(tb) & (np.abs(yb) < O.PITCH_AS + O.H_OPEN)       # inside the slitlet's outer edges
+    R[1].plot(yb[ok][::8], tb[ok][::8] / m[ok][::8], 'o', ms=3.4, mfc='white', mec=color, mew=1.1, zorder=7)
+ax.plot([], [], 'o', ms=3.4, mfc='white', mec='#555555', mew=1.1, label='measured from empty shutters')
+ax.set_yscale('log')
+ax.set_ylim(1e-3, 3.0)
+ax.set_ylabel('light per arcsec\n(1 = open shutter center)')
+ax.set_title('Uniform light through a three-shutter slitlet, on the detector', fontsize=10.5, loc='left')
+ax.legend(loc='lower center', fontsize=9)
+ax.tick_params(labelbottom=False)
+ax.text(0.5 * O.PITCH_AS, 0.93, 'bar', ha='center', va='top', fontsize=8.5, color=C.MUTED,
+        transform=ax.get_xaxis_transform())
 
-for ax, what in ((L[4], 'stars / model'), (R[4], 'measured / model')):
-    if ax is R[4]:
+for ax, what in ((L[4], 'stars / model'), (R[1], 'measured / model')):
+    if ax is R[1]:
         shade(ax)
     ax.axhspan(0.9, 1.1, color='#bbbbbb', alpha=0.35, lw=0, zorder=1)
     ax.axhline(1.0, color=C.INK, lw=0.8, zorder=2)
@@ -271,7 +265,9 @@ for ax, what in ((L[4], 'stars / model'), (R[4], 'measured / model')):
     ax.set_ylabel(what)
     ax.set_xlim(-0.95, 0.95)
     ax.set_xlabel("position along the slit (arcsec; 0 = center of the middle shutter)")
-fig.suptitle(f'The optics model along the slit, step by step. Left: a point source {args.position * O.PITCH_AS:.2f}" '
-             f'({args.position:g} of a shutter pitch) from the center of the middle shutter of a three-shutter '
-             'slitlet. Right: uniform light.', x=0.01, ha='left', fontsize=10, color=C.MUTED)
+fig.suptitle(f'A point source {args.position * O.PITCH_AS:.2f}" ({args.position:g} of a shutter pitch) from the center '
+             'of the middle shutter of a three-shutter slitlet', x=0.01, ha='left', fontsize=10, color=C.MUTED)
+ufig.suptitle('The same model for uniform light, against the bar shadow measured from empty shutters (PRISM)',
+              x=0.01, ha='left', fontsize=10, color=C.MUTED)
 C.save(fig, args, 'optics_steps.png')
+C.save(ufig, args, 'optics_uniform.png')
