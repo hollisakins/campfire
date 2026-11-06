@@ -55,6 +55,49 @@ def test_point_image_symmetric_and_loses_light_at_the_shutter():
     assert t_far < t1                                # off centre and at a longer wavelength: more lost
 
 
+def test_an_upper_edge_moved_down_cuts_light_near_the_upper_bar_only():
+    y, f = O._grid()
+    up = -0.0137 * O.SLIT                            # the shipped model's upper edge [arcsec]
+    def t(c, edges):
+        return O.point_image(c * O.SLIT, 4.5, (-1, 0, 1), 0.996, 0.03, 0.25, y, f, edges=edges)[1]
+    for c in (0.0, -0.35):                           # the centre and near the lower bar: unchanged to 0.5 %
+        assert t(c, (0.0, up)) == pytest.approx(t(c, (0.0, 0.0)), rel=5e-3)
+    assert t(0.35, (0.0, up)) < 0.98 * t(0.35, (0.0, 0.0))     # near the upper bar: less light
+    assert t(0.35, (0.0, 0.0)) == pytest.approx(t(-0.35, (0.0, 0.0)), rel=1e-6)   # symmetric without it
+
+
+def test_every_opening_is_exactly_its_height_wherever_it_falls_on_the_grid():
+    # the light of a flat field through each shutter is the same for every shutter, and moves by exactly the edge
+    # move, so no shutter gains a grid step by rounding (engine 1 opened shutters +-1 to +-3 one 0.0025 arcsec step
+    # too far at edges that fall on grid points)
+    y, _ = O._grid()
+    dy = y[1] - y[0]
+    open0 = O.opening_mask(y, (0,)).sum() * dy
+    for k in range(-3, 4):
+        for lo, hi in ((0.0, 0.0), (0.0, -0.3 * dy), (0.2 * dy, -1.7 * dy)):
+            area = O.opening_mask(y, (k,), (lo, hi)).sum() * dy
+            assert area == pytest.approx(open0 - lo + hi, abs=1e-9)
+
+
+def test_an_edge_moves_the_light_continuously_below_one_grid_step():
+    y, f = O._grid()
+    dy = y[1] - y[0]
+    ts = [O.point_image(0.15, 4.5, (-1, 0, 1), 0.996, 0.03, 0.25, y, f, edges=(0.0, -e))[1]
+          for e in np.linspace(0.0, 2 * dy, 9)]
+    steps = np.diff(ts)
+    assert np.all(steps < 0)                         # every quarter step cuts light, none is lost to the grid
+    assert steps.max() / steps.min() < 1.5           # and about equally
+
+
+def test_edges_enter_the_cache_key_only_when_set(small_grids, tmp_path):
+    a = O.Optics(0.996, 0.0344, -0.0026, 0.25, _kernel(), cache_dir=str(tmp_path))
+    b = O.Optics(0.996, 0.0344, -0.0026, 0.25, _kernel(), cache_dir=str(tmp_path), edges=(0.0, 0.0))
+    c = O.Optics(0.996, 0.0344, -0.0026, 0.25, _kernel(), cache_dir=str(tmp_path), edges=(0.0, -0.0137))
+    assert a._path('img', (0,), True) == b._path('img', (0,), True)      # the symmetric tables keep their files
+    assert a._path('img', (0,), True) != c._path('img', (0,), True)
+    assert c.edges_as == (0.0, pytest.approx(-0.0137 * O.SLIT))
+
+
 def test_kernel_at_normalised_and_linear_in_log_wavelength():
     delta = np.linspace(-2, 2, 31)
     narrow = np.exp(-0.5 * (delta / 0.05) ** 2)

@@ -42,7 +42,7 @@ from campfire_pipeline.nirspec import barshadow_calibration as B
 from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec import optics as O
 
-MEASURE_VERSION = '1'
+MEASURE_VERSION = '3'                 # 2: shutters above SCALE_CUT (1.05 x the background) left out; 3: exact shutter edges (optics engine 2)
 OFFSET_FILE = 'bar_offset.json'
 SHIFTS = np.round(np.arange(-0.10, 0.1001, 0.005), 4)  # trial offsets [slit units]
 U_LO, U_HI = 0.2, 0.75       # the steep part of a shutter's edge [pitches from its centre]
@@ -51,6 +51,13 @@ CENTRE = 0.15                # a shutter's own level from |u| below this [pitche
 N_BANDS = 3
 MAX_K = 2                    # shutters up to this many from the source (the optics tables end at +-5.5 slit units)
 SCALE_MAX = 1.5              # a shutter whose centre reads more than this x its exposure's background holds other light
+# The cut ``measure`` applies (at most SCALE_MAX). A bright star's far wing raises its neighbouring empty shutters a
+# little and slopes across their edges. Scanned on 1133, NGC 2506 v3b and v6 (bright stars) and two survey fields
+# (2026-11-05, scale_cut_scan.py): from 1.5 down to 1.05 the bright fields' offsets settle (1133 +0.0105 -> +0.0096,
+# v3b -0.019 -> -0.017, v6 -0.007 -> -0.0115) and 1133's lower-minus-upper falls from -0.026 to -0.0135, the survey
+# value; the survey fields' offsets do not move (ember_cosmos_p14 -0.0012, uncover2 -0.0073) and keep 85-93 % of
+# their pixels.
+SCALE_CUT = 1.05
 MIN_PIXELS = 3000            # per half, for an offset
 MIN_EXPOSURE_PIXELS = 2000   # per half, for one exposure's own offset (the spread between exposures)
 MIN_BIN = 30
@@ -146,13 +153,18 @@ def _worker(args):
     sel &= (np.abs(u) > U_LO) & (np.abs(u) < U_HI) & np.isfinite(norm) & (norm > 0) & (scale < SCALE_MAX)
     if not sel.any():
         return None, None
-    prof = uniform_profile(c.detector, open_mask(p['state']))
+    mask = open_mask(p['state'])
+    prof = uniform_profile(c.detector, mask)
     pitch = float(p['pitch'])
     T = model_ratio(prof, p['y'][sel] * pitch, p['lam'][sel], kk[sel], pitch)
     n = int(sel.sum())
+    # the edge each pixel looks at: inner when the shutter beyond it is open too (a bar between two open
+    # shutters), outer when it is closed (the slitlet's end)
+    beyond = kk[sel] + np.sign(u[sel]).astype(int)
+    inner = np.isin(beyond, np.array(mask))
     return dict(u=u[sel].astype(np.float32), band=band[sel].astype(np.int8),
                 r=(ratio[sel] / norm[sel]).astype(np.float32), T=T,
-                quadrant=np.full(n, p['quadrant'], np.int8),
+                quadrant=np.full(n, p['quadrant'], np.int8), inner=inner, scale=scale[sel].astype(np.float32),
                 exposure=np.full(n, f'{c.root}_{c.nod}')), None
 
 
@@ -242,13 +254,22 @@ def fit(s, sel=None, min_pixels=MIN_PIXELS):
     return 0.5 * (lo + hi), lo, hi
 
 
-def measure(canonicals, workspace, processes=1, cache_dir=None, max_canonicals=MAX_CANONICALS, log=None):
+def subset(s, keep):
+    """The samples ``s`` (``samples``) restricted to ``keep``."""
+    return {k: (v[:, keep] if k == 'T' else v[keep]) for k, v in s.items()}
+
+
+def measure(canonicals, workspace, processes=1, cache_dir=None, max_canonicals=MAX_CANONICALS, log=None,
+            scale_cut=None):
     """The bar offset of one disperser of one observation from the canonicals' empty shutters:
     a dict with ``offset`` (slit units; NaN when too few pixels), the two halves (``lower`` /
     ``upper``), ``exposures`` (each exposure's own offset where it has enough pixels) and their
     ``spread``, the offset measured in each quadrant (``quadrants``, a check), the offsets the
     profile fit applies per quadrant (``applied``: the offset plus ``QUADRANT_PATTERN``), and the
-    counts."""
+    counts. Only shutters whose centre reads below ``scale_cut`` x the exposure's background
+    (default ``SCALE_CUT``) enter: a bright neighbour's far wing raises a shutter's level and
+    slopes across its edges."""
+    scale_cut = SCALE_CUT if scale_cut is None else scale_cut
     log = log or (lambda *a: None)
     cans = list(canonicals)
     n_all = len(cans)
@@ -263,6 +284,8 @@ def measure(canonicals, workspace, processes=1, cache_dir=None, max_canonicals=M
     s = samples(cans, workspace, processes=processes, cache_dir=cache_dir, log=log) if cans else None
     if s is None:
         return out
+    s = subset(s, s['scale'] < scale_cut)
+    out['scale_cut'] = scale_cut
     out['n_pixels'] = int(s['r'].size)
     out['offset'], out['lower'], out['upper'] = fit(s)
     for ex in np.unique(s['exposure']):
@@ -275,6 +298,17 @@ def measure(canonicals, workspace, processes=1, cache_dir=None, max_canonicals=M
         v = fit(s, s['quadrant'] == q)[0]
         if np.isfinite(v):
             out['quadrants'][str(q)] = v
+    # the two halves per wavelength band (the band edges of ``_band_edges``): where the lower and the upper edges
+    # sit against the model at each wavelength, for the calibration of the shutter edges (optics_calibration)
+    # and apart for the edges between two open shutters (inner) and the slitlet's ends (outer)
+    out['bands'] = {}
+    for b in range(N_BANDS):
+        rec = {}
+        for lab, sel in (('all', s['band'] == b), ('inner', (s['band'] == b) & s['inner']),
+                         ('outer', (s['band'] == b) & ~s['inner'])):
+            _, lo, hi = fit(s, sel, MIN_PIXELS // N_BANDS)
+            rec[lab] = dict(lower=lo, upper=hi, n=int(sel.sum()))
+        out['bands'][str(b)] = rec
     if np.isfinite(out['offset']):
         out['applied'] = {str(q): out['offset'] + QUADRANT_PATTERN[q] for q in (1, 2, 3, 4)}
     return out

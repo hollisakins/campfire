@@ -33,6 +33,11 @@ point source sends through the pattern. They are built on first use (about a min
 cached under ``$CAMPFIRE_ROOT/cache/optics``, keyed by the model's numbers and the kernel's
 content, and read memory-mapped so parallel workers share them.
 
+The openings are symmetric, of half-height H_OPEN. A model file may move every opening's lower and upper edge
+('shutter'); the shipped one does not: the empty-shutter background of five survey fields and 1133 puts the two
+edges where the symmetric opening has them, to 0.002 slit units (design doc 3.7). The cache key carries
+ENGINE_VERSION: bump it whenever the computation of a table changes, or old tables are read back unchanged.
+
 Units: slit-frame units (one unit = the open height, 0.46 arcsec) unless noted.
 """
 import hashlib
@@ -65,7 +70,7 @@ X_PITCH = 0.27                # shutter pitch along the dispersion [arcsec] (the
 XC = np.round(np.arange(-2.5, 2.5001, 0.005), 4)               # source x [arcsec]
 W_COMPACT = 0.06              # widths up to this: exact weights over the tables (``_compact_weights``)
 K_MAX = 5                     # shutters beyond this offset do not change the tables' +-5.5 range
-ENGINE_VERSION = '1'          # part of the cache key: bump when the table computation changes
+ENGINE_VERSION = '2'          # part of the cache key: bump when the table computation changes (2: continuous edges)
 OPTICS_FILE = Path(__file__).parent.parent / 'data' / 'nirspec_optics.json'
 LOCK_WAIT = 900.0             # seconds to wait for another process building the same table
 
@@ -85,18 +90,30 @@ def _grid(n=4096, step=0.0025):
     return y, f
 
 
-def point_image(c, lam_um, shutters, rho, sigma_det, alpha, y, f):
+def opening_mask(y, shutters, edges=(0.0, 0.0)):
+    """The open area of shutters ``shutters`` (offsets from the source's shutter) on the grid ``y`` [arcsec]: 1 between
+    each opening's edges, ramping linearly over the one grid step an edge falls in, so an edge moves the light
+    continuously and every opening passes the same light wherever it falls on the grid (an edge on a grid point gives
+    the plain 0 / 1 mask). ``edges`` as in ``point_image``."""
+    mask = np.zeros_like(y)
+    lo, hi = edges
+    dy = y[1] - y[0]
+    for k in shutters:
+        a, b = k * PITCH_AS - H_OPEN + lo, k * PITCH_AS + H_OPEN + hi
+        mask = np.maximum(mask, np.clip((y - a) / dy, 0.0, 1.0) * np.clip((b - y) / dy, 0.0, 1.0))
+    return mask
+
+
+def point_image(c, lam_um, shutters, rho, sigma_det, alpha, y, f, edges=(0.0, 0.0)):
     """Detector intensity per arcsec (before row integration) of a point source at ``c`` arcsec
     with unit light entering the telescope, through open shutters ``shutters`` (offsets from the
-    source's shutter): (intensity, transmitted fraction)."""
+    source's shutter): (intensity, transmitted fraction). ``edges``: how far every opening's lower
+    and upper edge sit from the symmetric opening of half-height H_OPEN [arcsec, + toward +y]."""
     fmax = D_TEL / (2 * lam_um * 1e-6)
     pupil = np.clip(1.0 - (f / fmax) ** 2, 0.0, None) ** alpha if alpha > 0 else (np.abs(f) < fmax).astype(float)
     field = np.fft.fftshift(np.fft.ifft(pupil * np.exp(-2j * np.pi * f * (c * RAD))))
     norm = np.sum(np.abs(field) ** 2)
-    mask = np.zeros_like(y)
-    for k in shutters:
-        mask[np.abs(y - k * PITCH_AS) < H_OPEN] = 1.0
-    spec = np.fft.fft(np.fft.ifftshift(field * mask))
+    spec = np.fft.fft(np.fft.ifftshift(field * opening_mask(y, shutters, edges)))
     spec[np.abs(f) > rho * fmax] = 0.0
     inten = np.abs(np.fft.fftshift(np.fft.ifft(spec))) ** 2 / norm
     if sigma_det > 0:
@@ -149,12 +166,16 @@ class Optics:
     """The model for one disperser and detector: diffraction numbers ``rho`` (stop size over the
     telescope pupil's image), ``s0`` / ``s1`` (detector blur [arcsec] at 3 um and per um),
     ``alpha`` (pupil amplitude profile), and ``kernel`` (list of dict(lam [um], delta [slit
-    units], k): the table before the shutter at each wavelength node), and ``x_loss``
+    units], k): the table before the shutter at each wavelength node), ``x_loss``
     (dict(b, lam0), or None: the correction to jwst's along-dispersion point loss,
-    ``x_correction``)."""
+    ``x_correction``) and ``edges`` (lower, upper: where every opening's two edges sit against the
+    symmetric opening [slit units, + toward +y]; ``SHUTTER_EDGES``)."""
 
-    def __init__(self, rho, s0, s1, alpha, kernel, cache_dir=None, x_loss=None):
+    def __init__(self, rho, s0, s1, alpha, kernel, cache_dir=None, x_loss=None, edges=(0.0, 0.0)):
         self.params = dict(rho=float(rho), s0=float(s0), s1=float(s1), alpha=float(alpha))
+        if any(edges):
+            # in the cache key only when set, so the tables of the symmetric opening keep theirs
+            self.params.update(edge_lower=float(edges[0]), edge_upper=float(edges[1]))
         self.kernel = [dict(lam=float(n['lam']), delta=[float(x) for x in n['delta']], k=[float(x) for x in n['k']])
                        for n in kernel]
         self.x_loss = None if x_loss is None else dict(b=float(x_loss['b']), lam0=float(x_loss['lam0']))
@@ -274,6 +295,11 @@ class Optics:
     def _mask(mask):
         return tuple(int(k) for k in mask if abs(int(k)) <= K_MAX)
 
+    @property
+    def edges_as(self):
+        """The openings' lower and upper edges against the symmetric opening [arcsec]."""
+        return (self.params.get('edge_lower', 0.0) * SLIT, self.params.get('edge_upper', 0.0) * SLIT)
+
     def _raw_image(self, mask):
         p = self.params
         y, f = _grid()
@@ -281,7 +307,7 @@ class Optics:
         for i, L in enumerate(LAM):
             sd = max(p['s0'] + p['s1'] * (L - 3.0), 1e-4)
             for j, c in enumerate(C):
-                I, _ = point_image(c * SLIT, L, mask, p['rho'], sd, p['alpha'], y, f)
+                I, _ = point_image(c * SLIT, L, mask, p['rho'], sd, p['alpha'], y, f, edges=self.edges_as)
                 tab[i, j] = np.interp(Y * SLIT, y, row_integrate(y, I) * ROW)     # light per detector row
         return tab
 
@@ -289,7 +315,7 @@ class Optics:
         p = self.params
         y, f = _grid()
         return np.array([[point_image(c * SLIT, L, mask, p['rho'], max(p['s0'] + p['s1'] * (L - 3.0), 1e-4),
-                                      p['alpha'], y, f)[1] for c in C] for L in LAM])
+                                      p['alpha'], y, f, edges=self.edges_as)[1] for c in C] for L in LAM])
 
     def raw_image_table(self, mask):
         """``image_table`` without the kernel: a point source's light through the diffraction
@@ -404,19 +430,24 @@ _MODELS = {}
 
 def load_optics(path=OPTICS_FILE):
     """{'version': str, detector: Optics} from the model file (layout: 'meta' with 'version',
-    'diffraction' (rho, s0, s1, alpha), a kernel per detector and, optionally, 'x_loss')."""
+    'diffraction' (rho, s0, s1, alpha), a kernel per detector and, optionally, 'x_loss' and
+    'shutter' (lower, upper: the openings' edges against the symmetric opening, slit units))."""
     with open(path) as fh:
         raw = json.load(fh)
     d = raw['diffraction']
+    sh = raw.get('shutter') or {}
+    edges = (float(sh.get('lower', 0.0)), float(sh.get('upper', 0.0)))
     out = {'version': str(raw.get('meta', {}).get('version', '?'))}
     for det in ('NRS1', 'NRS2'):
-        out[det] = Optics(d['rho'], d['s0'], d['s1'], d['alpha'], raw[det], x_loss=raw.get('x_loss'))
+        out[det] = Optics(d['rho'], d['s0'], d['s1'], d['alpha'], raw[det], x_loss=raw.get('x_loss'), edges=edges)
     return out
 
 
 def models():
+    """The shipped model, or the file ``CAMPFIRE_NIRSPEC_OPTICS`` names (for testing a candidate calibration across
+    worker processes; products record which through PFOPTIC, the file's version)."""
     if 'default' not in _MODELS:
-        _MODELS['default'] = load_optics()
+        _MODELS['default'] = load_optics(os.environ.get('CAMPFIRE_NIRSPEC_OPTICS') or OPTICS_FILE)
     return _MODELS['default']
 
 

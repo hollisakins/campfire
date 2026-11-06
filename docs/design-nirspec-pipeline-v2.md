@@ -67,11 +67,12 @@ last column says where it is described.
 | Stage 2a: one `Spec2Pipeline` call per rate file, background-only slitlets in `bkgslits/` | Built | 3.1 |
 | Empirical bar-shadow tables, PRISM, G140M, G235M, G395M; no bar-shadow division of science frames | Built; settled (user, 2026-10-30); held-out check done (2026-11-03) | 3.2 |
 | Master background: step 1 (count rate, before 2a; tables in the rate file) and step 2 (calibrated, end of 2a; `_mbkg.fits`); painted past both ends of the calibrated range; no per-slitlet or smooth scaling | Built (master background 1.7); deploy, database columns and web built (32a5226c) | 3.3, 3.4 |
-| Smoothing the per-exposure grating background | Open: trial only, not approved | 3.3 |
+| Smoothing the per-exposure grating background | Not approved (user, 2026-10-30: some master-background noise is expected); a trial only if asked | 3.3 |
+| "Master background likely better" marks (`MBKGPREF` / `MBKGWHY`; spectra columns `mbkg_preferred`, `mbkg_reason`, `n_exp`, `n_exp_bkg`) | Decided (user, 2026-11-01: the rule approved, informational reasons made quantitative); Built | 4 |
 | Stuck-closed shutters by a per-shutter template fit, every disperser | Built: step 1 fits and calls every shutter (`SHUTAMP`, `CALLS`), `cfpipe nirspec detect-stuck` merges the calls into the stuck list; physical keys everywhere (`stuck_list.py`, database, web, deploy). Open: the user's verdict on the G395M review packet; G140M / G235M not yet checked | 3.5 |
 | Trace maps: one per exposure, built in step 1 from every commanded shutter, stored in the rate file, followed past both ends of the calibrated range | Built; stage 3 reads them (`tracemaps/` is its working copy) | 3.4, 3.6 |
 | Forward-model profile extraction on by default; shape chain (own fit above the gate, else the PRISM shape, else the default); instrument model fixed, never fitted; no per-exposure pointing offsets; each nod at its planned position | Built | 3.7 |
-| Diffraction model of the MSA for every disperser (`FIT_VERSION` 6, `optics.py`, `data/nirspec_optics.json` 2026.11-w2x), with a correction along the dispersion fitted to stars | Built (2026-11-04) | 3.7 |
+| Diffraction model of the MSA for every disperser (`FIT_VERSION` 6, `optics.py`, `data/nirspec_optics.json` 2026.11-r8), with a correction along the dispersion fitted to stars | Built (2026-11-04; kernel refitted on all calibration stars 2026-11-06) | 3.7 |
 | Bar offset of each observation, measured per disperser from its empty shutters (`FIT_VERSION` 7, `bar_offset.py`) | Built (2026-11-05) | 3.7 |
 | Boundary with jwst's references: one reader (`crds_refs.py`), the calibration manifest, `slit_loss_y` / `slit_loss_x` switches, `cfpipe nirspec crds-compare` | Built (2026-11-05) | 3.10 |
 | Joint first pass (every source solved with its neighbours on its nod differences, light past the cutouts in count rate), the only pass 1; the masked pass 1, pass 1b, the echo correction and the master-background first pass removed | Built | 3.8, 3.9 |
@@ -81,7 +82,7 @@ last column says where it is described.
 | Master-background spectrum as a secondary product, also through the 1-D combine of several exposure groups | Built (530bedb5 for the combine) | 4 |
 | Per-source runs give the same products as full runs | Built | 3.9 |
 | Optimal extraction's 3-pixel boxcar fallback normalised (it returned a third of the flux) | Built (merged 207bd0dc) | 4 |
-| End-to-end runs | p1 (2026-10-31, 3 h 14 min, 6 workers) and uncover2 (2026-11-02, 4 h 45 min), both before `FIT_VERSION` 6. Stage 3 of p1 on `FIT_VERSION` 7 running (2026-11-05, docs session, `scratch/claude/e2e_p1/run_stage3_fv7_docs.log`) | 3.9, 5 (V30) |
+| End-to-end runs | p1 (2026-10-31, 3 h 14 min, 6 workers) and uncover2 (2026-11-02, 4 h 45 min), both before `FIT_VERSION` 6. Stage 3 of p1 on `FIT_VERSION` 7 (2026-11-05, docs session, 207bd0dc, 12 workers): 83.8 min, 681 products, no errors (`scratch/claude/e2e_p1/run_stage3_fv7_docs.log`); its products not yet reviewed | 3.9, 5 (V30) |
 | Stage 1 detector-background mask extended past the calibrated range | Open | 3.1 |
 | Speed up stage 2's per-source work (on p1: rectification 25 min, stage 2b about 60 min) | Goal (user, 2026-10-31); not started; profile first | 5 (V30) |
 
@@ -1642,8 +1643,9 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
           survey; the survey alone 0.0058 +- 0.0003): the two references agree between observations and differ only in where zero
           is. The edges' half-light points of the table and the model differ by under 0.004
           (`edges_table_vs_optics.py`); the table's edges are slightly lopsided (more light past
-          the upper edge than the lower), the model's are symmetric, which is also why the two
-          halves fitted against the model differ (lower minus upper -0.014 in the survey).
+          the upper edge than the lower), the model's are symmetric. (The two halves fitted
+          against the model differed by -0.014 in the survey; that was the model's rounding error,
+          gone with exact edges: below, "The one-sided edge was a rounding error".)
         - Which zero the stars want (`stars_at_bg.py`: each edge visit's chi2 from the refits at
           trial offsets, interpolated at the background offset plus a constant c): NGC 2506, the
           median visit is best at c = -0.004 (change against no offset: -26.9; at c = 0 -21.4, at
@@ -1673,6 +1675,208 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
           0.002-0.005 higher; two observations). So most of the offset belongs to the observation
           (where the MSA and the telescope put the slits), with perhaps a small part from the
           grating wheel; each disperser is measured anyway.
+      - Is the rise of a compact source's transmission off centre in the red real (2026-11-05,
+        asked by the user through the docs session)? In `FIT_VERSION` 7 a point source 0.11-0.16
+        pitch off centre passes 1.1-1.3 % more light than at the centre at 4.5 um and 2.1-2.3 % more
+        at 5.0-5.3 um (both detectors; at most 0.4 % at 4 um and below); `FIT_VERSION` 5 had capped
+        it, `FIT_VERSION` 6 did not. Test (`pupil2d_check.py`, figure `pupil2d_check.png`): the same
+        transmission with the real 2-D JWST pupil (`jwst_pupil_RevW_npix1024`, segments and struts),
+        the field at the MSA by matrix Fourier transforms, three open shutters (0.46" x 0.22", 0.53"
+        pitch), the stop at rho = 0.996 of the pupil's image, against the model's own 1-D
+        diffraction (no kernel in either). Variants: four pupil orientations (NIRSpec's is not in
+        the data at hand), the stop shaped as the pupil's outline or a circle, the cycle-1 wavefront
+        error map, and without the shutters' cut across the slit. Ratio to the centre, mean of
+        +-0.15 pitch, after the stop:
+
+        | | 3.0 um | 4.5 um | 5.0 um |
+        |---|---|---|---|
+        | 1-D model | 0.997 | 1.005 | 1.021 |
+        | 2-D pupil, four orientations, both stops | 0.948-0.972 | 1.029-1.058 | 1.012-1.032 |
+        | 2-D pupil, no cut across the slit | 0.981-0.982 | 1.003 | 1.001-1.005 |
+
+        - The rise is real: the 2-D pupil gives it at 4.5 and 5 um in every variant (with the
+          wavefront error too), and the shutters alone already pass 1.7-2.6 % more light there (the
+          stop adds the rest). It comes from the 2-D pattern meeting the shutter's narrow width:
+          without the cut across the slit the 2-D pupil gives at most 0.7 %, so the 1-D model's
+          +2.1 % at 5 um matches the 2-D answer by coincidence of size, not by the same path.
+        - The 1-D model is too flat at 3 um (2-D: 3-5 % less light at 0.15-0.2 pitch, the model
+          about 1 %) and rises too little at 4.5 um (2-D +3-6 %, the model +0.5 %). The 2-D numbers
+          spread by 1-4 % with orientation and stop shape and leave out the kernel (pointing jitter
+          and wavefront drift), which smooths them; the stars remain the test.
+        - Near a bar the 2-D pupil agrees with the model, not with jwst's reference: at 0.35 / 0.40
+          pitch and 5 um, 0.70-0.73 / 0.54-0.57 (2-D) and 0.71 / 0.52 (model), against jwst's 0.85 /
+          0.73. The 1133 stars agree (docs session, `extraction-v2-docs/star_transmission_preview.py`,
+          from `xscan_1133.json`, fits before the bar offset, each visit against the same star's most
+          central one): near +0.37 pitch at 3.5-5 um they deliver 0.62 of the centred light, the
+          model 0.62, jwst 0.82; at 0.7-1.0 um near +0.38, 0.91 against the model's 0.97 and jwst's
+          0.85; on the -y side at 3.5-5 um 1.03-1.06 at -0.2 to -0.27 pitch, a rise like the 2-D one.
+      - The stars against position (2026-11-05; `star_trans.py`, `star_trans_shift.py`, figure
+        `star_trans.png`; input the docs session's refit of 1133 and NGC 2506 with `FIT_VERSION` 7 and
+        the bar offsets, `extraction-v2-docs/star_positions.json`, four bands 0.8-1.2, 2.7-3.3,
+        4.2-4.8, 4.5-5.3 um). Each visit's flux has the model's transmission divided out, so against
+        the same star's most central visit it is flat if the model is right; |SRCXPOS| <= 0.2,
+        unsaturated. NGC 2506 cannot test this: a star sits at nearly the same position in every
+        observation (about 20 pairs, all near the centre). 1133 is the only constraint (about 400
+        pairs per band).
+        - Inside 0.2 pitch of the centre (0.25 at 3 um) the 1133 stars follow the model to about 1 %
+          at every wavelength, and not the 2-D pupil's pure diffraction, whose dip at 3 um and peaks
+          at 4.5 um they do not show (the kernel, jitter and wavefront drift, smooths them).
+        - Near the bars they do not: at 3-4.9 um the -y side keeps 3-9 % more light than the model
+          at 0.25-0.35 pitch and the +y side 1-4 % less (10-20 % at 0.4); at 1 um both sides lose
+          7-10 % more than the model at 0.35-0.4. One extra bar shift does not explain it: the best
+          shift differs by band (+0.046, +0.019, +0.010, -0.007 slit units) and in the red the -y
+          excess survives it. The edges differ from each other and change with wavelength, as the
+          two halves of the background edges did (3.7, the bar offset: lower minus upper -0.014 in
+          the survey) and as the empirical bar-shadow table's lopsided edges do (3.10).
+        - What the edges would have to do (`edge_grid.py`, `edge_grid.json`; the user asked for the
+          fit, 2026-11-05). The model's MOS1x3 point transmission rebuilt with every opening moved
+          by a shift and widened on both sides (the shipped tables' own diffraction and kernel;
+          unchanged it reproduces them to 0.4 %), on a grid of -0.03 to +0.03 slit units, against
+          the 1133 residuals within 0.37 pitch:
+
+          | Band | Shift | Widen per side | Residual -y / +y at 0.25-0.37 pitch, before -> after |
+          |---|---|---|---|
+          | 1.0 um | -0.030 (grid edge) | -0.004 | +0.4 / -1.8 -> +0.1 / -1.0 % |
+          | 3.0 um | -0.019 | +0.004 | +3.2 / -0.1 -> +0.3 / +0.3 % |
+          | 4.5 um | -0.025 | +0.009 | +6.9 / -2.6 -> +1.1 / -0.8 % |
+          | 4.9 um | -0.019 | +0.008 | +6.7 / -1.6 -> +0.7 / -0.6 % |
+
+          A shift of the openings against the model's frame is the same as a bar offset larger by
+          that much: the 1133 stars want about 0.02 slit units more than the background measured
+          (+0.0099), the zero-point question of the bar offset again, now from fluxes. A pure shift
+          cannot go into the optics (the background measurement would move with it); it is a
+          constant between the background's offset and the stars'. The widening in the red runs the
+          other way from 1133's background edges (its outer openings 0.0125 narrower per side), so
+          the edges between two open shutters, which the stars sit next to, and the outer edges
+          next to a closed shutter, which the background measures, may differ. Next: the background
+          halves per band for every calibration observation (`bo_set_bands.zsh`, `bo2_*.json`),
+          then one joint fit.
+        - What it turned out to be (2026-11-05, later; scripts in `scratch/claude/extraction-v2/edge/`).
+          Tests, in order, of what could make point sources and uniform light disagree:
+          - Inner against outer edges (`bar_offset` now records each pixel's edge type; 20
+            observations, `edges_summary.py`): inner edges sit 0.002-0.005 slit units from outer
+            ones (1133 within 0.003). Not the explanation.
+          - The detector blur, the stop size, and the kernel's lopsided half placed after the
+            shutter (`split_test.py`, `combined_test.py`, `lopsided_test.py`): none produces the
+            background's narrowing (edge positions do not move with a symmetric blur); the
+            lopsided half after the shutter gives inner minus outer +0.0045 as measured, but does
+            not change the stars; a more lopsided kernel does nothing. A stop off centre cannot by
+            symmetry (a real, symmetric pupil gives T(c) = T(-c)).
+          - The model's open shutters per exposure (`mask_check_1133.py`): right in every nod.
+          - Nod differences against single frames less the master background
+            (`mbkg_vs_nod_1133.py`, all 680 visits fitted both ways): the same pattern. Not the
+            nod model.
+          - Brightness of the stars (`edge_bright.py`): the stars' shift is the same in every
+            third.
+          - What 1133's design hides: its configurations step the stars diagonally (stars near
+            -y sit at SRCXPOS +0.14, near +y at -0.08), and each configuration carries its own
+            flux offset that follows SRCXPOS (blue +-2 %, the 1133 ramp; red -6 to -11 % in the
+            corner configurations; `config_check_1133.py`). Stars within a configuration spread
+            over 0.13-0.15 pitch, so position and configuration separate: with one level per
+            star and one per configuration (`config_free_fit.py`) the dependence on position along
+            the slit is flat to about 1-3 % within 0.35 pitch at 1, 3 and 4.5-5.3 um (4.5-5.3: +4.3
+            / +2.4 % at -0.3 / -0.2 pitch, -0.8 to +2.0 % elsewhere). The one-sided +-7 % was mostly
+            the dispersion direction leaking in. The 4.2-4.8 um band alone shows a gradient along
+            the whole slit (+26 % at -0.4 through +-1 % at +-0.1 to -8.5 % at +0.4) that the
+            overlapping 4.5-5.3 band does not: spectral (the stars' features at 4.2-4.5 um with a
+            small wavelength shift along the slit, or the detector gap), not the bars.
+          - Bright stars bias the background measurement (`bo_brightness.zsh`, 1133's slitlets
+            split by their star's brightness): bar offset +0.0060 from the faintest third, +0.0120
+            from the brightest (all +0.0105); lower minus upper -0.013 against -0.035. The faint
+            third's lopsidedness matches the survey's (-0.014), so the one-sided edge below is the
+            instrument's, and calibration fields with bright stars need a brightness cut.
+          - The edge fit with the configuration terms (`edge_config_fit.py`): 1.0 um shift -0.005,
+            widen -0.020; 3.0 um shift -0.025, widen 0, driven by the 22 visits on the -y bar
+            (0.35-0.45 pitch, +30 % against the model); 4.5-5.3 um shift -0.010, widen +0.005. No
+            common zero point: within 0.35 pitch the model holds without one, and stars on a bar
+            (6 % of sources have |SRCYPOS| >= 0.40) are poorly described and dominate any fit that
+            includes them.
+          - ~~What both datasets agree on: every opening's upper edge sits about 0.014 slit units
+            lower than the symmetric model.~~ Withdrawn: the lopsided background halves were the
+            model's own error (next item). The stars' +y deficit near the bar stands on its own and
+            belongs with the stars on a bar.
+          - The one-sided edge was a rounding error in the model (2026-11-05, latest;
+            `stale_table_check*.py`, `exact_edges_bg.zsh`, `bo8_*.json`). The diffraction model drew
+            the open shutters on its 0.0025 arcsec grid with `|y - centre| < half height`. Every
+            shutter edge falls exactly on a grid point, and floating-point rounding opened some of
+            them: the source's own shutter was exact, shutters +-1 were one grid step (0.0054 slit
+            units) too tall at their outer edges, shutters +-2 and +-3 at both. The bar-offset halves
+            read exactly the outer halves of the neighboring shutters, so the model's openings were
+            too tall there, and lower minus upper came out about 0.011 too negative. The tables were
+            cached under a key that did not change when the mask code did, so the error stayed
+            hidden: the first sign was that edge moves smaller than one grid step changed nothing,
+            and larger ones changed the halves unevenly. `optics.opening_mask` now places each edge
+            exactly (ramping over the grid step it falls in; engine 2 rebuilds the tables;
+            `FIT_VERSION` 8, `MEASURE_VERSION` 3). With exact edges, lower minus upper [slit units]:
+
+            | Observation | Before | Exact edges | Offset before -> after |
+            |---|---|---|---|
+            | ember_cosmos_p14 | -0.0134 | -0.0020 | -0.0012 -> -0.0012 |
+            | uncover2 | -0.0112 | +0.0011 | -0.0073 -> -0.0080 |
+            | ember_egs_p1 | -0.0126 | -0.0013 | -0.0095 -> -0.0096 |
+            | capers_uds_p8 | -0.0144 | -0.0031 | -0.0043 -> -0.0044 |
+            | venus_pg004 | -0.0142 | -0.0027 | -0.0149 -> -0.0152 |
+            | 1133 | -0.0135 | -0.0004 | +0.0096 -> +0.0095 |
+            | NGC 2506 v3b | -0.0192 | -0.0078 | -0.0169 -> -0.0169 |
+            | NGC 2506 v6 | -0.0424 | -0.0311 | -0.0115 -> -0.0114 |
+
+            The survey's halves agree to -0.0016 +- 0.0008 (under 1 mas) and 1133's to 0.0004, so no
+            edge is moved in the shipped model (`optics` keeps the 'shutter' parameter, at zero).
+            The offsets move by at most 0.0007, so the quadrant pattern and the zero point stand.
+            NGC 2506 v6 keeps a large difference with few pixels and bright stars, as before. The
+            numbers above this item that quote lower minus upper (the survey's -0.014, 1133's
+            brightness thirds) carry the same -0.011 and are kept as they were measured. The kernel
+            calibration was fitted against the old tables; their difference is a few per cent of
+            the light at the outer edges of the neighboring shutters, where a star sends little,
+            and is checked when the kernel is refitted.
+      - The kernel refit (2026-11-06; `scratch/claude/extraction-v2/edge/oc_refit/`, scripts
+        `oc_refit5.zsh` to `oc_refit7.zsh`). Refitted on the exact-edge tables, with each
+        observation's bar offset, and on every calibration star, 1133's slit grid included (no data
+        held out). Star-ranges enter the fit when S/N >= 20, |centre| < 0.35, unsaturated, width
+        <= 0.06 and chi2/dof <= 2 (`CHI2_MAX`, now an absolute cut; it was relative to the range's
+        median). 590 star-detectors: NGC 2506 390, wavecal (6642, 12497) 167, 1133 33.
+        - The test is the stack test (`optics_calibration score`): per detector and range, the
+          median over the clean stars of data minus model at each offset from the trace, in % of the
+          peak. A range passes when the median stays within 1 % at every offset. The shipped
+          kernel (`2026.11-w2x`, fitted without 1133 and on the rounded-edge tables) refitted with
+          the current code passes all 14 ranges, worst 0.72 %.
+        - The first refits failed at NRS2 2.0-2.6 um (1.16 % and 1.26 %): the NGC 2506 and wavecal
+          stars left about 1 % of excess light at +2 rows, where the model had too much wing. The
+          cause was the weighting. The solve sums each star's normal equations, so a star counts by
+          its pixels. A 1133 star has 60 exposures (its planned shifts step it from -0.26 to +0.36
+          slit units within the shutter) and an NGC 2506 star 3, so one 1133 star weighs as much as
+          20 NGC 2506 stars, and 1133 gave more than half of every range's pixels.
+        - Fitting each 1133 star's kernel on its own (`per_star_wing.py`) showed that most give the
+          NGC 2506 kernel (1-5 % of the light beyond +-0.3 slit units). Eight give 6-20 % on one
+          side, in every range: 157763, 40786, 132906, 35389, 89577, 29643 beyond +0.3, 36855 and
+          36752 beyond -0.3. These are faint stars with a neighbor in the slitlet, fitted at chi2/dof
+          1.3-2.0. The neighbor is in every one of the star's exposures, so it does not average down.
+          Two other explanations were tested and ruled out: dropping the exposures near a bar
+          changed nothing (`kernel1133_inside`), and kernels held constant across wavelength
+          (`make_const.py`) showed that the interpolation between nodes is not the cause.
+        - The remedy is to weight each star once: `sum_normals` scales a star's normal equations by
+          3 / its exposures (`NOD_EXPOSURES`; kernel files record the count). This is now the
+          default (`solve --per-pixel` gives the old weighting). No data is dropped, and the weight
+          matches the stack test's median over stars.
+        - Result (r8, normal equations about `2026.11-w2x`): 14 of 14 ranges within 1 %, worst 0.69 %
+          (NRS2 3.3-4.1 um), NRS2 2.0-2.6 um 0.52 %. Per dataset (`score_by_group.py`) r8 and the
+          shipped kernel agree to 0.1 % in every range. The 1133 stars' own worst medians are 1-2 %
+          under both kernels (7-19 stars per range); how much of that comes from the stars with a
+          neighbor is not measured.
+        - Against `2026.11-w2x`, the light beyond 0.3 slit units moves by at most 0.4 % of the total
+          (`kernel_nodes.py`). At 4.66 um the core's weight moved between nodes within +-0.075 slit
+          units with the same light. Diffraction is wider there than the node spacing, so the data
+          cannot tell the two apart, and the score is unchanged (0.47 -> 0.49 %, 0.40 -> 0.38 %).
+          Weighted by pixel (r8p), the same normal equations put 1-2 % more light in the wing at 2-4
+          um.
+        - A second pass (normal equations about r8, solved as r9) changes the light beyond 0.3 by
+          at most 0.2 %, so the fit has converged. r8 ships as `data/nirspec_optics.json`
+          `2026.11-r8` (manifest `nirspec_calibrations.toml`), with r8's stack test (`stack8`) as
+          its record. The diffraction numbers and `x_loss` are kept from `2026.11-w2x`. Earlier
+          refits had lost `x_loss` because `step_solve` did not carry over the base model's other
+          keys; that is fixed and tested.
+        - Still open: `x_loss` is fitted to NGC 2506 alone. Its refit with 1133 (one x offset per
+          visit) is the along-dispersion item in section 6.
       - Stocktake of the whole optics work against what STScI provides and plans (2026-11-05):
         `scratch/claude/extraction-v2/review/stocktake.md` (duplication, ranked risks, how to keep
         the boundary with CRDS clean).
@@ -3060,7 +3264,7 @@ a fix or needs another field or disperser), **To make**.
 | V27 | Injection tests | recovered vs injected flux, bias and scatter against S/N | bias within about 1 % | To make (earlier results lost in the wipe) | none |
 | V28 | Shape tests on bright sources | 5-pixel boxcar shape test; stars against the PSF table | shape within about 1 % | To make (earlier results lost) | none |
 | V29 | Master-background spectrum vs nodded spectrum | the secondary spectrum against `fnu` for sources with clean nods | agree within the expected 3-5 % extra noise | To make | none |
-| V30 | Runtime per exposure | wall time per phase (step 1, 2a, step 2, maps, first pass, joint, final) | no step adds an hour per exposure | In progress. End-to-end p1 run (2026-10-31, isolated root `scratch/claude/e2e_p1`, 6 workers, 12 rate files, 2,886 cutouts): step 1 1 min; stage 2a `Spec2Pipeline` 24 min; `fix_units` 7 s; rectification of every cutout (`resample_single_exposure`) 25 min; plots 1 min; step 2 9 min; stage 2b about 60 min for 962 groups (about 22 s per group per worker); stage 3 pending. The rectification and stage 2b are the two largest pieces and neither is new in v2 | `scratch/claude/e2e_p1/run.log` |
+| V30 | Runtime per exposure | wall time per phase (step 1, 2a, step 2, maps, first pass, joint, final) | no step adds an hour per exposure | In progress. End-to-end p1 run (2026-10-31, isolated root `scratch/claude/e2e_p1`, 6 workers, 12 rate files, 2,886 cutouts): step 1 1 min; stage 2a `Spec2Pipeline` 24 min; `fix_units` 7 s; rectification of every cutout (`resample_single_exposure`) 25 min; plots 1 min; step 2 9 min; stage 2b about 60 min for 962 groups (about 22 s per group per worker). Stage 3 on `FIT_VERSION` 7 (2026-11-05, 12 workers, 681 products, `run_stage3_fv7_docs.log`): 83.8 min; bar offset 2 s (reused); PRISM joint pass 212 s, same-slitlet revision 34 s, joint pass again 58 s (16 sources), Spec3 106 s, products 310 s; G395M joint pass 1771 s, revision 72 s, joint pass again 621 s (19 sources), Spec3 403 s, products 1363 s; final extraction 45 s. The rectification and stage 2b are the two largest pieces and neither is new in v2 | `scratch/claude/e2e_p1/run.log` |
 
 ---
 
@@ -3109,8 +3313,6 @@ the change log (10).
 | Verdict on the G395M stuck review packet (27 shutters) and the thresholds | `scratch/claude/stuck_shutters/p1_g395m_stuck_review.pdf` |
 | Default galaxy width | 0.15 today; the population says 0.143 (stocktake: close it at 0.15 and state the +-15 %) |
 | Neighbour scan: `report_only` or `auto_override` | |
-| "Master background likely better" columns in archive products | 3.9 |
-| Grating background smoothing | trial only |
 | Stage 1 footprint past the calibrated range | 3.1 |
 
 **Speed and cleanup.**
@@ -3238,4 +3440,10 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   min), the master-background spectrum's end-to-end run (uncover2) and the same-slitlet
   CHANGELOG line (folded into the one extraction entry). Earlier the same day: 3.7 gained the bar
   offset from the background (measurement, references, stars, galaxies, gratings) and 3.10 the
-  boundary with jwst's references.
+  boundary with jwst's references. Later still: 3.7 the decomposition of the point-source /
+  uniform-light discrepancy and the brightness cut (`SCALE_CUT` 1.05); then the one-sided upper
+  edge withdrawn: it was a rounding error in the model's shutter mask, now exact (`FIT_VERSION` 8,
+  optics engine 2, `MEASURE_VERSION` 3), with the halves of six fields before and after.
+- **2026-11-06.** Section 3.7 (and the status row in section 1): the kernel refit with the bar
+  offsets, the exact edges and 1133 included; why weighting by pixel let a few 1133 stars with a
+  neighbor set the wing, the per-star weighting, and the shipped model `2026.11-r8`.

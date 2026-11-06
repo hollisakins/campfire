@@ -30,6 +30,11 @@ slope with the star's position (``profile_fit.CENTRE_LAW``), with the scatter he
 observation; and the exposures' fitted offsets against their planned shifts
 (``profile_fit.NOD_OFFSET_LAW``).
 
+The stars are loaded with each observation's bar offset (``bars``: ``bar_offset.ensure`` on each
+calibration workspace), as stage 3 loads a source. Every calibration observation enters every step;
+none is held out (user, 2026-11-05).
+
+    python -m campfire_pipeline.nirspec.optics_calibration bars --root R --obs a,b
     python -m campfire_pipeline.nirspec.optics_calibration stack --root R --obs a,b --out D
     python -m campfire_pipeline.nirspec.optics_calibration score --out D
     python -m campfire_pipeline.nirspec.optics_calibration kernel --root R --obs a,b --select D --out K
@@ -63,7 +68,9 @@ SNR_MIN = 20.0                     # peak-pixel S/N
 EDGE_MAX = 0.35                    # |centre| [slit units]
 SAT_MAX = 0.0                      # saturated share of the trace pixels
 W_STAR_MAX = 0.06                  # a star's median width over its ranges [slit units]: wider is not a point source
-CHI2_OUTLIER = 5.0                 # chi2/dof over the detector-range's median
+CHI2_MAX = 2.0                     # chi2/dof: the variance floor keeps a star that matches the model at ~1 at any
+                                   # brightness (bright ones far below), so the cut is absolute; one relative to
+                                   # the range's median (bright stars) dropped faint ones that fit (1133 red: 60 %)
 
 
 def restrict(exps, lam_range):
@@ -103,6 +110,7 @@ class StarTask:
     quadrant: int = None
     srcy: float = np.nan
     disperser: str = 'prism_clear'
+    bar_offsets: dict = None           # the observation's bar offsets (``bar_offset.table``), as stage 3 applies them
 
     @property
     def key(self):
@@ -112,8 +120,11 @@ class StarTask:
 
 def star_tasks(root, obs_name, disperser='prism_clear', observations_file=None):
     """Every source of a reduced observation with a stage-3 science exposure in the
-    disperser, one task per detector. Reads the root only (no workspace set-up)."""
+    disperser, one task per detector, with the observation's bar offsets (``bar_offset.json``
+    in its workspace, measured by the ``bars`` step; without it the stars are loaded with
+    none, and a warning says so). Reads the root only (no workspace set-up)."""
     from astropy.io import fits
+    from campfire_pipeline.nirspec import bar_offset as BO
     from campfire_pipeline.nirspec.observation import Observation
     from campfire_pipeline.nirspec import stage3 as S3
 
@@ -125,6 +136,10 @@ def star_tasks(root, obs_name, disperser='prism_clear', observations_file=None):
     every = every[every['filter_grating'] == disperser]
     if len(every) == 0:
         return []
+    bars = BO.table(obs.workspace_dir)
+    if disperser.replace('_', '/').upper() not in bars:
+        import warnings
+        warnings.warn(f'{obs_name} {disperser}: no bar offset measured (optics_calibration bars); loaded without one')
     sci = S3._science_files(every)
     out = []
     for sid in np.unique(sci['source_id']):
@@ -135,8 +150,19 @@ def star_tasks(root, obs_name, disperser='prism_clear', observations_file=None):
             out.append(StarTask(obs=obs_name, source_id=int(sid), detector=str(det).upper(),
                                 groups=[[str(p) for p in g] for g in t['groups']], overrides=t['overrides'],
                                 science=[str(n) for n in t['science']], quadrant=int(h.get('MSAQUAD', 0)),
-                                srcy=float(h.get('SRCYPOS', np.nan)), disperser=disperser))
+                                srcy=float(h.get('SRCYPOS', np.nan)), disperser=disperser, bar_offsets=bars or None))
     return out
+
+
+def step_bars(root, observations, processes=1, log=print):
+    """Measure the bar offset of every disperser of the calibration observations
+    (``bar_offset.ensure``: kept in each workspace's ``bar_offset.json``, measured again only
+    when stale), so the stars are loaded as stage 3 loads a source."""
+    from campfire_pipeline.nirspec import bar_offset as BO
+    for name in observations:
+        bars = BO.ensure(os.path.join(root, 'products', 'nirspec', name), processes=processes, log=log)
+        log(f'{name}: ' + '; '.join(f'{d} ' + ' '.join(f'q{q} {v:+.4f}' for q, v in sorted(qs.items()))
+                                    for d, qs in sorted(bars.items())))
 
 
 def tasks_for(root, observations, dispersers=('prism_clear',)):
@@ -145,7 +171,8 @@ def tasks_for(root, observations, dispersers=('prism_clear',)):
 
 
 def load_star(task):
-    return PF.load_source(task.groups, bkg_overrides=task.overrides, science=set(task.science))
+    return PF.load_source(task.groups, bkg_overrides=task.overrides, science=set(task.science),
+                          bar_offsets=task.bar_offsets)
 
 
 def saturated_flags(exps):
@@ -367,25 +394,19 @@ def fit_star(task, ranges=None, optics=None):
 # The stack test
 # ---------------------------------------------------------------------------
 def clean_keys(records, snr_min=SNR_MIN, edge_max=EDGE_MAX, sat_max=SAT_MAX, w_max=W_STAR_MAX,
-               chi2_outlier=CHI2_OUTLIER):
+               chi2_max=CHI2_MAX):
     """{(detector, range): [star keys]} of the star-ranges the stack test uses: peak S/N at
     least ``snr_min``, the centre within ``edge_max`` of the shutter centre, no saturated pixel
     on the trace; of stars whose median width over their ranges is at most ``w_max`` (a
-    galaxy, a pair or a contaminated star fits wider), and with chi2/dof at most
-    ``chi2_outlier`` x the median of the detector-range's candidates."""
-    cand = {}
+    galaxy, a pair or a contaminated star fits wider), and with chi2/dof at most ``chi2_max``."""
+    out = {}
     for rec in records:
         if not rec['ranges'] or np.median([row['w'] for row in rec['ranges']]) > w_max:
             continue
         for row in rec['ranges']:
-            if row['peak_snr'] >= snr_min and abs(row['c_node']) < edge_max and row['sat'] <= sat_max:
-                cand.setdefault((rec['detector'], row['range']), []).append((rec['key'], row['chi2'] / row['ndof']))
-    out = {}
-    for k, rows in cand.items():
-        med = np.median([c for _, c in rows])
-        keep = [key for key, c in rows if c <= chi2_outlier * med]
-        if keep:
-            out[k] = keep
+            if (row['peak_snr'] >= snr_min and abs(row['c_node']) < edge_max and row['sat'] <= sat_max
+                    and row['chi2'] <= chi2_max * row['ndof']):
+                out.setdefault((rec['detector'], row['range']), []).append(rec['key'])
     return out
 
 
@@ -498,6 +519,7 @@ FINE = np.round(np.arange(-2.0, 2.0001, 0.0125), 5)          # offsets the point
 FREE_W_SNR = 63.0                  # star-ranges at this peak S/N or above fit their own width; fainter ones are points
 S_DELTA = 1e-2                     # the solve's penalty on the wing's second differences (relative to the data)
 WING = 0.3                         # the penalty applies beyond this offset [slit units]; the core is free
+NOD_EXPOSURES = 3                  # a star's weight in the solve (per_star): its normals x this / its exposures
 
 
 def _hat():
@@ -575,7 +597,8 @@ def kernel_star(task, ranges, optics=None, free_w_snr=FREE_W_SNR):
     ``kernel_response`` at that state for the nod differences and for the single frames less
     the master background (which keep the light nodding removes; same shape, offsets and
     spectrum, the same variance floor, pixels beyond CLIP sigma of the model dropped).
-    Returns {range: (AtA, Atd, npix)} and {range: width}."""
+    Returns {range: (AtA, Atd, npix)}, {range: width}, the nod differences' part alone and the
+    number of exposures that hold the star."""
     from campfire_pipeline.nirspec import mbkg_extraction as MB
     exps = load_star(task)
     sci = [e for e in exps if e.use_data]
@@ -583,7 +606,7 @@ def kernel_star(task, ranges, optics=None, free_w_snr=FREE_W_SNR):
         frames = MB.frames_for([e.path for e in sci])
     except MB.NoMasterBackground:
         frames = None
-    out, widths = {}, {}
+    out, nod, widths = {}, {}, {}
     for r in ranges:
         rng = RANGES[r]
         try:
@@ -595,7 +618,9 @@ def kernel_star(task, ranges, optics=None, free_w_snr=FREE_W_SNR):
         M = RF.M
         p, eoff, f = RF.shape(g['c0'], g['drift']), RF.eoff.copy(), np.nan_to_num(g['_f'])
         widths[r] = g['w']
-        _add_normal(out, r, kernel_response(M, p, f, eoff, g['w']), M.pix['d'], M.pix['v'], g['_use'])
+        Rn = kernel_response(M, p, f, eoff, g['w'])
+        _add_normal(out, r, Rn, M.pix['d'], M.pix['v'], g['_use'])
+        _add_normal(nod, r, Rn, M.pix['d'], M.pix['v'], g['_use'])
         if frames is None:
             continue
         mexps = restrict(MB.single_frame_exposures(sci, frames), rng)
@@ -612,7 +637,7 @@ def kernel_star(task, ranges, optics=None, free_w_snr=FREE_W_SNR):
         vf = Mm.pix['v'] + (mx[inv] / SN_CAP) ** 2
         use = np.abs(Mm.pix['d'] - mm) < CLIP * np.sqrt(vf)
         _add_normal(out, r, kernel_response(Mm, p, f, em, g['w']), Mm.pix['d'], vf, use)
-    return out, widths
+    return out, widths, nod, int(sum(bool(e.has_source) for e in exps))
 
 
 def _kernel_one(args):
@@ -622,12 +647,15 @@ def _kernel_one(args):
         from campfire_pipeline.nirspec import optics as O
         optics = {d: o for d, o in O.load_optics(optics_path).items() if d != 'version'}
     try:
-        out, widths = kernel_star(task, ranges, optics=optics)
+        out, widths, nod, nexp = kernel_star(task, ranges, optics=optics)
     except Exception as err:          # one star's failure is reported, the others go on
         return task.key, f'{type(err).__name__}: {err}'
+    parts = {'': out, 'nod_': nod}    # every term, and the nod differences alone (what the stack test measures)
     np.savez(os.path.join(out_dir, 'kernel', f'{task.key}.npz'), widths=json.dumps(widths), detector=task.detector,
-             **{f'r{r}_AtA': a for r, (a, b, n) in out.items()}, **{f'r{r}_Atd': b for r, (a, b, n) in out.items()},
-             **{f'r{r}_n': n for r, (a, b, n) in out.items()})
+             nexp=nexp,
+             **{f'r{r}_{p}AtA': a for p, o in parts.items() for r, (a, b, n) in o.items()},
+             **{f'r{r}_{p}Atd': b for p, o in parts.items() for r, (a, b, n) in o.items()},
+             **{f'r{r}_{p}n': n for p, o in parts.items() for r, (a, b, n) in o.items()})
     return task.key, len(out)
 
 
@@ -660,9 +688,13 @@ def step_kernel(root, observations, select_dir, out_dir, optics_path=None, proce
             log(f'{key} {res}')
 
 
-def sum_normals(kernel_dir, keys=None):
+def sum_normals(kernel_dir, keys=None, part='', per_star=True):
     """{(detector, range): (AtA, Atd, npix)} summed over the stars' files (``step_kernel``),
-    or over ``keys`` only."""
+    or over ``keys`` only; every term (``part`` '') or the nod differences alone ('nod_').
+    ``per_star``: each star's normals times NOD_EXPOSURES / its number of exposures, so a star
+    counts once however often it was observed (1133's slit grid: 60 exposures a star; weighted
+    by pixels, a few 1133 stars with a neighbor set the kernel's wing for every star); False
+    weights every pixel alike."""
     tot = {}
     for fn in sorted(os.listdir(kernel_dir)):
         key = fn[:-4]
@@ -670,12 +702,14 @@ def sum_normals(kernel_dir, keys=None):
             continue
         z = np.load(os.path.join(kernel_dir, fn))
         det = str(z['detector'])
+        w = NOD_EXPOSURES / max(int(z['nexp']), 1) if per_star else 1.0
         for name in z.files:
-            if not name.endswith('_AtA'):
+            head, _, tail = name.partition('_')
+            if tail != f'{part}AtA':
                 continue
-            r = int(name[1:-4])
+            r = int(head[1:])
             AtA, Atd, n = tot.get((det, r), (0.0, 0.0, 0))
-            tot[(det, r)] = (AtA + z[name], Atd + z[f'r{r}_Atd'], n + int(z[f'r{r}_n']))
+            tot[(det, r)] = (AtA + w * z[name], Atd + w * z[f'r{r}_{part}Atd'], n + int(z[f'r{r}_{part}n']))
     return tot
 
 
@@ -691,17 +725,20 @@ def solve_kernel(AtA, Atd, s_delta=S_DELTA):
     return lsq_linear(U, solve_triangular(U, Atd, trans='T', lower=False), bounds=(0.0, np.inf), method='bvls').x
 
 
-def step_solve(kernel_dir, optics_path, out_path, version, keys=None, s_delta=S_DELTA, log=print):
-    """A model file from the stars' normal equations: the kernel per detector and range (at
-    the range's centre, ln-mean), on the diffraction numbers of the model the normals were
-    built at (``optics_path``; the shipped file by default)."""
+def step_solve(kernel_dir, optics_path, out_path, version, keys=None, s_delta=S_DELTA, part='', per_star=True,
+               log=print):
+    """A model file from the stars' normal equations (``part``, ``per_star``: see
+    ``sum_normals``): the kernel per detector and range (at the range's centre, ln-mean), with
+    everything else (diffraction numbers, ``x_loss``, shutter edges) from the model the normals
+    were built at (``optics_path``; the shipped file by default)."""
     from campfire_pipeline.nirspec import optics as O
     with open(optics_path or O.OPTICS_FILE) as fh:
         base = json.load(fh)
-    tot = sum_normals(kernel_dir, keys)
+    tot = sum_normals(kernel_dir, keys, part, per_star)
     out = {'meta': dict(base['meta'], version=version,
                         source=f'kernel fitted by optics_calibration from {kernel_dir} at the model '
-                               f'{base["meta"]["version"]}'), 'diffraction': base['diffraction']}
+                               f'{base["meta"]["version"]}')}
+    out.update({k: v for k, v in base.items() if k not in ('meta', 'NRS1', 'NRS2')})
     for det in ('NRS1', 'NRS2'):
         nodes = []
         for r in sorted(r for d, r in tot if d == det):
@@ -942,18 +979,27 @@ def fit_x_loss(pairs, lam0=X_LAM0, nit=4):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[1], formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('step', choices=('stack', 'score', 'kernel', 'solve', 'laws'))
+    ap.add_argument('step', choices=('bars', 'stack', 'score', 'kernel', 'solve', 'laws'))
     ap.add_argument('--root', help='CAMPFIRE root of the reduced calibration observations')
     ap.add_argument('--obs', help='comma-separated observations')
-    ap.add_argument('--out', required=True, help='output directory')
+    ap.add_argument('--out', help='output directory (every step but bars)')
     ap.add_argument('--dispersers', default='prism_clear', help='comma-separated, e.g. prism_clear,g395m_f290lp')
     ap.add_argument('--optics', default=None, help='a model file in place of the shipped data/nirspec_optics.json')
     ap.add_argument('--select', help='kernel: the stack run whose clean star-ranges are fitted')
     ap.add_argument('--model-out', help='solve: the model file to write')
     ap.add_argument('--version', help='solve: the new model\'s version')
+    ap.add_argument('--nod-only', action='store_true',
+                    help='solve: the nod differences\' normal equations alone (not the single frames less the master '
+                         'background)')
+    ap.add_argument('--per-pixel', action='store_true',
+                    help='solve: every pixel weighted alike, not each star once (sum_normals)')
     ap.add_argument('--processes', type=int, default=1)
     a = ap.parse_args(argv)
-    if a.step == 'stack':
+    if a.step != 'bars' and not a.out:
+        ap.error(f'{a.step} needs --out')
+    if a.step == 'bars':
+        step_bars(a.root, a.obs.split(','), processes=a.processes)
+    elif a.step == 'stack':
         step_stack(a.root, a.obs.split(','), a.out, dispersers=tuple(a.dispersers.split(',')), optics_path=a.optics,
                    processes=a.processes)
     elif a.step == 'score':
@@ -963,7 +1009,8 @@ def main(argv=None):
     elif a.step == 'laws':
         step_laws(a.out)
     else:
-        step_solve(os.path.join(a.out, 'kernel'), a.optics, a.model_out, a.version)
+        step_solve(os.path.join(a.out, 'kernel'), a.optics, a.model_out, a.version, part='nod_' if a.nod_only else '',
+                   per_star=not a.per_pixel)
 
 
 if __name__ == '__main__':

@@ -107,21 +107,28 @@ def test_kernel_solve_recovers_a_kernel(small_optics, tmp_path):
     assert np.all(k[np.abs(OC.DELTA) > 0.15] < 1e-6 * k.max())          # nothing where the kernel has nothing
     # two stars' files summed per detector and range, then a model file the pipeline reads
     os.makedirs(tmp_path / 'kernel')
-    for key in ('a_1_NRS1', 'b_2_NRS1'):
-        np.savez(tmp_path / 'kernel' / f'{key}.npz', detector='NRS1', widths='{}', r2_AtA=AtA / 2, r2_Atd=Atd / 2, r2_n=10)
-    tot = OC.sum_normals(str(tmp_path / 'kernel'))
-    assert set(tot) == {('NRS1', 2)} and tot[('NRS1', 2)][2] == 20
+    for key, nexp in (('a_1_NRS1', 3), ('b_2_NRS1', 60)):
+        np.savez(tmp_path / 'kernel' / f'{key}.npz', detector='NRS1', widths='{}', nexp=nexp, r2_AtA=AtA / 2,
+                 r2_Atd=Atd / 2, r2_n=10, r2_nod_AtA=AtA / 4, r2_nod_Atd=Atd / 4, r2_nod_n=4)
+    tot = OC.sum_normals(str(tmp_path / 'kernel'), per_star=False)    # every pixel alike
+    assert set(tot) == {('NRS1', 2)} and tot[('NRS1', 2)][2] == 20 and np.allclose(tot[('NRS1', 2)][0], AtA)
+    nod = OC.sum_normals(str(tmp_path / 'kernel'), part='nod_', per_star=False)   # the nod differences alone
+    assert nod[('NRS1', 2)][2] == 8 and np.allclose(nod[('NRS1', 2)][0], AtA / 2)
+    # the default, each star once: the three-nod star whole, the 60-exposure star at 3/60
+    one = OC.sum_normals(str(tmp_path / 'kernel'))
+    assert np.allclose(one[('NRS1', 2)][0], AtA / 2 * (1 + 3 / 60)) and one[('NRS1', 2)][2] == 20
     base = tmp_path / 'base.json'
     base.write_text(json.dumps({'meta': {'version': 'base'}, 'diffraction': dict(rho=0.996, s0=0.0344, s1=-0.0026,
                                                                                  alpha=0.25),
-                                'NRS1': [], 'NRS2': []}))
-    np.savez(tmp_path / 'kernel' / 'c_3_NRS2.npz', detector='NRS2', widths='{}', r2_AtA=AtA, r2_Atd=Atd, r2_n=10)
+                                'x_loss': dict(b=0.5, lam0=2.0), 'NRS1': [], 'NRS2': []}))
+    np.savez(tmp_path / 'kernel' / 'c_3_NRS2.npz', detector='NRS2', widths='{}', nexp=3, r2_AtA=AtA, r2_Atd=Atd, r2_n=10)
     OC.step_solve(str(tmp_path / 'kernel'), str(base), str(tmp_path / 'new.json'), 'test-1', log=lambda s: None)
     new = O.load_optics(str(tmp_path / 'new.json'))
     assert new['version'] == 'test-1'
     node = new['NRS1'].kernel[0]
     assert node['lam'] == pytest.approx(np.sqrt(OC.RANGES[2][0] * OC.RANGES[2][1]))
     assert np.allclose(node['k'], k)                 # the summed normals are the one star's
+    assert new['NRS1'].x_loss == dict(b=0.5, lam0=2.0)   # the rest of the base model is kept
 
 
 def test_laws_recover_a_known_centre_law_and_nod_scale():
@@ -186,6 +193,9 @@ def test_clean_keys_and_stack_metric(tmp_path):
             rec('galaxy', w=0.15), rec('odd', chi2r=8.0)]
     keys = OC.clean_keys(recs)
     assert keys == {('NRS1', 2): ['a', 'b', 'c']}
+    # many bright stars far below 1 (the variance floor) do not push out a faint one that fits at 1.5
+    bright = [rec(f'bright{i}', snr=150, chi2r=0.1) for i in range(20)]
+    assert 'faint_fits' in OC.clean_keys(bright + [rec('faint_fits', snr=25, chi2r=1.5)])[('NRS1', 2)]
     os.makedirs(tmp_path / 'samples')
     u = np.linspace(-4, 4, 4000)
     m = np.exp(-0.5 * (u / 0.6) ** 2)
