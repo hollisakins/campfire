@@ -2,110 +2,110 @@
 
 The NIRSpec pipeline writes three files per source and disperser:
 
-| File | What it holds |
+| File | Content |
 |---|---|
-| `<obs>_<grating>_<filter>_<source>_spec.fits` | The spectrum: 1-D and 2-D, both background versions, the model, the exposures |
-| `<obs>_<grating>_<filter>_<source>_zfit.fits` | The automatic template redshift |
+| `<obs>_<grating>_<filter>_<source>_spec.fits` | 1-D and 2-D spectra for both background treatments, the source and contamination models, and the exposure list |
+| `<obs>_<grating>_<filter>_<source>_zfit.fits` | Automatic template redshift |
 | `<obs>_<grating>_<filter>_<source>_lines.fits` | Emission-line fluxes at the inspected redshift, written after inspection by `cfpipe nirspec linefit` |
 
-Read extensions by name, not by number: the order can change between pipeline versions. Other files beside them (`_s2d.fits`, `_x1d.fits`, and the `.pdf` plots) are intermediates and quick-look plots.
+Extensions should be accessed by name; their order may change between pipeline versions. Other files in the product directory (`_s2d.fits`, `_x1d.fits`, and `.pdf` plots) are intermediate products and diagnostic plots.
 
-## The spectrum file
+## Spectrum file
 
 ### Extensions
 
-| Extension | Contents |
+| Extension | Content |
 |---|---|
-| `SPEC1D` | The 1-D spectrum, nod-subtracted (table below) |
-| `SCI`, `ERR` | The combined 2-D spectrum and its error, in MJy per pixel; rows run along the slitlet |
-| `WAVELENGTH` | The wavelength of every 2-D pixel, in µm |
-| `WHT` | The combination weight of every 2-D pixel |
-| `PROF2D` | The source's model on the 2-D grid, per µJy of reported flux (MJy / µJy) |
-| `CONTAM2D` | The other sources' predicted light on the 2-D grid (MJy) |
-| `PROF1D` | The weights of the optimal and boxcar extractions along the slit |
-| `EXPOSURES` | One row per exposure combined (table below) |
-| `SPEC1D_MBKG` | The 1-D spectrum with the master background subtracted instead of the other nods; same columns as `SPEC1D` |
-| `SCI_MBKG`, `ERR_MBKG` | Its 2-D spectrum and error, on the same grid as `SCI` |
-| `PROF1D_MBKG` | Its extraction weights |
+| `SPEC1D` | Nod-subtracted 1-D spectrum (columns below) |
+| `SCI`, `ERR` | Combined 2-D spectrum and uncertainty, MJy per pixel; rows along the slitlet |
+| `WAVELENGTH` | Wavelength of each 2-D pixel, µm |
+| `WHT` | Combination weight of each 2-D pixel |
+| `PROF2D` | Source model on the 2-D grid, per µJy of reported flux (MJy / µJy) |
+| `CONTAM2D` | Predicted contamination on the 2-D grid (MJy) |
+| `PROF1D` | Spatial weights of the optimal and boxcar extractions |
+| `EXPOSURES` | One row per combined exposure (columns below) |
+| `SPEC1D_MBKG` | Master-background-subtracted 1-D spectrum; same columns as `SPEC1D` |
+| `SCI_MBKG`, `ERR_MBKG` | Master-background-subtracted 2-D spectrum and uncertainty, on the `SCI` grid |
+| `PROF1D_MBKG` | Extraction weights for the master-background spectrum |
 
-The full model of the 2-D spectrum is `PROF2D × (fnu_prof - fnu_contam) + CONTAM2D`.
+The full 2-D model is `PROF2D × (fnu_prof - fnu_contam) + CONTAM2D`.
 
 ### `SPEC1D` columns
 
-Every flux column comes in µJy (`fnu_*`) and in erg s⁻¹ cm⁻² Å⁻¹ (`flam_*`), each with an `_err` column.
+Each flux column is given in µJy (`fnu_*`) and in erg s⁻¹ cm⁻² Å⁻¹ (`flam_*`), with a corresponding `_err` column.
 
-| Column | What it is |
+| Column | Content |
 |---|---|
 | `wave` | Wavelength, µm |
-| `fnu` | The best spectrum. By default the profile extraction, `fnu_prof`; the header card `EXTRACT` says which |
-| `fnu_prof` | The profile extraction: the light of the fitted source within a 0.8″ circle, nothing subtracted |
-| `fnu_contam` | Other sources' predicted light in `fnu_prof`. NaN where nothing was predicted or the source could not be separated from a neighbor. Its error is systematic and not part of `fnu_err` |
-| `fnu_opt` | The optimal extraction: the light that entered the shutter, corrected as a point source by `jwst` |
-| `fnu_3px`, `fnu_4px`, `fnu_5px` | Boxcar extractions over 3, 4 and 5 rows, corrected as a point source by `jwst` |
+| `fnu` | Adopted spectrum; by default `fnu_prof` (see `EXTRACT`) |
+| `fnu_prof` | Forward-model extraction: flux of the fitted source within a 0.8″ aperture, without contamination subtraction |
+| `fnu_contam` | Predicted contamination in `fnu_prof`; NaN where none was predicted or where the source could not be separated from a neighbor. Its uncertainty is systematic and not included in `fnu_err` |
+| `fnu_opt` | Optimal extraction: flux entering the shutter, with the `jwst` point-source path-loss correction |
+| `fnu_3px`, `fnu_4px`, `fnu_5px` | Boxcar extractions over 3, 4 and 5 rows, with the `jwst` point-source path-loss correction |
 
-The source with other sources' light removed is `fnu_prof - fnu_contam`. See [Extraction](/docs/reduction/nirspec/extraction) for what each means and when to use it.
+The decontaminated spectrum is `fnu_prof - fnu_contam`. See [Extraction](/docs/reduction/nirspec/extraction) for details.
 
 ### `EXPOSURES` columns
 
-| Column | What it is |
+| Column | Content |
 |---|---|
-| `filename` | The calibrated exposure |
-| `nod_number` | The number of nod positions in the pattern (the same in every row) |
-| `dither_number`, `dither_type`, `nod_type` | Which exposure of the pattern this is, and the pattern's names |
+| `filename` | Calibrated exposure |
+| `nod_number` | Number of nod positions in the pattern (identical in every row) |
+| `dither_number`, `dither_type`, `nod_type` | Position of the exposure in the pattern, and the pattern names |
 | `exptime` | Exposure time, s |
-| `bkg_nods` | Which exposures were subtracted from it (`excluded` when none was) |
-| `bkg_override` | Whether that choice came from an override, by hand or automatic |
-| `bkg_auto` | Whether the override was automatic (a cataloged neighbor, or the neighbor scan) |
-| `bkg_why` | Why: `hand`, `scan`, or the neighbor that caused it; a flag when every background exposure had a neighbor and all were kept |
-| `shutter_state` | The slitlet's shutters, one character each: `1` open, `0` closed, `x` the source's shutter |
+| `bkg_nods` | Background exposures subtracted (`excluded` if none) |
+| `bkg_override` | Whether the background selection was overridden, manually or automatically |
+| `bkg_auto` | Whether the override was automatic (cataloged neighbor or neighbor search) |
+| `bkg_why` | Reason for the override: `hand`, `scan`, or the contaminating neighbor; or a flag when all background exposures were contaminated and retained |
+| `shutter_state` | Slitlet shutter states, one character per shutter: `1` open, `0` closed, `x` the source's shutter |
 | `stuck_shutter_list` | Shutters treated as closed |
-| `source_ra`, `source_dec` | The source's planned position |
-| `source_xpos`, `source_ypos` | Its planned position in the shutter, across and along |
-| `v3pa` | The telescope's position angle |
-| `fixed_slit`, `slit_name` | Whether the source was in a fixed slit, and which |
+| `source_ra`, `source_dec` | Planned source position |
+| `source_xpos`, `source_ypos` | Planned position within the shutter, across and along the slit |
+| `v3pa` | Telescope position angle |
+| `fixed_slit`, `slit_name` | Whether the source was observed through a fixed slit, and which |
 
 ### Primary header
 
-The primary header keeps the cards `jwst` writes, including the versions and every reference file used (`CAL_VER`, `CRDS_CTX`, `R_PTHLOS`, `R_PHOTOM`, ...) and which `jwst` steps ran (`S_*`). CAMPFIRE adds:
+The primary header retains the `jwst` keywords, including software versions, all reference files used (`CAL_VER`, `CRDS_CTX`, `R_PTHLOS`, `R_PHOTOM`, ...) and step completion flags (`S_*`). CAMPFIRE adds:
 
-| Card | What it records |
+| Keyword | Content |
 |---|---|
-| `CMPFRVER`, `CMPFRTIM` | The CAMPFIRE pipeline version, and when the spectrum was made |
-| `EXTRACT`, `EXTRWHY` | Which extraction `fnu` is (`profile`, `profile_decontam`, `boxcar3`, `optimal`), and why |
-| `CMPFROPT` | Whether `fnu_opt` is the optimal extraction (`optimal`) or fell back to a boxcar |
-| `CONTSTAT` | Whether other sources' light was predicted (`off`, `none`, `predicted`) |
-| `NEXP`, `NEXPBKG` | Exposures combined; fewest exposures subtracted from any one |
-| `MBKGPREF`, `MBKGWHY` | Whether the master-background spectrum is likely the better one, and why |
-| `PFVER` | The version of the extraction model |
-| `PFOPTIC` | The version of the optics model |
-| `PFAPER` | The diameter of the circle the reported flux refers to, arcsec |
-| `PFSHAPE`, `PFREASON` | Which shape the source took (`own`, `prism`, `default`) and why |
-| `PFWIDTH`, `PFCEN` | The fitted Gaussian width (σ) and center at `PFPIVOT`, in units of the shutter's open height (0.46″) |
-| `PFSLY`, `PFSLX` | Which slit-loss model was used along the slit (`optics` / `jwst`) and across it (`corrected` / `jwst`) |
-| `PFPLREF` | The `jwst` path-loss reference the model starts from |
-| `PFBAROFF` | The bar offset applied, in the same units as `PFWIDTH` |
-| `PFCONTAM`, `PFCONSIG` | Other sources' predicted light relative to the spectrum, and relative to its noise |
-| `PFNBR` | A neighbor not in the catalog may sit in the slitlet (a flag for review) |
+| `CMPFRVER`, `CMPFRTIM` | CAMPFIRE pipeline version and processing time |
+| `EXTRACT`, `EXTRWHY` | Extraction adopted for `fnu` (`profile`, `profile_decontam`, `boxcar3`, `optimal`) and the reason |
+| `CMPFROPT` | Whether `fnu_opt` is the optimal extraction (`optimal`) or a boxcar fallback |
+| `CONTSTAT` | Contamination status (`off`, `none`, `predicted`) |
+| `NEXP`, `NEXPBKG` | Number of exposures combined; minimum number of background exposures subtracted from any one |
+| `MBKGPREF`, `MBKGWHY` | Whether the master-background spectrum is likely preferable, and the reason |
+| `PFVER` | Extraction model version |
+| `PFOPTIC` | Optics model version |
+| `PFAPER` | Diameter of the reporting aperture, arcsec |
+| `PFSHAPE`, `PFREASON` | Profile adopted (`own`, `prism`, `default`) and the reason |
+| `PFWIDTH`, `PFCEN` | Fitted Gaussian σ and center at `PFPIVOT`, in units of the open shutter height (0.46″) |
+| `PFSLY`, `PFSLX` | Slit-loss treatment along the slit (`optics` / `jwst`) and across the shutter (`corrected` / `jwst`) |
+| `PFPLREF` | `jwst` path-loss reference used as the baseline |
+| `PFBAROFF` | Bar offset applied, in the units of `PFWIDTH` |
+| `PFCONTAM`, `PFCONSIG` | Predicted contamination relative to the spectrum, and relative to its noise |
+| `PFNBR` | Possible uncataloged neighbor in the slitlet (flagged for review) |
 
-The `SPEC1D_MBKG` extension's header carries the same cards for the master-background spectrum's own fit; the primary header's are the nod-subtracted spectrum's. Further `PF*` cards record the details of the fit (the detection statistic, the χ² of each shape tried, the masked fraction of the shutter) for diagnosing a spectrum.
+The `SPEC1D_MBKG` extension header carries the corresponding keywords for the master-background fit; those in the primary header refer to the nod-subtracted spectrum. Additional `PF*` keywords record fit diagnostics (detection statistic, χ² of each candidate profile, masked shutter fraction).
 
-## The redshift file
+## Redshift file
 
-| Extension | Contents |
+| Extension | Content |
 |---|---|
-| Primary | `ZBEST` (the best redshift), `ZBEST_C` (the best on the coarse grid), `ZCONF` (the share of the fit's probability within 0.03 of it, %), `CHI2MIN`. `ZQUAL` is always 0 here: quality is set at inspection |
-| `MODEL` | The best-fit template combination: `wav` (µm), `fnu` (µJy) |
-| `CHI2` | The fit at every trial redshift: `z`, `chi2` |
+| Primary | `ZBEST` (best-fit redshift), `ZBEST_C` (best fit on the coarse grid), `ZCONF` (percentage of the redshift probability within Δz = 0.03), `CHI2MIN`. `ZQUAL` is always 0; quality is assigned at inspection |
+| `MODEL` | Best-fit template combination: `wav` (µm), `fnu` (µJy) |
+| `CHI2` | χ² over the redshift grid: `z`, `chi2` |
 
-This is the automatic redshift. The inspected redshift lives in the portal's catalog.
+This is the automatic redshift; the inspected redshift is stored in the portal catalog.
 
-## The line-fit file
+## Line-fit file
 
-| Extension | Contents |
+| Extension | Content |
 |---|---|
-| Primary | The redshift used (`ZUSED`) and its source and quality, the spectrum's global velocity offset and width, the input spectrum's hash (`SPECHASH`) |
-| `LINES` | One row per line, per accepted broad component (for example `Halpha_broad`) and per doublet total; `component` says which. Rest and observed wavelength, flux and error (erg s⁻¹ cm⁻²), continuum, rest-frame equivalent width, signal-to-noise, velocity and width, and a bitmask of flags (blend, blended, resolved, edge, masked, ...) |
-| `MODEL` | The fitted model and continuum on the spectrum's wavelength grid (erg s⁻¹ cm⁻² Å⁻¹) |
-| `COMPLEXES` | The groups of lines fitted together, and their χ² |
+| Primary | Redshift used (`ZUSED`), its origin and quality, the spectrum's global velocity offset and width, and the input spectrum hash (`SPECHASH`) |
+| `LINES` | One row per line, accepted broad component (e.g. `Halpha_broad`) and doublet total (`component`): rest and observed wavelength, flux and uncertainty (erg s⁻¹ cm⁻²), continuum, rest-frame equivalent width, S/N, velocity offset and width, and a flag bitmask (blend, blended, resolved, edge, masked, ...) |
+| `MODEL` | Fitted line model and continuum on the spectral grid (erg s⁻¹ cm⁻² Å⁻¹) |
+| `COMPLEXES` | Line groups fitted together, with their χ² |
 
-See [Redshifts and lines](/docs/reduction/nirspec/redshifts) for how the lines are fitted.
+The line fitting is described in [Redshifts and lines](/docs/reduction/nirspec/redshifts).

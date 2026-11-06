@@ -1,69 +1,67 @@
 # NIRSpec Pipeline
 
-The CAMPFIRE NIRSpec pipeline turns raw JWST/NIRSpec exposures taken with the micro-shutter assembly (MSA) into calibrated 1-D spectra and redshifts for every source in every slitlet. It is built on the STScI [JWST calibration pipeline](https://jwst-pipeline.readthedocs.io/) (`jwst`), and extends and updates the default processing with custom recipes for several steps.
+The CAMPFIRE NIRSpec pipeline reduces JWST/NIRSpec multi-object spectroscopy taken with the micro-shutter assembly (MSA) to calibrated 1-D spectra and redshifts for every source in every slitlet. It is built on the STScI [JWST calibration pipeline](https://jwst-pipeline.readthedocs.io/) (`jwst`), and extends and updates the default processing with custom recipes for several steps.
 
-If you're looking for how to describe the reduction in a paper, [Describing the reduction](/docs/reduction/nirspec/describing) has a paragraph you can adapt, the versions recorded in each spectrum file, and the choices you may want to mention.
+For describing the reduction in a publication, [Describing the reduction](/docs/reduction/nirspec/describing) provides a summary paragraph, the version information recorded in each spectrum file, and the processing choices left to the user.
 
-## How the pipeline runs
+## Pipeline overview
 
-![The NIRSpec pipeline, one column per stage. Each stage's output feeds the top of the next. Gray boxes are jwst pipeline steps, orange boxes are CAMPFIRE steps, white boxes are files written. A dashed outline marks a step that a configuration option turns on or off, with the option and its default.](/docs/nirspec/flow.png)
+![The NIRSpec pipeline, one column per stage; each stage's outputs feed the next. Gray boxes are jwst steps, orange boxes CAMPFIRE steps, and white boxes files written. Dashed outlines mark steps enabled or disabled by a configuration option, shown with its default.](/docs/nirspec/flow.png)
 
-Read the diagram one column at a time:
+1. **Stage 1** runs `jwst` ramp fitting, including its 1/f cleaning, then fits and subtracts the residual detector background and 1/f noise outside the footprint of every open shutter.
+2. **Stage 2a** maps the detector footprint of every shutter (the trace maps used in Stage 3 to identify overlapping spectra), measures the background spectrum from the empty shutters of each exposure, identifies stuck-closed shutters, and calibrates each source's 2-D spectrum with `jwst`. It ends by building the **master background**: the background spectrum forward-modeled onto the detector, shutter by shutter.
+3. **Stage 2b** performs nod subtraction: each exposure minus the mean of the other exposures in its group, excluding any background exposure in which a bright neighbor falls at the target's position.
+4. **Stage 3** measures the bar offset of the observation, fits each source jointly with the sources whose traces overlap it, combines the exposures, and fits each source's 2-D spectrum with a model of the galaxy convolved with the MSA optics. With each neighbor's flux now known, the Stage 2b exclusions are re-evaluated and affected sources reprocessed (orange loop). One spectrum file is written per source and disperser.
+5. **Redshifts and lines**: template-fit redshifts for every spectrum, and, after visual inspection, emission-line fluxes at the inspected redshift.
 
-1. **Stage 1** fits the detector ramps with `jwst`, including its 1/f cleaning. CAMPFIRE then removes the rest of the detector's own background and 1/f noise, keeping every spectrum's footprint out of the estimate.
-2. **Stage 2a** first maps where every shutter's spectrum falls on the detector (the trace maps; Stage 3 uses them to find overlapping spectra). It measures the background spectrum from the empty shutters of every exposure, finds shutters that were commanded open but stayed closed, and calibrates each source's 2-D spectrum with `jwst`. It ends by building the **master background**: the background spectrum laid out on the detector, shutter by shutter.
-3. **Stage 2b** subtracts the background by nodding. Each exposure has subtracted from it the mean of the other nods of the same sequence, in which the source sat in a different shutter. A nod in which a bright neighbor sits at the source's position is left out.
-4. **Stage 3** extracts the spectra. It first measures where the MSA's bars sit in this observation. It fits every source together with the sources whose light falls on the same pixels, combines the exposures, and fits each source's 2-D spectrum with a model of the galaxy seen through the MSA. Once every neighbor's brightness is known from that fit, the nod choices of Stage 2b are checked again, and sources whose nods change run again (the orange loop). Stage 3 writes one spectrum file per source and disperser.
-5. **Redshifts and lines** fits each spectrum with templates. After visual inspection, it measures the emission lines at the inspected redshift.
+## Differences from the standard jwst reduction
 
-## What is different from the standard jwst reduction
-
-| What | The standard `jwst` reduction | CAMPFIRE |
+| Step | Standard `jwst` reduction | CAMPFIRE |
 |---|---|---|
-| Detector background | 1/f cleaning (optional) | The `jwst` cleaning, then a fit of the detector's background pattern and the remaining 1/f stripes, outside every open shutter's footprint |
-| Background | Nod subtraction, or a master background from dedicated background shutters | Nod subtraction, leaving out a nod where a neighbor would be subtracted; a master background measured from every empty shutter, written as a second spectrum |
-| Shutters that misbehave | Failed-open shutters from the operations list; stuck-closed shutters not handled | Stuck-closed shutters found from each exposure's own data; failed-open shutters from the operations list, with the light each one passes measured from the data |
-| Overlapping spectra | Not modeled | Every source fitted together with its neighbors; their light on each spectrum reported separately, not subtracted |
-| Light lost at the shutter edges (path loss) | Point-source or uniform reference | Along the slit, a model of the MSA's optics for a source of any size and position. Along the dispersion (across the shutter), the `jwst` reference with a correction measured from stars |
-| Bar shadow | CRDS bar-shadow reference | In the master background, measured from empty shutters; in the spectra, part of the optics model |
-| Wavelengths | `jwst` wavelength calibration | The same. A zero-point correction measured by JADES is available and off by default |
-| 1-D extraction | Boxcar | A fit of each source's 2-D spectrum; boxcar and optimal extractions kept alongside |
+| Detector background | 1/f cleaning (optional) | `jwst` cleaning, followed by a fit of the picture-frame pattern and residual 1/f noise outside every open shutter's footprint |
+| Background subtraction | Nod subtraction, or master background from dedicated background shutters | Nod subtraction with exclusion of contaminated background exposures; master background from all empty shutters, provided as a secondary spectrum |
+| Shutter failures | Failed-open shutters from the operations list; stuck-closed shutters not handled | Stuck-closed shutters identified from each exposure; failed-open shutters from the operations list, with transmission measured from the data |
+| Overlapping spectra | Not modeled | Joint fit of each source with its neighbors; neighbor flux reported separately, not subtracted |
+| Path loss | Point-source or uniform-source reference | Along the slit, a model of the MSA optics for a source of any size and position; across the shutter, the `jwst` reference with a correction measured from stars |
+| Bar shadow | CRDS reference | Master background: measured from empty shutters. Spectra: part of the optics model |
+| Wavelength calibration | `jwst` | `jwst`; the JADES zero-point correction is available and off by default |
+| 1-D extraction | Boxcar | Forward-model fit of each source's 2-D spectrum; boxcar and optimal extractions also provided |
 
-## What CAMPFIRE replaces, and how to switch it back
+## Replaced calibrations
 
-CAMPFIRE's own calibrations replace parts of two `jwst` reference files, the MSA path loss and the bar shadow. Each spectrum records which were used.
+CAMPFIRE replaces parts of two `jwst` reference files, the MSA path loss and the bar shadow. Each spectrum records which were applied.
 
-| CAMPFIRE calibration | Replaces | How to use the `jwst` reference instead |
+| CAMPFIRE calibration | Replaces | Reverting to the `jwst` reference |
 |---|---|---|
-| Optics model, along the slit | The path-loss reference's dependence on position along the slit | `[nirspec.stage3] slit_loss_y = "jwst"` |
-| Correction along the dispersion (across the shutter) | Part of the path-loss reference's dependence on position across the shutter | `[nirspec.stage3] slit_loss_x = "jwst"` |
-| Bar offset per observation | Where the bars sit relative to `jwst`'s slit coordinates | `[nirspec.stage3] bar_offset = "off"` |
-| Measured bar-shadow tables | The bar-shadow reference, in the master background | No setting: the measured table is used for every disperser that has one (PRISM, G140M, G235M, G395M); the high-resolution gratings use the CRDS reference |
+| Optics model, along the slit | Path-loss dependence on position along the slit | `[nirspec.stage3] slit_loss_y = "jwst"` |
+| Correction across the shutter | Part of the path-loss dependence on position across the shutter | `[nirspec.stage3] slit_loss_x = "jwst"` |
+| Per-observation bar offset | Position of the bars relative to the `jwst` slit frame | `[nirspec.stage3] bar_offset = "off"` |
+| Measured bar-shadow tables | Bar-shadow reference, in the master background | No option: the measured table is used wherever one exists (PRISM, G140M, G235M, G395M); the high-resolution gratings use the CRDS reference |
 
-The calibration files, what they were derived from, and the reference files they were derived against are listed in `pipeline/campfire_pipeline/data/nirspec_calibrations.toml`. The [Slit losses and the MSA optics](/docs/reduction/nirspec/slit-losses) page shows how each was derived.
+The calibration files, their inputs, and the reference files they were derived against are listed in `pipeline/campfire_pipeline/data/nirspec_calibrations.toml`. Their derivation is described in [Slit losses and the MSA optics](/docs/reduction/nirspec/slit-losses).
 
-## What each spectrum file records
+## Provenance keywords
 
-Every spectrum file says how it was made, in its primary header:
+The primary header of each spectrum file records:
 
-| Card | What it records |
+| Keyword | Content |
 |---|---|
-| `CMPFRVER` | The CAMPFIRE pipeline version |
-| `CAL_VER`, `CRDS_CTX` | The `jwst` pipeline version and the CRDS context |
-| `PFVER` | The version of the extraction model |
-| `PFOPTIC` | The version of the optics model |
-| `PFPLREF` | The `jwst` path-loss reference the model starts from |
-| `PFSLY`, `PFSLX` | Whose slit loss was used, along the slit and along the dispersion |
-| `PFBAROFF` | The bar offset applied |
-| `EXTRACT`, `EXTRWHY` | Which extraction the best spectrum (`fnu`) is, and why |
-| `MBKGPREF`, `MBKGWHY` | Whether the master-background spectrum is likely the better one, and why |
+| `CMPFRVER` | CAMPFIRE pipeline version |
+| `CAL_VER`, `CRDS_CTX` | `jwst` version and CRDS context |
+| `PFVER` | Extraction model version |
+| `PFOPTIC` | Optics model version |
+| `PFPLREF` | `jwst` path-loss reference used as the baseline |
+| `PFSLY`, `PFSLX` | Slit-loss treatment along the slit and across the shutter |
+| `PFBAROFF` | Bar offset applied |
+| `EXTRACT`, `EXTRWHY` | Extraction adopted for `fnu`, and the reason |
+| `MBKGPREF`, `MBKGWHY` | Whether the master-background spectrum is likely preferable, and the reason |
 
-The [FITS reference](/docs/data-products/fits-columns) lists every column and extension.
+The [FITS reference](/docs/data-products/fits-columns) lists all columns and extensions.
 
-## Running it
+## Running the pipeline
 
 ```bash
 cfpipe nirspec run --obs <observation> --all --processes 8
 ```
 
-`--all` runs the four stages and the redshift fit. Each stage can also run alone (`stage1`, `stage2a`, `stage2b`, `stage3`, `zfit`). A stage skips sources whose products already exist unless `--overwrite` is given. Emission lines are fitted after inspection, with `cfpipe nirspec linefit --obs <observation>` (see [Redshifts and lines](/docs/reduction/nirspec/redshifts)). `cfpipe config` prints the default configuration.
+`--all` runs the four stages and the redshift fit; each stage can also be run alone (`stage1`, `stage2a`, `stage2b`, `stage3`, `zfit`). Existing products are skipped unless `--overwrite` is given. Emission lines are fitted after inspection with `cfpipe nirspec linefit --obs <observation>` (see [Redshifts and lines](/docs/reduction/nirspec/redshifts)). `cfpipe config` prints the default configuration.

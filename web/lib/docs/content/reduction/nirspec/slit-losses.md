@@ -1,61 +1,59 @@
 # Slit losses and the MSA optics
 
-An MSA shutter is about 0.2″ wide and 0.46″ tall on the sky, smaller than the telescope's image of a point source at long wavelengths and smaller than most galaxies. Part of every source's light falls on the bars between shutters and never reaches the detector. How much is lost depends on the wavelength, the size of the source, and where it sits in the shutter. Correcting for it is called the path loss, or slit loss.
+An MSA shutter subtends about 0.2″ × 0.46″, smaller than the point-spread function at long wavelengths and than most galaxies. The fraction of a source's flux lost to the shutter bars and edges (the path loss, or slit loss) depends on wavelength, source size, and position within the shutter.
 
-`jwst` corrects it with two reference tables: one for a point source, one for uniform light filling the shutter. A real galaxy is neither. Along the slit, CAMPFIRE replaces the correction with a model of the MSA's optics that works for a source of any size and position. Across the shutter it keeps `jwst`'s point-source table, with a correction measured from stars.
+`jwst` corrects path losses with two references, one for a point source and one for uniform illumination; real galaxies lie between the two. Along the slit, CAMPFIRE replaces this correction with a diffraction model of the MSA optics, valid for a source of any size and position. Across the shutter, it retains the `jwst` point-source reference with an empirical correction derived from stars.
 
-## How the model makes a source's image
+## Optical model
 
-The model follows the light through the instrument in four steps.
+The model propagates the light through four stages.
 
-![A point source 0.16″ (0.3 of a shutter pitch) from the center of the middle shutter of a three-shutter slitlet, along the slit at 1 µm (blue) and 5 µm (orange), on a log scale so the faint light shows. 1: the telescope's diffraction pattern arriving at the MSA, its rings several times wider at 5 µm. 2: the image convolved with the kernel (dashed: step 1); the kernel fills in the rings and moves a little light onto the bar and into the neighboring shutters. Inset: the kernel itself, a sharp core and about a percent of the peak spread to a few tenths of an arcsec. 3: the shutters cut the image sharply at their edges. 4: on the detector, averaged over the same wavelength bands as the calibration stars drawn on it (circles: the median of the stars' pixels, bars from the 25th to the 75th percentile; programs 1133 and NGC 2506, single exposures with the background removed, each scaled to the model's total light). Below: the stars over the model.](/docs/nirspec/optics_steps.png)
+![A point source 0.16″ (0.3 shutter pitches) from the center of the middle shutter of a three-shutter slitlet, along the slit at 1 µm (blue) and 5 µm (orange), on a logarithmic scale. 1: the telescope PSF at the MSA plane. 2: the PSF convolved with the kernel (dashed: stage 1); the kernel suppresses the diffraction minima and redistributes a small fraction of the flux onto the bar and into the adjacent shutters. Inset: the kernel. 3: truncation at the shutter edges. 4: the detector-plane profile, averaged over the wavelength bands of the calibration stars overplotted (circles: median of the stellar pixel values, bars: interquartile range; programs 1133 and NGC 2506, background-subtracted single exposures, each normalized to the model's total flux). Bottom: ratio of the stars to the model.](/docs/nirspec/optics_steps.png)
 
-1. **Arriving at the MSA.** The telescope's diffraction pattern, computed from its 6.5 m pupil for each wavelength.
-2. **Spread by the kernel.** The telescope's wavefront error and the pointing jitter during an exposure move a source's light by small amounts before it reaches the MSA. The kernel says how much light lands at each shift; it is a table measured from calibration stars, one per detector, changing smoothly with wavelength. Every shifted copy of the image then goes through the next two steps on its own. Uniform light does not feel the kernel (shifting uniform light changes nothing), so the stars, not the empty shutters, fix it.
-3. **Transmitted by the MSA.** The open area of each shutter passes light; the bars block it, cutting the image sharply at the shutter edges.
-4. **Reaching the detector.** Light diffracted at the shutter edges spreads out of the spectrograph's beam, and the spectrograph's pupil stop removes part of it. The detector blurs what is left before it is sampled by 0.1″ pixels.
+1. **Telescope PSF.** The diffraction pattern of the 6.5 m pupil at the MSA plane, computed at each wavelength.
+2. **Kernel.** Wavefront error and pointing jitter redistribute the light by small amounts before it reaches the MSA. This is modeled as a convolution with an empirical kernel, fitted to calibration stars for each detector and interpolated in wavelength. Uniform illumination is invariant under the convolution, so the kernel is constrained by the stars rather than by the empty shutters.
+3. **MSA transmission.** The open area of each shutter transmits the light; the bars block it, truncating the image sharply at the shutter edges.
+4. **Detector plane.** Light diffracted at the shutter edges is partly removed by the spectrograph pupil stop; the remainder is blurred by the detector response and sampled by 0.1″ pixels.
 
-A galaxy is the sum of such images over its shape: a round Gaussian of fitted width, centered at its fitted position.
+An extended source is modeled as a circular Gaussian of fitted width and position, integrated over its profile. The open shutters of each exposure enter the model individually, so a source in the end shutter of a slitlet, or in a single-shutter slitlet, incurs the additional loss to its closed neighbors.
 
-Each exposure's own open shutters enter the model, so a source in the end shutter of a slitlet, or in a slitlet of one shutter, loses the light that falls on the closed neighbors.
+## From point sources to uniform illumination
 
-## From a point source to uniform light
+The same model gives the transmitted fraction for any source size. For a centered point source it matches the `jwst` point-source reference by construction; elsewhere it follows from the instrument model. Between a point source and uniform illumination, which bracket most galaxies, `jwst` provides no correction.
 
-The same model gives the light that reaches the detector for any source. For a point source at the shutter center it agrees with `jwst`'s point-source table by construction; off center, and for every size, it follows the instrument. Between a point source and uniform light, where most galaxies are, `jwst` has nothing.
+![Fraction of a source's total flux reaching the detector as a function of position along the slit, at 0.8–1.2 µm (top) and 4.5–5.3 µm (bottom), for increasing source size from left to right. All losses are included: flux falling on the bars, and edge-diffracted light removed at the pupil stop. The vertical scale is normalized to the jwst value for a centered point source. Left: point source, with the jwst point-source reference (dashed) and calibration stars (gray: individual visits; black: medians). Right: uniform illumination, as a fraction of the flux incident on the slitlet footprint (bars included), with the jwst uniform reference on the same scale. Middle: Gaussian sources of 0.05″ and 0.2″ FWHM. Point sources lose flux only near the shutter edges; larger sources lose an increasing fraction to the bars at all positions. At 5 µm, a 0.05″ source remains much smaller than the PSF and behaves nearly as a point source.](/docs/nirspec/pathloss.png)
 
-![The fraction of a source's light that reaches the detector, against where the source sits along the slit, at 0.8 to 1.2 µm (top) and 4.5 to 5.3 µm (bottom), for sources of increasing size from left to right. Everything lost counts: light falling on the bars, and light diffracted at the shutter edges and removed at the pupil stop. The vertical scale is set to jwst's value for a point source at the center. Left: a point source, with jwst's point-source table (dashed) and calibration stars (gray points, black medians). Right: uniform light, as the share of the light falling on the slitlet's footprint (bars included), with jwst's uniform table on the same footing. In between: galaxies 0.05″ and 0.2″ across (FWHM). A point source loses light only near the shutter edges; the bigger the source, the more of it falls on the bars wherever it sits. At 5 µm a 0.05″ galaxy is still much smaller than the telescope's image, so it behaves almost like a point source.](/docs/nirspec/pathloss.png)
+The model sets the dependence of the loss on position and source size; its normalization, the loss of a centered point source, is taken from the `jwst` point-source reference. The model was not fitted to either `jwst` reference.
 
-The model sets how the loss changes with position and size. Its level, the loss of a point source at the shutter center, is taken from `jwst`'s point-source table. The model was not fitted to either `jwst` table.
+## Calibration of the model
 
-## How the model was derived
+The model parameters are constrained by two data sets:
 
-Two kinds of data fix the model's numbers:
+- **Calibration stars.** PRISM observations of about 590 stars at a range of positions within their shutters: programs 6642 and 12497, ten MSA configurations of the open cluster NGC 2506 (program 1493), and the commissioning slit-loss program, which stepped stars across their shutters (program 1133). Each star is weighted once in the fit regardless of its number of exposures, and each observation's bar offset is applied. The stars constrain the kernel (one per detector) and the correction across the shutter.
+- **Uniform illumination.** The bar shadow measured from empty shutters ([Bar-shadow calibration](/docs/reduction/nirspec/backgrounds#bar-shadow-calibration)). The pupil apodization, the pupil-stop size and the detector blur were chosen to reproduce the measured PRISM bar shadow without exceeding the wide-angle light observed in the stars; the kernel was then fitted to the stars.
 
-- **Calibration stars.** Stars observed through the MSA at many positions in their shutters, all through the PRISM: about 590 stars in programs 6642 and 12497, in ten MSA configurations of the open cluster NGC 2506 (program 1493), and in the commissioning program that stepped stars across their shutters on purpose (program 1133). Each star counts once in the fit, however many exposures it has, and each observation's bar offset is applied. A star is a point source, so its image on the detector shows the telescope's pattern, the shutter's cut and the detector's blur directly. The stars set the kernel before the MSA (one per detector) and the correction across the shutter.
-- **Uniform light.** The background in empty shutters shows how the shutter edges dim light that fills them (the bar shadow, see [Backgrounds](/docs/reduction/nirspec/backgrounds#bar-shadow-calibration)). The shape of the telescope's pupil, the size of the pupil stop and the detector blur were chosen so the model matches the measured PRISM bar shadow, without more widely spread light than the stars show. The kernel was then fitted to the stars.
+![The model for uniform illumination of a three-shutter slitlet (lines) compared with the bar shadow measured from empty PRISM shutters (circles), both averaged over 0.8–1.2 µm (blue) and 4.5–5.3 µm (orange) and normalized at the center of the middle shutter. Bottom: ratio of measurement to model within the slitlet.](/docs/nirspec/optics_uniform.png)
 
-![The same model for uniform light filling a three-shutter slitlet (lines), against the bar shadow measured from empty PRISM shutters (circles), both averaged over 0.8 to 1.2 µm (blue) and 4.5 to 5.3 µm (orange) and scaled to one at the middle shutter's center. Below: measured over model, inside the slitlet.](/docs/nirspec/optics_uniform.png)
+A single model is used for all dispersers, since the light incident on the MSA does not depend on the disperser; it was verified against grating observations of calibration stars and the G395M bar shadow. The model version is recorded in the `PFOPTIC` keyword, and its input files are listed in `pipeline/campfire_pipeline/data/nirspec_calibrations.toml`.
 
-One model serves every disperser: the light arriving at the MSA does not depend on the disperser. The grating stars and the G395M bar shadow were checked against it. The model's version is in the `PFOPTIC` header card, and the files it was derived from are listed in `pipeline/campfire_pipeline/data/nirspec_calibrations.toml`.
+## Path loss across the shutter
 
-## Across the shutter
+Across the dispersion direction, the source position within the shutter is set by the pointing and is not measured from the spectrum, and the source profile is not resolved. CAMPFIRE therefore retains the `jwst` point-source reference in this direction, multiplied by a correction measured from 93 NGC 2506 stars observed at several positions and, for extended sources, by the model ratio between the extended and point-source transmission. Redward of about 2 µm, the `jwst` reference underestimates the loss for off-center sources; the correction accounts for this.
 
-Across the dispersion, a source's position in its shutter is set by the pointing, not measured from the spectrum, and the data do not show its shape. CAMPFIRE keeps `jwst`'s point-source table in this direction and multiplies it by a correction measured from 93 stars of NGC 2506 seen at several positions, and, for an extended source, by the model's ratio between that source and a point source. Redward of about 2 µm, `jwst`'s table loses too little light for a source off center; the correction takes more.
+## Bar offset
 
-## Where the bars are
+The model requires the position of the shutter edges on the detector. The offset of the bars relative to the `jwst` slit frame is measured once per observation and disperser from the edges of the empty-shutter background, and applied in every fit (keyword `PFBAROFF`).
 
-The model needs to know where the shutter edges sit on the detector. CAMPFIRE measures this once per observation and disperser, from the edges of the empty shutters' background, and applies the offset in every fit (header card `PFBAROFF`).
+## Reverting to the jwst references
 
-## Switching back to jwst
-
-| Setting | Effect |
+| Option | Effect |
 |---|---|
-| `[nirspec.stage3] slit_loss_y = "jwst"` | Along the slit, `jwst`'s point-source path loss at the planned position; the model only shapes the image |
-| `[nirspec.stage3] slit_loss_x = "jwst"` | Across the shutter, `jwst`'s table without the star correction; the extended-source ratio still applies |
+| `[nirspec.stage3] slit_loss_y = "jwst"` | Along the slit: `jwst` point-source path loss at the planned position; the model determines only the spatial profile |
+| `[nirspec.stage3] slit_loss_x = "jwst"` | Across the shutter: `jwst` reference without the stellar correction; the extended-source ratio is still applied |
 | `[nirspec.stage3] bar_offset = "off"` | No bar offset |
 
-Each spectrum records the choice in `PFSLY`, `PFSLX` and `PFBAROFF`. The boxcar and optimal extractions in the same file (`fnu_3px`, `fnu_4px`, `fnu_5px`, `fnu_opt`) always carry `jwst`'s path-loss correction as Stage 2 applied it (point-source for nearly every source) and no bar-shadow correction.
+The settings are recorded in `PFSLY`, `PFSLX` and `PFBAROFF`. The boxcar and optimal extractions in the same file (`fnu_3px`, `fnu_4px`, `fnu_5px`, `fnu_opt`) always carry the `jwst` path-loss correction applied in Stage 2 (point-source for nearly all sources) and no bar-shadow correction.
 
-## Describing it in a paper
+## Summary for publications
 
-> Slit losses along the slit were computed with a diffraction model of the MSA (the telescope pupil, the open shutters of each exposure, the spectrograph pupil stop and the detector blur, with an empirical kernel fitted to calibration stars), for a Gaussian source of the fitted width at the fitted position. Across the shutter, the `jwst` point-source path loss was used, with a correction fitted to stars.
+> Slit losses along the slit were computed with a diffraction model of the MSA (telescope pupil, open shutters of each exposure, spectrograph pupil stop and detector response, with an empirical kernel fitted to calibration stars), evaluated for a Gaussian source of the fitted width and position. Across the shutter, the `jwst` point-source path loss was used with an empirical correction fitted to stars.

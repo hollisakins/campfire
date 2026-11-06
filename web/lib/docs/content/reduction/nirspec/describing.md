@@ -1,53 +1,53 @@
 # Describing the reduction
 
-This page collects material that may help in describing a CAMPFIRE NIRSpec reduction in a paper: the versions each spectrum file records, a paragraph you can adapt, and the choices the pipeline leaves to you.
+This page collects material that may be useful in describing a CAMPFIRE NIRSpec reduction in a publication: the version information recorded in each spectrum file, a summary paragraph, and the processing choices left to the user.
 
-## Versions
+## Version information
 
-Every spectrum file records how it was made in its primary header:
+The primary header of each spectrum file records:
 
-| Card | What it is |
+| Keyword | Content |
 |---|---|
-| `CMPFRVER` | The CAMPFIRE pipeline version |
-| `CAL_VER` | The `jwst` pipeline version |
-| `CRDS_CTX` | The CRDS context, which fixes every `jwst` reference file |
-| `PFOPTIC` | The version of the MSA optics model |
-| `PFVER` | The version of the extraction model |
+| `CMPFRVER` | CAMPFIRE pipeline version |
+| `CAL_VER` | `jwst` pipeline version |
+| `CRDS_CTX` | CRDS context, which determines every `jwst` reference file |
+| `PFOPTIC` | MSA optics model version |
+| `PFVER` | Extraction model version |
 
-The [FITS reference](/docs/data-products/fits-columns) lists every card.
+All keywords are listed in the [FITS reference](/docs/data-products/fits-columns).
 
-## A paragraph to adapt
+## Summary paragraph
 
-> The NIRSpec data were reduced with the CAMPFIRE pipeline (version `CMPFRVER`), built on the STScI `jwst` pipeline (version `CAL_VER`, CRDS context `CRDS_CTX`). After ramp fitting, the detector's background and 1/f noise were fitted and removed outside every open shutter's footprint. Shutters that stayed closed were identified from each exposure's own data; shutters stuck open were taken from the operations list, with the light each passes measured from the data. The background was removed by nod subtraction, leaving out any nod in which a cataloged neighbor fell at the target's position. Sources whose spectra overlap on the detector were fitted together. Each source's 2-D spectrum, in every exposure at once, was fitted with a Gaussian galaxy seen through a diffraction model of the MSA (the telescope pupil, the open shutters, the spectrograph pupil stop and the detector blur, calibrated on stars), and the reported flux is the light of the fitted galaxy within a 0.8″ circle. Redshifts were measured with templates and inspected visually; emission-line fluxes were measured at the inspected redshift.
+> The NIRSpec data were reduced with the CAMPFIRE pipeline (version `CMPFRVER`), built on the STScI `jwst` pipeline (version `CAL_VER`, CRDS context `CRDS_CTX`). After ramp fitting, the detector background and residual 1/f noise were fitted and subtracted outside the footprints of all open shutters. Stuck-closed shutters were identified from each exposure; failed-open shutters were taken from the MSA operations list, with their transmission measured from the data. The background was removed by nod subtraction, excluding background exposures in which a cataloged neighbor fell at the target position. Sources with overlapping traces were fitted jointly. Each source's 2-D spectrum was fitted simultaneously in all exposures with a Gaussian source model convolved with a diffraction model of the MSA (telescope pupil, open shutters, spectrograph pupil stop and detector response, calibrated on stars); the reported flux is that of the fitted intrinsic profile within a 0.8″-diameter aperture. Redshifts were measured by template fitting and visually inspected; emission-line fluxes were measured at the inspected redshift.
 
-Each page of the reduction has its own sentence for the step it covers: [slit losses](/docs/reduction/nirspec/slit-losses#describing-it-in-a-paper), [extraction](/docs/reduction/nirspec/extraction#describing-it-in-a-paper).
+More detailed summaries of individual steps are given in [Slit losses](/docs/reduction/nirspec/slit-losses#summary-for-publications) and [Extraction](/docs/reduction/nirspec/extraction#summary-for-publications).
 
-## Choices left to you
+## Processing choices
 
-| Choice | Default | Worth knowing |
+| Choice | Default | Notes |
 |---|---|---|
-| Other sources' light | Reported in `fnu_contam`, not subtracted from `fnu` | The source alone is `fnu_prof - fnu_contam`. The catalog's line fluxes are measured on `fnu` as it is |
-| Background | Nod subtraction (`fnu`) | The master-background spectrum (`SPEC1D_MBKG`) is in the same file; `MBKGPREF` marks where it is likely the better one |
-| Extraction | The profile extraction (`fnu`) | `fnu_opt` and the boxcars measure the light that entered the shutter, corrected as a point source |
-| Redshift | The inspected redshift, from the portal or `Campfire.query_objects()` | Line fluxes are measured for [redshift quality](/docs/inspection/redshift-quality) "probable" and up |
+| Contamination | Reported in `fnu_contam`, not subtracted from `fnu` | The decontaminated spectrum is `fnu_prof - fnu_contam`. Catalog line fluxes are measured on `fnu` |
+| Background | Nod subtraction (`fnu`) | The master-background spectrum (`SPEC1D_MBKG`) is in the same file; `MBKGPREF` flags cases where it is likely preferable |
+| Extraction | Forward-model extraction (`fnu`) | `fnu_opt` and the boxcar extractions measure the flux entering the shutter, with a point-source path-loss correction |
+| Redshift | Inspected redshift, from the portal or `Campfire.query_objects()` | Line fluxes are measured for [redshift quality](/docs/inspection/redshift-quality) "probable" and above |
 
-## Errors
+## Uncertainties
 
-`fnu_err` is statistical: it carries the noise of the exposure and of the exposures subtracted from it. It does not include the uncertainty of other sources' predicted light (`fnu_contam_err`, systematic), nor, for a source too faint to measure its own size (`PFSHAPE = default`), the uncertainty of the assumed size, which moves its flux by about 15 % either way.
+`fnu_err` is statistical, including the noise of the subtracted background exposures. It excludes the systematic uncertainty of the contamination prediction (`fnu_contam_err`) and, for sources with the default profile (`PFSHAPE = default`), the uncertainty of the assumed size, roughly ±15 % in flux.
 
-## Where CAMPFIRE departs from the CRDS calibration
+## Departures from the CRDS calibration
 
 CAMPFIRE replaces parts of two CRDS references:
 
-- **Path loss along the slit**: replaced by the optics model for the source's fitted size and position ([Slit losses](/docs/reduction/nirspec/slit-losses)). Across the shutter, the CRDS point-source path loss is used, with a correction measured from stars.
-- **Bar shadow**: replaced by tables measured from empty shutters, in building the master background ([Backgrounds](/docs/reduction/nirspec/backgrounds#bar-shadow-calibration)); the high-resolution gratings keep the CRDS reference there. The spectra themselves, both versions, take the bar shadow from the optics model; science frames are never divided by one.
-- **Where the bars sit**: measured once per observation from the empty shutters and applied in the optics model (`PFBAROFF`; `bar_offset = "off"` turns it off).
+- **Path loss along the slit**: replaced by the optics model evaluated for each source's fitted size and position ([Slit losses](/docs/reduction/nirspec/slit-losses)). Across the shutter, the CRDS point-source path loss is used with an empirical correction derived from stars.
+- **Bar shadow**: replaced by tables measured from empty shutters in the construction of the master background ([Bar-shadow calibration](/docs/reduction/nirspec/backgrounds#bar-shadow-calibration)); the high-resolution gratings retain the CRDS reference. In both extracted spectra the bar shadow is part of the optics model; science frames are never divided by a bar-shadow correction.
+- **Bar position**: an offset measured per observation from the empty shutters and applied in the optics model (`PFBAROFF`; disabled with `bar_offset = "off"`).
 
-Everything else (flat fields, wavelength solution, flux calibration) is the CRDS reference as delivered, unless the observation turned on one of the options on the [Detector and calibration](/docs/reduction/nirspec/detector-calibration#options-that-change-the-calibration) page. The reference-file cards of the spectrum file (`R_WAVCOR`, `R_FFLAT`, `R_PHOTOM`) record which.
+All other calibrations (flat fields, wavelength solution, flux calibration) use the CRDS references as delivered, unless one of the overrides in [Detector and calibration](/docs/reduction/nirspec/detector-calibration#optional-calibration-overrides) was enabled; the reference-file keywords (`R_WAVCOR`, `R_FFLAT`, `R_PHOTOM`) record which.
 
 ## References
 
-- CAMPFIRE: there is no pipeline paper yet. Data from a release can be cited as given on the page of the release named in the file's `CMPFRDR` card.
-- The `jwst` calibration pipeline: Bushouse et al., the JWST Calibration Pipeline (Zenodo), at the version in `CAL_VER`.
-- If `R_WAVCOR` names the JADES correction: Scholtz et al. (2025), JADES Data Release 4 (arXiv:2510.01034).
-- The redshift templates are built with `bagpipes` (Carnall et al. 2018).
+- CAMPFIRE: no pipeline paper exists yet. Data releases can be cited as given on the page of the release named in the file's `CMPFRDR` keyword.
+- `jwst` calibration pipeline: Bushouse et al., JWST Calibration Pipeline (Zenodo), at the version in `CAL_VER`.
+- JADES wavelength correction, if named in `R_WAVCOR`: Scholtz et al. (2025), JADES Data Release 4 (arXiv:2510.01034).
+- Redshift templates: `bagpipes` (Carnall et al. 2018).
