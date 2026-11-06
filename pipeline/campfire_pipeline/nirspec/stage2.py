@@ -1549,25 +1549,25 @@ def nod_background_partners(cal_files, bkg_overrides=None):
 
 
 def scan_notes(obs):
-    """The neighbour scan's findings per source, for the bkgsub plots: {source id: text}
-    from the automatic file (applied) and the proposed file (report only), each entry
-    with the nods it would keep and its comment (offset, statistic, PRISM cross-check)."""
+    """The neighbour scan's proposals per source, for the bkgsub plots: {source id: text}
+    from the proposed file, each entry with the nods it would keep and its comment
+    (offset, statistic, PRISM cross-check)."""
     import re
     out = {}
-    for path, state in ((obs.auto_bkg_override_file, 'applied'), (obs.proposed_bkg_override_file, 'proposed')):
-        if not os.path.exists(path):
+    path = obs.proposed_bkg_override_file
+    if not os.path.exists(path):
+        return out
+    root = None
+    for line in open(path):
+        m = re.match(r'^\[(\S+)\]', line.strip())
+        if m:
+            root = m.group(1)
             continue
-        root = None
-        for line in open(path):
-            m = re.match(r'^\[(\S+)\]', line.strip())
-            if m:
-                root = m.group(1)
-                continue
-            m = re.match(r'^\s*(\d+)\s*=\s*\{(.*)\}\s*(?:#\s*(.*))?$', line)
-            if m and root:
-                text = f'scan ({state}) {root[-5:]}: {m.group(2).strip()}' + (f'  {m.group(3).strip()}' if m.group(3) else '')
-                sid = int(m.group(1))
-                out[sid] = f'{out[sid]}; {text}' if sid in out else text
+        m = re.match(r'^\s*(\d+)\s*=\s*\{(.*)\}\s*(?:#\s*(.*))?$', line)
+        if m and root:
+            text = f'scan (proposed) {root[-5:]}: {m.group(2).strip()}' + (f'  {m.group(3).strip()}' if m.group(3) else '')
+            sid = int(m.group(1))
+            out[sid] = f'{out[sid]}; {text}' if sid in out else text
     return out
 
 
@@ -1577,17 +1577,16 @@ def bkgsub_tasks(obs, stage_config, pending, n_processes=1, pass1_prefix=None):
     source id, root, detector). Catalogued neighbours of a source's own slitlet: a
     partner that puts one near the source is dropped when the neighbour is bright enough
     (``slitlet_neighbours``; brightness from the joint first pass with ``pass1_prefix``,
-    else from the data); hand overrides win, the neighbour scan's file yields."""
+    else from the data); hand overrides win."""
     from campfire_pipeline.nirspec import slitlet_neighbours as SN
-    effective, from_auto = obs.effective_bkg_overrides()
+    hand = obs.bkg_overrides
     slitlet, flags = slitlet_overrides(
         obs, pending, stage_config.get('slitlet_neighbor_min_background', SN.MIN_SKY_FRAC),
         stage_config.get('slitlet_neighbor_max_distance', SN.MAX_DISTANCE), n_processes, pass1_prefix)
     tasks = []
     for bg, bg_files, source_id, root, detector in pending:
-        hand_scan = (effective.get(root) or {}).get(str(source_id)) or {}
-        scan_nods = from_auto.get((root, str(source_id)), set())
-        bkg_overrides, auto_nods, reasons = SN.layer(hand_scan, scan_nods, slitlet.get((root, int(source_id)), {}))
+        own = (hand.get(root) or {}).get(str(source_id)) or {}
+        bkg_overrides, auto_nods, reasons = SN.layer(own, slitlet.get((root, int(source_id)), {}))
         for nod, why in flags.get((root, int(source_id)), {}).items():
             reasons.setdefault(nod, why)                # partners kept: recorded, not an override
         tasks.append((list(bg_files['name']), obs.workspace_dir, bkg_overrides or None, sorted(auto_nods), reasons))

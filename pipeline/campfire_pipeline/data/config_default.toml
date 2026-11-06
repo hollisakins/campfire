@@ -192,10 +192,10 @@
     # on the nod differences as stage 2b made them, leaving out (not modelling) every pixel
     # another slitlet's source shutter lights in any frame of the difference (trace maps),
     # so the scan never depends on the joint model. Catalogued neighbours are stage 2b's
-    # (slitlet_neighbor_min_background); the scan finds the uncatalogued ones.
+    # (slitlet_neighbor_min_background); the scan finds the uncatalogued ones. Its proposals are
+    # never applied: they go to reference/nirspec/<obs>/nodded_background_overrides_proposed.toml,
+    # with a review figure per source (<obs>_<id>_neighbor.pdf in the workspace)
     scan_neighbours = true
-    scan_action = "report_only"              # "report_only" (proposed file) | "auto_override"
-                                             # (auto file, applied by stage 2b on its next run)
     scan_nbins = 16
     scan_dchi2 = 80.0                        # proposal threshold on chi2 drop / noise scale (sign-randomised
                                              # null, p14 PRISM: 0.23 % of 438 draws above 60-100, none above 120)

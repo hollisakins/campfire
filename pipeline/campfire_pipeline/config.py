@@ -332,6 +332,8 @@ REMOVED_OPTIONS = {
         'scan_noise': 'the scan always divides by its reduced chi2',
         'scan_close_rule': 'a neighbour closer than scan_close is always withheld',
         'scan_gain_rule': 'the proposal gain is recorded only',
+        'scan_action': 'proposals are written for review (nodded_background_overrides_proposed.toml), never '
+                       'applied; a leftover nodded_background_overrides_auto.toml is not read',
     },
 }
 _WARNED_REMOVED = set()

@@ -35,9 +35,10 @@ three times the noise of those rows, if larger: a faint target); a partner above
 (A - (B + C)/2 -> A - C). Two-nod sets, and nods whose partners are all dirty, are
 reported as unresolved (no proposal: excluding a nod stays a hand decision).
 
-Proposals are relative to the default partners (every other nod of the background
-group), whatever override is in force, so a rerun after applying them proposes the
-same thing.
+Proposals are made relative to the default partners (every other nod of the background
+group); those a nod already follows (a hand override, or a catalogued neighbour's) are
+then left out (``ScanResult.drop_in_force``), so the proposed file lists only what would
+change.
 """
 
 from dataclasses import dataclass, field
@@ -80,6 +81,21 @@ class ScanResult:
         if self.proposals or self.unresolved:
             self.suppressed = self.suppressed or why
             self.proposals, self.unresolved = {}, []
+
+    def drop_in_force(self, exps):
+        """Keep only the proposals that change what a nod subtracts now (``exps`` as stage 2b
+        made them, e.g. a catalogued neighbour's override already drops the same nod).
+        Returns the number of nods dropped from the proposals."""
+        now = {(_root(e), str(_nod(e))): sorted(_nod(exps[j]) for j in e.partners or []) for e in exps}
+        n = 0
+        for root in list(self.proposals):
+            for nod in list(self.proposals[root]):
+                if sorted(self.proposals[root][nod]) == now.get((root, nod)):
+                    del self.proposals[root][nod]
+                    n += 1
+            if not self.proposals[root]:
+                del self.proposals[root]
+        return n
 
     def cross_check(self, other, tol=0.2):
         """Compare with the scan of the same source in the other disperser

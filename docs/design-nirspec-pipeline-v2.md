@@ -3403,8 +3403,16 @@ scan's raw-noise, close and gain rules are gone. Stage 2 (master-background sess
 same day): `single_call`, `extract_bkgslits` and `empirical_barshadow` removed, 29 of the 30
 `master_bkg_*` thresholds moved into `master_bkg.SETTINGS` (only `master_bkg_plot` stays). A
 config that still sets a removed key gets one log line saying it has no effect
-(`config.REMOVED_OPTIONS`). Still open in the audit: `scan_action` (report only or apply the
-proposals). `pipeline/experiments/master_bkg_prototype`
+(`config.REMOVED_OPTIONS`). The neighbor scan's proposals (user, 2026-11-06): never applied,
+`scan_action` and the automatic override file removed; the proposed file lists only what would
+change, and each proposed source gets a review figure (`<obs>_<id>_neighbor.pdf`: per nod the
+difference and residual over the noise and their profile along the slit with the target, the
+neighbor and its copies marked; the spectrum with the current and the proposed background nods,
+both rebuilt from the frames before subtraction). Review: look at the figures, copy the entries
+you agree with into `nodded_background_overrides.toml`, run the command stage 3 prints. Checked on
+p1 924883 (PRISM, flux +15 %, S/N 10.2 to 11.5) and spurs_gds 369 (G140M, +13 %, S/N 20.4 to
+22.3); p1 923362 showed a proposal that stage 2b already applied for a catalogued neighbor,
+which is now left out. `pipeline/experiments/master_bkg_prototype`
 and its figures kept or dropped; small fixes found in the runs (`mbkg_extraction.local_contrast`:
 the subtraction outside its `errstate`, inf - inf warnings on spurs_gds); the design docs rewritten as final documentation (main text =
 what ships, appendix = explored and rejected); one categorized MAJOR CHANGELOG entry.

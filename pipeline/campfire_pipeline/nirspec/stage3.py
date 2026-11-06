@@ -437,10 +437,10 @@ def _cleanup_spec3_intermediates(cal_files, product_name):
 def _profile_fit_task(obs, files_all, target_files, product_name, source_id):
     """Arguments for one product's profile fit: every exposure of the background
     groups its science exposures came from (partners included), each group's nod
-    overrides (hand and automatic; the canonicals' BKGNODS cards win when present),
+    overrides (the hand file; the canonicals' BKGNODS cards win when present),
     the names stage 3 combines, and the disperser."""
     groups, overrides = [], []
-    eff = obs.effective_bkg_overrides()[0]
+    eff = obs.bkg_overrides
     for bg in np.unique(target_files['bkg_group']):
         g = files_all[files_all['bkg_group'] == bg]
         groups.append(list(g['path']))
@@ -507,8 +507,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     then (every disperser) Spec3 of its products (``s3_tasks``,
     ``run_stage3_single_source``: the s2d, crf and EXPOSURES table from the canonicals as
     revised) and the products (``profile_product.run_product``: every drizzle). The
-    neighbour-scan proposals are written to the observation's reference directory
-    (``scan_action``)."""
+    neighbour-scan proposals are written to the observation's reference directory, with
+    a review figure per proposed source (``write_scan_proposals``)."""
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec.observation import Observation
     from campfire_pipeline.nirspec import joint_first_pass as JF
@@ -636,8 +636,7 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                     _cleanup_in(t[1], t[4], prod)
     log_fallbacks(results)
     if fl['scan']:
-        write_scan_proposals(obs, results, run_sids, str(stage_config.get('scan_action', 'report_only')).lower(),
-                             xdisp_tol=fl['scan_xdisp_tol'])
+        write_scan_proposals(obs, results, run_sids, xdisp_tol=fl['scan_xdisp_tol'])
     return results
 
 
@@ -736,22 +735,27 @@ def _update_prism_scan_cards(obs, r, xdisp):
             hd['PFNBRSUP'] = 'grating scan disagrees'
 
 
-def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol=0.2):
-    """Neighbour-scan proposals to the observation's reference directory.
+def neighbour_figure_path(obs, source_id):
+    """The review figure of a source's neighbour-scan proposal (``write_scan_proposals``)."""
+    return os.path.join(obs.workspace_dir, f'{obs.name}_{int(source_id)}_neighbor.pdf')
 
-    ``auto_override``: ``nodded_background_overrides_auto.toml``, which stage 2b
-    applies on its next run (a hand override of the same nod wins);
-    ``report_only``: ``nodded_background_overrides_proposed.toml`` (never applied).
-    Entries of the sources processed in this run are replaced; others are kept.
-    Where a source has both PRISM and grating products, proposals are written only
-    when both scans find the neighbour at the same Delta (``xdisp_tol``; the grating
-    product checks this itself, ``ScanResult.cross_check``; PRISM proposals are
-    checked here, when the grating scans are known)."""
+
+def write_scan_proposals(obs, results, run_sids, xdisp_tol=0.2):
+    """Neighbour-scan proposals to ``nodded_background_overrides_proposed.toml`` in the
+    observation's reference directory (never applied: an entry is used once copied
+    into ``nodded_background_overrides.toml``), and one review figure per proposed
+    source (``neighbour_figure_path``, ``plots.plot_neighbour_proposal``: its nod
+    differences with the neighbour marked, and its spectrum with the background nods it
+    subtracts now and with the proposed ones). Entries and figures of the sources
+    processed in this run are replaced; others are kept. Where a source has both PRISM
+    and grating products, proposals are written only when both scans find the
+    neighbour at the same Delta (``xdisp_tol``; the grating product checks this itself,
+    ``ScanResult.cross_check``; PRISM proposals are checked here, when the grating scans
+    are known)."""
     import toml
     from datetime import date
+    from campfire_pipeline.nirspec.plots import plot_neighbour_proposal
 
-    if action not in ('report_only', 'auto_override'):
-        raise ValueError(f"scan_action must be 'report_only' or 'auto_override', got {action!r}")
     for r in results:
         s = r.get('scan') or {}
         if not (r.get('is_prism') and s):
@@ -763,7 +767,7 @@ def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol
         if s.get('detected') and s.get('proposals') and xd == 'disagree':
             log(f"{r['product']}: neighbour proposals withheld (grating scan disagrees)")
             s['proposals'] = {}
-    path = obs.auto_bkg_override_file if action == 'auto_override' else obs.proposed_bkg_override_file
+    path = obs.proposed_bkg_override_file
     old = toml.load(path) if os.path.exists(path) else {}
     entries = {}
     for root, d in old.items():
@@ -779,12 +783,9 @@ def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol
             note += f" unresolved={','.join(s['unresolved'])}"
         for root, nods in s['proposals'].items():
             entries.setdefault(root, {})[str(r['source_id'])] = (nods, note)
-    head = ('# automatic nodded-background overrides from the same-slitlet neighbour scan (cfpipe stage 3);\n'
-            '# stage 2b applies them on its next run; a hand override of the same nod wins\n'
-            if action == 'auto_override' else
-            '# proposed nodded-background overrides from the same-slitlet neighbour scan (cfpipe stage 3);\n'
-            '# report only: never applied. Copy an entry to nodded_background_overrides.toml to use it\n')
-    lines = [head.rstrip('\n')]
+    lines = ['# proposed nodded-background overrides from the same-slitlet neighbour scan (cfpipe stage 3);',
+             '# never applied. Review <obs>_<source id>_neighbor.pdf in the workspace, copy an entry to',
+             '# nodded_background_overrides.toml to use it, then rerun stage 2b and stage 3 for that source']
     for root in sorted(entries):
         lines.append(f'\n[{root}]')
         for sid in sorted(entries[root], key=int):
@@ -794,7 +795,29 @@ def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
-    log(f"Neighbour scan: {sum(len(v) for v in entries.values())} entries in {path}")
+
+    # review figures: one per source proposed in this run, from every product of it that proposes
+    for sid in run_sids:
+        stale = neighbour_figure_path(obs, sid)
+        if os.path.exists(stale):
+            os.remove(stale)
+    previews = {}
+    for r in results:
+        s = r.get('scan') or {}
+        if s.get('detected') and s.get('proposals') and s.get('preview') is not None:
+            previews.setdefault(int(r['source_id']), []).append((r['product'], s))
+    for sid, prods in sorted(previews.items()):
+        plot_neighbour_proposal(neighbour_figure_path(obs, sid), sid, prods)
+    proposed = sorted({int(r['source_id']) for r in results
+                       if (r.get('scan') or {}).get('detected') and (r.get('scan') or {}).get('proposals')})
+    if proposed:
+        ids = ' '.join(str(s) for s in proposed)
+        log(f"Neighbour scan: {len(proposed)} sources with proposals in {path} "
+            f"(figures: {len(previews)}, {obs.name}_<id>_neighbor.pdf in the workspace). To use one, copy its "
+            f"entry to nodded_background_overrides.toml and run:\n"
+            f"  cfpipe nirspec run --obs {obs.name} --stage2b --stage3 --source-ids {ids} --overwrite")
+    else:
+        log('Neighbour scan: no proposals in this run')
 
 
 def run_profile_fit_single_source(product_name, workspace_dir, groups, overrides, science,

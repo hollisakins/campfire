@@ -1,6 +1,6 @@
-"""Tests for the same-slitlet neighbour scan (nirspec/nod_scan.py) and the automatic
-background overrides it proposes (stage3.write_scan_proposals,
-Observation.effective_bkg_overrides).
+"""Tests for the same-slitlet neighbour scan (nirspec/nod_scan.py), the background
+overrides it proposes (stage3.write_scan_proposals) and their review figure
+(profile_product.neighbour_preview, plots.plot_neighbour_proposal).
 
 Synthetic three-nod slitlet from test_nirspec_profile_fit: source in the middle,
 bottom and top shutter of a 3-shutter slitlet. A neighbour one shutter pitch above
@@ -171,37 +171,108 @@ def _obs(tmp_path):
     return o
 
 
-def test_effective_overrides_hand_wins(tmp_path):
-    o = _obs(tmp_path)
-    (tmp_path / 'nodded_background_overrides.toml').write_text(f'[{ROOT}]\n    7 = {{1 = [3], 2 = []}}\n')
-    (tmp_path / 'nodded_background_overrides_auto.toml').write_text(
-        f'[{ROOT}]\n    7 = {{1 = [2], 3 = [2]}}\n    8 = {{2 = [1]}}\n')
-    eff, from_auto = o.effective_bkg_overrides()
-    assert eff[ROOT]['7'] == {'1': [3], '2': [], '3': [2]}
-    assert eff[ROOT]['8'] == {'2': [1]}
-    assert from_auto == {(ROOT, '7'): {'3'}, (ROOT, '8'): {'2'}}
-    assert o.bkg_overrides[ROOT]['7'] == {'1': [3], '2': []}          # the hand file is untouched
+def _frames_with_neighbour(target_scale, nbr_scale, delta, seed=1):
+    """Single frames (target + neighbour + noise) of the three synthetic nods, and a
+    stand-in for ``profile_fit.load_source`` that builds their nod differences for any
+    background-nod overrides, as the loader does from the frames before subtraction."""
+    exps = T._exposures(src_y=0.0)
+    M = PF.ProfileModel(exps)
+    c = M.c_prior
+    Rt = T._truth_result(exps, dict(centre=c, drift=0.0, width=0.1, width_change=0.0), np.zeros(3), target_scale)
+    Rn = T._truth_result(exps, dict(centre=c + delta, drift=0.0, width=0.1, width_change=0.0), np.zeros(3),
+                         nbr_scale)
+    rng = np.random.default_rng(seed)
+    frames = [np.nan_to_num(PF.frame_image(Rt, j)) + np.nan_to_num(PF.frame_image(Rn, j)) + rng.normal(size=(NY, NX))
+              for j in range(3)]
+
+    def load(groups, bkg_overrides=None, science=None, pre_bkgsub=False, **kw):
+        ov = (bkg_overrides or [None])[0] or {}
+        ex = T._exposures(src_y=0.0)
+        for k, e in enumerate(ex):
+            want = ov.get(str(k + 1))
+            if want is not None:
+                e.partners = [j for j in range(3) if j + 1 in want] or None
+            if e.partners is not None:
+                e.diff = frames[k] - np.mean([frames[j] for j in e.partners], axis=0)
+            e.var = np.ones((NY, NX))
+        return ex
+    return load, Rt
 
 
-def test_auto_override_toml_roundtrip(tmp_path):
+def test_preview_shows_what_the_proposal_changes(tmp_path, monkeypatch):
+    """A neighbour one shutter above an equally bright target: its copies through the
+    partners are subtracted from the target's rows in nods 1 and 3, so the spectrum with
+    every nod as background reads low; with the proposed nods it is back near the truth,
+    with a larger error (fewer background nods). The figure marks the dropped copies."""
+    from campfire_pipeline.nirspec import profile_product as PP
+    from campfire_pipeline.nirspec import plots
+    load, Rt = _frames_with_neighbour(30.0, 30.0, MSA_SLIT_PITCH)
+    monkeypatch.setattr(PF, 'load_source', load)
+    raw = load([['a', 'b', 'c']])
+    R = PF.fit_fixed(exps=raw, shape=dict(centre_offset=0.0, width=0.1, drift=0.0, width_change=0.0), chromatic=False)
+    S = NS.run(R, dchi2_min=60.0)
+    assert S.proposals == {ROOT: {'1': [3], '3': [2]}}
+    pv = PP.neighbour_preview([['a', 'b', 'c']], raw, R, None, 1, [e.name for e in raw], {}, S.proposals, S.delta)
+    assert pv is not None
+    truth = np.mean(np.interp(pv['lam'], Rt.lam, Rt.flux))
+    now, prop = np.nanmean(pv['now'][0]), np.nanmean(pv['proposed'][0])
+    assert abs(prop / truth - 1) < 0.5 * abs(now / truth - 1)
+    assert np.nanmedian(pv['proposed'][1]) > np.nanmedian(pv['now'][1])
+    nod1 = next(f for f in pv['frames'] if f['nod'] == 1)
+    assert {n: d for n, _, d in nod1['copies']} == {2: True, 3: False}
+    out = tmp_path / 'p.pdf'
+    plots.plot_neighbour_proposal(str(out), 1, [('obs_prism_1', dict(S.__dict__, preview=pv))])
+    assert out.stat().st_size > 0
+
+
+def test_proposals_already_in_force_are_left_out():
+    """Nod 1 already subtracts only nod 3 (e.g. a catalogued neighbour's override): that
+    part of the proposal is dropped, nod 3's stays."""
+    exps = T._exposures(src_y=0.0)
+    exps[0].partners = [2]
+    S = NS.ScanResult(detected=True, delta=1.15, proposals={ROOT: {'1': [3], '3': [2]}})
+    assert S.drop_in_force(exps) == 1
+    assert S.proposals == {ROOT: {'3': [2]}}
+    exps[2].partners = [1]
+    S.drop_in_force(exps)
+    assert S.proposals == {}
+
+
+def test_preview_needs_the_frames_before_subtraction(monkeypatch):
+    """When the loader cannot rebuild the differences (it returns the live partners),
+    there is no preview rather than a figure of two identical fits."""
+    from campfire_pipeline.nirspec import profile_product as PP
+    load, _ = _frames_with_neighbour(30.0, 30.0, MSA_SLIT_PITCH)
+    raw = load([['a', 'b', 'c']])
+    monkeypatch.setattr(PF, 'load_source', lambda groups, bkg_overrides=None, **kw: load(groups))
+    R = PF.fit_fixed(exps=raw, shape=dict(centre_offset=0.0, width=0.1, drift=0.0, width_change=0.0), chromatic=False)
+    assert PP.neighbour_preview([['a', 'b', 'c']], raw, R, None, 1, [e.name for e in raw], {},
+                                {ROOT: {'1': [3]}}, MSA_SLIT_PITCH) is None
+
+
+def test_proposals_file_and_figures(tmp_path, monkeypatch):
+    """The proposed file: entries of the re-run sources replaced, others kept; a figure
+    per proposed source with a preview, and a stale figure of a re-run source removed."""
     o = _obs(tmp_path)
-    o.auto_bkg_override_file  # property exists
-    (tmp_path / 'nodded_background_overrides_auto.toml').write_text(
+    o.workspace_dir = str(tmp_path)
+    drawn = []
+    monkeypatch.setattr('campfire_pipeline.nirspec.plots.plot_neighbour_proposal',
+                        lambda path, sid, prods: (drawn.append((sid, [p for p, _ in prods])), open(path, 'w').close()))
+    (tmp_path / 'nodded_background_overrides_proposed.toml').write_text(
         f'[{ROOT}]\n    7 = {{1 = [2]}}\n    9 = {{2 = [3]}}\n')
-    results = [dict(source_id=7, scan=dict(detected=True, delta=1.15, dchi2=120.0,
-                                           proposals={ROOT: {'1': [3], '3': [2]}}, unresolved=[])),
-               dict(source_id=11, scan=dict(detected=False, delta=0.0, dchi2=3.0, proposals={}, unresolved=[]))]
-    S3.write_scan_proposals(o, results, run_sids={7, 11}, action='auto_override')
-    d = toml.load(tmp_path / 'nodded_background_overrides_auto.toml')
+    stale = tmp_path / 'test_obs_11_neighbor.pdf'
+    stale.write_text('old')
+    results = [dict(source_id=7, product='o_prism_7', scan=dict(detected=True, delta=1.15, dchi2=120.0,
+                    proposals={ROOT: {'1': [3], '3': [2]}}, unresolved=[], preview={'frames': []})),
+               dict(source_id=11, product='o_prism_11', scan=dict(detected=False, delta=0.0, dchi2=3.0, proposals={},
+                    unresolved=[]))]
+    S3.write_scan_proposals(o, results, run_sids={7, 11})
+    d = toml.load(tmp_path / 'nodded_background_overrides_proposed.toml')
     assert d[ROOT]['7'] == {'1': [3], '3': [2]}           # replaced
     assert d[ROOT]['9'] == {'2': [3]}                     # not re-run: kept
     assert '11' not in d[ROOT]
-    eff, from_auto = o.effective_bkg_overrides()
-    assert eff[ROOT]['7'] == {'1': [3], '3': [2]}
-    S3.write_scan_proposals(o, results, run_sids={7}, action='report_only')
-    assert toml.load(tmp_path / 'nodded_background_overrides_proposed.toml')[ROOT]['7'] == {'1': [3], '3': [2]}
-    with pytest.raises(ValueError):
-        S3.write_scan_proposals(o, results, run_sids={7}, action='apply')
+    assert drawn == [(7, ['o_prism_7'])]
+    assert (tmp_path / 'test_obs_7_neighbor.pdf').exists() and not stale.exists()
 
 
 def test_suppress_keeps_detection_withholds_proposals():

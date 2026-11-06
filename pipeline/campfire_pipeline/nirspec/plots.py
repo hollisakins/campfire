@@ -808,6 +808,143 @@ def plot_bkg_subtraction(rate_file, image_data, mask, *,
 # Extraction profile comparison (from stage3)
 # ---------------------------------------------------------------------------
 
+def _mean_snr(flux, err):
+    """Inverse-variance mean of a spectrum and that mean over its error."""
+    ok = np.isfinite(flux) & np.isfinite(err) & (err > 0)
+    if not ok.any():
+        return np.nan, np.nan
+    w = 1.0 / err[ok] ** 2
+    m = np.sum(w * flux[ok]) / np.sum(w)
+    return m, m * np.sqrt(np.sum(w))
+
+
+def _bin_columns(a, n):
+    """Mean over runs of ``n`` columns (wavelength), NaN-aware."""
+    nx = a.shape[1] // n * n
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+        return np.nanmean(a[:, :nx].reshape(a.shape[0], -1, n), axis=2)
+
+
+def _binned_significance(d, v, n):
+    """Sum of ``d`` over runs of ``n`` columns over the square root of the summed variance ``v``."""
+    ok = np.isfinite(d) & np.isfinite(v) & (v > 0)
+    nx = d.shape[1] // n * n
+    s = np.where(ok, d, 0.0)[:, :nx].reshape(d.shape[0], -1, n).sum(axis=2)
+    w = np.where(ok, v, 0.0)[:, :nx].reshape(d.shape[0], -1, n).sum(axis=2)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.where(w > 0, s / np.sqrt(w), np.nan)
+
+
+def _slit_profile(values, var, y, step=0.08):
+    """Inverse-variance mean over wavelength of ``values`` in bins of slit position ``y``:
+    (bin centres, means)."""
+    ok = np.isfinite(values) & np.isfinite(y) & np.isfinite(var) & (var > 0)
+    if not ok.any():
+        return np.array([]), np.array([])
+    edges = np.arange(np.floor(y[ok].min() / step) * step, y[ok].max() + step, step)
+    s, _ = np.histogram(y[ok], bins=edges, weights=values[ok] / var[ok])
+    w, _ = np.histogram(y[ok], bins=edges, weights=1.0 / var[ok])
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return 0.5 * (edges[1:] + edges[:-1]), np.where(w > 0, s / w, np.nan)
+
+
+def _binned_spectrum(lam, flux, err, n=8):
+    """Inverse-variance means over runs of ``n`` points."""
+    ok = np.isfinite(flux) & np.isfinite(err) & (err > 0)
+    m = lam.size // n * n
+    w = np.where(ok, 1.0 / np.where(ok, err, 1.0) ** 2, 0.0)[:m].reshape(-1, n)
+    f = np.where(ok, flux, 0.0)[:m].reshape(-1, n)
+    sw = w.sum(axis=1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return (lam[:m].reshape(-1, n).mean(axis=1), np.where(sw > 0, (w * f).sum(axis=1) / sw, np.nan),
+                np.where(sw > 0, 1.0 / np.sqrt(sw), np.nan))
+
+
+def plot_neighbour_proposal(out_path, source_id, products):
+    """Review figure of a source's same-slitlet neighbour proposal (``stage3.write_scan_proposals``).
+
+    ``products``: [(product name, scan dict with ``preview`` from
+    ``profile_product.neighbour_preview``)]. Per product and science nod: the nod
+    difference (data) and the difference less the target's model (residual), binned
+    along the wavelength and shown over their noise (-3 to +3); to their right their
+    noise-weighted mean over wavelength along the slit, with the target's model. Lines
+    mark the target (dotted), the
+    neighbour where the scan found it (orange) and its negative copies from each
+    background nod (dashed; red for a nod the proposal drops, blue for one it keeps).
+    Then the spectrum fitted with the background nods subtracted now and with the
+    proposed ones, on the same pixels and at the same shape."""
+    n_rows = sum(2 * len(s['preview']['frames']) + 3 for _, s in products)
+    fig = plt.figure(figsize=(9, 0.42 * n_rows + 0.8))
+    gs = gridspec.GridSpec(n_rows, 2, width_ratios=[4, 1], hspace=0.6, wspace=0.08)
+    row = 0
+    for product, s in products:
+        pv = s['preview']
+        frames = pv['frames']
+        nb = 8
+        binned = [(_binned_significance(f['data'], f['var'], nb),
+                   _binned_significance(f['data'] - f['model'], f['var'], nb), _bin_columns(f['y'], nb))
+                  for f in frames]
+        for f, (db, rb, yb) in zip(frames, binned):
+            lines = [(f['target'], '0.2', ':'), (f['neighbour'], 'tab:orange', '-')]
+            lines += [(yc, 'tab:red' if dropped else 'tab:blue', '--') for _, yc, dropped in f['copies']]
+            for k, (img, what) in enumerate(((db, 'data / noise'), (rb, '(data - target model) / noise'))):
+                ax = fig.add_subplot(gs[row + k, 0])
+                ax.imshow(img, origin='lower', aspect='auto', cmap='Greys', vmin=-3, vmax=3,
+                          interpolation='nearest')
+                for level, color, ls in lines:
+                    if np.nanmin(yb) < level < np.nanmax(yb):
+                        ax.contour(np.nan_to_num(yb, nan=np.nanmax(yb) + 1), levels=[level], colors=[color],
+                                   linestyles=[ls], linewidths=0.8)
+                ax.text(0.003, 0.95, f"{f['root'][-5:]} nod {f['nod']}: {what}", transform=ax.transAxes,
+                        fontsize=5, va='top', fontname=_STYLE['fontname'],
+                        bbox=dict(facecolor='white', alpha=0.8, linewidth=0, pad=1))
+                ax.set_xticks([])
+                ax.set_yticks([])
+            ax = fig.add_subplot(gs[row:row + 2, 1])
+            yc, d = _slit_profile(f['data'], f['var'], f['y'])
+            _, m = _slit_profile(f['model'], f['var'], f['y'])
+            ax.step(yc, d, where='mid', color='k', lw=0.6, label='data')
+            ax.step(yc, m, where='mid', color='0.6', lw=0.6, label='target model')
+            ax.step(yc, d - m, where='mid', color='tab:purple', lw=0.6, label='data - model')
+            for level, color, ls in lines:
+                ax.axvline(level, color=color, ls=ls, lw=0.7)
+            ax.axhline(0, color='0.5', lw=0.4)
+            copies = ', '.join(f'{n}{" dropped" if dr else ""}' for n, _, dr in f['copies'])
+            ax.text(0.98, 0.95, f'background nods {copies}', transform=ax.transAxes, fontsize=4, ha='right',
+                    va='top', fontname=_STYLE['fontname'])
+            ax.tick_params(labelsize=4, direction='in', pad=1)
+            ax.set_yticks([])
+            if f is frames[0]:
+                ax.legend(fontsize=4, loc='lower left', frameon=False)
+            if f is frames[-1]:
+                ax.set_xlabel('slit position [slit units]', fontsize=5, labelpad=1)
+            row += 2
+        ax = fig.add_subplot(gs[row:row + 3, :])
+        row += 3
+        for key, color, label in (('now', 'k', 'background nods now'), ('proposed', 'tab:red', 'proposed nods')):
+            fl, er = pv[key]
+            m, snr = _mean_snr(fl, er)
+            lb, fb, eb = _binned_spectrum(pv['lam'], fl, er)
+            ax.step(lb, fb, where='mid', color=color, lw=0.7, label=f'{label}: mean {m:.3g}, S/N {snr:.1f}')
+            ax.fill_between(lb, fb - eb, fb + eb, step='mid', color=color, alpha=0.15, lw=0)
+        ax.axhline(0, color='0.5', lw=0.5)
+        ax.set_xlabel('wavelength [um]', fontsize=6)
+        ax.set_ylabel('flux (fit units)', fontsize=6)
+        ax.tick_params(labelsize=5)
+        ax.yaxis.get_offset_text().set_fontsize(5)
+        ax.legend(fontsize=5, loc='upper right')
+        ax.text(0.005, 0.97, f"{product}: neighbor at {s['delta']:+.2f} slit units from the target, chi2 drop "
+                f"{s['dchi2']:.0f}, PRISM scan {s.get('xdisp', 'single')}", transform=ax.transAxes, fontsize=5,
+                va='top', fontname=_STYLE['fontname'])
+        _style_axes(ax)
+    fig.suptitle(f'source {source_id}: same-slitlet neighbor proposal (target dotted, neighbor orange, its copies '
+                 f'dashed: red from a nod the proposal drops, blue kept)', fontsize=_STYLE['suptitle_fontsize'],
+                 fontname=_STYLE['fontname'])
+    fig.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+
 def plot_extraction_profiles(out_path, collapsed, profiles, x1d_start, x1d_stop, cen):
     """4-panel plot comparing extraction profiles against the collapsed spatial profile.
 

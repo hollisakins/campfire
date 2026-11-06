@@ -429,27 +429,18 @@ def combine(groups):
                  partners=base.partners, target_frac=max(tf) if tf else np.nan)
 
 
-def layer(effective, scan_nods, slitlet):
+def layer(hand, slitlet):
     """One source's overrides in one root, layered: a hand entry wins, then the
-    catalogued neighbours, then the neighbour scan's file. ``effective`` {nod (str):
-    nods} is the hand file over the scan's (``Observation.effective_bkg_overrides``),
-    ``scan_nods`` the nods of it that came from the scan, ``slitlet`` {nod (str):
-    (nods, reason)} from ``root_overrides``. Where the scan also changed a nod the
-    catalogue changed, the partners both keep are used (the catalogue's if none).
-    Returns (overrides {nod: nods}, automatic nods {nod}, reasons {nod: str})."""
+    catalogued neighbours. ``hand`` {nod (str): nods} is the source's entry of the hand
+    file, ``slitlet`` {nod (str): (nods, reason)} from ``root_overrides``. Returns
+    (overrides {nod: nods}, automatic nods {nod}, reasons {nod: str})."""
     out, auto, why = {}, set(), {}
-    for nod in sorted(set(effective) | set(slitlet), key=int):
-        if nod in effective and nod not in scan_nods:
-            out[nod], why[nod] = list(effective[nod]), 'hand'
-        elif nod in slitlet:
-            keep, reason = slitlet[nod]
-            if nod in effective:
-                both = [j for j in keep if j in effective[nod]]
-                keep, reason = (both, reason + '; scan') if both else (keep, reason)
-            out[nod], why[nod] = list(keep), reason
-            auto.add(nod)
+    for nod in sorted(set(hand) | set(slitlet), key=int):
+        if nod in hand:
+            out[nod], why[nod] = list(hand[nod]), 'hand'
         else:
-            out[nod], why[nod] = list(effective[nod]), 'scan'
+            keep, reason = slitlet[nod]
+            out[nod], why[nod] = list(keep), reason
             auto.add(nod)
     return out, auto, why
 

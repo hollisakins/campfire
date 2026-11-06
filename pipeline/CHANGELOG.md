@@ -80,6 +80,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   `contam_report`), `PFCMODE` reads `subtracted` (was `hybrid`), and `PFGATEM` and `PFROWS` are no
   longer written.
 
+- **NIRSpec stage 3: same-slitlet neighbor proposals are for review only, with a figure each.** The
+  scan's proposals always go to `reference/nirspec/<obs>/nodded_background_overrides_proposed.toml`
+  and are never applied: `scan_action` and the automatic override file
+  (`nodded_background_overrides_auto.toml`, which stage 2b used to apply) are removed. A proposal a
+  nod already follows (a hand override, or a catalogued neighbor's) is left out, so the file lists
+  only what would change. Each proposed source gets `<obs>_<id>_neighbor.pdf` in the workspace: per
+  nod its difference and residual over the noise, and their profile along the slit, with the target,
+  the neighbor and its copies from each background nod marked; and its spectrum fitted with the
+  background nods subtracted now and with the proposed ones (both rebuilt from the frames before
+  subtraction, on the same pixels at the same shape). Stage 3 ends with one log line giving the
+  number of proposals and the command that reruns those sources.
+
 - **NIRSpec: exposure sequences counted past 9 (`0410b`, `0410f`, ...) are found.** The
   activity of a JWST exposure sequence counts 1..9, a..z; the canonical-name pattern of
   `barshadow_calibration` (the master background's and the bar-shadow derivation's input

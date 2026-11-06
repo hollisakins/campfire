@@ -176,8 +176,7 @@ class FakeObs:
         self.directories_setup = True
         self.stuck_closed_shutters = None
 
-    def effective_bkg_overrides(self):
-        return {}, {}
+    bkg_overrides = {}
 
     def discover_files(self, ext='canonical', source_ids='all'):
         paths = sorted(p for p in os.listdir(self.workspace_dir) if p.startswith(ROOT) and p.endswith(f'_{SID}.fits'))

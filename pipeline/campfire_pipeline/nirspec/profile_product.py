@@ -88,6 +88,78 @@ def scan_input(exps, chain_result, maps, source_id):
     return PF.fit_fixed(model=M, shape=shape), share
 
 
+def partner_overrides(exps, n_groups):
+    """The background nods each exposure subtracts now, as override dicts (one per
+    background group, {nod (str): [nods]}; [] for an excluded nod)."""
+    from campfire_pipeline.nirspec import nod_scan as NS
+    out = [dict() for _ in range(n_groups)]
+    for e in exps:
+        out[e.group][str(NS._nod(e))] = [] if e.partners is None else sorted(NS._nod(exps[j]) for j in e.partners)
+    return out
+
+
+def neighbour_preview(groups, raw, chain_result, maps, source_id, science, stage_config, proposals, delta):
+    """What a scan proposal would change, for the review figure (``plots.plot_neighbour_proposal``).
+
+    The source is loaded twice from the frames before subtraction (``profile_fit.load_group``
+    with ``pre_bkgsub``), with the background nods it subtracts now and with the proposed
+    ones, and fitted at the chain's shape on the scan's pixels (``scan_input``), so the two
+    spectra differ only by the choice of nods. Returns a dict (spectra, and per science nod
+    of the current fit its nod difference, model and slit positions), or None when the
+    frames before subtraction are not there (a canonical stage 2b never subtracted)."""
+    from campfire_pipeline.nirspec import nod_scan as NS
+    from campfire_pipeline.nirspec import profile_fit as PF
+
+    now = partner_overrides(raw, len(groups))
+    prop = [dict(d) for d in now]
+    for e in raw:
+        want = (proposals.get(NS._root(e)) or {}).get(str(NS._nod(e)))
+        if want is not None:
+            prop[e.group][str(NS._nod(e))] = list(want)
+    fits_, loaded = {}, {}
+    for key, ov in (('now', now), ('proposed', prop)):
+        ex = PF.load_source(groups, bkg_overrides=ov, science=set(science), pre_bkgsub=True,
+                            **PF.load_options(stage_config))
+        if partner_overrides(ex, len(groups)) != ov:
+            return None                    # no frames before subtraction: the nods could not be changed
+        R, _ = scan_input(ex, chain_result, maps, source_id)
+        if R is None:
+            return None
+        fits_[key], loaded[key] = R, ex
+    R = fits_['now']
+    M = R.model
+    frames = []
+    for k, e in enumerate(M.exps):
+        if not (e.use_data and e.has_source) or e.partners is None:
+            continue
+        rows = np.any(np.isfinite(e.y), axis=1)
+        model = PF.model_frame(R, k, applied_pathloss=False, common=True)
+        nod = NS._nod(e)
+        kept = (proposals.get(NS._root(e)) or {}).get(str(nod))
+        copies = []
+        for j in e.partners:
+            # partner j's frame puts the neighbour where its own slit coordinate is src_y + delta;
+            # its slit frame moves with the nod, so that level is shifted into this nod's coordinates
+            x = M.exps[j]
+            with np.errstate(invalid='ignore'):
+                shift = float(np.nanmedian(e.y - x.y))
+            copies.append((NS._nod(x), float(x.src_y + delta + shift), kept is not None and NS._nod(x) not in kept))
+        frames.append(dict(
+            root=NS._root(e), nod=nod,
+            data=np.where(e.ok, e.diff, np.nan)[rows].astype(np.float32),
+            model=np.asarray(model)[rows].astype(np.float32),
+            var=np.asarray(M.diff_variance(k))[rows].astype(np.float32),
+            y=e.y[rows].astype(np.float32),
+            target=float(e.src_y + R.params['centre'] - R.params['centre_prior']),
+            neighbour=float(e.src_y + delta),
+            copies=copies))
+    return dict(lam=np.asarray(R.lam, np.float32),
+                now=(np.asarray(R.flux, np.float32), np.asarray(R.flux_err, np.float32)),
+                proposed=(np.asarray(fits_['proposed'].flux, np.float32),
+                          np.asarray(fits_['proposed'].flux_err, np.float32)),
+                frames=frames, grating=M.exps[0].grating)
+
+
 @dataclass
 class Analysis:
     """Everything one product's profile fit decided (for the writer and for diagnostics)."""
@@ -97,6 +169,7 @@ class Analysis:
     clean: dict = None
     contam_state: str = 'off'
     scan: object = None               # nod_scan.ScanResult
+    preview: dict = None              # neighbour_preview, when the scan proposes other background nods
 
 
 def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
@@ -200,8 +273,20 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
             S.suppress('target width on its bound')
         if not is_prism and prism_product and fl['scan_xdisp_tol'] >= 0:
             S.cross_check(read_scan(workspace_dir, prism_product), tol=fl['scan_xdisp_tol'])
+        if S.drop_in_force(raw):
+            log('neighbour scan: proposals already in force left out')
     TM.stop('scan', t_mark)
-    return Analysis(exps=exps, chain=C, prediction=P, clean=clean, contam_state=cstate, scan=S)
+    preview = None
+    if S is not None and S.proposals and groups:
+        with TM.step('scan_preview'):
+            try:
+                preview = neighbour_preview(groups, raw, C.result, maps, source_id, science, stage_config,
+                                            S.proposals, S.delta)
+                if preview is None:
+                    log('neighbour proposal: no preview (no frames before subtraction)')
+            except Exception as e:                   # noqa: BLE001 - a review figure must not fail the product
+                log(f'neighbour proposal preview failed ({type(e).__name__}: {e})')
+    return Analysis(exps=exps, chain=C, prediction=P, clean=clean, contam_state=cstate, scan=S, preview=preview)
 
 
 def read_scan(workspace_dir, product):
@@ -410,7 +495,8 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
                     is_prism=bool(is_prism), snr_det=float(C.snr_det), transfer=C.transfer,
                     scan=(None if S is None else dict(detected=S.detected, candidate=S.candidate, delta=S.delta,
                                                       dchi2=S.dchi2, proposals=S.proposals,
-                                                      unresolved=S.unresolved, xdisp=S.xdisp)),
+                                                      unresolved=S.unresolved, xdisp=S.xdisp,
+                                                      preview=A.preview)),
                     fallback=None)
     finally:
         if cleanup_crfs:

@@ -404,36 +404,10 @@ class Observation:
         return os.path.join(self.reference_dir, 'nodded_background_overrides.toml')
 
     @property
-    def auto_bkg_override_file(self):
-        """Automatic overrides from stage 3's same-slitlet neighbour scan
-        (``scan_action = "auto_override"``). Local only: never pushed or pulled."""
-        return os.path.join(self.reference_dir, 'nodded_background_overrides_auto.toml')
-
-    @property
     def proposed_bkg_override_file(self):
-        """Neighbour-scan proposals in report-only mode (never applied)."""
+        """Stage 3's same-slitlet neighbour-scan proposals (never applied; an entry is
+        used once copied into ``nodded_background_overrides.toml``). Local only."""
         return os.path.join(self.reference_dir, 'nodded_background_overrides_proposed.toml')
-
-    def effective_bkg_overrides(self):
-        """Hand overrides layered over the automatic ones: per (root, source, nod) a
-        hand entry wins (an empty hand list, excluding the nod, too). Returns
-        (overrides like ``bkg_overrides``, {(root, source id str): set of nods (str)
-        whose partners came from the automatic file})."""
-        hand = self.bkg_overrides
-        path = self.auto_bkg_override_file
-        if not os.path.exists(path):
-            return hand, {}
-        auto = toml.load(path)
-        out = {r: {s: dict(n) for s, n in d.items()} for r, d in hand.items()}
-        from_auto = {}
-        for root, d in auto.items():
-            for sid, nods in d.items():
-                cur = out.setdefault(root, {}).setdefault(str(sid), {})
-                for nod, use in nods.items():
-                    if str(nod) not in cur:
-                        cur[str(nod)] = list(use)
-                        from_auto.setdefault((root, str(sid)), set()).add(str(nod))
-        return out, from_auto
 
     @property
     def stuck_closed_shutters(self):
