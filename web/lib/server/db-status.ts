@@ -15,9 +15,10 @@ import { createServiceClient } from '@/lib/supabase/service';
  *
  * Probes are lazy and single-flight: a caller gets the last sample while it is
  * younger than PROBE_TTL_MS, otherwise it waits for one probe (bounded by
- * PROBE_TIMEOUT_MS) that concurrent callers share. A non-ok state is reported
- * only after BAD_SAMPLES consecutive bad samples, so one slow answer does not
- * raise the banner; a single good sample clears it.
+ * PROBE_TIMEOUT_MS) that concurrent callers share. Once the process has had a
+ * good sample, a non-ok state is reported only after BAD_SAMPLES consecutive
+ * bad samples, so one slow answer does not raise the banner; before that, the
+ * first bad sample counts (the deploy gate). A single good sample clears it.
  */
 
 export type DbState = 'ok' | 'degraded' | 'down';
@@ -50,6 +51,8 @@ interface Sample {
 
 let last: Sample | null = null;
 let consecutiveBad = 0;
+/** Has this process ever had a good sample? Until it has, nothing is delayed. */
+let everOk = false;
 let inflight: Promise<void> | null = null;
 
 /** Classify one probe answer. Exported for tests. */
@@ -72,12 +75,16 @@ async function probe(): Promise<void> {
   }
   const bad = classify(counts);
   consecutiveBad = bad ? consecutiveBad + 1 : 0;
+  if (!bad) everOk = true;
   last = { bad, at: Date.now() };
 }
 
 function current(): DbStatus {
   if (!last) return { state: 'ok', reason: null, checked_at: 0 };
-  const reported = consecutiveBad >= BAD_SAMPLES ? last.bad : null;
+  // The two-sample delay only absorbs a blip in a process that has worked: a
+  // fresh container whose first probe fails must not answer 200, because
+  // deploy.sh accepts the first healthy answer and would skip its rollback.
+  const reported = !everOk || consecutiveBad >= BAD_SAMPLES ? last.bad : null;
   return {
     state: reported === 'unreachable' ? 'down' : reported ? 'degraded' : 'ok',
     reason: reported,
@@ -99,6 +106,7 @@ export async function getDbStatus(): Promise<DbStatus> {
 export function resetDbStatus(): void {
   last = null;
   consecutiveBad = 0;
+  everOk = false;
   inflight = null;
 }
 

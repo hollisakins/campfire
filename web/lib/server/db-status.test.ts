@@ -76,8 +76,18 @@ describe('getDbStatus', () => {
   });
 
   it('reports down when the probe errors or times out', async () => {
+    await sample({ data: healthy, error: null });
     await sample({ data: null, error: { message: 'boom' } });
     expect(await sample('throw')).toMatchObject({ state: 'down', reason: 'unreachable' });
+  });
+
+  it('reports the first bad sample of a process that never had a good one (deploy gate)', async () => {
+    expect(await sample({ data: null, error: { message: 'no such function' } })).toMatchObject({
+      state: 'down',
+      reason: 'unreachable',
+    });
+    expect((await sample({ data: healthy, error: null })).state).toBe('ok');
+    expect((await sample({ data: walStall, error: null })).state).toBe('ok');
   });
 
   it('caches a sample for PROBE_TTL_MS and shares one probe between callers', async () => {
