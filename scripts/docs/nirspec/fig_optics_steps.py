@@ -141,18 +141,17 @@ axes[0].text(0.94, 0.93, 'closed\nshutter', ha='right', va='top', fontsize=8.5, 
 axes[-1].set_xlabel("position along the slit (arcsec; 0 = center of the source's shutter)")
 
 kx = axes[1].inset_axes([0.765, 0.47, 0.215, 0.36])                   # the kernel, inside step 2
-dist = np.abs(offs * O.SLIT)                                          # how far each shift moves the light
-s = np.linspace(0.0, 0.6, 241)
+step_as = (offs[1] - offs[0]) * O.SLIT                               # the pipeline's uniform grid of shifts
 for lam, color in zip(args.wavelengths, (C.WAVE_COLORS[0], C.WAVE_COLORS[-1])):
-    k = curves[lam]['kernel']                                         # on the pipeline's uniform grid, sum 1
-    beyond = np.array([k[dist > v].sum() for v in s])
-    kx.plot(s, np.maximum(beyond, 1e-5), color=color, lw=1.5)
+    k = curves[lam]['kernel'] / step_as                               # light per arcsec of shift, unit total
+    k = k / k.max()
+    kx.plot(offs * O.SLIT, np.maximum(k, 1e-5), color=color, lw=1.2)
 kx.set_yscale('log')
-kx.set_ylim(1e-3, 1.2)
-kx.set_xlim(0, 0.6)
+kx.set_ylim(3e-4, 1.5)
+kx.set_xlim(-0.5, 0.5)
 kx.tick_params(labelsize=7.5)
-kx.set_xlabel('x (arcsec)', fontsize=8, labelpad=1)
-kx.set_title('kernel: light shifted beyond x', fontsize=8.5, loc='left')
+kx.set_xlabel('shift (arcsec)', fontsize=8, labelpad=1)
+kx.set_title(f'kernel ({args.detector})', fontsize=8.5, loc='left')
 kx.patch.set_facecolor('white')
 fig.suptitle(f'A point source {args.position * O.PITCH_AS:.2f}" ({args.position:g} of a shutter pitch) from the '
              'center of the middle shutter of a three-shutter slitlet', x=0.01, ha='left', fontsize=10,
