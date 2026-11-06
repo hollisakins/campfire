@@ -9,7 +9,8 @@
 # - `depends_on` names the CRDS reference files the calibration was fitted against or whose layout it
 #   assumes. `crds_refs.check_references` warns when an exposure was reduced with another file;
 #   `cfpipe nirspec crds-compare` measures the new file against the model.
-# - `switch` is the setting that hands the replaced part back to jwst's reference.
+# - `switch` is the setting that hands the replaced part back to jwst's reference, or "none: ..." for a
+#   calibration that is always used.
 # The boundary itself (the only code that reads these references) is nirspec/crds_refs.py.
 
 [optics]
@@ -58,7 +59,7 @@ inputs = "empty shutters of ember_cosmos_p1, p2, p3, p5, p6, ember_egs_p1, ember
 derived = "2026-10-30"
 depends_on = { barshadow = "jwst_nirspec_barshadow_0006.fits" }
 assumes = "the reference's layout (DATA1X1 / DATA1X3, 1001 rows over +-1 pitch), copied from the template"
-switch = "[nirspec.stage2] empirical_barshadow = false"
+switch = "none: always used (2026-11-06); a grating without a table (the H gratings) takes the CRDS reference"
 code = ["nirspec/barshadow_calibration.py", "data/Generate_Barshadow_Cals.py"]
 tests = ["tests/test_barshadow_calibration.py"]
 record = "docs/design-nirspec-master-background.md section 9"
@@ -74,7 +75,7 @@ whose amplitude is a cubic in wavelength, held past the data"""
 derived = "2026-11-06"
 depends_on = { barshadow = "jwst_nirspec_barshadow_0003.fits" }
 assumes = "the reference's layout (DATA1X1 / DATA1X3, 1001 rows over +-1 pitch, 101 columns as jwst builds them); CDELT1 is ours"
-switch = "[nirspec.stage2] empirical_barshadow = false"
+switch = "none: always used (2026-11-06); a grating without a table (the H gratings) takes the CRDS reference"
 code = ["nirspec/barshadow_calibration.py", "data/Generate_Barshadow_Cals.py"]
 tests = ["tests/test_barshadow_calibration.py"]
 record = "docs/design-nirspec-master-background.md section 9"
@@ -90,7 +91,7 @@ whose amplitude is a cubic in wavelength, held past the data"""
 derived = "2026-11-06"
 depends_on = { barshadow = "jwst_nirspec_barshadow_0005.fits" }
 assumes = "the reference's layout (DATA1X1 / DATA1X3, 1001 rows over +-1 pitch, 101 columns as jwst builds them); CDELT1 is ours"
-switch = "[nirspec.stage2] empirical_barshadow = false"
+switch = "none: always used (2026-11-06); a grating without a table (the H gratings) takes the CRDS reference"
 code = ["nirspec/barshadow_calibration.py", "data/Generate_Barshadow_Cals.py"]
 tests = ["tests/test_barshadow_calibration.py"]
 record = "docs/design-nirspec-master-background.md section 9"
@@ -103,7 +104,7 @@ replaces = "jwst_nirspec_barshadow_0008.fits for the master background"
 inputs = "empty shutters of spurs_a2744, spurs_egs, spurs_gdn, spurs_gds (1780 shutters)"
 derived = "2026-10-30"
 depends_on = { barshadow = "jwst_nirspec_barshadow_0008.fits" }
-switch = "[nirspec.stage2] empirical_barshadow = false"
+switch = "none: always used (2026-11-06); a grating without a table (the H gratings) takes the CRDS reference"
 code = ["nirspec/barshadow_calibration.py", "data/Generate_Barshadow_Cals.py"]
 tests = ["tests/test_barshadow_calibration.py"]
 record = "docs/design-nirspec-master-background.md section 9"

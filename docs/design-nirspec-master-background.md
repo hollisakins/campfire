@@ -35,6 +35,20 @@ table of the metadata program page through `get_program_exposures()` (one row pe
 master background only which one the exposure uses, combined or its own), and the admin rate review
 draws the rate, the 2-D master background or their difference on one display range.
 
+**Configuration (2026-11-06, Hollis, release plan phase 1):** the master background's settings
+are fixed in the code (`master_bkg.SETTINGS`, the values below in §4 / §9, recorded in each
+product's header); the config keeps `master_bkg_plot` (the QA PDFs) and `detect_stuck_shutters`.
+"30 master bkg thresholds is a *ton*." `master_bkg_write_2d` is not one of the two because no
+master background exists without `MBKG2D`: stage 2b's neighbor test and background spectra and
+stage 3's master-background spectrum read it through `sky_for_slit` (lossless, ~3 MB per file).
+`master_bkg_min_shutters` is not either: under the pool rule an exposure with few clean shutters
+already takes its group's pool. With them went the paths only a switched-off option selected (no
+painting, failed-open shutters at full transmission, no pool, no quadrant scales, no model
+check). Stage 2a always runs one `Spec2Pipeline` per rate file (the per-source loop only as the
+fallback), always extracts the background slitlets, and gives them the empirical bar-shadow tables
+(CRDS for a grating without one); the options `single_call`, `extract_bkgslits` and
+`empirical_barshadow` are gone, and a config that sets any removed option is told once.
+
 **Fixed slits (2026-11-01, Hollis):** both steps skip a standalone fixed-slit exposure
 (`NRS_FIXEDSLIT`, no MSA metafile; `master_bkg_rate.has_master_background`): it has no empty
 shutters to build a master background from. Checked on `shellqs_j0217m0208` (6 rate files skipped,

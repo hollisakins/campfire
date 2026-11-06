@@ -30,6 +30,27 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Infrastructure
 
+- **NIRSpec stage 2 / master background: configuration audit (user decisions 2026-11-06).** Options
+  removed from `[nirspec.stage2]`, with the code paths only they selected:
+  - `single_call`: stage 2a always runs one `Spec2Pipeline` per rate file; the one-call-per-source
+    loop remains only as the automatic fallback when that call fails.
+  - `extract_bkgslits`: the background-only slitlets (`bkgslits/`) are always extracted.
+  - `empirical_barshadow`: stage 2a gives the background slitlets the empirical bar-shadow table of
+    every grating that has one (CRDS for the H gratings); `nirspec_calibrations.toml` lists the
+    tables with no switch. **Output change:** the default was off, so the `bkgslits/` files' SCI
+    changes (CRDS → empirical shadow divided out). The master background is unchanged: it multiplies
+    back whichever shadow jwst applied (the slit's `BARSHADOW`), and the `bkgslits/` files are
+    regenerable intermediates, never deployed.
+  - 29 of the 30 `master_bkg_*` settings move to `master_bkg.SETTINGS` with their comments; only
+    `master_bkg_plot` (the QA PDFs) stays in the config, and `detect_stuck_shutters` stays. The
+    switched-off paths go: no master background without the painted `MBKG2D` (`write_2d`; stage 2b
+    and stage 3 read it), failed-open shutters always at their measured transmission
+    (`failed_open_scale = 'full'`), always the pool rule (`prefer_pool`), the quadrant scales, and
+    the `jwst_backgrounds` comparison whenever it is installed (`model_check`). Values are the old
+    defaults, so no product changes.
+  - A config that still sets a removed option is told once that it has no effect
+    (`config.REMOVED_OPTIONS`).
+
 - **NIRSpec: an explicit boundary with jwst's path-loss and bar-shadow references.** CAMPFIRE's own
   MSA calibrations replace parts of those two CRDS references; the boundary is now one module and one
   file. `nirspec/crds_refs.py` is the only code that reads either reference or interprets what jwst
