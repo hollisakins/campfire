@@ -56,12 +56,20 @@ export const markdownComponents: Components = {
   h3: anchoredHeading('h3', 'text-xl font-semibold text-text-primary mt-6 mb-3'),
   h4: anchoredHeading('h4', 'text-lg font-semibold text-text-primary mt-4 mb-2'),
 
-  // Paragraphs
-  p: ({ children }) => (
-    <p className="text-text-primary leading-7 mb-4">
-      {children}
-    </p>
-  ),
+  // Paragraphs. A paragraph that holds only images (a standalone figure in the markdown) renders without
+  // the <p>: DocImage draws a <figure> with a <figcaption>, which HTML does not allow inside a <p>.
+  p: ({ node, children }) => {
+    const kids = node?.children ?? [];
+    const onlyImages = kids.length > 0 && kids.every(
+      (c) => (c.type === 'element' && c.tagName === 'img') || (c.type === 'text' && !c.value.trim())
+    );
+    if (onlyImages) return <>{children}</>;
+    return (
+      <p className="text-text-primary leading-7 mb-4">
+        {children}
+      </p>
+    );
+  },
 
   // Lists
   ul: ({ children }) => (
