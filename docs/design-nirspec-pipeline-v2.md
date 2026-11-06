@@ -3380,7 +3380,15 @@ web. Pipeline code is local-only, so PR A changes nothing users see, provided it
 additive and today's web reads the v2 sidecars (both checked in review slice 1). PR B goes live
 at the switch-over.
 
-**Phase 0, freeze.** No new features on the branch, only fixes. Merge `origin/main`.
+**Phase 0, freeze.** No new features on the branch, only fixes. Merge `origin/main`: done
+2026-11-06 (no conflicts; the data-release reader role, `pull --dr`, `cite`, provenance and four
+migrations dated 2026-10-28/29, all before the branch's five). Tests after the merge: pipeline
+1013 passed, 8 failed; Python client 1175 passed, 1 failed. All nine fail the same way on
+`origin/main` alone (7 NIRCam `test_align_apply`, `test_linefit` program-slug check against the
+local `programs.toml`, `test_dr_publish::test_cli_json_prompts_stay_off_stdout`): fix on `main`,
+not here. Still to do in slice 1: rebuild the database from the merged migration chain and run
+the drift check and the SQL guards (`supabase db reset`, declarative sync), since the branch's
+migrations were generated before `main`'s four existed.
 
 **Phase 1, cleanup before review.** The configuration audit (every new or changed
 `[nirspec.*]` key and default; the opt-in paths not chosen removed: `contam_pass1 = "fixed"`,
