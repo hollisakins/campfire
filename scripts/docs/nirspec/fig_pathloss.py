@@ -32,6 +32,10 @@ p.add_argument('--disperser', default='prism', help='for jwst\'s bar shadow (the
 p.add_argument('--stars', default=None, help='fit_star_positions.py output: stars at several positions')
 p.add_argument('--max-srcx', type=float, default=0.2, help='stars: largest |SRCXPOS| (along the dispersion)')
 p.add_argument('--min-snr', type=float, default=30.0, help='stars: smallest band S/N')
+p.add_argument('--per-total', action='store_true',
+               help='divide by all of the source\'s light instead of the light on the open shutters, so the light '
+                    'falling on the bars counts as lost (uniform light: per slitlet footprint, one full shutter '
+                    'pitch in both directions); written as pathloss_total.png')
 args = p.parse_args()
 C.setup_root(args.root)
 
@@ -66,6 +70,8 @@ open_half = O.H_OPEN / O.PITCH_AS                 # pitches
 pos = np.linspace(-open_half, open_half, 121)     # source position across the open part, pitches
 centres_slit = [k * O.PITCH_AS / O.SLIT for k in mask]
 tx = np.asarray(model.x_transmission_table(), float)
+# --per-total, uniform light: the open share of the slitlet's footprint (open length over pitch, both directions)
+OPEN_SHARE = (2 * open_half) * (2 * O.X_HALF / O.X_PITCH) if args.per_total else 1.0
 
 
 def band_lams(band, n=7):
@@ -100,11 +106,13 @@ def model_curve(wl, fwhm, where=pos):
         i = int(np.argmin(np.abs(O.LAM - wl)))
         t_y = prof[i].sum() / O.DY_ROW * (O.Y[1] - O.Y[0]) / 3.0
         t_x = np.interp(wl, O.LAM, tx.sum(axis=1)) * (O.XC[1] - O.XC[0]) / (2 * O.X_HALF)
-        return np.full(where.size, t_y * t_x)
+        return np.full(where.size, t_y * t_x * OPEN_SHARE)
     w = fwhm / 2.355 / O.SLIT
     t_y = model.transmission(mask, lam, c, np.full(where.size, w))
     t_x0 = float(np.interp(wl, O.LAM, tx[:, int(np.argmin(np.abs(O.XC)))]))
     r_x = model.x_extended_ratio(np.array([wl]), 0.0, np.array([max(w, 1e-6)]))[0] if w > 0 else 1.0
+    if args.per_total:
+        return t_y * t_x0 * r_x
     g_y = inside(c, w, 0.5, centres_slit)
     g_x = float(inside(0.0, w * O.SLIT, O.X_HALF, [0.0])) if w > 0 else 1.0
     return t_y * t_x0 * r_x / (g_y * g_x)
@@ -120,7 +128,7 @@ def band_curves(band, fwhm):
         m.append(scale * model_curve(wl, fwhm))
         jp.append(np.interp(pos, pc.y, pc.cube[j, :, ix]))
         ju.append(float(np.interp(wl, uni_lam, uni_val)) * mean_barshadow(wl, bs_table) * JWST_APERTURE_W
-                  / (2 * O.X_HALF))
+                  / (2 * O.X_HALF) * OPEN_SHARE)
     return np.mean(m, axis=0), np.mean(jp, axis=0), float(np.mean(ju))
 
 
@@ -203,12 +211,13 @@ for row, (band, color) in enumerate(zip(BANDS, row_colors)):
         if col in (0, len(cols) - 1):
             ax.legend(loc='lower center', fontsize=7.2)
         ax.set_xlim(-open_half, open_half)
-    axes[row, 0].set_ylabel(f'{band[0]:g}-{band[1]:g} µm\n\nlight reaching the detector /\nlight on the open shutters')
+    denominator = "all of the source's light" if args.per_total else 'light on the open shutters'
+    axes[row, 0].set_ylabel(f'{band[0]:g}-{band[1]:g} µm\n\nlight reaching the detector /\n{denominator}')
     axes[row, 0].yaxis.label.set_color(color)
 for ax in axes[-1]:
     ax.set_xlabel('position along the slit\n(shutter pitches)')
 for row in range(len(BANDS)):
-    axes[row, 0].set_ylim(0.3, 1.15)
+    axes[row, 0].set_ylim(0.0 if args.per_total else 0.3, 1.15)
 fig.suptitle(f'The light the MSA lets through, from a point source to uniform light (jwst references: {ref}, '
              f'{bs_name})', x=0.01, ha='left', fontsize=10, color=C.MUTED)
-C.save(fig, args, 'pathloss.png')
+C.save(fig, args, 'pathloss_total.png' if args.per_total else 'pathloss.png')
