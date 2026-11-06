@@ -14459,6 +14459,42 @@ COMMENT ON FUNCTION public.dr_program_roster(text, text[]) IS 'The per-program r
 REVOKE ALL ON FUNCTION public.dr_program_roster(text, text[]) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.dr_program_roster(text, text[]) TO service_role;
 
+-- db_stall_status(): is the database stuck on its disk or on locks? Read by
+-- the web's status probe (web/lib/server/db-status.ts) behind /api/health and
+-- the site-wide degraded banner. A READ on purpose: during the 2026-11-06
+-- Jetstream2 volume stall reads were served from cache while every COMMIT
+-- waited minutes on the WAL fsync, so a write probe would have hung and held
+-- a PostgREST connection per attempt, while this one sees the waiters. Ages
+-- are since the statement started (a COMMIT stuck on the flush ages from the
+-- COMMIT), counted from 5 s for WAL waits and 30 s for lock waits; the web
+-- decides what is degraded. SECURITY DEFINER so the owner's pg_read_all_stats
+-- sees every role's wait events; service_role only.
+CREATE OR REPLACE FUNCTION public.db_stall_status()
+RETURNS jsonb
+LANGUAGE sql
+STABLE SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+  SELECT jsonb_build_object(
+           'wal_waiters', count(*) FILTER (WHERE s.wal AND s.age_s >= 5),
+           'wal_wait_s', COALESCE(round(max(s.age_s) FILTER (WHERE s.wal)), 0),
+           'lock_waiters', count(*) FILTER (WHERE s.lck AND s.age_s >= 30),
+           'lock_wait_s', COALESCE(round(max(s.age_s) FILTER (WHERE s.lck)), 0))
+  FROM (SELECT extract(epoch FROM now() - a.state_change) AS age_s,
+               (a.wait_event_type = 'IO' AND a.wait_event IN ('WalSync', 'WalWrite', 'WalInitSync', 'WalInitWrite'))
+                 OR (a.wait_event_type = 'LWLock' AND a.wait_event IN ('WALWrite', 'WALInsert')) AS wal,
+               a.wait_event_type = 'Lock' AS lck
+        FROM pg_stat_activity a
+        WHERE a.state = 'active'
+          AND a.backend_type = 'client backend'
+          AND a.pid <> pg_backend_pid()) s;
+$$;
+
+COMMENT ON FUNCTION public.db_stall_status() IS 'Backends stuck on the WAL flush (>= 5 s) or on a lock (>= 30 s), with the oldest wait of each, for the web status probe behind /api/health and the degraded banner. A read, so it answers while commits hang on a stalled disk.';
+
+REVOKE ALL ON FUNCTION public.db_stall_status() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.db_stall_status() TO service_role;
+
 
 REVOKE ALL ON FUNCTION public.update_api_key_last_used(key_hash_input text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.validate_api_key(key_hash_input text) FROM PUBLIC, anon;
