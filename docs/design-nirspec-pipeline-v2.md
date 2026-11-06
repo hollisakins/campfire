@@ -3320,8 +3320,8 @@ the change log (10).
 | Item | Owner |
 |---|---|
 | Stage 2's per-source work: profile one stage-2b group and one rectification first (p1: rectification 25 min, stage 2b about 60 min of 3 h 14 min); candidates: rectify once instead of in 2a and 2b, invert the path loss arithmetically, batch per exposure | extraction session |
-| Retire the `tracemaps/` working copy once pass-1 validity keys on the rate files | extraction session |
-| Turn the scratch validation scripts (the NGC 2506 check, the 1133 scan, the bar-shadow model comparison) into `optics_calibration` subcommands | extraction session |
+| Retire the `tracemaps/` working copy once pass-1 validity keys on the rate files. Low value as it stands (12 MB on p1; one staleness rule): reading the maps straight from the rate files needs the stuck list in four consumers (joint first pass, products, master-background spectrum, stage 3), and the jwst-built maps of rate files reduced before 2026-11-01 still need the folder unless every observation is rerun from stage 1 | extraction session (user: whether old rate files are always rerun) |
+| Run the new checks on the shipped model: `visits` + `repeat` on NGC 2506 (check 1, y) and on 1133 by background group (x; refits `x_loss` with 1133) | extraction session, after the p1 run |
 
 ---
 
@@ -3447,4 +3447,9 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
 - **2026-11-06.** Section 3.7 (and the status row in section 1): the kernel refit with the bar
   offsets, the exact edges and 1133 included; why weighting by pixel let a few 1133 stars with a
   neighbor set the wing, the per-star weighting, and the shipped model `2026.11-r8`. Section 6:
-  the p1 end-to-end check now has to be on `FIT_VERSION` 8 and `2026.11-r8`.
+  the p1 end-to-end check now has to be on `FIT_VERSION` 8 and `2026.11-r8` (stage 3 rerun started,
+  the `FIT_VERSION` 7 products kept in `extraction-v2/p1_fv7`). Later: the scratch checks became
+  `optics_calibration` steps (`score --groups`, `compare`, `visits`, `repeat`, `barshadow`; 0e5202de):
+  the per-dataset score and the comparison reproduce the scratch numbers, and the shipped model's
+  uniform light misses the empirical bar-shadow tables by a median 0.0176 (PRISM) and 0.0190
+  (G395M) rms on the exact-edge tables; the `tracemaps/` item is held (section 6).
