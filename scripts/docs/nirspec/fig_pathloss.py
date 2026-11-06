@@ -26,7 +26,7 @@ import common as C
 
 p = C.parser(__doc__.splitlines()[0], obs=False)
 p.add_argument('--bands', nargs='+', default=['0.8:1.2', '4.5:5.3'], help='µm ranges lo:hi, one per row')
-p.add_argument('--sizes', type=float, nargs='+', default=[0.0, 0.1, 0.3, 1.0],
+p.add_argument('--sizes', type=float, nargs='+', default=[0.0, 0.05, 0.2],
                help='source FWHM in arcsec (0 = a point); uniform light is added as the last column')
 p.add_argument('--disperser', default='prism', help='for jwst\'s bar shadow (the uniform reference\'s profile)')
 p.add_argument('--stars', default=None, help='fit_star_positions.py output: stars at several positions')
