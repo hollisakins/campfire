@@ -6,14 +6,15 @@ the light a source of any size passes, so every galaxy gets its own correction, 
 
 Each panel: a round Gaussian source of one size (columns, from a point to uniform light) in one wavelength
 band (rows), moved along the slit across the open part of the middle shutter of a three-shutter slitlet. The
-curve is the light that reaches the detector over the light that falls on the open shutters (the light
-the shutter edges and the spectrograph's pupil stop lose; the light falling on the bars is the source's
-geometry, not the optics), averaged over the band. One scale for every size in a band: the model is set to
-jwst's point-source value for a point at the shutter center, the only place the pipeline takes its level
-from jwst. jwst's two references are drawn in the end columns on the same footing: the point reference as
-it is; the uniform reference, which is a surface brightness at the shutter center on jwst's aperture area,
-times jwst's own bar shadow integrated over every row of the slitlet and divided by the open length, and
-the ratio of the two aperture widths.
+curve is the light that reaches the detector over all of the source's light (lost on the bars, at the
+shutter edges and at the spectrograph's pupil stop), averaged over the band; for uniform light, over the light
+falling on the slitlet's footprint, one full shutter pitch in both directions. ``--per-open-shutters`` divides
+by the light falling on the open shutters instead (the bars then count as geometry, not loss). One scale for
+every size in a band: the model is set to jwst's point-source value for a point at the shutter center, the
+only place the pipeline takes its level from jwst. jwst's two references are drawn in the end columns on the
+same footing: the point reference as it is; the uniform reference, which is a surface brightness at the
+shutter center on jwst's aperture area, times jwst's own bar shadow integrated over every row of the slitlet
+and divided by the open length, the ratio of the two aperture widths, and the open share of the footprint.
 
 With ``--stars`` (from ``fit_star_positions.py``), the point-source column also shows calibration stars seen
 at several positions: each visit's light relative to the same star's most central visit (the model's
@@ -32,11 +33,11 @@ p.add_argument('--disperser', default='prism', help='for jwst\'s bar shadow (the
 p.add_argument('--stars', default=None, help='fit_star_positions.py output: stars at several positions')
 p.add_argument('--max-srcx', type=float, default=0.2, help='stars: largest |SRCXPOS| (along the dispersion)')
 p.add_argument('--min-snr', type=float, default=30.0, help='stars: smallest band S/N')
-p.add_argument('--per-total', action='store_true',
-               help='divide by all of the source\'s light instead of the light on the open shutters, so the light '
-                    'falling on the bars counts as lost (uniform light: per slitlet footprint, one full shutter '
-                    'pitch in both directions); written as pathloss_total.png')
+p.add_argument('--per-open-shutters', action='store_true',
+               help='divide by the light falling on the open shutters instead of all of the source\'s light (the '
+                    'bars then count as geometry, not loss); written as pathloss_open.png')
 args = p.parse_args()
+args.per_total = not args.per_open_shutters
 C.setup_root(args.root)
 
 import json                                                           # noqa: E402
@@ -220,4 +221,4 @@ for row in range(len(BANDS)):
     axes[row, 0].set_ylim(0.0 if args.per_total else 0.3, 1.15)
 fig.suptitle(f'The light the MSA lets through, from a point source to uniform light (jwst references: {ref}, '
              f'{bs_name})', x=0.01, ha='left', fontsize=10, color=C.MUTED)
-C.save(fig, args, 'pathloss_total.png' if args.per_total else 'pathloss.png')
+C.save(fig, args, 'pathloss.png' if args.per_total else 'pathloss_open.png')
