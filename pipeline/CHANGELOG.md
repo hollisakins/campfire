@@ -560,7 +560,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   (`[nirspec.stage3].profile_fit`, now on by default).** `fnu` is the best spectrum
   (`EXTRACT`/`EXTRWHY`): the profile extraction (Gaussian galaxy x star-measured PSF fitted
   to every nod difference, target-shutter light; `profile_fit.py`), its shape from a gated
-  chain (own fit / PRISM shape / default; `profile_chain.py`). Other slitlets' light is
+  chain (own fit / PRISM shape / default; `profile_chain.py`). An own fit that ends on a
+  bound is kept only when the centre alone is on its bound and the fallback fits clearly
+  worse (a real large offset, flagged); a width or drift on its bound falls back (on p1 one
+  source, 629668, whose fit had run to the centre, width and drift bounds at once beside a
+  same-slitlet neighbour: `fnu_prof` 4.6 x its 3-pixel boxcar). Other slitlets' light is
   predicted in one pass from every source's pass-1 spectrum over per-exposure trace maps
   (`trace_overlap.py`, `profile_contam.py`), masked or subtracted for the shape fit and
   reported in 1-D as `fnu_contam`; `fnu` is not contamination-subtracted by default

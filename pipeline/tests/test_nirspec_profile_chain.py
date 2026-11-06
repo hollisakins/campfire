@@ -280,6 +280,18 @@ def test_bound_hit_detected_and_chain_keeps_own_when_fallback_is_worse():
     assert C.shape == 'own' and C.reason.startswith('bound_kept')
 
 
+def test_width_on_its_bound_falls_back_even_when_the_fallback_is_worse():
+    """A bright source wider than the width bound: the own fit ends on the width bound and
+    beats the default shape by far, but a width (or drift) on its bound is the fit reaching
+    for other light, not a real offset, so the chain falls back (p1 629668; user, 2026-11-06)."""
+    exps = T._exposures(src_y=0.0)
+    _fill(exps, dict(centre_offset=0.0, width=0.35), 60.0, seed=8)
+    C = PC.choose_shape(exps, _cfg(bound_width_max=0.2), is_prism=True)
+    assert C.bound_bits & PF.BOUND_BITS['width']
+    assert C.chi2['default'] - C.chi2['own'] > 100            # the old rule would have kept it
+    assert C.shape == 'default' and C.reason.startswith('bound:') and 'width' in C.reason
+
+
 def test_bound_hit_falls_back_when_fallback_fits_as_well():
     exps = T._exposures(src_y=0.0)
     _fill(exps, dict(centre_offset=0.0, width=0.15), 4.0, seed=9)

@@ -345,10 +345,12 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
     elif srcy == 2:
         choice, reason = 'default', 'srcypos'
     elif bits:
-        # the own fit ended on a bound: fall back only if the fallback describes the data
-        # about as well; a real large offset keeps its own fit (flagged)
+        # the own fit ended on a bound. A real large offset keeps its own fit (flagged) when
+        # the fallback describes the data clearly worse, but only the centre may sit on its
+        # bound: a width or drift on its bound is the fit reaching for other light (a
+        # neighbour in the slitlet, p1 629668), so it falls back (user, 2026-11-06)
         R = cands['own']
-        if chi2[fallback] - chi2['own'] > _threshold(cfg, M, R):
+        if bits == PF.BOUND_BITS['centre'] and chi2[fallback] - chi2['own'] > _threshold(cfg, M, R):
             choice, reason = 'own', f'bound_kept:{_bit_names(bits)}'
         else:
             choice, reason = fallback, f'bound:{_bit_names(bits)}'
