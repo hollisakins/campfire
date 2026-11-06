@@ -3319,6 +3319,7 @@ the change log (10).
 | Item | Owner | Waiting on |
 |---|---|---|
 | The +2.5 % in-range offset and the +7 % G395M blue extension, remeasured on the current tables | MB session | |
+| spurs_gds (2026-11-06, MB session, `scratch/claude/e2e_review/`): the new G140M / G235M tables and the always-extended geometry pass (NRS1 in range -0.1 to +0.5 %; extensions +0.7 % G140M, +2.9 % G235M; past the calibrated range -0.5 / -1.1 %). NRS2 sits high by a constant +5 to +18e-5 DN/s (G395M +8 to +11e-5 at every background level; NRS1 < 4e-5), as in production: not from the branch, cancels in nod differences, touches the master-background spectrum and the 2-D only. Deferred (cause unknown; a leftover dark or pedestal would look like this). The slitlet-end rows (\|y\| 0.86-1.0 of the 1x1 table) rise in G140M's red (+0.035 of the open level), outside any open shutter; left. Stuck calls right (the same 3 shutters in all gratings; 867 from nod 1, 2003 from nods 1-2). Open: the stage-1 mask on an observation with the extension off (MB session) | MB session | |
 | Bimodal clean-shutter scales on G395M NRS1 (0.95 / 1.15) | MB session | |
 | Stuck fit on one G140M and one G235M observation; a plot for background-only slitlets; how to report partly open shutters (0.61-0.78) | extraction / MB session | |
 | Whether stage 2a's column removal reaches background-only slitlets | MB session | |
