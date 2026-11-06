@@ -313,6 +313,26 @@ REMOVED_OPTIONS = {
             'stuck_guard', 'error_floor', 'quadrant_scales', 'model_check', 'write_2d', 'same_spot_px',
             'failed_open_scale', 'failed_open_min_pixels', 'failed_open_nod_tol')},
     },
+    'stage3': {
+        'profile_fit_prism_mode': 'a grating keeps its own fit only when it beats the PRISM shape',
+        'profile_fit_rows': 'fnu_prof uses the x1d aperture rows',
+        'profile_fit_model_rows_frac': 'fnu_prof uses the x1d aperture rows',
+        'gate_noise': 'the gate divides by the clipped mean square of the residuals',
+        'profile_fit_partial': 'no partial own fits',
+        'gate_partial_snr_prism': 'no partial own fits',
+        'gate_partial_snr_grating': 'no partial own fits',
+        'contam_mode': "other slitlets' light is always subtracted before the shape fit",
+        'contam_dominance': 'the dominance ratio is recorded (PFDOMIN), never acted on',
+        'contam_dominance_apply': 'the dominance ratio is recorded (PFDOMIN), never acted on',
+        'contam_dominance_max': 'the dominance ratio is recorded (PFDOMIN), never acted on',
+        'contam_dominance_kappa': 'the dominance ratio is recorded (PFDOMIN), never acted on',
+        'contam_dominance_min_clean': 'the dominance ratio is recorded (PFDOMIN), never acted on',
+        'contam_1d': 'fnu_contam is reported, never subtracted from fnu',
+        'contam_1d_min_sigma': 'fnu_contam is reported, never subtracted from fnu',
+        'scan_noise': 'the scan always divides by its reduced chi2',
+        'scan_close_rule': 'a neighbour closer than scan_close is always withheld',
+        'scan_gain_rule': 'the proposal gain is recorded only',
+    },
 }
 _WARNED_REMOVED = set()
 

@@ -226,8 +226,8 @@ pixels instead.
 
 **Implementation.** `nirspec/barshadow_calibration.py`, `data/Generate_Barshadow_Cals.py`,
 tables `data/empirical_jwst_nirspec_barshadow_{prism,g140m,g235m,g395m}.fits`.
-`[nirspec.stage2].empirical_barshadow` (default off) passes a table to `BarShadowStep` for the
-background slitlets. The forward model's shutter: `profile_fit.SHUTTER`
+Stage 2 always passes a grating's table to `BarShadowStep` for the background slitlets (CRDS for
+the H gratings, which have none; no switch since 2026-11-06). The forward model's shutter: `profile_fit.SHUTTER`
 (`data/nirspec_shutter_transmission.json`, fitted by `psf_calibration.fit_shutter`).
 
 **Open.**
@@ -3074,8 +3074,8 @@ setting and measured by a command. The pieces:
   at the planned position, divided by the model's point transmission there, so a point source at its
   planned position gets jwst's loss exactly and the model only shapes the image);
   `slit_loss_x = "corrected"` (jwst's along the dispersion times `x_correction`) or `"jwst"`;
-  `bar_offset = "measure"` or `"off"`. `[nirspec.stage2] empirical_barshadow` for the master
-  background, as before. The product records `PFSLY`, `PFSLX`, `PFBAROFF` and `PFPLREF` (the path-loss
+  `bar_offset = "measure"` or `"off"`. The master background's empirical bar-shadow tables have
+  no switch (always used where one exists). The product records `PFSLY`, `PFSLX`, `PFBAROFF` and `PFPLREF` (the path-loss
   reference the model starts from). The defaults reproduce FIT_VERSION 7 exactly (two 1133 stars refit
   to the same chi2 to 0.1 before and after).
 - **A manifest.** `data/nirspec_calibrations.toml` lists every shipped calibration (the optics model,
@@ -3395,7 +3395,16 @@ migrations were generated before `main`'s four existed.
 
 **Phase 1, cleanup before review.** The configuration audit (every new or changed
 `[nirspec.*]` key and default; the opt-in paths not chosen removed: `contam_pass1 = "fixed"`,
-partial fits, the gated joint solve, unused knobs); `pipeline/experiments/master_bkg_prototype`
+partial fits, the gated joint solve, unused knobs). Done 2026-11-06 for stage 3 (user decisions):
+the free v1 shape, the PRISM-always mode, the MAD gate, partial fits, model-row extraction,
+contamination masking and the dominance rules (the ratio is recorded in `PFDOMIN`), the 1-D
+subtraction (`contam_1d`; `fnu_contam` is reported only, `EXTRWHY = contam_predicted`) and the
+scan's raw-noise, close and gain rules are gone. Stage 2 (master-background session, merged the
+same day): `single_call`, `extract_bkgslits` and `empirical_barshadow` removed, 29 of the 30
+`master_bkg_*` thresholds moved into `master_bkg.SETTINGS` (only `master_bkg_plot` stays). A
+config that still sets a removed key gets one log line saying it has no effect
+(`config.REMOVED_OPTIONS`). Still open in the audit: `scan_action` (report only or apply the
+proposals). `pipeline/experiments/master_bkg_prototype`
 and its figures kept or dropped; small fixes found in the runs (`mbkg_extraction.local_contrast`:
 the subtraction outside its `errstate`, inf - inf warnings on spurs_gds); the design docs rewritten as final documentation (main text =
 what ships, appendix = explored and rejected); one categorized MAJOR CHANGELOG entry.
@@ -3442,7 +3451,7 @@ One categorized CHANGELOG entry covers the pipeline changes; PR A carries the pl
 1. **`fnu` subtraction.** CHANGELOG Unreleased and `config_default.toml` (`contam_1d =
    "subtract"`, `contam_1d_min_sigma = 3.0`) subtract the predicted light from `fnu` above
    3σ. The user decided on 2026-10-30 that `fnu` is not subtracted. The decision wins; code
-   and changelog must change.
+   and changelog must change. (Resolved 2026-11-06: the option and the subtraction are removed.)
 2. **Joint solve.** "Joint solve stays off" (user, 2026-10-29; master-background doc decision
    7, merge plan decision 7, config `contam_joint = false`) is superseded by the approval of
    the local joint solve (user, 2026-10-30).
