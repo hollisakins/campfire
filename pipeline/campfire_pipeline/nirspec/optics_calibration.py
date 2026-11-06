@@ -719,15 +719,17 @@ def solve_kernel(AtA, Atd, s_delta=S_DELTA):
 
 def step_solve(kernel_dir, optics_path, out_path, version, keys=None, s_delta=S_DELTA, part='', log=print):
     """A model file from the stars' normal equations (``part``: see ``sum_normals``): the
-    kernel per detector and range (at the range's centre, ln-mean), on the diffraction numbers
-    of the model the normals were built at (``optics_path``; the shipped file by default)."""
+    kernel per detector and range (at the range's centre, ln-mean), with everything else
+    (diffraction numbers, ``x_loss``, shutter edges) from the model the normals were built at
+    (``optics_path``; the shipped file by default)."""
     from campfire_pipeline.nirspec import optics as O
     with open(optics_path or O.OPTICS_FILE) as fh:
         base = json.load(fh)
     tot = sum_normals(kernel_dir, keys, part)
     out = {'meta': dict(base['meta'], version=version,
                         source=f'kernel fitted by optics_calibration from {kernel_dir} at the model '
-                               f'{base["meta"]["version"]}'), 'diffraction': base['diffraction']}
+                               f'{base["meta"]["version"]}')}
+    out.update({k: v for k, v in base.items() if k not in ('meta', 'NRS1', 'NRS2')})
     for det in ('NRS1', 'NRS2'):
         nodes = []
         for r in sorted(r for d, r in tot if d == det):

@@ -117,7 +117,7 @@ def test_kernel_solve_recovers_a_kernel(small_optics, tmp_path):
     base = tmp_path / 'base.json'
     base.write_text(json.dumps({'meta': {'version': 'base'}, 'diffraction': dict(rho=0.996, s0=0.0344, s1=-0.0026,
                                                                                  alpha=0.25),
-                                'NRS1': [], 'NRS2': []}))
+                                'x_loss': dict(b=0.5, lam0=2.0), 'NRS1': [], 'NRS2': []}))
     np.savez(tmp_path / 'kernel' / 'c_3_NRS2.npz', detector='NRS2', widths='{}', r2_AtA=AtA, r2_Atd=Atd, r2_n=10)
     OC.step_solve(str(tmp_path / 'kernel'), str(base), str(tmp_path / 'new.json'), 'test-1', log=lambda s: None)
     new = O.load_optics(str(tmp_path / 'new.json'))
@@ -125,6 +125,7 @@ def test_kernel_solve_recovers_a_kernel(small_optics, tmp_path):
     node = new['NRS1'].kernel[0]
     assert node['lam'] == pytest.approx(np.sqrt(OC.RANGES[2][0] * OC.RANGES[2][1]))
     assert np.allclose(node['k'], k)                 # the summed normals are the one star's
+    assert new['NRS1'].x_loss == dict(b=0.5, lam0=2.0)   # the rest of the base model is kept
 
 
 def test_laws_recover_a_known_centre_law_and_nod_scale():
