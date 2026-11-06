@@ -519,6 +519,7 @@ FINE = np.round(np.arange(-2.0, 2.0001, 0.0125), 5)          # offsets the point
 FREE_W_SNR = 63.0                  # star-ranges at this peak S/N or above fit their own width; fainter ones are points
 S_DELTA = 1e-2                     # the solve's penalty on the wing's second differences (relative to the data)
 WING = 0.3                         # the penalty applies beyond this offset [slit units]; the core is free
+NOD_EXPOSURES = 3                  # a star's weight in the solve (per_star): its normals x this / its exposures
 
 
 def _hat():
@@ -596,7 +597,8 @@ def kernel_star(task, ranges, optics=None, free_w_snr=FREE_W_SNR):
     ``kernel_response`` at that state for the nod differences and for the single frames less
     the master background (which keep the light nodding removes; same shape, offsets and
     spectrum, the same variance floor, pixels beyond CLIP sigma of the model dropped).
-    Returns {range: (AtA, Atd, npix)} and {range: width}."""
+    Returns {range: (AtA, Atd, npix)}, {range: width}, the nod differences' part alone and the
+    number of exposures that hold the star."""
     from campfire_pipeline.nirspec import mbkg_extraction as MB
     exps = load_star(task)
     sci = [e for e in exps if e.use_data]
@@ -635,7 +637,7 @@ def kernel_star(task, ranges, optics=None, free_w_snr=FREE_W_SNR):
         vf = Mm.pix['v'] + (mx[inv] / SN_CAP) ** 2
         use = np.abs(Mm.pix['d'] - mm) < CLIP * np.sqrt(vf)
         _add_normal(out, r, kernel_response(Mm, p, f, em, g['w']), Mm.pix['d'], vf, use)
-    return out, widths, nod
+    return out, widths, nod, int(sum(bool(e.has_source) for e in exps))
 
 
 def _kernel_one(args):
@@ -645,11 +647,12 @@ def _kernel_one(args):
         from campfire_pipeline.nirspec import optics as O
         optics = {d: o for d, o in O.load_optics(optics_path).items() if d != 'version'}
     try:
-        out, widths, nod = kernel_star(task, ranges, optics=optics)
+        out, widths, nod, nexp = kernel_star(task, ranges, optics=optics)
     except Exception as err:          # one star's failure is reported, the others go on
         return task.key, f'{type(err).__name__}: {err}'
     parts = {'': out, 'nod_': nod}    # every term, and the nod differences alone (what the stack test measures)
     np.savez(os.path.join(out_dir, 'kernel', f'{task.key}.npz'), widths=json.dumps(widths), detector=task.detector,
+             nexp=nexp,
              **{f'r{r}_{p}AtA': a for p, o in parts.items() for r, (a, b, n) in o.items()},
              **{f'r{r}_{p}Atd': b for p, o in parts.items() for r, (a, b, n) in o.items()},
              **{f'r{r}_{p}n': n for p, o in parts.items() for r, (a, b, n) in o.items()})
@@ -685,9 +688,13 @@ def step_kernel(root, observations, select_dir, out_dir, optics_path=None, proce
             log(f'{key} {res}')
 
 
-def sum_normals(kernel_dir, keys=None, part=''):
+def sum_normals(kernel_dir, keys=None, part='', per_star=True):
     """{(detector, range): (AtA, Atd, npix)} summed over the stars' files (``step_kernel``),
-    or over ``keys`` only; every term (``part`` '') or the nod differences alone ('nod_')."""
+    or over ``keys`` only; every term (``part`` '') or the nod differences alone ('nod_').
+    ``per_star``: each star's normals times NOD_EXPOSURES / its number of exposures, so a star
+    counts once however often it was observed (1133's slit grid: 60 exposures a star; weighted
+    by pixels, a few 1133 stars with a neighbor set the kernel's wing for every star); False
+    weights every pixel alike."""
     tot = {}
     for fn in sorted(os.listdir(kernel_dir)):
         key = fn[:-4]
@@ -695,13 +702,14 @@ def sum_normals(kernel_dir, keys=None, part=''):
             continue
         z = np.load(os.path.join(kernel_dir, fn))
         det = str(z['detector'])
+        w = NOD_EXPOSURES / max(int(z['nexp']), 1) if per_star else 1.0
         for name in z.files:
             head, _, tail = name.partition('_')
             if tail != f'{part}AtA':
                 continue
             r = int(head[1:])
             AtA, Atd, n = tot.get((det, r), (0.0, 0.0, 0))
-            tot[(det, r)] = (AtA + z[name], Atd + z[f'r{r}_{part}Atd'], n + int(z[f'r{r}_{part}n']))
+            tot[(det, r)] = (AtA + w * z[name], Atd + w * z[f'r{r}_{part}Atd'], n + int(z[f'r{r}_{part}n']))
     return tot
 
 
@@ -717,15 +725,16 @@ def solve_kernel(AtA, Atd, s_delta=S_DELTA):
     return lsq_linear(U, solve_triangular(U, Atd, trans='T', lower=False), bounds=(0.0, np.inf), method='bvls').x
 
 
-def step_solve(kernel_dir, optics_path, out_path, version, keys=None, s_delta=S_DELTA, part='', log=print):
-    """A model file from the stars' normal equations (``part``: see ``sum_normals``): the
-    kernel per detector and range (at the range's centre, ln-mean), with everything else
-    (diffraction numbers, ``x_loss``, shutter edges) from the model the normals were built at
-    (``optics_path``; the shipped file by default)."""
+def step_solve(kernel_dir, optics_path, out_path, version, keys=None, s_delta=S_DELTA, part='', per_star=True,
+               log=print):
+    """A model file from the stars' normal equations (``part``, ``per_star``: see
+    ``sum_normals``): the kernel per detector and range (at the range's centre, ln-mean), with
+    everything else (diffraction numbers, ``x_loss``, shutter edges) from the model the normals
+    were built at (``optics_path``; the shipped file by default)."""
     from campfire_pipeline.nirspec import optics as O
     with open(optics_path or O.OPTICS_FILE) as fh:
         base = json.load(fh)
-    tot = sum_normals(kernel_dir, keys, part)
+    tot = sum_normals(kernel_dir, keys, part, per_star)
     out = {'meta': dict(base['meta'], version=version,
                         source=f'kernel fitted by optics_calibration from {kernel_dir} at the model '
                                f'{base["meta"]["version"]}')}
@@ -982,6 +991,8 @@ def main(argv=None):
     ap.add_argument('--nod-only', action='store_true',
                     help='solve: the nod differences\' normal equations alone (not the single frames less the master '
                          'background)')
+    ap.add_argument('--per-pixel', action='store_true',
+                    help='solve: every pixel weighted alike, not each star once (sum_normals)')
     ap.add_argument('--processes', type=int, default=1)
     a = ap.parse_args(argv)
     if a.step != 'bars' and not a.out:
@@ -998,7 +1009,8 @@ def main(argv=None):
     elif a.step == 'laws':
         step_laws(a.out)
     else:
-        step_solve(os.path.join(a.out, 'kernel'), a.optics, a.model_out, a.version, part='nod_' if a.nod_only else '')
+        step_solve(os.path.join(a.out, 'kernel'), a.optics, a.model_out, a.version, part='nod_' if a.nod_only else '',
+                   per_star=not a.per_pixel)
 
 
 if __name__ == '__main__':
