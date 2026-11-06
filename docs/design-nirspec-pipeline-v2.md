@@ -72,7 +72,7 @@ last column says where it is described.
 | Stuck-closed shutters by a per-shutter template fit, every disperser | Built: step 1 fits and calls every shutter (`SHUTAMP`, `CALLS`), `cfpipe nirspec detect-stuck` merges the calls into the stuck list; physical keys everywhere (`stuck_list.py`, database, web, deploy). Open: the user's verdict on the G395M review packet; G140M / G235M not yet checked | 3.5 |
 | Trace maps: one per exposure, built in step 1 from every commanded shutter, stored in the rate file, followed past both ends of the calibrated range | Built; stage 3 reads them (`tracemaps/` is its working copy) | 3.4, 3.6 |
 | Forward-model profile extraction on by default; shape chain (own fit above the gate, else the PRISM shape, else the default); instrument model fixed, never fitted; no per-exposure pointing offsets; each nod at its planned position | Built | 3.7 |
-| Diffraction model of the MSA for every disperser (`FIT_VERSION` 6, `optics.py`, `data/nirspec_optics.json` 2026.11-w2x), with a correction along the dispersion fitted to stars | Built (2026-11-04) | 3.7 |
+| Diffraction model of the MSA for every disperser (`FIT_VERSION` 6, `optics.py`, `data/nirspec_optics.json` 2026.11-r8), with a correction along the dispersion fitted to stars | Built (2026-11-04; kernel refitted on all calibration stars 2026-11-06) | 3.7 |
 | Bar offset of each observation, measured per disperser from its empty shutters (`FIT_VERSION` 7, `bar_offset.py`) | Built (2026-11-05) | 3.7 |
 | Boundary with jwst's references: one reader (`crds_refs.py`), the calibration manifest, `slit_loss_y` / `slit_loss_x` switches, `cfpipe nirspec crds-compare` | Built (2026-11-05) | 3.10 |
 | Joint first pass (every source solved with its neighbours on its nod differences, light past the cutouts in count rate), the only pass 1; the masked pass 1, pass 1b, the echo correction and the master-background first pass removed | Built | 3.8, 3.9 |
@@ -1829,6 +1829,54 @@ to the stars, not a percentile rule, every parameter smooth in wavelength over 0
             calibration was fitted against the old tables; their difference is a few per cent of
             the light at the outer edges of the neighboring shutters, where a star sends little,
             and is checked when the kernel is refitted.
+      - The kernel refit (2026-11-06; `scratch/claude/extraction-v2/edge/oc_refit/`, scripts
+        `oc_refit5.zsh` to `oc_refit7.zsh`). Refitted on the exact-edge tables, with each
+        observation's bar offset, and on every calibration star, 1133's slit grid included (no data
+        held out). Star-ranges enter the fit when S/N >= 20, |centre| < 0.35, unsaturated, width
+        <= 0.06 and chi2/dof <= 2 (`CHI2_MAX`, now an absolute cut; it was relative to the range's
+        median). 590 star-detectors: NGC 2506 390, wavecal (6642, 12497) 167, 1133 33.
+        - The test is the stack test (`optics_calibration score`): per detector and range, the
+          median over the clean stars of data minus model at each offset from the trace, in % of the
+          peak. A range passes when the median stays within 1 % at every offset. The shipped
+          kernel (`2026.11-w2x`, fitted without 1133 and on the rounded-edge tables) refitted with
+          the current code passes all 14 ranges, worst 0.72 %.
+        - The first refits failed at NRS2 2.0-2.6 um (1.16 % and 1.26 %): the NGC 2506 and wavecal
+          stars left about 1 % of excess light at +2 rows, where the model had too much wing. The
+          cause was the weighting. The solve sums each star's normal equations, so a star counts by
+          its pixels. A 1133 star has 60 exposures (its planned shifts step it from -0.26 to +0.36
+          slit units within the shutter) and an NGC 2506 star 3, so one 1133 star weighs as much as
+          20 NGC 2506 stars, and 1133 gave more than half of every range's pixels.
+        - Fitting each 1133 star's kernel on its own (`per_star_wing.py`) showed that most give the
+          NGC 2506 kernel (1-5 % of the light beyond +-0.3 slit units). Eight give 6-20 % on one
+          side, in every range: 157763, 40786, 132906, 35389, 89577, 29643 beyond +0.3, 36855 and
+          36752 beyond -0.3. These are faint stars with a neighbor in the slitlet, fitted at chi2/dof
+          1.3-2.0. The neighbor is in every one of the star's exposures, so it does not average down.
+          Two other explanations were tested and ruled out: dropping the exposures near a bar
+          changed nothing (`kernel1133_inside`), and kernels held constant across wavelength
+          (`make_const.py`) showed that the interpolation between nodes is not the cause.
+        - The remedy is to weight each star once: `sum_normals` scales a star's normal equations by
+          3 / its exposures (`NOD_EXPOSURES`; kernel files record the count). This is now the
+          default (`solve --per-pixel` gives the old weighting). No data is dropped, and the weight
+          matches the stack test's median over stars.
+        - Result (r8, normal equations about `2026.11-w2x`): 14 of 14 ranges within 1 %, worst 0.69 %
+          (NRS2 3.3-4.1 um), NRS2 2.0-2.6 um 0.52 %. Per dataset (`score_by_group.py`) r8 and the
+          shipped kernel agree to 0.1 % in every range. The 1133 stars' own worst medians are 1-2 %
+          under both kernels (7-19 stars per range); how much of that comes from the stars with a
+          neighbor is not measured.
+        - Against `2026.11-w2x`, the light beyond 0.3 slit units moves by at most 0.4 % of the total
+          (`kernel_nodes.py`). At 4.66 um the core's weight moved between nodes within +-0.075 slit
+          units with the same light. Diffraction is wider there than the node spacing, so the data
+          cannot tell the two apart, and the score is unchanged (0.47 -> 0.49 %, 0.40 -> 0.38 %).
+          Weighted by pixel (r8p), the same normal equations put 1-2 % more light in the wing at 2-4
+          um.
+        - A second pass (normal equations about r8, solved as r9) changes the light beyond 0.3 by
+          at most 0.2 %, so the fit has converged. r8 ships as `data/nirspec_optics.json`
+          `2026.11-r8` (manifest `nirspec_calibrations.toml`), with r8's stack test (`stack8`) as
+          its record. The diffraction numbers and `x_loss` are kept from `2026.11-w2x`. Earlier
+          refits had lost `x_loss` because `step_solve` did not carry over the base model's other
+          keys; that is fixed and tested.
+        - Still open: `x_loss` is fitted to NGC 2506 alone. Its refit with 1133 (one x offset per
+          visit) is the along-dispersion item in section 6.
       - Stocktake of the whole optics work against what STScI provides and plans (2026-11-05):
         `scratch/claude/extraction-v2/review/stocktake.md` (duplication, ranked risks, how to keep
         the boundary with CRDS clean).
@@ -3396,3 +3444,6 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   uniform-light discrepancy and the brightness cut (`SCALE_CUT` 1.05); then the one-sided upper
   edge withdrawn: it was a rounding error in the model's shutter mask, now exact (`FIT_VERSION` 8,
   optics engine 2, `MEASURE_VERSION` 3), with the halves of six fields before and after.
+- **2026-11-06.** Section 3.7 (and the status row in section 1): the kernel refit with the bar
+  offsets, the exact edges and 1133 included; why weighting by pixel let a few 1133 stars with a
+  neighbor set the wing, the per-star weighting, and the shipped model `2026.11-r8`.

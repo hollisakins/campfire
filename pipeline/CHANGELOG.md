@@ -172,6 +172,17 @@ Release procedure: edit the `## Unreleased` section below, then run
     same pupil, stop and kernel, a 0.03 arcsec scatter of the true position about the planned
     one, the source round). The fitted spectrum is the source's total light. Check 1 on NGC 2506
     with both in the fit: 8.0 / 11.5 / 6.5 / 6.1 / 9.4 % (was 7.0 / 12.2 / 6.3 / 7.3 / 12.6 %).
+  - The kernel is refitted (`2026.11-r8`) on all the calibration stars, 1133's slit grid
+    included (590 star-detectors), on the exact-edge tables and with each observation's bar
+    offset. Each star is weighted once in the solve (its normal equations x 3 / its exposures;
+    `--per-pixel` gives the old weighting): 1133 has 60 exposures a star, and by pixel a few of
+    its faint stars with a neighbor (6-20 % of their light beyond 0.3 slit units) set the
+    kernel's wing for every star, failing the stack test at NRS2 2.0-2.6 um (1.2 %). The stars
+    fitted are those with S/N >= 20, chi2/dof <= 2 (an absolute cut, was relative to the
+    range's median), unsaturated. Stack test 14 of 14 ranges within 1 % (worst 0.69 %; the
+    previous kernel 0.72 %, the datasets alike to 0.1 %); the light beyond 0.3 slit units
+    moves by at most 0.4 % of the total; a second pass changes it by at most 0.2 %. The solve
+    no longer drops `x_loss` from the model it writes.
   - **The reported flux changes meaning for extended sources.** `fnu_prof` is the fitted
     source's light inside a circle 0.8 arcsec across (1.5 shutter lengths;
     `profile_fit.REPORT_APERTURE`, `reported_factor`, header `PFAPER`), where it was the light

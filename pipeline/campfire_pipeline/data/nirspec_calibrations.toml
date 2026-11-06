@@ -14,16 +14,18 @@
 
 [optics]
 file = "nirspec_optics.json"
-sha256 = "17969c976e5cf3698681a906339f938ff8a2b4442e2d908b9a4232093d6c911c"
-version = "2026.11-w2x"
+sha256 = "7cc27af28f08b105726c0eec87b51c62e646c3ff3789f622f90f4fcea6616e55"
+version = "2026.11-r8"
 replaces = """jwst's slit-direction path loss (pathloss PS / UNI along y) and its implicit point-source image: a \
 diffraction model of the MSA (pupil, shutters, spectrograph stop, detector blur) with an empirical kernel \
 before the shutter, for a source of any width and position along the slit"""
 corrects = """jwst's point path loss along the dispersion: x_loss, exp(-b (lambda - lam0)+ SRCXPOS^2), b = 0.572 \
 (two star sets give 0.38-0.80); the extended-source ratio along the dispersion is the model's own"""
-inputs = """kernel and diffraction numbers: 593 calibration stars (programs 6642 obs 2, 12497 obs 1-5, 1493 NGC 2506) \
-and master-background single frames, PRISM; x_loss: 93 NGC 2506 stars seen at several positions"""
-derived = "2026-11-04"
+inputs = """kernel: 590 calibration star-detectors (1493 NGC 2506 390, 6642 obs 2 and 12497 obs 1-5 167, 1133 obs 3 \
+slit grid 33), nod differences and master-background single frames, PRISM, each star weighted once, with each \
+observation's bar offset; diffraction numbers: the PRISM bar-shadow tables; x_loss: 93 NGC 2506 stars seen at \
+several positions"""
+derived = "2026-11-06"
 crds_context = "jwst_1481.pmap"
 depends_on = { pathloss = "jwst_nirspec_pathloss_0010.fits" }
 assumes = """the MOS1x3 point path loss is a product of an x part and a y part (point_y_ratio divides out its y \
