@@ -1,22 +1,8 @@
 # NIRSpec Pipeline
 
-The CAMPFIRE NIRSpec pipeline turns raw JWST/NIRSpec exposures taken with the micro-shutter assembly (MSA) into calibrated 1-D spectra and redshifts for every source in every slitlet. It is built on the STScI [JWST calibration pipeline](https://jwst-pipeline.readthedocs.io/) (`jwst`). CAMPFIRE runs `jwst` where it does well and replaces it in three places: the background, the way spectra are extracted, and the correction for light lost at the shutter edges (the path loss, or slit loss).
+The CAMPFIRE NIRSpec pipeline turns raw JWST/NIRSpec exposures taken with the micro-shutter assembly (MSA) into calibrated 1-D spectra and redshifts for every source in every slitlet. It is built on the STScI [JWST calibration pipeline](https://jwst-pipeline.readthedocs.io/) (`jwst`), and extends and updates the default processing with custom recipes for several steps.
 
-This page is the map. Each part of the reduction has its own page, with figures that show what the step does to real data:
-
-- [Detector and calibration](/docs/reduction/nirspec/detector-calibration): from raw exposures to calibrated 2-D spectra
-- [Background estimation and subtraction](/docs/reduction/nirspec/backgrounds): the master background, stuck and failed-open shutters, nod subtraction
-- [Slit losses and the MSA optics](/docs/reduction/nirspec/slit-losses): how much of a source's light the shutters let through, and how CAMPFIRE models it
-- [Extraction](/docs/reduction/nirspec/extraction): fitting each source's 2-D spectrum, overlapping spectra, what the reported flux means
-- [Redshifts and lines](/docs/reduction/nirspec/redshifts): template redshifts and emission-line fluxes
-- [Describing the reduction](/docs/reduction/nirspec/describing): versions to quote, a paragraph to adapt, the choices that are yours
-
-## Before you use a spectrum
-
-[Describing the reduction](/docs/reduction/nirspec/describing) has a paragraph to adapt for a paper, the versions to quote and the choices to state. Two of those choices matter for every spectrum:
-
-- **The neighbors' light is not subtracted from `fnu`.** It is written as its own column, `fnu_contam`. The source alone is `fnu_prof - fnu_contam`. Subtract it when your science needs the source alone.
-- **Each file holds two spectra.** `fnu` comes from nod subtraction. `SPEC1D_MBKG` comes from the same exposures with the master background subtracted instead. The header card `MBKGPREF` says when the second is likely the better one (an extended source, a single exposure, or no clean nod), and `MBKGWHY` says why.
+If you're looking for how to describe the reduction in a paper, [Describing the reduction](/docs/reduction/nirspec/describing) has a paragraph you can adapt, the versions recorded in each spectrum file, and the choices you may want to mention.
 
 ## How the pipeline runs
 

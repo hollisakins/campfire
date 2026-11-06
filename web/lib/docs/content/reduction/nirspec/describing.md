@@ -1,10 +1,10 @@
 # Describing the reduction
 
-This page collects what you need to describe a CAMPFIRE NIRSpec reduction in a paper: the versions to quote, a paragraph to adapt, and the choices that are yours to state.
+This page collects material that may help in describing a CAMPFIRE NIRSpec reduction in a paper: the versions each spectrum file records, a paragraph you can adapt, and the choices the pipeline leaves to you.
 
-## What to quote
+## Versions
 
-Every spectrum file records how it was made in its primary header. Quote these for the spectra you use:
+Every spectrum file records how it was made in its primary header:
 
 | Card | What it is |
 |---|---|
@@ -14,7 +14,7 @@ Every spectrum file records how it was made in its primary header. Quote these f
 | `PFOPTIC` | The version of the MSA optics model |
 | `PFVER` | The version of the extraction model |
 
-If your spectra span several versions, say so; the [FITS reference](/docs/data-products/fits-columns) lists every card.
+The [FITS reference](/docs/data-products/fits-columns) lists every card.
 
 ## A paragraph to adapt
 
@@ -22,16 +22,14 @@ If your spectra span several versions, say so; the [FITS reference](/docs/data-p
 
 Each page of the reduction has its own sentence for the step it covers: [slit losses](/docs/reduction/nirspec/slit-losses#describing-it-in-a-paper), [extraction](/docs/reduction/nirspec/extraction#describing-it-in-a-paper).
 
-## Choices that are yours
+## Choices left to you
 
-The pipeline leaves these to you. State which you made.
-
-| Choice | Default | What to say |
+| Choice | Default | Worth knowing |
 |---|---|---|
-| Other sources' light | Reported in `fnu_contam`, not subtracted from `fnu` | Whether you used `fnu` or `fnu_prof - fnu_contam`. The catalog's line fluxes are measured on `fnu` as it is |
-| Background | Nod subtraction (`fnu`) | Whether you used the master-background spectrum (`SPEC1D_MBKG`) for any source, for example where `MBKGPREF` is true |
-| Extraction | The profile extraction (`fnu`) | If you used `fnu_opt` or a boxcar instead: these measure the light that entered the shutter, corrected as a point source |
-| Redshift | The inspected redshift, from the portal or `Campfire.query_objects()` | The [redshift quality](/docs/inspection/redshift-quality) you required (line fluxes are measured from "probable" up) |
+| Other sources' light | Reported in `fnu_contam`, not subtracted from `fnu` | The source alone is `fnu_prof - fnu_contam`. The catalog's line fluxes are measured on `fnu` as it is |
+| Background | Nod subtraction (`fnu`) | The master-background spectrum (`SPEC1D_MBKG`) is in the same file; `MBKGPREF` marks where it is likely the better one |
+| Extraction | The profile extraction (`fnu`) | `fnu_opt` and the boxcars measure the light that entered the shutter, corrected as a point source |
+| Redshift | The inspected redshift, from the portal or `Campfire.query_objects()` | Line fluxes are measured for [redshift quality](/docs/inspection/redshift-quality) "probable" and up |
 
 ## Errors
 
@@ -39,7 +37,7 @@ The pipeline leaves these to you. State which you made.
 
 ## Where CAMPFIRE departs from the CRDS calibration
 
-CAMPFIRE replaces parts of two CRDS references. A paper should say so:
+CAMPFIRE replaces parts of two CRDS references:
 
 - **Path loss along the slit**: replaced by the optics model for the source's fitted size and position ([Slit losses](/docs/reduction/nirspec/slit-losses)). Across the shutter, the CRDS point-source path loss is used, with a correction measured from stars.
 - **Bar shadow**: replaced by tables measured from empty shutters, in building the master background ([Backgrounds](/docs/reduction/nirspec/backgrounds#the-bar-shadow)); the high-resolution gratings keep the CRDS reference there. The spectra themselves, both versions, take the bar shadow from the optics model; science frames are never divided by one.
@@ -47,9 +45,9 @@ CAMPFIRE replaces parts of two CRDS references. A paper should say so:
 
 Everything else (flat fields, wavelength solution, flux calibration) is the CRDS reference as delivered, unless the observation turned on one of the options on the [Detector and calibration](/docs/reduction/nirspec/detector-calibration#options-that-change-the-calibration) page. The reference-file cards of the spectrum file (`R_WAVCOR`, `R_FFLAT`, `R_PHOTOM`) record which.
 
-## What to cite
+## References
 
-- CAMPFIRE: there is no pipeline paper yet. For data from a release, cite the release named in the file's `CMPFRDR` card, as given on its release page.
+- CAMPFIRE: there is no pipeline paper yet. Data from a release can be cited as given on the page of the release named in the file's `CMPFRDR` card.
 - The `jwst` calibration pipeline: Bushouse et al., the JWST Calibration Pipeline (Zenodo), at the version in `CAL_VER`.
 - If `R_WAVCOR` names the JADES correction: Scholtz et al. (2025), JADES Data Release 4 (arXiv:2510.01034).
 - The redshift templates are built with `bagpipes` (Carnall et al. 2018).
