@@ -21,6 +21,8 @@ from .exceptions import (
     DownloadError,
     ValidationError,
     APIError,
+    DRModeError,
+    DRLoadError,
 )
 from .flags import (
     RedshiftQuality,
@@ -64,6 +66,8 @@ __all__ = [
     "DownloadError",
     "ValidationError",
     "APIError",
+    "DRModeError",
+    "DRLoadError",
     # Flags
     "RedshiftQuality",
     "DQFlags",

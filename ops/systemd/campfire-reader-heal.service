@@ -1,0 +1,10 @@
+[Unit]
+Description=CAMPFIRE public SQL: re-apply the campfire_reader password when it was changed
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/campfire/repo/ops
+ExecStart=/usr/bin/bash /srv/campfire/repo/ops/scripts/reader-heal.sh
+Nice=10

@@ -41,6 +41,62 @@ Dependencies on the old platform that this replaces, found by audit
 only ever talks to `campfire.hollisakins.com/api/v1`, so no client release is
 tied to the move.
 
+## Public read-only SQL (`campfire_reader`)
+
+`docs/reader-role.md` is the reader's side. The host side is one compose
+profile and one script, and it is the one sanctioned exception to "only Caddy
+listens publicly" (Catalog Read Model phase 4; the role sees public rows only,
+under its own RLS policies, with no function and no other table):
+
+1. The role exists once the migration chain carries `20261028193000_phase4_reader_role.sql`
+   (`deploy.sh` applies it). It has no password until step 2.
+2. `bash scripts/reader-setup.sh` (from `ops/`): generates `READER_PASSWORD` into
+   `.env` when empty, sets it on the role, writes the PgBouncer userlist
+   (`$CAMPFIRE_DATA_ROOT/pgbouncer/userlist.txt`: that one name with the
+   plaintext password the pooler logs in to db with) and the heal's verifier
+   record (`verifier.txt`), makes a self-signed certificate
+   (`pgbouncer/reader.pem` / `reader.key`; the directory is the pooler's own,
+   world-traversable, since the container runs as its own uid and `certs/` is
+   0750) when missing, starts the pooler
+   (`docker compose --profile reader up -d pgbouncer`, image
+   `edoburu/pgbouncer`, transaction mode, `$READER_BIND:$READER_PORT`: the
+   VM's interface address, detected and written to `.env` when empty, since
+   `db` publishes `127.0.0.1:$POSTGRES_PORT` and one host port cannot carry
+   both bindings; port 5432 by default so the published string carries none)
+   and runs one query
+   through it the way a reader does, without a password. `rotate` changes the
+   password, `status` reports.
+3. Security group: admit TCP `$READER_PORT` (5432) from anywhere. Readers need
+   no credential by design: the pooler's `auth_type` is `trust`, which still
+   admits only names in the userlist, so `campfire_reader` is the one name that
+   gets a server connection, and the role's grants are the gate.
+4. DNS: `db.$WEB_HOST` as a DNS-only (grey cloud) A record to the VM:
+   Cloudflare's proxy carries no Postgres.
+5. Publish the connection string the script prints
+   (`postgresql://campfire_reader@db.$WEB_HOST/postgres`; docs, the portal's docs page).
+6. Enable the password heal (the script prints the command): `campfire-reader-heal.timer`
+   runs `scripts/reader-heal.sh` every 2 minutes, which re-applies `READER_PASSWORD`
+   and the role's settings when the stored verifier no longer matches the
+   record, the userlist no longer carries `.env`'s password, or the settings
+   drifted (a role may also `ALTER ROLE … SET` its own defaults), ends the
+   role's sessions and HUPs the pooler. Why: Postgres lets any role change its
+   own password, the read-only default is lifted per transaction with
+   `SET TRANSACTION READ WRITE`, and every reader runs as the role, so a reader
+   can desync the pooler's server-side login; the heal bounds that to two
+   minutes. The pooler also runs `DISCARD ALL` after every transaction
+   (`SERVER_RESET_QUERY_ALWAYS`), so no session state crosses readers.
+
+   The stronger fix, when wanted: make the pooler→db hop independent of the
+   password with a `pg_hba.conf` line scoped to the compose network and that
+   one role (`host postgres campfire_reader <docker subnet> trust`, or a client
+   certificate with `hostssl … cert`). The supabase image owns its `pg_hba.conf`
+   (`/etc/postgresql/pg_hba.conf` in the container), so that means a mounted
+   copy and a restore-check; not done in the first cut.
+
+The pooler is off unless the profile is given, so a stack without a reader
+password runs unchanged. Changelog entries for `READER_*` go below like any
+other `.env` change.
+
 ## Sizing
 
 | | |
@@ -616,6 +672,7 @@ optional Resend domain verification.
 
 ## Changelog
 
+- 2026-10-29 — Public SQL set up: `reader-setup.sh` run (`.env` `READER_PASSWORD` generated), security group admits the reader port, `db.campfire-jwst.org` DNS-only, `campfire-reader-heal.timer` enabled. Then the no-password form: `.env` `READER_PORT` 6432 → 5432 (the published string carries no port), pooler `auth_type` scram → trust over the one-name userlist (`READER_PASSWORD` is the pooler's own login now, not published), `READER_BIND` = the VM's interface address (written by the script), security group rule moved to 5432.
 - 2026-10-25 ~20:30 UTC — **Domain move executed** (see "Domain move"): certificates swapped (`origin.*` = campfire-jwst.org, `alt.*` = hollisakins.com); `.env` `WEB_HOST`, `WEB_STAGING_HOST`, `API_HOST` → the campfire-jwst.org names, `ALT_WEB_HOST`, `ALT_WEB_STAGING_HOST`, `ALT_API_HOST` → the hollisakins.com names, `SITE_URL`, `API_EXTERNAL_URL`, `SUPABASE_PUBLIC_URL`, `MAILER_TEMPLATES_*` → new urls, `ADDITIONAL_REDIRECT_URLS` = new + old lists; `web.env` `CDN_FRONT_URL`, `S3_TILES_PUBLIC_URL_BASE`, `NEXT_PUBLIC_*` → new hosts; caddy + auth recreated; parking rule deleted; `domain-move.sql` run; `DEPLOY_NEXT_PUBLIC_*` variables → new hosts; this PR's merge rebuilt the image.
 - 2026-10-25 — `.env` `ALT_API_HOST` set (early alias: the Supabase API answers on `api.campfire-jwst.org` ahead of the flip); `certs/alt.pem`/`alt.key` = the new zone's origin certificate (`jwst.*` kept as the spare); caddy recreated with the `ALT_*` Caddyfile.
 - 2026-10-25 — **Domain move prepared** (see "Domain move"): `campfire-jwst.org` zone, DNS, TLS mode, rate limit and the parking 302 on Cloudflare; `Caddyfile` / `docker-compose.yml` gain the `ALT_*` hostname blocks (inert until `.env` sets them; `certs/alt.pem`/`alt.key` must exist — copy of `origin.*` until the window); `ops/sql/domain-move.sql`; Worker gets `download.campfire-jwst.org` and the new origins. No `.env` change yet.

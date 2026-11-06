@@ -22,10 +22,15 @@ import { NextResponse } from 'next/server';
  * 5000-row page timed out at Cloudflare). A server-side cap cannot protect
  * older clients -- they stop paging at the first short page -- so upgrading
  * is the fix for a `sync --full` that fails on line fits.
+ *
+ * 0.7.0 (latest only, P5): data releases on the client -- `campfire pull
+ * --dr`, `Campfire(dr=)`, `identify`, `cite`, `provenance`, the sync tail's
+ * release and access notices (read from /auth/whoami). Older clients lose
+ * nothing they had (decision D-P5-1: no floor bump).
  */
 export async function GET() {
   const response = NextResponse.json({
-    latest: '0.6.1',
+    latest: '0.7.0',
     minimum: '0.5.0',
   });
 

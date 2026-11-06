@@ -21,12 +21,17 @@ vi.mock('@/lib/supabase/service', () => ({ createServiceClient: () => ({ marker:
 
 let release: Record<string, unknown> | null = null;
 let ledger: Record<string, unknown>[] = [];
+const rosterCalls: string[][] = [];
 vi.mock('@/lib/server/dr-exports', async () => {
   const actual = await vi.importActual<typeof import('@/lib/server/dr-exports')>('@/lib/server/dr-exports');
   return {
     ...actual,
     fetchRelease: async () => release,
     fetchLedger: async () => ledger,
+    fetchProgramRoster: async (_sb: unknown, _tag: string, slugs: readonly string[]) => {
+      rosterCalls.push([...slugs]);
+      return { pub: { is_public: true, spectra: 1, cfpipe_versions: [], crds_contexts: [] } };
+    },
   };
 });
 
@@ -115,5 +120,17 @@ describe('principals', () => {
     release = null;
     expect((await get()).status).toBe(404);
     expect((await get('no spaces')).status).toBe(400);
+  });
+});
+
+describe('program roster (P5-3)', () => {
+  it('is asked under the caller\'s own program set and returned with the record', async () => {
+    rosterCalls.length = 0;
+    principal = { userId: 'g', access: { isAdmin: false, accessibleSlugs: ['pub', 'priv'] } };
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect(rosterCalls).toEqual([['pub', 'priv']]);
+    const body = await res.json();
+    expect(body.programs).toEqual({ pub: { is_public: true, spectra: 1, cfpipe_versions: [], crds_contexts: [] } });
   });
 });

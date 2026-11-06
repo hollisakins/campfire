@@ -10,6 +10,8 @@ from astropy.table import Table
 
 from campfire.deploy.summary import (
     _finite_or_none,
+    format_stale_summary,
+    stale_summary_rows,
     get_spectra_records,
     get_zfit_scalar_updates,
     get_unique_objects,
@@ -177,3 +179,45 @@ def test_get_zfit_scalar_updates_clears_degenerate_fit_values():
     assert updates[0]['redshift_auto'] is None
     assert updates[0]['chi2_min'] is None
     assert updates[0]['confidence'] is None
+
+
+def _summary_on_disk(tmp_path, files: dict[str, bytes]) -> Table:
+    import hashlib
+    t = Table()
+    t['spec_file'] = list(files)
+    t['file_hash'] = ['sha256:' + hashlib.sha256(b).hexdigest() for b in files.values()]
+    for name, body in files.items():
+        (tmp_path / name).write_bytes(body)
+    return t
+
+
+def test_stale_summary_rows_accepts_a_fresh_summary(tmp_path):
+    t = _summary_on_disk(tmp_path, {'a_spec.fits': b'aaa', 'b_spec.fits': b'bbb'})
+    assert stale_summary_rows(t, tmp_path) == []
+
+
+def test_stale_summary_rows_names_a_final_rewritten_after_the_summary(tmp_path):
+    """The rehearsal case (#665): one FITS reprocessed in place, summary not regenerated."""
+    import hashlib
+    t = _summary_on_disk(tmp_path, {'a_spec.fits': b'aaa', 'b_spec.fits': b'bbb'})
+    (tmp_path / 'b_spec.fits').write_bytes(b'reprocessed')
+    stale = stale_summary_rows(t, tmp_path)
+    assert [r['spec_file'] for r in stale] == ['b_spec.fits']
+    assert stale[0]['file_hash'] == hashlib.sha256(b'reprocessed').hexdigest()
+    assert stale[0]['summary_hash'] == hashlib.sha256(b'bbb').hexdigest() and stale[0]['mtime']
+    msg = format_stale_summary('obs_x', stale)
+    assert 'b_spec.fits' in msg and 'cfpipe nirspec summary --obs obs_x' in msg and '1 final(s)' in msg
+
+
+def test_stale_summary_rows_reports_a_missing_final(tmp_path):
+    t = _summary_on_disk(tmp_path, {'a_spec.fits': b'aaa'})
+    (tmp_path / 'a_spec.fits').unlink()
+    stale = stale_summary_rows(t, tmp_path)
+    assert stale == [{'spec_file': 'a_spec.fits', 'summary_hash': stale[0]['summary_hash'], 'file_hash': None, 'mtime': None}]
+    assert 'missing on disk' in format_stale_summary('obs_x', stale)
+
+
+def test_stale_summary_rows_compares_without_the_prefix(tmp_path):
+    t = _summary_on_disk(tmp_path, {'a_spec.fits': b'aaa'})
+    t['file_hash'] = [h.split(':', 1)[1] for h in t['file_hash']]      # an old ECSV with bare hex
+    assert stale_summary_rows(t, tmp_path) == []

@@ -712,6 +712,7 @@ def download_objects(
     gratings: Optional[List[str]] = None,
     fields: Optional[List[str]] = None,
     filters: Optional[List[str]] = None,
+    dr: Optional[str] = None,
 ) -> dict:
     """Download storage objects for the given observations/fields + product types.
 
@@ -720,7 +721,9 @@ def download_objects(
     verify ``content_hash``, and record local state. ``fields`` selects
     field-scoped NIRCam rows (``observation IS NULL``); ``filters`` narrows those
     to specific NIRCam filters. Used for NIRSpec finals, intermediates, and
-    NIRCam alike.
+    NIRCam alike. With ``dr=<tag>`` (``campfire pull --dr``) the store is the
+    release's, the urls are the release's archived copies, and the verified
+    ``content_hash`` is the hash of those bytes (the release store carries it).
     """
     pending = store.get_pending_objects(
         observations=list(observations),
@@ -745,7 +748,8 @@ def download_objects(
 
     products_dir.mkdir(parents=True, exist_ok=True)
 
-    urls = api_client.presign_keys([r["storage_key"] for r in to_download])
+    keys = [r["storage_key"] for r in to_download]
+    urls = api_client.presign_keys(keys, dr=dr) if dr else api_client.presign_keys(keys)
     fetchable = [r for r in to_download if r["storage_key"] in urls]
     stats["unauthorized"] = len(to_download) - len(fetchable)
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=CAMPFIRE public SQL: password heal every 2 minutes (enabled by ops/README "Public read-only SQL")
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

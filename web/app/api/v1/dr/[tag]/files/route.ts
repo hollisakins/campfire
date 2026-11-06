@@ -7,6 +7,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { getBucketNameForBackend, getS3ClientForBackend } from '@/lib/storage';
 import {
   fetchLedger,
+  fetchProgramRoster,
   fetchRelease,
   fileVisible,
   openComponentScopes,
@@ -28,6 +29,8 @@ import {
  *   tag, state, format_version, components, counts, frozen_at, published_at,
  *   doi, notes, known_issues,
  *   complete: boolean,            // every ledger file is ready
+ *   programs: { slug: { is_public, spectra, cfpipe_versions, crds_contexts } },  // the roster this
+ *                                 // caller may see: public programs + their own (P5-3, `campfire cite`)
  *   files: [{ stream, scope, sha256, size, rows, url }]   // scope: program slug or component
  * }
  */
@@ -59,7 +62,10 @@ export async function GET(request: NextRequest, context: { params: Promise<{ tag
 
     const accessible = new Set(principal.access.accessibleSlugs);
     const open = openComponentScopes(release.components);
-    const ledger = await fetchLedger(supabase, tag);
+    const [ledger, programs] = await Promise.all([
+      fetchLedger(supabase, tag),
+      fetchProgramRoster(supabase, tag, principal.access.accessibleSlugs),
+    ]);
     const complete = ledger.length > 0 && ledger.every((r) => r.state === 'ready');
     const held = ledger.filter(
       (r) => r.state === 'ready' && r.storage_key && fileVisible(r.stream, r.partition, accessible, open),
@@ -95,6 +101,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ tag
         notes: release.notes,
         known_issues: release.known_issues,
         complete,
+        programs,
         files,
       },
       { headers: noStore },
