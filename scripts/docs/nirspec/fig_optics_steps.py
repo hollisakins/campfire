@@ -140,7 +140,7 @@ axes[0].text(0.94, 0.93, 'closed\nshutter', ha='right', va='top', fontsize=8.5, 
              transform=axes[0].get_xaxis_transform())
 axes[-1].set_xlabel("position along the slit (arcsec; 0 = center of the source's shutter)")
 
-kx = axes[1].inset_axes([0.765, 0.47, 0.215, 0.36])                   # the kernel, inside step 2
+kx = axes[1].inset_axes([0.83, 0.5, 0.15, 0.44])                      # the kernel, inside step 2
 step_as = (offs[1] - offs[0]) * O.SLIT                               # the pipeline's uniform grid of shifts
 for lam, color in zip(args.wavelengths, (C.WAVE_COLORS[0], C.WAVE_COLORS[-1])):
     k = curves[lam]['kernel'] / step_as                               # light per arcsec of shift, unit total
@@ -150,8 +150,10 @@ kx.set_yscale('log')
 kx.set_ylim(3e-4, 1.5)
 kx.set_xlim(-0.5, 0.5)
 kx.tick_params(labelsize=7.5)
+kx.set_xticks([-0.4, 0.0, 0.4])
 kx.set_xlabel('shift (arcsec)', fontsize=8, labelpad=1)
-kx.set_title(f'kernel ({args.detector})', fontsize=8.5, loc='left')
+kx.text(0.04, 0.95, f'kernel\n({args.detector})', transform=kx.transAxes, ha='left', va='top', fontsize=8,
+        fontweight='bold', color=C.INK)
 kx.patch.set_facecolor('white')
 fig.suptitle(f'A point source {args.position * O.PITCH_AS:.2f}" ({args.position:g} of a shutter pitch) from the '
              'center of the middle shutter of a three-shutter slitlet', x=0.01, ha='left', fontsize=10,
