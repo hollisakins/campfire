@@ -244,6 +244,50 @@ def build_extended_reference_files(rate_files):
     return result
 
 
+_GEOMETRY_WR = {}
+
+
+def geometry_wavelengthrange(rate_path):
+    """The ``wavelengthrange`` reference the slitlet geometry of ``rate_path`` is built
+    with (coverage counters, ``RateGeometry``, the trace maps step 1 stores): the extended
+    one (to ``EXTENDED_MAX_WAVELENGTH_UM``) for G140M/F100LP and G235M/F170LP whether or
+    not ``[nirspec.stage2].extend_g140m_g235m`` is on, None (the CRDS one) otherwise.
+
+    The first-order light past the nominal range reaches the detector either way, and with
+    the CRDS range ``assign_wcs`` gives no WCS on a detector to a slitlet whose nominal
+    range lies wholly on the other one: on NRS2 of a spurs_gds exposure 21 of 116 G140M
+    slitlets (1.90-3.46 um there) had no footprint, and the coverage count changed on
+    17.0 % of the detector (13.2 % for G235M). The setting decides only what stage 2a
+    calibrates. Builds just this one file (not the flats) into ``$CAMPFIRE_ROOT/cache``,
+    under the name ``build_extended_reference_files`` gives it, written atomically so
+    parallel workers can call it."""
+    import crds
+    from campfire_pipeline.config import _get_campfire_root
+
+    hdr = fits.getheader(rate_path)
+    det = str(hdr.get("DETECTOR", "NRS1")).strip().upper()
+    grating = str(hdr.get("GRATING", "")).strip().upper()
+    filt = str(hdr.get("FILTER", "")).strip().upper()
+    if (grating, filt) not in EXTENDED_GRATING_FILTERS:
+        return None
+    params = _crds_params(det, grating, filt, hdr)
+    key = tuple(sorted(params.items()))
+    if key in _GEOMETRY_WR and os.path.exists(_GEOMETRY_WR[key]):
+        return _GEOMETRY_WR[key]
+    src = crds.getreferences(params, reftypes=["wavelengthrange"], observatory="jwst").get("wavelengthrange", "")
+    if not src or "N/A" in src.upper():
+        raise FileNotFoundError(f"CRDS returned no wavelengthrange for {det}/{grating}/{filt}")
+    cache_dir = os.path.join(_get_campfire_root(), "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    out = _extended_output_path(src, cache_dir)
+    if not os.path.exists(out):
+        tmp = f"{out}.{os.getpid()}.tmp.asdf"
+        _build_extended_wavelengthrange(src, tmp)
+        os.replace(tmp, out)
+    _GEOMETRY_WR[key] = out
+    return out
+
+
 def verify_extension_crds_compatibility(rate_files):
     """Refuse to run extended reductions if CRDS has drifted from the calibration.
 

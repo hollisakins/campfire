@@ -116,6 +116,25 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         )
 
 
+def mask_wavelength_range(grating, filt, override_wavelength_range, crds_range_m):
+    """The ``[blue, red]`` wavelength range (metres) the slit mask's ``assign_wcs`` takes for
+    one disperser, or None to keep the CRDS one (``crds_range_m``): the configured
+    ``override_wavelength_range`` (microns, per grating) when there is one, and for
+    G140M/F100LP, G235M/F170LP and the H gratings with those filters
+    (``EXTENDED_TRACE_GRATING_FILTERS``) the red edge raised to ``EXTENDED_MAX_WAVELENGTH_UM``
+    whatever the extension setting: their first-order light past the calibrated range is on
+    the detector either way (user decision 2026-11-06)."""
+    from campfire_pipeline.nirspec.constants import EXTENDED_MAX_WAVELENGTH_UM, EXTENDED_TRACE_GRATING_FILTERS
+    rng = override_wavelength_range.get(grating)
+    extend_red = (str(grating).upper(), str(filt).upper()) in EXTENDED_TRACE_GRATING_FILTERS
+    if not rng and not extend_red:
+        return None
+    blue, red = (rng[0] / 1e6, rng[1] / 1e6) if rng else tuple(crds_range_m)
+    if extend_red:
+        red = max(red, EXTENDED_MAX_WAVELENGTH_UM / 1e6)
+    return [blue, red]
+
+
 def mask_slits(
         input_model,
         input_dir,
@@ -159,10 +178,8 @@ def mask_slits(
     filter_grating = filt + '_' + grating
 
     override_grating_wavelength_range = False
-    if grating in override_wavelength_range:
-        override_grating_wavelength_range = override_wavelength_range[grating]
-
-    if override_grating_wavelength_range:
+    # whether there is a range to set at all (the CRDS one it starts from is read below)
+    if mask_wavelength_range(grating, filt, override_wavelength_range, (np.nan, np.nan)) is not None:
         import tempfile
         wavelengthrange_file = AssignWcsStep().get_reference_file(input_model, 'wavelengthrange')
         suffix = os.path.splitext(wavelengthrange_file)[1]
@@ -170,13 +187,12 @@ def mask_slits(
         os.close(tmp_fd)
         shutil.copy2(wavelengthrange_file, tmp_path)
         wavelengthrange_file = tmp_path
+        override_grating_wavelength_range = True          # the temp file is removed at the end
         import asdf
         af = asdf.open(wavelengthrange_file, mode='rw')
         idx = af['waverange_selector'].index(filter_grating)
-        af.tree['wavelengthrange'][idx] = [
-            override_grating_wavelength_range[0]/1e6,
-            override_grating_wavelength_range[1]/1e6
-        ]
+        af.tree['wavelengthrange'][idx] = mask_wavelength_range(
+            grating, filt, override_wavelength_range, tuple(float(v) for v in af.tree['wavelengthrange'][idx]))
         log(f"Setting {filter_grating} wavelength range to: {af.tree['wavelengthrange'][idx]}")
 
         af.update()

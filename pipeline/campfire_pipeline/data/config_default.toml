@@ -36,6 +36,7 @@
     plot = true
     
     [nirspec.stage1.override_wavelength_range] # mask beyond the nominal wavelength range, to cover higher-order spectra
+        # (G140M/F100LP, G235M/F170LP and the H gratings with those filters are masked to 5.3 um whatever these say)
         G140M = [0.70, 2.5]
         G235M = [1.66, 4.0]
         G395M = [2.87, 5.5]

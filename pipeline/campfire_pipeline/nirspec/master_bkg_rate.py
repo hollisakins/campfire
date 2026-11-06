@@ -54,7 +54,7 @@ from campfire_pipeline.nirspec import master_bkg as M
 from campfire_pipeline.nirspec import stuck_list as S
 from campfire_pipeline.nirspec import trace_overlap as TO
 from campfire_pipeline.nirspec.coverage import (GEOMETRY_VERSION, cache_path, cutoffs_for, default_cache_dir,
-                                                 rate_geometry)
+                                                 rate_geometry, resolve_wavelengthrange)
 
 STEP1_VERSION = '1.4'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different;
 #                                1.3: the tables written into the rate file (no _mbkgr.fits);
@@ -348,7 +348,7 @@ def _decided_hash(resolved, root):
     return hashlib.sha1(json.dumps(ents).encode()).hexdigest()[:12]
 
 
-def _inputs_cards(rate, bs_path, cutoffs, decided):
+def _inputs_cards(rate, bs_path, cutoffs, decided, wr=None):
     h = fits.getheader(rate)
     return {
         'CFMB1VER': (STEP1_VERSION, 'master background step 1 version'),
@@ -362,6 +362,7 @@ def _inputs_cards(rate, bs_path, cutoffs, decided):
         'MBKGDEC': (decided, 'hash of the manual/web stuck entries of the root'),
         'MBKGTMV': (TO.SHUTTER_MAP_VERSION, 'trace map (TM* extensions) version'),
         'MBKGGEOV': (GEOMETRY_VERSION, 'slitlet footprint geometry version'),
+        'MBKGWR': (os.path.basename(wr) if wr else 'CRDS', 'wavelengthrange of the footprint geometry'),
     }
 
 
@@ -422,10 +423,6 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
 
     opt = M.options(stage_config)
     cache_dir = default_cache_dir()
-    extended_refs = {}
-    if stage_config.get('extend_g140m_g235m'):
-        from campfire_pipeline.nirspec.extended_wavelength import build_extended_reference_files
-        extended_refs = build_extended_reference_files(obs.rate_files) or {}
 
     stuck_path = obs.stuck_closed_shutters_file
     _ = obs.stuck_closed_shutters                # creates the blank file when absent
@@ -436,9 +433,11 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
             continue
         base = M.rate_base_of(rate)
         key = (str(h['GRATING']).strip().upper(), str(h['FILTER']).strip().upper())
-        ext = extended_refs.get((str(h.get('DETECTOR', '')).strip(), key[0], key[1]))
+        # the geometry's wavelengthrange: the extended one for G140M / G235M whether or not
+        # stage 2a extends them (their red light is on the detector either way), resolved
+        # once here so the workers build and key the same geometry
         by_root.setdefault(S.root_of(base), []).append(dict(rate=rate, base=base, key=key, cutoffs=cutoffs_for(*key),
-                                                            wr=ext.get('wavelengthrange') if ext else None))
+                                                            wr=resolve_wavelengthrange(rate)))
     if not by_root:
         return []
     metafiles = S.root_metafiles(obs, roots=set(by_root))
@@ -450,7 +449,7 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
         for it in items:
             _, bs_path = M._barshadow_reference(it['key'][0], it['rate'])
             it['bs_path'] = bs_path
-            it['cards'] = _inputs_cards(it['rate'], bs_path, it['cutoffs'], decided)
+            it['cards'] = _inputs_cards(it['rate'], bs_path, it['cutoffs'], decided, it['wr'])
         stale = overwrite or not all(product_current(product_path(obs, it['base']), it['cards']) for it in items)
         if stale:
             todo[root] = items

@@ -61,6 +61,39 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Algorithm
 
+- **NIRSpec G140M / G235M: traces followed past the calibrated range, and bar-shadow tables to 5.3 µm
+  (`coverage.COVERAGE_VERSION` 4, `GEOMETRY_VERSION` 3, `trace_overlap.SHUTTER_MAP_VERSION` '3').**
+  The first-order light of G140M/F100LP and G235M/F170LP runs past the nominal range onto the detector
+  whether or not `[nirspec.stage2].extend_g140m_g235m` is on, and three places stopped short of it:
+  - *Footprint geometry* (coverage counters, `RateGeometry`, the trace maps step 1 stores): built with the
+    CRDS wavelengthrange, `assign_wcs` gives no WCS on a detector to a slitlet whose nominal range lies wholly
+    on the other one. On NRS2 of a spurs_gds exposure 21 of 116 G140M slitlets (1.90-3.46 um there) had no
+    footprint; the coverage count changed on 17.0 % of NRS2 (13.7 % from empty to covered, 3.1 % from one
+    footprint to shared) and on 13.2 % for G235M; NRS1 is unchanged. The geometry of these dispersers is now
+    always built on the extended wavelengthrange (`extended_wavelength.geometry_wavelengthrange`, the default of
+    every `coverage` builder through `resolve_wavelengthrange`); step 1 records the file in `MBKGWR`.
+  - *Stage 1's slit mask for the 1/f fit*: these traces (and the H gratings' with F100LP / F170LP) are masked
+    to 5.3 um whatever `override_wavelength_range` and the extension setting say
+    (`constants.EXTENDED_TRACE_GRATING_FILTERS`, `stage1.mask_wavelength_range`);
+    `config._widen_stage1_ranges_for_extension` is gone. On NRS2 of the spurs_gds exposures this masks another
+    4.4-4.5 % of the detector and halves the background the column fit keeps (median per column 159 -> 91
+    G140M, 166 -> 80 G235M); NRS1 is unchanged.
+  - *The empirical bar-shadow tables* stopped at 1.495 / 2.492 um (the CRDS templates' axis) and every lookup
+    held that shape beyond. Re-derived from the four SPURS fields on an axis widened to 5.3 um over the same
+    101 columns (jwst builds its shadow 101 columns wide; only `CDELT1` changes: 0.0433 / 0.0365 um), with
+    footprints on the extended range (G140M measured to 3.18 um, G235M to 5.05 um). A red column's cells are
+    uncertain by 5-10 % (the background per pixel fades), so each segment is fitted as a mean profile plus one
+    shape change whose amplitude is a cubic in wavelength, held past the data (`build_tables(lowrank=(1, 3))`,
+    the default of `Generate_Barshadow_Cals.py` on a widened axis). Held out on spurs_gds, open area, % of the
+    open level: G140M 0.3-0.9 rms at 0.97-1.5 um (as the old table), 0.8-1.7 at 1.9-2.5, 2.8-3.2 at 2.5-3.4;
+    G235M 0.9-1.8 at 1.65-2.5, 1.4-2.6 at 2.5-4.2 and 2.5-3.5 at 4.2-5.05 um, where the old table held at
+    2.49 um is off by 4.7-6.9. The G140M shadow barely changes past 1.9 um because the background there is
+    largely second-order (and past 2.9 um third-order) light, whose diffraction is that of half (a third) the
+    wavelength (up to 5-7 % of the open level by 3.2 um); G235M's edges move by up to 6-12 % between 1.7 and
+    5.2 um.
+  Every G140M / G235M observation needs stage 1 onward again (the stored maps and step-1 products of both read
+  as stale).
+
 - **NIRSpec optics model: every shutter opening is exactly its height (`optics.ENGINE_VERSION` 2,
   `FIT_VERSION` 8, bar offset `MEASURE_VERSION` 3).**
   The diffraction model drew the open shutters on a 0.0025 arcsec grid with `|y - centre| < half

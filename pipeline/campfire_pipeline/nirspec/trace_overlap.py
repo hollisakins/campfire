@@ -178,7 +178,8 @@ class TraceMap:
 # The stored map: per shutter, built once from the rate file's geometry
 # ---------------------------------------------------------------------------
 CORE = 2             # flag bit: inside the open area of the pixel's nearest open shutter (unpadded)
-SHUTTER_MAP_VERSION = '2'   # 2: failed-open shutters padded like any open shutter
+SHUTTER_MAP_VERSION = '3'   # 2: failed-open shutters padded like any open shutter;
+                            # 3: G140M/G235M geometry always on the extended wavelengthrange
 SHUTTER_MAP_EXTENSIONS = ('TMSH1', 'TMSH2', 'TMFLAG', 'TMSLITS', 'TMSHUT')
 
 

@@ -1,5 +1,6 @@
 """The extended slitlet geometry and the counter's footprint rule, on a fake slit transform."""
 import numpy as np
+from astropy.io import fits
 
 from campfire_pipeline.nirspec import coverage as C
 
@@ -46,10 +47,54 @@ def test_cutout_origin_shifts_the_transform_and_add_block_places_the_rows():
 
 
 def test_cache_path_changes_with_the_cutoffs_and_the_version():
-    a = C.cache_path('/x/jw_rate.fits', '/c', (None, None))
-    b = C.cache_path('/x/jw_rate.fits', '/c', (0.96, None))
+    a = C.cache_path('/x/jw_rate.fits', '/c', (None, None), None)
+    b = C.cache_path('/x/jw_rate.fits', '/c', (0.96, None), None)
     assert a != b and f'_v{C.COVERAGE_VERSION}' in a and a.endswith('.npy')
-    assert C.cache_path('/x/jw_rate.fits', '/c', (0.96, None)) == b
+    assert C.cache_path('/x/jw_rate.fits', '/c', (0.96, None), None) == b
+    assert '_wr' in C.cache_path('/x/jw_rate.fits', '/c', (0.96, None), '/r/extended_wr.asdf')
+
+
+def _rate_header(path, grating, filt):
+    hdu = fits.PrimaryHDU()
+    for k, v in dict(DETECTOR='NRS2', GRATING=grating, FILTER=filt, EXP_TYPE='NRS_MSASPEC',
+                     **{'DATE-OBS': '2025-01-01', 'TIME-OBS': '00:00:00'}).items():
+        hdu.header[k] = v
+    hdu.writeto(path)
+    return str(path)
+
+
+def test_g140m_and_g235m_geometry_always_takes_the_extended_wavelengthrange(tmp_path, monkeypatch):
+    """With no extension setting anywhere, a G140M/F100LP or G235M/F170LP rate file's
+    geometry is built on the extended wavelengthrange (to 5.3 um): the first-order light
+    past the nominal range is on the detector whatever stage 2a calibrates. Other
+    dispersers keep the CRDS range."""
+    import asdf
+    import crds
+    from campfire_pipeline.nirspec import extended_wavelength as E
+    src = str(tmp_path / 'jwst_nirspec_wavelengthrange_0008.asdf')
+    asdf.AsdfFile({'waverange_selector': ['F100LP_G140M', 'F170LP_G235M', 'F290LP_G395M'],
+                   'wavelengthrange': [[9.7e-7, 1.89e-6], [1.66e-6, 3.17e-6], [2.87e-6, 5.27e-6]],
+                   'meta': {'date': 'x'}}).write_to(src)
+    asked = []
+    monkeypatch.setattr(crds, 'getreferences', lambda params, **kw: asked.append(params) or {'wavelengthrange': src})
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path / 'root'))
+    E._GEOMETRY_WR.clear()
+    g140 = _rate_header(tmp_path / 'a_nrs2_rate.fits', 'G140M', 'F100LP')
+    wr = C.resolve_wavelengthrange(g140)
+    assert wr == str(tmp_path / 'root' / 'cache' / 'extended_jwst_nirspec_wavelengthrange_0008.asdf')
+    with asdf.open(wr) as af:
+        ranges = dict(zip(af['waverange_selector'], af['wavelengthrange']))
+    assert list(ranges['F100LP_G140M']) == [9.7e-7, 5.3e-6] and list(ranges['F170LP_G235M']) == [1.66e-6, 5.3e-6]
+    assert list(ranges['F290LP_G395M']) == [2.87e-6, 5.27e-6]
+    assert C.resolve_wavelengthrange(_rate_header(tmp_path / 'b_nrs2_rate.fits', 'G235M', 'F170LP')) == wr
+    assert C.resolve_wavelengthrange(_rate_header(tmp_path / 'c_nrs2_rate.fits', 'G395M', 'F290LP')) is None
+    assert C.resolve_wavelengthrange(g140, None) is None                  # an explicit choice wins
+    # the cache keys follow: the default is the extended range, keyed apart from the CRDS one
+    assert C.cache_path(g140, '/c', (0.96, None)) == C.cache_path(g140, '/c', (0.96, None), wr)
+    assert C.cache_path(g140, '/c', (0.96, None)) != C.cache_path(g140, '/c', (0.96, None), None)
+    n = len(asked)
+    C.resolve_wavelengthrange(g140)
+    assert len(asked) == n                                                 # memoised per configuration
 
 
 def test_failed_open_shutters_carry_a_commanded_slitlets_margin(monkeypatch):
