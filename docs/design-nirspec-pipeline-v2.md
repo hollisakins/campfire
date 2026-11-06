@@ -3307,6 +3307,7 @@ the change log (10).
 | Item | Owner | Waiting on |
 |---|---|---|
 | Fit jitter near a bar: refits 0.006 slit units apart move a galaxy's 1.5-2.5 um flux by a median 3.8 % (90 %: 23 %) on p1 | extraction session | |
+| The default shape for a source planned past the shutter edge (|planned centre| >= 0.5 slit units): `fnu_prof` / `fnu_opt` median 0.58 on spurs_gds (6 products; 3 below 0.6) against 1.2-1.5 elsewhere (`extraction-v2/prof_vs_opt.py`); e.g. 3544 at +0.55 to +0.57 in all three gratings, detection S/N 33-57 under the gate, `fnu_prof` 40-50 % of `fnu_opt`. The default shape is fixed at the planned position, where the model's transmission changes steeply with position. Options to put to the user: flag these products, let the default shape's centre move, or report `fnu_opt` for them | extraction session | |
 | Position along the dispersion: a pointing offset of 0.03-0.065 pitch per visit, not seen by the model; the correction coefficient differs between star sets (NGC 2506 0.38, 1133 0.74, shipped 0.572); jwst's table misses by 20-30 % at 0.4 pitch or more off centre. Test: one x offset per 1133 visit, then whether target-acquisition images give it for survey fields | extraction session | |
 | Gratings on the PRISM-fitted model: score it on grating stars (12497 obs 4 G140H, 1117 G140M); G140H on NRS2 already fits worse; gratings may sit 0.002-0.005 higher in bar offset (two observations) | extraction session | |
 | Epoch: the kernel fitted per visit, the core width by visit at fixed brightness | extraction session | |
