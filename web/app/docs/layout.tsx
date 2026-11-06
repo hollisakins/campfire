@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { BookOpen, ChevronDown, ChevronRight, Menu, X } from 'lucide-react';
-import { docsNav, isDynamicSlug, type DocPage } from '@/lib/docs/config';
+import { containsSlug, docsNav, isDynamicSlug, type DocPage } from '@/lib/docs/config';
 
 function NavItem({ item, level = 0 }: { item: DocPage; level?: number }) {
   const pathname = usePathname();
@@ -12,7 +12,8 @@ function NavItem({ item, level = 0 }: { item: DocPage; level?: number }) {
   const isActive = currentSlug === item.slug || (isDynamicSlug(item.slug) && currentSlug.startsWith(item.slug + '/'));
   const hasChildren = item.children && item.children.length > 0;
   const isParentOfActive = hasChildren && item.children?.some(
-    child => child.slug === currentSlug || (isDynamicSlug(child.slug) && currentSlug.startsWith(child.slug + '/'))
+    child => containsSlug(child, currentSlug)
+      || (isDynamicSlug(child.slug) && currentSlug.startsWith(child.slug + '/'))
   );
   const [isOpen, setIsOpen] = useState(isParentOfActive || isActive);
 

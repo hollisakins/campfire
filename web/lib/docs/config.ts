@@ -90,36 +90,43 @@ export const docsNav: DocPage[] = [
         title: 'NIRSpec Pipeline',
         slug: 'reduction/nirspec',
         description: 'Spectral extraction and calibration',
-      },
-      {
-        title: 'NIRSpec: Detector and calibration',
-        slug: 'reduction/nirspec/detector-calibration',
-        description: 'Count rates, the detector background, calibrated 2-D spectra',
-      },
-      {
-        title: 'NIRSpec: Backgrounds',
-        slug: 'reduction/nirspec/backgrounds',
-        description: 'Master background, closed and open shutters, nod subtraction',
-      },
-      {
-        title: 'NIRSpec: Slit losses',
-        slug: 'reduction/nirspec/slit-losses',
-        description: 'The model of the MSA optics and how it was derived',
-      },
-      {
-        title: 'NIRSpec: Extraction',
-        slug: 'reduction/nirspec/extraction',
-        description: 'The source model, overlapping spectra, the reported flux',
-      },
-      {
-        title: 'NIRSpec: Redshifts and lines',
-        slug: 'reduction/nirspec/redshifts',
-        description: 'Template redshifts and emission-line fluxes',
-      },
-      {
-        title: 'NIRSpec: Describing the reduction',
-        slug: 'reduction/nirspec/describing',
-        description: 'Versions to quote, a paragraph to adapt, choices to state',
+        children: [
+          {
+            title: 'Overview',
+            slug: 'reduction/nirspec',
+            description: 'The pipeline at a glance',
+          },
+          {
+            title: 'Detector and calibration',
+            slug: 'reduction/nirspec/detector-calibration',
+            description: 'Count rates, the detector background, calibrated 2-D spectra',
+          },
+          {
+            title: 'Backgrounds',
+            slug: 'reduction/nirspec/backgrounds',
+            description: 'Master background, closed and open shutters, nod subtraction',
+          },
+          {
+            title: 'Slit losses',
+            slug: 'reduction/nirspec/slit-losses',
+            description: 'The model of the MSA optics and how it was derived',
+          },
+          {
+            title: 'Extraction',
+            slug: 'reduction/nirspec/extraction',
+            description: 'The source model, overlapping spectra, the reported flux',
+          },
+          {
+            title: 'Redshifts and lines',
+            slug: 'reduction/nirspec/redshifts',
+            description: 'Template redshifts and emission-line fluxes',
+          },
+          {
+            title: 'Describing the reduction',
+            slug: 'reduction/nirspec/describing',
+            description: 'Versions to quote, a paragraph to adapt, choices to state',
+          },
+        ],
       },
       {
         title: 'NIRCam Pipeline',
@@ -192,16 +199,29 @@ export const docsNav: DocPage[] = [
   },
 ];
 
-// Helper to find a doc page by slug (supports dynamic sub-pages)
-export function findDocBySlug(slug: string): DocPage | undefined {
-  for (const page of docsNav) {
-    if (page.slug === slug) return page;
+/** The path of nav entries from the top level down to ``slug`` (a section's own entry, not its same-slug
+ * "Overview" child), or undefined. Sections nest to any depth. */
+function pathTo(slug: string, pages: DocPage[] = docsNav): DocPage[] | undefined {
+  for (const page of pages) {
+    if (page.slug === slug) return [page];
     if (page.children) {
-      for (const child of page.children) {
-        if (child.slug === slug) return child;
-      }
+      const below = pathTo(slug, page.children.filter(child => child.slug !== page.slug));
+      if (below) return [page, ...below];
     }
   }
+  return undefined;
+}
+
+/** Whether ``slug`` is ``page`` or lies anywhere below it. */
+export function containsSlug(page: DocPage, slug: string): boolean {
+  if (page.slug === slug) return true;
+  return (page.children ?? []).some(child => containsSlug(child, slug));
+}
+
+// Helper to find a doc page by slug (supports dynamic sub-pages)
+export function findDocBySlug(slug: string): DocPage | undefined {
+  const path = pathTo(slug);
+  if (path) return path[path.length - 1];
   // For dynamic sub-pages (e.g. data-products/programs/7076), resolve to the parent entry
   const parentSlug = getDynamicParentSlug(slug);
   if (parentSlug) return findDocBySlug(parentSlug);
@@ -210,49 +230,29 @@ export function findDocBySlug(slug: string): DocPage | undefined {
 
 // Helper to get breadcrumb trail for a slug
 export function getBreadcrumbs(slug: string): { title: string; slug: string }[] {
-  const breadcrumbs: { title: string; slug: string }[] = [];
-
-  for (const page of docsNav) {
-    if (page.slug === slug) {
-      breadcrumbs.push({ title: page.title, slug: page.slug });
-      return breadcrumbs;
-    }
-    if (page.children) {
-      for (const child of page.children) {
-        if (child.slug === slug) {
-          breadcrumbs.push({ title: page.title, slug: page.slug });
-          breadcrumbs.push({ title: child.title, slug: child.slug });
-          return breadcrumbs;
-        }
-      }
-    }
-  }
+  const path = pathTo(slug);
+  if (path) return path.map(p => ({ title: p.title, slug: p.slug }));
 
   // For dynamic sub-pages, build breadcrumbs from the parent dynamic entry
   const parentSlug = getDynamicParentSlug(slug);
-  if (parentSlug) {
-    const parentBreadcrumbs = getBreadcrumbs(parentSlug);
-    return parentBreadcrumbs;
-  }
+  if (parentSlug) return getBreadcrumbs(parentSlug);
 
-  return breadcrumbs;
+  return [];
 }
 
 // Helper to get previous and next pages for navigation
 export function getAdjacentPages(slug: string): { prev?: DocPage; next?: DocPage } {
   const flatPages: DocPage[] = [];
 
-  for (const page of docsNav) {
-    flatPages.push(page);
-    if (page.children) {
-      // Skip the first child if it has the same slug as parent (overview)
-      for (const child of page.children) {
-        if (child.slug !== page.slug) {
-          flatPages.push(child);
-        }
-      }
+  // Depth first; a section's same-slug "Overview" child is the section itself, so it is skipped
+  const walk = (pages: DocPage[], parentSlug?: string) => {
+    for (const page of pages) {
+      if (page.slug === parentSlug) continue;
+      flatPages.push(page);
+      if (page.children) walk(page.children, page.slug);
     }
-  }
+  };
+  walk(docsNav);
 
   const currentIndex = flatPages.findIndex(p => p.slug === slug);
 
