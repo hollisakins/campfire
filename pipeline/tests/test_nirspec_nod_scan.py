@@ -118,10 +118,11 @@ def test_scan_divides_by_noise_scale():
     out = {}
     for f in (1.0, 0.5):
         R.model.pix['v'] = R.model.pix['v'] * f ** 2      # same fit, errors understated by 1/f
-        out[f] = (NS.run(R, dchi2_min=60.0), NS.run(R, dchi2_min=60.0, noise='none'))
-    assert out[0.5][1].dchi2 == pytest.approx(4 * out[1.0][1].dchi2, rel=1e-6)
-    assert out[0.5][0].dchi2 == pytest.approx(out[1.0][0].dchi2, rel=1e-6)
-    assert out[0.5][0].noise == pytest.approx(4 * out[1.0][0].noise, rel=1e-6)
+        out[f] = NS.run(R, dchi2_min=60.0)
+    raw = {f: S.dchi2 * S.noise for f, S in out.items()}
+    assert raw[0.5] == pytest.approx(4 * raw[1.0], rel=1e-6)
+    assert out[0.5].dchi2 == pytest.approx(out[1.0].dchi2, rel=1e-6)
+    assert out[0.5].noise == pytest.approx(4 * out[1.0].noise, rel=1e-6)
     exps = T._exposures(src_y=0.0)
     _data(exps, 30.0, 0.0, MSA_SLIT_PITCH, seed=3)                 # no neighbour: correct errors read ~1
     assert 0.85 < NS.run(PF.fit(exps, chromatic=False), dchi2_min=60.0).noise < 1.15
@@ -139,17 +140,14 @@ def test_brighter_close_neighbour_is_unresolvable():
 
 
 def test_close_fainter_neighbour_withheld():
-    """A fainter neighbour 0.75 slit units away: the round-2 rule ('brighter') proposed
-    for it; the default ('all') withholds it (its copies overlap the target's rows
-    under every partner choice)."""
+    """A fainter neighbour 0.75 slit units away is withheld too (its copies overlap the
+    target's rows under every partner choice)."""
     exps = T._exposures(src_y=0.0)
     _data(exps, 30.0, 15.0, 0.75, seed=2)
     R = PF.fit_fixed(exps)
     S = NS.run(R, dchi2_min=60.0, null_ratio=0.0)
     assert S.detected and abs(S.delta) < 0.9 and S.brightness < 1.0
     assert S.proposals == {} and 'too close' in S.suppressed
-    S = NS.run(R, dchi2_min=60.0, null_ratio=0.0, close_rule='brighter')
-    assert S.suppressed == ''
 
 
 def test_cross_check_withholds_disagreeing_proposals():

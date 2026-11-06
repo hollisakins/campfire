@@ -1010,83 +1010,6 @@ def fit(exps, chromatic=True, priors=None, clip=5.0, n_clip=2, grid=None, bounds
     return R
 
 
-PARTIAL_FREE = {'width': ('width',), 'centre': ('centre',)}
-
-
-def fit_partial(exps=None, free=('width',), base=None, clip=5.0, n_clip=2, model=None, chromatic=True,
-                priors=None, grid=None, bounds=None):
-    """Own fit of some of the shape parameters, the others held at a fixed shape.
-
-    free : names among 'centre', 'drift', 'width', 'width_change' that are fitted (with
-        their priors).
-    base : dict(centre_offset, drift, width, width_change) of the held parameters
-        (``shape_vector``); default the default shape.
-    For an intermediate detection S/N, where a full own fit follows the noise: the
-    width alone (centre at the planned position) or the centre alone.
-    """
-    names = ['centre', 'drift', 'width', 'width_change']
-    if model is not None:
-        M = model
-        M.use = np.ones(M.npix, bool)
-    else:
-        M = ProfileModel(exps, chromatic=chromatic, priors=priors, grid=grid, bounds=bounds)
-    if not M.chromatic:
-        raise ValueError('fit_partial needs the chromatic model (four shape parameters)')
-    q0 = shape_vector(base, M.c_prior, M.priors.width_median)
-    sel = [names.index(n) for n in free]
-    lo, hi = M.bounds()
-
-    def full(x):
-        q = q0.copy()
-        q[sel] = x
-        return q
-
-    def res(x):
-        return M.residuals(full(x))
-    starts = [{}]
-    if 'centre' in free:
-        starts = [dict(centre=M.c_prior + d) for d in (-0.2, -0.1, 0.0, 0.1, 0.2)]
-    if 'width' in free:
-        starts = [dict(s, width=np.log(w)) for s in starts for w in (0.03, 0.15, 0.4)]
-    best = None
-    for s in starts:
-        x = q0[sel].copy()
-        for nm, v in s.items():
-            x[sel.index(names.index(nm))] = v
-        c = float(np.sum(res(x) ** 2))
-        if best is None or c < best[0]:
-            best = (c, x)
-    x = np.clip(best[1], lo[sel] + 1e-6, hi[sel] - 1e-6)
-    for it in range(n_clip + 1):
-        # optimise x + 1: least_squares' xtol test is relative to |x|, which is ~0 for a centre
-        # at a planned position of 0 with zero offsets (it would stop at the start)
-        r_ = least_squares(lambda y: res(y - 1.0), x + 1.0, bounds=(lo[sel] + 1.0, hi[sel] + 1.0),
-                           x_scale='jac', ftol=1e-5, xtol=1e-5, gtol=1e-5)
-        x = r_.x - 1.0
-        if it == n_clip:
-            break
-        p, eoff = M.unpack(full(x))
-        f, _, _, A = M.solve(p, eoff)
-        r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
-        new = np.abs(r) < clip
-        if np.array_equal(new, M.use):
-            break
-        M.use = new
-    q = full(x)
-    p, eoff = M.unpack(q)
-    f, cov, good, A = M.solve(p, eoff, covariance=True)
-    r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
-    params = dict(centre=float(p[0]), drift=float(p[1]), width=float(np.exp(p[2])), width_change=float(p[3]),
-                  pivot=M.pivot, centre_prior=M.c_prior)
-    R = FitResult(params=params, eoff=eoff, lam=M.lam_grid, flux=np.where(good, f, np.nan),
-                  flux_err=np.where(good, np.sqrt(np.abs(np.diag(cov))), np.nan), chi2=float(np.sum(r[M.use] ** 2)),
-                  npix=int(round(float(np.sum(M.dof_weight()[M.use])))), nfree=int(good.sum()) + len(sel),
-                  chromatic=True, model=M)
-    R.bound_bits = M.bound_hits(q)
-    R.use = M.use.copy()
-    return R
-
-
 def shape_vector(shape, c_prior, width_default):
     """Shape vector (centre, drift, ln width, width change) from a dict with
     ``centre_offset`` (from the planned position), ``drift``, ``width``, ``width_change``."""
@@ -1136,26 +1059,12 @@ def fit_fixed(exps=None, shape=None, eoff=None, clip=5.0, n_clip=2, model=None,
     return R
 
 
-def noise_scale(M, r):
-    """Calibration of the stated errors from the normalised residuals ``r`` of a fit:
-    the robust (MAD) variance over all fitted pixels, divided by the variance the
-    nod bookkeeping expects ((N-1)/N, ``ProfileModel.dof_weight``). The source
-    covers a minority of the fitted pixels, so a shape mismatch moves the median
-    absolute residual little, unlike the reduced chi2."""
-    rr = r[M.use]
-    if rr.size < 10:
-        return 1.0
-    mad = 1.4826 * np.median(np.abs(rr - np.median(rr)))
-    c = mad ** 2 / float(np.median(M.dof_weight()[M.use]))
-    return float(c) if np.isfinite(c) and c > 0 else 1.0
-
-
 def mean_square_scale(M, r, clip=5.0):
     """Calibration of the stated errors from the normalised residuals ``r`` of a fit:
     the mean square of the residuals within ``clip`` sigma, per independent value
-    (``ProfileModel.dof_weight``). Unlike the MAD (``noise_scale``) it includes the
-    noise's own tails: on blank sources the MAD reads 10-20 % below the mean square,
-    and dividing a chi2 by it inflates the detection S/N of nothing."""
+    (``ProfileModel.dof_weight``). It includes the noise's own tails: on blank
+    sources a MAD reads 10-20 % below the mean square, and dividing a chi2 by it
+    inflates the detection S/N of nothing."""
     u = np.isfinite(r) & (np.abs(r) < clip)
     if u.sum() < 10:
         return 1.0
@@ -1163,23 +1072,19 @@ def mean_square_scale(M, r, clip=5.0):
     return c if np.isfinite(c) and c > 0 else 1.0
 
 
-def detection_snr(M, clip=5.0, n_clip=2, scale='mean_square'):
+def detection_snr(M, clip=5.0, n_clip=2):
     """Integrated detection S/N of a source, the gate of the shape chain.
 
     For each starting shape of the fit (``ProfileModel.start_grid``) the spectrum is
     solved and its chi2 improvement over no source, dchi2 = f . (A^T W d), is
     computed; the best is used, so compact or offset sources are not penalised by
     the default template. dchi2 is divided by a noise scale c measured from the
-    residuals at that best shape, and the number of spectrum points is subtracted
-    (its expectation for no source):  snr_det = sqrt(max(dchi2 / c - n, 0)).
-
-    scale : 'mean_square' (default, ``mean_square_scale``: residuals within
-        ``clip`` sigma) or 'mad' (``noise_scale``, the statistic before
-        2026-10-23, which read 10-20 % low on blanks and put the null at the
-        thresholds).
+    residuals at that best shape (``mean_square_scale``), and the number of spectrum
+    points is subtracted (its expectation for no source):
+    snr_det = sqrt(max(dchi2 / c - n, 0)).
 
     Outlier pixels are clipped first at the default shape. Returns
-    (snr_det, dict with dchi2, n, c, c_mad, c_ms, best shape vector)."""
+    (snr_det, dict with dchi2, n, c, best shape vector)."""
     M.use = np.ones(M.npix, bool)
     p0 = shape_vector(None, M.c_prior, M.priors.width_median)
     e0 = np.zeros(len(M.exps))
@@ -1201,13 +1106,9 @@ def detection_snr(M, clip=5.0, n_clip=2, scale='mean_square'):
             best = (d, p, int(good.sum()), A, f)
     d, p, n, A, f = best
     r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
-    c_mad = noise_scale(M, r)
-    c_ms = mean_square_scale(M, r, clip=clip)
-    if scale not in ('mean_square', 'mad'):
-        raise ValueError(f"gate_noise must be 'mean_square' or 'mad', got {scale!r}")
-    c = c_ms if scale == 'mean_square' else c_mad
+    c = mean_square_scale(M, r, clip=clip)
     s2 = d / c - n
-    return float(np.sqrt(max(s2, 0.0))), dict(dchi2=d, n=n, c=c, c_mad=c_mad, c_ms=c_ms, shape=p)
+    return float(np.sqrt(max(s2, 0.0))), dict(dchi2=d, n=n, c=c, shape=p)
 
 
 def planned_position(exps, tolerance=0.05):

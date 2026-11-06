@@ -45,6 +45,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   `PFPLREF`. `cfpipe nirspec crds-compare` prints the standing comparison of the active context's
   references with the calibrations; run it with every `CRDS_CONTEXT` bump.
 
+- **NIRSpec stage 3: the alternative extraction modes kept for comparison are removed.** Each had
+  lost its comparison, and none is a choice a user needs. Removed from `[nirspec.stage3]`:
+  `profile_fit_shape = "free"` (the v1 fit), `profile_fit_prism_mode = "always"`, `gate_noise = "mad"`,
+  `profile_fit_partial` and `gate_partial_snr_*`, `profile_fit_rows = "model"` and
+  `profile_fit_model_rows_frac`, `contam_mode = "mask"` (other slitlets' light is always subtracted
+  before the shape fit, and the pixels where the prediction is itself uncertain are left out),
+  `contam_dominance*` (the ratio is recorded in `PFDOMIN`, never acted on), `contam_1d` and
+  `contam_1d_min_sigma` (`fnu_contam` is always reported and never subtracted from `fnu`; the
+  `profile_decontam` extraction is gone), `scan_noise = "none"`, `scan_close_rule` (a close neighbour
+  is always withheld) and `scan_gain_rule` (the gain is recorded only). The defaults were already
+  these behaviors, so products do not change, except that `EXTRWHY` reads `contam_predicted` (was
+  `contam_report`), `PFCMODE` reads `subtracted` (was `hybrid`), and `PFGATEM` and `PFROWS` are no
+  longer written.
+
 - **NIRSpec: exposure sequences counted past 9 (`0410b`, `0410f`, ...) are found.** The
   activity of a JWST exposure sequence counts 1..9, a..z; the canonical-name pattern of
   `barshadow_calibration` (the master background's and the bar-shadow derivation's input

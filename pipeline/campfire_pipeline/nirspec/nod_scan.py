@@ -295,12 +295,12 @@ def proposal_gain(fracs, clean, snr):
     return float(gain), float(cost)
 
 
-def propose(R, delta, amps, drop_frac=0.2, nbins=16, width=None, gain_rule=False):
+def propose(R, delta, amps, drop_frac=0.2, nbins=16, width=None):
     """Partner proposals from the fractions (see module doc).
 
-    ``gain_rule``: a nod's proposal is kept only when its modelled gain exceeds its
-    variance cost (``proposal_gain``). Returns (proposals {root: {nod: [nods]}},
-    unresolved ['root:nod'], dirty, gains {'root:nod': (gain, cost)})."""
+    Returns (proposals {root: {nod: [nods]}}, unresolved ['root:nod'], dirty,
+    gains {'root:nod': (gain, cost)}: the modelled gain of each proposal and its
+    variance cost, ``proposal_gain``, recorded only)."""
     M = R.model
     snr = {}
     fr = partner_fractions(R, delta, amps, nbins=nbins, width=width, snr=snr)
@@ -317,23 +317,16 @@ def propose(R, delta, amps, drop_frac=0.2, nbins=16, width=None, gain_rule=False
             unres.append(key)
             continue
         gains[key] = proposal_gain(d, clean, snr.get(k, np.inf))
-        if gain_rule and not gains[key][0] > gains[key][1]:
-            continue
         props.setdefault(_root(e), {})[str(_nod(e))] = sorted(_nod(M.exps[j]) for j in clean)
     return props, unres, dirty, gains
 
 
-CLOSE_RULES = ('all', 'fainter', 'brighter', 'off')
-
-
 def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, null_ratio=1.5,
-        noise='mean_square', close=0.9, close_rule='all', gain_rule=False, flag_dchi2=np.inf, flag_low=np.inf,
-        flag_null_ratio=5.0):
+        close=0.9, flag_dchi2=np.inf, flag_low=np.inf, flag_null_ratio=5.0):
     """Scan, detect, propose. Never raises (a failure is recorded in ``error``).
 
-    The chi2 drops are divided by a noise scale (``noise = 'mean_square'``: the
-    reduced chi2 of the target + best neighbour + nuisance model on the fitted
-    pixels; 'none': not divided, as before 2026-10-23), so a bright target whose
+    The chi2 drops are divided by a noise scale (the reduced chi2 of the target +
+    best neighbour + nuisance model on the fitted pixels), so a bright target whose
     residuals carry shape mismatch, or understated errors, do not read as a
     neighbour. Detected when the best positive drop
     exceeds ``dchi2_min``, its S/N ``min_snr``, and ``null_ratio`` times the best
@@ -344,10 +337,7 @@ def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, nul
     A neighbour closer than ``close`` slit units cannot be separated from the target
     by choosing partners: its copies land on the target's rows whatever the choice,
     and in the slitlet injections applying such proposals made the target's flux
-    worse (2026-10-23). ``close_rule = 'all'`` withholds them whatever the
-    neighbour's brightness; 'brighter' only for a neighbour brighter than the target
-    (round 2); 'fainter' only for a neighbour no brighter than the target; 'off' never.
-    ``gain_rule``: see ``propose``.
+    worse (2026-10-23). They are withheld whatever the neighbour's brightness.
 
     The product flag (``candidate``) needs the statistic above ``flag_dchi2``, or above
     ``flag_low`` and ``flag_null_ratio`` times the negative-amplitude statistic (three or
@@ -355,8 +345,6 @@ def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, nul
     ``dchi2_min`` is the proposal level. On the p14 + p9 population (989 products) the
     mirror of this rule on the negative statistic fires on 1.7-2.1 % at 1500 / 500 / 5
     (round 3); the 80 level alone fires on 26-30 % of products."""
-    if close_rule not in CLOSE_RULES:
-        raise ValueError(f'scan_close_rule must be one of {CLOSE_RULES}, got {close_rule!r}')
     out = ScanResult(flag_dchi2=float(flag_dchi2))
     try:
         info = {}
@@ -364,15 +352,12 @@ def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, nul
         out.curve = (grid, dpos, dneg)
         if grid.size == 0:
             return out
-        if noise == 'mean_square':
-            # reduced chi2 once the best neighbour (either sign) is in the model: the
-            # neighbour's own light does not inflate it, shape mismatch of a bright
-            # target and understated errors do
-            best = max(float(dpos.max()), float(dneg.max()))
-            c = (info['chi2'] - best) / max(info['n_eff'] - 3 * nbins, 1.0)
-            out.noise = float(c) if np.isfinite(c) and c > 0 else 1.0
-        elif noise != 'none':
-            raise ValueError(f"scan_noise must be 'mean_square' or 'none', got {noise!r}")
+        # reduced chi2 once the best neighbour (either sign) is in the model: the
+        # neighbour's own light does not inflate it, shape mismatch of a bright
+        # target and understated errors do
+        best = max(float(dpos.max()), float(dneg.max()))
+        c = (info['chi2'] - best) / max(info['n_eff'] - 3 * nbins, 1.0)
+        out.noise = float(c) if np.isfinite(c) and c > 0 else 1.0
         dpos, dneg = dpos / out.noise, dneg / out.noise
         out.curve = (grid, dpos, dneg)
         i = int(np.argmax(dpos))
@@ -392,9 +377,8 @@ def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, nul
             tg = float(np.nanmean(info['flux']))
             out.brightness = nb / tg if tg > 0 else np.inf
             out.proposals, out.unresolved, out.dirty, out.gains = propose(
-                R, out.delta, amps[i], drop_frac=drop_frac, nbins=nbins, width=width, gain_rule=gain_rule)
-            if abs(out.delta) < close and (close_rule == 'all' or (close_rule == 'brighter' and out.brightness > 1.0)
-                                            or (close_rule == 'fainter' and not out.brightness > 1.0)):
+                R, out.delta, amps[i], drop_frac=drop_frac, nbins=nbins, width=width)
+            if abs(out.delta) < close:
                 out.suppressed = (f'brighter neighbour at {out.delta:+.2f}: unresolvable' if out.brightness > 1.0
                                   else f'neighbour at {out.delta:+.2f}: too close to separate')
                 out.proposals = {}

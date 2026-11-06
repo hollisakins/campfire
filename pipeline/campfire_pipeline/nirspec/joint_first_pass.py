@@ -182,7 +182,7 @@ def shape_for(exps, M, cfg, is_prism, prism_shape):
     gate, else the default shape."""
     if not is_prism and prism_shape is not None and prism_shape.shape == 'own':
         return PF.map_shape(prism_shape.params, M.pivot), 'prism'
-    snr, _ = PF.detection_snr(M, scale=cfg.gate_noise)
+    snr, _ = PF.detection_snr(M)
     if snr >= (cfg.gate_prism if is_prism else cfg.gate_grating):
         try:
             Ro = PF.fit(exps, model=M)

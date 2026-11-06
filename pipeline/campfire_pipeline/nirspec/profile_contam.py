@@ -38,14 +38,12 @@ Nothing is iterated: each step reads only the output of the steps before it.
   hits a named fallback (no usable pixel, too few wavelengths) gets one from its
   stage-3 3-pixel boxcar placed with the default shape (``boxcar_pass1``), which
   subtracts like any reliable pass 1; only a source with no stage-3 s2d has none.
-* **Use** (``contam_mode``): ``mask`` drops pixels where the predicted light exceeds
-  ``kappa`` times the target's per-pixel noise; ``hybrid`` (default) subtracts the
-  prediction everywhere and drops the pixels where the prediction's own uncertainty
-  exceeds ``kappa`` times the noise. Failed-open shutters are recorded only (their sky
-  cancels in a nod difference). This only changes the shape fit. The predicted light
-  is drizzled like the data (``CONTAM2D``) and extracted with the same weights as
-  ``fnu_prof`` (``fnu_contam``). Whether the best spectrum ``fnu`` has the prediction
-  subtracted is the ``contam_1d`` knob (``stage3._profile_fit_columns``).
+* **Use** (``apply``): the prediction is subtracted everywhere, and the pixels where
+  its own uncertainty exceeds ``kappa`` times the target's per-pixel noise are dropped.
+  Failed-open shutters are recorded only (their background cancels in a nod
+  difference). This only changes the shape fit. The predicted light is drizzled like
+  the data (``CONTAM2D``) and extracted with the same weights as ``fnu_prof``
+  (``fnu_contam``), which is reported beside the spectrum, not subtracted from it.
 """
 
 import glob
@@ -277,8 +275,7 @@ def pass1_settings(stage_config):
         sm_g = smooth_points(g('contam_pass1_smooth_grating', 15.0))
     out = dict(smooth_prism=sm_p, smooth_grating=sm_g,
                lines=bool(g('contam_pass1_lines', True)),
-               gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
-               gate_noise=str(g('gate_noise', 'mean_square')).lower())
+               gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)))
     bars = g('bar_offsets', None)
     if bars:
         # the measured bar offsets (``bar_offset.table``): a new measurement redoes pass 1
@@ -833,18 +830,19 @@ def contam_light_ratio(P, R, exps):
     return num / den if den > 0 else np.inf
 
 
-def apply(exps, P, mode='hybrid', kappa=1.0, dominance_kappa=1.0):
-    """Apply a prediction to the exposures before the shape fit (in place).
+DIRTY_KAPPA = 1.0      # a pixel is "dirty" when other sources' predicted light exceeds this x the noise
+
+
+def apply(exps, P, kappa=1.0):
+    """Apply a prediction to the exposures before the shape fit (in place): subtract
+    it, and drop the pixels where its own uncertainty exceeds ``kappa`` times the noise.
 
     Returns dict(overall, per_exposure, masked) with the fraction of the target's
     main-shutter pixels kept, and ``clean_pred`` / ``clean_pred_exposure``: the
     fraction of main-shutter pixels where the predicted other-source light stays below
-    ``dominance_kappa`` times the noise, whatever the mode did with it (in hybrid mode a well-predicted contaminant is subtracted,
-    not masked, so ``overall`` does not say how much of the trace it covers).
-    Also ``failed_open``: the fraction of main-shutter pixels in failed-open shutters.
-    ``mode``: mask | hybrid (see module doc)."""
-    if mode not in ('mask', 'hybrid'):
-        raise ValueError(f"contam_mode must be 'mask' or 'hybrid', got {mode!r}")
+    ``DIRTY_KAPPA`` times the noise (a well-predicted contaminant is subtracted, not
+    masked, so ``overall`` does not say how much of the trace it covers). Also
+    ``failed_open``: the fraction of main-shutter pixels in failed-open shutters."""
     c_plan = PF.planned_position(exps)[0]
     per, tot_b, tot_a, tot_c, tot_fo, per_c = [], 0, 0, 0, 0, []
     for k, e in enumerate(exps):
@@ -854,19 +852,13 @@ def apply(exps, P, mode='hybrid', kappa=1.0, dominance_kappa=1.0):
         b = int((e.ok & ms).sum())
         sig = diff_sigma(exps, k)
         drop = np.zeros(e.y.shape, bool)
-        # jointly solved light (``joint_first_pass.add_joint_light``) is subtracted in both modes, never masked
-        pj = P.pred_joint[k] if getattr(P, 'pred_joint', None) is not None else 0.0
         with np.errstate(invalid='ignore'):
             tot = np.abs(P.pred[k] + (P.pred_unreliable[k] if P.pred_unreliable is not None else 0.0))
-            dirty = tot > dominance_kappa * sig
+            dirty = tot > DIRTY_KAPPA * sig
             if P.pred_unreliable is not None:
                 drop |= np.abs(P.pred_unreliable[k]) > kappa * sig
-            if mode == 'mask':
-                e.diff = np.where(np.isfinite(pj), e.diff - pj, e.diff)
-                drop |= np.abs(P.pred[k] - pj) > kappa * sig
-            else:
-                e.diff = np.where(np.isfinite(P.pred[k]), e.diff - P.pred[k], e.diff)
-                drop |= P.dpred[k] > kappa * sig
+            e.diff = np.where(np.isfinite(P.pred[k]), e.diff - P.pred[k], e.diff)
+            drop |= P.dpred[k] > kappa * sig
         c = int((e.ok & ms & ~dirty).sum())
         if P.failed_open is not None:
             tot_fo += int((e.ok & ms & P.failed_open[k]).sum())

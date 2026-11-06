@@ -19,8 +19,7 @@ which shape builds the extraction profile:
    products that fell to the default shape, once every grating has run
    (``stage3.grating_transfer_plan``).
 3. **default**: the star-measured PSF times a Gaussian of the prior median width (or
-   ``default_shape_width``) at the planned position. Optionally, between ``gate_partial_snr_*`` and the gate,
-   an own fit of the width (or centre) only (``profile_fit_partial``).
+   ``default_shape_width``) at the planned position.
 
 Every candidate that runs is compared on the same pixels (a pixel is kept when any
 candidate's outlier clipping keeps it), with the spectrum re-solved and without
@@ -38,16 +37,14 @@ from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec import profile_timing as TM
 
 
-SHAPES = ('gated', 'free', 'fixed')
-PRISM_MODES = ('unless_better', 'always')
+SHAPES = ('gated', 'fixed')
 
 
 @dataclass
 class ChainConfig:
-    shape: str = 'gated'                 # gated | free (V0: old priors and bounds, no gate) | fixed (default shape)
+    shape: str = 'gated'                 # gated | fixed (the default shape only)
     chromatic: bool = True
     prism_transfer: bool = True
-    prism_mode: str = 'unless_better'    # unless_better | always
     gate_prism: float = 25.0             # own fit above these (round-3 realistic-mix injections,
     gate_grating: float = 70.0           # mean-square gate statistic; 2026-10-23)
     own_vs_prism_dchi2: float = 25.0     # plus k ln(N_eff), k = shape parameters
@@ -62,16 +59,7 @@ class ChainConfig:
     disagree_width_ratio: tuple = (0.6, 1.6)
     min_clean_fraction: float = 0.5      # contamination masking: below this no own fit
     min_clean_fraction_exposure: float = 0.3
-    gate_noise: str = 'mean_square'      # noise scale of the gate statistic: mean_square | mad
-    dominance: str = 'light'             # other sources dominate the trace -> no own fit: light | pixels | off
-    dominance_max: float = 1.0           # light: their predicted light / the target's fitted light on the main shutter
-    dominance_min_clean: float = 0.5     # pixels: main-shutter fraction below dominance_kappa x noise
-    dominance_apply: str = 'mask_only'   # always | mask_only (only when contam_mode = mask) | flag (PFDOMIN only)
-    contam_mode: str = 'hybrid'
     default_width: float = None          # width of the default shape (None: the prior median width)
-    partial_fit: str = 'off'             # below the gate: off | width | centre (own fit of that parameter only)
-    gate_partial_prism: float = 25.0     # ... from these gates up
-    gate_partial_grating: float = 30.0
 
     def default_shape(self):
         """Shape dict of the default candidate for ``profile_fit.fit_fixed`` (None: the prior median width)."""
@@ -84,9 +72,6 @@ class ChainConfig:
         shape = str(g('profile_fit_shape', 'gated')).lower()
         if shape not in SHAPES:
             raise ValueError(f'profile_fit_shape must be one of {SHAPES}, got {shape!r}')
-        mode = str(g('profile_fit_prism_mode', 'unless_better')).lower()
-        if mode not in PRISM_MODES:
-            raise ValueError(f'profile_fit_prism_mode must be one of {PRISM_MODES}, got {mode!r}')
         priors = PF.Priors(
             centre_sigma=float(g('prior_centre_sigma', 0.08)),
             drift_sigma=float(g('prior_drift_sigma', 0.03)),
@@ -96,18 +81,9 @@ class ChainConfig:
         bounds = PF.Bounds(
             centre=float(g('bound_centre', 0.3)), drift=float(g('bound_drift', 0.3)),
             width_max=float(g('bound_width_max', 0.6)), width_change=float(g('bound_width_change', 0.3)))
-        dom = str(g('contam_dominance', 'light')).lower()
-        if dom not in ('light', 'pixels', 'off'):
-            raise ValueError(f"contam_dominance must be 'light', 'pixels' or 'off', got {dom!r}")
-        dapply = str(g('contam_dominance_apply', 'mask_only')).lower()
-        if dapply not in ('always', 'mask_only', 'flag'):
-            raise ValueError(f"contam_dominance_apply must be 'always', 'mask_only' or 'flag', got {dapply!r}")
-        partial = str(g('profile_fit_partial', 'off')).lower()
-        if partial not in ('off',) + tuple(PF.PARTIAL_FREE):
-            raise ValueError(f"profile_fit_partial must be 'off', 'width' or 'centre', got {partial!r}")
         dwidth = g('default_shape_width', None)
         return cls(shape=shape, chromatic=bool(g('profile_fit_chromatic', True)),
-                   prism_transfer=bool(g('profile_fit_prism_transfer', True)), prism_mode=mode,
+                   prism_transfer=bool(g('profile_fit_prism_transfer', True)),
                    gate_prism=float(g('gate_snr_prism', 25.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
                    own_vs_prism_dchi2=float(g('own_vs_prism_dchi2', 25.0)),
                    own_vs_prism_min_gate=float(g('own_vs_prism_min_gate', 100.0)),
@@ -116,14 +92,7 @@ class ChainConfig:
                    srcypos_tolerance=float(g('srcypos_tolerance', 0.05)),
                    min_clean_fraction=float(g('contam_min_clean_fraction', 0.5)),
                    min_clean_fraction_exposure=float(g('contam_min_clean_fraction_exposure', 0.3)),
-                   gate_noise=str(g('gate_noise', 'mean_square')).lower(), dominance=dom,
-                   dominance_max=float(g('contam_dominance_max', 1.0)),
-                   dominance_min_clean=float(g('contam_dominance_min_clean', 0.5)),
-                   dominance_apply=dapply, contam_mode=str(g('contam_mode', 'hybrid')).lower(),
-                   default_width=(None if dwidth is None else float(dwidth)),
-                   partial_fit=partial,
-                   gate_partial_prism=float(g('gate_partial_snr_prism', 25.0)),
-                   gate_partial_grating=float(g('gate_partial_snr_grating', 30.0)))
+                   default_width=(None if dwidth is None else float(dwidth)))
 
 
 @dataclass
@@ -156,7 +125,7 @@ class PrismShape:
 class ChainResult:
     result: object                  # FitResult of the chosen shape (its model carries the exposures)
     shape: str                      # own | prism | default
-    chain: str                      # gated | free | fixed
+    chain: str                      # gated | fixed
     reason: str
     snr_det: float = np.nan
     gate: float = np.nan
@@ -170,7 +139,7 @@ class ChainResult:
     transfer: str = 'none'          # used | none | no_prism | prism_not_own | pa_mismatch | off
     pa_v3: float = np.nan
     candidates: dict = field(default_factory=dict, repr=False)
-    dominance: float = np.nan       # other-source light / own light (light rule) or clean fraction (pixels rule)
+    dominance: float = np.nan       # other sources' predicted light / the target's on the main shutter (recorded)
 
     def header_cards(self):
         """Primary-header cards of the chain (written to ``_pf.fits``, copied to ``_spec.fits``)."""
@@ -180,13 +149,12 @@ class ChainResult:
             'PFOPTIC': (PF.optics_version(), 'Diffraction model of the MSA (data/nirspec_optics.json)'),
             'PFAPER': (PF.REPORT_APERTURE, 'Reported-flux aperture diameter [arcsec]'),
             'PFSHAPE': (self.shape, 'Shape used: own / prism / grating / default'),
-            'PFCHAIN': (self.chain, 'Shape chain: gated / free / fixed'),
+            'PFCHAIN': (self.chain, 'Shape chain: gated / fixed'),
             'PFREASON': (self.reason[:68], 'Why this shape'),
             'PFGATE': (_f(self.snr_det), 'Detection S/N (gate statistic)'),
             'PFGATETH': (_f(self.gate), 'Gate threshold'),
             'PFGATEC': (_f(self.detection.get('c', np.nan)), 'Noise scale used by the gate'),
-            'PFGATEM': (_f(self.detection.get('c_mad', np.nan)), 'Noise scale from the MAD (old gate)'),
-            'PFDOMIN': (_f(self.dominance), 'Other-source dominance of the trace'),
+            'PFDOMIN': (_f(self.dominance), 'Other sources light / own light on the trace'),
             'PFCHI2D': (_f(self.chi2.get('default', np.nan)), 'chi2, default shape, common pixels'),
             'PFCHI2P': (_f(self.chi2.get('prism', np.nan)), 'chi2, PRISM shape, common pixels'),
             'PFCHI2O': (_f(self.chi2.get('own', np.nan)), 'chi2, own fit, common pixels'),
@@ -244,28 +212,15 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
     source (gratings), ``clean``: dict(overall, per_exposure[, clean_pred]) of the
     fraction of the main-shutter pixels left by contamination masking (None: no
     masking), ``contam_ratio``: callable(FitResult) -> other sources' predicted light
-    over the target's fitted light on the main shutter (``profile_contam.contam_light_ratio``).
-
-    Other sources dominate the trace (``cfg.dominance``): 'light' when that ratio,
-    at the fallback shape, exceeds ``dominance_max``; 'pixels' when less than
-    ``dominance_min_clean`` of the main shutter has predicted light below the
-    noise threshold. Then no own fit is made (reason ``dominated:<value>``). The
-    masked-fraction rule stays: in hybrid mode it only sees the pixels the
-    subtraction could not handle, which a smoothed pass 1 makes few."""
+    over the target's fitted light on the main shutter (``profile_contam.contam_light_ratio``),
+    recorded as ``PFDOMIN`` (the others' light is subtracted, so it decides nothing). The
+    masked-fraction rule only sees the pixels the subtraction could not handle."""
     log = log or (lambda *a: None)
     srcy = PF.planned_position(exps, cfg.srcypos_tolerance)[1]
     pa = _exp_pa(exps)
 
-    if cfg.shape == 'free':
-        M = PF.ProfileModel(exps, chromatic=cfg.chromatic)            # V0: original priors and bounds
-        snr, det = PF.detection_snr(M, scale=cfg.gate_noise)
-        R = PF.fit(exps, model=M)
-        return ChainResult(result=R, shape='own', chain='free', reason='free', snr_det=snr, detection=det,
-                           chi2={'own': R.chi2}, npix_common=R.npix, bound_bits=R.bound_bits, srcy_flag=srcy,
-                           pa_v3=pa, candidates={'own': R})
-
     M = PF.ProfileModel(exps, chromatic=cfg.chromatic, priors=cfg.priors, bounds=cfg.bounds)
-    snr, det = PF.detection_snr(M, scale=cfg.gate_noise)
+    snr, det = PF.detection_snr(M)
     gate = cfg.gate_prism if is_prism else cfg.gate_grating
     with TM.step('chain_fixed'):
         cands = {'default': PF.fit_fixed(model=M, shape=cfg.default_shape())}
@@ -292,39 +247,18 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
                 cands['prism'] = PF.fit_fixed(model=M, shape=xshape)
             transfer = 'used'
 
-    # do other sources dominate the trace?
-    dom, dominated = np.nan, False
-    if clean is not None and cfg.dominance == 'light' and contam_ratio is not None:
+    # how much of the trace's light is other sources' (recorded only)
+    dom = np.nan
+    if clean is not None and contam_ratio is not None:
         dom = float(contam_ratio(cands['prism'] if 'prism' in cands else cands['default']))
-        dominated = dom > cfg.dominance_max
-    elif clean is not None and cfg.dominance == 'pixels' and 'clean_pred' in clean:
-        dom = float(clean['clean_pred'])
-        dominated = dom < cfg.dominance_min_clean
-    # applied only where the others' light is not subtracted (mask mode), or never (flag)
-    if cfg.dominance_apply == 'flag' or (cfg.dominance_apply == 'mask_only' and cfg.contam_mode != 'mask'):
-        dominated = False
 
     # own fit
     reason = None
     if clean is not None and (clean['overall'] < cfg.min_clean_fraction
                               or min(clean['per_exposure'] or [1.0]) < cfg.min_clean_fraction_exposure):
         reason = f"masked:{clean['overall']:.2f}"
-    elif dominated:
-        reason = f'dominated:{dom:.2f}'
     elif snr < gate:
         reason = 'below_gate'
-        gate_part = cfg.gate_partial_prism if is_prism else cfg.gate_partial_grating
-        if cfg.partial_fit != 'off' and 'prism' not in cands and snr >= gate_part:
-            # intermediate S/N: fit only one shape parameter (the PRISM shape, where there is
-            # one, is a better description than a partial own fit)
-            try:
-                with TM.step('chain_own'):
-                    cands['own'] = PF.fit_partial(exps, free=PF.PARTIAL_FREE[cfg.partial_fit],
-                                                  base=cfg.default_shape(), model=M)
-                reason = f'gate_partial:{cfg.partial_fit}'
-            except Exception as e:                     # noqa: BLE001 - the chain falls back
-                log(f'partial own fit failed ({type(e).__name__}: {e})')
-                reason = 'fit_failed'
     else:
         try:
             with TM.step('chain_own'):
@@ -368,25 +302,22 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
         else:
             choice, reason = fallback, f'bound:{_bit_names(bits)}'
     elif 'prism' in cands:
-        if cfg.prism_mode == 'always':
-            choice, reason = 'prism', 'prism_always'
+        o = cands['own'].params
+        dc = (o['centre'] - o['centre_prior']) - xshape['centre_offset']
+        dlw = np.log(o['width'] / xshape['width'])
+        differ = abs(dc) > cfg.agree_centre or abs(dlw) > cfg.agree_log_width
+        better = chi2['prism'] - chi2['own'] > _threshold(cfg, M, cands['own'])
+        if better and differ and snr >= cfg.own_vs_prism_min_gate:
+            choice, reason = 'own', 'own_better'
+        elif better and differ:
+            choice, reason = 'prism', 'prism_kept:gate'
         else:
-            o = cands['own'].params
-            dc = (o['centre'] - o['centre_prior']) - xshape['centre_offset']
-            dlw = np.log(o['width'] / xshape['width'])
-            differ = abs(dc) > cfg.agree_centre or abs(dlw) > cfg.agree_log_width
-            better = chi2['prism'] - chi2['own'] > _threshold(cfg, M, cands['own'])
-            if better and differ and snr >= cfg.own_vs_prism_min_gate:
-                choice, reason = 'own', 'own_better'
-            elif better and differ:
-                choice, reason = 'prism', 'prism_kept:gate'
-            else:
-                choice, reason = 'prism', 'prism_kept' if differ else 'shapes_agree'
+            choice, reason = 'prism', 'prism_kept' if differ else 'shapes_agree'
     else:
-        choice, reason = 'own', (reason if reason and reason.startswith('gate_partial') else 'gate_passed')
+        choice, reason = 'own', 'gate_passed'
     if reason is None:
         reason = 'gate_passed'
-    if choice == 'prism' and (reason in ('below_gate', 'fit_failed') or reason.startswith(('masked', 'dominated'))):
+    if choice == 'prism' and (reason in ('below_gate', 'fit_failed') or reason.startswith('masked')):
         reason = f'{reason};prism'
     R = cands[choice]
     # a shape transferred from a sibling grating is labelled apart from one from PRISM

@@ -438,7 +438,7 @@ def test_combined_product_carries_the_master_background_spectrum(tmp_path):
     exposures = {'filename': ['a', 'b'], 'bkg_nods': ['2', '1'], 'bkg_why': ['every background exposure: x', '']}
     clip = dict(sigma_clip_enabled=False)
     args = (files, str(tmp_path), 'p', 7, wave, [1.0, 3.0], sci_shape, 2, 5, fits.Header(), exposures, False, clip,
-            None, 0.10)
+            0.10)
     # no stacked master-background 2-D (an exposure without a master background): none
     assert S3._combined_mbkg(*args) == ([], {})
     two_d(sci_shape)

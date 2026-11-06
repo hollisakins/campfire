@@ -40,11 +40,9 @@ def stage_flags(sc):
     g = sc.get
     return dict(
         contam=bool(g('contam_predict', True)),
-        contam_mode=str(g('contam_mode', 'hybrid')).lower(),
         kappa=float(g('contam_mask_kappa', 1.0)),
         pair_ratio=float(g('contam_pair_ratio', 3.0)),
         pair_min_frac=float(g('contam_pair_min_frac', 0.3)),
-        dominance_kappa=float(g('contam_dominance_kappa', 1.0)),
         scan=bool(g('scan_neighbours', True)),
         scan_nbins=int(g('scan_nbins', 16)),
         scan_width=g('scan_width', None),
@@ -53,10 +51,7 @@ def stage_flags(sc):
         scan_drop_frac=float(g('scan_drop_frac', 0.2)),
         scan_null_ratio=float(g('scan_null_ratio', 1.5)),
         scan_max_masked=float(g('scan_max_masked', 0.3)),
-        scan_noise=str(g('scan_noise', 'mean_square')).lower(),
         scan_close=float(g('scan_close', 0.9)),
-        scan_close_rule=str(g('scan_close_rule', 'all')).lower(),
-        scan_gain_rule=bool(g('scan_gain_rule', False)),
         scan_flag_dchi2=float(g('scan_flag_dchi2', 1500.0)),
         scan_flag_dchi2_low=float(g('scan_flag_dchi2_low', 500.0)),
         scan_flag_null_ratio=float(g('scan_flag_null_ratio', 5.0)),
@@ -130,7 +125,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
     raw = [copy.copy(e) for e in exps]      # as stage 2b made them: the same-slitlet scan's data
     P, clean, cstate = None, None, 'off'
     t_mark = TM.start()
-    if fl['contam'] and cfg.shape != 'free':
+    if fl['contam']:
         maps = CT.maps_for_exposures(workspace_dir, exps, stuck_keys) if maps is None else maps
         if not maps:
             cstate = 'no_maps'
@@ -165,8 +160,8 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
                     P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=pass1_for(source_id),
                                    pair_ratio=fl['pair_ratio'], why_missing=why_missing)
             saved = [(e.ok, e.diff) for e in exps]
-            clean = CT.apply(exps, P, mode=fl['contam_mode'], kappa=fl['kappa'], dominance_kappa=fl['dominance_kappa'])
-            cstate = fl['contam_mode'] if P.have_maps else f"{fl['contam_mode']}_partial_maps"
+            clean = CT.apply(exps, P, kappa=fl['kappa'])
+            cstate = 'subtracted' if P.have_maps else 'subtracted_partial_maps'
             npix = sum(int(m.sum()) for _, m in PF.fit_pixel_masks(exps))
             if npix < MIN_FIT_PIXELS:
                 # masking left (almost) nothing to fit: fit the data as they are, flagged
@@ -193,8 +188,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
         S = NS.run(R_scan if R_scan is not None else C.result, nbins=fl['scan_nbins'], width=fl['scan_width'],
                    dchi2_min=fl['scan_dchi2'],
                    min_snr=fl['scan_min_snr'], drop_frac=fl['scan_drop_frac'], null_ratio=fl['scan_null_ratio'],
-                   noise=fl['scan_noise'], close=fl['scan_close'], close_rule=fl['scan_close_rule'],
-                   gain_rule=fl['scan_gain_rule'], flag_dchi2=fl['scan_flag_dchi2'],
+                   close=fl['scan_close'], flag_dchi2=fl['scan_flag_dchi2'],
                    flag_low=fl['scan_flag_dchi2_low'], flag_null_ratio=fl['scan_flag_null_ratio'])
         # too few pixels free of other slitlets' light to tell a same-slitlet neighbour
         # (seen on 5215): report, do not propose
@@ -379,7 +373,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         hdr = shape_header(C, exps)
         hdr['PFNSRCF'] = (int(sum(not e.has_source for e in exps)), 'Exposures without the source (SRCFLUX=F)')
         hdr['PFSELFSB'] = (float(MX.self_subtraction(R, exps)), 'Own light the nod subtraction removes (share)')
-        hdr['PFCMODE'] = (cstate, 'Other-slitlet light: off/mask/hybrid/no_maps/..._undone')
+        hdr['PFCMODE'] = (cstate, 'Other-slitlet light: off/subtracted/no_maps/..._undone')
         if P is not None:
             def _v(x):
                 return float(x) if np.isfinite(x) else -999.0
