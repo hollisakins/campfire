@@ -108,9 +108,12 @@ def test_kernel_solve_recovers_a_kernel(small_optics, tmp_path):
     # two stars' files summed per detector and range, then a model file the pipeline reads
     os.makedirs(tmp_path / 'kernel')
     for key in ('a_1_NRS1', 'b_2_NRS1'):
-        np.savez(tmp_path / 'kernel' / f'{key}.npz', detector='NRS1', widths='{}', r2_AtA=AtA / 2, r2_Atd=Atd / 2, r2_n=10)
+        np.savez(tmp_path / 'kernel' / f'{key}.npz', detector='NRS1', widths='{}', r2_AtA=AtA / 2, r2_Atd=Atd / 2, r2_n=10,
+                 r2_nod_AtA=AtA / 4, r2_nod_Atd=Atd / 4, r2_nod_n=4)
     tot = OC.sum_normals(str(tmp_path / 'kernel'))
     assert set(tot) == {('NRS1', 2)} and tot[('NRS1', 2)][2] == 20
+    nod = OC.sum_normals(str(tmp_path / 'kernel'), part='nod_')      # the nod differences alone, kept apart
+    assert nod[('NRS1', 2)][2] == 8 and np.allclose(nod[('NRS1', 2)][0], AtA / 2)
     base = tmp_path / 'base.json'
     base.write_text(json.dumps({'meta': {'version': 'base'}, 'diffraction': dict(rho=0.996, s0=0.0344, s1=-0.0026,
                                                                                  alpha=0.25),
@@ -186,6 +189,9 @@ def test_clean_keys_and_stack_metric(tmp_path):
             rec('galaxy', w=0.15), rec('odd', chi2r=8.0)]
     keys = OC.clean_keys(recs)
     assert keys == {('NRS1', 2): ['a', 'b', 'c']}
+    # many bright stars far below 1 (the variance floor) do not push out a faint one that fits at 1.5
+    bright = [rec(f'bright{i}', snr=150, chi2r=0.1) for i in range(20)]
+    assert 'faint_fits' in OC.clean_keys(bright + [rec('faint_fits', snr=25, chi2r=1.5)])[('NRS1', 2)]
     os.makedirs(tmp_path / 'samples')
     u = np.linspace(-4, 4, 4000)
     m = np.exp(-0.5 * (u / 0.6) ** 2)

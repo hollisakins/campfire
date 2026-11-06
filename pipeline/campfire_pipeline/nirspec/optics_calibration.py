@@ -68,7 +68,9 @@ SNR_MIN = 20.0                     # peak-pixel S/N
 EDGE_MAX = 0.35                    # |centre| [slit units]
 SAT_MAX = 0.0                      # saturated share of the trace pixels
 W_STAR_MAX = 0.06                  # a star's median width over its ranges [slit units]: wider is not a point source
-CHI2_OUTLIER = 5.0                 # chi2/dof over the detector-range's median
+CHI2_MAX = 2.0                     # chi2/dof: the variance floor keeps a star that matches the model at ~1 at any
+                                   # brightness (bright ones far below), so the cut is absolute; one relative to
+                                   # the range's median (bright stars) dropped faint ones that fit (1133 red: 60 %)
 
 
 def restrict(exps, lam_range):
@@ -392,25 +394,19 @@ def fit_star(task, ranges=None, optics=None):
 # The stack test
 # ---------------------------------------------------------------------------
 def clean_keys(records, snr_min=SNR_MIN, edge_max=EDGE_MAX, sat_max=SAT_MAX, w_max=W_STAR_MAX,
-               chi2_outlier=CHI2_OUTLIER):
+               chi2_max=CHI2_MAX):
     """{(detector, range): [star keys]} of the star-ranges the stack test uses: peak S/N at
     least ``snr_min``, the centre within ``edge_max`` of the shutter centre, no saturated pixel
     on the trace; of stars whose median width over their ranges is at most ``w_max`` (a
-    galaxy, a pair or a contaminated star fits wider), and with chi2/dof at most
-    ``chi2_outlier`` x the median of the detector-range's candidates."""
-    cand = {}
+    galaxy, a pair or a contaminated star fits wider), and with chi2/dof at most ``chi2_max``."""
+    out = {}
     for rec in records:
         if not rec['ranges'] or np.median([row['w'] for row in rec['ranges']]) > w_max:
             continue
         for row in rec['ranges']:
-            if row['peak_snr'] >= snr_min and abs(row['c_node']) < edge_max and row['sat'] <= sat_max:
-                cand.setdefault((rec['detector'], row['range']), []).append((rec['key'], row['chi2'] / row['ndof']))
-    out = {}
-    for k, rows in cand.items():
-        med = np.median([c for _, c in rows])
-        keep = [key for key, c in rows if c <= chi2_outlier * med]
-        if keep:
-            out[k] = keep
+            if (row['peak_snr'] >= snr_min and abs(row['c_node']) < edge_max and row['sat'] <= sat_max
+                    and row['chi2'] <= chi2_max * row['ndof']):
+                out.setdefault((rec['detector'], row['range']), []).append(rec['key'])
     return out
 
 
@@ -608,7 +604,7 @@ def kernel_star(task, ranges, optics=None, free_w_snr=FREE_W_SNR):
         frames = MB.frames_for([e.path for e in sci])
     except MB.NoMasterBackground:
         frames = None
-    out, widths = {}, {}
+    out, nod, widths = {}, {}, {}
     for r in ranges:
         rng = RANGES[r]
         try:
@@ -620,7 +616,9 @@ def kernel_star(task, ranges, optics=None, free_w_snr=FREE_W_SNR):
         M = RF.M
         p, eoff, f = RF.shape(g['c0'], g['drift']), RF.eoff.copy(), np.nan_to_num(g['_f'])
         widths[r] = g['w']
-        _add_normal(out, r, kernel_response(M, p, f, eoff, g['w']), M.pix['d'], M.pix['v'], g['_use'])
+        Rn = kernel_response(M, p, f, eoff, g['w'])
+        _add_normal(out, r, Rn, M.pix['d'], M.pix['v'], g['_use'])
+        _add_normal(nod, r, Rn, M.pix['d'], M.pix['v'], g['_use'])
         if frames is None:
             continue
         mexps = restrict(MB.single_frame_exposures(sci, frames), rng)
@@ -637,7 +635,7 @@ def kernel_star(task, ranges, optics=None, free_w_snr=FREE_W_SNR):
         vf = Mm.pix['v'] + (mx[inv] / SN_CAP) ** 2
         use = np.abs(Mm.pix['d'] - mm) < CLIP * np.sqrt(vf)
         _add_normal(out, r, kernel_response(Mm, p, f, em, g['w']), Mm.pix['d'], vf, use)
-    return out, widths
+    return out, widths, nod
 
 
 def _kernel_one(args):
@@ -647,12 +645,14 @@ def _kernel_one(args):
         from campfire_pipeline.nirspec import optics as O
         optics = {d: o for d, o in O.load_optics(optics_path).items() if d != 'version'}
     try:
-        out, widths = kernel_star(task, ranges, optics=optics)
+        out, widths, nod = kernel_star(task, ranges, optics=optics)
     except Exception as err:          # one star's failure is reported, the others go on
         return task.key, f'{type(err).__name__}: {err}'
+    parts = {'': out, 'nod_': nod}    # every term, and the nod differences alone (what the stack test measures)
     np.savez(os.path.join(out_dir, 'kernel', f'{task.key}.npz'), widths=json.dumps(widths), detector=task.detector,
-             **{f'r{r}_AtA': a for r, (a, b, n) in out.items()}, **{f'r{r}_Atd': b for r, (a, b, n) in out.items()},
-             **{f'r{r}_n': n for r, (a, b, n) in out.items()})
+             **{f'r{r}_{p}AtA': a for p, o in parts.items() for r, (a, b, n) in o.items()},
+             **{f'r{r}_{p}Atd': b for p, o in parts.items() for r, (a, b, n) in o.items()},
+             **{f'r{r}_{p}n': n for p, o in parts.items() for r, (a, b, n) in o.items()})
     return task.key, len(out)
 
 
@@ -685,9 +685,9 @@ def step_kernel(root, observations, select_dir, out_dir, optics_path=None, proce
             log(f'{key} {res}')
 
 
-def sum_normals(kernel_dir, keys=None):
+def sum_normals(kernel_dir, keys=None, part=''):
     """{(detector, range): (AtA, Atd, npix)} summed over the stars' files (``step_kernel``),
-    or over ``keys`` only."""
+    or over ``keys`` only; every term (``part`` '') or the nod differences alone ('nod_')."""
     tot = {}
     for fn in sorted(os.listdir(kernel_dir)):
         key = fn[:-4]
@@ -696,11 +696,12 @@ def sum_normals(kernel_dir, keys=None):
         z = np.load(os.path.join(kernel_dir, fn))
         det = str(z['detector'])
         for name in z.files:
-            if not name.endswith('_AtA'):
+            head, _, tail = name.partition('_')
+            if tail != f'{part}AtA':
                 continue
-            r = int(name[1:-4])
+            r = int(head[1:])
             AtA, Atd, n = tot.get((det, r), (0.0, 0.0, 0))
-            tot[(det, r)] = (AtA + z[name], Atd + z[f'r{r}_Atd'], n + int(z[f'r{r}_n']))
+            tot[(det, r)] = (AtA + z[name], Atd + z[f'r{r}_{part}Atd'], n + int(z[f'r{r}_{part}n']))
     return tot
 
 
@@ -716,14 +717,14 @@ def solve_kernel(AtA, Atd, s_delta=S_DELTA):
     return lsq_linear(U, solve_triangular(U, Atd, trans='T', lower=False), bounds=(0.0, np.inf), method='bvls').x
 
 
-def step_solve(kernel_dir, optics_path, out_path, version, keys=None, s_delta=S_DELTA, log=print):
-    """A model file from the stars' normal equations: the kernel per detector and range (at
-    the range's centre, ln-mean), on the diffraction numbers of the model the normals were
-    built at (``optics_path``; the shipped file by default)."""
+def step_solve(kernel_dir, optics_path, out_path, version, keys=None, s_delta=S_DELTA, part='', log=print):
+    """A model file from the stars' normal equations (``part``: see ``sum_normals``): the
+    kernel per detector and range (at the range's centre, ln-mean), on the diffraction numbers
+    of the model the normals were built at (``optics_path``; the shipped file by default)."""
     from campfire_pipeline.nirspec import optics as O
     with open(optics_path or O.OPTICS_FILE) as fh:
         base = json.load(fh)
-    tot = sum_normals(kernel_dir, keys)
+    tot = sum_normals(kernel_dir, keys, part)
     out = {'meta': dict(base['meta'], version=version,
                         source=f'kernel fitted by optics_calibration from {kernel_dir} at the model '
                                f'{base["meta"]["version"]}'), 'diffraction': base['diffraction']}
@@ -976,6 +977,9 @@ def main(argv=None):
     ap.add_argument('--select', help='kernel: the stack run whose clean star-ranges are fitted')
     ap.add_argument('--model-out', help='solve: the model file to write')
     ap.add_argument('--version', help='solve: the new model\'s version')
+    ap.add_argument('--nod-only', action='store_true',
+                    help='solve: the nod differences\' normal equations alone (not the single frames less the master '
+                         'background)')
     ap.add_argument('--processes', type=int, default=1)
     a = ap.parse_args(argv)
     if a.step != 'bars' and not a.out:
@@ -992,7 +996,7 @@ def main(argv=None):
     elif a.step == 'laws':
         step_laws(a.out)
     else:
-        step_solve(os.path.join(a.out, 'kernel'), a.optics, a.model_out, a.version)
+        step_solve(os.path.join(a.out, 'kernel'), a.optics, a.model_out, a.version, part='nod_' if a.nod_only else '')
 
 
 if __name__ == '__main__':
