@@ -3370,11 +3370,58 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
 
 ## 8. Release
 
-- MAJOR release, merged to `main` only together with the full-archive re-reduction (user,
-  2026-10-24; reaffirmed 2026-10-29).
-- One categorized CHANGELOG entry covers the pipeline changes (Built, 6c5dba84; the master
-  background and bar shadow carry their own Unreleased entries from loving-bell).
-- The PR carries the plots of section 5.
+The plan (user, 2026-11-06; replaces "merged to `main` only together with the full-archive
+re-reduction", 2026-10-24). Size at the time (against `main`, 30 commits behind `origin/main`):
+317 commits, 186 files; NIRSpec pipeline code +16.8k lines, tests +6.5k, data tables +19.5k,
+design docs +5.1k, database +1.9k, web +1.3k, Python deploy and client +1.2k.
+
+**Two PRs.** PR A: pipeline, layout, docs, Python deploy and the database migrations. PR B: the
+web. Pipeline code is local-only, so PR A changes nothing users see, provided its migrations are
+additive and today's web reads the v2 sidecars (both checked in review slice 1). PR B goes live
+at the switch-over.
+
+**Phase 0, freeze.** No new features on the branch, only fixes. Merge `origin/main`.
+
+**Phase 1, cleanup before review.** The configuration audit (every new or changed
+`[nirspec.*]` key and default; the opt-in paths not chosen removed: `contam_pass1 = "fixed"`,
+partial fits, the gated joint solve, unused knobs); `pipeline/experiments/master_bkg_prototype`
+and its figures kept or dropped; the design docs rewritten as final documentation (main text =
+what ships, appendix = explored and rejected); one categorized MAJOR CHANGELOG entry.
+
+**Phase 2, review in slices** (read-through and fixes by the extraction session, then
+`/code-review` by the user; `/code-review ultra` for slices 1 and 3):
+1. data contracts: FITS products and cards, rate-file extensions, layout kinds, migrations,
+   deploy and sidecars;
+2. master background and stuck shutters (`master_bkg`, `master_bkg_rate`, `coverage`,
+   `barshadow_calibration`, `shutter_fit`, `stuck_list`);
+3. optics and the profile model (`optics`, `profile_fit`, `profile_chain`, `crds_refs`,
+   `bar_offset`, `optics_calibration`);
+4. contamination (`trace_overlap`, `profile_contam`, `joint_first_pass`, `profile_extend`,
+   `slitlet_neighbours`);
+5. orchestration (`stage2`, `stage3`, `profile_product`, `mbkg_extraction`, `drizzle_map`);
+6. web and the Python client.
+
+**Phase 3, science validation on the release candidate**, criteria written before the runs:
+p1 (PRISM, G395M; done), uncover2, spurs_gds (G140M / G235M extended; running), an H-grating
+observation, a fixed-slit observation (go2285), a crowded G395M field, one with many stuck
+shutters. Against production: delivered S/N (the success metric), flux against aperture
+photometry, redshifts and line fluxes, fallback and contamination-flag rates, runtime and memory
+per exposure; the missing plots of section 5.
+
+**Phase 4, release and reprocessing.**
+1. DR1: freeze the current (v1) catalog as a data release (`campfire dr freeze`) before
+   anything of v2 is deployed, with the v1 documentation preserved for it (open: in what form;
+   the web docs are not versioned, and the docs session's branch replaces the v1 NIRSpec page).
+2. Merge PR A after review and tag `pipeline-vN.0.0` (MAJOR).
+3. Reprocess the archive with the tag and `campfire push` (bytes only: no catalog change, no
+   publication).
+4. Fixes during reprocessing: small PRs to `main`; PATCH when science output is unchanged, MINOR
+   when it changes, and only the affected observations rerun (`cfpipe_version` in the products
+   and `spectra.cfpipe_version`).
+5. Switch-over in one step: `campfire deploy` over everything (uploaded bytes dedup-skip),
+   merge PR B (web, with the v2 docs) the same day.
+
+One categorized CHANGELOG entry covers the pipeline changes; PR A carries the plots of section 5.
 
 ---
 
