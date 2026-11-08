@@ -90,7 +90,7 @@ Version 2 changes six things.
 | Every 2-D image drizzled once per product | stage 3 | `drizzle_map.py` | 6.10 |
 | Boundary with jwst's references | stage 3 | `crds_refs.py`, `data/nirspec_calibrations.toml` | 7 |
 
-Versions at the time of writing: `FIT_VERSION` 8, optics model `2026.11-r8` (engine 2), master
+Versions at the time of writing: `FIT_VERSION` 9, optics model `2026.11-r8` (engine 2), master
 background `CFMBKGV` 1.8 (step 1 1.5), `JOINT_PASS_VERSION` 4, `PASS1_VERSION` 11, bar offset
 `MEASURE_VERSION` 4, trace map version 3.
 
@@ -877,7 +877,13 @@ background group, which also refits `x_loss` with 1133).
 **Decisions open with the user:** the default width; the default shape past the shutter edge
 (flag, let the center move, or report `fnu_opt`); whether `master_bkg_error_floor` (0.03, the master
 background's error floor only) comes back as an option; the stuck-shutter thresholds after the
-review packet.
+review packet; whether to center the optics tables' row integration (below).
+
+- *The optics tables sit half a grid step off.* `optics.row_integrate` averages over an even
+  number of grid steps (42), so every image table is shifted by +0.0027 slit units (1.25 mas).
+  The kernel, the bar offsets, the quadrant pattern and the center law were all fitted with the
+  shift in place, so the products are consistent with each other. Centering it means a new
+  `ENGINE_VERSION`, rebuilt tables and a refit of the optics model.
 
 ---
 
@@ -944,6 +950,29 @@ Checked and left: a failed-open shutter on a commanded-open one would be painted
 the 318 metafiles has one; a failed-open shutter measured at zero transmission keeps its footprint
 (painted 0, not uncovered), which is correct. The trace map is still built one rate file at a time
 after step 1's parallel work.
+
+Slice 3 (2026-11-08), optics and the profile model. The read-through and the code review led to
+these fixes:
+- a SRCYPOS placeholder (exactly 0 next to real values) was looked for on the position with the
+  bar offset added, so with a measured offset it was never found: it entered the prior center and
+  could force the default shape. It is now found on the SRCYPOS jwst wrote (`FIT_VERSION` 9);
+- an optics-table lock left by a process that died made every later process wait 15 minutes per
+  table; it is now taken over, and a process removes only its own lock;
+- the bar offset is measured again (`MEASURE_VERSION` 4): its empty shutters now leave out
+  secondary sources (slice 2);
+- the shape-independent part of the throughput is computed once per exposure instead of at every
+  step of the fit;
+- `PFCHROM` says whether the shape that was used varies with wavelength (it was always true for a
+  held shape);
+- the optics calibration keeps the base model's kernel for a detector with no stars (it wrote an
+  empty kernel that broke every later run), applies its last clipping to `x_loss` and refuses a
+  set of stars that cannot constrain it; the path-loss reference's axes take `CRPIX` into account
+  (1 in every reference so far).
+
+Checked and left: a missing path-loss reference fails the product rather than falling back (it is
+an environment error); along the dispersion the kernel is applied mirrored relative to the slit
+direction, which for a blur taken to be round has no physical meaning (its asymmetry is 0.002 slit
+units). Open: the half-step shift of the row integration (section 10).
 
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,

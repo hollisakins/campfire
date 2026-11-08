@@ -170,6 +170,12 @@ NO_CENTRE_LAW = {det: dict(D=np.zeros(PSF_LAM.size), alpha=np.zeros(PSF_LAM.size
 NOD_OFFSET_LAW = dict(scale=1.0)
 
 
+def _written_srcy(e):
+    """SRCYPOS as jwst wrote it, where a metafile placeholder reads exactly 0.0 (``src_y``
+    carries the bar offset); ``src_y`` for an exposure built without it."""
+    return e.src_y_jwst if np.isfinite(e.src_y_jwst) else e.src_y
+
+
 def nod_shifts(exps, law=None, c_ref=None):
     """Per exposure: the shift of its source image from the shared centre, slit units:
     ``law['scale']`` x (its SRCYPOS - the reference position ``c_ref``, default the planned
@@ -181,11 +187,10 @@ def nod_shifts(exps, law=None, c_ref=None):
         return np.zeros(len(exps))
     law = NOD_OFFSET_LAW if law is None else law
     c = planned_position(exps)[0] if c_ref is None else float(c_ref)
-    vals = [e.src_y for e in exps if e.has_source]
-    placeholder = any(v != 0.0 for v in vals)
+    placeholder = any(_written_srcy(e) != 0.0 for e in exps if e.has_source)
     out = np.zeros(len(exps))
     for k, e in enumerate(exps):
-        if not e.has_source or not np.isfinite(e.src_y) or (placeholder and e.src_y == 0.0):
+        if not e.has_source or not np.isfinite(e.src_y) or (placeholder and _written_srcy(e) == 0.0):
             continue
         out[k] = float(law['scale']) * (e.src_y - c)
     return out
@@ -751,6 +756,7 @@ class ProfileModel:
         for T, mask in zip(self.terms, term_masks):
             T['upos'] = self.image_pix[T['j']]['pos'][mask]
         self._pl_curves()
+        self._tau_fixed = {}
 
     @classmethod
     def for_placement(cls, exps, grid, priors=None, bounds=None, optics=None):
@@ -827,7 +833,7 @@ class ProfileModel:
         w = self.width(p, lam) if width is None else width
         return self.optics[k].transmission(aperture, lam, c, np.maximum(np.asarray(w, float), W_FLOOR))
 
-    def throughput(self, p, eoff, k, lam, dy):
+    def throughput(self, p, eoff, k, lam, dy, fixed=None):
         """Along-dispersion throughput tau_k: jwst's level and its along-dispersion
         dependence, with its slit-direction dependence replaced by the model's. jwst's
         point-source path loss at the planned position is moved to the shutter centre
@@ -841,7 +847,16 @@ class ProfileModel:
         jwst: y = "jwst" keeps jwst's point path loss at the planned position and divides by the
         model's point transmission there instead (the model then shapes the image and its change
         with the fitted position and width; a point source at the planned position gets jwst's
-        loss exactly); x = "jwst" leaves out ``x_correction``."""
+        loss exactly); x = "jwst" leaves out ``x_correction``. ``fixed``: ``throughput_fixed``
+        at these wavelengths, when already at hand."""
+        e = self.exps[k]
+        if fixed is None:
+            fixed = self.throughput_fixed(k, lam, dy)
+        return fixed * self.optics[k].x_extended_ratio(lam, e.src_x_jwst, self.width(p, lam))
+
+    def throughput_fixed(self, k, lam, dy):
+        """The part of ``throughput`` that does not depend on the shape: everything but the
+        extended-source ratio along the dispersion."""
         L, P = self.pl_curve[k]
         pl = np.interp(lam, L, P)
         e = self.exps[k]
@@ -855,15 +870,19 @@ class ProfileModel:
             c_ref = e.src_y if np.isfinite(e.src_y) else 0.0
         if sl.x == 'corrected':
             pl = pl * o.x_correction(lam, e.src_x_jwst)
-        pl = pl * o.x_extended_ratio(lam, e.src_x_jwst, self.width(p, lam))
-        t = self.transmission(p, eoff, k, lam, dy, width=0.0, centre=np.full(np.shape(lam), c_ref))
+        t = o.transmission(REF_APERTURE, lam, np.full(np.shape(lam), c_ref), np.full(np.shape(lam), W_FLOOR))
         return pl / np.maximum(t, 1e-6)
 
     def design(self, p, eoff):
         """Sparse (npix x ngrid) matrix A with model = A @ f."""
         rows, cols, vals = [], [], []
-        G = {j: self.throughput(p, eoff, j, q['lam'], q['dy']) * self.image(p, eoff, j, q['y'], q['lam'], q['dy'])
-             for j, q in self.image_pix.items()}
+        fixed = self.__dict__.setdefault('_tau_fixed', {})       # per exposure, on its image pixels
+        G = {}
+        for j, q in self.image_pix.items():
+            if j not in fixed:
+                fixed[j] = self.throughput_fixed(j, q['lam'], q['dy'])
+            G[j] = (self.throughput(p, eoff, j, q['lam'], q['dy'], fixed=fixed[j])
+                    * self.image(p, eoff, j, q['y'], q['lam'], q['dy']))
         for T in self.terms:
             g = T['w'] * G[T['j']][T['upos']]
             g = np.where(T['inside'], g, 0.0)
@@ -1053,7 +1072,7 @@ def fit_fixed(exps=None, shape=None, eoff=None, clip=5.0, n_clip=2, model=None,
     R = FitResult(params=params, eoff=e, lam=M.lam_grid, flux=np.where(good, f, np.nan),
                   flux_err=np.where(good, np.sqrt(np.abs(np.diag(cov))), np.nan), chi2=chi2,
                   npix=int(round(n_eff)), nfree=int(good.sum()),
-                  chromatic=True, model=M)
+                  chromatic=bool(p[1] != 0 or p[3] != 0), model=M)    # the held shape varies with wavelength
     R.bound_bits = 0
     R.use = M.use.copy()
     return R
@@ -1118,10 +1137,10 @@ def planned_position(exps, tolerance=0.05):
     exactly 0.000 next to nonzero values is a metafile placeholder and is ignored
     (flag 1); science values that still differ by more than ``tolerance`` give
     flag 2 (genuine disagreement)."""
-    vals = [e.src_y for e in exps if e.use_data and e.has_source] or [e.src_y for e in exps if e.use_data] \
-        or [e.src_y for e in exps]
+    sel = [e for e in exps if e.use_data and e.has_source] or [e for e in exps if e.use_data] or list(exps)
+    vals = [e.src_y for e in sel]
     flag = 0
-    nonzero = [v for v in vals if v != 0.0]
+    nonzero = [e.src_y for e in sel if _written_srcy(e) != 0.0]
     if nonzero and len(nonzero) < len(vals):
         vals, flag = nonzero, 1
     if len(vals) > 1 and (max(vals) - min(vals)) > tolerance:
@@ -1269,7 +1288,7 @@ def drizzle_arrays(frame_of, dmap):
     return dmap.drizzle({name: frame_of(name) for name in dmap.names})['data']
 
 
-FIT_VERSION = '8'                   # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset); 8: exact shutter edges in the optics tables (optics engine 2)
+FIT_VERSION = '9'                   # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset); 8: exact shutter edges in the optics tables (optics engine 2); 9: a SRCYPOS placeholder found with the bar offset applied
 
 
 def run_single_source(product_name, workspace_dir, groups, bkg_overrides, science,

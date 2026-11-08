@@ -142,8 +142,8 @@ def pathloss_cube(ref_name):
     if data.ndim != 3:
         raise ValueError(f'{name}: the {MOS_APERTURE} point path loss has {data.ndim} axes, expected 3')
 
-    def axis(n):
-        return hd[f'CRVAL{n}'] + hd[f'CDELT{n}'] * np.arange(hd[f'NAXIS{n}'])
+    def axis(n):                       # as jwst's pathloss step reads it (CRPIX is 1 in every reference so far)
+        return hd[f'CRVAL{n}'] + hd[f'CDELT{n}'] * (np.arange(hd[f'NAXIS{n}']) + 1 - hd.get(f'CRPIX{n}', 1.0))
     lam, y, x = axis(3) * 1e6, axis(2), axis(1)
     if not (0.3 < lam.min() and lam.max() < 10.0):           # metres in the file; a unit mix-up is off by 1e6
         raise ValueError(f'{name}: wavelengths {lam.min():.3g}-{lam.max():.3g} um after metres -> um')

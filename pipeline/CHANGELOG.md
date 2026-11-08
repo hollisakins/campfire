@@ -69,7 +69,7 @@ Release procedure: edit the `## Unreleased` section below, then run
     default shape (width 0.15 slit units, 0.16 arcsec FWHM, at the planned position). Named failures fall back to the
     3-pixel boxcar (`EXTRACT = boxcar3`); any other error fails the stage. `fnu` is never
     contamination-subtracted.
-  - *Optics model* (`optics.py`, `data/nirspec_optics.json` `2026.11-r8`, `FIT_VERSION` 8). One
+  - *Optics model* (`optics.py`, `data/nirspec_optics.json` `2026.11-r8`, `FIT_VERSION` 9). One
     diffraction model of the MSA, the same for every disperser, gives each source's image through
     the open shutters. The telescope's image at the MSA, convolved with an empirical kernel fitted
     to 590 calibration star-detector pairs, is cut by the open shutters (each opening exactly its

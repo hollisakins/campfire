@@ -360,6 +360,21 @@ def test_nod_shifts_follow_each_exposures_planned_position():
     assert PF.nod_shifts(exps)[1] == 0.0
 
 
+def test_a_placeholder_is_found_with_a_bar_offset_applied():
+    """``src_y`` carries the bar offset, so a placeholder reads the offset there; it is found
+    on the SRCYPOS jwst wrote (``src_y_jwst``)."""
+    from campfire_pipeline.nirspec.constants import MSA_SLIT_PITCH
+    bar = 0.012
+    exps = _nodded()
+    for e in exps:
+        e.src_y_jwst = e.src_y / MSA_SLIT_PITCH
+        e.src_y = e.src_y + bar
+    exps[2].src_y_jwst, exps[2].src_y = 0.0, bar           # the placeholder, moved by the offset
+    c, flag = PF.planned_position(exps)
+    assert flag == 1 and np.isclose(c, np.median([0.10, 0.115]) + bar)
+    assert PF.nod_shifts(exps)[2] == 0.0
+
+
 def test_a_single_exposure_is_not_shifted():
     """With one exposure (no nod partners) the reference is its own planned position: the
     law changes nothing."""

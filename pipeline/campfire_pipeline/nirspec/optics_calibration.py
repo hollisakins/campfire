@@ -761,6 +761,9 @@ def step_solve(kernel_dir, optics_path, out_path, version, keys=None, s_delta=S_
             nodes.append(dict(lam=lam, delta=DELTA.tolist(), k=k.tolist()))
             log(f'{det} {lam:.2f} um: integral {wk.sum():.4f}, beyond 0.3 {wk[np.abs(DELTA) > 0.3].sum() / wk.sum():.4f}, '
                 f'beyond 0.8 {wk[np.abs(DELTA) > 0.8].sum() / wk.sum():.4f}, {n} pixels')
+        if not nodes:                  # no star on this detector: its kernel stays the base model's
+            log(f'{det}: no normal equations; kernel kept from {base["meta"]["version"]}')
+            nodes = base[det]
         out[det] = nodes
     with open(out_path, 'w') as fh:
         json.dump(out, fh, indent=1)
@@ -976,16 +979,21 @@ def fit_x_loss(pairs, lam0=X_LAM0, nit=4):
     band = np.array([p['band'] for p in pairs])
     g = np.array([max(p['lam'] - lam0, 0.0) * (p['xv'] ** 2 - p['xr'] ** 2) for p in pairs], float)
     keep = np.ones(lnr.size, bool)
-    b = 0.0
+
+    def solve(keep):
+        gg = np.sum(g[keep] ** 2)
+        if not gg > 0:
+            raise ValueError(f'fit_x_loss: no pair constrains b (none above {lam0} um at a changed SRCXPOS)')
+        return -np.sum(lnr[keep] * g[keep]) / gg
     for _ in range(nit):
-        b = -np.sum(lnr[keep] * g[keep]) / np.sum(g[keep] ** 2)
+        b = solve(keep)
         v = lnr + b * g
         keep = np.zeros(lnr.size, bool)
         for bi in np.unique(band):
             s = band == bi
             mad = 1.4826 * np.median(np.abs(v[s] - np.median(v[s])))
             keep[s] = np.abs(v[s] - np.median(v[s])) < 4 * max(mad, 1e-3)
-    return float(b)
+    return float(solve(keep))                  # with the last clipping applied
 
 
 def main(argv=None):

@@ -141,11 +141,12 @@ def _cached(path, build):
         return np.load(path, mmap_mode='r')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     lock = path + '.lock'
-    owner, t0 = False, time.time()
+    token = f'{os.getpid()} {time.time()!r}'.encode()
     while True:
         try:
-            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-            owner = True
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, token)
+            os.close(fd)
             break
         except FileExistsError:
             pass
@@ -155,26 +156,27 @@ def _cached(path, build):
             age = time.time() - os.path.getmtime(lock)
         except FileNotFoundError:                 # released meanwhile: try again
             continue
-        if age > LOCK_WAIT:                       # left by a process that died
-            try:
+        if age > LOCK_WAIT:                       # left by a process that died (or a very slow build:
+            try:                                  # then both build, and the replace keeps one result)
                 os.remove(lock)
             except FileNotFoundError:
                 pass
             continue
-        if time.time() - t0 > LOCK_WAIT:          # still building: build it here too
-            break
         time.sleep(1.0)
-    if owner and os.path.exists(path):            # finished just before this process took the lock
-        os.remove(lock)
-        return np.load(path, mmap_mode='r')
     try:
-        tab = build()
-        tmp = f'{path}.{os.getpid()}.tmp.npy'
-        np.save(tmp, tab)
-        os.replace(tmp, path)
+        if not os.path.exists(path):              # else finished just before this process took the lock
+            tab = build()
+            tmp = f'{path}.{os.getpid()}.tmp.npy'
+            np.save(tmp, tab)
+            os.replace(tmp, path)
     finally:
-        if owner and os.path.exists(lock):
-            os.remove(lock)
+        try:                                      # only this process's lock, not one taken over since
+            with open(lock, 'rb') as fh:
+                mine = fh.read() == token
+            if mine:
+                os.remove(lock)
+        except FileNotFoundError:
+            pass
     return np.load(path, mmap_mode='r')
 
 
