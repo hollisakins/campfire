@@ -5,7 +5,7 @@ The NIRSpec background (zodiacal light and telescope thermal emission) is compar
 - **Nod subtraction**, which provides the primary spectrum (`fnu`).
 - **A master background**, measured from the empty shutters of each exposure and modeled onto the detector, which provides a secondary spectrum (`SPEC1D_MBKG`).
 
-Both depend on an accurate census of which shutters transmit light, so stuck-closed and failed-open shutters are treated here as well.
+Both depend on which shutters transmit light; stuck-closed and failed-open shutters are identified from the same exposures.
 
 ## Master background
 
@@ -22,7 +22,7 @@ For each exposure and detector, the background spectrum is measured from shutter
    | three consecutive 2-pixel bins above 4σ | emission line |
    | fainter than the ensemble by > 30 % | partially or fully closed shutter |
 
-3. **Pooling.** Each exposure's spectrum is compared with the spectrum pooled over the other exposures of its group (all nods, both detectors) in eight wavelength bands. If no band deviates by more than 2 % and 3σ, the pooled spectrum is adopted for its higher signal-to-noise; otherwise the exposure retains its own. Exposures with fewer than five clean shutters always adopt the pooled spectrum.
+3. **Combination.** Each exposure's spectrum is compared with the spectrum combined over the other exposures of its group (all nods, both detectors) in eight wavelength bands. If no band deviates by more than 2 % and 3σ, the combined spectrum is adopted for its higher signal-to-noise; otherwise the exposure retains its own. Exposures with fewer than five empty shutters always adopt the combined spectrum.
 4. **Forward model.** The spectrum is scaled per detector quadrant, multiplied by the bar shadow of each shutter, and placed along every open shutter's trace, including the light beyond the calibrated wavelength range at either end.
 
 The master background is written per exposure and detector as `<exposure>_mbkg.fits`. It is not used to correct the nod-subtracted spectra: shutter-to-shutter throughput variations, which cancel in nod subtraction but not in an ensemble average, make it a few percent noisier. Its uncertainty includes a 3 % systematic floor.
@@ -34,18 +34,18 @@ The bars and shutter edges of the MSA vignette uniformly illuminated shutters, i
 ![Bar shadow of a three-shutter PRISM slitlet at three wavelengths: CAMPFIRE's measured profile (solid) and the CRDS reference (dashed). The two differ in the position of the shutter edges and in the transmission under the interior bars. The measured profile also follows the light just beyond the outer shutters, and narrows with increasing wavelength.](/docs/nirspec/bar_shadow_prism.png)
 
 1. The background spectrum of each disperser is measured from the shutter centers alone, where the bar shadow is unity by definition. No bar-shadow model enters, so the result is independent of the reference it replaces.
-2. Each pixel of a clean empty shutter is normalized by that spectrum at its wavelength.
+2. Each pixel of an empty shutter is normalized by that spectrum at its wavelength.
 3. The normalized values are binned in position along the slitlet and wavelength; the median in each bin defines the profile for the outer edges of a slitlet and for an interior bar.
 4. The profiles are written in the format of the CRDS reference.
 
 | Disperser | Replaces | Derived from |
 |---|---|---|
-| PRISM | `jwst_nirspec_barshadow_0006.fits` | 8,459 empty shutters in seven EMBER pointings |
-| G140M | `jwst_nirspec_barshadow_0003.fits` | 7,309 empty shutters in the four SPURS fields |
-| G235M | `jwst_nirspec_barshadow_0005.fits` | 1,902 empty shutters in the four SPURS fields |
-| G395M | `jwst_nirspec_barshadow_0008.fits` | 1,780 empty shutters in the four SPURS fields |
+| PRISM | `jwst_nirspec_barshadow_0006.fits` | Empty shutters in seven EMBER pointings |
+| G140M | `jwst_nirspec_barshadow_0003.fits` | Empty shutters in the four SPURS fields |
+| G235M | `jwst_nirspec_barshadow_0005.fits` | Empty shutters in the four SPURS fields |
+| G395M | `jwst_nirspec_barshadow_0008.fits` | Empty shutters in the four SPURS fields |
 
-The high-resolution gratings retain the CRDS reference.
+The high-resolution gratings retain the CRDS reference. The shipped tables, their inputs and the reference files they were derived against are listed in `pipeline/campfire_pipeline/data/nirspec_calibrations.toml`.
 
 The measured tables are used in the master background. In the extraction, the bar shadow is part of the [optics model](/docs/reduction/nirspec/slit-losses), which reproduces these profiles. Science frames are never divided by a bar-shadow correction.
 

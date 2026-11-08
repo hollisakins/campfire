@@ -8,7 +8,7 @@ The NIRSpec pipeline writes three files per source and disperser:
 | `<obs>_<grating>_<filter>_<source>_zfit.fits` | Automatic template redshift |
 | `<obs>_<grating>_<filter>_<source>_lines.fits` | Emission-line fluxes at the inspected redshift, written after inspection by `cfpipe nirspec linefit` |
 
-Extensions should be accessed by name; their order may change between pipeline versions. Other files in the product directory (`_s2d.fits`, `_x1d.fits`, and `.pdf` plots) are intermediate products and diagnostic plots.
+Extensions are identified by name; their order may change between pipeline versions. Other files in the product directory (`_s2d.fits`, `_x1d.fits`, and `.pdf` plots) are intermediate products and diagnostic plots.
 
 ## Spectrum file
 
@@ -55,8 +55,8 @@ The decontaminated spectrum is `fnu_prof - fnu_contam`. See [Extraction](/docs/r
 | `exptime` | Exposure time, s |
 | `bkg_nods` | Background exposures subtracted (`excluded` if none) |
 | `bkg_override` | Whether the background selection was overridden, manually or automatically |
-| `bkg_auto` | Whether the override was automatic (cataloged neighbor or neighbor search) |
-| `bkg_why` | Reason for the override: `hand`, `scan`, or the contaminating neighbor; or a flag when all background exposures were contaminated and retained |
+| `bkg_auto` | Whether the override was automatic (cataloged neighbor) |
+| `bkg_why` | Reason for the override: `hand` (manual), or the contaminating neighbor; or a flag when all background exposures were contaminated and retained |
 | `shutter_state` | Slitlet shutter states, one character per shutter: `1` open, `0` closed, `x` the source's shutter |
 | `stuck_shutter_list` | Shutters treated as closed |
 | `source_ra`, `source_dec` | Planned source position |
