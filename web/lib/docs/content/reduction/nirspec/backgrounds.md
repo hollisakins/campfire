@@ -45,7 +45,7 @@ The bars and shutter edges of the MSA vignette uniformly illuminated shutters, i
 | G235M | `jwst_nirspec_barshadow_0005.fits` | 1,902 empty shutters in the four SPURS fields |
 | G395M | `jwst_nirspec_barshadow_0008.fits` | 1,780 empty shutters in the four SPURS fields |
 
-The high-resolution gratings retain the CRDS reference. Each table was also re-derived with one field withheld; the withheld field is reproduced more closely by the measured table than by the CRDS reference throughout the open shutter.
+The high-resolution gratings retain the CRDS reference.
 
 The measured tables are used in the master background. In the extraction, the bar shadow is part of the [optics model](/docs/reduction/nirspec/slit-losses), which reproduces these profiles. Science frames are never divided by a bar-shadow correction.
 
