@@ -877,7 +877,8 @@ background group, which also refits `x_loss` with 1133).
 **Decisions open with the user:** the default width; the default shape past the shutter edge
 (flag, let the center move, or report `fnu_opt`); whether `master_bkg_error_floor` (0.03, the master
 background's error floor only) comes back as an option; the stuck-shutter thresholds after the
-review packet; whether to center the optics tables' row integration (below).
+review packet. Decided: the optics tables' row integration (below) is centered at the next refit
+of the optics model, not before (user, 2026-11-08; noted at `optics.row_integrate`).
 
 - *The optics tables sit half a grid step off.* `optics.row_integrate` averages over an even
   number of grid steps (42), so every image table is shifted by +0.0027 slit units (1.25 mas).
@@ -972,7 +973,7 @@ these fixes:
 Checked and left: a missing path-loss reference fails the product rather than falling back (it is
 an environment error); along the dispersion the kernel is applied mirrored relative to the slit
 direction, which for a blur taken to be round has no physical meaning (its asymmetry is 0.002 slit
-units). Open: the half-step shift of the row integration (section 10).
+units). The half-step shift of the row integration waits for the next optics refit (section 10).
 
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,

@@ -126,6 +126,14 @@ def point_image(c, lam_um, shutters, rho, sigma_det, alpha, y, f, edges=(0.0, 0.
 
 def row_integrate(y, inten):
     """Mean of the intensity over a detector row centred at each y."""
+    # KNOWN OFFSET, fix at the next refit of the optics model: the row is 42 grid steps (ROW /
+    # 0.0025 arcsec), an even box, so ``mode='same'`` centers it half a step off and every table
+    # sits +0.00125 arcsec (+0.0027 slit units) toward +y. The kernel, the center law, the
+    # quadrant pattern and every bar offset were fitted with the shift in place, and the measured
+    # bar offset cancels it (with ``bar_offset = "off"`` a 0.0027 bias remains). Fixing it alone
+    # would leave those calibrations 0.0027 off: center the box (odd length, or shift by half a
+    # step), bump ENGINE_VERSION and refit the kernel and the center law together.
+    # (Design doc, section 10; 2026-11-08.)
     n = max(int(round(ROW / (y[1] - y[0]))), 1)
     return np.convolve(inten, np.ones(n) / n, mode='same')
 
