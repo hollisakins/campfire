@@ -12,8 +12,8 @@ Template set:
 
 | Templates | Description |
 |---|---|
-| 16 stellar populations | `bagpipes` models spanning a range of ages, star-formation histories, metallicities and attenuation, regenerated per redshift interval: ages are fractions of the age of the Universe at that redshift, metallicity decreases toward high redshift, and attenuation peaks near z ≈ 3 |
-| Emission lines | 21 lines and line groups from Lyα to Paα; doublets with fixed atomic ratios ([OIII], [NII], [SIII]) and Balmer and Paschen lines at recombination ratios are tied |
+| Stellar populations | `bagpipes` models spanning a range of ages, star-formation histories, metallicities and attenuation, regenerated per redshift interval: ages are fractions of the age of the Universe at that redshift, metallicity decreases toward high redshift, and attenuation peaks near z ≈ 3 |
+| Emission lines | Lines and line groups from Lyα to Paα; doublets with fixed atomic ratios ([OIII], [NII], [SIII]) and Balmer and Paschen lines at recombination ratios are tied |
 | Broad lines | Hα and Hβ with FWHM of 1,500 and 3,000 km/s |
 | Blackbodies | 500, 2,500 and 5,000 K, and a modified blackbody |
 
@@ -34,7 +34,7 @@ campfire pull --obs <observation>           # inspected redshifts, written to re
 cfpipe nirspec linefit --obs <observation>  # line fits at those redshifts
 ```
 
-1. **Line windows.** Each of the 43 lines in the line list that falls within the spectral range is assigned a window about its expected wavelength; lines with overlapping windows are fitted together.
+1. **Line windows.** Each line in the line list that falls within the spectral range is assigned a window about its expected wavelength; lines with overlapping windows are fitted together.
 2. **Model.** Within each window, one Gaussian per line, convolved with the instrumental resolution, on a linear local continuum. Fixed-ratio doublets are tied.
 3. **Kinematics.** Each line group is first fitted with its own velocity offset and width. Lines detected at S/N ≥ 5 then define a single velocity and width for the spectrum, with which the remaining lines are refitted. Velocity offsets are bounded to ±1,000 km/s from the inspected redshift (±2,500 km/s for the PRISM) and intrinsic widths to 10–600 km/s; without a strong line, the width is fixed at 100 km/s.
 4. **Blends.** Lines separated by less than about twice their width are fitted as a single component, reported under the stronger line and flagged.

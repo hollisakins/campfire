@@ -1,6 +1,6 @@
 # Detector and calibration
 
-This page covers the first stages of the [NIRSpec pipeline](/docs/reduction/nirspec): ramp fitting to count-rate images, and calibration to 2-D spectra for each source and exposure. These stages use the standard `jwst` pipeline and the CRDS flat-field, wavelength and flux calibrations, with one CAMPFIRE addition: subtraction of the detector background before calibration.
+Stages 1 and 2a of the [NIRSpec pipeline](/docs/reduction/nirspec) produce count-rate images and calibrated 2-D spectra for each source and exposure, using the standard `jwst` pipeline and the CRDS flat-field, wavelength and flux calibrations. The detector background is subtracted before calibration.
 
 ## Ramp fitting
 
@@ -67,7 +67,7 @@ All sources are calibrated as point sources (`set_stellarity = 1.0`) at their pl
 | `resample_spec` | `jwst` resampling after background subtraction: in Stage 2b per exposure, and in Stage 3 for the combined spectrum |
 | `extract_1d` | [Forward-model extraction](/docs/reduction/nirspec/extraction) |
 
-Stage 2a also performs three steps around the `jwst` call, described in [Background estimation and subtraction](/docs/reduction/nirspec/backgrounds): identification of stuck-closed shutters before calibration, so that `jwst` does not extract shutters that transmitted no light; extraction of dedicated background slitlets, calibrated as uniform sources; and, after calibration, measurement of the background spectrum and construction of the master background.
+Stage 2a also performs steps around the `jwst` call, described in [Background estimation and subtraction](/docs/reduction/nirspec/backgrounds): identification of stuck-closed shutters before calibration, so that `jwst` does not extract shutters that transmitted no light; extraction of dedicated background slitlets, calibrated as uniform sources; and, after calibration, measurement of the background spectrum and construction of the master background.
 
 ### Optional calibration overrides
 
@@ -76,4 +76,4 @@ Two options replace `jwst` reference files at this stage; both are disabled by d
 | Option | Effect |
 |---|---|
 | `[nirspec.stage2] empirical_wavecorr = true` | Adds the JADES wavelength zero-point correction (Scholtz et al. 2025) to the `jwst` correction for source position across the shutter |
-| `[nirspec.stage2] extend_g140m_g235m = true` | Extends G140M/F100LP and G235M/F170LP to 5.3 µm, beyond the red limit of the CRDS references, using flats and wavelength ranges generated on the fly and a flux calibration derived against the SPURS program. The Stage 1 footprints reach 5.3 µm for these settings either way |
+| `[nirspec.stage2] extend_g140m_g235m = true` | Extends G140M/F100LP and G235M/F170LP to 5.3 µm, beyond the red limit of the CRDS references, using flats and wavelength ranges generated on the fly and a flux calibration derived against the SPURS program. The Stage 1 footprints reach 5.3 µm for these grating/filter combinations whether or not the option is set |

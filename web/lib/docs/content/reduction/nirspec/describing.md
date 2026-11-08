@@ -1,7 +1,5 @@
 # Describing the reduction
 
-This page collects material that may be useful in describing a CAMPFIRE NIRSpec reduction in a publication: the version information recorded in each spectrum file, a summary paragraph, and the processing choices left to the user.
-
 ## Version information
 
 The primary header of each spectrum file records:
@@ -47,7 +45,7 @@ All other calibrations (flat fields, wavelength solution, flux calibration) use 
 
 ## References
 
-- CAMPFIRE: no pipeline paper exists yet. Data releases can be cited as given on the page of the release named in the file's `CMPFRDR` keyword.
+- CAMPFIRE: as given on the page of the data release named in the file's `CMPFRDR` keyword.
 - `jwst` calibration pipeline: Bushouse et al., JWST Calibration Pipeline (Zenodo), at the version in `CAL_VER`.
 - JADES wavelength correction, if named in `R_WAVCOR`: Scholtz et al. (2025), JADES Data Release 4 (arXiv:2510.01034).
 - Redshift templates: `bagpipes` (Carnall et al. 2018).
