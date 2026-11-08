@@ -56,9 +56,11 @@ from campfire_pipeline.nirspec import trace_overlap as TO
 from campfire_pipeline.nirspec.coverage import (GEOMETRY_VERSION, cache_path, cutoffs_for, default_cache_dir,
                                                  rate_geometry, resolve_wavelengthrange)
 
-STEP1_VERSION = '1.4'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different;
+STEP1_VERSION = '1.5'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different;
 #                                1.3: the tables written into the rate file (no _mbkgr.fits);
-#                                1.4: the trace map (TM* extensions) written with them
+#                                1.4: the trace map (TM* extensions) written with them;
+#                                1.5: the fit's source shutters include secondary sources, an exposure without
+#                                     a background gets an empty MBKG1DR, FITCSTS / FITCSTA cards
 N_GRID_SLITLETS = 6          # slitlets per detector whose central rows set the wavelength grid
 
 
@@ -106,18 +108,21 @@ def write_into_rate(rate, hdus):
 # ---------------------------------------------------------------------------
 
 def read_rate_sky(path):
-    """``(MBKG1DR table, {quadrant: scale})`` of a rate file step 1 has written into."""
+    """``(MBKG1DR table, {quadrant: scale})`` of a rate file step 1 has written into; the
+    table is None when step 1 found no background for the exposure (an empty ``MBKG1DR``)."""
+    from campfire_pipeline.nirspec.master_bkg import _rate_sky_of
     with fits.open(path, memmap=False) as h:
-        sky = Table(h['MBKG1DR'].data)
-        q = {int(r['quadrant']): float(r['scale']) for r in h['MBKGQSR'].data} if 'MBKGQSR' in h else {}
+        sky = _rate_sky_of(h)
+        q = {int(r['quadrant']): float(r['scale']) for r in h['MBKGQSR'].data} if 'MBKGQSR' in h and sky is not None else {}
     return sky, q
 
 
-def read_calls(workspace, root):
+def read_calls(workspace, root, paths=None):
     """The root's stuck-shutter calls, ``{(q, row, col): {stuck, a, n, note}}``, from
-    the first of its rate files that holds any; ``{}`` when there is none."""
+    the first of its rate files (``paths``, else every ``<root>_*_rate.fits`` in
+    ``workspace``) that holds any; ``{}`` when there is none."""
     import glob
-    for path in sorted(glob.glob(os.path.join(workspace, f'{root}_*_rate.fits'))):
+    for path in sorted(paths if paths is not None else glob.glob(os.path.join(workspace, f'{root}_*_rate.fits'))):
         try:
             with fits.open(path, memmap=False) as h:
                 if 'CALLS' not in h or not h['CALLS'].header.get('NAXIS2', 0):
@@ -392,7 +397,7 @@ def run_before_stage2a(obs, stage_config, n_processes=1, overwrite=False):
     metafiles = S.root_metafiles(obs)
     before = S.load(obs.stuck_closed_shutters_file, metafiles)
     run_step1(obs, stage_config, n_processes=n_processes, overwrite=overwrite,
-              write_calls=bool(stage_config.get('detect_stuck_shutters', True)))
+              write_calls=bool(stage_config.get('detect_stuck_shutters', True)), metafiles=metafiles)
     after = S.load(obs.stuck_closed_shutters_file, metafiles)
     sids, roots = set(), set()
     for root, mf in metafiles.items():
@@ -412,11 +417,13 @@ def run_before_stage2a(obs, stage_config, n_processes=1, overwrite=False):
     return sids, roots
 
 
-def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=True):
+def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=True, metafiles=None):
     """Step 1 for every MSA rate file of ``obs`` whose product is stale; returns the
     products written. With ``write_calls`` the stuck calls are merged into the
     observation's stuck list as ``auto`` entries (they are stored in ``CALLS`` either
-    way), the stored ``CALLS`` of a root whose products are current included."""
+    way), the stored ``CALLS`` of a root whose products are current included.
+    ``metafiles`` ({root: MetaFile}, ``stuck_list.root_metafiles``) is read here when not
+    given."""
     from multiprocessing import Pool
     from campfire_pipeline.nirspec.shutter_fit import call_shutters
 
@@ -439,7 +446,8 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
                                                             wr=resolve_wavelengthrange(rate)))
     if not by_root:
         return []
-    metafiles = S.root_metafiles(obs, roots=set(by_root))
+    if metafiles is None:
+        metafiles = S.root_metafiles(obs, roots=set(by_root))
     resolved = S.load(stuck_path, metafiles)
 
     todo = {}
@@ -456,7 +464,7 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
         log(f'master background step 1: {root}: current, skipped')
         # the stored calls still reach the list: a run with write_calls off, or an auto
         # entry lost from the file, would otherwise wait for the next rerun of the step
-        calls = read_calls(obs.workspace_dir, root) if write_calls else {}
+        calls = read_calls(obs.workspace_dir, root, [it['rate'] for it in items]) if write_calls else {}
         if calls:
             S.write_auto(stuck_path, root, calls, metafiles, obs_name=obs.name)
     if not todo:
@@ -506,6 +514,9 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
 
     written = []
     for root, items in todo.items():
+        for it in items:
+            if it['base'] not in specs_of:
+                _clear_tables(product_path(obs, it['base']))
         items = [it for it in items if it['base'] in specs_of]
         if not items:
             continue
@@ -542,16 +553,34 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
                         dtype=(np.int16, np.int16, np.int16, bool, np.float32, np.int16, 'U48')) if calls else None
         for it in items:
             sk = skies[it['base']]
-            rs, qs = sk['rs'], sk['qs']
+            rs, qs, cen = sk['rs'], sk['qs'], centres[it['base']]
             if rs is None:
-                log(f'master background step 1: {it["base"]}: no sky'); continue
+                # an empty MBKG1DR: the exposure has no step-1 background (step 2 paints it in
+                # the calibrated range only), and the root is current on the next run
+                log(f'master background step 1: {it["base"]}: no background, written empty')
+                rs, cen = (np.zeros(0),) * 4, np.zeros(0)
             out = product_path(obs, it['base'])
-            _write(out, it, centres[it['base']], rs, qs, specs_of[it['base']], keys_of[it['base']],
+            _write(out, it, cen, rs, qs, specs_of[it['base']], keys_of[it['base']],
                    fits_of.get(it['base']), calls_t, opt, sky=sk, trace_map=_trace_map_hdus(it, cache_dir))
             written.append(out)
         if calls and write_calls:
             S.write_auto(stuck_path, root, calls, metafiles, obs_name=obs.name)
     return written
+
+
+def _clear_tables(path):
+    """Empty an earlier run's step-1 extensions in a rate file this run could not process,
+    so step 2 does not paint with them (an empty ``MBKG1DR`` is no background); without
+    the step's cards the root stays stale and is retried. The extensions stay present for
+    the reason ``_write`` always writes all of them."""
+    hdr = step1_header(path)
+    if hdr is None or 'CFMB1VER' not in hdr:
+        return
+    hdus = [fits.BinTableHDU(name=name) for name in ('MBKG1DR', 'MBKGQSR', 'MBKGSHR', 'SHUTAMP', 'CALLS')]
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        write_into_rate(path, hdus + TO.ShutterMap.empty_hdus())
+    log(f'master background step 1: {os.path.basename(path)}: failed; the earlier step-1 tables are emptied')
 
 
 def _trace_map_hdus(it, cache_dir):
@@ -595,10 +624,11 @@ def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt, sky=None, 
             'MBKGPNSG': (float(opt['pool_nsigma']), '... and above this many sigma'),
         })
     if fit is not None:
-        for k in ('chi2_sky', 'chi2_all', 'const_sky', 'const_all'):
+        for k, card in (('chi2_sky', 'FITCHI2S'), ('chi2_all', 'FITCHI2A'), ('const_sky', 'FITCSTS'),
+                        ('const_all', 'FITCSTA')):
             v = fit.meta.get(k)
             if v is not None and np.isfinite(v):
-                cards[f'FIT{k.upper().replace("_", "")[:5]}'] = (float(v), f'shutter fit {k}')
+                cards[card] = (float(v), f'shutter fit {k}')
     hdus = [fits.BinTableHDU(_sky_table(centres, rs, own=sky['own'] if sky else None), name='MBKG1DR')]
     hdr = hdus[0].header
     for k, v in M._finite_cards(cards).items():

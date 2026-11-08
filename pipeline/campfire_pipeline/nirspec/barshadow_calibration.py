@@ -207,7 +207,10 @@ def widened_grid(grid, max_um):
 
 def _other_source_columns(c, slitlet_id):
     """Shutter columns of every catalogued source in this slitlet at this nod, and the
-    slitlet's own source column, from the original metafile."""
+    slitlet's own source column, from the original metafile: ``(own column, the other
+    columns holding a source, every column)``. A shutter holds a source when it is not
+    background (``background = 'N'``), as in step 1: the secondary sources of a slitlet
+    carry ``primary_source = 'N'``."""
     hdr = fits.getheader(c.rate_path)
     metafile = os.path.join(c.workspace, os.path.basename(hdr.get('OGMETFL') or hdr['MSAMETFL']))
     from astropy.table import Table
@@ -217,11 +220,14 @@ def _other_source_columns(c, slitlet_id):
     if 'dither_point_index' in shut.colnames and c.dither:
         sel &= shut['dither_point_index'] == c.dither
     rows = shut[sel]
-    src = rows[(rows['primary_source'] == 'Y') & (rows['source_id'] > 0)]
+    primary = np.char.strip(np.asarray(rows['primary_source'], str)) == 'Y'
+    not_bkg = np.char.strip(np.asarray(rows['background'], str)) == 'N'
+    src = rows[primary & (rows['source_id'] > 0)]
     own = src['shutter_column'][src['source_id'] == c.source_id]
     own_col = int(own[0]) if len(own) else None
     cols = sorted(set(int(v) for v in rows['shutter_column']))
-    others = sorted({int(v) for v in src['shutter_column'] if own_col is None or int(v) != own_col})
+    holds = rows['shutter_column'][not_bkg & (rows['source_id'] > 0)]
+    others = sorted({int(v) for v in holds if own_col is None or int(v) != own_col})
     return own_col, others, cols
 
 
@@ -399,29 +405,29 @@ def pixel_samples(c, counter, source_pad_px=2.0):
     # wherever the nod took it); the slit WCS places its catalogue position, so the
     # shutter next to it is padded like any shutter next to a source and the fake 'x'
     # shutter is measured as sky. A background slitlet (``source_id <= 0``) has no
-    # source to cut.
+    # source of its own to cut, but can hold secondary sources.
     src_offset = 0.0
+    others, own_col, cols = [], None, []
+    try:
+        own_col, others, cols = _other_source_columns(c, g['slitlet_id'])
+    except Exception as e:                    # metafile not at hand: keep the pixels
+        warnings.warn(f'{os.path.basename(c.path)}: no metafile for other sources ({e})')
     if not c.is_background:
-        others, own_col, cols = [], None, []
-        try:
-            own_col, others, cols = _other_source_columns(c, g['slitlet_id'])
-        except Exception as e:                # metafile not at hand: keep the pixels
-            warnings.warn(f'{os.path.basename(c.path)}: no metafile for other sources ({e})')
         if own_col is None and not planned:
             radec = _source_radec(c)
             if radec is None:
                 m.close()
                 raise ValueError('source left its slitlet at this dither point and is not in SOURCE_INFO')
             src_offset = source_slit_position(s, *radec, pitch)
-        ref_col = own_col if own_col is not None else (cols[kx] if 0 <= kx < len(cols) else None)
         good &= ~(np.abs(ys - src_offset) < 0.5 + pad)
         if src_offset == 0:
             good &= k != 0
-        # other catalogued sources in this slitlet (their shutter column -> shutter offset)
-        if ref_col is not None:
-            for col in others:
-                ko = col - ref_col
-                good &= ~(np.abs(ys - ko) < 0.5 + pad)
+    # other catalogued sources in this slitlet (their shutter column -> shutter offset)
+    ref_col = own_col if own_col is not None else (cols[kx] if 0 <= kx < len(cols) else None)
+    if ref_col is not None:
+        for col in others:
+            ko = col - ref_col
+            good &= ~(np.abs(ys - ko) < 0.5 + pad)
     m.close()
 
     seg, yseg, is_open = g['seg'], g['yseg'], g['is_open']

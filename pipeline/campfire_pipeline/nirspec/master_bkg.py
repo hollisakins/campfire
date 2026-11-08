@@ -76,7 +76,7 @@ from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec.coverage import (coverage_from_wcs, cutoffs_for, default_cache_dir, cache_path,
                                                  geometry_cache_path, slit_geometry_extended)
 
-ALGORITHM_VERSION = '1.7'    # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
+ALGORITHM_VERSION = '1.8'    # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
 #                               1.3: equal shutter weights, sky divided to the open-shutter centre (2026-10-31)
 #                               1.4: the group pool painted unless the exposure differs (pool_check) (2026-10-31)
 #                               1.5: step-1 tables read from the rate file, no MBKG1DR copy, 2-D extensions
@@ -86,6 +86,8 @@ ALGORITHM_VERSION = '1.7'    # 1.1: painted past the calibrated range; 1.2: coun
 #                                    comes through the same MSA spot (merge_painted) (2026-11-02)
 #                               1.7: failed-open shutters get a commanded slitlet's margin and the real shutter
 #                                    pitch (coverage.failed_open_slitlets) (2026-11-02)
+#                               1.8: shutters holding a secondary source left out of the empty shutters, as in
+#                                    step 1; a group's products are made together (2026-11-08)
 # The derivation's settings. Fixed in the code since the 2026-11-06 configuration audit
 # (Hollis: "30 master bkg thresholds is a *ton*"); the only one left in the config is
 # USER_OPTIONS. Every product records the ones that shape it in its header.
@@ -660,6 +662,14 @@ def resolve_barshadow_table(bs_ref, slit_path):
     return B.load_table(path)
 
 
+def _rate_sky_of(hdul):
+    """The ``MBKG1DR`` table of an open file; None when absent or empty (step 1 found no
+    background for that exposure)."""
+    if 'MBKG1DR' not in hdul or not hdul['MBKG1DR'].header.get('NAXIS2', 0):
+        return None
+    return Table(hdul['MBKG1DR'].data)
+
+
 def load_product(path, with_2d=False):
     """The content of a ``_mbkg.fits`` as the dict ``sky_for_slit`` takes. The 2-D arrays
     (``mbkg2d``, ``dq2d``, ``n2d``) and the exposure's rate frame (``rate``) are read with
@@ -673,14 +683,12 @@ def load_product(path, with_2d=False):
                    qscales={q: header_float(hdr, f'MBKGQ{q}') for q in (1, 2, 3, 4)},
                    floor=header_float(hdr, 'MBKGEFLR', 0.0), bs_ref=str(hdr.get('MBKGBSRF', 'CRDS')),
                    shutters=Table(h['SHUTTERS'].data) if 'SHUTTERS' in h else None,
-                   rate_sky=Table(h['MBKG1DR'].data) if 'MBKG1DR' in h else None,
-                   mbkg2d=None, dq2d=None, n2d=None, rate=None)
+                   rate_sky=_rate_sky_of(h), mbkg2d=None, dq2d=None, n2d=None, rate=None)
     if out['rate_sky'] is None:                # since 1.5 it lives in the rate file only (step 1)
         rate_path = os.path.join(os.path.dirname(os.path.abspath(path)), str(hdr.get('MBKGRATE', '')))
         if os.path.isfile(rate_path):
             with fits.open(rate_path, memmap=False) as h:
-                if 'MBKG1DR' in h:
-                    out['rate_sky'] = Table(h['MBKG1DR'].data)
+                out['rate_sky'] = _rate_sky_of(h)
     if with_2d:
         _load_2d(out)
     return out
@@ -1451,12 +1459,20 @@ def _failed_open_over_nods(obs, fo_of, tol):
         if not fos:
             continue
         out = product_path(obs, base)
+        how = ('measured, nods', 'failed-open transmission: how, over what')
+        if all(scales[base].get((f['name'], f['quadrant']), f['applied']) == f['applied'] for f in fos):
+            # every shutter keeps the scale it was painted at: the arrays stand and only the
+            # cards change (both already written by the painter, so the header keeps its size)
+            with fits.open(out, mode='update', memmap=False) as h:
+                h[0].header['MBKGFOSC'] = how
+            continue
         with fits.open(out, memmap=False) as h:
             hdul = fits.HDUList([x.copy() for x in h])
         mb = np.array(hdul['MBKG2D'].data, np.float32)
         cover = np.array(hdul['MBKG2DN'].data, np.uint8)
         dq = np.array(hdul['MBKG2DDQ'].data, np.uint8)
         rescale_failed_open(mb, dq, cover, fos, scales[base])
+        n_fo = (int(sum(f['applied'] > 0 for f in fos)), 'failed-open shutters painted')
         bunit = hdul['MBKG2D'].header.get('BUNIT', 'DN/s')
         for name in ('MBKG2D', 'MBKG2DN', 'MBKG2DDQ'):
             del hdul[name]
@@ -1464,8 +1480,7 @@ def _failed_open_over_nods(obs, fo_of, tol):
         hdul[-1].header['BUNIT'] = bunit
         hdul.append(fits.CompImageHDU(cover, name='MBKG2DN', compression_type='RICE_1'))
         hdul.append(fits.CompImageHDU(dq, name='MBKG2DDQ', compression_type='RICE_1'))
-        hdul[0].header['MBKGNFO'] = (int(sum(f['applied'] > 0 for f in fos)), 'failed-open shutters painted')
-        hdul[0].header['MBKGFOSC'] = ('measured, nods', 'failed-open transmission: how, over what')
+        hdul[0].header['MBKGNFO'], hdul[0].header['MBKGFOSC'] = n_fo, how
         atomic_save(hdul, out)
 
 
@@ -1483,7 +1498,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         version = 'unknown'
     inputs = discover_inputs(obs)
     stuck_mtime = obs.stuck_closed_shutters_mtime or 0.0
-    todo, bs_name_of = {}, {}
+    todo, bs_name_of, eligible = {}, {}, {}
     skipped_non_msa = 0
     for rate in obs.rate_files:
         base = rate_base_of(rate)
@@ -1495,6 +1510,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             log(f'master background: {base}: no stage-2a inputs, skipped')
             continue
         out = product_path(obs, base)
+        eligible[base] = (rate, cans)
         # a new bar-shadow table for the grating makes the product stale too
         if cans[0].grating not in bs_name_of:
             name, bs_path = _barshadow_reference(cans[0].grating, cans[0].path)
@@ -1510,12 +1526,13 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             f'(fixed slit), skipped')
     if not todo:
         return []
+    # every rate file of a group contributes to its pool and to the failed-open
+    # transmissions combined over its nods, so one stale product makes the whole group's
+    # products stale
+    groups = {base.rsplit('_', 2)[0] for base in todo}
+    todo = {base: v for base, v in eligible.items() if base.rsplit('_', 2)[0] in groups}
     log(f'master background for {obs.name}: {len(todo)} rate file(s), '
         f'{sum(len(v[1]) for v in todo.values())} input slits, options {opt}')
-
-    # every rate file of the exposure groups involved contributes to the pools, so
-    # sample the whole group even when only part of it is stale
-    groups = {base.rsplit('_', 2)[0] for base in todo}
     sample = {base: inputs[base] for base in inputs if base.rsplit('_', 2)[0] in groups and inputs[base]}
     canonicals = [c for cans in sample.values() for c in cans]
 
@@ -1666,10 +1683,10 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             base = rate_base_of(rate)
             p1 = R.product_path(obs, base)
             h1 = R.step1_header(p1)
-            if h1 is None:
-                log(f'master background: {base}: no step-1 tables in the rate file, painted in the calibrated range only')
+            sky_t, q = R.read_rate_sky(p1) if h1 is not None else (None, {})
+            if sky_t is None:
+                log(f'master background: {base}: no step-1 background in the rate file, painted in the calibrated range only')
                 continue
-            sky_t, q = R.read_rate_sky(p1)
             centres_of[base] = np.asarray(sky_t['wavelength'], float)
             rate_skies[base] = tuple(np.asarray(sky_t[c]) for c in ('rate', 'rate_err', 'n_shutters', 'source'))
             rate_q[base] = q

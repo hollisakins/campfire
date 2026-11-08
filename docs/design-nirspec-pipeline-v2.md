@@ -91,7 +91,7 @@ Version 2 changes six things.
 | Boundary with jwst's references | stage 3 | `crds_refs.py`, `data/nirspec_calibrations.toml` | 7 |
 
 Versions at the time of writing: `FIT_VERSION` 8, optics model `2026.11-r8` (engine 2), master
-background `CFMBKGV` 1.7 (step 1 1.4), `JOINT_PASS_VERSION` 4, `PASS1_VERSION` 11, bar offset
+background `CFMBKGV` 1.8 (step 1 1.5), `JOINT_PASS_VERSION` 4, `PASS1_VERSION` 11, bar offset
 `MEASURE_VERSION` 3, trace map version 3.
 
 ---
@@ -924,6 +924,26 @@ never requests. PR A's own `web/` is checked with `npm run typecheck`, `npm test
 
 A bad master-background extension still stops an observation's deploy before anything is uploaded,
 as any unexpected error does.
+
+Slice 2 (2026-11-08): v1's stuck detector is removed (below). The read-through and the code review
+led to these fixes:
+- a shutter holding a secondary source (`background = 'N'`, `primary_source = 'N'`; 304 of the
+  archive's 318 metafiles have some) is left out of step 2's empty shutters and counts as a
+  source shutter in the stuck-shutter fit, as step 1 already did (`CFMBKGV` 1.8, step 1 1.5);
+- step 2 makes all of a group's products together when one is stale, so the pool and the
+  failed-open transmissions combined over the nods stay the same for every nod;
+- a rate file step 1 cannot process has its earlier tables emptied instead of left for step 2,
+  and one without a background gets an empty `MBKG1DR` (step 2 paints it in the calibrated
+  range only);
+- a root whose step-1 products are current still merges its stored calls into the stuck list,
+  read from that root's own rate files;
+- the shutter fit's two constants no longer share one header card (`FITCSTS`, `FITCSTA`);
+- the failed-open rescale rewrites a product only when a transmission changed.
+
+Checked and left: a failed-open shutter on a commanded-open one would be painted twice, but none of
+the 318 metafiles has one; a failed-open shutter measured at zero transmission keeps its footprint
+(painted 0, not uncovered), which is correct. The trace map is still built one rate file at a time
+after step 1's parallel work.
 
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,

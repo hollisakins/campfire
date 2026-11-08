@@ -249,6 +249,25 @@ def test_write_into_rate_survives_a_jwst_save_and_a_rewrite(tmp_path):
     assert R.step1_header(path) is None
 
 
+def test_a_failed_rate_file_keeps_no_earlier_tables(tmp_path):
+    """A rate file step 1 could not process this run has its earlier tables emptied, not
+    left for step 2 to paint with: an empty MBKG1DR reads as no background, every
+    extension stays present, and without the step's cards the file is stale."""
+    from jwst.datamodels import ImageModel
+    path = str(tmp_path / 'jw_rate.fits')
+    m = ImageModel(np.ones((8, 8), np.float32)); m.save(path); m.close()
+    hdus = _step1_hdus(1.0)
+    hdus[0].header['CFMB1VER'] = R.STEP1_VERSION
+    R.write_into_rate(path, hdus)
+    R._clear_tables(path)
+    assert R.read_rate_sky(path) == (None, {})
+    with fits.open(path) as h:
+        assert all(n in h for n in R.STEP1_EXTENSIONS)
+    assert not R.product_current(path, {'CFMB1VER': (R.STEP1_VERSION, '')})
+    with ImageModel(path) as m:
+        assert np.all(m.data == 1)
+
+
 def test_fixed_slit_exposures_get_no_master_background(tmp_path):
     """A standalone fixed-slit rate file (no MSA, no metafile) is skipped by both steps:
     there are no empty shutters to build a master background from."""

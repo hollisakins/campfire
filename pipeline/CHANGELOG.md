@@ -107,9 +107,9 @@ Release procedure: edit the `## Unreleased` section below, then run
     `reference/nirspec/<obs>/nodded_background_overrides_proposed.toml` with a figure per source
     (`<obs>_<id>_neighbor.pdf`, laid out as the bkgsub plots), and stage 3 prints the command that
     reruns those sources.
-  - *Master background* (`master_bkg_rate.py`, `master_bkg.py`, `CFMBKGV` 1.7). Step 1, before
+  - *Master background* (`master_bkg_rate.py`, `master_bkg.py`, `CFMBKGV` 1.8). Step 1, before
     stage 2a, reads the rate files only. It measures each exposure's background from its empty
-    shutters, fits every commanded-open shutter's background to call stuck-closed shutters, and
+    shutters (no catalogued source, primary or secondary, at that dither point), fits every commanded-open shutter's background to call stuck-closed shutters, and
     builds the trace map. It writes these as tables into the rate file (`MBKG1DR`, `MBKGQSR`,
     `MBKGSHR`, `SHUTAMP`, `CALLS`, `TMSH1`/`TMSH2`/`TMFLAG`/`TMSLITS`/`TMSHUT`). Step 2, at the end
     of stage 2a, writes `<root>_<nod>_<nrsN>_mbkg.fits` (layout kind `nirspec_mbkg`): the 1-D

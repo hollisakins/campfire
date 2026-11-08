@@ -6,6 +6,30 @@ from astropy.io import fits
 from campfire_pipeline.nirspec import barshadow_calibration as B
 
 
+def test_other_source_columns_count_secondary_sources(tmp_path):
+    """A shutter holding a secondary source (background 'N', primary_source 'N') is cut
+    from the empty shutters, as step 1 cuts it; at another dither point it is empty."""
+    from types import SimpleNamespace
+    from astropy.table import Table
+    rows = Table(rows=[(1, 7, 1, 1001, 20, 'N', 'Y'), (1, 7, 1, 1001, 21, 'Y', 'N'),
+                       (1, 7, 1, 2002, 22, 'N', 'N'), (1, 7, 2, 1001, 21, 'N', 'Y'),
+                       (1, 7, 2, 1001, 20, 'Y', 'N'), (1, 7, 2, 1001, 22, 'Y', 'N')],
+                 names=('msa_metadata_id', 'slitlet_id', 'dither_point_index', 'source_id', 'shutter_column',
+                        'background', 'primary_source'))
+    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU(Table({'source_id': [1001]}), name='SOURCE_INFO'),
+                  fits.BinTableHDU(rows, name='SHUTTER_INFO')]).writeto(tmp_path / 'jw_msa.fits')
+    hdu = fits.PrimaryHDU()
+    hdu.header['MSAMETFL'] = 'jw_msa.fits'
+    hdu.writeto(tmp_path / 'jw_rate.fits')
+    c = SimpleNamespace(rate_path=str(tmp_path / 'jw_rate.fits'), workspace=str(tmp_path), msametid=1, dither=1,
+                        source_id=1001)
+    assert B._other_source_columns(c, 7) == (20, [22], [20, 21, 22])
+    c.dither = 2
+    assert B._other_source_columns(c, 7) == (21, [], [20, 21, 22])
+    c.source_id, c.dither = 0, 1                                        # a background slitlet's view
+    assert B._other_source_columns(c, 7) == (None, [20, 22], [20, 21, 22])
+
+
 def test_segment_map_three_shutter_slitlet():
     # state '1x1': shutters 0 (open), 1 (source), 2 (open); margins at j = -1 and j = 3
     j = np.array([0, 0, 1, 1, 2, 2, -1, 3, 3])

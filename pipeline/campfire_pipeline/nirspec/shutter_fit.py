@@ -106,7 +106,9 @@ def build_templates(geometry, rate_sky, qscales, table, shutter_info, shape=None
                 if len(state) == int(c.max()) - c0 + 1:
                     col_of_j = {jj: c0 + jj for jj in range(len(state))}
                 for r in mr:
-                    if int(r['source_id']) > 0 and str(r['primary_source']).strip() == 'Y':
+                    # a shutter holding any catalogued source (secondary ones included), as
+                    # step 1's empty-shutter selection counts them
+                    if int(r['source_id']) > 0 and str(r['background']).strip() == 'N':
                         src_j.add(int(r['shutter_column']) - c0)
                 row = int(mr['shutter_row'][0])
         if sid <= 0:
