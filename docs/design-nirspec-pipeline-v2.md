@@ -534,7 +534,8 @@ entering the shutter.
   median), 16-84 % 0.70-1.30, scatter 0.124 dex. The light in the shutter (`fnu_opt`) reads 0.620,
   16-84 % 0.41-0.84, 0.149 dex. Per band: F150W 0.84, F200W 0.97, F277W 0.89, F356W 0.92, F444W
   0.95. The ratio sits near 1 for compact sources and rises above 1 for the widest (figure
-  `web/public/docs/nirspec/reported_flux.png`, `scripts/docs/nirspec/fig_reported_flux.py`).
+  `web/public/docs/nirspec/reported_flux.png`, `scripts/docs/nirspec/fig_reported_flux.py`;
+  numbers from `scripts/docs/nirspec/reported_flux_stats.py <root> <aperture json>`).
 - Against the catalog's total (Kron) flux, in six bins of fitted width (`FIT_VERSION` 6): the
   light in the shutter read 0.87 for the most compact bin down to 0.32 for the widest; the
   reported flux reads 0.93 / 0.77 / 0.77 / 0.75 / 0.68 / 1.03, with the scatter 0.20 -> 0.16 dex.
