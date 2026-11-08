@@ -14,7 +14,7 @@ import {
   nodKey, normalizeBkgOverrides,
 } from '@/lib/nirspec-nods';
 import {
-  nextWebMark, slitletOrdinals, stuckOrdinals, type StuckShutterMark,
+  cutoutClickMark, nextWebMark, slitletOrdinals, stuckOrdinals, type StuckShutterMark,
 } from '@/lib/nirspec-shutters';
 import { fetchJson } from '@/lib/fetch-json';
 import { zscaleLimits, type StretchMode, type ColormapName } from '@/lib/fits';
@@ -188,12 +188,12 @@ function NodGridInner() {
   }, [decoded?.observation, queryClient, stuckKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A click on a cutout's shutter band: the ordinal's physical shutter(s) of that root.
-  const handleToggleShutter = useCallback((root: string, ordinal: number) => {
+  const handleToggleShutter = useCallback((root: string, ordinal: number, drawnStuck: boolean) => {
     const keys = slitletOrdinals(rootShutters.get(root) ?? []).get(ordinal) ?? [];
     if (keys.length === 0) { setSaveError(`${root}: no shutter map (redeploy)`); return; }
     const rm = marks.get(root) ?? NO_MARKS;
     if (keys.some((k) => rm.get(k)?.origin === 'manual')) { setSaveError(`${keys.join(', ')} set locally (manual)`); return; }
-    setMark(root, keys, keys.every((k) => rm.get(k)?.stuck) ? null : true);
+    setMark(root, keys, cutoutClickMark(drawnStuck, keys.map((k) => rm.get(k))));
   }, [rootShutters, marks, setMark]);
 
   const handleCycleShutter = useCallback((root: string, key: string) => {
@@ -321,7 +321,7 @@ function NodGridInner() {
                         onData={onData}
                         onSettled={onSettled}
                         stuckList={(root && stuckByRoot.get(root)) || NO_ORDINALS}
-                        onToggleShutter={(ordinal) => { if (root) handleToggleShutter(root, ordinal); }}
+                        onToggleShutter={(ordinal, drawnStuck) => { if (root) handleToggleShutter(root, ordinal, drawnStuck); }}
                       />
                     </div>
                   ))}

@@ -48,6 +48,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
+from campfire_pipeline.nirspec.stuck_list import shutter_key   # the key format of the table's CHECK
+
 PAGE = 1000
 TABLE = 'nirspec_stuck_shutters'
 
@@ -55,10 +57,6 @@ TABLE = 'nirspec_stuck_shutters'
 # ---------------------------------------------------------------------------
 # The plan (pure: no DB, no files; the mapping is passed in)
 # ---------------------------------------------------------------------------
-
-def shutter_key(q, r, c) -> str:
-    return f'q{int(q)}r{int(r)}c{int(c)}'
-
 
 @dataclass
 class Plan:

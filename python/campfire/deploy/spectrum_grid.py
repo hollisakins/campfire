@@ -218,10 +218,17 @@ def upsert_spectrum_exposures(client, records: list[dict], batch_size: int = 500
 
     for i in range(0, len(new_records), batch_size):
         client.table("spectrum_exposures").insert(new_records[i:i + batch_size]).execute()
-    for i in range(0, len(update_records), batch_size):
-        client.table("spectrum_exposures").upsert(
-            update_records[i:i + batch_size],
-            on_conflict="observation,exposure_root,nod,detector,source_id",
-        ).execute()
+    # A batch upsert sends the union of its rows' keys and NULL where a row lacks one,
+    # which would blank a render column (msa_shutters) a row leaves out: send rows with
+    # the same columns together.
+    by_columns: dict[tuple[str, ...], list[dict]] = {}
+    for r in update_records:
+        by_columns.setdefault(tuple(sorted(r)), []).append(r)
+    for group in by_columns.values():
+        for i in range(0, len(group), batch_size):
+            client.table("spectrum_exposures").upsert(
+                group[i:i + batch_size],
+                on_conflict="observation,exposure_root,nod,detector,source_id",
+            ).execute()
 
     return len(records)

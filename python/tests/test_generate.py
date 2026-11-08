@@ -299,8 +299,8 @@ def test_no_master_background_spectrum_writes_no_json(tmp_path):
 
 
 def test_row_defaults_are_the_fields_of_a_file_without_a_master_background_spectrum(tmp_path):
-    # Every spectra record carries these before its file's own fields, so a batch
-    # upsert never sends a NULL has_mbkg_spectrum (NOT NULL) for an unread file.
+    # A read file's spectra record carries these before its own fields; an unread
+    # file's record carries none of them, so its row keeps what an earlier deploy stored.
     from campfire.deploy.generate import MBKG_ROW_DEFAULTS
     fits_path = tmp_path / "obs_prism_clear_8_spec.fits"
     _write_spec_fits(fits_path, opt=[0.2, 1.0, 0.2])
@@ -320,7 +320,11 @@ def test_deploy_json_updates_rows_only_where_the_sidecar_landed(tmp_path):
     summary = [{"spec_file": a.name, "object_id": "t1", "grating": "prism"},
                {"spec_file": b.name, "object_id": "t2", "grating": "prism"}]
     keys = {a.name: "ka", b.name: "kb"}
-    assert update_mbkg_rows(sb, summary, [a, b], keys, uploaded_keys={"ka"}) == 1   # kb failed to upload
+    fields_of = {}
+    for p in (a, b):
+        with fits.open(p) as hdul:
+            fields_of[p.name] = mbkg_row_fields(hdul)
+    assert update_mbkg_rows(sb, summary, fields_of, keys, uploaded_keys={"ka"}) == 1   # kb failed to upload
     got = {r["target_id"]: r for r in sb.rows("spectra")}
     assert got["t1"]["has_mbkg_spectrum"] is True and got["t1"]["mbkg_reason"] == "extended"
     assert got["t2"]["has_mbkg_spectrum"] is False                                  # kept as it was

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   computeShutterRegions, shutterOverlayRegions,
-  parseShutterKey, slitletOrdinals, stuckOrdinals, nextWebMark, type StuckShutterMark,
+  parseShutterKey, slitletOrdinals, stuckOrdinals, nextWebMark, cutoutClickMark, EXPOSURE_ROOT_RE,
+  type StuckShutterMark,
 } from './nirspec-shutters';
 
 describe('physical shutter keys', () => {
@@ -35,6 +36,24 @@ describe('physical shutter keys', () => {
     expect(nextWebMark({ origin: 'web', stuck: true })).toBe(false);
     expect(nextWebMark({ origin: 'web', stuck: false })).toBeNull();
     expect(nextWebMark({ origin: 'manual', stuck: true })).toBeUndefined();
+  });
+
+  it('a cutout click clears what is drawn stuck, by a veto when no web row made it stuck', () => {
+    const stuck: StuckShutterMark = { origin: 'web', stuck: true };
+    const veto: StuckShutterMark = { origin: 'web', stuck: false };
+    expect(cutoutClickMark(false, [undefined])).toBe(true);        // drawn open: mark stuck
+    expect(cutoutClickMark(true, [stuck, stuck])).toBeNull();      // web rows made it stuck: delete
+    expect(cutoutClickMark(true, [undefined])).toBe(false);        // only the cell's STKSHTRS: veto
+    expect(cutoutClickMark(true, [veto])).toBeNull();              // already vetoed: delete the veto
+    expect(cutoutClickMark(false, [veto])).toBe(true);
+  });
+
+  it('accepts exposure roots whose activity is base 36', () => {
+    expect(EXPOSURE_ROOT_RE.test('jw07076001001_03101')).toBe(true);
+    expect(EXPOSURE_ROOT_RE.test('jw12497004001_0410f')).toBe(true);
+    for (const bad of ['jw12497004001_0410F', 'jw1249700400_04101', 'jw12497004001_04101_00001']) {
+      expect(EXPOSURE_ROOT_RE.test(bad)).toBe(false);
+    }
   });
 });
 

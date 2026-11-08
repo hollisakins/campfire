@@ -24,8 +24,9 @@ interface Props {
   onSettled: (id: number) => void;
   /** 1-indexed shutter ordinals flagged stuck for this cell's source (from the DB). */
   stuckList: number[];
-  /** Toggle a shutter ordinal stuck/unstuck. The page binds (exposure_root, source_id). */
-  onToggleShutter: (ordinal: number) => void;
+  /** Toggle a shutter ordinal stuck/unstuck, given how it is drawn. The page binds
+   * (exposure_root, source_id). */
+  onToggleShutter: (ordinal: number, drawnStuck: boolean) => void;
 }
 
 /** Median across the dispersion axis (columns) → one value per row. Mirrors the
@@ -78,7 +79,7 @@ function ShutterOverlay({
 }: {
   regions: import('@/lib/nirspec-shutters').ShutterOverlayRegion[];
   nRows: number;
-  onToggle: (ordinal: number) => void;
+  onToggle: (ordinal: number, drawnStuck: boolean) => void;
 }) {
   const yFromRow = (row: number) => 100 - (row / (nRows - 1)) * 100;
   return (
@@ -98,7 +99,7 @@ function ShutterOverlay({
               x={0} y={yTop} width={100} height={h}
               fill={r.stuck ? 'red' : 'white'} fillOpacity={r.stuck ? 0.18 : 0.001}
               className="cursor-pointer"
-              onClick={() => onToggle(r.ordinal)}
+              onClick={() => onToggle(r.ordinal, r.stuck)}
             >
               <title>{r.stuck ? `shutter ${r.ordinal} — stuck (click to clear)` : `shutter ${r.ordinal} (click to mark stuck)`}</title>
             </rect>

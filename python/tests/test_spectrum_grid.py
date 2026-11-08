@@ -14,6 +14,23 @@ from campfire.deploy.spectrum_grid import (
 )
 
 
+def test_update_batches_never_mix_column_sets():
+    # A batch upsert sends the union of its rows' keys and NULL where a row lacks one:
+    # a row whose slitlet did not resolve must not blank the msa_shutters an earlier
+    # deploy stored, so it goes in its own batch.
+    from campfire.deploy.spectrum_grid import upsert_spectrum_exposures
+    from .fakes import FakePostgrest
+    base = dict(observation="obs", exposure_root="jw07076001001_04101", nod="00001",
+                detector="nrs1", stage="cal")
+    existing = [dict(base, source_id=s, filename=f"jw07076001001_04101_00001_nrs1_{s}.fits") for s in (1, 2)]
+    sb = FakePostgrest({"spectrum_exposures": [dict(r, msa_shutters=["q1r1c1"]) for r in existing]})
+    records = [dict(existing[0], msa_shutters=["q1r1c1"]), dict(existing[1], msa_shutters=None)]
+    upsert_spectrum_exposures(sb, records)
+    batches = [rec.data for rec in sb.upserts]
+    assert len(batches) == 2
+    assert all(len({tuple(sorted(r)) for r in batch}) == 1 for batch in batches)
+
+
 def test_parse_spectrum_exposure_filename():
     assert parse_spectrum_exposure_filename(
         "jw07076020001_04101_00001_nrs1_117757.fits"

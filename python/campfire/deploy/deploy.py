@@ -31,8 +31,6 @@ from campfire.deploy.discover import (
 )
 from campfire.deploy.generate import (
     MBKG_ROW_DEFAULTS,
-    generate_spectrum_jsons,
-    generate_spectrum_mbkg_json,
     generate_spectrum_products,
     generate_thumbnails_from_fits,
     read_mbkg_row_fields,
@@ -787,14 +785,13 @@ def deploy_observation(
                 upload_tasks.append(UploadTask(json_mbkg_path, storage_key('spectrum_mbkg_json', scope, json_mbkg_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
         # Enrich spectra records with the file's row fields before the catalog upsert.
-        # A batch upsert sends one column list for all its rows (the union of their
-        # keys) and NULL where a row lacks a key, so a record whose file could not be
-        # read still carries every master-background column: has_mbkg_spectrum is
-        # NOT NULL, and one NULL would fail its whole batch.
+        # A record whose file could not be read (--supabase-only) carries none of them,
+        # so its row keeps the values an earlier deploy stored; batch_upsert_spectra
+        # sends records with different columns in separate batches.
         for rec in spectra:
             fits_name = rec['fits_path'].split('/')[-1]
-            rec.update(MBKG_ROW_DEFAULTS)
             if fits_name in row_fields_map:
+                rec.update(MBKG_ROW_DEFAULTS)
                 rec.update(row_fields_map[fits_name])
 
         # NIRSpec science products are homed on OSN under CANONICAL keys
@@ -1158,11 +1155,14 @@ def deploy_json(
         scope = Scope(obs=obs_name)
         tasks = []
         mbkg_key_of: dict[str, str | None] = {}   # spec file name -> its _spec_mbkg.json key (None: none)
+        fields_of: dict[str, dict] = {}           # spec file name -> its master-background row fields
         for path in tqdm(spec_paths, desc="Generating", unit="file"):
-            json_path, json_1d_path = generate_spectrum_jsons(path, temp_dir)
+            # one read per file: the JSONs and the row fields (a bad MBKGWHY fails here,
+            # before anything is uploaded)
+            json_path, json_1d_path, json_mbkg_path, row_fields = generate_spectrum_products(path, temp_dir)
+            fields_of[path.name] = {k: v for k, v in row_fields.items() if k in MBKG_ROW_DEFAULTS}
             tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
             tasks.append(UploadTask(json_1d_path, storage_key('spectrum_1d_json', scope, json_1d_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
-            json_mbkg_path = generate_spectrum_mbkg_json(path, temp_dir)
             mbkg_key_of[path.name] = None
             if json_mbkg_path is not None:
                 key = storage_key('spectrum_mbkg_json', scope, json_mbkg_path.name, scheme=KeyScheme.CANONICAL)
@@ -1195,25 +1195,26 @@ def deploy_json(
         # The spectra row's master-background columns follow the file, as in the full
         # deploy, so the row's has_mbkg_spectrum and the _spec_mbkg.json agree. A
         # spectrum whose sidecar did not land keeps its row as it was.
-        n_rows = update_mbkg_rows(get_supabase_client(config), summary, spec_paths, mbkg_key_of, uploaded_keys)
+        n_rows = update_mbkg_rows(get_supabase_client(config), summary, fields_of, mbkg_key_of, uploaded_keys)
         print(f"Updated the master-background columns of {n_rows} spectra rows")
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
 
 
-def update_mbkg_rows(sb, summary, spec_paths, mbkg_key_of, uploaded_keys) -> int:
-    """Set each spectra row's master-background columns from its file
-    (:func:`read_mbkg_row_fields`), skipping a file whose ``_spec_mbkg.json`` was
-    generated but did not upload. Returns the number of rows updated."""
+def update_mbkg_rows(sb, summary, fields_of, mbkg_key_of, uploaded_keys) -> int:
+    """Set each spectra row's master-background columns to its file's (``fields_of``:
+    spec file name -> :func:`mbkg_row_fields`), skipping a file whose
+    ``_spec_mbkg.json`` was generated but did not upload. Returns the number of rows
+    updated."""
     row_of = {row['spec_file']: row for row in summary if row.get('spec_file')}
     n = 0
-    for path in spec_paths:
-        key = mbkg_key_of.get(path.name)
-        row = row_of.get(path.name)
+    for name, fields in fields_of.items():
+        key = mbkg_key_of.get(name)
+        row = row_of.get(name)
         if row is None or (key is not None and key not in uploaded_keys):
             continue
-        sb.table('spectra').update(read_mbkg_row_fields(path)).eq(
+        sb.table('spectra').update(fields).eq(
             'target_id', row['object_id']).eq('grating', row['grating']).execute()
         n += 1
     return n

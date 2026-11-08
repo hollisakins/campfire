@@ -82,14 +82,6 @@ export function nodKey(nodToken: string): string {
   return String(parseInt(nodToken, 10));
 }
 
-/** Toggle a 1-indexed shutter ordinal in a stuck-shutter list; returns a new sorted, deduped list. */
-export function toggleStuckOrdinal(list: number[], ordinal: number): number[] {
-  const set = new Set(list);
-  if (set.has(ordinal)) set.delete(ordinal);
-  else set.add(ordinal);
-  return [...set].sort((a, b) => a - b);
-}
-
 /**
  * Normalize a bkg-override map for storage: an empty list `[]` for a nod is
  * meaningful (it means "exclude this nod", distinct from an absent key) and is

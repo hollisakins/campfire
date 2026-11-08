@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   encodeSource, decodeSource, buildNodGrid,
-  nodKey, toggleStuckOrdinal, normalizeBkgOverrides,
+  nodKey, normalizeBkgOverrides,
 } from './nirspec-nods';
 import type { SpectrumExposure } from './types';
 
@@ -67,13 +67,6 @@ describe('flag helpers (P6)', () => {
     expect(nodKey('00003')).toBe('3');
     expect(nodKey('00001')).toBe('1');
     expect(nodKey('12')).toBe('12');
-  });
-
-  it('toggleStuckOrdinal adds (sorted), removes, and dedups', () => {
-    expect(toggleStuckOrdinal([1, 3], 2)).toEqual([1, 2, 3]); // add, sorted
-    expect(toggleStuckOrdinal([1, 2, 3], 2)).toEqual([1, 3]); // remove existing
-    expect(toggleStuckOrdinal([2], 2)).toEqual([]);           // toggle to empty
-    expect(toggleStuckOrdinal([], 5)).toEqual([5]);
   });
 
   it('normalizeBkgOverrides: empty map → null; empty list preserved (= exclude)', () => {

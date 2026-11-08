@@ -132,8 +132,9 @@ export function shutterOverlayRegions(input: ShutterOverlayInput): ShutterOverla
 export const SHUTTER_KEY_RE = /^q([1-4])r(\d+)c(\d+)$/;
 
 /** An exposure root (MSA configuration), e.g. "jw07076001001_03101": the read route and
- * the write action of nirspec_stuck_shutters accept the same ones. */
-export const EXPOSURE_ROOT_RE = /^jw\d{11}_\d{5}$/;
+ * the write action of nirspec_stuck_shutters accept the same ones. The sequence's
+ * activity counts in base 36 past the ninth ("jw12497004001_0410f"). */
+export const EXPOSURE_ROOT_RE = /^jw\d{11}_[0-9a-z]{5}$/;
 
 export interface ShutterKey { q: number; r: number; c: number }
 
@@ -174,6 +175,19 @@ export function stuckOrdinals(keys: string[], marks: Map<string, StuckShutterMar
     if (ks.some((k) => marks.get(k)?.stuck)) out.push(ordinal);
   }
   return out;
+}
+
+/**
+ * The web mark a click on a cutout's shutter band sends for its physical shutters
+ * (`rows`: their current marks). A band drawn open is marked stuck. A band drawn
+ * stuck is cleared: its web rows are deleted when they are what makes it stuck, else
+ * the pipeline's own call (in the cell's STKSHTRS, never in the database) is vetoed;
+ * a band already vetoed has its veto deleted. `null` = delete the web rows.
+ */
+export function cutoutClickMark(drawnStuck: boolean, rows: (StuckShutterMark | undefined)[]): boolean | null {
+  if (rows.length > 0 && rows.every((r) => r?.stuck === true)) return null;
+  if (!drawnStuck) return true;
+  return rows.length > 0 && rows.every((r) => r?.stuck === false) ? null : false;
 }
 
 /**

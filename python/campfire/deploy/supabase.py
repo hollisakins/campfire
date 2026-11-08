@@ -1079,11 +1079,17 @@ def batch_upsert_spectra(
             if key in new_hashes:
                 existing_hashes[key] = (row.get('file_hash'), row.get('science_hash'))
 
-    for i in range(0, len(spectra), batch_size):
-        batch = spectra[i:i + batch_size]
-        client.table('spectra').upsert(
-            batch, on_conflict='target_id,grating'
-        ).execute()
+    # A batch upsert sends the union of its rows' keys and NULL where a row lacks one,
+    # which would blank a column a record leaves out (a file that could not be read):
+    # send rows with the same columns together.
+    by_columns: dict[tuple[str, ...], list[dict]] = {}
+    for s in spectra:
+        by_columns.setdefault(tuple(sorted(s)), []).append(s)
+    for group in by_columns.values():
+        for i in range(0, len(group), batch_size):
+            client.table('spectra').upsert(
+                group[i:i + batch_size], on_conflict='target_id,grating'
+            ).execute()
 
     changed: set[tuple[str, str]] = set()
     for key, new_pair in new_hashes.items():

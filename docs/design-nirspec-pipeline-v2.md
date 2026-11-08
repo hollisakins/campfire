@@ -878,6 +878,11 @@ background group, which also refits `x_loss` with 1133).
   unexplained.
 - *Stuck shutters.* Partly open shutters (a = 0.61-0.78) are called "review" and not reported
   otherwise. The 27 G395M shutters flagged for review await the user's verdict.
+- *A sidecar from an earlier deploy.* A redeploy whose spec.fits no longer carries a
+  master-background spectrum leaves the earlier `_spec_mbkg.json` registered, and the spectrum plot
+  still offers it. The redshift-fit and line-fit sidecars have the same gap. Not fixed here: the fix
+  is one step in deploy that retires a spectrum's sidecars the new files no longer produce, for
+  every kind at once.
 
 **Decisions open with the user:** the default width; the default shape past the shutter edge
 (flag, let the center move, or report `fnu_opt`); whether `master_bkg_error_floor` (0.03, the master
@@ -1058,6 +1063,32 @@ review). The read-through and the code review led to these fixes:
 The release plan now says when the stuck-shutter backfill runs: right after PR A merges, since the
 nods page reads only the new table from then on.
 
+Whole-branch review (2026-11-08). The branch is too large for one `/code-review ultra` (limit 8,000
+changed lines), so it was split into six parts, each reviewed as its final code against a local base
+branch that holds everything else: 1 data contracts and the web, 2 master background and stuck
+shutters, 3 optics and the profile model, 4 contamination and the nod scan, 5 orchestration, 6 the
+docs. The bar-shadow tables and the optics table (data) were left out. Part 1 ran as
+`/code-review ultra`; the others as `/code-review xhigh`.
+
+Part 1 led to these fixes:
+- the web's exposure-root pattern took digits only, but a sequence's activity counts in base 36
+  past the ninth (`jw12497004001_0410f`); for such an observation the nods page showed no stuck
+  marks and refused every click;
+- a redeploy could blank `msa_shutters` on rows whose slitlet did not resolve, and a
+  `--supabase-only` deploy wrote the master-background columns' defaults over an unreadable file's
+  row (and could blank its thumbnails): a batch upsert sends NULL for any key a row lacks. Rows are
+  now sent in batches of the same columns, and an unread file's record carries no
+  master-background columns;
+- a click on a shutter drawn stuck only by the cell's `STKSHTRS` (the pipeline's own call) marked it
+  stuck again and could never veto it; it now sends the veto;
+- `deploy json` reads each spec.fits once (it read each three times), which also checks `MBKGWHY`
+  before anything is uploaded;
+- smaller: the backfill script uses `stuck_list.shutter_key`; the unused `toggleStuckOrdinal` is
+  removed.
+
+Kept as it is: a spec.fits that breaks the master-background contract stops the deploy, before any
+upload. Noted (section 10): a sidecar left from an earlier deploy.
+
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,
 `test_dr_publish::test_cli_json_prompts_stay_off_stdout`) are fixed on `main`, not here. Still to do
@@ -1069,7 +1100,7 @@ proposal-only with its review figure, the master-background prototype script rem
 `local_contrast` warning fix, one CHANGELOG entry, this document rewritten, the docs branch merged.
 
 **Phase 2, review in slices** (read-through, `/code-review` at high effort and fixes by the extraction
-session; one `/code-review ultra` over the whole branch by the user after slice 6, user 2026-11-08):
+session; then a review of the whole branch in six parts, user 2026-11-08):
 1. data contracts: FITS products and cards, rate-file extensions, layout kinds, migrations, deploy
    and sidecars;
 2. master background and stuck shutters (`master_bkg`, `master_bkg_rate`, `coverage`,

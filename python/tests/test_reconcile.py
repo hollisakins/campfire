@@ -267,6 +267,20 @@ def test_batch_upsert_spectra_falls_back_to_file_hash_without_a_science_hash():
     assert changed == {('t1', 'prism')}
 
 
+def test_batch_upsert_spectra_never_mixes_column_sets():
+    # A record whose file could not be read (--supabase-only) carries no
+    # master-background columns; in one batch with a read file's record it would be
+    # sent NULL for them and lose what an earlier deploy stored.
+    client = _mock_supabase_client([])
+    batch_upsert_spectra(client, [
+        {'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:A', 'has_mbkg_spectrum': True},
+        {'target_id': 't2', 'grating': 'prism', 'file_hash': 'sha256:B'},
+    ])
+    batches = [c.args[0] for c in client.table.return_value.upsert.call_args_list]
+    assert len(batches) == 2
+    assert all(len({tuple(sorted(r)) for r in batch}) == 1 for batch in batches)
+
+
 def test_update_spectra_zfit_scalars_updates_only_the_scalars_per_row():
     # A plain UPDATE per (target_id, grating), never an upsert: a partial
     # upsert trips the NOT NULL columns (fits_path, ...) before ON CONFLICT.
