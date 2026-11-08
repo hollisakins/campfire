@@ -149,7 +149,7 @@ def design(members):
             sel = own & (s.pix_k == k)
             iy, ix, r = s.pix_iy[sel], s.pix_ix[sel], row0 + loc[sel]
             e = M.exps[k]
-            terms = [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in e.partners]
+            terms = PF.nod_terms(M.exps, k)
             for c in members:
                 g = c.model.lam_grid
                 for j, w in terms:

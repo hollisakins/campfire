@@ -189,7 +189,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
             if pass1_for is None:
                 def pass1_for(sid):
                     name = names.get(int(sid))
-                    path = CT.pass1_path(workspace_dir, name) if name else None
+                    path = CT.pass1_current(workspace_dir, name) if name else None
                     return CT.Pass1.read(path) if path and os.path.exists(path) else None
 
             def why_missing(sid):
@@ -303,7 +303,7 @@ def _own_joint_light(workspace_dir, pass1_products, source_id):
     from campfire_pipeline.nirspec import joint_first_pass as JF
     from campfire_pipeline.nirspec import profile_contam as CT
     name = (pass1_products or {}).get(int(source_id))
-    path = CT.pass1_path(workspace_dir, name) if name else None
+    path = CT.pass1_current(workspace_dir, name) if name else None
     if not path or not os.path.exists(path):
         return None
     z = np.load(path)
@@ -319,7 +319,7 @@ def _own_notsep(workspace_dir, pass1_products, source_id):
     from astropy.io import fits
     from campfire_pipeline.nirspec import profile_contam as CT
     name = (pass1_products or {}).get(int(source_id))
-    path = CT.pass1_path(workspace_dir, name) if name else None
+    path = CT.pass1_current(workspace_dir, name) if name else None
     if not path or not os.path.exists(path):
         return None
     z = np.load(path)

@@ -1,5 +1,7 @@
 """The joint first pass (joint_first_pass): neighbourhoods and the target's errors and
 not-separable flags."""
+import os
+
 import numpy as np
 import scipy.sparse as sp
 
@@ -146,8 +148,8 @@ def test_terms_are_the_exposure_and_its_partners():
         def __init__(self, p):
             self.partners = p
     exps = [E([1, 2]), E([0, 2]), E([])]
-    assert JF._terms(exps, 0) == [(0, 1.0), (1, -0.5), (2, -0.5)]
-    assert JF._terms(exps, 2) == [(2, 1.0)]
+    assert JF.PF.nod_terms(exps, 0) == [(0, 1.0), (1, -0.5), (2, -0.5)]
+    assert JF.PF.nod_terms(exps, 2) == [(2, 1.0)]
 
 
 def test_rate_nod_diff_subtracts_the_partners_mean(tmp_path):
@@ -163,7 +165,9 @@ def test_rate_nod_diff_subtracts_the_partners_mean(tmp_path):
                       fits.ImageHDU(dq, name='DQ')]).writeto(tmp_path / f'{k}_rate.fits')
     d, v, bad = JF._rate_nod_diff(str(tmp_path), 'a', ['b', 'c'], np.arange(4), np.arange(6))
     assert np.allclose(d, 5.0 - 2.0)
-    assert np.allclose(v, 0.2 + 2 * 0.2 / 4)
+    # weighted like the cutout's differences (profile_fit.ProfileModel.diff_variance): with N = 3
+    # frames of variance 0.2, (N / (N - 1))**2 * 0.2, not the single difference's 0.2 + 2 * 0.2 / 4
+    assert np.allclose(v, (3 / 2) ** 2 * 0.2)
     assert bad[1, 2] and bad.sum() == 1
     assert JF._rate_nod_diff(str(tmp_path), 'a', [], np.arange(4), np.arange(6)) is None
 
@@ -289,6 +293,40 @@ def test_run_target_without_a_boxcar_writes_the_reason(tmp_path, monkeypatch):
     def no_box(sid, t, cache, maps, sc, err):
         raise type(err)(f'{err}; no boxcar') from err
     monkeypatch.setattr(JF, '_boxcar', no_box)
-    out = JF.run_target(9, [9], _Cache(tmp_path, bad=[9]), {}, {}, pass1_dir=str(tmp_path / 'p1'))
+    (tmp_path / 'p1').mkdir()
+    (tmp_path / 'p1' / 'p_9_pass1.npz').write_text('an earlier pass 1')
+    out = JF.run_target(9, [9], _Cache(tmp_path, bad=[9]), {}, {}, pass1_dir=str(tmp_path / 'p1'),
+                        overwrite=True)
     assert out is None
     assert 'no_usable_pixels' in (tmp_path / 'p1' / 'p_9_pass1_missing.txt').read_text()
+    assert not (tmp_path / 'p1' / 'p_9_pass1.npz').exists()     # neighbours must not read it as current
+
+
+def test_run_target_checks_the_neighbours_files_too(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(JF.CT, '_pass1_valid', lambda out, groups, n, sig: seen.append(groups) or None)
+    monkeypatch.setattr(JF, 'solve_target', lambda members, degenerate: {})
+    monkeypatch.setattr(JF, 'pass1_of', lambda target, sol, maps, sc: ('joint', target))
+    _stub_write(monkeypatch, [])
+    cache = _Cache(tmp_path, bad=[])
+    nb = tmp_path / 'b_nrs1_cal.fits'
+    nb.write_text('x')
+    cache.tasks[3]['groups'] = [[str(nb)]]
+    JF.run_target(1, [1, 3], cache, {}, {}, pass1_dir=str(tmp_path / 'p1'))
+    assert str(nb) in [f for g in seen[0] for f in g]
+
+
+def test_own_pass_files_sit_beside_the_joint_pass(tmp_path, monkeypatch):
+    written = []
+    monkeypatch.setattr(JF, 'solve_target', lambda members, degenerate: {})
+    monkeypatch.setattr(JF, 'pass1_of', lambda target, sol, maps, sc: ('joint', target))
+    _stub_write(monkeypatch, written)
+    out = JF.run_target(1, [1], _Cache(tmp_path, bad=[]), {}, {}, own=True)
+    assert out.endswith('p_1_own_pass1.npz')
+    joint = JF.CT.pass1_path(str(tmp_path), 'p_1')
+    assert JF.CT.pass1_current(str(tmp_path), 'p_1') == joint     # nothing written yet (stubbed)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    open(out, 'w').close()
+    assert JF.CT.pass1_current(str(tmp_path), 'p_1') == out
+    JF.drop_own(str(tmp_path), ['p_1'])
+    assert not os.path.exists(out) and JF.CT.pass1_current(str(tmp_path), 'p_1') == joint

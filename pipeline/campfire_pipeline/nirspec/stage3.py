@@ -501,9 +501,10 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
        the frames before subtraction (``pre_bkgsub``), so the brightness, and with it the
        decision, does not depend on the choice an earlier run wrote into the canonicals;
     3. the joint first pass again, on the canonicals as now subtracted, of the sources
-       whose own background exposures are not the override files' (``_own_partners_differ``):
-       a product takes its neighbours' light from its own solve, which must be on its
-       own nod differences (``joint_first_pass.add_joint_light``);
+       whose own background exposures are not the override files' (``_own_partners_differ``),
+       into files of their own beside the first (``profile_contam.pass1_current``), so a
+       rerun finds both current: a product takes its neighbours' light from its own
+       solve, which must be on its own nod differences (``joint_first_pass.add_joint_light``);
 
     then (every disperser) Spec3 of its products (``s3_tasks``,
     ``run_stage3_single_source``: the s2d, crf and EXPOSURES table from the canonicals as
@@ -586,18 +587,23 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                        overwrite={s for s in jtasks if s in run_sids} if overwrite else False,
                        cache_size=int(stage_config.get('contam_joint_cache', 60)), pre_bkgsub=revise,
                        stuck_keys=stuck_keys)
+            own = []
             if revise:
                 from campfire_pipeline.nirspec.stage2 import revise_slitlet_overrides
                 with TM.phase(f'slitlet revision {fg}'):
                     revise_slitlet_overrides(obs, stage2_config, run_sids, fg, f'{obs.name}_{fg}', n_processes)
                 own = sorted(s for s, t in jtasks.items() if _own_partners_differ(t))
                 if own:
+                    # into their own files (joint_first_pass.run ``own``), read by the products
+                    # (CT.pass1_current); the revision reads the override files' pass
                     log(f"Profile fit: joint pass 1 again for {len(own)} {fg} sources on their own background "
                         f"exposures")
                     with TM.phase(f'pass1 joint own {fg} ({len(own)})'):
                         JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
+                               overwrite={s for s in own if s in run_sids} if overwrite else False,
                                cache_size=int(stage_config.get('contam_joint_cache', 60)), targets=own,
-                               stuck_keys=stuck_keys)
+                               stuck_keys=stuck_keys, own=True)
+            JF.drop_own(obs.workspace_dir, [t['product'] for s, t in jtasks.items() if s not in own])
         # Spec3 from the canonicals as (now) subtracted: the s2d, crf and EXPOSURES table
         s3 = [s3_of[t['product_name']] for t in by_fg[fg] if t['product_name'] in s3_of]
         if s3:

@@ -383,6 +383,11 @@ def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, cache=
         return g
     frames, geo = {}, {}
     for f, h, n in zip(cal_files, heads, nods):
+        # one frame per dither position (``measure``): the first there that holds the target
+        d = g.nod_dither[n]
+        has = str(h.get('SRCFLUX', 'T')).strip().upper() != 'F'
+        if d in frames and (frames[d][3] or not has):
+            continue
         ek = CT.exposure_key(f)
         if ek not in products:
             p = os.path.join(mbkg_dir, f'{ek}_mbkg.fits')
@@ -394,10 +399,9 @@ def measure_group(cal_files, source_id, mbkg_dir, msa_dir, products=None, cache=
         sl = m.slits[0]
         yy, xx = np.mgrid[:sl.data.shape[0], :sl.data.shape[1]]
         _, ys, _ = sl.meta.wcs.get_transform('detector', 'slit_frame')(xx, yy)
-        geo[g.nod_dither[n]] = (ek, int(sl.ystart) - 1, int(sl.xstart) - 1, sl.data.shape, CR.point_pathloss(sl))
+        geo[d] = (ek, int(sl.ystart) - 1, int(sl.xstart) - 1, sl.data.shape, CR.point_pathloss(sl))
         m.close()
-        frames[g.nod_dither[n]] = (np.asarray(s['sci'], float), np.asarray(s['sky'], float), np.asarray(ys, float),
-                                   str(h.get('SRCFLUX', 'T')).strip().upper() != 'F')
+        frames[d] = (np.asarray(s['sci'], float), np.asarray(s['sky'], float), np.asarray(ys, float), has)
     for nb in neighbours:
         P1 = pass1_for(nb.source_id) if pass1_for is not None else None
         model_of = None if P1 is None else (lambda d, P1=P1: model_light(P1, *geo[d]) if d in geo else None)
@@ -430,10 +434,11 @@ def combine(groups):
 
 
 def layer(hand, slitlet):
-    """One source's overrides in one root, layered: a hand entry wins, then the
-    catalogued neighbours. ``hand`` {nod (str): nods} is the source's entry of the hand
-    file, ``slitlet`` {nod (str): (nods, reason)} from ``root_overrides``. Returns
-    (overrides {nod: nods}, automatic nods {nod}, reasons {nod: str})."""
+    """One source's overrides in one root, layered: an override set by a person wins,
+    then the catalogued neighbours. ``hand`` {nod (str): nods} is the source's entry of
+    the observation's background overrides (``Observation.bkg_overrides``), ``slitlet``
+    {nod (str): (nods, reason)} from ``root_overrides``. Returns (overrides {nod: nods},
+    automatic nods {nod}, reasons {nod: str})."""
     out, auto, why = {}, set(), {}
     for nod in sorted(set(hand) | set(slitlet), key=int):
         if nod in hand:

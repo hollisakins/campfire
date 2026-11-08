@@ -586,16 +586,29 @@ def fit_pixel_masks(exps):
     return rows
 
 
+def nod_terms(exps, k):
+    """(exposure, weight) of every frame of exposure k's nod difference: +1 for k's own
+    frame and -1/n for each of its n subtracted partners."""
+    parts = list(exps[k].partners or [])
+    return [(k, 1.0)] + [(j, -1.0 / len(parts)) for j in parts]
+
+
 def term_weights(exps, k):
-    """(exposure, weight) of the terms of exposure k's nod difference: +1 for k's own
-    frame and -1/n for each of its n subtracted partners, leaving out frames that do
-    not contain the source (``Exposure.has_source``). Those were subtracted, so the
-    others' weights are unchanged, but they put no source light on the difference."""
-    e = exps[k]
-    parts = list(e.partners or [])
-    out = [(k, 1.0)] if e.has_source else []
-    out += [(j, -1.0 / len(parts)) for j in parts if exps[j].has_source]
-    return out
+    """``nod_terms`` without the frames that do not contain the source
+    (``Exposure.has_source``). Those were subtracted, so the others' weights are
+    unchanged, but they put no source light on the difference."""
+    return [(j, w) for j, w in nod_terms(exps, k) if exps[j].has_source]
+
+
+def nod_variance(var, partner_vars):
+    """Variance to weight a nod difference with, from its own frame's variance and its
+    partners' (``ProfileModel.diff_variance``): ((n+1)/n)**2 times the mean frame
+    variance of the set, or ``var`` as given without partners."""
+    n = len(partner_vars)
+    if n == 0:
+        return var
+    s2 = (var + sum(partner_vars)) / (n + 1)
+    return ((n + 1) / n) ** 2 * s2
 
 
 def model_optics(exps, optics=None):
@@ -692,11 +705,7 @@ class ProfileModel:
         subtracted some other way, e.g. the master background) is its own frame: its
         variance as given, one independent value per pixel."""
         e = self.exps[k]
-        n = len(e.partners)
-        if n == 0:
-            return e.var
-        s2 = (e.var + sum(self.exps[j].var for j in e.partners)) / (n + 1)
-        return ((n + 1) / n) ** 2 * s2
+        return nod_variance(e.var, [self.exps[j].var for j in e.partners])
 
     def dof_weight(self):
         """Independent values per fitted pixel, (N-1)/N for a set of N nods, 1 for a

@@ -64,10 +64,13 @@ from campfire_pipeline.nirspec import profile_contam as CT
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec import profile_joint as PJ
 
-JOINT_PASS_VERSION = '4'          # 2: the light past the cutouts is among the joint unknowns
+JOINT_PASS_VERSION = '5'          # 2: the light past the cutouts is among the joint unknowns
 #                                   3: nod differences instead of the master sky; the neighbours'
 #                                      light on the target's pixels is written beside its pass 1
 #                                   4: no per-exposure pointing offsets fitted (they took neighbours' light)
+#                                   5: rows past the cutouts weighted like the cutout's (they had 1.5x
+#                                      the weight with two partners); a frame without a trace map gives
+#                                      no light past the cutout
 JOINT_LIGHT_VERSION = '1'
 SPEC_SRC = 'joint'
 CHUNK = 512
@@ -189,8 +192,9 @@ def shape_for(exps, M, cfg, is_prism, prism_shape):
             if not Ro.bound_bits and PF.planned_position(exps, cfg.srcypos_tolerance)[1] != 2:
                 return dict(centre_offset=Ro.params['centre'] - Ro.params['centre_prior'], drift=Ro.params['drift'],
                             width=Ro.params['width'], width_change=Ro.params['width_change']), 'own'
-        except Exception:                                    # noqa: BLE001 - the default shape then
-            pass
+        except Exception as e:                               # noqa: BLE001 - the default shape then
+            from campfire_pipeline.common.io import log
+            log(f'{exps[0].name}: own shape fit failed ({type(e).__name__}: {e}); default shape')
     return cfg.default_shape(), 'default'
 
 
@@ -271,29 +275,14 @@ class MemberCache:
 def _rate_nod_diff(workspace, key, partner_keys, rows, cols):
     """(data, variance, bad) of one nod difference on a detector band, count-rate units:
     the exposure's rate minus the mean of its partners' (the frames stage 2b subtracts),
-    so the sky cancels pixel by pixel. Bad: DO_NOT_USE in any of the rates, or no value.
-    None without partners or without a rate file."""
+    so the background cancels pixel by pixel, weighted like the cutout's differences
+    (``profile_extend.nod_difference``). None without partners or without a rate file."""
     from campfire_pipeline.nirspec import profile_extend as PE
     paths = [os.path.join(workspace, f'{k}_rate.fits') for k in [key] + list(partner_keys)]
     if not partner_keys or not all(os.path.exists(p) for p in paths):
         return None
-    d, v, bad = PE._rate(paths[0], rows, cols)
-    n = len(partner_keys)
-    for p in paths[1:]:
-        s, vj, bj = PE._rate(p, rows, cols)
-        d = d - s / n
-        v = v + vj / n ** 2
-        bad = bad | bj
-    bad = bad | ~np.isfinite(d) | ~np.isfinite(v) | (v <= 0)
-    return d, v, bad
-
-
-def _terms(exps, k):
-    """The frames of exposure k's nod difference and their weights: [(k, 1), (j, -1/n) for
-    each partner j]."""
-    e = exps[k]
-    part = list(e.partners or [])
-    return [(k, 1.0)] + [(j, -1.0 / len(part)) for j in part]
+    rates = [PE._rate(p, rows, cols) for p in paths]
+    return PE.nod_difference(rates[0], rates[1:])
 
 
 def ext_setup(m, workspace):
@@ -389,7 +378,7 @@ def design_full(members):
 
     Every row is a nod difference: a member's light enters through each frame of the
     row's difference with its weight (+1 for the exposure, -1/n for each partner;
-    ``_terms``), as in ``profile_joint.design``. A datum is the exposure, its partners
+    ``profile_fit.nod_terms``), as in ``profile_joint.design``. A datum is the exposure, its partners
     and the detector pixel; it enters once.
 
     Column layout per member: its in-range grid (``col0``), then its blue and red end
@@ -442,7 +431,7 @@ def design_full(members):
             iy, ix, r = s.pix_iy[sel], s.pix_ix[sel], row0 + loc[sel]
             e = s.model.exps[k]
             det = (iy + int(e.origin[0])).astype(np.int64) * 100000 + (ix + int(e.origin[1]))
-            for j, w in _terms(s.model.exps, k):
+            for j, w in PF.nod_terms(s.model.exps, k):
                 cal = s.calibration(j)[iy, ix]          # count rate -> the member's units in frame j
                 add_ext_light(r, det, CT.exposure_key(s.model.exps[j].name), lambda f, cal=cal: cal[f], w)
         row0 += int(own.sum())
@@ -475,7 +464,7 @@ def design_full(members):
         for k in np.unique(kk):
             sk = kk == k
             r = r_all[sk]
-            for j, w in _terms(s.exps, k):
+            for j, w in PF.nod_terms(s.exps, k):
                 key = CT.exposure_key(s.exps[j].name)
                 # in-range light of every member in frame j, from its calibrated units to count rate
                 for c in members:
@@ -538,7 +527,8 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
     parts = np.concatenate([np.r_[np.full(m.model.lam_grid.size, 2 * i), np.full(m.ext['n'], 2 * i + 1)]
                             for i, m in enumerate(members)])
     n = A.shape[1]
-    use = np.isfinite(d) & np.isfinite(v) & (v > 0)
+    valid = np.isfinite(d) & np.isfinite(v) & (v > 0)
+    use = valid.copy()
     for it in range(n_clip + 1):
         N, b = _normal(A, d, v, use)
         diag = N.diagonal()
@@ -617,7 +607,7 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
     by_sid = np.where(pc >= 0, np.array([m.sid for m in members])[blocks[np.maximum(pc, 0)]], -1)
     by_ext = np.where(pc >= 0, parts[np.maximum(pc, 0)] % 2 == 1, False)
     return dict(lam=members[0].model.lam_grid, flux=flux[:n_in], err=err[:n_in], nosep=nosep[:n_in],
-                corr=corr[:n_in], ext=ext, npix=int(use.sum()), nclip=int((~use & np.isfinite(d)).sum()),
+                corr=corr[:n_in], ext=ext, npix=int(use.sum()), nclip=int((valid & ~use).sum()),
                 nosep_sid=by_sid, nosep_ext=by_ext, others=_others_on_target(members, A, f, gi, s))
 
 
@@ -838,13 +828,26 @@ def signature(stage_config, ids, prism=None, pre_bkgsub=False, overrides=None, s
     return CT._signature(s)
 
 
-def _paths(workspace, product, pass1_dir):
+def _paths(workspace, product, pass1_dir, own=False):
     """(pass-1 file, missing-reason file) of a product; under ``pass1_dir`` when given
-    (validation runs that must not touch the workspace)."""
+    (validation runs that must not touch the workspace). ``own``: the files of the pass
+    on the product's own nod differences (``CT.OWN_SUFFIX``)."""
+    if own:
+        product = product + CT.OWN_SUFFIX
     if pass1_dir:
         return (os.path.join(pass1_dir, f'{product}_pass1.npz'),
                 os.path.join(pass1_dir, f'{product}_pass1_missing.txt'))
     return CT.pass1_path(workspace, product), CT.missing_path(workspace, product)
+
+
+def drop_own(workspace, products):
+    """Remove the own-pass files (``_paths`` with ``own``) of ``products``: they no longer
+    take other background exposures than the joint pass, which is then theirs."""
+    for product in products:
+        out, missing = _paths(workspace, product, None, own=True)
+        for p in (out, missing, joint_light_path(out)):
+            if os.path.exists(p):
+                os.remove(p)
 
 
 def _spec3_current(workspace, product, paths):
@@ -880,29 +883,33 @@ def _boxcar(sid, t, cache, maps, stage_config, err):
 
 
 def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=0.9, pass1_dir=None,
-               stuck_keys=None):
-    """Solve one target's neighbourhood ``ids`` (target first) and write its pass-1 file.
+               stuck_keys=None, own=False):
+    """Solve one target's neighbourhood ``ids`` (target first) and write its pass-1 file
+    (``own``: the own-pass file, ``_paths``).
 
     A neighbour whose member cannot be built (``ProfileFitFallback``) is left out of the
     solve, logged; its light then stays in the target's spectrum where they share pixels.
     When the target's own member cannot be built its pass 1 is its stage-3 3-pixel
-    boxcar (``_boxcar``). Returns the path, or None (logged, reason in the missing file)
-    when there is no boxcar either. ``maps``: the trace maps (``CT.trace_maps``), read with
-    ``stuck_keys``; a pass 1 is redone when a rate file it read a map from is newer or the
-    stuck list changed."""
+    boxcar (``_boxcar``). Returns the path, or None (logged, reason in the missing file,
+    an earlier pass-1 file removed) when there is no boxcar either. ``maps``: the trace
+    maps (``CT.trace_maps``), read with ``stuck_keys``; a pass 1 is redone when a
+    canonical or rate file of any member is newer or the stuck list changed."""
     from campfire_pipeline.common.io import log
 
     t = cache.tasks[int(sid)]
-    out, missing = _paths(cache.workspace, t['product'], pass1_dir)
-    groups = t['groups']
-    keys = sorted({CT.exposure_key(f) for g in groups for f in g} & set(maps))
+    out, missing = _paths(cache.workspace, t['product'], pass1_dir, own)
+    keys = sorted({CT.exposure_key(f) for g in t['groups'] for f in g} & set(maps))
     rates = [CT.rate_path(cache.workspace, k) for k in keys]
     pre = getattr(cache, 'pre_bkgsub', False)
     sig = signature(stage_config, ids, [cache.prism_sig(s) for s in ids], pre,
                     [repr(cache.tasks[int(s)].get('overrides')) for s in ids] if pre else None,
                     stuck=CT.maps_signature(keys, stuck_keys))
     jpath = joint_light_path(out)
-    prev = None if overwrite else CT._pass1_valid(out, list(groups) + [rates], len(rates), sig)
+    # the solve reads every member's canonicals and the rate files of their exposures
+    files = [f for s in ids for g in cache.tasks[int(s)]['groups'] for f in g]
+    read = [CT.rate_path(cache.workspace, k) for k in sorted({CT.exposure_key(f) for f in files})]
+    read = files + [p for p in read if os.path.exists(p)]
+    prev = None if overwrite else CT._pass1_valid(out, [read], len(rates), sig)
     if prev is not None and not CT._boxcar_stale(prev, out, cache.workspace, t['product']):
         # a joint pass 1 needs its neighbours' light beside it; a boxcar one has none
         if str(prev['why'] if 'why' in prev else '') != 'joint' or read_joint_light(jpath, sig) is not None:
@@ -926,6 +933,8 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(missing, 'w') as f:
             f.write(f'{e.reason}: {e}\n')
+        if os.path.exists(out):                         # an earlier pass 1, of other data
+            os.remove(out)
         return None
     members = [target]
     for s in ids[1:]:
@@ -943,7 +952,8 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
 
 
 def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_keys=None, overwrite=False,
-              depth=2, cap=25, degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, stuck_keys=None):
+              depth=2, cap=25, degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, stuck_keys=None,
+              own=False):
     """One worker's share of a disperser: the joint first pass of ``targets`` (in
     coupling order), with one member cache of ``cache_size`` members. Returns the
     written paths."""
@@ -955,12 +965,13 @@ def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_k
         ids = [s for s in neighbourhood(coupled, sid, depth=depth, cap=cap) if s in tasks]
         ow = overwrite if isinstance(overwrite, bool) else int(sid) in overwrite
         out.append(run_target(sid, ids, cache, maps, stage_config, overwrite=ow, degenerate=degenerate,
-                              pass1_dir=pass1_dir, stuck_keys=stuck_keys))
+                              pass1_dir=pass1_dir, stuck_keys=stuck_keys, own=own))
     return out
 
 
 def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False, depth=2, cap=25,
-        degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, targets=None, stuck_keys=None):
+        degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, targets=None, stuck_keys=None,
+        own=False):
     """The joint first pass of every source of one disperser.
 
     tasks : {sid: dict(product, groups, overrides, science, prism_product[, spec3])} for
@@ -970,7 +981,8 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
     differences those of the override files (``MemberCache``). targets : solve only these
     sources' neighbourhoods (default every source). stuck_keys : the observation's stuck
     physical shutters by root (``CT.stuck_keys_by_root``), left out of the trace maps.
-    Returns the written paths."""
+    own : write the own-pass files (``_paths``), beside the joint pass's of the override
+    files, so a rerun finds both current. Returns the written paths."""
     from campfire_pipeline.common.parallel import dispatch
 
     files = {sid: [f for g in t['groups'] for f in g] for sid, t in tasks.items()}
@@ -987,6 +999,6 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
     size = int(np.ceil(len(order) / nb))
     batches = [order[i:i + size] for i in range(0, len(order), size)]
     args = [(b, tasks, workspace, stage_config, is_prism, coupled, keys, overwrite, depth, cap, degenerate,
-             pass1_dir, cache_size, pre_bkgsub, stuck_keys) for b in batches]
+             pass1_dir, cache_size, pre_bkgsub, stuck_keys, own) for b in batches]
     res = dispatch(run_batch, args, n_processes=n_processes, use_starmap=True) or []
     return [p for r in res for p in (r or [])]

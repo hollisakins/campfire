@@ -424,9 +424,42 @@ def test_excluded_member_light_is_left_out(stand_ins):
     assert all(np.all(p == 0) for p in P.pred) and 2 not in P.contributors and P.excluded == {2}
 
 
+def test_calibration_reads_the_cutouts_rate_pixels(tmp_path):
+    yy, xx = np.mgrid[:20, :30]
+    rate = (1.0 + 100 * yy + xx).astype(np.float32)
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(rate, name='SCI')]).writeto(
+        tmp_path / 'jw01234001001_03101_00001_nrs1_rate.fits')
+    canon = tmp_path / 'jw01234001001_03101_00001_nrs1_s000001_cal.fits'
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.full((3, 4), 6.0), name='SCI')]).writeto(canon)
+
+    class E:
+        name = canon.name
+        path = str(canon)
+        y = np.zeros((6, 8))
+        origin = (5, 7)                         # 1-based detector corner of the common frame
+        cutout = (1, 2, 3, 4)                   # (r0, c0, ny, nx) of the canonical on it
+        pl_applied = np.ones((6, 8))
+    cal = CT.calibration(E(), str(tmp_path))
+    # detector rows 6-8, columns 9-12 (1-based): 0-based rows 5-7, columns 8-11 of the rate
+    assert np.allclose(cal[1:4, 2:6], 6.0 / rate[5:8, 8:12])
+    assert np.isnan(cal[0]).all() and np.isnan(cal[:, :2]).all()
+
+
 # ---------------------------------------------------------------------------
 # light past a contaminant's cutout (profile_extend)
 # ---------------------------------------------------------------------------
+def test_nod_difference_is_weighted_like_the_cutout():
+    from campfire_pipeline.nirspec import profile_extend as PE
+    own = (np.full((2, 3), 5.0), np.full((2, 3), 0.2), np.zeros((2, 3), bool))
+    p1 = (np.full((2, 3), 1.0), np.full((2, 3), 0.4), np.zeros((2, 3), bool))
+    p2 = (np.full((2, 3), 3.0), np.full((2, 3), 0.3), np.eye(2, 3, dtype=bool))
+    d, v, bad = PE.nod_difference(own, [p1, p2])
+    assert np.allclose(d, 3.0)
+    assert np.allclose(v, PF.nod_variance(own[1], [p1[1], p2[1]]))
+    assert np.allclose(v, 2.25 * 0.3)
+    assert bad.tolist() == np.eye(2, 3, dtype=bool).tolist()
+
+
 def test_merge_sparse_extension_replaces_uncalibrated_pixels():
     from campfire_pipeline.nirspec import profile_extend as PE
     a = dict(origin=np.array([1, 1]), shape=np.array([2, 4]), idx=np.array([0, 1, 2, 3]),

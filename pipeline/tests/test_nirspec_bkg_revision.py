@@ -225,11 +225,11 @@ def phase(monkeypatch, fake_models):
     state = {}
 
     def joint_run(tasks, ws, sc, is_prism, n_processes=1, overwrite=False, cache_size=60, pre_bkgsub=False,
-                  targets=None, stuck_keys=None):
+                  targets=None, stuck_keys=None, own=False):
         t = tasks[SID]
         exps = PF.load_source(t['groups'], bkg_overrides=t['overrides'], science=set(t['science']),
                               **({'pre_bkgsub': True} if pre_bkgsub else {}))
-        calls.append(('pass1', pre_bkgsub, targets))
+        calls.append(('pass1', pre_bkgsub, targets) + (('own',) if own else ()))
         if targets is None:
             state['frac'] = _brightness(exps)
         return []
@@ -293,7 +293,8 @@ def test_spec3_runs_after_the_revision_and_the_pass_again_for_its_source(tmp_pat
     _run_phase(str(tmp_path))
     names = [c[0] for c in calls]
     assert names == ['pass1', 'revise', 'pass1', 'spec3', 'product']
-    assert calls[2] == ('pass1', False, [SID])           # on its own nod differences, after the revision
+    # on its own nod differences, after the revision, into its own files (beside the first pass's)
+    assert calls[2] == ('pass1', False, [SID], 'own')
 
 
 # ---------------------------------------------------------------------------

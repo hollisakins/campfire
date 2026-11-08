@@ -209,7 +209,6 @@ def calibration(e, rate_dir):
     rate_path = os.path.join(rate_dir, f'{key}_rate.fits')
     if not os.path.exists(rate_path) or not e.path:
         return cal
-    rate = fits.getdata(rate_path, 'SCI')
     with fits.open(e.path) as h:
         if 'PRE_BKGSUB_SCI' in h:
             pre = np.asarray(h['PRE_BKGSUB_SCI'].data, float)
@@ -218,8 +217,11 @@ def calibration(e, rate_dir):
         else:
             return cal
     r0, c0, ny, nx = e.cutout
-    ys, xs = e.origin[0] + r0, e.origin[1] + c0
-    raw = rate[ys - 1:ys - 1 + ny, xs - 1:xs - 1 + nx]
+    ys, xs = int(e.origin[0] + r0), int(e.origin[1] + c0)
+    if ys < 1 or xs < 1:
+        return cal
+    with fits.open(rate_path) as h:                       # the cutout's part only, not the whole detector
+        raw = np.asarray(h['SCI'].section[ys - 1:ys - 1 + ny, xs - 1:xs - 1 + nx], float)
     if raw.shape != pre.shape:
         return cal
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -230,11 +232,7 @@ def calibration(e, rate_dir):
 def diff_sigma(exps, k):
     """Per-pixel noise of exposure k's nod difference (the profile fit's weighting)."""
     e = exps[k]
-    n = len(e.partners)
-    if n == 0:                            # a single frame (no partners subtracted)
-        return np.sqrt(e.var)
-    s2 = (e.var + sum(exps[j].var for j in e.partners)) / (n + 1)
-    return np.sqrt(((n + 1) / n) ** 2 * s2)
+    return np.sqrt(PF.nod_variance(e.var, [exps[j].var for j in e.partners]))
 
 
 def main_shutter(e, c_plan):
@@ -246,6 +244,18 @@ def main_shutter(e, c_plan):
 # ---------------------------------------------------------------------------
 def pass1_path(workspace, product):
     return os.path.join(workspace, PASS1_SUBDIR, f'{product}_pass1.npz')
+
+
+# the product name of a pass 1 solved on the source's own nod differences when the joint pass
+# took the override files' (stage 3's second joint pass), kept beside it so both stay cached
+OWN_SUFFIX = '_own'
+
+
+def pass1_current(workspace, product):
+    """The pass-1 file a product and its neighbours read: the one on the product's own nod
+    differences when there is one (``OWN_SUFFIX``), else the joint pass's."""
+    p = pass1_path(workspace, product + OWN_SUFFIX)
+    return p if os.path.exists(p) else pass1_path(workspace, product)
 
 
 PIXELS_PER_RESEL = 2.0     # NIRSpec resolving power is quoted for a 2-pixel resolution element
@@ -676,7 +686,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, exclude=(), why_missing=None, 
             continue
         sig = diff_sigma(exps, k)
         ms = main_shutter(e, c_plan) & e.ok
-        terms = [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in e.partners]
+        terms = PF.nod_terms(exps, k)
         for csid in sorted(set(geo.sources[k]) | include):
             if int(csid) in exclude:
                 continue

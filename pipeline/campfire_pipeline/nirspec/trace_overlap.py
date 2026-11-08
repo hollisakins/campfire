@@ -297,7 +297,9 @@ class ShutterMap:
         a1[layer, pix] = s1; a2[layer, pix] = s2; af[layer, pix] = flg
         names = ('slit', 'j', 'q', 'row', 'col', 'source_id', 'background', 'primary', 'is_source',
                  'holds_source', 'sources')
-        dtypes = (np.int16, np.int16, np.int16, np.int16, np.int16, np.int64, 'U1', 'U1', bool, bool, 'U64')
+        # 'sources' as wide as its longest list (a fixed width would cut ids off)
+        wsrc = max([64] + [len(r['sources']) for r in shut])
+        dtypes = (np.int16, np.int16, np.int16, np.int16, np.int16, np.int64, 'U1', 'U1', bool, bool, f'U{wsrc}')
         st = Table(rows=[tuple(r[c] for c in names) for r in shut], names=names, dtype=dtypes) if shut \
             else Table(names=names, dtype=dtypes)
         sl = Table(rows=[(r['name'], r['source_id'], r['kind'], r['lit']) for r in slits],

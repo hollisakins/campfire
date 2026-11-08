@@ -469,7 +469,7 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
 
             def pass1_for(sid):
                 name = pass1_products.get(int(sid))
-                path = CT.pass1_path(workspace, name) if name else None
+                path = CT.pass1_current(workspace, name) if name else None
                 return CT.Pass1.read(path) if path and os.path.exists(path) else None
 
             def why_missing(sid):

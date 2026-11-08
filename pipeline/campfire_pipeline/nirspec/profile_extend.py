@@ -105,6 +105,19 @@ def _rate(path_rate, rows, cols):
     return sci, var, (dq & PF.DO_NOT_USE) > 0
 
 
+def nod_difference(own, partners):
+    """(data, variance, bad) of one nod difference from ``_rate`` tuples: the exposure's
+    rate minus the mean of its partners', weighted like the cutout's differences
+    (``profile_fit.nod_variance``). Bad: DO_NOT_USE in any of the rates, or no value."""
+    d, v, bad = own
+    if partners:
+        d = d - np.mean([p[0] for p in partners], axis=0)
+        bad = bad | np.any([p[2] for p in partners], axis=0)
+    v = PF.nod_variance(v, [p[1] for p in partners])
+    bad = bad | ~np.isfinite(d) | ~np.isfinite(v) | (v <= 0)
+    return d, v, bad
+
+
 def _others_mask(exps, k_list, maps, sid, rows, cols):
     """Pixels of the canvas lit by another source's source shutter in exposure k's own
     frame or a partner's (geometry of the trace maps, light past their range included)."""
@@ -116,9 +129,8 @@ def _others_mask(exps, k_list, maps, sid, rows, cols):
     except KeyError:
         return mask, False
     partners = [[k_list.index(j) for j in exps[k].partners] if exps[k].partners is not None else [] for k in k_list]
-    for k in k_list:
-        n = k_list.index(k)
-        lut = [m.traces_in(*region) for m in mlist]
+    lut = [m.traces_in(*region) for m in mlist]
+    for n, k in enumerate(k_list):
         for j in [n] + partners[n]:
             jy, jx, jidx, jflg = lut[j]
             slits = mlist[j].slits
@@ -171,24 +183,22 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
             if os.path.exists(path):
                 rates[k] = _rate(path, rows, cols)
         omask, have = _others_mask(exps, ks, maps, sid, rows, cols) if mask_others else ({k: 0 for k in ks}, True)
+        if not have:
+            # a frame without a trace map: other sources' light there cannot be masked, so
+            # the group gives no data rather than a fit that takes their light as this one's
+            continue
         for k in ks:
             e = exps[k]
             if not e.use_data or not e.partners or k not in rates or k not in geo:
                 continue
-            terms = [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in e.partners]
+            terms = PF.nod_terms(exps, k)
             if any(j not in rates or j not in geo for j, _ in terms):
                 continue
-            n = len(e.partners)
-            D = rates[k][0] - np.mean([rates[j][0] for j in e.partners], axis=0)
-            s2 = (rates[k][1] + sum(rates[j][1] for j in e.partners)) / (n + 1)
-            V = ((n + 1) / n) ** 2 * s2
-            bad = np.zeros(D.shape, bool)
-            for j, _ in terms:
-                bad |= rates[j][2]
+            D, V, bad = nod_difference(rates[k], [rates[j] for j in e.partners])
             lit = np.zeros(D.shape, bool)
             for j, _ in terms:
                 lit |= geo[j][3] & (np.abs(geo[j][2]) > 0)
-            ok = lit & np.isfinite(D) & np.isfinite(V) & (V > 0) & ~bad & ~np.asarray(omask[k], bool)
+            ok = lit & ~bad & ~np.asarray(omask[k], bool)
             blocks.append((k, D, V, ok, [(w, geo[j][2], geo[j][1]) for j, w in terms]))
     if not blocks:
         return None
@@ -407,9 +417,6 @@ def merge_sparse(a, b):
         m[n] = np.concatenate([np.asarray(a[n], float), np.asarray(b[n], float)[new]]).astype(np.float32)
     ea = np.asarray(a['ext'], bool) if 'ext' in a else np.zeros(ia.size, bool)
     m['ext'] = np.concatenate([ea, np.ones(int(new.sum()), bool)])
-    for n in ('prof', 'plam'):
-        if n in a:                                              # the echo design covers ``a`` only
-            m[n] = np.concatenate([np.asarray(a[n]), np.zeros(int(new.sum()), np.asarray(a[n]).dtype)])
     return m
 
 

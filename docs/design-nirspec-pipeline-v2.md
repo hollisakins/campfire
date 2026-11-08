@@ -980,6 +980,32 @@ an environment error); along the dispersion the kernel is applied mirrored relat
 direction, which for a blur taken to be round has no physical meaning (its asymmetry is 0.002 slit
 units). The half-step shift of the row integration waits for the next optics refit (section 10).
 
+Slice 4 (2026-11-08), contamination. The read-through and the code review led to these fixes:
+- the joint pass weighted its rows past the cutouts as single nod differences, while the cutout's
+  rows and the extension solve weight a nod set as a whole (`ProfileModel.diff_variance`). With
+  two partners those rows had 1.5 times their weight and their errors came out about 18 % small.
+  One helper now gives every nod difference its variance (`JOINT_PASS_VERSION` 5);
+- a joint pass 1 was checked against its target's files only. It is now redone when any member's
+  canonical or rate file is newer;
+- stage 3's second joint pass (sources whose own background exposures differ from the override
+  files') wrote over the first pass's file, so every rerun solved both again. It now writes a file
+  of its own beside the first, which the products read;
+- a source whose pass 1 fails no longer leaves an older pass-1 file for its neighbors to read;
+- the light past a cutout is no longer fitted in a group where a frame has no trace map, since
+  other sources' light there could not be masked;
+- the pixel calibration reads only the cutout's part of the rate file, and the mask past the
+  cutout builds each trace map's lookup once;
+- the similar-brightness pair flag is removed (section 9);
+- smaller: a failed own-shape fit is logged; the clipped-pixel count leaves out pixels that never
+  had a usable variance; a trace map's list of a shutter's sources is no longer cut at 64
+  characters; the same-slitlet brightness measurement keeps, at each dither position, a frame that
+  holds the target.
+
+Checked and left: the error computation's dense matrices (the target's unknowns against every
+unknown of the neighborhood) wait for a memory measurement on a crowded field. The floor on a
+prediction's uncertainty (`DPRED_FLOOR`, 10 % of the predicted light) is assumed, not measured, and
+is an open decision.
+
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,
 `test_dr_publish::test_cli_json_prompts_stay_off_stdout`) are fixed on `main`, not here. Still to do
