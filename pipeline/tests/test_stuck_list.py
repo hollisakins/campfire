@@ -9,7 +9,6 @@ import pytest
 
 pytest.importorskip("campfire_pipeline")
 from campfire_pipeline.nirspec import stuck_list as S  # noqa: E402
-from campfire_pipeline.nirspec.stuck_shutters import write_stuck_shutters_toml  # noqa: E402
 from test_nirspec_stage2a_single_call import _metafile  # noqa: E402
 
 ROOT = 'jw07076001001_05101'
@@ -145,19 +144,20 @@ def test_write_auto_on_a_new_file_and_nothing_to_write(tmp_path):
     assert S.read_file(path)[0][ROOT][(1, 100, 20)].stuck
 
 
-def test_the_legacy_writer_carries_the_physical_table_through(tmp_path):
-    import toml
-    path = _write(tmp_path / 's.toml', f'''[{ROOT}]
-    1002 = [1]  # hand
+def test_legacy_tags_untagged_and_auto_detected(tmp_path):
+    # the old writers left manual entries untagged and wrote `# auto-detected`
+    path = _write(tmp_path / 's.toml', f'''# header
+[{ROOT}]  # a comment on the header
+    1001 = [1]
+    1002 = [2]  # auto-detected
+    1003 = [3]  # web
+    1004 = [1, 2]  # hand
 [{ROOT}.shutters]
-    "q1r100c41" = {{origin = "auto", stuck = true, a = 0.04}}
+    "q1r100c41" = {{origin = "auto", stuck = true}}  # auto
 ''')
-    data = toml.load(path)
-    data[ROOT]['1001'] = [2]
-    write_stuck_shutters_toml(data, path, 'obs', provenance={(ROOT, '1001'): 'auto'})
-    phys, legacy = S.read_file(path)
-    assert phys[ROOT] == {(1, 100, 41): S.Entry('auto', True, 0.04)}
-    assert legacy[ROOT] == {1001: ([2], 'auto'), 1002: ([1], 'manual')}
+    assert S.legacy_tags(path) == {(ROOT, '1001'): 'hand', (ROOT, '1002'): 'auto',
+                                   (ROOT, '1003'): 'web', (ROOT, '1004'): 'hand'}
+    assert S.read_file(path)[1][ROOT][1002] == ([2], 'auto')
 
 
 def test_write_origin_replaces_one_origin_and_respects_higher_ones(tmp_path):

@@ -129,7 +129,8 @@ Release procedure: edit the `## Unreleased` section below, then run
     `stuck_closed_shutters.toml`, with origin `manual` > `web` > `auto` and `stuck = false` as a
     veto (`stuck_list.py`; legacy ordinal entries are still read). Step 1 writes its calls as `auto`
     entries. Stage 2a removes stuck shutters from the background-only slitlets too. `STKSHPHY`
-    lists them. New dependency `tomlkit`.
+    lists them. New dependency `tomlkit`. v1's detector (`stuck_shutters.py`, its diagnostic
+    plot `stuck_diagnostic.pdf`) is removed.
   - *Empirical bar-shadow tables* for PRISM, G140M, G235M and G395M (`barshadow_calibration.py`,
     `Generate_Barshadow_Cals.py`), measured from empty shutters in the pipeline's slit frame,
     G140M and G235M on an axis widened to 5.3 um. The CRDS references put the shutter edges a

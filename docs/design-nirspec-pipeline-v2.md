@@ -942,7 +942,9 @@ by the user; `/code-review ultra` for slices 1 and 3):
 2. master background and stuck shutters (`master_bkg`, `master_bkg_rate`, `coverage`,
    `barshadow_calibration`, `shutter_fit`, `stuck_list`); v1's stuck detector
    (`stuck_shutters.detect_stuck_shutters`, `merge_stuck_shutters`, `write_stuck_shutters_toml`,
-   `plots.plot_stuck_shutter_diagnostics`) has no caller outside tests and is removed here;
+   `plots.plot_stuck_shutter_diagnostics`) had no caller outside tests and is removed: the legacy
+   tag reader moved to `stuck_list.legacy_tags`, the shutter-row helper of the nods plots to
+   `plots.py`;
 3. optics and the profile model (`optics`, `profile_fit`, `profile_chain`, `crds_refs`, `bar_offset`,
    `optics_calibration`);
 4. contamination (`trace_overlap`, `profile_contam`, `joint_first_pass`, `profile_extend`,
@@ -980,7 +982,7 @@ first; user).
 | Geometry, cutoffs, coverage counter | `nirspec/coverage.py` |
 | Master background step 1, step 2 | `nirspec/master_bkg_rate.py`, `nirspec/master_bkg.py` |
 | Bar-shadow tables | `nirspec/barshadow_calibration.py`, `nirspec/barshadow_qa.py`, `data/Generate_Barshadow_Cals.py`, `data/empirical_jwst_nirspec_barshadow_*.fits` |
-| Stuck shutters | `nirspec/shutter_fit.py`, `nirspec/stuck_list.py`, `nirspec/stuck_shutters.py` |
+| Stuck shutters | `nirspec/shutter_fit.py`, `nirspec/stuck_list.py` |
 | Trace maps | `nirspec/trace_overlap.py` |
 | Same-slitlet neighbors | `nirspec/slitlet_neighbours.py`, `nirspec/stage2.py` |
 | Source model, shape chain, products | `nirspec/profile_fit.py`, `nirspec/profile_chain.py`, `nirspec/profile_product.py` |

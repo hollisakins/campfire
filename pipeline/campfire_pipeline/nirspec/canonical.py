@@ -18,7 +18,7 @@ frame after stage2b. Two classes of extra, non-schema HDU ride along:
   inverts/reapplies pathloss and pads/unpads to a common nod region, so the
   revert state is not a simple additive offset (design §3 PR-3).
 * ``S2D_{SCI,DQ,VAR_RNOISE}`` / ``S2D_BKGSUB_{...}`` — the rectified (resampled)
-  visualization views, cached for ``plots.py`` and ``stuck_shutters.py`` (was
+  visualization views, cached for ``plots.py`` (was
   the standalone ``_s2d`` / ``_s2d_bkgsub`` files).
 
 **Hard constraint** (same as the NIRCam canonical model, and as the ``_rate``

@@ -79,17 +79,39 @@ def _legacy_origin(tag):
     return 'manual' if tag == 'hand' else tag
 
 
+_LEGACY_HEADER = re.compile(r'^\s*\[([^\]]+)\]\s*(?:#.*)?$')
+_LEGACY_ENTRY = re.compile(r'^\s*(\d+)\s*=\s*\[([^\]]*)\]\s*(?:#\s*(.*))?$')
+
+
+def legacy_tags(path):
+    """The trailing tag of each legacy ``<source_id> = [ordinals]  # tag`` line, which
+    ``toml.load`` drops: ``{(root, source_id_str): tag}``, the tag ``web`` when the
+    comment contains it, ``auto`` when it contains that (the old ``# auto-detected``
+    too), ``hand`` otherwise or without a comment."""
+    tags, root = {}, None
+    with open(path) as f:
+        for line in f:
+            hm = _LEGACY_HEADER.match(line)
+            if hm:
+                root = hm.group(1).strip()
+                continue
+            em = _LEGACY_ENTRY.match(line)
+            if em and root is not None:
+                comment = (em.group(3) or '').lower()
+                tags[(root, em.group(1))] = 'web' if 'web' in comment else 'auto' if 'auto' in comment else 'hand'
+    return tags
+
+
 def read_file(path):
     """Parse the TOML into ``(physical, legacy)``:
     ``physical = {root: {(q, r, c): Entry}}`` and
     ``legacy = {root: {source_id: ([ordinals], origin)}}``. A missing file is empty."""
     import toml
-    from campfire_pipeline.nirspec.stuck_shutters import load_stuck_shutters_tagged
     physical, legacy = {}, {}
     if not os.path.exists(path):
         return physical, legacy
     data = toml.load(path)
-    tags = load_stuck_shutters_tagged(path)
+    tags = legacy_tags(path)
     for root, table in data.items():
         if not isinstance(table, dict):
             raise ValueError(f'{path}: [{root}] is not a table')
@@ -102,7 +124,7 @@ def read_file(path):
                 sid = int(key)
             except ValueError:
                 raise ValueError(f'{path}: [{root}] {key!r} is neither a source id nor the shutters table')
-            tag = tags.get((root, str(key)), (None, 'hand'))[1]
+            tag = tags.get((root, str(key)), 'hand')
             legacy.setdefault(root, {})[sid] = ([int(k) for k in value], _legacy_origin(tag))
     return physical, legacy
 

@@ -217,6 +217,38 @@ def _source_shutters(canonical, source_id):
         return None
 
 
+def _compute_shutter_regions(n_shutters, n_rows):
+    """Pixel row boundaries of each shutter in an s2d image.
+
+    Uses the JWST NIRSpec MSA slit geometry: each shutter occupies 1.15
+    slit_frame units, with an additional margin beyond each outer shutter
+    (0.55 half open area + 0.50 padding = 1.05 total).  The 0.50 padding
+    zone is excluded from the returned regions because it may contain
+    flux from adjacent slitlets.
+
+    Returns ``(row_start, row_end)`` for each region, ordered from the bottom
+    of the s2d (region 0 = highest shutter_column = shutter N) to the top
+    (region N-1 = lowest shutter_column = shutter 1).
+    """
+    from campfire_pipeline.nirspec.constants import MSA_SLIT_MARGIN, MSA_SLIT_PITCH
+    total = (n_shutters - 1) * MSA_SLIT_PITCH + 2 * MSA_SLIT_MARGIN
+
+    # Exclude the 0.50 padding beyond the outer shutters
+    outer_margin_pix = int(np.round(0.50 / total * (n_rows - 1)))
+
+    boundaries = [outer_margin_pix]
+    for k in range(n_shutters - 1):
+        # Bar midpoint between shutter k and k+1, measured from slit edge
+        frac = (MSA_SLIT_MARGIN + (k + 0.5) * MSA_SLIT_PITCH) / total
+        boundaries.append(int(np.round(frac * (n_rows - 1))))
+    boundaries.append(n_rows - outer_margin_pix)
+
+    # Skip the bar pixel at each inter-shutter boundary (the resampled bar is
+    # sub-pixel, so that pixel blends both neighbors) and one more row at the
+    # bottom of each region.
+    return [(boundaries[i] + (1 if i > 0 else 0) + 1, boundaries[i + 1]) for i in range(n_shutters)]
+
+
 # shutter label colours: dark enough to read on the white label box
 LABEL_PLAIN, LABEL_STUCK, LABEL_REVIEW = '0.2', '#b91c1c', '#c2410c'
 LABEL_BOX = dict(boxstyle='round,pad=0.15', facecolor='white', edgecolor='none', alpha=0.85)
@@ -277,8 +309,6 @@ def _annotate_stuck_shutters(ax, n_rows, shutsta, stuck_list, stkshtrs='N/A', ph
         any other value means the file was reprocessed with stuck
         shutters removed from the metafile.
     """
-    from campfire_pipeline.nirspec.stuck_shutters import _compute_shutter_regions
-
     n_current = len(shutsta)
     if n_current < 1:
         return
@@ -1101,279 +1131,6 @@ def plot_spectrum_qa(out_path, wave, fnu, fnu_err, flam, flam_err,
 
     plt.savefig(out_path)
     plt.close()
-
-
-# ---------------------------------------------------------------------------
-# Stuck shutter diagnostic (from stuck_shutters)
-# ---------------------------------------------------------------------------
-
-def _add_shutter_overlays(ax_img, ax_prof, n_rows, n_shutters,
-                          stuck_shutters_list, data, var_rnoise=None):
-    """Add shutter boundary lines and stuck-shutter highlights.
-
-    Spatial axis is inverted: region 0 (bottom) = shutter N,
-    region N-1 (top) = shutter 1.
-    """
-    from campfire_pipeline.nirspec.stuck_shutters import _compute_shutter_regions
-
-    regions = _compute_shutter_regions(n_shutters, n_rows)
-
-    for k in range(1, n_shutters):
-        boundary = regions[k][0] - 0.5
-        ax_img.axhline(boundary, color='gray', linestyle='--',
-                       linewidth=0.5, alpha=0.7)
-        ax_prof.axhline(boundary, color='gray', linestyle='--',
-                        linewidth=0.5, alpha=0.7)
-
-    for s in stuck_shutters_list:
-        k = n_shutters - s
-        row_start, row_end = regions[k]
-        y_lo = row_start - 0.5
-        y_hi = row_end - 0.5
-        ax_img.axhspan(y_lo, y_hi, color='red', alpha=0.15)
-        ax_prof.axhspan(y_lo, y_hi, color='red', alpha=0.15)
-        y_mid = (y_lo + y_hi) / 2
-        ax_prof.text(0.95, y_mid, f'STUCK (s{s})',
-                     transform=ax_prof.get_yaxis_transform(),
-                     ha='right', va='center', fontsize=5, color='red',
-                     fontweight='bold')
-
-    if var_rnoise is not None:
-        good_mask = (np.isfinite(data) & np.isfinite(var_rnoise)
-                     & (var_rnoise > 0))
-        for k, (row_start, row_end) in enumerate(regions):
-            region_data = data[row_start:row_end, :]
-            region_var = var_rnoise[row_start:row_end, :]
-            region_good = good_mask[row_start:row_end, :]
-            d = region_data[region_good]
-            rn_sigma = np.sqrt(region_var[region_good])
-            if len(d) > 0:
-                low_frac = np.sum(d < 2 * rn_sigma) / len(d)
-            else:
-                low_frac = 1.0
-            shutter_ordinal = n_shutters - k
-
-            y_mid = (row_start + row_end) / 2 - 0.5
-            ax_img.text(0.02, y_mid,
-                        f's{shutter_ordinal} lf={low_frac:.2f}',
-                        transform=ax_img.get_yaxis_transform(),
-                        fontsize=4, color='white', va='center',
-                        fontweight='bold',
-                        bbox=dict(boxstyle='round,pad=0.2',
-                                  facecolor='black', alpha=0.5))
-
-
-def plot_stuck_shutter_diagnostics(files, source_id, root, workspace_dir,
-                                   n_shutters, stuck_shutters_list, stage_config):
-    """Generate a diagnostic QA plot for stuck shutter detection.
-
-    Layout mirrors the nods.pdf plots with shutter boundaries and
-    stuck shutter highlights overlaid.
-
-    Parameters
-    ----------
-    files : Table
-        File table for this source (from discover_files + group_files).
-    source_id : int
-    root : str
-    workspace_dir : str
-        Output directory (plots go into ``{workspace_dir}/stuck_shutters/``).
-    n_shutters : int
-    stuck_shutters_list : list of int
-        1-indexed shutter numbers flagged as stuck.
-    stage_config : dict
-        For retrieving threshold values to display.
-    """
-    root_files = files[(files['root'] == root) & (files['source_id'] == source_id)]
-    detectors = sorted(np.unique(root_files['detector']))
-    has_both = 'nrs1' in detectors and 'nrs2' in detectors
-    exp_groups = sorted(np.unique(root_files['exp_group']))
-    multi_eg = len(exp_groups) > 1
-
-    # Un-bkgsub rectified view, cached as S2D_* HDUs on the canonical (issue #212).
-    sci_ext, dq_ext, vrn_ext = 'S2D_SCI', 'S2D_DQ', 'S2D_VAR_RNOISE'
-
-    plot_rows = []
-    for eg_idx, eg in enumerate(exp_groups):
-        eg_files = root_files[root_files['exp_group'] == eg]
-        for nod in sorted(np.unique(eg_files['nod'])):
-            nod_files = eg_files[eg_files['nod'] == nod]
-            nrs1_s2d = nrs2_s2d = None
-            for f in nod_files:
-                cano = f['path']
-                if _has_extension(cano, sci_ext):
-                    if f['detector'] == 'nrs1':
-                        nrs1_s2d = cano
-                    else:
-                        nrs2_s2d = cano
-            label = f"d{eg_idx+1}:{nod}" if multi_eg else nod
-            plot_rows.append((label, nrs1_s2d, nrs2_s2d))
-
-    n_nods = len(plot_rows)
-    if n_nods == 0:
-        return
-
-    # Shared ZScale normalization
-    data_arrays = []
-    mask_arrays = []
-    for _, n1, n2 in plot_rows:
-        for s2d_file in [n1, n2]:
-            if s2d_file:
-                d = fits.getdata(s2d_file, extname=sci_ext)
-                try:
-                    dq = fits.getdata(s2d_file, extname=dq_ext)
-                    good = np.isfinite(d) & (dq == 0)
-                except KeyError:
-                    good = np.isfinite(d)
-                data_arrays.append(d)
-                mask_arrays.append(good)
-    norm = _zscale_norm(data_arrays, mask_arrays)
-    if norm is None:
-        return
-
-    grating = root_files['grating'][0].upper() if len(root_files) > 0 else 'PRISM'
-    if grating == 'PRISM':
-        low_frac_thresh = stage_config.get('stuck_shutter_low_frac_threshold', 0.5)
-    else:
-        low_frac_thresh = stage_config.get(
-            'stuck_shutter_low_frac_threshold_grating', 0.7)
-    stuck_str = ', '.join(str(s) for s in stuck_shutters_list)
-    title = (f'{root} | {source_id} | {grating} | Stuck shutters: [{stuck_str}]\n'
-             f'low_frac > {low_frac_thresh}')
-
-    out_dir = os.path.join(workspace_dir, 'stuck_shutters')
-    os.makedirs(out_dir, exist_ok=True)
-
-    if has_both:
-        nrs1_shape = nrs2_shape = None
-        for _, n1, n2 in plot_rows:
-            if n1 and nrs1_shape is None:
-                nrs1_shape = np.shape(fits.getdata(n1, extname=sci_ext))
-            if n2 and nrs2_shape is None:
-                nrs2_shape = np.shape(fits.getdata(n2, extname=sci_ext))
-            if nrs1_shape and nrs2_shape:
-                break
-
-        nrs1_ratio = nrs1_shape[1] / (nrs1_shape[1] + nrs2_shape[1]) * 6
-        nrs2_ratio = 6 - nrs1_ratio
-
-        fig, ax = plt.subplots(n_nods, 4,
-            figsize=(7 * 1.5, n_nods * 1.5),
-            width_ratios=[nrs1_ratio, 0.5, nrs2_ratio, 0.5],
-            constrained_layout=True)
-        if n_nods == 1:
-            ax = ax.reshape(1, -1)
-
-        fig.suptitle(title, fontname=_STYLE['fontname'],
-                     fontsize=_STYLE['suptitle_fontsize'] - 1)
-
-        for i, (label, nrs1_s2d, nrs2_s2d) in enumerate(plot_rows):
-            if nrs1_s2d:
-                nrs1 = fits.getdata(nrs1_s2d, extname=sci_ext)
-                try:
-                    nrs1_vrn = fits.getdata(nrs1_s2d, extname=vrn_ext)
-                except KeyError:
-                    nrs1_vrn = None
-                ax[i, 0].imshow(nrs1, norm=norm, origin='lower', aspect='auto',
-                                interpolation='nearest')
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    prof = np.nanmedian(nrs1, axis=1)
-                ax[i, 1].step(prof, np.arange(nrs1.shape[0]) - 0.5, where='pre',
-                              linewidth=1, color='k')
-                _add_shutter_overlays(ax[i, 0], ax[i, 1], nrs1.shape[0],
-                                      n_shutters, stuck_shutters_list, nrs1,
-                                      var_rnoise=nrs1_vrn)
-
-            if nrs2_s2d:
-                nrs2 = fits.getdata(nrs2_s2d, extname=sci_ext)
-                try:
-                    nrs2_vrn = fits.getdata(nrs2_s2d, extname=vrn_ext)
-                except KeyError:
-                    nrs2_vrn = None
-                ax[i, 2].imshow(nrs2, norm=norm, origin='lower', aspect='auto',
-                                interpolation='nearest')
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    prof = np.nanmedian(nrs2, axis=1)
-                ax[i, 3].step(prof, np.arange(nrs2.shape[0]) - 0.5, where='pre',
-                              linewidth=1, color='k')
-                _add_shutter_overlays(ax[i, 2], ax[i, 3], nrs2.shape[0],
-                                      n_shutters, stuck_shutters_list, nrs2,
-                                      var_rnoise=nrs2_vrn)
-
-            ax[i, 1].tick_params(labelleft=False)
-            ax[i, 2].tick_params(labelleft=False)
-            ax[i, 3].tick_params(labelleft=False)
-            ax[i, 1].set_ylim(*ax[i, 0].get_ylim())
-            ax[i, 2].set_ylim(*ax[i, 0].get_ylim())
-            ax[i, 3].set_ylim(*ax[i, 0].get_ylim())
-            if i == 0:
-                ax[i, 0].set_title('nrs1', fontname=_STYLE['fontname'])
-                ax[i, 2].set_title('nrs2', fontname=_STYLE['fontname'])
-            ax[i, 3].set_ylabel(label, fontname=_STYLE['fontname'])
-            ax[i, 3].yaxis.set_label_position("right")
-
-        for i in range(n_nods - 1):
-            for j in range(4):
-                ax[i, j].tick_params(labelbottom=False)
-
-        for col in [1, 3]:
-            xmins = [ax[i, col].get_xlim()[0] for i in range(n_nods)]
-            xmaxs = [ax[i, col].get_xlim()[1] for i in range(n_nods)]
-            for i in range(n_nods):
-                ax[i, col].set_xlim(min(xmins), max(xmaxs))
-
-    else:
-        det = detectors[0]
-
-        fig, ax = plt.subplots(n_nods, 2,
-            figsize=(7 * 1.5, n_nods * 1.5),
-            width_ratios=[6, 1],
-            constrained_layout=True)
-        if n_nods == 1:
-            ax = ax.reshape(1, -1)
-
-        fig.suptitle(title, fontname=_STYLE['fontname'],
-                     fontsize=_STYLE['suptitle_fontsize'] - 1)
-
-        for i, (label, nrs1_s2d, nrs2_s2d) in enumerate(plot_rows):
-            s2d_file = nrs1_s2d if det == 'nrs1' else nrs2_s2d
-            if s2d_file:
-                data = fits.getdata(s2d_file, extname=sci_ext)
-                try:
-                    vrn = fits.getdata(s2d_file, extname=vrn_ext)
-                except KeyError:
-                    vrn = None
-                ax[i, 0].imshow(data, norm=norm, origin='lower', aspect='auto',
-                                interpolation='nearest')
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    prof = np.nanmedian(data, axis=1)
-                ax[i, 1].step(prof, np.arange(data.shape[0]) - 0.5, where='pre',
-                              linewidth=1, color='k')
-                _add_shutter_overlays(ax[i, 0], ax[i, 1], data.shape[0],
-                                      n_shutters, stuck_shutters_list, data,
-                                      var_rnoise=vrn)
-
-            ax[i, 1].tick_params(labelleft=False)
-            ax[i, 1].set_ylim(*ax[i, 0].get_ylim())
-            ax[i, 1].set_ylabel(label, fontname=_STYLE['fontname'])
-            ax[i, 1].yaxis.set_label_position("right")
-
-        for i in range(n_nods - 1):
-            ax[i, 0].tick_params(labelbottom=False)
-            ax[i, 1].tick_params(labelbottom=False)
-
-        xmins = [ax[i, 1].get_xlim()[0] for i in range(n_nods)]
-        xmaxs = [ax[i, 1].get_xlim()[1] for i in range(n_nods)]
-        for i in range(n_nods):
-            ax[i, 1].set_xlim(min(xmins), max(xmaxs))
-
-    out_path = os.path.join(out_dir, f'{root}_{source_id}_stuck_diagnostic.pdf')
-    plt.savefig(out_path, dpi=_STYLE['dpi'])
-    plt.close()
-    log(f'Saved stuck shutter diagnostic plot: {out_path}')
 
 
 # ---------------------------------------------------------------------------

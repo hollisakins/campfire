@@ -247,7 +247,10 @@ campfire_pipeline/
 │   ├── redshift_fitting.py #   Template-based chi-squared fitting
 │   ├── templates.py        #   Template grid generation
 │   ├── slits.py            #   MSA slit geometry
-│   ├── stuck_shutters.py   #   Stuck shutter auto-detection
+│   ├── master_bkg_rate.py  #   Master background step 1 (per-shutter fit)
+│   ├── master_bkg.py       #   Master background step 2
+│   ├── shutter_fit.py      #   Stuck-closed shutter calls from step 1
+│   ├── stuck_list.py       #   The stuck-closed shutter list
 │   └── plots.py            #   Stage-specific QA plots
 ├── nircam/                 # NIRCam imaging
 │   ├── cli.py              #   Click CLI
