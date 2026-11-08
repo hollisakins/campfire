@@ -4,6 +4,7 @@ Stage 2: WCS assignment (2a) and nodded background subtraction (2b).
 
 import os
 import glob
+import time
 import warnings
 import numpy as np
 from typing import List
@@ -683,6 +684,54 @@ def _drop_stuck(rows, stuck):
     return stuck_list.remove_stuck(rows, stuck), ordinals, [stuck_list.shutter_key(*k) for k in keys]
 
 
+def _stuck_hash(stuck):
+    """A short hash of a root's stuck set, the ``STKSHSET`` card of its bkgslits files."""
+    from campfire_pipeline.nirspec import stuck_list
+    import hashlib
+    keys = sorted(stuck_list.shutter_key(*k) for k in stuck)
+    return hashlib.sha1(' '.join(keys).encode()).hexdigest()[:12] if keys else 'none'
+
+
+def _canonical_stuck_changed(path, main_metafile, source_id, stuck):
+    """Whether the canonical at ``path`` was made with other stuck shutters than the
+    list names now for its source (its ``STKSHPHY`` card): step 1 changed the list in a
+    run that stopped before stage 2a finished, or the list was edited by hand. A
+    canonical without the card (made before it existed) counts as unchanged, one that
+    cannot be read as changed (it is remade)."""
+    try:
+        got = fits.getheader(path).get('STKSHPHY')
+    except OSError:
+        return True
+    if got is None:
+        return False
+    try:
+        want = _drop_stuck(main_metafile.rows_for_source(int(source_id)), stuck)[2]
+    except RuntimeError:
+        return False
+    return sorted(want) != sorted([] if str(got).strip() == 'N/A' else str(got).split())
+
+
+def _bkgslits_stuck_changed(path, stuck):
+    """Whether the bkgslits file at ``path`` was made with another stuck set of its root
+    (its ``STKSHSET`` card; a file without it counts as unchanged, one that cannot be
+    read as changed)."""
+    if not os.path.exists(path):
+        return False
+    try:
+        got = fits.getheader(path).get('STKSHSET')
+    except OSError:
+        return True
+    return got is not None and str(got) != _stuck_hash(stuck)
+
+
+def _s2a_time_card():
+    """The card stage 2a writes once, when it makes a canonical or a bkgslits file: when
+    it was made. The later rewrites (units, CFEXPGRP, stage 2b's re-save, the S2D views)
+    keep it but move the file's mtime, so the master background's skip key reads this."""
+    from campfire_pipeline.nirspec.master_bkg import S2A_TIME_KEY
+    return (S2A_TIME_KEY, round(time.time(), 6), 'campfire: stage 2a made this file (unix time)')
+
+
 def _source_cards(obs, main_metafile, source_id, stuck, extended_override, stuck_keys=()):
     """The provenance cards stage 2a stamps on one source's canonical."""
     cards = [
@@ -704,6 +753,7 @@ def _source_cards(obs, main_metafile, source_id, stuck, extended_override, stuck
         cards.append(('STKSHTRS', 'N/A', 'Stuck shutters masked'))
     cards.append(('STKSHPHY', ' '.join(stuck_keys) if len(stuck_keys) else 'N/A',
                   'Stuck shutters masked (q r c)'))
+    cards.append(_s2a_time_card())
     return cards
 
 
@@ -794,7 +844,7 @@ def _source_of_slit(slit, source_of_slitlet):
 
 
 def _split_spec2_result(cal_path, base, source_ids, cards_by_source, bkgslits_path, msametfl,
-                        slitlets_by_source, barshadow_override=None):
+                        slitlets_by_source, barshadow_override=None, stuck=frozenset()):
     """Split one multi-slit ``Spec2Pipeline`` product into the per-source
     canonicals (``_finalize_canonical``) and the background-slitlet file.
 
@@ -844,13 +894,13 @@ def _split_spec2_result(cal_path, base, source_ids, cards_by_source, bkgslits_pa
                 f'round: {unexpected}')
 
         if bkgslits_path is not None:
-            _write_bkgslits(model, bkg_slits, bkgslits_path, msametfl, barshadow_override)
+            _write_bkgslits(model, bkg_slits, bkgslits_path, msametfl, barshadow_override, stuck=stuck)
     finally:
         model.close()
     return produced, missing
 
 
-def _write_bkgslits(parent, bkg_slits, path, msametfl, barshadow_override=None):
+def _write_bkgslits(parent, bkg_slits, path, msametfl, barshadow_override=None, stuck=frozenset()):
     """Write the background-only slitlets of one exposure as a
     ``MultiSlitModel`` (``bkgslits/<root>_<nod>_<nrsN>_bkgslits.fits``).
 
@@ -890,6 +940,9 @@ def _write_bkgslits(parent, bkg_slits, path, msametfl, barshadow_override=None):
         hdr['CFBARSHA'] = (barshadow_done, 'Bar shadow applied to background slitlets')
         hdr['CFBSREF'] = (os.path.basename(barshadow_override) if barshadow_override else 'CRDS',
                           'Bar-shadow reference used')
+        key, value, comment = _s2a_time_card()
+        hdr[key] = (value, comment)
+        hdr['STKSHSET'] = (_stuck_hash(stuck), 'campfire: hash of the root stuck shutters removed')
         hdul.flush()
     os.replace(tmp, path)
     log(f'Wrote {len(bkg_slits)} background slitlet(s) to {os.path.basename(path)}')
@@ -926,7 +979,7 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
             # background slitlet so the next run does not look again.
             from jwst.datamodels import ImageModel
             with ImageModel(rate_file) as parent:
-                _write_bkgslits(parent, [], bkgslits_path, msametfl, barshadow_override)
+                _write_bkgslits(parent, [], bkgslits_path, msametfl, barshadow_override, stuck=stuck)
         return [], []
 
     metafile = main_metafile.for_sources(
@@ -973,7 +1026,7 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
                               for sid, rows in rows_by_source.items()}
         produced, missing = _split_spec2_result(
             cal_path, base, wanted, cards_by_source, bkgslits_path, msametfl,
-            slitlets_by_source, barshadow_override)
+            slitlets_by_source, barshadow_override, stuck=stuck)
     finally:
         if os.path.exists(cal_path):
             os.remove(cal_path)
@@ -1184,8 +1237,10 @@ def run_stage2a_single_rate(
         for source_id in source_ids_to_process:
             prod_name = f'{base}_{source_id}'
             nodata_marker = _nodata_marker(prod_name)
-            if ((os.path.exists(f'{prod_name}.fits') or os.path.exists(nodata_marker)) and not overwrite
-                    and source_id not in rerun_source_ids):
+            if (not overwrite and source_id not in rerun_source_ids
+                    and (os.path.exists(nodata_marker)
+                         or (os.path.exists(f'{prod_name}.fits') and not _canonical_stuck_changed(
+                             f'{prod_name}.fits', main_metafile, source_id, common['stuck'])))):
                 log(f'Skipping stage2a for {prod_name}, overwrite=False')
                 source_ids_processed.append(source_id)
                 continue
@@ -1195,7 +1250,8 @@ def run_stage2a_single_rate(
             pending.append(source_id)
 
         bkgslits_path = os.path.join(obs.bkgslits_dir, f'{base}_bkgslits.fits')
-        bkg_needed = bool(overwrite or not os.path.exists(bkgslits_path) or root in rerun_roots)
+        bkg_needed = bool(overwrite or not os.path.exists(bkgslits_path) or root in rerun_roots
+                          or _bkgslits_stuck_changed(bkgslits_path, common['stuck']))
 
         if not pending and not bkg_needed:
             log('No source IDs to process, exiting...')
@@ -1309,9 +1365,12 @@ def stamp_exp_group_single(file):
     can populate the web nods-renderer grid with the exact pipeline grouping. Uses
     ``append_extras`` (which copies the existing header) — additive and idempotent,
     surviving stage2b's re-save the same way ``CFSCHEMA`` does. Mirrors the
-    per-file ``fix_units`` dispatch shape.
+    per-file ``fix_units`` dispatch shape. A canonical that already carries the value is
+    left alone: its modification time is the master background's skip key.
     """
     from campfire_pipeline.nirspec import canonical as C
+    if C.read_exp_group(file['path']) == int(file['exp_group']):
+        return
     C.append_extras(file['path'], header_updates=C.exp_group_card(file['exp_group']))
 
 

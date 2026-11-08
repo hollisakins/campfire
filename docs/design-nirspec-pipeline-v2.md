@@ -91,7 +91,7 @@ Version 2 changes six things.
 | Boundary with jwst's references | stage 3 | `crds_refs.py`, `data/nirspec_calibrations.toml` | 7 |
 
 Versions at the time of writing: `FIT_VERSION` 9, optics model `2026.11-r8` (engine 2), master
-background `CFMBKGV` 1.8 (step 1 1.5), `JOINT_PASS_VERSION` 4, `PASS1_VERSION` 11, bar offset
+background `CFMBKGV` 1.9 (step 1 1.6), `JOINT_PASS_VERSION` 5, `PASS1_VERSION` 11, bar offset
 `MEASURE_VERSION` 4, trace map version 3.
 
 ---
@@ -275,6 +275,10 @@ review if it is 0.3 to 0.8 or the detectors differ by more than 0.5; open at 0.8
   `scripts/backfill_stuck_shutters_physical.py` converts once the migration is live.
 - `detect_stuck_shutters = false` keeps the calls in the rate file's `CALLS` table but does not
   write them to the list. Header card `STKSHPHY` lists the physical shutters applied.
+- Stage 2a remakes, without `--overwrite`, a canonical whose `STKSHPHY` differs from what the list
+  now names for its source, and a background-slitlet file whose `STKSHSET` (a hash of the root's
+  stuck set) differs from the root's. So a run that stopped after step 1 changed the list, or a
+  hand edit, is caught on the next run.
 
 ### 4.4 Trace maps
 
@@ -315,6 +319,10 @@ At the end of stage 2a, per exposure and detector:
 No per-slitlet scale, no smooth row or column scaling, and no smoothing of the grating background
 (appendix A). The settings are fixed in `master_bkg.SETTINGS` and recorded in the header; only
 `master_bkg_plot` (the QA PDF) is a config key.
+
+A product is redone when its inputs change: the time stage 2a made each canonical and
+background-slitlet file (`CFS2ATIM`, which the later rewrites of those files keep), the rate file's
+`CFBKGDT`, the stuck list's file time, the bar-shadow table and step 1's date.
 
 Product `<root>_<nod>_<nrsN>_mbkg.fits` (layout kind `nirspec_mbkg`): `MBKG1D`, `SHUTTERS`, and the
 model on the detector `MBKG2D` / `MBKG2DN` / `MBKG2DDQ` (losslessly compressed: 2.8 MB on PRISM,
@@ -1088,6 +1096,40 @@ Part 1 led to these fixes:
 
 Kept as it is: a spec.fits that breaks the master-background contract stops the deploy, before any
 upload. Noted (section 10): a sidecar left from an earlier deploy.
+
+Part 2 led to these fixes (`CFMBKGV` 1.9, step 1 1.6):
+- the master background was redone on every run: its skip key was the newest modification time of
+  the canonicals, which stage 2a's `CFEXPGRP` stamp, stage 2b and the S2D views rewrite. The key is
+  now the `CFS2ATIM` card stage 2a writes once on each canonical and background-slitlet file, and
+  the stamp no longer rewrites a file that already carries the value;
+- an exposure whose step-1 table is empty never recorded step 1's date, so it was redone every run;
+- a run that stopped after step 1 changed the stuck list, or a hand edit of the list, left
+  canonicals made with the old shutters in place (section 4.3 says how they are now remade);
+- the geometry pass painted a slitlet without a canonical with its stuck shutters open; they now
+  pass no light;
+- two sources in one slitlet name the same empty shutter by different offsets, so a shutter could
+  count twice and others be dropped; shutters are now told apart by their index in the slitlet;
+- a canonical's extended footprint never got the disperser's wavelength cutoffs (a slit of a
+  `MultiSlitModel` has no `meta.instrument`), so it ran to the transform's whole range; the cutoffs
+  are now passed;
+- step 1 left out of the background the shutters the fit called stuck even when a person had vetoed
+  the call, and old automatic calls the new fit reverses; it now uses the list as merged;
+- step 1 took a virtual slitlet's shutters (source id 0 or below: 8,636 of the 520,082 rows with
+  background `N` in the 318 metafiles of the archive) as holding a source, unlike step 2 and the
+  fit; they are now empty shutters;
+- a trace map that failed to build counted as done and was never retried; it now is;
+- when the geometry cache existed without the coverage counter, the workers crashed until the cache
+  was cleared by hand; the counter is now written;
+- with `CAMPFIRE_ROOT` unset the coverage cache went to `~/campfire-data`, not the layout's
+  `~/campfire`;
+- when the stuck fit's clipping ran out of rounds, its errors and pixel counts came from another
+  pixel set than its amplitudes; it now solves once more on the final set.
+
+Left for later: each background-slitlet file and metafile is opened once per slit rather than once
+per rate file; step 1 starts a process pool per root; the shutter-index geometry is written out in
+four places (`geometry_on_block`, `RateGeometry.blocks`, `slit_geometry`, and the column mapping
+of `shutter_fit` and step 1). The virtual-slitlet difference above was two of those copies
+drifting apart.
 
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,

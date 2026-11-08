@@ -295,8 +295,8 @@ def test_a_failed_single_call_redoes_what_it_did_not_settle(tmp_path, monkeypatc
         workspace_dir = str(tmp_path)
         bkgslits_dir = str(tmp_path)
 
-    (tmp_path / 'jw01_03101_00001_nrs1_bkgslits.fits').write_text('done')
-    (tmp_path / 'jw01_03101_00001_nrs1_2.fits').write_text('an earlier run')
+    fits.PrimaryHDU().writeto(tmp_path / 'jw01_03101_00001_nrs1_bkgslits.fits')     # done
+    fits.PrimaryHDU().writeto(tmp_path / 'jw01_03101_00001_nrs1_2.fits')            # an earlier run
     monkeypatch.setattr(MetaFile, 'load_for_rate_file', staticmethod(lambda path: Meta()))
     monkeypatch.setattr(stage2, '_stuck_shutters', lambda obs, root, mf: frozenset())
     monkeypatch.setattr(cfg, 'get_empirical_barshadow_path', lambda grating: 'table.fits')
@@ -319,3 +319,53 @@ def test_a_failed_single_call_redoes_what_it_did_not_settle(tmp_path, monkeypatc
     assert calls == [([2], 'orig_msa.fits')]
     assert sorted(got) == [1, 2]
     assert fits.getheader(rate)['MSAMETFL'] == 'orig_msa.fits'
+
+
+def test_a_stamped_canonical_is_not_rewritten(tmp_path):
+    # its modification time must not move: rewriting it on every run made the master
+    # background stale every run
+    p = tmp_path / 'c.fits'
+    h = fits.PrimaryHDU()
+    h.header['CFEXPGRP'] = 2
+    h.writeto(p)
+    os.utime(p, (1e9, 1e9))
+    stage2.stamp_exp_group_single({'path': str(p), 'exp_group': 2})
+    assert os.path.getmtime(p) == 1e9
+    stage2.stamp_exp_group_single({'path': str(p), 'exp_group': 3})
+    assert fits.getheader(p)['CFEXPGRP'] == 3
+
+
+def test_a_canonical_made_with_other_stuck_shutters_is_rerun(tmp_path, monkeypatch):
+    # what the canonical removed (STKSHPHY) against what the list names now for its source
+    monkeypatch.setattr(stage2, '_drop_stuck', lambda rows, stuck: (rows, None, sorted(stuck)))
+
+    class Meta:
+        def rows_for_source(self, sid):
+            return []
+
+    def canonical(name, value):
+        p = tmp_path / name
+        h = fits.PrimaryHDU()
+        if value is not None:
+            h.header['STKSHPHY'] = value
+        h.writeto(p)
+        return str(p)
+
+    same = canonical('a.fits', 'q1r2c3')
+    assert not stage2._canonical_stuck_changed(same, Meta(), 1, {'q1r2c3'})
+    assert stage2._canonical_stuck_changed(same, Meta(), 1, {'q1r2c3', 'q1r2c4'})   # step 1 added one
+    none = canonical('b.fits', 'N/A')
+    assert not stage2._canonical_stuck_changed(none, Meta(), 1, set())
+    assert stage2._canonical_stuck_changed(none, Meta(), 1, {'q1r2c3'})
+    assert not stage2._canonical_stuck_changed(canonical('c.fits', None), Meta(), 1, {'q1r2c3'})  # predates the card
+
+
+def test_a_bkgslits_file_made_with_another_stuck_set_is_rerun(tmp_path):
+    p = tmp_path / 'b_bkgslits.fits'
+    h = fits.PrimaryHDU()
+    h.header['STKSHSET'] = stage2._stuck_hash({(1, 2, 3)})
+    h.writeto(p)
+    assert not stage2._bkgslits_stuck_changed(str(p), {(1, 2, 3)})
+    assert stage2._bkgslits_stuck_changed(str(p), {(1, 2, 3), (1, 2, 4)})
+    assert stage2._stuck_hash(set()) == 'none'
+    assert not stage2._bkgslits_stuck_changed(str(tmp_path / 'absent.fits'), {(1, 2, 3)})

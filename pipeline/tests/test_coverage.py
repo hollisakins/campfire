@@ -120,3 +120,28 @@ def test_failed_open_shutters_carry_a_commanded_slitlets_margin(monkeypatch):
     assert g['j'][9, 0] == -1 and g['j'][11, 0] == 1
     from campfire_pipeline.nirspec.barshadow_calibration import SEGMENTS
     assert g['seg'][9, 0] == SEGMENTS.index('edge_lower') and g['seg'][11, 0] == SEGMENTS.index('edge_upper')
+
+
+def test_a_cached_geometry_without_its_counter_writes_the_counter(tmp_path, monkeypatch):
+    # a run stopped between the two writes: the workers load the counter from its path
+    import os
+    rate = str(tmp_path / 'r_rate.fits')
+    kw = dict(cutoffs=(1.0, 2.0), wavelengthrange_override=None)
+    geo_path = C.geometry_cache_path(rate, str(tmp_path), **kw)
+    open(geo_path, 'w').close()
+
+    class Geo:
+        def counter(self):
+            return np.ones((2, 2), np.int16)
+    monkeypatch.setattr(C.RateGeometry, 'load', classmethod(lambda cls, path: Geo()))
+    C.rate_geometry(rate, str(tmp_path), **kw)
+    counter = C.cache_path(rate, str(tmp_path), **kw)
+    assert os.path.exists(counter) and np.load(counter).sum() == 4
+
+
+def test_the_cache_sits_under_the_layout_root(monkeypatch, tmp_path):
+    import os
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
+    assert C.default_cache_dir() == os.path.join(str(tmp_path), 'cache', 'coverage')
+    monkeypatch.delenv('CAMPFIRE_ROOT')
+    assert C.default_cache_dir() == os.path.join(os.path.expanduser('~/campfire'), 'cache', 'coverage')

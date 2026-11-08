@@ -107,7 +107,7 @@ Release procedure: edit the `## Unreleased` section below, then run
     `reference/nirspec/<obs>/nodded_background_overrides_proposed.toml` with a figure per source
     (`<obs>_<id>_neighbor.pdf`, laid out as the bkgsub plots), and stage 3 prints the command that
     reruns those sources.
-  - *Master background* (`master_bkg_rate.py`, `master_bkg.py`, `CFMBKGV` 1.8). Step 1, before
+  - *Master background* (`master_bkg_rate.py`, `master_bkg.py`, `CFMBKGV` 1.9). Step 1, before
     stage 2a, reads the rate files only. It measures each exposure's background from its empty
     shutters (no catalogued source, primary or secondary, at that dither point), fits every commanded-open shutter's background to call stuck-closed shutters, and
     builds the trace map. It writes these as tables into the rate file (`MBKG1DR`, `MBKGQSR`,
@@ -129,7 +129,8 @@ Release procedure: edit the `## Unreleased` section below, then run
     `stuck_closed_shutters.toml`, with origin `manual` > `web` > `auto` and `stuck = false` as a
     veto (`stuck_list.py`; legacy ordinal entries are still read). Step 1 writes its calls as `auto`
     entries. Stage 2a removes stuck shutters from the background-only slitlets too. `STKSHPHY`
-    lists them. New dependency `tomlkit`. v1's detector (`stuck_shutters.py`, its diagnostic
+    lists them, and a canonical or background-slitlet file made with other stuck shutters than
+    the list now names is remade without `--overwrite`. New dependency `tomlkit`. v1's detector (`stuck_shutters.py`, its diagnostic
     plot `stuck_diagnostic.pdf`) is removed.
   - *Empirical bar-shadow tables* for PRISM, G140M, G235M and G395M (`barshadow_calibration.py`,
     `Generate_Barshadow_Cals.py`), measured from empty shutters in the pipeline's slit frame,

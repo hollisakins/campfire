@@ -65,9 +65,10 @@ WAVELENGTH_CUTOFFS = {
 
 
 def default_cache_dir():
-    """Where the counters are cached: ``$CAMPFIRE_ROOT/cache/coverage``."""
-    root = os.environ.get('CAMPFIRE_ROOT') or os.path.expanduser('~/campfire-data')
-    return os.path.join(root, 'cache', 'coverage')
+    """Where the counters are cached: ``$CAMPFIRE_ROOT/cache/coverage`` (the layout's root
+    and its default)."""
+    from campfire_layout.paths import campfire_root
+    return os.path.join(str(campfire_root()), 'cache', 'coverage')
 
 
 def cutoffs_for(grating, filter_name=None):
@@ -158,14 +159,12 @@ def geometry_on_block(transform, x0, y0, row_lo, row_hi, state, pitch, cutoffs=(
 def slit_geometry_extended(slit, cutoffs=None, row_pad=ROW_PAD, **kw):
     """``geometry_on_block`` for a stage-2a slit (a ``SlitModel`` of a canonical or of
     the ``bkgslits`` file): the cutout's rows ± ``row_pad`` and every column, in detector
-    coordinates. ``cutoffs`` default to the disperser's ``WAVELENGTH_CUTOFFS``."""
+    coordinates. ``cutoffs``: the disperser's ``cutoffs_for``, which callers pass (a slit
+    node of a ``MultiSlitModel`` carries no ``meta.instrument``); None for no cut."""
     x0 = int(slit.xstart) - 1; y0 = int(slit.ystart) - 1
     ny = int(slit.ysize) if slit.ysize else slit.data.shape[0]
     if cutoffs is None:
-        try:
-            cutoffs = cutoffs_for(slit.meta.instrument.grating, slit.meta.instrument.filter)
-        except Exception:
-            cutoffs = (None, None)
+        cutoffs = (None, None)
     tr = slit.meta.wcs.get_transform('detector', 'slit_frame')
     g = geometry_on_block(tr, x0, y0, y0 - row_pad, y0 + ny + row_pad, slit.shutter_state, _pitch(slit.slit_yscale), cutoffs, **kw)
     g.update(x0=x0, y0=y0, cutout_rows=(y0, y0 + ny), cutout_cols=(x0, x0 + int(slit.xsize or slit.data.shape[1])),
@@ -358,11 +357,17 @@ def rate_geometry(rate_path, cache_dir=None, cutoffs=None, wavelengthrange_overr
     wavelengthrange_override = resolve_wavelengthrange(rate_path, wavelengthrange_override)
     path = geometry_cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override) if cache_dir else None
     if path and os.path.exists(path):
-        return RateGeometry.load(path)
-    geo = RateGeometry.from_rate(rate_path, cutoffs, wavelengthrange_override)
+        geo = RateGeometry.load(path)
+    else:
+        geo = RateGeometry.from_rate(rate_path, cutoffs, wavelengthrange_override)
+        if path:
+            geo.save(path)
     if path:
-        geo.save(path)
-        np.save(cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override), geo.counter())
+        # the counter beside it, also when only the geometry was cached (a run stopped
+        # between the two writes): the workers load it from its path
+        counter = cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override)
+        if not os.path.exists(counter):
+            np.save(counter, geo.counter())
     return geo
 
 
@@ -384,7 +389,7 @@ def coverage_from_wcs(rate_path, cache_dir=None, cutoffs=None, wavelengthrange_o
         ph = fits.getheader(rate_path)
         cutoffs = cutoffs_for(ph.get('GRATING', ''), ph.get('FILTER', ''))
     wavelengthrange_override = resolve_wavelengthrange(rate_path, wavelengthrange_override)
-    cache =cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override) if cache_dir else None
+    cache = cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override) if cache_dir else None
     if cache and os.path.exists(cache):
         return np.load(cache)
     return rate_geometry(rate_path, cache_dir, cutoffs, wavelengthrange_override).counter()

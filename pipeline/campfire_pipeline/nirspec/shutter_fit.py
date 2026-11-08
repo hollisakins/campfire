@@ -165,8 +165,11 @@ def solve(A, y, ivar, n_iter=6, clip=4.0):
         if np.array_equal(new, keep):
             break
         keep = new
+    # solved on the final pixel set, so the amplitudes, chi2, errors and nfit agree when
+    # the clipping ran out of rounds before it settled (a no-op once it settled)
     Aw, iv = Ac[keep], ivar[keep]
     N = (Aw.T @ sp.diags(iv) @ Aw).toarray()
+    a = np.linalg.solve(N + np.diag((np.diag(N) == 0).astype(float)), Aw.T @ (iv * y[keep]))
     empty = np.diag(N) == 0
     Ni = np.linalg.pinv(N + np.diag(empty.astype(float)))
     chi2 = float(np.sum((y[keep] - Aw @ a) ** 2 * iv) / max(int(keep.sum()) - p - 1, 1))

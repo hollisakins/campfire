@@ -76,7 +76,7 @@ from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec.coverage import (coverage_from_wcs, cutoffs_for, default_cache_dir, cache_path,
                                                  geometry_cache_path, slit_geometry_extended)
 
-ALGORITHM_VERSION = '1.8'    # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
+ALGORITHM_VERSION = '1.9'    # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
 #                               1.3: equal shutter weights, sky divided to the open-shutter centre (2026-10-31)
 #                               1.4: the group pool painted unless the exposure differs (pool_check) (2026-10-31)
 #                               1.5: step-1 tables read from the rate file, no MBKG1DR copy, 2-D extensions
@@ -88,6 +88,9 @@ ALGORITHM_VERSION = '1.8'    # 1.1: painted past the calibrated range; 1.2: coun
 #                                    pitch (coverage.failed_open_slitlets) (2026-11-02)
 #                               1.8: shutters holding a secondary source left out of the empty shutters, as in
 #                                    step 1; a group's products are made together (2026-11-08)
+#                               1.9: a shared shutter taken once by its index in the slitlet; the extended
+#                                    footprint cut at the disperser's wavelengths; stuck shutters not painted
+#                                    in the slitlets without a slit; the skip key reads CFS2ATIM (2026-11-08)
 # The derivation's settings. Fixed in the code since the 2026-11-06 configuration audit
 # (Hollis: "30 master bkg thresholds is a *ton*"); the only one left in the config is
 # USER_OPTIONS. Every product records the ones that shape it in its header.
@@ -158,6 +161,7 @@ class ShutterSpectrum:
     line_run: int = 0
     clean: bool = False
     reason: str = 'pending'
+    j: int = -1             # the shutter's index in the slitlet's shutter state (any source's canonical)
 
     @property
     def slit(self):
@@ -211,10 +215,20 @@ def discover_inputs(obs):
     return dict(by_rate)
 
 
+# the primary card stage 2a writes once on every canonical and bkgslits file it makes
+S2A_TIME_KEY = 'CFS2ATIM'
+
+
 def inputs_stamp(canonicals):
-    """Newest modification time of the inputs, the skip key beside the rate file's."""
-    paths = sorted({c.path for c in canonicals})
-    return max((os.path.getmtime(p) for p in paths), default=0.0)
+    """Newest time stage 2a made one of the inputs, the skip key beside the rate file's.
+    The card, not the file's mtime: later steps rewrite the files (units, ``CFEXPGRP``,
+    stage 2b, the S2D views) without changing what this step reads. A file made before
+    the card existed counts by its mtime."""
+    out = 0.0
+    for p in sorted({c.path for c in canonicals}):
+        t = fits.getheader(p).get(S2A_TIME_KEY)
+        out = max(out, float(t) if t is not None else os.path.getmtime(p))
+    return out
 
 
 def product_current(path, rate_path, canonicals, stuck_mtime, bs_name=None, bs_stamp=None, step1_path=None):
@@ -348,7 +362,8 @@ def _worker_samples(args):
         if np.isfinite(sb).sum() < opt['min_bins']:
             continue
         out.append(ShutterSpectrum(rate_base=c.rate_base, source_id=c.source_id, slitlet_id=p['slitlet_id'],
-                                   quadrant=p['quadrant'], k=int(kk), n_pix=int(sel.sum()), sb=sb, err=err, n=n))
+                                   quadrant=p['quadrant'], k=int(kk), n_pix=int(sel.sum()), sb=sb, err=err, n=n,
+                                   j=int(p['j'][sel][0])))
     return c.key, out, None
 
 
@@ -372,16 +387,22 @@ def shutter_spectra(canonicals, counters, edges_of, opt, processes, bs_paths):
     else:
         for a in args:
             take(*_worker_samples(a))
-    # two sources of one slitlet offer the same shutters, from cutouts that can differ by a
-    # pixel: keep the lowest source id's, so the choice does not depend on which worker
-    # finished first
+    return dedup_shared_shutters(found), failures
+
+
+def dedup_shared_shutters(found):
+    """Spectra grouped by rate file, each physical shutter once. Two sources of one
+    slitlet offer the same shutters, from cutouts that can differ by a pixel: the lowest
+    source id's is kept, so the choice does not depend on which worker finished first.
+    A shutter is named by its index in the slitlet's shutter state (``j``), the same from
+    either canonical; its offset ``k`` counts from each canonical's own source shutter."""
     by_rate, seen = defaultdict(list), set()
-    for s in sorted(found, key=lambda s: (s.rate_base, s.slitlet_id, s.k, s.source_id)):
-        tag = (s.rate_base, s.slitlet_id, s.k)
+    for s in sorted(found, key=lambda s: (s.rate_base, s.slitlet_id, s.j, s.source_id, s.k)):
+        tag = (s.rate_base, s.slitlet_id, s.j if s.j >= 0 else ('k', s.k))
         if tag not in seen:
             seen.add(tag)
             by_rate[s.rate_base].append(s)
-    return by_rate, failures
+    return by_rate
 
 
 # ---------------------------------------------------------------------------
@@ -879,7 +900,9 @@ def _geometries(c):
     try:
         s = m.slits[int(c.extver) - 1]
         g = B.slit_geometry(s)
-        gx = slit_geometry_extended(s)
+        # the disperser's cutoffs, as the counter and the rate geometry have them (a slit
+        # node of a MultiSlitModel carries no meta.instrument to find them from)
+        gx = slit_geometry_extended(s, cutoffs=cutoffs_for(c.grating, c.filter))
     finally:
         m.close()
     return g, gx
@@ -978,6 +1001,23 @@ def _source_shutter_pixels(rate_path, shape):
     kind = np.asarray(tm.slits['kind']).astype(str)
     slit = (tm.index >= 0) & (kind[np.clip(tm.index, 0, None)] == 'slitlet')
     return (slit & ((tm.flag & TO.IN_SOURCE) > 0)).any(0).ravel()
+
+
+def _stuck_shutter_indices(rate_path, stuck):
+    """``{slitlet name: {j}}``: the shutters (index into the slitlet's shutter state) of
+    ``stuck`` ({(q, row, col)}), from the trace map step 1 stored in the rate file."""
+    if not stuck:
+        return {}
+    from campfire_pipeline.nirspec import trace_overlap as TO
+    m = TO.ShutterMap.read(rate_path)
+    if m is None:
+        return {}
+    names = np.asarray(m.slits['name']).astype(str)
+    out = {}
+    for s in m.shutters:
+        if (int(s['q']), int(s['row']), int(s['col'])) in stuck:
+            out.setdefault(str(names[int(s['slit'])]), set()).add(int(s['j']))
+    return out
 
 
 def _failed_open_closed(rate_path):
@@ -1164,7 +1204,7 @@ def _worker_paint(args):
     the layers are combined by ``merge_painted``.
     """
     (rate_path, product, canonicals, bs_path, counter_path, centres, rate_sky, opt, rate_q,
-     geometry_path) = args
+     geometry_path, stuck) = args
     table = B.load_table(bs_path)
     prod = load_product(product)
     rate, _, _, counter = _rate_frame(rate_path, counter_path)
@@ -1238,6 +1278,7 @@ def _worker_paint(args):
         geo = RateGeometry.load(geometry_path)
         in_source = _source_shutter_pixels(rate_path, rate.shape)
         closed = _failed_open_closed(rate_path)
+        stuck_j = _stuck_shutter_indices(rate_path, stuck)
         for b in geo.blocks():
             if b['kind'] == 'failed' and str(b['name']) in closed:
                 continue                  # failed open for the internal lamp only: no sky reaches it
@@ -1245,6 +1286,9 @@ def _worker_paint(args):
                 continue
             val = _rate_sky_through(b['lam'], b['seg'], b['yseg'], b['j'], len(b['state']),
                                     rate_q.get(int(b['quadrant']), np.nan), centres, rate_sky, table, floor_bs)
+            sj = stuck_j.get(str(b['name'])) if b['kind'] != 'failed' else None
+            if sj:
+                val = np.where(np.isin(b['j'], list(sj)), np.nan, val)    # a stuck shutter passes no light
             pix = b['pix']
             if b['kind'] == 'failed':
                 fo_layers.append((b, val))
@@ -1627,7 +1671,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             'MBKGRATE': (os.path.basename(rate), 'rate file this product belongs to'),
             'MBKGGRAT': (key[0], 'disperser'), 'MBKGFILT': (key[1], 'filter'),
             'MBKGNIN': (len(cans), 'input slits (canonicals + background slitlets)'),
-            'MBKGINMT': (inputs_stamp(cans), 'newest input mtime'),
+            'MBKGINMT': (inputs_stamp(cans), 'newest stage-2a time of the inputs'),
             'MBKGBKDT': (str(rate_hdr.get('CFBKGDT')), 'rate CFBKGDT at derivation'),
             'MBKGSTK': (float(stuck_mtime), 'stuck-shutter TOML mtime'),
             'MBKGNTOT': (len(spectra), 'empty shutters offered'),
@@ -1683,6 +1727,9 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             base = rate_base_of(rate)
             p1 = R.product_path(obs, base)
             h1 = R.step1_header(p1)
+            if h1 is not None:
+                # recorded for an empty table too: the product is current until step 1 reruns
+                step1_date[base] = str(h1.get('MBKGDATE'))
             sky_t, q = R.read_rate_sky(p1) if h1 is not None else (None, {})
             if sky_t is None:
                 log(f'master background: {base}: no step-1 background in the rate file, painted in the calibrated range only')
@@ -1690,9 +1737,13 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             centres_of[base] = np.asarray(sky_t['wavelength'], float)
             rate_skies[base] = tuple(np.asarray(sky_t[c]) for c in ('rate', 'rate_err', 'n_shutters', 'source'))
             rate_q[base] = q
-            step1_date[base] = str(h1.get('MBKGDATE'))
+        # the stuck-closed shutters of each root: the geometry pass paints slitlets without
+        # a canonical, whose stuck shutters stage 2a never removed
+        from campfire_pipeline.nirspec import stuck_list as S
+        resolved = S.load_obs(obs)
         paint_args = [(rate, out, cans, bs_path, counter, centres_of.get(rate_base_of(rate)),
-                       rate_skies.get(rate_base_of(rate)), o, rate_q.get(rate_base_of(rate), {}), geometries.get(rate))
+                       rate_skies.get(rate_base_of(rate)), o, rate_q.get(rate_base_of(rate), {}), geometries.get(rate),
+                       frozenset(S.stuck_set(resolved, S.root_of(rate_base_of(rate)))))
                       for (rate, out, cans, bs_path, counter, o), key in paint_args]
 
         fo_of = {}

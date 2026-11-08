@@ -528,3 +528,40 @@ def test_failed_open_over_nods_rewrites_the_products(tmp_path, monkeypatch):
             assert h['MBKG2D'].header['BUNIT'] == 'DN/s'
             assert h[0].header['MBKGFOSC'] == 'measured, nods' and h[0].header['MBKGNFO'] == 1
             assert h['MBKG2DDQ'].data.tolist() == [[8, 8], [0, 0]] and (h['MBKG2DN'].data == 2).all()
+
+
+def test_a_shared_shutter_is_taken_once_by_its_index_in_the_slitlet():
+    # slitlet [e1, A, e2, B, e3]: A's canonical counts k from A, B's from B, so the same
+    # empty shutter has different k; its index j in the shutter state is the same
+    def s(sid, k, j):
+        sh = _shutter([1.0, 1.0], k=k, sid=sid)
+        sh.slitlet_id, sh.j = 7, j
+        return sh
+    a = [s(100, -1, 0), s(100, 1, 2), s(100, 3, 4)]
+    b = [s(200, -3, 0), s(200, -1, 2), s(200, 1, 4)]
+    kept = M.dedup_shared_shutters(a + b)['r_00001_nrs1']
+    assert sorted(x.j for x in kept) == [0, 2, 4]                 # each shutter once
+    assert {x.source_id for x in kept} == {100}                   # the lowest source id's
+
+
+def test_the_skip_key_reads_when_stage_2a_made_the_inputs(tmp_path):
+    # later steps rewrite a canonical (units, CFEXPGRP, stage 2b, the S2D views), which moves
+    # its mtime but not what the master background reads
+    import os
+    from types import SimpleNamespace
+    paths = []
+    for i, t in enumerate((100.5, 200.25)):
+        p = tmp_path / f'c{i}.fits'
+        h = fits.PrimaryHDU()
+        h.header[M.S2A_TIME_KEY] = t
+        h.writeto(p)
+        os.utime(p, (5e8, 5e8))
+        paths.append(str(p))
+    old = tmp_path / 'old.fits'                                    # made before the card existed
+    fits.PrimaryHDU().writeto(old)
+    os.utime(old, (150.0, 150.0))
+    cans = [SimpleNamespace(path=p) for p in paths]
+    assert M.inputs_stamp(cans) == 200.25
+    assert M.inputs_stamp(cans + [SimpleNamespace(path=str(old))]) == 200.25
+    os.utime(old, (300.0, 300.0))
+    assert M.inputs_stamp(cans + [SimpleNamespace(path=str(old))]) == 300.0

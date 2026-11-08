@@ -285,3 +285,13 @@ def test_fixed_slit_exposures_get_no_master_background(tmp_path):
                           stuck_closed_shutters_mtime=0.0)
     assert M.run_master_bkg(obs, {}) == []
     assert not list(ws.glob('*_mbkg.fits'))
+
+
+def test_the_sky_leaves_out_the_stuck_shutters_of_the_merged_list():
+    from campfire_pipeline.nirspec.stuck_list import Entry
+    entries = {(1, 1, 1): Entry('manual', stuck=False),    # vetoed by hand: open whatever the fit says
+               (1, 1, 2): Entry('auto'),                   # an earlier run's call the fit now reverses
+               (1, 1, 3): Entry('auto'),                   # an earlier call this run did not measure
+               (1, 1, 4): Entry('web')}                    # marked from the web
+    calls = {(1, 1, 1): {'stuck': True}, (1, 1, 2): {'stuck': False}, (1, 1, 5): {'stuck': True}}
+    assert R.merged_stuck(entries, calls) == {(1, 1, 3), (1, 1, 4), (1, 1, 5)}

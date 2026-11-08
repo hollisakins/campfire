@@ -56,11 +56,14 @@ from campfire_pipeline.nirspec import trace_overlap as TO
 from campfire_pipeline.nirspec.coverage import (GEOMETRY_VERSION, cache_path, cutoffs_for, default_cache_dir,
                                                  rate_geometry, resolve_wavelengthrange)
 
-STEP1_VERSION = '1.5'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different;
+STEP1_VERSION = '1.6'          # 1.1: equal shutter weights, sky at the open-shutter centre; 1.2: pool unless different;
 #                                1.3: the tables written into the rate file (no _mbkgr.fits);
 #                                1.4: the trace map (TM* extensions) written with them;
 #                                1.5: the fit's source shutters include secondary sources, an exposure without
-#                                     a background gets an empty MBKG1DR, FITCSTS / FITCSTA cards
+#                                     a background gets an empty MBKG1DR, FITCSTS / FITCSTA cards;
+#                                1.6: a virtual slitlet's shutters (source id <= 0) are empty, as in step 2; the
+#                                     sky leaves out the stuck shutters of the merged list (vetoes kept); the
+#                                     fit's errors on its final pixels; a failed trace map is retried
 N_GRID_SLITLETS = 6          # slitlets per detector whose central rows set the wavelength grid
 
 
@@ -214,8 +217,10 @@ def _worker_samples(args):
                 col_of_j = {jj: c0 + jj for jj in range(len(b['state']))}
             for r in mr:
                 # every shutter of a slitlet carries its source's id; the ones holding a
-                # source at this dither point are background = 'N'
-                if str(r['background']).strip() == 'N':
+                # source at this dither point are background = 'N' with a catalogued source
+                # (id > 0, as step 2 and the stuck fit take it): a virtual slitlet's
+                # (id <= 0, 1.7 % of the 'N' rows in the archive) holds only background
+                if str(r['background']).strip() == 'N' and int(r['source_id']) > 0:
                     src_j.add(int(r['shutter_column']) - c0)
             row = int(mr['shutter_row'][0])
         core = b['is_open'] & (np.abs(b['f']) <= opt['core_frac']) & ok[b['pix']]
@@ -389,6 +394,16 @@ def has_master_background(header):
             and bool(header.get('OGMETFL') or header.get('MSAMETFL')))
 
 
+def merged_stuck(entries, calls):
+    """A root's stuck shutters once this run's ``calls`` ({(q, r, c): {'stuck': ...}}) are
+    merged into its resolved list ``entries`` ({(q, r, c): Entry}): a manual or web entry
+    decides its shutter (a veto included), this run's call replaces an earlier auto one."""
+    state = {k: e.stuck for k, e in entries.items() if e.origin == 'auto'}
+    state.update({k: bool(c['stuck']) for k, c in calls.items()})
+    state.update({k: e.stuck for k, e in entries.items() if e.origin != 'auto'})
+    return {k for k, v in state.items() if v}
+
+
 def run_before_stage2a(obs, stage_config, n_processes=1, overwrite=False):
     """Step 1 where stage 2a needs it, then what changed: ``(source_ids, roots)`` whose
     canonicals (sources) and background-slitlet files (roots) hold a shutter whose stuck
@@ -536,7 +551,7 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
                 fits_of[M.rate_base_of(rate)] = t
         calls = call_shutters(list(fits_of.values()), a_cut=opt['stuck_a_cut'], min_n=opt['stuck_min_n'],
                               guard=opt['stuck_guard'])
-        dark = {k for k, c in calls.items() if c['stuck']} | S.stuck_set(resolved, root)
+        dark = merged_stuck(resolved.get(root, {}), calls)
         for it in items:
             for s in specs_of[it['base']]:
                 if keys_of[it['base']].get((s.slitlet_id, s.k)) in dark and s.clean:
@@ -585,13 +600,14 @@ def _clear_tables(path):
 
 def _trace_map_hdus(it, cache_dir):
     """The rate file's trace map (``trace_overlap.ShutterMap``, every commanded shutter) from
-    the geometry this step already built; empty extensions when it cannot be made."""
+    the geometry this step already built; None when it cannot be made."""
     try:
         geo = rate_geometry(it['rate'], cache_dir, it['cutoffs'], it['wr'])
         return TO.ShutterMap.from_rate(it['rate'], geo).hdus()
     except Exception as e:                                   # noqa: BLE001 - no map is not a failed step
-        log(f'master background step 1: {it["base"]}: no trace map ({type(e).__name__}: {e})')
-        return TO.ShutterMap.empty_hdus()
+        log(f'master background step 1: {it["base"]}: no trace map ({type(e).__name__}: {e}); '
+            f'retried on the next run')
+        return None
 
 
 def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt, sky=None, trace_map=None):
@@ -608,6 +624,9 @@ def _write(path, it, centres, rs, qs, specs, keys, fit, calls_t, opt, sky=None, 
         'MBKGMINN': (int(opt['stuck_min_n']), 'stuck call: measurements needed'),
         'MBKGGARD': (float(opt['stuck_guard']), 'stuck call: detector agreement'),
     })
+    if trace_map is None:
+        # no trace map: the version card no longer matches, so the next run retries the step
+        cards['MBKGTMV'] = ('none', 'no trace map (it failed); step 1 retries')
     if sky is not None:
         chk = sky['check']
         cards.update({
