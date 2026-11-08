@@ -437,7 +437,7 @@ def layer(hand, slitlet):
     out, auto, why = {}, set(), {}
     for nod in sorted(set(hand) | set(slitlet), key=int):
         if nod in hand:
-            out[nod], why[nod] = list(hand[nod]), 'hand'
+            out[nod], why[nod] = list(hand[nod]), 'manual'
         else:
             keep, reason = slitlet[nod]
             out[nod], why[nod] = list(keep), reason

@@ -107,9 +107,9 @@ def test_layer_hand_then_catalogue():
     hand = {'1': [3], '3': []}                          # nods 1 and 3 by hand (3 excluded)
     slitlet = {'1': ([2], 'neighbor 9 at 0.030 of background'), '2': ([1], 'neighbor 9 at 0.030 of background')}
     out, auto, why = SN.layer(hand, slitlet)
-    assert out['1'] == [3] and why['1'] == 'hand' and '1' not in auto
+    assert out['1'] == [3] and why['1'] == 'manual' and '1' not in auto
     assert out['2'] == [1] and why['2'] == 'neighbor 9 at 0.030 of background' and '2' in auto
-    assert out['3'] == [] and why['3'] == 'hand' and '3' not in auto
+    assert out['3'] == [] and why['3'] == 'manual' and '3' not in auto
 
 
 def test_light_over_sky_reads_the_neighbours_shutter():
