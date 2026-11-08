@@ -250,6 +250,28 @@ def test_prism_blends_and_coverage():
     assert all(a[1] <= b[0] + 2 * LineFitConfig().cont_pixels for a, b in zip(spans, spans[1:]))
 
 
+def test_full_model_where_windows_overlap():
+    """Windows of neighboring complexes overlap at prism resolution; the full model (the MODEL
+    extension, the portal's line overlay) must carry every complex's lines there, not the
+    continuum of whichever window was written last."""
+    z = 2.52
+    truth = dict(TRUTH, ArIII7136=3e-19)
+    wave, fnu, err, r_of = synth(z, 'prism', truth, noise=1e-22, dv=0.0, sigma_v=10.0)
+    res = fit_lines(wave, fnu, err, z, r_of, LineFitConfig(), grating='prism')
+    cxs = sorted(res['complexes'], key=lambda c: c['lo_idx'])
+    assert any(a['hi_idx'] > b['lo_idx'] for a, b in zip(cxs, cxs[1:])), 'no overlapping windows to test'
+    model, cont = res['model']
+    conv = 2.99792458e-19 / wave ** 2
+    flam, ferr = fnu * conv, err * conv
+    ha = next(c for c in cxs if 'Halpha' in c['lines'])
+    sl = slice(ha['lo_idx'], ha['hi_idx'])
+    peak = sl.start + int(np.argmax(flam[sl]))
+    assert model[peak] > cont[peak] + 0.5 * (flam[peak] - cont[peak])
+    covered = np.isfinite(model)
+    pull = np.abs(flam - model)[covered] / ferr[covered]
+    assert np.median(pull) < 3 and np.max(np.abs(flam - model)[covered]) < 0.1 * np.nanmax(flam - cont)
+
+
 def test_doublet_totals_agree_across_resolutions():
     """A doublet total (component='doublet') means the same thing whether the
     grating resolves the pair or not: the covariance-propagated sum where it
@@ -475,7 +497,7 @@ def test_stage_writes_reads_and_skips(workspace):
     assert abs(prod['lines']['Halpha']['flux'] - 5e-18) / prod['lines']['Halpha']['flux_err'] < 4
     assert prod['lines']['OIII4959']['tied_to'] == 'OIII5007'
     # doublet totals round-trip with their catalog label; the product carries the version
-    assert h['LFITVER'] == '2'
+    assert h['LFITVER'] == lf.LINEFIT_VERSION
     sii = prod['lines']['SII6725']
     assert sii['component'] == 'doublet' and sii['label'] == '[SII]λλ6716,6731'
     assert sii['flags'] & FLAG_RESOLVED and np.isfinite(sii['flux'])

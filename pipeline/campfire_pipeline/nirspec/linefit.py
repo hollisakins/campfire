@@ -80,7 +80,7 @@ FWHM_TO_SIGMA = 1.0 / (2.0 * math.sqrt(2.0 * math.log(2.0)))   # 1 / 2.3548
 #: Algorithm version, stamped into every product (``LFITVER``) and into
 #: ``line_fits.fit_version``. Bump on any change to the model, the
 #: line list, or the flag semantics so downstream can tell apart re-fits.
-LINEFIT_VERSION = '2'
+LINEFIT_VERSION = '3'
 
 # Per-line flag bits (``flags`` in the LINES table and in the JSON payload).
 FLAG_TIED = 1            # flux is ratio-tied to its doublet primary
@@ -949,8 +949,13 @@ def fit_lines(wave_um, fnu_ujy, fnu_err_ujy, z, r_of, cfg: Optional[LineFitConfi
 
     # Pass 2: refit non-anchors with fixed kinematics (linear).
     lines = {}
-    model = np.full(n, np.nan)
-    cont = np.full(n, np.nan)
+    # The full model: windows of neighboring complexes overlap (a window extends cont_pixels past
+    # its supports), so the line parts are summed and each pixel's continuum is that of the complex
+    # whose lines cover it, else the mean of the windows that reach it.
+    line_sum = np.zeros(n)
+    cont_sum = np.zeros(n)
+    cont_n = np.zeros(n)
+    cont_own = np.full(n, np.nan)
     cx_out = []
     for cx, wm, fit in zip(complexes, wms, fits):
         if fit is None:
@@ -978,11 +983,19 @@ def fit_lines(wave_um, fnu_ujy, fnu_err_ujy, z, r_of, cfg: Optional[LineFitConfi
         lines.update(recs)
         sl = slice(cx.lo_idx, cx.hi_idx)
         m_win, c_win = wm.evaluate(fit['p'], wave[sl], lo[sl], hi[sl])
-        model[sl] = m_win
-        cont[sl] = c_win
+        line_sum[sl] += m_win - c_win
+        cont_sum[sl] += c_win
+        cont_n[sl] += 1
+        own = per_cx_support[cx.index][sl]
+        cont_own[sl][own] = c_win[own]
         cx_out.append(dict(index=cx.index, lines=cx.names, lo_idx=cx.lo_idx, hi_idx=cx.hi_idx,
                            chi2=fit['chi2'], dof=fit['dof'], anchor=cx.index in anchor_idx,
                            broad=bool(fit.get('broad'))))
+
+    covered = cont_n > 0
+    cont = np.full(n, np.nan)
+    cont[covered] = np.where(np.isfinite(cont_own), cont_own, cont_sum / np.maximum(cont_n, 1))[covered]
+    model = np.where(covered, cont + line_sum, np.nan)
 
     kin = dict(source=kin_source, dv=dv_g, dv_err=dv_g_err, sigma_v=sv_g, sigma_v_err=sv_g_err,
                n_anchors=len(anchors))

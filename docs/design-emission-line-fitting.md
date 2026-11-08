@@ -150,8 +150,9 @@ ew_rest_err, cont, cont_err, dv, dv_err, sigma_v, sigma_v_err, sigma_lsf_kms, wa
 complex, chi2, dof, npix, flags, blend_into, tied_to`. Flags (bitmask,
 `campfire.flags.LineFlags`): 1 tied, 2 blended, 4 blend, 8 edge, 16 kin_global, 32
 kin_default, 64 broad, 128 no_continuum, 256 fit_failed, 512 masked, 1024 sigma_unresolved,
-2048 resolved (doublet totals only). `LFITVER` is 2 (1 had no doublet totals and centred
-blends on the primary's rest wavelength).
+2048 resolved (doublet totals only). `LFITVER` is 3 (2 wrote each complex's model over its
+whole window, so where windows overlap the complex written last replaced the other's lines in
+`MODEL`; 1 had no doublet totals and centred blends on the primary's rest wavelength).
 
 **Product** `<base>_lines.fits`: PRIMARY (ZUSED/ZSRC/ZQUAL/OBJID/OBJVER, ZFIT, DVGLOB,
 SIGGLOB, KINSRC, NLINES/NDETECT/NBROAD, LFITVER, SPECHASH, FLSF, CMPFRVER, CMPFRTIM),

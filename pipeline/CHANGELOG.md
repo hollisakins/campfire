@@ -274,6 +274,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   `ALGNGTB` / `ALGNGTA`), so a silently mis-locked exposure is a header grep
   rather than a re-reduction. `gross_min_keep_frac = 0` restores the previous
   behaviour for A/B work.
+- **`linefit`: the full model is right where line windows overlap (`LFITVER` 3).** Each
+  line complex wrote its model over its whole window, so where the windows of neighboring
+  complexes overlap (common on the PRISM) the complex written last replaced the other's
+  lines with its own continuum: on ember_cosmos_p1 635314 the red half of Hα was missing.
+  The line parts are now summed, and each pixel takes the continuum of the complex whose
+  lines cover it. Line fluxes and every `LINES` column are unchanged (each complex was always
+  fitted on its own); the `MODEL` extension, the `_lines.json` sidecar and the portal's line
+  overlay change. The version bump refits every `_lines.fits` on the next run.
 - **`linefit`: doublet totals and honest blend centres (`LFITVER` 2).** Close
   doublets with a free ratio (NV, CIV, OIII], CIII], MgII, [OII], [SII];
   `linelist.DOUBLETS`) are now also reported as a *total* under the doublet's
