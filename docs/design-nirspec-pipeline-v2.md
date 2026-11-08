@@ -528,11 +528,17 @@ dispersion as in 6.3); `reported_factor` scales it to the aperture.
 entering the shutter.
 
 **Evidence** (p1 PRISM against COSMOS photometry).
-- Against the catalog's total (Kron) flux, in six bins of fitted width: the light in the shutter
-  read 0.87 for the most compact bin down to 0.32 for the widest; the reported flux reads
-  0.93 / 0.77 / 0.77 / 0.75 / 0.68 / 1.03, with the scatter 0.20 -> 0.16 dex.
-- Against the catalog's own 0.8 arcsec aperture flux, the 106 sources with their own fit read
-  0.96 +- 0.04 (per band 0.91-0.96). The aperture flux holds the source blurred by the PSF and
+- Against the catalog's own 0.8 arcsec aperture flux (`FIT_VERSION` 8; 127 sources with their own
+  fit; per band, catalog and spectrum S/N >= 10 and the band fully covered; each source's ratio
+  the median over its bands): the reported flux reads a median 0.952 +- 0.03 (error of the
+  median), 16-84 % 0.70-1.30, scatter 0.124 dex. The light in the shutter (`fnu_opt`) reads 0.620,
+  16-84 % 0.41-0.84, 0.149 dex. Per band: F150W 0.84, F200W 0.97, F277W 0.89, F356W 0.92, F444W
+  0.95. The ratio sits near 1 for compact sources and rises above 1 for the widest (figure
+  `web/public/docs/nirspec/reported_flux.png`, `scripts/docs/nirspec/fig_reported_flux.py`).
+- Against the catalog's total (Kron) flux, in six bins of fitted width (`FIT_VERSION` 6): the
+  light in the shutter read 0.87 for the most compact bin down to 0.32 for the widest; the
+  reported flux reads 0.93 / 0.77 / 0.77 / 0.75 / 0.68 / 1.03, with the scatter 0.20 -> 0.16 dex.
+- The aperture flux holds the source blurred by the PSF and
   `fnu_prof` the source before it, so a point source would sit a few per cent above 1. The level
   near 0.8 against the Kron total is the comparison (in the catalog the light inside 0.75 / 1.0
   arcsec is 0.75-0.82 / 0.81-0.89 of the Kron total), not a calibration difference.
