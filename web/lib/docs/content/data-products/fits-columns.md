@@ -71,7 +71,7 @@ The primary header retains the `jwst` keywords, including software versions, all
 | Keyword | Content |
 |---|---|
 | `CMPFRVER`, `CMPFRTIM` | CAMPFIRE pipeline version and processing time |
-| `EXTRACT`, `EXTRWHY` | Extraction adopted for `fnu` (`profile`, `profile_decontam`, `boxcar3`, `optimal`) and the reason |
+| `EXTRACT`, `EXTRWHY` | Extraction adopted for `fnu` (`profile`, `boxcar3`, `optimal`) and the reason |
 | `CMPFROPT` | Whether `fnu_opt` is the optimal extraction (`optimal`) or a boxcar fallback |
 | `CONTSTAT` | Contamination status (`off`, `none`, `predicted`) |
 | `NEXP`, `NEXPBKG` | Number of exposures combined; minimum number of background exposures subtracted from any one |

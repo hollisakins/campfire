@@ -45,7 +45,7 @@ The contamination is reported, not subtracted:
 | `fnu_contam` | Predicted contamination, extracted the same way |
 | `fnu` | Equal to `fnu_prof` by default |
 
-The decontaminated spectrum is `fnu_prof - fnu_contam`, with the systematic uncertainty of the prediction in `fnu_contam_err`. `fnu_contam` is NaN where no contamination was predicted and where the target could not be separated from a neighbor. `CONTSTAT` records whether contamination was predicted, and `EXTRWHY` the reason for the extraction adopted in `fnu`. With `[nirspec.stage3] contam_1d = "subtract"`, significant contamination is subtracted in `fnu` (`EXTRACT = profile_decontam`).
+The decontaminated spectrum is `fnu_prof - fnu_contam`, with the systematic uncertainty of the prediction in `fnu_contam_err`. `fnu_contam` is NaN where no contamination was predicted and where the target could not be separated from a neighbor. `CONTSTAT` records whether contamination was predicted, and `EXTRWHY` the reason for the extraction adopted in `fnu`.
 
 In the 2-D extensions, `PROF2D` is the source model per µJy of reported flux and `CONTAM2D` the contamination, both in the units of `SCI`; the full model is `PROF2D × (fnu_prof - fnu_contam) + CONTAM2D`.
 
