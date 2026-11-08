@@ -55,15 +55,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   `docs/design-nirspec-master-background.md`. Every observation needs reprocessing from stage 2a,
   and G140M / G235M from stage 1.
   - *The extraction* (`profile_fit.py`, `profile_chain.py`). The source is a Gaussian in the slit
-    direction whose centre and width vary linearly with log wavelength, seen through the optics
+    direction whose center and width vary linearly with log wavelength, seen through the optics
     model below, in each exposure and in its negative copies in the other nods' differences. Its
-    shape comes from a gated chain (`profile_fit_shape = "gated"`). A source above the detection
-    gate takes its own fit (S/N 25 PRISM, 70 gratings, on the clipped mean square of the
-    residuals). Below it, a grating takes the PRISM shape of the same source, or else the shape of
-    the source's grating that passed its gate (`PFSHAPE` `grating`; on spurs_gds the line-flux
-    ratios between gratings went from 0.93-1.18 to 0.93-1.05, 16-84 %). Failing all of these it
-    takes the default shape (width 0.15 slit units at the planned position). An own fit that ends
-    on a bound is kept only when the centre alone is on its bound. Named failures fall back to the
+    shape comes from a gated chain (`profile_fit_shape = "gated"`). A grating takes the PRISM shape
+    of the same source when that PRISM product took its own fit; its own fit replaces the PRISM
+    shape only at detection S/N 100 or more, and only when it is both significantly better and
+    different. Otherwise a source above the detection gate (S/N 25 PRISM, 70 gratings, on the
+    clipped mean square of the residuals) takes its own fit. An own fit with its width or drift on
+    a bound falls back; one with only its center on a bound is kept when the fallback fits clearly
+    worse. A grating with neither its own nor a PRISM shape takes the shape of the source's grating
+    that passed its gate (`PFSHAPE` `grating`; on spurs_gds the 16-84 % ranges of the line-flux
+    ratios between gratings went from 0.84-1.43 to 0.90-1.13). Failing all of these it takes the
+    default shape (width 0.15 slit units, 0.16 arcsec FWHM, at the planned position). Named failures fall back to the
     3-pixel boxcar (`EXTRACT = boxcar3`); any other error fails the stage. `fnu` is never
     contamination-subtracted.
   - *Optics model* (`optics.py`, `data/nirspec_optics.json` `2026.11-r8`, `FIT_VERSION` 8). One
@@ -80,9 +83,10 @@ Release procedure: edit the `## Unreleased` section below, then run
   - **The reported flux of an extended source is its light in 0.8 arcsec.** `fnu_prof` (and
     `fnu`) is the fitted source's light inside a circle 0.8 arcsec across (`PFAPER`), not the light
     in the shutter on jwst's point-source calibration. Point sources read the same either way;
-    extended ones read higher. On 92 p1 PRISM sources against COSMOS photometry it is 0.68-1.03 of
-    the photometry from compact to wide (the light in the shutter read 0.32-0.87), and 0.96 +- 0.04
-    of the catalog's own 0.8 arcsec aperture flux. `fnu_opt` and `fnu_3px` stay on jwst's
+    extended ones read higher. On p1 PRISM sources against COSMOS photometry, in six bins of fitted
+    width, the reported flux is 0.68-1.03 of the catalog's total flux, where the light in the shutter
+    read 0.87 for the most compact bin down to 0.32 for the widest; the 106 sources with their own
+    fit read 0.96 +- 0.04 of the catalog's own 0.8 arcsec aperture flux. `fnu_opt` and `fnu_3px` stay on jwst's
     calibration.
   - *Other slitlets' light* (`trace_overlap.py`, `joint_first_pass.py`, `profile_contam.py`,
     `profile_extend.py`). Every source is first solved with its neighbors on its nod differences,
@@ -96,7 +100,7 @@ Release procedure: edit the `## Unreleased` section below, then run
     source (the MSA plan's `SOURCE_INFO`, placed at every dither point) within 0.75 slit units of
     the target when that neighbor's light is at least 0.02 of the master background
     (`slitlet_neighbor_min_background`). Stage 3 redoes these decisions with each neighbor's
-    brightness from its modelled light, from the frames before subtraction, so the choice no longer
+    brightness from its modeled light, from the frames before subtraction, so the choice no longer
     depends on the previous run. Spec3 runs after them. A scan of the residuals finds neighbors not
     in the catalog. Its proposals are never applied: they go to
     `reference/nirspec/<obs>/nodded_background_overrides_proposed.toml` with a figure per source
@@ -108,10 +112,10 @@ Release procedure: edit the `## Unreleased` section below, then run
     builds the trace map. It writes these as tables into the rate file (`MBKG1DR`, `MBKGQSR`,
     `MBKGSHR`, `SHUTAMP`, `CALLS`, `TMSH1`/`TMSH2`/`TMFLAG`/`TMSLITS`/`TMSHUT`). Step 2, at the end
     of stage 2a, writes `<root>_<nod>_<nrsN>_mbkg.fits` (layout kind `nirspec_mbkg`): the 1-D
-    background (`MBKG1D`), the shutters offered (`SHUTTERS`), and the background painted back onto
-    the detector (`MBKG2D`/`MBKG2DN`/`MBKG2DDQ`, compressed). Each exposure takes its group's pooled
-    background unless it differs. Shutters are weighted equally. Every footprint is painted past the
-    calibrated range, and failed-open shutters at their measured transmission. Light from one MSA
+    background (`MBKG1D`), the shutters offered (`SHUTTERS`), and the background modeled onto the
+    detector (`MBKG2D`/`MBKG2DN`/`MBKG2DDQ`, compressed). Each exposure takes its group's pooled
+    background unless it differs. Shutters are weighted equally. The model extends every footprint
+    past the calibrated range and includes failed-open shutters at their measured transmission. Light from one MSA
     spot is counted once. Its settings are fixed in `master_bkg.SETTINGS` and recorded in the
     header.
   - *The master-background spectrum.* The same extraction on the exposures less their master
@@ -126,9 +130,9 @@ Release procedure: edit the `## Unreleased` section below, then run
     lists them. New dependency `tomlkit`.
   - *Empirical bar-shadow tables* for PRISM, G140M, G235M and G395M (`barshadow_calibration.py`,
     `Generate_Barshadow_Cals.py`), measured from empty shutters in the pipeline's slit frame,
-    G140M and G235M on an axis widened to 5.3 um. With one field held out, the residual inside the
-    shutters falls from 8-23 % (CRDS) to 0.6-4 %. Stage 2a gives them to the background-only
-    slitlets, and the master background paints with them.
+    G140M and G235M on an axis widened to 5.3 um. The CRDS references put the shutter edges a
+    fraction of a pixel row off and left errors of 10-23 % in a background modeled with them. Stage
+    2a gives the tables to the background-only slitlets, and the master background uses them.
   - *G140M / G235M traces past the calibrated range.* Their footprints (coverage, rate geometry,
     trace maps) are built on the extended wavelength range, and stage 1's 1/f mask follows the
     traces to 5.3 um, whatever `extend_g140m_g235m` says.
@@ -159,7 +163,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   - *Fixes found along the way.*
     - The optimal extraction's 3-pixel boxcar fallback (`CMPFROPT = 'boxcar-3px'`) reported about
       a third of the flux and understated the S/N by about the square root of 3 (16 % of local
-      products that record `CMPFROPT`). `extract_with_profile` now normalises the profile.
+      products that record `CMPFROPT`). `extract_with_profile` now normalizes the profile.
     - Exposure sequences counted past 9 (`0410b`, ...) are found. Before, a later sequence got no
       master background and no contamination keys.
     - `nirspec run` with stages 1 and 2a no longer fails when stage 1 writes no rate file for an
