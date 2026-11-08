@@ -189,6 +189,7 @@ def _frames_with_neighbour(target_scale, nbr_scale, delta, seed=1):
         ov = (bkg_overrides or [None])[0] or {}
         ex = T._exposures(src_y=0.0)
         for k, e in enumerate(ex):
+            e.path = f'nod{k + 1}.fits'
             want = ov.get(str(k + 1))
             if want is not None:
                 e.partners = [j for j in range(3) if j + 1 in want] or None
@@ -203,7 +204,9 @@ def test_preview_shows_what_the_proposal_changes(tmp_path, monkeypatch):
     """A neighbour one shutter above an equally bright target: its copies through the
     partners are subtracted from the target's rows in nods 1 and 3, so the spectrum with
     every nod as background reads low; with the proposed nods it is back near the truth,
-    with a larger error (fewer background nods). The figure marks the dropped copies."""
+    with a larger error (fewer background nods). The figure shows each nod's rectified
+    difference with both choices, rebuilt from the cached S2D_SCI views."""
+    from astropy.io import fits
     from campfire_pipeline.nirspec import profile_product as PP
     from campfire_pipeline.nirspec import plots
     load, Rt = _frames_with_neighbour(30.0, 30.0, MSA_SLIT_PITCH)
@@ -212,14 +215,23 @@ def test_preview_shows_what_the_proposal_changes(tmp_path, monkeypatch):
     R = PF.fit_fixed(exps=raw, shape=dict(centre_offset=0.0, width=0.1, drift=0.0, width_change=0.0), chromatic=False)
     S = NS.run(R, dchi2_min=60.0)
     assert S.proposals == {ROOT: {'1': [3], '3': [2]}}
-    pv = PP.neighbour_preview([['a', 'b', 'c']], raw, R, None, 1, [e.name for e in raw], {}, S.proposals, S.delta)
+    pv = PP.neighbour_preview([['a', 'b', 'c']], raw, R, None, 1, [e.name for e in raw], {}, S.proposals)
     assert pv is not None
     truth = np.mean(np.interp(pv['lam'], Rt.lam, Rt.flux))
     now, prop = np.nanmean(pv['now'][0]), np.nanmean(pv['proposed'][0])
     assert abs(prop / truth - 1) < 0.5 * abs(now / truth - 1)
     assert np.nanmedian(pv['proposed'][1]) > np.nanmedian(pv['now'][1])
     nod1 = next(f for f in pv['frames'] if f['nod'] == 1)
-    assert {n: d for n, _, d in nod1['copies']} == {2: True, 3: False}
+    assert nod1['path'] == 'nod1.fits'
+    assert nod1['now'] == [(2, 'nod2.fits'), (3, 'nod3.fits')]
+    assert nod1['proposed'] == [(3, 'nod3.fits')]
+    rng = np.random.default_rng(2)
+    for f in pv['frames']:
+        p = tmp_path / f['path']
+        fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(rng.normal(size=(21, 60)), name='S2D_SCI')]).writeto(p)
+        f['path'] = str(p)
+        for k in ('now', 'proposed'):
+            f[k] = [(n, str(tmp_path / q)) for n, q in f[k]]
     out = tmp_path / 'p.pdf'
     plots.plot_neighbour_proposal(str(out), 1, [('obs_prism_1', dict(S.__dict__, preview=pv))])
     assert out.stat().st_size > 0
@@ -247,7 +259,7 @@ def test_preview_needs_the_frames_before_subtraction(monkeypatch):
     monkeypatch.setattr(PF, 'load_source', lambda groups, bkg_overrides=None, **kw: load(groups))
     R = PF.fit_fixed(exps=raw, shape=dict(centre_offset=0.0, width=0.1, drift=0.0, width_change=0.0), chromatic=False)
     assert PP.neighbour_preview([['a', 'b', 'c']], raw, R, None, 1, [e.name for e in raw], {},
-                                {ROOT: {'1': [3]}}, MSA_SLIT_PITCH) is None
+                                {ROOT: {'1': [3]}}) is None
 
 
 def test_proposals_file_and_figures(tmp_path, monkeypatch):

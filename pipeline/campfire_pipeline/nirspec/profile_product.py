@@ -98,15 +98,16 @@ def partner_overrides(exps, n_groups):
     return out
 
 
-def neighbour_preview(groups, raw, chain_result, maps, source_id, science, stage_config, proposals, delta):
+def neighbour_preview(groups, raw, chain_result, maps, source_id, science, stage_config, proposals):
     """What a scan proposal would change, for the review figure (``plots.plot_neighbour_proposal``).
 
     The source is loaded twice from the frames before subtraction (``profile_fit.load_group``
     with ``pre_bkgsub``), with the background nods it subtracts now and with the proposed
     ones, and fitted at the chain's shape on the scan's pixels (``scan_input``), so the two
-    spectra differ only by the choice of nods. Returns a dict (spectra, and per science nod
-    of the current fit its nod difference, model and slit positions), or None when the
-    frames before subtraction are not there (a canonical stage 2b never subtracted)."""
+    spectra differ only by the choice of nods. Returns a dict (the two spectra, and per
+    science exposure its canonical and its background nods now and proposed, as
+    [(nod, canonical)]), or None when the frames before subtraction are not there (a
+    canonical stage 2b never subtracted)."""
     from campfire_pipeline.nirspec import nod_scan as NS
     from campfire_pipeline.nirspec import profile_fit as PF
 
@@ -126,38 +127,21 @@ def neighbour_preview(groups, raw, chain_result, maps, source_id, science, stage
         if R is None:
             return None
         fits_[key], loaded[key] = R, ex
+
+    def nods(ex, e):
+        return [(NS._nod(ex[j]), ex[j].path) for j in e.partners]
+
+    ex_now, ex_prop = loaded['now'], loaded['proposed']
+    proposed = {e.name: nods(ex_prop, e) for e in ex_prop if e.partners is not None}
+    frames = [dict(root=NS._root(e), nod=NS._nod(e), detector=e.detector, path=e.path, now=nods(ex_now, e),
+                   proposed=proposed.get(e.name, []))
+              for e in ex_now if e.use_data and e.has_source and e.partners is not None]
     R = fits_['now']
-    M = R.model
-    frames = []
-    for k, e in enumerate(M.exps):
-        if not (e.use_data and e.has_source) or e.partners is None:
-            continue
-        rows = np.any(np.isfinite(e.y), axis=1)
-        model = PF.model_frame(R, k, applied_pathloss=False, common=True)
-        nod = NS._nod(e)
-        kept = (proposals.get(NS._root(e)) or {}).get(str(nod))
-        copies = []
-        for j in e.partners:
-            # partner j's frame puts the neighbour where its own slit coordinate is src_y + delta;
-            # its slit frame moves with the nod, so that level is shifted into this nod's coordinates
-            x = M.exps[j]
-            with np.errstate(invalid='ignore'):
-                shift = float(np.nanmedian(e.y - x.y))
-            copies.append((NS._nod(x), float(x.src_y + delta + shift), kept is not None and NS._nod(x) not in kept))
-        frames.append(dict(
-            root=NS._root(e), nod=nod,
-            data=np.where(e.ok, e.diff, np.nan)[rows].astype(np.float32),
-            model=np.asarray(model)[rows].astype(np.float32),
-            var=np.asarray(M.diff_variance(k))[rows].astype(np.float32),
-            y=e.y[rows].astype(np.float32),
-            target=float(e.src_y + R.params['centre'] - R.params['centre_prior']),
-            neighbour=float(e.src_y + delta),
-            copies=copies))
     return dict(lam=np.asarray(R.lam, np.float32),
                 now=(np.asarray(R.flux, np.float32), np.asarray(R.flux_err, np.float32)),
                 proposed=(np.asarray(fits_['proposed'].flux, np.float32),
                           np.asarray(fits_['proposed'].flux_err, np.float32)),
-                frames=frames, grating=M.exps[0].grating)
+                frames=frames)
 
 
 @dataclass
@@ -281,7 +265,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
         with TM.step('scan_preview'):
             try:
                 preview = neighbour_preview(groups, raw, C.result, maps, source_id, science, stage_config,
-                                            S.proposals, S.delta)
+                                            S.proposals)
                 if preview is None:
                     log('neighbour proposal: no preview (no frames before subtraction)')
             except Exception as e:                   # noqa: BLE001 - a review figure must not fail the product
