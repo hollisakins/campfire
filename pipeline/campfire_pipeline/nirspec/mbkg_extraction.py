@@ -164,9 +164,9 @@ def local_contrast(frame):
     rows (an extended line, a band's edge rows) does not stand above its column."""
     a = frame.arrays
     d = np.where((a['dq'] & DO_NOT_USE) > 0, np.nan, np.asarray(a['data'], float))
-    rx = d - _shifted_median(d, 1, HOT_ROW_HALF)
-    ry = d - _shifted_median(d, 0, HOT_COL_HALF)
     with np.errstate(invalid='ignore', divide='ignore'):
+        rx = d - _shifted_median(d, 1, HOT_ROW_HALF)
+        ry = d - _shifted_median(d, 0, HOT_COL_HALF)
         return np.minimum(rx, ry) / np.asarray(a['err'], float)
 
 

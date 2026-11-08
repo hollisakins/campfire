@@ -29,580 +29,6 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
-
-- **NIRSpec stage 2 / master background: configuration audit (user decisions 2026-11-06).** Options
-  removed from `[nirspec.stage2]`, with the code paths only they selected:
-  - `single_call`: stage 2a always runs one `Spec2Pipeline` per rate file; the one-call-per-source
-    loop remains only as the automatic fallback when that call fails.
-  - `extract_bkgslits`: the background-only slitlets (`bkgslits/`) are always extracted.
-  - `empirical_barshadow`: stage 2a gives the background slitlets the empirical bar-shadow table of
-    every grating that has one (CRDS for the H gratings); `nirspec_calibrations.toml` lists the
-    tables with no switch. **Output change:** the default was off, so the `bkgslits/` files' SCI
-    changes (CRDS → empirical shadow divided out). The master background is unchanged: it multiplies
-    back whichever shadow jwst applied (the slit's `BARSHADOW`), and the `bkgslits/` files are
-    regenerable intermediates, never deployed.
-  - 29 of the 30 `master_bkg_*` settings move to `master_bkg.SETTINGS` with their comments; only
-    `master_bkg_plot` (the QA PDFs) stays in the config, and `detect_stuck_shutters` stays. The
-    switched-off paths go: no master background without the painted `MBKG2D` (`write_2d`; stage 2b
-    and stage 3 read it), failed-open shutters always at their measured transmission
-    (`failed_open_scale = 'full'`), always the pool rule (`prefer_pool`), the quadrant scales, and
-    the `jwst_backgrounds` comparison whenever it is installed (`model_check`). Values are the old
-    defaults, so no product changes.
-  - A config that still sets a removed option is told once that it has no effect
-    (`config.REMOVED_OPTIONS`).
-
-- **NIRSpec: an explicit boundary with jwst's path-loss and bar-shadow references.** CAMPFIRE's own
-  MSA calibrations replace parts of those two CRDS references; the boundary is now one module and one
-  file. `nirspec/crds_refs.py` is the only code that reads either reference or interprets what jwst
-  wrote from them into a cal file (moved there from `profile_fit`, `optics`, `barshadow_calibration`,
-  `master_bkg` and `slitlet_neighbours`); its path-loss reader picks the MOS1x3 extension by its
-  APERTURE card and checks the grid and units the profile fit assumes. `data/nirspec_calibrations.toml`
-  lists each shipped calibration with its sha256, version, inputs, the references it was derived
-  against, the switch that turns it off, its code and tests (tests fail on a file changed without its
-  entry); the loader warns when an exposure's path-loss reference is not the one a calibration was
-  derived against. New `[nirspec.stage3]` switches `slit_loss_y = "optics" | "jwst"` and
-  `slit_loss_x = "corrected" | "jwst"` hand either direction of the path loss back to jwst (defaults
-  unchanged: the same fits to 0.1 in chi2), recorded with the reference's name as `PFSLY`, `PFSLX`,
-  `PFPLREF`. `cfpipe nirspec crds-compare` prints the standing comparison of the active context's
-  references with the calibrations; run it with every `CRDS_CONTEXT` bump.
-
-- **NIRSpec stage 3: the alternative extraction modes kept for comparison are removed.** Each had
-  lost its comparison, and none is a choice a user needs. Removed from `[nirspec.stage3]`:
-  `profile_fit_shape = "free"` (the v1 fit), `profile_fit_prism_mode = "always"`, `gate_noise = "mad"`,
-  `profile_fit_partial` and `gate_partial_snr_*`, `profile_fit_rows = "model"` and
-  `profile_fit_model_rows_frac`, `contam_mode = "mask"` (other slitlets' light is always subtracted
-  before the shape fit, and the pixels where the prediction is itself uncertain are left out),
-  `contam_dominance*` (the ratio is recorded in `PFDOMIN`, never acted on), `contam_1d` and
-  `contam_1d_min_sigma` (`fnu_contam` is always reported and never subtracted from `fnu`; the
-  `profile_decontam` extraction is gone), `scan_noise = "none"`, `scan_close_rule` (a close neighbour
-  is always withheld) and `scan_gain_rule` (the gain is recorded only). The defaults were already
-  these behaviors, so products do not change, except that `EXTRWHY` reads `contam_predicted` (was
-  `contam_report`), `PFCMODE` reads `subtracted` (was `hybrid`), and `PFGATEM` and `PFROWS` are no
-  longer written.
-
-- **NIRSpec stage 3: same-slitlet neighbor proposals are for review only, with a figure each.** The
-  scan's proposals always go to `reference/nirspec/<obs>/nodded_background_overrides_proposed.toml`
-  and are never applied: `scan_action` and the automatic override file
-  (`nodded_background_overrides_auto.toml`, which stage 2b used to apply) are removed. A proposal a
-  nod already follows (a hand override, or a catalogued neighbor's) is left out, so the file lists
-  only what would change. Each proposed source gets `<obs>_<id>_neighbor.pdf` in the workspace: per
-  nod its difference and residual over the noise, and their profile along the slit, with the target,
-  the neighbor and its copies from each background nod marked; and its spectrum fitted with the
-  background nods subtracted now and with the proposed ones (both rebuilt from the frames before
-  subtraction, on the same pixels at the same shape). Stage 3 ends with one log line giving the
-  number of proposals and the command that reruns those sources.
-
-- **NIRSpec: exposure sequences counted past 9 (`0410b`, `0410f`, ...) are found.** The
-  activity of a JWST exposure sequence counts 1..9, a..z; the canonical-name pattern of
-  `barshadow_calibration` (the master background's and the bar-shadow derivation's input
-  discovery) and the exposure key of `profile_contam` took digits only, so an observation
-  with more than nine sequences got no master background for the later ones ("no stage-2a
-  inputs, skipped") and no contamination keys. Also: `nirspec run` with stage 1 and stage 2a
-  together no longer fails when stage 1 writes no rate file for an exposure (no open slit on
-  that detector, e.g. program 4465's NRS2): stage 2a skips it and says so. And the profile
-  fit's row height (`Exposure.dy`) is now defined on a slit's first and last row (one-sided
-  difference): in slitlets longer than three shutters the other nods' terms reach those rows,
-  where the central difference was NaN and the fit failed ("Residuals are not finite"). Fits
-  that succeeded before are unchanged (category uncertain: it gives a profile fit to sources
-  that had none, which is closer to Algorithm).
-
-### Algorithm
-
-- **NIRSpec G140M / G235M: traces followed past the calibrated range, and bar-shadow tables to 5.3 µm
-  (`coverage.COVERAGE_VERSION` 4, `GEOMETRY_VERSION` 3, `trace_overlap.SHUTTER_MAP_VERSION` '3').**
-  The first-order light of G140M/F100LP and G235M/F170LP runs past the nominal range onto the detector
-  whether or not `[nirspec.stage2].extend_g140m_g235m` is on, and three places stopped short of it:
-  - *Footprint geometry* (coverage counters, `RateGeometry`, the trace maps step 1 stores): built with the
-    CRDS wavelengthrange, `assign_wcs` gives no WCS on a detector to a slitlet whose nominal range lies wholly
-    on the other one. On NRS2 of a spurs_gds exposure 21 of 116 G140M slitlets (1.90-3.46 um there) had no
-    footprint; the coverage count changed on 17.0 % of NRS2 (13.7 % from empty to covered, 3.1 % from one
-    footprint to shared) and on 13.2 % for G235M; NRS1 is unchanged. The geometry of these dispersers is now
-    always built on the extended wavelengthrange (`extended_wavelength.geometry_wavelengthrange`, the default of
-    every `coverage` builder through `resolve_wavelengthrange`); step 1 records the file in `MBKGWR`.
-  - *Stage 1's slit mask for the 1/f fit*: these traces (and the H gratings' with F100LP / F170LP) are masked
-    to 5.3 um whatever `override_wavelength_range` and the extension setting say
-    (`constants.EXTENDED_TRACE_GRATING_FILTERS`, `stage1.mask_wavelength_range`);
-    `config._widen_stage1_ranges_for_extension` is gone. On NRS2 of the spurs_gds exposures this masks another
-    4.4-4.5 % of the detector and halves the background the column fit keeps (median per column 159 -> 91
-    G140M, 166 -> 80 G235M); NRS1 is unchanged.
-  - *The empirical bar-shadow tables* stopped at 1.495 / 2.492 um (the CRDS templates' axis) and every lookup
-    held that shape beyond. Re-derived from the four SPURS fields on an axis widened to 5.3 um over the same
-    101 columns (jwst builds its shadow 101 columns wide; only `CDELT1` changes: 0.0433 / 0.0365 um), with
-    footprints on the extended range (G140M measured to 3.18 um, G235M to 5.05 um). A red column's cells are
-    uncertain by 5-10 % (the background per pixel fades), so each segment is fitted as a mean profile plus one
-    shape change whose amplitude is a cubic in wavelength, held past the data (`build_tables(lowrank=(1, 3))`,
-    the default of `Generate_Barshadow_Cals.py` on a widened axis). Held out on spurs_gds, open area, % of the
-    open level: G140M 0.3-0.9 rms at 0.97-1.5 um (as the old table), 0.8-1.7 at 1.9-2.5, 2.8-3.2 at 2.5-3.4;
-    G235M 0.9-1.8 at 1.65-2.5, 1.4-2.6 at 2.5-4.2 and 2.5-3.5 at 4.2-5.05 um, where the old table held at
-    2.49 um is off by 4.7-6.9. The G140M shadow barely changes past 1.9 um because the background there is
-    largely second-order (and past 2.9 um third-order) light, whose diffraction is that of half (a third) the
-    wavelength (up to 5-7 % of the open level by 3.2 um); G235M's edges move by up to 6-12 % between 1.7 and
-    5.2 um.
-  Every G140M / G235M observation needs stage 1 onward again (the stored maps and step-1 products of both read
-  as stale).
-
-- **NIRSpec optics model: every shutter opening is exactly its height (`optics.ENGINE_VERSION` 2,
-  `FIT_VERSION` 8, bar offset `MEASURE_VERSION` 3).**
-  The diffraction model drew the open shutters on a 0.0025 arcsec grid with `|y - centre| < half
-  height`. Shutter edges fall exactly on grid points, and floating-point rounding opened some of
-  those points: the source's own shutter was exact, but shutters +-1 were one grid step
-  (0.0054 slit units) too tall at their outer edges and shutters +-2, +-3 one step too tall at both.
-  `optics.opening_mask` now places each edge exactly, ramping over the grid step an edge falls in,
-  so an edge between grid points moves the light continuously. The tables are rebuilt once (the
-  cache key changes). Effect: a few per cent of the light near the outer edges of the neighbouring
-  shutters. The bar-offset measurement reads exactly those edges: the offsets move by at most
-  0.0007 slit units (the error was symmetric), and the lower and upper halves no longer disagree by
-  -0.011 to -0.014 (five survey fields and 1133; now -0.003 to +0.001), which had looked like the
-  upper edge of every opening sitting lower than the lower edge. No edge is moved in the shipped
-  model.
-
-- **NIRSpec profile fit: the observation's bar offset, measured from its background (`FIT_VERSION` 7,
-  `bar_offset = "measure"` in `[nirspec.stage3]`, on by default).** An observation's MSA bars sit
-  up to about 0.02 slit units (9 mas) from where the model puts them in jwst's slit frame, by a
-  different amount in each observation (observations hours apart differ by 0.016); the grating-wheel
-  tilt readings and the date do not predict it. For a source near a bar that is several per cent of
-  its flux. Stage 3 now measures it per disperser before the profile fit (`nirspec/bar_offset.py`),
-  from the background in the observation's empty shutters: their edge profiles (the half facing
-  away from the source, 0.2-0.75 pitch from the centre, each pixel over its exposure's background
-  and its shutter's centre level) against the model's own profile for uniform light, the two halves
-  fitted apart so a wider or narrower profile does not move the offset. Kept in the workspace's
-  `bar_offset.json`, measured again only when the canonicals, the module or the optics model change;
-  one value per observation plus a fixed pattern by MSA quadrant (-0.004 to +0.005). The profile
-  fit adds it to every pixel's slit y and the planned position (`profile_fit.load_group`'s
-  `bar_offsets`; the light past the cutouts too), records it as `PFBAROFF`, and a new measurement
-  redoes the joint first pass. A disperser with too few empty-shutter pixels gets none.
-  - Measured: survey -0.015 to -0.001 (venus_pg004, ember_egs_p1, uncover2, capers_uds_p8,
-    ember_cosmos_p14), calibration -0.019 to +0.010; between exposures of one observation
-    0.0004-0.003. G395M of ember_cosmos_p14 +0.0012 against its PRISM -0.0012.
-  - Stars near a bar fit better at the background's offset: 1133 summed chi2 -104,600 (125 of 158
-    edge visits better), NGC 2506 -23,300 over ten observations. The zero point is uncertain by
-    about 0.01 (NGC 2506's stars want 0.004 less, 1133's 0.012 more).
-  - About 3-4 minutes per disperser of an observation (800 canonicals at most).
-
-- **NIRSpec profile fit: each nod at its own planned position (`profile_fit.NOD_OFFSET_LAW`,
-  on by default).** The model placed a source at one slit position in every exposure; the MSA
-  planning metadata gives each exposure its own (SRCYPOS), and the nods differ by up to ~0.08
-  detector rows, in proportion to the nod step and linearly across the field. Each exposure's
-  image, and its negative copies in the other nods' differences, now sits at its own planned
-  position (`nod_shifts`; `ProfileModel(nod_law=False)` restores the old geometry). Measured on
-  465 calibration stars (PRISM and six gratings): the planned shifts take the rms of freely
-  fitted offsets from 0.010 to 0.004 slit units; the median chi2 of PRISM star fits falls to
-  0.37 of its value above peak S/N 100 and 0.62 at 30-100. On p1 galaxies the chi2 improves by
-  up to 7 % and the flux moves by < 0.3 %. A single exposure, or a placeholder SRCYPOS, is not
-  shifted.
-
-- **NIRSpec profile fit: every disperser through a diffraction model of the MSA (`FIT_VERSION` 6).**
-  The released two-Gaussian PSF with its hard shutter edge gives way to one physical model in the
-  slit direction for every disperser (`nirspec/optics.py`; the unreleased FIT_VERSION 4 and 5,
-  Gaussian PSF tables with a smooth shutter, are the comparison below and are dropped with their
-  fitting code): the telescope's field at the MSA (pupil amplitude
-  (1 - u^2)^0.25), cut by the open shutters, the spectrograph's pupil stop (0.996 of the
-  telescope pupil's image) removing the light diffracted at the shutter edges, a detector blur of
-  0.034" - 0.0026"/um (lambda - 3 um), row integration; before the shutter an empirical kernel
-  (a non-negative table over source offset per detector, linear in ln lambda between seven
-  nodes) for the telescope's wavefront error and pointing jitter. A Gaussian source is summed over
-  point images (exactly over the tables for widths up to 0.06 slit units, so a compact source's
-  width can move below the table step).
-  - Calibrated on 593 stars (12497, 6642 obs 2, and NGC 2506 in 1493): the diffraction numbers on
-    the PRISM bar-shadow tables, the kernel on the stars' nod differences and master-background
-    single frames. The core of a bright star is broader (charge spreading: 0.02-0.03 slit units
-    of extra width above peak S/N 63, below 2.6 um), so the kernel is the faint stars' core and
-    each source's free width takes up the rest; brighter stars enter the kernel fit with their own
-    width. Shipped as `data/nirspec_optics.json` (`PFOPTIC` names it, `2026.11-w2`).
-  - Star stack, free centres and widths: NGC 2506 14 of 14 ranges within 1 % (median worst
-    0.44 %; FIT_VERSION 5 10 of 14, 0.76 %), the original stars 12 of 14 (0.75 %; 5: 12 of 14,
-    0.68 %, fitted on them). The red shoulder of FIT_VERSION 5 on NRS2 (-1.5 % at 3.3-5.3 um) is
-    gone.
-  - Fluxes move. The same star at different positions in its shutter scatters by 11.5 / 8.4 /
-    7.6 / 12.0 / 15.5 % in five bands from 0.6 to 5.3 um (calibration programs, 49 visits;
-    FIT_VERSION 5: 27.8 / 25.4 / 21.8 / 15.0 / 16.6 %), and on 93 NGC 2506 stars (245 visits,
-    shared wavelengths) by 7.0 / 12.2 / 6.3 / 7.3 / 12.6 % (FIT_VERSION 5: 18.3 / 19.3 / 17.9 /
-    12.9 / 13.2 %, rising by about 7 % per 0.1 slit units off centre; now no trend with the
-    position along the slit). On the 20 brightest p1 PRISM sources,
-    centred ones come out 1.006 / 1.011 / 1.023 / 1.024 / 1.016 x their FIT_VERSION 5 flux (the
-    wide light the old PSF lacked), sources 0.2-0.4 pitch off centre 0.93 / 0.99 / 1.06 / 1.12 /
-    1.25 x; chi2 0.3-0.7 % lower.
-  - Source positions are in slit-frame units (1.15 x SRCYPOS; `profile_fit.source_position`,
-    `Exposure.src_y_jwst` keeps jwst's). The throughput keeps jwst's point path loss level and its
-    along-dispersion dependence, with its slit-direction dependence replaced by the model's
-    (`crds_refs.point_y_ratio`, from the path-loss reference the cal file names).
-  - The gratings take the same model: the light before the shutter is the same, the G395M bar
-    shadow fits the PRISM numbers (misfit 0.017; its own table 0.016), and on the 6642 obs 2 stars
-    the six gratings fit with chi2 within -5 to +3 % of their FIT_VERSION 5 tables in 18 of 20
-    detector-ranges; G140H on NRS2 above 1.4 um fits worse (+7 %, +22 %; its stars' cores are
-    sharper than the shared kernel).
-  - Tables (one per open-shutter pattern and detector, about a minute each) are built on first use
-    and cached under `$CAMPFIRE_ROOT/cache/optics`, memory-mapped across workers.
-  - Removed: the PSF and shutter tables (`data/nirspec_profile_psf.json`,
-    `data/nirspec_shutter_transmission.json`), the code that fitted them (`psf_calibration`) and
-    the `PFSHUT` header card. `nirspec/optics_calibration.py` fits calibration stars through the
-    model, runs the stack test, fits the kernel (`kernel` / `solve`; it reproduces the shipped
-    kernel, and a further pass on 547 stars changes a point image by at most 0.4 % of its peak)
-    and the centre and nod laws (`laws`).
-  - The centre law (`profile_fit.CENTRE_LAW`) is remeasured through the model on 497 stars
-    (NGC 2506 added): the scatter of the trace's change with wavelength at 3-5.3 um falls from
-    0.008-0.024 to 0.004-0.011 slit units, the same held out by observation; the slope with the
-    position in the shutter is near zero now (the old PSF needed -0.11 at 4.7 um). The nod law
-    is unchanged (planned shifts, scale 1).
-  - Along the dispersion: jwst's point loss times a correction fitted to 93 NGC 2506 stars,
-    exp(-0.572 (lambda - 2 um)+ SRCXPOS^2) (model file `x_loss`, version `2026.11-w2x`;
-    `Optics.x_correction`, `Exposure.src_x_jwst`; held out, the star scatter at 3.5-5 um falls
-    from 12.7 / 12.5 % to 10.7 / 10.8 %, unchanged below 2.5 um), times the model's ratio for
-    the fitted source over a point (`Optics.x_extended_ratio`: one shutter 0.22 arcsec wide, the
-    same pupil, stop and kernel, a 0.03 arcsec scatter of the true position about the planned
-    one, the source round). The fitted spectrum is the source's total light. Check 1 on NGC 2506
-    with both in the fit: 8.0 / 11.5 / 6.5 / 6.1 / 9.4 % (was 7.0 / 12.2 / 6.3 / 7.3 / 12.6 %).
-  - The kernel is refitted (`2026.11-r8`) on all the calibration stars, 1133's slit grid
-    included (590 star-detectors), on the exact-edge tables and with each observation's bar
-    offset. Each star is weighted once in the solve (its normal equations x 3 / its exposures;
-    `--per-pixel` gives the old weighting): 1133 has 60 exposures a star, and by pixel a few of
-    its faint stars with a neighbor (6-20 % of their light beyond 0.3 slit units) set the
-    kernel's wing for every star, failing the stack test at NRS2 2.0-2.6 um (1.2 %). The stars
-    fitted are those with S/N >= 20, chi2/dof <= 2 (an absolute cut, was relative to the
-    range's median), unsaturated. Stack test 14 of 14 ranges within 1 % (worst 0.69 %; the
-    previous kernel 0.72 %, the datasets alike to 0.1 %); the light beyond 0.3 slit units
-    moves by at most 0.4 % of the total; a second pass changes it by at most 0.2 %. The solve
-    no longer drops `x_loss` from the model it writes.
-  - **The reported flux changes meaning for extended sources.** `fnu_prof` is the fitted
-    source's light inside a circle 0.8 arcsec across (1.5 shutter lengths;
-    `profile_fit.REPORT_APERTURE`, `reported_factor`, header `PFAPER`), where it was the light
-    in the shutter on jwst's point-source calibration (`main_shutter_factor`, removed). Point
-    sources are unchanged; extended ones rise. On 92 p1 PRISM sources against COSMOS auto
-    photometry, by fitted size from compact to wide: before 0.87 / 0.65 / 0.58 / 0.55 / 0.44 /
-    0.32 x the photometry, now 0.93 / 0.77 / 0.77 / 0.75 / 0.68 / 1.03, scatter 0.20 -> 0.16 dex.
-    Against the catalog's own aperture flux at 0.8 arcsec the 106 own-fit sources come out at
-    0.96 +- 0.04 (per band f115w-f444w 0.91-0.96; scatter 0.12 dex): the level of about 0.8 above
-    is light in 0.8 arcsec against a Kron total. The 3-pixel boxcar and `fnu_opt` stay on jwst's
-    calibration. A source below the shape gate takes the default width (0.15 slit units, the p1
-    own-fit median 0.143) for its along-dispersion extrapolation, which raises its flux by 19-28 %.
-  - A neighbour's pass 1 from its 3-pixel boxcar (`profile_fit.boxcar_factor`) is now on the
-    s2d's units (the forward model over the path loss stage 2b applied), where it was on the
-    model's point transmission at the planned position (about 20 % off near the shutter edge).
-    An exposure that names no path-loss reference warns at load.
-
-- **NIRSpec stage 3: the same-slitlet background choice no longer depends on the previous
-  run, and Spec3 runs after it.** Stage 3 redoes the same-slitlet decisions from the joint
-  first pass's model of each neighbor. That pass fitted every source on the nod differences
-  its canonicals held, i.e. on the choice the previous run wrote, so a source near the 0.02
-  threshold alternated from run to run (`ember_cosmos_p1` 922323: its neighbor read 0.020
-  starting from one choice and 0.021 starting from the other). When the decisions are
-  redone, the pass now fits every source on the nod differences of the override files (hand
-  and scan), rebuilt in memory from the frames before subtraction with stage 2b's arithmetic
-  (`profile_fit.load_group(pre_bkgsub=True)`; its own pass-1 cache key), and solves again, on
-  their canonicals, the sources whose background exposures then differ from those, so their
-  products still take their neighbors' light from their own solve. Spec3 ran before the
-  revision and, with `combine_method = "1d"`, never again: a revised source's s2d, the
-  drizzles through its crf and its `EXPOSURES` table kept the old choice. Now, per
-  disperser: pass 1, revision, pass 1 again where needed, Spec3, the products (every
-  drizzle); then the extraction. Spec3 runs once per product, as before; the pass-1
-  boxcar fallback runs its product's Spec3 itself when there is no current s2d. A source
-  near the threshold can get a different background than before.
-
-- **NIRSpec master background 1.7: failed-open shutters get a commanded slitlet's margin and
-  the real shutter pitch.** In 1.6, data minus master background along a fully open failed-open
-  shutter showed a stripe on each edge, +12 to +22 % of the shutter's core level just inside
-  its open area and in the row beyond it (PRISM, `ember_cosmos_p1`, median of 39 shutters ×
-  exposures). There were two causes in the records jwst's `msaflagopen.create_slitlets`
-  makes for the `msaoper` shutters:
-  - Their slit extent stops at the open area (`ymin` / `ymax` = ±0.5). Commanded slitlets get
-    0.5 more beyond it, so the rows just past a failed-open shutter were in no footprint and
-    never painted.
-  - Their `slit_yscale` is 1.0, not the 1.15 of every MSA shutter. jwst's transforms don't
-    read it, but `coverage._pitch` does, so the shutter's bar-shadow profile came out 1.15×
-    too narrow.
-
-  `coverage.failed_open_slitlets` now gives these records both (±1.0 and `MSA_SLIT_SCALES`),
-  and both the rate geometry and the stored trace map read it. The edge stripes on PRISM
-  fully open shutters go to within ±2 % of the core level, and the measured transmissions
-  don't change (core |f| ≤ 0.3).
-  - Shutters that pass part of the background (10 PRISM shutter × exposures at 0.2-0.8) are
-    now over-painted by up to 14 % on one edge. A partly open shutter doesn't pass a scaled
-    copy of a fully open one's profile.
-  - On G395M the comparison can't be measured: the light through a failed-open shutter is
-    about 0.0035 DN/s, and the rate between traces already sits +0.0005 above zero on NRS1.
-
-  The failed-open footprints are wider in the coverage counter (`COVERAGE_VERSION` 3), the
-  rate geometry (`GEOMETRY_VERSION` 2, new step-1 card `MBKGGEOV`) and the trace maps
-  (`MAP_VERSION` 8, `SHUTTER_MAP_VERSION` 2), so step 1, the trace maps and pass 1 of the
-  contamination model rebuild. `CFMBKGV` 1.7.
-- **NIRSpec stage 3: every 2-D image drizzled once per product, the master-background
-  spectrum in memory.** A product's pixel maps (`drizzle_map`: jwst's output grid from the
-  Spec3 crf, each exposure's pixel map once) carry every drizzle, through the drizzle library
-  directly: `PROF2D` / `CONTAM2D` / `CONTERR2D` (was one `ResampleSpecStep` call each) and the
-  master-background 2-D and its `PROF2D` / `CONTAM2D` / `CONTERR2D` (was a second Spec3 run
-  on copies of the canonicals written to `mbkg/`). The master-background frames are built in
-  memory and fitted on the nodded load's exposures. The crf's own arrays through the map
-  reproduce Spec3's s2d bit for bit; the nodded model arrays move by 1-2 float32 ulps (the
-  data's grid instead of one built from each image). The master-background frames' outlier
-  flags (`mbkg_extraction.outlier_flags`) are the nodded Spec3's plus a hot-pixel mask
-  (`hot_pixels`: more than 5 sigma above both its row and its column neighbors in every
-  exposure, at least 2; they cancel in the nod differences) plus the pixels without a master
-  background; no outlier detection of their own. On p1 629466 PRISM: 18 flagged pixels
-  against the old run's 20 (14 shared), the brightest `SCI_MBKG` pixel 7 sigma (old run 207),
-  `SPEC1D_MBKG.fnu` within 1.4 sigma. Without a crf there is no master-background spectrum.
-  Same extensions, columns and cards.
-- **NIRSpec master background 1.6: every footprint painted, light from one MSA spot counted
-  once.** The G395M master background read low (pixels on a failed-open shutter +54 %, pixels
-  under another slitlet's margin +5 to +10 %, on `ember_cosmos_p1`). Two causes: failed-open
-  shutters were in the coverage counter but never painted, and a slitlet's margin was dropped
-  wherever any open shutter was painted, which was meant for the next slitlet in the same MSA
-  column but also dropped the margins of crossing traces. Now the failed-open shutters (and any
-  slitlet that has neither a canonical nor a background-slit entry) are painted in count-rate
-  units from the rate file's `RateGeometry` over their whole footprint, and `merge_painted`
-  combines the layers: a pixel and a wavelength fix the spot on the MSA the light came
-  through, so layers within `master_bkg_same_spot_px` (1) columns of dispersion in wavelength
-  are one spot (the open shutter's sky if one is open there, else the margins' mean) and
-  different spots are summed. Failed-open shutters do not all pass an empty shutter's sky: on
-  p1 G395M, at the position the WCS gives, they pass from 0 to 1 of it, the same in every nod
-  (12/q3 0.06-0.12, 19/q3 0.49-0.53, 23/q4 0; most 0.9-1.0), so each is painted at its
-  measured transmission (`failed_open_transmission`: the median over its open-shutter core,
-  outside source shutters, of the rate minus everything else painted there over its full-sky
-  paint, clipped to [0, 1]; 1 when fewer than `master_bkg_failed_open_min_pixels` (200)
-  pixels measure it; `master_bkg_failed_open_scale = 'full'` paints all at 1). The
-  transmission is a property of the shutter, so once every rate file is painted the nods of
-  a configuration are combined per shutter and detector (`combine_failed_open`: when at least
-  two nods, and more than half, lie within `master_bkg_failed_open_nod_tol` (0.1) of their
-  median, every nod takes that median; an object behind the shutter in one nod is the
-  outlier) and the products are corrected in place (`rescale_failed_open`, exact because a
-  failed-open shutter's light adds to the rest unless it shares an MSA spot with another
-  layer, which the painter checks); card `MBKGFOSC` says which. Shutters
-  msaoper lists open only for the internal lamp (science `state` closed, vignetted; jwst flags
-  them anyway) are not painted. Failed-open pixels on p1 G395M went from +40-80 % to +3-6 %
-  (per-shutter medians +0.5 to +4 %). `MBKG2DN` counts MSA spots; `MBKG2DDQ` bit 8 marks a
-  painted failed-open shutter (light above its sky, such as an object behind it, is
-  contamination, not background); bit 2 now means a footprint that could not be painted. New
-  cards `MBKGNFO`, `MBKGNGEO`. `CFMBKGV` 1.6.
-- **NIRSpec master background 1.5: step 1's tables live in the rate file; `_mbkg.fits`
-  compressed.** Step 1 (`master_bkg_rate`) writes `MBKG1DR` (with the step's cards in its
-  header), `MBKGQSR`, `MBKGSHR`, `SHUTAMP` and `CALLS` into `<base>_rate.fits` itself, after
-  the jwst extensions (as stage 1 does with `CFBKG`); `<base>_mbkgr.fits` and its layout kind
-  `nirspec_mbkgr` are retired. All five tables are written every time, empty when there is
-  nothing to hold, so a jwst save of the rate file (which records them in its ASDF tree) never
-  finds one missing; `masks.restore_pre_bkgsub` drops them with the detector background, and
-  step 1 runs again. Step 2 reads them from the rate file, no longer keeps a copy of
-  `MBKG1DR` (`load_product` reads it from the rate file via `MBKGRATE`), and writes
-  `MBKG2D` / `MBKG2DN` / `MBKG2DDQ` compressed losslessly (GZIP_2 / RICE_1): 25 MB -> 2.8 MB
-  on PRISM, 7.8-8.3 MB on G395M (more pixels painted past the calibrated range), arrays
-  identical. Shutters seen through two sources' cutouts of one slitlet are now taken from the
-  lower source id instead of whichever worker finished first, so step 2 repeats exactly. On
-  `ember_cosmos_p1` G395M is bit-identical to 1.4 and PRISM within 0.1 % (that choice).
-  `CFMBKGV` 1.5, `CFMB1VER` 1.3; a 1.4 workspace re-runs both steps.
-- **NIRSpec trace map built once, in master background step 1, and stored in the rate file.**
-  `trace_overlap.ShutterMap` derives the map of which slitlets light each detector pixel from
-  the geometry step 1 already builds (`coverage.RateGeometry`: one `assign_wcs` on the original
-  metafile plus the failed-open shutters, past the calibrated range to the cutoffs) instead of a
-  second `assign_wcs` pass, over every commanded shutter: per pixel one layer per slitlet with
-  its nearest open shutter within `OPEN_HALF + LIGHT_PAD`, a second one within reach, and a new
-  `CORE` bit (inside the open area, unpadded); a shutter table with the physical key, the
-  SHUTTER_INFO source and flags at this dither point, and every catalogue source the shutter
-  holds at any dither point. Written into the rate file as `TMSH1` / `TMSH2` / `TMFLAG` /
-  `TMSLITS` / `TMSHUT` (0.7 MB PRISM, 2.3-2.6 MB G395M, compressed). `trace_map_from_rate(rate,
-  stuck)` gives the `TraceMap` the consumers read with the stuck-closed shutters removed on read
-  (their light gone, `IN_SOURCE` cleared where the source shutter is stuck, a slitlet whose
-  source-holding shutters are all stuck becomes `sky`), so editing the stuck list never rebuilds
-  it; `TraceMap.rows_of` also finds a slitlet through any catalogue source its shutters hold
-  (a second source shares its slitlet as its own). On `ember_cosmos_p1` it agrees with the
-  stage-3 `tracemaps/` maps on 99.7 % of (pixel, slitlet) pairs with the same layer depth (7-8
-  on G395M); the rest are pixels 0.750-0.78 slit units from a shutter centre, one row at the
-  padded edge. Stage 3 reads the maps from the rate files with the observation's stuck list
-  (`profile_contam.trace_maps`, kept in memory per worker); the `tracemaps/` folder and the
-  jwst-built maps are gone, so a rate file reduced before step 1 stored a map has none (stage 3
-  logs it; rerun stage 1). A pass 1 is redone when a rate file it read is newer or the stuck list
-  changed. On p1 the maps read this way equal the last `tracemaps/` copies in all 12 exposures.
-  `CFMB1VER` 1.4.
-- **NIRSpec master background 1.4: the group's pooled sky is painted unless an exposure
-  differs.** Each exposure × detector's clean shutters are tested against the pooled sky of
-  the other exposures of its group (`master_bkg.pool_check`): in each of 8 wavelength bands
-  the median of the shutters' ratios to the pool, with its error from their scatter (floored
-  at their propagated errors, at least `min_shutters` per band); a band differs when it is off
-  by more than `master_bkg_pool_tol` (2 %) and `master_bkg_pool_nsigma` (3) sigma. While any
-  member differs, the one with the largest deviation leaves the pool and the rest are tested
-  again (`pool_members`), so one discrepant exposure does not make the others look discrepant.
-  Members are painted with the pool of the members; the others keep their own sky. Step 2
-  pools every exposure of the group (calibrated), step 1 the same detector's exposures (count
-  rate), each deciding on its own. Provenance: `MBKGSRC` / `MBKGPSRC` (pool, exposure, group),
-  `MBKGPDEC` (the verdict and worst band), `MBKGPDEV` / `MBKGPSIG` / `MBKGPLO` / `MBKGPHI` /
-  `MBKGPNB`, `MBKGPMEM` (the members), `MBKGPTOL` / `MBKGPNSG`, and the exposure's own sky kept
-  as `MBKG1D.exposure_surf_bright` / `MBKG1DR.rate_exposure` whatever was painted. On
-  `ember_cosmos_p1` every exposure pools and the G395M 1-D sky noise per 2-px bin falls from
-  7-35 % to 3-5 %; on `ember_uds_p2` PRISM nod 2 (+17-18 % at 2.8-3.5 um, 31-44 sigma) leaves the
-  pool on both detectors while nods 1 and 3 stay. `master_bkg_prefer_pool = false` restores the
-  per-exposure sky. `CFMBKGV` 1.4, `CFMB1VER` 1.2.
-- **NIRSpec master background 1.3: the sky is no longer painted low.** Two biases in the
-  1-D sky (both steps), found on `ember_cosmos_p1` where the painted G395M sky sat +2.6 %
-  below held-out empty shutters (PRISM +1.1 %): (1) shutters were combined with
-  inverse-variance weights, but a shutter's error in a bin comes from one or two pixels whose
-  variance jwst derives from each pixel's own measured slope, so the shutters that fluctuated
-  low got the weight (2.0 points on G395M, 0.2 on PRISM); `master_bkg.combine` now weights
-  shutters equally (each takes the bin's median error, for the clip and the weight). (2) The
-  1-D sky was measured over the core `|f| <= 0.2`, where the bar-shadow table is already
-  0.97-0.99 (it is normalised to 1 over `|f| < 0.15`), and the painting multiplied by the
-  table again (0.9 points on both); every core pixel is now divided by the table first
-  (`master_bkg.core_to_centre`), so `MBKG1D` / `MBKG1DR` are the sky at the open-shutter
-  centre, as documented. On held-out shutters the two fixes leave -0.3 % (G395M) and +0.1 %
-  (PRISM). `CFMBKGV` 1.3, step 1 `CFMB1VER` 1.1 (products regenerate); `MBKGRRAT` compares
-  the two skies at the open-shutter centre.
-  `sky_for_slit` now warns when it falls back to the slit's own slitlet because the product
-  has no `MBKG2D` or no rate file beside it (that fallback was silent, and on G395M the own
-  slitlet is a third to a half of the painted total).
-- **NIRSpec master background in two steps; stuck shutters from a sky-template fit.**
-  Step 1 (`nirspec/master_bkg_rate.py`) runs at the start of stage 2a from the rate files
-  alone: one `assign_wcs` per rate file gives every commanded slitlet's footprint
-  (`coverage.rate_geometry`, a compact cache beside the coverage counter, which now comes
-  from the same pass and is identical to the old one); the empty shutters of every
-  slitlet give the count-rate sky `MBKG1DR` and its quadrant scales (judged on the core
-  less the source pad with the wider `master_bkg_rate_*` thresholds, measured over the
-  whole core, as the calibrated pass); `shutter_fit.fit_shutters` fits every
-  commanded-open shutter's sky template in each rate frame and `call_shutters` calls a
-  shutter stuck per exposure root (`master_bkg_stuck_*`); the stuck shutters leave the sky
-  and are merged into the stuck list as `auto` entries, and stage 2a re-runs the sources
-  and background slitlets whose shutters changed state. New product
-  `<root>_<nod>_<nrsN>_mbkgr.fits` (layout kind `nirspec_mbkgr`, cloud-backed):
-  `MBKG1DR`, `MBKGQSR`, `MBKGSHR`, `SHUTAMP`, `CALLS`. Step 2 (`master_bkg.run_master_bkg`,
-  end of stage 2a, `ALGORITHM_VERSION` 1.2) reselects its clean shutters in calibrated
-  units as before and paints past the calibrated range with step 1's sky and quadrant
-  scales (its own count-rate pass is gone; `MBKG1DR` in `_mbkg.fits` is a copy;
-  `MBKGRDT` stamps the step-1 product). The `low_frac` detector and the stage 2a
-  self-recursion are gone for every disperser; `cfpipe nirspec detect-stuck` runs step 1;
-  `detect_stuck_shutters_grating` and the `stuck_shutter_low_frac_threshold*` keys are
-  retired. On ember_cosmos_p1: the calls are the 15 hand-vetted PRISM shutters and the
-  21 G395M shutters of the fit study; the step-1 sky agrees with the previous one to 1 %
-  on the prism and within ±2–5 % (41-bin running median) on G395M; `MBKGRRAT` 0.984–1.000
-  (was 0.987–1.007).
-
-- **NIRSpec stuck-closed shutters are keyed by physical MSA shutter.** The list
-  `reference/nirspec/<obs>/stuck_closed_shutters.toml` takes a `[<root>.shutters]` table keyed
-  `"q<quadrant>r<row>c<column>"` (the metafile's `shutter_quadrant` / `shutter_row` /
-  `shutter_column`), each entry `{origin = "manual" | "web" | "auto", stuck = true | false}` with
-  an optional fit amplitude `a` and `note`; precedence manual > web > auto, and `stuck = false`
-  vetoes a lower-origin call. Legacy `<source_id> = [ordinals]  # tag` entries are still read,
-  mapped through the root's metafile onto the same columns stage 2a always removed (`hand` or no
-  tag -> manual); on ember_cosmos_p1 the 15 PRISM entries map to the vetted shutters exactly and
-  the rebuilt per-source table equals the file. New `campfire_pipeline.nirspec.stuck_list`
-  (parser, resolver, `remove_stuck`, and `write_auto`, a tomlkit merge of the template fit's calls
-  that keeps hand comments and leaves the file untouched when nothing changes, since its mtime is
-  stage 2a's skip key). Stage 2a removes the stuck shutters' rows by physical shutter, now also
-  from the **background-only slitlets** (output change wherever one holds a stuck shutter), and
-  stamps `STKSHPHY` (the removed shutters) beside `STKSHTRS` (unchanged: the ordinals). The
-  legacy writer carries the physical table through. New dependency `tomlkit`.
-
-### Infrastructure
-
-- **Master background skips standalone fixed-slit exposures in step 2 too.** Step 1 already
-  required an MSA exposure with its metafile; step 2, called at the end of every stage 2a, had no
-  such check and would have tried to build a master background from fixed-slit cutouts. Both now
-  use `master_bkg_rate.has_master_background` and log the files they skip (`shellqs_j0217m0208`:
-  6 rate files skipped, nothing written). Fixed-slit observations get no `_mbkg.fits`.
-- **Layout kind `spectrum_mbkg_json`** (`<base>_spec_mbkg.json`, in `campfire-layout`): the
-  deploy-side JSON of a spectrum's master-background extraction, a fifth sibling of
-  `_spec.fits`; `test_layout`'s sibling round-trip covers it.
-- **NIRSpec master background (design P1b).** `campfire_pipeline.nirspec.master_bkg` derives,
-  at the end of stage 2a (and as `cfpipe nirspec master-bkg`), the sky of every exposure x detector
-  from the empty shutters of its canonicals and the background slitlets of its `bkgslits/` file:
-  `<root>_<nod>_<nrsN>_mbkg.fits` beside the rate file (new layout kind `nirspec_mbkg`, cloud-backed
-  intermediate) with `MBKG1D` (MJy/sr at the shutter centre, per-bin error and shutter count, the
-  exposure group's pooled sky and the `jwst_backgrounds` prediction), `SHUTTERS` (every shutter
-  offered, with its scale, chi2, line run, clean flag and reason) and `MBKG2D` / `MBKG2DN` / `MBKG2DDQ`
-  (the sky painted back onto the detector in DN/s through the exact per-pixel calibration factor,
-  summed where footprints overlap, the number of slits painted per pixel, and flags: 1 nothing covers,
-  2 a covering trace not painted, 4 a tail). The selection is the symmetric
-  scale-and-reject iteration of design §4.2 with the P0-settled defaults (`[nirspec.stage2]
-  master_bkg_*`: shutter core |f| <= 0.2, 2-pixel bins, 3 px source pad, 5 % excess / 30 % deficit
-  rejection, 4-sigma line runs); per-quadrant scales and the scale/offset against the pool are recorded
-  in the header, never applied; an exposure with fewer than `master_bkg_min_shutters` clean shutters
-  takes the pool (`MBKGSRC`). `master_bkg.sky_for_slit` is the consumer's entry point: the sky on
-  one slit's cutout in that slit's own units (MJy per pixel for any canonical, point or extended;
-  MJy/sr for a background slitlet): by default the painted total of every slitlet whose trace crosses
-  the cutout, brought into the slit's frame through the pixelwise `SCI / rate` factor (on the gratings
-  a pixel carries several slitlets' sky; the slit's own slitlet alone, evaluated with the bar shadow
-  from the empirical table where one exists and CRDS otherwise, is `own_sky` and `mode='own'`), with
-  the 3 % error floor in the variance; nothing is masked by default (`mask_bits` is opt-in, flagging a
-  covering trace that was not painted); there is no per-slitlet or smooth rescaling of the master
-  background (decided 2026-11-02). **The sky is painted past the calibrated range (algorithm 1.1,
-  2026-10-30).** The painter used to stop where a cutout's wavelength or calibration ends, while the
-  sky light runs on: on G140M and G235M NRS2 every trace stopped at a fixed detector column (1593 to
-  1824) with the sky continuing to the detector edge at full strength, on G395M the filter cut-on
-  lets 50 % through 0.05 µm before the cutout, and jwst's bounding box starts 13 to 45 columns before
-  the calibration does. `coverage.slit_geometry_extended` / `slitlet_geometry_extended` now evaluate
-  a slitlet's `detector -> slit_frame` transform over a row block around its cutout and every detector
-  column (the transform is finite across the whole detector; jwst's bounding box only clips `wcs(x,
-  y)`), returning the same dict for a stage-2a cutout and for a slitlet of the rate file's MSA
-  configuration; the footprint is that geometry cut to per-disperser wavelength cutoffs measured from
-  the empty shutters where the light falls below 2 % of the in-band level (`WAVELENGTH_CUTOFFS`: prism
-  0.55 to 5.6 µm, G140M/F100LP 0.96 to the detector edge, G235M/F170LP 1.55 to 5.05, G395M/F290LP 2.60
-  to 5.7). `coverage_from_wcs` counts those footprints (cache tag `_v2`, no `tail_px`; the 200 px
-  G395M tail and the derivation's `--tail-px` are gone). The painter paints the footprint past each
-  slit's calibrated columns in count-rate units with no flat or photometric calibration: the
-  exposure's own rate-unit sky at the open-shutter centre (`MBKG1DR`, DN/s, measured from the clean
-  shutters' core pixels over their whole footprints on the `MBKG1D` grid continued to the cutoffs)
-  times the bar shadow; `MBKGNEXT` counts those pixels, `MBKGRRAT` the median ratio of the in-range
-  painted values to the rate-unit sky on the same pixels, `MBKGCBLU` / `MBKGCRED` the cutoffs. The
-  `DQ_TAIL` bit is retired (never set). `sky_for_slit` returns `sky_rate` (the painted DN/s cutout,
-  finite past the calibrated range too), `rate` and `calibrated` beside `sky`, which has the slit's
-  units only where its `SCI` is finite. Each slitlet is painted once (two sources of one slitlet share a cutout) and each
-  physical shutter is selected once; margin rows count only where no open shutter was painted. Products skip when their inputs are
-  unchanged (the bar-shadow table of the expansion counts as an input: its name `MBKGBSRF` and its
-  derivation date `MBKGBSDT`). Nothing is subtracted yet (P2). `barshadow_calibration.pixel_samples` now reads any
-  slit of a multi-slit file and skips the source cut for a background slitlet (`slit_geometry` is
-  the shared WCS-to-shutter mapping); `coverage` gained the cache-path helpers.
-- **Empirical NIRSpec MSA bar-shadow calibration.** `campfire_pipeline.nirspec.barshadow_calibration`
-  measures the bar-shadow profile from the empty shutters of stage-2a canonicals, in the pipeline's own
-  slit-frame coordinates, per reference segment (outer edges from the 1x1 image, interior bar from the
-  1x3 image) and wavelength column, with the sky pooled and the shutters selected per exposure, and
-  `campfire_pipeline/data/Generate_Barshadow_Cals.py` writes it in the CRDS `barshadow` layout as
-  `empirical_jwst_nirspec_barshadow_<grating>.fits` (four tables ship: PRISM from the seven EMBER
-  prism pointings, G140M / G235M / G395M from the four SPURS fields) with
-  a QA report (`barshadow_qa`: measured segments vs CRDS vs table, per-observation consistency, the
-  images, a held-out observation divided by each table, the exposure-level sky). With one field held
-  out, the residual inside the shutters drops from 11-18 % (CRDS) to 1-2.5 % per segment on the prism,
-  from 11-13 % to 0.6-1.4 % on G140M, from 8-19 % to 1-4 % on G235M and from 11-23 % to 1.3-2.6 % on
-  G395M (the CRDS interior-bar profile is 0.1 pitch too wide on the gratings). The rows beyond the
-  outer shutter edge, which a cutout covers with one or two pixel rows, are now measured: the
-  profile pass admits a margin pixel on the open shutter it borders (its own shutter is the closed
-  neighbour, never in the clean set, so every margin pixel used to be dropped), and rows too sparse
-  for any single wavelength column are filled from the wavelength-collapsed profile instead of a
-  constant floor. The light there falls from 0.15 of the open level at 0.53 pitch to 0.02 beyond
-  0.65 on every disperser, and the constant (0.18-0.25) had painted the margin rows two to ten
-  times too bright. Each profile cell is the median of a histogram of SB / sky, not a mean
-  clipped to (-0.5, 2.5): where the per-pixel noise is comparable to the value (beyond the edge,
-  faint sky) the clip kept the positive tail only and lifted G235M / G395M margins to 0.09-0.13 and
-  the faint-sky G395M bar minimum by 0.09. All four tables now reach 0.03 at 0.6-0.7 pitch and
-  0.01-0.02 beyond. `[nirspec.stage2].empirical_barshadow`
-  (default off) passes the table to `BarShadowStep` for the background slitlets
-  (`config.get_empirical_barshadow_path`); gratings without a table fall back to CRDS. The overlap
-  counter moved to `nirspec/coverage.py` with the redward tail past the nominal cutoff (`TAIL_PX`).
-  A slitlet whose source the nod moved out (jwst then marks no primary shutter, writes an `x` on
-  the first shutter with `source_ypos` 0) is measured with the source's catalogue position placed
-  through the slit WCS (`source_slit_position`), so the fake source shutter counts as sky and the
-  shutter next to the real position is padded; the same placement serves a secondary source that
-  is never the slitlet's primary.
-
-### Infrastructure
-
-- **Stage 2a runs one `Spec2Pipeline` call per rate file instead of one per
-  source.** The per-source metafile edits (`MetaFile.rows_for_source`) are applied
-  to every source at once in one edited full metafile (`MetaFile.for_sources`), the
-  call runs once, and the multi-slit result is split into the same one-slit
-  canonicals (`stage2._split_spec2_result`). `Spec2Pipeline` is per slit from
-  `assign_wcs` onwards, so the per-slit arrays are unchanged (checked array-for-array
-  against the per-source loop on `ember_cosmos_p1`); only the `MSAMETFL` card now
-  names the observation's real metafile rather than a transient per-source copy.
-  A slit is routed to its source by slitlet, so a nod whose source shutter was
-  removed as stuck closed (jwst then extracts the slitlet under its background
-  name, with the uniform pathloss) stays that source's nod product with
-  `SRCFLUX = 'F'`, exactly as the per-source loop kept it.
-  Sources sharing a slitlet are extracted in successive rounds, fixed-slit sources
-  get their own round under the extended-wavelength override, and any failure of
-  the single call falls back to the per-source loop for the sources it did not
-  produce (`[nirspec.stage2].single_call = false` selects that loop outright).
-  The same call also extracts the MSA plan's background-only slitlets into
-  `products/nirspec/<obs>/bkgslits/<root>_<nrsN>_bkgslits.fits` (new layout kind
-  `nirspec_bkgslits`, a regenerable local intermediate: uniform pathloss, MJy/sr,
-  bar shadow applied as a separate step), the input of the master-background work
-  (`docs/design-nirspec-master-background.md`); `extract_bkgslits = false` turns
-  that off.
-
-### Infrastructure
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.
@@ -622,6 +48,124 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **MAJOR: NIRSpec extraction v2.** `fnu` is now the profile extraction: a model of the source's
+  light fitted to every nod difference. The optimal extraction moves to `fnu_opt`. Other slitlets'
+  light is predicted and reported, and every exposure gets a master background. The full record,
+  with the tests behind each number, is in `docs/design-nirspec-pipeline-v2.md` and
+  `docs/design-nirspec-master-background.md`. Every observation needs reprocessing from stage 2a,
+  and G140M / G235M from stage 1.
+  - *The extraction* (`profile_fit.py`, `profile_chain.py`). The source is a Gaussian in the slit
+    direction whose centre and width vary linearly with log wavelength, seen through the optics
+    model below, in each exposure and in its negative copies in the other nods' differences. Its
+    shape comes from a gated chain (`profile_fit_shape = "gated"`). A source above the detection
+    gate takes its own fit (S/N 25 PRISM, 70 gratings, on the clipped mean square of the
+    residuals). Below it, a grating takes the PRISM shape of the same source, or else the shape of
+    the source's grating that passed its gate (`PFSHAPE` `grating`; on spurs_gds the line-flux
+    ratios between gratings went from 0.93-1.18 to 0.93-1.05, 16-84 %). Failing all of these it
+    takes the default shape (width 0.15 slit units at the planned position). An own fit that ends
+    on a bound is kept only when the centre alone is on its bound. Named failures fall back to the
+    3-pixel boxcar (`EXTRACT = boxcar3`); any other error fails the stage. `fnu` is never
+    contamination-subtracted.
+  - *Optics model* (`optics.py`, `data/nirspec_optics.json` `2026.11-r8`, `FIT_VERSION` 8). One
+    diffraction model of the MSA for every disperser replaces the two-Gaussian PSF and the hard
+    shutter edge. The telescope's field is cut by the open shutters (each opening exactly its
+    height) and by the spectrograph's pupil stop, then blurred by the detector, after an empirical
+    kernel fitted to 590 calibration star-detectors. Along the dispersion it uses jwst's point loss
+    times a correction fitted to NGC 2506 stars. The same star at different positions in its
+    shutter (93 NGC 2506 stars) scatters by 6-12 % in five bands from 0.6 to 5.3 um, with no
+    trend with the position along the slit. Each nod sits at its own planned position (`NOD_OFFSET_LAW`). Each observation's bar
+    offset is measured from the background in its empty shutters (`bar_offset.py`,
+    `bar_offset = "measure"`, `PFBAROFF`). Tables are built on first use and cached under
+    `$CAMPFIRE_ROOT/cache/optics`.
+  - **The reported flux of an extended source is its light in 0.8 arcsec.** `fnu_prof` (and
+    `fnu`) is the fitted source's light inside a circle 0.8 arcsec across (`PFAPER`), not the light
+    in the shutter on jwst's point-source calibration. Point sources read the same either way;
+    extended ones read higher. On 92 p1 PRISM sources against COSMOS photometry it is 0.68-1.03 of
+    the photometry from compact to wide (the light in the shutter read 0.32-0.87), and 0.96 +- 0.04
+    of the catalog's own 0.8 arcsec aperture flux. `fnu_opt` and `fnu_3px` stay on jwst's
+    calibration.
+  - *Other slitlets' light* (`trace_overlap.py`, `joint_first_pass.py`, `profile_contam.py`,
+    `profile_extend.py`). Every source is first solved with its neighbors on its nod differences,
+    with its light followed past its cutout in count rate (pass 1). The prediction from those
+    spectra over per-exposure trace maps is subtracted before the shape fit, and the pixels where
+    the prediction is itself uncertain are left out. In the 1-D spectrum it is reported as
+    `fnu_contam` and never subtracted. A source whose own pass 1 failed is predicted from its
+    3-pixel boxcar (`PFCBOX`). One that the maps put on a trace with no stage-3 s2d is an error
+    (`MissingContaminant`).
+  - *Same-slitlet neighbors.* Stage 2b leaves out a background exposure that puts a catalogued
+    source (the MSA plan's `SOURCE_INFO`, placed at every dither point) within 0.75 slit units of
+    the target when that neighbor's light is at least 0.02 of the master background
+    (`slitlet_neighbor_min_background`). Stage 3 redoes these decisions with each neighbor's
+    brightness from its modelled light, from the frames before subtraction, so the choice no longer
+    depends on the previous run. Spec3 runs after them. A scan of the residuals finds neighbors not
+    in the catalog. Its proposals are never applied: they go to
+    `reference/nirspec/<obs>/nodded_background_overrides_proposed.toml` with a figure per source
+    (`<obs>_<id>_neighbor.pdf`, laid out as the bkgsub plots), and stage 3 prints the command that
+    reruns those sources.
+  - *Master background* (`master_bkg_rate.py`, `master_bkg.py`, `CFMBKGV` 1.7). Step 1, before
+    stage 2a, reads the rate files only. It measures each exposure's background from its empty
+    shutters, fits every commanded-open shutter's background to call stuck-closed shutters, and
+    builds the trace map. It writes these as tables into the rate file (`MBKG1DR`, `MBKGQSR`,
+    `MBKGSHR`, `SHUTAMP`, `CALLS`, `TMSH1`/`TMSH2`/`TMFLAG`/`TMSLITS`/`TMSHUT`). Step 2, at the end
+    of stage 2a, writes `<root>_<nod>_<nrsN>_mbkg.fits` (layout kind `nirspec_mbkg`): the 1-D
+    background (`MBKG1D`), the shutters offered (`SHUTTERS`), and the background painted back onto
+    the detector (`MBKG2D`/`MBKG2DN`/`MBKG2DDQ`, compressed). Each exposure takes its group's pooled
+    background unless it differs. Shutters are weighted equally. Every footprint is painted past the
+    calibrated range, and failed-open shutters at their measured transmission. Light from one MSA
+    spot is counted once. Its settings are fixed in `master_bkg.SETTINGS` and recorded in the
+    header.
+  - *The master-background spectrum.* The same extraction on the exposures less their master
+    background, as `SPEC1D_MBKG`, `SCI_MBKG`, `ERR_MBKG` and `PROF1D_MBKG` of the `_spec.fits`, with
+    `MBKGPREF`/`MBKGWHY` saying when it is likely better than the nodded spectrum (no clear
+    background, a single exposure, or a source the nod subtraction removes more than 10 % of). The
+    deploy writes it as `<base>_spec_mbkg.json` (layout kind `spectrum_mbkg_json`).
+  - *Stuck-closed shutters* are keyed by physical MSA shutter (`q<quadrant>r<row>c<column>`) in
+    `stuck_closed_shutters.toml`, with origin `manual` > `web` > `auto` and `stuck = false` as a
+    veto (`stuck_list.py`; legacy ordinal entries are still read). Step 1 writes its calls as `auto`
+    entries. Stage 2a removes stuck shutters from the background-only slitlets too. `STKSHPHY`
+    lists them. New dependency `tomlkit`.
+  - *Empirical bar-shadow tables* for PRISM, G140M, G235M and G395M (`barshadow_calibration.py`,
+    `Generate_Barshadow_Cals.py`), measured from empty shutters in the pipeline's slit frame,
+    G140M and G235M on an axis widened to 5.3 um. With one field held out, the residual inside the
+    shutters falls from 8-23 % (CRDS) to 0.6-4 %. Stage 2a gives them to the background-only
+    slitlets, and the master background paints with them.
+  - *G140M / G235M traces past the calibrated range.* Their footprints (coverage, rate geometry,
+    trace maps) are built on the extended wavelength range, and stage 1's 1/f mask follows the
+    traces to 5.3 um, whatever `extend_g140m_g235m` says.
+  - *Stage 2a* runs one `Spec2Pipeline` call per rate file; the per-source loop is only the fallback
+    when that call fails. It also extracts the MSA plan's background-only slitlets into
+    `bkgslits/<root>_<nrsN>_bkgslits.fits` (layout kind `nirspec_bkgslits`, local intermediate).
+  - *Calibration boundary with jwst* (`crds_refs.py`, `data/nirspec_calibrations.toml`). One module
+    reads jwst's path-loss and bar-shadow references. One file lists each shipped calibration with
+    its hash, version, inputs and the references it was derived against. `slit_loss_y` /
+    `slit_loss_x` hand either direction of the path loss back to jwst (`PFSLY`, `PFSLX`,
+    `PFPLREF`). `cfpipe nirspec crds-compare` compares a CRDS context's references with the
+    calibrations; run it with every `CRDS_CONTEXT` bump.
+  - *Outputs.* New `SPEC1D` columns `fnu_opt`, `fnu_prof`, `fnu_contam` (with errors and `flam_*`);
+    `fnu_err` is statistical only. New extensions `PROF2D`, `CONTAM2D`, `CONTERR2D` (every 2-D
+    image drizzled once per product through its pixel maps) and the master-background ones above.
+    New cards `EXTRACT`/`EXTRWHY`, `CONTSTAT`, and the `PF*` cards of the fit, its shape, the
+    contamination and the neighbor scan. Readers find every `_spec.fits` extension by name. Gone:
+    `_mbkgr.fits` (kind `nirspec_mbkgr`), the `tracemaps/` folder, the PSF and shutter tables, the
+    `PFSHUT` card. The `_pf.fits` intermediate is deleted once the `_spec.fits` is written.
+  - *Configuration.* New in `[nirspec.stage3]`: the shape chain and its gates, priors and bounds,
+    `bar_offset`, `slit_loss_y`/`_x`, the contamination keys, `mbkg_spectrum`, and the neighbor scan.
+    New in `[nirspec.stage2]`: `slitlet_neighbor_*`, `master_bkg_plot`, `detect_stuck_shutters`.
+    Options tried during development and then removed: `single_call`, `extract_bkgslits`,
+    `empirical_barshadow`, the `master_bkg_*` thresholds, `profile_fit_shape = "free"`,
+    `profile_fit_prism_mode`, `gate_noise`, partial fits, model-row extraction, `contam_mode`,
+    `contam_dominance*`, `contam_1d*`, `scan_noise`/`_close_rule`/`_gain_rule`, `scan_action`. A
+    config that still sets one is told once that it has no effect (`config.REMOVED_OPTIONS`).
+  - *Fixes found along the way.*
+    - The optimal extraction's 3-pixel boxcar fallback (`CMPFROPT = 'boxcar-3px'`) reported about
+      a third of the flux and understated the S/N by about the square root of 3 (16 % of local
+      products that record `CMPFROPT`). `extract_with_profile` now normalises the profile.
+    - Exposure sequences counted past 9 (`0410b`, ...) are found. Before, a later sequence got no
+      master background and no contamination keys.
+    - `nirspec run` with stages 1 and 2a no longer fails when stage 1 writes no rate file for an
+      exposure (no open slit on that detector).
+    - The profile fit's row height is defined on a slit's first and last row, so slitlets longer
+      than three shutters no longer fail with "Residuals are not finite".
 - **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every
   `source_id <= 0`, so a genuine source 0 (PID 2750's `2750_0`) was never extracted.
   ID 0 is also the metafile's value for empty background shutters, so it now counts as
@@ -636,48 +180,6 @@ Release procedure: edit the `## Unreleased` section below, then run
   `bkg_nods` / `bkg_override` (`N/A` for canonicals from before this change). Additive
   output columns; no pixel values change. Motivated by a pull that wiped the local
   override files: the products carried no record of which overrides had been applied.
-- **MAJOR: NIRSpec extraction v2, the profile extraction as `fnu`
-  (`[nirspec.stage3].profile_fit`, now on by default).** `fnu` is the best spectrum
-  (`EXTRACT`/`EXTRWHY`): the profile extraction (Gaussian galaxy x star-measured PSF fitted
-  to every nod difference, target-shutter light; `profile_fit.py`), its shape from a gated
-  chain (own fit / PRISM shape / default; `profile_chain.py`). An own fit that ends on a
-  bound is kept only when the centre alone is on its bound and the fallback fits clearly
-  worse (a real large offset, flagged); a width or drift on its bound falls back (on p1 one
-  source, 629668, whose fit had run to the centre, width and drift bounds at once beside a
-  same-slitlet neighbour: `fnu_prof` 4.6 x its 3-pixel boxcar). Without a PRISM shape, a
-  grating product that fell to the default shape is redone, once every grating has run, with
-  the shape of the source's grating that took its own fit (its centre offset and width,
-  held over the wavelengths; `PFSHAPE` `grating`, `stage3.grating_transfer_plan`,
-  `profile_fit_grating_transfer`). On spurs_gds 29 of 240 products (3 min, 6 % of the
-  profile fit): their width 0.15 -> 0.074, flux x 0.80, delivered S/N unchanged, and the
-  line-flux ratios between gratings 0.93-1.05 / 0.90-1.09 (16-84 %) where they were
-  0.93-1.18 / 0.92-1.43; the other 211 products unchanged. Other slitlets' light is
-  predicted in one pass from every source's pass-1 spectrum over per-exposure trace maps
-  (`trace_overlap.py`, `profile_contam.py`), masked or subtracted for the shape fit and
-  reported in 1-D as `fnu_contam`; `fnu` is not contamination-subtracted by default
-  (`contam_1d = "report"`; `"subtract"` opts in above `contam_1d_min_sigma`); a gated joint
-  solve of strongly coupled groups (`contam_joint`) is off by default. The maps name each
-  slitlet by its source at every dither point (a source nodded out of a short slitlet no
-  longer meets its own slitlet as a stranger) and leave out stuck-closed shutters; every
-  trace is followed past its nominal range and every pass 1 with it, in count rate
-  (`profile_extend.py`, all dispersers). A source whose own pass 1 hits a named fallback is
-  predicted from its stage-3 3-pixel boxcar placed with the default shape, and subtracted
-  (`PFCBOX` counts them per target); one with no stage-3 s2d that the maps put on a trace
-  is an error (`MissingContaminant`, with the reason). Named failures fall back to `fnu_3px` (`boxcar3`);
-  any other error fails the stage. New SPEC1D columns: `fnu_opt` (the optimal extraction,
-  formerly `fnu`), `fnu_prof`, `fnu_contam` (+ errors, `flam_*`; `fnu_err` is statistical
-  only); `PROF2D` and `CONTAM2D` extensions, placed after `WHT` beside the 2-D data (readers now find every spec.fits extension by name); `PF*` / `CONTSTAT` cards. With `profile_fit`
-  off, `fnu` stays the optimal extraction (`EXTRACT = optimal`) and `fnu_opt` is added.
-  The `_pf.fits` intermediate is deleted once the `_spec.fits` is written.
-- **Optimal extraction's 3-px boxcar fallback reported a third of the flux.** When the
-  optimal profile is judged corrupted (`CMPFROPT = 'boxcar-3px'`), stage 3 extracts with an
-  unnormalised 3-px boxcar, and the inverse-variance formula in `extract_with_profile`
-  returns the profile's amplitude, i.e. the flux per row: the optimal extraction (`fnu` in
-  released products; `fnu_opt` now, and `fnu` with `profile_fit` off) was about 1/3 of the
-  source flux and the S/N understated by about √3 (16 % of the local products that record
-  `CMPFROPT`; median `fnu / fnu_3px` 0.40). `extract_with_profile` now normalises the
-  profile when weighting, which leaves normalised (true optimal) profiles unchanged.
-  Affected products need stage 3 rerun and redeploying.
 - **`resample` now writes a per-tile exposure map, `<mosaic>_exp.fits`, next to
   the split `_sci/_err/_wht`.** It is the full-resolution, per-tile member of the
   `exp` family; the field-wide `expmap_<field>_<filter>.fits` is the coarse member.

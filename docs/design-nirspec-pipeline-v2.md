@@ -3405,17 +3405,19 @@ same day): `single_call`, `extract_bkgslits` and `empirical_barshadow` removed, 
 config that still sets a removed key gets one log line saying it has no effect
 (`config.REMOVED_OPTIONS`). The neighbor scan's proposals (user, 2026-11-06): never applied,
 `scan_action` and the automatic override file removed; the proposed file lists only what would
-change, and each proposed source gets a review figure (`<obs>_<id>_neighbor.pdf`: per nod the
-difference and residual over the noise and their profile along the slit with the target, the
-neighbor and its copies marked; the spectrum with the current and the proposed background nods,
-both rebuilt from the frames before subtraction). Review: look at the figures, copy the entries
+change, and each proposed source gets a review figure (`<obs>_<id>_neighbor.pdf`, laid out as the
+bkgsub plots: per nod the rectified difference with the current and with the proposed background
+nods, each with its profile along the slit; the spectrum with each choice, both rebuilt from the
+frames before subtraction). Review: look at the figures, copy the entries
 you agree with into `nodded_background_overrides.toml`, run the command stage 3 prints. Checked on
 p1 924883 (PRISM, flux +15 %, S/N 10.2 to 11.5) and spurs_gds 369 (G140M, +13 %, S/N 20.4 to
 22.3); p1 923362 showed a proposal that stage 2b already applied for a catalogued neighbor,
-which is now left out. `pipeline/experiments/master_bkg_prototype`
-and its figures kept or dropped; small fixes found in the runs (`mbkg_extraction.local_contrast`:
-the subtraction outside its `errstate`, inf - inf warnings on spurs_gds); the design docs rewritten as final documentation (main text =
-what ships, appendix = explored and rejected); one categorized MAJOR CHANGELOG entry.
+which is now left out. Done 2026-11-07: `pipeline/experiments/master_bkg_prototype` dropped
+(in git history; `master_bkg.py` replaced it); `mbkg_extraction.local_contrast` takes its
+subtraction inside the `errstate` (the inf - inf warnings on spurs_gds); the branch's 25 CHANGELOG
+entries folded into one MAJOR entry under Algorithm (the diff against `main` is that entry alone).
+Left: the design docs rewritten as final documentation (main text = what ships, appendix =
+explored and rejected).
 
 **Phase 2, review in slices** (read-through and fixes by the extraction session, then
 `/code-review` by the user; `/code-review ultra` for slices 1 and 3):
@@ -3438,7 +3440,7 @@ photometry, redshifts and line fluxes, fallback and contamination-flag rates, ru
 per exposure; the missing plots of section 5.
 
 **Phase 4, release and reprocessing.**
-1. DR1: freeze the current (v1) catalog as a data release (`campfire dr freeze`) before
+1. DR 2026.1: freeze the current (v1) catalog as a data release (`campfire dr freeze`) before
    anything of v2 is deployed, with the v1 documentation preserved for it (open: in what form;
    the web docs are not versioned, and the docs session's branch replaces the v1 NIRSpec page).
 2. Merge PR A after review and tag `pipeline-vN.0.0` (MAJOR).

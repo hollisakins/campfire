@@ -902,7 +902,8 @@ measurement on the archive.
    prism, whether exposures need their own scale/offset (§4.1), the `source_pad` default, how the
    level compares with `jwst_backgrounds`, and whether solar lines are visible in the stacked G140M sky
    (§3.3). No pipeline change; its findings become the defaults of P1. **Script:**
-   `pipeline/experiments/master_bkg_prototype/prototype_master_bkg.py` (README beside it).
+   `pipeline/experiments/master_bkg_prototype/prototype_master_bkg.py`, removed 2026-11-07 once
+   `master_bkg.py` replaced it (in git history before then).
 1. **P1a — single-call stage 2a** (§1.7): one edited full metafile per rate file, split into the
    per-source canonicals and the `bkgslits/` file; bit-identity gate against the per-source runs;
    per-source fallback on failure. Pure speed-up for everything else, PATCH / Infrastructure.
@@ -960,7 +961,7 @@ measurement on the archive.
 
 ## 9. P0 results on `ember_egs_p1` (prism, 2026-10-28)
 
-Run with `pipeline/experiments/master_bkg_prototype/prototype_master_bkg.py` (defaults: shutter
+Run with the prototype script (§7 P0; since removed; defaults: shutter
 core `--open-frac 0.2`, `--source-pad-px 3`, `--model`) over 714 canonicals, 215 sources, 3 nods ×
 2 detectors; figures in `docs/figures/master-bkg-prototype/`.
 
