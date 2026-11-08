@@ -359,7 +359,7 @@ on the source's position takes half of its light, negative, off the source. The 
   one choice per nod.
 - When every background exposure is contaminated, the nod keeps them all and `BKGWHY` says so ("every
   background exposure: neighbor <id> at <f> of background").
-- Hand overrides (`nodded_background_overrides.toml`) win. `BKGNODS` and `BKGWHY` are copied to the
+- Manual overrides (`nodded_background_overrides.toml`, reason `manual`) win. `BKGNODS` and `BKGWHY` are copied to the
   `EXPOSURES` table (`bkg_nods`, `bkg_why`), and the bkgsub plots label each nod
   `nod - [background nods]` with the reason.
 
@@ -885,9 +885,45 @@ review packet.
 
 The plan (user, 2026-11-06).
 
-**Two PRs.** PR A: pipeline, layout, docs, Python deploy and the database migrations. PR B: the web.
-Pipeline code is local-only, so PR A changes nothing users see, provided its migrations are additive
-and today's web reads the v2 sidecars (checked in review slice 1). PR B goes live at the switch-over.
+**Two PRs.** PR A: pipeline, layout, design docs, Python deploy and the database migrations. PR B:
+the web, including the web docs pages. PR B goes live at the switch-over.
+
+Every merge to `main` that touches `web/` rebuilds and deploys the live site (`deploy.yml`), so PR A
+carries `main`'s `web/` except a minimal set (user, 2026-11-07):
+- the layout mirror (`web/lib/layout.ts`, `layout-products.json`, `layout.test.ts`), which CI's
+  golden test compares with `layout/`;
+- the server-side retain gate (`web/lib/server/retain.ts`), which knows the new product types;
+- the admin stuck-shutter review (`web/app/api/admin/nirspec/stuck-shutters/route.ts`,
+  `web/lib/nirspec-shutters.ts` and its test, `web/app/admin/nirspec/nods/[source]/page.tsx`,
+  `web/lib/actions/nirspec-nods.ts` and its test) with the types it uses (`web/lib/types.ts`). It
+  must go live with the `nirspec_stuck_shutters` table, or the old portal keeps writing the old
+  column after the backfill.
+
+Everything else under `web/` waits for PR B: the docs pages and figures, the master-background
+spectrum switch, the catalog filters, the metadata page's exposures, and the admin rate view.
+
+Checked in slice 1 (2026-11-07): the migrations only add things (a view and a check constraint are
+recreated with new columns and product types; the guards confirm their grants); the nodded
+spectrum's sidecars keep their shape, and the master-background spectrum is a new file today's web
+never requests. PR A's own `web/` is checked with `npm run typecheck`, `npm test` and
+`npm run build` when the branch is cut. The slice's code review (2026-11-07) led to these fixes:
+- every spectra row carries the master-background columns, so one unreadable file no longer fails
+  its upsert batch on the `NOT NULL` flag;
+- `deploy json` updates those columns where the sidecar landed;
+- rate-exposure updates are sent in batches of equal columns, so a missing card leaves its column
+  as it was;
+- `get_program_exposures` lists an observation with no published spectrum only to admins and
+  drafts links (new migration, guard extended);
+- the `storage_objects` and `spectra` check constraints are added `NOT VALID` and then validated,
+  `main`'s shape;
+- reverting a background subtraction removes `BKGAUTO` and `BKGWHY` too;
+- the web stuck-shutter action can no longer turn a manual row into a web one;
+- clearing the last web mark reaches the local list when the database still has the observation's
+  manual rows (`--allow-empty` otherwise);
+- the deploy snapshot keeps a legacy stuck entry it cannot map.
+
+A bad master-background extension still stops an observation's deploy before anything is uploaded,
+as any unexpected error does.
 
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,
@@ -1141,7 +1177,8 @@ The user's decisions that shaped what ships, by date.
   chosen are removed. The neighbor scan's proposals are never applied. The grating-to-grating shape
   transfer built.
 - **2026-11-07** The neighbor review figure laid out like the bkgsub plots, spectrum unbinned. The
-  master-background prototype dropped. DR 2026.1 is the v1 freeze.
+  master-background prototype dropped. DR 2026.1 is the v1 freeze. PR A carries only a minimal set
+  of `web/` changes (section 11).
 
 ---
 

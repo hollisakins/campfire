@@ -15,6 +15,23 @@ from campfire.deploy.rate_exposures import (
 )
 
 
+def test_update_batches_never_mix_column_sets():
+    # postgrest-py sends one column list per batch (the union of its rows' keys) and
+    # NULL where a row lacks one, which would blank a card the other file has: rows
+    # with different columns must go in different batches.
+    from campfire.deploy.rate_exposures import upsert_rate_exposures
+    from .fakes import FakePostgrest
+    base = dict(observation="obs", detector="nrs1", stage="rate")
+    existing = [dict(base, exposure_root=f"jw0707602000{i}_04101_00001",
+                     filename=f"jw0707602000{i}_04101_00001_nrs1_rate.fits") for i in (1, 2)]
+    sb = FakePostgrest({"nirspec_rate_exposures": [dict(r) for r in existing]})
+    records = [dict(existing[0], dither_position=1), dict(existing[1])]   # file 2 lacks the card
+    upsert_rate_exposures(sb, records)
+    batches = [rec.data for rec in sb.upserts]
+    assert len(batches) == 2
+    assert all(len({tuple(sorted(r)) for r in batch}) == 1 for batch in batches)
+
+
 def test_parse_rate_filename():
     assert parse_rate_filename("jw07076020001_04101_00001_nrs1_rate.fits") == (
         "jw07076020001_04101_00001", "nrs1")

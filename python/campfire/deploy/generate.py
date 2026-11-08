@@ -356,6 +356,12 @@ def generate_spectrum_products(
 
 MBKG_REASONS = ('no_clear_background', 'single_exposure', 'extended')
 
+# The spectra-row master-background columns of a file that has none (or could not
+# be read): what :func:`mbkg_row_fields` returns for a file without SPEC1D_MBKG or
+# the cards.
+MBKG_ROW_DEFAULTS = {'has_mbkg_spectrum': False, 'mbkg_preferred': None, 'mbkg_reason': None,
+                     'n_exp': None, 'n_exp_bkg': None}
+
 
 def read_mbkg_row_fields(fits_path: Path) -> dict:
     """:func:`mbkg_row_fields` of a spec.fits on disk."""

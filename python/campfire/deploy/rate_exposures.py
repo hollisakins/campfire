@@ -179,9 +179,9 @@ _RENDER_COLS = ("grating", "image_width", "image_height", "storage_key")
 # What was observed (read_observing_metadata): deploy-owned like the render columns.
 _OBSERVING_COLS = tuple(_OBSERVING_CARDS)
 # The master background (read from the _mbkg.fits beside the rate file): deploy-owned
-# like the render columns. A batch that carries none leaves them untouched; in a batch
-# where some exposures have one, postgrest-py sends the union of keys, so a row whose
-# exposure has no master background is cleared (NULL), which is the truth.
+# like the render columns. A column a record does not carry is left untouched on its row
+# (upsert_rate_exposures sends rows with the same columns together, since postgrest-py
+# sends one column list per batch and NULL where a row lacks a key).
 _MBKG_COLS = ("mbkg_storage_key", "mbkg_source", "mbkg_rate_source", "mbkg_test",
               "mbkg_exposures", "mbkg_n_empty_shutters", "mbkg_version")
 
@@ -241,10 +241,17 @@ def upsert_rate_exposures(client, records: list[dict], batch_size: int = 500) ->
 
     for i in range(0, len(new_records), batch_size):
         client.table("nirspec_rate_exposures").insert(new_records[i:i + batch_size]).execute()
-    for i in range(0, len(update_records), batch_size):
-        client.table("nirspec_rate_exposures").upsert(
-            update_records[i:i + batch_size],
-            on_conflict="observation,exposure_root,detector",
-        ).execute()
+    # A batch upsert sends the union of its rows' keys and NULL where a row lacks one,
+    # which would blank a column whose card this file lacks: send rows with the same
+    # columns together.
+    by_columns: dict[tuple[str, ...], list[dict]] = {}
+    for r in update_records:
+        by_columns.setdefault(tuple(sorted(r)), []).append(r)
+    for group in by_columns.values():
+        for i in range(0, len(group), batch_size):
+            client.table("nirspec_rate_exposures").upsert(
+                group[i:i + batch_size],
+                on_conflict="observation,exposure_root,detector",
+            ).execute()
 
     return len(records)

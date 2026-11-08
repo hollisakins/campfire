@@ -7171,8 +7171,9 @@ GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
 -- the exposure uses. nirspec_rate_exposures is admin-only under RLS (it carries
 -- the review state), so this SECURITY DEFINER reader hands program viewers these
 -- columns and nothing else, scoped like every other catalog read: the program
--- must be in accessible_program_slugs(), and a share link sees only the
--- observation it was minted for.
+-- must be in accessible_program_slugs(), a share link sees only the
+-- observation it was minted for, and an observation with no published
+-- spectrum (a draft deploy) is seen only by admins and drafts links.
 CREATE OR REPLACE FUNCTION public.get_program_exposures(p_program_slug text)
 RETURNS TABLE(
   observation text, exposure_root text, detector text, grating text, filter text,
@@ -7192,6 +7193,9 @@ AS $$
   WHERE o.program_slug = p_program_slug
     AND p_program_slug = ANY(public.accessible_program_slugs())
     AND (NOT public.is_link_account() OR r.observation = public.link_observation())
+    AND (public.is_admin() OR public.link_sees_drafts()
+         OR EXISTS (SELECT 1 FROM public.spectra s
+                    WHERE s.observation = r.observation AND s.deploy_status = 'published'))
   ORDER BY r.observation, r.exposure_root, r.detector;
 $$;
 

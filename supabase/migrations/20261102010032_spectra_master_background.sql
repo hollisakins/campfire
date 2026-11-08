@@ -780,7 +780,9 @@ END;
 $function$;
 
 ALTER TABLE "public"."spectra"
-  ADD CONSTRAINT "spectra_mbkg_reason_check" CHECK (((mbkg_reason IS NULL) OR (mbkg_reason = ANY (ARRAY['no_clear_background'::text, 'single_exposure'::text, 'extended'::text]))));
+  ADD CONSTRAINT "spectra_mbkg_reason_check" CHECK (((mbkg_reason IS NULL) OR (mbkg_reason = ANY (ARRAY['no_clear_background'::text, 'single_exposure'::text, 'extended'::text])))) NOT VALID;
+
+ALTER TABLE "public"."spectra" VALIDATE CONSTRAINT "spectra_mbkg_reason_check";
 
 ALTER TABLE "public"."storage_objects"
   ADD CONSTRAINT "storage_objects_product_type_check"
@@ -807,7 +809,12 @@ ALTER TABLE "public"."storage_objects"
     'photometry_pz'::text,
     'nirspec_manual_mask'::text,
     'nirspec_stuck_shutters'::text,
-    'nirspec_bkg_override'::text, 'nircam_mask'::text, 'nircam_astrom_cat'::text, 'nircam_bad_pixel'::text, 'nircam_flat'::text, 'nircam_wisp'::text])));
+    'nirspec_bkg_override'::text, 'nircam_mask'::text, 'nircam_astrom_cat'::text, 'nircam_bad_pixel'::text, 'nircam_flat'::text, 'nircam_wisp'::text]))) NOT VALID;
+
+-- Added NOT VALID and validated separately, the shape main's storage_objects
+-- migrations use (within one migration's transaction the table stays locked until
+-- commit either way; the scan is one pass over product_type).
+ALTER TABLE "public"."storage_objects" VALIDATE CONSTRAINT "storage_objects_product_type_check";
 
 CREATE VIEW "public"."cat_spectra" WITH (security_invoker=true) AS  SELECT id,
     grating,

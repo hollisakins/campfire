@@ -1373,17 +1373,21 @@ def nirspec_pull_rate_masks(ctx, config_path, obs, dry_run, local):
               help='Show what would be written without touching files.')
 @click.option('--local', is_flag=True,
               help='Use local Supabase (127.0.0.1:54321).')
+@click.option('--allow-empty', is_flag=True,
+              help='Clear the local web entries even when the DB holds no rows for the observation '
+                   '(every web mark was cleared on the portal).')
 @click.pass_context
-def nirspec_pull_stuck_shutters(ctx, config_path, obs, dry_run, local):
+def nirspec_pull_stuck_shutters(ctx, config_path, obs, dry_run, local, allow_empty):
     """Mirror the web rows of nirspec_stuck_shutters into stuck_closed_shutters.toml.
 
     Each root's web entries ([<root>.shutters], physical keys) become exactly the
-    DB's; manual and auto entries are never touched (manual > web > auto). An empty
-    DB never clears local web entries. The pipeline reads the TOML before stage 2.
+    DB's; manual and auto entries are never touched (manual > web > auto). A DB with
+    no rows at all for the observation clears no local web entries unless
+    --allow-empty. The pipeline reads the TOML before stage 2.
     """
     from campfire.deploy.nirspec_flags import pull_stuck_shutters
     config = load_config(config_path, local=_resolve_local(ctx, local))
-    pull_stuck_shutters(obs, config, dry_run=dry_run)
+    pull_stuck_shutters(obs, config, dry_run=dry_run, allow_empty=allow_empty)
 
 
 @nirspec.command('pull-bkg-overrides', hidden=True)

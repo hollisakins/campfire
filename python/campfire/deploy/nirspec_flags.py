@@ -182,12 +182,15 @@ def apply_web_pull(path, obs, db_web, local_web_roots, *, allow_empty=False):
     return changed, False
 
 
-def pull_stuck_shutters(obs, config, dry_run=False, stuck_file=None):
+def pull_stuck_shutters(obs, config, dry_run=False, stuck_file=None, allow_empty=False):
     """Mirror the DB's web stuck-shutter rows into the local TOML's ``web`` entries.
 
     Manual and auto entries are never touched, and a shutter the file has as manual
     keeps it (manual > web). DB manual rows missing from the file (pushed from another
     machine) are reported, not written: manual entries are edited by hand only.
+    The DB counts as empty (and clears nothing) only when it holds no row of any origin
+    for the observation; a DB with manual rows but no web rows means the web marks were
+    cleared. ``allow_empty`` clears them in the empty case too.
     """
     from campfire.deploy import require_pipeline
     require_pipeline("Pulling stuck shutters (stuck_list writer)")
@@ -219,14 +222,17 @@ def pull_stuck_shutters(obs, config, dry_run=False, stuck_file=None):
     else:
         stuck_file.parent.mkdir(parents=True, exist_ok=True)
     try:
-        changed, skipped = apply_web_pull(target, obs, db_web, local_web_roots)
+        changed, skipped = apply_web_pull(target, obs, db_web, local_web_roots,
+                                          allow_empty=allow_empty or bool(rows))
     finally:
         if tmpdir:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     if skipped:
-        print(f"  kept the local web entries of {len(local_web_roots)} root(s): the DB has no web rows "
-              f"for {obs} (a pull never wipes local config from an empty database)")
+        print(f"  kept the local web entries of {len(local_web_roots)} root(s): the DB has no stuck-shutter "
+              f"rows for {obs} (a pull never wipes local config from an empty database). If every web mark "
+              f"was cleared on the portal, run `campfire deploy nirspec pull-stuck-shutters --obs {obs} "
+              f"--allow-empty`")
     elif changed:
         print(f"  {'Would update' if dry_run else 'Updated'} the web entries of {len(changed)} root(s) "
               f"in {stuck_file}")
@@ -244,8 +250,9 @@ def stuck_snapshot(stuck_file, obs, obs_dir=None):
     """The deploy-time snapshot of the stuck list for ``deployments.stuck_shutters``:
     the resolved physical entries, in the TOML's own shape
     ``{root: {"shutters": {"q2r195c64": {"origin", "stuck", "a"?, "note"?}}}}``, plus,
-    verbatim under ``{root: {sid: [ordinals]}}``, the legacy entries of roots whose
-    metafile could not be found (so nothing in the file is lost)."""
+    verbatim under ``{root: {sid: [ordinals]}}``, the legacy entries that could not be
+    mapped to physical shutters (no metafile for the root, a source the metafile does
+    not hold, an ordinal past the slitlet's end), so nothing in the file is lost."""
     from campfire_pipeline.nirspec import stuck_list
     physical, legacy = stuck_list.read_file(str(stuck_file))
     sobs = _stuck_obs(obs, stuck_file, obs_dir)
@@ -265,9 +272,14 @@ def stuck_snapshot(stuck_file, obs, obs_dir=None):
         if table:
             out.setdefault(root, {})[stuck_list.SHUTTERS] = table
     for root, entries in legacy.items():
-        if root in metafiles:
-            continue
+        mf = metafiles.get(root)
         for sid, (ordinals, _origin) in entries.items():
+            if mf is not None:
+                try:
+                    stuck_list.legacy_to_physical(mf, sid, ordinals)
+                    continue                      # mapped: it is among the physical entries
+                except (RuntimeError, IndexError):
+                    pass                          # resolve() dropped it: keep it verbatim
             out.setdefault(root, {})[str(sid)] = list(ordinals)
     return out
 

@@ -160,6 +160,50 @@ def test_pull_stuck_shutters_end_to_end(stuck_list, monkeypatch, tmp_path, capsy
     assert sb.upserts == [] and sb.deletes == []                           # a pull never writes the DB
 
 
+def test_pull_clears_the_last_web_mark_when_the_db_has_other_rows(stuck_list, monkeypatch, tmp_path):
+    # Every web mark cleared on the portal, the observation's manual row still in the
+    # DB: the DB is not empty, so the local web entry is cleared.
+    import campfire.deploy.nirspec_flags as nf
+    f = tmp_path / "stuck_closed_shutters.toml"
+    f.write_text(LOCAL)
+    monkeypatch.setattr(nf, "_ref_dir", lambda obs: tmp_path)
+    sb = FakePostgrest({"nirspec_stuck_shutters": [_row(ROOT, "q2r195c64", "manual", id=1)]})
+    monkeypatch.setattr(nf, "get_supabase_client", lambda config: sb)
+    nf.pull_stuck_shutters("obs", config={})
+    phys, _ = stuck_list.read_file(str(f))
+    assert (2, 195, 65) not in phys[ROOT]                                  # the cleared web mark
+    assert phys[ROOT][(2, 195, 64)] == stuck_list.Entry("manual")
+
+
+def test_pull_from_an_empty_db_needs_allow_empty(stuck_list, monkeypatch, tmp_path, capsys):
+    import campfire.deploy.nirspec_flags as nf
+    f = tmp_path / "stuck_closed_shutters.toml"
+    f.write_text(LOCAL)
+    monkeypatch.setattr(nf, "_ref_dir", lambda obs: tmp_path)
+    monkeypatch.setattr(nf, "get_supabase_client", lambda config: FakePostgrest({"nirspec_stuck_shutters": []}))
+    nf.pull_stuck_shutters("obs", config={})
+    assert f.read_text() == LOCAL                                          # kept
+    assert "--allow-empty" in capsys.readouterr().out
+    nf.pull_stuck_shutters("obs", config={}, allow_empty=True)
+    phys, _ = stuck_list.read_file(str(f))
+    assert (2, 195, 65) not in phys[ROOT]                                  # cleared on request
+
+
+def test_stuck_snapshot_keeps_a_legacy_entry_that_cannot_be_mapped(stuck_list, monkeypatch, tmp_path):
+    # The root has a metafile, but the entry's ordinal is past the slitlet's end:
+    # resolve() drops it with a log line, so the snapshot keeps it verbatim.
+    from campfire.deploy.nirspec_flags import stuck_snapshot
+    f = tmp_path / "stuck_closed_shutters.toml"
+    f.write_text(LOCAL + f"\n[{ROOT2}]\n    1234 = [4]  # hand\n")
+    monkeypatch.setattr(stuck_list, "root_metafiles", lambda obs, roots=None: {ROOT2: object()})
+
+    def unmappable(metafile, sid, ordinals):
+        raise IndexError("stuck shutter ordinal 4 is out of range for a 3-shutter slitlet")
+    monkeypatch.setattr(stuck_list, "legacy_to_physical", unmappable)
+    snap = stuck_snapshot(f, "obs", obs_dir=tmp_path)
+    assert snap[ROOT2] == {"1234": [4]}
+
+
 def test_stuck_snapshot_roundtrip(stuck_list, tmp_path):
     from campfire.deploy.nirspec_flags import stuck_snapshot, stuck_snapshot_to_toml
     f = tmp_path / "stuck_closed_shutters.toml"

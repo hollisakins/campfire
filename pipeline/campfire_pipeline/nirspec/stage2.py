@@ -1603,7 +1603,7 @@ def _wanted_bkg_cards(paths, overrides, auto_nods, reasons):
         overridden = overrides is not None and nod in overrides
         out.append(C.bkg_nods_cards([_nod_number(paths[j]) for j in part] if part else [], overridden,
                                     auto=nod in set(auto_nods or ()),
-                                    why=(reasons or {}).get(nod, 'hand' if overridden else '')))
+                                    why=(reasons or {}).get(nod, 'manual' if overridden else '')))
     return out
 
 
@@ -1812,7 +1812,7 @@ def run_stage2b_single_slitlet(
                     header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG='excluded:override')
                     nod = str(_nod_number(cal_files[i]))
                     header_updates.update(C.bkg_nods_cards([], overridden=True, auto=nod in set(auto_nods or ()),
-                                                           why=(reasons or {}).get(nod, 'hand')))
+                                                           why=(reasons or {}).get(nod, 'manual')))
                     C.append_extras(cal_files[i], header_updates=header_updates)
                     continue
                 if overridden:
@@ -1853,7 +1853,7 @@ def run_stage2b_single_slitlet(
                 header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG=None)
                 nod = str(_nod_number(cal_files[i]))
                 header_updates.update(C.bkg_nods_cards(bkg_nods, overridden=overridden, auto=nod in set(auto_nods or ()),
-                                                       why=(reasons or {}).get(nod, 'hand' if overridden else '')))
+                                                       why=(reasons or {}).get(nod, 'manual' if overridden else '')))
                 if rectify:
                     resampled = result.copy()
                     resampled = pixel_replace.call(resampled)
