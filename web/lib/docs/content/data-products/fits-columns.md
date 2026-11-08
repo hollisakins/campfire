@@ -56,7 +56,7 @@ The decontaminated spectrum is `fnu_prof - fnu_contam`. See [Extraction](/docs/r
 | `bkg_nods` | Background exposures subtracted (`excluded` if none) |
 | `bkg_override` | Whether the background selection was overridden, manually or automatically |
 | `bkg_auto` | Whether the override was automatic (cataloged neighbor) |
-| `bkg_why` | Reason for the override: `hand` (manual), or the contaminating neighbor; or a flag when all background exposures were contaminated and retained |
+| `bkg_why` | Reason for the override: `manual`, or the contaminating neighbor; or a flag when all background exposures were contaminated and retained |
 | `shutter_state` | Slitlet shutter states, one character per shutter: `1` open, `0` closed, `x` the source's shutter |
 | `stuck_shutter_list` | Shutters treated as closed |
 | `source_ra`, `source_dec` | Planned source position |
