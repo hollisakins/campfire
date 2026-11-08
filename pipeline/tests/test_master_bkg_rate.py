@@ -158,6 +158,34 @@ def test_read_calls_reads_the_first_rate_file_of_the_root_that_holds_any(tmp_pat
     assert R.read_calls(str(tmp_path), 'jw07076001001_03101') == {}
 
 
+def test_a_current_root_still_merges_its_stored_calls_into_the_list(tmp_path, monkeypatch):
+    """Step 1 skips a root whose products are current, but its stored CALLS still reach
+    the stuck list when the calls are wanted (after a run with them off, say)."""
+    from types import SimpleNamespace
+    from campfire_pipeline.nirspec import stuck_list as S
+    calls = Table(rows=[(2, 195, 64, True, -0.01, 6, ''), (2, 195, 65, False, 1.02, 6, '')],
+                  names=('q', 'row', 'col', 'stuck', 'a', 'n', 'note'),
+                  dtype=(np.int16, np.int16, np.int16, bool, np.float32, np.int16, 'U48'))
+    hdu = fits.PrimaryHDU()
+    for k, v in dict(EXP_TYPE='NRS_MSASPEC', MSAMETFL='jw_msa.fits', DETECTOR='NRS1', GRATING='PRISM',
+                     FILTER='CLEAR').items():
+        hdu.header[k] = v
+    rate = tmp_path / 'jw07076001001_05101_00001_nrs1_rate.fits'
+    fits.HDUList([hdu, fits.BinTableHDU(calls, name='CALLS')]).writeto(rate)
+    monkeypatch.setattr(R, 'resolve_wavelengthrange', lambda rate: None)
+    monkeypatch.setattr(R.S, 'root_metafiles', lambda obs, roots=None: {})
+    monkeypatch.setattr(M, '_barshadow_reference', lambda grating, rate: (None, '/t/bs.fits'))
+    monkeypatch.setattr(R, '_inputs_cards', lambda *a, **k: {})
+    monkeypatch.setattr(R, 'product_current', lambda path, cards: True)
+    stuck = str(tmp_path / 'stuck.toml')
+    obs = SimpleNamespace(name='obs', rate_files=[str(rate)], workspace_dir=str(tmp_path),
+                          stuck_closed_shutters_file=stuck, stuck_closed_shutters={})
+    assert R.run_step1(obs, {}, write_calls=False) == [] and not os.path.exists(stuck)
+    assert R.run_step1(obs, {}, write_calls=True) == []
+    phys = S.read_file(stuck)[0]['jw07076001001_05101']
+    assert phys == {(2, 195, 64): S.Entry('auto', True, -0.01)}
+
+
 def test_product_current_reads_the_cards_of_the_rate_files_mbkg1dr(tmp_path):
     path = str(tmp_path / 'x_rate.fits')
     cards = {'CFMB1VER': ('1.0', ''), 'MBKGDEC': ('abc', '')}

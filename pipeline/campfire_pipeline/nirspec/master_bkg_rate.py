@@ -416,7 +416,7 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
     """Step 1 for every MSA rate file of ``obs`` whose product is stale; returns the
     products written. With ``write_calls`` the stuck calls are merged into the
     observation's stuck list as ``auto`` entries (they are stored in ``CALLS`` either
-    way)."""
+    way), the stored ``CALLS`` of a root whose products are current included."""
     from multiprocessing import Pool
     from campfire_pipeline.nirspec.shutter_fit import call_shutters
 
@@ -452,8 +452,13 @@ def run_step1(obs, stage_config, n_processes=1, overwrite=False, write_calls=Tru
         stale = overwrite or not all(product_current(product_path(obs, it['base']), it['cards']) for it in items)
         if stale:
             todo[root] = items
-        else:
-            log(f'master background step 1: {root}: current, skipped')
+            continue
+        log(f'master background step 1: {root}: current, skipped')
+        # the stored calls still reach the list: a run with write_calls off, or an auto
+        # entry lost from the file, would otherwise wait for the next rerun of the step
+        calls = read_calls(obs.workspace_dir, root) if write_calls else {}
+        if calls:
+            S.write_auto(stuck_path, root, calls, metafiles, obs_name=obs.name)
     if not todo:
         return []
     items_all = [it for items in todo.values() for it in items]

@@ -11,9 +11,8 @@ as the sum of all of them plus a constant,
     rate(pixel) = c + sum over shutters s of a_s T_s(pixel),
 
 so overlapping traces are separate terms of one fit. An open shutter has a ~ 1, a stuck
-one a ~ 0 (design: docs/design-nirspec-pipeline-v2.md; study:
-scratch/claude/stuck_shutters/REPORT.md, ember_cosmos_p1: all 15 hand-vetted PRISM
-shutters at a = 0.00-0.02, no other shutter below 0.92).
+one a ~ 0 (docs/design-nirspec-pipeline-v2.md, section 4; on ember_cosmos_p1 all 15
+manually vetted PRISM shutters gave a = 0.00-0.02, and no other shutter fell below 0.92).
 
 * Template: the exposure's count-rate sky at the open-shutter centre (MBKG1DR) times the
   quadrant scale times the bar shadow of the commanded shutter state, over the shutter's
