@@ -85,8 +85,9 @@ Release procedure: edit the `## Unreleased` section below, then run
     in the shutter on jwst's point-source calibration. Point sources read the same either way;
     extended ones read higher. On p1 PRISM sources against COSMOS photometry, in six bins of fitted
     width, the reported flux is 0.68-1.03 of the catalog's total flux, where the light in the shutter
-    read 0.87 for the most compact bin down to 0.32 for the widest; the 106 sources with their own
-    fit read 0.96 +- 0.04 of the catalog's own 0.8 arcsec aperture flux. `fnu_opt` and `fnu_3px` stay on jwst's
+    read 0.87 for the most compact bin down to 0.32 for the widest. Against the catalog's own 0.8
+    arcsec aperture flux, 127 sources with their own fit read a median 0.95 +- 0.03 (16-84 %
+    0.70-1.30), where the light in the shutter reads 0.62. `fnu_opt` and `fnu_3px` stay on jwst's
     calibration.
   - *Other slitlets' light* (`trace_overlap.py`, `joint_first_pass.py`, `profile_contam.py`,
     `profile_extend.py`). Every source is first solved with its neighbors on its nod differences,
