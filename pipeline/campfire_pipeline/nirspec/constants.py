@@ -62,6 +62,13 @@ EXTENDED_GRATING_FILTERS = {("G140M", "F100LP"), ("G235M", "F170LP")}
 # background mask are pushed out to this, in microns.
 EXTENDED_MAX_WAVELENGTH_UM = 5.3
 
+# Dispersers whose first-order light runs past the calibrated range onto the detector
+# (a long-pass filter, nothing blocking the red): stage 1's slit mask follows their
+# traces to EXTENDED_MAX_WAVELENGTH_UM whatever stage 2a calibrates (user decision
+# 2026-11-06), as the footprint geometry does for the M gratings
+# (extended_wavelength.geometry_wavelengthrange).
+EXTENDED_TRACE_GRATING_FILTERS = EXTENDED_GRATING_FILTERS | {("G140H", "F100LP"), ("G235H", "F170LP")}
+
 # Upper bound of the extended flat-field wavelength grid, in microns (a hair
 # past EXTENDED_MAX_WAVELENGTH_UM so the 5.3 um sample is included).
 EXTENDED_GRID_MAX_UM = 5.301

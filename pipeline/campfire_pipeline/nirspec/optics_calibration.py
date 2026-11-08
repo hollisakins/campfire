@@ -111,18 +111,24 @@ class StarTask:
     srcy: float = np.nan
     disperser: str = 'prism_clear'
     bar_offsets: dict = None           # the observation's bar offsets (``bar_offset.table``), as stage 3 applies them
+    group: str = ''                    # one stage-2b background group only (``star_tasks(by_group=True)``)
+    srcx: float = np.nan
+    config: int = -1                   # MSAMETID
 
     @property
     def key(self):
         base = f'{self.obs}_{self.source_id}_{self.detector}'
-        return base if self.disperser == 'prism_clear' else f'{base}_{self.disperser}'
+        base = base if self.disperser == 'prism_clear' else f'{base}_{self.disperser}'
+        return f'{base}_g{self.group}' if self.group else base
 
 
-def star_tasks(root, obs_name, disperser='prism_clear', observations_file=None):
+def star_tasks(root, obs_name, disperser='prism_clear', observations_file=None, by_group=False):
     """Every source of a reduced observation with a stage-3 science exposure in the
-    disperser, one task per detector, with the observation's bar offsets (``bar_offset.json``
-    in its workspace, measured by the ``bars`` step; without it the stars are loaded with
-    none, and a warning says so). Reads the root only (no workspace set-up)."""
+    disperser, one task per detector (and per stage-2b background group with ``by_group``: a
+    scan that steps the stars within one observation, ``scripts/nirspec_optics_checks.py``),
+    with the observation's bar offsets (``bar_offset.json`` in its workspace, measured by the
+    ``bars`` step; without it the stars are loaded with none, and a warning says so). Reads the
+    root only (no workspace set-up)."""
     from astropy.io import fits
     from campfire_pipeline.nirspec import bar_offset as BO
     from campfire_pipeline.nirspec.observation import Observation
@@ -144,13 +150,18 @@ def star_tasks(root, obs_name, disperser='prism_clear', observations_file=None):
     out = []
     for sid in np.unique(sci['source_id']):
         for det in np.unique(sci['detector'][sci['source_id'] == sid]):
-            tf = sci[(sci['source_id'] == sid) & (sci['detector'] == det)]
-            t = S3._profile_fit_task(obs, every, tf, '', sid)
-            h = fits.getheader(tf['path'][0], 'SCI')
-            out.append(StarTask(obs=obs_name, source_id=int(sid), detector=str(det).upper(),
-                                groups=[[str(p) for p in g] for g in t['groups']], overrides=t['overrides'],
-                                science=[str(n) for n in t['science']], quadrant=int(h.get('MSAQUAD', 0)),
-                                srcy=float(h.get('SRCYPOS', np.nan)), disperser=disperser, bar_offsets=bars or None))
+            this = (sci['source_id'] == sid) & (sci['detector'] == det)
+            for bg in (np.unique(sci['bkg_group'][this]) if by_group else [None]):
+                tf = sci[this if bg is None else this & (sci['bkg_group'] == bg)]
+                t = S3._profile_fit_task(obs, every, tf, '', sid)
+                hs = [fits.getheader(p, 'SCI') for p in tf['path']]
+                out.append(StarTask(obs=obs_name, source_id=int(sid), detector=str(det).upper(),
+                                    groups=[[str(p) for p in g] for g in t['groups']], overrides=t['overrides'],
+                                    science=[str(n) for n in t['science']], quadrant=int(hs[0].get('MSAQUAD', 0)),
+                                    srcy=float(np.median([h.get('SRCYPOS', np.nan) for h in hs])),
+                                    srcx=float(np.median([h.get('SRCXPOS', np.nan) for h in hs])),
+                                    config=int(fits.getheader(tf['path'][0]).get('MSAMETID', -1)),
+                                    disperser=disperser, bar_offsets=bars or None, group='' if bg is None else str(bg)))
     return out
 
 
@@ -165,9 +176,10 @@ def step_bars(root, observations, processes=1, log=print):
                                     for d, qs in sorted(bars.items())))
 
 
-def tasks_for(root, observations, dispersers=('prism_clear',)):
+def tasks_for(root, observations, dispersers=('prism_clear',), by_group=False):
     """Star tasks of the observations."""
-    return [t for name in observations for d in dispersers for t in star_tasks(root, name, disperser=d)]
+    return [t for name in observations for d in dispersers for t in star_tasks(root, name, disperser=d,
+                                                                                 by_group=by_group)]
 
 
 def load_star(task):

@@ -70,7 +70,7 @@ last column says where it is described.
 | Smoothing the per-exposure grating background | Not approved (user, 2026-10-30: some master-background noise is expected); a trial only if asked | 3.3 |
 | "Master background likely better" marks (`MBKGPREF` / `MBKGWHY`; spectra columns `mbkg_preferred`, `mbkg_reason`, `n_exp`, `n_exp_bkg`) | Decided (user, 2026-11-01: the rule approved, informational reasons made quantitative); Built | 4 |
 | Stuck-closed shutters by a per-shutter template fit, every disperser | Built: step 1 fits and calls every shutter (`SHUTAMP`, `CALLS`), `cfpipe nirspec detect-stuck` merges the calls into the stuck list; physical keys everywhere (`stuck_list.py`, database, web, deploy). Open: the user's verdict on the G395M review packet; G140M / G235M not yet checked | 3.5 |
-| Trace maps: one per exposure, built in step 1 from every commanded shutter, stored in the rate file, followed past both ends of the calibrated range | Built; stage 3 reads them (`tracemaps/` is its working copy) | 3.4, 3.6 |
+| Trace maps: one per exposure, built in step 1 from every commanded shutter, stored in the rate file, followed past both ends of the calibrated range | Built; stage 3 reads them from the rate files (`tracemaps/` retired 2026-11-06) | 3.4, 3.6 |
 | Forward-model profile extraction on by default; shape chain (own fit above the gate, else the PRISM shape, else the default); instrument model fixed, never fitted; no per-exposure pointing offsets; each nod at its planned position | Built | 3.7 |
 | Diffraction model of the MSA for every disperser (`FIT_VERSION` 6, `optics.py`, `data/nirspec_optics.json` 2026.11-r8), with a correction along the dispersion fitted to stars | Built (2026-11-04; kernel refitted on all calibration stars 2026-11-06) | 3.7 |
 | Bar offset of each observation, measured per disperser from its empty shutters (`FIT_VERSION` 7, `bar_offset.py`) | Built (2026-11-05) | 3.7 |
@@ -83,7 +83,7 @@ last column says where it is described.
 | Per-source runs give the same products as full runs | Built | 3.9 |
 | Optimal extraction's 3-pixel boxcar fallback normalised (it returned a third of the flux) | Built (merged 207bd0dc) | 4 |
 | End-to-end runs | p1 (2026-10-31, 3 h 14 min, 6 workers) and uncover2 (2026-11-02, 4 h 45 min), both before `FIT_VERSION` 6. Stage 3 of p1 on `FIT_VERSION` 7 (2026-11-05, docs session, 207bd0dc, 12 workers): 83.8 min, 681 products, no errors (`scratch/claude/e2e_p1/run_stage3_fv7_docs.log`); its products not yet reviewed | 3.9, 5 (V30) |
-| Stage 1 detector-background mask extended past the calibrated range | Open | 3.1 |
+| Stage 1 detector-background mask extended past the calibrated range | Decided 2026-11-06 for G140M / G235M (always to the extended range); MB session building it | 3.1 |
 | Speed up stage 2's per-source work (on p1: rectification 25 min, stage 2b about 60 min) | Goal (user, 2026-10-31); not started; profile first | 5 (V30) |
 
 ---
@@ -118,8 +118,8 @@ Each step lists what it reads and what it writes, as the branch runs it.
    partner both are kept and flagged; 3.9). The variance includes the subtracted frames' noise. The master background
    is never used to correct the nodded frames.
 6. **Stage 3, before the extraction.** Per observation: the bar offset of each disperser from its
-   empty shutters (`bar_offset.json`, measured once; 3.7), and the trace maps read from the rate
-   files into `tracemaps/`.
+   empty shutters (`bar_offset.json`, measured once; 3.7), and the stuck list resolved once; the
+   trace maps are read from the rate files as they are needed (nothing is written).
 7. **Joint first pass** (per disperser, PRISM first). Every source solved together with the
    sources whose light shares its pixels (trace maps), each at its fixed shape, on the nod
    differences, with its light past the cutouts in count rate (`profile_extend`). Gives each
@@ -155,9 +155,12 @@ call extracts the MSA plan's background-only slitlets, which the master backgrou
 - Built: loving-bell, CHANGELOG Unreleased ("Stage 2a runs one `Spec2Pipeline` call per rate
   file"). Checked array-for-array against the per-source loop on `ember_cosmos_p1`.
 - `bkgslits/` is a regenerable local intermediate (layout kind `nirspec_bkgslits`).
-- Open (MB session): extend stage 1's `mask_slits` footprint past the calibrated range, so the
-  detector background is not fitted on sky that runs past a trace's calibrated end. Recommended
-  in the merge plan (decision 10); not decided.
+- Stage 1's slit mask for the 1/f fit covers G140M/F100LP and G235M/F170LP traces (and the H
+  gratings with those filters) out to the extended range, whether or not `extend_g140m_g235m` is
+  on (user, 2026-11-06: "yes, always mask the extended traces"). Before, the mask stopped at
+  `override_wavelength_range` (G140M 2.5 um, G235M 4.0 um) and the red tails on NRS2 (to about
+  3.5 / 5.05 um) were fitted as detector background. MB session implements it with the
+  always-extended geometry (3.6).
 
 ### 3.2 Empirical bar shadow
 
@@ -223,8 +226,8 @@ pixels instead.
 
 **Implementation.** `nirspec/barshadow_calibration.py`, `data/Generate_Barshadow_Cals.py`,
 tables `data/empirical_jwst_nirspec_barshadow_{prism,g140m,g235m,g395m}.fits`.
-`[nirspec.stage2].empirical_barshadow` (default off) passes a table to `BarShadowStep` for the
-background slitlets. The forward model's shutter: `profile_fit.SHUTTER`
+Stage 2 always passes a grating's table to `BarShadowStep` for the background slitlets (CRDS for
+the H gratings, which have none; no switch since 2026-11-06). The forward model's shutter: `profile_fit.SHUTTER`
 (`data/nirspec_shutter_transmission.json`, fitted by `psf_calibration.fit_shutter`).
 
 **Open.**
@@ -539,6 +542,13 @@ first pass need it. Maps follow each trace past both ends of the calibrated rang
 source light continues there just as the sky does.
 
 **Decisions.**
+- G140M/F100LP and G235M/F170LP geometry (counters, stored trace maps) is always built with the
+  extended wavelength range, whether or not `extend_g140m_g235m` is on; the setting only decides
+  what stage 2a calibrates (user, 2026-11-06). With the standard range jwst gives a slitlet whose
+  nominal range lies wholly on NRS1 no NRS2 WCS, so its red tail vanished: on spurs_gds 21 of 116
+  slitlets, coverage wrong on 17.0 % (G140M) / 13.2 % (G235M) of NRS2 (MB session,
+  `scratch/claude/bs_wide/compare_geom.py`). MB session implements it with the wider bar-shadow
+  tables.
 - Traces fully extended; gaps inside the range do not matter, because a chip gap in the
   contaminant is the same chip gap on the spectrum it contaminates; a contaminant without a
   spectrum means something is wrong (user, 2026-10-29).
@@ -548,12 +558,17 @@ source light continues there just as the sky does.
 **Evidence.** p1 maps `~/campfire-data/scratch/claude/extraction-v2/maps_p1/` (`traces_per_pixel.png`,
 `named_<sid>.png`).
 
-**Implementation.** `nirspec/trace_overlap.py` (`TraceMap`, `get_trace_map`, map version 7),
-extended with `coverage.geometry_on_block` and `WAVELENGTH_CUTOFFS` (e3af87b0). Built in
-`stage3.run_profile_fit_phase` today.
-
-**Open (extraction session).** Build from step 1's cached `assign_wcs` model; register
-`tracemaps/` as a regenerable layout kind.
+**Implementation.** Built in master background step 1 from the rate file's geometry and stored in
+the rate file (`trace_overlap.ShutterMap`, `TMSH1` / `TMSH2` / `TMFLAG` / `TMSLITS` / `TMSHUT`).
+Stage 3 reads it with the observation's stuck list (`profile_contam.trace_maps`: stuck shutters
+removed on read, the last 64 kept in memory per worker); nothing is written per exposure. A pass 1
+is redone when a rate file it read a map from is newer or the stuck list changed (its signature
+names the stuck shutters). A rate file without a stored map (reduced before 2026-11-01) has no
+map: stage 3 logs the exposures; every observation is rerun from stage 1 before the release
+(user, 2026-11-06). The `tracemaps/` folder and the jwst-built maps (`get_trace_map`) are gone;
+on p1 the maps read from the rate files equal the last `tracemaps/` copies in all 12 exposures
+(`extraction-v2/maps_equal_p1.py`). The jwst-built map (`TraceMap.build`, `full_mask_model`,
+`drop_stuck_shutters`) and the map file format are removed from `trace_overlap.py`.
 
 ### 3.7 Profile extraction and the shape chain
 
@@ -3059,8 +3074,8 @@ setting and measured by a command. The pieces:
   at the planned position, divided by the model's point transmission there, so a point source at its
   planned position gets jwst's loss exactly and the model only shapes the image);
   `slit_loss_x = "corrected"` (jwst's along the dispersion times `x_correction`) or `"jwst"`;
-  `bar_offset = "measure"` or `"off"`. `[nirspec.stage2] empirical_barshadow` for the master
-  background, as before. The product records `PFSLY`, `PFSLX`, `PFBAROFF` and `PFPLREF` (the path-loss
+  `bar_offset = "measure"` or `"off"`. The master background's empirical bar-shadow tables have
+  no switch (always used where one exists). The product records `PFSLY`, `PFSLX`, `PFBAROFF` and `PFPLREF` (the path-loss
   reference the model starts from). The defaults reproduce FIT_VERSION 7 exactly (two 1133 stars refit
   to the same chi2 to 0.1 before and after).
 - **A manifest.** `data/nirspec_calibrations.toml` lists every shipped calibration (the optics model,
@@ -3270,15 +3285,16 @@ a fix or needs another field or disperser), **To make**.
 
 ## 6. Open decisions and next steps
 
-As of 2026-11-05. Items done or superseded since the last version of this list are recorded in
+As of 2026-11-06. Items done or superseded since the last version of this list are recorded in
 the change log (10).
 
 **Before the release (section 8).**
 
 | Item | Owner | Waiting on |
 |---|---|---|
-| p1 on `FIT_VERSION` 7: review the stage 3 rerun (running, docs session) as the end-to-end check of the current model; the stage 1-2 products there are from 2026-10-31 | extraction session | the run |
-| A second field (a spurs observation) and G140M / G235M end to end | extraction session | |
+| p1 on the current model: stage 3 rerun 2026-11-06 (`FIT_VERSION` 8, optics `2026.11-r8`, 94 min, 12 workers, 681 products, no fallbacks; `e2e_p1/run_stage3_fv8_r8.log`). Against `FIT_VERSION` 7 (`extraction-v2/p1_fv7`, `p1_fv8_vs_fv7.py`): `fnu_prof` band fluxes median within 0.5 % in every band, 16-84 % within ±2 %, no trend with the fitted centre; shapes unchanged but one (G395M own -> default). One outlier: PRISM 629668 now ends on the centre, width and drift bounds at once and is kept (`bound_kept`), +214 % (`fnu_prof` 4.6 x its 3-pixel boxcar; a same-slitlet neighbour is flagged). Decided (user, 2026-11-06): an own fit on a bound is kept only when the centre alone is on its bound; a width or drift on its bound falls back (`profile_chain`). 629668 now takes the default shape (centre +0.43, width 0.15; `extraction-v2/p1_chain_one.py`); 920940 (centre only) is unchanged | done | |
+| G140M / G235M bar-shadow tables stopped at 1.495 / 2.492 um (the CRDS templates' wavelength axis), every lookup holding the last column. Done (MB session, a8d51114, merged 40bafa5e): 101 columns to 5.3 um, a mean profile plus one shape change cubic in wavelength, measured to 3.18 / 5.05 um; held out on spurs_gds, open-area rms 2.8-3.2 % (G140M 2.5-3.4 um) and 2.5-3.5 % (G235M 4.2-5.05 um) against 3.5-4.5 / 4.7-6.9 % for the held table. The model overstated the hold error for G140M: past 1.95 / 2.9 um the background is mostly second- / third-order light (MB design doc §9) | done | |
+| spurs_gds end to end with `extend_g140m_g235m` on (2026-11-06; observation 007002: one group each of G140M, G235M, G395M; isolated root `scratch/claude/e2e_spurs_gds`, code 40bafa5e): 240 products, no fallbacks, 1 h 47 min (stage 1 24 min, stage 3 profile fit 48 min). Trace maps: 116 traces on NRS2 for G140M / G235M (95 with the standard range). Stuck calls: the same 3 physical shutters in all three gratings. Contamination predicted past the nominal red end in 14 G140M and 15 G235M products. Against production v1 (0.6.0) on the same exposures (G235M, G395M): measured noise of the 3-pixel boxcar v2 / v1 1.00-1.01, boxcar fluxes within 1-4 %, delivered S/N of `fnu_prof` against v1's `fnu` 0.99 (16-84 % 0.88-1.06), v2's stated errors about 20 % more conservative. G140M is not comparable: v1 combines four exposure groups (007001 too), this run one (noise 2.2 x). Gratings where they overlap (`spurs_overlap.py`): G235M / G395M in both nominal ranges 1.15, in G235M's extension 1.27-1.31, the same in v1, so not from v2 (a calibration offset between the gratings and the extension's second-order light; MB session asked for the master-background side, `spurs_*.py` in `extraction-v2/`) | extraction session | MB session's review |
 | Validation plots still to make or redo (5): V22 (joint vs PRISM, 2-D first), V23-V25, V26 (delivered S/N against the archive), V27 (injections), V28 (shape tests on bright sources), V29 (master-background spectrum against `fnu`); V1, V3, V6 redone on the current tables | extraction session (V1, V3, V6: MB session) | |
 | Merge `origin/main` (30 commits) into the branch | extraction session | |
 | One CHANGELOG entry for the extraction (joint first pass, no per-exposure offsets, same-slitlet overrides, maps from the rate file, `FIT_VERSION` 6 and 7, the CRDS boundary) | extraction session | |
@@ -3291,6 +3307,8 @@ the change log (10).
 | Item | Owner | Waiting on |
 |---|---|---|
 | Fit jitter near a bar: refits 0.006 slit units apart move a galaxy's 1.5-2.5 um flux by a median 3.8 % (90 %: 23 %) on p1 | extraction session | |
+| The extension's calibration on v2 (2026-11-06, `extraction-v2/ext_cal_lines.py`: the 'calibrate' step of `data/Generate_Extended_Cals.py` on the stage-3 products; quality-4 spurs_gds sources, the same lines, model, window, Monte Carlo errors and S/N cuts). Line-flux ratios, median over lines: G140M / G235M 1.9-2.4 um 0.99 (10 lines), 2.4-3.2 um 1.06 (10); G235M / G395M 3.2-4.0 um 1.04 (24), 4.0-5.3 um 1.02 (9); both nominal 1.00 (11). v2 `fnu_opt` 0.99 / 0.99 / 1.06 / 0.95, v1 `fnu` 1.00 / 0.95 / 1.08 / 0.95: still calibrated. Wider scatter in v2 `fnu`, traced to the shape chosen per grating: a grating below its gate takes the default width 0.15 while another fits the source's own 0.05-0.10, and the reported (0.8 arcsec) flux follows the width (G140M default against G235M own: ratios 1.40-1.54 for 1040, 987, 4850, 1808; 888 the other way, 0.65-0.72). Grating-only observations have no PRISM shape to transfer. Built (user, 2026-11-06; b6069a45, prototype): once every grating has run, a grating product that fell to the default and took no PRISM shape is redone with the shape of the source's grating that took its own fit (highest detection S/N), its centre offset and width held over the wavelengths (`PFSHAPE` `grating`; `stage3.grating_transfer_plan`, `profile_fit_grating_transfer`; the gratings keep their Spec3 crf until then; pass 1 keeps the default). spurs_gds stage 3 again (`run_stage3_xfer.log`, `xfer_effect.py`): 29 of 240 products redone in 178 s (6 % of the profile fit); their width 0.15 -> 0.074, flux x 0.80 [0.66, 0.92], delivered S/N x 1.02 [1.00, 1.06]; the other 211 products bit-identical; line-flux ratios G140M / G235M 0.96 [0.93, 1.05] and 1.03 [0.90, 1.09], G235M / G395M 1.03 [0.95, 1.13] and 1.02 (16-84 % were 0.93-1.18, 0.92-1.43, 0.84-1.13). The default width (0.15) inflated compact sources' reported flux by about 25 %: see the default-width decision below | done (prototype) | |
+| The default shape for a source planned past the shutter edge (|planned centre| >= 0.5 slit units): `fnu_prof` / `fnu_opt` median 0.58 on spurs_gds (6 products; 3 below 0.6) against 1.2-1.5 elsewhere (`extraction-v2/prof_vs_opt.py`); e.g. 3544 at +0.55 to +0.57 in all three gratings, detection S/N 33-57 under the gate, `fnu_prof` 40-50 % of `fnu_opt`. The default shape is fixed at the planned position, where the model's transmission changes steeply with position. Options to put to the user: flag these products, let the default shape's centre move, or report `fnu_opt` for them | extraction session | |
 | Position along the dispersion: a pointing offset of 0.03-0.065 pitch per visit, not seen by the model; the correction coefficient differs between star sets (NGC 2506 0.38, 1133 0.74, shipped 0.572); jwst's table misses by 20-30 % at 0.4 pitch or more off centre. Test: one x offset per 1133 visit, then whether target-acquisition images give it for survey fields | extraction session | |
 | Gratings on the PRISM-fitted model: score it on grating stars (12497 obs 4 G140H, 1117 G140M); G140H on NRS2 already fits worse; gratings may sit 0.002-0.005 higher in bar offset (two observations) | extraction session | |
 | Epoch: the kernel fitted per visit, the core width by visit at fixed brightness | extraction session | |
@@ -3302,6 +3320,7 @@ the change log (10).
 | Item | Owner | Waiting on |
 |---|---|---|
 | The +2.5 % in-range offset and the +7 % G395M blue extension, remeasured on the current tables | MB session | |
+| spurs_gds (2026-11-06, MB session, `scratch/claude/e2e_review/`): the new G140M / G235M tables and the always-extended geometry pass (NRS1 in range -0.1 to +0.5 %; extensions +0.7 % G140M, +2.9 % G235M; past the calibrated range -0.5 / -1.1 %). NRS2 sits high by a constant +5 to +18e-5 DN/s (G395M +8 to +11e-5 at every background level; NRS1 < 4e-5), as in production: not from the branch, cancels in nod differences, touches the master-background spectrum and the 2-D only. Deferred (cause unknown; a leftover dark or pedestal would look like this). The slitlet-end rows (\|y\| 0.86-1.0 of the 1x1 table) rise in G140M's red (+0.035 of the open level), outside any open shutter; left. Stuck calls right (the same 3 shutters in all gratings; 867 from nod 1, 2003 from nods 1-2). Open: the stage-1 mask on an observation with the extension off (MB session) | MB session | |
 | Bimodal clean-shutter scales on G395M NRS1 (0.95 / 1.15) | MB session | |
 | Stuck fit on one G140M and one G235M observation; a plot for background-only slitlets; how to report partly open shutters (0.61-0.78) | extraction / MB session | |
 | Whether stage 2a's column removal reaches background-only slitlets | MB session | |
@@ -3313,15 +3332,13 @@ the change log (10).
 | Verdict on the G395M stuck review packet (27 shutters) and the thresholds | `scratch/claude/stuck_shutters/p1_g395m_stuck_review.pdf` |
 | Default galaxy width | 0.15 today; the population says 0.143 (stocktake: close it at 0.15 and state the +-15 %) |
 | Neighbour scan: `report_only` or `auto_override` | |
-| Stage 1 footprint past the calibrated range | 3.1 |
 
 **Speed and cleanup.**
 
 | Item | Owner |
 |---|---|
 | Stage 2's per-source work: profile one stage-2b group and one rectification first (p1: rectification 25 min, stage 2b about 60 min of 3 h 14 min); candidates: rectify once instead of in 2a and 2b, invert the path loss arithmetically, batch per exposure | extraction session |
-| Retire the `tracemaps/` working copy once pass-1 validity keys on the rate files | extraction session |
-| Turn the scratch validation scripts (the NGC 2506 check, the 1133 scan, the bar-shadow model comparison) into `optics_calibration` subcommands | extraction session |
+| Run the checks on the shipped model (`scripts/nirspec_optics_checks.py visits` + `repeat`): NGC 2506 (check 1, y) and 1133 by background group (x; refits `x_loss` with 1133) | extraction session, after the p1 run |
 
 ---
 
@@ -3356,11 +3373,86 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
 
 ## 8. Release
 
-- MAJOR release, merged to `main` only together with the full-archive re-reduction (user,
-  2026-10-24; reaffirmed 2026-10-29).
-- One categorized CHANGELOG entry covers the pipeline changes (Built, 6c5dba84; the master
-  background and bar shadow carry their own Unreleased entries from loving-bell).
-- The PR carries the plots of section 5.
+The plan (user, 2026-11-06; replaces "merged to `main` only together with the full-archive
+re-reduction", 2026-10-24). Size at the time (against `main`, 30 commits behind `origin/main`):
+317 commits, 186 files; NIRSpec pipeline code +16.8k lines, tests +6.5k, data tables +19.5k,
+design docs +5.1k, database +1.9k, web +1.3k, Python deploy and client +1.2k.
+
+**Two PRs.** PR A: pipeline, layout, docs, Python deploy and the database migrations. PR B: the
+web. Pipeline code is local-only, so PR A changes nothing users see, provided its migrations are
+additive and today's web reads the v2 sidecars (both checked in review slice 1). PR B goes live
+at the switch-over.
+
+**Phase 0, freeze.** No new features on the branch, only fixes. Merge `origin/main`: done
+2026-11-06 (no conflicts; the data-release reader role, `pull --dr`, `cite`, provenance and four
+migrations dated 2026-10-28/29, all before the branch's five). Tests after the merge: pipeline
+1013 passed, 8 failed; Python client 1175 passed, 1 failed. All nine fail the same way on
+`origin/main` alone (7 NIRCam `test_align_apply`, `test_linefit` program-slug check against the
+local `programs.toml`, `test_dr_publish::test_cli_json_prompts_stay_off_stdout`): fix on `main`,
+not here. Still to do in slice 1: rebuild the database from the merged migration chain and run
+the drift check and the SQL guards (`supabase db reset`, declarative sync), since the branch's
+migrations were generated before `main`'s four existed.
+
+**Phase 1, cleanup before review.** The configuration audit (every new or changed
+`[nirspec.*]` key and default; the opt-in paths not chosen removed: `contam_pass1 = "fixed"`,
+partial fits, the gated joint solve, unused knobs). Done 2026-11-06 for stage 3 (user decisions):
+the free v1 shape, the PRISM-always mode, the MAD gate, partial fits, model-row extraction,
+contamination masking and the dominance rules (the ratio is recorded in `PFDOMIN`), the 1-D
+subtraction (`contam_1d`; `fnu_contam` is reported only, `EXTRWHY = contam_predicted`) and the
+scan's raw-noise, close and gain rules are gone. Stage 2 (master-background session, merged the
+same day): `single_call`, `extract_bkgslits` and `empirical_barshadow` removed, 29 of the 30
+`master_bkg_*` thresholds moved into `master_bkg.SETTINGS` (only `master_bkg_plot` stays). A
+config that still sets a removed key gets one log line saying it has no effect
+(`config.REMOVED_OPTIONS`). The neighbor scan's proposals (user, 2026-11-06): never applied,
+`scan_action` and the automatic override file removed; the proposed file lists only what would
+change, and each proposed source gets a review figure (`<obs>_<id>_neighbor.pdf`, laid out as the
+bkgsub plots: per nod the rectified difference with the current and with the proposed background
+nods, each with its profile along the slit; the spectrum with each choice, both rebuilt from the
+frames before subtraction). Review: look at the figures, copy the entries
+you agree with into `nodded_background_overrides.toml`, run the command stage 3 prints. Checked on
+p1 924883 (PRISM, flux +15 %, S/N 10.2 to 11.5) and spurs_gds 369 (G140M, +13 %, S/N 20.4 to
+22.3); p1 923362 showed a proposal that stage 2b already applied for a catalogued neighbor,
+which is now left out. Done 2026-11-07: `pipeline/experiments/master_bkg_prototype` dropped
+(in git history; `master_bkg.py` replaced it); `mbkg_extraction.local_contrast` takes its
+subtraction inside the `errstate` (the inf - inf warnings on spurs_gds); the branch's 25 CHANGELOG
+entries folded into one MAJOR entry under Algorithm (the diff against `main` is that entry alone).
+Left: the design docs rewritten as final documentation (main text = what ships, appendix =
+explored and rejected).
+
+**Phase 2, review in slices** (read-through and fixes by the extraction session, then
+`/code-review` by the user; `/code-review ultra` for slices 1 and 3):
+1. data contracts: FITS products and cards, rate-file extensions, layout kinds, migrations,
+   deploy and sidecars;
+2. master background and stuck shutters (`master_bkg`, `master_bkg_rate`, `coverage`,
+   `barshadow_calibration`, `shutter_fit`, `stuck_list`);
+3. optics and the profile model (`optics`, `profile_fit`, `profile_chain`, `crds_refs`,
+   `bar_offset`, `optics_calibration`);
+4. contamination (`trace_overlap`, `profile_contam`, `joint_first_pass`, `profile_extend`,
+   `slitlet_neighbours`);
+5. orchestration (`stage2`, `stage3`, `profile_product`, `mbkg_extraction`, `drizzle_map`);
+6. web and the Python client.
+
+**Phase 3, science validation on the release candidate**, criteria written before the runs:
+p1 (PRISM, G395M; done), uncover2, spurs_gds (G140M / G235M extended; running), an H-grating
+observation, a fixed-slit observation (go2285), a crowded G395M field, one with many stuck
+shutters. Against production: delivered S/N (the success metric), flux against aperture
+photometry, redshifts and line fluxes, fallback and contamination-flag rates, runtime and memory
+per exposure; the missing plots of section 5.
+
+**Phase 4, release and reprocessing.**
+1. DR 2026.1: freeze the current (v1) catalog as a data release (`campfire dr freeze`) before
+   anything of v2 is deployed, with the v1 documentation preserved for it (open: in what form;
+   the web docs are not versioned, and the docs session's branch replaces the v1 NIRSpec page).
+2. Merge PR A after review and tag `pipeline-vN.0.0` (MAJOR).
+3. Reprocess the archive with the tag and `campfire push` (bytes only: no catalog change, no
+   publication).
+4. Fixes during reprocessing: small PRs to `main`; PATCH when science output is unchanged, MINOR
+   when it changes, and only the affected observations rerun (`cfpipe_version` in the products
+   and `spectra.cfpipe_version`).
+5. Switch-over in one step: `campfire deploy` over everything (uploaded bytes dedup-skip),
+   merge PR B (web, with the v2 docs) the same day.
+
+One categorized CHANGELOG entry covers the pipeline changes; PR A carries the plots of section 5.
 
 ---
 
@@ -3369,7 +3461,7 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
 1. **`fnu` subtraction.** CHANGELOG Unreleased and `config_default.toml` (`contam_1d =
    "subtract"`, `contam_1d_min_sigma = 3.0`) subtract the predicted light from `fnu` above
    3σ. The user decided on 2026-10-30 that `fnu` is not subtracted. The decision wins; code
-   and changelog must change.
+   and changelog must change. (Resolved 2026-11-06: the option and the subtraction are removed.)
 2. **Joint solve.** "Joint solve stays off" (user, 2026-10-29; master-background doc decision
    7, merge plan decision 7, config `contam_joint = false`) is superseded by the approval of
    the local joint solve (user, 2026-10-30).
@@ -3446,4 +3538,13 @@ time; isolated roots must set `CRDS_PATH` explicitly; keep scratch under
   optics engine 2, `MEASURE_VERSION` 3), with the halves of six fields before and after.
 - **2026-11-06.** Section 3.7 (and the status row in section 1): the kernel refit with the bar
   offsets, the exact edges and 1133 included; why weighting by pixel let a few 1133 stars with a
-  neighbor set the wing, the per-star weighting, and the shipped model `2026.11-r8`.
+  neighbor set the wing, the per-star weighting, and the shipped model `2026.11-r8`. Section 6:
+  the p1 end-to-end check now has to be on `FIT_VERSION` 8 and `2026.11-r8` (stage 3 rerun started,
+  the `FIT_VERSION` 7 products kept in `extraction-v2/p1_fv7`). Later: the scratch checks became
+  `optics_calibration` steps (`score --groups`, `compare`, `visits`, `repeat`, `barshadow`; 0e5202de):
+  the per-dataset score and the comparison reproduce the scratch numbers, and the shipped model's
+  uniform light misses the empirical bar-shadow tables by a median 0.0176 (PRISM) and 0.0190
+  (G395M) rms on the exact-edge tables. Then, on the user's word, the checks became a script
+  (`pipeline/scripts/nirspec_optics_checks.py`) rather than steps, and `tracemaps/` was retired
+  (1, 2 item 6, 3.6, 6): every observation is rerun from stage 1 before the release, so stage 3
+  reads the maps from the rate files only; the jwst-built map code is removed.

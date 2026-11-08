@@ -97,25 +97,11 @@ def test_detection_snr_does_not_penalise_offset_sources():
     assert sb > 0.7 * sa
 
 
-def test_noise_scale_is_robust_to_shape_mismatch():
-    """A bright source fitted with the wrong (default) shape: the reduced chi2 grows,
-    the MAD noise scale (the old gate option) stays ~1."""
-    exps = T._exposures()
-    _fill(exps, dict(centre_offset=0.25, width=0.05), 200.0, seed=4)
-    M = PF.ProfileModel(exps)
-    R = PF.fit_fixed(model=M)
-    assert R.chi2_red > 2.0
-    _, det = PF.detection_snr(M, scale='mad')
-    assert det['c'] < 0.5 * R.chi2_red and det['c'] < 1.6
-    assert det['c'] == det['c_mad']
-
-
 def test_gate_mean_square_scale_counts_the_tails():
-    """Noise with heavier tails than a Gaussian (a t distribution, unit variance): the
-    MAD reads low, so dchi2 / c_mad inflates the detection S/N of nothing; the
-    clipped mean square stays near the true variance and the null stays low."""
+    """Noise with heavier tails than a Gaussian (a t distribution, unit variance) and no
+    source: a MAD of the residuals reads low and would inflate the detection S/N of
+    nothing; the gate's clipped mean square counts the tails and reads above it."""
     rng = np.random.default_rng(11)
-    gates = {'mad': [], 'mean_square': []}
     for seed in range(4):
         exps = T._exposures()
         _fill(exps, dict(width=0.15), 0.0, seed=seed)
@@ -125,11 +111,11 @@ def test_gate_mean_square_scale_counts_the_tails():
             t = rng.standard_t(nu, size=e.diff.shape) / np.sqrt(nu / (nu - 2))
             e.diff = t * np.sqrt(M0.diff_variance(k))
         M = PF.ProfileModel(exps)
-        for sc in gates:
-            s, det = PF.detection_snr(M, scale=sc)
-            gates[sc].append(s)
-        assert det['c_mad'] < 0.9 * det['c_ms']
-    assert np.median(gates['mean_square']) < np.median(gates['mad'])
+        _, det = PF.detection_snr(M)
+        f, _, _, A = M.solve(det['shape'], np.zeros(len(M.exps)))
+        r = ((M.pix['d'] - A @ f) / np.sqrt(M.pix['v']))[M.use]
+        mad = (1.4826 * np.median(np.abs(r - np.median(r)))) ** 2 / float(np.median(M.dof_weight()[M.use]))
+        assert mad < 0.9 * det['c']
 
 
 # ---------------------------------------------------------------------------
@@ -137,9 +123,9 @@ def test_gate_mean_square_scale_counts_the_tails():
 # ---------------------------------------------------------------------------
 def test_config_knobs_reach_priors_and_bounds():
     cfg = _cfg(prior_centre_sigma=0.05, prior_width_log_sigma=0.4, bound_centre=0.2, bound_width_max=0.5,
-               profile_fit_prism_mode='always', gate_snr_prism=12.0)
+               gate_snr_prism=12.0)
     assert cfg.priors.centre_sigma == 0.05 and cfg.priors.width_log_sigma == 0.4
-    assert cfg.prism_mode == 'always' and cfg.gate_prism == 12.0
+    assert cfg.gate_prism == 12.0
     M = PF.ProfileModel(T._exposures(src_y=0.1), priors=cfg.priors, bounds=cfg.bounds)
     lo, hi = M.bounds()
     assert lo[0] == pytest.approx(0.1 - 0.2) and hi[0] == pytest.approx(0.1 + 0.2)
@@ -242,6 +228,47 @@ def test_chain_picks_prism_when_own_not_better():
     assert C.shdis == 0
 
 
+def test_sibling_grating_shape_is_held_over_the_wavelengths_and_labelled_grating():
+    """Below the gate a grating takes the shape of its source's other grating that passed its
+    gate: its centre offset and width at that grating's pivot, without the chromatic terms
+    (they would be extrapolated an octave), labelled 'grating'."""
+    from campfire_pipeline.nirspec import profile_contam as CT
+    truth = dict(centre_offset=0.12, width=0.08, drift=0.0, width_change=0.0)
+    exps = _grating(T._exposures(src_y=0.05))
+    _fill(exps, truth, 8.0, seed=11)
+    h = fits.Header()
+    h.update(PFSHAPE='own', PFCEN=0.05 + 0.12, PFCENPR=0.05, PFDRIFT=0.25, PFWIDTH=0.08, PFDWIDTH=0.2,
+             PFPIVOT=2.3)
+    ref = PC.PrismShape.from_header('obs_g235m_f170lp_7', h, chromatic=CT.is_prism_product('obs_g235m_f170lp_7'))
+    assert not ref.chromatic and ref.params['drift'] == 0.0 and ref.params['width_change'] == 0.0
+    assert PC.PrismShape.from_header('obs_prism_clear_7', h, chromatic=True).params['drift'] == 0.25
+    M = PF.ProfileModel(exps)
+    x = PF.map_shape(ref.params, 2 * M.pivot)                # held, wherever the target's pivot is
+    assert x['centre_offset'] == pytest.approx(0.12) and x['width'] == pytest.approx(0.08)
+    C = PC.choose_shape(exps, _cfg(gate_snr_grating=1e6), is_prism=False, prism=ref)
+    assert C.transfer == 'used' and C.shape == 'grating' and C.reason == 'below_gate;prism'
+    assert C.result.params['width'] == pytest.approx(0.08)
+    assert C.header_cards()['PFPRISM'][0] == 'obs_g235m_f170lp_7'
+
+
+def test_grating_transfer_plan():
+    """A source's grating products that fell to the default take the shape of its grating that
+    took its own fit (the highest detection S/N when several did); not where a PRISM shape was
+    used, a product fell back, or no grating took its own fit."""
+    from campfire_pipeline.nirspec.stage3 import grating_transfer_plan
+
+    def r(prod, sid, shape, snr=10.0, transfer='no_prism', prism=False, fallback=None):
+        return dict(product=prod, source_id=sid, shape=shape, snr_det=snr, transfer=transfer, is_prism=prism,
+                    fallback=fallback)
+    results = [r('o_g140m_1', 1, 'default'), r('o_g235m_1', 1, 'own', 80), r('o_g395m_1', 1, 'own', 120),
+               r('o_g140m_2', 2, 'default'), r('o_g235m_2', 2, 'default'),                      # no reference
+               r('o_g140m_3', 3, 'default', transfer='prism_not_own'), r('o_g235m_3', 3, 'own', 90),
+               r('o_prism_3', 3, 'default', prism=True),
+               r('o_g140m_4', 4, 'prism', transfer='used'), r('o_g235m_4', 4, 'own', 90),       # PRISM shape used
+               r('o_g140m_5', 5, None, fallback='no_crf'), r('o_g235m_5', 5, 'own', 90)]
+    assert grating_transfer_plan(results) == {'o_g140m_1': 'o_g395m_1', 'o_g140m_3': 'o_g235m_3'}
+
+
 def test_chain_picks_own_when_significantly_better():
     truth = dict(centre_offset=0.2, width=0.12, drift=0.0, width_change=0.0)
     exps = _grating(T._exposures(src_y=0.05))
@@ -251,8 +278,6 @@ def test_chain_picks_own_when_significantly_better():
     C = PC.choose_shape(exps, _cfg(), is_prism=False, prism=prism)
     assert C.shape == 'own' and C.reason == 'own_better'
     assert C.shdis == 1
-    C2 = PC.choose_shape(exps, _cfg(profile_fit_prism_mode='always'), is_prism=False, prism=prism)
-    assert C2.shape == 'prism' and C2.reason == 'prism_always'
     # below the own-vs-PRISM gate floor the PRISM shape is kept even when the own fit is better
     C3 = PC.choose_shape(exps, _cfg(own_vs_prism_min_gate=10 * C.snr_det), is_prism=False, prism=prism)
     assert C3.shape == 'prism' and C3.reason == 'prism_kept:gate'
@@ -280,6 +305,18 @@ def test_bound_hit_detected_and_chain_keeps_own_when_fallback_is_worse():
     assert C.shape == 'own' and C.reason.startswith('bound_kept')
 
 
+def test_width_on_its_bound_falls_back_even_when_the_fallback_is_worse():
+    """A bright source wider than the width bound: the own fit ends on the width bound and
+    beats the default shape by far, but a width (or drift) on its bound is the fit reaching
+    for other light, not a real offset, so the chain falls back (p1 629668; user, 2026-11-06)."""
+    exps = T._exposures(src_y=0.0)
+    _fill(exps, dict(centre_offset=0.0, width=0.35), 60.0, seed=8)
+    C = PC.choose_shape(exps, _cfg(bound_width_max=0.2), is_prism=True)
+    assert C.bound_bits & PF.BOUND_BITS['width']
+    assert C.chi2['default'] - C.chi2['own'] > 100            # the old rule would have kept it
+    assert C.shape == 'default' and C.reason.startswith('bound:') and 'width' in C.reason
+
+
 def test_bound_hit_falls_back_when_fallback_fits_as_well():
     exps = T._exposures(src_y=0.0)
     _fill(exps, dict(centre_offset=0.0, width=0.15), 4.0, seed=9)
@@ -298,9 +335,10 @@ def test_chain_masked_fraction_skips_own_fit():
     assert C.shape == 'default' and C.reason.startswith('masked:0.30')
 
 
-def test_chain_dominance_rules_skip_own_fit():
-    """Other sources dominate the trace although hybrid masking kept most of it
-    (a well-predicted contaminant is subtracted, not masked): no own fit."""
+def test_chain_dominance_is_recorded_only():
+    """Other sources dominate the trace although the subtraction kept most of it (a
+    well-predicted contaminant is subtracted, not masked): the ratio is recorded
+    (PFDOMIN), measured at the fallback shape, and the own fit is still used."""
     exps = T._exposures()
     _fill(exps, dict(width=0.15), 40.0)
     clean = dict(overall=0.9, per_exposure=[0.9] * 3, clean_pred=0.3)
@@ -309,32 +347,15 @@ def test_chain_dominance_rules_skip_own_fit():
     def ratio(R):
         seen.append(R)
         return 3.0
-    always = dict(contam_dominance_apply='always')
-    C = PC.choose_shape(exps, _cfg(**always), is_prism=True, clean=clean, contam_ratio=ratio)
-    assert C.shape == 'default' and C.reason == 'dominated:3.00' and C.dominance == 3.0
-    assert seen and seen[0] is C.candidates['default']             # measured at the fallback shape
-    C = PC.choose_shape(exps, _cfg(**always), is_prism=True, clean=clean, contam_ratio=lambda R: 0.5)
-    assert C.shape == 'own'
-    C = PC.choose_shape(exps, _cfg(contam_dominance='pixels', **always), is_prism=True, clean=clean)
-    assert C.reason == 'dominated:0.30'
-    C = PC.choose_shape(exps, _cfg(contam_dominance='off'), is_prism=True, clean=clean, contam_ratio=ratio)
-    assert C.shape == 'own'
-    # default (round 3): the rule applies only in mask mode; in hybrid mode it is a flag (PFDOMIN)
     C = PC.choose_shape(exps, _cfg(), is_prism=True, clean=clean, contam_ratio=ratio)
     assert C.shape == 'own' and C.dominance == 3.0
-    C = PC.choose_shape(exps, _cfg(contam_mode='mask'), is_prism=True, clean=clean, contam_ratio=ratio)
-    assert C.reason == 'dominated:3.00'
-    C = PC.choose_shape(exps, _cfg(contam_mode='mask', contam_dominance_apply='flag'), is_prism=True, clean=clean,
-                        contam_ratio=ratio)
-    assert C.shape == 'own'
+    assert seen and seen[0] is C.candidates['default']
+    assert C.header_cards()['PFDOMIN'][0] == pytest.approx(3.0)
 
 
-def test_chain_free_and_fixed_modes():
+def test_chain_fixed_mode():
     exps = T._exposures()
     _fill(exps, dict(width=0.25), 30.0)
-    F = PC.choose_shape(exps, _cfg(profile_fit_shape='free'), is_prism=True)
-    assert F.chain == 'free' and F.shape == 'own'
-    assert F.result.model.priors.centre_sigma == PF.Priors().centre_sigma      # V0 priors
     X = PC.choose_shape(exps, _cfg(profile_fit_shape='fixed'), is_prism=True)
     assert X.chain == 'fixed' and X.shape == 'default'
     assert X.result.params['width'] == pytest.approx(0.15)

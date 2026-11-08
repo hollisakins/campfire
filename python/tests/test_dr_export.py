@@ -16,7 +16,7 @@ def _entry(stream, scope, state='pending'):
             'sha256': None, 'size_bytes': None, 'rows': None, 'built_at': None, 'error': None}
 
 
-def _db(ledger, *, rows=None, busy=(), fail_rows=(), lose_claim=(), lose_ready_answer=()):
+def _db(ledger, *, rows=None, busy=(), fail_rows=(), lose_claim=(), lose_ready_answer=(), drop_once=()):
     """A fake dr_export_* API over a mutable ledger, as the SQL behaves."""
     rows = rows or {}
     claims = {}
@@ -54,10 +54,16 @@ def _db(ledger, *, rows=None, busy=(), fail_rows=(), lose_claim=(), lose_ready_a
             r.update(state='failed', error=p['p_error'])
             return {'state': 'exporting'}
 
+    dropped = set()
+
     def export_rows(p):
         key = f"{p['p_stream']}/{p['p_partition']}"
         if key in fail_rows:
             raise RuntimeError('boom')
+        if key in drop_once and key not in dropped:      # the connection drops once (#666)
+            dropped.add(key)
+            import httpx
+            raise httpx.RemoteProtocolError('Server disconnected')
         data = rows.get(key, [])
         start = 0 if p['p_after'] is None else next(i for i, r in enumerate(data) if r['next_cursor'] == p['p_after']) + 1
         return data[start:start + p['p_limit']]
@@ -118,6 +124,40 @@ def test_pages_with_the_cursor(tmp_path):
     rows, _sha, _size = X.build_file(db, TAG, 'spectra', 'p', str(tmp_path / 'f'), page=2)
     assert rows == 5
     assert [c.params['p_after'] for c in db.rpcs if c.name == 'dr_export_rows'] == [None, '1', '3']
+
+
+def test_a_dropped_connection_is_retried_before_a_file_fails(monkeypatch):
+    naps = []
+    monkeypatch.setattr('campfire.transient._sleep', naps.append)
+    ledger = [_entry('objects', 'pub'), _entry('manifest', 'nircam/f')]
+    db, s3 = _db(ledger, rows=ROWS, drop_once=('objects/pub',)), _s3()
+    logs = []
+    rep = X.run_export(db, s3, BUCKET, TAG, log=logs.append)
+    assert rep.failed == [] and rep.remaining == 0
+    assert sorted(b['stream'] for b in rep.built) == ['manifest', 'objects']
+    # the first page of objects/pub was asked twice; one backoff; the retry was logged
+    assert [c.params['p_after'] for c in db.rpcs if c.name == 'dr_export_rows' and c.params['p_stream'] == 'objects'] == [None, None]
+    assert naps == [1.0] and any('retrying objects/pub page' in m for m in logs)
+
+
+def test_a_dropped_status_request_after_the_uploads_is_retried(monkeypatch):
+    """The orchestration requests (begin, ledger, status) are retried too (remote Codex on #667)."""
+    naps = []
+    monkeypatch.setattr('campfire.transient._sleep', naps.append)
+    ledger = [_entry('objects', 'pub')]
+    db, s3 = _db(ledger, rows=ROWS), _s3()
+    real_status = db.rpc_handlers['dr_export_status']
+    dropped = []
+
+    def status(p):
+        if not dropped:
+            dropped.append(1)
+            import httpx
+            raise httpx.RemoteProtocolError('Server disconnected')
+        return real_status(p)
+    db.rpc_handlers['dr_export_status'] = status
+    rep = X.run_export(db, s3, BUCKET, TAG, log=lambda *_: None)
+    assert rep.failed == [] and rep.remaining == 0 and rep.state == 'exported' and naps == [1.0]
 
 
 def test_a_failing_file_is_marked_failed_and_the_run_goes_on_without_a_sweep():

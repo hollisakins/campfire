@@ -182,7 +182,7 @@ def shape_for(exps, M, cfg, is_prism, prism_shape):
     gate, else the default shape."""
     if not is_prism and prism_shape is not None and prism_shape.shape == 'own':
         return PF.map_shape(prism_shape.params, M.pivot), 'prism'
-    snr, _ = PF.detection_snr(M, scale=cfg.gate_noise)
+    snr, _ = PF.detection_snr(M)
     if snr >= (cfg.gate_prism if is_prism else cfg.gate_grating):
         try:
             Ro = PF.fit(exps, model=M)
@@ -821,14 +821,17 @@ def add_joint_light(P, exps, jl):
     return P
 
 
-def signature(stage_config, ids, prism=None, pre_bkgsub=False, overrides=None):
+def signature(stage_config, ids, prism=None, pre_bkgsub=False, overrides=None, stuck=''):
     """The cache signature of a joint pass-1 file: the pass-1 settings, this module's
     version, the neighbourhood's members, the PRISM shapes they take (``prism``, one
-    string per member) and, with ``pre_bkgsub``, that the nod differences were the
+    string per member), the stuck shutters its trace maps were read with (``stuck``,
+    ``CT.maps_signature``) and, with ``pre_bkgsub``, that the nod differences were the
     override files' (``MemberCache``) and which (``overrides``, one string per member), so
     a pass 1 of the other kind, or of other overrides, is never reused."""
     st = CT.pass1_settings(stage_config)
     s = dict(st, joint=JOINT_PASS_VERSION, members=','.join(str(s) for s in ids))
+    if stuck:
+        s['stuck'] = stuck
     if prism:
         s['prism'] = ';'.join(prism)
     if pre_bkgsub:
@@ -879,28 +882,30 @@ def _boxcar(sid, t, cache, maps, stage_config, err):
     return CT.boxcar_pass1(exps, sid, maps, cache.workspace, cache.is_prism, stage_config, box[:3]), box[3]
 
 
-def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=0.9, pass1_dir=None):
+def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=0.9, pass1_dir=None,
+               stuck_keys=None):
     """Solve one target's neighbourhood ``ids`` (target first) and write its pass-1 file.
 
     A neighbour whose member cannot be built (``ProfileFitFallback``) is left out of the
     solve, logged; its light then stays in the target's spectrum where they share pixels.
     When the target's own member cannot be built its pass 1 is its stage-3 3-pixel
     boxcar (``_boxcar``). Returns the path, or None (logged, reason in the missing file)
-    when there is no boxcar either."""
+    when there is no boxcar either. ``maps``: the trace maps (``CT.trace_maps``), read with
+    ``stuck_keys``; a pass 1 is redone when a rate file it read a map from is newer or the
+    stuck list changed."""
     from campfire_pipeline.common.io import log
-    from campfire_pipeline.nirspec import trace_overlap as TO
 
     t = cache.tasks[int(sid)]
     out, missing = _paths(cache.workspace, t['product'], pass1_dir)
     groups = t['groups']
-    keys = {CT.exposure_key(f) for g in groups for f in g}
-    mpaths = [TO.trace_map_path(os.path.join(cache.workspace, CT.MAPS_SUBDIR), f'{k}_rate.fits') for k in sorted(keys)]
-    mpaths = [p for p in mpaths if os.path.exists(p)]
+    keys = sorted({CT.exposure_key(f) for g in groups for f in g} & set(maps))
+    rates = [CT.rate_path(cache.workspace, k) for k in keys]
     pre = getattr(cache, 'pre_bkgsub', False)
     sig = signature(stage_config, ids, [cache.prism_sig(s) for s in ids], pre,
-                    [repr(cache.tasks[int(s)].get('overrides')) for s in ids] if pre else None)
+                    [repr(cache.tasks[int(s)].get('overrides')) for s in ids] if pre else None,
+                    stuck=CT.maps_signature(keys, stuck_keys))
     jpath = joint_light_path(out)
-    prev = None if overwrite else CT._pass1_valid(out, list(groups) + [mpaths], len(mpaths), sig)
+    prev = None if overwrite else CT._pass1_valid(out, list(groups) + [rates], len(rates), sig)
     if prev is not None and not CT._boxcar_stale(prev, out, cache.workspace, t['product']):
         # a joint pass 1 needs its neighbours' light beside it; a boxcar one has none
         if str(prev['why'] if 'why' in prev else '') != 'joint' or read_joint_light(jpath, sig) is not None:
@@ -915,7 +920,7 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
             P1, src = _boxcar(sid, t, cache, tmaps, stage_config, e)
             log(f"{t['product']}: pass 1 from the stage-3 3-pixel boxcar ({src}), its own fell back "
                 f"({e.reason}: {e})")
-            CT.write_pass1(out, P1, sig, len(mpaths), SPEC_SRC)
+            CT.write_pass1(out, P1, sig, len(rates), SPEC_SRC)
             if os.path.exists(missing):
                 os.remove(missing)
             return out
@@ -933,7 +938,7 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
             log(f"{t['product']}: neighbour {s} left out of the joint solve ({e.reason})")
     sol = solve_target(members, degenerate=degenerate)
     P1 = pass1_of(target, sol, tmaps, stage_config)
-    CT.write_pass1(out, P1, sig, len(mpaths), SPEC_SRC)
+    CT.write_pass1(out, P1, sig, len(rates), SPEC_SRC)
     write_joint_light(jpath, target, sol.get('others', []), sig)
     if os.path.exists(missing):
         os.remove(missing)
@@ -941,29 +946,24 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
 
 
 def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_keys=None, overwrite=False,
-              depth=2, cap=25, degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False):
+              depth=2, cap=25, degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, stuck_keys=None):
     """One worker's share of a disperser: the joint first pass of ``targets`` (in
     coupling order), with one member cache of ``cache_size`` members. Returns the
     written paths."""
     cache = MemberCache(tasks, workspace, stage_config, is_prism, size=cache_size, pre_bkgsub=pre_bkgsub)
     keys = maps_keys or sorted({CT.exposure_key(f) for t in tasks.values() for g in t['groups'] for f in g})
-    from campfire_pipeline.nirspec import trace_overlap as TO
-    maps = {}
-    for k in keys:
-        p = TO.trace_map_path(os.path.join(workspace, CT.MAPS_SUBDIR), f'{k}_rate.fits')
-        if TO.map_is_current(p):
-            maps[k] = TO.TraceMap.read(p)
+    maps = CT.trace_maps(workspace, keys, stuck_keys)
     out = []
     for sid in targets:
         ids = [s for s in neighbourhood(coupled, sid, depth=depth, cap=cap) if s in tasks]
         ow = overwrite if isinstance(overwrite, bool) else int(sid) in overwrite
         out.append(run_target(sid, ids, cache, maps, stage_config, overwrite=ow, degenerate=degenerate,
-                              pass1_dir=pass1_dir))
+                              pass1_dir=pass1_dir, stuck_keys=stuck_keys))
     return out
 
 
 def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False, depth=2, cap=25,
-        degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, targets=None):
+        degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, targets=None, stuck_keys=None):
     """The joint first pass of every source of one disperser.
 
     tasks : {sid: dict(product, groups, overrides, science, prism_product[, spec3])} for
@@ -971,17 +971,14 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
     overwrite : bool, or the set of source ids whose pass 1 is redone whatever its cache
     says (the others are redone only when stale). pre_bkgsub : every member's nod
     differences those of the override files (``MemberCache``). targets : solve only these
-    sources' neighbourhoods (default every source). Returns the written paths."""
+    sources' neighbourhoods (default every source). stuck_keys : the observation's stuck
+    physical shutters by root (``CT.stuck_keys_by_root``), left out of the trace maps.
+    Returns the written paths."""
     from campfire_pipeline.common.parallel import dispatch
-    from campfire_pipeline.nirspec import trace_overlap as TO
 
     files = {sid: [f for g in t['groups'] for f in g] for sid, t in tasks.items()}
     keys = sorted({CT.exposure_key(f) for fs in files.values() for f in fs})
-    maps = {}
-    for k in keys:
-        p = TO.trace_map_path(os.path.join(workspace, CT.MAPS_SUBDIR), f'{k}_rate.fits')
-        if TO.map_is_current(p):
-            maps[k] = TO.TraceMap.read(p)
+    maps = CT.trace_maps(workspace, keys, stuck_keys)
     coupled = coupling(files, maps)
     order = target_order(coupled, depth=depth, cap=cap)
     if targets is not None:
@@ -993,6 +990,6 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
     size = int(np.ceil(len(order) / nb))
     batches = [order[i:i + size] for i in range(0, len(order), size)]
     args = [(b, tasks, workspace, stage_config, is_prism, coupled, keys, overwrite, depth, cap, degenerate,
-             pass1_dir, cache_size, pre_bkgsub) for b in batches]
+             pass1_dir, cache_size, pre_bkgsub, stuck_keys) for b in batches]
     res = dispatch(run_batch, args, n_processes=n_processes, use_starmap=True) or []
     return [p for r in res for p in (r or [])]

@@ -12,10 +12,37 @@ def _shutter(sb, err=0.01, q=1, k=1, sid=100, rate='r_00001_nrs1'):
                              sb=sb, err=np.full(sb.shape, err), n=np.full(sb.shape, 5))
 
 
-def test_options_strip_the_prefix():
-    o = M.options({'master_bkg_core_frac': 0.3, 'unrelated': 1})
-    assert o['core_frac'] == 0.3 and o['bin_pixels'] == M.DEFAULTS['master_bkg_bin_pixels']
+def test_options_take_only_the_user_facing_keys_from_the_config():
+    """The settings are fixed in the code; only ``master_bkg_plot`` is read from the config."""
+    o = M.options({'master_bkg_plot': False, 'master_bkg_core_frac': 0.3, 'unrelated': 1})
+    assert o['plot'] is False
+    assert o['core_frac'] == M.SETTINGS['core_frac'] == 0.2       # a removed option has no effect
     assert 'unrelated' not in o
+    assert set(o) == set(M.SETTINGS) | {'plot'}
+
+
+def test_the_default_config_sets_no_removed_option():
+    import tomllib
+    from importlib.resources import files
+    from campfire_pipeline import config as C
+    cfg = tomllib.loads(files('campfire_pipeline').joinpath('data/config_default.toml').read_text())['nirspec']
+    for stage, removed in C.REMOVED_OPTIONS.items():
+        assert not set(cfg[stage]) & set(removed), set(cfg[stage]) & set(removed)
+    stage2 = {k for k in cfg['stage2'] if k.startswith('master_bkg_')}
+    assert stage2 == set(M.USER_OPTIONS)
+
+
+def test_a_removed_option_left_in_a_config_is_reported_once(monkeypatch):
+    from campfire_pipeline import config as C
+    said = []
+    monkeypatch.setattr('campfire_pipeline.common.io.log', lambda msg, *a: said.append(msg))
+    monkeypatch.setattr(C, '_WARNED_REMOVED', set())
+    obs = type('Obs', (), {'stage_overrides': {'stage2': {'single_call': False}}})()
+    cfg = {'nirspec': {'stage2': {'master_bkg_write_2d': False, 'rectify': True}}}
+    for _ in range(2):
+        merged = C.get_stage_config('stage2', cfg, obs)
+    assert merged['rectify'] is True
+    assert len(said) == 2 and 'master_bkg_write_2d' in said[0] and 'single_call' in said[1]
 
 
 def test_bin_spectrum_median_and_counts():

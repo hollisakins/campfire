@@ -36,6 +36,7 @@
     plot = true
     
     [nirspec.stage1.override_wavelength_range] # mask beyond the nominal wavelength range, to cover higher-order spectra
+        # (G140M/F100LP, G235M/F170LP and the H gratings with those filters are masked to 5.3 um whatever these say)
         G140M = [0.70, 2.5]
         G235M = [1.66, 4.0]
         G395M = [2.87, 5.5]
@@ -48,21 +49,10 @@
 
 [nirspec.stage2]
     set_stellarity = 1.0
-    # One Spec2Pipeline call per rate file over an edited full metafile, split into
-    # the per-source canonicals afterwards (same per-slit arrays as one call per
-    # source, for one CRDS/WCS set-up instead of one per source). false runs the
-    # original one-call-per-source loop, which is also the fallback when the
-    # single call fails.
-    single_call = true
-    # Also extract the MSA plan's background-only slitlets (no catalog source) into
-    # products/nirspec/<obs>/bkgslits/<root>_<nrsN>_bkgslits.fits, calibrated as
-    # extended sources (uniform pathloss, MJy/sr, bar shadow applied). Input of the
-    # master-background derivation; regenerable, never deployed. Needs single_call.
-    extract_bkgslits = true
-    # Use the empirical bar-shadow table (campfire_pipeline/data/empirical_jwst_nirspec_barshadow_<grating>.fits,
-    # derived from our own empty shutters by Generate_Barshadow_Cals.py) instead of the CRDS reference for the
-    # background slitlets; gratings without a table fall back to CRDS. Off until the tables are validated.
-    empirical_barshadow = false
+    # Stage 2a runs one Spec2Pipeline per rate file (the per-source loop only as the
+    # fallback when that call fails), always extracts the MSA plan's background-only
+    # slitlets (bkgslits/), and gives those the empirical bar-shadow tables (CRDS for a
+    # grating without one); none of this is configurable since the 2026-11-06 audit.
     rectify = true
     plot_bkgsub = true
     # Stage 2b: a background exposure that puts another catalog source (the MSA plan's
@@ -78,64 +68,24 @@
     slitlet_neighbor_min_background = 0.02
     slitlet_neighbor_max_distance = 0.75
     empirical_wavecorr = false
-    # Master background (docs/design-nirspec-master-background.md §4): the sky of each
-    # exposure x detector from its empty shutters, written as <root>_<nod>_<nrsN>_mbkg.fits
-    # at the end of stage 2a (always; these knobs set how, never whether). The 1-D sky
-    # comes from the shutter core |f| <= master_bkg_core_frac with master_bkg_bin_pixels
-    # detector pixels per bin; a shutter is rejected when its scale against the sky is
-    # above 1 + master_bkg_excess_min or below 1 - master_bkg_low_min (both at 3 sigma),
-    # or when master_bkg_line_min_bins consecutive bins exceed master_bkg_line_sigma.
-    # Below master_bkg_min_shutters clean shutters the exposure takes its group's pooled
-    # sky. master_bkg_error_floor is the fractional systematic sky_for_slit adds in
-    # quadrature; master_bkg_model_check compares with jwst_backgrounds when installed;
-    # master_bkg_write_2d paints the sky back onto the detector (MBKG2D, 16 MB per file).
-    master_bkg_source_pad_px = 3.0
-    master_bkg_core_frac = 0.2
-    master_bkg_bin_pixels = 2.0
-    master_bkg_min_pixels = 20
-    master_bkg_min_bins = 10
-    master_bkg_clip_sigma = 3.0
-    master_bkg_line_sigma = 4.0
-    master_bkg_line_min_bins = 3
-    master_bkg_excess_min = 0.05
-    master_bkg_low_min = 0.30
-    master_bkg_n_iter = 3
-    master_bkg_min_shutters = 5
-    # Pool unless different: each exposure x detector is painted with the pooled sky of its
-    # exposure group (step 2: every exposure; step 1, in count rate: the same detector),
-    # unless its own clean shutters differ from the pool of the other exposures in one of
-    # master_bkg_pool_bands wavelength bands by more than master_bkg_pool_tol AND
-    # master_bkg_pool_nsigma sigma (shutter-to-shutter scatter); then it keeps its own sky.
-    # The decision and the worst band are recorded (MBKGSRC / MBKGPSRC, MBKGPDEC ...), and
-    # the exposure's own sky is kept in the product either way.
-    master_bkg_prefer_pool = true
-    master_bkg_pool_tol = 0.02
-    master_bkg_pool_nsigma = 3.0
-    master_bkg_pool_bands = 8
-    # step 1 (count rate, before stage 2a): no flat field, so slitlets scatter ~7 % grey
-    # and the selection's thresholds are wider; the stuck call is per exposure root
-    master_bkg_rate_excess_min = 0.15
-    master_bkg_rate_low_min = 0.30
-    master_bkg_stuck_a_cut = 0.3                       # median sky amplitude below this ...
-    master_bkg_stuck_min_n = 2                         # ... from this many nods x detectors ...
-    master_bkg_stuck_guard = 0.5                       # ... with the two detectors' medians this close
-    master_bkg_error_floor = 0.03
-    master_bkg_quadrant_scales = true
-    master_bkg_model_check = true
-    master_bkg_write_2d = true
+    # Master background (docs/design-nirspec-master-background.md §4): the background of
+    # each exposure x detector from its empty shutters, its tables in the rate file (step 1,
+    # before stage 2a) and <root>_<nod>_<nrsN>_mbkg.fits with the background painted back
+    # onto the detector (step 2, end of stage 2a). Always made; its settings are fixed in
+    # the code (master_bkg.SETTINGS) and recorded in each product's header.
+    # master_bkg_plot writes the QA PDF of every exposure x detector (no product depends on it).
     master_bkg_plot = true
     # Extend G140M/F100LP and G235M/F170LP past their nominal red cutoff, using the
     # next-redder grating's calibration: a committed extended photom reference plus
     # extended fflat/sflat/wavelengthrange generated on the fly. Opt-in per observation
     # ([<obs>.stage2]). Only those two grating/filter combos are affected; every other
-    # config runs normally. When true, stage 1's background-subtraction mask auto-widens
-    # for these gratings (see config.get_stage_config) so the extended-order flux is not
-    # subtracted as background before stage 2 can recover it.
+    # config runs normally. Stage 1's mask and the master background follow those traces
+    # to 5.3 um whatever this says.
     extend_g140m_g235m = false
 
     # Stuck-closed shutters: master-background step 1 (before stage 2a) fits every
-    # commanded-open shutter's sky in each rate frame (nirspec/shutter_fit.py), calls the
-    # stuck ones per exposure root (master_bkg_stuck_* above) and merges them into the
+    # commanded-open shutter's background in each rate frame (nirspec/shutter_fit.py), calls
+    # the stuck ones per exposure root (master_bkg.SETTINGS stuck_*) and merges them into the
     # observation's stuck list as auto entries, every disperser. false: the calls are still
     # made and stored (the rate file's CALLS table) but not written to the list.
     detect_stuck_shutters = true
@@ -157,32 +107,25 @@
     profile_fit_chromatic = true    # centre and width vary linearly with log wavelength
     # --- extraction v2 prototype (nirspec/profile_chain.py, profile_contam.py, nod_scan.py) ---
     # Shape of the extraction profile: "gated" (own fit above the detection gate, else the
-    # PRISM shape of the same source for gratings, else the default shape), "free" (the
-    # original v1 fit: free shape, original priors and bounds), "fixed" (default shape only).
+    # PRISM shape of the same source for gratings, else the default shape), "fixed" (default
+    # shape only).
     profile_fit_shape = "gated"
     profile_fit_prism_transfer = true        # gratings may take the PRISM shape
-    profile_fit_prism_mode = "unless_better" # "unless_better" | "always"
-    profile_fit_rows = "aperture"            # fnu_prof rows: "aperture" | "model" (all significant
-                                             # PROF2D rows incl. negative nod copies)
-    profile_fit_model_rows_frac = 0.02       # "model" rows: |PROF2D| >= this x column max
+    profile_fit_grating_transfer = true      # without a PRISM shape, a grating that fell to the default takes the
+                                             # shape of the source's grating that passed its gate (its centre
+                                             # offset and width; stage3.grating_transfer_plan)
     # Detection S/N gate for the own fit (noise scale = clipped mean square of the residuals).
     # Round-3 realistic-mix injections (2026-10-23): PRISM own fit unbiased (|bias| < 0.5 %) from
     # gate 25 and ahead of the default shape in delivered S/N there; G395M own fit has outliers
     # below 70. Null (real faint sources, own continuum removed): PRISM max 16 of 47, G395M max 26 of 126.
     gate_snr_prism = 25.0
     gate_snr_grating = 70.0
-    gate_noise = "mean_square"               # "mean_square" | "mad" (the gate before 2026-10-23)
     # Default shape (below the gate, no PRISM shape): star PSF x a Gaussian of this width at the
     # planned position. 0.15 (the prior median) reads ~5 % low on the population; 0.21 is unbiased
     # on it but costs 6-8 % in noise-only S/N. No per-exposure pointing offsets are fitted (any
     # shape): the nods land where commanded, and in crowded G395M a fitted offset took
     # neighbours' light (2026-11-01; it had bought ~1.5 % less bias on isolated injections).
     default_shape_width = 0.15
-    # Own fit of the width only between gate_partial_snr_* and the gate, products without a PRISM
-    # shape ("off" | "width" | "centre"). G395M 30-70: bias -5 % -> 0 at 1-2.5 % noise-only S/N.
-    profile_fit_partial = "off"
-    gate_partial_snr_prism = 25.0
-    gate_partial_snr_grating = 30.0
     own_vs_prism_dchi2 = 25.0                # grating own fit beats the PRISM shape by this + k ln(N)
     own_vs_prism_min_gate = 100.0            # and only above this gate (below it the PRISM shape is kept)
     own_vs_prism_centre = 0.08               # and only when the shapes differ by more than this in centre
@@ -216,9 +159,10 @@
     # solved with its neighbours on its nod differences, nothing masked or smoothed
     # (joint_first_pass), its light past its cutout too (count rate, no calibration;
     # profile_extend); failed-open shutters are recorded only (their background cancels in
-    # a nod difference)
+    # a nod difference). The prediction is subtracted before the shape fit, and the pixels where
+    # its own uncertainty exceeds contam_mask_kappa x the noise are left out; in the 1-D spectrum
+    # it is reported (fnu_contam), never subtracted from fnu
     contam_predict = true
-    contam_mode = "hybrid"                   # "hybrid" (subtract, mask where uncertain) | "mask"
     contam_joint_cache = 60                  # joint pass: members kept per worker (about 45 MB each on G395M;
                                              # a solve adds about 2.6 GB at its peak). Lower it to run more workers
     slitlet_neighbor_brightness = "model"    # after the joint pass, redo stage 2b's same-slitlet decisions with each
@@ -234,18 +178,8 @@
     contam_mask_kappa = 1.0                  # threshold in units of the per-pixel noise
     contam_min_clean_fraction = 0.5          # less main-shutter data left: no own fit
     contam_min_clean_fraction_exposure = 0.3 # or less than this in any exposure
-    contam_dominance = "light"               # other sources dominate the trace -> no own fit:
-                                             # "light" | "pixels" | "off"
-    contam_dominance_apply = "mask_only"     # "always" | "mask_only" (only with contam_mode = "mask") | "flag"
-    contam_dominance_max = 1.0               # light: their predicted light / the target's on the main shutter
-    contam_dominance_kappa = 1.0             # pixels: predicted light above this x noise is "dirty"
-    contam_dominance_min_clean = 0.5         # pixels: less clean main shutter than this
     contam_pair_ratio = 3.0                  # similar-brightness pair flag within 1/r..r
     contam_pair_min_frac = 0.3               # and the contaminant's light >= this x the target's in its extraction
-    contam_1d = "report"                     # fnu: "report" (fnu = fnu_prof; users subtract fnu_contam themselves,
-                                             # 2026-10-30) | "subtract" (fnu_prof - fnu_contam, EXTRACT = profile_decontam)
-    contam_1d_min_sigma = 3.0                # subtract only when the prediction exceeds this x the integrated noise
-                                             # (vs PRISM: helps above 3, neutral at 1-3; round 3)
     # The master-background spectrum (mbkg_extraction), the secondary product: the same
     # extraction on the exposures with their master background subtracted, as SPEC1D_MBKG,
     # SCI_MBKG, ERR_MBKG and PROF1D_MBKG of the _spec.fits. MBKGPREF says when it is likely
@@ -258,12 +192,11 @@
     # on the nod differences as stage 2b made them, leaving out (not modelling) every pixel
     # another slitlet's source shutter lights in any frame of the difference (trace maps),
     # so the scan never depends on the joint model. Catalogued neighbours are stage 2b's
-    # (slitlet_neighbor_min_background); the scan finds the uncatalogued ones.
+    # (slitlet_neighbor_min_background); the scan finds the uncatalogued ones. Its proposals are
+    # never applied: they go to reference/nirspec/<obs>/nodded_background_overrides_proposed.toml,
+    # with a review figure per source (<obs>_<id>_neighbor.pdf in the workspace)
     scan_neighbours = true
-    scan_action = "report_only"              # "report_only" (proposed file) | "auto_override"
-                                             # (auto file, applied by stage 2b on its next run)
     scan_nbins = 16
-    scan_noise = "mean_square"               # chi2 drops / reduced chi2 of target + neighbour ("none": raw)
     scan_dchi2 = 80.0                        # proposal threshold on chi2 drop / noise scale (sign-randomised
                                              # null, p14 PRISM: 0.23 % of 438 draws above 60-100, none above 120)
     scan_flag_dchi2 = 1500.0                 # product flag PFNBR only above this (negative-amplitude statistic of
@@ -271,8 +204,6 @@
     scan_flag_null_ratio = 5.0               # statistic (mirror rule 1.7-2.1 %), or the other disperser agrees
     scan_null_ratio = 1.5                    # and > this x the best negative-amplitude drop (provisional)
     scan_close = 0.9                         # neighbour closer than this: no proposal (copies overlap the target)
-    scan_close_rule = "all"                  # "all" | "brighter" (only brighter neighbours, round 2) | "off"
-    scan_gain_rule = false                   # also require modelled flux gain > the variance cost of the drop
     scan_xdisp_tol = 0.2                     # PRISM and grating scans must agree on Delta within this (< 0: off)
     scan_min_snr = 5.0
     scan_drop_frac = 0.2                     # partner dropped when it puts > this x the target's light on its rows

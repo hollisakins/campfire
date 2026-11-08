@@ -94,7 +94,7 @@ def test_unreliable_contaminant_is_masked_not_subtracted(stand_ins):
     assert P.unreliable == {2}
     assert np.all(P.pred[0] == 0)
     before = t_exps[0].diff.copy()
-    CT.apply(t_exps, P, mode='hybrid', kappa=1.0)
+    CT.apply(t_exps, P, kappa=1.0)
     np.testing.assert_array_equal(t_exps[0].diff, before)
     sig = CT.diff_sigma(t_exps, 0)
     big = np.abs(P.pred_unreliable[0]) > sig
@@ -111,24 +111,20 @@ def test_mask_threshold_and_clean_fraction():
     rows = np.unique(np.nonzero(ms)[0])
     block = np.zeros(exps[0].y.shape, bool)
     block[rows[: len(rows) // 2], :] = True
-    pred[0][block] = 3.0 * sig[block]                  # above kappa = 1 sigma
+    pred[0][block] = 3.0 * sig[block]                  # above 1 sigma: "dirty"
     pred[0][~block] = 0.5 * sig[~block]                # below
-    P = CT.Prediction(pred=pred, dpred=[0.1 * np.abs(p) for p in pred])
+    dpred = [0.1 * np.abs(p) for p in pred]
+    dpred[0][block] = 2.0 * sig[block]                 # the prediction's own uncertainty above kappa = 1 sigma
+    P = CT.Prediction(pred=pred, dpred=dpred)
     before = exps[0].diff.copy()
-    clean = CT.apply(exps, P, mode='mask', kappa=1.0)
+    clean = CT.apply(exps, P, kappa=1.0)
+    # subtracted everywhere, dropped only where the prediction itself is uncertain
+    np.testing.assert_allclose(exps[0].diff, before - pred[0])
     assert not exps[0].ok[block].any() and exps[0].ok[~block & ms].all()
     expect0 = (ms & ~block).sum() / ms.sum()
     assert clean['per_exposure'][0] == pytest.approx(expect0)
     assert clean['overall'] == pytest.approx((ms.sum() * 2 + (ms & ~block).sum()) / (3 * ms.sum()), rel=1e-6)
-    np.testing.assert_array_equal(exps[0].diff, before)          # mask does not touch the data
-    # hybrid: subtracts everywhere, masks only where the prediction itself is uncertain
-    exps, _ = _source(1, 0.0, 10.0)
-    for e in exps:
-        e.var = np.ones(e.y.shape)
-    before = exps[0].diff.copy()
-    CT.apply(exps, P, mode='hybrid', kappa=1.0)
-    np.testing.assert_allclose(exps[0].diff, before - pred[0])
-    assert exps[0].ok[ms].all()                                   # dpred = 0.1 pred < 1 sigma everywhere
+    assert clean['clean_pred_exposure'][0] == pytest.approx(expect0)
 
 
 def test_smooth_spectrum_clips_outliers_and_averages():
@@ -210,7 +206,7 @@ def test_pixels_without_calibration_get_no_light(monkeypatch, stand_ins):
     P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
     assert not P.pred[0][blk].any() and P.pred[0][~blk].any()
     ok = t_exps[0].ok.copy()
-    CT.apply(t_exps, P, mode='hybrid', kappa=1.0)
+    CT.apply(t_exps, P, kappa=1.0)
     assert np.array_equal(t_exps[0].ok[blk], ok[blk])
 
 
@@ -260,26 +256,9 @@ def test_contam_light_ratio_scales_with_contaminant():
     assert CT.contam_light_ratio(P, Rt, t_exps) == pytest.approx(2.0, rel=1e-6)
 
 
-def test_model_rows_extraction_uses_negative_copies():
-    rng = np.random.default_rng(3)
-    ny, nx = 30, 200
-    rows = np.arange(ny)[:, None]
-    prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2)
-    P = prof - 0.5 * np.exp(-0.5 * ((rows - 10) / 1.2) ** 2) - 0.5 * np.exp(-0.5 * ((rows - 20) / 1.2) ** 2)
-    P = P * np.ones((1, nx)) / prof.sum()
-    flux = 5.0
-    err = np.ones((ny, nx))
-    data = flux * P + rng.normal(size=(ny, nx))
-    f, e, sel = S3.model_rows_extraction(P, data, err, None, frac=0.02)
-    assert np.mean(f) == pytest.approx(flux, abs=4 * np.mean(e) / np.sqrt(nx))
-    np.testing.assert_allclose(e, 1.0 / np.sqrt(np.sum(np.where(sel, P, 0) ** 2, axis=0)))
-    assert np.std((f - flux) / e) == pytest.approx(1.0, abs=0.15)
-    # the copies carry information: the error is smaller than from the positive rows alone
-    fa, ea, _ = S3.model_rows_extraction(np.where(P > 0, P, 0.0), data, err, None, frac=0.02)
-    assert np.median(e) < np.median(ea)
-
-
 def test_contam2d_fraction_recovers_injected_contaminant(tmp_path):
+    """Other light at 10 % of the target: fnu_contam measures it and the best spectrum
+    stays fnu_prof, nothing subtracted."""
     ny, nx = 30, 100
     rows = np.arange(ny)[:, None]
     prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
@@ -292,28 +271,17 @@ def test_contam2d_fraction_recovers_injected_contaminant(tmp_path):
                  ).writeto(path)
     err = np.full((ny, nx), 0.01)
     out = S3._profile_fit_columns(str(path), sci_uJy.copy(), err, np.zeros((ny, nx), bool), 12, 18,
-                                  np.linspace(1, 5, nx), rows='aperture', contam_1d='report')
+                                  np.linspace(1, 5, nx))
     c = out['columns']
     np.testing.assert_allclose(c['fnu_prof'][0], 10.0, rtol=1e-6)
     np.testing.assert_allclose(c['fnu_contam'][0], 1.0, rtol=1e-6)
-    assert out['header']['PFCONTAM'] == pytest.approx(0.1, rel=1e-6)
-    assert out['header']['PFROWS'] == 'aperture'
-    assert (out['choice'], out['reason']) == ('profile', 'contam_report')
+    assert out['header']['PFCONTAM'] == pytest.approx(0.1, rel=1e-6) and out['header']['PFCONSIG'] > 3
+    assert (out['choice'], out['reason']) == ('profile', 'contam_predicted')
     assert out['header']['EXTRACT'] == 'profile' and out['header']['CONTSTAT'] == 'predicted'
     assert [h.name for h in out['hdus']] == ['PROF2D', 'CONTAM2D']
-    m = S3._profile_fit_columns(str(path), sci_uJy.copy(), err, np.zeros((ny, nx), bool), 12, 18,
-                                np.linspace(1, 5, nx), rows='model', contam_1d='report')
-    np.testing.assert_allclose(m['columns']['fnu_prof'][0], 10.0, rtol=1e-6)
-    # subtract (opt-in): the best spectrum is the decontaminated flux
-    s = S3._profile_fit_columns(str(path), sci_uJy.copy(), err, np.zeros((ny, nx), bool), 12, 18,
-                                np.linspace(1, 5, nx), rows='aperture', contam_1d='subtract')
-    assert (s['choice'], s['reason']) == ('profile_decontam', 'contam_significant') and s['header']['PFCONSIG'] > 3
-    cs = s['columns']
-    fnu, fnu_err = S3.best_spectrum(s['choice'], cs['fnu_prof'][0], cs['fnu_prof_err'][0], cs['fnu_contam'][0],
-                                    None, None)
-    np.testing.assert_allclose(fnu, 9.0, rtol=1e-6)
-    np.testing.assert_allclose(cs['fnu_prof'][0], 10.0, rtol=1e-6)
-    np.testing.assert_array_equal(fnu_err, cs['fnu_prof_err'][0])     # statistical error only
+    fnu, fnu_err = S3.best_spectrum(out['choice'], c['fnu_prof'][0], c['fnu_prof_err'][0], None, None)
+    np.testing.assert_allclose(fnu, 10.0, rtol=1e-6)
+    np.testing.assert_array_equal(fnu_err, c['fnu_prof_err'][0])
 
 
 def test_nothing_predicted_is_nan(tmp_path):
@@ -361,7 +329,7 @@ def test_not_separable_wavelengths_are_nan(tmp_path):
     assert out['header']['PFNOTSEP'] == pytest.approx(inside.mean(), abs=0.02)
 
 
-def test_insignificant_prediction_is_not_subtracted(tmp_path):
+def test_faint_prediction_is_reported_where_it_is(tmp_path):
     ny, nx = 30, 100
     rows = np.arange(ny)[:, None]
     prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
@@ -372,8 +340,8 @@ def test_insignificant_prediction_is_not_subtracted(tmp_path):
     fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(prof / 1e12, name='PROF2D'),
                   fits.ImageHDU(contam, name='CONTAM2D')]).writeto(path)
     out = S3._profile_fit_columns(str(path), 10.0 * prof, np.full((ny, nx), 0.01), np.zeros((ny, nx), bool), 12, 18,
-                                  np.linspace(1, 5, nx), contam_1d='subtract')
-    assert (out['choice'], out['reason']) == ('profile', 'contam_insignificant')
+                                  np.linspace(1, 5, nx))
+    assert (out['choice'], out['reason']) == ('profile', 'contam_predicted')
     assert out['header']['PFCONSIG'] < 3
     c = out['columns']['fnu_contam'][0]
     assert np.isfinite(c[50]) and np.isnan(np.delete(c, 50)).all()
@@ -407,7 +375,7 @@ def test_fallback_pf_file_gives_the_boxcar(tmp_path):
     assert np.isnan(out['columns']['fnu_prof'][0]).all() and np.isnan(out['columns']['fnu_contam'][0]).all()
     box, box_err = np.arange(nx, dtype=float), np.ones(nx)
     f, e = S3.best_spectrum(out['choice'], out['columns']['fnu_prof'][0], out['columns']['fnu_prof_err'][0],
-                            out['columns']['fnu_contam'][0], box, box_err)
+                            box, box_err)
     assert f is box and e is box_err
 
 
@@ -419,28 +387,23 @@ def test_profile_shape_mismatch_raises(tmp_path):
                                 12, 18, np.linspace(1, 5, 50))
 
 
-@pytest.mark.parametrize('have,pred,csig,mode,expect', [
-    (False, False, 0.0, 'subtract', ('profile', 'contam_off')),
-    (True, False, 0.0, 'subtract', ('profile', 'contam_none')),
-    (True, True, 10.0, 'report', ('profile', 'contam_report')),
-    (True, True, 3.5, 'subtract', ('profile_decontam', 'contam_significant')),
-    (True, True, 3.0, 'subtract', ('profile', 'contam_insignificant')),
+@pytest.mark.parametrize('have,pred,expect', [
+    (False, False, ('profile', 'contam_off')),
+    (True, False, ('profile', 'contam_none')),
+    (True, True, ('profile', 'contam_predicted')),
 ])
-def test_choose_extraction(have, pred, csig, mode, expect):
-    assert S3.choose_extraction(have, pred, csig, mode, 3.0) == expect
+def test_choose_extraction(have, pred, expect):
+    assert S3.choose_extraction(have, pred) == expect
     assert expect[0] in S3.EXTRACTIONS and expect[1] in S3.EXTRACT_REASONS
 
 
-def test_best_spectrum_error_is_statistical_only():
+def test_best_spectrum():
     prof, err = np.array([10.0, 10.0, np.nan]), np.array([1.0, 1.0, 1.0])
-    contam = np.array([2.0, np.nan, 2.0])
-    f, e = S3.best_spectrum('profile_decontam', prof, err, contam, None, None)
-    np.testing.assert_array_equal(f, [8.0, 10.0, np.nan])       # nothing predicted: nothing subtracted
-    np.testing.assert_array_equal(e, err)
-    f, e = S3.best_spectrum('profile', prof, err, contam, None, None)
+    f, e = S3.best_spectrum('profile', prof, err, None, None)
     np.testing.assert_array_equal(f, prof)
+    np.testing.assert_array_equal(e, err)
     with pytest.raises(ValueError):
-        S3.best_spectrum('optimal', prof, err, contam, None, None)
+        S3.best_spectrum('optimal', prof, err, None, None)
 
 
 def test_smooth_spectrum_keeps_coherent_lines():
@@ -529,7 +492,7 @@ def test_extension_pixels_are_predicted(monkeypatch):
     P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
     assert not P.pred[0][past].any()
     ok = t_exps[0].ok.copy()
-    CT.apply(t_exps, P, mode='hybrid', kappa=1.0)
+    CT.apply(t_exps, P, kappa=1.0)
     assert np.array_equal(t_exps[0].ok[past], ok[past])
 
 

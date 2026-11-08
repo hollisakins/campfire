@@ -299,6 +299,55 @@ def resolve_programs_file(explicit_path=None):
 # Stage config getters
 # ---------------------------------------------------------------------------
 
+# Options removed from [nirspec.<stage>] (2026-11-06 configuration audit): a config that still
+# sets one is told once that it has no effect.
+REMOVED_OPTIONS = {
+    'stage2': {
+        'single_call': 'stage 2a always runs one Spec2Pipeline per rate file (per source only as the fallback)',
+        'extract_bkgslits': 'the background-only slitlets are always extracted',
+        'empirical_barshadow': 'the empirical bar-shadow tables are always used (CRDS for a grating without one)',
+        **{f'master_bkg_{k}': 'fixed in master_bkg.SETTINGS' for k in (
+            'source_pad_px', 'core_frac', 'bin_pixels', 'min_pixels', 'min_bins', 'clip_sigma', 'line_sigma',
+            'line_min_bins', 'excess_min', 'low_min', 'n_iter', 'min_shutters', 'prefer_pool', 'pool_tol',
+            'pool_nsigma', 'pool_bands', 'rate_excess_min', 'rate_low_min', 'stuck_a_cut', 'stuck_min_n',
+            'stuck_guard', 'error_floor', 'quadrant_scales', 'model_check', 'write_2d', 'same_spot_px',
+            'failed_open_scale', 'failed_open_min_pixels', 'failed_open_nod_tol')},
+    },
+    'stage3': {
+        'profile_fit_prism_mode': 'a grating keeps its own fit only when it beats the PRISM shape',
+        'profile_fit_rows': 'fnu_prof uses the x1d aperture rows',
+        'profile_fit_model_rows_frac': 'fnu_prof uses the x1d aperture rows',
+        'gate_noise': 'the gate divides by the clipped mean square of the residuals',
+        'profile_fit_partial': 'no partial own fits',
+        'gate_partial_snr_prism': 'no partial own fits',
+        'gate_partial_snr_grating': 'no partial own fits',
+        'contam_mode': "other slitlets' light is always subtracted before the shape fit",
+        'contam_dominance': 'the dominance ratio is recorded (PFDOMIN), never acted on',
+        'contam_dominance_apply': 'the dominance ratio is recorded (PFDOMIN), never acted on',
+        'contam_dominance_max': 'the dominance ratio is recorded (PFDOMIN), never acted on',
+        'contam_dominance_kappa': 'the dominance ratio is recorded (PFDOMIN), never acted on',
+        'contam_dominance_min_clean': 'the dominance ratio is recorded (PFDOMIN), never acted on',
+        'contam_1d': 'fnu_contam is reported, never subtracted from fnu',
+        'contam_1d_min_sigma': 'fnu_contam is reported, never subtracted from fnu',
+        'scan_noise': 'the scan always divides by its reduced chi2',
+        'scan_close_rule': 'a neighbour closer than scan_close is always withheld',
+        'scan_gain_rule': 'the proposal gain is recorded only',
+        'scan_action': 'proposals are written for review (nodded_background_overrides_proposed.toml), never '
+                       'applied; a leftover nodded_background_overrides_auto.toml is not read',
+    },
+}
+_WARNED_REMOVED = set()
+
+
+def _warn_removed(stage_name, merged):
+    from campfire_pipeline.common.io import log
+    for key in sorted(set(merged) & set(REMOVED_OPTIONS.get(stage_name, {}))):
+        if (stage_name, key) not in _WARNED_REMOVED:
+            _WARNED_REMOVED.add((stage_name, key))
+            log(f'config: [nirspec.{stage_name}].{key} was removed and has no effect: '
+                f'{REMOVED_OPTIONS[stage_name][key]}')
+
+
 def get_stage_config(stage_name, config, obs):
     """Build effective config for a NIRSpec pipeline stage.
 
@@ -306,60 +355,14 @@ def get_stage_config(stage_name, config, obs):
         1. Observation-specific overrides  (observations.toml  [obs.stageN])
         2. Config defaults + user overrides (already merged in load_config)
 
-    When ``[nirspec.stage2].extend_g140m_g235m`` is enabled for this
-    observation, stage1's background-subtraction wavelength caps for the
-    extended gratings are auto-widened (see
-    ``_widen_stage1_ranges_for_extension``) so stage1 does not subtract the
-    extended-order flux as background before stage2 can recover it.
+    Stage 1's slit mask follows the G140M/F100LP and G235M/F170LP traces (and the H
+    gratings with those filters) to the extended red edge whether or not
+    ``[nirspec.stage2].extend_g140m_g235m`` is on (``stage1.mask_slits``,
+    ``constants.EXTENDED_TRACE_GRATING_FILTERS``), so nothing here depends on it.
     """
     merged = dict(config.get('nirspec', {}).get(stage_name, {}))
     merged.update(obs.stage_overrides.get(stage_name, {}))
-
-    if stage_name == 'stage1':
-        stage2 = dict(config.get('nirspec', {}).get('stage2', {}))
-        stage2.update(obs.stage_overrides.get('stage2', {}))
-        if stage2.get('extend_g140m_g235m'):
-            merged = _widen_stage1_ranges_for_extension(merged)
-
-    return merged
-
-
-def _widen_stage1_ranges_for_extension(stage1_config):
-    """Widen stage1's background-subtraction wavelength caps for extended gratings.
-
-    Extended-wavelength reductions (``[nirspec.stage2].extend_g140m_g235m``) push
-    the extracted range of G140M/F100LP and G235M/F170LP out to
-    ``EXTENDED_MAX_WAVELENGTH_UM``. Stage1's ``override_wavelength_range`` defines
-    the science footprint protected from the background estimate; if its red caps
-    stay at the nominal values, the extended-order flux is treated as background and
-    subtracted in place before stage2 runs.
-
-    Returns a copy of *stage1_config* with the red edge of the extended gratings
-    raised to the extension limit (the blue edge is preserved). The nested
-    ``override_wavelength_range`` dict is deep-copied before mutation so the loaded
-    config is never modified.
-    """
-    import copy
-    from campfire_pipeline.common.io import log
-    from campfire_pipeline.nirspec.constants import (
-        EXTENDED_MAX_WAVELENGTH_UM, EXTENDED_GRATING_FILTERS,
-    )
-
-    gratings_to_widen = {grating for grating, _filt in EXTENDED_GRATING_FILTERS}
-
-    merged = dict(stage1_config)
-    ranges = copy.deepcopy(merged.get('override_wavelength_range', {}))
-    for grating in gratings_to_widen:
-        if grating in ranges:
-            lo, hi = ranges[grating]
-            if hi < EXTENDED_MAX_WAVELENGTH_UM:
-                ranges[grating] = [lo, EXTENDED_MAX_WAVELENGTH_UM]
-                log(f"extend_g140m_g235m: widened stage1 {grating} background mask "
-                    f"red edge {hi} -> {EXTENDED_MAX_WAVELENGTH_UM} um")
-        else:
-            log(f"extend_g140m_g235m: no stage1 override_wavelength_range entry for "
-                f"{grating}; extended-order flux may be subtracted as background")
-    merged['override_wavelength_range'] = ranges
+    _warn_removed(stage_name, merged)
     return merged
 
 
@@ -433,8 +436,8 @@ def get_empirical_barshadow_path(grating):
     Derived from CAMPFIRE stage-2a canonicals by
     ``campfire_pipeline/data/Generate_Barshadow_Cals.py`` in the CRDS ``barshadow``
     layout, so ``BarShadowStep`` takes it as ``override_barshadow``; used for the
-    background slitlets of stage 2a when ``[nirspec.stage2].empirical_barshadow`` is on,
-    and by the master background. The H gratings have no table and fall back to CRDS.
+    background slitlets of stage 2a and by the master background. The H gratings have no
+    table and fall back to CRDS.
     """
     name = f"empirical_jwst_nirspec_barshadow_{str(grating).strip().lower()}.fits"
     path = os.path.join(os.path.dirname(__file__), "data", name)

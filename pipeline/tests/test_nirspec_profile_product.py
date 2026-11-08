@@ -75,28 +75,19 @@ def _groups(contam_a, contam_b, extract=('profile', 'profile'), state=('predicte
     return wave, prof, groups
 
 
-def test_combine_chooses_the_best_spectrum_again():
+def test_combine_reports_the_combined_prediction():
     """Per-group fnu_contam combined with the profile's exposure-time weights; a group
     with nothing predicted adds zero light; PFCONSIG recomputed on the combined
-    spectra decides the subtraction."""
+    spectra; the prediction is reported, never subtracted."""
     a = np.full(40, 2.0)
     b = np.full(40, np.nan)                                  # nothing predicted in the second group
     wave, prof, groups = _groups(a, b)
-    out = S3._combined_profile_fit(prof, groups, [1.0, 3.0], wave, np.full(40, 10.0), np.full(40, 0.05),
-                                   contam_1d='subtract')
+    out = S3._combined_profile_fit(prof, groups, [1.0, 3.0], wave, np.full(40, 10.0), np.full(40, 0.05))
     c = out['columns']['fnu_contam'][0]
     np.testing.assert_allclose(c[2:-2], 0.25 * 2.0, rtol=1e-6)      # exposure-time weights 1:3
     np.testing.assert_allclose(out['columns']['fnu_contam_err'][0][2:-2], 0.25 * 0.2, rtol=1e-6)   # linear
-    assert out['choice'] == 'profile_decontam' and out['header']['PFCONSIG'] > 3
-    assert out['header']['EXTRACT'] == 'profile_decontam' and out['header']['CONTSTAT'] == 'predicted'
-    # the default reports the prediction and never subtracts it
-    out = S3._combined_profile_fit(prof, groups, [1.0, 3.0], wave, np.full(40, 10.0), np.full(40, 0.05))
-    assert (out['choice'], out['reason']) == ('profile', 'contam_report') and out['header']['PFCONSIG'] > 3
-    # a faint prediction: not subtracted
-    wave, prof, groups = _groups(np.full(40, 1e-4), np.full(40, 1e-4))
-    out = S3._combined_profile_fit(prof, groups, [1.0, 1.0], wave, np.full(40, 10.0), np.full(40, 0.05),
-                                   contam_1d='subtract')
-    assert (out['choice'], out['reason']) == ('profile', 'contam_insignificant')
+    assert (out['choice'], out['reason']) == ('profile', 'contam_predicted') and out['header']['PFCONSIG'] > 3
+    assert out['header']['EXTRACT'] == 'profile' and out['header']['CONTSTAT'] == 'predicted'
 
 
 def test_combine_group_fallback_gives_the_boxcar():
@@ -150,8 +141,8 @@ def test_spec_fits_columns_and_cards(tmp_path):
         ext = [x.name for x in h[1:]]
     assert names == (['wave'] + _cols('') + _cols('_opt') + _cols('_3px') + _cols('_4px') + _cols('_5px')
                      + _cols('_prof') + _cols('_contam'))
-    # default: fnu is not contamination-subtracted; fnu_contam is there for users to subtract
-    assert (hd['EXTRACT'], hd['EXTRWHY'], hd['CONTSTAT']) == ('profile', 'contam_report', 'predicted')
+    # fnu is not contamination-subtracted; fnu_contam is there for users to subtract
+    assert (hd['EXTRACT'], hd['EXTRWHY'], hd['CONTSTAT']) == ('profile', 'contam_predicted', 'predicted')
     np.testing.assert_allclose(d['fnu'][2:-2], 10.0, rtol=1e-5)
     np.testing.assert_allclose(d['fnu_prof'][2:-2], 10.0, rtol=1e-5)
     np.testing.assert_allclose(d['fnu_prof'][2:-2] - d['fnu_contam'][2:-2], 9.0, rtol=1e-5)

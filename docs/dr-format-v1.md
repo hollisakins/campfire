@@ -176,3 +176,95 @@ dr export` rebuilds exactly those; a release is published only from `ready`, so
 a reader of a published release always sees manifest files that carry the
 archive keys. The files route's `complete`
 flag is false while any file is pending.
+
+## Local store (the reader's side, P5-1)
+
+`campfire pull --dr <tag>` (`campfire.dr_store.load_release`) lands a release under
+`$CAMPFIRE_ROOT/dr/<tag>/`:
+
+```
+release.json                       the files route's answer + loaded_at, schema_version, the files
+README.md                          the citation sentence and the facts behind it (rewritten on every load)
+exports/<stream>/<scope>.jsonl.gz  the export files as fetched (scope named by the key rule above)
+meta/campfire.db                   a LocalStore (the live mirror's DDL) + release_manifest
+products/<relpath>                 the bytes, placed by the layout contract from the live storage_key
+```
+
+A file already on disk that verifies (sha256 + size from the files route) is kept;
+one that does not is fetched again. The store is derived from the kept files and
+nothing else: it is rebuilt from them whenever the set of files changes (a program
+granted or lost) or the client's `SCHEMA_VERSION` moved, with the
+`storage_objects.local_*` columns (what is on disk) carried across. The live
+mirror's purge, tombstone and schema-mismatch-delete logic never touch a release
+store. A release of a format version the client does not know is refused before
+anything is written.
+
+Merging a stream's files into one table:
+
+- **objects**: one row per `id`; `programs` / `evidence_programs` /
+  `reviewed_spectrum_ids` unioned, `z_source_spectrum_id` the non-null copy; the
+  six scoped aggregates plus `member_target_ids` recomputed over the `spectra` rows
+  held (the reader holds every published spectrum of its programs, so the result
+  describes exactly its view of the release).
+- **spectra**, **line_fits**: one row per id; a fit takes the `field` of its
+  spectrum.
+- **photometry**: one row per `id`, keyed by the object's name (the live stream's
+  key), `programs` dropped.
+- **manifest**: kept whole in `release_manifest` (archive key, byte state, stamped
+  hash, for the byte pull), and mirrored into `storage_objects` so the live-shaped
+  code (`get_spectrum`, `find_local_path`) resolves a spectrum's file: there
+  `content_hash` is the hash of the bytes a reader of the release gets, the
+  `stamped_hash` of a stamped member, the live `content_hash` otherwise.
+
+`Campfire(dr=tag)` reads this store and nothing else (design §4.7: it fails
+closed, `DRModeError`, on every live branch).
+
+The bytes (`campfire pull --dr <tag> --obs ... | --program ... | --field ... | --all`,
+P5-2) go through the same download engine as a live pull, planned from the
+release store's `storage_objects`, presigned with `?dr=<tag>` (the storage
+presign route answers with the release's archived copies, members the release
+does not hold archived omitted), verified against the hash the store carries
+(the stamped bytes' hash for a stamped member) and recorded on the release
+store, so an interrupted pull resumes at file granularity. The live tree and
+the live mirror are never touched. `GET /api/v1/dr` lists the releases a caller
+may read (`campfire dr list`); `POST /api/v1/identify` answers what the archive
+knows about a file's bytes (`campfire identify`, `identify_files`).
+
+
+## Citation and provenance files (P5-3)
+
+`GET /api/v1/dr` and `/dr/<tag>/files` answer a per-program roster as `programs`:
+`{slug: {is_public, spectra, cfpipe_versions, crds_contexts}}` for the programs
+public at the freeze (the set the DOI record holds) plus the caller's own, from
+`dr_program_roster(tag, slugs)` under the principal's program set. It is computed
+per call and never stored on the release row, which every account and the public
+reader role read whole. `campfire cite TAG` /
+`Campfire(dr=TAG).cite()` (`campfire/cite.py`) build the sentence of design §4.5
+from the release record, the programs the reader holds (the `spectra` stream's
+scopes of the files route's answer) and that roster: public programs are cited
+through the DOI, the others described with the pipeline versions they were
+reduced with (exact from the pulled store's `spectra`, else the roster's union).
+A live client answers "generate a provenance file".
+
+A provenance file (`campfire provenance`, `campfire/provenance.py`, format
+`campfire-provenance/1`) is JSON:
+
+```
+format, created_at, client_version, base_url, channel ("live"), latest_dr, last_synced_at,
+selection: {lists, observations, programs, objects},
+objects: [{object_id, version, redshift, redshift_auto, redshift_inspected, redshift_quality,
+           field, programs, last_inspected_at, last_data_change_at}],
+files:   [{storage_key, spectrum_id, object_id, observation, program_slug, field, grating,
+           cfpipe_version, crds_context, reduced_at, server_hash, science_hash, size_bytes,
+           local_path, sha256, local_science_hash, in_releases}],
+summary: {objects, files, files_on_disk}
+```
+
+`sha256` is the hash of the bytes on the author's disk at writing time (null when
+the file is not there), `server_hash` the registry's; `in_releases` the pulled
+releases on that machine holding those bytes or that science. Nothing is sent
+anywhere. `campfire provenance check FILE [--dr TAG] [--offline]` re-hashes the
+files (`ok` / `modified` / `missing` / `not-recorded`), asks `identify` about the
+recorded bytes (the archive's sentence per file), compares the science hashes
+against a pulled release's `release_manifest`, and reports objects whose version
+or redshift moved in the live mirror.

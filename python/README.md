@@ -94,7 +94,7 @@ campfire login --api-key    # Paste an API key (for headless systems)
 campfire sync               # Pulls full object/spectra metadata (~seconds)
 ```
 
-This downloads the complete catalog into a local SQLite database and exports `objects.csv` + `spectra.csv`. No FITS files are downloaded. Safe to run often — refreshes inspection results, redshifts, and flags. After the first run a sync is incremental: only rows changed since the last sync are fetched, and rows removed on the server (regrouped objects, revoked spectra) are deleted locally. The file index covers the final products the client can download; `campfire pull --intermediate` indexes the intermediates of its selection on demand. `campfire sync --full` re-walks everything.
+This downloads the complete catalog into a local SQLite database and exports `objects.csv` + `spectra.csv`. No FITS files are downloaded. Safe to run often — refreshes inspection results, redshifts, and flags. After the first run a sync is incremental: only rows changed since the last sync are fetched, and rows removed on the server (regrouped objects, revoked spectra) are deleted locally. The file index covers the final products the client can download; `campfire pull --intermediate` indexes the intermediates of its selection on demand. `campfire sync --full` re-walks everything. The tail of a sync names the newest published data release (`DR2026.1 published 2026-11-01; you are on live`) and, when your program access changed since your last full sync, asks for `campfire sync --full` (an incremental sync keys on what changed on the server, and a grant changes nothing there).
 
 ### 2. Download spectra
 
@@ -113,6 +113,56 @@ campfire pull --obs ember_uds_p4            # also writes reference/nirspec/<obs
 cfpipe nirspec linefit --obs ember_uds_p4   # pipeline: fits at the inspected redshifts
 campfire deploy lines --obs ember_uds_p4    # line_fits rows (+ _lines.fits on OSN)
 ```
+
+### 2c. Pull a data release
+
+```bash
+campfire dr list                                  # the releases you may read
+campfire pull --dr DR2026.1                       # the release's catalog into dr/DR2026.1/, then a listing
+campfire pull --dr DR2026.1 --obs ember_uds_p4    # its frozen bytes for a selection (--program / --field / --all)
+campfire identify spectra/*.fits                  # what each file is: "in DR2026.1, still current", ...
+campfire cite DR2026.1 [--obs X | --program P]    # the citation sentence for the release as you read it
+```
+
+A release pull never touches the live tree or the live mirror: the catalog
+goes to `dr/<tag>/meta/campfire.db` (built from the release's export files,
+verified against the server's hashes) and the bytes, the archived copies the
+release names, to `dr/<tag>/products/`, verified against the release manifest
+and resumable at file granularity. `campfire identify` hashes a file (whole-file
+sha256, plus the science hash when the pipeline is installed), looks the hashes
+up in every store on this machine and then on the server under your program
+scope, and answers in one line per file; `--offline` skips the server.
+
+`campfire cite TAG` prints the sentence to put in a paper: the release's DOI,
+plus the proprietary programs among those you hold (or `--program` / `--obs`
+select) described with the pipeline version and CRDS context they were
+reduced with, as the release records them; public programs are covered by
+the DOI. It reads the pulled release when there is one (no network) and the
+server otherwise; every pulled release carries the same sentence in
+`dr/<tag>/README.md`.
+
+### 2d. Record what you used from live
+
+```bash
+campfire provenance --obs ember_uds_p4 -o paper.campfire.json     # or --list SLUG, --program P, --object NAME
+campfire provenance check paper.campfire.json [--dr DR2026.1] [--offline]
+campfire pull --provenance paper.campfire.json                     # the recorded bytes, from wherever still holds them
+```
+
+Work from live has no citation until a release freezes it. A provenance file
+records, from the local ledgers only, the objects of a selection as they are
+now (version, redshift, quality) and every spectrum's file with the sha256 of
+the bytes on your disk beside the registry's, the pipeline version, and the
+releases on this machine already holding it. `check` re-hashes the files,
+asks the archive what it knows about the recorded bytes (`identify`), and with
+`--dr` says whether that pulled release holds the same science for each file.
+It exits 1 when a file was modified or no longer resolves. `pull --provenance`
+fetches the recorded bytes back: into the live tree while live still carries
+exactly those bytes, otherwise from the release holding them (into
+`dr/<tag>/products/`, after loading that release's catalog), preferring exact
+bytes over the same science under a stamp; a file on disk with other bytes is
+set aside under `.superseded/` first, and a file nothing holds any more is
+reported (exit 1).
 
 ### 3. Check status
 
@@ -273,6 +323,34 @@ if result['stale_count'] > 0:
     print(f"{result['stale_count']} files updated on server")
     cf.download(stale_only=True)
 ```
+
+### Data releases
+
+A data release is a frozen, citable snapshot of the published catalog
+(`docs/design-data-releases.md`). Once pulled (`campfire pull --dr DR2026.1`,
+which lands the release under `$CAMPFIRE_ROOT/dr/DR2026.1/`), a client opened on
+it reads that store and nothing else: no login, no network, no silent fallback to
+the live catalog. Anything only the live service answers (`remote=True`, a
+predicate tree `q=`, `sync()`, `download()`, cutouts) raises `DRModeError`.
+
+```python
+from campfire import Campfire
+dr = Campfire(dr="DR2026.1")
+dr.release["doi"], dr.release["frozen_at"]
+dr.cite()                                    # "CAMPFIRE DR2026.1 (doi:...), plus program ember reduced with ..."
+t = dr.query_objects(redshift_range=(5, 7))
+t.meta["channel"], t.meta["release"]        # "dr", "DR2026.1" (a live table says "live")
+dr.query_lines()                             # stale fits dropped by default on a release
+dr.open_spectrum("rubies_uds3_prism_12345")  # from dr/DR2026.1/products/, never the API
+```
+
+Objects in several of your programs are merged into one row with the aggregates
+(`n_spectra`, `gratings`, …) recomputed over the spectra the release holds for
+you; `file_hash` is the hash of the file the release hands out (the stamped
+archive copy when there is one). `campfire.dr_store.load_release(session, tag)`
+is the loader `pull --dr` runs: it keeps the export files, verifies them against
+the server's hashes, and rebuilds the store from them when the file set or the
+client's schema changed.
 
 ### Plotting
 

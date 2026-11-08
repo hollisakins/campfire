@@ -28,6 +28,13 @@ def main():
     ap.add_argument('--source-pad-px', type=float, default=2.0, help='rows excluded beyond the source shutter edges (5+ leaves only the shutters two away)')
     ap.add_argument('--smooth-cols', type=float, default=2.0, help='Gaussian smoothing along wavelength, in columns')
     ap.add_argument('--n-min', type=int, default=20, help='pixels a (segment, row, column) cell needs')
+    ap.add_argument('--wavelength-max-um', type=float, default=None,
+                    help='widen the template wavelength axis to end here (default: 5.3 for G140M and G235M, '
+                         'whose templates stop at 1.495 / 2.492 um; the template axis otherwise)')
+    ap.add_argument('--smooth-fit', choices=('auto', 'yes', 'no'), default='auto',
+                    help='model each segment as a mean profile plus one shape change whose amplitude is a cubic in '
+                         'wavelength, and smooth the rest with inverse-variance weights (auto: on a widened axis, '
+                         'where the red end is noisy)')
     ap.add_argument('--out-dir', default=os.path.dirname(os.path.abspath(__file__)))
     ap.add_argument('--qa', default=None, help='QA PDF path (default <out-dir>/empirical_barshadow_<grating>_qa.pdf)')
     ap.add_argument('--no-write', action='store_true', help='derive and report only')
@@ -46,9 +53,15 @@ def main():
     except Exception:
         version = 'unknown'
 
+    from campfire_pipeline.nirspec.constants import EXTENDED_GRATING_FILTERS, EXTENDED_MAX_WAVELENGTH_UM
+    wmax = args.wavelength_max_um
+    if wmax is None and args.grating.upper() in {g for g, _ in EXTENDED_GRATING_FILTERS}:
+        wmax = EXTENDED_MAX_WAVELENGTH_UM
+    fit = args.smooth_fit == 'yes' or (args.smooth_fit == 'auto' and wmax is not None)
     res = B.derive(args.obs, args.grating.upper(), paths['products_dir'], cache_dir, filter_name=args.filter,
                    source_pad_px=args.source_pad_px, processes=args.processes,
-                   smooth_cols=args.smooth_cols, n_min=args.n_min, held_out=args.held_out)
+                   smooth_cols=args.smooth_cols, n_min=args.n_min, held_out=args.held_out, wavelength_max_um=wmax,
+                   weighted=fit, lowrank=(1, 3) if fit else None)
     res['provenance']['version'] = version
     name = f'empirical_jwst_nirspec_barshadow_{args.grating.lower()}.fits'
     out = os.path.join(args.out_dir, name)

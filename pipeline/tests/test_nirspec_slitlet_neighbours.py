@@ -103,16 +103,13 @@ def test_sky_to_msa_reproduces_the_plan_and_places_unlisted_sources():
     assert all(abs(v - 0.3) < 0.01 for v in far.values())           # it nods with source 1
 
 
-def test_layer_hand_then_catalogue_then_scan():
-    effective = {'1': [3], '2': [3], '3': [2]}          # nod 1 by hand; nods 2, 3 from the scan's file
-    scan = {'2', '3'}
+def test_layer_hand_then_catalogue():
+    hand = {'1': [3], '3': []}                          # nods 1 and 3 by hand (3 excluded)
     slitlet = {'1': ([2], 'neighbor 9 at 0.030 of background'), '2': ([1], 'neighbor 9 at 0.030 of background')}
-    out, auto, why = SN.layer(effective, scan, slitlet)
+    out, auto, why = SN.layer(hand, slitlet)
     assert out['1'] == [3] and why['1'] == 'hand' and '1' not in auto
-    assert out['2'] == [1] and why['2'] == 'neighbor 9 at 0.030 of background' and '2' in auto   # nothing both keep
-    assert out['3'] == [2] and why['3'] == 'scan' and '3' in auto
-    out, _, why = SN.layer({'2': [1, 3]}, {'2'}, {'2': ([1], 'neighbor 9 at 0.030 of background')})
-    assert out['2'] == [1] and why['2'].endswith('; scan')
+    assert out['2'] == [1] and why['2'] == 'neighbor 9 at 0.030 of background' and '2' in auto
+    assert out['3'] == [] and why['3'] == 'hand' and '3' not in auto
 
 
 def test_light_over_sky_reads_the_neighbours_shutter():

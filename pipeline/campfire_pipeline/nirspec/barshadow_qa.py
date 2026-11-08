@@ -110,8 +110,11 @@ def qa_report(res, out_pdf):
         # --- page 3: the tables as images ---
         fig, axes = plt.subplots(2, 3, figsize=(16, 8))
         ext = [grid.wavelengths_um[0], grid.wavelengths_um[-1], grid.rows[0], grid.rows[-1]]
+        # the CRDS image on the empirical table's wavelength columns (held at its ends, as
+        # every lookup reads it), so the difference compares like with like on a widened axis
+        lam_c = crds['grid'].wavelengths_um
         for r, key in enumerate(('data1x1', 'data1x3')):
-            a_c = crds[key]; a_n = new[key]
+            a_c = np.array([np.interp(grid.wavelengths_um, lam_c, row) for row in crds[key]]); a_n = new[key]
             for ci, (arr, lab, vmin, vmax, cmap) in enumerate(((a_c, 'CRDS', 0.4, 1.0, 'viridis'), (a_n, 'empirical', 0.4, 1.0, 'viridis'),
                                                            (a_n - a_c, 'empirical - CRDS', -0.15, 0.15, 'RdBu_r'))):
                 ax = axes[r, ci]; im = ax.imshow(arr, origin='lower', aspect='auto', extent=ext, vmin=vmin, vmax=vmax, cmap=cmap)

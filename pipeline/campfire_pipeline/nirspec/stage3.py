@@ -230,9 +230,6 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
             plot_profiles=plot_profiles,
             plot_optext=plot_optext,
             version=version,
-            profile_fit_rows=str(stage_config.get('profile_fit_rows', 'aperture')).lower(),
-            profile_fit_model_rows_frac=float(stage_config.get('profile_fit_model_rows_frac', 0.02)),
-            profile_fit_contam=contam_1d_settings(stage_config),
             profile_fit=profile_fit,
             mbkg_spectrum=mbkg_spectrum,
             mbkg_extended_frac=float(stage_config.get('mbkg_extended_frac', 0.10)),
@@ -253,7 +250,6 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
             plot_profiles=plot_profiles,
             plot_optext=plot_optext,
             version=version,
-            profile_fit_contam=contam_1d_settings(stage_config),
             mbkg_spectrum=mbkg_spectrum,
             mbkg_extended_frac=float(stage_config.get('mbkg_extended_frac', 0.10)),
         )
@@ -441,10 +437,10 @@ def _cleanup_spec3_intermediates(cal_files, product_name):
 def _profile_fit_task(obs, files_all, target_files, product_name, source_id):
     """Arguments for one product's profile fit: every exposure of the background
     groups its science exposures came from (partners included), each group's nod
-    overrides (hand and automatic; the canonicals' BKGNODS cards win when present),
+    overrides (the hand file; the canonicals' BKGNODS cards win when present),
     the names stage 3 combines, and the disperser."""
     groups, overrides = [], []
-    eff = obs.effective_bkg_overrides()[0]
+    eff = obs.bkg_overrides
     for bg in np.unique(target_files['bkg_group']):
         g = files_all[files_all['bkg_group'] == bg]
         groups.append(list(g['path']))
@@ -488,7 +484,10 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     (extraction v2), every 2-D image of them drizzled before stage 3 extracts anything.
 
     Dispersers run PRISM first, so a grating can take the PRISM shape of the same
-    source. With ``contam_predict``, trace maps for every exposure of the observation
+    source. Where it has none, a grating product that fell to the default shape is redone
+    once every grating has run, with the shape of the source's grating that took its own fit
+    (``grating_transfer_plan``, ``profile_fit_grating_transfer``; the gratings keep their
+    Spec3 crf until then). With ``contam_predict``, trace maps for every exposure of the observation
     (cached), then per disperser:
 
     1. the joint first pass of every source of the configuration (also the ones not
@@ -508,8 +507,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     then (every disperser) Spec3 of its products (``s3_tasks``,
     ``run_stage3_single_source``: the s2d, crf and EXPOSURES table from the canonicals as
     revised) and the products (``profile_product.run_product``: every drizzle). The
-    neighbour-scan proposals are written to the observation's reference directory
-    (``scan_action``)."""
+    neighbour-scan proposals are written to the observation's reference directory, with
+    a review figure per proposed source (``write_scan_proposals``)."""
     from campfire_pipeline.common.parallel import dispatch
     from campfire_pipeline.nirspec.observation import Observation
     from campfire_pipeline.nirspec import joint_first_pass as JF
@@ -525,8 +524,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
             bars = BO.ensure(obs.workspace_dir, processes=n_processes, log=log)
         stage_config = dict(stage_config, bar_offsets=bars)
     fl = stage_flags(stage_config)
+    contam = fl['contam']
     shape = str(stage_config.get('profile_fit_shape', 'gated')).lower()
-    contam = fl['contam'] and shape != 'free'
     revise = stage2_config is not None and \
         str(stage_config.get('slitlet_neighbor_brightness', 'model')).lower() == 'model'
     s3_kwargs = s3_kwargs or {}
@@ -540,21 +539,25 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
             dispatch(run_stage3_single_source, rest, n_processes=n_processes, use_starmap=True, **s3_kwargs)
     all_fg = set(by_fg)
     sci_all = None
+    stuck_keys = None
     if contam:
         every = Observation.group_files(obs.discover_files(ext='canonical', source_ids='all'))
         sci_all = _science_files(every)
         all_fg |= set(np.unique(every['filter_grating']))
-        # stuck-closed shutters pass no light: left out of the maps
-        mt = CT.map_tasks(obs.workspace_dir, list(every['path']), log=log,
-                          stuck=CT.stuck_by_root(obs.stuck_closed_shutters),
-                          stuck_keys=CT.stuck_keys_by_root(obs))
-        if mt:
-            log(f"Profile fit: building {len(mt)} trace maps")
-            with TM.phase(f'trace_maps ({len(mt)})'):
-                dispatch(CT.build_map, mt, n_processes=n_processes, use_starmap=True)
+        # the trace maps are read from the rate files; stuck-closed shutters pass no light and are left out
+        stuck_keys = CT.stuck_keys_by_root(obs)
+        no_map = CT.exposures_without_maps(obs.workspace_dir, list(every['path']))
+        if no_map:
+            log(f"Profile fit: {len(no_map)} exposures have no trace map in their rate file (rerun stage 1); "
+                f"the light of their neighbours is not predicted: {', '.join(no_map)}")
     prism_fg = _prism_fg(all_fg)
     order = sorted(by_fg, key=lambda fg: (0 if fg == prism_fg else 1, fg))
     run_sids = {t['source_id'] for t in pf_tasks}
+    # the grating shape transfer redoes some grating products once every grating has run, through
+    # their Spec3 crf, which a product otherwise removes when it is done
+    gxfer = (bool(stage_config.get('profile_fit_grating_transfer', True)) and shape == 'gated'
+             and sum(fg != prism_fg for fg in by_fg) >= 2)
+    task_of = {}
     results = []
     for fg in order:
         is_prism = fg == prism_fg
@@ -580,7 +583,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
             with TM.phase(f'pass1 joint {fg} ({len(jtasks)})'):
                 JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
                        overwrite={s for s in jtasks if s in run_sids} if overwrite else False,
-                       cache_size=int(stage_config.get('contam_joint_cache', 60)), pre_bkgsub=revise)
+                       cache_size=int(stage_config.get('contam_joint_cache', 60)), pre_bkgsub=revise,
+                       stuck_keys=stuck_keys)
             if revise:
                 from campfire_pipeline.nirspec.stage2 import revise_slitlet_overrides
                 with TM.phase(f'slitlet revision {fg}'):
@@ -591,26 +595,84 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                         f"exposures")
                     with TM.phase(f'pass1 joint own {fg} ({len(own)})'):
                         JF.run(jtasks, obs.workspace_dir, stage_config, is_prism, n_processes=n_processes,
-                               cache_size=int(stage_config.get('contam_joint_cache', 60)), targets=own)
+                               cache_size=int(stage_config.get('contam_joint_cache', 60)), targets=own,
+                               stuck_keys=stuck_keys)
         # Spec3 from the canonicals as (now) subtracted: the s2d, crf and EXPOSURES table
         s3 = [s3_of[t['product_name']] for t in by_fg[fg] if t['product_name'] in s3_of]
         if s3:
             with TM.phase(f'spec3 {fg} ({len(s3)} products)'):
                 dispatch(run_stage3_single_source, s3, n_processes=n_processes, use_starmap=True, **s3_kwargs)
         tasks = []
+        keep_crfs = gxfer and not is_prism
         for t in by_fg[fg]:
             prism_product = f"{obs.name}_{prism_fg}_{t['source_id']}" if (prism_fg and not is_prism) else ''
             tasks.append((t['product_name'], t['workspace_dir'], t['groups'], t['overrides'], t['science'],
-                          t['source_id'], stage_config, is_prism, prism_product, pass1_products, cleanup_crfs))
+                          t['source_id'], stage_config, is_prism, prism_product, pass1_products,
+                          cleanup_crfs and not keep_crfs, stuck_keys))
+            if keep_crfs:
+                task_of[t['product_name']] = tasks[-1]
         log(f"Profile fit: {len(tasks)} {fg} products")
         with TM.phase(f'products {fg} ({len(tasks)})'):
             res = [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]
         results += res
+    if gxfer:
+        # a source's gratings take the shape of the one that passed its gate where they fell to the default
+        plan = {p: ref for p, ref in grating_transfer_plan(results).items() if p in task_of}
+        if plan:
+            redo = []
+            for prod, ref in sorted(plan.items()):
+                t = list(task_of[prod])
+                t[8], t[10] = ref, cleanup_crfs
+                redo.append(tuple(t))
+            log(f"Profile fit: {len(redo)} grating products again with the shape of their source's grating that "
+                f"passed its gate")
+            with TM.phase(f'products grating transfer ({len(redo)})'):
+                res = [r for r in dispatch(run_product, redo, n_processes=n_processes, use_starmap=True) or [] if r]
+            again = {r['product']: r for r in res}
+            results = [again.get(r['product'], r) for r in results]
+        if cleanup_crfs:
+            for prod, t in task_of.items():
+                if prod not in plan:
+                    _cleanup_in(t[1], t[4], prod)
     log_fallbacks(results)
     if fl['scan']:
-        write_scan_proposals(obs, results, run_sids, str(stage_config.get('scan_action', 'report_only')).lower(),
-                             xdisp_tol=fl['scan_xdisp_tol'])
+        write_scan_proposals(obs, results, run_sids, xdisp_tol=fl['scan_xdisp_tol'])
     return results
+
+
+def grating_transfer_plan(results):
+    """The products the grating shape transfer redoes: {grating product: the product whose
+    shape it takes}. A source's reference is its grating product that took its own fit (the
+    highest detection S/N when several did); every other grating product of that source that
+    fell to the default shape, and took no PRISM shape, is redone with the reference's shape
+    as its transferred candidate (``profile_chain.PrismShape``, not chromatic). ``results``:
+    the ``run_product`` summaries of every disperser."""
+    ref = {}
+    for r in results:
+        if r.get('is_prism') or r.get('fallback') or r.get('shape') != 'own':
+            continue
+        s, snr = int(r['source_id']), float(r.get('snr_det', -np.inf))
+        if s not in ref or snr > ref[s][0]:
+            ref[s] = (snr, r['product'])
+    plan = {}
+    for r in results:
+        if (r.get('is_prism') or r.get('fallback') or r.get('shape') != 'default'
+                or r.get('transfer') == 'used'):
+            continue
+        s = int(r['source_id'])
+        if s in ref and ref[s][1] != r['product']:
+            plan[r['product']] = ref[s][1]
+    return plan
+
+
+def _cleanup_in(workspace, science, product_name):
+    """``_cleanup_spec3_intermediates`` from the workspace (its paths are relative)."""
+    prev = os.getcwd()
+    os.chdir(workspace)
+    try:
+        _cleanup_spec3_intermediates(list(science), product_name)
+    finally:
+        os.chdir(prev)
 
 
 def log_fallbacks(results):
@@ -673,22 +735,27 @@ def _update_prism_scan_cards(obs, r, xdisp):
             hd['PFNBRSUP'] = 'grating scan disagrees'
 
 
-def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol=0.2):
-    """Neighbour-scan proposals to the observation's reference directory.
+def neighbour_figure_path(obs, source_id):
+    """The review figure of a source's neighbour-scan proposal (``write_scan_proposals``)."""
+    return os.path.join(obs.workspace_dir, f'{obs.name}_{int(source_id)}_neighbor.pdf')
 
-    ``auto_override``: ``nodded_background_overrides_auto.toml``, which stage 2b
-    applies on its next run (a hand override of the same nod wins);
-    ``report_only``: ``nodded_background_overrides_proposed.toml`` (never applied).
-    Entries of the sources processed in this run are replaced; others are kept.
-    Where a source has both PRISM and grating products, proposals are written only
-    when both scans find the neighbour at the same Delta (``xdisp_tol``; the grating
-    product checks this itself, ``ScanResult.cross_check``; PRISM proposals are
-    checked here, when the grating scans are known)."""
+
+def write_scan_proposals(obs, results, run_sids, xdisp_tol=0.2):
+    """Neighbour-scan proposals to ``nodded_background_overrides_proposed.toml`` in the
+    observation's reference directory (never applied: an entry is used once copied
+    into ``nodded_background_overrides.toml``), and one review figure per proposed
+    source (``neighbour_figure_path``, ``plots.plot_neighbour_proposal``: its nod
+    differences with the neighbour marked, and its spectrum with the background nods it
+    subtracts now and with the proposed ones). Entries and figures of the sources
+    processed in this run are replaced; others are kept. Where a source has both PRISM
+    and grating products, proposals are written only when both scans find the
+    neighbour at the same Delta (``xdisp_tol``; the grating product checks this itself,
+    ``ScanResult.cross_check``; PRISM proposals are checked here, when the grating scans
+    are known)."""
     import toml
     from datetime import date
+    from campfire_pipeline.nirspec.plots import plot_neighbour_proposal
 
-    if action not in ('report_only', 'auto_override'):
-        raise ValueError(f"scan_action must be 'report_only' or 'auto_override', got {action!r}")
     for r in results:
         s = r.get('scan') or {}
         if not (r.get('is_prism') and s):
@@ -700,7 +767,7 @@ def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol
         if s.get('detected') and s.get('proposals') and xd == 'disagree':
             log(f"{r['product']}: neighbour proposals withheld (grating scan disagrees)")
             s['proposals'] = {}
-    path = obs.auto_bkg_override_file if action == 'auto_override' else obs.proposed_bkg_override_file
+    path = obs.proposed_bkg_override_file
     old = toml.load(path) if os.path.exists(path) else {}
     entries = {}
     for root, d in old.items():
@@ -716,12 +783,9 @@ def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol
             note += f" unresolved={','.join(s['unresolved'])}"
         for root, nods in s['proposals'].items():
             entries.setdefault(root, {})[str(r['source_id'])] = (nods, note)
-    head = ('# automatic nodded-background overrides from the same-slitlet neighbour scan (cfpipe stage 3);\n'
-            '# stage 2b applies them on its next run; a hand override of the same nod wins\n'
-            if action == 'auto_override' else
-            '# proposed nodded-background overrides from the same-slitlet neighbour scan (cfpipe stage 3);\n'
-            '# report only: never applied. Copy an entry to nodded_background_overrides.toml to use it\n')
-    lines = [head.rstrip('\n')]
+    lines = ['# proposed nodded-background overrides from the same-slitlet neighbour scan (cfpipe stage 3);',
+             '# never applied. Review <obs>_<source id>_neighbor.pdf in the workspace, copy an entry to',
+             '# nodded_background_overrides.toml to use it, then rerun stage 2b and stage 3 for that source']
     for root in sorted(entries):
         lines.append(f'\n[{root}]')
         for sid in sorted(entries[root], key=int):
@@ -731,7 +795,29 @@ def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
-    log(f"Neighbour scan: {sum(len(v) for v in entries.values())} entries in {path}")
+
+    # review figures: one per source proposed in this run, from every product of it that proposes
+    for sid in run_sids:
+        stale = neighbour_figure_path(obs, sid)
+        if os.path.exists(stale):
+            os.remove(stale)
+    previews = {}
+    for r in results:
+        s = r.get('scan') or {}
+        if s.get('detected') and s.get('proposals') and s.get('preview') is not None:
+            previews.setdefault(int(r['source_id']), []).append((r['product'], s))
+    for sid, prods in sorted(previews.items()):
+        plot_neighbour_proposal(neighbour_figure_path(obs, sid), sid, prods)
+    proposed = sorted({int(r['source_id']) for r in results
+                       if (r.get('scan') or {}).get('detected') and (r.get('scan') or {}).get('proposals')})
+    if proposed:
+        ids = ' '.join(str(s) for s in proposed)
+        log(f"Neighbour scan: {len(proposed)} sources with proposals in {path} "
+            f"(figures: {len(previews)}, {obs.name}_<id>_neighbor.pdf in the workspace). To use one, copy its "
+            f"entry to nodded_background_overrides.toml and run:\n"
+            f"  cfpipe nirspec run --obs {obs.name} --stage2b --stage3 --source-ids {ids} --overwrite")
+    else:
+        log('Neighbour scan: no proposals in this run')
 
 
 def run_profile_fit_single_source(product_name, workspace_dir, groups, overrides, science,
@@ -794,7 +880,6 @@ def spec3_boxcar3(workspace_dir, product_name):
 
 
 def extract_columns(s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, pf_file=None, is_fixed_slit=False,
-                    profile_fit_rows='aperture', profile_fit_model_rows_frac=0.02, profile_fit_contam=None,
                     label=''):
     """Every 1-D extraction of one 2-D spectrum (the nodded one or the master-background
     one, ``mbkg_extraction``): the optimal extraction, the 3/4/5-pixel boxcars and, with
@@ -841,12 +926,10 @@ def extract_columns(s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, pf_file
     if pf_file is not None:
         if not os.path.exists(pf_file):
             raise FileNotFoundError(f'{label}: profile_fit is on but {pf_file} was not written')
-        pf = _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave,
-                                  rows=profile_fit_rows, model_rows_frac=profile_fit_model_rows_frac,
-                                  **(profile_fit_contam or {}))
+        pf = _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave)
         cols = pf['columns']
         fnu_best, fnu_best_err = best_spectrum(pf['choice'], cols['fnu_prof'][0], cols['fnu_prof_err'][0],
-                                               cols['fnu_contam'][0], fnu_3px, fnu_3px_err)
+                                               fnu_3px, fnu_3px_err)
         cards, pf_hdus, choice = pf['header'], pf['hdus'], pf['choice']
     else:
         fnu_best, fnu_best_err = fnu_opt, fnu_opt_err
@@ -881,7 +964,7 @@ MBKG_EXTENSIONS = ('SPEC1D_MBKG', 'SCI_MBKG', 'ERR_MBKG', 'PROF1D_MBKG')
 
 
 def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, ap_stop, s2dh, exposures,
-                       primary_hdr, is_fixed_slit, profile_fit, extended_frac, extract_kw):
+                       primary_hdr, is_fixed_slit, profile_fit, extended_frac):
     """The master-background spectrum of a product (``mbkg_extraction``): its 2-D
     spectrum and every 1-D extraction of it, made exactly as the nodded ones
     (``extract_columns`` on the master-background 2-D, drizzled through the nodded
@@ -914,7 +997,7 @@ def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, a
         return [], {}
     ex = extract_columns(mb_sci * 1e12, mb_err * 1e12, mb_mask, ap_start, ap_stop, wave,
                          pf_file=paths['pf'] if profile_fit else None, is_fixed_slit=is_fixed_slit,
-                         label=f'{product_name} (master background)', **extract_kw)
+                         label=f'{product_name} (master background)')
     sources, version = MX.background_sources(exposures.get('filename', []), workspace_dir)
     spec = table_to_hdu(ex['spec1d'])
     spec.name = 'SPEC1D_MBKG'
@@ -941,9 +1024,6 @@ def opt_ext_single_source(
       plot_optext = False,
       overwrite = False,
       version = 'v0.1',
-      profile_fit_rows = 'aperture',
-      profile_fit_model_rows_frac = 0.02,
-      profile_fit_contam = None,
       profile_fit = False,
       mbkg_spectrum = False,
       mbkg_extended_frac = 0.10,
@@ -952,8 +1032,8 @@ def opt_ext_single_source(
     Runs an optimal extraction routine and saves an msaexp-style "_spec.fits" file (combining 2D and 1D) for a single object.
 
     ``fnu`` is the best spectrum (header ``EXTRACT``): with ``profile_fit`` the profile
-    extraction, with the other sources' predicted light subtracted when it is
-    significant, or the 3-pixel boxcar on a named fallback (``_profile_fit_columns``);
+    extraction (other sources' predicted light reported in ``fnu_contam``), or the
+    3-pixel boxcar on a named fallback (``_profile_fit_columns``);
     without it, the optimal extraction. ``fnu_opt`` is always the optimal extraction.
 
     ``NEXP`` / ``NEXPBKG`` count the exposures combined and the fewest background
@@ -1021,8 +1101,7 @@ def opt_ext_single_source(
     pf_file = os.path.join(workspace_dir, f'{product_name}_pf.fits')
     ex = extract_columns(s2d_sci, s2d_err, s2d_mask, x1d_start, x1d_stop, wave,
                          pf_file=pf_file if profile_fit else None, is_fixed_slit=is_fixed_slit,
-                         profile_fit_rows=profile_fit_rows, profile_fit_model_rows_frac=profile_fit_model_rows_frac,
-                         profile_fit_contam=profile_fit_contam, label=product_name)
+                         label=product_name)
     collapsed, cen = ex['collapsed'], ex['cen']
     primary.header['CMPFROPT'] = (ex['optext_status'], "Optimal extraction status ('optimal' or fallback)")
     if plot_profiles:
@@ -1080,10 +1159,7 @@ def opt_ext_single_source(
     if mbkg_spectrum:
         mbkg, mcards = mbkg_spectrum_hdus(product_name, workspace_dir, wave, s2d['SCI'].data.shape, x1d_start,
                                           x1d_stop, s2dh, exposures, primary.header, is_fixed_slit, profile_fit,
-                                          mbkg_extended_frac,
-                                          dict(profile_fit_rows=profile_fit_rows,
-                                               profile_fit_model_rows_frac=profile_fit_model_rows_frac,
-                                               profile_fit_contam=profile_fit_contam))
+                                          mbkg_extended_frac)
         for key, value in mcards.items():
             primary.header[key] = value
 
@@ -1140,39 +1216,6 @@ def _add_pf_columns(table, columns, wave):
         _add_flux_columns(table, sfx, columns[f'fnu{sfx}'][0], columns[f'fnu{sfx}_err'][0], wave, desc)
 
 
-def model_rows_extraction(P, data, err, mask, frac=0.02):
-    """Weighted fit of the s2d with an unnormalised profile on every row where the
-    profile is significant, negative nod copies included:
-    flux = sum(P D / V) / sum(P^2 / V), error = 1 / sqrt(sum(P^2 / V)).
-
-    P is per unit reported flux (same units as data per flux unit), so no
-    normalisation enters; rows are those with |P| >= frac x the column's max |P|."""
-    V = err ** 2
-    with np.errstate(invalid='ignore', divide='ignore'):
-        amax = np.nanmax(np.abs(np.where(np.isfinite(P), P, np.nan)), axis=0)
-        sel = (np.isfinite(P) & np.isfinite(data) & np.isfinite(V) & (V > 0)
-               & (np.abs(P) >= frac * amax[None, :]) & (amax[None, :] > 0))
-        if mask is not None:
-            sel &= ~mask
-        Pw = np.where(sel, P, 0.0)
-        Vs = np.where(sel, V, 1.0)
-        num = np.sum(np.where(sel, Pw * data / Vs, 0.0), axis=0)
-        den = np.sum(np.where(sel, Pw ** 2 / Vs, 0.0), axis=0)
-        good = den > 0
-        flux = np.where(good, num / np.where(good, den, 1.0), np.nan)
-        flux_err = np.where(good, 1.0 / np.sqrt(np.where(good, den, 1.0)), np.nan)
-    return flux, flux_err, sel
-
-
-CONTAM_1D = ('report', 'subtract')
-
-
-def contam_1d_settings(sc):
-    """The 1-D other-light knobs of ``[nirspec.stage3]`` (``_profile_fit_columns``)."""
-    return dict(contam_1d=str(sc.get('contam_1d', 'report')).lower(),
-                contam_1d_min_sigma=float(sc.get('contam_1d_min_sigma', 3.0)))
-
-
 def _contam_1d(C2D, E2D, Pm, weight_rows, V, flux, flux_err):
     """Other sources' light (CONTAM2D, its uncertainty CONTERR2D) extracted with the
     fnu_prof weights: per column the predicted flux ``cflux``, its systematic error
@@ -1205,14 +1248,11 @@ def _contam_1d(C2D, E2D, Pm, weight_rows, V, flux, flux_err):
 
 # Which extraction is the best spectrum ``fnu`` of a product (header EXTRACT), and why
 # (EXTRWHY). 'optimal' only when the profile fit is not configured (profile_fit = false).
-EXTRACTIONS = ('profile', 'profile_decontam', 'boxcar3', 'optimal')
+EXTRACTIONS = ('profile', 'boxcar3', 'optimal')
 EXTRACT_REASONS = {
-    'contam_significant': "profile_decontam: the predicted other light exceeds contam_1d_min_sigma x the "
-                          "integrated noise (PFCONSIG); subtracted",
-    'contam_insignificant': 'profile: other light predicted, below that threshold; not subtracted',
+    'contam_predicted': 'profile: other light predicted, reported in fnu_contam (never subtracted)',
     'contam_none': 'profile: no other light predicted on the extraction',
-    'contam_report': 'profile: contam_1d = "report", never subtracted',
-    'contam_off': 'profile: no prediction (contam_predict off, free shape, or no trace maps)',
+    'contam_off': 'profile: no prediction (contam_predict off, or no trace maps)',
     'no_crf': 'boxcar3: Spec3 wrote no crf for the source',
     'not_bkg_subtracted': 'boxcar3: old-layout observation, canonical files not background-subtracted',
     'no_usable_pixels': "boxcar3: no usable pixel in the target's open shutters",
@@ -1234,20 +1274,15 @@ def extraction_cards(choice, reason, contam_state):
     return h
 
 
-def choose_extraction(have_contam, any_predicted, csig, contam_1d='report', min_sigma=3.0):
-    """(EXTRACT, EXTRWHY) of a product whose profile fit ran: the profile extraction with
-    the predicted other light subtracted when the prediction exceeds ``min_sigma`` times
-    the noise of the integrated flux (``PFCONSIG``) and ``contam_1d`` is 'subtract',
-    else the profile extraction as it is."""
+def choose_extraction(have_contam, any_predicted):
+    """(EXTRACT, EXTRWHY) of a product whose profile fit ran: always the profile
+    extraction as it is; the reason says whether other light is predicted on it
+    (``fnu_contam``, for the user to subtract or not)."""
     if not have_contam:
         return 'profile', 'contam_off'
     if not any_predicted:
         return 'profile', 'contam_none'
-    if contam_1d != 'subtract':
-        return 'profile', 'contam_report'
-    if csig > min_sigma:
-        return 'profile_decontam', 'contam_significant'
-    return 'profile', 'contam_insignificant'
+    return 'profile', 'contam_predicted'
 
 
 def _notsep_on(NS, wave):
@@ -1271,21 +1306,16 @@ def _notsep_on(NS, wave):
     return out
 
 
-def best_spectrum(choice, prof, prof_err, contam, box, box_err):
-    """The best spectrum ``fnu`` and its error for an extraction choice. The error is
-    the statistical one only: the prediction's uncertainty is ``fnu_contam_err``."""
+def best_spectrum(choice, prof, prof_err, box, box_err):
+    """The best spectrum ``fnu`` and its error for an extraction choice (statistical)."""
     if choice == 'boxcar3':
         return box, box_err
-    if choice == 'profile_decontam':
-        with np.errstate(invalid='ignore'):
-            return prof - np.where(np.isfinite(contam), contam, 0.0), prof_err
     if choice == 'profile':
         return prof, prof_err
     raise ValueError(f'no best spectrum for extraction {choice!r}')
 
 
-def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, rows='aperture',
-                         model_rows_frac=0.02, contam_1d='report', contam_1d_min_sigma=3.0):
+def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave):
     """Extraction of the s2d with the profile-fit 2D profile, and the choice of the best
     spectrum.
 
@@ -1299,16 +1329,12 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     agree up to the along-dispersion correction; off centre they differ by the ratio of
     jwst's loss across the slit to the model's (about 20 % for a source planned 0.4
     shutter pitches from the centre); an extended source's ``fnu_opt`` is the light in its shutter.
-
-    ``rows``: which rows ``fnu_prof`` uses: ``aperture`` (the x1d aperture rows) or
-    ``model`` (every row where PROF2D is significant, including the negative nod
-    copies; ``model_rows_extraction``).
+    ``fnu_prof`` uses the x1d aperture rows.
 
     Other sources' light (``CONTAM2D``, its uncertainty ``CONTERR2D``) is extracted with
     the same weights: ``fnu_contam`` (NaN where nothing is predicted) and
     ``fnu_contam_err`` (systematic), integrated as ``PFCONTAM`` / ``PFCONMAX`` /
-    ``PFCONSIG``. The best spectrum is chosen by ``choose_extraction`` (``contam_1d``,
-    ``contam_1d_min_sigma``).
+    ``PFCONSIG``. It is reported, never subtracted from ``fnu`` (``choose_extraction``).
 
     A ``_pf.fits`` without PROF2D is a named fallback (``profile_product.write_fallback``):
     the best spectrum is the 3-pixel boxcar.
@@ -1335,37 +1361,29 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         NS = h['NOTSEP'].data if 'NOTSEP' in h else None
         if NS is not None:
             NS = (np.asarray(NS['lam'], float), np.asarray(NS['notsep'], bool))
-    if rows not in ('aperture', 'model'):
-        raise ValueError(f"profile_fit_rows must be 'aperture' or 'model', got {rows!r}")
     if P.shape != s2d_sci.shape:
         raise ValueError(f"{os.path.basename(pf_file)}: profile {P.shape} does not match the s2d {s2d_sci.shape}")
-    if contam_1d not in CONTAM_1D:
-        raise ValueError(f'contam_1d must be one of {CONTAM_1D}, got {contam_1d!r}')
     x = np.arange(P.shape[0] + 1)
     in_ap = (x[:-1] > ap_start) & (x[1:] <= ap_stop)
     Pm = np.where(np.isfinite(P), P * 1e12, np.nan)       # per uJy, against s2d_sci in uJy units
-    if rows == 'model':
-        flux, flux_err, weight_rows = model_rows_extraction(Pm, s2d_sci, s2d_err, s2d_mask, frac=model_rows_frac)
-    else:
-        Pa = np.where(in_ap[:, None] & np.isfinite(P), P * 1e12, 0.0)
-        norm = Pa.sum(axis=0)
-        good = norm > 1e-3 * np.nanmax(norm)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=RuntimeWarning)
-            amp, amp_err = extract_with_profile(np.where(good, Pa / np.where(good, norm, 1.0), 0.0),
-                                                s2d_sci.copy(), s2d_err.copy(), mask=s2d_mask, ivw=True)
-        flux = np.where(good, amp / np.where(good, norm, 1.0), np.nan)
-        flux_err = np.where(good, amp_err / np.where(good, norm, 1.0), np.nan)
-        weight_rows = in_ap[:, None] & np.isfinite(P) & ~s2d_mask
+    Pa = np.where(in_ap[:, None] & np.isfinite(P), P * 1e12, 0.0)
+    norm = Pa.sum(axis=0)
+    good = norm > 1e-3 * np.nanmax(norm)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+        amp, amp_err = extract_with_profile(np.where(good, Pa / np.where(good, norm, 1.0), 0.0),
+                                            s2d_sci.copy(), s2d_err.copy(), mask=s2d_mask, ivw=True)
+    flux = np.where(good, amp / np.where(good, norm, 1.0), np.nan)
+    flux_err = np.where(good, amp_err / np.where(good, norm, 1.0), np.nan)
+    weight_rows = in_ap[:, None] & np.isfinite(P) & ~s2d_mask
     columns = {
-        'fnu_prof': (flux, f'Profile-fit flux (PROF2D weights, {rows} rows), nothing subtracted'),
+        'fnu_prof': (flux, 'Profile-fit flux (PROF2D weights, aperture rows), nothing subtracted'),
         'fnu_prof_err': (flux_err, 'Profile-fit flux error (statistical)'),
     }
     keep = fits.Header()
     for key in header:
         if key.startswith('PF'):
             keep[key] = (header[key], header.comments[key])
-    keep['PFROWS'] = (rows, 'Rows of fnu_prof: aperture / model')
     hdus = []
     prof = fits.ImageHDU(P, name='PROF2D')
     prof.header['BUNIT'] = ('MJy / uJy', 'SCI per unit reported flux (not per column)')
@@ -1373,7 +1391,7 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     if C2D is None or C2D.shape != P.shape:
         columns['fnu_contam'] = (nan, 'Predicted other-source flux (no prediction)')
         columns['fnu_contam_err'] = (nan, 'Its uncertainty (systematic)')
-        choice, reason = choose_extraction(False, False, 0.0, contam_1d, contam_1d_min_sigma)
+        choice, reason = choose_extraction(False, False)
         keep.update(extraction_cards(choice, reason, 'off'))
         return dict(columns=columns, header=keep, hdus=hdus, choice=choice, reason=reason)
     V = s2d_err ** 2
@@ -1391,7 +1409,7 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
                              'Predicted other-source flux in the fnu_prof extraction '
                              '(NaN: none predicted, or not separable)')
     columns['fnu_contam_err'] = (np.where(predicted, cerr, np.nan), 'Its uncertainty (systematic)')
-    choice, reason = choose_extraction(True, bool(np.any(predicted)), csig, contam_1d, contam_1d_min_sigma)
+    choice, reason = choose_extraction(True, bool(np.any(predicted)))
     keep.update(extraction_cards(choice, reason, 'predicted' if np.any(predicted) else 'none'))
     c = fits.ImageHDU(C2D, name='CONTAM2D')
     c.header['BUNIT'] = ('MJy', 'Predicted other-source light, as SCI')
@@ -1399,8 +1417,7 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     return dict(columns=columns, header=keep, hdus=hdus, choice=choice, reason=reason)
 
 
-def _combined_profile_fit(prof, groups_pf, exposure_times, common_wave, fnu_prof, fnu_prof_err,
-                          contam_1d='report', contam_1d_min_sigma=3.0):
+def _combined_profile_fit(prof, groups_pf, exposure_times, common_wave, fnu_prof, fnu_prof_err):
     """The profile-fit columns and cards of a 1-D combined product.
 
     prof : the groups' ``fnu_prof`` (``per_eg_data['prof']``); groups_pf : per group its
@@ -1442,8 +1459,7 @@ def _combined_profile_fit(prof, groups_pf, exposure_times, common_wave, fnu_prof
         choice, reason = 'boxcar3', 'group_fallback'
         log(f'1D combine: groups fell back ({", ".join(sorted(set(fell)))}); best spectrum is the 3-pixel boxcar')
     else:
-        choice, reason = choose_extraction(states != {'off'}, bool(predicted.any()), csig, contam_1d,
-                                           contam_1d_min_sigma)
+        choice, reason = choose_extraction(states != {'off'}, bool(predicted.any()))
     state = 'off' if states <= {'off'} else 'predicted' if 'predicted' in states else 'none'
     keep['PFCONSIG'] = (csig, 'Predicted other light / noise (1-D combined)')
     keep.update(extraction_cards(choice, reason, state))
@@ -1475,7 +1491,7 @@ def _combined_spec1d(common_wave, combined, fnu_best, fnu_best_err, choice, pf_c
 
 def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, common_wave,
                    exposure_times, sci_shape, ap_start, ap_stop, s2dh, exposures, is_fixed_slit,
-                   combine_kw, profile_fit_contam, extended_frac):
+                   combine_kw, extended_frac):
     """The master-background spectrum of a 1D-combined product, made as its nodded
     spectrum is: every group's ``SPEC1D_MBKG`` column combined onto ``common_wave``
     (exposure-time weights, the same clipping), the best spectrum chosen again on the
@@ -1529,11 +1545,9 @@ def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, co
     hdr_cards = extraction_cards('optimal', 'profile_fit_off', 'off')
     if 'prof' in combined:
         fnu_prof, fnu_prof_err, _ = combined['prof']
-        pf = _combined_profile_fit(data['prof'], groups_pf, exposure_times, common_wave, fnu_prof, fnu_prof_err,
-                                   **(profile_fit_contam or {}))
+        pf = _combined_profile_fit(data['prof'], groups_pf, exposure_times, common_wave, fnu_prof, fnu_prof_err)
         pf_columns, hdr_cards, choice = pf['columns'], pf['header'], pf['choice']
-        fnu_best, fnu_best_err = best_spectrum(choice, fnu_prof, fnu_prof_err, pf_columns['fnu_contam'][0],
-                                               fnu_3px, fnu_3px_err)
+        fnu_best, fnu_best_err = best_spectrum(choice, fnu_prof, fnu_prof_err, fnu_3px, fnu_3px_err)
     else:
         fnu_best, fnu_best_err = combined['opt'][0], combined['opt'][1]
     spec = _combined_spec1d(common_wave, combined, fnu_best, fnu_best_err, choice, pf_columns)
@@ -1570,7 +1584,7 @@ def combine_per_eg_spectra(
     all_cal_files,
     workspace_dir, product_name, source_id, filter_grating,
     sigma_clip=True, sigma_clip_low=3.0, sigma_clip_high=3.0,
-    sigma_clip_maxiters=5, plot_profiles=True, plot_optext=True, version='v0.1', profile_fit_contam=None,
+    sigma_clip_maxiters=5, plot_profiles=True, plot_optext=True, version='v0.1',
     mbkg_spectrum=False, mbkg_extended_frac=0.10,
 ):
     """
@@ -1741,11 +1755,10 @@ def combine_per_eg_spectra(
     if has_pf:
         fnu_prof, fnu_prof_err, _ = combined['prof']
         pf = _combined_profile_fit(per_eg_data['prof'], groups_pf, exposure_times, common_wave, fnu_prof,
-                                   fnu_prof_err, **(profile_fit_contam or {}))
+                                   fnu_prof_err)
         pf_columns, pf_hdus = pf['columns'], pf['hdus']
         cards, choice = pf['header'], pf['choice']
-        fnu_best, fnu_best_err = best_spectrum(choice, fnu_prof, fnu_prof_err, pf_columns['fnu_contam'][0],
-                                               fnu_3px, fnu_3px_err)
+        fnu_best, fnu_best_err = best_spectrum(choice, fnu_prof, fnu_prof_err, fnu_3px, fnu_3px_err)
     else:
         choice = 'optimal'
         cards = extraction_cards('optimal', 'profile_fit_off', 'off')
@@ -1793,7 +1806,7 @@ def combine_per_eg_spectra(
             s2d['SCI'].data.shape, x1d_start, x1d_stop, s2dh, exposures, is_fixed_slit,
             dict(sigma_clip_enabled=sigma_clip, sigma_clip_low=sigma_clip_low, sigma_clip_high=sigma_clip_high,
                  sigma_clip_maxiters=sigma_clip_maxiters),
-            profile_fit_contam, mbkg_extended_frac)
+            mbkg_extended_frac)
         for key, value in mcards.items():
             primary.header[key] = value
 

@@ -176,8 +176,7 @@ class FakeObs:
         self.directories_setup = True
         self.stuck_closed_shutters = None
 
-    def effective_bkg_overrides(self):
-        return {}, {}
+    bkg_overrides = {}
 
     def discover_files(self, ext='canonical', source_ids='all'):
         paths = sorted(p for p in os.listdir(self.workspace_dir) if p.startswith(ROOT) and p.endswith(f'_{SID}.fits'))
@@ -226,7 +225,7 @@ def phase(monkeypatch, fake_models):
     state = {}
 
     def joint_run(tasks, ws, sc, is_prism, n_processes=1, overwrite=False, cache_size=60, pre_bkgsub=False,
-                  targets=None):
+                  targets=None, stuck_keys=None):
         t = tasks[SID]
         exps = PF.load_source(t['groups'], bkg_overrides=t['overrides'], science=set(t['science']),
                               **({'pre_bkgsub': True} if pre_bkgsub else {}))
@@ -247,8 +246,7 @@ def phase(monkeypatch, fake_models):
 
     monkeypatch.setattr(JF, 'run', joint_run)
     monkeypatch.setattr(S2, 'revise_slitlet_overrides', revise)
-    monkeypatch.setattr(CT, 'map_tasks', lambda *a, **k: [])
-    monkeypatch.setattr(CT, 'stuck_by_root', lambda *a: {})
+    monkeypatch.setattr(CT, 'exposures_without_maps', lambda *a: [])
     monkeypatch.setattr(CT, 'stuck_keys_by_root', lambda *a: {})
     monkeypatch.setattr(S3, 'run_stage3_single_source', lambda *a, **k: calls.append(('spec3', a[2])))
     monkeypatch.setattr(PP, 'run_product', lambda *a: calls.append(('product', a[0])) or None)
@@ -337,8 +335,7 @@ def test_exposures_table_of_a_revised_source_is_what_was_subtracted(tmp_path, mo
     monkeypatch.setattr(Spec3Pipeline, 'call', _fake_spec3)
     monkeypatch.setattr(JF, 'run', lambda *a, **k: [])
     monkeypatch.setattr(S2, 'revise_slitlet_overrides', revise)
-    monkeypatch.setattr(CT, 'map_tasks', lambda *a, **k: [])
-    monkeypatch.setattr(CT, 'stuck_by_root', lambda *a: {})
+    monkeypatch.setattr(CT, 'exposures_without_maps', lambda *a: [])
     monkeypatch.setattr(CT, 'stuck_keys_by_root', lambda *a: {})
     monkeypatch.setattr(PP, 'run_product', product)
     monkeypatch.setattr(BO, 'ensure', lambda *a, **k: {})

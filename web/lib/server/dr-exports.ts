@@ -107,6 +107,27 @@ export async function fetchRelease(
   return (data as DrReleaseRow | null) ?? null;
 }
 
+/**
+ * The releases a caller may read, newest frozen first (GET /api/v1/dr,
+ * `campfire dr list`): published ones; every state to admins (the shadow run).
+ */
+export async function fetchVisibleReleases(
+  supabase: SupabaseClient,
+  isAdmin: boolean,
+): Promise<DrReleaseRow[]> {
+  let query = supabase
+    .from('dr_releases')
+    .select(
+      'tag, state, components, dr_format_version, counts, frozen_at, published_at, withdrawn_at, doi, notes, known_issues',
+    )
+    .order('frozen_at', { ascending: false, nullsFirst: false })
+    .order('tag');
+  if (!isAdmin) query = query.eq('state', 'published');
+  const { data, error } = await query;
+  if (error) throw new Error(`dr_releases listing failed: ${error.message}`);
+  return ((data as DrReleaseRow[] | null) ?? []).filter((r) => releaseVisible(r, isAdmin));
+}
+
 /** The export ledger of a tag. */
 export async function fetchLedger(
   supabase: SupabaseClient,
@@ -120,4 +141,49 @@ export async function fetchLedger(
     .order('partition');
   if (error) throw new Error(`dr_exports lookup failed: ${error.message}`);
   return (data as DrExportLedgerRow[] | null) ?? [];
+}
+
+/**
+ * The newest published release (by `published_at`), or null: the `latest_dr`
+ * of /api/v1/auth/whoami (P5-3), which the sync tail announces.
+ */
+export async function fetchLatestPublishedRelease(
+  supabase: SupabaseClient,
+): Promise<Pick<DrReleaseRow, 'tag' | 'doi' | 'published_at'> | null> {
+  const { data, error } = await supabase
+    .from('dr_releases')
+    .select('tag, doi, published_at')
+    .eq('state', 'published')
+    .order('published_at', { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`dr_releases lookup failed: ${error.message}`);
+  return (data as Pick<DrReleaseRow, 'tag' | 'doi' | 'published_at'> | null) ?? null;
+}
+
+/** One program's entry in a release's roster (dr_program_roster). */
+export interface DrProgramRosterEntry {
+  is_public: boolean;
+  spectra: number;
+  cfpipe_versions: string[];
+  crds_contexts: string[];
+}
+
+/**
+ * The per-program roster of a release as THIS caller may see it (P5-3,
+ * `campfire cite`): every program public at the freeze plus the caller's own
+ * among the proprietary ones. Computed by `dr_program_roster` per call and
+ * never stored on `dr_releases`, which every account reads whole.
+ */
+export async function fetchProgramRoster(
+  supabase: SupabaseClient,
+  tag: string,
+  accessibleSlugs: readonly string[],
+): Promise<Record<string, DrProgramRosterEntry>> {
+  const { data, error } = await supabase.rpc('dr_program_roster', {
+    p_tag: tag,
+    p_program_slugs: [...accessibleSlugs],
+  });
+  if (error) throw new Error(`dr_program_roster failed: ${error.message}`);
+  return (data as Record<string, DrProgramRosterEntry> | null) ?? {};
 }

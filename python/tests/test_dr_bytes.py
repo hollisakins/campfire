@@ -155,6 +155,53 @@ def _s3(**objects):
     return s3
 
 
+class _DropsOnce:
+    """An S3 client whose named operation raises a transport error on its first call."""
+
+    def __init__(self, inner, op):
+        self._inner, self._op, self.dropped = inner, op, 0
+
+    def __getattr__(self, name):
+        fn = getattr(self._inner, name)
+        if name != self._op:
+            return fn
+
+        def wrapped(*a, **kw):
+            if not self.dropped:
+                self.dropped += 1
+                raise ConnectionResetError(54, 'Connection reset by peer')
+            return fn(*a, **kw)
+        return wrapped
+
+
+def test_a_member_whose_connection_drops_is_retried(monkeypatch):
+    naps = []
+    monkeypatch.setattr('campfire.transient._sleep', naps.append)
+    body = b'{"a": 1}'
+    key = 'data/products/nirspec/abc_p1/abc_p1_123_prism_spec.json'
+    s3 = _DropsOnce(_s3(**{key: body}), 'put_object')
+    out = B.process_member(_row(key, body, product_type='spectrum_json'), tag='DR-t', s3=s3, bucket=BUCKET)
+    assert out.state == 'copied' and out.archive_key and s3.dropped == 1 and naps == [1.0]
+    assert s3.body(BUCKET, out.archive_key) == body
+
+
+def test_a_member_that_keeps_dropping_fails_after_the_last_attempt(monkeypatch):
+    monkeypatch.setattr('campfire.transient._sleep', lambda s: None)
+    body = b'{"a": 1}'
+    key = 'data/products/nirspec/abc_p1/abc_p1_123_prism_spec.json'
+    calls = []
+
+    class _Dead:
+        def __getattr__(self, name):
+            def fn(*a, **kw):
+                calls.append(name)
+                raise ConnectionResetError(54, 'reset')
+            return fn
+    out = B.process_member(_row(key, body, product_type='spectrum_json'), tag='DR-t', s3=_Dead(), bucket=BUCKET)
+    assert out.state == 'failed' and out.action == 'error' and 'ConnectionResetError' in out.error
+    assert len(calls) == 3
+
+
 def test_stamp_member_puts_conditionally_under_the_stamped_hash():
     body = _fits_bytes(4)
     s3 = _s3(**{SPEC_KEY: body})
@@ -537,6 +584,45 @@ def test_pass_pages_batches_and_converges():
     # nothing left: a second run sees nothing
     rep2 = B.run_byte_pass(client, s3, BUCKET, TAG, verify_science=False, log=lambda *_: None)
     assert rep2.seen == 0
+
+
+def test_pass_refetches_a_page_and_resends_a_mark_whose_connection_dropped(monkeypatch):
+    """A dropped connection on the page fetch or the mark used to abort the run
+    (remote Codex on #667); both are idempotent and are retried."""
+    naps = []
+    monkeypatch.setattr('campfire.transient._sleep', naps.append)
+    s3 = _s3()
+    rows = []
+    for i in range(4):
+        key = f'data/products/nirspec/abc_p1/abc_p1_{i}_prism_spec.json'
+        body = f'{{"i": {i}}}'.encode()
+        s3.seed(BUCKET, key, body)
+        rows.append(_row(key, body, product_type='spectrum_json'))
+    client, state = _fake_db(rows)
+    real_pending, real_mark = client.rpc_handlers['dr_bytes_pending'], client.rpc_handlers['dr_bytes_mark']
+    dropped = {'page': 0, 'mark': 0}
+
+    def pending(params):
+        if not dropped['page']:
+            dropped['page'] += 1
+            raise ConnectionResetError(54, 'Connection reset by peer')
+        return real_pending(params)
+
+    def mark(params):
+        out = real_mark(params)                     # the mark committed...
+        if not dropped['mark']:
+            dropped['mark'] += 1
+            import httpx
+            raise httpx.RemoteProtocolError('Server disconnected')   # ...and its answer was lost
+        return out
+    client.rpc_handlers.update({'dr_bytes_pending': pending, 'dr_bytes_mark': mark})
+    rep = B.run_byte_pass(client, s3, BUCKET, TAG, page_size=10, mark_batch=10,
+                          verify_science=False, log=lambda *_: None)
+    assert rep.seen == 4 and rep.by_state == {'copied': 4} and rep.state == 'ready'
+    assert all(r['byte_state'] == 'copied' for r in rows)
+    assert dropped == {'page': 1, 'mark': 1} and naps == [1.0, 1.0]
+    # the re-sent mark carried the same outcomes and the fake accepted it twice
+    assert len(state['marks']) == 2 and state['marks'][0] == state['marks'][1]
 
 
 def test_pass_records_failures_and_retries_them():

@@ -808,6 +808,144 @@ def plot_bkg_subtraction(rate_file, image_data, mask, *,
 # Extraction profile comparison (from stage3)
 # ---------------------------------------------------------------------------
 
+def _mean_snr(flux, err):
+    """Inverse-variance mean of a spectrum and that mean over its error."""
+    ok = np.isfinite(flux) & np.isfinite(err) & (err > 0)
+    if not ok.any():
+        return np.nan, np.nan
+    w = 1.0 / err[ok] ** 2
+    m = np.sum(w * flux[ok]) / np.sum(w)
+    return m, m * np.sqrt(np.sum(w))
+
+
+def _rectified_difference(paths, partners, scales):
+    """A nod's rectified difference: its ``S2D_SCI`` view less the mean of its background
+    nods' (``partners``: {detector: [canonicals]}), detectors side by side with a gap,
+    frames without the source on the point-source calibration (``scales``)."""
+    def read(p):
+        a = fits.getdata(p, extname='S2D_SCI').astype(float)
+        f = scales.get(p)
+        return a * f if f is not None and np.isfinite(f) else a
+
+    parts = []
+    for det in sorted(paths):
+        a = read(paths[det])
+        bs = [b for b in (read(p) for p in partners.get(det, [])) if b.shape == a.shape]
+        parts.append(a - np.mean(bs, axis=0) if bs else np.full(a.shape, np.nan))
+    ny = max(p.shape[0] for p in parts)
+    gap = np.full((ny, 10), np.nan)
+    out = []
+    for p in parts:
+        out += [np.vstack([p, np.full((ny - p.shape[0], p.shape[1]), np.nan)]), gap]
+    return np.hstack(out[:-1])
+
+
+def plot_neighbour_proposal(out_path, source_id, products):
+    """Review figure of a source's same-slitlet neighbour proposal (``stage3.write_scan_proposals``),
+    laid out as the bkgsub plots (``plot_stage2a_results``).
+
+    ``products``: [(product name, scan dict with ``preview`` from
+    ``profile_product.neighbour_preview``)]. One row per science nod: the rectified nod
+    difference with the background nods it subtracts now (left) and with the proposed
+    ones (right), both rebuilt from the cached ``S2D_SCI`` views, each with its median
+    over wavelength beside it (the current one repeated in grey next to the proposed
+    one). Under each product's rows, the spectrum fitted with each choice of nods."""
+    blocks = []
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+        for product, s in products:
+            pv = s['preview']
+            by_det = {}
+            for f in pv['frames']:
+                by_det.setdefault(f['detector'], set()).update([f['path']] + [p for _, p in f['now'] + f['proposed']])
+            scales = {}
+            for paths in by_det.values():
+                scales.update(_no_source_scales(sorted(paths)))
+            nods = {}
+            for f in pv['frames']:
+                r = nods.setdefault((f['root'], f['nod']), dict(paths={}, now={}, proposed={}))
+                r['paths'][f['detector']] = f['path']
+                for k in ('now', 'proposed'):
+                    r[k][f['detector']] = f[k]
+            many_roots = len({root for root, _ in nods}) > 1
+            rows = []
+            for (root, nod), r in sorted(nods.items()):
+                name = f"{root.split('_')[-1]}:{nod}" if many_roots else str(nod)
+                imgs, labels = {}, {}
+                for k in ('now', 'proposed'):
+                    imgs[k] = _rectified_difference(r['paths'], {d: [p for _, p in v] for d, v in r[k].items()},
+                                                    scales)
+                    labels[k] = f"{name} - [{','.join(str(n) for n in sorted({n for v in r[k].values() for n, _ in v}))}]"
+                rows.append((imgs, labels))
+            blocks.append((product, pv, rows, _zscale_norm([im for imgs, _ in rows for im in imgs.values()])))
+
+    heights = [h for _, _, rows, _ in blocks for h in [1.0] * len(rows) + [1.6]]
+    fig = plt.figure(figsize=(7 * 1.5, 1.5 * sum(heights)), constrained_layout=True)
+    gs = fig.add_gridspec(len(heights), 4, width_ratios=[3, 0.5, 3, 0.5], height_ratios=heights)
+    fig.suptitle(', '.join(p for p, _ in products), fontname='monospace', fontsize=8)
+    i = 0
+    for product, pv, rows, norm in blocks:
+        prof_axes = []
+        for n, (imgs, labels) in enumerate(rows):
+            profiles = {}
+            for c, k in ((0, 'now'), (2, 'proposed')):
+                img = imgs[k]
+                ax = fig.add_subplot(gs[i, c])
+                ax.imshow(img, norm=norm, origin='lower', aspect='auto', interpolation='nearest')
+                y = np.arange(img.shape[0]) - 0.5
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    profiles[k] = np.nanmedian(img, axis=1)
+                ap = fig.add_subplot(gs[i, c + 1], sharey=ax)
+                if k == 'proposed':
+                    ap.step(profiles['now'], y, where='pre', linewidth=0.8, color='0.6')
+                ap.step(profiles[k], y, where='pre', linewidth=1, color='k')
+                ap.tick_params(labelleft=False)
+                changed = k == 'proposed' and labels['proposed'] != labels['now']
+                ap.set_ylabel(labels[k], fontname='monospace', color='tab:red' if changed else 'k')
+                ap.yaxis.set_label_position('right')
+                prof_axes.append(ap)
+                if c == 2:
+                    ax.tick_params(labelleft=False)
+                if n == 0:
+                    ax.set_title('background nods now' if k == 'now' else 'proposed', fontname='monospace')
+                if n < len(rows) - 1:
+                    ax.tick_params(labelbottom=False)
+                    ap.tick_params(labelbottom=False)
+            i += 1
+        lo = min(a.get_xlim()[0] for a in prof_axes)
+        hi = max(a.get_xlim()[1] for a in prof_axes)
+        for a in prof_axes:
+            a.set_xlim(lo, hi)
+
+        ax = fig.add_subplot(gs[i, :])
+        i += 1
+        shown = []
+        lam = pv['lam']
+        has = np.isfinite(pv['now'][0]) | np.isfinite(pv['proposed'][0])
+        for key, color in (('now', '0.6'), ('proposed', 'k')):
+            fl, er = pv[key]
+            _, snr = _mean_snr(fl, er)
+            label = 'background nods now' if key == 'now' else 'proposed'
+            ax.step(lam, fl, where='mid', color=color, lw=0.7, label=f'{label}  (S/N {snr:.1f})')
+            ax.fill_between(lam, fl - er, fl + er, step='mid', color=color, alpha=0.2, lw=0)
+            shown.append(fl)
+        ax.axhline(0, color='0.5', lw=0.5)
+        if has.any():
+            ax.set_xlim(np.nanmin(lam[has]), np.nanmax(lam[has]))
+        lo, hi = np.nanpercentile(np.concatenate(shown), [2, 98])
+        if np.isfinite(lo) and hi > lo:
+            ax.set_ylim(min(lo, 0) - 0.3 * (hi - lo), hi + 0.3 * (hi - lo))
+        ax.set_xlabel('wavelength [um]')
+        ax.set_ylabel('flux')
+        ax.legend(loc='upper right', prop=dict(family='monospace', size=7))
+        if len(blocks) > 1:
+            ax.set_title(product, fontname='monospace', fontsize=8)
+        _style_axes(ax)
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+
+
 def plot_extraction_profiles(out_path, collapsed, profiles, x1d_start, x1d_stop, cen):
     """4-panel plot comparing extraction profiles against the collapsed spatial profile.
 

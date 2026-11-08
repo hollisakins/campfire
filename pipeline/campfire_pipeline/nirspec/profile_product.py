@@ -40,11 +40,9 @@ def stage_flags(sc):
     g = sc.get
     return dict(
         contam=bool(g('contam_predict', True)),
-        contam_mode=str(g('contam_mode', 'hybrid')).lower(),
         kappa=float(g('contam_mask_kappa', 1.0)),
         pair_ratio=float(g('contam_pair_ratio', 3.0)),
         pair_min_frac=float(g('contam_pair_min_frac', 0.3)),
-        dominance_kappa=float(g('contam_dominance_kappa', 1.0)),
         scan=bool(g('scan_neighbours', True)),
         scan_nbins=int(g('scan_nbins', 16)),
         scan_width=g('scan_width', None),
@@ -53,10 +51,7 @@ def stage_flags(sc):
         scan_drop_frac=float(g('scan_drop_frac', 0.2)),
         scan_null_ratio=float(g('scan_null_ratio', 1.5)),
         scan_max_masked=float(g('scan_max_masked', 0.3)),
-        scan_noise=str(g('scan_noise', 'mean_square')).lower(),
         scan_close=float(g('scan_close', 0.9)),
-        scan_close_rule=str(g('scan_close_rule', 'all')).lower(),
-        scan_gain_rule=bool(g('scan_gain_rule', False)),
         scan_flag_dchi2=float(g('scan_flag_dchi2', 1500.0)),
         scan_flag_dchi2_low=float(g('scan_flag_dchi2_low', 500.0)),
         scan_flag_null_ratio=float(g('scan_flag_null_ratio', 5.0)),
@@ -93,6 +88,62 @@ def scan_input(exps, chain_result, maps, source_id):
     return PF.fit_fixed(model=M, shape=shape), share
 
 
+def partner_overrides(exps, n_groups):
+    """The background nods each exposure subtracts now, as override dicts (one per
+    background group, {nod (str): [nods]}; [] for an excluded nod)."""
+    from campfire_pipeline.nirspec import nod_scan as NS
+    out = [dict() for _ in range(n_groups)]
+    for e in exps:
+        out[e.group][str(NS._nod(e))] = [] if e.partners is None else sorted(NS._nod(exps[j]) for j in e.partners)
+    return out
+
+
+def neighbour_preview(groups, raw, chain_result, maps, source_id, science, stage_config, proposals):
+    """What a scan proposal would change, for the review figure (``plots.plot_neighbour_proposal``).
+
+    The source is loaded twice from the frames before subtraction (``profile_fit.load_group``
+    with ``pre_bkgsub``), with the background nods it subtracts now and with the proposed
+    ones, and fitted at the chain's shape on the scan's pixels (``scan_input``), so the two
+    spectra differ only by the choice of nods. Returns a dict (the two spectra, and per
+    science exposure its canonical and its background nods now and proposed, as
+    [(nod, canonical)]), or None when the frames before subtraction are not there (a
+    canonical stage 2b never subtracted)."""
+    from campfire_pipeline.nirspec import nod_scan as NS
+    from campfire_pipeline.nirspec import profile_fit as PF
+
+    now = partner_overrides(raw, len(groups))
+    prop = [dict(d) for d in now]
+    for e in raw:
+        want = (proposals.get(NS._root(e)) or {}).get(str(NS._nod(e)))
+        if want is not None:
+            prop[e.group][str(NS._nod(e))] = list(want)
+    fits_, loaded = {}, {}
+    for key, ov in (('now', now), ('proposed', prop)):
+        ex = PF.load_source(groups, bkg_overrides=ov, science=set(science), pre_bkgsub=True,
+                            **PF.load_options(stage_config))
+        if partner_overrides(ex, len(groups)) != ov:
+            return None                    # no frames before subtraction: the nods could not be changed
+        R, _ = scan_input(ex, chain_result, maps, source_id)
+        if R is None:
+            return None
+        fits_[key], loaded[key] = R, ex
+
+    def nods(ex, e):
+        return [(NS._nod(ex[j]), ex[j].path) for j in e.partners]
+
+    ex_now, ex_prop = loaded['now'], loaded['proposed']
+    proposed = {e.name: nods(ex_prop, e) for e in ex_prop if e.partners is not None}
+    frames = [dict(root=NS._root(e), nod=NS._nod(e), detector=e.detector, path=e.path, now=nods(ex_now, e),
+                   proposed=proposed.get(e.name, []))
+              for e in ex_now if e.use_data and e.has_source and e.partners is not None]
+    R = fits_['now']
+    return dict(lam=np.asarray(R.lam, np.float32),
+                now=(np.asarray(R.flux, np.float32), np.asarray(R.flux_err, np.float32)),
+                proposed=(np.asarray(fits_['proposed'].flux, np.float32),
+                          np.asarray(fits_['proposed'].flux_err, np.float32)),
+                frames=frames)
+
+
 @dataclass
 class Analysis:
     """Everything one product's profile fit decided (for the writer and for diagnostics)."""
@@ -102,13 +153,14 @@ class Analysis:
     clean: dict = None
     contam_state: str = 'off'
     scan: object = None               # nod_scan.ScanResult
+    preview: dict = None              # neighbour_preview, when the scan proposes other background nods
 
 
 def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                     prism_product='', pass1_products=None, log=None, exps=None, pass1_for=None, maps=None,
-                    prism=None):
+                    prism=None, stuck_keys=None):
     """Load, predict and apply other slitlets' light, choose the shape, scan for a
-    same-slitlet neighbour. No files are written.
+    same-slitlet neighbour. No files are written. ``stuck_keys``: as ``run_product``.
 
     For tests: ``exps`` (preloaded exposures, modified in place), ``pass1_for``
     (sid -> ``Pass1``), ``maps`` and ``prism`` (a ``PrismShape``) replace what is
@@ -130,8 +182,8 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
     raw = [copy.copy(e) for e in exps]      # as stage 2b made them: the same-slitlet scan's data
     P, clean, cstate = None, None, 'off'
     t_mark = TM.start()
-    if fl['contam'] and cfg.shape != 'free':
-        maps = CT.maps_for_exposures(workspace_dir, exps) if maps is None else maps
+    if fl['contam']:
+        maps = CT.maps_for_exposures(workspace_dir, exps, stuck_keys) if maps is None else maps
         if not maps:
             cstate = 'no_maps'
         else:
@@ -165,8 +217,8 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
                     P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=pass1_for(source_id),
                                    pair_ratio=fl['pair_ratio'], why_missing=why_missing)
             saved = [(e.ok, e.diff) for e in exps]
-            clean = CT.apply(exps, P, mode=fl['contam_mode'], kappa=fl['kappa'], dominance_kappa=fl['dominance_kappa'])
-            cstate = fl['contam_mode'] if P.have_maps else f"{fl['contam_mode']}_partial_maps"
+            clean = CT.apply(exps, P, kappa=fl['kappa'])
+            cstate = 'subtracted' if P.have_maps else 'subtracted_partial_maps'
             npix = sum(int(m.sum()) for _, m in PF.fit_pixel_masks(exps))
             if npix < MIN_FIT_PIXELS:
                 # masking left (almost) nothing to fit: fit the data as they are, flagged
@@ -188,13 +240,12 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
         # the scan never sees other slitlets' light: their pixels are left out, not modelled
         with TM.step('scan_input'):
             if maps is None:
-                maps = CT.maps_for_exposures(workspace_dir, exps)
+                maps = CT.maps_for_exposures(workspace_dir, exps, stuck_keys)
             R_scan, share = scan_input(raw, C.result, maps, source_id)
         S = NS.run(R_scan if R_scan is not None else C.result, nbins=fl['scan_nbins'], width=fl['scan_width'],
                    dchi2_min=fl['scan_dchi2'],
                    min_snr=fl['scan_min_snr'], drop_frac=fl['scan_drop_frac'], null_ratio=fl['scan_null_ratio'],
-                   noise=fl['scan_noise'], close=fl['scan_close'], close_rule=fl['scan_close_rule'],
-                   gain_rule=fl['scan_gain_rule'], flag_dchi2=fl['scan_flag_dchi2'],
+                   close=fl['scan_close'], flag_dchi2=fl['scan_flag_dchi2'],
                    flag_low=fl['scan_flag_dchi2_low'], flag_null_ratio=fl['scan_flag_null_ratio'])
         # too few pixels free of other slitlets' light to tell a same-slitlet neighbour
         # (seen on 5215): report, do not propose
@@ -206,8 +257,20 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
             S.suppress('target width on its bound')
         if not is_prism and prism_product and fl['scan_xdisp_tol'] >= 0:
             S.cross_check(read_scan(workspace_dir, prism_product), tol=fl['scan_xdisp_tol'])
+        if S.drop_in_force(raw):
+            log('neighbour scan: proposals already in force left out')
     TM.stop('scan', t_mark)
-    return Analysis(exps=exps, chain=C, prediction=P, clean=clean, contam_state=cstate, scan=S)
+    preview = None
+    if S is not None and S.proposals and groups:
+        with TM.step('scan_preview'):
+            try:
+                preview = neighbour_preview(groups, raw, C.result, maps, source_id, science, stage_config,
+                                            S.proposals)
+                if preview is None:
+                    log('neighbour proposal: no preview (no frames before subtraction)')
+            except Exception as e:                   # noqa: BLE001 - a review figure must not fail the product
+                log(f'neighbour proposal preview failed ({type(e).__name__}: {e})')
+    return Analysis(exps=exps, chain=C, prediction=P, clean=clean, contam_state=cstate, scan=S, preview=preview)
 
 
 def read_scan(workspace_dir, product):
@@ -292,7 +355,7 @@ def shape_header(C, exps):
 
 
 def run_product(product_name, workspace_dir, groups, overrides, science, source_id, stage_config,
-                is_prism, prism_product='', pass1_products=None, cleanup_crfs=True):
+                is_prism, prism_product='', pass1_products=None, cleanup_crfs=True, stuck_keys=None):
     """Build ``{product_name}_pf.fits`` and, with ``mbkg_spectrum``, the master-background
     files (module doc). Returns a dict summary (for the driver).
 
@@ -303,7 +366,9 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
     master-background spectrum too; without a crf there is none). Any other
     exception propagates: the stage fails.
 
-    pass1_products : {source id: pass-1 product name} of the configuration (contamination)."""
+    pass1_products : {source id: pass-1 product name} of the configuration (contamination).
+    stuck_keys : the observation's stuck physical shutters by root, left out of the trace
+    maps (``profile_contam.trace_maps``)."""
     from astropy.io import fits
     from campfire_pipeline.common.io import log
     from campfire_pipeline.nirspec import drizzle_map as DM
@@ -334,7 +399,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         try:
             A = analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                                 prism_product=prism_product, pass1_products=pass1_products,
-                                log=lambda m: log(f'{product_name}: {m}'))
+                                log=lambda m: log(f'{product_name}: {m}'), stuck_keys=stuck_keys)
         except PF.ProfileFitFallback as e:
             log(f"{product_name}: {e}; 3-pixel boxcar ({e.reason})")
             write_fallback(path, e.reason)
@@ -377,7 +442,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         hdr = shape_header(C, exps)
         hdr['PFNSRCF'] = (int(sum(not e.has_source for e in exps)), 'Exposures without the source (SRCFLUX=F)')
         hdr['PFSELFSB'] = (float(MX.self_subtraction(R, exps)), 'Own light the nod subtraction removes (share)')
-        hdr['PFCMODE'] = (cstate, 'Other-slitlet light: off/mask/hybrid/no_maps/..._undone')
+        hdr['PFCMODE'] = (cstate, 'Other-slitlet light: off/subtracted/no_maps/..._undone')
         if P is not None:
             def _v(x):
                 return float(x) if np.isfinite(x) else -999.0
@@ -408,13 +473,14 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             # the same pixel maps (mbkg_extraction)
             with TM.step('mbkg'):
                 MX.fit_product(product_name, workspace_dir, exps, science, source_id, C, stage_config, dmap,
-                               pass1_products=pass1_products, log=log)
+                               pass1_products=pass1_products, log=log, stuck_keys=stuck_keys)
         TM.report(f'product {product_name}', log=log)
         return dict(product=product_name, source_id=int(source_id), shape=C.shape, reason=C.reason,
-                    is_prism=bool(is_prism),
+                    is_prism=bool(is_prism), snr_det=float(C.snr_det), transfer=C.transfer,
                     scan=(None if S is None else dict(detected=S.detected, candidate=S.candidate, delta=S.delta,
                                                       dchi2=S.dchi2, proposals=S.proposals,
-                                                      unresolved=S.unresolved, xdisp=S.xdisp)),
+                                                      unresolved=S.unresolved, xdisp=S.xdisp,
+                                                      preview=A.preview)),
                     fallback=None)
     finally:
         if cleanup_crfs:

@@ -186,6 +186,8 @@ def test_every_switch_named_exists_in_the_default_config():
     import re
     cfg = tomllib.loads(DEFAULT_CONFIG.read_text())['nirspec']
     for name, e in CR.manifest().items():
+        if e['switch'].startswith('none:'):            # always used (the bar-shadow tables)
+            continue
         section = re.search(r'\[nirspec\.(\w+)\]', e['switch']).group(1)
         for setting in re.findall(r'(\w+)\s*=', e['switch']):
             assert setting in cfg[section], f'{name}: {setting} not in [nirspec.{section}]'

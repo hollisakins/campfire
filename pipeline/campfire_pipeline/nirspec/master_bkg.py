@@ -86,38 +86,42 @@ ALGORITHM_VERSION = '1.7'    # 1.1: painted past the calibrated range; 1.2: coun
 #                                    comes through the same MSA spot (merge_painted) (2026-11-02)
 #                               1.7: failed-open shutters get a commanded slitlet's margin and the real shutter
 #                                    pitch (coverage.failed_open_slitlets) (2026-11-02)
+# The derivation's settings. Fixed in the code since the 2026-11-06 configuration audit
+# (Hollis: "30 master bkg thresholds is a *ton*"); the only one left in the config is
+# USER_OPTIONS. Every product records the ones that shape it in its header.
+SETTINGS = dict(
+    source_pad_px=3.0,        # rows beyond the source shutter's edges dropped (§9: 3 px)
+    core_frac=0.2,            # |f| of the shutter core that measures the 1-D sky
+    bin_pixels=2.0,           # detector pixels per wavelength bin
+    min_pixels=20,            # pixels a shutter needs
+    min_bins=10,              # bins a shutter needs
+    clip_sigma=3.0,           # per-bin clipping when shutters are combined
+    line_sigma=4.0,           # a run of bins above this many sigma is a line ...
+    line_min_bins=3,          # ... this many bins long
+    excess_min=0.05,          # reject a shutter brighter than the sky by this (and 3 sigma)
+    low_min=0.30,             # reject a shutter fainter than the sky by this (and 3 sigma)
+    n_iter=3,                 # scale-and-reject iterations
+    min_shutters=5,           # below this the exposure takes the group's pooled sky
+    # each exposure x detector is painted with its group's pooled sky unless its own clean
+    # shutters differ from the pool of the other exposures (pool_check) in one of pool_bands
+    # wavelength bands by more than pool_tol AND pool_nsigma (shutter-to-shutter scatter)
+    pool_tol=0.02,
+    pool_nsigma=3.0,
+    pool_bands=8,
+    rate_excess_min=0.15,     # step 1 (count rate, no flat: ~7 % grey per slitlet): excess threshold
+    rate_low_min=0.30,        # step 1: low-throughput threshold
+    stuck_a_cut=0.3,          # step 1 stuck call: median sky amplitude below this ...
+    stuck_min_n=2,            # ... from at least this many measurements (nods x detectors) ...
+    stuck_guard=0.5,          # ... and the two detectors' medians within this
+    error_floor=0.03,         # fraction of the sky added in quadrature downstream (MBKGEFLR)
+    same_spot_px=1.0,         # 2-D: two slitlets' light on a pixel within this many columns of dispersion is one MSA spot
+    failed_open_min_pixels=200,   # 2-D: core pixels outside source shutters a failed-open transmission needs (else 1)
+    failed_open_nod_tol=0.1,      # ... nods within this of their median give one value per shutter and detector
+)
+# [nirspec.stage2] keys still read from the config, with their defaults
 _PREFIX = 'master_bkg_'
-DEFAULTS = dict(
-    master_bkg_source_pad_px=3.0,     # rows beyond the source shutter's edges dropped (§9: 3 px)
-    master_bkg_core_frac=0.2,         # |f| of the shutter core that measures the 1-D sky
-    master_bkg_bin_pixels=2.0,        # detector pixels per wavelength bin
-    master_bkg_min_pixels=20,         # pixels a shutter needs
-    master_bkg_min_bins=10,           # bins a shutter needs
-    master_bkg_clip_sigma=3.0,        # per-bin clipping when shutters are combined
-    master_bkg_line_sigma=4.0,        # a run of bins above this many sigma is a line
-    master_bkg_line_min_bins=3,
-    master_bkg_excess_min=0.05,       # reject a shutter brighter than the sky by this (and 3 sigma)
-    master_bkg_low_min=0.30,          # reject a shutter fainter than the sky by this (and 3 sigma)
-    master_bkg_n_iter=3,
-    master_bkg_min_shutters=5,        # below this the exposure takes the group's pooled sky
-    master_bkg_prefer_pool=True,      # paint the group's pooled sky unless this exposure's differs (pool_check)
-    master_bkg_pool_tol=0.02,         # ... a band differs when off by more than this fraction
-    master_bkg_pool_nsigma=3.0,       # ... and by more than this many sigma (shutter-to-shutter scatter)
-    master_bkg_pool_bands=8,          # ... wavelength bands tested
-    master_bkg_rate_excess_min=0.15,  # step 1 (count rate, no flat: ~7 % grey per slitlet): excess threshold
-    master_bkg_rate_low_min=0.30,     # step 1: low-throughput threshold
-    master_bkg_stuck_a_cut=0.3,       # step 1 stuck call: median sky amplitude below this
-    master_bkg_stuck_min_n=2,         # ... from at least this many measurements (nods x detectors)
-    master_bkg_stuck_guard=0.5,       # ... and the two detectors' medians within this
-    master_bkg_error_floor=0.03,      # fraction of the sky added in quadrature downstream
-    master_bkg_quadrant_scales=True,
-    master_bkg_model_check=True,      # compare with jwst_backgrounds when installed
-    master_bkg_write_2d=True,
-    master_bkg_same_spot_px=1.0,      # 2-D: two slitlets' light on a pixel within this many columns of dispersion is one MSA spot
-    master_bkg_failed_open_scale='measured',  # 2-D: failed-open shutters painted at their measured transmission ('full': at 1)
-    master_bkg_failed_open_min_pixels=200,    # ... core pixels outside source shutters a measurement needs (else 1)
-    master_bkg_failed_open_nod_tol=0.1,       # ... nods within this of their median give one value per shutter and detector
-    master_bkg_plot=True,
+USER_OPTIONS = dict(
+    master_bkg_plot=True,     # the QA PDF of every exposure x detector (no product depends on it)
 )
 REASONS = ('clean', 'too_few_bins', 'low_throughput', 'continuum_excess', 'line_excess')
 DQ_UNCOVERED = 1          # no slitlet footprint on the pixel
@@ -127,8 +131,11 @@ DQ_FAILED_OPEN = 8        # a failed-open shutter's sky is painted here (light a
 
 
 def options(stage_config):
-    """The ``master_bkg_*`` knobs of ``[nirspec.stage2]`` without their prefix."""
-    return {k[len(_PREFIX):]: stage_config.get(k, v) for k, v in DEFAULTS.items()}
+    """The derivation's settings: ``SETTINGS`` plus the user-facing ``master_bkg_*`` keys of
+    ``[nirspec.stage2]`` (``USER_OPTIONS``) without their prefix."""
+    o = dict(SETTINGS)
+    o.update({k[len(_PREFIX):]: stage_config.get(k, v) for k, v in USER_OPTIONS.items()})
+    return o
 
 
 @dataclass
@@ -1154,7 +1161,7 @@ def _worker_paint(args):
     prod = load_product(product)
     rate, _, _, counter = _rate_frame(rate_path, counter_path)
     ny_d, nx_d = rate.shape
-    core_frac = float(opt.get('core_frac', 0.2))
+    core_frac = float(opt.get('core_frac', SETTINGS['core_frac']))
     layers = []                         # one (pix, lam, val, is_open) per slitlet painting
     n_painted, n_ext, n_failed_open, n_geometry, failures = 0, 0, 0, 0, []
     painted = set()
@@ -1243,16 +1250,13 @@ def _worker_paint(args):
         # transmission: the median, over its open-shutter core outside source shutters, of
         # (rate - everything else painted there) / its full-sky paint, clipped to [0, 1].
         # Light above 1 (an object behind the shutter) is contamination.
-        measured = str(opt.get('failed_open_scale', 'measured')) == 'measured'
         rate_good = np.isfinite(rate).ravel() & ((_rate_dq(rate_path) & 1) == 0).ravel()
-        base = merge_painted(rate.shape, layers, float(opt.get('same_spot_px', 1.0)))[0].ravel() if measured else None
-        n_min = int(opt.get('failed_open_min_pixels', 200))
+        base = merge_painted(rate.shape, layers, float(opt.get('same_spot_px', SETTINGS['same_spot_px'])))[0].ravel()
+        n_min = int(opt.get('failed_open_min_pixels', SETTINGS['failed_open_min_pixels']))
         for b, val in fo_layers:
             pix = b['pix']
-            a, n, scale = np.nan, 0, 1.0
-            if measured:
-                core = b['is_open'] & (np.abs(b['f']) <= 0.3) & rate_good[pix] & ~in_source[pix]
-                a, n, scale = failed_open_transmission(rate.ravel()[pix], base[pix], val, core, n_min)
+            core = b['is_open'] & (np.abs(b['f']) <= 0.3) & rate_good[pix] & ~in_source[pix]
+            a, n, scale = failed_open_transmission(rate.ravel()[pix], base[pix], val, core, n_min)
             # painted even at 0, so the MSA spots on every pixel do not depend on the scale
             ok = paint(pix // nx_d, pix % nx_d, b['lam'], val * scale, b['is_open'])
             fo_amps.append(dict(name=str(b['name']), quadrant=int(b['quadrant']), a=a, n=n, scale=scale,
@@ -1274,7 +1278,7 @@ def _worker_paint(args):
 
     # the total is linear in each failed-open shutter's paint (merge_painted's weights), so
     # run_master_bkg can rescale a shutter to its value over all nods afterwards, exactly
-    mb, cover, n_layers, weights = merge_painted(rate.shape, layers, float(opt.get('same_spot_px', 1.0)),
+    mb, cover, n_layers, weights = merge_painted(rate.shape, layers, float(opt.get('same_spot_px', SETTINGS['same_spot_px'])),
                                                  weights_of=[f['layer'] for f in fo_amps])
     for f in fo_amps:
         w, alone = weights[f['layer']]
@@ -1515,12 +1519,9 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
     sample = {base: inputs[base] for base in inputs if base.rsplit('_', 2)[0] in groups and inputs[base]}
     canonicals = [c for cans in sample.values() for c in cans]
 
-    # with the extended-wavelength reduction on, the footprints must reach the extended
-    # red end too, so the counter's assign_wcs takes the same wavelengthrange override
-    extended_refs = {}
-    if stage_config.get('extend_g140m_g235m'):
-        from campfire_pipeline.nirspec.extended_wavelength import build_extended_reference_files
-        extended_refs = build_extended_reference_files(obs.rate_files) or {}
+    # the footprints reach as far as the light does: G140M / G235M geometry is always built
+    # on the extended wavelengthrange, whatever the reduction calibrates
+    # (coverage.resolve_wavelengthrange)
     cache_dir = default_cache_dir()
     counters, geometries, cutoffs_of = {}, {}, {}
     for base in sorted(sample):
@@ -1528,13 +1529,11 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         if not os.path.exists(rate):
             continue
         c0 = sample[base][0]
-        ext = extended_refs.get((c0.detector.upper(), c0.grating, c0.filter))
-        wr = ext.get('wavelengthrange') if ext else None
         cutoffs = cutoffs_for(c0.grating, c0.filter)
         cutoffs_of[rate] = cutoffs
-        coverage_from_wcs(rate, cache_dir=cache_dir, cutoffs=cutoffs, wavelengthrange_override=wr)
-        counters[rate] = cache_path(rate, cache_dir, cutoffs, wr)
-        geometries[rate] = geometry_cache_path(rate, cache_dir, cutoffs, wr)
+        coverage_from_wcs(rate, cache_dir=cache_dir, cutoffs=cutoffs)
+        counters[rate] = cache_path(rate, cache_dir, cutoffs)
+        geometries[rate] = geometry_cache_path(rate, cache_dir, cutoffs)
     log(f'master background: {len(counters)} coverage counters')
 
     dispersers = sorted({(c.grating, c.filter) for c in canonicals})
@@ -1559,18 +1558,17 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         sky = select_clean(spectra, median_seed(spectra), opt)
         skies[base] = sky
         shutters_of[base] = spectra
-    # the group's pool: every exposure's clean shutters, or with prefer_pool those of the
-    # exposures consistent with each other (pool_members); the others keep their own sky
+    # the group's pool: the clean shutters of the exposures consistent with each other
+    # (pool_members); the others keep their own sky
     pools, checks, in_pool = {}, {}, set()
     for grp in groups:
         clean_of = {base: [s for s in sp if s.clean] for base, sp in shutters_of.items() if base.rsplit('_', 2)[0] == grp}
-        if opt['prefer_pool'] and clean_of:
+        members = set()
+        if clean_of:
             key0 = next(c for c in canonicals if c.rate_base in clean_of)
             e = edges_of[(key0.grating, key0.filter)]
             members, chk = pool_members(clean_of, 0.5 * (e[1:] + e[:-1]), opt)
             checks.update(chk); in_pool |= members
-        else:
-            members = set(clean_of)
         pooled = [s for b in members for s in clean_of[b]]
         pools[grp] = combine(pooled, opt['clip_sigma']) if pooled else None
 
@@ -1595,15 +1593,14 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             log(f'master background: {base}: no clean shutters and no pool; no product')
             continue
         a, ae, b, be, nfit = scale_offset(own, pool) if (pool is not None and own is not None) else (np.nan,) * 4 + (0,)
-        qsc = quadrant_scales(spectra, sky, opt) if opt['quadrant_scales'] else {q: (np.nan, 0) for q in (1, 2, 3, 4)}
+        qsc = quadrant_scales(spectra, sky, opt)
         model, mscale = None, np.nan
-        if opt['model_check']:
-            try:
-                ph = fits.getheader(rate)
-                model, mscale = model_sky(centres, sky[0], float(ph['TARG_RA']), float(ph['TARG_DEC']), ph['DATE-OBS'])
-                model = model * mscale
-            except Exception as e:
-                log(f'master background: {base}: jwst_backgrounds comparison skipped ({type(e).__name__}: {e})')
+        try:                              # recorded only (MBKGMDL); skipped without jwst_backgrounds
+            ph = fits.getheader(rate)
+            model, mscale = model_sky(centres, sky[0], float(ph['TARG_RA']), float(ph['TARG_DEC']), ph['DATE-OBS'])
+            model = model * mscale
+        except Exception as e:
+            log(f'master background: {base}: jwst_backgrounds comparison skipped ({type(e).__name__}: {e})')
         rate_hdr = fits.getheader(rate)
         med_sky = float(np.nanmedian(sky[0])) if np.isfinite(sky[0]).any() else np.nan
         cards = {
@@ -1654,8 +1651,9 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         written.append(out)
         log(f'master background: {base}: {n_clean}/{len(spectra)} shutters clean ({src}); '
             f'scale vs pool {a:.4f}, offset/sky {cards["MBKGOFFR"][0]:+.4f}; data/model {mscale:.3f}')
-        if opt['write_2d']:
-            paint_args.append(((rate, out, cans, bs_of[key][1], counters.get(rate), opt), key))
+        # always painted: stage 2b (neighbor test, background spectra) and stage 3's
+        # master-background spectrum read MBKG2D through sky_for_slit
+        paint_args.append(((rate, out, cans, bs_of[key][1], counters.get(rate), opt), key))
 
     if paint_args:
         from multiprocessing import Pool
@@ -1696,7 +1694,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             hdul[0].header['MBKGN2D'] = (n_painted, 'slits painted into MBKG2D')
             hdul[0].header['MBKGNEXT'] = (int(n_ext), 'pixels painted past the calibrated range')
             hdul[0].header['MBKGNFO'] = (int(counts['failed_open']), 'failed-open shutters painted')
-            hdul[0].header['MBKGFOSC'] = (str(opt.get('failed_open_scale', 'measured')) + ', exposure',
+            hdul[0].header['MBKGFOSC'] = ('measured, exposure',
                                           'failed-open transmission: how, over what')
             hdul[0].header['MBKGNGEO'] = (int(counts['geometry']), 'slitlets painted with no slit (rate units)')
             hdul[0].header['MBKGCBLU'] = (float(blue) if blue is not None else 'edge', 'footprint blue cutoff [um]')
@@ -1726,8 +1724,8 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         else:
             for a in paint_args:
                 _finish(_worker_paint(a))
-        if str(opt.get('failed_open_scale', 'measured')) == 'measured' and any(fo_of.values()):
-            _failed_open_over_nods(obs, fo_of, float(opt.get('failed_open_nod_tol', 0.1)))
+        if any(fo_of.values()):
+            _failed_open_over_nods(obs, fo_of, float(opt['failed_open_nod_tol']))
 
     if plot:
         for out in written:

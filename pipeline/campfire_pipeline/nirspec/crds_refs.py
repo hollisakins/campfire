@@ -14,8 +14,9 @@ each listed with its inputs and the references it depends on in ``data/nirspec_c
   Switches: ``[nirspec.stage3].slit_loss_y`` = "optics" | "jwst" and ``slit_loss_x`` =
   "corrected" | "jwst" (``SlitLoss``), recorded as PFSLY / PFSLX, with the path-loss reference's
   name as PFPLREF.
-* the bar shadow: not applied to science slits (stage 2 skips the step); the master background
-  takes the empirical tables (``barshadow_calibration``, ``[nirspec.stage2].empirical_barshadow``).
+* the bar shadow: not applied to science slits (stage 2 skips the step); the master background and
+  stage 2a's background slitlets take the empirical tables (``barshadow_calibration``) for every
+  grating that has one, the CRDS reference for the others (the H gratings).
 
 This module is the only place that reads those two references or interprets what jwst wrote from
 them into a cal file, and it checks the assumptions the calibrations make about them
@@ -259,8 +260,8 @@ def check_references(pathloss=None, barshadow=None, grating=None, path=MANIFEST_
     """The calibrations derived against another reference than the ones given (names as a cal file
     or CRDS gives them; the bar shadow per ``grating``): a list of messages, each also warned once
     per process with ``warn``. The model still runs (its slit-direction loss does not use the
-    reference's), but the named parts were fitted against the old file and should be re-derived or
-    switched off (``SlitLoss``, ``[nirspec.stage2].empirical_barshadow``)."""
+    reference's), but the named parts were fitted against the old file and should be re-derived
+    (the path loss can also be switched off, ``SlitLoss``)."""
     out = []
     for reftype, name in (('pathloss', pathloss), ('barshadow', barshadow)):
         if not name:
