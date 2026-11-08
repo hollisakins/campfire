@@ -56,7 +56,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   and G140M/F100LP, G235M/F170LP and the H gratings with those filters from stage 1.
   - *The extraction* (`profile_fit.py`, `profile_chain.py`). The source is a Gaussian in the slit
     direction whose center and width vary linearly with log wavelength, seen through the optics
-    model below, in each exposure and in its negative copies in the other nods' differences. Its
+    model below, in each exposure and in its negative images in the other nods' differences. Its
     shape comes from a gated chain (`profile_fit_shape = "gated"`). A grating takes the PRISM shape
     of the same source when that PRISM product took its own fit; its own fit replaces the PRISM
     shape only at detection S/N 100 or more, and only when it is both significantly better and
@@ -70,20 +70,20 @@ Release procedure: edit the `## Unreleased` section below, then run
     3-pixel boxcar (`EXTRACT = boxcar3`); any other error fails the stage. `fnu` is never
     contamination-subtracted.
   - *Optics model* (`optics.py`, `data/nirspec_optics.json` `2026.11-r8`, `FIT_VERSION` 8). One
-    diffraction model of the MSA for every disperser replaces the two-Gaussian PSF and the hard
-    shutter edge. The telescope's field is cut by the open shutters (each opening exactly its
-    height) and by the spectrograph's pupil stop, then blurred by the detector, after an empirical
-    kernel fitted to 590 calibration star-detectors. Along the dispersion it uses jwst's point loss
-    times a correction fitted to NGC 2506 stars. The same star at different positions in its
-    shutter (93 NGC 2506 stars) scatters by 6-12 % in five bands from 0.6 to 5.3 um, with no
-    trend with the position along the slit. Each nod sits at its own planned position (`NOD_OFFSET_LAW`). Each observation's bar
+    diffraction model of the MSA, the same for every disperser, gives each source's image through
+    the open shutters. The telescope's image at the MSA, convolved with an empirical kernel fitted
+    to 590 calibration star-detector pairs, is cut by the open shutters (each opening exactly its
+    height) and by the spectrograph's pupil stop, then blurred by the detector. Along the
+    dispersion it uses jwst's point loss times a correction fitted to NGC 2506 stars. The same star
+    at different positions in its shutter (93 NGC 2506 stars) scatters by 6-12 % in five bands
+    from 0.7 to 5 um, with no trend with the position along the slit. Each nod sits at its own planned position (`NOD_OFFSET_LAW`). Each observation's bar
     offset is measured from the background in its empty shutters (`bar_offset.py`,
     `bar_offset = "measure"`, `PFBAROFF`). Tables are built on first use and cached under
     `$CAMPFIRE_ROOT/cache/optics`.
   - **The reported flux of an extended source is its light in 0.8 arcsec.** `fnu_prof` (and
     `fnu`) is the fitted source's light inside a circle 0.8 arcsec across (`PFAPER`), not the light
     in the shutter on jwst's point-source calibration. Point sources read the same either way;
-    extended ones read higher. On p1 PRISM sources against COSMOS photometry, in six bins of fitted
+    extended ones read higher. On `ember_cosmos_p1` PRISM sources against COSMOS photometry, in six bins of fitted
     width, the reported flux is 0.68-1.03 of the catalog's total flux, where the light in the shutter
     read 0.87 for the most compact bin down to 0.32 for the widest. Against the catalog's own 0.8
     arcsec aperture flux, 127 sources with their own fit read a median 0.95 +- 0.03 (16-84 %
@@ -91,13 +91,13 @@ Release procedure: edit the `## Unreleased` section below, then run
     calibration.
   - *Other slitlets' light* (`trace_overlap.py`, `joint_first_pass.py`, `profile_contam.py`,
     `profile_extend.py`). Every source is first solved with its neighbors on its nod differences,
-    with its light followed past its cutout in count rate (pass 1). The prediction from those
+    with its light followed past its cutout in count rate (the joint first pass). The prediction from those
     spectra over per-exposure trace maps is subtracted before the shape fit, and the pixels where
     the prediction is itself uncertain are left out. In the 1-D spectrum it is reported as
-    `fnu_contam` and never subtracted. A source whose own pass 1 failed is predicted from its
+    `fnu_contam` and never subtracted. A neighbor whose own fit fell back is predicted from its
     3-pixel boxcar (`PFCBOX`). One that the maps put on a trace with no stage-3 s2d is an error
     (`MissingContaminant`).
-  - *Same-slitlet neighbors.* Stage 2b leaves out a background exposure that puts a catalogued
+  - *Same-slitlet neighbors.* Stage 2b leaves out a background exposure that puts a cataloged
     source (the MSA plan's `SOURCE_INFO`, placed at every dither point) within 0.75 slit units of
     the target when that neighbor's light is at least 0.02 of the master background
     (`slitlet_neighbor_min_background`). Stage 3 redoes these decisions with each neighbor's
@@ -113,12 +113,13 @@ Release procedure: edit the `## Unreleased` section below, then run
     builds the trace map. It writes these as tables into the rate file (`MBKG1DR`, `MBKGQSR`,
     `MBKGSHR`, `SHUTAMP`, `CALLS`, `TMSH1`/`TMSH2`/`TMFLAG`/`TMSLITS`/`TMSHUT`). Step 2, at the end
     of stage 2a, writes `<root>_<nod>_<nrsN>_mbkg.fits` (layout kind `nirspec_mbkg`): the 1-D
-    background (`MBKG1D`), the shutters offered (`SHUTTERS`), and the background modeled onto the
-    detector (`MBKG2D`/`MBKG2DN`/`MBKG2DDQ`, compressed). Each exposure takes its group's pooled
+    background (`MBKG1D`), the empty-shutter table (`SHUTTERS`), and the background modeled onto the
+    detector (`MBKG2D`/`MBKG2DN`/`MBKG2DDQ`, compressed). Each exposure takes its group's combined
     background unless it differs. Shutters are weighted equally. The model extends every footprint
-    past the calibrated range and includes failed-open shutters at their measured transmission. Light from one MSA
-    spot is counted once. Its settings are fixed in `master_bkg.SETTINGS` and recorded in the
-    header.
+    past the calibrated range and includes failed-open shutters at their measured transmission. Where
+    two slitlets' footprints light a pixel at the same position along the dispersion, that is one
+    shutter's light and is counted once. Its settings are fixed in
+    `master_bkg.SETTINGS` and recorded in the header.
   - *The master-background spectrum.* The same extraction on the exposures less their master
     background, as `SPEC1D_MBKG`, `SCI_MBKG`, `ERR_MBKG` and `PROF1D_MBKG` of the `_spec.fits`, with
     `MBKGPREF`/`MBKGWHY` saying when it is likely better than the nodded spectrum (no clear

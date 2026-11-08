@@ -7,7 +7,7 @@ the light of other slitlets, the master-background spectrum, and the boundary wi
 references. It is written for the reviewers of the pull request and for whoever maintains the
 code afterwards.
 
-- The main text (sections 1 to 11) describes what ships and the measurements behind it.
+- The main text (sections 1 to 12) describes what ships and the measurements behind it.
 - Appendix A lists what was built or tried and not shipped, and why.
 - Appendix B is the record of the user's decisions, with dates.
 - Appendix C lists errors found in earlier results and how they were corrected.
@@ -34,6 +34,11 @@ scratch paths of each figure, is in git history up to commit 7887b615. Scratch r
 shutter widths (SRCXPOS, 0.20 arcsec open, 0.27 arcsec pitch). jwst's planned position along the
 slit (SRCYPOS) is in shutter pitches.
 
+**Datasets.** The observations named below: p1 is `ember_cosmos_p1` (PRISM and G395M), uncover2
+a PRISM observation of two visits, spurs_gds a SPURS field (G140M, G235M, G395M). The calibration
+stars: NGC 2506 (program 1493, ten MSA configurations), programs 6642 and 12497, and the
+commissioning slit-loss program 1133 (stars stepped across their shutters).
+
 ---
 
 ## 1. Summary
@@ -55,11 +60,11 @@ Version 2 changes six things.
    MSA shutter.
 3. **A forward-model extraction.** Each source is a Gaussian whose center and width vary
    smoothly with wavelength, seen through a diffraction model of the MSA, in every exposure and
-   in its negative copies from the nod subtraction. `fnu` is extracted with this model as the
+   in its negative images from the nod subtraction. `fnu` is extracted with this model as the
    weights. The reported flux of an extended source is its light in a circle 0.8 arcsec across.
 4. **Other slitlets' light** is solved jointly with each source's neighbors and reported as its
    own column, `fnu_contam`, never subtracted from `fnu`.
-5. **Same-slitlet neighbors.** A background exposure that puts a catalogued neighbor on the
+5. **Same-slitlet neighbors.** A background exposure that puts a cataloged neighbor on the
    source is left out of the nod subtraction when the neighbor is bright enough. Stage 3 redoes
    these decisions from the modeled light of each neighbor.
 6. **CAMPFIRE's own MSA calibrations** (the optics model, each observation's bar offset, the
@@ -113,7 +118,7 @@ Each step lists what it reads and writes.
    canonicals and `bkgslits/`. Writes `<root>_<nod>_<nrsN>_mbkg.fits`. Stage 2a then rectifies each
    exposure with its master background subtracted, for the nods plots (`S2D_SCI`, card `MBKGSUB`).
 5. **Stage 2b (nod subtraction).** Each exposure minus the mean of its background exposures. A
-   background exposure that puts a bright catalogued neighbor on the source is left out
+   background exposure that puts a bright cataloged neighbor on the source is left out
    (section 5). The variance includes the subtracted exposures' noise.
 6. **Stage 3**, per observation: the bar offset of each disperser from its empty shutters
    (`bar_offset.json` in the workspace, measured once); the stuck list resolved once; trace maps
@@ -165,7 +170,7 @@ whatever `extend_g140m_g235m` says:
 
 ---
 
-## 4. Master background and the MSA census
+## 4. Master background, stuck-closed shutters and trace maps
 
 The master background is described in full in the master-background design study (section 9 there
 for the measurements). This section summarizes what ships.
@@ -180,7 +185,7 @@ empty shutters instead.
 
 - The background spectrum of each disperser is measured from shutter centers alone, where the
   bar shadow is 1 by definition, so no bar-shadow model enters the measurement.
-- Each pixel of a clean empty shutter is divided by that spectrum. The values are binned in
+- Each pixel of an empty shutter is divided by that spectrum. The values are binned in
   position along the slitlet and wavelength, and the median per bin defines the profile of a
   slitlet's outer edges and of an interior bar. The median replaced a clipped mean, which kept
   only the bright tail where the profile approaches zero.
@@ -241,7 +246,7 @@ review if it is 0.3 to 0.8 or the detectors differ by more than 0.5; open at 0.8
 **Evidence** (`ember_cosmos_p1`).
 - PRISM: all 15 hand-vetted shutters at median a = 0.00-0.02; no other of 561 shutters below 0.92.
 - G395M: 1338 shutters; live shutters at 0.92-1.09 (16-84 %). 23 below 0.3: 21 credible (7 also
-  vetted on PRISM, 14 new) and 2 artifacts (templates that are blue stubs in the filter cut-on),
+  vetted on PRISM, 14 new) and 2 artifacts (templates that are short blue fragments at the filter cut-on),
   which the detector-disagreement rule catches. Single measurements are not decisive on G395M; the
   median is.
 - Modeling the background again with the 21 shutters closed: in the pixels whose model changes by
@@ -282,7 +287,7 @@ neighbor scan and the master background need it.
 - Each slitlet is named by its source at every dither point. Stuck-closed shutters are removed on
   read with the observation's stuck list (`profile_contam.trace_maps`), so a new stuck call needs
   no new map; the last 64 maps are kept in memory per worker.
-- A second catalogued source in a slitlet counts as the slitlet's own light: same-slitlet
+- A second cataloged source in a slitlet counts as the slitlet's own light: same-slitlet
   neighbors are the job of section 5, not of the joint model.
 - A rate file without a stored map (reduced before 2026-11-01) has none; stage 3 logs the
   exposures. Every observation is rerun from stage 1 for the release.
@@ -290,10 +295,11 @@ neighbor scan and the master background need it.
 ### 4.5 Step 2: the calibrated background and its model on the detector
 
 At the end of stage 2a, per exposure and detector:
-- reselects its clean shutters in calibrated units and measures the background spectrum
+- reselects its empty shutters in calibrated units and measures the background spectrum
   (`MBKG1D`, MJy/sr; the only place that unit is used);
-- each exposure takes its group's pooled background unless it differs from it (eight wavelength
-  bands, 2 % and 3 sigma); with fewer than five clean shutters it always takes the pool;
+- each exposure takes its group's combined background unless it differs from it (eight wavelength
+  bands, 2 % and 3 sigma); with fewer than five empty shutters it always takes the combined
+  background;
 - shutters are weighted equally (inverse-variance weights favored pixels that fluctuated low, about
   2 points on G395M);
 - the background is modeled onto the detector through every open shutter's footprint and bar
@@ -302,7 +308,9 @@ At the end of stage 2a, per exposure and detector:
   G235M/F170LP 1.55 / 5.05 um, G395M/F290LP 2.60 / 5.7 um);
 - failed-open shutters are included at their measured transmission (0 to 1, combined over the nods
   that agree), with the margins of crossing traces kept;
-- light from one MSA spot is counted once where traces overlap.
+- where two slitlets' footprints light a pixel at the same position along the dispersion (within
+  one column, `same_spot_px`), that is the light of one MSA shutter, and it is counted once, not
+  once per slitlet.
 
 No per-slitlet scale, no smooth row or column scaling, and no smoothing of the grating background
 (appendix A). The settings are fixed in `master_bkg.SETTINGS` and recorded in the header; only
@@ -314,12 +322,12 @@ about 8 MB on G395M). `load_product` follows `MBKGRATE` to read `MBKG1DR` from t
 `sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0)` is the interface the extraction
 uses; it warns when it falls back to the slit's own slitlet.
 
-**Accuracy.** PRISM: each exposure within 0.2-0.4 % of the pool in scale, a quadrant term of
-+-2.5 %, and a shutter-to-shutter scatter of +-4 %, of which about 2.7 % is a per-shutter floor that
-nodding cancels and an ensemble cannot. On held-back clean shutters after the weighting and
+**Accuracy.** PRISM: each exposure within 0.2-0.4 % of the combined background in scale, a quadrant
+term of +-2.5 %, and a shutter-to-shutter scatter of +-4 %, of which about 2.7 % is a per-shutter
+floor that nodding cancels and an ensemble cannot. On held-back empty shutters after the weighting and
 bar-shadow fixes the residual is -0.3 % (G395M) and +0.1 % (PRISM). G395M's background agrees
 with PRISM's in the same field to 1-5 %. The background modeled past the calibrated range joins the
-in-range model at the per-cent level (`MBKGRRAT` 0.968-1.007 on p1). On spurs_gds the extended
+in-range model at the percent level (`MBKGRRAT` 0.968-1.007 on p1). On spurs_gds the extended
 geometry and the new G140M / G235M tables give NRS1 in range -0.1 to +0.5 %, extensions +0.7 %
 (G140M) and +2.9 % (G235M). Section 10 lists what is still being measured.
 
@@ -333,7 +341,7 @@ Each exposure minus the mean of its background exposures, as before. Two things 
 canonical's own variance only, because jwst's background step does not add the subtracted frames'
 variance: every nodded spectrum's error was about 20 % low with three nods.
 
-**Same-slitlet neighbors.** With three nods, a catalogued neighbor that a background exposure puts
+**Same-slitlet neighbors.** With three nods, a cataloged neighbor that a background exposure puts
 on the source's position takes half of its light, negative, off the source. The rule
 (`slitlet_neighbours.py`):
 - Positions come from the MSA plan's `SOURCE_INFO`. A quadratic map from sky offsets to MSA shutter
@@ -341,7 +349,7 @@ on the source's position takes half of its light, negative, off the source. The 
   reproduces the plan's own placements to 0.001-0.003 shutter on p1. Every `SOURCE_INFO` source
   within 0.75 of a row pitch of the slitlet's row and 0.75 slit units of one of its open shutters,
   at any dither point, is a neighbor (one the map cannot place falls back to `SHUTTER_INFO`).
-- A background exposure is dirty for a nod when it puts a neighbor within
+- A background exposure is contaminated for a nod when it puts a neighbor within
   `slitlet_neighbor_max_distance` (0.75 slit units) of the source's position in that nod.
 - It is left out when the neighbor's light is at least `slitlet_neighbor_min_background` (0.02) of
   the master background and another background exposure remains. The light is measured in the frame
@@ -349,7 +357,7 @@ on the source's position takes half of its light, negative, off the source. The 
   shutters, median over the spectrum, in a frame that holds the source and puts the neighbor at
   least 1 slit unit from it. A neighbor too close to measure counts as bright. Both detectors give
   one choice per nod.
-- When every background exposure is dirty, the nod keeps them all and `BKGWHY` says so ("every
+- When every background exposure is contaminated, the nod keeps them all and `BKGWHY` says so ("every
   background exposure: neighbor <id> at <f> of background").
 - Hand overrides (`nodded_background_overrides.toml`) win. `BKGNODS` and `BKGWHY` are copied to the
   `EXPOSURES` table (`bkg_nods`, `bkg_why`), and the bkgsub plots label each nod
@@ -358,8 +366,9 @@ on the source's position takes half of its light, negative, off the source. The 
 Stage 2b measures the neighbor's light from the data as a first guess. Stage 3 redoes the decisions
 from the joint model (section 6.8).
 
-**Evidence** (p1, by position): PRISM 14 sources with a neighbor within reach, 21 nods with a dirty
-background exposure, 4 with none clean; G395M 39, 57, 11. In the PRISM check (the light an override
+**Evidence** (p1, by position): PRISM 14 sources with a neighbor within reach, 21 nods with a
+contaminated background exposure, 4 with none uncontaminated; G395M 39 sources, 57 nods, 11 with none
+uncontaminated. In the PRISM check (the light an override
 removed from the source's shutter against the neighbor's own PRISM spectrum), 8 of 15 overridden
 nods removed light with the neighbor's spectrum, among them negative lines of the neighbor at
 3.75 and 2.85 um; the other 7 removed nothing measurable and only cost noise. On average the effect
@@ -369,7 +378,7 @@ on G395M against PRISM is within the noise; it is clear where the neighbor is br
 
 ## 6. Stage 3: the extraction
 
-### 6.1 What the products report
+### 6.1 The reported columns
 
 | Column | Content |
 |---|---|
@@ -387,7 +396,7 @@ and cards.
 
 `profile_fit.ProfileModel`. The source is a round Gaussian whose center and width vary linearly
 with log wavelength (`profile_fit_chromatic`). It is seen through the optics model (6.3) in every
-exposure, and as negative copies at the positions of that exposure's background exposures. One
+exposure, and as negative images at the positions of that exposure's background exposures. One
 spectrum is shared by all exposures and solved wavelength by wavelength, linearly, given the shape.
 The fit sets the shape and the model images (`PROF2D`); the reported columns are then extracted
 from the combined 2-D spectrum with those images as weights (6.1), so the 1-D spectrum is read
@@ -449,28 +458,29 @@ changes nothing measurable.
 **Calibration.** The diffraction numbers (pupil apodization, stop, blur) were chosen to reproduce
 the measured PRISM bar shadow without more wide-angle light than the stars show; the kernel was
 then fitted linearly to the stars (`optics_calibration` `kernel` / `solve`). Stars: 590
-star-detectors from all PRISM calibration visits with every star used, each weighted once whatever
-its number of exposures, with each observation's bar offset: NGC 2506 (program 1493, ten
-configurations) 390, programs 6642 and 12497 167, the commissioning slit-loss program 1133 33.
-Star-ranges enter when S/N >= 20, |center| < 0.35, unsaturated, width <= 0.06 slit units and
+star-detector pairs (a star on both detectors counts twice) from all PRISM calibration visits with
+every star used, each weighted once whatever its number of exposures, with each observation's bar
+offset: NGC 2506 (program 1493, ten configurations) 390, programs 6642 and 12497 167, the
+commissioning slit-loss program 1133 33. A star's wavelength range enters when S/N >= 20,
+|center| < 0.35, unsaturated, width <= 0.06 slit units and
 chi2/dof <= 2. A further pass changes the light beyond 0.3 slit units by at most 0.2 %: the fit
 has converged. The tests below run on the same stars, by dataset; nothing is held out.
 
 **Evidence.**
 - *Stack test* (per detector and range, the median over clean stars of data minus model at each
   offset from the trace, % of the peak; a range passes within 1 % at every offset): 14 of 14
-  ranges over 0.7-5.3 um, worst 0.69 % (NRS2 3.3-4.1 um). By dataset, r8 and the previous kernel
-  agree to 0.1 % in every range.
+  ranges over 0.7-5.3 um, worst 0.69 % (NRS2 3.3-4.1 um). By dataset, the `2026.11-r8` kernel and
+  the previous one agree to 0.1 % in every range.
 - *Uniform light*: the model's image of a uniformly lit slitlet misses the empirical bar-shadow
   tables by a median 0.018 (PRISM) and 0.019 (G395M) rms of the open level.
 - *The same star at different positions* (NGC 2506, 93 stars in two or more of ten configurations,
   245 visits, each against the star's most central visit): clipped scatter 8.0 / 11.5 / 6.5 / 6.1 /
   9.4 % in 0.7-1 / 1-1.5 / 1.5-2.5 / 2.5-3.5 / 3.5-5 um, no trend with position along the slit.
   The previous shutter model (`FIT_VERSION` 5) gave 18.3 / 19.3 / 17.9 / 12.9 / 13.2 %, its fluxes
-  rising 4-7 % per 0.1 slit units from the center. These numbers are from the kernel before r8; the
-  repeat on r8 is listed in section 10.
+  rising 4-7 % per 0.1 slit units from the center. These numbers are from the kernel before
+  `2026.11-r8`; the repeat on `2026.11-r8` is among the checks still to run (section 10).
 - *1133* (34 stars, each at 20 positions, 680 visits, band S/N about 1000): compact sources inside
-  |x| < 0.3 and |center| < 0.3 are described to 1.4-1.6 % (0.7-3.5 um) and 2.5 % (3.5-5 um) once
+  |x| < 0.3 and |center| < 0.3 are reproduced to within 1.4-1.6 % (0.7-3.5 um) and 2.5 % (3.5-5 um) once
   each configuration's pointing offset in x is allowed.
 - *Physical cross-check*: a two-dimensional calculation with the real JWST pupil (segments, struts,
   three open shutters, the stop) agrees with the model near a bar (0.70-0.73 and 0.54-0.57 of the
@@ -478,7 +488,7 @@ has converged. The tests below run on the same stars, by dataset; nothing is hel
   and shows the small rise of a compact source's transmission off center in the red that the model
   also has.
 - *Gratings*: the shared model against each grating's own earlier tables on 6642 obs 2 gives chi2
-  ratios of 0.95-1.03 in 18 of 20 detector-ranges. G140H on NRS2 above 1.4 um fits worse (cores
+  ratios of 0.95-1.03 in 18 of 20 detector and wavelength-range combinations. G140H on NRS2 above 1.4 um fits worse (cores
   sharper than the PRISM kernel).
 - *Galaxies* (p1 PRISM and G395M): chi2/dof 0.94-1.14 with noise-like continuum residuals; emission
   lines leave residuals where the line emission sits differently from the continuum (one shape for
@@ -540,7 +550,7 @@ entering the shutter.
   light in the shutter read 0.87 for the most compact bin down to 0.32 for the widest; the
   reported flux reads 0.93 / 0.77 / 0.77 / 0.75 / 0.68 / 1.03, with the scatter 0.20 -> 0.16 dex.
 - The aperture flux holds the source blurred by the PSF and
-  `fnu_prof` the source before it, so a point source would sit a few per cent above 1. The level
+  `fnu_prof` the source before it, so a point source would sit a few percent above 1. The level
   near 0.8 against the Kron total is the comparison (in the catalog the light inside 0.75 / 1.0
   arcsec is 0.75-0.82 / 0.81-0.89 of the Kron total), not a calibration difference.
 - The fitted width follows the source's size (rank correlation +0.73 / +0.75 with the catalog's
@@ -560,8 +570,8 @@ The fit's detection S/N is measured on the clipped mean square of the residuals.
    with a PRISM shape keeps the PRISM shape unless its own fit is at detection S/N 100 or more
    (`own_vs_prism_min_gate`) and both better (chi2 by `own_vs_prism_dchi2` + k ln N) and different
    (center by more than 0.08 or ln width by more than 0.3).
-3. **Bounds.** An own fit with a width or drift on its bound falls back: that is the fit reaching
-   for other light (a neighbor in the slitlet). One with only the center on its bound is kept when
+3. **Bounds.** An own fit with a width or drift on its bound falls back: that is the fit taking
+   up other light (a neighbor in the slitlet). One with only the center on its bound is kept when
    the fallback fits clearly worse (`bound_kept`), since a large offset from the plan can be real.
 4. **Default shape**: a Gaussian of width 0.15 slit units (0.16 arcsec FWHM) at the planned
    position. A source whose planned position is inconsistent between exposures takes it too.
@@ -605,8 +615,8 @@ members' light on the target's own pixels, which the product reads. Targets are 
 consecutive neighborhoods share members (`contam_joint_cache` members kept per worker).
 
 **Not separable.** A wavelength where the target's spectrum correlates with a member's below -0.9
-is not separable; `fnu_contam` is NaN there (`PFNOTSEP`, the fraction). This is honest: the two
-are not determined by the data at those wavelengths.
+is not separable; `fnu_contam` is NaN there (`PFNOTSEP`, the fraction). The two are not determined
+by the data at those wavelengths.
 
 **The prediction** (`profile_contam.py`). Other slitlets' light is predicted from the neighbors'
 first-pass spectra over the trace maps. It is subtracted before the shape fit, and the pixels where
@@ -657,7 +667,7 @@ pixels it reports only. Its proposals are never applied. They go to
 proposed source gets a figure `<obs>_<id>_neighbor.pdf` laid out like the bkgsub plots (per nod
 the rectified difference with the current and the proposed background exposures, each with its
 profile along the slit; the spectrum with each choice), and stage 3 prints the command that reruns
-those sources. A proposal stage 2b already applied for a catalogued neighbor is left out. `PFNBR*`
+those sources. A proposal stage 2b already applied for a cataloged neighbor is left out. `PFNBR*`
 cards record the scan. On p1 924883 (PRISM) and spurs_gds 369 (G140M) a proposal raised the S/N
 from 10.2 to 11.5 and from 20.4 to 22.3.
 
@@ -669,7 +679,7 @@ so the two spectra differ only in how the background was removed.
 - Frames: each exposure's calibrated frame before subtraction (`PRE_BKGSUB_SCI`) minus its master
   background (`sky_for_slit`), in memory; the variance adds the master background's.
 - The fit: the nodded fit's exposures as single frames, at the nodded chain's shape, the spectrum
-  solved. Other slitlets' light enters once and positive, catalogued same-slitlet neighbors
+  solved. Other slitlets' light enters once and positive, cataloged same-slitlet neighbors
   included, since nothing is subtracted.
 - Failed-open shutters on the source's trace (`failed_open.py`): per exposure and shutter, a
   spectrum along detector columns times a flat profile over the shutter, solved with the source on
@@ -689,7 +699,7 @@ so the two spectra differ only in how the background was removed.
   spectrum is likely better, with the first of: `no_clear_background` (every background exposure of
   an exposure holds a bright neighbor), `single_exposure` (an exposure with no background exposure),
   `extended` (the nod subtraction removes more than `mbkg_extended_frac` = 0.10 of the source's own
-  light in its main shutter, `PFSELFSB`).
+  light in its own shutter, `PFSELFSB`).
 - The 1-D combine of several exposure groups carries it as it carries the nodded columns.
 - The science hash leaves out `*_MBKG` extensions and `MBKG*` cards, so this spectrum never marks
   line fits stale.
@@ -834,7 +844,7 @@ stage 2b (about 60 min) were the largest parts of the full run on 6 workers; nei
 against overlap count, internal consistency between detectors and nods, delivered S/N against the
 archive, injections, shape tests on bright sources, the master-background spectrum against `fnu`),
 the master-background residual figures on the current tables, and the optics checks on the shipped
-r8 model (`pipeline/scripts/nirspec_optics_checks.py visits` and `repeat`: NGC 2506, and 1133 by
+`2026.11-r8` model (`pipeline/scripts/nirspec_optics_checks.py visits` and `repeat`: NGC 2506, and 1133 by
 background group, which also refits `x_loss` with 1133).
 
 **Known limitations.**
@@ -859,10 +869,10 @@ background group, which also refits `x_loss` with 1133).
 - *Master background.* NRS2 sits high by a constant +5 to +18e-5 DN/s on spurs_gds (also in
   production; cancels in nod differences; touches the master-background spectrum and its 2-D only).
   The +2.5 % in-range offset and the +7 % at the G395M filter cut-on were measured before the median
-  fix and are being remeasured. G395M NRS1 clean-shutter scales are bimodal (0.95 / 1.15),
+  fix and are being remeasured. G395M NRS1 empty-shutter scales are bimodal (0.95 / 1.15),
   unexplained.
 - *Stuck shutters.* Partly open shutters (a = 0.61-0.78) are called "review" and not reported
-  otherwise. The G395M review packet (27 shutters) awaits the user's verdict.
+  otherwise. The 27 G395M shutters flagged for review await the user's verdict.
 
 **Decisions open with the user:** the default width; the default shape past the shutter edge
 (flag, let the center move, or report `fnu_opt`); whether `master_bkg_error_floor` (0.03, the master
@@ -965,10 +975,10 @@ of each is in git history.
   narrower PSF"). Fitted on nod differences built with the path loss still applied; with the
   profile model's own frames the stars did not prefer the narrow-side table, and a refit found the
   nods misplaced (which became the nod offset law).
-- *A three-component smooth PSF* (table S, `FIT_VERSION` 4, 2026-11-02/03). One PSF per detector,
+- *A three-component smooth PSF* (`FIT_VERSION` 4, 2026-11-02/03). One PSF per detector,
   seven parameters as splines in ln(lambda), fitted jointly to the stars; under 1 % of the peak in
   11-13 of 14 ranges. It raised bright fluxes by about 2 % (light 2.5-4 rows out). A
-  self-consistent second round (S2) moved the wing/shoulder split by up to 2 % of the peak on NRS2
+  self-consistent second round moved the wing/shoulder split by up to 2 % of the peak on NRS2
   without a better fit. Replaced by the optics model: the split did not matter, the part before the
   shutter and the shutter edge did.
 - *The hard shutter edge* (+-0.50 slit units, blur split evenly). Its uniform-light image stayed
@@ -1003,9 +1013,9 @@ of each is in git history.
 - *Galaxy shapes from imaging*: "never reliable" (user, 2026-10-22).
 
 **The first pass and contamination.**
-- *A masked first pass* (each neighbor fitted alone with every pixel another source lights masked),
-  *pass 1b*, *the echo correction*, pass-1 smoothing and *a gated group joint solve* (up to 6
-  members). The mask is circular: the masked pixels are those the prediction needs. Replaced by the
+- *A masked first pass* (each neighbor fitted alone with every pixel another source lights masked)
+  and its variants (*pass 1b*, *the echo correction*, pass-1 smoothing, *a gated group joint solve*
+  of up to 6 members). The mask is circular: the masked pixels are those the prediction needs. Replaced by the
   joint first pass; about 2,800 lines removed, products identical to rounding.
 - *A first pass on single frames less the master background.* A single frame holds each source once
   and positive, which looked easier. But a residual in the master background is taken up as source
@@ -1024,10 +1034,10 @@ of each is in git history.
 - *Per-exposure pointing offsets* (prior 0.015, cap 0.1). In crowded G395M 12 % sat at the cap,
   absorbing neighbors' light. Removed (2026-11-01); it cost about 1.5 % more bias of the default shape
   on isolated injections.
-- *"Unpredicted light"* (light on a source's pixels no catalogued trace explains). Its causes were
+- *"Unpredicted light"* (light on a source's pixels no cataloged trace explains). Its causes were
   trace-map bugs (a slitlet mislabeled at a dither point, stuck shutters in maps) and traces not
   followed past the range. A contaminant without a spectrum is now an error.
-- *Ending the extension grids where the count-rate background falls below a few per cent.* Withdrawn:
+- *Ending the extension grids where the count-rate background falls below a few percent.* Withdrawn:
   real sources can be much brighter than the background.
 - *Predicting a grating neighbor from its PRISM spectrum*: careful modeling, out of scope for the
   archive (user, 2026-10-30).
@@ -1043,10 +1053,11 @@ of each is in git history.
   master-background products). It helped where a neighbor's image was strong but failed where the
   own frame shared the light or the light was not a source. Superseded by the rule that overrides
   are only for neighbors in the same slitlet (user, 2026-11-01).
-- *A rule by shutter* (dirty when the neighbor is in the source's shutter). Wrong test: pairs one nod
+- *A rule by shutter* (a background exposure is contaminated when the neighbor is in the source's
+  shutter). Wrong test: pairs one nod
   step apart often put the neighbor 0.5-0.65 slit units away in every exposure, and others land
   exactly on the source. Replaced by the rule by position from `SOURCE_INFO`.
-- *Keeping only the farther background exposure* when both are dirty (option B). Worse against
+- *Keeping only the farther background exposure* when both are contaminated. Worse against
   PRISM in all 5 sources tried: one background exposure costs more noise than the bias it removes.
 - *The data measure of the neighbor's brightness as final.* It counts other slitlets' light; the
   model measure replaced it after the joint pass. Leaving out other slitlets' pixels from the data
@@ -1063,7 +1074,7 @@ of each is in git history.
 - *A per-exposure background-difference term in the nodded products*: the master background is 3-5 %
   noisier than the nodded background and would add noise everywhere.
 - *Dividing science frames by a bar shadow*: never; the bar shadow enters through the optics model.
-- *Reusing step 1's clean shutters in step 2*: the user chose reselection in calibrated units.
+- *Reusing step 1's shutter selection in step 2*: the user chose reselection in calibrated units.
 - *The `low_frac` stuck-shutter detector*: fails on the gratings, where other traces fill a dark
   shutter's rows.
 - *Source x ordinal keys for stuck shutters*: physical shutter keys everywhere instead.
@@ -1094,7 +1105,8 @@ The user's decisions that shaped what ships, by date.
   not the header. No "pf" or "stage3" in user-facing names. The merge is a MAJOR release.
 - **2026-10-29** Profile fit on by default. Columns `fnu` (best), `fnu_opt`, the boxcars, `fnu_prof`,
   `fnu_contam` with its own error. `_pf.fits` deleted; `PROF2D` and `CONTAM2D` kept. The master
-  background is the last part of stage 2a, per exposure x detector with the group's pool as fallback,
+  background is the last part of stage 2a, per exposure x detector with the group's combined
+  background as fallback,
   never used to correct the nodded spectra; no background-difference term. Science frames are never
   divided by a bar shadow; the measured table is used where one exists. Traces fully extended. A
   contaminant without a spectrum is an error. Master-background spectra as a secondary product. With
@@ -1109,7 +1121,7 @@ The user's decisions that shaped what ships, by date.
   joint pass on nod differences.
 - **2026-11-01** No per-exposure pointing offsets. Overrides are only for neighbors in the same
   slitlet; other slitlets' light is the joint model's, reported. The rule by position with
-  `SOURCE_INFO`, threshold 0.02 of the background, R 0.75; when every background exposure is dirty
+  `SOURCE_INFO`, threshold 0.02 of the background, R 0.75; when every background exposure is contaminated
   keep them all and flag. Neighbor brightness from the joint model. "Background", not "sky". The
   `MBKGPREF` rule and its reasons; 2-D in the FITS; exposure counts.
 - **2026-11-02** No smooth or per-slitlet master-background scaling on any disperser. Failed-open
@@ -1137,7 +1149,7 @@ The user's decisions that shaped what ships, by date.
 
 Kept because each one changed a conclusion recorded at the time.
 
-- **A PRISM comparison that flattered the subtraction** (2026-10-31). The rms of `fnu_prof -
+- **A PRISM comparison biased toward the subtraction** (2026-10-31). The rms of `fnu_prof -
   fnu_contam` against PRISM was computed with the prediction's error added in quadrature, so a noisy
   prediction enlarged its own error bar. With `fnu_prof_err` alone subtraction helped in 52 of 131
   sources, not most. Every comparison since uses the spectrum's own error.

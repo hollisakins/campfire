@@ -52,7 +52,7 @@
     # Stage 2a runs one Spec2Pipeline per rate file (the per-source loop only as the
     # fallback when that call fails), always extracts the MSA plan's background-only
     # slitlets (bkgslits/), and gives those the empirical bar-shadow tables (CRDS for a
-    # grating without one); none of this is configurable since the 2026-11-06 audit.
+    # grating without one); none of this is configurable.
     rectify = true
     plot_bkgsub = true
     # Stage 2b: a background exposure that puts another catalog source (the MSA plan's
@@ -63,15 +63,15 @@
     # before subtraction, over one shutter height around it, median over the spectrum) and
     # another background exposure remains. Otherwise the exposure keeps them all and is
     # flagged (BKGWHY "every background exposure: ..."). With three exposures a kept
-    # neighbor biases the source by half its light, negative. A hand override of the same
+    # neighbor biases the source by half its light, negative. A manual override of the same
     # exposure wins. A very large min_background keeps every background exposure.
     slitlet_neighbor_min_background = 0.02
     slitlet_neighbor_max_distance = 0.75
     empirical_wavecorr = false
     # Master background (docs/design-nirspec-master-background.md §4): the background of
     # each exposure x detector from its empty shutters, its tables in the rate file (step 1,
-    # before stage 2a) and <root>_<nod>_<nrsN>_mbkg.fits with the background painted back
-    # onto the detector (step 2, end of stage 2a). Always made; its settings are fixed in
+    # before stage 2a) and <root>_<nod>_<nrsN>_mbkg.fits with the background modeled onto
+    # the detector (step 2, end of stage 2a). Always made; its settings are fixed in
     # the code (master_bkg.SETTINGS) and recorded in each product's header.
     # master_bkg_plot writes the QA PDF of every exposure x detector (no product depends on it).
     master_bkg_plot = true
@@ -104,7 +104,7 @@
     # Forward-model ("profile fit") extraction (nirspec/profile_fit.py): fnu_prof, fnu_contam,
     # and the best spectrum fnu chosen from them (EXTRACT); fnu_opt keeps the optimal extraction.
     profile_fit = true
-    profile_fit_chromatic = true    # centre and width vary linearly with log wavelength
+    profile_fit_chromatic = true    # center and width vary linearly with log wavelength
     # Shape of the extraction profile (nirspec/profile_chain.py): "gated" (a grating keeps the PRISM
     # shape of the same source unless its own fit is better and different at detection S/N
     # own_vs_prism_min_gate; otherwise the own fit above the detection gate; else the shape of
@@ -112,12 +112,13 @@
     profile_fit_shape = "gated"
     profile_fit_prism_transfer = true        # gratings may take the PRISM shape
     profile_fit_grating_transfer = true      # without a PRISM shape, a grating that fell to the default takes the
-                                             # shape of the source's grating that passed its gate (its centre
+                                             # shape of the source's grating that passed its gate (its center
                                              # offset and width; stage3.grating_transfer_plan)
     # Detection S/N gate for the own fit (noise scale = clipped mean square of the residuals).
-    # Round-3 realistic-mix injections (2026-10-23): PRISM own fit unbiased (|bias| < 0.5 %) from
-    # gate 25 and ahead of the default shape in delivered S/N there; G395M own fit has outliers
-    # below 70. Null (real faint sources, own continuum removed): PRISM max 16 of 47, G395M max 26 of 126.
+    # Injection tests with a realistic mix of source shapes (2026-10-23): on PRISM the own fit is
+    # unbiased (|bias| < 0.5 %) from 25 and delivers more S/N than the default shape there; on
+    # G395M it has outliers below 70. A null test on real faint sources with their own continuum
+    # removed gave a highest detection S/N of 16 (47 PRISM sources) and 26 (126 G395M sources).
     gate_snr_prism = 25.0
     gate_snr_grating = 70.0
     # Default shape (below the gate, no other shape): a Gaussian of this width (slit units; 0.15 is
@@ -125,16 +126,16 @@
     # median width of 0.143; a default-shape source's reported flux scales with this width, and
     # the spread of real widths is about +-15 % in flux. No per-exposure pointing offsets are fitted (any
     # shape): the nods land where commanded, and in crowded G395M a fitted offset took
-    # neighbours' light (2026-11-01; it had bought ~1.5 % less bias on isolated injections).
+    # neighbors' light (2026-11-01; it gave about 1.5 % less bias on isolated injections).
     default_shape_width = 0.15
     own_vs_prism_dchi2 = 25.0                # grating own fit beats the PRISM shape by this + k ln(N)
     own_vs_prism_min_gate = 100.0            # and only above this gate (below it the PRISM shape is kept)
     own_vs_prism_centre = 0.08               # and only when the shapes differ by more than this in centre
     own_vs_prism_log_width = 0.3             # or this in ln width
-    # Shape priors and bounds. PROVISIONAL: calibrated on two observations (ember_cosmos_p14,
-    # p9; PRISM V0 fits at S/N >= 100 after the SRCFLUX=F partner fix: centre std 0.082 / MAD
-    # 0.055, width median 0.157, ln width std 0.77 / MAD 0.51, drift std 0.030, width change
-    # std 0.042). Re-derive on more observations before release.
+    # Shape priors and bounds. PROVISIONAL: calibrated on two observations (ember_cosmos_p14 and
+    # ember_cosmos_p9; PRISM fits at S/N >= 100: center std 0.082 / MAD 0.055, width median
+    # 0.157, ln width std 0.77 / MAD 0.51, drift std 0.030, width change std 0.042). Re-derive
+    # on more observations before release.
     prior_centre_sigma = 0.08
     prior_width_median = 0.15
     prior_width_log_sigma = 0.6
@@ -156,8 +157,8 @@
     # | "jwst" (as delivered).
     slit_loss_y = "optics"
     slit_loss_x = "corrected"
-    # Other slitlets' light (trace maps + prediction from pass-1 spectra). Pass 1: each source
-    # solved with its neighbours on its nod differences, nothing masked or smoothed
+    # Other slitlets' light (trace maps + prediction from the first-pass spectra). The joint first
+    # pass: each source solved with its neighbors on its nod differences, nothing masked or smoothed
     # (joint_first_pass), its light past its cutout too (count rate, no calibration;
     # profile_extend); failed-open shutters are recorded only (their background cancels in
     # a nod difference). The prediction is subtracted before the shape fit, and the pixels where
@@ -168,10 +169,10 @@
                                              # a solve adds about 2.6 GB at its peak). Lower it to run more workers
     slitlet_neighbor_brightness = "model"    # after the joint pass, redo stage 2b's same-slitlet decisions with each
                                              # neighbor's brightness from its modeled light, which leaves out other
-                                             # slitlets' light (p1 G395M: the data read 3x the model there); a source
+                                             # slitlets' light (ember_cosmos_p1 G395M: the data read 3x the model there); a source
                                              # whose background exposures change gets stage 2b again. "data": keep
                                              # stage 2b's decisions
-    contam_pass1_smooth_prism = 7.5          # a pass 1 from a source's 3-pixel boxcar (its own fit fell back):
+    contam_pass1_smooth_prism = 7.5          # a first-pass spectrum from a source's 3-pixel boxcar (its own fit fell back):
     contam_pass1_smooth_grating = 15.0       # outliers clipped, then a running mean over this many resolution
                                              # elements (2 pixels each; 0: off). contam_pass1_smooth
                                              # (grid points, both dispersers) overrides when set
@@ -186,28 +187,32 @@
     # SCI_MBKG, ERR_MBKG and PROF1D_MBKG of the _spec.fits. MBKGPREF says when it is likely
     # better than the nodded spectrum (MBKGWHY: no_clear_background, single_exposure,
     # extended); extended when the nod subtraction removes more than mbkg_extended_frac of
-    # the source's own light in its main shutter (proposed, 2026-11-01).
+    # the source's own light in its own shutter.
     mbkg_spectrum = true
     mbkg_extended_frac = 0.10
-    # Same-slitlet neighbour scan on the residuals: the target refitted at its chosen shape
-    # on the nod differences as stage 2b made them, leaving out (not modelling) every pixel
+    # Same-slitlet neighbor scan on the residuals: the target refitted at its chosen shape
+    # on the nod differences as stage 2b made them, leaving out (not modeling) every pixel
     # another slitlet's source shutter lights in any frame of the difference (trace maps),
-    # so the scan never depends on the joint model. Catalogued neighbours are stage 2b's
-    # (slitlet_neighbor_min_background); the scan finds the uncatalogued ones. Its proposals are
+    # so the scan never depends on the joint model. Cataloged neighbors are stage 2b's
+    # (slitlet_neighbor_min_background); the scan finds the uncataloged ones. Its proposals are
     # never applied: they go to reference/nirspec/<obs>/nodded_background_overrides_proposed.toml,
     # with a review figure per source (<obs>_<id>_neighbor.pdf in the workspace)
     scan_neighbours = true
     scan_nbins = 16
-    scan_dchi2 = 80.0                        # proposal threshold on chi2 drop / noise scale (sign-randomised
-                                             # null, p14 PRISM: 0.23 % of 438 draws above 60-100, none above 120)
-    scan_flag_dchi2 = 1500.0                 # product flag PFNBR only above this (negative-amplitude statistic of
-    scan_flag_dchi2_low = 500.0              # p14 + p9: 1.4 % above), or above _low and _null_ratio x the negative
-    scan_flag_null_ratio = 5.0               # statistic (mirror rule 1.7-2.1 %), or the other disperser agrees
+    scan_dchi2 = 80.0                        # proposal threshold on chi2 drop / noise scale (sign-randomized
+                                             # null, ember_cosmos_p14 PRISM: 0.23 % of 438 draws above 60-100,
+                                             # none above 120)
+    scan_flag_dchi2 = 1500.0                 # product flag PFNBR only above this (the negative-amplitude
+    scan_flag_dchi2_low = 500.0              # statistic of ember_cosmos_p14 and p9: 1.4 % above), or above _low
+    scan_flag_null_ratio = 5.0               # and _null_ratio x the negative-amplitude statistic (1.7-2.1 % of
+                                             # null draws pass), or the other disperser agrees
     scan_null_ratio = 1.5                    # and > this x the best negative-amplitude drop (provisional)
-    scan_close = 0.9                         # neighbour closer than this: no proposal (copies overlap the target)
-    scan_xdisp_tol = 0.2                     # PRISM and grating scans must agree on Delta within this (< 0: off)
+    scan_close = 0.9                         # neighbor closer than this: no proposal (its negative images overlap the target)
+    scan_xdisp_tol = 0.2                     # PRISM and grating scans must agree on the neighbor's offset along the
+                                             # slitlet within this (< 0: off)
     scan_min_snr = 5.0
-    scan_drop_frac = 0.2                     # partner dropped when it puts > this x the target's light on its rows
+    scan_drop_frac = 0.2                     # a background exposure is dropped when it puts more than this x the
+                                             # target's light on the target's rows
     scan_max_masked = 0.3                    # no proposals when other slitlets light more than this share of the
                                              # fitted pixels (reported only)
 
