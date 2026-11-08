@@ -332,6 +332,8 @@ REMOVED_OPTIONS = {
         'contam_dominance_min_clean': 'the dominance ratio is never acted on',
         'contam_1d': 'fnu_contam is reported, never subtracted from fnu',
         'contam_1d_min_sigma': 'fnu_contam is reported, never subtracted from fnu',
+        'contam_pair_ratio': 'the similar-brightness pair flag is no longer computed (it reached no product)',
+        'contam_pair_min_frac': 'the similar-brightness pair flag is no longer computed (it reached no product)',
         'scan_noise': 'the scan always divides by its reduced chi2',
         'scan_close_rule': 'a neighbour closer than scan_close is always withheld',
         'scan_gain_rule': 'the proposal gain is recorded only',

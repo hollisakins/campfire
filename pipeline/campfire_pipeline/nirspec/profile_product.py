@@ -41,8 +41,6 @@ def stage_flags(sc):
     return dict(
         contam=bool(g('contam_predict', True)),
         kappa=float(g('contam_mask_kappa', 1.0)),
-        pair_ratio=float(g('contam_pair_ratio', 3.0)),
-        pair_min_frac=float(g('contam_pair_min_frac', 0.3)),
         scan=bool(g('scan_neighbours', True)),
         scan_nbins=int(g('scan_nbins', 16)),
         scan_width=g('scan_width', None),
@@ -206,16 +204,14 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
             # their own pass 1s and added from it
             jl = _own_joint_light(workspace_dir, names, source_id)
             members = {int(s) for s in jl['members']} if jl is not None else set()
-            P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=pass1_for(source_id),
-                           pair_ratio=fl['pair_ratio'], why_missing=why_missing, exclude=members)
+            P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, why_missing=why_missing, exclude=members)
             if jl is not None:
                 from campfire_pipeline.nirspec import joint_first_pass as JF
                 try:
                     JF.add_joint_light(P, exps, jl)
                 except ValueError as e:
                     log(f'{e}; neighbours predicted from their own pass 1s')
-                    P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=pass1_for(source_id),
-                                   pair_ratio=fl['pair_ratio'], why_missing=why_missing)
+                    P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, why_missing=why_missing)
             saved = [(e.ok, e.diff) for e in exps]
             clean = CT.apply(exps, P, kappa=fl['kappa'])
             cstate = 'subtracted' if P.have_maps else 'subtracted_partial_maps'
@@ -232,8 +228,6 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
     ratio = (lambda R: CT.contam_light_ratio(P, R, exps)) if P is not None and clean is not None else None
     with TM.step('chain'):
         C = PC.choose_shape(exps, cfg, is_prism, prism=prism, clean=clean, log=log, contam_ratio=ratio)
-    if P is not None:
-        CT.pair_flag(P, C.result, exps, min_frac=fl['pair_min_frac'])
     S = None
     t_mark = TM.start()
     if fl['scan']:

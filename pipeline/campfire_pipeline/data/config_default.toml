@@ -180,8 +180,6 @@
     contam_mask_kappa = 1.0                  # threshold in units of the per-pixel noise
     contam_min_clean_fraction = 0.5          # less main-shutter data left: no own fit
     contam_min_clean_fraction_exposure = 0.3 # or less than this in any exposure
-    contam_pair_ratio = 3.0                  # similar-brightness pair flag within 1/r..r
-    contam_pair_min_frac = 0.3               # and the contaminant's light >= this x the target's in its extraction
     # The master-background spectrum (mbkg_extraction), the secondary product: the same
     # extraction on the exposures with their master background subtracted, as SPEC1D_MBKG,
     # SCI_MBKG, ERR_MBKG and PROF1D_MBKG of the _spec.fits. MBKGPREF says when it is likely

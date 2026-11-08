@@ -789,7 +789,6 @@ def add_joint_light(P, exps, jl):
             or tuple(exps[0].y.shape) != tuple(int(x) for x in jl['shape']):
         raise ValueError(f"joint light of source {int(jl['sid'])}: the solve's exposures {stored} are not the "
                          f'product\'s {tags}')
-    n = len(exps)
     if P.pred_joint is None:
         P.pred_joint = [np.zeros(e.y.shape) for e in exps]
     if P.dpred_joint is None:
@@ -808,8 +807,6 @@ def add_joint_light(P, exps, jl):
             P.pred[k] = P.pred[k] + img
             P.pred_joint[k] = P.pred_joint[k] + img
             P.dpred_joint[k] = P.dpred_joint[k] + dimg
-            P.by_source.setdefault(csid, [None] * n)
-            P.by_source[csid][k] = img if P.by_source[csid][k] is None else P.by_source[csid][k] + img
             e = exps[k]
             if e.use_data and e.partners is not None:
                 ms = CT.main_shutter(e, c_plan) & e.ok

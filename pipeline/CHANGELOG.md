@@ -173,7 +173,8 @@ Release procedure: edit the `## Unreleased` section below, then run
     during development: `single_call`, `extract_bkgslits`,
     `empirical_barshadow`, the `master_bkg_*` thresholds, `profile_fit_shape = "free"`,
     `profile_fit_prism_mode`, `gate_noise`, partial fits, model-row extraction, `contam_mode`,
-    `contam_dominance*`, `contam_1d*`, `scan_noise`/`_close_rule`/`_gain_rule`, `scan_action`. A
+    `contam_dominance*`, `contam_1d*`, `contam_pair_*` (the similar-brightness pair flag, which no
+    product reported), `scan_noise`/`_close_rule`/`_gain_rule`, `scan_action`. A
     config that still sets one is told once that it has no effect (`config.REMOVED_OPTIONS`).
   - *Fixes found along the way.*
     - The optimal extraction's 3-pixel boxcar fallback (`CMPFROPT = 'boxcar-3px'`) reported about

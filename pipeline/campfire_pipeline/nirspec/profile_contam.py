@@ -601,13 +601,7 @@ class Prediction:
     contributors: dict = field(default_factory=dict)   # sid -> max |pred| / sigma on the target's main shutter
     unreliable: set = field(default_factory=set)       # contaminants whose pass 1 may hold the target's light
     pred_unreliable: list = None     # per exposure: their predicted light (masking only, never subtracted)
-    pair: int = 0
-    pair_id: int = -1
-    pair_ratio: float = np.nan
-    pair_frac: float = np.nan        # the pair contaminant's light in the target's extraction / the target's
     have_maps: bool = True
-    by_source: dict = field(default_factory=dict, repr=False)   # sid -> per exposure predicted light (pair flag)
-    pair_candidates: list = field(default_factory=list)       # [(sid, pass-1 flux ratio)] within the ratio window
     failed_open: list = None         # per exposure: pixels of failed-open shutters (recorded only)
     dpred_joint: list = None         # per exposure: statistical uncertainty of the jointly solved light (report only)
     pred_joint: list = None          # per exposure: the jointly solved part of ``pred``
@@ -626,8 +620,7 @@ def _place_sparse(fr, origin_t, shape_t):
     return ty, tx, ok
 
 
-def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0, exclude=(),
-            why_missing=None, include=()):
+def predict(exps, sid, maps, pass1_for, rate_dir, exclude=(), why_missing=None, include=()):
     """Predicted other sources' light in each science nod difference of a target.
 
     Every source the trace maps put on the target's trace is predicted from its pass
@@ -643,7 +636,6 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
         jointly solved spectrum: its light is subtracted and never masked (its
         statistical uncertainty goes to ``dpred_joint``, for reporting only, without
         the ``DPRED_FLOOR``).
-    own_pass1 : the target's own pass 1 (pair candidates).
     exclude : contaminants whose light is modelled elsewhere, left out entirely, their
         light past their cutouts too (the members of the target's joint first pass,
         whose light on it comes from that solve, ``joint_first_pass.add_joint_light``).
@@ -676,7 +668,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             cals[j] = calibration(exps[j], rate_dir)
         return cals[j]
 
-    cache, contrib, unreliable, by_source = {}, {}, set(), {}
+    cache, contrib, unreliable = {}, {}, set()
     boxcar = set()
     for k in range(n):
         e = exps[k]
@@ -729,40 +721,13 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
                     s = np.abs(add) / sig
                 v = float(np.nanmax(np.where(ms, s, np.nan))) if ms.any() else 0.0
                 contrib[csid] = max(contrib.get(csid, 0.0), v if np.isfinite(v) else 0.0)
-            by_source.setdefault(csid, [None] * n)
-            by_source[csid][k] = add if by_source[csid][k] is None else by_source[csid][k] + add
     for k in range(n):
         dpred[k] = np.maximum(dpred[k], DPRED_FLOOR * np.abs(pred[k]))
     # jointly solved light (``joint_first_pass.add_joint_light``) is added to pred_joint later
-    out = Prediction(pred=pred, dpred=dpred, contributors=contrib, unreliable=unreliable, pred_unreliable=pred_u,
-                     have_maps=geo.have_maps, by_source=by_source, failed_open=geo.failed_open,
-                     dpred_joint=[np.zeros(e.y.shape) for e in exps], excluded=exclude,
-                     pred_joint=[np.zeros(e.y.shape) for e in exps], boxcar=boxcar)
-    # similar-brightness pair candidates: a contaminant above the noise on the target's
-    # main shutter whose pass-1 flux is within a factor pair_ratio of the target's. The
-    # flag itself (``pair_flag``) also needs the contaminant's light to matter in the
-    # target's extraction, which needs the target's fitted shape.
-    if own_pass1 is not None:
-        for csid in set(contrib) | unreliable:
-            v = contrib.get(csid, np.inf)            # unreliable ones: no prediction, compare the spectra anyway
-            P1 = cache.get(csid)
-            if v <= 1.0 or P1 is None:
-                continue
-            fc = np.interp(own_pass1.lam, P1.lam, np.nan_to_num(P1.flux), left=np.nan, right=np.nan)
-            ft = own_pass1.flux
-            ok = np.isfinite(fc) & np.isfinite(ft)
-            if ok.sum() < 5:
-                continue
-            ratio = np.nansum(fc[ok]) / np.nansum(ft[ok]) if np.nansum(ft[ok]) > 0 else np.inf
-            if 1.0 / pair_ratio < ratio < pair_ratio:
-                out.pair_candidates.append((int(csid), float(ratio)))
-        out.pair_candidates.sort(key=lambda t: abs(np.log(t[1])))
-        if out.pair_candidates:                      # provisional (ratio only) until pair_flag runs
-            out.pair, out.pair_id, out.pair_ratio = 1, out.pair_candidates[0][0], out.pair_candidates[0][1]
-    for csid in list(by_source):                     # keep per-source light only where the pair flag needs it
-        if csid not in {c for c, _ in out.pair_candidates}:
-            del by_source[csid]
-    return out
+    return Prediction(pred=pred, dpred=dpred, contributors=contrib, unreliable=unreliable, pred_unreliable=pred_u,
+                      have_maps=geo.have_maps, failed_open=geo.failed_open,
+                      dpred_joint=[np.zeros(e.y.shape) for e in exps], excluded=exclude,
+                      pred_joint=[np.zeros(e.y.shape) for e in exps], boxcar=boxcar)
 
 
 def _target_light(R, exps, k, c_plan):
@@ -771,45 +736,6 @@ def _target_light(R, exps, k, c_plan):
     m = PF.model_frame(R, k, applied_pathloss=False, common=True)
     ms = main_shutter(exps[k], c_plan) & np.isfinite(m)
     return m, ms
-
-
-def pair_flag(P, R, exps, min_frac=0.3):
-    """Final similar-brightness pair flag: a ratio candidate (``predict``) whose light in
-    the target's profile-weighted extraction is at least ``min_frac`` of the target's
-    own (both with the target's fitted profile ``R``, main shutter; the target's own
-    light is its model, not the data). Sets ``P.pair``, ``pair_id``, ``pair_ratio``,
-    ``pair_frac`` (the candidates' best fraction is kept even when it does not fire)."""
-    P.pair, P.pair_id, P.pair_ratio, P.pair_frac = 0, -1, np.nan, np.nan
-    if not P.pair_candidates:
-        return P
-    c_plan = R.model.c_prior
-    M = R.model
-    tgt, rows = 0.0, {}
-    for k, e in enumerate(exps):
-        if not e.use_data or e.partners is None:
-            continue
-        m, ms = _target_light(R, exps, k, c_plan)
-        V = M.diff_variance(k)
-        ok = ms & np.isfinite(V) & (V > 0)
-        rows[k] = (m, ok, V)
-        tgt += float(np.sum((m * m / V)[ok]))
-    best = None
-    for csid, ratio in P.pair_candidates:
-        arrs = P.by_source.get(csid)
-        if arrs is None:
-            continue
-        num = 0.0
-        for k, (m, ok, V) in rows.items():
-            if arrs[k] is not None:
-                num += float(np.nansum((m * arrs[k] / V)[ok]))
-        frac = abs(num) / tgt if tgt > 0 else np.inf
-        if best is None or frac > best[2]:
-            best = (csid, ratio, frac)
-    if best is not None:
-        P.pair_frac = float(best[2])
-        if best[2] >= min_frac:
-            P.pair, P.pair_id, P.pair_ratio = 1, int(best[0]), float(best[1])
-    return P
 
 
 def contam_light_ratio(P, R, exps):

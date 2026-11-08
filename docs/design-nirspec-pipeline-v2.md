@@ -805,7 +805,7 @@ New in `[nirspec.stage3]`: `profile_fit`, `profile_fit_chromatic`, `profile_fit_
 `profile_fit_prism_transfer`, `profile_fit_grating_transfer`, the gates (`gate_snr_*`),
 `default_shape_width`, `own_vs_prism_*`, the priors and bounds, `srcypos_tolerance`, `bar_offset`,
 `slit_loss_y`, `slit_loss_x`, the contamination keys (`contam_predict`, `contam_joint_cache`,
-`contam_pass1_*`, `contam_mask_kappa`, `contam_min_clean_fraction*`, `contam_pair_*`),
+`contam_pass1_*`, `contam_mask_kappa`, `contam_min_clean_fraction*`),
 `slitlet_neighbor_brightness`, `mbkg_spectrum`, `mbkg_extended_frac`, and the neighbor scan
 (`scan_*`).
 
@@ -814,7 +814,9 @@ effect): `single_call`, `extract_bkgslits`, `empirical_barshadow`, 29 `master_bk
 (now `master_bkg.SETTINGS`), v1's `low_frac` stuck detector keys
 (`stuck_shutter_low_frac_threshold*`, `detect_stuck_shutters_grating`), `profile_fit_prism_mode`,
 `gate_noise`, partial fits, model-row extraction, `contam_mode`, `contam_dominance*`,
-`contam_1d*`, `scan_noise`, `scan_close_rule`, `scan_gain_rule`, `scan_action`.
+`contam_1d*`, `contam_pair_*` (the similar-brightness pair flag: it reached no product once its
+cards went, and it missed jointly solved neighbors; user, 2026-11-08), `scan_noise`,
+`scan_close_rule`, `scan_gain_rule`, `scan_action`.
 
 Removed before they reached any release, so not warned about: `profile_fit_shape = "free"`,
 `contam_pass1` and the masked first pass's keys, `contam_echo`, `contam_joint*` (but

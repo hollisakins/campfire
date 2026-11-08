@@ -233,22 +233,6 @@ def test_failed_open_is_recorded_only():
         TO.nod_contamination = orig
 
 
-def test_pair_flag_needs_light_in_the_extraction(stand_ins):
-    """Similar pass-1 brightness alone does not make a pair: the contaminant's light in
-    the target's extraction must reach ``min_frac`` of the target's own."""
-    t_exps, Rt = _source(1, 0.0, 10.0)
-    for e in t_exps:
-        e.var = np.ones(e.y.shape)
-    own = _pass1_of(Rt, 1)
-    for centre, expect in ((0.0, 1), (2.3, 0)):           # on the target's rows / two shutters away
-        c_exps, Rc = _source(2, centre, 10.0)
-        P1 = _pass1_of(Rc, 2)
-        P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.', own_pass1=own)
-        assert P.pair_candidates and P.pair_candidates[0][0] == 2
-        CT.pair_flag(P, Rt, t_exps, min_frac=0.3)
-        assert P.pair == expect, (centre, P.pair_frac)
-
-
 def test_contam_light_ratio_scales_with_contaminant():
     t_exps, Rt = _source(1, 0.0, 10.0)
     pred = [PF.model_frame(Rt, k, applied_pathloss=False, common=True) * 2.0 for k in range(3)]
