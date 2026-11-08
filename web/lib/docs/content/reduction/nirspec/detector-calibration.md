@@ -33,6 +33,8 @@ The model is fitted to unilluminated pixels and subtracted from the full frame. 
 | G235M, G235H | 1.66–4.0 |
 | G395M, G395H | 2.87–5.5 |
 
+These ranges extend beyond the nominal ones to cover higher-order spectra. For G140M/F100LP, G235M/F170LP and the H gratings with those filters, the red limit is 5.3 µm, since their first-order light beyond the calibrated range reaches the detector whether or not those wavelengths are calibrated.
+
 The model components, fitted in sequence:
 
 | Component | Model |
@@ -74,4 +76,4 @@ Two options replace `jwst` reference files at this stage; both are disabled by d
 | Option | Effect |
 |---|---|
 | `[nirspec.stage2] empirical_wavecorr = true` | Adds the JADES wavelength zero-point correction (Scholtz et al. 2025) to the `jwst` correction for source position across the shutter |
-| `[nirspec.stage2] extend_g140m_g235m = true` | Extends G140M/F100LP and G235M/F170LP to 5.3 µm, beyond the red limit of the CRDS references, using flats and wavelength ranges generated on the fly and a flux calibration derived against the SPURS program. The Stage 1 footprints are widened accordingly |
+| `[nirspec.stage2] extend_g140m_g235m = true` | Extends G140M/F100LP and G235M/F170LP to 5.3 µm, beyond the red limit of the CRDS references, using flats and wavelength ranges generated on the fly and a flux calibration derived against the SPURS program. The Stage 1 footprints reach 5.3 µm for these settings either way |

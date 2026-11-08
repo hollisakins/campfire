@@ -41,8 +41,8 @@ The bars and shutter edges of the MSA vignette uniformly illuminated shutters, i
 | Disperser | Replaces | Derived from |
 |---|---|---|
 | PRISM | `jwst_nirspec_barshadow_0006.fits` | 8,459 empty shutters in seven EMBER pointings |
-| G140M | `jwst_nirspec_barshadow_0003.fits` | 6,925 empty shutters in the four SPURS fields |
-| G235M | `jwst_nirspec_barshadow_0005.fits` | 1,589 empty shutters in the four SPURS fields |
+| G140M | `jwst_nirspec_barshadow_0003.fits` | 7,309 empty shutters in the four SPURS fields |
+| G235M | `jwst_nirspec_barshadow_0005.fits` | 1,902 empty shutters in the four SPURS fields |
 | G395M | `jwst_nirspec_barshadow_0008.fits` | 1,780 empty shutters in the four SPURS fields |
 
 The high-resolution gratings retain the CRDS reference. Each table was also re-derived with one field withheld; the withheld field is reproduced more closely by the measured table than by the CRDS reference throughout the open shutter.
