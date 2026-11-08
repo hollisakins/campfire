@@ -28,8 +28,8 @@ says the bars are. Within an observation it is one number plus a small pattern b
 that is the same in every observation (``QUADRANT_PATTERN``).
 
 The result is written per disperser to ``bar_offset.json`` in the observation's workspace and
-measured again only when it is missing, from an older version of this module, or from a different
-set of canonicals (``ensure``).
+measured again only when it is missing, from an older version of this module or optics model, or
+from a different number of canonicals (``ensure``).
 """
 import json
 import os
@@ -42,7 +42,8 @@ from campfire_pipeline.nirspec import barshadow_calibration as B
 from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec import optics as O
 
-MEASURE_VERSION = '3'                 # 2: shutters above SCALE_CUT (1.05 x the background) left out; 3: exact shutter edges (optics engine 2)
+MEASURE_VERSION = '4'                 # 2: shutters above SCALE_CUT (1.05 x the background) left out; 3: exact shutter edges (optics engine 2);
+#                                       4: shutters holding a secondary source left out (pixel_samples)
 OFFSET_FILE = 'bar_offset.json'
 SHIFTS = np.round(np.arange(-0.10, 0.1001, 0.005), 4)  # trial offsets [slit units]
 U_LO, U_HI = 0.2, 0.75       # the steep part of a shutter's edge [pitches from its centre]

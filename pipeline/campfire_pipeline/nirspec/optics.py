@@ -1,5 +1,5 @@
 """Diffraction model of the MSA in the slit direction: the profile fit's PSF and shutter for every
-disperser (FIT_VERSION 6).
+disperser (design doc, docs/design-nirspec-pipeline-v2.md, section 6.3).
 
 A point source at slit position c: the telescope's field at the MSA is the Fourier transform of
 its pupil, whose amplitude across the slit direction is (1 - u^2)^ALPHA (u the pupil coordinate
@@ -35,7 +35,7 @@ content, and read memory-mapped so parallel workers share them.
 
 The openings are symmetric, of half-height H_OPEN. A model file may move every opening's lower and upper edge
 ('shutter'); the shipped one does not: the empty-shutter background of five survey fields and 1133 puts the two
-edges where the symmetric opening has them, to 0.002 slit units (design doc 3.7). The cache key carries
+edges where the symmetric opening has them, to 0.002 slit units (design doc, appendix A). The cache key carries
 ENGINE_VERSION: bump it whenever the computation of a table changes, or old tables are read back unchanged.
 
 Units: slit-frame units (one unit = the open height, 0.46 arcsec) unless noted.
@@ -141,16 +141,32 @@ def _cached(path, build):
         return np.load(path, mmap_mode='r')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     lock = path + '.lock'
-    try:
-        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-        owner = True
-    except FileExistsError:
-        owner = False
-        t0 = time.time()
-        while time.time() - t0 < LOCK_WAIT:
-            if os.path.exists(path):
-                return np.load(path, mmap_mode='r')
-            time.sleep(1.0)
+    owner, t0 = False, time.time()
+    while True:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            owner = True
+            break
+        except FileExistsError:
+            pass
+        if os.path.exists(path):
+            return np.load(path, mmap_mode='r')
+        try:
+            age = time.time() - os.path.getmtime(lock)
+        except FileNotFoundError:                 # released meanwhile: try again
+            continue
+        if age > LOCK_WAIT:                       # left by a process that died
+            try:
+                os.remove(lock)
+            except FileNotFoundError:
+                pass
+            continue
+        if time.time() - t0 > LOCK_WAIT:          # still building: build it here too
+            break
+        time.sleep(1.0)
+    if owner and os.path.exists(path):            # finished just before this process took the lock
+        os.remove(lock)
+        return np.load(path, mmap_mode='r')
     try:
         tab = build()
         tmp = f'{path}.{os.getpid()}.tmp.npy'

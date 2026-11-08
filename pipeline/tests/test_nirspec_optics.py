@@ -98,6 +98,19 @@ def test_edges_enter_the_cache_key_only_when_set(small_grids, tmp_path):
     assert c.edges_as == (0.0, pytest.approx(-0.0137 * O.SLIT))
 
 
+def test_a_lock_left_by_a_dead_process_is_taken_over_at_once(tmp_path):
+    import os
+    import time
+    path = str(tmp_path / 'tab.npy')
+    lock = path + '.lock'
+    open(lock, 'w').close()
+    old = time.time() - O.LOCK_WAIT - 10
+    os.utime(lock, (old, old))
+    t0 = time.time()
+    tab = O._cached(path, lambda: np.arange(3.0))
+    assert time.time() - t0 < 5 and np.array_equal(tab, np.arange(3.0)) and not os.path.exists(lock)
+
+
 def test_kernel_at_normalised_and_linear_in_log_wavelength():
     delta = np.linspace(-2, 2, 31)
     narrow = np.exp(-0.5 * (delta / 0.05) ** 2)

@@ -42,7 +42,7 @@ from campfire_pipeline.nirspec.constants import MSA_SLIT_PITCH
 
 DATA_DIR = Path(__file__).parent.parent / 'data'
 MANIFEST_FILE = DATA_DIR / 'nirspec_calibrations.toml'
-MOS_APERTURE = 'MOS1x3'          # jwst's MOS path-loss aperture: three shutters about the source's
+MOS_APERTURE = 'MOS1x3'          # jwst's MOS path-loss aperture: three shutters about the source's shutter
 
 
 # ---------------------------------------------------------------------------

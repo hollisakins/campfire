@@ -92,7 +92,7 @@ Version 2 changes six things.
 
 Versions at the time of writing: `FIT_VERSION` 8, optics model `2026.11-r8` (engine 2), master
 background `CFMBKGV` 1.8 (step 1 1.5), `JOINT_PASS_VERSION` 4, `PASS1_VERSION` 11, bar offset
-`MEASURE_VERSION` 3, trace map version 3.
+`MEASURE_VERSION` 4, trace map version 3.
 
 ---
 
@@ -955,8 +955,8 @@ guards.
 proposal-only with its review figure, the master-background prototype script removed, the
 `local_contrast` warning fix, one CHANGELOG entry, this document rewritten, the docs branch merged.
 
-**Phase 2, review in slices** (read-through and fixes by the extraction session, then `/code-review`
-by the user; `/code-review ultra` for slices 1 and 3):
+**Phase 2, review in slices** (read-through, `/code-review` at high effort and fixes by the extraction
+session; one `/code-review ultra` over the whole branch by the user after slice 6, user 2026-11-08):
 1. data contracts: FITS products and cards, rate-file extensions, layout kinds, migrations, deploy
    and sidecars;
 2. master background and stuck shutters (`master_bkg`, `master_bkg_rate`, `coverage`,

@@ -1,5 +1,5 @@
 """
-Choice of the source shape for the profile-fit extraction (prototype, extraction v2).
+Choice of the source shape for the profile-fit extraction.
 
 The profile fit (``profile_fit``) can fit a source's cross-dispersion shape freely,
 but at low S/N a free shape follows the noise, and in crowded masks it follows
@@ -8,7 +8,10 @@ which shape builds the extraction profile:
 
 1. **own**: the source's own fit with recalibrated priors and tighter bounds, used
    when the source is detected above a gate and the fit is sane (no parameter on a
-   bound, no disagreement among the planned positions).
+   bound, no disagreement among the planned positions). A grating with a PRISM shape
+   takes its own fit only when the two differ, the own fit describes the data better by
+   ``own_vs_prism_dchi2`` + k ln(N), and the detection S/N is at least
+   ``own_vs_prism_min_gate``.
 2. **prism**: for a grating, the shape fitted to the PRISM spectrum of the same
    source in the same observation, mapped to the grating's wavelengths by its
    chromatic terms (``profile_fit.map_shape``), keeping its offset from the planned
