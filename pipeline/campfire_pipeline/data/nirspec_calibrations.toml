@@ -34,7 +34,7 @@ dependence at the central x); y in shutter pitches over three shutters"""
 switch = "[nirspec.stage3] slit_loss_y = \"jwst\" (slit direction), slit_loss_x = \"jwst\" (x_loss)"
 code = ["nirspec/optics.py", "nirspec/optics_calibration.py", "nirspec/profile_fit.py"]
 tests = ["tests/test_nirspec_optics.py", "tests/test_nirspec_optics_calibration.py"]
-record = "docs/design-nirspec-pipeline-v2.md section 3.7"
+record = "docs/design-nirspec-pipeline-v2.md section 6.3"
 
 [bar_offset]
 file = ""                     # measured per observation into the workspace's bar_offset.json
@@ -48,7 +48,7 @@ depends_on = {}
 switch = "[nirspec.stage3] bar_offset = \"off\""
 code = ["nirspec/bar_offset.py"]
 tests = ["tests/test_nirspec_bar_offset.py"]
-record = "docs/design-nirspec-pipeline-v2.md section 3.7"
+record = "docs/design-nirspec-pipeline-v2.md section 6.4"
 
 [barshadow_prism]
 file = "empirical_jwst_nirspec_barshadow_prism.fits"

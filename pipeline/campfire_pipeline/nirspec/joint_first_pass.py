@@ -5,7 +5,7 @@ On the gratings a detector pixel often carries light of two or more sources at d
 wavelengths. The masked first pass fitted each source with every pixel another source's
 shutter lights left out; on G395M that removed most of most sources' own light, and
 exactly the wavelengths whose light the contamination prediction needs
-(docs/design-nirspec-pipeline-v2.md, section 3.9). Here each source is solved together
+(docs/design-nirspec-pipeline-v2.md, section 6.7). Here each source is solved together
 with its neighbours: every pixel's model is the sum of the light of every source that
 lands on it, each through its fixed shape, so the fit is linear in the spectra and
 nothing is masked. Each source also has pixels of its own, which pin it down.
@@ -41,7 +41,7 @@ Nod differences, not single frames minus the master sky: a nod difference subtra
 same pixels, so the sky cancels exactly, including the part that differs from shutter to
 shutter and repeats between nods. On p1 G395M the master sky left about +2.6 % of the sky
 in single frames and a per-shutter spread; faint sources came out 0.15-0.2 µJy high and
-their shape fits failed (docs/design-nirspec-pipeline-v2.md, 2026-10-31). Each source's
+their shape fits failed (docs/design-nirspec-pipeline-v2.md, appendix A). Each source's
 light enters its own difference (+1) and its partners' (-1/n), so other sources' negative
 images are modelled like the rest.
 

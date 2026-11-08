@@ -105,10 +105,10 @@
     # and the best spectrum fnu chosen from them (EXTRACT); fnu_opt keeps the optimal extraction.
     profile_fit = true
     profile_fit_chromatic = true    # centre and width vary linearly with log wavelength
-    # --- extraction v2 prototype (nirspec/profile_chain.py, profile_contam.py, nod_scan.py) ---
-    # Shape of the extraction profile: "gated" (own fit above the detection gate, else the
-    # PRISM shape of the same source for gratings, else the default shape), "fixed" (default
-    # shape only).
+    # Shape of the extraction profile (nirspec/profile_chain.py): "gated" (a grating keeps the PRISM
+    # shape of the same source unless its own fit is better and different at detection S/N
+    # own_vs_prism_min_gate; otherwise the own fit above the detection gate; else the shape of
+    # another grating; else the default shape), "fixed" (default shape only).
     profile_fit_shape = "gated"
     profile_fit_prism_transfer = true        # gratings may take the PRISM shape
     profile_fit_grating_transfer = true      # without a PRISM shape, a grating that fell to the default takes the
@@ -120,9 +120,10 @@
     # below 70. Null (real faint sources, own continuum removed): PRISM max 16 of 47, G395M max 26 of 126.
     gate_snr_prism = 25.0
     gate_snr_grating = 70.0
-    # Default shape (below the gate, no PRISM shape): star PSF x a Gaussian of this width at the
-    # planned position. 0.15 (the prior median) reads ~5 % low on the population; 0.21 is unbiased
-    # on it but costs 6-8 % in noise-only S/N. No per-exposure pointing offsets are fitted (any
+    # Default shape (below the gate, no other shape): a Gaussian of this width (slit units; 0.15 is
+    # 0.16 arcsec FWHM) at the planned position, through the optics model. Own fits on p1 have a
+    # median width of 0.143; a default-shape source's reported flux scales with this width, and
+    # the spread of real widths is about +-15 % in flux. No per-exposure pointing offsets are fitted (any
     # shape): the nods land where commanded, and in crowded G395M a fitted offset took
     # neighbours' light (2026-11-01; it had bought ~1.5 % less bias on isolated injections).
     default_shape_width = 0.15

@@ -53,7 +53,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   light is predicted and reported, and every exposure gets a master background. The full record,
   with the tests behind each number, is in `docs/design-nirspec-pipeline-v2.md` and
   `docs/design-nirspec-master-background.md`. Every observation needs reprocessing from stage 2a,
-  and G140M / G235M from stage 1.
+  and G140M/F100LP, G235M/F170LP and the H gratings with those filters from stage 1.
   - *The extraction* (`profile_fit.py`, `profile_chain.py`). The source is a Gaussian in the slit
     direction whose center and width vary linearly with log wavelength, seen through the optics
     model below, in each exposure and in its negative copies in the other nods' differences. Its
@@ -135,7 +135,8 @@ Release procedure: edit the `## Unreleased` section below, then run
     2a gives the tables to the background-only slitlets, and the master background uses them.
   - *G140M / G235M traces past the calibrated range.* Their footprints (coverage, rate geometry,
     trace maps) are built on the extended wavelength range, and stage 1's 1/f mask follows the
-    traces to 5.3 um, whatever `extend_g140m_g235m` says.
+    traces to 5.3 um, whatever `extend_g140m_g235m` says. The mask does the same for G140H/F100LP
+    and G235H/F170LP.
   - *Stage 2a* runs one `Spec2Pipeline` call per rate file; the per-source loop is only the fallback
     when that call fails. It also extracts the MSA plan's background-only slitlets into
     `bkgslits/<root>_<nrsN>_bkgslits.fits` (layout kind `nirspec_bkgslits`, local intermediate).
@@ -146,16 +147,20 @@ Release procedure: edit the `## Unreleased` section below, then run
     `PFPLREF`). `cfpipe nirspec crds-compare` compares a CRDS context's references with the
     calibrations; run it with every `CRDS_CONTEXT` bump.
   - *Outputs.* New `SPEC1D` columns `fnu_opt`, `fnu_prof`, `fnu_contam` (with errors and `flam_*`);
-    `fnu_err` is statistical only. New extensions `PROF2D`, `CONTAM2D`, `CONTERR2D` (every 2-D
-    image drizzled once per product through its pixel maps) and the master-background ones above.
+    `fnu_err` is statistical only. `fnu_prof` and `fnu_contam` are extracted from the combined 2-D
+    spectrum with the fitted model as the weights. New extensions `PROF2D` and `CONTAM2D` (every
+    2-D image drizzled once per product through its pixel maps) and the master-background ones
+    above. The `EXPOSURES` table gains `bkg_why`.
     New cards `EXTRACT`/`EXTRWHY`, `CONTSTAT`, and the `PF*` cards of the fit, its shape, the
     contamination and the neighbor scan. Readers find every `_spec.fits` extension by name. Gone:
     `_mbkgr.fits` (kind `nirspec_mbkgr`), the `tracemaps/` folder, the PSF and shutter tables, the
     `PFSHUT` card. The `_pf.fits` intermediate is deleted once the `_spec.fits` is written.
   - *Configuration.* New in `[nirspec.stage3]`: the shape chain and its gates, priors and bounds,
     `bar_offset`, `slit_loss_y`/`_x`, the contamination keys, `mbkg_spectrum`, and the neighbor scan.
-    New in `[nirspec.stage2]`: `slitlet_neighbor_*`, `master_bkg_plot`, `detect_stuck_shutters`.
-    Options tried during development and then removed: `single_call`, `extract_bkgslits`,
+    New in `[nirspec.stage2]`: `slitlet_neighbor_*` and `master_bkg_plot`; `detect_stuck_shutters`
+    now decides whether step 1's calls reach the stuck list. Removed: v1's stuck-detector keys
+    (`stuck_shutter_low_frac_threshold*`, `detect_stuck_shutters_grating`), and options tried
+    during development: `single_call`, `extract_bkgslits`,
     `empirical_barshadow`, the `master_bkg_*` thresholds, `profile_fit_shape = "free"`,
     `profile_fit_prism_mode`, `gate_noise`, partial fits, model-row extraction, `contam_mode`,
     `contam_dominance*`, `contam_1d*`, `scan_noise`/`_close_rule`/`_gain_rule`, `scan_action`. A

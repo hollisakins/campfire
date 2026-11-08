@@ -55,8 +55,8 @@ Version 2 changes six things.
    MSA shutter.
 3. **A forward-model extraction.** Each source is a Gaussian whose center and width vary
    smoothly with wavelength, seen through a diffraction model of the MSA, in every exposure and
-   in its negative copies from the nod subtraction. `fnu` is this fit. The reported flux of an
-   extended source is its light in a circle 0.8 arcsec across.
+   in its negative copies from the nod subtraction. `fnu` is extracted with this model as the
+   weights. The reported flux of an extended source is its light in a circle 0.8 arcsec across.
 4. **Other slitlets' light** is solved jointly with each source's neighbors and reported as its
    own column, `fnu_contam`, never subtracted from `fnu`.
 5. **Same-slitlet neighbors.** A background exposure that puts a catalogued neighbor on the
@@ -130,8 +130,8 @@ Each step lists what it reads and writes.
 8. **Stage 3, after every grating:** a grating product that fell to the default shape and had no
    PRISM shape is redone with the shape of the source's grating that took its own fit
    (section 6.6).
-9. **Final extraction.** Writes `<obs>_<grating>_<sid>_spec.fits` and deletes the `_pf.fits`
-   intermediate.
+9. **Final extraction.** Extracts the columns from the combined 2-D spectrum, writes
+   `<obs>_<grating>_<filter>_<sid>_spec.fits` and deletes the `_pf.fits` intermediate.
 
 Nothing is computed twice: the count-rate background step 1 measures is the master background
 before calibration, and step 1's `assign_wcs` pass serves the coverage counter, the stuck-shutter
@@ -212,9 +212,10 @@ The tables go into `<base>_rate.fits` after jwst's extensions, as stage 1 does w
 (`master_bkg_rate.write_into_rate`, atomic by copy). All of them are written every time, empty when
 there is nothing to hold, because a jwst save of the rate file records every extension name in its
 ASDF tree and a later rewrite must find each one. `masks.restore_pre_bkgsub` drops them together
-with the detector background. `MBKG1DR`'s header holds step 1's skip key: its version, the rate
-file's `CFBKGDT`, the metafile name and id, the bar-shadow stamp, the wavelength cutoffs, the hash of
-the manual and web stuck entries, and the thresholds.
+with the detector background. `MBKG1DR`'s header holds step 1's skip key
+(`master_bkg_rate._inputs_cards`): its version, the rate file and its `CFBKGDT`, the metafile name
+and id, the bar-shadow table and its stamp, the wavelength cutoffs, the hash of the manual and web
+stuck entries, the trace-map and geometry versions, and the wavelength range.
 
 ### 4.3 Stuck-closed shutters
 
@@ -257,13 +258,16 @@ review if it is 0.3 to 0.8 or the detectors differ by more than 0.5; open at 0.8
 - Origins `manual` (typed by a person), `web` (the portal's nod review) and `auto` (the fit), with
   precedence manual > web > auto. `stuck = false` from a person vetoes an auto call, so a wrong call
   is not reinstated on the next run.
-- Legacy entries (`sid = [ordinals]`) are still read, mapped through the metafile; ones that cannot
-  be mapped are reported. The auto writer (tomlkit) rewrites only auto entries and does not write
-  when the merged content is unchanged, because the file time is the canonicals' skip key
-  (`STKSHTIM`). Converting legacy entries is a separate command.
-- The same shape is the jsonb in `nirspec_source_review.stuck_shutters`, shared by the pipeline,
-  the web nod review and deploy. `scripts/backfill_stuck_shutters_physical.py` converts the
-  database's legacy entries once the migration is live.
+- Legacy entries (`sid = [ordinals]`) are still read and mapped through the metafile on read
+  (`stuck_list.resolve`); ones that cannot be mapped are reported. The local file is never
+  rewritten to physical keys. The auto writer (tomlkit) rewrites only auto entries and does not
+  write when the merged content is unchanged, because the file time is the canonicals' skip key
+  (`STKSHTIM`).
+- The database keeps the same keys in its own table, `nirspec_stuck_shutters`: one row per
+  observation, exposure root and physical shutter, origin `manual` (pushed from the local file on
+  deploy) or `web` (the portal's nod review). Auto calls stay local. It supersedes the per-source
+  ordinal lists in `nirspec_source_review.stuck_shutters`, which
+  `scripts/backfill_stuck_shutters_physical.py` converts once the migration is live.
 - `detect_stuck_shutters = false` keeps the calls in the rate file's `CALLS` table but does not
   write them to the list. Header card `STKSHPHY` lists the physical shutters applied.
 
@@ -307,7 +311,7 @@ No per-slitlet scale, no smooth row or column scaling, and no smoothing of the g
 Product `<root>_<nod>_<nrsN>_mbkg.fits` (layout kind `nirspec_mbkg`): `MBKG1D`, `SHUTTERS`, and the
 model on the detector `MBKG2D` / `MBKG2DN` / `MBKG2DDQ` (losslessly compressed: 2.8 MB on PRISM,
 about 8 MB on G395M). `load_product` follows `MBKGRATE` to read `MBKG1DR` from the rate file.
-`sky_for_slit(product, path, extver=1, table=None, mode='total')` is the interface the extraction
+`sky_for_slit(product, path, extver=1, table=None, mode='total', mask_bits=0)` is the interface the extraction
 uses; it warns when it falls back to the slit's own slitlet.
 
 **Accuracy.** PRISM: each exposure within 0.2-0.4 % of the pool in scale, a quadrant term of
@@ -370,8 +374,8 @@ on G395M against PRISM is within the noise; it is clear where the neighbor is br
 | Column | Content |
 |---|---|
 | `fnu`, `flam` | the best spectrum: `fnu_prof`, or `fnu_3px` for a named failure (`EXTRACT`, `EXTRWHY`) |
-| `fnu_prof` | the profile fit, nothing subtracted |
-| `fnu_contam` | other slitlets' predicted light, extracted the same way; NaN where none is predicted or where the source cannot be separated from a neighbor |
+| `fnu_prof` | the combined 2-D spectrum extracted over the aperture rows with the fitted source model (`PROF2D`) as inverse-variance weights, scaled to the reported flux; nothing subtracted |
+| `fnu_contam` | other slitlets' predicted light (`CONTAM2D`), extracted the same way; NaN where none is predicted or where the source cannot be separated from a neighbor |
 | `fnu_opt` | the v1 optimal extraction, on jwst's point-source calibration |
 | `fnu_3px`, `fnu_4px`, `fnu_5px` | boxcars, unchanged, on jwst's point-source calibration |
 
@@ -385,6 +389,9 @@ and cards.
 with log wavelength (`profile_fit_chromatic`). It is seen through the optics model (6.3) in every
 exposure, and as negative copies at the positions of that exposure's background exposures. One
 spectrum is shared by all exposures and solved wavelength by wavelength, linearly, given the shape.
+The fit sets the shape and the model images (`PROF2D`); the reported columns are then extracted
+from the combined 2-D spectrum with those images as weights (6.1), so the 1-D spectrum is read
+from the same drizzled data as the other extractions.
 
 - **Each nod at its own planned position** (`NOD_OFFSET_LAW`, scale 1). The shared center is moved in
   each exposure by its SRCYPOS minus the reference. Measured freely on 465 calibration stars, the
@@ -416,8 +423,8 @@ model for every disperser: the light that reaches the MSA does not depend on the
    grid (`opening_mask`);
 4. the spectrograph's pupil stop (0.996 of the pupil's image), which removes part of the light
    diffracted at the shutter edges;
-5. a Gaussian detector blur (0.034 arcsec minus 0.0026 arcsec per um), then integration over a
-   pixel row.
+5. a Gaussian detector blur, sigma = 0.0344 arcsec - 0.0026 arcsec/um x (lambda - 3 um), then
+   integration over a pixel row.
 
 Tables of point images per open-shutter pattern (wavelength x source position x detector position)
 are built on first use and cached under `$CAMPFIRE_ROOT/cache/optics`, keyed by the model's numbers,
@@ -432,8 +439,8 @@ end shutter or a single shutter loses the light that falls on its closed neighbo
 counted twice.
 
 **Along the dispersion**, jwst's point path loss (its x part; `pathloss_0010` is exactly an x part
-times a y part) times a correction fitted to stars, `x_correction` = exp(-b (lambda - 2 um)+ x^2),
-x = SRCXPOS, b = 0.572 (`x_loss` in the model file). For an extended source, times the model's
+times a y part) times a correction fitted to stars, `x_correction` = exp(-b max(lambda - 2 um, 0)
+x^2), x = SRCXPOS, b = 0.572 (`x_loss` in the model file). For an extended source, times the model's
 ratio of extended to point transmission across a 0.20 arcsec shutter (`x_extended_ratio`, the
 source taken as round, with the half-width 0.110 arcsec and position scatter 0.030 arcsec the
 stars' x loss fitted). The correction raises a flux by 13 % at 4.5 um and x = 0.3; below 2.5 um it
@@ -511,7 +518,7 @@ sources move by under 0.3 %, default-shape sources near a bar by a median +0.2 t
 ### 6.5 The reported flux
 
 `fnu_prof` (and `fnu`) is the fitted source's light inside a circle 0.8 arcsec across (1.5 shutter
-lengths), centered on it: the round Gaussian of the fitted width before the PSF
+pitches), centered on it: the round Gaussian of the fitted width before the PSF
 (`profile_fit.REPORT_APERTURE`, card `PFAPER`). For a point source this is all of its light. The
 aperture bounds how far a wide source is extrapolated past what the shutter saw. The fit's spectrum
 is the source's total light (along the slit from the model at the fitted width, along the
@@ -659,8 +666,8 @@ so the two spectra differ only in how the background was removed.
   included, since nothing is subtracted.
 - Failed-open shutters on the source's trace (`failed_open.py`): per exposure and shutter, a
   spectrum along detector columns times a flat profile over the shutter, solved with the source on
-  the frames minus the other sources' predicted light, and added to `CONTAM2D` / `CONTERR2D`
-  (cards `PFNFOPEN`, `PFFOSIG`). On p1 109 of 681 products have failed-open pixels on the source's
+  the frames minus the other sources' predicted light, and added to the master-background
+  spectrum's contamination and its error (cards `PFNFOPEN`, `PFFOSIG`). On p1 109 of 681 products have failed-open pixels on the source's
   shutter. The nodded spectrum is unchanged: the background behind a failed-open shutter cancels in
   the nod difference.
 - Outlier flags: the nodded Spec3's, the pixels without a master background, and a hot-pixel mask.
@@ -689,8 +696,8 @@ off-source rows. Neither comparison measures the master background against a tru
 ### 6.10 Every 2-D image drizzled once
 
 `drizzle_map.DrizzleMap.from_crf` builds jwst's output grid from the crf and each exposure's pixel
-map once per product; every 2-D image (`PROF2D`, `CONTAM2D`, `CONTERR2D`, the master-background
-2-D) then goes through the drizzle library with stcal's weights and variance propagation. The nodded
+map once per product; every 2-D image (`PROF2D`, `CONTAM2D`, the contamination's error, the
+master-background 2-D) then goes through the drizzle library with stcal's weights and variance propagation. The nodded
 data stay Spec3's s2d. The crf's own arrays through the map reproduce Spec3's s2d bit for bit; the
 model images agree with the old per-image `ResampleSpecStep` calls to 1-2 float32 ulps (jwst built
 each call's grid weighted by the image drizzled). `fnu` moves by at most 1.5e-7 relative. The
@@ -741,11 +748,13 @@ reference from STScI can be taken up by a setting and measured by a command.
 
 ## 8. Products
 
-**`_spec.fits`** (`<obs>_<grating>_<sid>_spec.fits`). Readers find every extension by name.
+**`_spec.fits`** (`<obs>_<grating>_<filter>_<sid>_spec.fits`). Readers find every extension by
+name.
 - `SPEC1D` columns: section 6.1, each with `_err` and `flam_*`.
-- 2-D: `PROF2D` (the source model per uJy of reported flux, in SCI's units), `CONTAM2D` and
-  `CONTERR2D` (other slitlets' predicted light and its error); the full model is
-  `PROF2D x (fnu_prof - fnu_contam) + CONTAM2D`. No 2-D image is stored twice.
+- 2-D: `PROF2D` (the source model per uJy of reported flux, in SCI's units) and `CONTAM2D` (other
+  slitlets' predicted light); the full model is `PROF2D x (fnu_prof - fnu_contam) + CONTAM2D`.
+  The prediction's 2-D error (`CONTERR2D`) lives only in the `_pf.fits` intermediate and is
+  reduced to `fnu_contam_err`. No 2-D image is stored twice.
 - Master-background spectrum: `SPEC1D_MBKG`, `SCI_MBKG`, `ERR_MBKG`, `PROF1D_MBKG`.
 - Cards: `EXTRACT` / `EXTRWHY`, `CONTSTAT`; the fit (`PFVER`, `PFOPTIC`, `PFAPER`, `PFSHAPE`,
   `PFREASON`, `PFCHAIN`, `PFGATE`, the shape parameters `PFCEN`, `PFWIDTH`, `PFDRIFT`, ...); the
@@ -753,7 +762,7 @@ reference from STScI can be taken up by a setting and measured by a command.
   `PFNOTSEP`, `PFCBOX`, `PFDOMIN`, ...); the neighbor scan (`PFNBR*`); the master-background
   spectrum (`NEXP`, `NEXPBKG`, `MBKGPREF`, `MBKGWHY`, `MBKGNEXP`). The FITS reference page lists
   them all.
-- The `EXPOSURES` table gains `bkg_nods` and `bkg_why`.
+- The `EXPOSURES` table gains `bkg_why`, beside the existing `bkg_nods`.
 
 **Per exposure.** `<base>_rate.fits` carries step 1's tables and the trace map;
 `<base>_mbkg.fits` (layout kind `nirspec_mbkg`); the canonicals; `bkgslits/` (local, regenerable).
@@ -780,14 +789,16 @@ New in `[nirspec.stage3]`: `profile_fit`, `profile_fit_chromatic`, `profile_fit_
 `slitlet_neighbor_brightness`, `mbkg_spectrum`, `mbkg_extended_frac`, and the neighbor scan
 (`scan_*`).
 
-Removed during development (each tried and not chosen; appendix A): `single_call`,
-`extract_bkgslits`, `empirical_barshadow`, 29 `master_bkg_*` thresholds (now
-`master_bkg.SETTINGS`), the `low_frac` stuck detector's keys, `profile_fit_shape = "free"`,
-`profile_fit_prism_mode`, `gate_noise`, partial fits, model-row extraction, `contam_mode`,
-`contam_dominance*`, `contam_1d*`, `contam_pass1` and the masked first pass's keys, `contam_echo`,
-`contam_joint*` (but `contam_joint_cache`), `scan_noise`, `scan_close_rule`, `scan_gain_rule`,
-`scan_action`. A config that still sets one is told once that it has no effect
-(`config.REMOVED_OPTIONS`).
+Removed (`config.REMOVED_OPTIONS`; a config that still sets one is told once that it has no
+effect): `single_call`, `extract_bkgslits`, `empirical_barshadow`, 29 `master_bkg_*` thresholds
+(now `master_bkg.SETTINGS`), v1's `low_frac` stuck detector keys
+(`stuck_shutter_low_frac_threshold*`, `detect_stuck_shutters_grating`), `profile_fit_prism_mode`,
+`gate_noise`, partial fits, model-row extraction, `contam_mode`, `contam_dominance*`,
+`contam_1d*`, `scan_noise`, `scan_close_rule`, `scan_gain_rule`, `scan_action`.
+
+Removed before they reached any release, so not warned about: `profile_fit_shape = "free"`,
+`contam_pass1` and the masked first pass's keys, `contam_echo`, `contam_joint*` (but
+`contam_joint_cache`). Appendix A says why each went.
 
 ---
 
@@ -876,7 +887,9 @@ by the user; `/code-review ultra` for slices 1 and 3):
 1. data contracts: FITS products and cards, rate-file extensions, layout kinds, migrations, deploy
    and sidecars;
 2. master background and stuck shutters (`master_bkg`, `master_bkg_rate`, `coverage`,
-   `barshadow_calibration`, `shutter_fit`, `stuck_list`);
+   `barshadow_calibration`, `shutter_fit`, `stuck_list`); v1's stuck detector
+   (`stuck_shutters.detect_stuck_shutters`, `merge_stuck_shutters`, `write_stuck_shutters_toml`,
+   `plots.plot_stuck_shutter_diagnostics`) has no caller outside tests and is removed here;
 3. optics and the profile model (`optics`, `profile_fit`, `profile_chain`, `crds_refs`, `bar_offset`,
    `optics_calibration`);
 4. contamination (`trace_overlap`, `profile_contam`, `joint_first_pass`, `profile_extend`,
@@ -894,7 +907,10 @@ exposure; the plots of section 10.
 1. DR 2026.1: freeze the current (v1) catalog as a data release (`campfire dr freeze`) before
    anything of v2 is deployed, with the v1 documentation preserved for it (open: in what form).
 2. Merge PR A after review and tag `pipeline-vN.0.0` (MAJOR).
-3. Reprocess the archive from stage 1 with the tag and `campfire push` (bytes only).
+3. Reprocess the archive from stage 1 with the tag and `campfire push` (bytes only). Stage 2a is
+   the minimum for most observations (step 1 writes into the existing rate file); G140M/F100LP,
+   G235M/F170LP and the H gratings with those filters need stage 1 for the extended mask. The
+   whole archive is rerun from stage 1 so that every rate file is made the same way.
 4. Fixes during reprocessing: small PRs to `main`; PATCH when science output is unchanged, MINOR when
    it changes; only the affected observations rerun.
 5. Switch-over in one step: `campfire deploy` over everything, and PR B merged the same day.
@@ -924,7 +940,7 @@ first; user).
 | Boundary with jwst | `nirspec/crds_refs.py`, `data/nirspec_calibrations.toml` |
 | Orchestration | `nirspec/stage2.py`, `nirspec/stage3.py` |
 | Config | `data/config_default.toml`, `config.py` (`REMOVED_OPTIONS`) |
-| Stuck list storage | `supabase/schemas/tables.sql` (`nirspec_source_review.stuck_shutters`), `web/lib/nirspec-nods.ts`, deploy's stuck-shutter pull |
+| Stuck list storage | `supabase/schemas/tables.sql` (`nirspec_stuck_shutters`), `web/lib/nirspec-shutters.ts`, `python/campfire/deploy/nirspec_flags.py` |
 
 Running the pipeline on the reduction machine: stage 1 at most 6 workers, stage 2a-sized work up to
 12 when nothing else heavy runs, one heavy chain at a time; isolated roots set `CRDS_PATH`

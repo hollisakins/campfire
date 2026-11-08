@@ -306,6 +306,9 @@ REMOVED_OPTIONS = {
         'single_call': 'stage 2a always runs one Spec2Pipeline per rate file (per source only as the fallback)',
         'extract_bkgslits': 'the background-only slitlets are always extracted',
         'empirical_barshadow': 'the empirical bar-shadow tables are always used (CRDS for a grating without one)',
+        **{k: 'stuck-closed shutters come from the per-shutter fit of master-background step 1, every disperser'
+           for k in ('stuck_shutter_low_frac_threshold', 'stuck_shutter_low_frac_threshold_grating',
+                     'detect_stuck_shutters_grating')},
         **{f'master_bkg_{k}': 'fixed in master_bkg.SETTINGS' for k in (
             'source_pad_px', 'core_frac', 'bin_pixels', 'min_pixels', 'min_bins', 'clip_sigma', 'line_sigma',
             'line_min_bins', 'excess_min', 'low_min', 'n_iter', 'min_shutters', 'prefer_pool', 'pool_tol',

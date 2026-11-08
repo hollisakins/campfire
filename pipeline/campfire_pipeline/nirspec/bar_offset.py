@@ -4,7 +4,7 @@ empty shutters.
 The profile fit's shutters (``optics``) sit at fixed positions in jwst's slit frame. A star fitted
 near a bar shows that the real bars of one observation can sit up to about 0.02 slit units (9 mas)
 away from them, by a different amount in each observation, and that this moves the flux of a source
-near a bar by several per cent (docs/design-nirspec-pipeline-v2.md, §3.7). The amount does not follow
+near a bar by several per cent (docs/design-nirspec-pipeline-v2.md, §6.4). The amount does not follow
 the grating-wheel tilt readings or the date, so it is measured per observation, here, from light
 every observation has: the background in the shutters of its slitlets that hold no source.
 
