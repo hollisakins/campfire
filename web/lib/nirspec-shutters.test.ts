@@ -83,6 +83,15 @@ describe('shutterOverlayRegions', () => {
     expect(regions).toHaveLength(2);
   });
 
+  it("post-reprocessing: the cell's STKSHTRS list sets the geometry, automatic calls included", () => {
+    // ordinal 1 of 3 removed by the pipeline's own call: no mark in the database
+    const regions = shutterOverlayRegions({ shutsta: 'xx', stuckList: [], stkshtrs: '[1]', nRows: 400 });
+    expect(regions.map((r) => r.ordinal)).toEqual([3, 2]);
+    // an interior removed shutter stays in the window and shows stuck
+    const inner = shutterOverlayRegions({ shutsta: 'xx', stuckList: [], stkshtrs: '[2]', nRows: 400 });
+    expect(inner.map((r) => [r.ordinal, r.stuck])).toEqual([[3, false], [2, true], [1, false]]);
+  });
+
   it('empty SHUTSTA yields no regions', () => {
     expect(shutterOverlayRegions({ shutsta: '', stuckList: [], stkshtrs: 'N/A', nRows: 400 })).toEqual([]);
     expect(shutterOverlayRegions({ shutsta: null, stuckList: [], stkshtrs: 'N/A', nRows: 400 })).toEqual([]);

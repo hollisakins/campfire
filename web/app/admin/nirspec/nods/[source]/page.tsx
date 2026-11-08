@@ -30,6 +30,7 @@ const EMPTY_REVIEW: ReviewState = { bkg_overrides: {} };
 
 type Marks = Map<string, StuckShutterMark>;
 const NO_MARKS: Marks = new Map();
+const NO_ORDINALS: number[] = [];
 
 /** exposure_root shared by a nod-grid row's ≤2 detector cells (nrs1/nrs2 of one nod). */
 function rowRoot(row: { cells: Record<string, SpectrumExposure | null> }): string | null {
@@ -158,6 +159,14 @@ function NodGridInner() {
     }
     return m;
   }, [stuckQuery.data]);
+
+  // Each root's stuck ordinals (overlay frame), one array per root so a cell's overlay
+  // memo is not redone on every render while the grid loads.
+  const stuckByRoot = useMemo(() => {
+    const m = new Map<string, number[]>();
+    for (const [root, keys] of rootShutters) m.set(root, stuckOrdinals(keys ?? [], marks.get(root) ?? NO_MARKS));
+    return m;
+  }, [rootShutters, marks]);
 
   // Optimistic write of one root's web marks; the query is refetched afterwards.
   const setMark = useCallback((root: string, keys: string[], stuck: boolean | null) => {
@@ -311,7 +320,7 @@ function NodGridInner() {
                         bkgsub={bkgsub}
                         onData={onData}
                         onSettled={onSettled}
-                        stuckList={root ? stuckOrdinals(rootShutters.get(root) ?? [], marks.get(root) ?? NO_MARKS) : []}
+                        stuckList={(root && stuckByRoot.get(root)) || NO_ORDINALS}
                         onToggleShutter={(ordinal) => { if (root) handleToggleShutter(root, ordinal); }}
                       />
                     </div>

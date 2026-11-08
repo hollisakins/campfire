@@ -296,6 +296,8 @@ function findNamedHdu(buf: Uint8Array, extname: string): HduHeader {
   throw new HduNotFoundError(`No ${extname} extension in the first 64 HDUs`);
 }
 
+const DECODE_BATCH = 64;
+
 /** Byte width of one BINTABLE field from its TFORMn (`rT`, e.g. `1PB(3688)`, `2E`). */
 export function tformWidth(tform: string): number {
   const m = /^\s*(\d*)([LXBIJKAEDCMPQ])/.exec(tform);
@@ -388,7 +390,7 @@ export async function fetchCompressedImage(
     throw new Error(`${extname}: ${nRows} tile rows for a ${nTilesX} x ${nTilesY} tile grid`);
   }
   const out = new Float32Array(width * height);
-  await Promise.all(Array.from({ length: nRows }, async (_, row) => {
+  const decodeRow = async (row: number) => {
     const tx = row % nTilesX;
     const ty = Math.floor(row / nTilesX);
     const w = Math.min(tileW, width - tx * tileW);
@@ -412,7 +414,13 @@ export async function fetchCompressedImage(
     for (let y = 0; y < th; y++) {
       out.set(tile.subarray(y * w, (y + 1) * w), (ty * tileH + y) * width + tx * tileW);
     }
-  }));
+  };
+  // a bounded number of tiles in flight (MBKG2D has one per detector row, 2048)
+  for (let start = 0; start < nRows; start += DECODE_BATCH) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const end = Math.min(start + DECODE_BATCH, nRows);
+    await Promise.all(Array.from({ length: end - start }, (_, i) => decodeRow(start + i)));
+  }
   return { data: out, width, height };
 }
 

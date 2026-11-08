@@ -60,12 +60,23 @@ export interface ShutterOverlayRegion extends ShutterRegion {
 export interface ShutterOverlayInput {
   /** SHUTSTA header string from the s2d SCI extension; its length is the current shutter count. */
   shutsta: string | null | undefined;
-  /** 1-indexed shutter ordinals flagged as stuck (from nirspec_source_review.stuck_shutters). */
+  /** 1-indexed shutter ordinals marked stuck (nirspec_stuck_shutters, ``stuckOrdinals``). */
   stuckList: number[];
-  /** STKSHTRS header from the s2d PRIMARY extension ('N/A' ⇒ pre-reprocessing). */
+  /** STKSHTRS header from the s2d PRIMARY extension ('N/A' ⇒ pre-reprocessing). A
+   *  reprocessed cell's list of removed ordinals sets its geometry: the pipeline plot
+   *  reads the full local list (automatic calls included), which the web cannot. */
   stkshtrs: string | null | undefined;
   /** Number of spatial pixels (image height). */
   nRows: number;
+}
+
+/** The ordinals a reprocessed cell's STKSHTRS lists (stage 2a writes the list, e.g.
+ * "[1, 3]"), or null when it is not a list. */
+export function removedOrdinals(stkshtrs: string): number[] | null {
+  const m = /^\s*\[([\d,\s]*)\]\s*$/.exec(stkshtrs);
+  if (!m) return null;
+  const out = m[1]!.split(',').map((s) => s.trim()).filter(Boolean).map(Number);
+  return out.length ? out : null;
 }
 
 /**
@@ -81,6 +92,7 @@ export function shutterOverlayRegions(input: ShutterOverlayInput): ShutterOverla
 
   // STKSHTRS distinguishes pre- vs post-reprocessing; 'N/A' (or absent) ⇒ pre.
   const reprocessed = !!stkshtrs && stkshtrs !== 'N/A';
+  const removed = reprocessed ? removedOrdinals(stkshtrs) : null;
 
   let nEffective: number;
   let ordinals: number[];
@@ -88,10 +100,14 @@ export function shutterOverlayRegions(input: ShutterOverlayInput): ShutterOverla
     nEffective = nCurrent;
     ordinals = Array.from({ length: nCurrent }, (_, k) => nCurrent - k);
   } else {
-    const nOriginal = nCurrent + stuckList.length;
-    const stuckSet = new Set(stuckList);
+    // The shutters this cell's processing removed: its own STKSHTRS list when it is one
+    // (the pipeline's automatic calls included, which never reach the database), else
+    // the marks.
+    const removedList = removed ?? stuckList;
+    const nOriginal = nCurrent + removedList.length;
+    const removedSet = new Set(removedList);
     const remaining: number[] = [];
-    for (let s = 1; s <= nOriginal; s++) if (!stuckSet.has(s)) remaining.push(s);
+    for (let s = 1; s <= nOriginal; s++) if (!removedSet.has(s)) remaining.push(s);
     if (remaining.length === 0) return [];
     const minRemain = remaining[0]!;
     const maxRemain = remaining[remaining.length - 1]!;
@@ -99,7 +115,7 @@ export function shutterOverlayRegions(input: ShutterOverlayInput): ShutterOverla
     ordinals = Array.from({ length: nEffective }, (_, k) => maxRemain - k);
   }
 
-  const stuckSet = new Set(stuckList);
+  const stuckSet = new Set([...stuckList, ...(reprocessed ? removed ?? [] : [])]);
   return computeShutterRegions(nEffective, nRows).map((region, k) => {
     const ordinal = ordinals[k]!;
     return { ...region, ordinal, stuck: stuckSet.has(ordinal) };
@@ -114,6 +130,10 @@ export function shutterOverlayRegions(input: ShutterOverlayInput): ShutterOverla
 // ---------------------------------------------------------------------------
 
 export const SHUTTER_KEY_RE = /^q([1-4])r(\d+)c(\d+)$/;
+
+/** An exposure root (MSA configuration), e.g. "jw07076001001_03101": the read route and
+ * the write action of nirspec_stuck_shutters accept the same ones. */
+export const EXPOSURE_ROOT_RE = /^jw\d{11}_\d{5}$/;
 
 export interface ShutterKey { q: number; r: number; c: number }
 

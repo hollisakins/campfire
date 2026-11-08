@@ -1907,8 +1907,10 @@ class LocalStore:
                 field,
                 COUNT(CASE WHEN product_type IN ('nirspec_spec') THEN 1 END) AS finals_available,
                 COUNT(CASE WHEN product_type IN ('nirspec_spec') AND local_path IS NOT NULL THEN 1 END) AS finals_local,
-                COUNT(CASE WHEN product_type IN ('nirspec_spectrum_exposure') THEN 1 END) AS intermediates_available,
-                COUNT(CASE WHEN product_type IN ('nirspec_spectrum_exposure') AND local_path IS NOT NULL THEN 1 END) AS intermediates_local,
+                COUNT(CASE WHEN product_type IN ('nirspec_spectrum_exposure', 'nirspec_mbkg') THEN 1 END)
+                    AS intermediates_available,
+                COUNT(CASE WHEN product_type IN ('nirspec_spectrum_exposure', 'nirspec_mbkg')
+                           AND local_path IS NOT NULL THEN 1 END) AS intermediates_local,
                 COALESCE(SUM(CASE WHEN local_path IS NOT NULL THEN size_bytes END), 0) AS local_bytes,
                 COALESCE(SUM(size_bytes), 0) AS available_bytes
             FROM storage_objects

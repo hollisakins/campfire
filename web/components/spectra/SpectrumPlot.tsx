@@ -153,6 +153,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   const mbkgError = showMbkg && mbkgQuery.error
     ? (mbkgQuery.error instanceof Error ? mbkgQuery.error.message : 'Failed to load the master-background spectrum')
     : null;
+  // the resolve listed it but the file is not there (e.g. a release member not archived
+  // yet): the box is shown off and disabled, never ticked over the nodded spectrum
+  const mbkgUnavailable = hasMbkg && mbkgQuery.isSuccess && mbkgQuery.data === null;
   const data: SpectrumData1D | null = mbkgData ?? nodded;
   const heat: SpectrumData | null = mbkgData ?? noddedHeat;
   const loading = oneDQuery.isPending;
@@ -941,10 +944,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         {hasMbkg && (
           <PlotCheckbox
             label="Master background"
-            checked={showMbkg}
-            onChange={setShowMbkg}
+            checked={showMbkg && !mbkgError && !mbkgUnavailable}
+            disabled={mbkgUnavailable}
+            onChange={(v) => { if (v && mbkgError) void mbkgQuery.refetch(); setShowMbkg(v); }}
             title={
-              mbkgError
+              mbkgUnavailable
+                ? 'The master-background spectrum is not available here'
+                : mbkgError
                 ? `The master-background spectrum failed to load: ${mbkgError}`
                 : showMbkg && mbkgQuery.isPending
                   ? 'Loading the master-background spectrum…'

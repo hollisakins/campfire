@@ -1,12 +1,12 @@
 import { NextRequest } from 'next/server';
 import { getRequestPrincipal } from '@/lib/auth/identity';
 import type { NirspecStuckShutter } from '@/lib/types';
+import { EXPOSURE_ROOT_RE } from '@/lib/nirspec-shutters';
 
 export interface StuckShuttersResponse {
   rows: NirspecStuckShutter[];
 }
 
-const ROOT_RE = /^jw\d{11}_\d{5}$/;
 const MAX_ROOTS = 100;
 
 /**
@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
   const observation = params.get('observation') ?? '';
   if (!observation) return Response.json({ error: 'Missing observation' }, { status: 400 });
   const roots = (params.get('roots') ?? '').split(',').map((r) => r.trim()).filter(Boolean);
-  if (roots.length > MAX_ROOTS || roots.some((r) => !ROOT_RE.test(r))) {
+  if (roots.length > MAX_ROOTS || roots.some((r) => !EXPOSURE_ROOT_RE.test(r))) {
     return Response.json({ error: 'Invalid roots' }, { status: 400 });
   }
 

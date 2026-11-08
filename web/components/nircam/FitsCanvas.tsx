@@ -105,7 +105,8 @@ interface Props {
   vmin: number;
   vmax: number;
   onLoad?: (info: FitsCanvasLoad) => void;
-  onError?: (msg: string) => void;
+  /** A load failed (its message), or null once a view switch loaded after one failed. */
+  onError?: (msg: string | null) => void;
 }
 
 export default function FitsCanvas({
@@ -137,6 +138,9 @@ export default function FitsCanvas({
     return () => {
       viewerRef.current?.destroy();
       viewerRef.current = null;
+      // the decoded images (~16 MB each) are for toggling views while the page is open
+      imageCache.clear();
+      rateLimitsCache.clear();
     };
   }, []);
 
@@ -156,8 +160,10 @@ export default function FitsCanvas({
         const exposure = `${fitsKey}|${mbkgKey ?? ''}`;
         const [hostLo, hostHi] = rangeRef.current;
         if (mbkgKey && reportedRef.current === exposure && hostHi > hostLo) {
-          // a view switch of the same exposure: keep the host's range
+          // a view switch of the same exposure: keep the host's range (onLoad would reset
+          // it); clear an error an earlier view left
           viewer.setDisplayRange(hostLo, hostHi);
+          onErrorRef.current?.(null);
           return;
         }
         if (shared) viewer.setDisplayRange(shared[0], shared[1]);

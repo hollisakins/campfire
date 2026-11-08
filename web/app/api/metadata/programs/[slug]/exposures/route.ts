@@ -38,7 +38,9 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ sl
   const { data, error } = await supabase.rpc('get_program_exposures', { p_program_slug: slug });
   if (error) {
     console.error('get_program_exposures failed:', error);
-    return Response.json({ exposures: [], error: error.message } satisfies ProgramExposuresResponse, { headers: NO_STORE });
+    // an error status, so the client's query fails (and says so) instead of caching no exposures
+    return Response.json({ exposures: [], error: error.message } satisfies ProgramExposuresResponse,
+      { status: 500, headers: NO_STORE });
   }
   return Response.json({ exposures: (data ?? []) as ProgramExposure[] } satisfies ProgramExposuresResponse, { headers: NO_STORE });
 }

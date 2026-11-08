@@ -43,7 +43,8 @@ export default function ProgramDetailPage() {
   const observations = data?.observations ?? [];
   const error = data?.error ?? null;
   const loading = isLoading;
-  const { data: exposuresData } = useProgramExposuresQuery(programSlug, !authLoading && !!user && !!program);
+  const { data: exposuresData, error: exposuresError } =
+    useProgramExposuresQuery(programSlug, !authLoading && !!user && !!program);
   const exposuresByObs = React.useMemo(() => {
     const m = new Map<string, ProgramExposure[]>();
     for (const e of exposuresData?.exposures ?? []) {
@@ -232,9 +233,12 @@ export default function ProgramDetailPage() {
       {observations.length > 0 && (
         <div className="mb-8">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-text-primary">
-              Observations
-            </h2>
+            <div>
+              <h2 className="text-lg font-semibold text-text-primary">
+                Observations
+              </h2>
+              {exposuresError && <p className="text-xs text-red-500">Exposures could not be loaded</p>}
+            </div>
             {totalPointings > 0 && (
               <div className="flex gap-2 text-xs">
                 <button

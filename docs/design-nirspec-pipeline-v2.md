@@ -1036,6 +1036,28 @@ noise; it only sets the spectrum the profile is drawn at, and the reported error
 2-D, which includes it. The drizzle would subtract a background level set by jwst's sky matching;
 Spec3 does not run it for MSA spectra, so nothing is subtracted.
 
+Slice 6 (2026-11-08), the web and the Python client (the docs pages and figures are the user's
+review). The read-through and the code review led to these fixes:
+- the nods overlay drew a reprocessed cell's shutter bands from the marks in the database, which
+  never hold the pipeline's automatic calls, so a cell whose shutter the pipeline removed on its own
+  had its bands numbered wrong (and a click marked another shutter). The geometry now comes from the
+  cell's `STKSHTRS` list, as the cell was made;
+- the spectrum plot's master-background switch stayed ticked over the nodded spectrum when the
+  master-background file turned out to be missing (a release member not archived yet) or failed to
+  load; it now shows off, disabled when the file is missing, and a retry when it failed;
+- the rate review kept an earlier view's error after switching to a view that loaded, held its
+  decoded images (up to about 100 MB) after leaving the page, and decoded the 2048 rows of a
+  master-background image all at once; the error clears, the images are released, the rows are
+  decoded 64 at a time;
+- a failed exposures query on the program page read as a program without exposures (and was kept
+  for 10 minutes); it is now an error, shown in one line;
+- `campfire status` counts the master-background files among a NIRSpec observation's intermediates;
+- smaller: the exposure-root pattern is shared by the stuck-shutter route and action; the nods page
+  computes each root's stuck ordinals once.
+
+The release plan now says when the stuck-shutter backfill runs: right after PR A merges, since the
+nods page reads only the new table from then on.
+
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,
 `test_dr_publish::test_cli_json_prompts_stay_off_stdout`) are fixed on `main`, not here. Still to do
@@ -1081,8 +1103,9 @@ exposure; the plots of section 10.
    it changes; only the affected observations rerun.
 5. Switch-over in one step: `campfire deploy` over everything, and PR B merged the same day.
 
-**Other:** run `scripts/backfill_stuck_shutters_physical.py` once the migration is live (dry run
-first; user).
+**Other:** run `scripts/backfill_stuck_shutters_physical.py` right after PR A merges (dry run first;
+user). From then on the nods page reads only `nirspec_stuck_shutters`, so until the backfill runs, the
+marks made with the old ordinal buttons do not show there.
 
 ---
 

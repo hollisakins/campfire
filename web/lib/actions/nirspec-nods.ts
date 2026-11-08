@@ -2,7 +2,7 @@
 
 import { requireAdmin as requireAdminIdentity } from '@/lib/auth/identity';
 import type { SpectrumExposure, NirspecSourceReview, NirspecStuckShutter } from '@/lib/types';
-import { SHUTTER_KEY_RE } from '@/lib/nirspec-shutters';
+import { SHUTTER_KEY_RE, EXPOSURE_ROOT_RE } from '@/lib/nirspec-shutters';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -168,8 +168,6 @@ export async function saveBkgOverrides(
 // Reads go through GET /api/admin/nirspec/stuck-shutters.
 // ---------------------------------------------------------------------------
 
-const ROOT_RE = /^jw\d{11}_\d{5}$/;
-
 /**
  * Set the web mark of physical shutters of one exposure root: `stuck` true (stuck
  * closed) or false (not stuck: vetoes the pipeline's own call) writes origin
@@ -183,7 +181,7 @@ export async function setWebStuckShutters(
   stuck: boolean | null,
 ): Promise<{ rows?: NirspecStuckShutter[]; error?: string }> {
   try {
-    if (!observation || !ROOT_RE.test(exposureRoot)) return { error: 'Invalid exposure root' };
+    if (!observation || !EXPOSURE_ROOT_RE.test(exposureRoot)) return { error: 'Invalid exposure root' };
     const keys = [...new Set(shutters)];
     if (keys.length === 0 || keys.length > 64 || keys.some((k) => !SHUTTER_KEY_RE.test(k))) {
       return { error: 'Invalid shutter keys' };
