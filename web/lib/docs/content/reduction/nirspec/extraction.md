@@ -13,10 +13,11 @@ Each source is modeled as a circular Gaussian with a width and position that may
 Faint sources do not constrain their own spatial profile. The profile is chosen in the following order:
 
 1. **PRISM profile**, for a grating spectrum, if the same source's PRISM spectrum was fitted with its own profile at the same position angle. A grating's own fit supersedes it only for bright sources (detection S/N ≥ 100) whose own fit is both significantly better and significantly different.
-2. **Own fitted profile**, if the detection S/N exceeds 25 (PRISM) or 70 (gratings) and the fit does not reach its parameter bounds.
-3. **Default profile**: a compact source (0.16″ FWHM) at the planned position.
+2. **Own fitted profile**, if the detection S/N exceeds 25 (PRISM) or 70 (gratings) and no parameter of the fit reaches its bound. A fit whose center alone reaches its bound is kept when it is significantly better than the alternative, since a large offset from the planned position can be real.
+3. **Profile from another grating**, for a grating spectrum without a PRISM profile that would otherwise take the default: the center offset and width of the same source's grating spectrum fitted with its own profile (the highest detection S/N if several), held constant with wavelength.
+4. **Default profile**: a compact source (0.16″ FWHM) at the planned position.
 
-The keywords `PFSHAPE` and `PFREASON` record the profile adopted and the reason.
+The keywords `PFSHAPE` (`prism`, `own`, `grating`, `default`) and `PFREASON` record the profile adopted and the reason.
 
 ## Definition of the reported flux
 

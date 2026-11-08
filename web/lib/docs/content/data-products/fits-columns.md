@@ -79,7 +79,7 @@ The primary header retains the `jwst` keywords, including software versions, all
 | `PFVER` | Extraction model version |
 | `PFOPTIC` | Optics model version |
 | `PFAPER` | Diameter of the reporting aperture, arcsec |
-| `PFSHAPE`, `PFREASON` | Profile adopted (`own`, `prism`, `default`) and the reason |
+| `PFSHAPE`, `PFREASON` | Profile adopted (`own`, `prism`, `grating`, `default`) and the reason |
 | `PFWIDTH`, `PFCEN` | Fitted Gaussian σ and center at `PFPIVOT`, in units of the open shutter height (0.46″) |
 | `PFSLY`, `PFSLX` | Slit-loss treatment along the slit (`optics` / `jwst`) and across the shutter (`corrected` / `jwst`) |
 | `PFPLREF` | `jwst` path-loss reference used as the baseline |
