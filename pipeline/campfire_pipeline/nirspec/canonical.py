@@ -177,18 +177,19 @@ def make_prefixed_hdus(arrays, prefix, slit_extver=1):
     return hdus
 
 
-BKG_NODS_CARDS = ('BKGNODS', 'BKGOVR')
+BKG_NODS_CARDS = ('BKGNODS', 'BKGOVR', 'BKGAUTO', 'BKGWHY')
 
 
 def bkg_nods_cards(nods, overridden, auto=False, why=''):
-    """Header cards recording which nods stage 2b subtracted as background.
+    """Header cards recording which nods stage 2b subtracted as background
+    (``BKG_NODS_CARDS``, all removed when the subtraction is reverted).
 
     ``BKGNODS`` is the comma-separated nod (exposure) numbers, or ``excluded`` when
     an empty override dropped this nod; ``BKGOVR`` says whether a
     nodded-background override chose them, ``BKGAUTO`` whether that override was
-    chosen automatically (a catalogued neighbour of the slitlet, or stage 3's
-    neighbour scan), ``BKGWHY`` why (``hand``, ``scan``, or the catalogued
-    neighbors and their light over the background); on a nod with no override it holds
+    chosen automatically (a cataloged neighbor of the slitlet), ``BKGWHY`` why
+    (``manual``, or the cataloged neighbors and their light over the
+    background); on a nod with no override it holds
     only a flag (``every background exposure: ...``: a bright neighbor from each).
     Stage 3 copies them into the ``EXPOSURES`` table, so the background choice is
     recorded in every product."""

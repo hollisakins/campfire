@@ -298,6 +298,34 @@ def test_no_master_background_spectrum_writes_no_json(tmp_path):
     assert not (tmp_path / "obs_prism_clear_4_spec_mbkg.json").exists()
 
 
+def test_row_defaults_are_the_fields_of_a_file_without_a_master_background_spectrum(tmp_path):
+    # Every spectra record carries these before its file's own fields, so a batch
+    # upsert never sends a NULL has_mbkg_spectrum (NOT NULL) for an unread file.
+    from campfire.deploy.generate import MBKG_ROW_DEFAULTS
+    fits_path = tmp_path / "obs_prism_clear_8_spec.fits"
+    _write_spec_fits(fits_path, opt=[0.2, 1.0, 0.2])
+    with fits.open(fits_path) as hdul:
+        assert mbkg_row_fields(hdul) == MBKG_ROW_DEFAULTS
+
+
+def test_deploy_json_updates_rows_only_where_the_sidecar_landed(tmp_path):
+    from campfire.deploy.deploy import update_mbkg_rows
+    from .fakes import FakePostgrest
+    a, b = tmp_path / "obs_prism_clear_1_spec.fits", tmp_path / "obs_prism_clear_2_spec.fits"
+    for p in (a, b):
+        _write_spec_fits(p, opt=[0.2, 1.0, 0.2], fnu_mbkg=[1.0] * 4,
+                         header={'MBKGPREF': True, 'MBKGWHY': 'extended', 'NEXP': 3, 'NEXPBKG': 2})
+    rows = [{"target_id": t, "grating": "prism", "has_mbkg_spectrum": False} for t in ("t1", "t2")]
+    sb = FakePostgrest({"spectra": rows})
+    summary = [{"spec_file": a.name, "object_id": "t1", "grating": "prism"},
+               {"spec_file": b.name, "object_id": "t2", "grating": "prism"}]
+    keys = {a.name: "ka", b.name: "kb"}
+    assert update_mbkg_rows(sb, summary, [a, b], keys, uploaded_keys={"ka"}) == 1   # kb failed to upload
+    got = {r["target_id"]: r for r in sb.rows("spectra")}
+    assert got["t1"]["has_mbkg_spectrum"] is True and got["t1"]["mbkg_reason"] == "extended"
+    assert got["t2"]["has_mbkg_spectrum"] is False                                  # kept as it was
+
+
 def test_master_background_reason_only_when_preferred(tmp_path):
     fits_path = tmp_path / "obs_prism_clear_7_spec.fits"
     _write_spec_fits(fits_path, opt=[0.2, 1.0, 0.2], fnu_mbkg=[1.0] * 4,

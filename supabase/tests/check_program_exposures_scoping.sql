@@ -25,9 +25,23 @@ BEGIN
     ('zzz_mb_prop', 'Exposures Test Private', false);
 
   INSERT INTO observations (name, program_slug, jwst_program_id, field) VALUES
-    ('mb_obs_a',    'zzz_mb_pub',  9971, 'zzz_mb_field'),
-    ('mb_obs_b',    'zzz_mb_pub',  9971, 'zzz_mb_field'),
-    ('mb_obs_prop', 'zzz_mb_prop', 9972, 'zzz_mb_field');
+    ('mb_obs_a',     'zzz_mb_pub',  9971, 'zzz_mb_field'),
+    ('mb_obs_b',     'zzz_mb_pub',  9971, 'zzz_mb_field'),
+    ('mb_obs_draft', 'zzz_mb_pub',  9971, 'zzz_mb_field'),
+    ('mb_obs_prop',  'zzz_mb_prop', 9972, 'zzz_mb_field');
+
+  -- An observation's exposures are listed once it has a published spectrum;
+  -- mb_obs_draft has only a draft one (deployed, not yet published).
+  INSERT INTO targets (target_id, field, ra, dec, program_slug, observation) VALUES
+    ('zzz-mb-a',     'zzz_mb_field', 150.0, 2.0, 'zzz_mb_pub',  'mb_obs_a'),
+    ('zzz-mb-b',     'zzz_mb_field', 150.0, 2.0, 'zzz_mb_pub',  'mb_obs_b'),
+    ('zzz-mb-draft', 'zzz_mb_field', 150.0, 2.0, 'zzz_mb_pub',  'mb_obs_draft'),
+    ('zzz-mb-prop',  'zzz_mb_field', 150.0, 2.0, 'zzz_mb_prop', 'mb_obs_prop');
+  INSERT INTO spectra (target_id, grating, fits_path, signal_to_noise, exposure_time, deploy_status) VALUES
+    ('zzz-mb-a',     'PRISM', '/tmp/zzz_mb_a.fits',     10.0, 1000.0, 'published'),
+    ('zzz-mb-b',     'G395M', '/tmp/zzz_mb_b.fits',     10.0, 1000.0, 'published'),
+    ('zzz-mb-draft', 'PRISM', '/tmp/zzz_mb_draft.fits', 10.0, 1000.0, 'draft'),
+    ('zzz-mb-prop',  'PRISM', '/tmp/zzz_mb_prop.fits',  10.0, 1000.0, 'published');
 
   INSERT INTO auth.users (id, email) VALUES
     ('00000000-0000-0000-0000-0000000000c1', 'zzz-mb-admin@test.invalid'),
@@ -66,7 +80,10 @@ BEGIN
     ('mb_obs_prop', 'jw99972001001_03101_00001', 'nrs1', 'p1_rate.fits', 'PRISM', 'CLEAR',
      '2025-11-08', 2830.0, 'NRSIRS2RAPID', 20, 2, 1, 3,
      'data/products/nirspec/mb_obs_prop/p1_mbkg.fits', 'combined', 'combined', 'consistent',
-     '{1/1}', 120, '1.5', 'pending', NULL);
+     '{1/1}', 120, '1.5', 'pending', NULL),
+    ('mb_obs_draft', 'jw99971003001_03101_00001', 'nrs1', 'd1_rate.fits', 'PRISM', 'CLEAR',
+     '2025-11-09', 2830.0, 'NRSIRS2RAPID', 20, 2, 1, 3,
+     NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'pending', NULL);
 
   -- The labels are constrained to the portal's two words ----------------------
   BEGIN
@@ -82,8 +99,9 @@ BEGIN
 
   PERFORM set_config('role', 'authenticated', true);
 
-  -- 1) Viewer without a grant: every exposure of the public program (with a master
-  --    background or not), none of the private program, and no table rows ---------
+  -- 1) Viewer without a grant: every exposure of the public program's published
+  --    observations (with a master background or not), none of its draft-only
+  --    observation, none of the private program, and no table rows -----------------
   PERFORM set_config('request.jwt.claims',
     json_build_object('sub', '00000000-0000-0000-0000-0000000000c2', 'role', 'authenticated')::text, true);
   v_obs := ARRAY(SELECT m.observation || '/' || m.detector FROM public.get_program_exposures('zzz_mb_pub') m);
@@ -115,12 +133,17 @@ BEGIN
     RAISE EXCEPTION 'granted viewer: want the private exposure, got % rows', v_count;
   END IF;
 
-  -- 3) Admin ---------------------------------------------------------------------
+  -- 3) Admin: the private exposure, and the draft-only observation's too ----------
   PERFORM set_config('request.jwt.claims',
     json_build_object('sub', '00000000-0000-0000-0000-0000000000c1', 'role', 'authenticated')::text, true);
   SELECT count(*) INTO v_count FROM public.get_program_exposures('zzz_mb_prop');
   IF v_count <> 1 THEN
     RAISE EXCEPTION 'admin: want the private exposure, got % rows', v_count;
+  END IF;
+  SELECT count(*) INTO v_count FROM public.get_program_exposures('zzz_mb_pub') m
+   WHERE m.observation = 'mb_obs_draft';
+  IF v_count <> 1 THEN
+    RAISE EXCEPTION 'admin: want the draft-only observation''s exposure, got % rows', v_count;
   END IF;
 
   -- 4) Share link for observation a: that observation only -----------------------
@@ -138,7 +161,7 @@ BEGIN
   PERFORM set_config('request.jwt.claims', '', true);
   PERFORM set_config('role', 'none', true);
 
-  RAISE NOTICE 'OK: get_program_exposures scoping holds (viewer, granted viewer, admin, share link, anon).';
+  RAISE NOTICE 'OK: get_program_exposures scoping holds (viewer, granted viewer, admin, share link, anon, draft-only observation).';
 END $$;
 
 ROLLBACK;

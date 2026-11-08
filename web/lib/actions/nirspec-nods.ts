@@ -172,7 +172,7 @@ const ROOT_RE = /^jw\d{11}_\d{5}$/;
 
 /**
  * Set the web mark of physical shutters of one exposure root: `stuck` true (stuck
- * closed) or false (not stuck: vetoes the pipeline's own call) upserts origin
+ * closed) or false (not stuck: vetoes the pipeline's own call) writes origin
  * 'web' rows; null deletes the web rows. Refuses when any of the shutters has a
  * manual row. Returns the shutters' rows after the write.
  */
@@ -210,17 +210,39 @@ export async function setWebStuckShutters(
       if (error) return { error: error.message };
       return { rows: [] };
     }
-    const { data, error } = await supabase
-      .from('nirspec_stuck_shutters')
-      .upsert(
-        keys.map((shutter) => ({
+    // No upsert: a manual row a deploy pushes between the read above and this write
+    // would be overwritten as 'web'. Existing web rows are updated only while still
+    // web, and new rows are inserted, so a row that appeared meanwhile is a conflict.
+    const webKeys = new Set((current ?? []).filter((r) => r.origin === 'web').map((r) => r.shutter));
+    const toUpdate = keys.filter((k) => webKeys.has(k));
+    const toInsert = keys.filter((k) => !webKeys.has(k));
+    const rows: NirspecStuckShutter[] = [];
+    if (toUpdate.length) {
+      const { data, error } = await supabase
+        .from('nirspec_stuck_shutters')
+        .update({ stuck })
+        .eq('observation', observation)
+        .eq('exposure_root', exposureRoot)
+        .eq('origin', 'web')
+        .in('shutter', toUpdate)
+        .select();
+      if (error) return { error: error.message };
+      if ((data ?? []).length < toUpdate.length) return { error: 'Changed meanwhile; reload and try again' };
+      rows.push(...((data ?? []) as NirspecStuckShutter[]));
+    }
+    if (toInsert.length) {
+      const { data, error } = await supabase
+        .from('nirspec_stuck_shutters')
+        .insert(toInsert.map((shutter) => ({
           observation, exposure_root: exposureRoot, shutter, origin: 'web', stuck,
-        })),
-        { onConflict: 'observation,exposure_root,shutter' },
-      )
-      .select();
-    if (error) return { error: error.message };
-    return { rows: (data ?? []) as NirspecStuckShutter[] };
+        })))
+        .select();
+      if (error) {
+        return { error: error.code === '23505' ? 'Changed meanwhile; reload and try again' : error.message };
+      }
+      rows.push(...((data ?? []) as NirspecStuckShutter[]));
+    }
+    return { rows };
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Failed to save stuck shutters' };
   }

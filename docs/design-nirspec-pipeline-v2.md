@@ -906,7 +906,24 @@ Checked in slice 1 (2026-11-07): the migrations only add things (a view and a ch
 recreated with new columns and product types; the guards confirm their grants); the nodded
 spectrum's sidecars keep their shape, and the master-background spectrum is a new file today's web
 never requests. PR A's own `web/` is checked with `npm run typecheck`, `npm test` and
-`npm run build` when the branch is cut.
+`npm run build` when the branch is cut. The slice's code review (2026-11-07) led to these fixes:
+- every spectra row carries the master-background columns, so one unreadable file no longer fails
+  its upsert batch on the `NOT NULL` flag;
+- `deploy json` updates those columns where the sidecar landed;
+- rate-exposure updates are sent in batches of equal columns, so a missing card leaves its column
+  as it was;
+- `get_program_exposures` lists an observation with no published spectrum only to admins and
+  drafts links (new migration, guard extended);
+- the `storage_objects` and `spectra` check constraints are added `NOT VALID` and then validated,
+  `main`'s shape;
+- reverting a background subtraction removes `BKGAUTO` and `BKGWHY` too;
+- the web stuck-shutter action can no longer turn a manual row into a web one;
+- clearing the last web mark reaches the local list when the database still has the observation's
+  manual rows (`--allow-empty` otherwise);
+- the deploy snapshot keeps a legacy stuck entry it cannot map.
+
+A bad master-background extension still stops an observation's deploy before anything is uploaded,
+as any unexpected error does.
 
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,
