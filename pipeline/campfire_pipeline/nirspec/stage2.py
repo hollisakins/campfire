@@ -985,9 +985,12 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
 
 def _run_spec2_single_call(rate_file, obs, main_metafile, pending, bkgslits_path, *,
                            root, set_stellarity, wavecorr_override, extended_override,
-                           msametfl, barshadow_override=None, stuck=frozenset()):
+                           msametfl, barshadow_override=None, stuck=frozenset(), done=None):
     """The single-call path: ``_plan_rounds`` then one ``_run_spec2_round`` each;
-    the background slitlets ride with the first round."""
+    the background slitlets ride with the first round. ``done`` (a list) collects the
+    source ids each round settles (a canonical or a ``_nodata`` marker) as it goes, so a
+    later round's failure leaves the caller knowing which are still to do."""
+    done = [] if done is None else done
     base = _rate_base(rate_file)
     rounds = _plan_rounds(main_metafile, pending,
                           split_fixed_slit=extended_override is not None)
@@ -999,13 +1002,14 @@ def _run_spec2_single_call(rate_file, obs, main_metafile, pending, bkgslits_path
             f'extended-wavelength override)')
     produced = []
     for index, rnd in enumerate(rounds, start=1):
-        got, _nodata = _run_spec2_round(
+        got, nodata = _run_spec2_round(
             rate_file, obs, main_metafile, rnd, index, root=root,
             set_stellarity=set_stellarity, wavecorr_override=wavecorr_override,
             extended_override=extended_override,
             bkgslits_path=bkgslits_path if index == 1 else None, msametfl=msametfl,
             barshadow_override=barshadow_override, stuck=stuck)
         produced += got
+        done.extend(list(got) + list(nodata))
     return produced
 
 
@@ -1020,10 +1024,12 @@ def _cleanup_round_files(base):
 
 def _run_spec2_per_source(rate_file, obs, main_metafile, source_ids, *, root,
                           set_stellarity, wavecorr_override, extended_override,
-                          stuck=frozenset()):
+                          stuck=frozenset(), msametfl=None):
     """One ``Spec2Pipeline`` call per source (cwd = workspace): the original
     stage-2a arrangement, kept as the fallback of the single call and as the
-    reference it is checked against. Returns the source ids produced."""
+    reference it is checked against. Returns the source ids produced. ``msametfl``:
+    the observation's metafile, written into each canonical in place of the one-source
+    copy the call ran on (``_finalize_canonical``; it is deleted here)."""
     from jwst.pipeline import Spec2Pipeline
     from jwst.assign_wcs.util import NoDataOnDetectorError
 
@@ -1066,7 +1072,7 @@ def _run_spec2_per_source(rate_file, obs, main_metafile, source_ids, *, root,
             _write_nodata_marker(prod_name)
 
         # Promote the cal product to the bare canonical file + stamp cards + CFP_CAL.
-        _finalize_canonical(prod_name, cards)
+        _finalize_canonical(prod_name, cards, msametfl=msametfl)
 
         if os.path.exists(asn_file):
             os.remove(asn_file)
@@ -1195,25 +1201,25 @@ def run_stage2a_single_rate(
             log('No source IDs to process, exiting...')
             return source_ids_processed
 
+        done = []
         try:
             source_ids_processed += _run_spec2_single_call(
                 rate_file, obs, main_metafile, pending,
                 bkgslits_path if bkg_needed else None,
                 msametfl=main_metafile.filename, barshadow_override=barshadow_override,
-                **common)
+                done=done, **common)
         except KeyboardInterrupt:
             raise
         except Exception as e:
             log(f'Single-call stage2a failed for {base}; falling back to one '
                 f'Spec2Pipeline call per source', e)
             _cleanup_round_files(base)
-            remaining = [
-                sid for sid in pending
-                if not (os.path.exists(f'{base}_{sid}.fits')
-                        or os.path.exists(_nodata_marker(f'{base}_{sid}')))
-            ]
-            source_ids_processed += _run_spec2_per_source(
-                rate_file, obs, main_metafile, remaining, **common)
+            # what the call's earlier rounds settled is kept; everything else pending is
+            # redone, a canonical of an earlier run included (it was pending for a reason)
+            got = [sid for sid in done if os.path.exists(f'{base}_{sid}.fits')]
+            remaining = [sid for sid in pending if sid not in set(done)]
+            source_ids_processed += got + _run_spec2_per_source(
+                rate_file, obs, main_metafile, remaining, msametfl=main_metafile.filename, **common)
 
     except KeyboardInterrupt:
         return source_ids_processed
@@ -1248,9 +1254,9 @@ def _finalize_canonical(prod_name, cards, msametfl=None):
     ``{prod_name}.fits`` (issue #212): rename in place, stamp the provenance
     ``cards`` and the ``CFP_CAL`` state keyword. Must run with cwd in the
     workspace (relative paths). Returns the canonical path, or None if the cal
-    product is absent (NoDataOnDetectorError). ``msametfl`` (the single-call
-    path) rewrites the ``MSAMETFL`` card to the observation's real metafile,
-    instead of the transient edited copy the call ran on."""
+    product is absent (NoDataOnDetectorError). ``msametfl`` rewrites the
+    ``MSAMETFL`` card to the observation's real metafile, instead of the transient
+    edited copy the call ran on (the single call's, or one source's in its fallback)."""
     from campfire_pipeline.common import cfp
     from campfire_pipeline.nirspec import canonical as C
     cal_out = f'{prod_name}_cal.fits'
@@ -1349,33 +1355,49 @@ def master_background_on(canonical_file):
     (``master_bkg.sky_for_slit``): ``(background, variance)``, or None when the exposure
     has no ``_mbkg.fits`` beside it."""
     from campfire_pipeline.nirspec import master_bkg as MB
-    from campfire_pipeline.nirspec.profile_contam import exposure_key
 
-    key = exposure_key(canonical_file)
-    path = os.path.join(os.path.dirname(os.path.abspath(canonical_file)), f'{key}_mbkg.fits')
-    if key is None or not os.path.exists(path):
+    path = _mbkg_path(canonical_file)
+    if path is None:
         return None
     d = MB.sky_for_slit(MB.load_product(path), canonical_file)
     return np.asarray(d['sky'], float), np.asarray(d['var'], float)
+
+
+def _mbkg_path(canonical_file):
+    """The ``_mbkg.fits`` of a canonical's exposure beside it, or None."""
+    from campfire_pipeline.nirspec.profile_contam import exposure_key
+    key = exposure_key(canonical_file)
+    path = os.path.join(os.path.dirname(os.path.abspath(canonical_file)), f'{key}_mbkg.fits')
+    return path if key is not None and os.path.exists(path) else None
+
+
+def _mbkg_stamp(canonical_file):
+    """Which master background a rectified view subtracted: the modification time of its
+    exposure's ``_mbkg.fits``, '' for none (``resample_single_exposure``)."""
+    path = _mbkg_path(canonical_file)
+    return '' if path is None else f'{os.path.getmtime(path):.6f}'
 
 
 def resample_single_exposure(file: Table, overwrite=False):
     """Rectify the canonical's calibrated frame with its master background subtracted
     (``master_background_on``; the frame as it is when the exposure has none) and cache
     the resampled view as ``S2D_{SCI,DQ,VAR_RNOISE}`` HDUs on it (issue #212; was a
-    standalone ``_s2d.fits``), ``MBKGSUB`` on ``S2D_SCI`` saying which. Consumed by the
-    nods plots. Runs after master background step 2 (``run_stage2a``)."""
+    standalone ``_s2d.fits``), ``MBKGSUB`` on ``S2D_SCI`` saying which and ``MBKGTIME``
+    which master background (``_mbkg_stamp``: a rewritten one redoes the view). Consumed
+    by the nods plots. Runs after master background step 2 (``run_stage2a``)."""
     from campfire_pipeline.nirspec import canonical as C
 
     canonical_file = file['path']
     workspace_dir = os.path.dirname(canonical_file)
-    background = master_background_on(canonical_file)
+    stamp = _mbkg_stamp(canonical_file)
 
     # Skip if the view is already cached on the canonical, made the same way.
     if not overwrite:
         with fits.open(canonical_file, memmap=False) as _h:
-            if 'S2D_SCI' in _h and bool(_h['S2D_SCI'].header.get('MBKGSUB', False)) == (background is not None):
+            if 'S2D_SCI' in _h and str(_h['S2D_SCI'].header.get('MBKGTIME', '')) == stamp \
+                    and bool(_h['S2D_SCI'].header.get('MBKGSUB', False)) == bool(stamp):
                 return
+    background = master_background_on(canonical_file)
 
     # Handle directory changes
     prev_cwd = os.getcwd()
@@ -1409,6 +1431,7 @@ def resample_single_exposure(file: Table, overwrite=False):
         for h in extras:
             if h.name == 'S2D_SCI':
                 h.header['MBKGSUB'] = (background is not None, 'master background subtracted before rectifying')
+                h.header['MBKGTIME'] = (stamp, 'mtime of the _mbkg.fits subtracted')
         resampled.close()
         model.close()
 
@@ -1536,6 +1559,9 @@ def nod_background_partners(cal_files, bkg_overrides=None):
     which must model exactly the frames that were subtracted.
 
     Returns a list, one entry per file: partner indices into ``cal_files``, or None.
+    Raises ValueError when an override names nods none of which is in this group (an
+    override is per root; a nod can be missing on one detector): which nods to use
+    instead is the override's author's choice.
     """
     nods = [_nod_number(f) for f in cal_files]
     out = []
@@ -1544,6 +1570,10 @@ def nod_background_partners(cal_files, bkg_overrides=None):
         if bkg_overrides is not None and str(nods[i]) in bkg_overrides:
             nods_to_use = bkg_overrides[str(nods[i])]
             partners = None if len(nods_to_use) == 0 else [j for j, n in enumerate(nods) if n in nods_to_use]
+            if partners == []:
+                raise ValueError(f'{os.path.basename(cal_files[i])}: the background override of nod {nods[i]} '
+                                 f'names nods {list(nods_to_use)}, none of which is in this group '
+                                 f'(nods {nods}); edit the override')
         out.append(partners)
     return out
 

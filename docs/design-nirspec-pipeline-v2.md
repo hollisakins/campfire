@@ -1006,6 +1006,36 @@ unknown of the neighborhood) wait for a memory measurement on a crowded field. T
 prediction's uncertainty (`DPRED_FLOOR`, 10 % of the predicted light) is assumed, not measured, and
 is an open decision.
 
+Slice 5 (2026-11-08), orchestration. The read-through and the code review led to these fixes:
+- the master-background spectrum's `PROF2D`, `CONTAM2D` and `CONTERR2D` were drizzled with the
+  nodded crf's masks and weights, its 2-D with the master-background frames' own. At a pixel
+  masked in only one of them (a hot pixel, no master background, a bad pixel in a nod partner)
+  the profile combined other exposures than the data it weights. They now take the frames' own;
+- when stage 2a's single Spec2 call failed, the fallback skipped a source whose canonical from an
+  earlier run was on disk, though it was queued to be redone, and did not report the sources the
+  call had finished. Its canonicals also kept a one-source metafile name (deleted right after),
+  which the same-slitlet check reads;
+- the same-slitlet check no longer reads a metafile for a standalone fixed-slit exposure (it has
+  none, and stage 2b stopped);
+- an override that names only nods missing from a detector's group now stops stage 2b with its
+  name, instead of a division by zero;
+- the PRISM neighbor scan found earlier runs' grating scans only in `_pf.fits`, which is deleted
+  after extraction; it now reads their `_spec.fits` too;
+- a grating redone with another grating's shape cross-checked its neighbor scan against that
+  grating instead of the PRISM product;
+- rewriting the proposed-overrides file dropped the comment (offset, statistic, date) of every
+  entry it kept;
+- the rectified view for the nods plots is redone when its master background is rewritten, not
+  only when one appears or disappears (each view is redone once, to record it);
+- smaller: the refit at the chain's shape and the pass-1 lookup are shared by the nodded and
+  master-background fits; the combined master-background spectrum takes its profile-fit columns
+  only when every group has them, as the nodded one does.
+
+Checked and left: the master-background fit weights its frames without the master background's own
+noise; it only sets the spectrum the profile is drawn at, and the reported errors come from the
+2-D, which includes it. The drizzle would subtract a background level set by jwst's sky matching;
+Spec3 does not run it for MSA spectra, so nothing is subtracted.
+
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,
 `test_dr_publish::test_cli_json_prompts_stay_off_stdout`) are fixed on `main`, not here. Still to do

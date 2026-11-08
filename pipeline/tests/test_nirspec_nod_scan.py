@@ -271,7 +271,7 @@ def test_proposals_file_and_figures(tmp_path, monkeypatch):
     monkeypatch.setattr('campfire_pipeline.nirspec.plots.plot_neighbour_proposal',
                         lambda path, sid, prods: (drawn.append((sid, [p for p, _ in prods])), open(path, 'w').close()))
     (tmp_path / 'nodded_background_overrides_proposed.toml').write_text(
-        f'[{ROOT}]\n    7 = {{1 = [2]}}\n    9 = {{2 = [3]}}\n')
+        f'[{ROOT}]\n    7 = {{1 = [2]}}\n    9 = {{2 = [3]}}   # Delta=+1.00 dchi2=90 prism=single 2026-11-01\n')
     stale = tmp_path / 'test_obs_11_neighbor.pdf'
     stale.write_text('old')
     results = [dict(source_id=7, product='o_prism_7', scan=dict(detected=True, delta=1.15, dchi2=120.0,
@@ -282,6 +282,8 @@ def test_proposals_file_and_figures(tmp_path, monkeypatch):
     d = toml.load(tmp_path / 'nodded_background_overrides_proposed.toml')
     assert d[ROOT]['7'] == {'1': [3], '3': [2]}           # replaced
     assert d[ROOT]['9'] == {'2': [3]}                     # not re-run: kept
+    text = (tmp_path / 'nodded_background_overrides_proposed.toml').read_text()
+    assert '9 = {2 = [3]}   # Delta=+1.00 dchi2=90 prism=single 2026-11-01' in text     # with its comment
     assert '11' not in d[ROOT]
     assert drawn == [(7, ['o_prism_7'])]
     assert (tmp_path / 'test_obs_7_neighbor.pdf').exists() and not stale.exists()

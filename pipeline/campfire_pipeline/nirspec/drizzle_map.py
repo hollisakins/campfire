@@ -16,7 +16,8 @@ stcal's ``Resample``), but with each exposure's pixel map computed once:
 2. ``DrizzleMap.drizzle``: one image per exposure through those maps. Arrays not given
    (DQ, ERR, VAR_*) are the crf's, so an image takes the data's masks and weights (an
    image on the crf's exposures: ``PROF2D``, ``CONTAM2D``, ``CONTERR2D``); a full set
-   (the master-background frames, ``mbkg_extraction``) is drizzled as data. Weights,
+   (the master-background frames, and the model images on their masks,
+   ``mbkg_extraction``) is drizzled as given. Weights,
    variance propagation and ``ERR`` follow stcal: each variance drizzled as its square
    root with the data's weight map, combined with the exposure-time (or read-noise)
    weights, ``ERR`` the square root of their sum.

@@ -258,6 +258,27 @@ def pass1_current(workspace, product):
     return p if os.path.exists(p) else pass1_path(workspace, product)
 
 
+def pass1_lookup(workspace, pass1_products):
+    """(pass1_for, why_missing) of a configuration's pass-1 products ({source id: product
+    name}): source id -> its current ``Pass1`` (``pass1_current``) or None, and source id
+    -> why it has none (``predict``)."""
+    names = pass1_products or {}
+
+    def pass1_for(sid):
+        name = names.get(int(sid))
+        path = pass1_current(workspace, name) if name else None
+        return Pass1.read(path) if path and os.path.exists(path) else None
+
+    def why_missing(sid):
+        name = names.get(int(sid))
+        if name is None:
+            # pass 1 runs for every source with a stage-3 science exposure
+            return ('no science exposure of it reaches stage 3 in this disperser (every nod '
+                    'excluded, e.g. by a background override), so it has no s2d either')
+        return missing_reason(workspace, name)
+    return pass1_for, why_missing
+
+
 PIXELS_PER_RESEL = 2.0     # NIRSpec resolving power is quoted for a 2-pixel resolution element
 
 

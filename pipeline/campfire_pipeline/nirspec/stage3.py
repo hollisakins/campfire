@@ -629,8 +629,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
             redo = []
             for prod, ref in sorted(plan.items()):
                 t = list(task_of[prod])
-                t[8], t[10] = ref, cleanup_crfs
-                redo.append(tuple(t))
+                t[10] = cleanup_crfs
+                redo.append(tuple(t) + (ref,))          # run_product's shape_product
             log(f"Profile fit: {len(redo)} grating products again with the shape of their source's grating that "
                 f"passed its gate")
             with TM.phase(f'products grating transfer ({len(redo)})'):
@@ -694,18 +694,21 @@ def log_fallbacks(results):
 
 def _prism_xdisp(obs, r, results, tol):
     """A PRISM product's neighbour against the grating scans of the same source (this
-    run's results, else their ``_pf.fits`` headers): 'single' when no grating product
-    exists, 'none' when the PRISM scan found nothing, 'agree' when a grating scan finds
-    the neighbour within ``tol`` of the same Delta, else 'disagree'."""
+    run's results, else the headers of earlier runs' products: their ``_pf.fits`` or,
+    once extracted, ``_spec.fits``): 'single' when no grating product exists, 'none' when
+    the PRISM scan found nothing, 'agree' when a grating scan finds the neighbour within
+    ``tol`` of the same Delta, else 'disagree'."""
     from campfire_pipeline.nirspec.profile_product import read_scan
     sid = r['source_id']
     others = [(g['scan'] or {}) for g in results if g['source_id'] == sid and not g.get('is_prism')]
     found = [(bool(s.get('detected')), float(s.get('delta', np.nan))) for s in others if s]
     if not others:
-        for p in glob.glob(os.path.join(obs.workspace_dir, f'{obs.name}_*_{sid}_pf.fits')):
-            if os.path.basename(p) == f"{r['product']}_pf.fits":
-                continue
-            s = read_scan(obs.workspace_dir, os.path.basename(p)[:-len('_pf.fits')])
+        products = set()
+        for sfx in ('_pf.fits', '_spec.fits'):
+            for p in glob.glob(os.path.join(obs.workspace_dir, f'{obs.name}_*_{sid}{sfx}')):
+                products.add(os.path.basename(p)[:-len(sfx)])
+        for prod in sorted(products - {r['product']}):
+            s = read_scan(obs.workspace_dir, prod)
             if s is not None:
                 found.append(s)
     if not found:
@@ -739,6 +742,26 @@ def _update_prism_scan_cards(obs, r, xdisp):
             r['scan']['candidate'] = True
         elif xdisp == 'disagree':
             XC.put(hd, 'NBRPROP', '')
+
+
+def _proposal_notes(path):
+    """The comment of each entry of a proposed-overrides file (``write_scan_proposals``
+    writes one per entry: offset, statistic, PRISM check, date): {(root, source id): note}.
+    TOML readers drop comments, so a rewrite keeps the others' this way."""
+    import re
+    out, root = {}, None
+    if not os.path.exists(path):
+        return out
+    with open(path) as f:
+        for line in f:
+            m = re.match(r'^\[(\S+)\]', line.strip())
+            if m:
+                root = m.group(1)
+                continue
+            m = re.match(r'^\s*(\d+)\s*=\s*\{.*\}\s*#\s*(.*?)\s*$', line)
+            if m and root:
+                out[(root, m.group(1))] = m.group(2)
+    return out
 
 
 def neighbour_figure_path(obs, source_id):
@@ -775,11 +798,13 @@ def write_scan_proposals(obs, results, run_sids, xdisp_tol=0.2):
             s['proposals'] = {}
     path = obs.proposed_bkg_override_file
     old = toml.load(path) if os.path.exists(path) else {}
+    notes = _proposal_notes(path)
     entries = {}
     for root, d in old.items():
         for sid, nods in d.items():
             if int(sid) not in run_sids:
-                entries.setdefault(root, {})[str(sid)] = ({str(k): list(v) for k, v in nods.items()}, '')
+                entries.setdefault(root, {})[str(sid)] = ({str(k): list(v) for k, v in nods.items()},
+                                                          notes.get((root, str(sid)), ''))
     for r in results:
         s = r.get('scan') or {}
         if not s.get('detected'):
@@ -1507,18 +1532,20 @@ def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, co
 
     keys = {'opt': ('fnu_opt', 'fnu_opt_err'), '3px': ('fnu_3px', 'fnu_3px_err'), '4px': ('fnu_4px', 'fnu_4px_err'),
             '5px': ('fnu_5px', 'fnu_5px_err')}
-    data, groups_pf, selfsub = None, [], []
+    names = []
     for spec_file in per_eg_spec_files:
         with fits.open(os.path.join(workspace_dir, spec_file)) as h:
             if 'SPEC1D_MBKG' not in h:
                 log(f'{product_name}: no master-background spectrum ({spec_file} has none)')
                 return [], {}
+            names.append(set(h['SPEC1D_MBKG'].columns.names))
+    if names and all('fnu_prof' in n for n in names):          # as the nodded combine (combine_per_eg_spectra)
+        keys['prof'] = ('fnu_prof', 'fnu_prof_err')
+    data = {k: {'wavelengths': [], 'fluxes': [], 'errors': []} for k in keys}
+    groups_pf, selfsub = [], []
+    for spec_file in per_eg_spec_files:
+        with fits.open(os.path.join(workspace_dir, spec_file)) as h:
             t = h['SPEC1D_MBKG'].data
-            names = set(t.columns.names)
-            if data is None:
-                if 'fnu_prof' in names:
-                    keys['prof'] = ('fnu_prof', 'fnu_prof_err')
-                data = {k: {'wavelengths': [], 'fluxes': [], 'errors': []} for k in keys}
             for k, (fc, ec) in keys.items():
                 data[k]['wavelengths'].append(np.array(t['wave']))
                 data[k]['fluxes'].append(np.array(t[fc]))

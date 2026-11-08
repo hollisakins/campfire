@@ -243,7 +243,8 @@ def test_master_background_two_d_through_the_nodded_map():
         frame['data'][9, 14] = 3.0 + 50 * frame['err'][9, 14]          # a hot pixel, in both
         frame['dq'] = np.zeros((DY, DX), np.uint32)
         frames[e['name']] = MX.Frame(frame, np.zeros((DY, DX), np.uint32), 'NRS1', (1, 1))
-    out = MX.drizzle_2d(d, frames)
+    inputs = MX.flagged_inputs(d, frames)
+    out = MX.drizzle_2d(d, inputs)
     hot = np.zeros((DY, DX), int)
     hot[9, 14] = MX.OUTLIER | PF.DO_NOT_USE
     outlier = [np.where((x.arrays['dq'] & MX.OUTLIER) > 0, MX.OUTLIER | PF.DO_NOT_USE, 0) | hot for x in d.exposures]
@@ -255,7 +256,15 @@ def test_master_background_two_d_through_the_nodded_map():
     assert not np.array_equal(out['wht'], clean['wht'])   # the flags took the pixels' weight
     np.testing.assert_allclose(out['data'][np.isfinite(out['data'])], 3.0, rtol=1e-6)
     with pytest.raises(ValueError):
-        MX.drizzle_2d(d, {exps[0]['name']: frames[exps[0]['name']]})
+        MX.flagged_inputs(d, {exps[0]['name']: frames[exps[0]['name']]})
+
+    # a model image takes the frames' masks and weights, not the nodded crf's: where the
+    # hot pixel is masked in the frames only, the two differ
+    model = {e['name']: np.full((DY, DX), float(k + 1)) for k, e in enumerate(exps)}
+    on_frames = MX.drizzle_on_frames(d, inputs, model)
+    want = d.drizzle({n: {**inputs[n], 'data': model[n].astype(np.float32)} for n in model})['data']
+    np.testing.assert_array_equal(on_frames, want)
+    assert not np.array_equal(on_frames, d.drizzle(model)['data'])
 
 
 def test_single_frame_exposures_from_the_nodded_load():

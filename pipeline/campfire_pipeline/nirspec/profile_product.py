@@ -1,5 +1,5 @@
 """
-One product's profile-fit extraction profile, extraction v2 (prototype).
+One product's profile-fit extraction profile, extraction v2.
 
 Per product (one source, one disperser), after Spec3 has written its crf:
 
@@ -76,14 +76,7 @@ def scan_input(exps, chain_result, maps, source_id):
     share = n1 / n0 if n0 else 0.0
     if n1 < MIN_FIT_PIXELS:
         return None, share
-    M0 = chain_result.model
-    M = PF.ProfileModel(ex, chromatic=M0.chromatic, priors=M0.priors, bounds=M0.bounds_cfg, c_prior=M0.c_prior,
-                        grid=M0.lam_grid)
-    M.pivot = M0.pivot                       # the chain's shape is defined at its own pivot
-    p = chain_result.params
-    shape = dict(centre_offset=p['centre'] - M0.c_prior, drift=p['drift'], width=p['width'],
-                 width_change=p['width_change'])
-    return PF.fit_fixed(model=M, shape=shape), share
+    return PF.refit_at_shape(chain_result, ex)[0], share
 
 
 def partner_overrides(exps, n_groups):
@@ -156,9 +149,10 @@ class Analysis:
 
 def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                     prism_product='', pass1_products=None, log=None, exps=None, pass1_for=None, maps=None,
-                    prism=None, stuck_keys=None):
+                    prism=None, stuck_keys=None, shape_product=None):
     """Load, predict and apply other slitlets' light, choose the shape, scan for a
-    same-slitlet neighbour. No files are written. ``stuck_keys``: as ``run_product``.
+    same-slitlet neighbour. No files are written. ``stuck_keys``, ``shape_product``: as
+    ``run_product``.
 
     For tests: ``exps`` (preloaded exposures, modified in place), ``pass1_for``
     (sid -> ``Pass1``), ``maps`` and ``prism`` (a ``PrismShape``) replace what is
@@ -185,24 +179,12 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
         if not maps:
             cstate = 'no_maps'
         else:
-            names = pass1_products or {}
-            if pass1_for is None:
-                def pass1_for(sid):
-                    name = names.get(int(sid))
-                    path = CT.pass1_current(workspace_dir, name) if name else None
-                    return CT.Pass1.read(path) if path and os.path.exists(path) else None
-
-            def why_missing(sid):
-                name = names.get(int(sid))
-                if name is None:
-                    # pass 1 runs for every source with a stage-3 science exposure
-                    return ('no science exposure of it reaches stage 3 in this disperser (every nod '
-                            'excluded, e.g. by a background override), so it has no s2d either')
-                return CT.missing_reason(workspace_dir, name)
+            read_pass1, why_missing = CT.pass1_lookup(workspace_dir, pass1_products)
+            pass1_for = pass1_for or read_pass1
             # the neighbours' light from the target's own joint solve (joint_first_pass), when
             # its pass 1 came from there: those members are left out of the prediction from
             # their own pass 1s and added from it
-            jl = _own_joint_light(workspace_dir, names, source_id)
+            jl = _own_joint_light(workspace_dir, pass1_products, source_id)
             members = {int(s) for s in jl['members']} if jl is not None else set()
             P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, why_missing=why_missing, exclude=members)
             if jl is not None:
@@ -223,8 +205,8 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
                 log(f'contamination masking left {npix} pixels; undone')
                 cstate, clean = f'{cstate}_undone', None
     TM.stop('contam', t_mark)
-    if prism is None and not is_prism and prism_product:
-        prism = CT.read_prism_shape(workspace_dir, prism_product)
+    if prism is None and not is_prism and (shape_product or prism_product):
+        prism = CT.read_prism_shape(workspace_dir, shape_product or prism_product)
     ratio = (lambda R: CT.contam_light_ratio(P, R, exps)) if P is not None and clean is not None else None
     with TM.step('chain'):
         C = PC.choose_shape(exps, cfg, is_prism, prism=prism, clean=clean, log=log, contam_ratio=ratio)
@@ -347,7 +329,8 @@ def shape_header(C, exps=None):
 
 
 def run_product(product_name, workspace_dir, groups, overrides, science, source_id, stage_config,
-                is_prism, prism_product='', pass1_products=None, cleanup_crfs=True, stuck_keys=None):
+                is_prism, prism_product='', pass1_products=None, cleanup_crfs=True, stuck_keys=None,
+                shape_product=None):
     """Build ``{product_name}_pf.fits`` and, with ``mbkg_spectrum``, the master-background
     files (module doc). Returns a dict summary (for the driver).
 
@@ -360,7 +343,10 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
 
     pass1_products : {source id: pass-1 product name} of the configuration (contamination).
     stuck_keys : the observation's stuck physical shutters by root, left out of the trace
-    maps (``profile_contam.trace_maps``)."""
+    maps (``profile_contam.trace_maps``).
+    shape_product : the product whose shape a grating takes, when not ``prism_product``
+    (``stage3.grating_transfer_plan``: another grating of the source); the neighbour
+    scan's cross-check stays with ``prism_product``."""
     from astropy.io import fits
     from campfire_pipeline.common.io import log
     from campfire_pipeline.nirspec import drizzle_map as DM
@@ -392,7 +378,8 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         try:
             A = analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                                 prism_product=prism_product, pass1_products=pass1_products,
-                                log=lambda m: log(f'{product_name}: {m}'), stuck_keys=stuck_keys)
+                                log=lambda m: log(f'{product_name}: {m}'), stuck_keys=stuck_keys,
+                                shape_product=shape_product)
         except PF.ProfileFitFallback as e:
             log(f"{product_name}: {e}; 3-pixel boxcar ({e.reason})")
             write_fallback(path, e.reason)

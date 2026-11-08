@@ -1,6 +1,8 @@
 """Catalogued neighbours of a source's slitlet (``slitlet_neighbours``): positions from the
 MSA plan, the distance rule, the brightness threshold and the layering of overrides. The
 listed layout is p1 slitlet 35: 634522 (primary) and 634547 share shutter columns 26-28."""
+import os
+
 import numpy as np
 from astropy.table import Table
 
@@ -177,3 +179,47 @@ def test_bkg_cards_match_reads_bkgnods_and_bkgwhy(tmp_path):
     assert _bkg_cards_match(paths, None, [], {}) == 'subtraction'         # stage 2b would now keep both
     assert _bkg_cards_match(paths, {'1': [3]}, ['1'], reasons) == 'subtraction'   # another partner
     assert _bkg_cards_match(paths, {'1': [2]}, ['1'], {'1': 'neighbor 9 at 0.050 of background'}) == 'cards'
+
+
+def test_an_exposure_without_an_msa_configuration_has_no_scene(tmp_path):
+    """A standalone fixed-slit canonical names no metafile: no slitlet, no neighbours
+    (stage 2b's same-slitlet check then leaves it alone)."""
+    from astropy.io import fits
+    p = tmp_path / 'jw00001001001_03101_00001_nrs1_7.fits'
+    fits.PrimaryHDU().writeto(p)
+    assert SN.scene_for(str(p), str(tmp_path), 7, {}) == (None, [])
+    fits.setval(p, 'MSAMETFL', value='N/A')
+    fits.setval(p, 'MSAMETID', value=1)
+    assert SN.scene_for(str(p), str(tmp_path), 7, {}) == (None, [])
+
+
+def test_an_override_naming_only_other_detectors_nods_stops_with_its_name():
+    import pytest
+    from campfire_pipeline.nirspec.stage2 import nod_background_partners
+    files = [f'jw00001001001_03101_{n:05d}_nrs2_7.fits' for n in (1, 2)]
+    assert nod_background_partners(files, {'1': [2, 3]}) == [[1], [0]]       # one of them here: used
+    assert nod_background_partners(files, {'1': []}) == [None, [0]]          # empty: excluded
+    with pytest.raises(ValueError, match='none of which is in this group'):
+        nod_background_partners(files, {'1': [3]})
+
+
+def test_the_rectified_view_is_redone_when_its_master_background_is_rewritten(tmp_path, monkeypatch):
+    import pytest
+    from astropy.io import fits
+    from campfire_pipeline.nirspec import stage2 as S2
+    canon = tmp_path / 'jw00001001001_03101_00001_nrs1_7.fits'
+    mbkg = tmp_path / 'jw00001001001_03101_00001_nrs1_mbkg.fits'
+    mbkg.write_text('x')
+    os.utime(mbkg, (1.7e9, 1.7e9))
+    s2d = fits.ImageHDU(name='S2D_SCI')
+    s2d.header['MBKGSUB'] = True
+    s2d.header['MBKGTIME'] = S2._mbkg_stamp(str(canon))
+    fits.HDUList([fits.PrimaryHDU(), s2d]).writeto(canon)
+
+    def rebuilt(path):
+        raise RuntimeError('rebuilt')
+    monkeypatch.setattr(S2, 'master_background_on', rebuilt)
+    S2.resample_single_exposure({'path': str(canon)})            # the same master background: kept
+    os.utime(mbkg, (1.8e9, 1.8e9))                               # step 2 wrote it again
+    with pytest.raises(RuntimeError, match='rebuilt'):
+        S2.resample_single_exposure({'path': str(canon)})

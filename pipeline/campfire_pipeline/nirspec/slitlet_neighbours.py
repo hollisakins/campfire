@@ -339,11 +339,15 @@ class Group:
 
 def scene_for(cal_file, msa_dir, source_id, cache):
     """``scene`` of a canonical's source in its MSA configuration (tables and fits cached
-    in ``cache`` per metafile and configuration)."""
+    in ``cache`` per metafile and configuration). (None, []) for an exposure without an
+    MSA configuration (a standalone fixed-slit exposure: no slitlet, no neighbours)."""
     from astropy.io import fits
     from astropy.table import Table
     h = fits.getheader(cal_file)
-    key = (os.path.join(msa_dir, str(h['MSAMETFL'])), int(h['MSAMETID']))
+    name = str(h.get('MSAMETFL', '')).strip()
+    if 'MSAMETID' not in h or name.upper() in ('', 'N/A', 'NONE'):
+        return None, []
+    key = (os.path.join(msa_dir, name), int(h['MSAMETID']))
     if key not in cache:
         shut = Table.read(key[0], hdu='SHUTTER_INFO')
         try:

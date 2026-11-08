@@ -275,3 +275,47 @@ def test_split_keeps_a_primary_less_slitlet_as_its_sources_product(tmp_path, mon
     with fits.open(bkg_path) as h:
         assert h['PRIMARY'].header['CFNBKGSL'] == 1
         assert h[('SCI', 1)].header['SRCNAME'] == '7076_BKG40'
+
+
+def test_a_failed_single_call_redoes_what_it_did_not_settle(tmp_path, monkeypatch):
+    """The single call settles source 1, then fails. The fallback redoes source 2 although
+    a canonical of an earlier run is on disk (it was pending: in ``rerun_source_ids``), with
+    the observation's metafile for its MSAMETFL, and returns both."""
+    import campfire_pipeline.config as cfg
+    rate = tmp_path / 'jw01_03101_00001_nrs1_rate.fits'
+    hdu = fits.PrimaryHDU()
+    hdu.header.update(MSAMETFL='orig_msa.fits', EXP_TYPE='NRS_MSASPEC', GRATING='PRISM')
+    hdu.writeto(rate)
+
+    class Meta:
+        filename = 'orig_msa.fits'
+        unique_source_ids = np.array([1, 2])
+
+    class Obs:
+        workspace_dir = str(tmp_path)
+        bkgslits_dir = str(tmp_path)
+
+    (tmp_path / 'jw01_03101_00001_nrs1_bkgslits.fits').write_text('done')
+    (tmp_path / 'jw01_03101_00001_nrs1_2.fits').write_text('an earlier run')
+    monkeypatch.setattr(MetaFile, 'load_for_rate_file', staticmethod(lambda path: Meta()))
+    monkeypatch.setattr(stage2, '_stuck_shutters', lambda obs, root, mf: frozenset())
+    monkeypatch.setattr(cfg, 'get_empirical_barshadow_path', lambda grating: 'table.fits')
+    monkeypatch.setattr(stage2, 'log', lambda *a, **k: None)
+
+    def single(rate_file, obs, mf, pending, bkg, *, done, **kw):
+        open('jw01_03101_00001_nrs1_1.fits', 'w').close()
+        done.append(1)
+        raise RuntimeError('round 2 failed')
+    calls = []
+    monkeypatch.setattr(stage2, '_run_spec2_single_call', single)
+    monkeypatch.setattr(stage2, '_run_spec2_per_source',
+                        lambda rate_file, obs, mf, sids, msametfl=None, **kw: calls.append((list(sids), msametfl))
+                        or list(sids))
+    cwd = os.getcwd()
+    try:
+        got = stage2.run_stage2a_single_rate(str(rate), Obs(), rerun_source_ids=frozenset({2}))
+    finally:
+        os.chdir(cwd)
+    assert calls == [([2], 'orig_msa.fits')]
+    assert sorted(got) == [1, 2]
+    assert fits.getheader(rate)['MSAMETFL'] == 'orig_msa.fits'

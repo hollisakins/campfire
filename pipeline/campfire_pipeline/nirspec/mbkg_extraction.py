@@ -25,7 +25,9 @@ per product, built from the nodded Spec3 crf), before any 1-D extraction:
    neighbors in the target's own slitlet included (``include``): no background exposure
    is dropped for them here. Light through failed-open shutters on the trace is solved
    with the source and added to it (``failed_open``; card ``NFOPEN``).
-   ``PROF2D`` / ``CONTAM2D`` / ``CONTERR2D`` are drizzled through the same maps into
+   ``PROF2D`` / ``CONTAM2D`` / ``CONTERR2D`` are drizzled through the same maps with the
+   frames' own masks and weights (``drizzle_on_frames``: the nodded crf's would combine
+   other exposures than the 2-D's at a pixel masked in only one of them) into
    ``{product}_mbkg_pf.fits``.
 4. stage 3 extracts it exactly like the nodded product (``stage3.extract_columns``) into
    ``SPEC1D_MBKG``, ``SCI_MBKG``, ``ERR_MBKG`` and ``PROF1D_MBKG`` of the same
@@ -228,16 +230,36 @@ def outlier_flags(frame, crf_dq, hot):
     return out
 
 
-def drizzle_2d(dmap, frames):
-    """The master-background 2-D spectrum (module doc, 2): ``frames`` ({name: Frame},
-    every exposure of the map) drizzled as data through ``dmap`` with their outlier flags
-    (``outlier_flags``). Returns dict(data, err, wht, ...) (``DrizzleMap.drizzle``)."""
+def flagged_inputs(dmap, frames):
+    """The drizzle inputs of the master-background frames: ``frames`` ({name: Frame},
+    every exposure of the map) with their outlier flags (``outlier_flags``), {name: arrays}."""
     missing = [x.name for x in dmap.exposures if x.name not in frames]
     if missing:
         raise ValueError(f'master background: no frame for {missing}')
     hot = hot_pixels({x.name: frames[x.name] for x in dmap.exposures})
-    inputs = {x.name: outlier_flags(frames[x.name], x.arrays['dq'], hot[x.name]) for x in dmap.exposures}
+    return {x.name: outlier_flags(frames[x.name], x.arrays['dq'], hot[x.name]) for x in dmap.exposures}
+
+
+def drizzle_2d(dmap, inputs):
+    """The master-background 2-D spectrum (module doc, 2): the frames' ``inputs``
+    (``flagged_inputs``) drizzled as data through ``dmap``. Returns dict(data, err, wht,
+    ...) (``DrizzleMap.drizzle``)."""
     return dmap.drizzle(inputs, variances=True)
+
+
+def drizzle_on_frames(dmap, inputs, images):
+    """Model images ({name: image on the crf cutout}; a name not given: zeros) drizzled
+    with the master-background frames' masks and weights (``inputs``), as their 2-D was
+    (``drizzle_2d``), so a profile and the data it weights combine the same exposures at
+    every pixel. Returns the 2-D image."""
+    out = {}
+    for x in dmap.exposures:
+        img = images.get(x.name)
+        a = dict(inputs[x.name])
+        shape = np.shape(a['data'])
+        a['data'] = np.nan_to_num(np.zeros(shape) if img is None else np.asarray(img, float)).astype(np.float32)
+        out[x.name] = a
+    return dmap.drizzle(out)['data']
 
 
 def write_2d_file(path, d2):
@@ -251,16 +273,17 @@ def write_2d_file(path, d2):
 def write_2d(product_name, workspace, source_id, dmap, log=None):
     """Steps 1-2 of the module doc for a product: its master-background 2-D through
     ``dmap`` (the frames of the map's exposures, the canonicals in ``workspace``).
-    Returns the frames ({name: Frame}), or None (logged) when an exposure has
-    no master background (no master-background spectrum)."""
+    Returns (frames {name: Frame}, their drizzle inputs ``flagged_inputs``), or None
+    (logged) when an exposure has no master background (no master-background spectrum)."""
     log = log or (lambda *a: None)
     try:
         frames = frames_for([os.path.join(workspace, n) for n in dmap.names])
     except NoMasterBackground as e:
         log(f'{product_name}: no master-background spectrum ({e})')
         return None
-    write_2d_file(product_paths(workspace, product_name, source_id)['s2d'], drizzle_2d(dmap, frames))
-    return frames
+    inputs = flagged_inputs(dmap, frames)
+    write_2d_file(product_paths(workspace, product_name, source_id)['s2d'], drizzle_2d(dmap, inputs))
+    return frames, inputs
 
 
 def cleanup(workspace, product_name):
@@ -437,45 +460,33 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
     log = log or (lambda *a: None)
     paths = product_paths(workspace, product_name, source_id)
     science = set(science)
-    frames = write_2d(product_name, workspace, source_id, dmap, log=log)
-    if frames is None:
+    made = write_2d(product_name, workspace, source_id, dmap, log=log)
+    if made is None:
         return None
+    frames, inputs = made
     try:
         mexps = single_frame_exposures([e for e in exps if e.name in science], frames)
         if not mexps:
             raise PF.NoUsablePixels('master background: no science exposure')
-        M0 = chain.result.model
-        M = PF.ProfileModel(mexps, chromatic=M0.chromatic, priors=M0.priors, bounds=M0.bounds_cfg,
-                            c_prior=M0.c_prior, grid=M0.lam_grid)
-        M.pivot = M0.pivot                    # the chain's shape is defined at its own pivot
-        p = chain.result.params
-        shape = dict(centre_offset=p['centre'] - M0.c_prior, drift=p['drift'], width=p['width'],
-                     width_change=p['width_change'])
-        R = PF.fit_fixed(model=M, shape=shape)
+        R, shape = PF.refit_at_shape(chain.result, mexps)
     except PF.ProfileFitFallback as e:
         log(f'{product_name}: master-background fit: {e}; its fnu is the 3-pixel boxcar ({e.reason})')
         PP.write_fallback(paths['pf'], e.reason)
         return paths['pf']
 
+    # every model image on the frames' own masks and weights, as their 2-D (drizzle_on_frames)
+    M = R.model
+    by_name = {e.name: k for k, e in enumerate(M.exps)}
     hdus = []
-    prof = PF.drizzle_frames(R, dmap, unit=True)
+    prof = drizzle_on_frames(dmap, inputs, {n: PF.model_frame(R, by_name[n], unit=True) for n in dmap.names
+                                            if n in by_name})
     hdus.append(fits.ImageHDU(np.asarray(prof, float) / 1e12, name='PROF2D'))
     fo_cards = (0, 0.0)
     fl = PP.stage_flags(stage_config)
     if fl['contam']:
         maps = CT.maps_for_exposures(workspace, mexps, stuck_keys)
         if maps:
-            pass1_products = pass1_products or {}
-
-            def pass1_for(sid):
-                name = pass1_products.get(int(sid))
-                path = CT.pass1_current(workspace, name) if name else None
-                return CT.Pass1.read(path) if path and os.path.exists(path) else None
-
-            def why_missing(sid):
-                name = pass1_products.get(int(sid))
-                return CT.missing_reason(workspace, name) if name else 'no pass 1 in this disperser'
-
+            pass1_for, why_missing = CT.pass1_lookup(workspace, pass1_products)
             near = same_slitlet_sources(exps[0].path, workspace, source_id)
             P = CT.predict(mexps, source_id, maps, pass1_for, workspace, why_missing=why_missing, include=near)
             s1 = CT.pass1_settings(stage_config)
@@ -491,8 +502,7 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
                     f'their light up to {fo_cards[1]:.1f} x the noise on the main shutter')
             for what, name, unit in (('pred', 'CONTAM2D', 'Predicted other-source light, as SCI'),
                                      ('dpred', 'CONTERR2D', 'Uncertainty of CONTAM2D (systematic), as SCI')):
-                live = CT.live_frames(mexps, P, what=what)
-                d2 = dmap.drizzle({n: live.get(n) for n in dmap.names})['data']
+                d2 = drizzle_on_frames(dmap, inputs, CT.live_frames(mexps, P, what=what))
                 h = fits.ImageHDU(np.asarray(d2, float), name=name)
                 h.header['BUNIT'] = ('MJy', unit)
                 hdus.append(h)

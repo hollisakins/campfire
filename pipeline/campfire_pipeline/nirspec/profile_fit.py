@@ -1281,6 +1281,21 @@ def boxcar_factor(result, lam):
     return out / n if n else np.full(lam.shape, np.nan)
 
 
+def refit_at_shape(result, exps):
+    """The spectrum of ``exps`` at the shape a fit chose (``result``, e.g. a shape chain's
+    result: its model's priors, bounds, grid, prior centre and pivot, the shape defined at
+    that pivot): the same source on other data (the scan's pixels, the frames minus the
+    master background). Returns (FitResult, shape dict as ``fit_fixed`` takes it)."""
+    M0 = result.model
+    M = ProfileModel(exps, chromatic=M0.chromatic, priors=M0.priors, bounds=M0.bounds_cfg, c_prior=M0.c_prior,
+                     grid=M0.lam_grid)
+    M.pivot = M0.pivot
+    p = result.params
+    shape = dict(centre_offset=p['centre'] - M0.c_prior, drift=p['drift'], width=p['width'],
+                 width_change=p['width_change'])
+    return fit_fixed(model=M, shape=shape), shape
+
+
 def drizzle_frames(result, dmap, unit=False):
     """Drizzle model frames exactly as stage 3 drizzled the data: through the product's
     pixel maps (``drizzle_map.DrizzleMap``, from Spec3's outlier-flagged crf), so the
