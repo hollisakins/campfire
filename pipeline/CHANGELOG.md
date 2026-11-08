@@ -64,7 +64,7 @@ Release procedure: edit the `## Unreleased` section below, then run
     clipped mean square of the residuals) takes its own fit. An own fit with its width or drift on
     a bound falls back; one with only its center on a bound is kept when the fallback fits clearly
     worse. A grating with neither its own nor a PRISM shape takes the shape of the source's grating
-    that passed its gate (`PFSHAPE` `grating`; on spurs_gds the 16-84 % ranges of the line-flux
+    that passed its gate (`SHAPE` `grating`; on spurs_gds the 16-84 % ranges of the line-flux
     ratios between gratings went from 0.84-1.43 to 0.90-1.13). Failing all of these it takes the
     default shape (width 0.15 slit units, 0.16 arcsec FWHM, at the planned position). Named failures fall back to the
     3-pixel boxcar (`EXTRACT = boxcar3`); any other error fails the stage. `fnu` is never
@@ -78,10 +78,10 @@ Release procedure: edit the `## Unreleased` section below, then run
     at different positions in its shutter (93 NGC 2506 stars) scatters by 6-12 % in five bands
     from 0.7 to 5 um, with no trend with the position along the slit. Each nod sits at its own planned position (`NOD_OFFSET_LAW`). Each observation's bar
     offset is measured from the background in its empty shutters (`bar_offset.py`,
-    `bar_offset = "measure"`, `PFBAROFF`). Tables are built on first use and cached under
+    `bar_offset = "measure"`, `BAROFF`). Tables are built on first use and cached under
     `$CAMPFIRE_ROOT/cache/optics`.
   - **The reported flux of an extended source is its light in 0.8 arcsec.** `fnu_prof` (and
-    `fnu`) is the fitted source's light inside a circle 0.8 arcsec across (`PFAPER`), not the light
+    `fnu`) is the fitted source's light inside a circle 0.8 arcsec across (`FLUXAPER`), not the light
     in the shutter on jwst's point-source calibration. Point sources read the same either way;
     extended ones read higher. On `ember_cosmos_p1` PRISM sources against COSMOS photometry, in six bins of fitted
     width, the reported flux is 0.68-1.03 of the catalog's total flux, where the light in the shutter
@@ -95,7 +95,7 @@ Release procedure: edit the `## Unreleased` section below, then run
     spectra over per-exposure trace maps is subtracted before the shape fit, and the pixels where
     the prediction is itself uncertain are left out. In the 1-D spectrum it is reported as
     `fnu_contam` and never subtracted. A neighbor whose own fit fell back is predicted from its
-    3-pixel boxcar (`PFCBOX`). One that the maps put on a trace with no stage-3 s2d is an error
+    3-pixel boxcar (`CONTBOX`). One that the maps put on a trace with no stage-3 s2d is an error
     (`MissingContaminant`).
   - *Same-slitlet neighbors.* Stage 2b leaves out a background exposure that puts a cataloged
     source (the MSA plan's `SOURCE_INFO`, placed at every dither point) within 0.75 slit units of
@@ -146,18 +146,25 @@ Release procedure: edit the `## Unreleased` section below, then run
   - *Calibration boundary with jwst* (`crds_refs.py`, `data/nirspec_calibrations.toml`). One module
     reads jwst's path-loss and bar-shadow references. One file lists each shipped calibration with
     its hash, version, inputs and the references it was derived against. `slit_loss_y` /
-    `slit_loss_x` hand either direction of the path loss back to jwst (`PFSLY`, `PFSLX`,
-    `PFPLREF`). `cfpipe nirspec crds-compare` compares a CRDS context's references with the
+    `slit_loss_x` hand either direction of the path loss back to jwst (`SLOSSY`, `SLOSSX`).
+    `cfpipe nirspec crds-compare` compares a CRDS context's references with the
     calibrations; run it with every `CRDS_CONTEXT` bump.
   - *Outputs.* New `SPEC1D` columns `fnu_opt`, `fnu_prof`, `fnu_contam` (with errors and `flam_*`);
     `fnu_err` is statistical only. `fnu_prof` and `fnu_contam` are extracted from the combined 2-D
     spectrum with the fitted model as the weights. New extensions `PROF2D` and `CONTAM2D` (every
     2-D image drizzled once per product through its pixel maps) and the master-background ones
     above. The `EXPOSURES` table gains `bkg_why`.
-    New cards `EXTRACT`/`EXTRWHY`, `CONTSTAT`, and the `PF*` cards of the fit, its shape, the
-    contamination and the neighbor scan. Readers find every `_spec.fits` extension by name. Gone:
-    `_mbkgr.fits` (kind `nirspec_mbkgr`), the `tracemaps/` folder, the PSF and shutter tables, the
-    `PFSHUT` card. The `_pf.fits` intermediate is deleted once the `_spec.fits` is written.
+    New cards `EXTRACT`/`EXTRWHY`, `CONTSTAT`, and the extraction's cards, named by what they
+    hold and listed with their descriptions in `nirspec/extraction_cards.py` (the one list the
+    writers, the stage-3 copy and the docs' FITS reference follow): versions and calibration
+    (`EXTRVER`, `OPTICVER`, `FLUXAPER`, `SLOSSY`/`SLOSSX`, `BAROFF`), the profile (`SHAPE`,
+    `SHAPEWHY`, `SHAPESRC`, `PA_V3`, `DETSNR`, `SRC*`), other sources' light (`NCONTAM`,
+    `CONTBOX`, `CONTFRAC`, `CONTSIG`, `CONTNSEP`, `SELFSUB`, `NFOPEN`) and the neighbor scan
+    (`NBR*`). A card that does not apply is left out, not written as -999. The fit's internal
+    diagnostics (the candidate χ², gate noise, pair and failed-open fractions, scan statistics,
+    per-exposure offsets) are not written. Readers find every `_spec.fits` extension by name.
+    Gone: `_mbkgr.fits` (kind `nirspec_mbkgr`), the `tracemaps/` folder, the PSF and shutter
+    tables. The `_pf.fits` intermediate is deleted once the `_spec.fits` is written.
   - *Configuration.* New in `[nirspec.stage3]`: the shape chain and its gates, priors and bounds,
     `bar_offset`, `slit_loss_y`/`_x`, the contamination keys, `mbkg_spectrum`, and the neighbor scan.
     New in `[nirspec.stage2]`: `slitlet_neighbor_*` and `master_bkg_plot`; `detect_stuck_shutters`

@@ -202,7 +202,7 @@
     scan_dchi2 = 80.0                        # proposal threshold on chi2 drop / noise scale (sign-randomized
                                              # null, ember_cosmos_p14 PRISM: 0.23 % of 438 draws above 60-100,
                                              # none above 120)
-    scan_flag_dchi2 = 1500.0                 # product flag PFNBR only above this (the negative-amplitude
+    scan_flag_dchi2 = 1500.0                 # product flag NBRFLAG only above this (the negative-amplitude
     scan_flag_dchi2_low = 500.0              # statistic of ember_cosmos_p14 and p9: 1.4 % above), or above _low
     scan_flag_null_ratio = 5.0               # and _null_ratio x the negative-amplitude statistic (1.7-2.1 % of
                                              # null draws pass), or the other disperser agrees

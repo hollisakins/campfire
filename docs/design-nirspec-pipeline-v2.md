@@ -420,7 +420,7 @@ from the same drizzled data as the other extractions.
 
 ### 6.3 The optics model of the MSA
 
-`nirspec/optics.py`, model file `data/nirspec_optics.json` `2026.11-r8`, header card `PFOPTIC`. One
+`nirspec/optics.py`, model file `data/nirspec_optics.json` `2026.11-r8`, header card `OPTICVER`. One
 model for every disperser: the light that reaches the MSA does not depend on the disperser.
 
 **Along the slit**, a one-dimensional Fraunhofer model:
@@ -515,7 +515,7 @@ none.
 position (jwst's SRCYPOS, which only undoes jwst's own path loss, stays as it is); the light past
 the cutouts takes the same frame. The value is kept in the workspace's `bar_offset.json` (measured
 again when the canonicals, `MEASURE_VERSION` or the optics model change) and recorded in
-`PFBAROFF`. `bar_offset = "off"` turns it off.
+`BAROFF`. `bar_offset = "off"` turns it off.
 
 **Evidence.** Moving the data by +0.020 pitch is recovered as +0.022 / +0.023. Survey observations
 range from -0.015 to +0.0005 against the model, with the two edge halves agreeing to 0.001 and
@@ -529,7 +529,7 @@ sources move by under 0.3 %, default-shape sources near a bar by a median +0.2 t
 
 `fnu_prof` (and `fnu`) is the fitted source's light inside a circle 0.8 arcsec across (1.5 shutter
 pitches), centered on it: the round Gaussian of the fitted width before the PSF
-(`profile_fit.REPORT_APERTURE`, card `PFAPER`). For a point source this is all of its light. The
+(`profile_fit.REPORT_APERTURE`, card `FLUXAPER`). For a point source this is all of its light. The
 aperture bounds how far a wide source is extrapolated past what the shutter saw. The fit's spectrum
 is the source's total light (along the slit from the model at the fitted width, along the
 dispersion as in 6.3); `reported_factor` scales it to the aperture.
@@ -578,9 +578,9 @@ The fit's detection S/N is measured on the clipped mean square of the residuals.
 5. **Another grating's shape**, after every grating has run (`profile_fit_grating_transfer`,
    `stage3.grating_transfer_plan`): a grating product that fell to the default and had no PRISM
    shape is redone with the center offset and width of the source's grating that took its own fit
-   (the highest detection S/N), held over wavelength. `PFSHAPE` = `grating`, card `PFXFER`.
+   (the highest detection S/N), held over wavelength. `SHAPE` = `grating`, `SHAPESRC` names the product.
 
-`PFSHAPE` (`own`, `prism`, `grating`, `default`), `PFREASON`, `PFCHAIN`, `PFGATE` record the choice.
+`SHAPE` (`own`, `prism`, `grating`, `default`), `SHAPEWHY` and `DETSNR` record the choice.
 
 **Why a chain.** Faint sources do not constrain their own shape, and a joint solve with wrong
 shapes moves light between neighbors (6.7). The success metric is delivered S/N, with line width and
@@ -615,14 +615,14 @@ members' light on the target's own pixels, which the product reads. Targets are 
 consecutive neighborhoods share members (`contam_joint_cache` members kept per worker).
 
 **Not separable.** A wavelength where the target's spectrum correlates with a member's below -0.9
-is not separable; `fnu_contam` is NaN there (`PFNOTSEP`, the fraction). The two are not determined
+is not separable; `fnu_contam` is NaN there (`CONTNSEP`, the fraction). The two are not determined
 by the data at those wavelengths.
 
 **The prediction** (`profile_contam.py`). Other slitlets' light is predicted from the neighbors'
 first-pass spectra over the trace maps. It is subtracted before the shape fit, and the pixels where
 the prediction's own uncertainty exceeds `contam_mask_kappa` times the noise are left out of the
 fit. In the 1-D spectrum it is reported as `fnu_contam` and never subtracted from `fnu`. A neighbor
-whose own fit fell back is predicted from its 3-pixel boxcar, smoothed (`PFCBOX`). A trace the maps
+whose own fit fell back is predicted from its 3-pixel boxcar, smoothed (`CONTBOX`). A trace the maps
 name with no stage-3 s2d is an error (`MissingContaminant`): a contaminant without a spectrum means
 something is wrong. `fnu_contam_err` is the error with the other members held, a lower bound, plus a
 floor of 0.1 of the prediction (`DPRED_FLOOR`, an assumption).
@@ -667,7 +667,7 @@ pixels it reports only. Its proposals are never applied. They go to
 proposed source gets a figure `<obs>_<id>_neighbor.pdf` laid out like the bkgsub plots (per nod
 the rectified difference with the current and the proposed background exposures, each with its
 profile along the slit; the spectrum with each choice), and stage 3 prints the command that reruns
-those sources. A proposal stage 2b already applied for a cataloged neighbor is left out. `PFNBR*`
+those sources. A proposal stage 2b already applied for a cataloged neighbor is left out. The `NBR*`
 cards record the scan. On p1 924883 (PRISM) and spurs_gds 369 (G140M) a proposal raised the S/N
 from 10.2 to 11.5 and from 20.4 to 22.3.
 
@@ -684,7 +684,7 @@ so the two spectra differ only in how the background was removed.
 - Failed-open shutters on the source's trace (`failed_open.py`): per exposure and shutter, a
   spectrum along detector columns times a flat profile over the shutter, solved with the source on
   the frames minus the other sources' predicted light, and added to the master-background
-  spectrum's contamination and its error (cards `PFNFOPEN`, `PFFOSIG`). On p1 109 of 681 products have failed-open pixels on the source's
+  spectrum's contamination and its error (card `NFOPEN`). On p1 109 of 681 products have failed-open pixels on the source's
   shutter. The nodded spectrum is unchanged: the background behind a failed-open shutter cancels in
   the nod difference.
 - Outlier flags: the nodded Spec3's, the pixels without a master background, and a hot-pixel mask.
@@ -699,7 +699,7 @@ so the two spectra differ only in how the background was removed.
   spectrum is likely better, with the first of: `no_clear_background` (every background exposure of
   an exposure holds a bright neighbor), `single_exposure` (an exposure with no background exposure),
   `extended` (the nod subtraction removes more than `mbkg_extended_frac` = 0.10 of the source's own
-  light in its own shutter, `PFSELFSB`).
+  light in its own shutter, `SELFSUB`).
 - The 1-D combine of several exposure groups carries it as it carries the nodded columns.
 - The science hash leaves out `*_MBKG` extensions and `MBKG*` cards, so this spectrum never marks
   line fits stale.
@@ -742,8 +742,8 @@ reference from STScI can be taken up by a setting and measured by a command.
   - `slit_loss_x = "corrected"` (jwst's along the dispersion times `x_correction`) or `"jwst"`;
   - `bar_offset = "measure"` or `"off"`.
 
-  The products record `PFSLY`, `PFSLX`, `PFBAROFF` and `PFPLREF` (the path-loss reference the model
-  starts from). The empirical bar-shadow tables have no switch.
+  The products record `SLOSSY`, `SLOSSX` and `BAROFF`; the path-loss reference the model starts from
+  follows from `CRDS_CTX`. The empirical bar-shadow tables have no switch.
 - **A manifest.** `data/nirspec_calibrations.toml` lists each shipped calibration (the optics model,
   the four bar-shadow tables, the bar offset): file and sha256, version, what it replaces, its
   inputs, the CRDS context it was fitted on, the references it depends on, its switch, code, tests
@@ -773,12 +773,15 @@ name.
   The prediction's 2-D error (`CONTERR2D`) lives only in the `_pf.fits` intermediate and is
   reduced to `fnu_contam_err`. No 2-D image is stored twice.
 - Master-background spectrum: `SPEC1D_MBKG`, `SCI_MBKG`, `ERR_MBKG`, `PROF1D_MBKG`.
-- Cards: `EXTRACT` / `EXTRWHY`, `CONTSTAT`; the fit (`PFVER`, `PFOPTIC`, `PFAPER`, `PFSHAPE`,
-  `PFREASON`, `PFCHAIN`, `PFGATE`, the shape parameters `PFCEN`, `PFWIDTH`, `PFDRIFT`, ...); the
-  calibration boundary (`PFBAROFF`, `PFSLY`, `PFSLX`, `PFPLREF`); contamination (`PFNCONT`,
-  `PFNOTSEP`, `PFCBOX`, `PFDOMIN`, ...); the neighbor scan (`PFNBR*`); the master-background
-  spectrum (`NEXP`, `NEXPBKG`, `MBKGPREF`, `MBKGWHY`, `MBKGNEXP`). The FITS reference page lists
-  them all.
+- Cards: `EXTRACT` / `EXTRWHY`, `CONTSTAT`; the extraction's cards, named by what they hold and
+  listed with their descriptions in `nirspec/extraction_cards.py`, the one list the writers, the
+  stage-3 copy and the FITS reference follow: versions and calibration (`EXTRVER`, `OPTICVER`,
+  `FLUXAPER`, `SLOSSY`, `SLOSSX`, `BAROFF`), the profile (`SHAPE`, `SHAPEWHY`, `SHAPESRC`, `PA_V3`,
+  `DETSNR`, `SRCCEN`, `SRCWIDTH`, ...), other sources' light (`NCONTAM`, `CONTFRAC`, `CONTSIG`,
+  `CONTNSEP`, `CONTBOX`, `SELFSUB`, `NFOPEN`) and the neighbor scan (`NBR*`); the master-background
+  spectrum (`NEXP`, `NEXPBKG`, `MBKGPREF`, `MBKGWHY`, `MBKGNEXP`). A card that does not apply is
+  left out. The fit's internal diagnostics (candidate chi2, gate noise, scan statistics,
+  per-exposure offsets) are not written (user, 2026-11-08).
 - The `EXPOSURES` table gains `bkg_why`, beside the existing `bkg_nods`.
 
 **Per exposure.** `<base>_rate.fits` carries step 1's tables and the trace map;
@@ -789,7 +792,7 @@ name.
 `mbkg_reason`, `n_exp` and `n_exp_bkg`. The stuck list's database shape is in section 4.3.
 
 **Gone.** `_mbkgr.fits` (kind `nirspec_mbkgr`), the `tracemaps/` folder, the PSF and shutter tables
-and the `PFSHUT` card. The `_pf.fits` intermediate is deleted once the `_spec.fits` is written.
+and the shutter-table card. The `_pf.fits` intermediate is deleted once the `_spec.fits` is written.
 
 ---
 
@@ -963,7 +966,7 @@ these fixes:
   secondary sources (slice 2);
 - the shape-independent part of the throughput is computed once per exposure instead of at every
   step of the fit;
-- `PFCHROM` says whether the shape that was used varies with wavelength (it was always true for a
+- `SRCCHROM` (then `PFCHROM`) says whether the shape that was used varies with wavelength (it was always true for a
   held shape);
 - the optics calibration keeps the base model's kernel for a detector with no stars (it wrote an
   empty kernel that broke every later run), applies its last clipping to `x_loss` and refuses a
@@ -1131,7 +1134,7 @@ of each is in git history.
   archive (user, 2026-10-30).
 - *Smoothness priors on other members*: would push a contaminant's lines into the target.
 - *Masking and dominance rules* in the shape chain (`contam_mode`, `contam_dominance*`): removed in the
-  audit; the ratio is recorded in `PFDOMIN`.
+  audit; the ratio is computed but not written.
 - *The jwst-built trace maps and the `tracemaps/` folder*: replaced by the maps step 1 stores. On p1
   the stored maps equal the last `tracemaps/` copies in all 12 exposures, and they fix stuck source
   shutters that the jwst build kept lit.

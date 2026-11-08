@@ -887,9 +887,9 @@ def _write_bkgslits(parent, bkg_slits, path, msametfl, barshadow_override=None):
         hdr = hdul[0].header
         hdr['MSAMETFL'] = msametfl
         hdr['CFNBKGSL'] = (len(bkg_slits), 'campfire: number of background-only slitlets')
-        hdr['CFBARSHA'] = (barshadow_done, 'campfire: bar shadow applied to background slitlets')
+        hdr['CFBARSHA'] = (barshadow_done, 'Bar shadow applied to background slitlets')
         hdr['CFBSREF'] = (os.path.basename(barshadow_override) if barshadow_override else 'CRDS',
-                          'campfire: bar-shadow reference (empirical file or CRDS)')
+                          'Bar-shadow reference used')
         hdul.flush()
     os.replace(tmp, path)
     log(f'Wrote {len(bkg_slits)} background slitlet(s) to {os.path.basename(path)}')

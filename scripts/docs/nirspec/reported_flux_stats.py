@@ -1,5 +1,5 @@
 """Numbers behind reported_flux.png: fnu (and fnu_opt) over the 0.8" aperture flux, same selection as the figure
-(PFSHAPE own, photometry S/N >= 10, spectrum S/N >= 10 in band, band fully covered, aperture entry present).
+(SHAPE own, photometry S/N >= 10, spectrum S/N >= 10 in band, band fully covered, aperture entry present).
 Read only: the products under <root> and the catalog mirror (mode=ro).
 
     python scripts/docs/nirspec/reported_flux_stats.py <root> <aperture json>
@@ -53,7 +53,7 @@ for path in sorted(glob.glob(os.path.join(ws, f'{OBS}_{GRATING}_*_spec.fits'))):
     if sid not in phot:
         continue
     with fits.open(path) as h:
-        if h[0].header.get('PFSHAPE') != 'own':
+        if h[0].header.get('SHAPE') != 'own':
             continue
         t = h['SPEC1D'].data
         lam = np.asarray(t['wave'], float)

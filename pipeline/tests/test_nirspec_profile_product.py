@@ -77,7 +77,7 @@ def _groups(contam_a, contam_b, extract=('profile', 'profile'), state=('predicte
 
 def test_combine_reports_the_combined_prediction():
     """Per-group fnu_contam combined with the profile's exposure-time weights; a group
-    with nothing predicted adds zero light; PFCONSIG recomputed on the combined
+    with nothing predicted adds zero light; CONTSIG recomputed on the combined
     spectra; the prediction is reported, never subtracted."""
     a = np.full(40, 2.0)
     b = np.full(40, np.nan)                                  # nothing predicted in the second group
@@ -86,7 +86,7 @@ def test_combine_reports_the_combined_prediction():
     c = out['columns']['fnu_contam'][0]
     np.testing.assert_allclose(c[2:-2], 0.25 * 2.0, rtol=1e-6)      # exposure-time weights 1:3
     np.testing.assert_allclose(out['columns']['fnu_contam_err'][0][2:-2], 0.25 * 0.2, rtol=1e-6)   # linear
-    assert (out['choice'], out['reason']) == ('profile', 'contam_predicted') and out['header']['PFCONSIG'] > 3
+    assert (out['choice'], out['reason']) == ('profile', 'contam_predicted') and out['header']['CONTSIG'] > 3
     assert out['header']['EXTRACT'] == 'profile' and out['header']['CONTSTAT'] == 'predicted'
 
 
@@ -116,7 +116,7 @@ def _stage3_inputs(tmp_path, product, contam_level=0.1):
     x1.header['EXTRYSTP'] = 18
     fits.HDUList([fits.PrimaryHDU(), x1]).writeto(tmp_path / f'{product}_x1d.fits')
     h = fits.Header()
-    h['PFNCONT'] = 1
+    h['NCONTAM'] = 1
     fits.HDUList([fits.PrimaryHDU(header=h), fits.ImageHDU(prof / 1e12, name='PROF2D'),
                   fits.ImageHDU(contam_level * 10.0 * prof / 1e12, name='CONTAM2D'),
                   fits.ImageHDU(0.0 * prof, name='CONTERR2D')]).writeto(tmp_path / f'{product}_pf.fits')
@@ -129,6 +129,7 @@ def _cols(sfx):
     return [f'fnu{sfx}', f'fnu{sfx}_err', f'flam{sfx}', f'flam{sfx}_err']
 
 
+@pytest.mark.filterwarnings('error:Card is too long')          # every card keeps its description
 def test_spec_fits_columns_and_cards(tmp_path):
     """The SPEC1D column set and the extraction cards of a profile-fit product; the
     _pf.fits is deleted once the _spec.fits is written."""

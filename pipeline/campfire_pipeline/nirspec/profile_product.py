@@ -284,10 +284,10 @@ def read_scan(workspace_dir, product):
                 h = fits.getheader(p)
             except OSError:
                 continue
-            if 'PFNBRD' in h:            # detection at the proposal level (PFNBR is the stricter flag)
-                return bool(h['PFNBRD']), float(h.get('PFNBRDEL', np.nan))
-            if 'PFNBR' in h:
-                return bool(h['PFNBR']), float(h.get('PFNBRDEL', np.nan))
+            if 'NBRDET' in h:            # detection at the proposal level (NBRFLAG is the stricter flag)
+                return bool(h['NBRDET']), float(h.get('NBRDELTA', np.nan))
+            if 'NBRFLAG' in h:
+                return bool(h['NBRFLAG']), float(h.get('NBRDELTA', np.nan))
     return None
 
 
@@ -341,16 +341,14 @@ def _fallback_summary(product_name, source_id, is_prism, reason):
                 scan=None, fallback=reason)
 
 
-def shape_header(C, exps):
-    """The shape cards of a product's ``_pf.fits`` (the chain's cards, the per-exposure
-    pointing offsets and their count), in the order ``run_product`` writes them."""
+def shape_header(C, exps=None):
+    """The shape cards of a product's ``_pf.fits`` (the chain's ``extraction_cards``), in
+    the order ``run_product`` writes them."""
     from astropy.io import fits
+    from campfire_pipeline.nirspec import extraction_cards as XC
     hdr = fits.Header()
     for k, v in C.header_cards().items():
-        hdr[k] = v
-    for k, (e, o) in enumerate(zip(exps, C.result.eoff)):
-        hdr[f'PFOFF{k}'] = (float(o), f'Pointing offset {e.name[:31]}')
-    hdr['PFNEXP'] = (len(exps), 'Exposures in the model (incl. partners)')
+        XC.put(hdr, k, v)
     return hdr
 
 
@@ -378,6 +376,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
     from campfire_pipeline.nirspec import profile_timing as TM
 
     from campfire_pipeline.nirspec import mbkg_extraction as MX
+    from campfire_pipeline.nirspec import extraction_cards as XC
 
     prev_cwd = os.getcwd()
     os.chdir(workspace_dir)
@@ -439,31 +438,15 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
                 hdus.append(ns)
         TM.stop('drizzle', t_mark)
 
-        hdr = shape_header(C, exps)
-        hdr['PFNSRCF'] = (int(sum(not e.has_source for e in exps)), 'Exposures without the source (SRCFLUX=F)')
-        hdr['PFSELFSB'] = (float(MX.self_subtraction(R, exps)), 'Own light the nod subtraction removes (share)')
-        hdr['PFCMODE'] = (cstate, 'Other-slitlet light: off/subtracted/no_maps/..._undone')
+        hdr = shape_header(C)
+        XC.put(hdr, 'SELFSUB', float(MX.self_subtraction(R, exps)))
         if P is not None:
-            def _v(x):
-                return float(x) if np.isfinite(x) else -999.0
-            hdr['PFMASKF'] = (float(clean['masked']) if clean else 0.0, 'Fraction of main-shutter pixels dropped')
-            hdr['PFCLEANP'] = (_v(clean['clean_pred']) if clean else -999.0,
-                               'Main-shutter fraction with other light < noise')
-            hdr['PFFOPEN'] = (_v(clean['failed_open']) if clean else -999.0,
-                              'Main-shutter fraction in failed-open shutters')
-            hdr['PFNCONT'] = (len(P.contributors), 'Other sources predicted on the trace')
-            # not a subset of PFNCONT: an unreliable source is counted here whether or not
-            # its light reaches the noise
-            hdr['PFCUNREL'] = (len(P.unreliable), 'Other sources, pass 1 unreliable (masked)')
-            # their own pass 1 fell back: predicted from their stage-3 3-pixel boxcar (subtracted)
-            hdr['PFCBOX'] = (len(getattr(P, 'boxcar', ()) or ()), 'Other sources predicted from a 3px boxcar')
-            hdr['PFPAIR'] = (int(P.pair), 'Similar-brightness contaminant on the trace')
-            hdr['PFPAIRID'] = (int(P.pair_id), 'Its source id (-1: none)')
-            hdr['PFPAIRR'] = (_v(P.pair_ratio), 'Its pass-1 flux / the target pass-1 flux')
-            hdr['PFPAIRF'] = (_v(P.pair_frac), 'Its light / target light in the extraction')
+            XC.put(hdr, 'NCONTAM', len(P.contributors))
+            # their own pass 1 fell back: predicted from their stage-3 3-pixel boxcar
+            XC.put(hdr, 'CONTBOX', len(getattr(P, 'boxcar', ()) or ()))
         if S is not None:
             for k, v in S.header_cards().items():
-                hdr[k] = v
+                XC.put(hdr, k, v)
         t_mark = TM.start()
         out = fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus)
         out.writeto(path, overwrite=True)

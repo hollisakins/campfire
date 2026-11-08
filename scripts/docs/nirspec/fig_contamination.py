@@ -90,6 +90,6 @@ ax.set_xlabel('wavelength (µm)')
 ax.set_ylabel('flux density (µJy)')
 ax.legend(loc='upper right', fontsize=9)
 fig.suptitle(f'{args.obs} {args.grating.split("_")[0].upper()}, source {args.source}: contamination from '
-             f'{int(hdr.get("PFNCONT", 0))} overlapping sources', x=0.01, ha='left', fontsize=10,
+             f'{int(hdr.get("NCONTAM", 0))} overlapping sources', x=0.01, ha='left', fontsize=10,
              color=C.MUTED)
 C.save(fig, args, f'contamination_{args.grating.split("_")[0]}.png')

@@ -154,8 +154,7 @@ def test_header_cards_record_the_choices(monkeypatch):
                      eoff=np.zeros(3), lam=M.lam_grid, flux=np.ones(M.lam_grid.size), flux_err=np.ones(M.lam_grid.size),
                      chi2=0.0, npix=0, nfree=0, chromatic=True, model=M)
     c = PC.ChainResult(result=R, shape='own', chain='gated', reason='test').header_cards()
-    assert c['PFSLY'][0] == 'jwst' and c['PFSLX'][0] == 'corrected'
-    assert c['PFPLREF'][0] == 'jwst_nirspec_pathloss_0010.fits'
+    assert c['SLOSSY'] == 'jwst' and c['SLOSSX'] == 'corrected'
 
 
 # ---------------------------------------------------------------------------

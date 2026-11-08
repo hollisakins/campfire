@@ -76,18 +76,37 @@ The primary header retains the `jwst` keywords, including software versions, all
 | `CONTSTAT` | Contamination status (`off`, `none`, `predicted`) |
 | `NEXP`, `NEXPBKG` | Number of exposures combined; minimum number of background exposures subtracted from any one |
 | `MBKGPREF`, `MBKGWHY` | Whether the master-background spectrum is likely preferable, and the reason |
-| `PFVER` | Extraction model version |
-| `PFOPTIC` | Optics model version |
-| `PFAPER` | Diameter of the reporting aperture, arcsec |
-| `PFSHAPE`, `PFREASON` | Profile adopted (`own`, `prism`, `grating`, `default`) and the reason |
-| `PFWIDTH`, `PFCEN` | Fitted Gaussian σ and center at `PFPIVOT`, in units of the open shutter height (0.46″) |
-| `PFSLY`, `PFSLX` | Slit-loss treatment along the slit (`optics` / `jwst`) and across the shutter (`corrected` / `jwst`) |
-| `PFPLREF` | `jwst` path-loss reference used as the baseline |
-| `PFBAROFF` | Bar offset applied, in the units of `PFWIDTH` |
-| `PFCONTAM`, `PFCONSIG` | Predicted contamination relative to the spectrum, and relative to its noise |
-| `PFNBR` | Possible uncataloged neighbor in the slitlet (flagged for review) |
 
-The `SPEC1D_MBKG` extension header carries the corresponding keywords for the master-background fit; those in the primary header refer to the nod-subtracted spectrum. Additional `PF*` keywords record fit diagnostics (detection statistic, χ² of each candidate profile, masked shutter fraction).
+The extraction adds the keywords below. Lengths along the slit are in units of the open shutter height (0.46″). A keyword that does not apply to a spectrum is omitted.
+
+| Keyword | Content |
+|---|---|
+| `EXTRVER` | Extraction model version |
+| `OPTICVER` | MSA optics model version |
+| `FLUXAPER` | Diameter of the aperture the reported flux refers to, arcsec |
+| `SLOSSY`, `SLOSSX` | Path loss along the slit (`optics` / `jwst`) and across the shutter (`corrected` / `jwst`) |
+| `BAROFF` | Bar offset applied |
+| `SHAPE`, `SHAPEWHY` | Profile adopted (`own`, `prism`, `grating`, `default`) and the reason |
+| `SHAPESRC` | Product the profile was taken from (`prism`, `grating`) |
+| `PA_V3` | Position angle of the science exposures, used to match a PRISM profile |
+| `DETSNR` | Detection S/N of the source, compared with the threshold for an own profile |
+| `SRCCEN`, `SRCCENPL` | Fitted and planned center along the slit, at `SRCPIVOT` |
+| `SRCWIDTH` | Fitted Gaussian σ of the source at `SRCPIVOT` |
+| `SRCDRIFT`, `SRCDWID` | Change of the center and of σ per octave in wavelength |
+| `SRCPIVOT` | Pivot wavelength of the profile, µm |
+| `SRCCHROM` | Whether the profile varies with wavelength |
+| `SRCCHI2` | Reduced χ² of the source model |
+| `NCONTAM` | Number of other sources predicted on the trace |
+| `CONTBOX` | Of those, the number predicted from a 3-pixel boxcar because their own fit failed |
+| `CONTFRAC`, `CONTSIG` | Predicted contamination relative to the spectrum, and relative to its noise |
+| `CONTNSEP` | Fraction of the spectrum where the target cannot be separated from a neighbor |
+| `SELFSUB` | Fraction of the source's own flux removed by nod subtraction |
+| `NBRFLAG`, `NBRDET` | Possible uncataloged neighbor in the slitlet (flagged for review), and whether it passed the threshold for proposing an override |
+| `NBRDELTA` | Offset of that neighbor from the target |
+| `NBRPROP` | Background exposures proposed for exclusion |
+| `NBRXDISP` | Whether the other disperser's scan agrees (`single`, `agree`, `disagree`, `none`) |
+
+The `SPEC1D_MBKG` extension header carries the same keywords for the master-background fit, plus `NFOPEN`, the number of failed-open shutters included on the trace; those in the primary header refer to the nod-subtracted spectrum.
 
 ## Redshift file
 

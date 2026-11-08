@@ -12,8 +12,8 @@ each listed with its inputs and the references it depends on in ``data/nirspec_c
   (``bar_offset``) places its shutters. jwst's point path loss keeps the overall level and its
   dependence along the dispersion, times a correction fitted to stars (``Optics.x_correction``).
   Switches: ``[nirspec.stage3].slit_loss_y`` = "optics" | "jwst" and ``slit_loss_x`` =
-  "corrected" | "jwst" (``SlitLoss``), recorded as PFSLY / PFSLX, with the path-loss reference's
-  name as PFPLREF.
+  "corrected" | "jwst" (``SlitLoss``), recorded as SLOSSY / SLOSSX (the path-loss reference follows from CRDS_CTX).
+
 * the bar shadow: not applied to science slits (stage 2 skips the step); the master background and
   stage 2a's background slitlets take the empirical tables (``barshadow_calibration``) for every
   grating that has one, the CRDS reference for the others (the H gratings).

@@ -36,6 +36,7 @@ from astropy.io.fits import table_to_hdu
 from jwst import associations
 
 from campfire_pipeline.common.io import log
+from campfire_pipeline.nirspec import extraction_cards as XC
 from campfire_pipeline.nirspec.observation import (
     read_nod_type,
     read_primary_dither_points,
@@ -718,21 +719,20 @@ def _prism_scan_agrees(obs, r, results, tol):
 def _update_prism_scan_cards(obs, r, xdisp):
     """Write the cross-disperser result into a PRISM product's ``_pf.fits``: the
     grating ran after it. An agreeing grating scan makes the detection a candidate
-    (``PFNBR``)."""
+    (``NBRFLAG``); a disagreeing one withdraws its proposals (``NBRPROP``)."""
     path = os.path.join(obs.workspace_dir, f"{r['product']}_pf.fits")
     if not os.path.exists(path):
         return
     with fits.open(path, mode='update') as h:
         hd = h[0].header
-        if 'PFNBRX' not in hd:
+        if 'NBRXDISP' not in hd:
             return
-        hd['PFNBRX'] = xdisp
+        XC.put(hd, 'NBRXDISP', xdisp)
         if xdisp == 'agree':
-            hd['PFNBR'] = 1
+            XC.put(hd, 'NBRFLAG', True)
             r['scan']['candidate'] = True
-        elif xdisp == 'disagree' and hd.get('PFNBRDRP'):
-            hd['PFNBRDRP'] = ''
-            hd['PFNBRSUP'] = 'grating scan disagrees'
+        elif xdisp == 'disagree':
+            XC.put(hd, 'NBRPROP', '')
 
 
 def neighbour_figure_path(obs, source_id):
@@ -973,7 +973,7 @@ def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, a
     (SPEC1D's columns on the same ``wave``; its header carries the extraction cards,
     ``MBKGVER`` and the per-exposure ``MBKGSRC``), ``SCI_MBKG`` / ``ERR_MBKG`` (SCI's grid)
     and ``PROF1D_MBKG``; and the primary cards ``MBKGPREF`` / ``MBKGWHY``
-    (``mbkg_extraction.preferred``, from the exposures and the nodded fit's ``PFSELFSB``)
+    (``mbkg_extraction.preferred``, from the exposures and the nodded fit's ``SELFSUB``)
     and ``MBKGNEXP``.
 
     Returns (hdus, cards). Named conditions return ([], {}) and log why: no
@@ -1009,9 +1009,9 @@ def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, a
     prof.name = 'PROF1D_MBKG'
     hdus = [spec, fits.ImageHDU(data=mb_sci.astype(np.float32), header=s2dh.copy(), name='SCI_MBKG'),
             fits.ImageHDU(data=mb_err.astype(np.float32), header=s2dh.copy(), name='ERR_MBKG'), prof]
-    pref, why = MX.preferred(exposures, primary_hdr.get('PFSELFSB'), extended_frac)
+    pref, why = MX.preferred(exposures, primary_hdr.get('SELFSUB'), extended_frac)
     cards = {'MBKGPREF': (bool(pref), 'master-background spectrum likely better'),
-             'MBKGWHY': (why, 'why: ' + '/'.join(MX.WHY)),
+             'MBKGWHY': (why, 'Reason for MBKGPREF'),
              'MBKGNEXP': (int(sum(s == 'exposure' for s in sources)), 'exposures with their own master background')}
     return hdus, cards
 
@@ -1073,7 +1073,7 @@ def opt_ext_single_source(
             log(f'Keyword {keyword} not found')
             continue
 
-    ph['CMPFRTIM'] = (datetime.now(timezone.utc).isoformat(), 'UTC date/time of CAMPFIRE reduction (ISO 8601)')
+    ph['CMPFRTIM'] = (datetime.now(timezone.utc).isoformat(), 'Reduction time, UTC (ISO 8601)')
     ph['CMPFRVER'] = (version, 'campfire-pipeline version (PEP 440)')
 
     # Carry fixed-slit provenance from the EXPOSURES table into the primary header
@@ -1103,7 +1103,7 @@ def opt_ext_single_source(
                          pf_file=pf_file if profile_fit else None, is_fixed_slit=is_fixed_slit,
                          label=product_name)
     collapsed, cen = ex['collapsed'], ex['cen']
-    primary.header['CMPFROPT'] = (ex['optext_status'], "Optimal extraction status ('optimal' or fallback)")
+    primary.header['CMPFROPT'] = (ex['optext_status'], 'Optimal extraction: optimal or a fallback')
     if plot_profiles:
         from campfire_pipeline.nirspec.plots import plot_extraction_profiles
         plot_extraction_profiles(
@@ -1235,10 +1235,10 @@ def _contam_1d(C2D, E2D, Pm, weight_rows, V, flux, flux_err):
         cerr = np.where(okd, np.sum(np.abs(w) * Eu, axis=0) / np.where(okd, den, 1.0), np.nan)
         ok = np.isfinite(cflux) & np.isfinite(flux)
         tot = np.nansum(flux[ok])
-        contam = float(np.nansum(cflux[ok]) / tot) if tot > 0 else -999.0
+        contam = float(np.nansum(cflux[ok]) / tot) if tot > 0 else np.nan
         sn = ok & (np.abs(flux) > 3 * flux_err)
         frac = np.abs(cflux[sn] / flux[sn])
-        conmax = float(np.percentile(frac, 95)) if frac.size else -999.0
+        conmax = float(np.percentile(frac, 95)) if frac.size else np.nan
         # the prediction in units of the noise of the integrated (inverse-variance) flux
         okn = ok & np.isfinite(flux_err) & (flux_err > 0)
         ivar = 1.0 / flux_err[okn] ** 2
@@ -1333,8 +1333,8 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
 
     Other sources' light (``CONTAM2D``, its uncertainty ``CONTERR2D``) is extracted with
     the same weights: ``fnu_contam`` (NaN where nothing is predicted) and
-    ``fnu_contam_err`` (systematic), integrated as ``PFCONTAM`` / ``PFCONMAX`` /
-    ``PFCONSIG``. It is reported, never subtracted from ``fnu`` (``choose_extraction``).
+    ``fnu_contam_err`` (systematic), integrated as ``CONTFRAC`` and
+    ``CONTSIG``. It is reported, never subtracted from ``fnu`` (``choose_extraction``).
 
     A ``_pf.fits`` without PROF2D is a named fallback (``profile_product.write_fallback``):
     the best spectrum is the 3-pixel boxcar.
@@ -1381,9 +1381,7 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         'fnu_prof_err': (flux_err, 'Profile-fit flux error (statistical)'),
     }
     keep = fits.Header()
-    for key in header:
-        if key.startswith('PF'):
-            keep[key] = (header[key], header.comments[key])
+    XC.copy(header, keep)
     hdus = []
     prof = fits.ImageHDU(P, name='PROF2D')
     prof.header['BUNIT'] = ('MJy / uJy', 'SCI per unit reported flux (not per column)')
@@ -1397,13 +1395,11 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     V = s2d_err ** 2
     main = _contam_1d(C2D, E2D, Pm, weight_rows, V, flux, flux_err)
     cflux, cerr, csig, predicted = (main[k] for k in ('cflux', 'cerr', 'csig', 'predicted'))
-    keep['PFCONTAM'] = (main['contam'], 'Predicted other light / fnu_prof, integrated')
-    keep['PFCONMAX'] = (main['conmax'], '95th pct of |contam/fnu_prof| where S/N > 3')
-    keep['PFCONSIG'] = (csig, 'Predicted other light / noise, integrated')
+    XC.put(keep, 'CONTFRAC', main['contam'])
+    XC.put(keep, 'CONTSIG', csig)
     notsep = _notsep_on(NS, wave)
     if NS is not None:
-        keep['PFNOTSEP'] = (float(notsep[np.isfinite(flux)].mean()) if np.isfinite(flux).any() else 0.0,
-                            'Fraction of fnu_prof where other light is not separable')
+        XC.put(keep, 'CONTNSEP', float(notsep[np.isfinite(flux)].mean()) if np.isfinite(flux).any() else 0.0)
     predicted = predicted & ~notsep
     columns['fnu_contam'] = (np.where(predicted, cflux, np.nan),
                              'Predicted other-source flux in the fnu_prof extraction '
@@ -1426,7 +1422,7 @@ def _combined_profile_fit(prof, groups_pf, exposure_times, common_wave, fnu_prof
     ``fnu_contam`` is combined with the exposure-time weights of ``fnu_prof`` (no
     clipping; a group with nothing predicted adds zero light), its error linearly (the
     predictions of the groups come from the same pass-1 spectra). The best spectrum is
-    chosen by ``choose_extraction`` on the combined spectra, with ``PFCONSIG``
+    chosen by ``choose_extraction`` on the combined spectra, with ``CONTSIG``
     recomputed; any group on a fallback makes the combined product the 3-pixel boxcar
     (``group_fallback``)."""
     waves = prof['wavelengths']
@@ -1461,7 +1457,7 @@ def _combined_profile_fit(prof, groups_pf, exposure_times, common_wave, fnu_prof
     else:
         choice, reason = choose_extraction(states != {'off'}, bool(predicted.any()))
     state = 'off' if states <= {'off'} else 'predicted' if 'predicted' in states else 'none'
-    keep['PFCONSIG'] = (csig, 'Predicted other light / noise (1-D combined)')
+    XC.put(keep, 'CONTSIG', csig)
     keep.update(extraction_cards(choice, reason, state))
     return dict(columns=columns, header=keep, hdus=[], choice=choice, reason=reason)
 
@@ -1526,7 +1522,7 @@ def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, co
                 groups_pf.append(dict(contam=np.array(t['fnu_contam'], float), contam_err=np.array(t['fnu_contam_err'], float),
                                       extract=str(hh.get('EXTRACT', '')), reason=str(hh.get('EXTRWHY', '')),
                                       state=str(hh.get('CONTSTAT', 'off'))))
-            selfsub.append(h[0].header.get('PFSELFSB'))
+            selfsub.append(h[0].header.get('SELFSUB'))
     paths = MX.product_paths(workspace_dir, product_name, source_id)
     if not os.path.exists(paths['s2d']):
         log(f'{product_name}: no master-background spectrum (no stacked master-background 2-D)')
@@ -1574,7 +1570,7 @@ def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, co
     ss = [float(v) for v in selfsub if v is not None and np.isfinite(float(v))]
     pref, why = MX.preferred(exposures, max(ss) if ss else None, extended_frac)
     cards = {'MBKGPREF': (bool(pref), 'master-background spectrum likely better'),
-             'MBKGWHY': (why, 'why: ' + '/'.join(MX.WHY)),
+             'MBKGWHY': (why, 'Reason for MBKGPREF'),
              'MBKGNEXP': (int(sum(s == 'exposure' for s in sources)), 'exposures with their own master background')}
     return hdus, cards
 
@@ -1743,10 +1739,10 @@ def combine_per_eg_spectra(
             ph[keyword] = (x1d['PRIMARY'].header[keyword], x1d['PRIMARY'].header.comments[keyword])
         except KeyError:
             continue
-    ph['CMPFRTIM'] = (datetime.now(timezone.utc).isoformat(), 'UTC date/time of CAMPFIRE reduction (ISO 8601)')
+    ph['CMPFRTIM'] = (datetime.now(timezone.utc).isoformat(), 'Reduction time, UTC (ISO 8601)')
     ph['CMPFRVER'] = (version, 'campfire-pipeline version (PEP 440)')
     ph['CMPFRSTG'] = ('stage3-1d', 'CAMPFIRE stage that produced this file')
-    ph['CMPFROPT'] = (optext_status, "Optimal extraction status ('optimal' or fallback)")
+    ph['CMPFROPT'] = (optext_status, 'Optimal extraction: optimal or a fallback')
     ph['NCOMBINE'] = (len(per_eg_spec_files), 'Number of per-exp_group spectra combined')
 
     fnu_opt, fnu_opt_err, n_opt = combined['opt']

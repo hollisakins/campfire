@@ -211,7 +211,7 @@ def write_lines_file(path, result, *, z_source, entry: RedshiftEntry | None, spe
     hdr['EXTEND'] = True
     hdr['LFITVER'] = (LINEFIT_VERSION, 'linefit algorithm version')
     hdr['ZUSED'] = (round(float(s['z_used']), 6), 'Redshift the lines were fit at')
-    hdr['ZSRC'] = (z_source, "Redshift source: inspected (portal) | auto (zfit)")
+    hdr['ZSRC'] = (z_source, "Redshift source: inspected or auto (zfit)")
     hdr['ZQUAL'] = (int(entry.quality) if entry is not None else 0,
                     'Inspection quality at fit time (0-4)')
     if entry is not None and entry.object_id:
@@ -251,7 +251,7 @@ def write_lines_file(path, result, *, z_source, entry: RedshiftEntry | None, spe
         hdr['SCIHASH'] = (sci_hash, 'science-content sha256 of the input spectrum (v1)')
     hdr['CMPFRVER'] = (cfpipe_version, 'campfire-pipeline version (PEP 440)')
     hdr['CMPFRTIM'] = (datetime.now(timezone.utc).isoformat(),
-                       'UTC date/time of the line fit (ISO 8601)')
+                       'Line-fit time, UTC (ISO 8601)')
     primary = fits.PrimaryHDU(header=hdr)
 
     # LINES table

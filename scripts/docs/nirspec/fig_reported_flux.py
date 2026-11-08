@@ -94,12 +94,12 @@ for path in sorted(glob.glob(os.path.join(C.workspace(root, args.obs), f'{args.o
         continue
     with fits.open(path) as h:
         H, t = h[0].header, h['SPEC1D'].data
-        if H.get('PFSHAPE') != 'own':                       # the fitted width is the source's own
+        if H.get('SHAPE') != 'own':                       # the fitted width is the source's own
             continue
         lam = np.asarray(t['wave'], float)
         rep = ratio(lam, np.asarray(t['fnu'], float), np.asarray(t['fnu_err'], float), phot[sid], sid)
         opt = ratio(lam, np.asarray(t['fnu_opt'], float), np.asarray(t['fnu_opt_err'], float), phot[sid], sid)
-        w2 = max(H['PFWIDTH'] + H['PFDWIDTH'] * np.log2(2.0 / H['PFPIVOT']), 0.003) * SLIT
+        w2 = max(H['SRCWIDTH'] + H['SRCDWID'] * np.log2(2.0 / H['SRCPIVOT']), 0.003) * SLIT
     if np.isfinite(rep) and np.isfinite(opt) and rep > 0 and opt > 0:
         rows.append((2.355 * w2, opt, rep))
 fwhm, opt, rep = (np.array(c) for c in zip(*rows))

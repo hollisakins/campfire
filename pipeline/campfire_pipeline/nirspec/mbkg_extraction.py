@@ -24,7 +24,7 @@ per product, built from the nodded Spec3 crf), before any 1-D extraction:
    positive where each is in that exposure (``profile_contam.predict``), catalogued
    neighbors in the target's own slitlet included (``include``): no background exposure
    is dropped for them here. Light through failed-open shutters on the trace is solved
-   with the source and added to it (``failed_open``; cards ``PFNFOPEN`` / ``PFFOSIG``).
+   with the source and added to it (``failed_open``; card ``NFOPEN``).
    ``PROF2D`` / ``CONTAM2D`` / ``CONTERR2D`` are drizzled through the same maps into
    ``{product}_mbkg_pf.fits``.
 4. stage 3 extracts it exactly like the nodded product (``stage3.extract_columns``) into
@@ -496,11 +496,10 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
                 h = fits.ImageHDU(np.asarray(d2, float), name=name)
                 h.header['BUNIT'] = ('MJy', unit)
                 hdus.append(h)
+    from campfire_pipeline.nirspec import extraction_cards as XC
     hdr = fits.Header()
     for k, v in chain.header_cards().items():
-        hdr[k] = v
-    hdr['PFNEXP'] = (len(mexps), 'Exposures in the model (master background subtracted)')
-    hdr['PFNFOPEN'] = (int(fo_cards[0]), 'Failed-open shutters modeled on the trace')
-    hdr['PFFOSIG'] = (float(fo_cards[1]), 'Their max light / noise on the main shutter')
+        XC.put(hdr, k, v)
+    XC.put(hdr, 'NFOPEN', int(fo_cards[0]))
     fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus).writeto(paths['pf'], overwrite=True)
     return paths['pf']

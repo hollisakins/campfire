@@ -275,7 +275,7 @@ def test_contam2d_fraction_recovers_injected_contaminant(tmp_path):
     c = out['columns']
     np.testing.assert_allclose(c['fnu_prof'][0], 10.0, rtol=1e-6)
     np.testing.assert_allclose(c['fnu_contam'][0], 1.0, rtol=1e-6)
-    assert out['header']['PFCONTAM'] == pytest.approx(0.1, rel=1e-6) and out['header']['PFCONSIG'] > 3
+    assert out['header']['CONTFRAC'] == pytest.approx(0.1, rel=1e-6) and out['header']['CONTSIG'] > 3
     assert (out['choice'], out['reason']) == ('profile', 'contam_predicted')
     assert out['header']['EXTRACT'] == 'profile' and out['header']['CONTSTAT'] == 'predicted'
     assert [h.name for h in out['hdus']] == ['PROF2D', 'CONTAM2D']
@@ -293,7 +293,7 @@ def test_nothing_predicted_is_nan(tmp_path):
     contam = np.zeros((ny, nx))
     path = tmp_path / 'x_pf.fits'
     hdr = fits.Header()
-    hdr['PFNCONT'] = 0
+    hdr['NCONTAM'] = 0
     fits.HDUList([fits.PrimaryHDU(header=hdr), fits.ImageHDU(prof / 1e12, name='PROF2D'),
                   fits.ImageHDU(contam, name='CONTAM2D')]).writeto(path)
     out = S3._profile_fit_columns(str(path), 10.0 * prof, np.full((ny, nx), 0.01), np.zeros((ny, nx), bool), 12, 18,
@@ -326,7 +326,7 @@ def test_not_separable_wavelengths_are_nan(tmp_path):
     outside = (wave < 1.98) | (wave > 3.02)
     assert np.isnan(c[inside]).all()
     np.testing.assert_allclose(c[outside], 1.0, rtol=1e-6)
-    assert out['header']['PFNOTSEP'] == pytest.approx(inside.mean(), abs=0.02)
+    assert out['header']['CONTNSEP'] == pytest.approx(inside.mean(), abs=0.02)
 
 
 def test_faint_prediction_is_reported_where_it_is(tmp_path):
@@ -342,7 +342,7 @@ def test_faint_prediction_is_reported_where_it_is(tmp_path):
     out = S3._profile_fit_columns(str(path), 10.0 * prof, np.full((ny, nx), 0.01), np.zeros((ny, nx), bool), 12, 18,
                                   np.linspace(1, 5, nx))
     assert (out['choice'], out['reason']) == ('profile', 'contam_predicted')
-    assert out['header']['PFCONSIG'] < 3
+    assert out['header']['CONTSIG'] < 3
     c = out['columns']['fnu_contam'][0]
     assert np.isfinite(c[50]) and np.isnan(np.delete(c, 50)).all()
 
@@ -563,7 +563,7 @@ def test_boxcar_pass1_is_the_boxcar_placed_with_the_default_shape(stand_ins):
 
 def test_boxcar_contaminant_is_subtracted_and_counted(stand_ins):
     """A boxcar pass 1 subtracts like a reliable one (its light was measured on its own
-    trace), and the target's prediction lists it (``PFCBOX``)."""
+    trace), and the target's prediction lists it (``CONTBOX``)."""
     t_exps, _ = _source(1, 0.0, 10.0)
     Rc, box = _default_shape_source(2, 5.0)
     P1 = CT.boxcar_pass1(_no_usable_pixels(2), 2, {}, '.', True, NO_SMOOTH, box)

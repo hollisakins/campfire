@@ -69,8 +69,8 @@ for row, (sid, label) in enumerate(args.source):
     C.label_panel(axes[row, 0], f'{sid}: {label}')
     h = d['hdr']
     shape = {'own': 'own profile', 'prism': 'PRISM profile', 'default': 'default profile'}.get(
-        str(h.get('PFSHAPE')), str(h.get('PFSHAPE')))
-    axes[row, 1].text(0.99, 0.04, f'{shape}; FWHM {2.355 * float(h.get("PFWIDTH", np.nan)) * 0.46:.2f}"',
+        str(h.get('SHAPE')), str(h.get('SHAPE')))
+    axes[row, 1].text(0.99, 0.04, f'{shape}; FWHM {2.355 * float(h.get("SRCWIDTH", np.nan)) * 0.46:.2f}"',
                       transform=axes[row, 1].transAxes, ha='right', va='bottom', fontsize=8.5,
                       bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.85))
     rows = np.arange(sci.shape[0])

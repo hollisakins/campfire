@@ -56,11 +56,11 @@ def test_scan_recovers_injected_neighbour_delta_and_partner():
     assert S.proposals == {ROOT: {'1': [3], '3': [2]}}
     assert not S.unresolved
     cards = S.header_cards()
-    assert cards['PFNBRD'][0] == 1 and cards['PFNBRDRP'][0] == '03101:1>3;03101:3>2'
+    assert cards['NBRDET'] and cards['NBRPROP'] == '03101:1>3;03101:3>2'
     # the product flag needs the stricter level (default: never in this call)
-    assert cards['PFNBR'][0] == 0 and not S.candidate
+    assert not cards['NBRFLAG'] and not S.candidate
     S2 = NS.run(R, dchi2_min=60.0, flag_dchi2=0.5 * S.dchi2)
-    assert S2.candidate and S2.header_cards()['PFNBR'][0] == 1
+    assert S2.candidate and S2.header_cards()['NBRFLAG']
     assert not NS.run(R, dchi2_min=60.0, flag_dchi2=2 * S.dchi2).candidate
 
 
@@ -68,7 +68,7 @@ def test_candidate_from_other_disperser_agreement():
     S = NS.ScanResult(detected=True, delta=1.15, dchi2=120.0, proposals={ROOT: {'1': [3]}})
     assert not S.candidate
     S.cross_check((True, 1.10), tol=0.2)
-    assert S.candidate and S.header_cards()['PFNBR'][0] == 1
+    assert S.candidate and S.header_cards()['NBRFLAG']
 
 
 def test_proposal_gain_and_cost():
@@ -291,4 +291,4 @@ def test_suppress_keeps_detection_withholds_proposals():
     S = NS.ScanResult(detected=True, delta=1.15, dchi2=500.0, proposals={ROOT: {'1': [3]}}, unresolved=[f'{ROOT}:2'])
     S.suppress('other-slitlet light, masked 0.57')
     assert S.detected and S.proposals == {} and S.unresolved == []
-    assert S.header_cards()['PFNBRSUP'][0].startswith('other-slitlet')
+    assert S.suppressed.startswith('other-slitlet') and S.header_cards()['NBRPROP'] == ''

@@ -91,7 +91,7 @@ NIRCAM = Keyset(
         'CFP_EDGE': 'campfire: edges flagged',
         'CFP_BKG':  'campfire: background (pedestal, 1/f, variance)',
         'CFP_DIAG': 'campfire: diagonal stripe theta and search range',
-        'CFP_SHFT': 'campfire: pre-jhat WCS shift (dra,ddec,droll,scale)',
+        'CFP_SHFT': 'campfire: WCS shift',
         'CFP_PREV': 'campfire: preview PNG rendered',
         'CFP_JHAT': 'campfire: jhat refcat used',
         'CFP_ALGN': 'campfire: align solve',
@@ -116,7 +116,7 @@ NIRSPEC = Keyset(
         'CFP_S2D',   # rectified s2d views appended as S2D_* HDUs
     ],
     comments={
-        'CFP_CAL':  'campfire: spec2 cal done (wcs/photom/fix_units)',
+        'CFP_CAL':  'campfire: spec2 cal (wcs/photom/units)',
         'CFP_MASK': 'campfire: nirspec mask applied',
         'CFP_BKG':  'campfire: nodded bkgsub state',
         'CFP_S2D':  'campfire: s2d rectified views appended',

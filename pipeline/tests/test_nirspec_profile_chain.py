@@ -237,8 +237,8 @@ def test_sibling_grating_shape_is_held_over_the_wavelengths_and_labelled_grating
     exps = _grating(T._exposures(src_y=0.05))
     _fill(exps, truth, 8.0, seed=11)
     h = fits.Header()
-    h.update(PFSHAPE='own', PFCEN=0.05 + 0.12, PFCENPR=0.05, PFDRIFT=0.25, PFWIDTH=0.08, PFDWIDTH=0.2,
-             PFPIVOT=2.3)
+    h.update(SHAPE='own', SRCCEN=0.05 + 0.12, SRCCENPL=0.05, SRCDRIFT=0.25, SRCWIDTH=0.08, SRCDWID=0.2,
+             SRCPIVOT=2.3)
     ref = PC.PrismShape.from_header('obs_g235m_f170lp_7', h, chromatic=CT.is_prism_product('obs_g235m_f170lp_7'))
     assert not ref.chromatic and ref.params['drift'] == 0.0 and ref.params['width_change'] == 0.0
     assert PC.PrismShape.from_header('obs_prism_clear_7', h, chromatic=True).params['drift'] == 0.25
@@ -248,7 +248,7 @@ def test_sibling_grating_shape_is_held_over_the_wavelengths_and_labelled_grating
     C = PC.choose_shape(exps, _cfg(gate_snr_grating=1e6), is_prism=False, prism=ref)
     assert C.transfer == 'used' and C.shape == 'grating' and C.reason == 'below_gate;prism'
     assert C.result.params['width'] == pytest.approx(0.08)
-    assert C.header_cards()['PFPRISM'][0] == 'obs_g235m_f170lp_7'
+    assert C.header_cards()['SHAPESRC'] == 'obs_g235m_f170lp_7'
 
 
 def test_grating_transfer_plan():
@@ -337,8 +337,8 @@ def test_chain_masked_fraction_skips_own_fit():
 
 def test_chain_dominance_is_recorded_only():
     """Other sources dominate the trace although the subtraction kept most of it (a
-    well-predicted contaminant is subtracted, not masked): the ratio is recorded
-    (PFDOMIN), measured at the fallback shape, and the own fit is still used."""
+    well-predicted contaminant is subtracted, not masked): the ratio is kept on the
+    result, measured at the fallback shape, and the own fit is still used."""
     exps = T._exposures()
     _fill(exps, dict(width=0.15), 40.0)
     clean = dict(overall=0.9, per_exposure=[0.9] * 3, clean_pred=0.3)
@@ -350,7 +350,6 @@ def test_chain_dominance_is_recorded_only():
     C = PC.choose_shape(exps, _cfg(), is_prism=True, clean=clean, contam_ratio=ratio)
     assert C.shape == 'own' and C.dominance == 3.0
     assert seen and seen[0] is C.candidates['default']
-    assert C.header_cards()['PFDOMIN'][0] == pytest.approx(3.0)
 
 
 def test_chain_fixed_mode():
@@ -366,15 +365,30 @@ def test_header_flags_written():
     _fill(exps, dict(width=0.15), 40.0)
     prism = _prism_of(dict(centre_offset=0.0, width=0.15), 3.0, 0.1)
     C = PC.choose_shape(exps, _cfg(), is_prism=False, prism=prism)
-    cards = C.header_cards()
-    h = fits.Header()
-    for k, v in cards.items():
-        h[k] = v
-    for key, typ in [('PFVER', str), ('PFSHAPE', str), ('PFCHAIN', str), ('PFREASON', str), ('PFGATE', float),
-                     ('PFGATETH', float), ('PFCHI2D', float), ('PFCHI2P', float), ('PFCHI2O', float),
-                     ('PFBOUND', int), ('PFSRCY', int), ('PFSHDIS', int), ('PFPRISM', str), ('PFXFER', str),
-                     ('PFCEN', float), ('PFCENPR', float), ('PFDRIFT', float), ('PFWIDTH', float),
-                     ('PFDWIDTH', float), ('PFPIVOT', float)]:
+    from campfire_pipeline.nirspec import extraction_cards as XC
+    from campfire_pipeline.nirspec.profile_product import shape_header
+    h = shape_header(C)
+    for key, typ in [('EXTRVER', str), ('OPTICVER', str), ('FLUXAPER', float), ('SHAPE', str), ('SHAPEWHY', str),
+                     ('SHAPESRC', str), ('DETSNR', float), ('SRCCEN', float), ('SRCCENPL', float),
+                     ('SRCDRIFT', float), ('SRCWIDTH', float), ('SRCDWID', float), ('SRCPIVOT', float),
+                     ('SRCCHROM', bool), ('SRCCHI2', float)]:
         assert key in h and isinstance(h[key], typ), key
+    # every card carries its description from the one list
+    assert all(h.comments[k] == XC.CARDS[k] for k in h)
     back = PC.PrismShape.from_header('x', h)
     assert back.params['width'] == pytest.approx(C.result.params['width'])
+
+
+def test_extraction_cards_omit_what_does_not_apply():
+    from campfire_pipeline.nirspec import extraction_cards as XC
+    h = fits.Header()
+    XC.put(h, 'CONTFRAC', 0.2)
+    XC.put(h, 'CONTFRAC', np.nan)                 # no longer applies: removed, not a placeholder
+    XC.put(h, 'SHAPESRC', '')
+    XC.put(h, 'NBRFLAG', np.bool_(True))
+    assert 'CONTFRAC' not in h and 'SHAPESRC' not in h and h['NBRFLAG'] is True
+    with pytest.raises(KeyError):
+        XC.put(h, 'PFSHAPE', 'own')
+    # descriptions fit beside a numeric value on one 80-character card
+    assert all(len(d) <= 47 for d in XC.CARDS.values())
+    assert all(len(k) <= 8 for k in XC.CARDS)

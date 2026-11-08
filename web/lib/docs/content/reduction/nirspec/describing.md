@@ -9,8 +9,8 @@ The primary header of each spectrum file records:
 | `CMPFRVER` | CAMPFIRE pipeline version |
 | `CAL_VER` | `jwst` pipeline version |
 | `CRDS_CTX` | CRDS context, which determines every `jwst` reference file |
-| `PFOPTIC` | MSA optics model version |
-| `PFVER` | Extraction model version |
+| `OPTICVER` | MSA optics model version |
+| `EXTRVER` | Extraction model version |
 
 All keywords are listed in the [FITS reference](/docs/data-products/fits-columns).
 
@@ -31,7 +31,7 @@ More detailed summaries of individual steps are given in [Slit losses](/docs/red
 
 ## Uncertainties
 
-`fnu_err` is statistical, including the noise of the subtracted background exposures. It excludes the systematic uncertainty of the contamination prediction (`fnu_contam_err`) and, for sources with the default profile (`PFSHAPE = default`), the uncertainty of the assumed size, roughly ±15 % in flux.
+`fnu_err` is statistical, including the noise of the subtracted background exposures. It excludes the systematic uncertainty of the contamination prediction (`fnu_contam_err`) and, for sources with the default profile (`SHAPE = default`), the uncertainty of the assumed size, roughly ±15 % in flux.
 
 ## Departures from the CRDS calibration
 
@@ -39,7 +39,7 @@ CAMPFIRE replaces parts of two CRDS references:
 
 - **Path loss along the slit**: replaced by the optics model evaluated for each source's fitted size and position ([Slit losses](/docs/reduction/nirspec/slit-losses)). Across the shutter, the CRDS point-source path loss is used with an empirical correction derived from stars.
 - **Bar shadow**: replaced by tables measured from empty shutters in the construction of the master background ([Bar-shadow calibration](/docs/reduction/nirspec/backgrounds#bar-shadow-calibration)); the high-resolution gratings retain the CRDS reference. In both extracted spectra the bar shadow is part of the optics model; science frames are never divided by a bar-shadow correction.
-- **Bar position**: an offset measured per observation from the empty shutters and applied in the optics model (`PFBAROFF`; disabled with `bar_offset = "off"`).
+- **Bar position**: an offset measured per observation from the empty shutters and applied in the optics model (`BAROFF`; disabled with `bar_offset = "off"`).
 
 All other calibrations (flat fields, wavelength solution, flux calibration) use the CRDS references as delivered, unless one of the overrides in [Detector and calibration](/docs/reduction/nirspec/detector-calibration#optional-calibration-overrides) was enabled; the reference-file keywords (`R_WAVCOR`, `R_FFLAT`, `R_PHOTOM`) record which.
 

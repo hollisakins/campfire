@@ -545,7 +545,7 @@ class Bounds:
     width_change: float = 0.4         # per octave
 
 
-# bit of each shape parameter in a bound-hit mask (header PFBOUND; 16 was the per-exposure
+# bit of each shape parameter in a bound-hit mask (named in SHAPEWHY 'bound:...'; 16 was the per-exposure
 # pointing offsets, no longer fitted)
 BOUND_BITS = dict(centre=1, width=2, drift=4, width_change=8)
 
@@ -1311,21 +1311,13 @@ def run_single_source(product_name, workspace_dir, groups, bkg_overrides, scienc
     s2d = os.path.join(workspace_dir, f'{product_name}_s2d.fits')
     prof = drizzle_frames(R, DM.DrizzleMap.from_crf(crf_path, DM.step_settings(s2d)), unit=True)
 
+    from campfire_pipeline.nirspec import extraction_cards as XC
     hdr = fits.Header()
-    hdr['PFVER'] = (FIT_VERSION, 'Profile-fit model version')
-    hdr['PFOPTIC'] = (optics_version(), 'Diffraction model of the MSA (data/nirspec_optics.json)')
-    hdr['PFCHROM'] = (bool(chromatic), 'Centre and width vary with wavelength')
-    hdr['PFCEN'] = (p['centre'], 'Source centre at the pivot [slit units]')
-    hdr['PFCENPR'] = (p['centre_prior'], 'Planned source position (prior centre)')
-    hdr['PFDRIFT'] = (p['drift'], 'Centre change per octave [slit units]')
-    hdr['PFWIDTH'] = (p['width'], 'Galaxy Gaussian sigma at the pivot [slit units]')
-    hdr['PFDWIDTH'] = (p['width_change'], 'Width change per octave [slit units]')
-    hdr['PFPIVOT'] = (p['pivot'], 'Pivot wavelength [um]')
-    hdr['PFCHI2'] = (R.chi2_red, 'Reduced chi2 of the fit')
-    hdr['PFNPIX'] = (R.npix, 'Pixels in the fit')
-    hdr['PFNEXP'] = (len(exps), 'Exposures in the model (incl. subtracted partners)')
-    for k, (e, o) in enumerate(zip(exps, R.eoff)):
-        hdr[f'PFOFF{k}'] = (float(o), f'Pointing offset {e.name[:31]}')
+    for name, value in (('EXTRVER', FIT_VERSION), ('OPTICVER', optics_version()), ('SRCCHROM', bool(chromatic)),
+                        ('SRCCEN', p['centre']), ('SRCCENPL', p['centre_prior']), ('SRCDRIFT', p['drift']),
+                        ('SRCWIDTH', p['width']), ('SRCDWID', p['width_change']), ('SRCPIVOT', p['pivot']),
+                        ('SRCCHI2', R.chi2_red)):
+        XC.put(hdr, name, value)
     out = fits.HDUList([
         fits.PrimaryHDU(header=hdr),
         fits.ImageHDU(np.asarray(prof, float) / 1e12, name='PROF2D'),

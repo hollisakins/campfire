@@ -471,7 +471,7 @@ def load_optics(path=OPTICS_FILE):
 
 def models():
     """The shipped model, or the file ``CAMPFIRE_NIRSPEC_OPTICS`` names (for testing a candidate calibration across
-    worker processes; products record which through PFOPTIC, the file's version)."""
+    worker processes; products record which through OPTICVER, the file's version)."""
     if 'default' not in _MODELS:
         _MODELS['default'] = load_optics(os.environ.get('CAMPFIRE_NIRSPEC_OPTICS') or OPTICS_FILE)
     return _MODELS['default']

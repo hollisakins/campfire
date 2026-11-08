@@ -17,13 +17,13 @@ Faint sources do not constrain their own spatial profile. The profile is chosen 
 3. **Profile from another grating**, for a grating spectrum without a PRISM profile that would otherwise take the default: the center offset and width of the same source's grating spectrum fitted with its own profile (the highest detection S/N if several), held constant with wavelength.
 4. **Default profile**: a compact source (0.16″ FWHM) at the planned position.
 
-The keywords `PFSHAPE` (`prism`, `own`, `grating`, `default`) and `PFREASON` record the profile adopted and the reason.
+The keywords `SHAPE` (`prism`, `own`, `grating`, `default`) and `SHAPEWHY` record the profile adopted and the reason.
 
 ## Definition of the reported flux
 
 A shutter samples only part of an extended source, and a decreasing fraction with increasing size. Because the fit models the full source, the reported flux is defined as the flux of the fitted, intrinsic (pre-PSF) profile within a 0.8″-diameter circular aperture centered on the source; for a point source this is the total flux. This is the quantity in `fnu`. The 0.8″ aperture, 1.5 shutter pitches, limits the extrapolation of large sources beyond the region sampled by the shutter.
 
-![Left: a 0.4″ FWHM galaxy, its open shutter with the adjacent shutters of the slitlet (dashed), and the 0.8″ reporting aperture. Right: the ratio of spectroscopic to 0.8″-aperture imaging flux for the 127 galaxies fitted with their own profile (`PFSHAPE = own`), as a function of fitted size. Gray: optimal extraction (flux entering the shutter), which declines with size. Blue: reported flux, consistent with the aperture photometry for most galaxies and exceeding it for the largest.](/docs/nirspec/reported_flux.png)
+![Left: a 0.4″ FWHM galaxy, its open shutter with the adjacent shutters of the slitlet (dashed), and the 0.8″ reporting aperture. Right: the ratio of spectroscopic to 0.8″-aperture imaging flux for the 127 galaxies fitted with their own profile (`SHAPE = own`), as a function of fitted size. Gray: optimal extraction (flux entering the shutter), which declines with size. Blue: reported flux, consistent with the aperture photometry for most galaxies and exceeding it for the largest.](/docs/nirspec/reported_flux.png)
 
 The optimal (`fnu_opt`) and boxcar (`fnu_3px`, `fnu_4px`, `fnu_5px`) extractions are also provided. They measure the flux entering the shutter with the `jwst` point-source path-loss correction, and are not directly comparable with `fnu` for extended sources.
 
@@ -67,4 +67,4 @@ Each file also contains a spectrum extracted identically from the same exposures
 
 ## Summary for publications
 
-> Each source's 2-D spectrum was fitted simultaneously in all exposures with a Gaussian source model convolved with a model of the MSA optics; the reported flux is that of the fitted intrinsic profile within a 0.8″-diameter aperture. Sources too faint to constrain their own profile were extracted with a compact default profile at the planned position (`PFSHAPE = default`).
+> Each source's 2-D spectrum was fitted simultaneously in all exposures with a Gaussian source model convolved with a model of the MSA optics; the reported flux is that of the fitted intrinsic profile within a 0.8″-diameter aperture. Sources too faint to constrain their own profile were extracted with a compact default profile at the planned position (`SHAPE = default`).

@@ -326,8 +326,8 @@ def _inputs(tmp_path, product, amp, where, contam=0.1, wave=None, bkg_why=('', '
         x1.header['EXTRYSTP'] = 18
         fits.HDUList([fits.PrimaryHDU(), x1]).writeto(os.path.join(where, f'{product}_x1d.fits'))
     h = fits.Header()
-    h['PFNCONT'] = 1
-    h['PFSELFSB'] = 0.02
+    h['NCONTAM'] = 1
+    h['SELFSUB'] = 0.02
     fits.HDUList([fits.PrimaryHDU(header=h), fits.ImageHDU(prof / 1e12, name='PROF2D'),
                   fits.ImageHDU(contam * amp * prof / 1e12, name='CONTAM2D'),
                   fits.ImageHDU(0.0 * prof, name='CONTERR2D')]).writeto(os.path.join(where, f'{product}_pf.fits'))
@@ -424,7 +424,7 @@ def test_combined_product_carries_the_master_background_spectrum(tmp_path):
         h.name = 'SPEC1D_MBKG'
         h.header['EXTRACT'] = 'profile'
         prim = fits.PrimaryHDU()
-        prim.header['PFSELFSB'] = 0.01
+        prim.header['SELFSUB'] = 0.01
         name = f'p_g{i}_spec.fits'
         fits.HDUList([prim, h]).writeto(tmp_path / name)
         files.append(name)

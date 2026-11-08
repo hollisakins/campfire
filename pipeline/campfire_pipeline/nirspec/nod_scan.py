@@ -54,7 +54,7 @@ INNER = 0.5          # |Delta| below this is not scanned (inside the target's ow
 @dataclass
 class ScanResult:
     """``detected``: the statistic passes the proposal threshold (``dchi2_min``); partner
-    proposals are made only then. ``candidate``: the product flag (``PFNBR``), set only
+    proposals are made only then. ``candidate``: the product flag (``NBRFLAG``), set only
     when the statistic also exceeds ``flag_dchi2`` (where the unphysical
     negative-amplitude statistic of the real population is 1-2 %) or the other
     disperser's scan finds the neighbour at the same Delta."""
@@ -118,19 +118,14 @@ class ScanResult:
     def header_cards(self):
         drp = ';'.join(f'{r[-5:]}:{n}>{",".join(str(x) for x in v)}'
                        for r, d in sorted(self.proposals.items()) for n, v in sorted(d.items()))
+        """{card: value} of the scan (``extraction_cards``); the proposals themselves go to
+        the proposed-overrides file and the per-source figure."""
         return {
-            'PFNBR': (int(self.candidate), 'Same-slitlet neighbour candidate (flag)'),
-            'PFNBRD': (int(self.detected), 'Above the proposal threshold (not a flag)'),
-            'PFNBRDEL': (float(self.delta) if np.isfinite(self.delta) else -999.0, 'Neighbour offset from target [slit units]'),
-            'PFNBRSIG': (float(self.dchi2), 'Neighbour chi2 drop / noise scale (best, positive)'),
-            'PFNBRNUL': (float(self.dchi2_null), 'Same, negative amplitude (null)'),
-            'PFNBRC': (float(self.noise), 'Noise scale of the scan chi2'),
-            'PFNBRBRT': (float(self.brightness) if np.isfinite(self.brightness) else -999.0,
-                         'Neighbour / target mean flux'),
-            'PFNBRX': (self.xdisp, 'Other disperser scan: single/agree/disagree/none'),
-            'PFNBRDRP': (drp[:68], 'Proposed partners root:nod>nods'),
-            'PFNBRUNS': (len(self.unresolved), 'Contaminated nods with no clear background'),
-            'PFNBRSUP': (self.suppressed[:68], 'Proposals withheld because'),
+            'NBRFLAG': bool(self.candidate),
+            'NBRDET': bool(self.detected),
+            'NBRDELTA': float(self.delta),
+            'NBRXDISP': self.xdisp,
+            'NBRPROP': drp[:40],
         }
 
 

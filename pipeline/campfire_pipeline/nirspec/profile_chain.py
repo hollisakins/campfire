@@ -58,7 +58,7 @@ class ChainConfig:
     pa_tolerance: float = 1.0            # deg; PRISM shape transferred only at the same roll
     agree_centre: float = 0.08           # own and PRISM shapes "agree" within these (then PRISM is kept)
     agree_log_width: float = 0.3
-    disagree_centre: float = 0.1         # PFSHDIS thresholds
+    disagree_centre: float = 0.1         # thresholds of the PRISM-own disagreement (reason prism_kept)
     disagree_width_ratio: tuple = (0.6, 1.6)
     min_clean_fraction: float = 0.5      # contamination masking: below this no own fit
     min_clean_fraction_exposure: float = 0.3
@@ -107,20 +107,20 @@ class PrismShape:
     pivot, held at every wavelength, since a grating's chromatic terms do not extrapolate an
     octave or more to another grating's range)."""
     product: str
-    shape: str                      # PFSHAPE of that product
+    shape: str                      # SHAPE of that product
     params: dict                    # centre, centre_prior, drift, width, width_change, pivot
     pa_v3: float = np.nan
     chromatic: bool = True
 
     @classmethod
     def from_header(cls, product, h, chromatic=True):
-        if 'PFSHAPE' not in h:
+        if 'SHAPE' not in h:
             return None
-        params = dict(centre=float(h['PFCEN']), centre_prior=float(h['PFCENPR']), drift=float(h['PFDRIFT']),
-                      width=float(h['PFWIDTH']), width_change=float(h['PFDWIDTH']), pivot=float(h['PFPIVOT']))
+        params = dict(centre=float(h['SRCCEN']), centre_prior=float(h['SRCCENPL']), drift=float(h['SRCDRIFT']),
+                      width=float(h['SRCWIDTH']), width_change=float(h['SRCDWID']), pivot=float(h['SRCPIVOT']))
         if not chromatic:
             params.update(drift=0.0, width_change=0.0)
-        return cls(product=product, shape=str(h['PFSHAPE']), params=params, pa_v3=float(h.get('PFPAV3', np.nan)),
+        return cls(product=product, shape=str(h['SHAPE']), params=params, pa_v3=float(h.get('PA_V3', np.nan)),
                    chromatic=chromatic)
 
 
@@ -145,54 +145,34 @@ class ChainResult:
     dominance: float = np.nan       # other sources' predicted light / the target's on the main shutter (recorded)
 
     def header_cards(self):
-        """Primary-header cards of the chain (written to ``_pf.fits``, copied to ``_spec.fits``)."""
+        """{card: value} of the chain (``extraction_cards``; written to the intermediate,
+        copied to ``_spec.fits``). Values that do not apply are left out by ``put``."""
         p = self.result.params
-        c = {
-            'PFVER': (PF.FIT_VERSION, 'Profile-fit model version'),
-            'PFOPTIC': (PF.optics_version(), 'Diffraction model of the MSA (data/nirspec_optics.json)'),
-            'PFAPER': (PF.REPORT_APERTURE, 'Reported-flux aperture diameter [arcsec]'),
-            'PFSHAPE': (self.shape, 'Shape used: own / prism / grating / default'),
-            'PFCHAIN': (self.chain, 'Shape chain: gated / fixed'),
-            'PFREASON': (self.reason[:68], 'Why this shape'),
-            'PFGATE': (_f(self.snr_det), 'Detection S/N (gate statistic)'),
-            'PFGATETH': (_f(self.gate), 'Gate threshold'),
-            'PFGATEC': (_f(self.detection.get('c', np.nan)), 'Noise scale used by the gate'),
-            'PFDOMIN': (_f(self.dominance), 'Other sources light / own light on the trace'),
-            'PFCHI2D': (_f(self.chi2.get('default', np.nan)), 'chi2, default shape, common pixels'),
-            'PFCHI2P': (_f(self.chi2.get('prism', np.nan)), 'chi2, PRISM shape, common pixels'),
-            'PFCHI2O': (_f(self.chi2.get('own', np.nan)), 'chi2, own fit, common pixels'),
-            'PFNPIXC': (int(self.npix_common), 'Independent pixels behind the chi2 values'),
-            'PFBOUND': (int(self.bound_bits), 'Own fit on a bound: 1 cen 2 wid 4 drift 8 dwid'),
-            'PFSRCY': (int(self.srcy_flag), 'SRCYPOS: 0 ok, 1 placeholder ignored, 2 disagree'),
-            'PFSHDIS': (int(self.shdis), 'PRISM and own grating shapes disagree'),
-            'PFPRISM': (self.prism_product[:68], 'Product the transferred shape came from'),
-            'PFXFER': (self.transfer, 'Shape transfer: used/none/no_prism/...'),
-            'PFPAV3': (_f(self.pa_v3), 'PA_V3 of the science exposures [deg]'),
-            'PFCEN': (p['centre'], 'Source centre at the pivot [slit units]'),
-            'PFCENPR': (p['centre_prior'], 'Planned source position (prior centre)'),
-            'PFDRIFT': (p['drift'], 'Centre change per octave [slit units]'),
-            'PFWIDTH': (p['width'], 'Galaxy Gaussian sigma at the pivot [slit units]'),
-            'PFDWIDTH': (p['width_change'], 'Width change per octave [slit units]'),
-            'PFPIVOT': (p['pivot'], 'Pivot wavelength [um]'),
-            'PFCHROM': (bool(self.result.chromatic), 'Centre and width vary with wavelength'),
-            'PFCHI2': (float(self.result.chi2_red), 'Reduced chi2 of the chosen fit'),
-            'PFNPIX': (int(self.result.npix), 'Pixels in the fit'),
-            'PFBAROFF': (_f(np.median([e.bar_offset for e in self.result.model.exps])),
-                         'Bar offset added to slit y [slit units]'),
-        }
         exps = self.result.model.exps
+        c = {
+            'EXTRVER': PF.FIT_VERSION,
+            'OPTICVER': PF.optics_version(),
+            'FLUXAPER': PF.REPORT_APERTURE,
+            'SHAPE': self.shape,
+            'SHAPEWHY': self.reason[:40],
+            'SHAPESRC': self.prism_product[:40],
+            'PA_V3': float(self.pa_v3),
+            'DETSNR': float(self.snr_det),
+            'SRCCEN': p['centre'],
+            'SRCCENPL': p['centre_prior'],
+            'SRCDRIFT': p['drift'],
+            'SRCWIDTH': p['width'],
+            'SRCDWID': p['width_change'],
+            'SRCPIVOT': p['pivot'],
+            'SRCCHROM': bool(self.result.chromatic),
+            'SRCCHI2': float(self.result.chi2_red),
+            'BAROFF': float(np.median([e.bar_offset for e in exps])) if exps else np.nan,
+        }
         sl = exps[0].slit_loss if exps else None
         if sl is not None:
-            c['PFSLY'] = (sl.y, 'Slit-direction path loss: optics / jwst')
-            c['PFSLX'] = (sl.x, 'Along-dispersion path loss: corrected / jwst')
-        refs = sorted({e.pl_ref for e in exps if e.pl_ref})
-        c['PFPLREF'] = (','.join(refs)[:68] or 'none', 'jwst path-loss reference the model starts from')
+            c['SLOSSY'] = sl.y
+            c['SLOSSX'] = sl.x
         return c
-
-
-def _f(x):
-    x = float(x)
-    return x if np.isfinite(x) else -999.0
 
 
 def _exp_pa(exps):
@@ -216,7 +196,7 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
     fraction of the main-shutter pixels left by contamination masking (None: no
     masking), ``contam_ratio``: callable(FitResult) -> other sources' predicted light
     over the target's fitted light on the main shutter (``profile_contam.contam_light_ratio``),
-    recorded as ``PFDOMIN`` (the others' light is subtracted, so it decides nothing). The
+    kept on the result as ``dominance`` (the others' light is subtracted, so it decides nothing). The
     masked-fraction rule only sees the pixels the subtraction could not handle."""
     log = log or (lambda *a: None)
     srcy = PF.planned_position(exps, cfg.srcypos_tolerance)[1]

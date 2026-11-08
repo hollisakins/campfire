@@ -48,11 +48,10 @@ The primary header of each spectrum file records:
 |---|---|
 | `CMPFRVER` | CAMPFIRE pipeline version |
 | `CAL_VER`, `CRDS_CTX` | `jwst` version and CRDS context |
-| `PFVER` | Extraction model version |
-| `PFOPTIC` | Optics model version |
-| `PFPLREF` | `jwst` path-loss reference used as the baseline |
-| `PFSLY`, `PFSLX` | Slit-loss treatment along the slit and across the shutter |
-| `PFBAROFF` | Bar offset applied |
+| `EXTRVER` | Extraction model version |
+| `OPTICVER` | Optics model version |
+| `SLOSSY`, `SLOSSX` | Path-loss treatment along the slit and across the shutter |
+| `BAROFF` | Bar offset applied |
 | `EXTRACT`, `EXTRWHY` | Extraction adopted for `fnu`, and the reason |
 | `MBKGPREF`, `MBKGWHY` | Whether the master-background spectrum is likely preferable, and the reason |
 

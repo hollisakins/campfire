@@ -34,7 +34,7 @@ The model parameters are constrained by two data sets:
 
 ![The model for uniform illumination of a three-shutter slitlet (lines) compared with the bar shadow measured from empty PRISM shutters (circles), both averaged over 0.8–1.2 µm (blue) and 4.5–5.3 µm (orange) and normalized at the center of the middle shutter. Bottom: ratio of measurement to model within the slitlet.](/docs/nirspec/optics_uniform.png)
 
-A single model is used for all dispersers, since the light incident on the MSA does not depend on the disperser; it was verified against grating observations of calibration stars and the G395M bar shadow. The model version is recorded in the `PFOPTIC` keyword, and its input files are listed in `pipeline/campfire_pipeline/data/nirspec_calibrations.toml`.
+A single model is used for all dispersers, since the light incident on the MSA does not depend on the disperser; it was verified against grating observations of calibration stars and the G395M bar shadow. The model version is recorded in the `OPTICVER` keyword, and its input files are listed in `pipeline/campfire_pipeline/data/nirspec_calibrations.toml`.
 
 ## Path loss across the shutter
 
@@ -42,7 +42,7 @@ Across the dispersion direction, the source position within the shutter is set b
 
 ## Bar offset
 
-The model requires the position of the shutter edges on the detector. The offset of the bars relative to the `jwst` slit frame is measured once per observation and disperser from the edges of the empty-shutter background, and applied in every fit (keyword `PFBAROFF`).
+The model requires the position of the shutter edges on the detector. The offset of the bars relative to the `jwst` slit frame is measured once per observation and disperser from the edges of the empty-shutter background, and applied in every fit (keyword `BAROFF`).
 
 ## Reverting to the jwst references
 
@@ -52,7 +52,7 @@ The model requires the position of the shutter edges on the detector. The offset
 | `[nirspec.stage3] slit_loss_x = "jwst"` | Across the shutter: `jwst` reference without the stellar correction; the extended-source ratio is still applied |
 | `[nirspec.stage3] bar_offset = "off"` | No bar offset |
 
-The settings are recorded in `PFSLY`, `PFSLX` and `PFBAROFF`. The boxcar and optimal extractions in the same file (`fnu_3px`, `fnu_4px`, `fnu_5px`, `fnu_opt`) always carry the `jwst` path-loss correction applied in Stage 2 (point-source for nearly all sources) and no bar-shadow correction.
+The settings are recorded in `SLOSSY`, `SLOSSX` and `BAROFF`. The boxcar and optimal extractions in the same file (`fnu_3px`, `fnu_4px`, `fnu_5px`, `fnu_opt`) always carry the `jwst` path-loss correction applied in Stage 2 (point-source for nearly all sources) and no bar-shadow correction.
 
 ## Summary for publications
 
