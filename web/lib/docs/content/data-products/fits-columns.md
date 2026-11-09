@@ -101,7 +101,7 @@ The extraction adds the keywords below. Lengths along the slit are in units of t
 | `CONTFRAC`, `CONTSIG` | Predicted contamination relative to the spectrum, and relative to its noise |
 | `CONTNSEP` | Fraction of the spectrum where the target cannot be separated from a neighbor |
 | `SELFSUB` | Fraction of the source's own flux removed by nod subtraction |
-| `NBRFLAG`, `NBRDET` | Possible uncataloged neighbor in the slitlet (flagged for review), and whether it passed the threshold for proposing an override |
+| `NBRDET` | Uncataloged neighbor in the slitlet above the threshold for proposing an override |
 | `NBRDELTA` | Offset of that neighbor from the target |
 | `NBRPROP` | Background exposures proposed for exclusion |
 | `NBRXDISP` | Whether the other disperser's scan agrees (`single`, `agree`, `disagree`, `none`) |
