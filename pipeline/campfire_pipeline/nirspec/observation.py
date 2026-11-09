@@ -662,7 +662,13 @@ class Observation:
                     if files3['dither_pattern_type'][0] == 'NONE':
                         pass
 
+                    elif (files3['dither_pattern_type'][0] == '2-POINT-WITH-NIRCAM-SIZE3') and ('SHUTTER-SLITLET' in files3['nod_type'][0]) and (files3['subpixel_dither_points'][0] == 2):
+                        subpx_dither = np.where(np.isin(files3['dither_position'], [1,3,5]), 1, 2)
+
                     elif (files3['dither_pattern_type'][0] == '2-POINT-WITH-NIRCAM-SIZE2') and ('SHUTTER-SLITLET' in files3['nod_type'][0]) and (files3['subpixel_dither_points'][0] == 2):
+                        subpx_dither = np.where(np.isin(files3['dither_position'], [1,3,5]), 1, 2)
+
+                    elif (files3['dither_pattern_type'][0] == '2-POINT-WITH-NIRCAM-SIZE1') and ('SHUTTER-SLITLET' in files3['nod_type'][0]) and (files3['subpixel_dither_points'][0] == 2):
                         subpx_dither = np.where(np.isin(files3['dither_position'], [1,3,5]), 1, 2)
 
                     elif files3['dither_pattern_type'][0].endswith('-NOD') and files3['subpixel_dither_points'][0] == 1:
