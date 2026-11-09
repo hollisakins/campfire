@@ -925,9 +925,13 @@ background group, which also refits `x_loss` with 1133).
   cutouts it crosses: on uds_p2 38178 at 23 times its PRISM flux, and 39597 at about 20 uJy, where
   its nodded and PRISM spectra are near zero; 39597 is also flagged `MBKGPREF` (`extended`), so its
   master-background spectrum is offered as the likely better one. The same light falls on p1's
-  master-background spectra at those rows. A map of light that is the same in every nod and that no
-  model explains finds it in both observations, with the fixed slits' light and a few fainter
-  traces (design in `scratch/claude/open_shutter_design/design.md`; how to treat it is open).
+  master-background spectra at those rows. It is not in every G395M observation: spurs_gds (program
+  9214, 2026-08-23, between and after the two EMBER visits of 2025-11-27 and 2026-07-25) is at the
+  background level there (0.0001 against 0.05-0.08 DN/s). So a fixed mask per disperser would be
+  wrong, and finding it per observation would have to tell it from a large source that fills its own
+  slitlet, which is also the same in every nod. It is left as a limitation (user, 2026-11-09). A map
+  of light that is the same in every nod and that no model explains, with the fixed slits' light and
+  a few fainter traces, is designed in `scratch/claude/open_shutter_design/design.md`.
 - *Faint G395M below PRISM.* Between the two dispersers, at faint fluxes, the 3-pixel boxcar
   differs by about -0.005 to -0.014 uJy (G395M lower) in every flux bin, on uds_p2 and on p1, in
   v1 and v2, and with every extraction and both backgrounds; above 0.5 uJy it is invisible. Against
