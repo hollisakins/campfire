@@ -401,7 +401,9 @@ class ShutterMap:
                 ids = [int(sid[i])] + ids
             srcs.append(','.join(str(s) for s in ids))
         slits['kind'] = kind; slits['source_id'] = sid; slits['lit'] = lit
-        slits['sources'] = np.array(srcs, dtype='U256') if srcs else np.zeros(0, 'U256')
+        # as wide as its longest list (a fixed width would cut ids off)
+        wsrc = max([64] + [len(s) for s in srcs])
+        slits['sources'] = np.array(srcs, dtype=f'U{wsrc}') if srcs else np.zeros(0, 'U64')
         src_here = is_src & alive & lit[slit_of] & (kind[slit_of] == 'slitlet') if nsh else np.zeros(0, bool)
 
         def take(a, idx):

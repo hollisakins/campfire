@@ -50,9 +50,6 @@ def stage_flags(sc):
         scan_null_ratio=float(g('scan_null_ratio', 1.5)),
         scan_max_masked=float(g('scan_max_masked', 0.3)),
         scan_close=float(g('scan_close', 0.9)),
-        scan_flag_dchi2=float(g('scan_flag_dchi2', 1500.0)),
-        scan_flag_dchi2_low=float(g('scan_flag_dchi2_low', 500.0)),
-        scan_flag_null_ratio=float(g('scan_flag_null_ratio', 5.0)),
         scan_xdisp_tol=float(g('scan_xdisp_tol', 0.2)),
     )
 
@@ -185,7 +182,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
             # its pass 1 came from there: those members are left out of the prediction from
             # their own pass 1s and added from it
             jl = _own_joint_light(workspace_dir, pass1_products, source_id)
-            members = {int(s) for s in jl['members']} if jl is not None else set()
+            members = {int(s) for s in jl['solved']} if jl is not None else set()
             P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, why_missing=why_missing, exclude=members)
             if jl is not None:
                 from campfire_pipeline.nirspec import joint_first_pass as JF
@@ -221,8 +218,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
         S = NS.run(R_scan if R_scan is not None else C.result, nbins=fl['scan_nbins'], width=fl['scan_width'],
                    dchi2_min=fl['scan_dchi2'],
                    min_snr=fl['scan_min_snr'], drop_frac=fl['scan_drop_frac'], null_ratio=fl['scan_null_ratio'],
-                   close=fl['scan_close'], flag_dchi2=fl['scan_flag_dchi2'],
-                   flag_low=fl['scan_flag_dchi2_low'], flag_null_ratio=fl['scan_flag_null_ratio'])
+                   close=fl['scan_close'])
         # too few pixels free of other slitlets' light to tell a same-slitlet neighbour
         # (seen on 5215): report, do not propose
         if R_scan is None or 1.0 - share > fl['scan_max_masked']:
@@ -260,10 +256,8 @@ def read_scan(workspace_dir, product):
                 h = fits.getheader(p)
             except OSError:
                 continue
-            if 'NBRDET' in h:            # detection at the proposal level (NBRFLAG is the stricter flag)
+            if 'NBRDET' in h:
                 return bool(h['NBRDET']), float(h.get('NBRDELTA', np.nan))
-            if 'NBRFLAG' in h:
-                return bool(h['NBRFLAG']), float(h.get('NBRDELTA', np.nan))
     return None
 
 
@@ -441,7 +435,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         TM.report(f'product {product_name}', log=log)
         return dict(product=product_name, source_id=int(source_id), shape=C.shape, reason=C.reason,
                     is_prism=bool(is_prism), snr_det=float(C.snr_det), transfer=C.transfer,
-                    scan=(None if S is None else dict(detected=S.detected, candidate=S.candidate, delta=S.delta,
+                    scan=(None if S is None else dict(detected=S.detected, delta=S.delta,
                                                       dchi2=S.dchi2, proposals=S.proposals,
                                                       unresolved=S.unresolved, xdisp=S.xdisp,
                                                       preview=A.preview)),

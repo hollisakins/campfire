@@ -30,7 +30,7 @@ class Member:
     sid: int
     product: str
     exps: list
-    model: object                 # ProfileModel of the member's data (non-members' light subtracted / masked)
+    model: object                 # ProfileModel of the member's data, as they are (nothing subtracted or masked)
     p: np.ndarray                 # fixed shape vector at the model's pivot
     eoff: np.ndarray
     shape_src: str = ''
@@ -96,8 +96,7 @@ def _pixel_keys(member, tags):
     for k, m in M.pix_masks:
         e = M.exps[k]
         iy, ix = np.nonzero(m)
-        tag = CT.exposure_key(e.name) + '|' + ','.join(sorted(CT.exposure_key(M.exps[j].name) for j in e.partners))
-        tid = tags.setdefault(tag, len(tags))
+        tid = tags.setdefault(CT.nod_tag(M.exps, k), len(tags))
         det = (iy + int(e.origin[0])).astype(np.int64) * 100000 + (ix + int(e.origin[1]))
         ks.append(np.full(iy.size, k))
         iys.append(iy)
@@ -109,8 +108,9 @@ def _pixel_keys(member, tags):
 def owned_pixels(members):
     """Each detector datum enters the joint data once: a pixel in several members' fit
     regions (the same nod difference, i.e. the same partners) belongs to the first
-    member in the list (sorted by source id). Its value and noise are that member's,
-    in its calibration. Sets ``member.owned`` and returns the number of joint data."""
+    member in the list (the target, then by coupling strength, ``joint_first_pass.neighbourhood``).
+    Its value and noise are that member's, in its calibration. Sets ``member.owned`` and
+    returns the number of joint data."""
     claimed = np.zeros(0, np.int64)
     tags = {}
     n = 0

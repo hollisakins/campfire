@@ -54,17 +54,13 @@ INNER = 0.5          # |Delta| below this is not scanned (inside the target's ow
 @dataclass
 class ScanResult:
     """``detected``: the statistic passes the proposal threshold (``dchi2_min``); partner
-    proposals are made only then. ``candidate``: the product flag (``NBRFLAG``), set only
-    when the statistic also exceeds ``flag_dchi2`` (where the unphysical
-    negative-amplitude statistic of the real population is 1-2 %) or the other
-    disperser's scan finds the neighbour at the same Delta."""
+    proposals are made only then, for a person to review."""
     detected: bool = False
-    candidate: bool = False
-    flag_dchi2: float = np.inf
     gains: dict = field(default_factory=dict)       # 'root:nod' -> (modelled gain, variance cost) of a proposal
     delta: float = np.nan
     dchi2: float = 0.0
     dchi2_null: float = 0.0          # best chi2 drop with a net negative neighbour
+    dchi2_nuisance: float = 0.0      # chi2 drop of the target's centre and width terms alone (recorded only)
     snr: float = 0.0
     curve: tuple = field(default=(), repr=False)     # (deltas, dchi2 positive, dchi2 negative)
     proposals: dict = field(default_factory=dict)   # root -> {nod (str): [nods]}
@@ -110,7 +106,6 @@ class ScanResult:
             self.xdisp = 'none'
         elif det and np.isfinite(d) and abs(d - self.delta) <= tol:
             self.xdisp = 'agree'
-            self.candidate = True
         else:
             self.xdisp = 'disagree'
             self.suppress('other disperser ' + (f'finds Delta {d:+.2f}' if det else 'finds none'))
@@ -121,7 +116,6 @@ class ScanResult:
         """{card: value} of the scan (``extraction_cards``); the proposals themselves go to
         the proposed-overrides file and the per-source figure."""
         return {
-            'NBRFLAG': bool(self.candidate),
             'NBRDET': bool(self.detected),
             'NBRDELTA': float(self.delta),
             'NBRXDISP': self.xdisp,
@@ -208,6 +202,8 @@ def scan(R, nbins=16, width=None, step=0.05, refine=True, info=None):
         return float(al @ b[ok]), al, Ni, ok
 
     d0 = _solve(Nu)[0] if Nu.shape[1] else 0.0
+    if info is not None:
+        info['d0'] = float(d0)
 
     def at(delta):
         T = np.asarray(M.design(_neighbour_p(c, delta, width), np.zeros(len(M.exps))) @ Bm)
@@ -309,37 +305,49 @@ def proposal_gain(fracs, clean, snr):
 def propose(R, delta, amps, drop_frac=0.2, nbins=16, width=None):
     """Partner proposals from the fractions (see module doc).
 
+    A nod's partners are one choice for both detectors (the overrides key on root and
+    nod), so a nod's exposures are taken together: a partner is dirty when it is on
+    either detector, at its larger fraction.
+
     Returns (proposals {root: {nod: [nods]}}, unresolved ['root:nod'], dirty,
     gains {'root:nod': (gain, cost)}: the modelled gain of each proposal and its
     variance cost, ``proposal_gain``, recorded only)."""
     M = R.model
     snr = {}
     fr = partner_fractions(R, delta, amps, nbins=nbins, width=width, snr=snr)
-    props, unres, dirty, gains = {}, [], {}, {}
+    by_nod = {}
     for k, d in fr.items():
         e = M.exps[k]
-        bad = [j for j, v in d.items() if v > drop_frac]
+        c = by_nod.setdefault(f'{_root(e)}:{_nod(e)}', dict(root=_root(e), nod=_nod(e), fr={}, snr=np.inf))
+        for j, v in d.items():
+            n = _nod(M.exps[j])
+            c['fr'][n] = max(c['fr'].get(n, -np.inf), v)
+        c['snr'] = min(c['snr'], snr.get(k, np.inf))
+    props, unres, dirty, gains = {}, [], {}, {}
+    for key, c in by_nod.items():
+        d = c['fr']
+        bad = [n for n, v in d.items() if v > drop_frac]
         if not bad:
             continue
-        key = f'{_root(e)}:{_nod(e)}'
-        dirty[key] = {_nod(M.exps[j]): round(v, 3) for j, v in d.items()}
-        clean = [j for j in d if j not in bad]
+        dirty[key] = {n: round(v, 3) for n, v in d.items()}
+        clean = [n for n in d if n not in bad]
         if len(d) < 2 or not clean:
             unres.append(key)
             continue
-        gains[key] = proposal_gain(d, clean, snr.get(k, np.inf))
-        props.setdefault(_root(e), {})[str(_nod(e))] = sorted(_nod(M.exps[j]) for j in clean)
+        gains[key] = proposal_gain(d, clean, c['snr'])
+        props.setdefault(c['root'], {})[str(c['nod'])] = sorted(clean)
     return props, unres, dirty, gains
 
 
 def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, null_ratio=1.5,
-        close=0.9, flag_dchi2=np.inf, flag_low=np.inf, flag_null_ratio=5.0):
+        close=0.9):
     """Scan, detect, propose. Never raises (a failure is recorded in ``error``).
 
-    The chi2 drops are divided by a noise scale (the reduced chi2 of the target +
-    best neighbour + nuisance model on the fitted pixels), so a bright target whose
-    residuals carry shape mismatch, or understated errors, do not read as a
-    neighbour. Detected when the best positive drop
+    The chi2 drops are divided by a noise scale: the target model's chi2 less the best
+    neighbour's drop beyond the centre and width terms, per degree of freedom. The drop
+    those terms give on their own (``dchi2_nuisance``) stays in it; the proposal level
+    was set on this scale. So a bright target whose residuals carry shape mismatch, or
+    understated errors, do not read as a neighbour. Detected when the best positive drop
     exceeds ``dchi2_min``, its S/N ``min_snr``, and ``null_ratio`` times the best
     drop a *negative* neighbour gives on the same data (structured residuals of a
     bright or extended target produce both signs; a separate source produces mostly
@@ -348,15 +356,12 @@ def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, nul
     A neighbour closer than ``close`` slit units cannot be separated from the target
     by choosing partners: its copies land on the target's rows whatever the choice,
     and in the slitlet injections applying such proposals made the target's flux
-    worse (2026-10-23). They are withheld whatever the neighbour's brightness.
+    worse (2026-10-23). They are withheld whatever the neighbour's brightness, and so
+    is the nod list a person would otherwise be asked about (``unresolved``).
 
-    The product flag (``candidate``) needs the statistic above ``flag_dchi2``, or above
-    ``flag_low`` and ``flag_null_ratio`` times the negative-amplitude statistic (three or
-    more nods), or the other disperser's agreement (``ScanResult.cross_check``).
-    ``dchi2_min`` is the proposal level. On the p14 + p9 population (989 products) the
-    mirror of this rule on the negative statistic fires on 1.7-2.1 % at 1500 / 500 / 5
-    (round 3); the 80 level alone fires on 26-30 % of products."""
-    out = ScanResult(flag_dchi2=float(flag_dchi2))
+    ``dchi2_min`` is the proposal level; proposals are written for review, never
+    applied (``stage3.write_scan_proposals``)."""
+    out = ScanResult()
     try:
         info = {}
         grid, dpos, dneg, amps = scan(R, nbins=nbins, width=width, info=info)
@@ -369,6 +374,7 @@ def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, nul
         best = max(float(dpos.max()), float(dneg.max()))
         c = (info['chi2'] - best) / max(info['n_eff'] - 3 * nbins, 1.0)
         out.noise = float(c) if np.isfinite(c) and c > 0 else 1.0
+        out.dchi2_nuisance = float(info.get('d0', 0.0))
         dpos, dneg = dpos / out.noise, dneg / out.noise
         out.curve = (grid, dpos, dneg)
         i = int(np.argmax(dpos))
@@ -380,8 +386,6 @@ def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, nul
         sizes = [sum(1 for x in R.model.exps if x.group == g) for g in {x.group for x in R.model.exps}]
         null_ok = out.dchi2 > null_ratio * out.dchi2_null if min(sizes) >= 3 else True
         out.detected = bool(out.dchi2 > dchi2_min and out.snr >= min_snr and null_ok)
-        strong_null = min(sizes) >= 3 and out.dchi2 > flag_low and out.dchi2 > flag_null_ratio * out.dchi2_null
-        out.candidate = bool(out.detected and (out.dchi2 > flag_dchi2 or strong_null))
         if out.detected:
             M = R.model
             nb = float(np.mean(np.clip(_bins(M.lam_grid, nbins) @ amps[i], 0, None)))
@@ -392,7 +396,7 @@ def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, nul
             if abs(out.delta) < close:
                 out.suppressed = (f'brighter neighbour at {out.delta:+.2f}: unresolvable' if out.brightness > 1.0
                                   else f'neighbour at {out.delta:+.2f}: too close to separate')
-                out.proposals = {}
+                out.proposals, out.unresolved = {}, []
     except Exception as e:                       # noqa: BLE001 - a failed scan must not fail the product
         out.error = f'{type(e).__name__}: {e}'
     return out

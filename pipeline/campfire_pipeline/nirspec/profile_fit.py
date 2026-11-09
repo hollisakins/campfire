@@ -246,17 +246,8 @@ class Exposure:
 
     @property
     def dy(self):
-        """Pixel height in slit_frame units: the central difference of y down each column, one-sided
-        at a slit's first and last row (the row beyond is outside the slit, y NaN; slitlets longer
-        than three shutters put partner terms on those rows)."""
-        y = np.asarray(self.y, float)
-        d = np.abs(np.gradient(y, axis=0))
-        edge = np.isnan(d) & np.isfinite(y)
-        if edge.any():
-            up = np.abs(np.diff(y, axis=0, append=np.nan))
-            down = np.abs(np.diff(y, axis=0, prepend=np.nan))
-            d = np.where(edge, np.where(np.isfinite(up), up, down), d)
-        return d
+        """Pixel height in slit_frame units (``pixel_height``)."""
+        return pixel_height(self.y)
 
 
 def _common_frame(slits):
@@ -586,6 +577,34 @@ def fit_pixel_masks(exps):
     return rows
 
 
+def pixel_height(y):
+    """Pixel height in slit_frame units of a slit-position image ``y`` (NaN outside the
+    slit): the central difference of y down each column, one-sided at a slit's first and
+    last row (the row beyond is outside the slit; slitlets longer than three shutters put
+    partner terms on those rows)."""
+    y = np.asarray(y, float)
+    d = np.abs(np.gradient(y, axis=0))
+    edge = np.isnan(d) & np.isfinite(y)
+    if edge.any():
+        up = np.abs(np.diff(y, axis=0, append=np.nan))
+        down = np.abs(np.diff(y, axis=0, prepend=np.nan))
+        d = np.where(edge, np.where(np.isfinite(up), up, down), d)
+    return d
+
+
+def cover(grid, lam_lo, lam_hi):
+    """``grid`` (sorted) extended at each end, by the step of its end, until it spans
+    ``lam_lo``-``lam_hi``: every pixel a spectrum on it models then falls between two
+    points. Unchanged when it already does or has fewer than two points."""
+    g = np.asarray(grid, float)
+    if g.size < 2 or not (np.isfinite(lam_lo) and np.isfinite(lam_hi)):
+        return g
+    lo, hi = g[1] - g[0], g[-1] - g[-2]
+    n_lo = int(np.ceil((g[0] - lam_lo) / lo)) if lam_lo < g[0] and lo > 0 else 0
+    n_hi = int(np.ceil((lam_hi - g[-1]) / hi)) if lam_hi > g[-1] and hi > 0 else 0
+    return np.concatenate([g[0] - lo * np.arange(n_lo, 0, -1), g, g[-1] + hi * np.arange(1, n_hi + 1)])
+
+
 def nod_terms(exps, k):
     """(exposure, weight) of every frame of exposure k's nod difference: +1 for k's own
     frame and -1/n for each of its n subtracted partners."""
@@ -717,7 +736,11 @@ class ProfileModel:
 
     def _grid(self):
         """Spectrum grid: native sampling at the source row of the first fitted
-        exposure on each detector, merged across detectors."""
+        exposure on each detector, extended at its ends (``cover``) to the wavelengths of
+        every frame the detector's fitted pixels take (other rows and nods, and the partner
+        frames, could reach past that row's), merged across detectors. On p1 no source
+        needed the extension: the row runs on over the pixels without a flat field, which
+        are never fitted."""
         lams = []
         for det in sorted({e.detector for e in self.exps if e.use_data}):
             cand = [x for x in self.exps if x.use_data and x.detector == det]
@@ -725,7 +748,13 @@ class ProfileModel:
             yy = np.where(np.isfinite(e.y), e.y, np.inf)
             r = np.argmin(np.abs(yy - e.src_y), axis=0)
             lam = e.wav[r, np.arange(e.wav.shape[1])]
-            lams.append(lam[np.isfinite(lam)])
+            lam = np.unique(lam[np.isfinite(lam)])
+            used = [self.exps[j].wav[m] for k, m in self.pix_masks if self.exps[k].detector == det
+                    for j, _ in term_weights(self.exps, k)]
+            used = np.concatenate([u[np.isfinite(u)] for u in used]) if used else np.zeros(0)
+            if lam.size >= 2 and used.size:
+                lam = cover(lam, used.min(), used.max())
+            lams.append(lam)
         g = np.unique(np.concatenate(lams))
         if g.size < 3:
             raise TooFewWavelengths('profile fit: too few wavelength samples')

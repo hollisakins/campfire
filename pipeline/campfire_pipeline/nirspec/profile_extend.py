@@ -203,8 +203,8 @@ def solve_extension(R, sid, maps, workspace, n_smooth=31, keep_lines=True, clip=
     if not blocks:
         return None
     ends = []
-    for lrow in end_rows(per_exp, exps, [b[0] for b in blocks], lam_min_in, lam_max_in):
-        out = _solve_end(blocks, lrow, n_smooth, keep_lines, clip, n_clip)
+    for grid in end_grids(per_exp, exps, [b[0] for b in blocks], lam_min_in, lam_max_in):
+        out = _solve_end(blocks, grid, n_smooth, keep_lines, clip, n_clip) if grid is not None else None
         if out is not None:
             ends.append(out)
     if not ends:
@@ -236,7 +236,7 @@ def past_geometry(M, p, eoff, lam_min_in, lam_max_in):
             ys = ys + e.bar_offset                   # the model's slit frame, as ``load_group`` places e.y
             with np.errstate(invalid='ignore'):
                 past = foot & ((lam > lam_max_in) | (lam < lam_min_in))
-            dy = np.abs(np.gradient(np.where(np.isfinite(ys), ys, 0.0), axis=0))
+            dy = PF.pixel_height(ys)
             gimg = np.zeros(ys.shape)
             if e.has_source and past.any():
                 yv, lv, dv = ys[past], lam[past], dy[past]
@@ -285,6 +285,24 @@ def native_grid(lrow):
     return grid if grid.size >= 2 else None
 
 
+def end_grids(per_exp, exps, ks, lam_min_in, lam_max_in):
+    """The blue end's and the red end's grids (None where an end has none): the native
+    grid of the source row (``end_rows``, ``native_grid``) extended (``profile_fit.cover``)
+    to the wavelengths of every pixel past that end where the source has light in the
+    frames of ``ks``, so the grid starts where the in-range one stops and reaches the last
+    such pixel (other rows and nods reach past the source row's)."""
+    lit = [per_exp[k][3][per_exp[k][5] & np.isfinite(per_exp[k][4]) & (per_exp[k][4] != 0)]
+           for k in dict.fromkeys(ks) if k in per_exp]
+    lit = np.concatenate(lit) if lit else np.zeros(0)
+    lit = lit[np.isfinite(lit)]
+    out = []
+    for lrow, side in zip(end_rows(per_exp, exps, ks, lam_min_in, lam_max_in),
+                          (lit[lit < lam_min_in], lit[lit > lam_max_in])):
+        g = native_grid(lrow)
+        out.append(PF.cover(g, side.min(), side.max()) if g is not None and side.size else g)
+    return out
+
+
 def frames_of(per_exp, exps, ends):
     """The frames the ends' spectra (dicts with ``lam``, ``flux``, ``err``) put on each
     exposure holding the source: {exposure key: dict(rows, cols, img, err, keep)}."""
@@ -310,15 +328,12 @@ def frames_of(per_exp, exps, ends):
     return frames
 
 
-def _solve_end(blocks, lrow, n_smooth, keep_lines, clip, n_clip):
-    """One end's spectrum on the native grid ``lrow`` (sorted wavelengths along the
-    source row): the design over the ``blocks`` pixels whose wavelength falls on the grid,
-    solved with ``clip``-sigma clipping and smoothed. None when there are too few pixels."""
+def _solve_end(blocks, grid, n_smooth, keep_lines, clip, n_clip):
+    """One end's spectrum on its grid (``end_grids``): the design over the ``blocks``
+    pixels whose wavelength falls on the grid, solved with ``clip``-sigma clipping and
+    smoothed. None when there are too few pixels."""
     from campfire_pipeline.nirspec.profile_contam import smooth_spectrum
 
-    grid = native_grid(lrow)
-    if grid is None:
-        return None
     rows_, cols_, vals_, d_, v_ = [], [], [], [], []
     nrow = 0
     for k, D, V, ok, terms in blocks:

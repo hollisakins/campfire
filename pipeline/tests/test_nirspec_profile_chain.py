@@ -385,8 +385,8 @@ def test_extraction_cards_omit_what_does_not_apply():
     XC.put(h, 'CONTFRAC', 0.2)
     XC.put(h, 'CONTFRAC', np.nan)                 # no longer applies: removed, not a placeholder
     XC.put(h, 'SHAPESRC', '')
-    XC.put(h, 'NBRFLAG', np.bool_(True))
-    assert 'CONTFRAC' not in h and 'SHAPESRC' not in h and h['NBRFLAG'] is True
+    XC.put(h, 'NBRDET', np.bool_(True))
+    assert 'CONTFRAC' not in h and 'SHAPESRC' not in h and h['NBRDET'] is True
     with pytest.raises(KeyError):
         XC.put(h, 'PFSHAPE', 'own')
     # descriptions fit beside a numeric value on one 80-character card

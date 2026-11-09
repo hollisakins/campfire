@@ -727,8 +727,7 @@ def _prism_scan_agrees(obs, r, results, tol):
 
 def _update_prism_scan_cards(obs, r, xdisp):
     """Write the cross-disperser result into a PRISM product's ``_pf.fits``: the
-    grating ran after it. An agreeing grating scan makes the detection a candidate
-    (``NBRFLAG``); a disagreeing one withdraws its proposals (``NBRPROP``)."""
+    grating ran after it. A disagreeing grating scan withdraws its proposals (``NBRPROP``)."""
     path = os.path.join(obs.workspace_dir, f"{r['product']}_pf.fits")
     if not os.path.exists(path):
         return
@@ -737,10 +736,7 @@ def _update_prism_scan_cards(obs, r, xdisp):
         if 'NBRXDISP' not in hd:
             return
         XC.put(hd, 'NBRXDISP', xdisp)
-        if xdisp == 'agree':
-            XC.put(hd, 'NBRFLAG', True)
-            r['scan']['candidate'] = True
-        elif xdisp == 'disagree':
+        if xdisp == 'disagree':
             XC.put(hd, 'NBRPROP', '')
 
 

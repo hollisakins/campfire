@@ -168,6 +168,26 @@ def test_long_slitlet_row_height_at_slit_ends():
         assert np.allclose(e.dy[inside], DY)
 
 
+def test_pixel_height_is_one_sided_at_the_slit_edges():
+    y = np.array([[np.nan], [0.0], [0.2], [0.4], [np.nan]])
+    d = PF.pixel_height(y)
+    assert np.allclose(d[1:4, 0], 0.2) and np.isnan(d[0, 0]) and np.isnan(d[4, 0])
+
+
+def test_cover_extends_a_grid_by_its_end_steps():
+    assert np.allclose(PF.cover(np.array([1.0, 1.1, 1.3]), 0.85, 1.55), [0.8, 0.9, 1.0, 1.1, 1.3, 1.5, 1.7])
+    assert np.allclose(PF.cover(np.array([1.0, 1.1, 1.3]), 1.05, 1.2), [1.0, 1.1, 1.3])
+
+
+def test_the_grid_covers_every_fitted_pixel():
+    """The trace is tilted, so other rows and the other nods reach past the source row's
+    wavelengths: every wavelength the model takes lies between two grid points."""
+    M = PF.ProfileModel(_exposures())
+    lam = np.concatenate([T['lam'] for T in M.terms])
+    assert M.lam_grid[0] <= lam.min() and M.lam_grid[-1] >= lam.max()
+    assert all(T['inside'].all() for T in M.terms)
+
+
 def test_long_slitlet_fit():
     """A seven-shutter slitlet (one long open column, as in program 4465): the partner terms
     reach the slit's end rows and the fit still recovers the shape and the spectrum."""

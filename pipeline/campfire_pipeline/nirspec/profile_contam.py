@@ -71,6 +71,14 @@ def exposure_key(path):
     return f'{m.group(1)}_{m.group(2)}_{m.group(3)}' if m else None
 
 
+def nod_tag(exps, k):
+    """Exposure k's nod difference as a string, '<key>|<partner keys, sorted>': the same
+    difference in any source's exposure list gives the same tag, so a detector pixel of
+    it is one datum (``profile_joint.owned_pixels``, ``joint_first_pass.design_full``)."""
+    return exposure_key(exps[k].name) + '|' + ','.join(sorted(exposure_key(exps[j].name)
+                                                             for j in (exps[k].partners or [])))
+
+
 def nod_key(path):
     """('00001', 'nrs1')."""
     m = _NOD.match(os.path.basename(path))
@@ -296,7 +304,8 @@ def pass1_settings(stage_config):
     (``contam_pass1_smooth_prism`` / ``_grating``; a pass 1 from the 3-pixel boxcar,
     ``boxcar_pass1``); ``contam_pass1_smooth`` (grid points) overrides both when set;
     ``contam_pass1_lines`` keeps emission lines; the shape gates (the joint first
-    pass's member shapes)."""
+    pass's member shapes, as ``profile_chain.ChainConfig`` reads them)."""
+    from campfire_pipeline.nirspec import profile_chain as PC
     g = stage_config.get
     legacy = g('contam_pass1_smooth', None)
     if legacy is not None:
@@ -304,9 +313,10 @@ def pass1_settings(stage_config):
     else:
         sm_p = smooth_points(g('contam_pass1_smooth_prism', 7.5))
         sm_g = smooth_points(g('contam_pass1_smooth_grating', 15.0))
+    cfg = PC.ChainConfig.from_stage_config(stage_config)
     out = dict(smooth_prism=sm_p, smooth_grating=sm_g,
                lines=bool(g('contam_pass1_lines', True)),
-               gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)))
+               gate_prism=float(cfg.gate_prism), gate_grating=float(cfg.gate_grating))
     bars = g('bar_offsets', None)
     if bars:
         # the measured bar offsets (``bar_offset.table``): a new measurement redoes pass 1
@@ -466,7 +476,7 @@ def boxcar_pass1(exps, sid, maps, workspace, is_prism, stage_config, box):
     ok = np.isfinite(wave) & (wave > 0)
     o = np.argsort(wave[ok])
     lam, fnu, err = wave[ok][o], fnu[ok][o], err[ok][o]
-    keep = np.concatenate([[True], np.diff(lam) > 0])
+    keep = np.concatenate([[True], np.diff(lam) > 0]) if lam.size else np.zeros(0, bool)
     lam, fnu, err = lam[keep], fnu[keep], err[keep]
     if lam.size < 3:
         raise PF.TooFewWavelengths(f'source {sid}: boxcar pass 1: {lam.size} wavelength samples')
@@ -663,13 +673,13 @@ def predict(exps, sid, maps, pass1_for, rate_dir, exclude=(), why_missing=None, 
     last ~10 columns of a trace, where the contaminant's flats stop (0.1 % of a
     contaminant's light in G395M, 0.3 % in PRISM; ember_cosmos_p14 pass 1, 2026-10-29).
 
-    pass1_for : callable sid -> ``Pass1``. A ``Pass1`` with ``joint = True`` holds a
-        jointly solved spectrum: its light is subtracted and never masked (its
-        statistical uncertainty goes to ``dpred_joint``, for reporting only, without
-        the ``DPRED_FLOOR``).
+    pass1_for : callable sid -> ``Pass1``. Every contaminant predicted here, joint pass 1
+        or not, takes the ``DPRED_FLOOR`` and is masked where it is too uncertain
+        (``apply``).
     exclude : contaminants whose light is modelled elsewhere, left out entirely, their
-        light past their cutouts too (the members of the target's joint first pass,
-        whose light on it comes from that solve, ``joint_first_pass.add_joint_light``).
+        light past their cutouts too: the members of the target's joint first pass, whose
+        light on it comes from that solve (``joint_first_pass.add_joint_light``), subtracted
+        and never masked (its statistical uncertainty in ``dpred_joint``, reported only).
     why_missing : callable sid -> why that source has no pass 1 (``missing_reason``), for
         the error message.
     include : contaminants added to every exposure whatever the maps say: catalogued

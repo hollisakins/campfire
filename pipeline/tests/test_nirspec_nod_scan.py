@@ -57,18 +57,39 @@ def test_scan_recovers_injected_neighbour_delta_and_partner():
     assert not S.unresolved
     cards = S.header_cards()
     assert cards['NBRDET'] and cards['NBRPROP'] == '03101:1>3;03101:3>2'
-    # the product flag needs the stricter level (default: never in this call)
-    assert not cards['NBRFLAG'] and not S.candidate
-    S2 = NS.run(R, dchi2_min=60.0, flag_dchi2=0.5 * S.dchi2)
-    assert S2.candidate and S2.header_cards()['NBRFLAG']
-    assert not NS.run(R, dchi2_min=60.0, flag_dchi2=2 * S.dchi2).candidate
+    assert 'NBRFLAG' not in cards
+    assert S.dchi2_nuisance >= 0.0
 
 
-def test_candidate_from_other_disperser_agreement():
-    S = NS.ScanResult(detected=True, delta=1.15, dchi2=120.0, proposals={ROOT: {'1': [3]}})
-    assert not S.candidate
-    S.cross_check((True, 1.10), tol=0.2)
-    assert S.candidate and S.header_cards()['NBRFLAG']
+def test_a_nods_detectors_give_one_proposal():
+    """NRS1 and NRS2 exposures of the same nod: a partner dirty on either detector is
+    dropped for the nod (one choice for both), at its larger fraction."""
+    exps = T._exposures(src_y=0.0)
+    exps2 = T._exposures(src_y=0.0)
+    for e in exps2:
+        e.name = e.name.replace('nrs1', 'nrs2')
+    M = types.SimpleNamespace(exps=exps + exps2)
+    R = types.SimpleNamespace(model=M)
+    # nod 1 on NRS1: partner nod 2 dirty; nod 1 on NRS2: partner nod 3 dirty a little more
+    fr = {0: {1: 0.5, 2: 0.0}, 3: {4: 0.1, 5: 0.3}}
+    orig = NS.partner_fractions
+    NS.partner_fractions = lambda *a, **k: fr
+    try:
+        props, unres, dirty, _ = NS.propose(R, 1.15, None)
+    finally:
+        NS.partner_fractions = orig
+    assert props == {} and unres == [f'{ROOT}:1']             # both partners dirty on one or the other
+    assert dirty[f'{ROOT}:1'] == {2: 0.5, 3: 0.3}
+
+
+def test_close_neighbour_leaves_nothing_to_review():
+    """A neighbour too close to separate: no proposal and no nod listed as unresolved."""
+    exps = T._exposures(src_y=0.0)[:2]
+    exps[0].partners, exps[1].partners = [1], [0]
+    _data(exps, 30.0, 15.0, 0.75, seed=2)
+    S = NS.run(PF.fit_fixed(exps), dchi2_min=60.0, null_ratio=0.0)
+    assert S.detected and abs(S.delta) < 0.9
+    assert S.proposals == {} and S.unresolved == []
 
 
 def test_proposal_gain_and_cost():

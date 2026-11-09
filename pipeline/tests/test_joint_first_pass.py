@@ -3,18 +3,44 @@ not-separable flags."""
 import os
 
 import numpy as np
+import pytest
 import scipy.sparse as sp
 
 from campfire_pipeline.nirspec import joint_first_pass as JF
 
 
-def test_neighbourhood_is_symmetric_strongest_first_and_capped():
-    coupled = {1: {2: 500, 3: 150}, 2: {4: 1000}, 3: {}, 4: {}, 5: {1: 50}}
-    assert JF.neighbourhood(coupled, 1, depth=1) == [1, 2, 3]
-    assert JF.neighbourhood(coupled, 1, depth=2) == [1, 2, 3, 4]
+def test_neighbourhood_is_symmetric_strongest_first_and_uncut():
+    coupled = {1: {2: 500, 3: 150}, 2: {4: 1000}, 3: {}, 4: {}, 5: {1: 1}, 6: {}}
+    assert JF.neighbourhood(coupled, 1, depth=1) == [1, 2, 3, 5]     # one pixel couples too
+    assert JF.neighbourhood(coupled, 1, depth=2) == [1, 2, 3, 5, 4]
     assert JF.neighbourhood(coupled, 4, depth=1) == [4, 2]           # 2 lights 4: symmetric
-    assert JF.neighbourhood(coupled, 1, depth=2, cap=2) == [1, 2]
-    assert 5 not in JF.neighbourhood(coupled, 1, depth=2)            # below min_px
+    assert 6 not in JF.neighbourhood(coupled, 1, depth=2)
+
+
+def _map():
+    """A trace map of one 20 x 40 exposure: source 1's slitlet on rows 8-11 (its cutout
+    columns 0-19, its trace on to column 39), source 2's source shutter crossing rows 9-10
+    at columns 30-34 only (past 1's cutout), source 3's crossing 1's cutout."""
+    from astropy.table import Table
+    from campfire_pipeline.nirspec import trace_overlap as TO
+    slits = Table(rows=[('s1', 1, 'slitlet', True), ('s2', 2, 'slitlet', True), ('s3', 3, 'slitlet', True)],
+                  names=('name', 'source_id', 'kind', 'lit'))
+    index = np.full((2, 20, 40), TO.NONE, np.int16)
+    flag = np.zeros((2, 20, 40), np.uint8)
+    index[0, 8:12, :] = 0
+    flag[0, 9:11, :] = TO.IN_SOURCE
+    for r, cols in ((1, slice(30, 35)), (2, slice(5, 8))):
+        index[1, 9:11, cols] = r
+        flag[1, 9:11, cols] = TO.IN_SOURCE
+    return TO.TraceMap(slits=slits, index=index, flag=flag)
+
+
+def test_coupling_counts_light_past_the_cutout(monkeypatch):
+    """Source 2 lights source 1's trace only past its cutout: it couples all the same."""
+    monkeypatch.setattr(JF, '_cutout_region', lambda p: (0, 8, 20, 4))
+    c = JF.coupling({1: ['jw00001001001_01101_00001_nrs1_cal.fits']},
+                    {'jw00001001001_01101_00001_nrs1': _map()})
+    assert c[1] == {2: 10, 3: 6}
 
 
 def test_target_order_walks_the_coupling():
@@ -68,10 +94,13 @@ class _Member:
         self.ext =dict(n=0, grids=[np.zeros(0), np.zeros(0)], lo=3.0, model={}, rows=None)
 
 
-def test_solve_target_flags_only_the_inseparable_wavelengths(monkeypatch):
+@pytest.mark.parametrize('values', [JF.CHUNK_VALUES, 1])
+def test_solve_target_flags_only_the_inseparable_wavelengths(monkeypatch, values):
     """Two sources whose spectra share pixels: on the first half of the target's grid each
     target point appears only together with one neighbour point, in the same proportions on
-    every pixel (inseparable); on the second half the target also has pixels of its own."""
+    every pixel (inseparable); on the second half the target also has pixels of its own.
+    The same with the inverse taken a few columns at a time (``CHUNK_VALUES``)."""
+    monkeypatch.setattr(JF, 'CHUNK_VALUES', values)
     rng = np.random.default_rng(0)
     n = 40
     rows, cols, vals = [], [], []
@@ -219,9 +248,10 @@ def test_joint_light_round_trip_and_placement(tmp_path, monkeypatch):
     others = [dict(sid=3, rows=np.array([0, 2]), val=np.array([1.5, -0.5]), err=np.array([0.1, 0.2])),
               dict(sid=4, rows=np.array([3]), val=np.array([2.0]), err=np.array([0.3]))]
     path = str(tmp_path / 'p_jointlight.npz')
-    JF.write_joint_light(path, t, others, 'sigA')
+    JF.write_joint_light(path, t, others, 'sigA', solved=[3, 4, 5])      # 5: no light kept on the target
     assert JF.read_joint_light(path, 'sigB') is None
     jl = JF.read_joint_light(path, 'sigA')
+    assert jl['members'].tolist() == [3, 4] and jl['solved'].tolist() == [3, 4, 5]
     monkeypatch.setattr(JF.PF, 'planned_position', lambda exps: (0.0, 0))
     monkeypatch.setattr(JF.CT, 'main_shutter', lambda e, c: np.ones(e.y.shape, bool))
     monkeypatch.setattr(JF.CT, 'diff_sigma', lambda exps, k: np.ones(exps[k].y.shape))
@@ -229,7 +259,7 @@ def test_joint_light_round_trip_and_placement(tmp_path, monkeypatch):
     JF.add_joint_light(P, exps, jl)
     assert P.pred[0][1, 4] == 1.5 and P.pred[1][1, 5] == -0.5 and P.pred[1][3, 6] == 2.0
     assert np.allclose(P.pred[0], P.pred_joint[0]) and np.isclose(P.dpred_joint[1][3, 6], 0.3)
-    assert P.joint == {3, 4} and np.isclose(P.contributors[3], 1.5) and np.isclose(P.contributors[4], 2.0)
+    assert P.joint == {3, 4, 5} and np.isclose(P.contributors[3], 1.5) and np.isclose(P.contributors[4], 2.0)
 
 
 def test_joint_light_refuses_other_nod_differences(tmp_path):
@@ -268,13 +298,13 @@ class _Cache:
 
 def _stub_write(monkeypatch, written):
     monkeypatch.setattr(JF.CT, 'write_pass1', lambda out, P1, *a: written.append((out, P1)))
-    monkeypatch.setattr(JF, 'write_joint_light', lambda path, target, others, sig: None)
+    monkeypatch.setattr(JF, 'write_joint_light', lambda path, target, others, sig, solved=(): None)
 
 
 def test_run_target_leaves_out_a_neighbour_that_cannot_be_built(tmp_path, monkeypatch):
     solved, written = [], []
     monkeypatch.setattr(JF, 'solve_target', lambda members, degenerate: solved.append(members) or {})
-    monkeypatch.setattr(JF, 'pass1_of', lambda target, sol, maps, sc: ('joint', target))
+    monkeypatch.setattr(JF, 'pass1_of', lambda target, sol, sc: ('joint', target))
     _stub_write(monkeypatch, written)
     out = JF.run_target(1, [1, 2, 3], _Cache(tmp_path, bad=[2]), {}, {}, pass1_dir=str(tmp_path / 'p1'))
     assert solved == [[1, 3]]
@@ -306,7 +336,7 @@ def test_run_target_checks_the_neighbours_files_too(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(JF.CT, '_pass1_valid', lambda out, groups, n, sig: seen.append(groups) or None)
     monkeypatch.setattr(JF, 'solve_target', lambda members, degenerate: {})
-    monkeypatch.setattr(JF, 'pass1_of', lambda target, sol, maps, sc: ('joint', target))
+    monkeypatch.setattr(JF, 'pass1_of', lambda target, sol, sc: ('joint', target))
     _stub_write(monkeypatch, [])
     cache = _Cache(tmp_path, bad=[])
     nb = tmp_path / 'b_nrs1_cal.fits'
@@ -319,7 +349,7 @@ def test_run_target_checks_the_neighbours_files_too(tmp_path, monkeypatch):
 def test_own_pass_files_sit_beside_the_joint_pass(tmp_path, monkeypatch):
     written = []
     monkeypatch.setattr(JF, 'solve_target', lambda members, degenerate: {})
-    monkeypatch.setattr(JF, 'pass1_of', lambda target, sol, maps, sc: ('joint', target))
+    monkeypatch.setattr(JF, 'pass1_of', lambda target, sol, sc: ('joint', target))
     _stub_write(monkeypatch, written)
     out = JF.run_target(1, [1], _Cache(tmp_path, bad=[]), {}, {}, own=True)
     assert out.endswith('p_1_own_pass1.npz')

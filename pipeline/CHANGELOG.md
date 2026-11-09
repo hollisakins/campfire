@@ -92,7 +92,9 @@ Release procedure: edit the `## Unreleased` section below, then run
     calibration.
   - *Other slitlets' light* (`trace_overlap.py`, `joint_first_pass.py`, `profile_contam.py`,
     `profile_extend.py`). Every source is first solved with its neighbors on its nod differences,
-    with its light followed past its cutout in count rate (the joint first pass). The prediction from those
+    with its light followed past its cutout in count rate (the joint first pass). Its neighbors are
+    the sources whose light reaches its cutouts or its trace past them, and theirs, with no size
+    cap. The prediction from those
     spectra over per-exposure trace maps is subtracted before the shape fit, and the pixels where
     the prediction is itself uncertain are left out. In the 1-D spectrum it is reported as
     `fnu_contam` and never subtracted. A neighbor whose own fit fell back is predicted from its

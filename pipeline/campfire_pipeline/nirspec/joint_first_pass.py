@@ -13,9 +13,10 @@ nothing is masked. Each source also has pixels of its own, which pin it down.
 Per disperser (``run``):
 
 1. coupling from the trace maps (``coupling``): which sources' source shutters light
-   which other sources' cutouts, from the canonical headers and the maps alone;
+   which other sources' cutouts or traces past them, from the canonical headers and the
+   maps alone;
 2. per source a neighbourhood (``neighbourhood``): the source, its neighbours and theirs
-   (two steps, at most ``cap`` sources, strongest first);
+   (two steps, strongest first);
 3. per member, once per worker (``MemberCache``): its nod differences, the data of its
    final profile fit (``profile_fit.load_source``: each exposure minus the mean of the
    frames stage 2b subtracted; with ``pre_bkgsub``, of the partners the override files
@@ -71,9 +72,14 @@ JOINT_PASS_VERSION = '5'          # 2: the light past the cutouts is among the j
 #                                   5: rows past the cutouts weighted like the cutout's (they had 1.5x
 #                                      the weight with two partners); a frame without a trace map gives
 #                                      no light past the cutout
-JOINT_LIGHT_VERSION = '1'
+#                                   6: neighbourhoods without a size cap or pixel minimum, coupled over
+#                                      each source's whole trace; the grids past the cutout cover every
+#                                      pixel they model; the slit's edge rows past the cutout at their
+#                                      true height
+JOINT_LIGHT_VERSION = '2'         # 2: every solve member recorded (``solved``), not only those with light kept
 SPEC_SRC = 'joint'
-CHUNK = 512
+CHUNK = 512                       # inverse-matrix columns per solve, at most
+CHUNK_VALUES = 8_000_000          # and at most this many values per block (64 MB)
 
 
 # ---------------------------------------------------------------------------
@@ -87,10 +93,14 @@ def _cutout_region(path):
 
 
 def coupling(files_by_sid, maps):
-    """{sid: {other sid: pixels}}: how many pixels of each source's cutouts (every
-    exposure) another source's source shutter lights, from the trace maps.
+    """{sid: {other sid: pixels}}: how many pixels of each source's data (every
+    exposure) another source's source shutter lights, from the trace maps. A source's
+    data are its cutouts and its whole trace past them (the rows of its slitlet in the
+    map, which follows the light past the calibrated wavelengths): the joint solve fits
+    both (``design_full``), so a source whose light lands only past a cutout couples too.
 
     files_by_sid : {sid: [canonical paths]}; maps : {exposure key: TraceMap}."""
+    from campfire_pipeline.nirspec import profile_extend as PE
     out = {}
     for sid, paths in files_by_sid.items():
         n = {}
@@ -98,8 +108,15 @@ def coupling(files_by_sid, maps):
             m = maps.get(CT.exposure_key(p))
             if m is None:
                 continue
-            iy, ix, idx, flg = m.traces_in(*_cutout_region(p))
-            src = m.source_shutter(flg)
+            x0, y0, nx, ny = _cutout_region(p)
+            NY, NX = m.index.shape[1:]
+            b0, b1 = max(y0 - PE.EXT_ROWS, 0), min(y0 + ny + PE.EXT_ROWS, NY)
+            iy, ix, idx, flg = m.traces_in(0, b0, NX, b1 - b0)
+            pix = iy.astype(np.int64) * NX + ix
+            own = np.isin(idx, m.rows_of(int(sid)))
+            yy = iy + b0
+            region = ((yy >= y0) & (yy < y0 + ny) & (ix >= x0) & (ix < x0 + nx)) | np.isin(pix, pix[own])
+            src = m.source_shutter(flg) & region
             for r in np.unique(idx[src]):
                 rec = m.slits[int(r)]
                 if rec['kind'] != 'slitlet':
@@ -112,14 +129,14 @@ def coupling(files_by_sid, maps):
     return out
 
 
-def neighbourhood(coupled, sid, depth=2, cap=25, min_px=100):
+def neighbourhood(coupled, sid, depth=2):
     """The target first, then its neighbours and theirs (``depth`` steps), strongest
-    coupling first, at most ``cap`` sources. A source couples to another when either
-    lights at least ``min_px`` pixels of the other's cutouts."""
+    coupling first. A source couples to another when either lights any pixel of the
+    other's data (``coupling``)."""
     sym = {}
     for a, row in coupled.items():
         for b, n in row.items():
-            if n >= min_px:
+            if n > 0:
                 sym.setdefault(a, {})[b] = max(sym.get(a, {}).get(b, 0), n)
                 sym.setdefault(b, {})[a] = max(sym.get(b, {}).get(a, 0), n)
     chosen, frontier = [int(sid)], [int(sid)]
@@ -130,19 +147,17 @@ def neighbourhood(coupled, sid, depth=2, cap=25, min_px=100):
                 if t not in chosen and t in coupled:
                     chosen.append(t)
                     nxt.append(t)
-                    if len(chosen) >= cap:
-                        return chosen
         frontier = nxt
     return chosen
 
 
-def target_order(coupled, depth=2, cap=25, window=60):
+def target_order(coupled, depth=2, window=60):
     """Sources ordered so that a worker's member cache is reused: the next target is the
     unvisited source whose neighbourhood shares the most members with the last ``window``
     members used (ties by source id; a fresh start at the lowest id when none shares one).
     A breadth-first walk does not do this: its last sources lie on a ring far apart, and
     on ember_cosmos_p1 G395M they rebuilt 23 of 25 members per target."""
-    nbh = {s: neighbourhood(coupled, s, depth=depth, cap=cap) for s in coupled}
+    nbh = {s: neighbourhood(coupled, s, depth=depth) for s in coupled}
     inv = {}
     for s, ids in nbh.items():
         for t in ids:
@@ -287,11 +302,16 @@ def _rate_nod_diff(workspace, key, partner_keys, rows, cols):
 
 def ext_setup(m, workspace):
     """A member's light past the wavelengths its fit pixels have (``m.ext``): one grid
-    per end (``profile_extend.end_rows``), its frames per unit count-rate spectrum on the
-    detector there (sparse, one per exposure: the source's own light in that frame), and
-    the data there, each science exposure's nod difference of the rate files
-    (``_rate_nod_diff``), on the pixels its own trace lights in that exposure. Nothing
-    past the cutout (``n = 0``) when it has no such pixels."""
+    per end (``profile_extend.end_grids``: from where its fit pixels stop to the last
+    pixel with its light), its frames per unit count-rate spectrum on the detector there
+    (sparse, one per exposure: the source's own light in that frame), and the data there,
+    each science exposure's nod difference of the rate files (``_rate_nod_diff``), on the
+    pixels its own trace lights in that exposure. Nothing past the cutout (``n = 0``) when
+    it has no such pixels.
+
+    The boundary is the fit pixels' range, not the spectrum grid's: the grid runs on
+    over the cutout's pixels without a flat field, whose light the in-range spectrum
+    cannot reach (no calibration to convert it), so they are this part's."""
     from campfire_pipeline.nirspec import profile_extend as PE
     M, exps = m.model, m.exps
     lam_in = np.asarray(M.pix['lam'], float)
@@ -301,7 +321,7 @@ def ext_setup(m, workspace):
     if not per_exp:
         return m.ext
     order = [k for k, e in enumerate(exps) if e.use_data] + [k for k, e in enumerate(exps) if not e.use_data]
-    grids = [PE.native_grid(r) for r in PE.end_rows(per_exp, exps, order, lo, hi)]
+    grids = PE.end_grids(per_exp, exps, order, lo, hi)
     grids = [g if g is not None else np.zeros(0) for g in grids]
     m.ext['grids'], m.ext['n'] = grids, int(sum(g.size for g in grids))
     if not m.ext['n']:
@@ -444,8 +464,7 @@ def design_full(members):
         R = s.ext.get('rows') if s.ext['n'] else None
         if R is None:
             continue
-        tag_of = {k: CT.exposure_key(s.exps[k].name) + '|' + ','.join(
-            sorted(CT.exposure_key(s.exps[j].name) for j in (s.exps[k].partners or []))) for k in np.unique(R['k'])}
+        tag_of = {k: CT.nod_tag(s.exps, k) for k in np.unique(R['k'])}
         tid = np.array([tags.setdefault(tag_of[k], len(tags)) for k in R['k']], np.int64)
         keys = tid * 10 ** 10 + R['det']
         own = ~np.isin(keys, claimed)
@@ -563,29 +582,39 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
     partner = np.full(m0, -1)                           # global column of the most negative correlation
     if tcol.size:
         g_n = gi.size
-        X = np.zeros((g_n, tcol.size))
-        for a in range(0, tcol.size, CHUNK):
-            bnd = min(a + CHUNK, tcol.size)
-            E = np.zeros((g_n, bnd - a))
-            E[tcol[a:bnd], np.arange(bnd - a)] = 1.0
-            X[:, a:bnd] = lu.solve(E)
-        cii = X[tcol, np.arange(tcol.size)]
+        chunk = int(max(16, min(CHUNK, CHUNK_VALUES // max(g_n, 1))))
+
+        def inverse_columns(cols):
+            """The inverse normal matrix's columns ``cols``, ``chunk`` at a time: (i0, i1, block)."""
+            for i0 in range(0, cols.size, chunk):
+                i1 = min(i0 + chunk, cols.size)
+                E = np.zeros((g_n, i1 - i0))
+                E[cols[i0:i1], np.arange(i1 - i0)] = 1.0
+                yield i0, i1, lu.solve(E)
+
+        # the target's columns of the inverse are never held whole (members x target points
+        # grows with the neighbourhood): one pass for the target's variances and the other
+        # unknowns whose bound allows a correlation below -degenerate, one for those rows
         other = blocks[gi] != 0
         njj = np.asarray(Ng.diagonal()).ravel()
-        with np.errstate(invalid='ignore', divide='ignore'):
-            bound = X / np.sqrt(np.abs(cii)[None, :] / njj[:, None])   # >= |true correlation| in size
-        cand = np.flatnonzero(other & np.any(bound < -degenerate, axis=1))
+        cii = np.zeros(tcol.size)
+        hit = np.zeros(g_n, bool)
+        for i0, i1, Xc in inverse_columns(tcol):
+            cii[i0:i1] = Xc[tcol[i0:i1], np.arange(i1 - i0)]
+            with np.errstate(invalid='ignore', divide='ignore'):
+                bound = Xc / np.sqrt(np.abs(cii[i0:i1])[None, :] / njj[:, None])   # >= |true correlation| in size
+            hit |= np.any(bound < -degenerate, axis=1)
+        cand = np.flatnonzero(other & hit)
         cjj = np.full(g_n, np.nan)
-        for a in range(0, cand.size, CHUNK):
-            bnd = min(a + CHUNK, cand.size)
-            E = np.zeros((g_n, bnd - a))
-            E[cand[a:bnd], np.arange(bnd - a)] = 1.0
-            Y = lu.solve(E)
-            cjj[cand[a:bnd]] = Y[cand[a:bnd], np.arange(bnd - a)]
+        for i0, i1, Y in inverse_columns(cand):
+            cjj[cand[i0:i1]] = Y[cand[i0:i1], np.arange(i1 - i0)]
         cmin = np.zeros(tcol.size)
         if cand.size:
+            X = np.zeros((cand.size, tcol.size))
+            for i0, i1, Xc in inverse_columns(tcol):
+                X[:, i0:i1] = Xc[cand]
             with np.errstate(invalid='ignore', divide='ignore'):
-                c = X[cand] / np.sqrt(np.abs(cii)[None, :] * np.abs(cjj[cand])[:, None])
+                c = X / np.sqrt(np.abs(cii)[None, :] * np.abs(cjj[cand])[:, None])
             c = np.where(np.isfinite(c), c, 0.0)
             cmin = c.min(axis=0)
             pcol = gi[cand[np.argmin(c, axis=0)]]          # the other unknown each one is closest to
@@ -642,7 +671,7 @@ def _others_on_target(members, A, f, gi, s):
 # ---------------------------------------------------------------------------
 # Pass-1 file of one target
 # ---------------------------------------------------------------------------
-def pass1_of(target, sol, maps, stage_config):
+def pass1_of(target, sol, stage_config):
     """A ``profile_contam.Pass1`` of the target from its joint solution: frames from its
     own spectrum (never smoothed), the light past its fitted wavelengths from the joint
     solution too (count rate, merged as ``ext`` pixels, ``ext_frames``), and the
@@ -713,21 +742,22 @@ def joint_light_path(pass1_file):
 
 
 def _exposure_tags(exps):
-    """Per exposure: its key and its nod difference (the exposure and its partners)."""
-    return [CT.exposure_key(e.name) + '|' + ','.join(sorted(CT.exposure_key(exps[j].name)
-                                                           for j in (e.partners or []))) for e in exps]
+    """Per exposure: its nod difference (``profile_contam.nod_tag``)."""
+    return [CT.nod_tag(exps, k) for k in range(len(exps))]
 
 
 KEEP_FRAC = 0.01        # joint-light pixels kept: a member's light or its error above this x the pixel's noise
 
 
-def write_joint_light(path, target, others, sig):
+def write_joint_light(path, target, others, sig, solved=()):
     """Write the other members' light on the target's pixels (``solve_target``'s
     ``others``) atomically: per pixel its member, exposure, row and column on the target's
     common frame, value and error (single precision), with each exposure's nod difference
     for the check on reading. Pixels where a member's light and its error are both below
     ``KEEP_FRAC`` of the pixel's noise are left out (most of a faint member's pixels;
-    3.5 MB per G395M source with them)."""
+    3.5 MB per G395M source with them). ``solved``: every other member of the solve, kept
+    whole (``members`` lists only those with light kept), since the product leaves all of
+    them out of its own prediction."""
     k, iy, ix = target.pix_k, target.pix_iy, target.pix_ix
     pv = getattr(target.model, 'pix', {}).get('v') if hasattr(target, 'model') else None
     if pv is not None:
@@ -742,8 +772,9 @@ def write_joint_light(path, target, others, sig):
     sids = np.array([o['sid'] for o in others], np.int64)
     mi = np.concatenate([np.full(o['rows'].size, i) for i, o in enumerate(others)]) if others else np.zeros(0, int)
     rows = np.concatenate([o['rows'] for o in others]) if others else np.zeros(0, int)
+    solved = sorted({int(s) for s in solved} | {int(s) for s in sids})
     arrays = dict(version=JOINT_LIGHT_VERSION, sig=sig, sid=int(target.sid), members=sids,
-                  tags=np.array(_exposure_tags(target.exps)), origin=np.array(target.exps[0].origin),
+                  solved=np.array(solved, np.int64), tags=np.array(_exposure_tags(target.exps)), origin=np.array(target.exps[0].origin),
                   shape=np.array(target.exps[0].y.shape), m=mi.astype(np.int32), k=k[rows].astype(np.int16),
                   iy=iy[rows].astype(np.int32), ix=ix[rows].astype(np.int32),
                   val=(np.concatenate([o['val'] for o in others]) if others else np.zeros(0)).astype(np.float32),
@@ -804,7 +835,7 @@ def add_joint_light(P, exps, jl):
                     v = np.abs(img) / CT.diff_sigma(exps, k)
                 v = float(np.nanmax(np.where(ms, v, np.nan))) if ms.any() else 0.0
                 P.contributors[csid] = max(P.contributors.get(csid, 0.0), v if np.isfinite(v) else 0.0)
-        P.joint.add(csid)
+    P.joint.update(int(s) for s in jl['solved'])
     return P
 
 
@@ -882,7 +913,7 @@ def _boxcar(sid, t, cache, maps, stage_config, err):
     return CT.boxcar_pass1(exps, sid, maps, cache.workspace, cache.is_prism, stage_config, box[:3]), box[3]
 
 
-def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=0.9, pass1_dir=None,
+def run_target(sid, ids, cache, map_keys, stage_config, overwrite=False, degenerate=0.9, pass1_dir=None,
                stuck_keys=None, own=False):
     """Solve one target's neighbourhood ``ids`` (target first) and write its pass-1 file
     (``own``: the own-pass file, ``_paths``).
@@ -891,14 +922,15 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
     solve, logged; its light then stays in the target's spectrum where they share pixels.
     When the target's own member cannot be built its pass 1 is its stage-3 3-pixel
     boxcar (``_boxcar``). Returns the path, or None (logged, reason in the missing file,
-    an earlier pass-1 file removed) when there is no boxcar either. ``maps``: the trace
-    maps (``CT.trace_maps``), read with ``stuck_keys``; a pass 1 is redone when a
-    canonical or rate file of any member is newer or the stuck list changed."""
+    an earlier pass-1 file removed) when there is no boxcar either. ``map_keys``: the
+    exposures whose rate files hold a trace map (the solve reads none; the boxcar reads
+    the target's, with ``stuck_keys``); a pass 1 is redone when a canonical or rate file
+    of any member is newer or the stuck list changed."""
     from campfire_pipeline.common.io import log
 
     t = cache.tasks[int(sid)]
     out, missing = _paths(cache.workspace, t['product'], pass1_dir, own)
-    keys = sorted({CT.exposure_key(f) for g in t['groups'] for f in g} & set(maps))
+    keys = sorted({CT.exposure_key(f) for g in t['groups'] for f in g} & set(map_keys))
     rates = [CT.rate_path(cache.workspace, k) for k in keys]
     pre = getattr(cache, 'pre_bkgsub', False)
     sig = signature(stage_config, ids, [cache.prism_sig(s) for s in ids], pre,
@@ -916,12 +948,11 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
             return out
     if os.path.exists(jpath):
         os.remove(jpath)
-    tmaps = {k: maps[k] for k in keys if k in maps}
     try:
         try:
             target = cache.get(sid)
         except PF.ProfileFitFallback as e:
-            P1, src = _boxcar(sid, t, cache, tmaps, stage_config, e)
+            P1, src = _boxcar(sid, t, cache, CT.trace_maps(cache.workspace, keys, stuck_keys), stage_config, e)
             log(f"{t['product']}: pass 1 from the stage-3 3-pixel boxcar ({src}), its own fell back "
                 f"({e.reason}: {e})")
             CT.write_pass1(out, P1, sig, len(rates), SPEC_SRC)
@@ -936,40 +967,40 @@ def run_target(sid, ids, cache, maps, stage_config, overwrite=False, degenerate=
         if os.path.exists(out):                         # an earlier pass 1, of other data
             os.remove(out)
         return None
-    members = [target]
+    members, solved = [target], []
     for s in ids[1:]:
         try:
             members.append(cache.get(s))
+            solved.append(int(s))
         except PF.ProfileFitFallback as e:
             log(f"{t['product']}: neighbour {s} left out of the joint solve ({e.reason})")
     sol = solve_target(members, degenerate=degenerate)
-    P1 = pass1_of(target, sol, tmaps, stage_config)
+    P1 = pass1_of(target, sol, stage_config)
     CT.write_pass1(out, P1, sig, len(rates), SPEC_SRC)
-    write_joint_light(jpath, target, sol.get('others', []), sig)
+    write_joint_light(jpath, target, sol.get('others', []), sig, solved=solved)
     if os.path.exists(missing):
         os.remove(missing)
     return out
 
 
-def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, maps_keys=None, overwrite=False,
-              depth=2, cap=25, degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, stuck_keys=None,
+def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, map_keys, overwrite=False,
+              depth=2, degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, stuck_keys=None,
               own=False):
     """One worker's share of a disperser: the joint first pass of ``targets`` (in
-    coupling order), with one member cache of ``cache_size`` members. Returns the
-    written paths."""
+    coupling order), with one member cache of ``cache_size`` members. ``map_keys``: the
+    exposures whose rate files hold a trace map (``run``; no map is read here but a
+    boxcar target's own). Returns the written paths."""
     cache = MemberCache(tasks, workspace, stage_config, is_prism, size=cache_size, pre_bkgsub=pre_bkgsub)
-    keys = maps_keys or sorted({CT.exposure_key(f) for t in tasks.values() for g in t['groups'] for f in g})
-    maps = CT.trace_maps(workspace, keys, stuck_keys)
     out = []
     for sid in targets:
-        ids = [s for s in neighbourhood(coupled, sid, depth=depth, cap=cap) if s in tasks]
+        ids = [s for s in neighbourhood(coupled, sid, depth=depth) if s in tasks]
         ow = overwrite if isinstance(overwrite, bool) else int(sid) in overwrite
-        out.append(run_target(sid, ids, cache, maps, stage_config, overwrite=ow, degenerate=degenerate,
+        out.append(run_target(sid, ids, cache, map_keys, stage_config, overwrite=ow, degenerate=degenerate,
                               pass1_dir=pass1_dir, stuck_keys=stuck_keys, own=own))
     return out
 
 
-def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False, depth=2, cap=25,
+def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False, depth=2,
         degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, targets=None, stuck_keys=None,
         own=False):
     """The joint first pass of every source of one disperser.
@@ -989,7 +1020,9 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
     keys = sorted({CT.exposure_key(f) for fs in files.values() for f in fs})
     maps = CT.trace_maps(workspace, keys, stuck_keys)
     coupled = coupling(files, maps)
-    order = target_order(coupled, depth=depth, cap=cap)
+    map_keys = sorted(maps)
+    del maps
+    order = target_order(coupled, depth=depth)
     if targets is not None:
         want = {int(t) for t in targets}
         order = [s for s in order if s in want]
@@ -998,7 +1031,7 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
     nb = max(1, int(n_processes))
     size = int(np.ceil(len(order) / nb))
     batches = [order[i:i + size] for i in range(0, len(order), size)]
-    args = [(b, tasks, workspace, stage_config, is_prism, coupled, keys, overwrite, depth, cap, degenerate,
+    args = [(b, tasks, workspace, stage_config, is_prism, coupled, map_keys, overwrite, depth, degenerate,
              pass1_dir, cache_size, pre_bkgsub, stuck_keys, own) for b in batches]
     res = dispatch(run_batch, args, n_processes=n_processes, use_starmap=True) or []
     return [p for r in res for p in (r or [])]

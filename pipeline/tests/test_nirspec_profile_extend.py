@@ -46,3 +46,21 @@ def test_solve_end_too_few_pixels():
     from campfire_pipeline.nirspec import profile_extend as PE
     lam = np.tile(np.linspace(5.3, 5.31, 3), (2, 1))
     assert PE._solve_end([_block(lam, lambda x: np.ones_like(x))], np.sort(lam[0]), 0, True, 5.0, 2) is None
+
+
+def test_end_grids_cover_every_lit_pixel_past_the_ends():
+    """A tilted trace: rows away from the source's reach past the source row's wavelengths
+    at both ends. Each end's grid starts where the in-range one stops and reaches the last
+    pixel with the source's light."""
+    import types
+    from campfire_pipeline.nirspec import profile_extend as PE
+    ny, nx = 6, 60
+    rows = np.arange(ny)[:, None] * np.ones((1, nx))
+    lam = np.linspace(1.0, 4.0, nx)[None, :] + 0.01 * (rows - 2)
+    ys = (rows - 2) * 0.2                                          # the source on row 2
+    past = (lam < 1.5) | (lam > 3.5)
+    per_exp = {0: (np.arange(ny), np.arange(nx), ys, lam, np.ones((ny, nx)), past)}
+    blue, red = PE.end_grids(per_exp, [types.SimpleNamespace(src_y=0.0)], [0], 1.5, 3.5)
+    b, r = lam[past & (lam < 1.5)], lam[past & (lam > 3.5)]
+    assert blue[0] <= b.min() and blue[-1] >= b.max()
+    assert red[0] <= r.min() and red[-1] >= r.max()

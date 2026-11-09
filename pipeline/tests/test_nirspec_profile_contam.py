@@ -578,6 +578,14 @@ def test_boxcar_pass1_is_the_boxcar_placed_with_the_default_shape(stand_ins):
         np.testing.assert_allclose(fr['img'][big], truth[big], rtol=0.02)
 
 
+def test_boxcar_without_wavelengths_is_a_named_fallback():
+    """A boxcar with no valid wavelength raises the named fallback (the source's reason
+    is then written), not an indexing error that fails the phase."""
+    box = (np.array([np.nan, -1.0]), np.ones(2), np.ones(2))
+    with pytest.raises(PF.TooFewWavelengths):
+        CT.boxcar_pass1([], 2, {}, '.', True, NO_SMOOTH, box)
+
+
 def test_boxcar_contaminant_is_subtracted_and_counted(stand_ins):
     """A boxcar pass 1 subtracts like a reliable one (its light was measured on its own
     trace), and the target's prediction lists it (``CONTBOX``)."""

@@ -42,7 +42,6 @@ CARDS = {
     'SELFSUB': 'Own flux removed by nod subtraction',
     'NFOPEN': 'Failed-open shutters on the trace',
     # same-slitlet neighbor scan
-    'NBRFLAG': 'Same-slitlet neighbor found',
     'NBRDET': 'Neighbor above the proposal threshold',
     'NBRDELTA': 'Neighbor offset from target [slit units]',
     'NBRPROP': 'Proposed overrides (root:nod>nods)',

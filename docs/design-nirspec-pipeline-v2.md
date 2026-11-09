@@ -616,8 +616,9 @@ centroid (user, 2026-10-22).
 ### 6.7 Other slitlets' light
 
 **The joint first pass** (`joint_first_pass.py`, the linear system in `profile_joint.py`). For each
-source, its neighborhood is every source whose source shutter lights the source's fit region in the
-trace maps, plus their direct neighbors (two steps, capped at 25). All members are fitted together
+source, its neighborhood is every source whose source shutter lights the source's data in the trace
+maps (its cutouts and its trace past them), plus their direct neighbors (two steps, no size cap).
+On p1 G395M that is a median 31 members, at most 46. All members are fitted together
 on their nod differences, each at a fixed shape from the chain, so the fit is linear in the spectra
 and nothing is masked. Each pixel's model is the sum of every member that lands on it, with the +1
 and -1/n terms of the nod subtraction. A member's light past its cutout is a second set of unknowns
@@ -833,7 +834,8 @@ cards went, and it missed jointly solved neighbors; user, 2026-11-08), `scan_noi
 
 Removed before they reached any release, so not warned about: `profile_fit_shape = "free"`,
 `contam_pass1` and the masked first pass's keys, `contam_echo`, `contam_joint*` (but
-`contam_joint_cache`). Appendix A says why each went.
+`contam_joint_cache`), the neighbor scan's flag levels (`scan_flag_dchi2`, `scan_flag_dchi2_low`,
+`scan_flag_null_ratio`; section 11, part 4). Appendix A says why each went.
 
 ---
 
@@ -1167,6 +1169,60 @@ Part 3 led to these fixes (bar offset `MEASURE_VERSION` 5):
 Left for later: the bar offset holds every pixel's model at each trial offset (41 x the pixels,
 float32; over 1 GB for 800 G395M canonicals), to measure before changing; `RangeFit` builds a model
 twice.
+
+Part 4 led to these fixes (`JOINT_PASS_VERSION` 6, `JOINT_LIGHT_VERSION` 2):
+- a source whose light reached a member only past the member's cutout never joined the
+  neighborhood, since the coupling counted cutout pixels only. Its light there was neither modeled
+  nor masked, and went mostly into the member's light past its cutout. The coupling now counts each
+  source's whole trace, so such sources are members (user, 2026-11-09: dropping or masking pixels
+  is not acceptable in the joint solve);
+- neighborhoods were cut at 25 members, and a source needed 100 pixels to couple. A source left out
+  by either was unmodeled where it overlaps, with nothing to show it; on p1 G395M 360 of the 477
+  neighborhoods were at the cap. Both are removed (user, 2026-11-09). The depth stays two steps
+  (user, 2026-11-09): on p1 G395M a median 31 members, 90 % 38, at most 46 (three steps: 45, 56, 68;
+  the whole disperser couples into two groups of about 240 and 260). PRISM is nearly unchanged
+  (median 2, at most 8);
+- one solve per coupled group instead of one per neighborhood was considered and is slower. The
+  target's errors need its columns of the inverse matrix, about 3,200 solves against the
+  factorization, and each costs in proportion to the factorization's size, which grows faster than
+  the members (fill per unknown 39, 89, 167, 194 at depths 1-4). Extrapolated, that is 70,000 to
+  180,000 CPU seconds on p1 G395M, against about 19,000 for the whole pass now;
+- past each end of its cutout, a member's grid was the source row's own samples, starting at the
+  first one past its fit pixels. Pixels of other rows and nods between that boundary and the first
+  sample had no unknown and were left out. The grids now reach every pixel past the end with the
+  member's light (`profile_extend.end_grids`): 100-150 pixels per p1 G395M member, 0.4-0.6 % of its
+  light past the cutout. The boundary stays at the fit pixels' range: the spectrum grid runs on
+  over the cutout's pixels without a flat field (about 3,700 per member, all but 3 of 11,295 on
+  three members without calibration), which the in-range spectrum cannot reach, so they stay the
+  light past the cutout's. The same extension guards the profile fit's spectrum grid, which no
+  source of p1 needed (0 of 31.6 million fit pixels outside it, PRISM and G395M), so `FIT_VERSION`
+  stays 9;
+- a member whose light on the target fell below 1 % of the noise was left out of the stored member
+  list, so the product predicted it from its own neighborhood's solve. Every solve member is now
+  recorded (`solved`) and taken from this solve;
+- the first and last rows of a slit past the cutout were about 4 times too tall (the height was
+  differenced against the 0 past the slit's end). One helper (`profile_fit.pixel_height`) serves
+  both places;
+- the neighbor scan's possible-neighbor flag (`NBRFLAG`) and its three levels (`scan_flag_dchi2`,
+  `scan_flag_dchi2_low`, `scan_flag_null_ratio`) are removed (user, 2026-11-09): hand-set levels on
+  a statistic whose scale any change to the scan shifts. `NBRDET`, the proposals and their figures
+  stay, and a person reviews every proposal. The scan's docstring now says what its noise scale
+  holds: the nuisance terms' drop stays in it, recorded as `dchi2_nuisance`;
+- a nod's NRS1 and NRS2 proposals overwrote each other. A partner is now dirty for the nod when it
+  is on either detector, at its larger fraction;
+- a neighbor too close to separate cleared the proposals but stayed listed as unresolved;
+- memory: the error computation's dense block (the target's unknowns against every unknown) is built
+  in blocks of at most 64 MB (the item left in slice 4), and a worker no longer
+  loads every exposure's trace map, only a boxcar target's own;
+- a boxcar pass 1 with no usable wavelength raised an `IndexError` and failed the phase; it is now
+  the named fallback;
+- smaller: the pass-1 signature reads the gates from the chain's settings (its PRISM fallback was 50
+  where the gate's is 25); the nod difference's tag is built in one place (`profile_contam.nod_tag`);
+  a trace map's list of a slitlet's sources is as wide as its longest (it was cut at 256
+  characters); the docstrings of `predict` and of `profile_joint` say what the code does.
+
+Left for later: the scan's proposal level (`scan_dchi2`) is still fixed in the configuration; it
+could follow each observation's null (the negative-amplitude statistic) instead.
 
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,
