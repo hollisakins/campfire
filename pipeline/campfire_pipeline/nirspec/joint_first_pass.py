@@ -25,7 +25,10 @@ Per disperser (``run``):
    the shape of the chain (the PRISM shape of the same
    source when the PRISM product took its own fit, else its own fit above the grating
    gate, else the default shape; ``shape_for``), the per-exposure pointing offsets at
-   that shape, and its frames per unit spectrum (``profile_joint``);
+   that shape, and its frames per unit spectrum (``profile_joint``). With several
+   workers, the shapes and offsets are fixed once per source before they start
+   (``member_shape``): a worker rebuilds an evicted member, and other workers build it
+   too, but its own fit is most of a build;
 4. one weighted least-squares fit of every member's spectrum at full resolution,
    clipped at ``clip`` sigma twice (``solve_target``); each source is the target of its
    own neighbourhood;
@@ -218,7 +221,7 @@ class MemberCache:
     use and kept for the most recent ``size`` sources (a worker processes neighbourhoods
     in coupling order, ``target_order``)."""
 
-    def __init__(self, tasks, workspace, stage_config, is_prism, size=60, pre_bkgsub=False):
+    def __init__(self, tasks, workspace, stage_config, is_prism, size=60, pre_bkgsub=False, shapes=None):
         from campfire_pipeline.nirspec import profile_chain as PC
         self.tasks = tasks                      # sid -> dict(groups, overrides, science, prism_product)
         self.workspace = workspace
@@ -228,7 +231,9 @@ class MemberCache:
         self.pre_bkgsub = pre_bkgsub            # nod differences of the override files (profile_fit.load_group)
         self.load_options = PF.load_options(stage_config)     # bar offsets (set by stage 3) and slit-loss switches
         self._m = OrderedDict()
-        self._shape = {}                        # sid -> (shape, label, eoff): kept when a member is evicted
+        # sid -> (shape, label, eoff): kept when a member is evicted; ``shapes`` fixed beforehand
+        # (``member_shape``), so that a member several workers build is fitted once
+        self._shape = dict(shapes or {})
         self._failed = {}                       # sid -> the ProfileFitFallback its build raised
         self._prism = {}                        # sid -> PRISM shape string (signature)
 
@@ -262,18 +267,34 @@ class MemberCache:
                 f"{ps.shape}:" + ','.join(f'{k}={ps.params[k]:.4f}' for k in sorted(ps.params)))
         return self._prism[sid]
 
-    def _build(self, sid):
+    def _load(self, sid):
         t = self.tasks[sid]
         exps = PF.load_source(t['groups'], bkg_overrides=t['overrides'], science=set(t['science']),
                               pre_bkgsub=self.pre_bkgsub, **self.load_options)
-        cfg = self.cfg
-        M = PF.ProfileModel(exps, chromatic=True, priors=cfg.priors, bounds=cfg.bounds)
+        return exps, PF.ProfileModel(exps, chromatic=True, priors=self.cfg.priors, bounds=self.cfg.bounds)
+
+    def _fix_shape(self, sid, exps, M):
+        t = self.tasks[sid]
+        prism = (CT.read_prism_shape(self.workspace, t['prism_product'])
+                 if (not self.is_prism and t.get('prism_product')) else None)
+        shape, src = shape_for(exps, M, self.cfg, self.is_prism, prism)
+        R = PF.fit_fixed(model=M, shape=shape)
+        self._shape[sid] = (shape, src, np.asarray(R.eoff, float))
+        return self._shape[sid]
+
+    def shape_of(self, sid):
+        """(shape, source label, per-exposure pointing offsets) the member of ``sid`` is
+        built with; raises ``ProfileFitFallback`` when its data cannot be loaded."""
+        sid = int(sid)
         if sid not in self._shape:
-            prism = (CT.read_prism_shape(self.workspace, t['prism_product'])
-                     if (not self.is_prism and t.get('prism_product')) else None)
-            shape, src = shape_for(exps, M, cfg, self.is_prism, prism)
-            R = PF.fit_fixed(model=M, shape=shape)
-            self._shape[sid] = (shape, src, np.asarray(R.eoff, float))
+            self._fix_shape(sid, *self._load(sid))
+        return self._shape[sid]
+
+    def _build(self, sid):
+        t = self.tasks[sid]
+        exps, M = self._load(sid)
+        if sid not in self._shape:
+            self._fix_shape(sid, exps, M)
         shape, src, eoff = self._shape[sid]
         m = PJ.Member(sid=sid, product=t['product'], exps=exps, model=M,
                       p=PF.shape_vector(shape, M.c_prior, M.priors.width_median),
@@ -282,6 +303,16 @@ class MemberCache:
         PJ.basis_frames(m)
         ext_setup(m, self.workspace)
         return m
+
+
+def member_shape(sid, task, workspace, stage_config, is_prism, pre_bkgsub=False):
+    """(sid, the shape tuple ``MemberCache.shape_of`` gives, or None when the member
+    cannot be built): one source's shape fixed once for every worker (``run``)."""
+    cache = MemberCache({int(sid): task}, workspace, stage_config, is_prism, size=0, pre_bkgsub=pre_bkgsub)
+    try:
+        return int(sid), cache.shape_of(sid)
+    except PF.ProfileFitFallback:
+        return int(sid), None
 
 
 # ---------------------------------------------------------------------------
@@ -423,9 +454,13 @@ def design_full(members):
         """Every member's extension light at detector pixels ``det`` (rows ``r``) of frame
         ``key``, times the frame's weight ``w`` in the row's nod difference; ``conv_of(sel)``
         converts count rate to the row's units."""
+        if not det.size:
+            return
+        dlo, dhi = det.min(), det.max()
         for c in members:
             mod = c.ext['model'].get(key) if c.ext['n'] else None
-            if mod is None:
+            # keys run row by row: a member whose pixels here are all in other rows is skipped
+            if mod is None or not mod['det'].size or mod['det'][-1] < dlo or mod['det'][0] > dhi:
                 continue
             found, pos = _lookup(mod, det)
             if not found.any():
@@ -458,22 +493,21 @@ def design_full(members):
     n_cut = row0
 
     # rows past the cutouts: once per datum, never one a cutout holds
-    claimed = np.unique(np.concatenate(cut_keys)) if cut_keys else np.zeros(0, np.int64)
-    d, v = [d0], [v0]
+    ext_keys = []
     for s in members:
         R = s.ext.get('rows') if s.ext['n'] else None
         if R is None:
+            ext_keys.append(np.zeros(0, np.int64))
             continue
         tag_of = {k: CT.nod_tag(s.exps, k) for k in np.unique(R['k'])}
         tid = np.array([tags.setdefault(tag_of[k], len(tags)) for k in R['k']], np.int64)
-        keys = tid * 10 ** 10 + R['det']
-        own = ~np.isin(keys, claimed)
-        _, first = np.unique(keys, return_index=True)
-        once = np.zeros(keys.size, bool)
-        once[first] = True
-        own &= once
-        claimed = np.union1d(claimed, keys[own])
-        if not own.any():
+        ext_keys.append(tid * 10 ** 10 + R['det'])
+    # a datum is the first member's that has it, after every cutout's
+    first = PJ.first_occurrence([np.concatenate(cut_keys) if cut_keys else np.zeros(0, np.int64)] + ext_keys)[1:]
+    d, v = [d0], [v0]
+    for s, own in zip(members, first):
+        R = s.ext.get('rows') if s.ext['n'] else None
+        if R is None or not own.any():
             continue
         kk, det = R['k'][own], R['det'][own]
         r_all = row0 + np.arange(int(own.sum()))
@@ -483,6 +517,7 @@ def design_full(members):
         for k in np.unique(kk):
             sk = kk == k
             r = r_all[sk]
+            ylo, yhi, xlo, xhi = dy[sk].min(), dy[sk].max(), dx[sk].min(), dx[sk].max()
             for j, w in PF.nod_terms(s.exps, k):
                 key = CT.exposure_key(s.exps[j].name)
                 # in-range light of every member in frame j, from its calibrated units to count rate
@@ -490,9 +525,12 @@ def design_full(members):
                     b = c.basis.get(key)
                     if b is None:
                         continue
-                    cy = dy[sk] - int(b['origin'][0])
-                    cx = dx[sk] - int(b['origin'][1])
                     ny, nx = b['prof'].shape
+                    oy, ox = int(b['origin'][0]), int(b['origin'][1])
+                    if oy > yhi or oy + ny <= ylo or ox > xhi or ox + nx <= xlo:
+                        continue                        # its cutout is away from these rows
+                    cy = dy[sk] - oy
+                    cx = dx[sk] - ox
                     ins = (cy >= 0) & (cy < ny) & (cx >= 0) & (cx < nx)
                     if not ins.any():
                         continue
@@ -593,8 +631,10 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
                 yield i0, i1, lu.solve(E)
 
         # the target's columns of the inverse are never held whole (members x target points
-        # grows with the neighbourhood): one pass for the target's variances and the other
-        # unknowns whose bound allows a correlation below -degenerate, one for those rows
+        # grows with the neighbourhood): one pass gives the target's variances and the other
+        # unknowns whose bound allows a correlation below -degenerate; those unknowns' own
+        # columns give their variances and, the matrix being symmetric, their rows against
+        # the target
         other = blocks[gi] != 0
         njj = np.asarray(Ng.diagonal()).ravel()
         cii = np.zeros(tcol.size)
@@ -606,13 +646,12 @@ def solve_target(members, clip=5.0, n_clip=2, degenerate=0.9):
             hit |= np.any(bound < -degenerate, axis=1)
         cand = np.flatnonzero(other & hit)
         cjj = np.full(g_n, np.nan)
+        X = np.zeros((cand.size, tcol.size))
         for i0, i1, Y in inverse_columns(cand):
             cjj[cand[i0:i1]] = Y[cand[i0:i1], np.arange(i1 - i0)]
+            X[i0:i1] = Y[tcol].T
         cmin = np.zeros(tcol.size)
         if cand.size:
-            X = np.zeros((cand.size, tcol.size))
-            for i0, i1, Xc in inverse_columns(tcol):
-                X[:, i0:i1] = Xc[cand]
             with np.errstate(invalid='ignore', divide='ignore'):
                 c = X / np.sqrt(np.abs(cii)[None, :] * np.abs(cjj[cand])[:, None])
             c = np.where(np.isfinite(c), c, 0.0)
@@ -913,6 +952,32 @@ def _boxcar(sid, t, cache, maps, stage_config, err):
     return CT.boxcar_pass1(exps, sid, maps, cache.workspace, cache.is_prism, stage_config, box[:3]), box[3]
 
 
+def _target_state(sid, ids, cache, map_keys, stage_config, overwrite=False, pass1_dir=None, stuck_keys=None,
+                  own=False):
+    """A target's pass-1 paths, the exposures with a trace map and their rate files, its
+    signature, and whether its pass 1 is current (``run_target``): dict(out, missing,
+    keys, rates, sig, jpath, current)."""
+    t = cache.tasks[int(sid)]
+    out, missing = _paths(cache.workspace, t['product'], pass1_dir, own)
+    keys = sorted({CT.exposure_key(f) for g in t['groups'] for f in g} & set(map_keys))
+    rates = [CT.rate_path(cache.workspace, k) for k in keys]
+    pre = getattr(cache, 'pre_bkgsub', False)
+    sig = signature(stage_config, ids, [cache.prism_sig(s) for s in ids], pre,
+                    [repr(cache.tasks[int(s)].get('overrides')) for s in ids] if pre else None,
+                    stuck=CT.maps_signature(keys, stuck_keys))
+    jpath = joint_light_path(out)
+    # the solve reads every member's canonicals and the rate files of their exposures
+    files = [f for s in ids for g in cache.tasks[int(s)]['groups'] for f in g]
+    read = [CT.rate_path(cache.workspace, k) for k in sorted({CT.exposure_key(f) for f in files})]
+    read = files + [p for p in read if os.path.exists(p)]
+    prev = None if overwrite else CT._pass1_valid(out, [read], len(rates), sig)
+    current = False
+    if prev is not None and not CT._boxcar_stale(prev, out, cache.workspace, t['product']):
+        # a joint pass 1 needs its neighbours' light beside it; a boxcar one has none
+        current = str(prev['why'] if 'why' in prev else '') != 'joint' or read_joint_light(jpath, sig) is not None
+    return dict(out=out, missing=missing, keys=keys, rates=rates, sig=sig, jpath=jpath, current=current)
+
+
 def run_target(sid, ids, cache, map_keys, stage_config, overwrite=False, degenerate=0.9, pass1_dir=None,
                stuck_keys=None, own=False):
     """Solve one target's neighbourhood ``ids`` (target first) and write its pass-1 file
@@ -929,23 +994,10 @@ def run_target(sid, ids, cache, map_keys, stage_config, overwrite=False, degener
     from campfire_pipeline.common.io import log
 
     t = cache.tasks[int(sid)]
-    out, missing = _paths(cache.workspace, t['product'], pass1_dir, own)
-    keys = sorted({CT.exposure_key(f) for g in t['groups'] for f in g} & set(map_keys))
-    rates = [CT.rate_path(cache.workspace, k) for k in keys]
-    pre = getattr(cache, 'pre_bkgsub', False)
-    sig = signature(stage_config, ids, [cache.prism_sig(s) for s in ids], pre,
-                    [repr(cache.tasks[int(s)].get('overrides')) for s in ids] if pre else None,
-                    stuck=CT.maps_signature(keys, stuck_keys))
-    jpath = joint_light_path(out)
-    # the solve reads every member's canonicals and the rate files of their exposures
-    files = [f for s in ids for g in cache.tasks[int(s)]['groups'] for f in g]
-    read = [CT.rate_path(cache.workspace, k) for k in sorted({CT.exposure_key(f) for f in files})]
-    read = files + [p for p in read if os.path.exists(p)]
-    prev = None if overwrite else CT._pass1_valid(out, [read], len(rates), sig)
-    if prev is not None and not CT._boxcar_stale(prev, out, cache.workspace, t['product']):
-        # a joint pass 1 needs its neighbours' light beside it; a boxcar one has none
-        if str(prev['why'] if 'why' in prev else '') != 'joint' or read_joint_light(jpath, sig) is not None:
-            return out
+    st = _target_state(sid, ids, cache, map_keys, stage_config, overwrite, pass1_dir, stuck_keys, own)
+    out, missing, keys, rates, sig, jpath = (st[n] for n in ('out', 'missing', 'keys', 'rates', 'sig', 'jpath'))
+    if st['current']:
+        return out
     if os.path.exists(jpath):
         os.remove(jpath)
     try:
@@ -985,12 +1037,14 @@ def run_target(sid, ids, cache, map_keys, stage_config, overwrite=False, degener
 
 def run_batch(targets, tasks, workspace, stage_config, is_prism, coupled, map_keys, overwrite=False,
               depth=2, degenerate=0.9, pass1_dir=None, cache_size=60, pre_bkgsub=False, stuck_keys=None,
-              own=False):
+              own=False, shapes=None):
     """One worker's share of a disperser: the joint first pass of ``targets`` (in
     coupling order), with one member cache of ``cache_size`` members. ``map_keys``: the
     exposures whose rate files hold a trace map (``run``; no map is read here but a
-    boxcar target's own). Returns the written paths."""
-    cache = MemberCache(tasks, workspace, stage_config, is_prism, size=cache_size, pre_bkgsub=pre_bkgsub)
+    boxcar target's own). ``shapes``: the members' shapes fixed beforehand
+    (``member_shape``). Returns the written paths."""
+    cache = MemberCache(tasks, workspace, stage_config, is_prism, size=cache_size, pre_bkgsub=pre_bkgsub,
+                        shapes=shapes)
     out = []
     for sid in targets:
         ids = [s for s in neighbourhood(coupled, sid, depth=depth) if s in tasks]
@@ -1029,9 +1083,25 @@ def run(tasks, workspace, stage_config, is_prism, n_processes=1, overwrite=False
     if not order:
         return []
     nb = max(1, int(n_processes))
+    shapes = None
+    if nb > 1:
+        # a member is built by every worker whose targets need it, and fixing its shape (its own
+        # fit above the gate) is most of a build: fixed here once per member, in parallel
+        # (only for the targets whose pass 1 is not current)
+        probe = MemberCache(tasks, workspace, stage_config, is_prism, size=0, pre_bkgsub=pre_bkgsub)
+        need = set()
+        for t in order:
+            ids = [s for s in neighbourhood(coupled, t, depth=depth) if s in tasks]
+            ow = overwrite if isinstance(overwrite, bool) else int(t) in overwrite
+            if not _target_state(t, ids, probe, map_keys, stage_config, ow, pass1_dir, stuck_keys, own)['current']:
+                need.update(ids)
+        need = sorted(need)
+        res = (dispatch(member_shape, [(s, tasks[s], workspace, stage_config, is_prism, pre_bkgsub) for s in need],
+                        n_processes=n_processes, use_starmap=True) or []) if need else []
+        shapes = {s: v for s, v in res if v is not None}
     size = int(np.ceil(len(order) / nb))
     batches = [order[i:i + size] for i in range(0, len(order), size)]
     args = [(b, tasks, workspace, stage_config, is_prism, coupled, map_keys, overwrite, depth, degenerate,
-             pass1_dir, cache_size, pre_bkgsub, stuck_keys, own) for b in batches]
+             pass1_dir, cache_size, pre_bkgsub, stuck_keys, own, shapes) for b in batches]
     res = dispatch(run_batch, args, n_processes=n_processes, use_starmap=True) or []
     return [p for r in res for p in (r or [])]

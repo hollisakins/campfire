@@ -1224,6 +1224,21 @@ Part 4 led to these fixes (`JOINT_PASS_VERSION` 6, `JOINT_LIGHT_VERSION` 2):
 Left for later: the scan's proposal level (`scan_dchi2`) is still fixed in the configuration; it
 could follow each observation's null (the negative-amplitude statistic) instead.
 
+After part 4, three changes make the joint first pass faster without changing its results (user,
+2026-11-09). On p1 G395M with 12 workers and 60 members cached per worker, the pass builds 1,059
+members where 477 would do, and two thirds of a build was the member's shape (its own fit above
+the gate or the gate's check). The shapes are now fixed once per source before the workers start
+(`member_shape`), only for the targets whose pass 1 is not current. The design assigned each pixel
+by re-sorting the pixels already claimed once per member and looked every member up for every
+other member's pixels; one sort now assigns them (`profile_joint.first_occurrence`) and members
+whose pixels lie elsewhere are skipped. The target's correlations with the other members took a
+second pass over the target's columns of the inverse; the other members' own columns, which the
+pass already solves for their variances, hold the same numbers since the matrix is symmetric. On
+two depth-2 neighborhoods (31 and 38 members) against the part 4 code: a member build 14-15 s to
+4.4 s, the design 5.4-7.7 s to 2.2-2.8 s with an identical matrix, data and noise, the solve
+17-28 s to 10-14 s with identical spectra, errors and not-separable flags, and the correlations
+within 4e-15 (measured on the 38-member one).
+
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,
 `test_dr_publish::test_cli_json_prompts_stay_off_stdout`) are fixed on `main`, not here. Still to do

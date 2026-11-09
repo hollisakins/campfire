@@ -29,6 +29,13 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- **NIRSpec joint first pass, faster** (`joint_first_pass.py`, `profile_joint.py`; results
+  unchanged). Each source's shape is fitted once per disperser before the workers start, not by
+  every worker that builds the source; the design assigns each pixel with one sort and skips
+  members whose pixels lie elsewhere; the target's correlations with the other members come from
+  those members' own columns of the inverse (the matrix is symmetric), not from a second pass over
+  the target's. On two p1 G395M neighborhoods: a member build 14-15 s to 4.4 s, the design 5.4-7.7
+  s to 2.2-2.8 s, the solve 17-28 s to 10-14 s.
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.

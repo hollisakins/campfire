@@ -111,17 +111,26 @@ def owned_pixels(members):
     member in the list (the target, then by coupling strength, ``joint_first_pass.neighbourhood``).
     Its value and noise are that member's, in its calibration. Sets ``member.owned`` and
     returns the number of joint data."""
-    claimed = np.zeros(0, np.int64)
     tags = {}
+    tables = [_pixel_keys(m, tags) for m in members]
+    first = first_occurrence([t[3] for t in tables])
     n = 0
-    for m in members:
-        k, iy, ix, keys = _pixel_keys(m, tags)
-        own = ~np.isin(keys, claimed)
-        claimed = np.union1d(claimed, keys[own])
+    for m, (k, iy, ix, _), own in zip(members, tables, first):
         m.pix_k, m.pix_iy, m.pix_ix = k, iy, ix
         m.owned = own
         n += int(own.sum())
     return n
+
+
+def first_occurrence(parts):
+    """Per array of ``parts`` (integer keys), which of its entries is a key's first
+    appearance across all of them in order: one sort, however many parts."""
+    sizes = [p.size for p in parts]
+    allk = np.concatenate(parts) if parts else np.zeros(0, np.int64)
+    _, idx = np.unique(allk, return_index=True)
+    mask = np.zeros(allk.size, bool)
+    mask[idx] = True
+    return np.split(mask, np.cumsum(sizes)[:-1]) if parts else []
 
 
 def design(members):
@@ -150,15 +159,20 @@ def design(members):
             iy, ix, r = s.pix_iy[sel], s.pix_ix[sel], row0 + loc[sel]
             e = M.exps[k]
             terms = PF.nod_terms(M.exps, k)
+            dy, dx = iy + int(e.origin[0]), ix + int(e.origin[1])         # detector row, column
+            ylo, yhi, xlo, xhi = dy.min(), dy.max(), dx.min(), dx.max()
             for c in members:
                 g = c.model.lam_grid
                 for j, w in terms:
                     b = c.basis.get(CT.exposure_key(M.exps[j].name))
                     if b is None:
                         continue
-                    cy = iy + int(e.origin[0]) - int(b['origin'][0])
-                    cx = ix + int(e.origin[1]) - int(b['origin'][1])
                     ny, nx = b['prof'].shape
+                    oy, ox = int(b['origin'][0]), int(b['origin'][1])
+                    if oy > yhi or oy + ny <= ylo or ox > xhi or ox + nx <= xlo:
+                        continue                        # c's frame is away from these pixels
+                    cy = dy - oy
+                    cx = dx - ox
                     ins = (cy >= 0) & (cy < ny) & (cx >= 0) & (cx < nx)
                     if not ins.any():
                         continue

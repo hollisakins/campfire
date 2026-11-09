@@ -135,6 +135,30 @@ def test_solve_target_flags_only_the_inseparable_wavelengths(monkeypatch, values
     assert np.all(sol['err'][: n // 2] > 3 * sol['err'][sep].max())     # inseparable: large errors
 
 
+def test_solve_target_correlations_are_those_of_the_dense_inverse(monkeypatch):
+    """The target's errors and most negative correlations against a dense inverse of the
+    same scaled normal matrix (the rows against the target come from the other unknowns'
+    own columns, by symmetry)."""
+    rng = np.random.default_rng(2)
+    n = 30
+    A = sp.random(400, 2 * n, density=0.04, random_state=3, format='csr')
+    A = A + sp.csr_matrix((np.ones(n), (np.arange(n), np.arange(n))), shape=A.shape)
+    A = A + sp.csr_matrix((0.9 * np.ones(n), (np.arange(n), n + np.arange(n))), shape=A.shape)
+    v = np.full(A.shape[0], 0.01)
+    d = A @ np.ones(2 * n) + rng.normal(0, 0.1, A.shape[0])
+    monkeypatch.setattr(JF, 'design_full', lambda ms: (A, d, v, A.shape[0]))
+    sol = JF.solve_target([_Member(n), _Member(n)], n_clip=0, degenerate=0.3)
+    N = (A.T @ sp.diags(1.0 / v) @ A).toarray()
+    s = 1.0 / np.sqrt(np.diag(N))
+    C = np.linalg.inv(s[:, None] * N * s[None, :] + 1e-9 * np.eye(2 * n))
+    corr = C / np.sqrt(np.outer(np.diag(C), np.diag(C)))
+    want = corr[n:, :n].min(axis=0)
+    assert np.allclose(sol['err'], s[:n] * np.sqrt(np.diag(C)[:n]), rtol=1e-8)
+    low = want < -0.3                                       # the candidates the bound lets through
+    assert low.any()
+    assert np.allclose(sol['corr'][low], want[low], rtol=1e-8)
+
+
 def test_solve_target_recovers_unknowns_of_very_different_scales(monkeypatch):
     """A target with in-range unknowns in calibrated units (design ~1e10) and past-cutout
     unknowns in count rate (design ~1): both are recovered (an absolute ridge set by the
@@ -360,3 +384,44 @@ def test_own_pass_files_sit_beside_the_joint_pass(tmp_path, monkeypatch):
     assert JF.CT.pass1_current(str(tmp_path), 'p_1') == out
     JF.drop_own(str(tmp_path), ['p_1'])
     assert not os.path.exists(out) and JF.CT.pass1_current(str(tmp_path), 'p_1') == joint
+
+
+def test_first_occurrence_marks_each_key_once_in_order():
+    from campfire_pipeline.nirspec import profile_joint as PJ
+    a, b, c = np.array([5, 1, 5]), np.array([], np.int64), np.array([1, 7, 2, 7])
+    out = PJ.first_occurrence([a, b, c])
+    assert [o.tolist() for o in out] == [[True, True, False], [], [False, True, True, False]]
+
+
+def test_member_cache_takes_shapes_fixed_beforehand(monkeypatch):
+    def no_fit(*a, **k):
+        raise AssertionError('the shape was fixed beforehand')
+    monkeypatch.setattr(JF, 'shape_for', no_fit)
+    monkeypatch.setattr(JF.MemberCache, '_load', lambda self, sid: (None, None))
+    fixed = (dict(width=0.1), 'own', np.zeros(3))
+    cache = JF.MemberCache({4: {}}, '', {}, True, size=0, shapes={4: fixed})
+    assert cache.shape_of(4) is fixed
+
+
+def test_run_fixes_shapes_only_for_targets_it_will_solve(monkeypatch):
+    """Target 1's pass 1 is current, 2's is not: only 2's neighbourhood (2 and 4) gets its
+    shapes fixed, once, and every worker receives them."""
+    import campfire_pipeline.common.parallel as PAR
+    coupled = {1: {3: 5}, 2: {4: 5}, 3: {}, 4: {}}
+    tasks = {s: dict(product=f'p_{s}', groups=[[f'jw00001001001_01101_00001_nrs1_{s}.fits']]) for s in coupled}
+    monkeypatch.setattr(JF.CT, 'trace_maps', lambda ws, keys, stuck=None: {})
+    monkeypatch.setattr(JF, 'coupling', lambda files, maps: coupled)
+    monkeypatch.setattr(JF, 'MemberCache', lambda *a, **k: None)
+    monkeypatch.setattr(JF, '_target_state', lambda t, *a, **k: dict(current=int(t) == 1))
+    calls = []
+
+    def dispatch(func, args, n_processes=1, use_starmap=False):
+        calls.append((func.__name__, args))
+        if func is JF.member_shape:
+            return [(a[0], ('shape', a[0])) for a in args]
+        return [[] for _ in args]
+    monkeypatch.setattr(PAR, 'dispatch', dispatch)
+    JF.run(tasks, '', {}, False, n_processes=2, targets=[1, 2])
+    assert calls[0][0] == 'member_shape' and [a[0] for a in calls[0][1]] == [2, 4]
+    assert calls[1][0] == 'run_batch'
+    assert all(a[-1] == {2: ('shape', 2), 4: ('shape', 4)} for a in calls[1][1])
