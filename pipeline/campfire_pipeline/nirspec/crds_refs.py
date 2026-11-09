@@ -106,8 +106,15 @@ def point_to_uniform(kind, point, uniform):
 # The path-loss reference
 # ---------------------------------------------------------------------------
 def _locate(name):
+    """The local path of CRDS reference ``name``, fetched into the cache when it is not there
+    (stage 3 may run where stage 2 did not, or on another ``CRDS_PATH``)."""
     import crds
-    return crds.locate_file(os.path.basename(str(name).replace('crds://', '')), 'jwst')
+    base = os.path.basename(str(name).replace('crds://', ''))
+    path = crds.locate_file(base, 'jwst')
+    if not os.path.exists(path):
+        from crds.client import api
+        api.dump_references(crds.get_default_context('jwst'), baserefs=[base])
+    return path
 
 
 @dataclass(frozen=True)
@@ -151,7 +158,32 @@ def pathloss_cube(ref_name):
         raise ValueError(f'{name}: y runs {y[0]:+.3f} to {y[-1]:+.3f}, expected three shutter pitches about 0')
     if abs(x[0] + 0.5) > 0.05 or abs(x[-1] - 0.5) > 0.05:
         raise ValueError(f'{name}: x runs {x[0]:+.3f} to {x[-1]:+.3f}, expected one shutter pitch about 0')
-    return PathlossCube(name=name, lam=lam, y=y, x=x, cube=data)
+    pc = PathlossCube(name=name, lam=lam, y=y, x=x, cube=data)
+    worst = shutter_repeat(pc)
+    if worst > REPEAT_TOL:
+        raise ValueError(f'{name}: the point path loss differs between the three shutters by up to '
+                         f'{100 * worst:.2f} % (ln), above {100 * REPEAT_TOL:.2f} %: point_y_ratio divides it out at '
+                         f'the central shutter for every nod')
+    return pc
+
+
+REPEAT_TOL = 0.002     # largest |ln P(y) - ln P(y -+ 1)| allowed between the cube's shutters
+
+
+def shutter_repeat(pc):
+    """The largest |ln P(y) - ln P(y -+ 1)| at the central x over the outer shutters of the cube
+    (0.5 <= |y| <= 1.5 pitches), over its wavelengths: zero when the reference repeats one profile
+    in every shutter. ``point_y_ratio`` evaluates the central shutter at SRCYPOS, while jwst
+    evaluated the cube at SRCYPOS -+ 1 for a source in the slitlet's first or last shutter (nods 2
+    and 3 of a 3-shutter slitlet), so the two agree only when it does (``jwst_nirspec_pathloss_0010``:
+    0.0000)."""
+    prof = np.log(np.clip(pc.at_x_centre(), 1e-12, None))
+    worst = 0.0
+    for step, lo, hi in ((-1.0, 0.5, 1.5), (1.0, -1.5, -0.5)):
+        ys = pc.y[(pc.y >= lo) & (pc.y <= hi)]
+        for p in prof:
+            worst = max(worst, float(np.max(np.abs(np.interp(ys, pc.y, p) - np.interp(ys + step, pc.y, p)))))
+    return worst
 
 
 def point_y_ratio(ref_name, lam, srcy):
@@ -355,6 +387,13 @@ def barshadow_edges(table_path, lams=(1.0, 3.0, 5.0)):
     return out
 
 
+def _table_lams(path):
+    """(first, last) wavelength [um] of a bar-shadow table's ``DATA1X1`` grid."""
+    from astropy.io import fits
+    h = fits.getheader(path, 'DATA1X1')
+    return h['CRVAL1'] * 1e6, (h['CRVAL1'] + h['CDELT1'] * (h['NAXIS1'] - 1)) * 1e6
+
+
 def compare_barshadow(grating, crds_name=None):
     """The empirical table of ``grating`` against the CRDS bar shadow (``crds_name``, default the one
     the active context selects): each one's half-light edge points and their differences (empirical
@@ -368,12 +407,17 @@ def compare_barshadow(grating, crds_name=None):
         return None
     filt = dict(MOS_GRATINGS).get(grating.upper(), 'CLEAR')
     name = crds_name or active_references(grating.upper(), filt)['barshadow']
+    crds_path = _locate(name)
     lo, hi = GRATING_LIMITS[grating.lower()][:2]
-    lams = tuple(np.round(np.geomspace(lo, hi, 5)[1:4], 2))            # inside the disperser's own range
-    a, b = barshadow_edges(emp, lams), barshadow_edges(_locate(name), lams)
+    # inside the disperser's own range and both tables' wavelength grids: a table is read at its
+    # nearest column beyond its grid (the CRDS G140M / G235M references stop at 1.495 / 2.49 um)
+    for p in (emp, crds_path):
+        lo, hi = max(lo, _table_lams(p)[0]), min(hi, _table_lams(p)[1])
+    lams = tuple(np.round(np.geomspace(lo, hi, 5)[1:4], 2))
+    a, b = barshadow_edges(emp, lams), barshadow_edges(crds_path, lams)
     out = dict(grating=grating.upper(), empirical=os.path.basename(emp), crds=name, edges={})
     for lam in a:
-        if a[lam].size != b[lam].size:
+        if a[lam].size != b[lam].size or a[lam].size == 0:
             out['edges'][lam] = dict(empirical=a[lam].tolist(), crds=b[lam].tolist(), shift=np.nan, width=np.nan)
             continue
         d = a[lam] - b[lam]

@@ -1,7 +1,7 @@
 # CAMPFIRE's own NIRSpec MSA calibrations: what each replaces or corrects in jwst's reference products,
 # what it was derived from, which CRDS references it depends on, and how to turn it off.
 #
-# Rules (tests/test_nirspec_calibration_manifest.py enforces the first three):
+# Rules (tests/test_nirspec_crds_refs.py enforces the first three):
 # - Every shipped calibration file is listed here, with the sha256 of its bytes. A file changed without
 #   its entry fails the tests: re-derive, then update `sha256`, `version`, `derived` and `inputs` together.
 # - `version` matches the version the file carries itself (nirspec_optics.json `meta.version`; the bar-shadow
@@ -38,7 +38,7 @@ record = "docs/design-nirspec-pipeline-v2.md section 6.3"
 
 [bar_offset]
 file = ""                     # measured per observation into the workspace's bar_offset.json
-version = "4"                 # bar_offset.MEASURE_VERSION
+version = "5"                 # bar_offset.MEASURE_VERSION
 replaces = "the registration of the MSA bars in jwst's slit frame, per observation and disperser"
 inputs = """measured from each observation's own empty shutters against the optics model; the fixed quadrant \
 pattern (bar_offset.QUADRANT_PATTERN) from 11 survey PRISM observations; the cut on a shutter's level \

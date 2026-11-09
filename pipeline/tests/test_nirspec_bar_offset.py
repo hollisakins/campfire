@@ -83,14 +83,20 @@ def test_file_round_trip(tmp_path):
 
 
 class _Can:
-    def __init__(self, sid):
+    def __init__(self, sid, d, made=100.0):
+        from astropy.io import fits
+        from campfire_pipeline.nirspec.master_bkg import S2A_TIME_KEY
         self.grating, self.filter, self.source_id = 'PRISM', 'CLEAR', sid
+        self.path = str(d / f'c{sid}.fits')
+        h = fits.PrimaryHDU()
+        h.header[S2A_TIME_KEY] = made                    # when stage 2a made it
+        h.writeto(self.path, overwrite=True)
 
 
 def test_ensure_measures_only_what_changed(tmp_path, monkeypatch):
     ws = tmp_path / 'products' / 'nirspec' / 'obs'
     ws.mkdir(parents=True)
-    cans = [_Can(i) for i in range(10)]
+    cans = [_Can(i, tmp_path) for i in range(10)]
     monkeypatch.setattr(BO.B, 'discover_workspace', lambda workspace: list(cans))
     calls = []
 
@@ -101,12 +107,38 @@ def test_ensure_measures_only_what_changed(tmp_path, monkeypatch):
     assert BO.ensure(str(ws))['PRISM/CLEAR'][1] == pytest.approx(0.01 + BO.QUADRANT_PATTERN[1])
     BO.ensure(str(ws))
     assert calls == [10]                                 # kept
-    cans.append(_Can(10))
+    cans.append(_Can(10, tmp_path))
     BO.ensure(str(ws))
     assert calls == [10, 11]                             # another set of canonicals
-    BO.write(str(ws), {'PRISM/CLEAR': _measurement(0.01, n=11, version='0')})
+    BO.write(str(ws), {'PRISM/CLEAR': dict(_measurement(0.01, n=11, version='0'), inputs=100.0)})
     BO.ensure(str(ws))
     assert calls == [10, 11, 11]                         # an older measurement
+    cans[3] = _Can(3, tmp_path, made=200.0)
+    BO.ensure(str(ws))
+    assert calls == [10, 11, 11, 11]                     # stage 2a made a canonical again (same count)
+
+
+def test_the_all_quadrant_fit_holds_the_pattern_once():
+    # a field whose pixels are all in quadrant 4 measures base + pattern[4]; its applied offsets
+    # are the base plus each quadrant's pattern
+    assert BO.pattern_mean([4] * 10) == pytest.approx(BO.QUADRANT_PATTERN[4])
+    assert BO.pattern_mean([1, 2, 3, 4]) == pytest.approx(np.mean(list(BO.QUADRANT_PATTERN.values())))
+    assert BO.pattern_mean([]) == 0.0
+
+
+def test_a_minimum_on_the_edge_of_the_trial_offsets_gives_none():
+    key = np.repeat(np.arange(6), 40)
+    r = np.random.default_rng(0).normal(0.0, 0.01, key.size)
+    T = np.vstack([np.full(key.size, abs(d - BO.SHIFTS[0]) * 10) for d in BO.SHIFTS])   # best at the first trial
+    assert np.isnan(BO._best(r, T, key))
+    T = np.vstack([np.full(key.size, abs(d - 0.012) * 10) for d in BO.SHIFTS])          # best inside the grid
+    assert abs(BO._best(r, T, key) - 0.012) < 0.005
+
+
+def test_the_grating_samples_reach_past_the_crds_grid():
+    from types import SimpleNamespace
+    g = BO.sample_grid(SimpleNamespace(grating='G140M', path=''), (None, None))
+    assert g.wavelengths_um[-1] > 5.0                      # the CRDS G140M reference stops at 1.495 um
 
 
 def test_pass1_signature_follows_the_offsets():

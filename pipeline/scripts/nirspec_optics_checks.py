@@ -3,8 +3,8 @@ calibration itself (``nirspec.optics_calibration``):
 
 * ``score``: the stack test per dataset (``--groups name=key prefix,...``), from a stack run;
 * ``compare``: two stack runs of the same stars (two models), their chi2 per range;
-* ``visits`` + ``repeat``: the same star at several positions, each visit fitted as stage 3 fits it.
-  Is its flux the same? Across configurations in y (check 1 on NGC 2506); along a scan in x (1133's
+* ``visits`` + ``repeat``: the same star at several positions, each visit fitted by the profile fit
+  with its defaults (``PF.fit``; stage 3's shape chain picks among such fits). Is its flux the same? Across configurations in y (check 1 on NGC 2506); along a scan in x (1133's
   slit grid, 12497 obs 4), which also refits the along-dispersion correction (``x_loss``);
 * ``barshadow``: the model's uniform light against the empirical bar-shadow tables.
 
@@ -22,7 +22,7 @@ import numpy as np
 from campfire_pipeline.nirspec import optics_calibration as OC
 from campfire_pipeline.nirspec import profile_fit as PF
 
-VISIT_BANDS = ((0.7, 1.0), (1.0, 1.5), (1.5, 2.5), (2.5, 3.5), (3.5, 5.0))   # PRISM; a grating: four of its own
+VISIT_BANDS = ((0.7, 1.0), (1.0, 1.5), (1.5, 2.5), (2.5, 3.5), (3.5, 5.0))   # PRISM; a grating: visit_bands
 REPEAT_SNR = 20.0                  # a band enters when its S/N (flux over error) is at least this
 REPEAT_SAT = 0.01                  # ... and at most this share of its trace pixels is saturated
 REPEAT_EDGE = 0.25                 # |SRCYPOS| of an edge visit
@@ -112,17 +112,31 @@ def band_fluxes(lam, flux, err, bands, min_points=5):
     return out
 
 
+def visit_bands(disperser):
+    """The bands a visit's flux is measured in: ``VISIT_BANDS`` for PRISM, else four equal
+    steps in log wavelength over the grating's range. Fixed per disperser, so a band is the
+    same wavelengths in every visit (a visit's own pixel percentiles move with its x position)."""
+    if disperser == 'prism_clear':
+        return VISIT_BANDS
+    from campfire_pipeline.nirspec.constants import GRATING_LIMITS
+    lo, hi = GRATING_LIMITS[disperser.split('_')[0].lower()][:2]
+    e = np.geomspace(lo, hi, 5)
+    return tuple((float(a), float(b)) for a, b in zip(e[:-1], e[1:]))
+
+
 def fit_visit(task):
     """One visit of a star (``OC.StarTask``: one detector of one configuration, or one
-    background group of a scan) through the profile fit as stage 3 runs it (``PF.fit``, the
-    model in use: the shipped one or the file ``CAMPFIRE_NIRSPEC_OPTICS`` names): band fluxes,
-    the fitted centre and width, chi2/dof, the planned position (median SRCXPOS / SRCYPOS of its
-    science exposures) and the saturated share of each band. Errors are returned, not raised."""
+    background group of a scan) through the profile fit with its defaults (``PF.fit``, the
+    model in use: the shipped one or the file ``CAMPFIRE_NIRSPEC_OPTICS`` names; not stage 3's
+    shape chain): band fluxes (``visit_bands``), the fitted centre and width, chi2/dof, the
+    planned position (median SRCXPOS / SRCYPOS of its science exposures), the program and the
+    saturated share of each band. Errors are returned, not raised."""
     head = dict(key=task.key, obs=task.obs, sid=task.source_id, det=task.detector, group=task.group,
                 config=task.config, srcx=task.srcx, srcy=task.srcy)
     try:
         exps = OC.load_star(task)
-        bands = VISIT_BANDS if task.disperser == 'prism_clear' else OC.grating_ranges(exps, n=4)
+        head['program'] = os.path.basename(exps[0].path)[2:7]       # a star is the same source id in one program
+        bands = visit_bands(task.disperser)
         R = PF.fit(exps)
         flags = OC.saturated_flags(exps)
         return dict(head, bands=[list(b) for b in bands], flux=band_fluxes(R.lam, R.flux, R.flux_err, bands),
@@ -163,14 +177,15 @@ def visits(root, observations, out_path, disperser='prism_clear', by_group=False
 def repeat_pairs(rows, along='y', snr_min=REPEAT_SNR, sat_max=REPEAT_SAT, exclude=()):
     """Per band: each visit of a star against the same star's most central visit along
     ``along`` ('y': SRCYPOS, the slit direction; 'x': SRCXPOS, along the dispersion) on the
-    same detector (bands over two detectors cover different wavelengths), among the visits
-    where the band has S/N >= ``snr_min`` and at most ``sat_max`` saturated. Returns
+    same detector (bands over two detectors cover different wavelengths) and in the same program
+    (a source id names one star only within its program's catalogue), among the visits where the
+    band has S/N >= ``snr_min`` and at most ``sat_max`` saturated. Returns
     [[dict(lnr, pos, ref_pos, sid, lam, band)]] per band."""
     pos = 'srcy' if along == 'y' else 'srcx'
     by = {}
     for r in rows:
         if 'error' not in r and r['sid'] not in set(exclude) and np.isfinite(r[pos]):
-            by.setdefault((r['sid'], r['det']), []).append(r)
+            by.setdefault((r.get('program'), r['sid'], r['det']), []).append(r)
     nb = max((len(r['bands']) for r in rows if 'bands' in r), default=0)
     out = [[] for _ in range(nb)]
     for vs in by.values():

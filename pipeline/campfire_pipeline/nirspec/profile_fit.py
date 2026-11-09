@@ -638,6 +638,7 @@ class ProfileModel:
         the shipped model of each exposure's detector (``model_optics``)."""
 
     centre_law_tables = None
+    nod_law = None
     nod_shift = None
     optics = None
 
@@ -647,6 +648,7 @@ class ProfileModel:
         self.chromatic = chromatic
         self.centre_law_tables = centre_law_tables
         self.optics = model_optics(exps, optics)
+        self.nod_law = nod_law
         self.nod_shift = nod_shifts(exps, nod_law)
         self.priors = priors or Priors()
         self.bounds_cfg = bounds or Bounds()
@@ -1287,9 +1289,13 @@ def refit_at_shape(result, exps):
     that pivot): the same source on other data (the scan's pixels, the frames minus the
     master background). Returns (FitResult, shape dict as ``fit_fixed`` takes it)."""
     M0 = result.model
+    by_detector = {e.detector: o for e, o in zip(M0.exps, M0.optics)}
+    optics = [by_detector.get(e.detector) for e in exps]
     M = ProfileModel(exps, chromatic=M0.chromatic, priors=M0.priors, bounds=M0.bounds_cfg, c_prior=M0.c_prior,
-                     grid=M0.lam_grid)
-    M.pivot = M0.pivot
+                     grid=M0.lam_grid, centre_law_tables=M0.centre_law_tables, nod_law=M0.nod_law,
+                     optics=optics if all(o is not None for o in optics) else None)
+    # the shape is defined at the fit's pivot and clamped at the fit's wavelength range (``_x``)
+    M.pivot, M.lam_rng = M0.pivot, M0.lam_rng
     p = result.params
     shape = dict(centre_offset=p['centre'] - M0.c_prior, drift=p['drift'], width=p['width'],
                  width_change=p['width_change'])

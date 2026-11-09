@@ -78,7 +78,8 @@ Release procedure: edit the `## Unreleased` section below, then run
     at different positions in its shutter (93 NGC 2506 stars) scatters by 6-12 % in five bands
     from 0.7 to 5 um, with no trend with the position along the slit. Each nod sits at its own planned position (`NOD_OFFSET_LAW`). Each observation's bar
     offset is measured from the background in its empty shutters (`bar_offset.py`,
-    `bar_offset = "measure"`, `BAROFF`). Tables are built on first use and cached under
+    `bar_offset = "measure"`, `BAROFF`), over the disperser's full wavelength range, with the
+    quadrant pattern counted once, and again when stage 2a remakes the observation. Tables are built on first use and cached under
     `$CAMPFIRE_ROOT/cache/optics`.
   - **The reported flux of an extended source is its light in 0.8 arcsec.** `fnu_prof` (and
     `fnu`) is the fitted source's light inside a circle 0.8 arcsec across (`FLUXAPER`), not the light

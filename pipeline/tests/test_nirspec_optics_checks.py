@@ -73,6 +73,16 @@ def test_repeat_pairs_against_the_most_central_visit(checks):
     assert p[0][0]['lnr'] == pytest.approx(np.log(1.1)) and p[1][0]['lnr'] == pytest.approx(np.log(0.9))
     assert p[0][0]['pos'] == 0.3 and p[0][0]['ref_pos'] == 0.02
     assert checks.repeat_pairs(rows, exclude=[1]) == [[], []]
+    # the same source id in another program is another star
+    other = [dict(r, program='01133') if r.get('srcy') == 0.3 and r.get('det') == 'NRS1' else dict(r, program='12497')
+             for r in rows]
+    assert checks.repeat_pairs(other) == [[], []]
+
+
+def test_a_grating_band_is_the_same_wavelengths_in_every_visit(checks):
+    b = checks.visit_bands('g395m_f290lp')
+    assert len(b) == 4 and b[0][0] == pytest.approx(2.68) and b[-1][1] == pytest.approx(5.51)
+    assert checks.visit_bands('prism_clear') == checks.VISIT_BANDS
 
 
 def test_repeat_along_x_refits_the_correction(checks, tmp_path):

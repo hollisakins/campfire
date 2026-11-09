@@ -76,9 +76,9 @@ LOCK_WAIT = 900.0             # seconds to wait for another process building the
 
 
 def default_cache_dir():
-    """``$CAMPFIRE_ROOT/cache/optics``."""
-    root = os.environ.get('CAMPFIRE_ROOT') or os.path.expanduser('~/campfire-data')
-    return os.path.join(root, 'cache', 'optics')
+    """``$CAMPFIRE_ROOT/cache/optics`` (the layout's root and its default)."""
+    from campfire_layout.paths import campfire_root
+    return os.path.join(str(campfire_root()), 'cache', 'optics')
 
 
 # ---------------------------------------------------------------------------

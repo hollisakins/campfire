@@ -92,7 +92,7 @@ Version 2 changes six things.
 
 Versions at the time of writing: `FIT_VERSION` 9, optics model `2026.11-r8` (engine 2), master
 background `CFMBKGV` 1.9 (step 1 1.6), `JOINT_PASS_VERSION` 5, `PASS1_VERSION` 11, bar offset
-`MEASURE_VERSION` 4, trace map version 3.
+`MEASURE_VERSION` 5, trace map version 3.
 
 ---
 
@@ -516,13 +516,18 @@ light (its point images summed over source positions, without the kernel) at the
 position plus a trial offset. Only the steep part of each edge (0.2-0.75 pitch from the center) on
 the side facing away from the source is used, and shutters brighter than 1.05 of the background
 (`SCALE_CUT`) are left out, because bright stars bias it. A fixed quadrant pattern (-0.0042 /
-+0.0003 / -0.0009 / +0.0047) is added. A disperser with under 3000 usable pixels per half gets
-none.
++0.0003 / -0.0009 / +0.0047) is added per quadrant, after the pattern's mean over the fitted pixels
+is taken out (the fit over every quadrant's pixels already holds it, in proportion to where the
+pixels sit; zero for a field spread evenly). A disperser with under 3000 usable pixels per half, or
+whose best trial offset is the edge of the trial range (+-0.10), gets none. The pixels are binned on
+the empirical bar-shadow table's wavelength grid, which for G140M and G235M runs to 5.3 um (CRDS's
+stops at 1.495 / 2.49 um).
 
 `profile_fit.load_group` adds the offset to every pixel's slit position and to the planned
 position (jwst's SRCYPOS, which only undoes jwst's own path loss, stays as it is); the light past
 the cutouts takes the same frame. The value is kept in the workspace's `bar_offset.json` (measured
-again when the canonicals, `MEASURE_VERSION` or the optics model change) and recorded in
+again when the canonicals change in number or are made again by stage 2a, their `CFS2ATIM`, or when
+`MEASURE_VERSION` or the optics model change) and recorded in
 `BAROFF`. `bar_offset = "off"` turns it off.
 
 **Evidence.** Moving the data by +0.020 pitch is recovered as +0.022 / +0.023. Survey observations
@@ -1130,6 +1135,38 @@ per rate file; step 1 starts a process pool per root; the shutter-index geometry
 four places (`geometry_on_block`, `RateGeometry.blocks`, `slit_geometry`, and the column mapping
 of `shutter_fit` and step 1). The virtual-slitlet difference above was two of those copies
 drifting apart.
+
+Part 3 led to these fixes (bar offset `MEASURE_VERSION` 5):
+- the quadrant pattern was counted twice in a field whose pixels sit mostly in one quadrant: the
+  offset fitted over every quadrant's pixels already holds the pattern in proportion to where the
+  pixels sit, and the pattern was then added in full. Its mean over the fitted pixels is now taken
+  out first (section 6.4). Re-measured with the fix, the applied offsets of 1133 and the eleven
+  NGC 2506 visits move by 0.0001 to 0.0014 slit units (1133: -0.0003), the same in every quadrant.
+  That is a tenth of the zero point's 0.01 uncertainty, so the optics fit is not redone;
+- G140M and G235M offsets were measured on CRDS's wavelength grid, which stops at 1.495 / 2.49 um,
+  so their redder light was dropped; they use the empirical table's grid (to 5.3 um);
+- a best trial offset on the edge of the trial range (+-0.10, a half dominated by other light) was
+  applied; it now gives no offset;
+- `bar_offset.json` was kept after stage 2a made the canonicals again (a new CRDS context moves
+  jwst's slit frame); it is now also keyed on their `CFS2ATIM`;
+- the path-loss reference was located in the CRDS cache but never fetched, so stage 3 failed where
+  stage 2 had not run; it is fetched when missing. Its reader now also checks that the reference
+  repeats one profile in every shutter, which `point_y_ratio` assumes for the nods whose source is
+  in an end shutter (jwst moves the source one shutter there); `jwst_nirspec_pathloss_0010` does,
+  to 0.00 %;
+- `refit_at_shape` (the neighbor scan, the master-background spectrum) took the fit's pivot but its
+  own wavelength range, and dropped the fit's optics and laws; it takes all of them;
+- with `CAMPFIRE_ROOT` unset the optics tables went to `~/campfire-data`; they follow the layout's
+  root;
+- calibration tools: `stack` takes one disperser and `laws` PRISM only (ranges are pooled by
+  index); one range of `kernel_star` that has no usable single-frame pixel no longer discards the
+  star's other equations; the repeat check pairs a star within its program and measures a
+  grating's fluxes in fixed bands; `crds-compare` compares the bar-shadow tables inside both
+  tables' grids; the manifest names its test file.
+
+Left for later: the bar offset holds every pixel's model at each trial offset (41 x the pixels,
+float32; over 1 GB for 800 G395M canonicals), to measure before changing; `RangeFit` builds a model
+twice.
 
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,

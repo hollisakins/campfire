@@ -418,3 +418,26 @@ def test_known_nod_law_is_fitted_and_needed():
     assert abs(R.params['centre'] - 0.10) < 0.005
     B = PF.fit(exps, chromatic=False, model=PF.ProfileModel(exps, chromatic=False, nod_law=False))
     assert B.chi2_red > 1.2 * R.chi2_red
+
+
+def test_a_refit_at_the_shape_keeps_the_fits_model(monkeypatch):
+    # the shape is defined at the fit's pivot and clamped at its wavelength range, with its optics
+    # and laws: a refit on other pixels (the scan's, the frames less the master background) must
+    # not take its own
+    from types import SimpleNamespace
+    made = {}
+
+    class Model:
+        def __init__(self, exps, **kw):
+            made.update(kw)
+            self.pivot, self.lam_rng = 9.0, (8.0, 9.0)       # what the new pixels would give
+    monkeypatch.setattr(PF, 'ProfileModel', Model)
+    monkeypatch.setattr(PF, 'fit_fixed', lambda model, shape: model)
+    M0 = SimpleNamespace(exps=[SimpleNamespace(detector='NRS1')], optics=['optics NRS1'], chromatic=True,
+                         priors=None, bounds_cfg=None, c_prior=0.1, lam_grid=np.arange(3.0), centre_law_tables='law',
+                         nod_law=False, pivot=2.0, lam_rng=(1.0, 3.0))
+    result = SimpleNamespace(model=M0, params=dict(centre=0.15, drift=0.0, width=0.1, width_change=0.0))
+    M, shape = PF.refit_at_shape(result, [SimpleNamespace(detector='NRS1')])
+    assert (M.pivot, M.lam_rng) == (2.0, (1.0, 3.0))
+    assert made['optics'] == ['optics NRS1'] and made['centre_law_tables'] == 'law' and made['nod_law'] is False
+    assert shape['centre_offset'] == pytest.approx(0.05)

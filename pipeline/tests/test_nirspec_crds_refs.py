@@ -37,18 +37,21 @@ DEFAULT_CONFIG = DATA / 'config_default.toml'
 # ---------------------------------------------------------------------------
 # the path-loss reference
 # ---------------------------------------------------------------------------
-def _pathloss_file(tmp_path, monkeypatch, y0=-1.5, aperture='MOS1x3', ny=91, separable=True):
+def _pathloss_file(tmp_path, monkeypatch, y0=-1.5, aperture='MOS1x3', ny=91, separable=True, periodic=True):
     """A path-loss reference in jwst's layout: P(lam, y, x) = a(lam) * gy(y) * gx(x) (plus a cross term
-    when not separable), y and x in shutter pitches, wavelengths in metres."""
+    when not separable), y and x in shutter pitches, wavelengths in metres. ``periodic``: one profile
+    repeated in every shutter, as jwst's references are; else one profile over all three."""
     lam = 0.6e-6 + 0.27e-6 * np.arange(21)
     y = y0 + (1.0 / 30) * np.arange(ny)
     x = -0.5 + (1.0 / 30) * np.arange(31)
-    gy = np.exp(-0.5 * (y / 0.4) ** 2)
+    u = np.sin(np.pi * y) / np.pi if periodic else y      # ~y near each shutter's centre, the same in every shutter
+    gy = np.exp(-0.5 * (u / 0.4) ** 2)
     gx = np.exp(-0.5 * (x / 0.5) ** 2)
     a = 0.9 - 0.05 * lam * 1e6
     cube = a[:, None, None] * gy[None, :, None] * gx[None, None, :]
     if not separable:
-        cube = cube * np.exp(0.2 * y[None, :, None] * x[None, None, :])
+        v = np.sin(2 * np.pi * y) / (2 * np.pi) if periodic else y
+        cube = cube * np.exp(v[:, None] * x[None, :])[None]
     hdr = fits.Header()
     for n, (v0, dv, size) in enumerate(((x[0], x[1] - x[0], x.size), (y[0], y[1] - y[0], y.size),
                                         (lam[0], lam[1] - lam[0], lam.size)), start=1):
@@ -80,7 +83,8 @@ def test_separability_sees_a_cross_term(tmp_path, monkeypatch):
     assert CR.separability(name)[1].max() > 0.02
 
 
-@pytest.mark.parametrize('kw, says', [(dict(aperture='MOS1x1'), 'APERTURE'), (dict(y0=-0.5, ny=31), 'y runs')])
+@pytest.mark.parametrize('kw, says', [(dict(aperture='MOS1x1'), 'APERTURE'), (dict(y0=-0.5, ny=31), 'y runs'),
+                                      (dict(periodic=False), 'differs between the three shutters')])
 def test_the_reader_names_a_broken_assumption(tmp_path, monkeypatch, kw, says):
     name, *_ = _pathloss_file(tmp_path, monkeypatch, **kw)
     with pytest.raises(ValueError, match=says):
@@ -226,3 +230,28 @@ def test_live_reference_meets_the_assumptions(crds_reference):
     for lam, rows in r['y_profile'].items():
         assert rows[0.1]['jwst'] == pytest.approx(1.0, abs=0.1)
     assert CR.compare_text(r)
+
+
+def test_a_reference_missing_from_the_cache_is_fetched(tmp_path, monkeypatch):
+    # stage 3 may run where stage 2 did not: locate_file only names the cache path
+    import crds
+    from crds.client import api
+    path = tmp_path / 'jwst_nirspec_pathloss_0010.fits'
+    fetched = []
+    monkeypatch.setattr(crds, 'locate_file', lambda name, obs: str(tmp_path / name))
+    monkeypatch.setattr(crds, 'get_default_context', lambda obs: 'jwst_0000.pmap')
+    monkeypatch.setattr(api, 'dump_references', lambda ctx, baserefs: fetched.extend(baserefs) or path.touch())
+    assert CR._locate('crds://jwst_nirspec_pathloss_0010.fits') == str(path)
+    assert fetched == ['jwst_nirspec_pathloss_0010.fits'] and path.exists()
+    assert CR._locate('jwst_nirspec_pathloss_0010.fits') == str(path) and len(fetched) == 1    # there now
+
+
+def test_the_bar_shadow_comparison_stays_inside_both_grids(tmp_path):
+    def table(name, w_hi):
+        h = fits.ImageHDU(np.ones((5, 101)), name='DATA1X1')
+        h.header.update(CRVAL1=0.97e-6, CDELT1=(w_hi - 0.97) * 1e-6 / 100)
+        p = tmp_path / name
+        fits.HDUList([fits.PrimaryHDU(), h]).writeto(p)
+        return str(p)
+    assert CR._table_lams(table('crds.fits', 1.4948))[1] == pytest.approx(1.4948)
+    assert CR._table_lams(table('emp.fits', 5.3))[1] == pytest.approx(5.3)

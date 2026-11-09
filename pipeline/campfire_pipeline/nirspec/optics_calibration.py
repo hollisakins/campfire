@@ -383,8 +383,9 @@ def fit_star(task, ranges=None, optics=None):
     if ranges is None:
         ranges = RANGES if task.disperser == 'prism_clear' else grating_ranges(exps)
     flags = saturated_flags(exps)
-    rec = dict(key=task.key, obs=task.obs, detector=task.detector, quadrant=task.quadrant, srcy=task.srcy,
-               exposures=[e.name for e in exps], has_source=[bool(e.has_source) for e in exps], ranges=[])
+    rec = dict(key=task.key, obs=task.obs, disperser=task.disperser, detector=task.detector, quadrant=task.quadrant,
+               srcy=task.srcy, exposures=[e.name for e in exps], has_source=[bool(e.has_source) for e in exps],
+               ranges=[])
     samp = {}
     for r, rng in enumerate(ranges):
         try:
@@ -485,13 +486,15 @@ def _stack_one(args):
     return task.key, len(rec['ranges'])
 
 
-def step_stack(root, observations, out_dir, dispersers=('prism_clear',), optics_path=None, processes=1, log=print):
-    """Every star of the observations through ``fit_star``: records under ``out_dir``/records,
-    stacking samples under ``out_dir``/samples."""
+def step_stack(root, observations, out_dir, disperser='prism_clear', optics_path=None, processes=1, log=print):
+    """Every star of the observations in one disperser through ``fit_star``: records under
+    ``out_dir``/records, stacking samples under ``out_dir``/samples. One disperser per run: the
+    later steps pool star-ranges by range index, which names PRISM's ``RANGES`` for PRISM and each
+    star's own ``grating_ranges`` for a grating."""
     from multiprocessing import Pool
     os.makedirs(os.path.join(out_dir, 'records'), exist_ok=True)
     os.makedirs(os.path.join(out_dir, 'samples'), exist_ok=True)
-    tasks = tasks_for(root, observations, dispersers)
+    tasks = tasks_for(root, observations, (disperser,))
     log(f'{len(tasks)} stars')
     args = [(t, out_dir, optics_path) for t in tasks]
     if processes <= 1:
@@ -635,10 +638,14 @@ def kernel_star(task, ranges, optics=None, free_w_snr=FREE_W_SNR):
         _add_normal(nod, r, Rn, M.pix['d'], M.pix['v'], g['_use'])
         if frames is None:
             continue
-        mexps = restrict(MB.single_frame_exposures(sci, frames), rng)
-        opt = None if optics is None else [optics[e.detector] for e in mexps]
-        Mm = PF.ProfileModel(mexps, grid=M.lam_grid, centre_law_tables=PF.NO_CENTRE_LAW, c_prior=M.c_prior, optics=opt)
-        Mm.pivot = M.pivot
+        try:
+            mexps = restrict(MB.single_frame_exposures(sci, frames), rng)
+            opt = None if optics is None else [optics[e.detector] for e in mexps]
+            Mm = PF.ProfileModel(mexps, grid=M.lam_grid, centre_law_tables=PF.NO_CENTRE_LAW, c_prior=M.c_prior,
+                                 optics=opt)
+        except PF.ProfileFitFallback:
+            continue                      # this range's single frames only; its nod differences are kept
+        Mm.pivot, Mm.lam_rng = M.pivot, M.lam_rng
         off = {e.name: eoff[k] for k, e in enumerate(M.exps)}
         em = np.array([off.get(e.name, 0.0) for e in Mm.exps])
         mm = Mm.design(p, em) @ f
@@ -921,6 +928,10 @@ def step_laws(out_dir, log=print):
     and without the planned shifts, with the fitted scale of the planned shifts per
     observation. Writes ``out_dir``/laws.json."""
     recs = read_records(out_dir)
+    other = sorted({r.get('disperser', 'prism_clear') for r in recs} - {'prism_clear'})
+    if other:
+        # the reference centre (REF_RANGES) and the law's wavelengths are PRISM's RANGES
+        raise ValueError(f'laws takes a PRISM stack run; {out_dir} holds {", ".join(other)}')
     keys = clean_keys(recs)
     rows = centre_rows(recs, keys)
     fit = centre_law_fit(rows)
@@ -1003,7 +1014,8 @@ def main(argv=None):
     ap.add_argument('--root', help='CAMPFIRE root of the reduced calibration observations')
     ap.add_argument('--obs', help='comma-separated observations')
     ap.add_argument('--out', help='output directory (every step but bars)')
-    ap.add_argument('--dispersers', default='prism_clear', help='comma-separated, e.g. prism_clear,g395m_f290lp')
+    ap.add_argument('--disperser', default='prism_clear',
+                    help='stack: one disperser per run, e.g. g395m_f290lp (laws takes PRISM only)')
     ap.add_argument('--optics', default=None, help='a model file in place of the shipped data/nirspec_optics.json')
     ap.add_argument('--select', help='kernel: the stack run whose clean star-ranges are fitted')
     ap.add_argument('--model-out', help='solve: the model file to write')
@@ -1020,7 +1032,7 @@ def main(argv=None):
     if a.step == 'bars':
         step_bars(a.root, a.obs.split(','), processes=a.processes)
     elif a.step == 'stack':
-        step_stack(a.root, a.obs.split(','), a.out, dispersers=tuple(a.dispersers.split(',')), optics_path=a.optics,
+        step_stack(a.root, a.obs.split(','), a.out, disperser=a.disperser, optics_path=a.optics,
                    processes=a.processes)
     elif a.step == 'score':
         step_score(a.out)

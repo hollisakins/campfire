@@ -29,7 +29,7 @@ that is the same in every observation (``QUADRANT_PATTERN``).
 
 The result is written per disperser to ``bar_offset.json`` in the observation's workspace and
 measured again only when it is missing, from an older version of this module or optics model, or
-from a different number of canonicals (``ensure``).
+from other canonicals (their number, or when stage 2a made them; ``ensure``).
 """
 import json
 import os
@@ -42,8 +42,10 @@ from campfire_pipeline.nirspec import barshadow_calibration as B
 from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec import optics as O
 
-MEASURE_VERSION = '4'                 # 2: shutters above SCALE_CUT (1.05 x the background) left out; 3: exact shutter edges (optics engine 2);
-#                                       4: shutters holding a secondary source left out (pixel_samples)
+MEASURE_VERSION = '5'                 # 2: shutters above SCALE_CUT (1.05 x the background) left out; 3: exact shutter edges (optics engine 2);
+#                                       4: shutters holding a secondary source left out (pixel_samples);
+#                                       5: the quadrant pattern counted once (pattern_mean), G140M / G235M on the widened
+#                                          grid, no offset from a minimum on the edge of SHIFTS
 OFFSET_FILE = 'bar_offset.json'
 SHIFTS = np.round(np.arange(-0.10, 0.1001, 0.005), 4)  # trial offsets [slit units]
 U_LO, U_HI = 0.2, 0.75       # the steep part of a shutter's edge [pitches from its centre]
@@ -169,6 +171,17 @@ def _worker(args):
                 exposure=np.full(n, f'{c.root}_{c.nod}')), None
 
 
+def sample_grid(canonical, cutoffs):
+    """The wavelength grid the samples are binned on: the empirical bar-shadow table's (widened
+    to the light on the detector), else CRDS's widened to the disperser's red cutoff. The CRDS
+    G140M / G235M references stop at 1.495 / 2.49 um, and a pixel off the grid is dropped."""
+    from campfire_pipeline.config import get_empirical_barshadow_path
+    emp = get_empirical_barshadow_path(canonical.grating)
+    if emp:
+        return B.reference_grid(emp)
+    return B.widened_grid(B.reference_grid(CR.barshadow_path(canonical.path)), cutoffs[1])
+
+
 def samples(canonicals, workspace, processes=1, cache_dir=None, log=None):
     """Every usable pixel of the empty shutters of ``canonicals`` (one disperser of one
     observation): dict of flat arrays ``u`` (pitches from the shutter centre), ``band``, ``r``
@@ -179,9 +192,9 @@ def samples(canonicals, workspace, processes=1, cache_dir=None, log=None):
     from campfire_pipeline.nirspec.coverage import cache_path, coverage_from_wcs, cutoffs_for, default_cache_dir
     log = log or (lambda *a: None)
     cache_dir = cache_dir or default_cache_dir()
-    grid = B.reference_grid(CR.barshadow_path(canonicals[0].path))
-    edges = _band_edges(grid)
     cut = cutoffs_for(canonicals[0].grating, canonicals[0].filter)
+    grid = sample_grid(canonicals[0], cut)
+    edges = _band_edges(grid)
     counters = {}
     for rate in sorted({c.rate_path for c in canonicals}):
         if os.path.exists(rate):
@@ -215,7 +228,8 @@ def samples(canonicals, workspace, processes=1, cache_dir=None, log=None):
 def _best(r, T, key):
     """Best trial offset for pixels ``r`` with model ``T``: chi2 of the binned medians (bins
     ``key``) against the model's, minimum of a parabola through the best three; NaN with fewer
-    than five bins."""
+    than five bins, or when the minimum is on the edge of the trial offsets (a half dominated by
+    other light, not an offset the grid brackets)."""
     chi = np.zeros(SHIFTS.size)
     nb = 0
     order = np.argsort(key, kind='stable')
@@ -233,9 +247,10 @@ def _best(r, T, key):
     if nb < 5:
         return np.nan
     i = int(np.argmin(chi))
-    j = int(np.clip(i, 1, SHIFTS.size - 2))
-    a, b, _ = np.polyfit(SHIFTS[j - 1:j + 2], chi[j - 1:j + 2], 2)
-    return float(np.clip(-b / (2 * a), SHIFTS[0], SHIFTS[-1])) if a > 0 else float(SHIFTS[i])
+    if i in (0, SHIFTS.size - 1):
+        return np.nan
+    a, b, _ = np.polyfit(SHIFTS[i - 1:i + 2], chi[i - 1:i + 2], 2)
+    return float(np.clip(-b / (2 * a), SHIFTS[i - 1], SHIFTS[i + 1])) if a > 0 else float(SHIFTS[i])
 
 
 def fit(s, sel=None, min_pixels=MIN_PIXELS):
@@ -266,8 +281,8 @@ def measure(canonicals, workspace, processes=1, cache_dir=None, max_canonicals=M
     a dict with ``offset`` (slit units; NaN when too few pixels), the two halves (``lower`` /
     ``upper``), ``exposures`` (each exposure's own offset where it has enough pixels) and their
     ``spread``, the offset measured in each quadrant (``quadrants``, a check), the offsets the
-    profile fit applies per quadrant (``applied``: the offset plus ``QUADRANT_PATTERN``), and the
-    counts. Only shutters whose centre reads below ``scale_cut`` x the exposure's background
+    profile fit applies per quadrant (``applied``: the offset less ``pattern_mean``, the pattern
+    the all-quadrant fit already holds, plus ``QUADRANT_PATTERN``), and the counts. Only shutters whose centre reads below ``scale_cut`` x the exposure's background
     (default ``SCALE_CUT``) enter: a bright neighbour's far wing raises a shutter's level and
     slopes across its edges."""
     scale_cut = SCALE_CUT if scale_cut is None else scale_cut
@@ -311,8 +326,19 @@ def measure(canonicals, workspace, processes=1, cache_dir=None, max_canonicals=M
             rec[lab] = dict(lower=lo, upper=hi, n=int(sel.sum()))
         out['bands'][str(b)] = rec
     if np.isfinite(out['offset']):
-        out['applied'] = {str(q): out['offset'] + QUADRANT_PATTERN[q] for q in (1, 2, 3, 4)}
+        # the fit over every quadrant's pixels already holds the pattern, weighted by where the pixels
+        # sit; it is taken out before each quadrant's own is added (zero for a field spread evenly)
+        out['pattern_mean'] = pattern_mean(s['quadrant'][np.isfinite(s['r'])])
+        out['applied'] = {str(q): out['offset'] - out['pattern_mean'] + QUADRANT_PATTERN[q] for q in (1, 2, 3, 4)}
     return out
+
+
+def pattern_mean(quadrants):
+    """``QUADRANT_PATTERN`` averaged over pixels in these quadrants."""
+    n = np.bincount(np.clip(np.asarray(quadrants, int), 0, 4), minlength=5)
+    if n.sum() == 0:
+        return 0.0
+    return float(sum(n[q] * QUADRANT_PATTERN[q] for q in (1, 2, 3, 4)) / n.sum())
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +393,7 @@ def table(workspace):
 def ensure(workspace, processes=1, cache_dir=None, log=None, overwrite=False):
     """Measure every disperser of the observation in ``workspace`` whose entry in
     ``bar_offset.json`` is missing, from another ``MEASURE_VERSION`` or optics model, or from
-    another number of canonicals; returns ``table``."""
+    other canonicals (another number, or made at another time by stage 2a); returns ``table``."""
     log = log or (lambda *a: None)
     workspace = os.path.abspath(workspace)
     obs_name = os.path.basename(workspace)
@@ -375,12 +401,16 @@ def ensure(workspace, processes=1, cache_dir=None, log=None, overwrite=False):
     by = {}
     for c in cans:
         by.setdefault(disperser_key(c.grating, c.filter), []).append(c)
+    from campfire_pipeline.nirspec.master_bkg import inputs_stamp
     have = read(workspace)
     changed = False
     for key, cs in sorted(by.items()):
         old = have.get(key) or {}
+        # the canonicals as stage 2a made them (CFS2ATIM): a stage 2a rerun, e.g. on a new CRDS
+        # context that moves jwst's slit frame, is measured again
+        stamp = inputs_stamp(cs)
         if (not overwrite and old.get('version') == MEASURE_VERSION and old.get('optics') == O.version()
-                and old.get('n_canonicals') == len(cs)):
+                and old.get('n_canonicals') == len(cs) and abs(float(old.get('inputs') or -1) - stamp) < 1e-3):
             continue
         try:
             with warnings.catch_warnings():
@@ -397,6 +427,7 @@ def ensure(workspace, processes=1, cache_dir=None, log=None, overwrite=False):
                 f"{m['spread']:.4f})")
         else:
             log(f'bar offset {obs_name} {key}: too few empty-shutter pixels ({m["n_pixels"]}); none applied')
+        m['inputs'] = stamp
         have[key] = m
         changed = True
     if changed:
