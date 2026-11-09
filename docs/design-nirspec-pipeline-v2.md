@@ -1284,8 +1284,14 @@ Left for later: the caches keyed on modification times (pass 1, the joint light)
 content instead, as the master background does with `CFS2ATIM`; the master background is read once
 per canonical rather than once per exposure, to measure before changing. A source seen in a single
 exposure (no background exposure) gets no product at all, so `MBKGWHY` `single_exposure` never
-applies; such sources are to get a product from the master background alone (user, 2026-11-09),
-which is the next change.
+applies. Such a source could get a product from the master background alone: Spec3 on its
+calibrated frames for the grid and pixel maps, the profile fit on the frames less their master
+background, `SPEC1D` from those, and single-frame rows in its neighbors' joint solves, where its light
+is not modeled now. None of the data at hand has such a source (p1, spurs_gds, uncover2, the 1133
+visit, and by file name the 4,290 sources of the 33 archive observations with canonicals on disk),
+so it waits for an observation that needs it (user, 2026-11-09). They would come from nods lost to
+stuck-closed shutters or the detector gap, an observation without nods, or a hand override that
+leaves every nod out.
 
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,
