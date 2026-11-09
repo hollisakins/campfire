@@ -96,5 +96,4 @@ The nod-subtracted spectrum is generally preferred, since its background is meas
 | `MBKGWHY` | Condition |
 |---|---|
 | `no_clear_background` | every background exposure is contaminated by a neighbor at the target's position |
-| `single_exposure` | an exposure has no background exposure |
 | `extended` | nod subtraction removes more than 10 % of the source's own flux |
