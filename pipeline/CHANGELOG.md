@@ -162,7 +162,10 @@ Release procedure: edit the `## Unreleased` section below, then run
     `cfpipe nirspec crds-compare` compares a CRDS context's references with the
     calibrations; run it with every `CRDS_CONTEXT` bump.
   - *Outputs.* New `SPEC1D` columns `fnu_opt`, `fnu_prof`, `fnu_contam` (with errors and `flam_*`);
-    `fnu_err` is statistical only. `fnu_prof` and `fnu_contam` are extracted from the combined 2-D
+    `fnu_err` is statistical only. Every error now includes the noise of the subtracted background
+    exposures, which jwst's background step left out: with three nods, errors are 1.22 times v1's
+    for the same flux (`ember_uds_p2`: the 3-pixel boxcar's flux the same to 0.2 %, its S/N 0.80
+    of v1's). `fnu_prof` and `fnu_contam` are extracted from the combined 2-D
     spectrum with the fitted model as the weights. New extensions `PROF2D` and `CONTAM2D` (every
     2-D image drizzled once per product through its pixel maps) and the master-background ones
     above. The `EXPOSURES` table gains `bkg_why`.
