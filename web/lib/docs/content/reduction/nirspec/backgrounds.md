@@ -98,4 +98,4 @@ The nod-subtracted spectrum is generally preferred, since its background is meas
 | `no_clear_background` | every background exposure is contaminated by a neighbor at the target's position |
 | `extended` | nod subtraction removes more than 10 % of the source's own flux |
 
-The master background models light only through the shutters in the pipeline's trace maps. Light through any other open shutter cancels in nod subtraction but remains in the master-background spectrum of every source whose trace it crosses, whether or not `MBKGPREF` is set. A master-background spectrum well above both the nod-subtracted spectrum and the other dispersers can indicate such light.
+The master background models light only through the shutters in the pipeline's trace maps. Other light that is the same in every nod, such as light through an open shutter outside the trace maps or light from the instrument itself, cancels in nod subtraction but remains in the master-background spectrum of every source whose trace it crosses, whether or not `MBKGPREF` is set. A master-background spectrum well above both the nod-subtracted spectrum and the other dispersers can indicate such light.
