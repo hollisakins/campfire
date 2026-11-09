@@ -269,6 +269,32 @@ def test_grating_transfer_plan():
     assert grating_transfer_plan(results) == {'o_g140m_1': 'o_g395m_1', 'o_g140m_3': 'o_g235m_3'}
 
 
+def test_refresh_science_after_the_revision(tmp_path):
+    """After the revision reran stage 2b: a nod it excluded leaves the product and its
+    Spec3 inputs, a nod it now subtracts is only reported, and a product left with no
+    nod is not made."""
+    import types
+    from campfire_pipeline.nirspec import stage3 as S3
+
+    def canonical(name, bkg):
+        h = fits.Header()
+        h['CFP_BKG'] = bkg
+        fits.PrimaryHDU(header=h).writeto(tmp_path / name)
+        return str(tmp_path / name)
+    a = canonical('a_1.fits', '2026-11-09T10:00:00')
+    b = canonical('b_1.fits', 'excluded:override')
+    c = canonical('c_1.fits', '2026-11-09T10:00:00')        # was skipped, now subtracted
+    d = canonical('d_2.fits', 'skipped:nods=1')
+    obs = types.SimpleNamespace(workspace_dir=str(tmp_path), name='o')
+    t1 = dict(product_name='o_g395m_1', groups=[[a, b, c]], science=['a_1.fits', 'b_1.fits'], source_id=1)
+    t2 = dict(product_name='o_g395m_2', groups=[[d]], science=['d_2.fits'], source_id=2)
+    s3_of = {'o_g395m_1': (['a_1.fits', 'b_1.fits'], str(tmp_path), 'o_g395m_1', 1),
+             'o_g395m_2': (['d_2.fits'], str(tmp_path), 'o_g395m_2', 2)}
+    keep = S3._refresh_science(obs, [t1, t2], s3_of)
+    assert keep == [t1] and t1['science'] == ['a_1.fits']
+    assert s3_of == {'o_g395m_1': (['a_1.fits'], str(tmp_path), 'o_g395m_1', 1)}
+
+
 def test_chain_picks_own_when_significantly_better():
     truth = dict(centre_offset=0.2, width=0.12, drift=0.0, width_change=0.0)
     exps = _grating(T._exposures(src_y=0.05))

@@ -305,6 +305,15 @@ def test_single_frame_exposures_from_the_nodded_load():
     assert not out[0].ok[3, 5] and out[1].ok[3, 5]
     M = PF.ProfileModel(out, chromatic=True)
     assert np.all(M.dof_weight() == 1.0)                   # single frames: one independent value per pixel
+    # the frames' arrays with their outlier flags (flagged_inputs) leave those pixels out too
+    flagged = {}
+    for n, f in frames.items():
+        a = dict(f.arrays)
+        a['dq'] = a['dq'].copy()
+        a['dq'][4, 6] |= MX.OUTLIER | PF.DO_NOT_USE
+        flagged[n] = a
+    out2 = MX.single_frame_exposures(exps, flagged)
+    assert all(not x.ok[4, 6] for x in out2) and all(x.ok[4, 7] for x in out2)
 
 
 # ---------------------------------------------------------------------------

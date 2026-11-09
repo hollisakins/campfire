@@ -358,7 +358,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
     path = os.path.join(workspace_dir, f'{product_name}_pf.fits')
     mbkg = bool(stage_config.get('mbkg_spectrum', True))
     try:
-        crf = f'{product_name}_s{source_id:09d}_crf.fits'
+        crf = DM.crf_path(product_name, source_id)
         if not os.path.exists(crf):
             # nothing to drizzle through: no master-background 2-D either
             log(f"{product_name}: no Spec3 crf ({crf}); 3-pixel boxcar, no master-background spectrum")

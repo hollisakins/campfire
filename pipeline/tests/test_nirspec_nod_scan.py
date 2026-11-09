@@ -299,7 +299,7 @@ def test_proposals_file_and_figures(tmp_path, monkeypatch):
                     proposals={ROOT: {'1': [3], '3': [2]}}, unresolved=[], preview={'frames': []})),
                dict(source_id=11, product='o_prism_11', scan=dict(detected=False, delta=0.0, dchi2=3.0, proposals={},
                     unresolved=[]))]
-    S3.write_scan_proposals(o, results, run_sids={7, 11})
+    S3.write_scan_proposals(o, results, scanned={(ROOT, 7), (ROOT, 11)})
     d = toml.load(tmp_path / 'nodded_background_overrides_proposed.toml')
     assert d[ROOT]['7'] == {'1': [3], '3': [2]}           # replaced
     assert d[ROOT]['9'] == {'2': [3]}                     # not re-run: kept
@@ -308,6 +308,26 @@ def test_proposals_file_and_figures(tmp_path, monkeypatch):
     assert '11' not in d[ROOT]
     assert drawn == [(7, ['o_prism_7'])]
     assert (tmp_path / 'test_obs_7_neighbor.pdf').exists() and not stale.exists()
+
+
+def test_proposals_of_a_disperser_not_rerun_are_kept(tmp_path, monkeypatch):
+    """Source 7 has proposals on a PRISM root and a grating root; a run of the grating
+    alone, which finds nothing now, keeps the PRISM entry and its figure."""
+    o = _obs(tmp_path)
+    o.workspace_dir = str(tmp_path)
+    monkeypatch.setattr('campfire_pipeline.nirspec.plots.plot_neighbour_proposal',
+                        lambda path, sid, prods: open(path, 'w').close())
+    other = 'jw01234001001_05101'
+    (tmp_path / 'nodded_background_overrides_proposed.toml').write_text(
+        f'[{ROOT}]\n    7 = {{1 = [2]}}\n\n[{other}]\n    7 = {{2 = [3]}}\n')
+    fig = tmp_path / 'test_obs_7_neighbor.pdf'
+    fig.write_text('old')
+    results = [dict(source_id=7, product='o_g395m_7', scan=dict(detected=False, delta=0.0, dchi2=3.0, proposals={},
+                    unresolved=[]))]
+    S3.write_scan_proposals(o, results, scanned={(other, 7)})
+    d = toml.load(tmp_path / 'nodded_background_overrides_proposed.toml')
+    assert d[ROOT]['7'] == {'1': [2]} and other not in d
+    assert fig.exists()
 
 
 def test_suppress_keeps_detection_withholds_proposals():

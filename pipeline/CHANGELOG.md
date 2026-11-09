@@ -75,7 +75,7 @@ Release procedure: edit the `## Unreleased` section below, then run
     ratios between gratings went from 0.84-1.43 to 0.90-1.13). Failing all of these it takes the
     default shape (width 0.15 slit units, 0.16 arcsec FWHM, at the planned position). Named failures fall back to the
     3-pixel boxcar (`EXTRACT = boxcar3`); any other error fails the stage. `fnu` is never
-    contamination-subtracted.
+    contamination-subtracted. Fixed-slit products find their Spec3 crf (`{product}_{slit}_s{id}`).
   - *Optics model* (`optics.py`, `data/nirspec_optics.json` `2026.11-r8`, `FIT_VERSION` 9). One
     diffraction model of the MSA, the same for every disperser, gives each source's image through
     the open shutters. The telescope's image at the MSA, convolved with an empirical kernel fitted
@@ -133,7 +133,8 @@ Release procedure: edit the `## Unreleased` section below, then run
   - *The master-background spectrum.* The same extraction on the exposures less their master
     background, as `SPEC1D_MBKG`, `SCI_MBKG`, `ERR_MBKG` and `PROF1D_MBKG` of the `_spec.fits`, with
     `MBKGPREF`/`MBKGWHY` saying when it is likely better than the nodded spectrum (no clear
-    background, a single exposure, or a source the nod subtraction removes more than 10 % of). The
+    background, a single exposure, or a source the nod subtraction removes more than 10 % of). Its
+    fit leaves out the pixels its 2-D flags as outliers or hot pixels. The
     deploy writes it as `<base>_spec_mbkg.json` (layout kind `spectrum_mbkg_json`).
   - *Stuck-closed shutters* are keyed by physical MSA shutter (`q<quadrant>r<row>c<column>`) in
     `stuck_closed_shutters.toml`, with origin `manual` > `web` > `auto` and `stuck = false` as a

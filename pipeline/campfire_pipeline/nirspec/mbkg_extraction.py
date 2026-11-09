@@ -55,7 +55,6 @@ import numpy as np
 MBKG_SUBDIR = 'mbkg'            # the 2-D and profile-fit files, inside the workspace
 SUFFIX = '_mbkg'                # product name suffix of the master-background files
 WHY = ('no_clear_background', 'single_exposure', 'extended')
-FALLBACK_NO_MBKG = 'no_master_background'
 OUTLIER = 16                    # jwst DQ OUTLIER
 DO_NOT_USE = 1
 
@@ -296,7 +295,8 @@ def cleanup(workspace, product_name):
 def single_frame_exposures(exps, frames):
     """The fit's master-background exposures, in memory (module doc, 3): every science
     exposure of the nodded fit (``exps``, ``use_data``) with its frame minus master
-    background (``frames``) in place of the nod difference, nothing subtracted
+    background (``frames``: {name: ``Frame``, or its arrays with the outlier flags,
+    ``flagged_inputs``}) in place of the nod difference, nothing subtracted
     (``partners == []``). Geometry, variance and path loss are the nodded load's; the
     usable pixels are recomputed from the frame (``profile_fit.load_group``). Each
     group's science exposures are placed on their own common frame, as
@@ -320,7 +320,8 @@ def single_frame_exposures(exps, frames):
                 p = np.full(shape, fill, dtype=float)
                 p[r1:r1 + ny, c1:c1 + nx] = a
                 return p
-            frame = frames[e.name].arrays
+            fr = frames[e.name]
+            frame = fr.arrays if hasattr(fr, 'arrays') else fr
             pl = e.pl_applied[cut]
             var = e.var[cut]                      # var x pl^2: positive and finite where var is (pl > 0)
             diff = np.asarray(frame['data'], float) * pl
@@ -463,9 +464,10 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
     made = write_2d(product_name, workspace, source_id, dmap, log=log)
     if made is None:
         return None
-    frames, inputs = made
+    _, inputs = made
     try:
-        mexps = single_frame_exposures([e for e in exps if e.name in science], frames)
+        # the frames with the outlier and hot-pixel flags their 2-D left out
+        mexps = single_frame_exposures([e for e in exps if e.name in science], inputs)
         if not mexps:
             raise PF.NoUsablePixels('master background: no science exposure')
         R, shape = PF.refit_at_shape(chain.result, mexps)

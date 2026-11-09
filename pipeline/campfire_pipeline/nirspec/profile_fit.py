@@ -1349,38 +1349,3 @@ def drizzle_arrays(frame_of, dmap):
 
 FIT_VERSION = '9'                   # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset); 8: exact shutter edges in the optics tables (optics engine 2); 9: a SRCYPOS placeholder found with the bar offset applied
 
-
-def run_single_source(product_name, workspace_dir, groups, bkg_overrides, science,
-                      crf_path, chromatic=True, priors=None):
-    """Fit one source and write ``{product_name}_pf.fits``: the fitted shape (header)
-    and the drizzled 2D profile per unit reported flux (PROF2D) on the stage-3 s2d
-    grid. The profile is not normalised: weighting the s2d with it returns the
-    reported flux (the source's light inside REPORT_APERTURE, ``reported_factor``)."""
-    import os
-    from astropy.io import fits
-    from campfire_pipeline.common.io import log
-    from campfire_pipeline.nirspec import drizzle_map as DM
-
-    exps = load_source(groups, bkg_overrides=bkg_overrides, science=science)
-    R = fit(exps, chromatic=chromatic, priors=priors)
-    p = R.params
-    log(f"{product_name}: profile fit centre {p['centre']:+.3f} (prior {p['centre_prior']:+.3f}), "
-        f"width {p['width']:.3f}, drift {p['drift']:+.3f}/oct, width change {p['width_change']:+.3f}/oct, "
-        f"chi2/dof {R.chi2_red:.3f}")
-    s2d = os.path.join(workspace_dir, f'{product_name}_s2d.fits')
-    prof = drizzle_frames(R, DM.DrizzleMap.from_crf(crf_path, DM.step_settings(s2d)), unit=True)
-
-    from campfire_pipeline.nirspec import extraction_cards as XC
-    hdr = fits.Header()
-    for name, value in (('EXTRVER', FIT_VERSION), ('OPTICVER', optics_version()), ('SRCCHROM', bool(chromatic)),
-                        ('SRCCEN', p['centre']), ('SRCCENPL', p['centre_prior']), ('SRCDRIFT', p['drift']),
-                        ('SRCWIDTH', p['width']), ('SRCDWID', p['width_change']), ('SRCPIVOT', p['pivot']),
-                        ('SRCCHI2', R.chi2_red)):
-        XC.put(hdr, name, value)
-    out = fits.HDUList([
-        fits.PrimaryHDU(header=hdr),
-        fits.ImageHDU(np.asarray(prof, float) / 1e12, name='PROF2D'),
-    ])
-    path = os.path.join(workspace_dir, f'{product_name}_pf.fits')
-    out.writeto(path, overwrite=True)
-    return path

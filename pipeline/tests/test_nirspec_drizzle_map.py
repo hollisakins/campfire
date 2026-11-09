@@ -144,3 +144,15 @@ def test_match_nans_and_flags_is_jwst():
     a = DM.match_nans_and_flags({k: np.array(e[k]) for k in DM.NAN_EXTENSIONS + ('dq',)})
     for k in DM.NAN_EXTENSIONS + ('dq',):
         np.testing.assert_array_equal(a[k], getattr(m, k), err_msg=k)
+
+
+def test_crf_path_finds_msa_and_fixed_slit_names(tmp_path):
+    """Spec3 names an MSA product's crf ``{product}_s{id}_crf.fits`` and a fixed-slit
+    one ``{product}_{slit}_s{id}_crf.fits``; the MSA name when there is neither."""
+    msa = tmp_path / 'o_g395m_7_s000000007_crf.fits'
+    assert DM.crf_path('o_g395m_7', 7, str(tmp_path)) == str(msa)
+    fs = tmp_path / 'o_g395m_7_s200a1_s000000007_crf.fits'
+    fs.write_text('')
+    assert DM.crf_path('o_g395m_7', 7, str(tmp_path)) == str(fs)
+    msa.write_text('')
+    assert DM.crf_path('o_g395m_7', 7, str(tmp_path)) == str(msa)

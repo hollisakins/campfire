@@ -214,6 +214,7 @@ def test_the_rectified_view_is_redone_when_its_master_background_is_rewritten(tm
     s2d = fits.ImageHDU(name='S2D_SCI')
     s2d.header['MBKGSUB'] = True
     s2d.header['MBKGTIME'] = S2._mbkg_stamp(str(canon))
+    s2d.header['S2DVER'] = S2.S2D_VIEW_VERSION
     fits.HDUList([fits.PrimaryHDU(), s2d]).writeto(canon)
 
     def rebuilt(path):
@@ -221,5 +222,23 @@ def test_the_rectified_view_is_redone_when_its_master_background_is_rewritten(tm
     monkeypatch.setattr(S2, 'master_background_on', rebuilt)
     S2.resample_single_exposure({'path': str(canon)})            # the same master background: kept
     os.utime(mbkg, (1.8e9, 1.8e9))                               # step 2 wrote it again
+    with pytest.raises(RuntimeError, match='rebuilt'):
+        S2.resample_single_exposure({'path': str(canon)})
+
+
+def test_a_rectified_view_of_an_older_version_is_redone(tmp_path, monkeypatch):
+    """A view made before S2D_VIEW_VERSION 2 may hold the nod difference: redone."""
+    import pytest
+    from astropy.io import fits
+    from campfire_pipeline.nirspec import stage2 as S2
+    canon = tmp_path / 'jw00001001001_03101_00001_nrs1_7.fits'
+    s2d = fits.ImageHDU(name='S2D_SCI')
+    s2d.header['MBKGSUB'] = False
+    s2d.header['MBKGTIME'] = ''
+    fits.HDUList([fits.PrimaryHDU(), s2d]).writeto(canon)
+
+    def rebuilt(path):
+        raise RuntimeError('rebuilt')
+    monkeypatch.setattr(S2, 'master_background_on', rebuilt)
     with pytest.raises(RuntimeError, match='rebuilt'):
         S2.resample_single_exposure({'path': str(canon)})

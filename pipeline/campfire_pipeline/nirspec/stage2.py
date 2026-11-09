@@ -1015,6 +1015,11 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
         log(f'No data on detector for {prod_name}')
         for sid in wanted:
             _write_nodata_marker(f'{base}_{sid}')
+        if bkgslits_path is not None:
+            # nor for its background slitlets: recorded, so the next run does not call it again
+            from jwst.datamodels import ImageModel
+            with ImageModel(rate_file) as parent:
+                _write_bkgslits(parent, [], bkgslits_path, msametfl, barshadow_override, stuck=stuck)
         return [], wanted
     finally:
         for stale in (asn_file, metafile.filename):
@@ -1437,8 +1442,12 @@ def _mbkg_stamp(canonical_file):
     return '' if path is None else f'{os.path.getmtime(path):.6f}'
 
 
+S2D_VIEW_VERSION = '2'      # 2: the calibrated frame (PRE_BKGSUB_*) after stage 2b, not the nod difference
+
+
 def resample_single_exposure(file: Table, overwrite=False):
-    """Rectify the canonical's calibrated frame with its master background subtracted
+    """Rectify the canonical's calibrated frame (``PRE_BKGSUB_*`` once stage 2b has
+    subtracted its nods) with its master background subtracted
     (``master_background_on``; the frame as it is when the exposure has none) and cache
     the resampled view as ``S2D_{SCI,DQ,VAR_RNOISE}`` HDUs on it (issue #212; was a
     standalone ``_s2d.fits``), ``MBKGSUB`` on ``S2D_SCI`` saying which and ``MBKGTIME``
@@ -1454,7 +1463,8 @@ def resample_single_exposure(file: Table, overwrite=False):
     if not overwrite:
         with fits.open(canonical_file, memmap=False) as _h:
             if 'S2D_SCI' in _h and str(_h['S2D_SCI'].header.get('MBKGTIME', '')) == stamp \
-                    and bool(_h['S2D_SCI'].header.get('MBKGSUB', False)) == bool(stamp):
+                    and bool(_h['S2D_SCI'].header.get('MBKGSUB', False)) == bool(stamp) \
+                    and str(_h['S2D_SCI'].header.get('S2DVER', '')) == S2D_VIEW_VERSION:
                 return
     background = master_background_on(canonical_file)
 
@@ -1472,6 +1482,14 @@ def resample_single_exposure(file: Table, overwrite=False):
         model = MultiSlitModel(canonical_file)
 
         resampled = model.copy()
+        # the calibrated frame: after stage 2b the live arrays are the nod difference, and the
+        # frame before it is kept as PRE_BKGSUB_*
+        pre = C.read_slit_arrays(canonical_file, prefix=C.PRE_BKGSUB_PREFIX)
+        for ext, attr in (('SCI', 'data'), ('ERR', 'err'), ('DQ', 'dq'), ('VAR_RNOISE', 'var_rnoise'),
+                          ('VAR_POISSON', 'var_poisson')):
+            cur = getattr(resampled.slits[0], attr)
+            if ext in pre and np.shape(pre[ext]) == np.shape(cur):
+                setattr(resampled.slits[0], attr, np.asarray(pre[ext]).astype(cur.dtype))
         if background is not None:
             data = np.asarray(resampled.slits[0].data, float)
             resampled.slits[0].data = np.where(np.isfinite(background[0]), data - background[0],
@@ -1491,6 +1509,7 @@ def resample_single_exposure(file: Table, overwrite=False):
             if h.name == 'S2D_SCI':
                 h.header['MBKGSUB'] = (background is not None, 'master background subtracted before rectifying')
                 h.header['MBKGTIME'] = (stamp, 'mtime of the _mbkg.fits subtracted')
+                h.header['S2DVER'] = (S2D_VIEW_VERSION, 'rectified view version')
         resampled.close()
         model.close()
 
@@ -1641,22 +1660,30 @@ def scan_notes(obs):
     """The neighbour scan's proposals per source, for the bkgsub plots: {source id: text}
     from the proposed file, each entry with the nods it would keep and its comment
     (offset, statistic, PRISM cross-check)."""
-    import re
     out = {}
-    path = obs.proposed_bkg_override_file
+    for root, sid, body, note in proposal_entries(obs.proposed_bkg_override_file):
+        text = f'scan (proposed) {root[-5:]}: {body}' + (f'  {note}' if note else '')
+        out[int(sid)] = f'{out[int(sid)]}; {text}' if int(sid) in out else text
+    return out
+
+
+def proposal_entries(path):
+    """The entries of a proposed-overrides file as ``stage3.write_scan_proposals`` writes
+    them, one per line under its ``[root]``, with its comment (TOML readers drop
+    comments): [(root, source id, nods text, comment)]; empty when there is no file."""
+    import re
+    out, root = [], None
     if not os.path.exists(path):
         return out
-    root = None
-    for line in open(path):
-        m = re.match(r'^\[(\S+)\]', line.strip())
-        if m:
-            root = m.group(1)
-            continue
-        m = re.match(r'^\s*(\d+)\s*=\s*\{(.*)\}\s*(?:#\s*(.*))?$', line)
-        if m and root:
-            text = f'scan (proposed) {root[-5:]}: {m.group(2).strip()}' + (f'  {m.group(3).strip()}' if m.group(3) else '')
-            sid = int(m.group(1))
-            out[sid] = f'{out[sid]}; {text}' if sid in out else text
+    with open(path) as f:
+        for line in f:
+            m = re.match(r'^\[(\S+)\]', line.strip())
+            if m:
+                root = m.group(1)
+                continue
+            m = re.match(r'^\s*(\d+)\s*=\s*\{(.*)\}\s*(?:#\s*(.*?))?\s*$', line)
+            if m and root:
+                out.append((root, m.group(1), m.group(2).strip(), (m.group(3) or '').strip()))
     return out
 
 

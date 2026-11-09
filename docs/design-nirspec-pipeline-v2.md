@@ -116,7 +116,8 @@ Each step lists what it reads and writes.
    (`bkgslits/<root>_<nrsN>_bkgslits.fits`).
 4. **Master background, step 2** (calibrated, end of stage 2a). Reads step 1's tables, the
    canonicals and `bkgslits/`. Writes `<root>_<nod>_<nrsN>_mbkg.fits`. Stage 2a then rectifies each
-   exposure with its master background subtracted, for the nods plots (`S2D_SCI`, card `MBKGSUB`).
+   exposure's calibrated frame (the one before stage 2b's subtraction, once 2b has run) with its
+   master background subtracted, for the nods plots (`S2D_SCI`, cards `MBKGSUB`, `S2DVER`).
 5. **Stage 2b (nod subtraction).** Each exposure minus the mean of its background exposures. A
    background exposure that puts a bright cataloged neighbor on the source is left out
    (section 5). The variance includes the subtracted exposures' noise.
@@ -1238,6 +1239,53 @@ two depth-2 neighborhoods (31 and 38 members) against the part 4 code: a member 
 4.4 s, the design 5.4-7.7 s to 2.2-2.8 s with an identical matrix, data and noise, the solve
 17-28 s to 10-14 s with identical spectra, errors and not-separable flags, and the correlations
 within 4e-15 (measured on the 38-member one).
+
+Part 5 led to these fixes:
+- the nods plots' rectified view (`S2D_SCI`) rectified the canonical's live frame, which after
+  stage 2b is the nod difference: any view made after 2b (a master background written again, or the
+  first stage 2a run after the master background came in) showed a nod difference with the master
+  background subtracted on top, in the nods plots and in stage 3's review figures. It rectifies the
+  frame before the subtraction (`PRE_BKGSUB_*`) once 2b has run; `S2DVER` 2 redoes older views. On
+  a p1 canonical rebuilt with the master background off, the view's median is 3.8e-13 MJy against
+  the calibrated frame's 4.8e-13 (the rest is the path loss taken out for the view), where the nod
+  difference's is 3e-15;
+- Spec3 names a fixed-slit product's crf `{product}_{slit}_s{id}_crf.fits`, but stage 3 looked
+  only for the MSA name, so every fixed-slit product fell back to the 3-pixel boxcar (`EXTRWHY`
+  `no_crf`) and had no master-background spectrum. One helper (`drizzle_map.crf_path`) tries both,
+  as the s2d and x1d renaming does;
+- the master-background refit and its failed-open and contamination fits used the frames without
+  the outlier and hot-pixel flags their own 2-D leaves out; they take the flagged frames;
+- the neighbor scan's and the master-background fit's trace maps kept the stuck-closed shutters
+  when `contam_predict` was off; the stuck list is always read;
+- the neighbor review figure was drawn unguarded after the whole profile-fit phase, so a failing
+  figure stopped stage 3; it is now logged;
+- a rerun of one disperser removed the source's proposals for its other disperser, since entries
+  were kept only for sources not run at all. They are kept per exposure root and source not scanned
+  in the run, with the figure, unless this run proposes again;
+- the nods each product combines were fixed before the same-slitlet revision reran stage 2b, which
+  also applies a hand override edited since; a nod it no longer subtracts is now left out of the
+  product and its Spec3 inputs, and one it now subtracts is reported with the command that adds it;
+- an exposure whose slits all project off the detector wrote no background-slitlet file, so every
+  stage 2a run called Spec2 on it again; the empty file is now written, as when there is nothing to
+  extract;
+- a master-background 2-D or profile fit left by an interrupted run could be attached to a later
+  product; a product's master-background files are cleared before its Spec3;
+- smaller: one reader of the proposed-overrides file (`stage2.proposal_entries`, it was parsed in
+  two places, one leaving the file open); the 1-D-combined master-background spectrum shares the
+  2-D read and the extensions with the others; removed code no flow ran (`run_profile_fit_single_source`
+  and the v1 `profile_fit.run_single_source`, `_prism_scan_agrees`, `FALLBACK_NO_MBKG`).
+
+Checked and left: `fix_units` was said to rewrite every canonical on each stage 2a run, which would
+make every pass 1 stale; a canonical it has fixed keeps its bytes and modification time. The
+relabel of a background reason after the revision does rewrite the canonicals, so the next run
+recomputes the pass 1 of their neighborhoods once.
+
+Left for later: the caches keyed on modification times (pass 1, the joint light) could key on
+content instead, as the master background does with `CFS2ATIM`; the master background is read once
+per canonical rather than once per exposure, to measure before changing. A source seen in a single
+exposure (no background exposure) gets no product at all, so `MBKGWHY` `single_exposure` never
+applies; such sources are to get a product from the master background alone (user, 2026-11-09),
+which is the next change.
 
 **Phase 0, freeze.** Done. `origin/main` merged 2026-11-06. Failing tests that fail on `main` alone
 (NIRCam `test_align_apply`, `test_linefit`'s program-slug check against the local `programs.toml`,

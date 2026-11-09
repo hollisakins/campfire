@@ -35,6 +35,20 @@ VARIANCES = ('var_rnoise', 'var_flat', 'var_poisson')                        # s
 DO_NOT_USE = 1
 
 
+def crf_path(product_name, source_id, workspace_dir=''):
+    """A product's Spec3 crf, whose pixel maps everything is drizzled through: MSA
+    products are ``{product}_s{id:09d}_crf.fits``, fixed-slit ones insert the slit name
+    (``{product}_{slit}_s{id:09d}_crf.fits``), as ``stage3.run_stage3_single_source``
+    renames their s2d and x1d. The MSA name when neither exists."""
+    import glob
+    import os
+    msa = os.path.join(workspace_dir, f'{product_name}_s{int(source_id):09d}_crf.fits')
+    if os.path.exists(msa):
+        return msa
+    fs = sorted(glob.glob(os.path.join(workspace_dir, f'{product_name}_*_s{int(source_id):09d}_crf.fits')))
+    return fs[0] if fs else msa
+
+
 def step_settings(s2d_path):
     """The resample settings Spec3 used for a product (its s2d's ``meta.resample``): pixfrac,
     kernel, fillval, weight_type, pixel_scale_ratio."""

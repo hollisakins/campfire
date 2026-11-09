@@ -301,6 +301,11 @@ def run_stage3_single_source(
     os.chdir(workspace_dir)
 
     try:
+        # whatever an interrupted earlier run left must not stand in for this run's
+        # master-background 2-D or profile fit (mbkg_spectrum_hdus reads what exists)
+        from campfire_pipeline.nirspec import mbkg_extraction as MX
+        MX.cleanup(workspace_dir, product_name)
+
         association= [(file, 'science') for file in cal_files]
 
         asn = associations.asn_from_list.asn_from_list(
@@ -390,7 +395,7 @@ def run_stage3_single_source(
         if mbkg_spectrum:
             from campfire_pipeline.nirspec import drizzle_map as DM
             from campfire_pipeline.nirspec import mbkg_extraction as MX
-            crf = f'{product_name}_s{source_id:09d}_crf.fits'
+            crf = DM.crf_path(product_name, source_id)
             if os.path.exists(crf):
                 dmap = DM.DrizzleMap.from_crf(crf, DM.step_settings(s2d_file))
                 MX.write_2d(product_name, os.getcwd(), source_id, dmap, log=log)
@@ -454,12 +459,51 @@ def _profile_fit_task(obs, files_all, target_files, product_name, source_id):
 
 def _science_files(files):
     """Canonicals stage 3 combines: background-subtracted and containing the source."""
-    def _ok(path):
-        h = fits.getheader(path)
+    ok = set(_science_files_of(list(files['path'])))
+    return files[[os.path.basename(p) in ok for p in files['path']]]
+
+
+def _refresh_science(obs, fg_tasks, s3_of):
+    """After the same-slitlet revision reran stage 2b, which may have applied a hand
+    override edited since (a nod set to none): the nods each product combines, read
+    again. A nod no longer subtracted is dropped from the product's science list and its
+    Spec3 inputs (a product left with none is not made); a nod of the product's groups
+    now subtracted but not in it is logged with the command that adds it. Returns the
+    tasks to keep."""
+    keep = []
+    for t in fg_tasks:
+        paths = {os.path.basename(p): p for g in t['groups'] for p in g}
+        ok = set(_science_files_of([paths.get(n, os.path.join(obs.workspace_dir, n)) for n in paths]))
+        dropped = [n for n in t['science'] if n not in ok]
+        added = sorted(n for n in ok if n not in t['science'])
+        if dropped:
+            log(f"{t['product_name']}: {', '.join(dropped)} no longer background-subtracted after the revision; "
+                f"left out")
+            t['science'] = [n for n in t['science'] if n in ok]
+            s3 = s3_of.get(t['product_name'])
+            if s3 is not None:
+                s3_of[t['product_name']] = (list(t['science']),) + tuple(s3[1:])
+        if added:
+            log(f"{t['product_name']}: {', '.join(added)} now background-subtracted but not in this product; to add "
+                f"it: cfpipe nirspec run --obs {obs.name} --stage3 --source-ids {t['source_id']} --overwrite")
+        if t['science']:
+            keep.append(t)
+        else:
+            log(f"{t['product_name']}: no background-subtracted exposure left after the revision; not made")
+            s3_of.pop(t['product_name'], None)
+    return keep
+
+
+def _science_files_of(paths):
+    """The names among ``paths`` stage 3 combines: background-subtracted and containing
+    the source."""
+    out = []
+    for p in paths:
+        h = fits.getheader(p)
         v = h.get('CFP_BKG')
-        return (bool(v) and not str(v).startswith(('skipped', 'excluded'))
-                and str(h.get('SRCFLUX', 'T')) == 'T')
-    return files[[_ok(f['path']) for f in files]]
+        if bool(v) and not str(v).startswith(('skipped', 'excluded')) and str(h.get('SRCFLUX', 'T')) == 'T':
+            out.append(os.path.basename(p))
+    return out
 
 
 def _prism_fg(fgs):
@@ -541,13 +585,13 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
             dispatch(run_stage3_single_source, rest, n_processes=n_processes, use_starmap=True, **s3_kwargs)
     all_fg = set(by_fg)
     sci_all = None
-    stuck_keys = None
+    # every trace map read here (the prediction, the neighbour scan, the master-background fit)
+    # leaves out the stuck-closed shutters: they pass no light
+    stuck_keys = CT.stuck_keys_by_root(obs)
     if contam:
         every = Observation.group_files(obs.discover_files(ext='canonical', source_ids='all'))
         sci_all = _science_files(every)
         all_fg |= set(np.unique(every['filter_grating']))
-        # the trace maps are read from the rate files; stuck-closed shutters pass no light and are left out
-        stuck_keys = CT.stuck_keys_by_root(obs)
         no_map = CT.exposures_without_maps(obs.workspace_dir, list(every['path']))
         if no_map:
             log(f"Profile fit: {len(no_map)} exposures have no trace map in their rate file (rerun stage 1); "
@@ -592,6 +636,7 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                 from campfire_pipeline.nirspec.stage2 import revise_slitlet_overrides
                 with TM.phase(f'slitlet revision {fg}'):
                     revise_slitlet_overrides(obs, stage2_config, run_sids, fg, f'{obs.name}_{fg}', n_processes)
+                by_fg[fg] = _refresh_science(obs, by_fg[fg], s3_of)
                 own = sorted(s for s, t in jtasks.items() if _own_partners_differ(t))
                 if own:
                     # into their own files (joint_first_pass.run ``own``), read by the products
@@ -643,7 +688,7 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                     _cleanup_in(t[1], t[4], prod)
     log_fallbacks(results)
     if fl['scan']:
-        write_scan_proposals(obs, results, run_sids, xdisp_tol=fl['scan_xdisp_tol'])
+        write_scan_proposals(obs, results, scanned_roots(pf_tasks), xdisp_tol=fl['scan_xdisp_tol'])
     return results
 
 
@@ -719,12 +764,6 @@ def _prism_xdisp(obs, r, results, tol):
     return 'agree' if any(det and np.isfinite(x) and abs(x - d) <= tol for det, x in found) else 'disagree'
 
 
-def _prism_scan_agrees(obs, r, results, tol):
-    """True when no grating product exists, or one finds the neighbour within ``tol``
-    of the same Delta (``_prism_xdisp``)."""
-    return _prism_xdisp(obs, r, results, tol) in ('single', 'agree')
-
-
 def _update_prism_scan_cards(obs, r, xdisp):
     """Write the cross-disperser result into a PRISM product's ``_pf.fits``: the
     grating ran after it. A disagreeing grating scan withdraws its proposals (``NBRPROP``)."""
@@ -744,20 +783,8 @@ def _proposal_notes(path):
     """The comment of each entry of a proposed-overrides file (``write_scan_proposals``
     writes one per entry: offset, statistic, PRISM check, date): {(root, source id): note}.
     TOML readers drop comments, so a rewrite keeps the others' this way."""
-    import re
-    out, root = {}, None
-    if not os.path.exists(path):
-        return out
-    with open(path) as f:
-        for line in f:
-            m = re.match(r'^\[(\S+)\]', line.strip())
-            if m:
-                root = m.group(1)
-                continue
-            m = re.match(r'^\s*(\d+)\s*=\s*\{.*\}\s*#\s*(.*?)\s*$', line)
-            if m and root:
-                out[(root, m.group(1))] = m.group(2)
-    return out
+    from campfire_pipeline.nirspec.stage2 import proposal_entries
+    return {(root, sid): note for root, sid, _, note in proposal_entries(path) if note}
 
 
 def neighbour_figure_path(obs, source_id):
@@ -765,14 +792,23 @@ def neighbour_figure_path(obs, source_id):
     return os.path.join(obs.workspace_dir, f'{obs.name}_{int(source_id)}_neighbor.pdf')
 
 
-def write_scan_proposals(obs, results, run_sids, xdisp_tol=0.2):
+def scanned_roots(pf_tasks):
+    """The (exposure root, source id) pairs a run's products scan: a proposal is keyed by
+    root, so a source's entries for a disperser not run this time are kept."""
+    return {('_'.join(os.path.basename(f).split('_')[:2]), int(t['source_id']))
+            for t in pf_tasks for g in t['groups'] for f in g}
+
+
+def write_scan_proposals(obs, results, scanned, xdisp_tol=0.2):
     """Neighbour-scan proposals to ``nodded_background_overrides_proposed.toml`` in the
     observation's reference directory (never applied: an entry is used once copied
     into ``nodded_background_overrides.toml``), and one review figure per proposed
     source (``neighbour_figure_path``, ``plots.plot_neighbour_proposal``: its nod
     differences with the neighbour marked, and its spectrum with the background nods it
-    subtracts now and with the proposed ones). Entries and figures of the sources
-    processed in this run are replaced; others are kept. Where a source has both PRISM
+    subtracts now and with the proposed ones). Entries of the (root, source) pairs this
+    run scanned (``scanned``, ``scanned_roots``) are replaced; others are kept. A
+    source's figure is redrawn from this run's products when they propose; otherwise it
+    is removed, unless the source keeps entries this run did not scan. Where a source has both PRISM
     and grating products, proposals are written only when both scans find the
     neighbour at the same Delta (``xdisp_tol``; the grating product checks this itself,
     ``ScanResult.cross_check``; PRISM proposals are checked here, when the grating scans
@@ -795,12 +831,13 @@ def write_scan_proposals(obs, results, run_sids, xdisp_tol=0.2):
     path = obs.proposed_bkg_override_file
     old = toml.load(path) if os.path.exists(path) else {}
     notes = _proposal_notes(path)
-    entries = {}
+    entries, kept = {}, set()
     for root, d in old.items():
         for sid, nods in d.items():
-            if int(sid) not in run_sids:
+            if (root, int(sid)) not in scanned:
                 entries.setdefault(root, {})[str(sid)] = ({str(k): list(v) for k, v in nods.items()},
                                                           notes.get((root, str(sid)), ''))
+                kept.add(int(sid))
     for r in results:
         s = r.get('scan') or {}
         if not s.get('detected'):
@@ -824,17 +861,20 @@ def write_scan_proposals(obs, results, run_sids, xdisp_tol=0.2):
         f.write('\n'.join(lines) + '\n')
 
     # review figures: one per source proposed in this run, from every product of it that proposes
-    for sid in run_sids:
-        stale = neighbour_figure_path(obs, sid)
-        if os.path.exists(stale):
-            os.remove(stale)
     previews = {}
     for r in results:
         s = r.get('scan') or {}
         if s.get('detected') and s.get('proposals') and s.get('preview') is not None:
             previews.setdefault(int(r['source_id']), []).append((r['product'], s))
+    for sid in {s for _, s in scanned}:
+        stale = neighbour_figure_path(obs, sid)
+        if os.path.exists(stale) and (sid in previews or sid not in kept):
+            os.remove(stale)
     for sid, prods in sorted(previews.items()):
-        plot_neighbour_proposal(neighbour_figure_path(obs, sid), sid, prods)
+        try:
+            plot_neighbour_proposal(neighbour_figure_path(obs, sid), sid, prods)
+        except Exception as e:                           # noqa: BLE001 - a review figure must not fail the stage
+            log(f'{obs.name} {sid}: neighbour proposal figure failed ({type(e).__name__}: {e})')
     proposed = sorted({int(r['source_id']) for r in results
                        if (r.get('scan') or {}).get('detected') and (r.get('scan') or {}).get('proposals')})
     if proposed:
@@ -845,30 +885,6 @@ def write_scan_proposals(obs, results, run_sids, xdisp_tol=0.2):
             f"  cfpipe nirspec run --obs {obs.name} --stage2b --stage3 --source-ids {ids} --overwrite")
     else:
         log('Neighbour scan: no proposals in this run')
-
-
-def run_profile_fit_single_source(product_name, workspace_dir, groups, overrides, science,
-                                  source_id, chromatic=True, cleanup_crfs=True):
-    """Original (v1) profile fit for one source after Spec3 (needs Spec3's crf):
-    free shape, original priors. Kept for reference; stage 3 uses
-    ``run_profile_fit_phase``. A failure is logged and leaves the standard products
-    untouched."""
-    from campfire_pipeline.nirspec import profile_fit as PF
-
-    prev_cwd = os.getcwd()
-    os.chdir(workspace_dir)
-    try:
-        crf = f'{product_name}_s{source_id:09d}_crf.fits'
-        if not os.path.exists(crf):
-            log(f"{product_name}: no Spec3 crf ({crf}); skipping profile fit")
-            return
-        PF.run_single_source(product_name, workspace_dir, groups, overrides, set(science), crf, chromatic=chromatic)
-    except Exception as e:
-        log(f"{product_name}: profile fit failed ({type(e).__name__}: {e}); standard extraction only")
-    finally:
-        if cleanup_crfs:
-            _cleanup_spec3_intermediates(list(science), product_name)
-        os.chdir(prev_cwd)
 
 
 def boxcar3(s2d_sci, s2d_err, s2d_mask, cen):
@@ -1010,33 +1026,55 @@ def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, a
     from campfire_pipeline.nirspec import mbkg_extraction as MX
 
     paths = MX.product_paths(workspace_dir, product_name, 0)
-    if not os.path.exists(paths['s2d']):
-        log(f'{product_name}: no master-background spectrum (no master-background 2-D)')
+    mb = _read_mbkg_2d(paths['s2d'], sci_shape, product_name)
+    if mb is None:
         return [], {}
-    with fits.open(paths['s2d']) as s2d:
+    mb_sci, mb_err, mb_mask = mb
+    ex = extract_columns(mb_sci * 1e12, mb_err * 1e12, mb_mask, ap_start, ap_stop, np.asarray(wave),
+                         pf_file=paths['pf'] if profile_fit else None, is_fixed_slit=is_fixed_slit,
+                         label=f'{product_name} (master background)')
+    spec = table_to_hdu(ex['spec1d'])
+    for key in ex['cards']:
+        spec.header[key] = (ex['cards'][key], ex['cards'].comments[key])
+    return _mbkg_hdus(spec, table_to_hdu(ex['prof1d']), mb_sci, mb_err, s2dh, exposures, workspace_dir,
+                      primary_hdr.get('SELFSUB'), extended_frac)
+
+
+def _read_mbkg_2d(path, sci_shape, product_name, what='master-background 2-D'):
+    """A product's master-background 2-D (``mbkg_extraction.write_2d``): (sci, err, mask
+    where no exposure has weight), or None, logged, when there is none or it is of
+    another shape than the nodded SCI (``sci_shape``; the grid is the nodded one by
+    construction, so only a stale file could)."""
+    if not os.path.exists(path):
+        log(f'{product_name}: no master-background spectrum (no {what})')
+        return None
+    with fits.open(path) as s2d:
         mb_sci = np.asarray(s2d['SCI'].data, float)
         mb_err = np.asarray(s2d['ERR'].data, float)
         mb_mask = s2d['WHT'].data == 0
-    wave = np.asarray(wave)
     if mb_sci.shape != tuple(sci_shape):
-        log(f'{product_name}: no master-background spectrum: its 2-D {mb_sci.shape} differs from the nodded one '
+        log(f'{product_name}: no master-background spectrum: its {what} {mb_sci.shape} differs from the nodded one '
             f'{tuple(sci_shape)}')
-        return [], {}
-    ex = extract_columns(mb_sci * 1e12, mb_err * 1e12, mb_mask, ap_start, ap_stop, wave,
-                         pf_file=paths['pf'] if profile_fit else None, is_fixed_slit=is_fixed_slit,
-                         label=f'{product_name} (master background)')
+        return None
+    return mb_sci, mb_err, mb_mask
+
+
+def _mbkg_hdus(spec, prof, mb_sci, mb_err, s2dh, exposures, workspace_dir, selfsub, extended_frac):
+    """The master-background extensions and primary cards of a product, from its 1-D
+    columns (``spec``, the extraction cards already on it) and profiles (``prof``):
+    ``SPEC1D_MBKG`` with ``MBKGVER`` and the per-exposure ``MBKGSRC``, ``SCI_MBKG`` /
+    ``ERR_MBKG`` on the nodded SCI's header, ``PROF1D_MBKG``; ``MBKGPREF`` / ``MBKGWHY``
+    (``mbkg_extraction.preferred``, with the nodded fit's ``selfsub``) and ``MBKGNEXP``.
+    Returns (hdus, cards)."""
+    from campfire_pipeline.nirspec import mbkg_extraction as MX
     sources, version = MX.background_sources(exposures.get('filename', []), workspace_dir)
-    spec = table_to_hdu(ex['spec1d'])
     spec.name = 'SPEC1D_MBKG'
-    for key in ex['cards']:
-        spec.header[key] = (ex['cards'][key], ex['cards'].comments[key])
     spec.header['MBKGVER'] = (version, 'master-background algorithm version (CFMBKGV)')
     spec.header['MBKGSRC'] = (','.join(sources), 'per EXPOSURES row: combined / exposure')
-    prof = table_to_hdu(ex['prof1d'])
     prof.name = 'PROF1D_MBKG'
     hdus = [spec, fits.ImageHDU(data=mb_sci.astype(np.float32), header=s2dh.copy(), name='SCI_MBKG'),
             fits.ImageHDU(data=mb_err.astype(np.float32), header=s2dh.copy(), name='ERR_MBKG'), prof]
-    pref, why = MX.preferred(exposures, primary_hdr.get('SELFSUB'), extended_frac)
+    pref, why = MX.preferred(exposures, selfsub, extended_frac)
     cards = {'MBKGPREF': (bool(pref), 'master-background spectrum likely better'),
              'MBKGWHY': (why, 'Reason for MBKGPREF'),
              'MBKGNEXP': (int(sum(s == 'exposure' for s in sources)), 'exposures with their own master background')}
@@ -1553,16 +1591,10 @@ def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, co
                                       state=str(hh.get('CONTSTAT', 'off'))))
             selfsub.append(h[0].header.get('SELFSUB'))
     paths = MX.product_paths(workspace_dir, product_name, source_id)
-    if not os.path.exists(paths['s2d']):
-        log(f'{product_name}: no master-background spectrum (no stacked master-background 2-D)')
+    mb = _read_mbkg_2d(paths['s2d'], sci_shape, product_name, what='stacked master-background 2-D')
+    if mb is None:
         return [], {}
-    with fits.open(paths['s2d']) as s2d:
-        mb_sci = np.asarray(s2d['SCI'].data, float)
-        mb_err = np.asarray(s2d['ERR'].data, float)
-    if mb_sci.shape != tuple(sci_shape):
-        log(f'{product_name}: no master-background spectrum: its stacked 2-D {mb_sci.shape} differs from the '
-            f'nodded one {tuple(sci_shape)}')
-        return [], {}
+    mb_sci, mb_err, _ = mb
     combined = {k: combine_1d_spectra(v['wavelengths'], v['fluxes'], v['errors'], exposure_times, common_wave,
                                       **combine_kw) for k, v in data.items()}
     fnu_3px, fnu_3px_err, _ = combined['3px']
@@ -1576,12 +1608,8 @@ def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, co
     else:
         fnu_best, fnu_best_err = combined['opt'][0], combined['opt'][1]
     spec = _combined_spec1d(common_wave, combined, fnu_best, fnu_best_err, choice, pf_columns)
-    spec.name = 'SPEC1D_MBKG'
     for key in hdr_cards:
         spec.header[key] = (hdr_cards[key], hdr_cards.comments[key])
-    sources, version = MX.background_sources(exposures.get('filename', []), workspace_dir)
-    spec.header['MBKGVER'] = (version, 'master-background algorithm version (CFMBKGV)')
-    spec.header['MBKGSRC'] = (','.join(sources), 'per EXPOSURES row: combined / exposure')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', category=RuntimeWarning)
         collapsed = np.nanmedian(mb_sci * 1e12, axis=1)
@@ -1592,16 +1620,9 @@ def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, co
     prof['3px'] = boxcar_profile(cen - 1.5, cen + 1.5, len(collapsed))
     prof['4px'] = boxcar_profile(cen - 2.0, cen + 2.0, len(collapsed))
     prof['5px'] = boxcar_profile(cen - 2.5, cen + 2.5, len(collapsed))
-    prof_hdu = table_to_hdu(prof)
-    prof_hdu.name = 'PROF1D_MBKG'
-    hdus = [spec, fits.ImageHDU(data=mb_sci.astype(np.float32), header=s2dh.copy(), name='SCI_MBKG'),
-            fits.ImageHDU(data=mb_err.astype(np.float32), header=s2dh.copy(), name='ERR_MBKG'), prof_hdu]
     ss = [float(v) for v in selfsub if v is not None and np.isfinite(float(v))]
-    pref, why = MX.preferred(exposures, max(ss) if ss else None, extended_frac)
-    cards = {'MBKGPREF': (bool(pref), 'master-background spectrum likely better'),
-             'MBKGWHY': (why, 'Reason for MBKGPREF'),
-             'MBKGNEXP': (int(sum(s == 'exposure' for s in sources)), 'exposures with their own master background')}
-    return hdus, cards
+    return _mbkg_hdus(spec, table_to_hdu(prof), mb_sci, mb_err, s2dh, exposures, workspace_dir,
+                      max(ss) if ss else None, extended_frac)
 
 
 def combine_per_eg_spectra(
