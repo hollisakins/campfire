@@ -910,14 +910,24 @@ background group, which also refits `x_loss` with 1133).
   The +2.5 % in-range offset and the +7 % at the G395M filter cut-on were measured before the median
   fix and are being remeasured. G395M NRS1 empty-shutter scales are bimodal (0.95 / 1.15),
   unexplained.
-- *Light through a shutter no list knows.* On uds_p2 G395M, NRS2 rows 638-646, columns 0-580, a
-  bright spectrum is the same in all three nods (the nod differences cancel it) and absent from the
-  master-background model and from the trace map; PRISM shows nothing at those pixels, so it is
-  dispersed light, not the detector. It enters the master-background spectra of the sources whose
-  cutouts it crosses: 38178 at 23 times its PRISM flux, and 39597 at about 20 uJy, where its
-  nodded and PRISM spectra are near zero; 39597 is also flagged `MBKGPREF` (`extended`), so its
-  master-background spectrum is offered as the likely better one. A method to find such shutters
-  is being designed.
+- *Light from the instrument that nothing models.* In G395M a bright light runs from NRS1 column
+  about 450 to NRS2 column 2048 in four strands one shutter pitch apart, brightest up to NRS2 column
+  580 (rows 638-646 there). It is the same in all three nods (the nod differences cancel it), and it
+  sits at the same detector place, with the same profile, in uds_p2 and in p1: two fields, two MSA
+  configurations, two dates. So it follows the instrument, not the sky or the shutters opened. PRISM
+  shows a matching six-strand pattern elsewhere (NRS1 columns 1650-2048, rows 643-668), so it is
+  dispersed light, not the detector. Through jwst's model it lands like light from quadrant 4 near
+  x 20-30, y 35-36, a block the MSA operations reference marks failed closed, with its brightest
+  strands on the bars between shutter rows. Light the MSA itself gives off there, such as the glow of
+  an electrical short, fits what was measured; the mechanism is not verified. The failed-open
+  shutters of the MSA operations reference are in the trace map; this light is not, and the master
+  background does not contain it. It enters the master-background spectra of the sources whose
+  cutouts it crosses: on uds_p2 38178 at 23 times its PRISM flux, and 39597 at about 20 uJy, where
+  its nodded and PRISM spectra are near zero; 39597 is also flagged `MBKGPREF` (`extended`), so its
+  master-background spectrum is offered as the likely better one. The same light falls on p1's
+  master-background spectra at those rows. A map of light that is the same in every nod and that no
+  model explains finds it in both observations, with the fixed slits' light and a few fainter
+  traces (design in `scratch/claude/open_shutter_design/design.md`; how to treat it is open).
 - *Faint G395M below PRISM.* Between the two dispersers, at faint fluxes, the 3-pixel boxcar
   differs by about -0.005 to -0.014 uJy (G395M lower) in every flux bin, on uds_p2 and on p1, in
   v1 and v2, and with every extraction and both backgrounds; above 0.5 uJy it is invisible. Against
