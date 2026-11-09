@@ -855,6 +855,24 @@ Removed before they reached any release, so not warned about: `profile_fit_shape
   0.88-1.06), stated errors about 20 % larger (the subtracted exposures' noise). The extension's
   calibration still holds on v2 (line-flux ratios between gratings 0.99 / 1.06 / 1.04 / 1.02 in
   `fnu_opt`'s terms by wavelength band).
+- uds_p2 (`ember_uds_p2`, PRISM and G395M, the NRSIRS2RAPID readout, one MSA configuration; never
+  deployed, v1 products on disk from 2026-07-30), on the code of 2026-11-09: stage 1 to 3 in about
+  1 h 30 min, 434 products, no fallbacks. Against v1:
+  - the same extraction gives the same flux and larger errors: the 3-pixel boxcar's flux within
+    0.2 % in median on both dispersers, its S/N 0.80 of v1's. The canonicals' variances are the same
+    before stage 2b and 1.50 times v1's after, the subtracted exposures' noise (section 5);
+  - `fnu` is a median 1.46 (PRISM) and 1.51 (G395M) times v1's optimal `fnu` (16-84 % 1.1-3.1),
+    the light in 0.8 arcsec against the light in the shutter; 43545 (width 0.57 slit units) reads 4.5
+    times;
+  - 5 sources have no v2 product: step 1 calls all their shutters stuck closed in every nod, and
+    their 10 v1 products are noise (integrated S/N -3.7 to +0.9);
+  - every source has both dispersers, which overlap at 2.87-5.25 um. On the 44 sources at v1 S/N
+    >= 10 in both, G395M over PRISM (at PRISM sampling, least squares per source) is 0.975 in median
+    for v2 `fnu` (scatter 0.019 dex) against 0.985 for v1 (0.027 dex), and the trend from 2.9 to
+    5.2 um is 6 % against 9 % (2 % with `fnu_contam` removed). Above G395M S/N 20 both agree within
+    5 %. The outliers are other slitlets' light that v2 marks (39341, 34904: half or more of their
+    wavelengths not separable; on the separable ones G395M / PRISM is 1.25 and 1.02; 196166, 43281),
+    light through a shutter no list knows (below), and the faint G395M deficit (below).
 
 **Runtime.** On p1 (12 workers): stage 3 94 min. Its largest parts are the G395M joint pass (about
 30 min with the second pass) and the G395M products (23 min). Stage 2's rectification (25 min) and
@@ -892,6 +910,19 @@ background group, which also refits `x_loss` with 1133).
   The +2.5 % in-range offset and the +7 % at the G395M filter cut-on were measured before the median
   fix and are being remeasured. G395M NRS1 empty-shutter scales are bimodal (0.95 / 1.15),
   unexplained.
+- *Light through a shutter no list knows.* On uds_p2 G395M, NRS2 rows 638-646, columns 0-580, a
+  bright spectrum is the same in all three nods (the nod differences cancel it) and absent from the
+  master-background model and from the trace map; PRISM shows nothing at those pixels, so it is
+  dispersed light, not the detector. It enters the master-background spectra of the sources whose
+  cutouts it crosses: 38178 at 23 times its PRISM flux, and 39597 at about 20 uJy, where its
+  nodded and PRISM spectra are near zero; 39597 is also flagged `MBKGPREF` (`extended`), so its
+  master-background spectrum is offered as the likely better one. A method to find such shutters
+  is being designed.
+- *Faint G395M below PRISM.* Between the two dispersers, at faint fluxes, the 3-pixel boxcar
+  differs by about -0.005 to -0.014 uJy (G395M lower) in every flux bin, on uds_p2 and on p1, in
+  v1 and v2, and with every extraction and both backgrounds; above 0.5 uJy it is invisible. Against
+  COSMOS photometry on p1, G395M falls below the catalog in the faintest quartiles and PRISM does
+  not (about 2-3 sigma together), but slit losses limit that test. Not traced to a step.
 - *Stuck shutters.* Partly open shutters (a = 0.61-0.78) are called "review" and not reported
   otherwise. The 27 G395M shutters flagged for review await the user's verdict.
 - *A sidecar from an earlier deploy.* A redeploy whose spec.fits no longer carries a
