@@ -14,8 +14,32 @@ def _run(tmp_path, sid=7):
     return PP.run_product('obs_prism_7', str(tmp_path), [[]], [None], [], sid, {}, True, cleanup_crfs=False)
 
 
-def _with_crf(tmp_path, sid=7):
+def _with_crf(tmp_path, monkeypatch, sid=7):
+    """A stand-in crf: the file exists, its outlier flags are read as none."""
+    from campfire_pipeline.nirspec import drizzle_map as DM
     (tmp_path / f'obs_prism_7_s{sid:09d}_crf.fits').write_bytes(b'')
+    monkeypatch.setattr(DM, 'crf_dq', lambda path: {})
+
+
+def test_the_product_fit_leaves_out_the_crf_outliers(tmp_path):
+    """``analyse_product`` with the crf's flags: the flagged pixel is out of the nod differences
+    the chain fits (and of the scan's copies); without them the log says nothing was taken."""
+    import test_nirspec_profile_fit as T
+    exps = T._exposures()
+    T._inject(exps, T.TRUTH, [0, 0, 0], flux_scale=50.0, noise=1.0, seed=7)
+    dq = np.zeros((T.NY, T.NX), np.uint32)
+    dq[15, 60] = PF.OUTLIER | PF.DO_NOT_USE
+    said = []
+    sc = dict(contam_predict=False, scan_neighbours=False)
+    A = PP.analyse_product(str(tmp_path), [], [None], [e.name for e in exps], 1, sc, True, exps=exps,
+                           crf_dq={exps[0].name: dq}, log=said.append)
+    assert all(not e.ok[15, 60] for e in A.exps)
+    assert any('Spec3 outliers' in m for m in said)
+    exps2 = T._exposures()
+    T._inject(exps2, T.TRUTH, [0, 0, 0], flux_scale=50.0, noise=1.0, seed=7)
+    said = []
+    PP.analyse_product(str(tmp_path), [], [None], [e.name for e in exps2], 1, sc, True, exps=exps2, log=said.append)
+    assert all(e.ok[15, 60] for e in exps2) and any('no crf outlier flags' in m for m in said)
 
 
 def test_no_crf_falls_back(tmp_path):
@@ -31,7 +55,7 @@ def test_named_conditions_fall_back(tmp_path, monkeypatch, exc):
     with its 2-D through the product's pixel maps."""
     from campfire_pipeline.nirspec import drizzle_map as DM
     from campfire_pipeline.nirspec import mbkg_extraction as MX
-    _with_crf(tmp_path)
+    _with_crf(tmp_path, monkeypatch)
 
     def boom(*a, **k):
         raise exc('profile fit: test')
@@ -51,7 +75,7 @@ def test_named_conditions_fall_back(tmp_path, monkeypatch, exc):
 def test_other_exceptions_propagate(tmp_path, monkeypatch, exc):
     """Anything that is not a named condition fails the stage, and no _pf.fits is left
     that the extraction could mistake for a result."""
-    _with_crf(tmp_path)
+    _with_crf(tmp_path, monkeypatch)
 
     def boom(*a, **k):
         raise exc('unexpected')

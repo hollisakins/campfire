@@ -668,7 +668,7 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
             res = [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]
         results += res
     if gxfer:
-        # a source's gratings take the shape of the one that passed its gate where they fell to the default
+        # a source's gratings take the shape of the one that took its own fit where they fell to the default
         plan = {p: ref for p, ref in grating_transfer_plan(results).items() if p in task_of}
         if plan:
             redo = []
@@ -677,7 +677,7 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                 t[10] = cleanup_crfs
                 redo.append(tuple(t) + (ref,))          # run_product's shape_product
             log(f"Profile fit: {len(redo)} grating products again with the shape of their source's grating that "
-                f"passed its gate")
+                f"took its own fit")
             with TM.phase(f'products grating transfer ({len(redo)})'):
                 res = [r for r in dispatch(run_product, redo, n_processes=n_processes, use_starmap=True) or [] if r]
             again = {r['product']: r for r in res}
@@ -1218,6 +1218,9 @@ def opt_ext_single_source(
     exposures = {c: list(exp.data[c]) for c in exp.data.columns.names}
     nexp, nexp_bkg = MX.exposure_counts(exposures)
     primary.header['NEXP'] = (nexp, 'Exposures combined')
+    from campfire_pipeline.nirspec.variance import stamps_of
+    primary.header['CFVARPS'] = (stamps_of([os.path.join(workspace_dir, str(f).strip()) for f in exposures.get('filename', [])]),
+                                 'rate Poisson variance')
     if nexp_bkg is not None:
         primary.header['NEXPBKG'] = (nexp_bkg, 'Fewest background exposures subtracted from one')
     mbkg = []
@@ -1388,7 +1391,7 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     SCI in MJy): it is not normalised per column, so its in-aperture sum carries
     the aperture and path-loss correction. The weighted fit of the data on the
     aperture rows, sum(P D / V) / sum(P^2 / V), is the reported flux directly: the
-    source's light inside ``profile_fit.REPORT_APERTURE`` (``reported_factor``), with the
+    source's light that entered the shutter across the dispersion (``reported_factor``), with the
     model's loss across the slit and its along-dispersion correction. ``fnu_opt`` stays on
     jwst's point-source calibration: for a point source at the shutter centre the two
     agree up to the along-dispersion correction; off centre they differ by the ratio of
@@ -1843,6 +1846,9 @@ def combine_per_eg_spectra(
     exposures = {c: list(exp_hdu.data[c]) for c in exp_hdu.data.columns.names}
     nexp, nexp_bkg = MX.exposure_counts(exposures)
     primary.header['NEXP'] = (nexp, 'Exposures combined')
+    from campfire_pipeline.nirspec.variance import stamps_of
+    primary.header['CFVARPS'] = (stamps_of([os.path.join(workspace_dir, str(f).strip()) for f in exposures.get('filename', [])]),
+                                 'rate Poisson variance')
     if nexp_bkg is not None:
         primary.header['NEXPBKG'] = (nexp_bkg, 'Fewest background exposures subtracted from one')
     mbkg = []

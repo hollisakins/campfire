@@ -363,6 +363,7 @@ def _inputs_cards(rate, bs_path, cutoffs, decided, wr=None):
         'CFMB1VER': (STEP1_VERSION, 'master background step 1 version'),
         'MBKGRATE': (os.path.basename(rate), 'rate file this product belongs to'),
         'MBKGBKDT': (str(h.get('CFBKGDT')), 'rate CFBKGDT at derivation'),
+        'MBKGVARP': (str(h.get('CFVARPS', 'N/A')), 'rate Poisson variance (CFVARPS)'),
         'MBKGMETA': (os.path.basename(h.get('OGMETFL') or h.get('MSAMETFL') or ''), 'MSA metafile'),
         'MBKGMTID': (int(h.get('MSAMETID', -1)), 'MSA metadata id'),
         'MBKGBSRF': (os.path.basename(bs_path), 'bar-shadow table of the templates'),

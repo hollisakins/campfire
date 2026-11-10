@@ -10,12 +10,12 @@ Each source is modeled as a circular Gaussian with a width and position that may
 
 ### Profile selection
 
-Faint sources do not constrain their own spatial profile. The profile is chosen in the following order:
+The width and center of every fit have priors, so a faint source, which does not constrain its own profile, settles near a compact source at its planned position. The profile is chosen in the following order:
 
 1. **PRISM profile**, for a grating spectrum, if the same source's PRISM spectrum was fitted with its own profile at the same position angle. A grating's own fit supersedes it only for bright sources (detection S/N ≥ 100) whose own fit is both significantly better and significantly different.
-2. **Own fitted profile**, if the detection S/N exceeds 25 (PRISM) or 70 (gratings) and no parameter of the fit reaches its bound. A fit whose center alone reaches its bound is kept when it is significantly better than the alternative, since a large offset from the planned position can be real.
+2. **Own fitted profile**, at any S/N. A fit with a parameter at its limit is kept and flagged in `SHAPEWHY` (`bound:`).
 3. **Profile from another grating**, for a grating spectrum without a PRISM profile that would otherwise take the default: the center offset and width of the same source's grating spectrum fitted with its own profile (the highest detection S/N if several), held constant with wavelength.
-4. **Default profile**: a compact source (0.16″ FWHM) at the planned position.
+4. **Default profile**: a compact source (0.16″ FWHM) at the planned position, where no own fit is possible (contamination leaves too few pixels, or the planned positions disagree between exposures).
 
 The keywords `SHAPE` (`prism`, `own`, `grating`, `default`) and `SHAPEWHY` record the profile adopted and the reason.
 
@@ -69,4 +69,4 @@ Each file also contains a spectrum extracted identically from the same exposures
 
 ## Summary for publications
 
-> Each source's 2-D spectrum was fitted simultaneously in all exposures with a Gaussian source model convolved with a model of the MSA optics; the reported flux is that of the fitted intrinsic profile within the open width of the shutter across the dispersion and over its full extent along the slit. Sources too faint to constrain their own profile were extracted with a compact default profile at the planned position (`SHAPE = default`).
+> Each source's 2-D spectrum was fitted simultaneously in all exposures with a Gaussian source model convolved with a model of the MSA optics; the reported flux is that of the fitted intrinsic profile within the open width of the shutter across the dispersion and over its full extent along the slit. Priors on the profile's width and center govern sources too faint to constrain their own profile.

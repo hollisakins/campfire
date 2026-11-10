@@ -49,6 +49,15 @@ def crf_path(product_name, source_id, workspace_dir=''):
     return fs[0] if fs else msa
 
 
+def crf_dq(crf_path):
+    """{exposure file name: DQ} of a product's Spec3 crf, each on its canonical's cutout: what
+    Spec3's outlier detection flagged (``profile_fit.mask_crf_outliers``)."""
+    from jwst import datamodels
+    from jwst.datamodels import SourceModelContainer
+    with datamodels.open(crf_path) as m:
+        return {str(x.meta.filename): np.array(x.dq) for x in SourceModelContainer(m)}
+
+
 def step_settings(s2d_path):
     """The resample settings Spec3 used for a product (its s2d's ``meta.resample``): pixfrac,
     kernel, fillval, weight_type, pixel_scale_ratio."""

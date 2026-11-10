@@ -38,7 +38,7 @@ Each flux column is given in µJy (`fnu_*`) and in erg s⁻¹ cm⁻² Å⁻¹ (`
 |---|---|
 | `wave` | Wavelength, µm |
 | `fnu` | Adopted spectrum; by default `fnu_prof` (see `EXTRACT`) |
-| `fnu_prof` | Forward-model extraction: flux of the fitted source within a 0.8″ aperture, without contamination subtraction |
+| `fnu_prof` | Forward-model extraction: flux of the fitted source that entered the shutter across the dispersion (all of it along the slit), without contamination subtraction |
 | `fnu_contam` | Predicted contamination in `fnu_prof`; NaN where none was predicted or where the source could not be separated from a neighbor. Its uncertainty is systematic and not included in `fnu_err` |
 | `fnu_opt` | Optimal extraction: flux entering the shutter, with the `jwst` point-source path-loss correction |
 | `fnu_3px`, `fnu_4px`, `fnu_5px` | Boxcar extractions over 3, 4 and 5 rows, with the `jwst` point-source path-loss correction |
@@ -83,13 +83,13 @@ The extraction adds the keywords below. Lengths along the slit are in units of t
 |---|---|
 | `EXTRVER` | Extraction model version |
 | `OPTICVER` | MSA optics model version |
-| `FLUXAPER` | Diameter of the aperture the reported flux refers to, arcsec |
+| `FLUXWID` | Open shutter width across the dispersion the reported flux refers to, arcsec |
 | `SLOSSY`, `SLOSSX` | Path loss along the slit (`optics` / `jwst`) and across the shutter (`corrected` / `jwst`) |
 | `BAROFF` | Bar offset applied |
 | `SHAPE`, `SHAPEWHY` | Profile adopted (`own`, `prism`, `grating`, `default`) and the reason |
 | `SHAPESRC` | Product the profile was taken from (`prism`, `grating`) |
 | `PA_V3` | Position angle of the science exposures, used to match a PRISM profile |
-| `DETSNR` | Detection S/N of the source, compared with the threshold for an own profile |
+| `DETSNR` | Detection S/N of the source |
 | `SRCCEN`, `SRCCENPL` | Fitted and planned center along the slit, at `SRCPIVOT` |
 | `SRCWIDTH` | Fitted Gaussian σ of the source at `SRCPIVOT` |
 | `SRCDRIFT`, `SRCDWID` | Change of the center and of σ per octave in wavelength |
@@ -106,7 +106,7 @@ The extraction adds the keywords below. Lengths along the slit are in units of t
 | `NBRPROP` | Background exposures proposed for exclusion |
 | `NBRXDISP` | Whether the other disperser's scan agrees (`single`, `agree`, `disagree`, `none`) |
 
-The `SPEC1D_MBKG` extension header carries the same keywords for the master-background fit, plus `NFOPEN`, the number of failed-open shutters included on the trace; those in the primary header refer to the nod-subtracted spectrum.
+The `SPEC1D_MBKG` extension header carries the same keywords for the master-background fit, plus `NFOPEN`, the number of failed-open shutters included on the trace, and `MBKGSCL` / `MBKGSCLE`, the correction to the master background's level fitted with the source (0.01 = 1 %) and its uncertainty (`MBKGSCL` is 0 and `MBKGSCLC` holds the fitted value when it reached the 3 % cap and was not applied); those in the primary header refer to the nod-subtracted spectrum.
 
 ## Redshift file
 

@@ -224,39 +224,98 @@ def test_no_signal_gives_zero_flux_within_errors():
     assert abs(np.mean(chi)) < 0.2 and 0.8 < np.std(chi) < 1.2
 
 
-def test_outlier_pixels_are_masked():
+def _cosmic_ray(exps, k, r, cols, amp=500.0):
+    """A cosmic ray in exposure k's frame at row r, columns ``cols``: in k's own nod difference
+    as it is, in each difference k is a partner of at -1/n of it."""
+    for i, e in enumerate(exps):
+        if i == k:
+            e.diff[r, cols] += amp
+        elif k in e.partners:
+            e.diff[r, cols] -= amp / len(e.partners)
+
+
+def test_a_cosmic_ray_flagged_in_the_crf_is_left_out_of_its_difference_and_its_partners():
+    """Spec3 flagged the hit in exposure 1's crf only: the pixel is left out of exposure 1's
+    difference and of the two differences it was subtracted from, and the fit is unbiased."""
     exps = _exposures()
     _inject(exps, TRUTH, [0, 0, 0], flux_scale=50.0, noise=1.0, seed=7)
-    exps[1].diff[NY // 2, 40:43] += 500.0            # cosmic-ray-like hits
+    r, cols = NY // 2, slice(40, 43)
+    _cosmic_ray(exps, 1, r, cols)
+    dq = np.zeros((NY, NX), np.uint32)
+    dq[r, cols] = PF.OUTLIER | PF.DO_NOT_USE
+    n, missing = PF.mask_crf_outliers(exps, {exps[1].name: dq})
+    assert n == 9 and missing == [exps[0].name, exps[2].name]
+    for e in exps:
+        assert not e.ok[r, cols].any() and e.ok[r, 45]
     R = PF.fit(exps, chromatic=False)
-    assert (~R.model.use).sum() >= 3
+    assert R.model.use.all()                               # nothing clipped by the fit itself
     good = np.isfinite(R.flux) & (R.lam > 1.0) & (R.lam < 4.8)
     assert abs(np.median(R.flux[good] / (50.0 * _spectrum(R.lam[good]))) - 1) < 0.03
+    with pytest.raises(ValueError):                        # the crf must be on the canonical cutout
+        PF.mask_crf_outliers(exps, {exps[1].name: dq[:-1]})
 
 
-def test_reported_factor_is_one_for_a_point_source_anywhere():
-    """The reported flux is the source's light inside REPORT_APERTURE: all of a point
-    source's, wherever it sits in the shutter."""
+def test_crf_outliers_is_the_one_decision():
+    """OUTLIER in the crf, less what the canonical's live DQ already had (the master-background
+    frames' rule, ``mbkg_extraction.outlier_flags``, is this function)."""
+    crf = np.array([[0, 16, 17, 16]], np.uint32)
+    live = np.array([[0, 0, 0, 16]], np.uint32)
+    np.testing.assert_array_equal(PF.crf_outliers(crf), [[False, True, True, True]])
+    np.testing.assert_array_equal(PF.crf_outliers(crf, live), [[False, True, True, False]])
+
+
+def test_real_light_that_departs_from_the_model_is_not_masked():
+    """A compact knot beside the source, which a single Gaussian cannot describe: its pixels sit
+    far from the model, and the fit keeps every one of them (until 2026-11-10 they were
+    clipped at 5 sigma, and with them real light)."""
+    exps = _exposures()
+    _inject(exps, TRUTH, [0, 0, 0], flux_scale=50.0, noise=1.0, seed=7)
+    knot = _truth_result(exps, dict(centre=0.45, drift=0.0, width=0.02, width_change=0.0), [0, 0, 0], 20.0)
+    for k, e in enumerate(exps):
+        e.diff = e.diff + np.nan_to_num(PF.model_frame(knot, k, applied_pathloss=False))
+    R = PF.fit(exps, chromatic=False)
+    M = R.model
+    r = (M.pix['d'] - M.linear_solve(PF._qvec(R)[0], R.eoff).model) / np.sqrt(M.pix['v'])
+    assert np.sum(np.abs(r) > 5) > 20                      # the clip would have taken these
+    assert R.model.use.all() and R.use.all()
+    F = PF.fit_fixed(model=M)
+    assert F.use.all()
+    snr, det = PF.detection_snr(M)
+    assert M.use.all() and snr > 0
+
+
+def test_reported_factor_is_one_for_a_centred_point_source_anywhere_along_the_slit():
+    """The reported flux is the source's light that entered the shutter across the
+    dispersion: all of a point source's at the shutter centre, wherever it sits along the slit."""
     for y in (0.0, 0.3):
         exps = _exposures(src_y=y)
         R = _truth_result(exps, dict(centre=y, drift=0.0, width=PF.W_FLOOR, width_change=0.0), [0, 0, 0], 1.0)
-        assert np.allclose(PF.reported_factor(R, np.array([1.0, 2.0, 4.0])), 1.0)
+        assert np.allclose(PF.reported_factor(R, np.array([1.0, 2.0, 4.0])), 1.0, atol=1e-3)
 
 
-def test_reported_factor_bounds_a_wide_source():
-    """A round Gaussian of sigma s arcsec keeps 1 - exp(-R^2 / 2 s^2) inside the circle of
-    radius R = REPORT_APERTURE / 2, and the share falls as the source widens."""
-    from campfire_pipeline.nirspec.optics import SLIT
-    exps = _exposures()
+def test_reported_factor_is_the_light_between_the_shutter_edges():
+    """A round Gaussian of sigma s arcsec at x = SRCXPOS * X_PITCH keeps the share between the
+    shutter edges +-X_HALF (s widened by the position scatter X_BLUR): the share falls as the
+    source widens, and as it moves off centre, most for a compact source."""
+    from scipy.special import erf
+    from campfire_pipeline.nirspec.optics import SLIT, X_BLUR, X_HALF, X_PITCH
     lam = np.array([1.0, 2.0, 4.0])
-    shares = []
-    for w in (0.1, 0.4, 1.5):
-        R = _truth_result(exps, dict(centre=0.0, drift=0.0, width=w, width_change=0.0), [0, 0, 0], 1.0)
-        f = PF.reported_factor(R, lam)
-        s = w * SLIT
-        assert np.allclose(f, 1.0 - np.exp(-(0.5 * PF.REPORT_APERTURE) ** 2 / (2 * s ** 2)))
-        shares.append(f[0])
-    assert shares[0] > 0.99 > shares[1] > shares[2] > 0.1
+
+    def expect(w, x):
+        s = np.sqrt((w * SLIT) ** 2 + X_BLUR ** 2) * np.sqrt(2)
+        return 0.5 * (erf((X_HALF - x) / s) - erf((-X_HALF - x) / s))
+    shares = {}
+    for srcx in (0.0, 0.2):
+        exps = _exposures()
+        for e in exps:
+            e.src_x_jwst = srcx
+        for w in (0.1, 0.4, 1.5):
+            R = _truth_result(exps, dict(centre=0.0, drift=0.0, width=w, width_change=0.0), [0, 0, 0], 1.0)
+            f = PF.reported_factor(R, lam)
+            assert np.allclose(f, expect(w, srcx * X_PITCH))
+            shares[srcx, w] = f[0]
+    assert shares[0.0, 0.1] > 0.9 > shares[0.0, 0.4] > shares[0.0, 1.5] > 0.1
+    assert shares[0.2, 0.1] / shares[0.0, 0.1] < shares[0.2, 1.5] / shares[0.0, 1.5] < 1.0
 
 
 def test_boxcar_factor_is_what_the_model_frames_hold():

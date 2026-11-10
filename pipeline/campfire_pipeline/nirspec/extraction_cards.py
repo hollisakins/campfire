@@ -14,7 +14,7 @@ CARDS = {
     # versions and calibration
     'EXTRVER': 'Extraction model version',
     'OPTICVER': 'MSA optics model version',
-    'FLUXAPER': 'Reported-flux aperture diameter [arcsec]',
+    'FLUXWID': 'Reported flux: width across dispersion [arcsec]',
     'SLOSSY': 'Path loss along the slit: optics/jwst',
     'SLOSSX': 'Path loss across shutter: corrected/jwst',
     'BAROFF': 'Bar offset applied [slit units]',
@@ -41,6 +41,9 @@ CARDS = {
     'CONTNSEP': 'Fraction of fnu_prof not separable',
     'SELFSUB': 'Own flux removed by nod subtraction',
     'NFOPEN': 'Failed-open shutters on the trace',
+    'MBKGSCL': 'Master background level fitted (0.01 = 1%)',
+    'MBKGSCLE': 'Uncertainty of MBKGSCL',
+    'MBKGSCLC': 'Scale fitted, over the cap: MBKGSCL set 0',
     # same-slitlet neighbor scan
     'NBRDET': 'Neighbor above the proposal threshold',
     'NBRDELTA': 'Neighbor offset from target [slit units]',
