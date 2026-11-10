@@ -48,6 +48,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **Stage 1 finishes an exposure with no open shutter on the detector (#681).** `jwst`
+  raises `NoDataOnDetectorError` when nothing projects onto a detector (e.g. NRS2 of
+  `jw01747017001_03101`). `clean_flicker_noise` with `mask_science_regions = true` hit
+  it and no rate file was written, which then broke stage 2a; the background-subtraction
+  reference pre-fetch and slit mask hit it again. Detector1 is now re-run for that
+  exposure with `mask_science_regions = false` (there are no source traces to mask),
+  the pre-fetch carries on, and the background fit masks the failed-open shutters only
+  (their WCS reference files are resolved from CRDS directly, since `assign_wcs` records none).
+  Adds rate files for exposures that used to fail; every other exposure is unchanged.
+  Stage 2a already skipped such a detector.
 - **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every
   `source_id <= 0`, so a genuine source 0 (PID 2750's `2750_0`) was never extracted.
   ID 0 is also the metafile's value for empty background shutters, so it now counts as
