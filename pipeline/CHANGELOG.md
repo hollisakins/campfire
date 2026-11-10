@@ -54,7 +54,8 @@ Release procedure: edit the `## Unreleased` section below, then run
   it and no rate file was written, which then broke stage 2a; the background-subtraction
   reference pre-fetch and slit mask hit it again. Detector1 is now re-run for that
   exposure with `mask_science_regions = false` (there are no source traces to mask),
-  the pre-fetch carries on, and the background fit masks the failed-open shutters only.
+  the pre-fetch carries on, and the background fit masks the failed-open shutters only
+  (their WCS reference files are resolved from CRDS directly, since `assign_wcs` records none).
   Adds rate files for exposures that used to fail; every other exposure is unchanged.
   Stage 2a already skipped such a detector.
 - **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every

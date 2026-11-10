@@ -217,7 +217,18 @@ def mask_slits(
         source_slits = []
     # slits = slits + failed_slits
 
-    wcs_reffile_names = create_reference_filename_dictionary(processed_model)
+    if has_science:
+        wcs_reffile_names = create_reference_filename_dictionary(processed_model)
+    else:
+        # create_reference_filename_dictionary reads the names assign_wcs
+        # recorded in meta.ref_file, which are absent when it raised: resolve
+        # them from CRDS the way the step itself does (a fresh step, so the
+        # failed-open shutters use the default wavelength range as above).
+        ref_step = AssignWcsStep()
+        wcs_reffile_names = {
+            reftype: ref_step.get_reference_file(processed_model, reftype) or ""
+            for reftype in ref_step.reference_file_types
+        }
 
     temp_mask = np.zeros(input_model.data.shape,dtype=int)
 

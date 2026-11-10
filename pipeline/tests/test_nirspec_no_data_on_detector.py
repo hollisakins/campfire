@@ -88,8 +88,13 @@ def test_mask_slits_without_science_masks_nothing_extra(monkeypatch):
         msaflagopen_step.MSAFlagOpenStep, "get_reference_file",
         lambda self, model, reftype: "msaoper.json",
     )
+    # assign_wcs raised, so meta.ref_file is empty and jwst's
+    # create_reference_filename_dictionary (left unstubbed) would fail on it:
+    # the names must come from the step's own CRDS lookup instead.
+    looked_up = []
     monkeypatch.setattr(
-        msaflagopen_step, "create_reference_filename_dictionary", lambda model: {},
+        AssignWcsStep, "get_reference_file",
+        lambda self, model, reftype: looked_up.append(reftype) or f"{reftype}.asdf",
     )
     monkeypatch.setattr("jwst.msaflagopen.msaflag_open.create_slitlets", lambda ref: [])
 
@@ -98,6 +103,7 @@ def test_mask_slits_without_science_masks_nothing_extra(monkeypatch):
     mask[:10] = False
     out = stage1.mask_slits(model, "", mask.copy())
     assert np.array_equal(out, mask)
+    assert looked_up == list(AssignWcsStep.reference_file_types)
 
 
 def test_prefetch_survives_no_data(monkeypatch, tmp_path):
