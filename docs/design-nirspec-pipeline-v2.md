@@ -559,15 +559,16 @@ dispersion as in 6.3); `reported_factor` scales it to the light in the shutter.
 `fnu_opt`, `fnu_3px` and the cal and s2d files stay on jwst's point-source calibration: the light
 entering the shutter.
 
-**Evidence** (p1 PRISM against COSMOS photometry).
+**Evidence for the earlier 0.8 arcsec circle** (`FIT_VERSION` up to 10, p1 PRISM against COSMOS
+photometry; a record of the replaced definition, not a description of the current reported flux,
+which has no photometric comparison yet).
 - Against the catalog's own 0.8 arcsec aperture flux (`FIT_VERSION` 8; 127 sources with their own
   fit; per band, catalog and spectrum S/N >= 10 and the band fully covered; each source's ratio
   the median over its bands): the reported flux reads a median 0.952 +- 0.03 (error of the
   median), 16-84 % 0.70-1.30, scatter 0.124 dex. The light in the shutter (`fnu_opt`) reads 0.620,
   16-84 % 0.41-0.84, 0.149 dex. Per band: F150W 0.84, F200W 0.97, F277W 0.89, F356W 0.92, F444W
-  0.95. The ratio sits near 1 for compact sources and rises above 1 for the widest (figure
-  `web/public/docs/nirspec/reported_flux.png`, `scripts/docs/nirspec/fig_reported_flux.py`;
-  numbers from `scripts/docs/nirspec/reported_flux_stats.py <root> <aperture json>`).
+  0.95. The ratio sat near 1 for compact sources and rose above 1 for the widest (the figure and
+  the script that made these numbers were removed with the definition).
 - Against the catalog's total (Kron) flux, in six bins of fitted width (`FIT_VERSION` 6): the
   light in the shutter read 0.87 for the most compact bin down to 0.32 for the widest; the
   reported flux reads 0.93 / 0.77 / 0.77 / 0.75 / 0.68 / 1.03, with the scatter 0.20 -> 0.16 dex.
