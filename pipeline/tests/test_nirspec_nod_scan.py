@@ -224,8 +224,11 @@ def _frames_with_neighbour(target_scale, nbr_scale, delta, seed=1):
 def test_preview_shows_what_the_proposal_changes(tmp_path, monkeypatch):
     """A neighbour one shutter above an equally bright target: its copies through the
     partners are subtracted from the target's rows in nods 1 and 3, so the spectrum with
-    every nod as background reads low; with the proposed nods it is back near the truth,
-    with a larger error (fewer background nods). The figure shows each nod's rectified
+    every nod as background reads low; with the proposed nods it moves toward the truth,
+    with a larger error (fewer background nods). (Since the fits stopped clipping against
+    their model, 2026-11-10, the neighbour's own light that stays on the fitted pixels is
+    no longer clipped away, so the proposed spectrum is closer to the truth but not within
+    half the error of the current one, as it was.) The figure shows each nod's rectified
     difference with both choices, rebuilt from the cached S2D_SCI views."""
     from astropy.io import fits
     from campfire_pipeline.nirspec import profile_product as PP
@@ -240,7 +243,7 @@ def test_preview_shows_what_the_proposal_changes(tmp_path, monkeypatch):
     assert pv is not None
     truth = np.mean(np.interp(pv['lam'], Rt.lam, Rt.flux))
     now, prop = np.nanmean(pv['now'][0]), np.nanmean(pv['proposed'][0])
-    assert abs(prop / truth - 1) < 0.5 * abs(now / truth - 1)
+    assert abs(prop / truth - 1) < 0.75 * abs(now / truth - 1)
     assert np.nanmedian(pv['proposed'][1]) > np.nanmedian(pv['now'][1])
     nod1 = next(f for f in pv['frames'] if f['nod'] == 1)
     assert nod1['path'] == 'nod1.fits'

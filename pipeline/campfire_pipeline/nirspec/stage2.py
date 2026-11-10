@@ -295,6 +295,11 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
             for rate_file in obs.rate_files:
                 ensure_fresh(rate_file, obs, stage1_cfg)
 
+    # The Poisson variance from each pixel's row neighbors (nirspec/variance.py), for rate files made
+    # before it or by another version; serially, before step 1 and the parallel dispatch read them
+    from campfire_pipeline.nirspec.variance import ensure_variance
+    ensure_variance(obs.rate_files, log=log)
+
     # Ensure the background override file exists so it can be edited before stage2b
     _ = obs.bkg_overrides
 
@@ -732,7 +737,23 @@ def _s2a_time_card():
     return (S2A_TIME_KEY, round(time.time(), 6), 'campfire: stage 2a made this file (unix time)')
 
 
-def _source_cards(obs, main_metafile, source_id, stuck, extended_override, stuck_keys=()):
+def _canonical_variance_changed(path, rate_file):
+    """Whether the canonical (or bkgslits file) at ``path`` was made from another Poisson variance
+    than its rate file now holds (``CFVARPS``, nirspec/variance.py): the rate file's variance was
+    rewritten since. A file without the card counts as changed when the rate file has one."""
+    from campfire_pipeline.nirspec.variance import stamp
+    if not os.path.exists(path):
+        return False
+    return stamp(path) != stamp(rate_file)
+
+
+def _var_stamp(rate_file):
+    """The rate file's ``CFVARPS`` (nirspec/variance.py), '' without one."""
+    from campfire_pipeline.nirspec.variance import stamp
+    return stamp(rate_file)
+
+
+def _source_cards(obs, main_metafile, source_id, stuck, extended_override, stuck_keys=(), rate_file=None):
     """The provenance cards stage 2a stamps on one source's canonical."""
     cards = [
         ('STKSHFIL', os.path.basename(obs.stuck_closed_shutters_file), 'Stuck shutter file name'),
@@ -753,6 +774,9 @@ def _source_cards(obs, main_metafile, source_id, stuck, extended_override, stuck
         cards.append(('STKSHTRS', 'N/A', 'Stuck shutters masked'))
     cards.append(('STKSHPHY', ' '.join(stuck_keys) if len(stuck_keys) else 'N/A',
                   'Stuck shutters masked (q r c)'))
+    if rate_file is not None:
+        from campfire_pipeline.nirspec.variance import stamp
+        cards.append(('CFVARPS', stamp(rate_file) or 'N/A', 'Poisson variance of the rate file'))
     cards.append(_s2a_time_card())
     return cards
 
@@ -844,7 +868,7 @@ def _source_of_slit(slit, source_of_slitlet):
 
 
 def _split_spec2_result(cal_path, base, source_ids, cards_by_source, bkgslits_path, msametfl,
-                        slitlets_by_source, barshadow_override=None, stuck=frozenset()):
+                        slitlets_by_source, barshadow_override=None, stuck=frozenset(), var_stamp=''):
     """Split one multi-slit ``Spec2Pipeline`` product into the per-source
     canonicals (``_finalize_canonical``) and the background-slitlet file.
 
@@ -894,13 +918,14 @@ def _split_spec2_result(cal_path, base, source_ids, cards_by_source, bkgslits_pa
                 f'round: {unexpected}')
 
         if bkgslits_path is not None:
-            _write_bkgslits(model, bkg_slits, bkgslits_path, msametfl, barshadow_override, stuck=stuck)
+            _write_bkgslits(model, bkg_slits, bkgslits_path, msametfl, barshadow_override, stuck=stuck,
+                            var_stamp=var_stamp)
     finally:
         model.close()
     return produced, missing
 
 
-def _write_bkgslits(parent, bkg_slits, path, msametfl, barshadow_override=None, stuck=frozenset()):
+def _write_bkgslits(parent, bkg_slits, path, msametfl, barshadow_override=None, stuck=frozenset(), var_stamp=None):
     """Write the background-only slitlets of one exposure as a
     ``MultiSlitModel`` (``bkgslits/<root>_<nod>_<nrsN>_bkgslits.fits``).
 
@@ -943,6 +968,8 @@ def _write_bkgslits(parent, bkg_slits, path, msametfl, barshadow_override=None, 
         key, value, comment = _s2a_time_card()
         hdr[key] = (value, comment)
         hdr['STKSHSET'] = (_stuck_hash(stuck), 'campfire: hash of the root stuck shutters removed')
+        if var_stamp:
+            hdr['CFVARPS'] = (var_stamp, 'Poisson variance of the rate file')
         hdul.flush()
     os.replace(tmp, path)
     log(f'Wrote {len(bkg_slits)} background slitlet(s) to {os.path.basename(path)}')
@@ -964,7 +991,8 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
     rows_by_source, cards_by_source, all_stuck = {}, {}, []
     for sid in rnd['source_ids']:
         rows, ordinals, keys = _drop_stuck(main_metafile.rows_for_source(sid), stuck)
-        cards_by_source[sid] = _source_cards(obs, main_metafile, sid, ordinals, extended_override, keys)
+        cards_by_source[sid] = _source_cards(obs, main_metafile, sid, ordinals, extended_override, keys,
+                                             rate_file=rate_file)
         if len(rows) == 0:
             log(f'All shutters marked as stuck closed for {base}_{sid}, skipping extraction')
             all_stuck.append(sid)
@@ -979,7 +1007,8 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
             # background slitlet so the next run does not look again.
             from jwst.datamodels import ImageModel
             with ImageModel(rate_file) as parent:
-                _write_bkgslits(parent, [], bkgslits_path, msametfl, barshadow_override, stuck=stuck)
+                _write_bkgslits(parent, [], bkgslits_path, msametfl, barshadow_override, stuck=stuck,
+                                var_stamp=_var_stamp(rate_file))
         return [], []
 
     metafile = main_metafile.for_sources(
@@ -1019,7 +1048,8 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
             # nor for its background slitlets: recorded, so the next run does not call it again
             from jwst.datamodels import ImageModel
             with ImageModel(rate_file) as parent:
-                _write_bkgslits(parent, [], bkgslits_path, msametfl, barshadow_override, stuck=stuck)
+                _write_bkgslits(parent, [], bkgslits_path, msametfl, barshadow_override, stuck=stuck,
+                                var_stamp=_var_stamp(rate_file))
         return [], wanted
     finally:
         for stale in (asn_file, metafile.filename):
@@ -1031,7 +1061,7 @@ def _run_spec2_round(rate_file, obs, main_metafile, rnd, index, *, root,
                               for sid, rows in rows_by_source.items()}
         produced, missing = _split_spec2_result(
             cal_path, base, wanted, cards_by_source, bkgslits_path, msametfl,
-            slitlets_by_source, barshadow_override, stuck=stuck)
+            slitlets_by_source, barshadow_override, stuck=stuck, var_stamp=_var_stamp(rate_file))
     finally:
         if os.path.exists(cal_path):
             os.remove(cal_path)
@@ -1105,7 +1135,7 @@ def _run_spec2_per_source(rate_file, obs, main_metafile, source_ids, *, root,
         # remove shutters that are marked as stuck closed
         source_metafile.shutter_table, ordinals, keys = _drop_stuck(
             source_metafile.shutter_table, stuck)
-        cards = _source_cards(obs, main_metafile, source_id, ordinals, extended_override, keys)
+        cards = _source_cards(obs, main_metafile, source_id, ordinals, extended_override, keys, rate_file=rate_file)
 
         # Skip extraction if all shutters are stuck closed
         if len(source_metafile.shutter_table) == 0:
@@ -1245,7 +1275,8 @@ def run_stage2a_single_rate(
             if (not overwrite and source_id not in rerun_source_ids
                     and (os.path.exists(nodata_marker)
                          or (os.path.exists(f'{prod_name}.fits') and not _canonical_stuck_changed(
-                             f'{prod_name}.fits', main_metafile, source_id, common['stuck'])))):
+                             f'{prod_name}.fits', main_metafile, source_id, common['stuck'])
+                             and not _canonical_variance_changed(f'{prod_name}.fits', rate_file)))):
                 log(f'Skipping stage2a for {prod_name}, overwrite=False')
                 source_ids_processed.append(source_id)
                 continue
@@ -1256,7 +1287,8 @@ def run_stage2a_single_rate(
 
         bkgslits_path = os.path.join(obs.bkgslits_dir, f'{base}_bkgslits.fits')
         bkg_needed = bool(overwrite or not os.path.exists(bkgslits_path) or root in rerun_roots
-                          or _bkgslits_stuck_changed(bkgslits_path, common['stuck']))
+                          or _bkgslits_stuck_changed(bkgslits_path, common['stuck'])
+                          or _canonical_variance_changed(bkgslits_path, rate_file))
 
         if not pending and not bkg_needed:
             log('No source IDs to process, exiting...')

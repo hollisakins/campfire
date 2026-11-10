@@ -1,17 +1,20 @@
 """
 Choice of the source shape for the profile-fit extraction.
 
-The profile fit (``profile_fit``) can fit a source's cross-dispersion shape freely,
-but at low S/N a free shape follows the noise, and in crowded masks it follows
-other sources' light. This module decides, per product (one source, one disperser),
-which shape builds the extraction profile:
+The profile fit (``profile_fit``) fits a source's cross-dispersion shape with
+Gaussian priors on its centre and width; where the data say little, the priors
+decide, and the fit settles on a compact source at the planned position. This
+module decides, per product (one source, one disperser), which shape builds the
+extraction profile:
 
-1. **own**: the source's own fit with recalibrated priors and tighter bounds, used
-   when the source is detected above a gate and the fit is sane (no parameter on a
-   bound, no disagreement among the planned positions). A grating with a PRISM shape
-   takes its own fit only when the two differ, the own fit describes the data better by
-   ``own_vs_prism_dchi2`` + k ln(N), and the detection S/N is at least
-   ``own_vs_prism_min_gate``.
+1. **own**: the source's own fit, at every S/N (user, 2026-11-10: no detection gate).
+   A fit that ends with a parameter on a bound is kept and flagged (``SHAPEWHY``
+   ';bound:<names>', ``bound_bits``): falling back to the default shape reported about a
+   quarter of the flux of sources of width 1 slit unit or more at every S/N, while the
+   fit on its bound reported 0.95-1.10 of it (injections on zenith_p15, 2026-11-10). A
+   grating with a PRISM shape takes its own fit only when the two differ, the own fit
+   describes the data better by ``own_vs_prism_dchi2`` + k ln(N), and the detection S/N
+   is at least ``own_vs_prism_min_gate``.
 2. **prism**: for a grating, the shape fitted to the PRISM spectrum of the same
    source in the same observation, mapped to the grating's wavelengths by its
    chromatic terms (``profile_fit.map_shape``), keeping its offset from the planned
@@ -22,20 +25,24 @@ which shape builds the extraction profile:
    products that fell to the default shape, once every grating has run
    (``stage3.grating_transfer_plan``).
 3. **default**: the star-measured PSF times a Gaussian of the prior median width (or
-   ``default_shape_width``) at the planned position.
+   ``default_shape_width``) at the planned position. Only where there is no own fit:
+   contamination masking left too little of the trace, the fit raised, or the planned
+   positions disagree between exposures (``srcypos``).
 
-Every candidate that runs is compared on the same pixels (a pixel is kept when any
-candidate's outlier clipping keeps it), with the spectrum re-solved and without
-prior terms, so the choice can be redone offline from the header.
+Every candidate that runs is compared on the same pixels (every usable pixel: the fits
+no longer clip against their model; Spec3's outliers are already out,
+``profile_fit.mask_crf_outliers``), with the spectrum re-solved and without prior terms,
+so the choice can be redone offline from the header.
 
-The gate is the integrated detection S/N (``profile_fit.detection_snr``), computed
-before any candidate is fitted.
+The integrated detection S/N (``profile_fit.detection_snr``) is reported (``DETSNR``)
+and decides nothing here except the PRISM comparison's ``own_vs_prism_min_gate``.
 """
 
 from dataclasses import dataclass, field
 
 import numpy as np
 
+from campfire_pipeline.nirspec import optics as O
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec import profile_timing as TM
 
@@ -48,8 +55,8 @@ class ChainConfig:
     shape: str = 'gated'                 # gated | fixed (the default shape only)
     chromatic: bool = True
     prism_transfer: bool = True
-    gate_prism: float = 25.0             # own fit above these (round-3 realistic-mix injections,
-    gate_grating: float = 70.0           # mean-square gate statistic; 2026-10-23)
+    gate_prism: float = 25.0             # the joint first pass's member shapes only (joint_first_pass.shape_for);
+    gate_grating: float = 70.0           # the chains themselves have no detection gate
     own_vs_prism_dchi2: float = 25.0     # plus k ln(N_eff), k = shape parameters
     own_vs_prism_min_gate: float = 100.0  # below: a grating keeps the PRISM shape (own fit not better there)
     priors: PF.Priors = field(default_factory=PF.Priors)
@@ -63,6 +70,8 @@ class ChainConfig:
     min_clean_fraction: float = 0.5      # contamination masking: below this no own fit
     min_clean_fraction_exposure: float = 0.3
     default_width: float = None          # width of the default shape (None: the prior median width)
+    mbkg_scale_sigma: float = 0.01       # allowance of the master-background scale term (mbkg_extraction); 0: off
+    mbkg_scale_cap: float = 0.03         # a fitted |scale| this large: set to zero, refitted without the term
 
     def default_shape(self):
         """Shape dict of the default candidate for ``profile_fit.fit_fixed`` (None: the prior median width)."""
@@ -95,7 +104,9 @@ class ChainConfig:
                    srcypos_tolerance=float(g('srcypos_tolerance', 0.05)),
                    min_clean_fraction=float(g('contam_min_clean_fraction', 0.5)),
                    min_clean_fraction_exposure=float(g('contam_min_clean_fraction_exposure', 0.3)),
-                   default_width=(None if dwidth is None else float(dwidth)))
+                   default_width=(None if dwidth is None else float(dwidth)),
+                   mbkg_scale_sigma=float(g('mbkg_scale_allowance', 0.01)),
+                   mbkg_scale_cap=float(g('mbkg_scale_cap', 0.03)))
 
 
 @dataclass
@@ -131,7 +142,6 @@ class ChainResult:
     chain: str                      # gated | fixed
     reason: str
     snr_det: float = np.nan
-    gate: float = np.nan
     detection: dict = field(default_factory=dict)
     chi2: dict = field(default_factory=dict)        # candidate -> chi2 on the common pixels
     npix_common: int = 0
@@ -152,7 +162,7 @@ class ChainResult:
         c = {
             'EXTRVER': PF.FIT_VERSION,
             'OPTICVER': PF.optics_version(),
-            'FLUXAPER': PF.REPORT_APERTURE,
+            'FLUXWID': 2 * O.X_HALF,
             'SHAPE': self.shape,
             'SHAPEWHY': self.reason[:40],
             'SHAPESRC': self.prism_product[:40],
@@ -167,6 +177,10 @@ class ChainResult:
             'SRCCHROM': bool(self.result.chromatic),
             'SRCCHI2': float(self.result.chi2_red),
             'BAROFF': float(np.median([e.bar_offset for e in exps])) if exps else np.nan,
+            # the master-background scale term (master-background spectrum only; NaN, left out, otherwise)
+            'MBKGSCL': float(getattr(self.result, 'mbkg_scale', np.nan)),
+            'MBKGSCLE': float(getattr(self.result, 'mbkg_scale_err', np.nan)),
+            'MBKGSCLC': float(getattr(self.result, 'mbkg_scale_capped', np.nan)),   # only when the cap applied
         }
         sl = exps[0].slit_loss if exps else None
         if sl is not None:
@@ -203,13 +217,12 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
     pa = _exp_pa(exps)
 
     M = PF.ProfileModel(exps, chromatic=cfg.chromatic, priors=cfg.priors, bounds=cfg.bounds)
-    snr, det = PF.detection_snr(M)
-    gate = cfg.gate_prism if is_prism else cfg.gate_grating
+    snr, det = PF.detection_snr(M)                    # reported (DETSNR)
     with TM.step('chain_fixed'):
         cands = {'default': PF.fit_fixed(model=M, shape=cfg.default_shape())}
     if cfg.shape == 'fixed':
         R = cands['default']
-        return ChainResult(result=R, shape='default', chain='fixed', reason='fixed', snr_det=snr, gate=gate,
+        return ChainResult(result=R, shape='default', chain='fixed', reason='fixed', snr_det=snr,
                            detection=det, chi2={'default': R.chi2}, npix_common=R.npix, srcy_flag=srcy, pa_v3=pa,
                            candidates=cands)
 
@@ -235,13 +248,11 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
     if clean is not None and contam_ratio is not None:
         dom = float(contam_ratio(cands['prism'] if 'prism' in cands else cands['default']))
 
-    # own fit
+    # own fit, at every S/N: where the data say little, its priors decide
     reason = None
     if clean is not None and (clean['overall'] < cfg.min_clean_fraction
                               or min(clean['per_exposure'] or [1.0]) < cfg.min_clean_fraction_exposure):
         reason = f"masked:{clean['overall']:.2f}"
-    elif snr < gate:
-        reason = 'below_gate'
     else:
         try:
             with TM.step('chain_own'):
@@ -269,21 +280,14 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
         lo, hi = cfg.disagree_width_ratio
         shdis = int(abs(dc) > cfg.disagree_centre or not (lo <= ratio <= hi))
 
+    # a parameter on its bound is a flag, not a switch: the fit on its bound is kept (it
+    # reported 0.95-1.10 of injected wide sources' flux, the default shape about 0.25;
+    # user, 2026-11-10), and the bits and SHAPEWHY say so
     bits = cands['own'].bound_bits if 'own' in cands else 0
     if 'own' not in cands:
         choice = fallback
     elif srcy == 2:
         choice, reason = 'default', 'srcypos'
-    elif bits:
-        # the own fit ended on a bound. A real large offset keeps its own fit (flagged) when
-        # the fallback describes the data clearly worse, but only the centre may sit on its
-        # bound: a width or drift on its bound is the fit reaching for other light (a
-        # neighbour in the slitlet, p1 629668), so it falls back (user, 2026-11-06)
-        R = cands['own']
-        if bits == PF.BOUND_BITS['centre'] and chi2[fallback] - chi2['own'] > _threshold(cfg, M, R):
-            choice, reason = 'own', f'bound_kept:{_bit_names(bits)}'
-        else:
-            choice, reason = fallback, f'bound:{_bit_names(bits)}'
     elif 'prism' in cands:
         o = cands['own'].params
         dc = (o['centre'] - o['centre_prior']) - xshape['centre_offset']
@@ -297,15 +301,15 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
         else:
             choice, reason = 'prism', 'prism_kept' if differ else 'shapes_agree'
     else:
-        choice, reason = 'own', 'gate_passed'
-    if reason is None:
-        reason = 'gate_passed'
-    if choice == 'prism' and (reason in ('below_gate', 'fit_failed') or reason.startswith('masked')):
+        choice, reason = 'own', 'own_fit'
+    if choice == 'own' and bits:
+        reason = f'{reason};bound:{_bit_names(bits)}'
+    if choice == 'prism' and (reason == 'fit_failed' or reason.startswith('masked')):
         reason = f'{reason};prism'
     R = cands[choice]
     # a shape transferred from a sibling grating is labelled apart from one from PRISM
     shape = 'grating' if (choice == 'prism' and prism is not None and not prism.chromatic) else choice
-    return ChainResult(result=R, shape=shape, chain='gated', reason=reason, snr_det=snr, gate=gate, detection=det,
+    return ChainResult(result=R, shape=shape, chain='gated', reason=reason, snr_det=snr, detection=det,
                        chi2=chi2, npix_common=npix_common, bound_bits=bits, srcy_flag=srcy, shdis=shdis,
                        prism_product=prism.product if (prism is not None and transfer == 'used') else '',
                        transfer=transfer, pa_v3=pa, candidates=cands, dominance=dom)

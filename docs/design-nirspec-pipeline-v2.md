@@ -62,7 +62,7 @@ Version 2 changes six things.
 3. **A forward-model extraction.** Each source is a Gaussian whose center and width vary
    smoothly with wavelength, seen through a diffraction model of the MSA, in every exposure and
    in its negative images from the nod subtraction. `fnu` is extracted with this model as the
-   weights. The reported flux of an extended source is its light in a circle 0.8 arcsec across.
+   weights. The reported flux of an extended source is its light that entered the shutter across the dispersion (all of it along the slit).
 4. **Other slitlets' light** is solved jointly with each source's neighbors and reported as its
    own column, `fnu_contam`, never subtracted from `fnu`.
 5. **Same-slitlet neighbors.** A background exposure that puts a cataloged neighbor on the
@@ -542,12 +542,19 @@ sources move by under 0.3 %, default-shape sources near a bar by a median +0.2 t
 
 ### 6.5 The reported flux
 
-`fnu_prof` (and `fnu`) is the fitted source's light inside a circle 0.8 arcsec across (1.5 shutter
-pitches), centered on it: the round Gaussian of the fitted width before the PSF
-(`profile_fit.REPORT_APERTURE`, card `FLUXAPER`). For a point source this is all of its light. The
-aperture bounds how far a wide source is extrapolated past what the shutter saw. The fit's spectrum
-is the source's total light (along the slit from the model at the fitted width, along the
-dispersion as in 6.3); `reported_factor` scales it to the aperture.
+`fnu_prof` (and `fnu`) is the fitted source's light that entered the shutter across the dispersion
+(between the shutter's edges, `optics.X_HALF` either side of its centre, card `FLUXWID`), and all of
+it along the slit: the round Gaussian of the fitted width before the PSF, at each exposure's planned
+position SRCXPOS (widened by the position scatter `X_BLUR` the along-dispersion tables carry),
+averaged over the exposures. A point source at the shutter centre gives all of its light; an
+off-centre source gives less, as less of it entered. Along the slit the fitted profile is measured;
+across the shutter the data do not constrain the shape, so the reported flux stops at the shutter's
+edges instead of extrapolating the round assumption beyond them (replaced a 0.8 arcsec circle,
+2026-11-10). It is not a total flux and depends on where the source sat in its shutter:
+comparisons with photometry calibrate it, as for any slit spectrum. A consequence: the reported
+flux hardly depends on the fitted width, since it is close to what the shutter measured. The fit's
+spectrum is the source's total light (along the slit from the model at the fitted width, along the
+dispersion as in 6.3); `reported_factor` scales it to the light in the shutter.
 
 `fnu_opt`, `fnu_3px` and the cal and s2d files stay on jwst's point-source calibration: the light
 entering the shutter.
@@ -573,37 +580,131 @@ entering the shutter.
 
 ### 6.6 The shape chain
 
-`profile_chain.choose_shape`, `profile_fit_shape = "gated"` (`"fixed"` uses the default shape only).
-The fit's detection S/N is measured on the clipped mean square of the residuals.
+`profile_chain.choose_shape`, `profile_fit_shape = "gated"` (`"fixed"` uses the default shape only;
+the name stays for existing configs, though the chain has had no detection gate since 2026-11-10).
+The fit's detection S/N is measured on the clipped mean square of the residuals and reported
+(`DETSNR`); it decides nothing but the PRISM comparison's floor (2).
 
 1. **PRISM shape** (gratings only). When the same source's PRISM product took its own fit at the
    same position angle, its center offset from the planned position and its width are the
-   grating's fallback candidate (`profile_fit_prism_transfer`). PRISM and grating visits of one
+   grating's other candidate (`profile_fit_prism_transfer`). PRISM and grating visits of one
    configuration share pointing and planned positions, so the offset means the same thing (over
    113 free G395M fits, G395M minus PRISM center +0.006, scatter 0.05).
-2. **Own fit**, above the detection gate (`gate_snr_prism` 25, `gate_snr_grating` 70). A grating
-   with a PRISM shape keeps the PRISM shape unless its own fit is at detection S/N 100 or more
-   (`own_vs_prism_min_gate`) and both better (chi2 by `own_vs_prism_dchi2` + k ln N) and different
-   (center by more than 0.08 or ln width by more than 0.3).
-3. **Bounds.** An own fit with a width or drift on its bound falls back: that is the fit taking
-   up other light (a neighbor in the slitlet). One with only the center on its bound is kept when
-   the fallback fits clearly worse (`bound_kept`), since a large offset from the plan can be real.
-   The width may reach 1.5 slit units and change by 0.6 per octave (`bound_width_max`,
-   `bound_width_change`). Under the first limits, 0.6 and 0.3, 11 products of zenith_p15 and
-   uds_p2 fell back on the width. Refitted with the wider limits (user, 2026-11-09), the five
-   bright ones (detection S/N 53-163) settled at 0.85-1.33 and their master-background frames
-   agreed (0.88-1.36), two of them on both PRISM and G395M: extended galaxies, whose default
-   shape had reported 3-6 times too little flux. The five faint ones (S/N 27-40) ran to the new
-   limit while their master-background frames fit 0.02-0.39: the fit reaching for other light,
-   still caught. (The eleventh did not reach the limit without its contamination subtraction.)
+2. **Own fit**, at every S/N (user, 2026-11-10). Where the data say little, the priors on the
+   width and center decide, and the fit settles near a compact source at the planned position. A
+   grating with a PRISM shape keeps the PRISM shape unless its own fit is at detection S/N 100 or
+   more (`own_vs_prism_min_gate`) and both better (chi2 by `own_vs_prism_dchi2` + k ln N) and
+   different (center by more than 0.08 or ln width by more than 0.3).
+3. **Bounds are flags.** An own fit with a parameter on its bound is kept, and `SHAPEWHY` says so
+   (`own_fit;bound:width`, the bits in `ChainResult.bound_bits`). The width may reach 1.5 slit
+   units and change by 0.6 per octave (`bound_width_max`, `bound_width_change`). Until 2026-11-10
+   a width or drift on its bound fell back to the default shape, on the reading that the fit was
+   taking up other light. Synthetic frames (below) showed what that cost: the default reported
+   about 0.25 of the flux of every source 1 slit unit wide or wider, at every S/N up to 400 (0.05-0.12
+   in the nodded spectrum), while the fit on its bound reported 0.95-1.10. A fit reaching for a
+   neighbor's light is now flagged, not hidden behind a shape that is wrong for every wide source.
+   History: under the first limits, 0.6 and 0.3, 11 products of zenith_p15 and uds_p2 fell back on
+   the width; refitted with the wider limits (user, 2026-11-09), the five bright ones (detection
+   S/N 53-163) settled at 0.85-1.33 with their master-background frames agreeing (0.88-1.36), and
+   the five faint ones (S/N 27-40) ran to the new limit while their master-background frames fit
+   0.02-0.39. The second group is the case the master-background scale term (6.9) addresses: a
+   master-background level error the plain fit turned into a wide source.
 4. **Default shape**: a Gaussian of width 0.15 slit units (0.16 arcsec FWHM) at the planned
-   position. A source whose planned position is inconsistent between exposures takes it too.
+   position, only where there is no own fit: contamination masking left too little of the trace
+   (`masked:<fraction>`), the fit raised (`fit_failed`), or the planned position is inconsistent
+   between exposures (`srcypos`).
 5. **Another grating's shape**, after every grating has run (`profile_fit_grating_transfer`,
    `stage3.grating_transfer_plan`): a grating product that fell to the default and had no PRISM
    shape is redone with the center offset and width of the source's grating that took its own fit
    (the highest detection S/N), held over wavelength. `SHAPE` = `grating`, `SHAPESRC` names the product.
 
 `SHAPE` (`own`, `prism`, `grating`, `default`), `SHAPEWHY` and `DETSNR` record the choice.
+
+**The remaining branches** (after 2026-11-10), each with its reason:
+
+| branch / threshold | where | why it stays |
+|---|---|---|
+| `profile_fit_shape = "fixed"` | both chains | an explicit user choice (default shape only), not a decision on the data |
+| PRISM transfer: same roll (`pa_tolerance` 1 deg), PRISM product `own` | nodded chain | the offset from the plan only means the same at the same roll; untouched by this change |
+| `own_vs_prism_dchi2` 25 + k ln N, `own_vs_prism_centre` 0.08 / `_log_width` 0.3, `own_vs_prism_min_gate` 100 | nodded chain, gratings with a PRISM shape | a choice between two measured shapes, not a fallback to an assumed one; G395M own fits below S/N 100 were not better than the PRISM shape. Not re-tested here: worth a look with the injection harness (open question) |
+| contamination masking (`contam_min_clean_fraction` 0.5, `_exposure` 0.3) | both chains | too few clean pixels to fit a shape at all; untouched |
+| `srcypos` (`srcypos_tolerance` 0.05) | both chains (the master-background spectrum keeps the nodded shape) | the planned positions disagree, so the prior centre is undefined; untouched |
+| `fit_failed` | both chains | the fit raised: nothing to keep |
+| grating transfer | stage 3, after the chains | only reaches products that fell to the default (the three cases above), so it now runs far less often |
+| `gate_snr_prism` / `gate_snr_grating` | `joint_first_pass.shape_for` only | the neighbors' shapes in the joint first pass (contamination prediction), where a bound fit also still falls to the default. Left alone: it is not the extracted spectrum, and fitting every neighbor freely costs run time. Open question |
+| profile-fit fallbacks to the 3-pixel boxcar (`ProfileFitFallback`: not background-subtracted, no usable pixels, too few wavelengths, no crf) | `profile_product`, `mbkg_extraction` | named conditions under which no model can be fitted; untouched |
+
+**Re-deriving the width prior.** The prior (median 0.15, ln sigma 0.6) was fitted on PRISM fits at
+detection S/N >= 100 of two observations (ember_cosmos_p14, p9), after wide sources had already
+fallen to the default shape, and its measured ln spread 0.77 was narrowed to 0.6. With no gate it
+now sets the shape of every faint source, so it should be measured again, from the archive, once
+products are made with this chain:
+1. Take every PRISM and grating product with `SHAPE = own` and `DETSNR` >= 100 (the regime where
+   the prior's pull is small; check this by refitting a subset with the width prior widened, e.g.
+   ln sigma 2, and keeping the threshold where the width changes by less than its error), from
+   every observation reduced with `FIT_VERSION` >= 10, so wide sources are no longer missing.
+   Include fits flagged `bound:width`: leaving them out is the truncation the old prior had.
+2. Fit the distribution of ln `SRCWIDTH` at the pivot with a Gaussian, with each fit's width
+   uncertainty deconvolved, per disperser. The ln sigma is the measured one, not narrowed.
+3. Look for a trend with brightness (the catalog magnitude, or the fitted flux at a fixed
+   wavelength): fainter galaxies are smaller. If the median moves by more than its error across the
+   magnitudes of faint sources, make the prior's median a function of magnitude (one line,
+   `ln w = a + b (m - m0)`), so the prior for a faint source comes from galaxies of its brightness
+   rather than from the bright ones. The fits at S/N >= 100 reach only the bright end; the
+   extrapolation to faint magnitudes is the weak point, and the null and injection tests below are
+   its check.
+4. Validate on the synthetic frames of the harness (below) with sources drawn from the new
+   prior: reported flux within a few % at every S/N, and no excess of fits on the width bound.
+
+**Validating the 2026-11-10 chain** (no gate, bounds as flags, the master-background scale term
+of 6.9):
+- Unit tests (`tests/test_nirspec_profile_chain.py`, `tests/test_nirspec_mbkg_extraction.py`): a
+  faint source takes its own fit near the prior; fits on a bound are kept with their flag and
+  report more of a wide source's flux than the default; the scale term recovers a +-2 % level
+  error and the flux, matches the dense joint least squares, keeps the detection S/N of empty
+  frames with a level error at noise, holds an unmeasured scale at 0 with error 0.01, and is
+  refused on nod differences or without the master background.
+- Synthetic frames on real geometry: `scratch/claude/shape_injection.py` (`scan_carrier_synth`,
+  `synth_report.py`) for the scan over levels, widths and S/N; `scratch/claude/shape_allowance/
+  check_real.py` runs the production `choose_shape` / `own_shape` on zenith_p15 products (read
+  only) with and without the term. Note the harness's `run()` builds frames without the master
+  background; with the term on, `own_shape` refuses them (pass `backgrounds=` to
+  `single_frame_exposures`, as `check_real.py` does).
+- Null tests on empty shutters with the production extraction (`scratch/claude/scan_null.py`,
+  `inject_zp15`): extracted at empty-shutter positions, the mean master-background flux should be
+  zero within its error and the fraction of fits on the width bound should be that of noise; with
+  the variance fix in as well, the nodded and master-background nulls should agree.
+- zenith_p15 re-extraction (the user, later): compare `SHAPE` / `SHAPEWHY` counts, the
+  distribution of `MBKGSCL` against the per-slitlet levels of `zp15_mbkg/slitlets.ecsv` (they
+  should correlate, slope near 1), the nodded vs master-background flux ratio of faint sources,
+  and the products that fell to the default before (`below_gate`, `bound:`), looked at in 2-D
+  data / model / residual panels.
+
+**Open questions (2026-11-10).**
+- The joint first pass (`joint_first_pass.shape_for`) still gates its neighbors' shapes at
+  `gate_snr_*` and drops a bound fit to the default. Its shapes only predict other sources' light,
+  but a wide neighbor predicted at the default shape is under-predicted the same way. Remove the
+  gate there too (run time: every neighbor gets a free fit)?
+- The PRISM comparison's floor `own_vs_prism_min_gate` (100) is a detection-S/N threshold that
+  picks between two measured shapes. Keep, or re-test with the harness now that a grating's own
+  fit always exists?
+- The scale term is removed from `SCI_MBKG` (the reported master-background spectrum). Keep the
+  2-D corrected, or keep it as the frames minus the master background and apply the scale only in
+  the fit?
+- `MBKGSCL` is one number per product. A level error that changes with wavelength (the slitlet
+  study's spread per band) would need a few knots; the synthetic tests had the 4-knot variant
+  (`k4_*`) and the user chose the constant.
+- The stacked `SCI_MBKG` of 1-D combined products is not corrected (no fit there).
+- **The scale can run far past the allowance on real frames.** `check_real.py` on zenith_p15 (real
+  frames, other sources' light not subtracted): two faint products fit -0.019 +- 0.0014 (the
+  variance bias the separate fix removes), but 547856 (the extended source, S/N 440) fits
+  +0.23 +- 0.004 and 549120 +0.90 +- 0.003. The frames measure the scale to a few 0.1 %, so a 1 %
+  allowance does not hold it, and any light shaped like the master background across the slitlet
+  (an extended source's wings, a neighbor or failed-open light that was not subtracted) is taken
+  as background and then removed from `SCI_MBKG`. Decided (user): the hard cap at 0.03 (6.9). Still
+  worth a look in 2-D panels with the contamination prediction subtracted, as stage 3 does; the
+  note as first written: a cap or a flag on |MBKGSCL| far
+  beyond the measured 1-3 % spread may be needed.
 
 **Why a chain.** Faint sources do not constrain their own shape, and a joint solve with wrong
 shapes moves light between neighbors (6.7). The success metric is delivered S/N, with line width and
@@ -705,15 +806,57 @@ again.
   background (`sky_for_slit`), in memory; the variance adds the master background's.
 - The fit: the nodded fit's exposures as single frames. Other slitlets' light enters once and
   positive, cataloged same-slitlet neighbors included, since nothing is subtracted.
-- The shape (`own_shape`, user 2026-11-09): the frames' own fit by the nodded chain's rules (the
-  detection gate on these frames, the same priors and bounds, other slitlets' predicted light
-  subtracted first and its uncertain pixels dropped, the masked-fraction rule, the bound rule).
-  Otherwise the nodded chain's shape. `SHAPEWHY` is `mbkg_own` (or `mbkg_bound_kept:centre`), or
-  `nodded;<why>` with the reason the frames' own fit was not taken. The nod differences take away
+- The shape (`own_shape`, user 2026-11-09, revised 2026-11-10): the frames' own fit with the nodded
+  chain's priors and bounds, other slitlets' predicted light subtracted first and its uncertain
+  pixels dropped, the masked-fraction rule; at every S/N, a fit on a bound kept and flagged, as in
+  6.6. The nodded chain's shape only where the own fit cannot run (`fixed`, `srcypos`, masked, the
+  fit raised). `SHAPEWHY` is `mbkg_own` (or `mbkg_own;bound:<names>`), or `nodded;<why>`. The nod
+  differences take away
   an extended source's outer light, and with it the width: zenith_p15 547856 fits 0.70 slit units
   on these frames against 0.50 on the nod differences, the reduced chi2 goes from 4.3 at the nodded
   shape to 2.9, and its master-background flux rises 8-16 %. The other extended sources of 6.6 fit
   wider on these frames too (1.07 against 0.85, 1.18 against 0.88).
+- The master-background scale term (user's design, 2026-11-10; `mbkg_scale_allowance` 0.01).
+  Every fit on these frames models them as the source plus s times the master background, one s
+  for the whole product (all exposures), solved linearly with the spectrum at every trial shape
+  (`ProfileModel(mbkg_sigma=...)`, `linear_solve`: one extra row and column in the normal
+  equations, eliminated through the spectrum's sparse factorisation), with the penalty (s / 0.01)^2
+  added to the chi2. The detection S/N's no-source comparison solves s too, so a level error is not
+  counted as a source. s > 0 means the frame held s times the master background beyond what was
+  subtracted. Why: the master background's level is off by about 1 % per slitlet, either sign
+  (zenith_p15, measured by the master-background work: 15 % of slitlets below -1 %, 23 % above
+  +2 %; `scratch/claude/zp15_mbkg/slitlets.ecsv`). On synthetic frames (real geometry and
+  variances, no real light, known truth; `scratch/claude/shape_injection.py` `scan_carrier_synth`,
+  `synth_report.py`, results `scan_zp15_synth/`), levels of +-1-3 % biased the plain fit badly
+  (+3 %: a compact faint source at 4x its flux; -2 %: 0.6x) and sent 50-96 % of empty fits to the
+  width bound; with the term the flux was within a few % at every level and 19 % of empty fits ran
+  wide (noise). The cost falls on sources about as wide as the slitlet, which look like the
+  master background: width 2.5 slit units reports about 0.6 of its flux, width 1.5 loses some at
+  S/N < 25. The allowance rarely binds (the frames measure a slitlet's level to about 0.1 %); 1 % is
+  the measured spread. The nodded spectrum has no term: the master background cancels in a nod
+  difference.
+  - What happens to s: written as `MBKGSCL` (and its error `MBKGSCLE`) in the `SPEC1D_MBKG` header;
+    s times each frame's master background is taken out of the frames before their 2-D is drizzled
+    again (`corrected_inputs`; masks and weights unchanged), so `SCI_MBKG` and the profile
+    extraction from it carry the correction; the failed-open solve removes it first too. A 1-D
+    combined product's stacked `SCI_MBKG` is drizzled from the stacked crf without it (its 1-D
+    columns are the groups' corrected ones).
+  - The cap (user, 2026-11-10; `mbkg_scale_cap` 0.03). A fitted |s| of 0.03 or more (in the shape
+    fit on the cleaned frames, the spectrum on the frames as they are, or the nodded shape's refit)
+    is not a level error, which the slitlet study measured within 1-3 %, but light the term would
+    take for background: on zenith_p15, with other sources' light not subtracted, the extended
+    547856 fitted +0.23 and 549120 +0.90, the frames measuring s to a few 0.1 %, so the 1 %
+    allowance alone does not hold it. Then s is set to zero and everything is fitted again without
+    the term (the shape, the detection S/N, the spectrum); `fit_product` takes nothing out of
+    `SCI_MBKG` or the failed-open solve. Cards: `MBKGSCL` = 0 and `MBKGSCLC` = the value fitted
+    (absent when the cap did not apply). A hard rule, chosen over a flag so a product never carries
+    a correction of that size.
+  - Composition with the pixel-variance fix (6.11, same branch): the term's behavior above was
+    measured with variances smoothed along the dispersion. With jwst's own-pixel variances the
+    weighted fit reads a master background 1.3-1.9 % low, and the term absorbed that (s near -0.019
+    on two faint zenith_p15 products). With the variances from the rate files' neighbor rule, s
+    measures the master background's own level error. Nothing in the term depends on how the
+    variances were made, and no smoothing is done on the frames themselves.
 - Failed-open shutters on the source's trace (`failed_open.py`): per exposure and shutter, a
   spectrum along detector columns times a flat profile over the shutter, solved with the source on
   the frames minus the other sources' predicted light, and added to the master-background
@@ -753,6 +896,113 @@ model images agree with the old per-image `ResampleSpecStep` calls to 1-2 float3
 each call's grid weighted by the image drizzled). `fnu` moves by at most 1.5e-7 relative. The
 separate master-background Spec3 is gone. Without a crf (a named rare condition) there is no
 master-background spectrum.
+
+### 6.11 Pixel variances
+
+`variance.py` (user decision 2026-11-10; plan and validation in
+`scratch/claude/variance_fix/plan.md` sections 3a and 5, figure `window_guard.png`, scripts
+`scan_rate.py`, `scan_lines.py`).
+
+**Why.** jwst's ramp fit sets each pixel's Poisson variance from that pixel's own counts. A pixel
+that came out low reports a small variance and gets a large weight, so any fit weighted by
+1 / variance is pulled low by about one electron per pixel per exposure: the background's scale on
+clean empty shutters read -0.96 % (zenith_p15 PRISM) and -3.89 % (ember_cosmos_p1 G395M) against
+equal weights; on a frame minus the master background a faint source reads tens of percent low
+(Monte Carlo: -32 % at 10 e per column per exposure). `profile_fit.nod_variance` was already nearly
+unbiased for nod differences; stage 2b's variance, the s2d ERR and the master-background frames
+were not.
+
+**The rule.** In the rate frame, once, after stage 1's background subtraction:
+1. neighbors are the usable lit pixels (not in `CFBKGMASK`, no DO_NOT_USE, finite) within +-5
+   columns of the same detector row (a row is the dispersion direction: on PRISM and G395M the slit
+   position moves 0.002-0.009 rows per column), the pixel itself left out;
+2. excess = (SCI - median SCI of the neighbors) / sqrt(median variance of the neighbors + VR);
+3. the Poisson variance is the mean of the neighbors' jwst variances, leaving out neighbors whose
+   own excess is above 5 (the median reads 4-6 % low at these counts; this mean matches jwst's
+   level within 0.5 % in every band and edge class of both data sets);
+4. a pixel keeps jwst's own variance when its excess is above 5 and the pixel above or below it
+   has excess above 2 (light across the slit: a line or a source). A lone high pixel (cosmic-ray
+   residue, hot pixel: most of the 0.13-0.29 % of empty-shutter pixels above 5 sigma) gets its
+   neighbors' variance.
+Unlit pixels keep jwst's. The constants are module constants (`HALF`, `EXCESS_SIGMA`,
+`SUPPORT_SIGMA`), stamped in the header, not user configuration.
+
+**Results of the validation** (plan section 5): every window from +-2 to +-15 removes the bias
+(PRISM +0.44 against +0.47 for equal weights; G395M +0.57 against +0.59); +-5 follows structure along
+the row best overall. Without the guard, bright lines take the continuum's variance (errors x0.65-0.71,
+residual spread doubled); with it, line fluxes match jwst's within 0.1-0.4 % and errors within 1-2 %.
+The guard with support across the slit leaves -0.01 % (PRISM) / -0.02 % (G395M) of bias.
+
+**Where.** `variance.apply_to_rate` at the end of `stage1.subtract_background_from_rate_file`
+(so `masks.bkgsub_with_masks` and `ensure_fresh` get it); `variance.ensure_variance` at stage 2a's
+start for rate files without `CFVARPS` or with another version; `masks.restore_pre_bkgsub` puts
+jwst's back. jwst's array stays in the rate file as `VAR_POISSON_JWST` (+16 MB per rate file) and
+every rewrite starts from it, so the result is the same however often it runs. `ERR` =
+sqrt(VP + VR) (before, stage 1 rescaled `VAR_RNOISE` without rewriting `ERR`). Staleness: canonicals
+and bkgslits files carry `CFVARPS` and stage 2a remakes them when it differs from their rate's
+(`_canonical_variance_changed`); step 1 keys on `MBKGVARP`; step 2, stage 2b, the profile fit and
+Spec3 follow the remade canonicals (step 2 through the stage-2a time card); the `_spec.fits` records
+the canonicals' `CFVARPS`.
+
+**Validating it** (plan 3d, after a rerun from stage 2a): rate-level 1/ERR^2 against equal weights
+per band (within about 0.1 %); null tests on empty shutters with the production extraction, nodded
+and master-background; the master-background scale term's `MBKGSCL` should move from about -0.019
+to scatter about zero on faint products; `product_check.py` weighted minus equal-weight near 0 sigma;
+line fluxes and errors of bright-line sources within 1 %; outlier-flag counts (expect a small rise,
+inspect the new ones in images); shutter-fit amplitudes up 1-2 % on PRISM with no call flipping.
+
+**Not done / open.** Only PRISM and G395M were validated (the medium gratings share the detector
+orientation, assumed). Standalone fixed-slit canonicals carry no `CFVARPS` and are not remade by
+it. The master-background fit's variance still leaves out the master background's own variance,
+which its drizzle includes (plan open question 3). `mbkg_extraction._shifted_median` was not moved
+into `variance.py` (it works along both axes; the plan's suggested merge is cosmetic).
+
+### 6.12 Outlier pixels: Spec3's flags, no clip against the model
+
+User decision 2026-11-10. **Rule:** pixels Spec3's outlier detection flagged (`OUTLIER` in the crf's
+DQ) are left out of the profile fits and of the products; the profile fit no longer clips pixels
+against its own model.
+
+**Why.** On bright extended sources the 5-sigma clip against the model removed real light where the
+model is worst: zenith_p15 547856 lost 257 of 27,144 master-background fit pixels, 189 of them above
+the model, 1.9 % of the light, clustered at 1.0-2.5, 3.5-4.5 and 4.9-5.1 um
+(`scratch/claude/mask_where.py`, `transmission_547856.png`). A clip against a model is a clip of
+whatever the model does not describe.
+
+**One decision point.** `profile_fit.crf_outliers(crf_dq, live_dq=None)`: `OUTLIER` in the crf, less
+what the canonical's live DQ already had. The master-background frames (`mbkg_extraction.outlier_flags`,
+with the hot-pixel mask on top) and the nod differences (`profile_fit.mask_crf_outliers`) both call it.
+In a nod difference a pixel is left out when the same detector pixel is flagged in that exposure's crf
+or in the crf of any exposure it was differenced with (a cosmic ray in a partner's frame is in this
+difference too, at -1/n). The crf exposures are on the canonical cutouts (`drizzle_map.crf_dq` reads
+them by file name); a crf DQ of another shape is an error.
+
+**Who gets the flags.**
+- The product's own fit (`profile_product.analyse_product`, from `run_product`): the nodded chain
+  (`profile_chain.choose_shape`, the PRISM and sibling-grating candidates included), the same-slitlet
+  scan (its copies are taken after the masking) and the scan's preview figure. The crf exists then:
+  `run_product` checks for it first and falls back to the 3-pixel boxcar without one
+  (`FALLBACK_NO_CRF`, logged); stage 3 keeps every crf until its product's profile fit ends, and the
+  grating products a transfer may redo keep theirs until the transfer is done
+  (`stage3`, `keep_crfs`). `analyse_product` called without flags logs that nothing but the
+  canonicals' DO_NOT_USE was left out.
+- The master-background fit: as before (`outlier_flags`).
+- The drizzled products (SCI, SCI_MBKG, PROF2D, CONTAM2D) and `fnu` extracted from them: as before,
+  through the crf's DQ in `drizzle_map` (test `test_spec3_outliers_in_the_crf_are_left_out_of_every_drizzled_image`).
+- Not: the joint first pass (`joint_first_pass`, its member shapes through `profile_fit.fit`, and
+  `profile_extend`) runs before Spec3, so there is no crf yet; its member shapes are now fitted with no
+  clip at all and only the canonicals' DO_NOT_USE masked. `nod_scan` sees what the product's fit sees.
+
+**No clip in `profile_fit`.** `fit`, `fit_fixed` and `detection_snr` fit every usable pixel; their
+`clip` / `n_clip` parameters are gone (`fit_fixed(use=...)` still takes a fixed mask).
+`mean_square_scale` keeps its 5-sigma cut (`NOISE_CLIP`): it estimates the noise level for the
+detection S/N and masks nothing.
+
+**Remaining model-based clips** (left alone, listed): `joint_first_pass.solve_target` (5 sigma, two
+rounds, on the joint solve's residuals; no crf exists when it runs), `profile_extend._solve_end` (the
+light past the cutout, same reason), and `failed_open.solve` (its own clip on the
+failed-open solve's residuals, in the master-background fit). `profile_contam.smooth_spectrum` clips a
+pass-1 spectrum against its running mean (not pixels).
 
 ---
 
@@ -809,7 +1059,7 @@ name.
 - Cards: `EXTRACT` / `EXTRWHY`, `CONTSTAT`; the extraction's cards, named by what they hold and
   listed with their descriptions in `nirspec/extraction_cards.py`, the one list the writers, the
   stage-3 copy and the FITS reference follow: versions and calibration (`EXTRVER`, `OPTICVER`,
-  `FLUXAPER`, `SLOSSY`, `SLOSSX`, `BAROFF`), the profile (`SHAPE`, `SHAPEWHY`, `SHAPESRC`, `PA_V3`,
+  `FLUXWID`, `SLOSSY`, `SLOSSX`, `BAROFF`), the profile (`SHAPE`, `SHAPEWHY`, `SHAPESRC`, `PA_V3`,
   `DETSNR`, `SRCCEN`, `SRCWIDTH`, ...), other sources' light (`NCONTAM`, `CONTFRAC`, `CONTSIG`,
   `CONTNSEP`, `CONTBOX`, `SELFSUB`, `NFOPEN`) and the neighbor scan (`NBR*`); the master-background
   spectrum (`NEXP`, `NEXPBKG`, `MBKGPREF`, `MBKGWHY`, `MBKGNEXP`). A card that does not apply is
@@ -835,7 +1085,8 @@ New in `[nirspec.stage2]`: `slitlet_neighbor_min_background`, `slitlet_neighbor_
 `master_bkg_plot`; `detect_stuck_shutters` now governs whether step 1's calls reach the stuck list.
 
 New in `[nirspec.stage3]`: `profile_fit`, `profile_fit_chromatic`, `profile_fit_shape`,
-`profile_fit_prism_transfer`, `profile_fit_grating_transfer`, the gates (`gate_snr_*`),
+`profile_fit_prism_transfer`, `profile_fit_grating_transfer`, the gates (`gate_snr_*`, the joint
+first pass's neighbor shapes only since 2026-11-10), `mbkg_scale_allowance`,
 `default_shape_width`, `own_vs_prism_*`, the priors and bounds, `srcypos_tolerance`, `bar_offset`,
 `slit_loss_y`, `slit_loss_x`, the contamination keys (`contam_predict`, `contam_joint_cache`,
 `contam_pass1_*`, `contam_mask_kappa`, `contam_min_clean_fraction*`),

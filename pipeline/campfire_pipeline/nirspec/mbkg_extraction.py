@@ -21,8 +21,10 @@ per product, built from the nodded Spec3 crf), before any 1-D extraction:
 3. ``fit_product``: the nodded fit's exposures with their frame minus master background
    in place of the nod difference, as single frames (``single_frame_exposures``: nothing
    subtracted from them), the forward model at the frames' own shape (``own_shape``: the
-   nodded chain's rules on these frames, falling back to the shape the nodded chain chose;
-   the nodded data underestimate an extended source's width), the spectrum solved. Other
+   nodded chain's priors and bounds on these frames, at every S/N; the nodded data
+   underestimate an extended source's width), the spectrum solved together with one
+   scale of the master background for the whole product (the master-background scale
+   term, ``MBKGSCL``), which then comes out of the 2-D as well (``corrected_inputs``). Other
    sources' light is predicted from their pass 1s, once and positive where each is in that
    exposure (``profile_contam.predict``), catalogued neighbors in the target's own slitlet
    included (``include``): no background exposure is dropped for them here; it is
@@ -84,11 +86,16 @@ class Frame:
         on the canonical's cutout, as the drizzle takes them (float32 / uint32).
     live_dq : the canonical's live DQ (``outlier_flags``).
     detector, origin : where the cutout sits: detector name and its (ystart, xstart),
-        1-based like jwst (``hot_pixels``)."""
+        1-based like jwst (``hot_pixels``).
+    background : the master background subtracted, on the cutout in the units of ``data``
+        (NaN where there is none): the column of the master-background scale term
+        (``single_frame_exposures``) and what its fitted scale removes from the 2-D
+        (``fit_product``)."""
     arrays: dict
     live_dq: np.ndarray
     detector: str = ''
     origin: tuple = (1, 1)
+    background: np.ndarray = None
 
 
 def frame_arrays(canonical):
@@ -119,7 +126,7 @@ def frame_arrays(canonical):
         frame['var_flat'] = np.asarray(live['VAR_FLAT']).astype(np.float32)
     h = fits.getheader(canonical, 'SCI')
     return Frame(frame, np.asarray(live['DQ']).astype(np.uint32), str(fits.getheader(canonical).get('DETECTOR', '')),
-                 (int(h.get('SLTSTRT2', 1)), int(h.get('SLTSTRT1', 1))))
+                 (int(h.get('SLTSTRT2', 1)), int(h.get('SLTSTRT1', 1))), np.asarray(sky, float))
 
 
 def frames_for(canonicals):
@@ -225,8 +232,9 @@ def outlier_flags(frame, crf_dq, hot):
     - its hot pixels (``hot``, ``hot_pixels``), which cancel in the nod differences.
     jwst's outlier detection is not run on the frames. Before 2026-11-02 they had a Spec3
     run of their own and its outlier detection on them."""
+    from campfire_pipeline.nirspec.profile_fit import crf_outliers
     a = frame.arrays
-    new = ((np.asarray(crf_dq) & OUTLIER) > 0) & ((np.asarray(frame.live_dq) & OUTLIER) == 0)
+    new = crf_outliers(crf_dq, frame.live_dq)       # the nodded fit takes the same flags (mask_crf_outliers)
     out = dict(a)
     out['dq'] = (a['dq'] | np.where(new | np.asarray(hot, bool), OUTLIER | DO_NOT_USE, 0)).astype(a['dq'].dtype)
     return out
@@ -295,7 +303,7 @@ def cleanup(workspace, product_name):
         os.remove(p)
 
 
-def single_frame_exposures(exps, frames):
+def single_frame_exposures(exps, frames, backgrounds=None):
     """The fit's master-background exposures, in memory (module doc, 3): every science
     exposure of the nodded fit (``exps``, ``use_data``) with its frame minus master
     background (``frames``: {name: ``Frame``, or its arrays with the outlier flags,
@@ -303,7 +311,11 @@ def single_frame_exposures(exps, frames):
     (``partners == []``). Geometry, variance and path loss are the nodded load's; the
     usable pixels are recomputed from the frame (``profile_fit.load_group``). Each
     group's science exposures are placed on their own common frame, as
-    ``profile_fit.load_source(single_frames=True)`` on those exposures alone places them."""
+    ``profile_fit.load_source(single_frames=True)`` on those exposures alone places them.
+
+    backgrounds : {name: the master background subtracted from that frame, on its cutout
+        (``Frame.background``)}: placed as ``Exposure.mbkg`` in the units of ``diff``, the
+        column of the master-background scale term. None: no column (``mbkg`` None)."""
     import copy
     from campfire_pipeline.nirspec import profile_fit as PF
 
@@ -337,7 +349,24 @@ def single_frame_exposures(exps, frames):
             x.wav, x.y = place(e.wav[cut]), place(e.y[cut])
             x.pl_applied, x.pl_point = place(pl), place(e.pl_point[cut])
             x.cutout, x.origin = (r1, c1, ny, nx), (y0, x0)
+            x.mbkg = None
+            if backgrounds is not None:
+                x.mbkg = place(np.asarray(backgrounds[e.name], float) * pl)
             out.append(x)
+    return out
+
+
+def corrected_inputs(inputs, frames, scale):
+    """The drizzle inputs (``flagged_inputs``) with ``scale`` times each frame's master
+    background (``Frame.background``) taken out of its data: the frames minus the master
+    background at the level the fit measured in the slitlet (``own_shape``'s
+    ``mbkg_scale``). Masks and variances are unchanged. ``inputs`` itself is untouched."""
+    out = {}
+    for n, a in inputs.items():
+        bg = np.nan_to_num(np.asarray(frames[n].background, float))
+        b = dict(a)
+        b['data'] = (np.asarray(a['data'], float) - scale * bg).astype(np.asarray(a['data']).dtype)
+        out[n] = b
     return out
 
 
@@ -449,17 +478,38 @@ def own_shape(R0, shape0, chain, stage_config, P=None, kappa=1.0, log=None):
     """The shape of the master-background spectrum: the frames' own fit (user, 2026-11-09).
 
     The nodded data underestimate an extended source's width (the nods subtract its outer
-    light), so the frames minus master background, which keep it, fit the shape again,
-    by the nodded chain's rules (``profile_chain.choose_shape``): the same priors and
-    bounds, the detection gate on these frames, other sources' light ``P`` subtracted and
-    its uncertain pixels dropped first (on copies), the masked-fraction rule, and a fit
-    with a width or drift on its bound falling back (one with only its centre there keeps
-    its own fit when the fallback describes the data clearly worse). The fallback is the
-    nodded chain's shape (``R0``, ``shape0``: ``refit_at_shape`` on these frames).
+    light), so the frames minus master background, which keep it, fit the shape again:
+    the nodded chain's priors and bounds, other sources' light ``P`` subtracted and its
+    uncertain pixels dropped first (on copies), the masked-fraction rule. As in the nodded
+    chain (user, 2026-11-10) the fit runs at every S/N (the detection S/N is reported, not
+    a gate) and a fit with a parameter on its bound is kept and flagged (SHAPEWHY
+    'mbkg_own;bound:<names>', ``bound_bits``).
+
+    Every fit on these frames carries the master-background scale term
+    (``profile_fit.ProfileModel``, ``mbkg_sigma`` = ``mbkg_scale_allowance``): one constant
+    times the master background, for the whole product, solved with the spectrum at every
+    shape and in the detection S/N's no-source comparison, held near zero by a Gaussian
+    allowance. A slitlet whose master background is off by 1-3 % otherwise turns into a
+    wide source (or a negative one) with a biased flux. The exposures must carry their
+    master background (``Exposure.mbkg``, ``single_frame_exposures``) unless the term is
+    off (``mbkg_scale_allowance = 0``).
+
+    The cap (``mbkg_scale_cap``, 0.03; user, 2026-11-10): when any fit of the run (the shape
+    fit, the spectrum on the frames as they are, or the nodded shape's refit) takes a scale
+    of that size or more, the scale is set to zero and everything is fitted again without
+    the term (shape, detection S/N, spectrum). The result then carries ``mbkg_scale`` 0 and
+    the scale fitted before the cap as ``mbkg_scale_capped`` (cards ``MBKGSCL`` = 0 and
+    ``MBKGSCLC``); ``fit_product`` takes nothing out of the 2-D or the failed-open solve.
+
+    The nodded chain's shape (``R0``, ``shape0``: ``refit_at_shape`` on these frames, with
+    the term) is kept only where the own fit cannot run: the fixed chain, a source whose
+    planned positions disagree (``srcypos``), the masked-fraction rule, or a fit that
+    raised.
 
     Returns (FitResult, shape dict as ``fit_fixed`` takes it, ``ChainResult`` for the
-    cards: SHAPE 'own' with SHAPEWHY 'mbkg_own' / 'mbkg_bound_kept:centre', or the
-    nodded chain's SHAPE with SHAPEWHY 'nodded;<why>')."""
+    cards: SHAPE 'own' with SHAPEWHY 'mbkg_own[;bound:<names>]', or the nodded chain's
+    SHAPE with SHAPEWHY 'nodded;<why>'). The FitResult's ``mbkg_scale`` /
+    ``mbkg_scale_err`` are the term's (cards ``MBKGSCL`` / ``MBKGSCLE``)."""
     import copy
     import dataclasses
     from campfire_pipeline.nirspec import profile_chain as PC
@@ -469,60 +519,73 @@ def own_shape(R0, shape0, chain, stage_config, P=None, kappa=1.0, log=None):
     log = log or (lambda *a: None)
     cfg = PC.ChainConfig.from_stage_config(stage_config)
     M0 = R0.model
-    is_prism = str(M0.exps[0].grating).upper().startswith('PRISM')
-    gate = cfg.gate_prism if is_prism else cfg.gate_grating
+    sigma = cfg.mbkg_scale_sigma or None
     exps = [copy.copy(e) for e in M0.exps]
     clean = CT.apply(exps, P, kappa=kappa) if P is not None else None
 
-    def model():
-        M = PF.ProfileModel(exps, chromatic=cfg.chromatic, priors=cfg.priors, bounds=cfg.bounds, grid=M0.lam_grid,
+    def model(on, term):
+        M = PF.ProfileModel(on, chromatic=cfg.chromatic, priors=cfg.priors, bounds=cfg.bounds, grid=M0.lam_grid,
                             c_prior=M0.c_prior, centre_law_tables=M0.centre_law_tables, nod_law=M0.nod_law,
-                            optics=M0.optics)
+                            optics=M0.optics, mbkg_sigma=term)
         M.pivot, M.lam_rng = M0.pivot, M0.lam_rng          # the shape is defined at the nodded fit's pivot
         return M
 
-    def nodded(why, snr=np.nan):
-        return R0, shape0, dataclasses.replace(chain, result=R0, reason=f'nodded;{why}'[:40], snr_det=snr, gate=gate)
+    def run(term, nodded_R):
+        """The shape and spectrum with the scale term (``term``, its allowance) or without it (None)."""
+        def nodded(why, snr=np.nan):
+            return nodded_R, shape0, dataclasses.replace(chain, result=nodded_R, reason=f'nodded;{why}'[:40],
+                                                         snr_det=snr)
+        if cfg.shape == 'fixed' or chain.reason == 'srcypos':
+            return nodded(chain.reason)
+        if clean is not None and (clean['overall'] < cfg.min_clean_fraction
+                                  or min(clean['per_exposure'] or [1.0]) < cfg.min_clean_fraction_exposure):
+            return nodded(f"masked:{clean['overall']:.2f}")
+        snr = np.nan
+        try:
+            M = model(exps, term)
+            snr, _ = PF.detection_snr(M)
+            R = PF.fit(exps, model=M)
+        except Exception as e:                         # noqa: BLE001 - falls back like the nodded chain
+            log(f'master-background own fit failed ({type(e).__name__}: {e})')
+            return nodded(getattr(e, 'reason', 'fit_failed'), snr)
+        reason = 'mbkg_own'
+        if R.bound_bits:
+            reason = f'{reason};bound:{PC._bit_names(R.bound_bits)}'
+        p = R.params
+        shape = dict(centre_offset=p['centre'] - M.c_prior, drift=p['drift'], width=p['width'],
+                     width_change=p['width_change'])
+        # the spectrum (and the scale) and the model images on the frames as they are (other sources'
+        # light is CONTAM2D)
+        R1 = PF.fit_fixed(model=model(M0.exps, term), shape=shape)
+        R1.bound_bits = R.bound_bits
+        if term:
+            # the largest scale any fit of this run took (the shape fit's, on the cleaned frames, or the spectrum's)
+            R1.mbkg_scale_peak = max((R.mbkg_scale, R1.mbkg_scale), key=abs)
+        return R1, shape, dataclasses.replace(chain, result=R1, shape='own', reason=reason, snr_det=snr,
+                                              bound_bits=R.bound_bits, prism_product='', transfer='none')
 
-    if cfg.shape == 'fixed' or chain.reason == 'srcypos':
-        return nodded(chain.reason)
-    if clean is not None and (clean['overall'] < cfg.min_clean_fraction
-                              or min(clean['per_exposure'] or [1.0]) < cfg.min_clean_fraction_exposure):
-        return nodded(f"masked:{clean['overall']:.2f}")
-    snr = np.nan
-    try:
-        M = model()
-        snr, _ = PF.detection_snr(M)
-        if snr < gate:
-            return nodded('below_gate', snr)
-        R = PF.fit(exps, model=M)
-    except Exception as e:                             # noqa: BLE001 - falls back like the nodded chain
-        log(f'master-background own fit failed ({type(e).__name__}: {e})')
-        return nodded(getattr(e, 'reason', 'fit_failed'), snr)
-    reason = 'mbkg_own'
-    if R.bound_bits:
-        names = PC._bit_names(R.bound_bits)
-        if R.bound_bits != PF.BOUND_BITS['centre']:
-            return nodded(f'bound:{names}', snr)
-        # the nodded shape on the same (cleaned) pixels, re-solved, against the own fit
-        keep = R.use.copy()
-        p0, e0 = PF._qvec(R0)
-        p1, e1 = PF._qvec(R)
-        if M.chi2_at(p0, e0, keep) - M.chi2_at(p1, e1, keep) <= PC._threshold(cfg, M, R):
-            return nodded(f'bound:{names}', snr)
-        reason = f'mbkg_bound_kept:{names}'
-    p = R.params
-    shape = dict(centre_offset=p['centre'] - M.c_prior, drift=p['drift'], width=p['width'],
-                 width_change=p['width_change'])
-    # the spectrum and the model images on the frames as they are (other sources' light is CONTAM2D)
-    M1 = PF.ProfileModel(M0.exps, chromatic=cfg.chromatic, priors=cfg.priors, bounds=cfg.bounds, grid=M0.lam_grid,
-                         c_prior=M0.c_prior, centre_law_tables=M0.centre_law_tables, nod_law=M0.nod_law,
-                         optics=M0.optics)
-    M1.pivot, M1.lam_rng = M0.pivot, M0.lam_rng
-    R1 = PF.fit_fixed(model=M1, shape=shape)
-    R1.bound_bits = R.bound_bits
-    return R1, shape, dataclasses.replace(chain, result=R1, shape='own', reason=reason, snr_det=snr, gate=gate,
-                                          bound_bits=R.bound_bits, prism_product='', transfer='none')
+    if sigma and any(e.mbkg is None for e in exps if e.use_data):
+        # a caller's omission, not a property of the data: never a quiet fit without the term
+        raise ValueError('master background: the scale term needs each exposure\'s master background '
+                         '(single_frame_exposures(..., backgrounds=...))')
+    out = run(sigma, R0)
+    if not sigma:
+        return out
+    R = out[0]
+    fitted = R.mbkg_scale if R is R0 else R.mbkg_scale_peak
+    if not (np.isfinite(fitted) and abs(fitted) >= cfg.mbkg_scale_cap):
+        return out
+    # the cap (user, 2026-11-10): a scale this large is not a master-background level error (measured
+    # within 1-3 %) but light the term would take for background (an extended source's wings, a
+    # neighbor): the scale is set to zero and everything is fitted again without the term
+    log(f'master-background scale {fitted:+.4f} reached the cap {cfg.mbkg_scale_cap}; refitted without it')
+    R0n = PF.fit_fixed(model=model(M0.exps, None), shape=shape0)
+    R0n.bound_bits = R0.bound_bits
+    Rn, shape, C = run(None, R0n)
+    if Rn is R0n:
+        Rn = copy.copy(R0n)
+    Rn.mbkg_scale, Rn.mbkg_scale_err, Rn.mbkg_scale_capped = 0.0, np.nan, float(fitted)
+    return Rn, shape, dataclasses.replace(C, result=Rn)
 
 
 def fit_product(product_name, workspace, exps, science, source_id, chain, stage_config, dmap,
@@ -537,6 +600,7 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
     (``profile_contam.trace_maps``)."""
     from astropy.io import fits
     from campfire_pipeline.nirspec import failed_open as FO
+    from campfire_pipeline.nirspec import profile_chain as PC
     from campfire_pipeline.nirspec import profile_contam as CT
     from campfire_pipeline.nirspec import profile_fit as PF
     from campfire_pipeline.nirspec import profile_product as PP
@@ -547,15 +611,18 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
     made = write_2d(product_name, workspace, source_id, dmap, log=log)
     if made is None:
         return None
-    _, inputs = made
+    frames, inputs = made
     fl = PP.stage_flags(stage_config)
+    sigma = PC.ChainConfig.from_stage_config(stage_config).mbkg_scale_sigma or None
     P = maps = None
     try:
-        # the frames with the outlier and hot-pixel flags their 2-D left out
-        mexps = single_frame_exposures([e for e in exps if e.name in science], inputs)
+        # the frames with the outlier and hot-pixel flags their 2-D left out, and their master
+        # background (the column of the scale term)
+        mexps = single_frame_exposures([e for e in exps if e.name in science], inputs,
+                                       backgrounds={n: f.background for n, f in frames.items()})
         if not mexps:
             raise PF.NoUsablePixels('master background: no science exposure')
-        R0, shape0 = PF.refit_at_shape(chain.result, mexps)
+        R0, shape0 = PF.refit_at_shape(chain.result, mexps, mbkg_sigma=sigma)
         if fl['contam']:
             # other sources' light in the frames: subtracted before the shape fit and drizzled as CONTAM2D
             maps = CT.maps_for_exposures(workspace, mexps, stuck_keys)
@@ -565,11 +632,19 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
                 P = CT.predict(mexps, source_id, maps, pass1_for, workspace, why_missing=why_missing, include=near)
         R, shape, chain = own_shape(R0, shape0, chain, stage_config, P=P, kappa=fl['kappa'], log=log)
         log(f'{product_name}: master-background shape {chain.shape} ({chain.reason}), width '
-            f'{R.params["width"]:.3f} (nodded {R0.params["width"]:.3f})')
+            f'{R.params["width"]:.3f} (nodded {R0.params["width"]:.3f}), master-background scale '
+            f'{R.mbkg_scale:+.4f} +- {R.mbkg_scale_err:.4f}')
     except PF.ProfileFitFallback as e:
         log(f'{product_name}: master-background fit: {e}; its fnu is the 3-pixel boxcar ({e.reason})')
         PP.write_fallback(paths['pf'], e.reason)
         return paths['pf']
+
+    scale = float(R.mbkg_scale) if np.isfinite(R.mbkg_scale) else 0.0
+    if scale != 0.0:
+        # the 2-D the spectrum is extracted from: the frames minus the master background at the
+        # level the fit measured in this slitlet (masks and weights unchanged)
+        inputs = corrected_inputs(inputs, frames, scale)
+        write_2d_file(paths['s2d'], drizzle_2d(dmap, inputs))
 
     # every model image on the frames' own masks and weights, as their 2-D (drizzle_on_frames)
     M = R.model
@@ -584,7 +659,10 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
             s1 = CT.pass1_settings(stage_config)
             knot = max(s1['smooth_prism'] if mexps[0].grating.startswith('PRISM') else s1['smooth_grating'], 3)
             p_shape = PF.shape_vector(shape, M.c_prior, M.priors.width_median)
-            L = FO.solve(M, p_shape, mexps, source_id, maps, knot, minus=P.pred)
+            # the light removed first: other sources' and the master-background level the fit measured
+            minus = [P.pred[k] + scale * np.nan_to_num(x.mbkg) if x.mbkg is not None else P.pred[k]
+                     for k, x in enumerate(mexps)]
+            L = FO.solve(M, p_shape, mexps, source_id, maps, knot, minus=minus)
             if L is not None:
                 for k in range(len(mexps)):
                     P.pred[k] = P.pred[k] + L.pred[k]

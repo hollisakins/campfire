@@ -3,7 +3,9 @@ One product's profile-fit extraction profile, extraction v2.
 
 Per product (one source, one disperser), after Spec3 has written its crf:
 
-1. load the source's exposures (``profile_fit.load_source``);
+1. load the source's exposures (``profile_fit.load_source``) and leave out of the nod
+   differences the pixels Spec3's outlier detection flagged in the crf
+   (``profile_fit.mask_crf_outliers``; the fits do not clip against their model);
 2. predict other slitlets' light and mask or subtract it for the shape fit
    (``profile_contam``; ``contam_predict``): the members of the source's joint-pass
    neighbourhood from that solve (``joint_first_pass.add_joint_light``, subtracted,
@@ -86,7 +88,7 @@ def partner_overrides(exps, n_groups):
     return out
 
 
-def neighbour_preview(groups, raw, chain_result, maps, source_id, science, stage_config, proposals):
+def neighbour_preview(groups, raw, chain_result, maps, source_id, science, stage_config, proposals, crf_dq=None):
     """What a scan proposal would change, for the review figure (``plots.plot_neighbour_proposal``).
 
     The source is loaded twice from the frames before subtraction (``profile_fit.load_group``
@@ -109,6 +111,8 @@ def neighbour_preview(groups, raw, chain_result, maps, source_id, science, stage
     for key, ov in (('now', now), ('proposed', prop)):
         ex = PF.load_source(groups, bkg_overrides=ov, science=set(science), pre_bkgsub=True,
                             **PF.load_options(stage_config))
+        if crf_dq is not None:
+            PF.mask_crf_outliers(ex, crf_dq)          # as the product's own fit (analyse_product)
         if partner_overrides(ex, len(groups)) != ov:
             return None                    # no frames before subtraction: the nods could not be changed
         R, _ = scan_input(ex, chain_result, maps, source_id)
@@ -146,10 +150,16 @@ class Analysis:
 
 def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                     prism_product='', pass1_products=None, log=None, exps=None, pass1_for=None, maps=None,
-                    prism=None, stuck_keys=None, shape_product=None):
-    """Load, predict and apply other slitlets' light, choose the shape, scan for a
-    same-slitlet neighbour. No files are written. ``stuck_keys``, ``shape_product``: as
-    ``run_product``.
+                    prism=None, stuck_keys=None, shape_product=None, crf_dq=None):
+    """Load, leave out Spec3's outliers, predict and apply other slitlets' light, choose the
+    shape, scan for a same-slitlet neighbour. No files are written. ``stuck_keys``,
+    ``shape_product``: as ``run_product``.
+
+    crf_dq : {canonical name: crf DQ} of the product's Spec3 crf (``drizzle_map.crf_dq``): its
+        outliers are left out of the nod differences (``profile_fit.mask_crf_outliers``; the fits
+        no longer clip against their model). None: nothing is left out but the canonicals' own
+        DO_NOT_USE, and the log says so (``run_product`` never gets here without a crf: it falls
+        back to the 3-pixel boxcar, ``FALLBACK_NO_CRF``).
 
     For tests: ``exps`` (preloaded exposures, modified in place), ``pass1_for``
     (sid -> ``Pass1``), ``maps`` and ``prism`` (a ``PrismShape``) replace what is
@@ -168,7 +178,13 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
         with TM.step('load'):
             exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science),
                                   **PF.load_options(stage_config))
-    raw = [copy.copy(e) for e in exps]      # as stage 2b made them: the same-slitlet scan's data
+    if crf_dq is None:
+        log('no crf outlier flags: only the canonicals\' DO_NOT_USE pixels are left out')
+    else:
+        n_out, missing = PF.mask_crf_outliers(exps, crf_dq)
+        log(f'{n_out} pixels of the nod differences left out as Spec3 outliers (crf)'
+            + (f'; no crf entry for {missing}' if missing else ''))
+    raw = [copy.copy(e) for e in exps]      # as stage 2b made them, Spec3's outliers left out: the scan's data
     P, clean, cstate = None, None, 'off'
     t_mark = TM.start()
     if fl['contam']:
@@ -237,7 +253,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
         with TM.step('scan_preview'):
             try:
                 preview = neighbour_preview(groups, raw, C.result, maps, source_id, science, stage_config,
-                                            S.proposals)
+                                            S.proposals, crf_dq=crf_dq)
                 if preview is None:
                     log('neighbour proposal: no preview (no frames before subtraction)')
             except Exception as e:                   # noqa: BLE001 - a review figure must not fail the product
@@ -373,7 +389,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             A = analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                                 prism_product=prism_product, pass1_products=pass1_products,
                                 log=lambda m: log(f'{product_name}: {m}'), stuck_keys=stuck_keys,
-                                shape_product=shape_product)
+                                shape_product=shape_product, crf_dq=DM.crf_dq(crf))
         except PF.ProfileFitFallback as e:
             log(f"{product_name}: {e}; 3-pixel boxcar ({e.reason})")
             write_fallback(path, e.reason)
@@ -384,7 +400,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         exps, C, P, clean, cstate, S = A.exps, A.chain, A.prediction, A.clean, A.contam_state, A.scan
         R = C.result
         p = R.params
-        log(f"{product_name}: shape {C.shape} ({C.reason}), gate {C.snr_det:.1f}/{C.gate:.0f}, "
+        log(f"{product_name}: shape {C.shape} ({C.reason}), detection S/N {C.snr_det:.1f}, "
             f"centre {p['centre']:+.3f} (plan {p['centre_prior']:+.3f}), width {p['width']:.3f}")
         if S is not None:
             if S.error:
