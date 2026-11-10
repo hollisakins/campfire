@@ -21,7 +21,7 @@ Extensions are identified by name; their order may change between pipeline versi
 | `WAVELENGTH` | Wavelength of each 2-D pixel, µm |
 | `WHT` | Combination weight of each 2-D pixel |
 | `PROF2D` | Source model on the 2-D grid, per µJy of reported flux (MJy / µJy) |
-| `TRANS2D` | Share of the source's light at each pixel that the MSA lets through (light through the shutters over light with no MSA) |
+| `TRANS2D` | Share of the source's light at each pixel that the MSA lets through (light through the shutters over light with no MSA); can exceed 1 in a source's faint wings, where diffraction at the shutters spreads light from the core outward |
 | `CONTAM2D` | Predicted contamination on the 2-D grid (MJy) |
 | `PROF1D` | Spatial weights of the optimal and boxcar extractions |
 | `EXPOSURES` | One row per combined exposure (columns below) |
