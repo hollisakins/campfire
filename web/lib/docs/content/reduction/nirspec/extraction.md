@@ -21,11 +21,7 @@ The keywords `SHAPE` (`prism`, `own`, `grating`, `default`) and `SHAPEWHY` recor
 
 ## Definition of the reported flux
 
-A shutter samples only part of an extended source, and a decreasing fraction with increasing size. Along the slit the fit measures the source's profile, so the reported flux includes all of the fitted source's light in that direction. Across the shutter the data do not constrain the shape, so the reported flux stops at the shutter edges. It is the flux of the fitted, intrinsic (pre-PSF) profile within the 0.22″ open width of the shutter (`FLUXWID`), at each exposure's planned position with an allowance of 0.03″ for pointing scatter, averaged over the exposures. This is the quantity in `fnu`.
-
-A point source at the shutter center gives its total flux; 0.05″ and 0.10″ off center across the shutter, it gives 98 % and 63 %. A centered galaxy of 0.2″ FWHM gives 78 %, and one of 0.4″ gives 48 %. The reported flux is therefore not a total flux; as for any slit spectrum, comparison with photometry sets the normalization. Because it is close to the light the shutter recorded, it depends only weakly on the fitted size.
-
-![Left: a 0.4″ FWHM galaxy at the center of its open shutter, with the adjacent shutters of the slitlet (dashed). The reported flux is the galaxy's intrinsic light within the shaded band: the shutter's open width across the dispersion, and the full extent along the slit. Right: the reported fraction of a source's total flux as a function of its intrinsic size, for three positions across the shutter; the point marks the galaxy on the left.](/docs/nirspec/reported_flux.png)
+The model describes each source with an intrinsic (pre-PSF) profile, fitted or assumed (see [Profile selection](#profile-selection)). Along the slit, where the data sample the profile, `fnu` is that profile's full flux, including light that fell on the bars and the adjacent shutters. Along the dispersion, where a shutter gives no spatial information, it is the light within the shutter's 0.22″ open width (`FLUXWID`), as for any slit spectrum.
 
 The optimal (`fnu_opt`) and boxcar (`fnu_3px`, `fnu_4px`, `fnu_5px`) extractions are also provided. They measure the flux entering the shutter with the `jwst` point-source path-loss correction, and are not directly comparable with `fnu` for extended sources.
 
