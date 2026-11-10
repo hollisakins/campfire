@@ -58,6 +58,51 @@ def test_self_subtraction_is_small_for_a_compact_source_and_large_for_a_wide_one
     assert MX.self_subtraction(wide, exps) > 0.10
 
 
+def _nodded_choice(exps, width):
+    """What ``fit_product`` hands ``own_shape``: the nodded chain's shape (here a given width at
+    the truth's centre) refitted on the single frames, and its ``ChainResult``."""
+    from campfire_pipeline.nirspec import profile_chain as PC
+    M = PF.ProfileModel(exps, chromatic=True)
+    shape = dict(centre_offset=TRUTH['centre'] - M.c_prior, drift=0.0, width=width, width_change=0.0)
+    R0 = PF.fit_fixed(model=M, shape=shape)
+    return R0, shape, PC.ChainResult(result=R0, shape='own', chain='gated', reason='gate_passed')
+
+
+def test_the_master_background_frames_fit_a_wide_source_wider_than_the_nodded_shape():
+    wide = dict(TRUTH, width=0.9, width_change=0.0)
+    exps, _ = _single_frames(wide, flux_scale=200.0, noise=1.0)
+    R0, shape0, chain = _nodded_choice(exps, 0.4)
+    R, shape, C = MX.own_shape(R0, shape0, chain, {})
+    assert (C.shape, C.reason) == ('own', 'mbkg_own')
+    assert R.params['width'] == pytest.approx(0.9, rel=0.1)
+    assert shape['width'] == R.params['width']
+    assert C.header_cards()['SRCWIDTH'] == R.params['width']
+    assert C.snr_det > C.gate
+
+
+def test_a_faint_source_keeps_the_nodded_shape():
+    exps, _ = _single_frames(TRUTH, flux_scale=0.3, noise=1.0)
+    R0, shape0, chain = _nodded_choice(exps, 0.2)
+    R, shape, C = MX.own_shape(R0, shape0, chain, {})
+    assert R is R0 and shape is shape0
+    assert (C.shape, C.reason) == ('own', 'nodded;below_gate')
+
+
+def test_the_fixed_chain_keeps_the_nodded_shape():
+    exps, _ = _single_frames(TRUTH, flux_scale=200.0, noise=1.0)
+    R0, shape0, chain = _nodded_choice(exps, 0.2)
+    R, _, C = MX.own_shape(R0, shape0, chain, {'profile_fit_shape': 'fixed'})
+    assert R is R0 and C.reason == 'nodded;gate_passed'
+
+
+def test_a_width_on_its_bound_keeps_the_nodded_shape():
+    wide = dict(TRUTH, width=0.9, width_change=0.0)
+    exps, _ = _single_frames(wide, flux_scale=200.0, noise=1.0)
+    R0, shape0, chain = _nodded_choice(exps, 0.4)
+    R, _, C = MX.own_shape(R0, shape0, chain, {'bound_width_max': 0.5})
+    assert R is R0 and C.reason.startswith('nodded;bound:') and 'width' in C.reason
+
+
 # ---------------------------------------------------------------------------
 # MBKGPREF / MBKGWHY, NEXP / NEXPBKG
 # ---------------------------------------------------------------------------

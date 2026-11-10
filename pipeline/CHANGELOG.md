@@ -70,7 +70,10 @@ Release procedure: edit the `## Unreleased` section below, then run
     different. Otherwise a source above the detection gate (S/N 25 PRISM, 70 gratings, on the
     clipped mean square of the residuals) takes its own fit. An own fit with its width or drift on
     a bound falls back; one with only its center on a bound is kept when the fallback fits clearly
-    worse. A grating with neither its own nor a PRISM shape takes the shape of the source's grating
+    worse. The width may reach 1.5 slit units and change by 0.6 per octave (`bound_width_max`,
+    `bound_width_change`; first 0.6 and 0.3, under which extended sources such as `ember_uds_p2`
+    37057 and 43168 fell to the default shape and reported 3-6 times too little flux, while
+    sources whose fit only reached for other light still run to the new limit and fall back). A grating with neither its own nor a PRISM shape takes the shape of the source's grating
     that passed its gate (`SHAPE` `grating`; on spurs_gds the 16-84 % ranges of the line-flux
     ratios between gratings went from 0.84-1.43 to 0.90-1.13). Failing all of these it takes the
     default shape (width 0.15 slit units, 0.16 arcsec FWHM, at the planned position). Named failures fall back to the
@@ -134,7 +137,12 @@ Release procedure: edit the `## Unreleased` section below, then run
     background, as `SPEC1D_MBKG`, `SCI_MBKG`, `ERR_MBKG` and `PROF1D_MBKG` of the `_spec.fits`, with
     `MBKGPREF`/`MBKGWHY` saying when it is likely better than the nodded spectrum (no clear
     background, a single exposure, or a source the nod subtraction removes more than 10 % of). Its
-    fit leaves out the pixels its 2-D flags as outliers or hot pixels. The
+    fit leaves out the pixels its 2-D flags as outliers or hot pixels. Its shape is the frames' own
+    fit, by the nodded chain's rules (the detection gate on these frames, the same priors and
+    bounds, other sources' light subtracted first), falling back to the nodded shape (`SHAPEWHY`
+    `mbkg_own`, or `nodded;<why>`): the nod differences take away an extended source's outer light
+    and its width with it (`zenith_p15` 547856: 0.70 slit units against 0.50, reduced χ² 4.3 to
+    2.9, flux 8-16 % higher). The
     deploy writes it as `<base>_spec_mbkg.json` (layout kind `spectrum_mbkg_json`).
   - *Stuck-closed shutters* are keyed by physical MSA shutter (`q<quadrant>r<row>c<column>`) in
     `stuck_closed_shutters.toml`, with origin `manual` > `web` > `auto` and `stuck = false` as a

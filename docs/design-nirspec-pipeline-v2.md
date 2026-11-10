@@ -587,6 +587,14 @@ The fit's detection S/N is measured on the clipped mean square of the residuals.
 3. **Bounds.** An own fit with a width or drift on its bound falls back: that is the fit taking
    up other light (a neighbor in the slitlet). One with only the center on its bound is kept when
    the fallback fits clearly worse (`bound_kept`), since a large offset from the plan can be real.
+   The width may reach 1.5 slit units and change by 0.6 per octave (`bound_width_max`,
+   `bound_width_change`). Under the first limits, 0.6 and 0.3, 11 products of zenith_p15 and
+   uds_p2 fell back on the width. Refitted with the wider limits (user, 2026-11-09), the five
+   bright ones (detection S/N 53-163) settled at 0.85-1.33 and their master-background frames
+   agreed (0.88-1.36), two of them on both PRISM and G395M: extended galaxies, whose default
+   shape had reported 3-6 times too little flux. The five faint ones (S/N 27-40) ran to the new
+   limit while their master-background frames fit 0.02-0.39: the fit reaching for other light,
+   still caught. (The eleventh did not reach the limit without its contamination subtraction.)
 4. **Default shape**: a Gaussian of width 0.15 slit units (0.16 arcsec FWHM) at the planned
    position. A source whose planned position is inconsistent between exposures takes it too.
 5. **Another grating's shape**, after every grating has run (`profile_fit_grating_transfer`,
@@ -688,14 +696,23 @@ from 10.2 to 11.5 and from 20.4 to 22.3.
 
 ### 6.9 The master-background spectrum
 
-`mbkg_extraction.py`. The same extraction on the exposures with their master background subtracted,
-so the two spectra differ only in how the background was removed.
+`mbkg_extraction.py`. The same extraction on the exposures with their master background subtracted.
+The two spectra differ in how the background was removed and in the shape, which these frames fit
+again.
 
 - Frames: each exposure's calibrated frame before subtraction (`PRE_BKGSUB_SCI`) minus its master
   background (`sky_for_slit`), in memory; the variance adds the master background's.
-- The fit: the nodded fit's exposures as single frames, at the nodded chain's shape, the spectrum
-  solved. Other slitlets' light enters once and positive, cataloged same-slitlet neighbors
-  included, since nothing is subtracted.
+- The fit: the nodded fit's exposures as single frames. Other slitlets' light enters once and
+  positive, cataloged same-slitlet neighbors included, since nothing is subtracted.
+- The shape (`own_shape`, user 2026-11-09): the frames' own fit by the nodded chain's rules (the
+  detection gate on these frames, the same priors and bounds, other slitlets' predicted light
+  subtracted first and its uncertain pixels dropped, the masked-fraction rule, the bound rule).
+  Otherwise the nodded chain's shape. `SHAPEWHY` is `mbkg_own` (or `mbkg_bound_kept:centre`), or
+  `nodded;<why>` with the reason the frames' own fit was not taken. The nod differences take away
+  an extended source's outer light, and with it the width: zenith_p15 547856 fits 0.70 slit units
+  on these frames against 0.50 on the nod differences, the reduced chi2 goes from 4.3 at the nodded
+  shape to 2.9, and its master-background flux rises 8-16 %. The other extended sources of 6.6 fit
+  wider on these frames too (1.07 against 0.85, 1.18 against 0.88).
 - Failed-open shutters on the source's trace (`failed_open.py`): per exposure and shutter, a
   spectrum along detector columns times a flat profile over the shutter, solved with the source on
   the frames minus the other sources' predicted light, and added to the master-background
@@ -1595,6 +1612,9 @@ The user's decisions that shaped what ships, by date.
 - **2026-11-07** The neighbor review figure laid out like the bkgsub plots, spectrum unbinned. The
   master-background prototype dropped. DR 2026.1 is the v1 freeze. PR A carries only a minimal set
   of `web/` changes (section 11).
+- **2026-11-09** Shape bounds widened (width 1.5, width change 0.6 per octave). The
+  master-background spectrum fits its own shape. A divided 2-D (the master-background 2-D over
+  the fitted source's transmission through the MSA) is wanted as a product, form to be decided.
 
 ---
 

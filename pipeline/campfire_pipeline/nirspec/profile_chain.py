@@ -83,7 +83,7 @@ class ChainConfig:
             width_change_sigma=float(g('prior_width_change_sigma', 0.04)))
         bounds = PF.Bounds(
             centre=float(g('bound_centre', 0.3)), drift=float(g('bound_drift', 0.3)),
-            width_max=float(g('bound_width_max', 0.6)), width_change=float(g('bound_width_change', 0.3)))
+            width_max=float(g('bound_width_max', 1.5)), width_change=float(g('bound_width_change', 0.6)))
         dwidth = g('default_shape_width', None)
         return cls(shape=shape, chromatic=bool(g('profile_fit_chromatic', True)),
                    prism_transfer=bool(g('profile_fit_prism_transfer', True)),

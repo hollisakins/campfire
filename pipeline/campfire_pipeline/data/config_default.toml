@@ -141,10 +141,14 @@
     prior_width_log_sigma = 0.6
     prior_drift_sigma = 0.03
     prior_width_change_sigma = 0.04
+    # The width limits were 0.6 and +-0.3 until 2026-11-09: extended sources (uds_p2 37057, 43168,
+    # zenith_p15 546037; fitted widths 0.85-1.25, their master-background frames agreeing) hit them
+    # and fell to the default shape, reporting 3-6x too little flux. Sources whose fit only reaches
+    # for other light still run to 1.5 and fall back (a width on its bound always does).
     bound_centre = 0.3                       # +- around the planned position
-    bound_width_max = 0.6
+    bound_width_max = 1.5
     bound_drift = 0.3
-    bound_width_change = 0.3
+    bound_width_change = 0.6
     srcypos_tolerance = 0.05
     # Where the observation's MSA bars sit against jwst's slit frame, measured per disperser from the
     # background in its empty shutters (nirspec/bar_offset.py, kept in the workspace's bar_offset.json) and
