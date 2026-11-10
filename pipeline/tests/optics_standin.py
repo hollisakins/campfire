@@ -26,6 +26,10 @@ class Analytic:
             inside |= np.abs(y - k * MSA_SLIT_PITCH) < PF.OPEN_HALF
         return g * inside * O.DY_ROW
 
+    def without_msa(self):
+        """The same PSF with nothing cut: every opening as wide as the pitch."""
+        return NoMSA()
+
     def x_correction(self, lam, srcx):
         return np.ones(np.shape(lam))
 
@@ -37,6 +41,13 @@ class Analytic:
         s = self._s(width) * np.sqrt(2)
         return sum(0.5 * (erf((k * MSA_SLIT_PITCH + PF.OPEN_HALF - centre) / s)
                           - erf((k * MSA_SLIT_PITCH - PF.OPEN_HALF - centre) / s)) for k in mask)
+
+
+class NoMSA(Analytic):
+    def image(self, mask, y, lam, centre, width):
+        y, lam, centre, width = np.broadcast_arrays(y, lam, centre, width)
+        s = self._s(width)
+        return np.exp(-0.5 * ((y - centre) / s) ** 2) / (np.sqrt(2 * np.pi) * s) * O.DY_ROW
 
 
 STANDIN = Analytic()

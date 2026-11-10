@@ -1003,7 +1003,8 @@ def extract_columns(s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, pf_file
                 optext_status=optext_status, collapsed=collapsed, cen=cen, profiles=profiles)
 
 
-MBKG_EXTENSIONS = ('SPEC1D_MBKG', 'SCI_MBKG', 'ERR_MBKG', 'PROF1D_MBKG')
+MBKG_EXTENSIONS = ('SPEC1D_MBKG', 'SCI_MBKG', 'ERR_MBKG', 'PROF2D_MBKG', 'TRANS2D_MBKG', 'CONTAM2D_MBKG',
+                   'PROF1D_MBKG')
 
 
 def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, ap_stop, s2dh, exposures,
@@ -1014,8 +1015,11 @@ def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, a
     product's pixel maps onto its grid, with the nodded aperture rows and the nodded
     ``wave``, so the deploy contract's identical wave holds), as ``SPEC1D_MBKG``
     (SPEC1D's columns on the same ``wave``; its header carries the extraction cards,
-    ``MBKGVER`` and the per-exposure ``MBKGSRC``), ``SCI_MBKG`` / ``ERR_MBKG`` (SCI's grid)
-    and ``PROF1D_MBKG``; and the primary cards ``MBKGPREF`` / ``MBKGWHY``
+    ``MBKGVER`` and the per-exposure ``MBKGSRC``), ``SCI_MBKG`` / ``ERR_MBKG`` (SCI's grid),
+    with the profile fit its model ``PROF2D_MBKG`` / ``TRANS2D_MBKG`` / ``CONTAM2D_MBKG`` (as
+    ``PROF2D`` / ``TRANS2D`` / ``CONTAM2D``: the master-background fit's own shape, no nod
+    traces) and ``PROF1D_MBKG``;
+    and the primary cards ``MBKGPREF`` / ``MBKGWHY``
     (``mbkg_extraction.preferred``, from the exposures and the nodded fit's ``SELFSUB``)
     and ``MBKGNEXP``.
 
@@ -1037,7 +1041,7 @@ def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, a
     for key in ex['cards']:
         spec.header[key] = (ex['cards'][key], ex['cards'].comments[key])
     return _mbkg_hdus(spec, table_to_hdu(ex['prof1d']), mb_sci, mb_err, s2dh, exposures, workspace_dir,
-                      primary_hdr.get('SELFSUB'), extended_frac)
+                      primary_hdr.get('SELFSUB'), extended_frac, model_hdus=ex['pf_hdus'])
 
 
 def _read_mbkg_2d(path, sci_shape, product_name, what='master-background 2-D'):
@@ -1059,11 +1063,12 @@ def _read_mbkg_2d(path, sci_shape, product_name, what='master-background 2-D'):
     return mb_sci, mb_err, mb_mask
 
 
-def _mbkg_hdus(spec, prof, mb_sci, mb_err, s2dh, exposures, workspace_dir, selfsub, extended_frac):
+def _mbkg_hdus(spec, prof, mb_sci, mb_err, s2dh, exposures, workspace_dir, selfsub, extended_frac, model_hdus=()):
     """The master-background extensions and primary cards of a product, from its 1-D
     columns (``spec``, the extraction cards already on it) and profiles (``prof``):
     ``SPEC1D_MBKG`` with ``MBKGVER`` and the per-exposure ``MBKGSRC``, ``SCI_MBKG`` /
-    ``ERR_MBKG`` on the nodded SCI's header, ``PROF1D_MBKG``; ``MBKGPREF`` / ``MBKGWHY``
+    ``ERR_MBKG`` on the nodded SCI's header, the fit's ``model_hdus`` (``PROF2D`` /
+    ``CONTAM2D``) as ``PROF2D_MBKG`` / ``CONTAM2D_MBKG``, ``PROF1D_MBKG``; ``MBKGPREF`` / ``MBKGWHY``
     (``mbkg_extraction.preferred``, with the nodded fit's ``selfsub``) and ``MBKGNEXP``.
     Returns (hdus, cards)."""
     from campfire_pipeline.nirspec import mbkg_extraction as MX
@@ -1073,7 +1078,12 @@ def _mbkg_hdus(spec, prof, mb_sci, mb_err, s2dh, exposures, workspace_dir, selfs
     spec.header['MBKGSRC'] = (','.join(sources), 'per EXPOSURES row: combined / exposure')
     prof.name = 'PROF1D_MBKG'
     hdus = [spec, fits.ImageHDU(data=mb_sci.astype(np.float32), header=s2dh.copy(), name='SCI_MBKG'),
-            fits.ImageHDU(data=mb_err.astype(np.float32), header=s2dh.copy(), name='ERR_MBKG'), prof]
+            fits.ImageHDU(data=mb_err.astype(np.float32), header=s2dh.copy(), name='ERR_MBKG')]
+    for m in model_hdus:
+        m = m.copy()
+        m.name = f'{m.name}_MBKG'
+        hdus.append(m)
+    hdus.append(prof)
     pref, why = MX.preferred(exposures, selfsub, extended_frac)
     cards = {'MBKGPREF': (bool(pref), 'master-background spectrum likely better'),
              'MBKGWHY': (why, 'Reason for MBKGPREF'),
@@ -1243,16 +1253,7 @@ def opt_ext_single_source(
 
     if plot_optext:
         from campfire_pipeline.nirspec.plots import plot_spectrum_qa
-        wave = spec1d.data['wave']
-        plot_spectrum_qa(
-            out_filename.replace('_spec.fits', '_spec.pdf'),
-            wave=wave,
-            fnu=spec1d.data['fnu'], fnu_err=spec1d.data['fnu_err'],
-            flam=spec1d.data['flam'], flam_err=spec1d.data['flam_err'],
-            sci_2d=s2d['SCI'].data, err_2d=s2d['ERR'].data,
-            profile_ypos=prof1d.data['ypos'], profile_opt=prof1d.data['opt'],
-            cen=cen, product_name=product_name,
-        )
+        plot_spectrum_qa(out_filename)
 
     s2d.close()
     x1d.close()
@@ -1426,6 +1427,7 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         P = np.asarray(h['PROF2D'].data, float)
         C2D = np.asarray(h['CONTAM2D'].data, float) if 'CONTAM2D' in h else None
         E2D = np.asarray(h['CONTERR2D'].data, float) if 'CONTERR2D' in h else None
+        T2D = np.asarray(h['TRANS2D'].data, float) if 'TRANS2D' in h else None
         NS = h['NOTSEP'].data if 'NOTSEP' in h else None
         if NS is not None:
             NS = (np.asarray(NS['lam'], float), np.asarray(NS['notsep'], bool))
@@ -1454,6 +1456,10 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     prof = fits.ImageHDU(P, name='PROF2D')
     prof.header['BUNIT'] = ('MJy / uJy', 'SCI per unit reported flux (not per column)')
     hdus.append(prof)
+    if T2D is not None and T2D.shape == P.shape:
+        t = fits.ImageHDU(T2D, name='TRANS2D')
+        t.header['BUNIT'] = ('', 'Source light through the MSA over its light with no MSA')
+        hdus.append(t)
     if C2D is None or C2D.shape != P.shape:
         columns['fnu_contam'] = (nan, 'Predicted other-source flux (no prediction)')
         columns['fnu_contam_err'] = (nan, 'Its uncertainty (systematic)')
@@ -1873,17 +1879,7 @@ def combine_per_eg_spectra(
 
     if plot_optext:
         from campfire_pipeline.nirspec.plots import plot_spectrum_qa
-        plot_spectrum_qa(
-            out_filename.replace('_spec.fits', '_spec.pdf'),
-            wave=common_wave,
-            fnu=fnu_best, fnu_err=fnu_best_err,
-            flam=_fnu_to_flam(fnu_best, common_wave),
-            flam_err=_fnu_to_flam(fnu_best_err, common_wave),
-            sci_2d=s2d['SCI'].data, err_2d=s2d['ERR'].data,
-            profile_ypos=prof1d['ypos'], profile_opt=profile_opt,
-            cen=cen, product_name=product_name,
-            subtitle='(1D combine)',
-        )
+        plot_spectrum_qa(out_filename, subtitle='(1D combine)')
 
     x1d.close()
     s2d.close()

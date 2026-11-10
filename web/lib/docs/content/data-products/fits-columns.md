@@ -21,14 +21,16 @@ Extensions are identified by name; their order may change between pipeline versi
 | `WAVELENGTH` | Wavelength of each 2-D pixel, µm |
 | `WHT` | Combination weight of each 2-D pixel |
 | `PROF2D` | Source model on the 2-D grid, per µJy of reported flux (MJy / µJy) |
+| `TRANS2D` | Share of the source's light at each pixel that the MSA lets through (light through the shutters over light with no MSA) |
 | `CONTAM2D` | Predicted contamination on the 2-D grid (MJy) |
 | `PROF1D` | Spatial weights of the optimal and boxcar extractions |
 | `EXPOSURES` | One row per combined exposure (columns below) |
 | `SPEC1D_MBKG` | Master-background-subtracted 1-D spectrum; same columns as `SPEC1D` |
 | `SCI_MBKG`, `ERR_MBKG` | Master-background-subtracted 2-D spectrum and uncertainty, on the `SCI` grid |
+| `PROF2D_MBKG`, `TRANS2D_MBKG`, `CONTAM2D_MBKG` | As `PROF2D`, `TRANS2D` and `CONTAM2D`, for the master-background spectrum |
 | `PROF1D_MBKG` | Extraction weights for the master-background spectrum |
 
-The full 2-D model is `PROF2D × (fnu_prof - fnu_contam) + CONTAM2D`.
+The full 2-D model is `PROF2D × (fnu_prof - fnu_contam) + CONTAM2D` (the `_MBKG` extensions and columns for the master-background spectrum). `SCI / TRANS2D` shows the 2-D as the source would look with no MSA in the way.
 
 ### `SPEC1D` columns
 

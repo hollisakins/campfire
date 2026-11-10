@@ -177,9 +177,14 @@ Release procedure: edit the `## Unreleased` section below, then run
     exposures, which jwst's background step left out: with three nods, errors are 1.22 times v1's
     for the same flux (`ember_uds_p2`: the 3-pixel boxcar's flux the same to 0.2 %, its S/N 0.80
     of v1's). `fnu_prof` and `fnu_contam` are extracted from the combined 2-D
-    spectrum with the fitted model as the weights. New extensions `PROF2D` and `CONTAM2D` (every
-    2-D image drizzled once per product through its pixel maps) and the master-background ones
-    above. The `EXPOSURES` table gains `bkg_why`.
+    spectrum with the fitted model as the weights. New extensions `PROF2D`, `TRANS2D` (the share of
+    the source's light at each pixel the MSA passes: its light through the shutters over its light
+    with no MSA, `Optics.without_msa`) and `CONTAM2D` (every 2-D image drizzled once per product
+    through its pixel maps), and the master-background ones above with their own `PROF2D_MBKG` /
+    `TRANS2D_MBKG` / `CONTAM2D_MBKG`, so both 2-D models can be rebuilt from the product. The
+    `EXPOSURES` table gains `bkg_why`. The `_spec.pdf` diagnostic is drawn from the `_spec.fits`
+    alone (`plots.plot_spectrum_qa`): nodded and master background side by side, each with its 2-D
+    data, model and residual and its f_nu and f_lambda against the other's.
     New cards `EXTRACT`/`EXTRWHY`, `CONTSTAT`, and the extraction's cards, named by what they
     hold and listed with their descriptions in `nirspec/extraction_cards.py` (the one list the
     writers, the stage-3 copy and the docs' FITS reference follow): versions and calibration

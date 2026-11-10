@@ -413,6 +413,9 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         t_mark = TM.start()
         prof = PF.drizzle_frames(R, dmap, unit=True)
         hdus = [fits.ImageHDU(np.asarray(prof, float) / 1e12, name='PROF2D')]
+        h = fits.ImageHDU(np.asarray(PF.drizzle_transmission(R, dmap), float), name='TRANS2D')
+        h.header['BUNIT'] = ('', 'Source light through the MSA over its light with no MSA')
+        hdus.append(h)
         if P is not None:
             live = CT.live_frames(exps, P)
             c2d = PF.drizzle_arrays(lambda name: live.get(name), dmap)

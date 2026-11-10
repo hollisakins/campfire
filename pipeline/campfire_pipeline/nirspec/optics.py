@@ -207,6 +207,20 @@ class Optics:
         self.x_loss = None if x_loss is None else dict(b=float(x_loss['b']), lam0=float(x_loss['lam0']))
         self.cache_dir = cache_dir
         self._img, self._tr, self._tx = {}, {}, None
+        self._no_msa = None
+
+    def without_msa(self):
+        """These optics with no MSA in the way: every opening widened to the full pitch (no
+        bars, no edges), the telescope, kernel and the spectrograph's stop unchanged. Its image
+        through ``ALL_OPEN`` is the source's light with nothing removed by the shutters, the
+        denominator of the transmission (``profile_fit.transmission_frame``). Its tables are
+        cached like the others (about 15 s per detector the first time)."""
+        if self._no_msa is None:
+            ext = 0.5 * (PITCH_AS - SLIT) / SLIT + 0.01
+            p = self.params
+            self._no_msa = Optics(p['rho'], p['s0'], p['s1'], p['alpha'], self.kernel, cache_dir=self.cache_dir,
+                                  x_loss=self.x_loss, edges=(-ext, ext))
+        return self._no_msa
 
     # -- along the dispersion -------------------------------------------------
     def x_correction(self, lam, srcx):
@@ -481,6 +495,8 @@ def optics_for(detector):
     """The shipped model of an exposure's detector ('NRS1' / 'NRS2')."""
     return models()[str(detector).upper()]
 
+
+ALL_OPEN = tuple(range(-K_MAX, K_MAX + 1))     # every shutter of the tables' range, for ``Optics.without_msa``
 
 def version():
     return models()['version']

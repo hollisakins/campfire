@@ -1019,116 +1019,175 @@ def plot_extraction_profiles(out_path, collapsed, profiles, x1d_start, x1d_stop,
 # Spectrum QA plot (from stage3)
 # ---------------------------------------------------------------------------
 
-def plot_spectrum_qa(out_path, wave, fnu, fnu_err, flam, flam_err,
-                     sci_2d, err_2d, profile_ypos, profile_opt, cen,
-                     product_name, subtitle=None):
-    """3-row diagnostic: 2D S/N image, f_nu spectrum, f_lambda spectrum.
+def plot_spectrum_qa(spec_path, out_path=None, subtitle=None):
+    """Diagnostic of a final ``_spec.fits``, drawn from the product alone (so it can be
+    redrawn at any time): two columns, the nodded spectrum and the master-background
+    one (``SCI_MBKG``, ...). Rows: the 2-D data, the 2-D model and the residual, as
+    S/N, with the collapsed profile beside the data; then f_nu and f_lambda, the
+    column's spectrum in black and the other column's in grey.
+
+    The model is ``PROF2D x (fnu_prof - fnu_contam) + CONTAM2D`` (``_MBKG`` for the
+    master background); the data and model share one scale (S/N, divided by the
+    sigma-clipped scatter of the data's S/N), the residual is (data - model) / ERR.
+    Rows the product cannot fill (no profile fit, no master-background spectrum) say so.
 
     Parameters
     ----------
-    out_path : str
-        Output PDF path.
-    wave : ndarray
-        Wavelength array (microns).
-    fnu, fnu_err : ndarray
-        Flux density and error in micro-Jansky.
-    flam, flam_err : ndarray
-        Flux density and error in erg/s/cm2/Angstrom.
-    sci_2d, err_2d : ndarray
-        2D science and error arrays from the s2d file.
-    profile_ypos : ndarray
-        Spatial pixel positions for the extraction profile.
-    profile_opt : ndarray
-        Optimal extraction profile.
-    cen : float
-        Extraction centre pixel.
-    product_name : str
-        Product name for the suptitle.
+    spec_path : str
+        The ``_spec.fits``.
+    out_path : str, optional
+        Output PDF (default: ``_spec.fits`` -> ``_spec.pdf``).
     subtitle : str, optional
-        Extra text appended to suptitle (e.g. ``"(1D combine)"``).
+        Extra text appended to the suptitle (e.g. ``"(1D combine)"``).
     """
+    from astropy.io import fits
     from astropy.stats import sigma_clipped_stats
     from astropy.utils.exceptions import AstropyWarning
 
-    fig = plt.figure(figsize=(8, 6), constrained_layout=True, dpi=_STYLE['dpi'])
-    gs = gridspec.GridSpec(nrows=3, ncols=2, width_ratios=[9, 1],
-                           height_ratios=[1, 2.5, 2.5], figure=fig)
+    out_path = out_path or spec_path.replace('_spec.fits', '_spec.pdf')
+    with fits.open(spec_path) as h:
+        hdr = h[0].header
+        names = {x.name for x in h}
+        sides = []
+        for tag, suffix in (('nodded', ''), ('master background', '_MBKG')):
+            if f'SPEC1D{suffix}' not in names or f'SCI{suffix}' not in names:
+                sides.append(None)
+                continue
+            t = h[f'SPEC1D{suffix}'].data
+            s = dict(tag=tag, wave=np.asarray(t['wave'], float),
+                     fnu=np.asarray(t['fnu'], float), fnu_err=np.asarray(t['fnu_err'], float),
+                     flam=np.asarray(t['flam'], float), flam_err=np.asarray(t['flam_err'], float),
+                     sci=np.asarray(h[f'SCI{suffix}'].data, float), err=np.asarray(h[f'ERR{suffix}'].data, float),
+                     extract=(h[f'SPEC1D{suffix}'].header if suffix else hdr).get('EXTRACT', ''),
+                     prof=np.asarray(h[f'PROF1D{suffix}'].data['opt'], float) if f'PROF1D{suffix}' in names
+                     else None, model=None)
+            if f'PROF2D{suffix}' in names and 'fnu_prof' in t.columns.names:
+                src = np.asarray(t['fnu_prof'], float)
+                if 'fnu_contam' in t.columns.names:
+                    src = src - np.nan_to_num(np.asarray(t['fnu_contam'], float))
+                model = np.asarray(h[f'PROF2D{suffix}'].data, float) * np.nan_to_num(src)[None, :]
+                if f'CONTAM2D{suffix}' in names:
+                    model = model + np.nan_to_num(np.asarray(h[f'CONTAM2D{suffix}'].data, float))
+                s['model'] = np.where(np.isfinite(s['sci']), model, np.nan)
+            if suffix:
+                s['scale'] = h[f'SPEC1D{suffix}'].header.get('MBKGSCL')
+            sides.append(s)
+        p1 = h['PROF1D'].data
+        ypos = np.asarray(p1['ypos'], float)
+        # the aperture centre: the 4-pixel boxcar is symmetric about it
+        w4 = np.asarray(p1['4px'], float)
+        cen = float(np.sum(ypos * w4) / np.sum(w4)) if np.sum(w4) > 0 else ypos.mean()
 
-    ax_2d = fig.add_subplot(gs[0, 0])
-    ax_1d_fnu = fig.add_subplot(gs[1, 0])
-    ax_1d_flam = fig.add_subplot(gs[2, 0])
-    ax_prof = fig.add_subplot(gs[0, 1])
-
-    # 2D S/N
-    nsci = sci_2d / err_2d
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=AstropyWarning)
-        std = sigma_clipped_stats(nsci, sigma=3)[2]
-    snr_2d = nsci / std
-
-    vmin, vmax = -3, 8
-    cmap = plt.colormaps['viridis']
+    fig = plt.figure(figsize=(15, 9), constrained_layout=True, dpi=_STYLE['dpi'])
+    outer = gridspec.GridSpec(nrows=1, ncols=2, figure=fig)
+    cmap = plt.colormaps['viridis'].copy()
     cmap.set_bad('0.8')
+    rcmap = plt.colormaps['RdBu_r'].copy()
+    rcmap.set_bad('0.8')
+    y = ypos - cen
+    ref = next((s for s in sides if s is not None), None)
+    xmin, xmax = (np.nanmin(ref['wave']), np.nanmax(ref['wave'])) if ref is not None else (0, 1)
 
-    ax_2d.pcolormesh(wave, profile_ypos - cen, snr_2d,
-                     vmin=vmin, vmax=vmax, cmap=cmap, rasterized=True)
-    ax_2d.set_ylabel('$y$ [pix]')
-    ax_2d.set_ylim(-10, 10)
-    ax_2d.minorticks_on()
-    ax_2d.tick_params(direction='in', which='both', axis='y')
+    def ylim_of(key):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            vals = [np.nanpercentile(s[key] + s[key + '_err'], 97) for s in sides if s is not None]
+        vals = [v for v in vals if np.isfinite(v)]
+        return 1.2 * max(vals) if vals else None
+    ylims = {k: ylim_of(k) for k in ('fnu', 'flam')}
 
-    # f_nu
-    ax_1d_fnu.step(wave, fnu, where='mid', color='k', linewidth=1)
-    ax_1d_fnu.fill_between(wave, fnu - fnu_err, fnu + fnu_err,
-                           alpha=0.15, facecolor='k', edgecolor='none', step='mid')
-    ax_1d_fnu.set_ylabel(r'$f_{\nu}$ [$\mu$Jy]')
+    def blank(ax, text):
+        ax.text(0.5, 0.5, text, transform=ax.transAxes, ha='center', va='center', color='0.4', fontsize=8)
+        ax.set_xticks([])
+        ax.set_yticks([])
 
-    # f_lambda
-    ax_1d_flam.step(wave, flam, where='mid', color='k', linewidth=1)
-    ax_1d_flam.fill_between(wave, flam - flam_err, flam + flam_err,
+    for c, s in enumerate(sides):
+        gs = outer[0, c].subgridspec(5, 2, width_ratios=[9, 1], height_ratios=[1, 1, 1, 2.2, 2.2])
+        a_d, a_m, a_r = (fig.add_subplot(gs[i, 0]) for i in range(3))
+        a_p = fig.add_subplot(gs[0, 1])
+        a_fnu = fig.add_subplot(gs[3, 0])
+        a_flam = fig.add_subplot(gs[4, 0])
+        for ax in (fig.add_subplot(gs[1, 1]), fig.add_subplot(gs[2, 1]), fig.add_subplot(gs[3, 1]),
+                   fig.add_subplot(gs[4, 1])):
+            ax.axis('off')
+        title = 'Nodded' if c == 0 else 'Master background'
+        if s is None:
+            a_d.set_title(title, fontsize=9)
+            for ax in (a_d, a_m, a_r, a_p, a_fnu, a_flam):
+                blank(ax, 'no master-background spectrum' if ax is a_d else '')
+            continue
+        if c == 1 and s.get('scale') is not None:
+            title += f' (MBKGSCL {s["scale"]:+.3f})'
+        a_d.set_title(f'{title}, {s["extract"]}', fontsize=9)
+        wave = s['wave']
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            warnings.filterwarnings('ignore', category=AstropyWarning)
+            nsci = s['sci'] / s['err']
+            std = sigma_clipped_stats(nsci, sigma=3)[2]
+            std = std if np.isfinite(std) and std > 0 else 1.0
+        for ax, img, lab in ((a_d, nsci / std, 'data'),
+                             (a_m, None if s['model'] is None else s['model'] / s['err'] / std, 'model'),
+                             (a_r, None if s['model'] is None else (s['sci'] - s['model']) / s['err'],
+                              'residual')):
+            if img is None:
+                blank(ax, f'{lab}: no profile fit')
+                continue
+            if lab == 'residual':
+                ax.pcolormesh(wave, y, img, vmin=-5, vmax=5, cmap=rcmap, rasterized=True)
+            else:
+                ax.pcolormesh(wave, y, img, vmin=-3, vmax=8, cmap=cmap, rasterized=True)
+            ax.set_ylabel(f'{lab}\n$y$ [pix]')
+            ax.set_ylim(-10, 10)
+            ax.set_xlim(xmin, xmax)
+            ax.minorticks_on()
+            ax.tick_params(direction='in', which='both', labelbottom=False)
+
+        # collapsed profile: data (black), model (red line), extraction weights (red fill)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            p = np.nanmedian(s['sci'], axis=1)
+            norm = np.nanmax(p[np.abs(y) < 5]) if np.any(np.abs(y) < 5) else np.nanmax(p)
+            a_p.step(p / norm, y, where='mid', color='k')
+            if s['model'] is not None:
+                a_p.step(np.nanmedian(s['model'], axis=1) / norm, y, where='mid', color='tab:red', lw=1)
+        if s['prof'] is not None and np.nanmax(s['prof']) > 0:
+            a_p.fill_betweenx(y, 0, s['prof'] / np.nanmax(s['prof']), facecolor='r', alpha=0.3,
+                              edgecolor='none', step='mid')
+        a_p.axvline(0, color='k', linewidth=1, zorder=-1000, alpha=0.2)
+        a_p.set_xlim(-0.3, 1.2)
+        a_p.set_ylim(-10, 10)
+        a_p.tick_params(labelbottom=False, bottom=False, labelleft=False, direction='in', which='both')
+
+        other = sides[1 - c]
+        for ax, key, lab in ((a_fnu, 'fnu', r'$f_{\nu}$ [$\mu$Jy]'),
+                             (a_flam, 'flam', r'$f_{\lambda}$ [erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$]')):
+            if other is not None:
+                ax.step(other['wave'], other[key], where='mid', color='0.6', linewidth=0.8,
+                        label='master background' if c == 0 else 'nodded')
+            ax.step(wave, s[key], where='mid', color='k', linewidth=1, label=s['tag'])
+            ax.fill_between(wave, s[key] - s[key + '_err'], s[key] + s[key + '_err'],
                             alpha=0.15, facecolor='k', edgecolor='none', step='mid')
-    ax_1d_flam.set_ylabel(r'$f_{\lambda}$ [erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$]')
-    ax_1d_flam.set_xlabel(r'Observed Wavelength [$\mu$m]')
+            ax.set_ylabel(lab)
+            ax.set_xlim(xmin, xmax)
+            if ylims[key] is not None:
+                ax.set_ylim(-0.1 * ylims[key], ylims[key])
+        a_fnu.legend(fontsize=7, loc='upper left', frameon=False)
+        a_fnu.tick_params(labelbottom=False)
+        a_flam.set_xlabel(r'Observed Wavelength [$\mu$m]')
+        _style_axes(a_fnu, a_flam)
 
-    _style_axes(ax_1d_fnu, ax_1d_flam)
-
-    # Spatial profile
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', category=RuntimeWarning)
-        p = np.nanmedian(sci_2d, axis=1)
-        p /= np.nanmax(p[profile_opt != 0])
-    ax_prof.step(p, profile_ypos - cen, where='post', color='k')
-    ax_prof.fill_betweenx(profile_ypos - cen, np.zeros_like(profile_ypos),
-                          profile_opt / np.nanmax(profile_opt),
-                          facecolor='r', alpha=0.3, edgecolor='none', step='pre')
-    ax_prof.axvline(0, color='k', linewidth=1, zorder=-1000, alpha=0.2)
-    ax_prof.minorticks_on()
-    ax_prof.set_xlim(-0.3, 1.2)
-    ax_prof.set_ylim(-10, 10)
-    ax_prof.tick_params(labelbottom=False, bottom=False, labelleft=False,
-                        direction='in', which='both')
-
-    # Axis limits
-    xmin, xmax = wave.min(), wave.max()
-    ax_2d.set_xlim(xmin, xmax)
-    ax_1d_fnu.set_xlim(xmin, xmax)
-    ax_1d_flam.set_xlim(xmin, xmax)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', category=RuntimeWarning)
-        ymax = np.nanpercentile(fnu + fnu_err, 97) * 1.2
-        if np.isfinite(ymax):
-            ax_1d_fnu.set_ylim(-0.1 * ymax, ymax)
-        ymax = np.nanpercentile(flam + flam_err, 97) * 1.2
-        if np.isfinite(ymax):
-            ax_1d_flam.set_ylim(-0.1 * ymax, ymax)
-
-    title = product_name + '_spec'
+    title = os.path.basename(spec_path).replace('.fits', '')
+    cards = [f'{k} {hdr[k]}' for k in ('SHAPE', 'SHAPEWHY') if k in hdr]
+    if 'SRCWIDTH' in hdr:
+        cards.append(f'width {hdr["SRCWIDTH"]:.2f}')
+    if hdr.get('MBKGPREF'):
+        cards.append('master background preferred')
+    if cards:
+        title += '   ' + ', '.join(cards)
     if subtitle:
         title += f' {subtitle}'
-    fig.suptitle(title, fontname=_STYLE['fontname'],
-                 fontsize=_STYLE['suptitle_fontsize'])
-
+    fig.suptitle(title, fontname=_STYLE['fontname'], fontsize=_STYLE['suptitle_fontsize'] + 2)
     plt.savefig(out_path)
     plt.close()
 

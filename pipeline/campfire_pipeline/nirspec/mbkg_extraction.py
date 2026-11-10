@@ -653,6 +653,11 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
     prof = drizzle_on_frames(dmap, inputs, {n: PF.model_frame(R, by_name[n], unit=True) for n in dmap.names
                                             if n in by_name})
     hdus.append(fits.ImageHDU(np.asarray(prof, float) / 1e12, name='PROF2D'))
+    trans = drizzle_on_frames(dmap, inputs, {n: PF.transmission_frame(R, by_name[n]) for n in dmap.names
+                                             if n in by_name})
+    h = fits.ImageHDU(np.asarray(trans, float), name='TRANS2D')
+    h.header['BUNIT'] = ('', 'Source light through the MSA over its light with no MSA')
+    hdus.append(h)
     fo_cards = (0, 0.0)
     if fl['contam']:
         if maps:

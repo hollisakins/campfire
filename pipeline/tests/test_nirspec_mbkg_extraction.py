@@ -597,6 +597,7 @@ def _inputs(tmp_path, product, amp, where, contam=0.1, wave=None, bkg_why=('', '
     h['NCONTAM'] = 1
     h['SELFSUB'] = 0.02
     fits.HDUList([fits.PrimaryHDU(header=h), fits.ImageHDU(prof / 1e12, name='PROF2D'),
+                  fits.ImageHDU(np.full(prof.shape, 0.8), name='TRANS2D'),
                   fits.ImageHDU(contam * amp * prof / 1e12, name='CONTAM2D'),
                   fits.ImageHDU(0.0 * prof, name='CONTERR2D')]).writeto(os.path.join(where, f'{product}_pf.fits'))
 
@@ -618,7 +619,15 @@ def test_spec_fits_carries_the_master_background_spectrum(tmp_path):
     path = tmp_path / 'p_spec.fits'
     with fits.open(path) as h:
         ext = [x.name for x in h[1:]]
-        assert ext[-4:] == list(S3.MBKG_EXTENSIONS)
+        # last, in order, with the master-background fit's model images; the nodded ones carry theirs
+        assert ext[-7:] == list(S3.MBKG_EXTENSIONS)
+        assert {'PROF2D', 'TRANS2D', 'CONTAM2D'} <= set(ext)
+        np.testing.assert_allclose(h['TRANS2D_MBKG'].data, 0.8)
+        # the full 2-D model, PROF2D x (fnu_prof - fnu_contam) + CONTAM2D, is the master-background 2-D
+        t = h['SPEC1D_MBKG'].data
+        model = h['PROF2D_MBKG'].data * (t['fnu_prof'] - np.nan_to_num(t['fnu_contam']))[None, :] \
+            + h['CONTAM2D_MBKG'].data
+        np.testing.assert_allclose(model[:, 2:-2], h['SCI_MBKG'].data[:, 2:-2], rtol=1e-4, atol=1e-17)
         assert h['SPEC1D_MBKG'].columns.names == h['SPEC1D'].columns.names
         np.testing.assert_array_equal(h['SPEC1D_MBKG'].data['wave'], h['SPEC1D'].data['wave'])
         assert h['SCI_MBKG'].data.shape == h['SCI'].data.shape == h['ERR_MBKG'].data.shape
@@ -637,6 +646,22 @@ def test_spec_fits_carries_the_master_background_spectrum(tmp_path):
             del keep[0].header[k]
         keep.writeto(tmp_path / 'nodded_only.fits')
     assert science_hash(path) == science_hash(tmp_path / 'nodded_only.fits')
+
+
+def test_the_spectrum_plot_is_drawn_from_the_product_alone(tmp_path):
+    """The diagnostic reads only the _spec.fits: with the master-background spectrum, and
+    without it or a profile fit (those rows say so)."""
+    from campfire_pipeline.nirspec.plots import plot_spectrum_qa
+    _inputs(tmp_path, 'p', 10.0, str(tmp_path))
+    _inputs(tmp_path, 'p_mbkg', 8.0, MX.subdir(str(tmp_path)), x1d=False)
+    _master_backgrounds(tmp_path)
+    S3.opt_ext_single_source('p', str(tmp_path), profile_fit=True, mbkg_spectrum=True, plot_optext=True)
+    assert (tmp_path / 'p_spec.pdf').stat().st_size > 0
+    with fits.open(tmp_path / 'p_spec.fits') as h:
+        fits.HDUList([x.copy() for x in h if x.name not in S3.MBKG_EXTENSIONS + ('PROF2D', 'TRANS2D', 'CONTAM2D')]) \
+            .writeto(tmp_path / 'bare_spec.fits')
+    plot_spectrum_qa(str(tmp_path / 'bare_spec.fits'))
+    assert (tmp_path / 'bare_spec.pdf').stat().st_size > 0
 
 
 def test_flagged_exposure_prefers_the_master_background(tmp_path):

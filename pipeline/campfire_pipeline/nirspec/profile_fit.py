@@ -1475,5 +1475,47 @@ def drizzle_arrays(frame_of, dmap):
     return dmap.drizzle({name: frame_of(name) for name in dmap.names})['data']
 
 
+T_MIN_LIGHT = 1e-3      # transmission_frame: pixels where the source's MSA-free light is below this share of its peak are NaN
+
+
+def transmission_frame(result, k):
+    """Transmission of the fitted source in exposure k on its canonical cutout: per pixel,
+    the source's light there through the exposure's open shutters (the model image, at its
+    fitted centre and width) over its light with no MSA (``Optics.without_msa``, every
+    shutter of the range open). The slit-direction part only: the along-dispersion losses
+    and the throughput are not in it, and the source's own spectrum cancels. One where
+    the shutters take nothing, below one at the bars and the slitlet's edges and beyond its
+    ends. It can exceed one in a source's faint far wing (up to ~1.4 for a compact source
+    one shutter away), where the shutters' diffraction spreads light from its bright core
+    outward. NaN off the frame and where the source puts almost no light
+    (``T_MIN_LIGHT`` of its peak in the frame). ``data / T`` is
+    then the 2-D as the source would look with no MSA."""
+    from campfire_pipeline.nirspec import optics as O
+    M = result.model
+    e = M.exps[k]
+    p, eoff = _qvec(result)
+    r0, c0, ny, nx = e.cutout
+    sl = (slice(r0, r0 + ny), slice(c0, c0 + nx))
+    m = np.isfinite(e.y) & np.isfinite(e.wav)
+    out = np.full(e.y.shape, np.nan)
+    y, lam = e.y[m], e.wav[m]
+    c, w = M.centre(p, eoff, k, lam), M.width(p, lam)
+    num = M.optics[k].image(e.open_k, y, lam, c, w)
+    den = M.optics[k].without_msa().image(O.ALL_OPEN, y, lam, c, w)
+    ok = den > T_MIN_LIGHT * np.max(den, initial=0.0)
+    out[m] = np.where(ok, num / np.where(ok, den, 1.0), np.nan)
+    return out[sl]
+
+
+def drizzle_transmission(result, dmap):
+    """``transmission_frame`` of every exposure drizzled through the product's pixel maps
+    (``drizzle_arrays``): the exposures' transmissions averaged with the data's weights. The
+    drizzle takes a NaN as zero, so pixels where the source puts almost no light come out
+    near zero rather than NaN."""
+    by_name = {e.name: k for k, e in enumerate(result.model.exps)}
+    return drizzle_arrays(lambda name: transmission_frame(result, by_name[name]) if name in by_name else None,
+                          dmap)
+
+
 FIT_VERSION = '11'                  # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset); 8: exact shutter edges in the optics tables (optics engine 2); 9: a SRCYPOS placeholder found with the bar offset applied; 10: no detection gate and fits on a bound kept (profile_chain), the master-background scale term (mbkg_extraction); 11: the reported flux is the light that entered the shutter across the dispersion (no 0.8" circle)
 

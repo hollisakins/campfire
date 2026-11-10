@@ -293,6 +293,26 @@ def test_reported_factor_is_one_for_a_centred_point_source_anywhere_along_the_sl
         assert np.allclose(PF.reported_factor(R, np.array([1.0, 2.0, 4.0])), 1.0, atol=1e-3)
 
 
+def test_transmission_is_one_in_the_open_shutters_and_zero_behind_the_bars():
+    """The transmission frame is the source's light through the MSA over its light with no
+    MSA: with the stand-in's hard edges, one inside every open shutter of the exposure,
+    zero on the bars between them and beyond the slitlet's ends, and NaN where the source
+    puts almost no light."""
+    from campfire_pipeline.nirspec.constants import MSA_SLIT_PITCH
+    exps = _exposures(src_y=0.0)
+    R = _truth_result(exps, dict(centre=0.0, drift=0.0, width=0.6, width_change=0.0), [0, 0, 0], 1.0)
+    for k, e in enumerate(exps):
+        T = PF.transmission_frame(R, k)
+        assert T.shape == e.y.shape
+        near = np.abs(e.y - np.round(e.y / MSA_SLIT_PITCH) * MSA_SLIT_PITCH)
+        shutter = np.round(e.y / MSA_SLIT_PITCH).astype(int)
+        lit = np.isfinite(T)
+        opened = np.isin(shutter, e.open_k) & (near < PF.OPEN_HALF - 0.01)
+        assert np.allclose(T[lit & opened], 1.0)
+        assert np.allclose(T[lit & ~opened & ((near > PF.OPEN_HALF + 0.01) | ~np.isin(shutter, e.open_k))], 0.0)
+        assert (lit & opened).sum() > 0 and (~lit).sum() > 0
+
+
 def test_reported_factor_is_the_light_between_the_shutter_edges():
     """A round Gaussian of sigma s arcsec at x = SRCXPOS * X_PITCH keeps the share between the
     shutter edges +-X_HALF (s widened by the position scatter X_BLUR): the share falls as the
