@@ -38,7 +38,7 @@ Each flux column is given in µJy (`fnu_*`) and in erg s⁻¹ cm⁻² Å⁻¹ (`
 |---|---|
 | `wave` | Wavelength, µm |
 | `fnu` | Adopted spectrum; by default `fnu_prof` (see `EXTRACT`) |
-| `fnu_prof` | Forward-model extraction: flux of the fitted source within a 0.8″ aperture, without contamination subtraction |
+| `fnu_prof` | Forward-model extraction: flux of the fitted source that entered the shutter across the dispersion (all of it along the slit), without contamination subtraction |
 | `fnu_contam` | Predicted contamination in `fnu_prof`; NaN where none was predicted or where the source could not be separated from a neighbor. Its uncertainty is systematic and not included in `fnu_err` |
 | `fnu_opt` | Optimal extraction: flux entering the shutter, with the `jwst` point-source path-loss correction |
 | `fnu_3px`, `fnu_4px`, `fnu_5px` | Boxcar extractions over 3, 4 and 5 rows, with the `jwst` point-source path-loss correction |
@@ -83,7 +83,7 @@ The extraction adds the keywords below. Lengths along the slit are in units of t
 |---|---|
 | `EXTRVER` | Extraction model version |
 | `OPTICVER` | MSA optics model version |
-| `FLUXAPER` | Diameter of the aperture the reported flux refers to, arcsec |
+| `FLUXWID` | Open shutter width across the dispersion the reported flux refers to, arcsec |
 | `SLOSSY`, `SLOSSX` | Path loss along the slit (`optics` / `jwst`) and across the shutter (`corrected` / `jwst`) |
 | `BAROFF` | Bar offset applied |
 | `SHAPE`, `SHAPEWHY` | Profile adopted (`own`, `prism`, `grating`, `default`) and the reason |

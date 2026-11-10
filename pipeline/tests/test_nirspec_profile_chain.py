@@ -341,11 +341,12 @@ def test_a_centre_on_its_bound_is_kept_and_flagged():
     assert C.shape == 'own' and C.reason == 'own_fit;bound:centre'
 
 
-def test_a_width_on_its_bound_is_kept_and_reports_more_of_the_flux_than_the_default():
+def test_a_width_on_its_bound_is_kept_and_the_reported_flux_hardly_depends_on_the_width():
     """A bright source wider than the width bound: the own fit ends on the width bound and
     is kept, flagged (user, 2026-11-10; until then a width on its bound fell back to the
-    default shape). The fit on its bound reports more of the source's flux than the
-    default shape would: the reason for keeping it."""
+    default shape). The reported flux is the light that entered the shutter, which the data
+    measure: the fit on its bound and the default shape both report it to about 10 %, within
+    2 % of each other, though neither has the true width."""
     exps = T._exposures(src_y=0.0)
     R_true = _fill(exps, dict(centre_offset=0.0, width=0.35), 60.0, seed=8)
     C = PC.choose_shape(exps, _cfg(bound_width_max=0.2), is_prism=True)
@@ -359,7 +360,7 @@ def test_a_width_on_its_bound_is_kept_and_reports_more_of_the_flux_than_the_defa
         return float(np.sum((R.flux * PF.reported_factor(R, R.lam))[g]))
     truth = reported(R_true)
     own, default = reported(C.result) / truth, reported(C.candidates['default']) / truth
-    assert abs(own - 1) < abs(default - 1)
+    assert abs(own - 1) < 0.15 and abs(default - 1) < 0.15 and abs(own - default) < 0.02
 
 
 def test_bound_bits_never_change_the_choice():
@@ -412,7 +413,7 @@ def test_header_flags_written():
     from campfire_pipeline.nirspec import extraction_cards as XC
     from campfire_pipeline.nirspec.profile_product import shape_header
     h = shape_header(C)
-    for key, typ in [('EXTRVER', str), ('OPTICVER', str), ('FLUXAPER', float), ('SHAPE', str), ('SHAPEWHY', str),
+    for key, typ in [('EXTRVER', str), ('OPTICVER', str), ('FLUXWID', float), ('SHAPE', str), ('SHAPEWHY', str),
                      ('SHAPESRC', str), ('DETSNR', float), ('SRCCEN', float), ('SRCCENPL', float),
                      ('SRCDRIFT', float), ('SRCWIDTH', float), ('SRCDWID', float), ('SRCPIVOT', float),
                      ('SRCCHROM', bool), ('SRCCHI2', float)]:

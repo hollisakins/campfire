@@ -104,7 +104,6 @@ CENTRE_LAW = {
 }
 
 W_FLOOR = 0.003
-REPORT_APERTURE = 0.8      # arcsec across (1.5 shutter lengths): the reported flux is the source's light inside it
 
 
 def open_shutters(shutter_state, slit_ymin, slit_ymax):
@@ -1386,18 +1385,28 @@ def model_frame(result, k, unit=False, applied_pathloss=True, common=False):
 
 
 def reported_factor(result, lam):
-    """Reported-flux factor: the share of the fitted source's light inside a circle
-    REPORT_APERTURE across, centred on it, 1 - exp(-R^2 / 2 sigma^2) for the round Gaussian
-    of the fitted width (sigma in arcsec at each wavelength).
+    """Reported-flux factor: the share of the fitted source's light that falls within the
+    shutter's open width across the dispersion (the shutter's edges, +-optics.X_HALF about
+    its centre), and anywhere along the slit. For the round Gaussian of the fitted width
+    sigma (arcsec, at each wavelength) at the planned position x = SRCXPOS * X_PITCH of each
+    exposure: Phi((X_HALF - x) / s) - Phi((-X_HALF - x) / s), s = sqrt(sigma^2 + X_BLUR^2)
+    with the scatter of the true position about the planned one that the optics model's
+    along-dispersion tables carry, averaged over the exposures holding the source.
 
     The true spectrum (the source's total light) times this factor is the reported flux:
-    the whole source up to a bound, so a wide or nearly uniform source does not depend on
-    the model far beyond the slitlet (user, 2026-11-04). For a point source it is one."""
-    from campfire_pipeline.nirspec.optics import SLIT
+    the light that entered the shutter, so nothing is extrapolated across the shutter, where
+    the data do not constrain the shape (user, 2026-11-10; replaced the 0.8" circle). Along
+    the slit the fitted profile is measured. A point source at the centre gives one; an
+    off-centre source gives less, as its light in the shutter is less."""
+    from scipy.special import erf
+    from campfire_pipeline.nirspec.optics import SLIT, X_BLUR, X_HALF, X_PITCH
     M = result.model
     p, _ = _qvec(result)
-    sigma = M.width(p, np.asarray(lam, float)) * SLIT
-    return 1.0 - np.exp(-(0.5 * REPORT_APERTURE) ** 2 / (2.0 * sigma ** 2))
+    lam = np.asarray(lam, float)
+    s = np.sqrt((M.width(p, lam) * SLIT) ** 2 + X_BLUR ** 2) * np.sqrt(2.0)
+    xs = [e.src_x_jwst * X_PITCH if np.isfinite(e.src_x_jwst) else 0.0
+          for e in M.exps if e.has_source] or [0.0]
+    return np.mean([0.5 * (erf((X_HALF - x) / s) - erf((-X_HALF - x) / s)) for x in xs], axis=0)
 
 
 def boxcar_factor(result, lam):
@@ -1466,5 +1475,5 @@ def drizzle_arrays(frame_of, dmap):
     return dmap.drizzle({name: frame_of(name) for name in dmap.names})['data']
 
 
-FIT_VERSION = '10'                  # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset); 8: exact shutter edges in the optics tables (optics engine 2); 9: a SRCYPOS placeholder found with the bar offset applied; 10: no detection gate and fits on a bound kept (profile_chain), the master-background scale term (mbkg_extraction)
+FIT_VERSION = '11'                  # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset); 8: exact shutter edges in the optics tables (optics engine 2); 9: a SRCYPOS placeholder found with the bar offset applied; 10: no detection gate and fits on a bound kept (profile_chain), the master-background scale term (mbkg_extraction); 11: the reported flux is the light that entered the shutter across the dispersion (no 0.8" circle)
 

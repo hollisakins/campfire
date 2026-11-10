@@ -1391,7 +1391,7 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     SCI in MJy): it is not normalised per column, so its in-aperture sum carries
     the aperture and path-loss correction. The weighted fit of the data on the
     aperture rows, sum(P D / V) / sum(P^2 / V), is the reported flux directly: the
-    source's light inside ``profile_fit.REPORT_APERTURE`` (``reported_factor``), with the
+    source's light that entered the shutter across the dispersion (``reported_factor``), with the
     model's loss across the slit and its along-dispersion correction. ``fnu_opt`` stays on
     jwst's point-source calibration: for a point source at the shutter centre the two
     agree up to the along-dispersion correction; off centre they differ by the ratio of

@@ -284,29 +284,38 @@ def test_real_light_that_departs_from_the_model_is_not_masked():
     assert M.use.all() and snr > 0
 
 
-def test_reported_factor_is_one_for_a_point_source_anywhere():
-    """The reported flux is the source's light inside REPORT_APERTURE: all of a point
-    source's, wherever it sits in the shutter."""
+def test_reported_factor_is_one_for_a_centred_point_source_anywhere_along_the_slit():
+    """The reported flux is the source's light that entered the shutter across the
+    dispersion: all of a point source's at the shutter centre, wherever it sits along the slit."""
     for y in (0.0, 0.3):
         exps = _exposures(src_y=y)
         R = _truth_result(exps, dict(centre=y, drift=0.0, width=PF.W_FLOOR, width_change=0.0), [0, 0, 0], 1.0)
-        assert np.allclose(PF.reported_factor(R, np.array([1.0, 2.0, 4.0])), 1.0)
+        assert np.allclose(PF.reported_factor(R, np.array([1.0, 2.0, 4.0])), 1.0, atol=1e-3)
 
 
-def test_reported_factor_bounds_a_wide_source():
-    """A round Gaussian of sigma s arcsec keeps 1 - exp(-R^2 / 2 s^2) inside the circle of
-    radius R = REPORT_APERTURE / 2, and the share falls as the source widens."""
-    from campfire_pipeline.nirspec.optics import SLIT
-    exps = _exposures()
+def test_reported_factor_is_the_light_between_the_shutter_edges():
+    """A round Gaussian of sigma s arcsec at x = SRCXPOS * X_PITCH keeps the share between the
+    shutter edges +-X_HALF (s widened by the position scatter X_BLUR): the share falls as the
+    source widens, and as it moves off centre, most for a compact source."""
+    from scipy.special import erf
+    from campfire_pipeline.nirspec.optics import SLIT, X_BLUR, X_HALF, X_PITCH
     lam = np.array([1.0, 2.0, 4.0])
-    shares = []
-    for w in (0.1, 0.4, 1.5):
-        R = _truth_result(exps, dict(centre=0.0, drift=0.0, width=w, width_change=0.0), [0, 0, 0], 1.0)
-        f = PF.reported_factor(R, lam)
-        s = w * SLIT
-        assert np.allclose(f, 1.0 - np.exp(-(0.5 * PF.REPORT_APERTURE) ** 2 / (2 * s ** 2)))
-        shares.append(f[0])
-    assert shares[0] > 0.99 > shares[1] > shares[2] > 0.1
+
+    def expect(w, x):
+        s = np.sqrt((w * SLIT) ** 2 + X_BLUR ** 2) * np.sqrt(2)
+        return 0.5 * (erf((X_HALF - x) / s) - erf((-X_HALF - x) / s))
+    shares = {}
+    for srcx in (0.0, 0.2):
+        exps = _exposures()
+        for e in exps:
+            e.src_x_jwst = srcx
+        for w in (0.1, 0.4, 1.5):
+            R = _truth_result(exps, dict(centre=0.0, drift=0.0, width=w, width_change=0.0), [0, 0, 0], 1.0)
+            f = PF.reported_factor(R, lam)
+            assert np.allclose(f, expect(w, srcx * X_PITCH))
+            shares[srcx, w] = f[0]
+    assert shares[0.0, 0.1] > 0.9 > shares[0.0, 0.4] > shares[0.0, 1.5] > 0.1
+    assert shares[0.2, 0.1] / shares[0.0, 0.1] < shares[0.2, 1.5] / shares[0.0, 1.5] < 1.0
 
 
 def test_boxcar_factor_is_what_the_model_frames_hold():

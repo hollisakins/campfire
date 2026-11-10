@@ -61,7 +61,7 @@ Version 2 changes six things.
 3. **A forward-model extraction.** Each source is a Gaussian whose center and width vary
    smoothly with wavelength, seen through a diffraction model of the MSA, in every exposure and
    in its negative images from the nod subtraction. `fnu` is extracted with this model as the
-   weights. The reported flux of an extended source is its light in a circle 0.8 arcsec across.
+   weights. The reported flux of an extended source is its light that entered the shutter across the dispersion (all of it along the slit).
 4. **Other slitlets' light** is solved jointly with each source's neighbors and reported as its
    own column, `fnu_contam`, never subtracted from `fnu`.
 5. **Same-slitlet neighbors.** A background exposure that puts a cataloged neighbor on the
@@ -541,12 +541,19 @@ sources move by under 0.3 %, default-shape sources near a bar by a median +0.2 t
 
 ### 6.5 The reported flux
 
-`fnu_prof` (and `fnu`) is the fitted source's light inside a circle 0.8 arcsec across (1.5 shutter
-pitches), centered on it: the round Gaussian of the fitted width before the PSF
-(`profile_fit.REPORT_APERTURE`, card `FLUXAPER`). For a point source this is all of its light. The
-aperture bounds how far a wide source is extrapolated past what the shutter saw. The fit's spectrum
-is the source's total light (along the slit from the model at the fitted width, along the
-dispersion as in 6.3); `reported_factor` scales it to the aperture.
+`fnu_prof` (and `fnu`) is the fitted source's light that entered the shutter across the dispersion
+(between the shutter's edges, `optics.X_HALF` either side of its centre, card `FLUXWID`), and all of
+it along the slit: the round Gaussian of the fitted width before the PSF, at each exposure's planned
+position SRCXPOS (widened by the position scatter `X_BLUR` the along-dispersion tables carry),
+averaged over the exposures. A point source at the shutter centre gives all of its light; an
+off-centre source gives less, as less of it entered. Along the slit the fitted profile is measured;
+across the shutter the data do not constrain the shape, so the reported flux stops at the shutter's
+edges instead of extrapolating the round assumption beyond them (replaced a 0.8 arcsec circle,
+2026-11-10). It is not a total flux and depends on where the source sat in its shutter:
+comparisons with photometry calibrate it, as for any slit spectrum. A consequence: the reported
+flux hardly depends on the fitted width, since it is close to what the shutter measured. The fit's
+spectrum is the source's total light (along the slit from the model at the fitted width, along the
+dispersion as in 6.3); `reported_factor` scales it to the light in the shutter.
 
 `fnu_opt`, `fnu_3px` and the cal and s2d files stay on jwst's point-source calibration: the light
 entering the shutter.
@@ -1051,7 +1058,7 @@ name.
 - Cards: `EXTRACT` / `EXTRWHY`, `CONTSTAT`; the extraction's cards, named by what they hold and
   listed with their descriptions in `nirspec/extraction_cards.py`, the one list the writers, the
   stage-3 copy and the FITS reference follow: versions and calibration (`EXTRVER`, `OPTICVER`,
-  `FLUXAPER`, `SLOSSY`, `SLOSSX`, `BAROFF`), the profile (`SHAPE`, `SHAPEWHY`, `SHAPESRC`, `PA_V3`,
+  `FLUXWID`, `SLOSSY`, `SLOSSX`, `BAROFF`), the profile (`SHAPE`, `SHAPEWHY`, `SHAPESRC`, `PA_V3`,
   `DETSNR`, `SRCCEN`, `SRCWIDTH`, ...), other sources' light (`NCONTAM`, `CONTFRAC`, `CONTSIG`,
   `CONTNSEP`, `CONTBOX`, `SELFSUB`, `NFOPEN`) and the neighbor scan (`NBR*`); the master-background
   spectrum (`NEXP`, `NEXPBKG`, `MBKGPREF`, `MBKGWHY`, `MBKGNEXP`). A card that does not apply is

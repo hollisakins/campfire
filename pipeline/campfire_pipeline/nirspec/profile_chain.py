@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from campfire_pipeline.nirspec import optics as O
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec import profile_timing as TM
 
@@ -161,7 +162,7 @@ class ChainResult:
         c = {
             'EXTRVER': PF.FIT_VERSION,
             'OPTICVER': PF.optics_version(),
-            'FLUXAPER': PF.REPORT_APERTURE,
+            'FLUXWID': 2 * O.X_HALF,
             'SHAPE': self.shape,
             'SHAPEWHY': self.reason[:40],
             'SHAPESRC': self.prism_product[:40],

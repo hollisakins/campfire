@@ -91,9 +91,12 @@ Release procedure: edit the `## Unreleased` section below, then run
     `bar_offset = "measure"`, `BAROFF`), over the disperser's full wavelength range, with the
     quadrant pattern counted once, and again when stage 2a remakes the observation. Tables are built on first use and cached under
     `$CAMPFIRE_ROOT/cache/optics`.
-  - **The reported flux of an extended source is its light in 0.8 arcsec.** `fnu_prof` (and
-    `fnu`) is the fitted source's light inside a circle 0.8 arcsec across (`FLUXAPER`), not the light
-    in the shutter on jwst's point-source calibration. Point sources read the same either way;
+  - **The reported flux of an extended source is its light that entered the shutter across the
+    dispersion.** `fnu_prof` (and `fnu`) is the fitted source's light between the shutter's edges
+    across the dispersion, at its planned position, and all of it along the slit (`FLUXWID`), not
+    the light in the shutter on jwst's point-source calibration. (An earlier revision of this branch reported the light in a 0.8
+    arcsec circle, which extrapolated the round shape across the shutter; the comparison below
+    was made with that circle.) Point sources read the same either way;
     extended ones read higher. On `ember_cosmos_p1` PRISM sources against COSMOS photometry, in six bins of fitted
     width, the reported flux is 0.68-1.03 of the catalog's total flux, where the light in the shutter
     read 0.87 for the most compact bin down to 0.32 for the widest. Against the catalog's own 0.8
@@ -180,7 +183,7 @@ Release procedure: edit the `## Unreleased` section below, then run
     New cards `EXTRACT`/`EXTRWHY`, `CONTSTAT`, and the extraction's cards, named by what they
     hold and listed with their descriptions in `nirspec/extraction_cards.py` (the one list the
     writers, the stage-3 copy and the docs' FITS reference follow): versions and calibration
-    (`EXTRVER`, `OPTICVER`, `FLUXAPER`, `SLOSSY`/`SLOSSX`, `BAROFF`), the profile (`SHAPE`,
+    (`EXTRVER`, `OPTICVER`, `FLUXWID`, `SLOSSY`/`SLOSSX`, `BAROFF`), the profile (`SHAPE`,
     `SHAPEWHY`, `SHAPESRC`, `PA_V3`, `DETSNR`, `SRC*`), other sources' light (`NCONTAM`,
     `CONTBOX`, `CONTFRAC`, `CONTSIG`, `CONTNSEP`, `SELFSUB`, `NFOPEN`) and the neighbor scan
     (`NBR*`). A card that does not apply is left out, not written as -999. The fit's internal
