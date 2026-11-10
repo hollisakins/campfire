@@ -7,7 +7,8 @@ the light of other slitlets, the master-background spectrum, and the boundary wi
 references. It is written for the reviewers of the pull request and for whoever maintains the
 code afterwards.
 
-- The main text (sections 1 to 12) describes what ships and the measurements behind it.
+- The main text (sections 1 to 12) describes what ships and the measurements behind it; section 13
+  records a stretch goal for later.
 - Appendix A lists what was built or tried and not shipped, and why.
 - Appendix B is the record of the user's decisions, with dates.
 - Appendix C lists errors found in earlier results and how they were corrected.
@@ -1431,6 +1432,31 @@ marks made with the old ordinal buttons do not show there.
 Running the pipeline on the reduction machine: stage 1 at most 6 workers, stage 2a-sized work up to
 12 when nothing else heavy runs, one heavy chain at a time; isolated roots set `CRDS_PATH`
 explicitly.
+
+---
+
+## 13. Stretch goal: user source models (future work)
+
+**Goal.** A user fits their own source model to one target's data with the same forward model stage 3
+uses: a Sérsic profile, a bulge plus a disk, or clumps. The end state: the web portal offers a target's
+intermediate products for download, and the user points their own agent at them and asks it to "fit this
+with a Sérsic model."
+
+The machinery exists today (`profile_fit.ProfileModel` and its design matrix, the optics model, the
+exposure loading), but it is internal and undocumented. It would need some generalization, and
+documenting as a public API of the `cfpipe` package. What it would take:
+
+1. **A small documented layer** over the forward model: load a target's exposures, render a source
+   model through the optics and shutters, and solve for the spectrum at a given shape.
+2. **Image models beyond round Gaussians:** elliptical components, or an arbitrary image such as a
+   NIRCam stamp.
+3. **A per-target bundle of intermediate products:** everything the forward model needs for one target,
+   so a user can run it without the archive.
+4. **Web access to that bundle.** Access rules probably allow it already; it is not exposed.
+5. **Agent-friendly documentation:** what the bundle holds, the API, and worked examples.
+
+**Open.** The exact form of the intermediate products, and how this relates to the 2-D transmission or
+profile-model products we will ship (still under discussion).
 
 ---
 
