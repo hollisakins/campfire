@@ -106,7 +106,7 @@ The extraction adds the keywords below. Lengths along the slit are in units of t
 | `NBRPROP` | Background exposures proposed for exclusion |
 | `NBRXDISP` | Whether the other disperser's scan agrees (`single`, `agree`, `disagree`, `none`) |
 
-The `SPEC1D_MBKG` extension header carries the same keywords for the master-background fit, plus `NFOPEN`, the number of failed-open shutters included on the trace, and `MBKGSCL` / `MBKGSCLE`, the correction to the master background's level fitted with the source (0.01 = 1 %) and its uncertainty; those in the primary header refer to the nod-subtracted spectrum.
+The `SPEC1D_MBKG` extension header carries the same keywords for the master-background fit, plus `NFOPEN`, the number of failed-open shutters included on the trace, and `MBKGSCL` / `MBKGSCLE`, the correction to the master background's level fitted with the source (0.01 = 1 %) and its uncertainty (`MBKGSCL` is 0 and `MBKGSCLC` holds the fitted value when it reached the 3 % cap and was not applied); those in the primary header refer to the nod-subtracted spectrum.
 
 ## Redshift file
 

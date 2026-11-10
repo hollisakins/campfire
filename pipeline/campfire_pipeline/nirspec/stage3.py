@@ -1218,6 +1218,9 @@ def opt_ext_single_source(
     exposures = {c: list(exp.data[c]) for c in exp.data.columns.names}
     nexp, nexp_bkg = MX.exposure_counts(exposures)
     primary.header['NEXP'] = (nexp, 'Exposures combined')
+    from campfire_pipeline.nirspec.variance import stamps_of
+    primary.header['CFVARPS'] = (stamps_of([os.path.join(workspace_dir, str(f).strip()) for f in exposures.get('filename', [])]),
+                                 'rate Poisson variance')
     if nexp_bkg is not None:
         primary.header['NEXPBKG'] = (nexp_bkg, 'Fewest background exposures subtracted from one')
     mbkg = []
@@ -1843,6 +1846,9 @@ def combine_per_eg_spectra(
     exposures = {c: list(exp_hdu.data[c]) for c in exp_hdu.data.columns.names}
     nexp, nexp_bkg = MX.exposure_counts(exposures)
     primary.header['NEXP'] = (nexp, 'Exposures combined')
+    from campfire_pipeline.nirspec.variance import stamps_of
+    primary.header['CFVARPS'] = (stamps_of([os.path.join(workspace_dir, str(f).strip()) for f in exposures.get('filename', [])]),
+                                 'rate Poisson variance')
     if nexp_bkg is not None:
         primary.header['NEXPBKG'] = (nexp_bkg, 'Fewest background exposures subtracted from one')
     mbkg = []

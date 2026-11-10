@@ -295,3 +295,18 @@ def test_the_sky_leaves_out_the_stuck_shutters_of_the_merged_list():
                (1, 1, 4): Entry('web')}                    # marked from the web
     calls = {(1, 1, 1): {'stuck': True}, (1, 1, 2): {'stuck': False}, (1, 1, 5): {'stuck': True}}
     assert R.merged_stuck(entries, calls) == {(1, 1, 3), (1, 1, 4), (1, 1, 5)}
+
+
+def test_the_skip_key_follows_the_rate_files_poisson_variance(tmp_path):
+    """Step 1 reruns when the rate file's Poisson variance is rewritten (``MBKGVARP`` = its
+    ``CFVARPS``, nirspec/variance.py), which leaves ``CFBKGDT`` as it was."""
+    rate = str(tmp_path / 'jw00001001001_03101_00001_nrs1_rate.fits')
+    h = fits.Header()
+    h['CFBKGDT'] = '2026-11-10T00:00:00'
+    fits.PrimaryHDU(header=h).writeto(rate)
+    before = R._inputs_cards(rate, '/t/bs.fits', (0.96, None), 'h')
+    assert before['MBKGVARP'][0] == 'N/A'
+    with fits.open(rate, mode='update') as hd:
+        hd[0].header['CFVARPS'] = 'nbr-mean-v1'
+    after = R._inputs_cards(rate, '/t/bs.fits', (0.96, None), 'h')
+    assert after['MBKGVARP'][0] == 'nbr-mean-v1' and after['MBKGBKDT'] == before['MBKGBKDT']

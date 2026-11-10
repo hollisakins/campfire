@@ -693,8 +693,9 @@ of 6.9):
   +0.23 +- 0.004 and 549120 +0.90 +- 0.003. The frames measure the scale to a few 0.1 %, so a 1 %
   allowance does not hold it, and any light shaped like the master background across the slitlet
   (an extended source's wings, a neighbor or failed-open light that was not subtracted) is taken
-  as background and then removed from `SCI_MBKG`. Check these in 2-D panels with the contamination
-  prediction subtracted, as stage 3 does, before production; a cap or a flag on |MBKGSCL| far
+  as background and then removed from `SCI_MBKG`. Decided (user): the hard cap at 0.03 (6.9). Still
+  worth a look in 2-D panels with the contamination prediction subtracted, as stage 3 does; the
+  note as first written: a cap or a flag on |MBKGSCL| far
   beyond the measured 1-3 % spread may be needed.
 
 **Why a chain.** Faint sources do not constrain their own shape, and a joint solve with wrong
@@ -832,12 +833,22 @@ again.
     extraction from it carry the correction; the failed-open solve removes it first too. A 1-D
     combined product's stacked `SCI_MBKG` is drizzled from the stacked crf without it (its 1-D
     columns are the groups' corrected ones).
-  - Composition with the pixel-variance fix (`scratch/claude/variance_fix/plan.md`, separate
-    change): the term's behavior above was measured with variances smoothed along the dispersion.
-    With jwst's own-pixel variances the weighted fit reads a master background 1.3-1.9 % low, and
-    the term absorbs that too (s near -0.015, the allowance partly binding); once the variances are
-    fixed, s measures the master background's own level error. Nothing in the term depends on how
-    the variances were made.
+  - The cap (user, 2026-11-10; `mbkg_scale_cap` 0.03). A fitted |s| of 0.03 or more (in the shape
+    fit on the cleaned frames, the spectrum on the frames as they are, or the nodded shape's refit)
+    is not a level error, which the slitlet study measured within 1-3 %, but light the term would
+    take for background: on zenith_p15, with other sources' light not subtracted, the extended
+    547856 fitted +0.23 and 549120 +0.90, the frames measuring s to a few 0.1 %, so the 1 %
+    allowance alone does not hold it. Then s is set to zero and everything is fitted again without
+    the term (the shape, the detection S/N, the spectrum); `fit_product` takes nothing out of
+    `SCI_MBKG` or the failed-open solve. Cards: `MBKGSCL` = 0 and `MBKGSCLC` = the value fitted
+    (absent when the cap did not apply). A hard rule, chosen over a flag so a product never carries
+    a correction of that size.
+  - Composition with the pixel-variance fix (6.11, same branch): the term's behavior above was
+    measured with variances smoothed along the dispersion. With jwst's own-pixel variances the
+    weighted fit reads a master background 1.3-1.9 % low, and the term absorbed that (s near -0.019
+    on two faint zenith_p15 products). With the variances from the rate files' neighbor rule, s
+    measures the master background's own level error. Nothing in the term depends on how the
+    variances were made, and no smoothing is done on the frames themselves.
 - Failed-open shutters on the source's trace (`failed_open.py`): per exposure and shutter, a
   spectrum along detector columns times a flat profile over the shutter, solved with the source on
   the frames minus the other sources' predicted light, and added to the master-background
@@ -877,6 +888,66 @@ model images agree with the old per-image `ResampleSpecStep` calls to 1-2 float3
 each call's grid weighted by the image drizzled). `fnu` moves by at most 1.5e-7 relative. The
 separate master-background Spec3 is gone. Without a crf (a named rare condition) there is no
 master-background spectrum.
+
+### 6.11 Pixel variances
+
+`variance.py` (user decision 2026-11-10; plan and validation in
+`scratch/claude/variance_fix/plan.md` sections 3a and 5, figure `window_guard.png`, scripts
+`scan_rate.py`, `scan_lines.py`).
+
+**Why.** jwst's ramp fit sets each pixel's Poisson variance from that pixel's own counts. A pixel
+that came out low reports a small variance and gets a large weight, so any fit weighted by
+1 / variance is pulled low by about one electron per pixel per exposure: the background's scale on
+clean empty shutters read -0.96 % (zenith_p15 PRISM) and -3.89 % (ember_cosmos_p1 G395M) against
+equal weights; on a frame minus the master background a faint source reads tens of percent low
+(Monte Carlo: -32 % at 10 e per column per exposure). `profile_fit.nod_variance` was already nearly
+unbiased for nod differences; stage 2b's variance, the s2d ERR and the master-background frames
+were not.
+
+**The rule.** In the rate frame, once, after stage 1's background subtraction:
+1. neighbors are the usable lit pixels (not in `CFBKGMASK`, no DO_NOT_USE, finite) within +-5
+   columns of the same detector row (a row is the dispersion direction: on PRISM and G395M the slit
+   position moves 0.002-0.009 rows per column), the pixel itself left out;
+2. excess = (SCI - median SCI of the neighbors) / sqrt(median variance of the neighbors + VR);
+3. the Poisson variance is the mean of the neighbors' jwst variances, leaving out neighbors whose
+   own excess is above 5 (the median reads 4-6 % low at these counts; this mean matches jwst's
+   level within 0.5 % in every band and edge class of both data sets);
+4. a pixel keeps jwst's own variance when its excess is above 5 and the pixel above or below it
+   has excess above 2 (light across the slit: a line or a source). A lone high pixel (cosmic-ray
+   residue, hot pixel: most of the 0.13-0.29 % of empty-shutter pixels above 5 sigma) gets its
+   neighbors' variance.
+Unlit pixels keep jwst's. The constants are module constants (`HALF`, `EXCESS_SIGMA`,
+`SUPPORT_SIGMA`), stamped in the header, not user configuration.
+
+**Results of the validation** (plan section 5): every window from +-2 to +-15 removes the bias
+(PRISM +0.44 against +0.47 for equal weights; G395M +0.57 against +0.59); +-5 follows structure along
+the row best overall. Without the guard, bright lines take the continuum's variance (errors x0.65-0.71,
+residual spread doubled); with it, line fluxes match jwst's within 0.1-0.4 % and errors within 1-2 %.
+The guard with support across the slit leaves -0.01 % (PRISM) / -0.02 % (G395M) of bias.
+
+**Where.** `variance.apply_to_rate` at the end of `stage1.subtract_background_from_rate_file`
+(so `masks.bkgsub_with_masks` and `ensure_fresh` get it); `variance.ensure_variance` at stage 2a's
+start for rate files without `CFVARPS` or with another version; `masks.restore_pre_bkgsub` puts
+jwst's back. jwst's array stays in the rate file as `VAR_POISSON_JWST` (+16 MB per rate file) and
+every rewrite starts from it, so the result is the same however often it runs. `ERR` =
+sqrt(VP + VR) (before, stage 1 rescaled `VAR_RNOISE` without rewriting `ERR`). Staleness: canonicals
+and bkgslits files carry `CFVARPS` and stage 2a remakes them when it differs from their rate's
+(`_canonical_variance_changed`); step 1 keys on `MBKGVARP`; step 2, stage 2b, the profile fit and
+Spec3 follow the remade canonicals (step 2 through the stage-2a time card); the `_spec.fits` records
+the canonicals' `CFVARPS`.
+
+**Validating it** (plan 3d, after a rerun from stage 2a): rate-level 1/ERR^2 against equal weights
+per band (within about 0.1 %); null tests on empty shutters with the production extraction, nodded
+and master-background; the master-background scale term's `MBKGSCL` should move from about -0.019
+to scatter about zero on faint products; `product_check.py` weighted minus equal-weight near 0 sigma;
+line fluxes and errors of bright-line sources within 1 %; outlier-flag counts (expect a small rise,
+inspect the new ones in images); shutter-fit amplitudes up 1-2 % on PRISM with no call flipping.
+
+**Not done / open.** Only PRISM and G395M were validated (the medium gratings share the detector
+orientation, assumed). Standalone fixed-slit canonicals carry no `CFVARPS` and are not remade by
+it. The master-background fit's variance still leaves out the master background's own variance,
+which its drizzle includes (plan open question 3). `mbkg_extraction._shifted_median` was not moved
+into `variance.py` (it works along both axes; the plan's suggested merge is cosmetic).
 
 ---
 

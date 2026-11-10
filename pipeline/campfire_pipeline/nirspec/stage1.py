@@ -524,8 +524,12 @@ def subtract_background_from_rate_file(
     # so deleting after save would leave dangling refs. In the normal flow these
     # extensions aren't present here (restore_pre_bkgsub clears them); this
     # protects against any inconsistent state surviving into a re-run.
+    # A leftover VAR_POISSON_JWST (nirspec/variance.py) is put back as VAR_POISSON first, so
+    # the subtraction starts from jwst's variance.
     with fits.open(rate_file, mode='update') as _hdul:
-        for name in ('CFBKG', 'CFBKGMASK'):
+        if 'VAR_POISSON_JWST' in _hdul:
+            _hdul['VAR_POISSON'].data[...] = _hdul['VAR_POISSON_JWST'].data
+        for name in ('CFBKG', 'CFBKGMASK', 'VAR_POISSON_JWST'):
             try:
                 del _hdul[name]
             except KeyError:
@@ -807,6 +811,12 @@ def subtract_background_from_rate_file(
         hdr['CFBKGDT'] = (time.strftime('%Y-%m-%dT%H:%M:%S'), 'Timestamp of last bkg sub')
         hdul.append(fits.ImageHDU(bkg_total.astype(np.float32), name='CFBKG'))
         hdul.append(fits.ImageHDU(mask.astype(np.uint8), name='CFBKGMASK'))
+
+    # The Poisson variance from each pixel's row neighbors, and ERR = sqrt(VP + VR) with the
+    # rescaled read noise (nirspec/variance.py); jwst's array is kept as VAR_POISSON_JWST.
+    from campfire_pipeline.nirspec import variance as V
+    frac = V.apply_to_rate(rate_file)
+    log(f'Poisson variance from row neighbors ({V.VERSION}); {100 * frac:.3f} % of lit pixels keep their own')
 
 
 def run_stage1_single_uncal(

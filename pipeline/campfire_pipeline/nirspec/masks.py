@@ -287,7 +287,9 @@ def restore_pre_bkgsub(rate_file: str) -> None:
     cleared, the ``CFBKG`` / ``CFBKGMASK`` extensions are dropped (they
     correspond to a bkgsub that no longer holds), so are the master-background
     step-1 tables (``master_bkg_rate.STEP1_EXTENSIONS``, measured on the frame
-    being undone; step 1 runs again before stage 2a), and any stale
+    being undone; step 1 runs again before stage 2a), VAR_POISSON goes back to
+    jwst's (``VAR_POISSON_JWST``, dropped, with ERR = sqrt(VP + VR) and the
+    ``CFVAR*`` cards cleared; ``nirspec/variance.py``), and any stale
     ``CFMASK*`` sentinels are stripped so the re-apply can re-stamp from
     scratch.
 
@@ -318,13 +320,16 @@ def restore_pre_bkgsub(rate_file: str) -> None:
                 f"Re-run stage1 from uncal."
             )
         bkg = np.asarray(hdul["CFBKG"].data).copy()
+        # jwst's own Poisson variance, kept by nirspec/variance.py (absent in older rate files)
+        vp_jwst = np.asarray(hdul["VAR_POISSON_JWST"].data).copy() if "VAR_POISSON_JWST" in hdul else None
 
     # Clear the bkgsub header sentinels. Header keys carry no asdf refs, so
     # they are safe to strip with astropy; the CFBKG/CFBKGMASK *extensions*
     # are dropped through the datamodel below (see _drop_extra_fits).
+    from campfire_pipeline.nirspec.variance import CARDS as VAR_CARDS
     with fits.open(rate_file, mode="update") as hdul:
         hdr = hdul[0].header
-        for k in ("CFBKGSUB", "CFBKGRMS", "CFBKGDT", "CFMASKSH", "CFMASKDT", "CFMASKN"):
+        for k in ("CFBKGSUB", "CFBKGRMS", "CFBKGDT", "CFMASKSH", "CFMASKDT", "CFMASKN") + VAR_CARDS:
             if k in hdr:
                 del hdr[k]
 
@@ -340,8 +345,12 @@ def restore_pre_bkgsub(rate_file: str) -> None:
         #   reverse:  data += bkg;        var_rnoise /= var_rescale
         model.data = model.data + bkg
         model.var_rnoise = model.var_rnoise / float(var_rescale)
+        #   and the Poisson variance back to jwst's, ERR = sqrt(VP + VR) again
+        if vp_jwst is not None:
+            model.var_poisson = vp_jwst
+            model.err = np.sqrt(model.var_poisson + model.var_rnoise).astype(model.err.dtype)
         from campfire_pipeline.nirspec.master_bkg_rate import STEP1_EXTENSIONS
-        _drop_extra_fits(model, ("CFBKG", "CFBKGMASK", "CFDQMASK") + STEP1_EXTENSIONS)
+        _drop_extra_fits(model, ("CFBKG", "CFBKGMASK", "CFDQMASK", "VAR_POISSON_JWST") + STEP1_EXTENSIONS)
         model.save(rate_file)
 
 

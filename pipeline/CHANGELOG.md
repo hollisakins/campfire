@@ -233,6 +233,30 @@ Release procedure: edit the `## Unreleased` section below, then run
     extraction and recorded as `MBKGSCL` / `MBKGSCLE` in the `SPEC1D_MBKG` header. Sources about as
     wide as the slitlet pay for it (width 2.5 slit units: about 0.6 of their flux). The nodded
     spectrum has no term: the master background cancels in a nod difference.
+    A hard cap (`mbkg_scale_cap = 0.03`): a fitted |scale| of 0.03 or more is not a level error but
+    light the term would take for background (zenith_p15's extended 547856 fitted +0.23), so the
+    scale is set to zero and the shape, detection S/N and spectrum are fitted again without the term;
+    nothing is then taken out of `SCI_MBKG` or the failed-open solve, `MBKGSCL` is 0 and `MBKGSCLC`
+    holds the value fitted.
+  - *Pixel variances independent of each pixel's own noise* (`nirspec/variance.py`, `CFVARPS`
+    `nbr-mean-v1`). jwst sets a pixel's Poisson variance from its own counts, so every fit weighted
+    by 1 / variance favored pixels that came out low: the background's level read -1 % (PRISM) to
+    -3.9 % (G395M) low and faint sources on frames minus the master background up to tens of percent
+    low. Each rate file's `VAR_POISSON` is now the mean of jwst's variances of its usable lit
+    neighbors within +-5 columns of the same row, the pixel itself and neighbors more than 5 sigma
+    above their own neighbors left out; a pixel keeps jwst's own when it stands more than 5 sigma
+    above its neighbors and the pixel above or below it more than 2 sigma (a line or a source; a
+    lone high pixel gets its neighbors' variance and no longer protects itself from outlier
+    rejection). On zenith_p15 PRISM and ember_cosmos_p1 G395M empty shutters the background bias goes
+    from -0.96 % / -3.89 % to the equal-weight value within 0.03-0.05 %, the variance level matches
+    jwst's within 0.5 %, and line fluxes and errors match jwst's within 0.1-0.4 % and 1-2 %. jwst's
+    array is kept as `VAR_POISSON_JWST` and every rewrite starts from it; `ERR` becomes
+    sqrt(VP + VR), which now includes stage 1's read-noise rescale (it did not before). Applied at
+    the end of stage 1's background subtraction and, for existing rate files, at stage 2a's start;
+    undone by `restore_pre_bkgsub`. Cards `CFVARPS`/`CFVARHW`/`CFVARXS`/`CFVARSS`/`CFVARNG` on the
+    rate file; canonicals and bkgslits files carry `CFVARPS` and are remade when it differs from
+    their rate's, step 1 keys on it (`MBKGVARP`), and the `_spec.fits` records it. Reported fluxes of
+    faint sources rise (master-background spectra most, about +7 % below integrated S/N 10).
   - The width prior (median 0.15, ln sigma 0.6) is provisional and now decides the shape of every
     faint source; how to re-derive it from the archive is in `docs/design-nirspec-pipeline-v2.md` 6.6.
 - **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every
