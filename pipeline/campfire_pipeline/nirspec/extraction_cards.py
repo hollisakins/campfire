@@ -43,6 +43,7 @@ CARDS = {
     'NFOPEN': 'Failed-open shutters on the trace',
     'MBKGSCL': 'Master background level fitted (0.01 = 1%)',
     'MBKGSCLE': 'Uncertainty of MBKGSCL',
+    'MBKGSCLC': 'Scale fitted, over the cap: MBKGSCL set 0',
     # same-slitlet neighbor scan
     'NBRDET': 'Neighbor above the proposal threshold',
     'NBRDELTA': 'Neighbor offset from target [slit units]',

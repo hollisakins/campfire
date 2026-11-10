@@ -493,6 +493,13 @@ def own_shape(R0, shape0, chain, stage_config, P=None, kappa=1.0, log=None):
     master background (``Exposure.mbkg``, ``single_frame_exposures``) unless the term is
     off (``mbkg_scale_allowance = 0``).
 
+    The cap (``mbkg_scale_cap``, 0.03; user, 2026-11-10): when any fit of the run (the shape
+    fit, the spectrum on the frames as they are, or the nodded shape's refit) takes a scale
+    of that size or more, the scale is set to zero and everything is fitted again without
+    the term (shape, detection S/N, spectrum). The result then carries ``mbkg_scale`` 0 and
+    the scale fitted before the cap as ``mbkg_scale_capped`` (cards ``MBKGSCL`` = 0 and
+    ``MBKGSCLC``); ``fit_product`` takes nothing out of the 2-D or the failed-open solve.
+
     The nodded chain's shape (``R0``, ``shape0``: ``refit_at_shape`` on these frames, with
     the term) is kept only where the own fit cannot run: the fixed chain, a source whose
     planned positions disagree (``srcypos``), the masked-fraction rule, or a fit that
@@ -515,44 +522,69 @@ def own_shape(R0, shape0, chain, stage_config, P=None, kappa=1.0, log=None):
     exps = [copy.copy(e) for e in M0.exps]
     clean = CT.apply(exps, P, kappa=kappa) if P is not None else None
 
-    def model(on):
+    def model(on, term):
         M = PF.ProfileModel(on, chromatic=cfg.chromatic, priors=cfg.priors, bounds=cfg.bounds, grid=M0.lam_grid,
                             c_prior=M0.c_prior, centre_law_tables=M0.centre_law_tables, nod_law=M0.nod_law,
-                            optics=M0.optics, mbkg_sigma=sigma)
+                            optics=M0.optics, mbkg_sigma=term)
         M.pivot, M.lam_rng = M0.pivot, M0.lam_rng          # the shape is defined at the nodded fit's pivot
         return M
 
-    def nodded(why, snr=np.nan):
-        return R0, shape0, dataclasses.replace(chain, result=R0, reason=f'nodded;{why}'[:40], snr_det=snr)
+    def run(term, nodded_R):
+        """The shape and spectrum with the scale term (``term``, its allowance) or without it (None)."""
+        def nodded(why, snr=np.nan):
+            return nodded_R, shape0, dataclasses.replace(chain, result=nodded_R, reason=f'nodded;{why}'[:40],
+                                                         snr_det=snr)
+        if cfg.shape == 'fixed' or chain.reason == 'srcypos':
+            return nodded(chain.reason)
+        if clean is not None and (clean['overall'] < cfg.min_clean_fraction
+                                  or min(clean['per_exposure'] or [1.0]) < cfg.min_clean_fraction_exposure):
+            return nodded(f"masked:{clean['overall']:.2f}")
+        snr = np.nan
+        try:
+            M = model(exps, term)
+            snr, _ = PF.detection_snr(M)
+            R = PF.fit(exps, model=M)
+        except Exception as e:                         # noqa: BLE001 - falls back like the nodded chain
+            log(f'master-background own fit failed ({type(e).__name__}: {e})')
+            return nodded(getattr(e, 'reason', 'fit_failed'), snr)
+        reason = 'mbkg_own'
+        if R.bound_bits:
+            reason = f'{reason};bound:{PC._bit_names(R.bound_bits)}'
+        p = R.params
+        shape = dict(centre_offset=p['centre'] - M.c_prior, drift=p['drift'], width=p['width'],
+                     width_change=p['width_change'])
+        # the spectrum (and the scale) and the model images on the frames as they are (other sources'
+        # light is CONTAM2D)
+        R1 = PF.fit_fixed(model=model(M0.exps, term), shape=shape)
+        R1.bound_bits = R.bound_bits
+        if term:
+            # the largest scale any fit of this run took (the shape fit's, on the cleaned frames, or the spectrum's)
+            R1.mbkg_scale_peak = max((R.mbkg_scale, R1.mbkg_scale), key=abs)
+        return R1, shape, dataclasses.replace(chain, result=R1, shape='own', reason=reason, snr_det=snr,
+                                              bound_bits=R.bound_bits, prism_product='', transfer='none')
 
-    if cfg.shape == 'fixed' or chain.reason == 'srcypos':
-        return nodded(chain.reason)
-    if clean is not None and (clean['overall'] < cfg.min_clean_fraction
-                              or min(clean['per_exposure'] or [1.0]) < cfg.min_clean_fraction_exposure):
-        return nodded(f"masked:{clean['overall']:.2f}")
     if sigma and any(e.mbkg is None for e in exps if e.use_data):
         # a caller's omission, not a property of the data: never a quiet fit without the term
         raise ValueError('master background: the scale term needs each exposure\'s master background '
                          '(single_frame_exposures(..., backgrounds=...))')
-    snr = np.nan
-    try:
-        M = model(exps)
-        snr, _ = PF.detection_snr(M)
-        R = PF.fit(exps, model=M)
-    except Exception as e:                             # noqa: BLE001 - falls back like the nodded chain
-        log(f'master-background own fit failed ({type(e).__name__}: {e})')
-        return nodded(getattr(e, 'reason', 'fit_failed'), snr)
-    reason = 'mbkg_own'
-    if R.bound_bits:
-        reason = f'{reason};bound:{PC._bit_names(R.bound_bits)}'
-    p = R.params
-    shape = dict(centre_offset=p['centre'] - M.c_prior, drift=p['drift'], width=p['width'],
-                 width_change=p['width_change'])
-    # the spectrum (and the scale) and the model images on the frames as they are (other sources' light is CONTAM2D)
-    R1 = PF.fit_fixed(model=model(M0.exps), shape=shape)
-    R1.bound_bits = R.bound_bits
-    return R1, shape, dataclasses.replace(chain, result=R1, shape='own', reason=reason, snr_det=snr,
-                                          bound_bits=R.bound_bits, prism_product='', transfer='none')
+    out = run(sigma, R0)
+    if not sigma:
+        return out
+    R = out[0]
+    fitted = R.mbkg_scale if R is R0 else R.mbkg_scale_peak
+    if not (np.isfinite(fitted) and abs(fitted) >= cfg.mbkg_scale_cap):
+        return out
+    # the cap (user, 2026-11-10): a scale this large is not a master-background level error (measured
+    # within 1-3 %) but light the term would take for background (an extended source's wings, a
+    # neighbor): the scale is set to zero and everything is fitted again without the term
+    log(f'master-background scale {fitted:+.4f} reached the cap {cfg.mbkg_scale_cap}; refitted without it')
+    R0n = PF.fit_fixed(model=model(M0.exps, None), shape=shape0)
+    R0n.bound_bits = R0.bound_bits
+    Rn, shape, C = run(None, R0n)
+    if Rn is R0n:
+        Rn = copy.copy(R0n)
+    Rn.mbkg_scale, Rn.mbkg_scale_err, Rn.mbkg_scale_capped = 0.0, np.nan, float(fitted)
+    return Rn, shape, dataclasses.replace(C, result=Rn)
 
 
 def fit_product(product_name, workspace, exps, science, source_id, chain, stage_config, dmap,

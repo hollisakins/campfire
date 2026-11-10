@@ -157,6 +157,48 @@ def test_the_scale_term_takes_up_a_master_background_level_error(error):
     assert abs(_reported_ratio(R, truth) - 1) < 0.05
 
 
+def test_a_two_percent_level_is_fitted_and_kept_below_the_cap():
+    exps, _ = _single_frames(TRUTH, flux_scale=30.0, noise=1.0, mbkg_error=0.02)
+    R0, shape0, chain = _nodded_choice(exps, 0.2)
+    R, _, C = MX.own_shape(R0, shape0, chain, {})
+    assert R.mbkg_scale == pytest.approx(0.02, abs=0.002) and np.isnan(R.mbkg_scale_capped)
+    cards = C.header_cards()
+    assert cards['MBKGSCL'] == R.mbkg_scale and not np.isfinite(cards['MBKGSCLC'])
+
+
+@pytest.mark.parametrize('error', [0.10, -0.10])
+def test_a_scale_at_the_cap_is_set_to_zero_and_the_fit_is_the_one_without_the_term(error):
+    """A 10 % level (or any light the term would take for background): the fitted scale
+    reaches the cap (0.03), so the result is exactly the fit without the term, with
+    MBKGSCL = 0 and the fitted value in MBKGSCLC."""
+    exps, _ = _single_frames(TRUTH, flux_scale=30.0, noise=1.0, mbkg_error=error)
+    R0, shape0, chain = _nodded_choice(exps, 0.2)
+    R, shape, C = MX.own_shape(R0, shape0, chain, {})
+    R0n, shape0n, chain_n = _nodded_choice(exps, 0.2, mbkg_sigma=None)
+    Rn, shapen, Cn = MX.own_shape(R0n, shape0n, chain_n, {'mbkg_scale_allowance': 0.0})
+    assert R.mbkg_scale == 0.0 and np.sign(R.mbkg_scale_capped) == np.sign(error)
+    assert abs(R.mbkg_scale_capped) >= 0.03
+    assert R.model.mbkg_sigma is None                       # refitted without the term
+    assert shape == shapen and C.reason == Cn.reason and C.snr_det == Cn.snr_det
+    np.testing.assert_array_equal(R.flux, Rn.flux)
+    cards = C.header_cards()
+    assert cards['MBKGSCL'] == 0.0 and cards['MBKGSCLC'] == R.mbkg_scale_capped
+    from campfire_pipeline.nirspec import extraction_cards as XC
+    h = fits.Header()
+    for k, v in cards.items():
+        XC.put(h, k, v)
+    assert h['MBKGSCL'] == 0.0 and 'MBKGSCLE' not in h and h['MBKGSCLC'] == R.mbkg_scale_capped
+
+
+def test_the_cap_applies_to_a_nodded_shape_kept_too():
+    """The fixed chain keeps the nodded shape; its refit's scale is capped the same way."""
+    exps, _ = _single_frames(TRUTH, flux_scale=30.0, noise=1.0, mbkg_error=0.10)
+    R0, shape0, chain = _nodded_choice(exps, 0.2)
+    R, _, C = MX.own_shape(R0, shape0, chain, {'profile_fit_shape': 'fixed'})
+    assert C.reason == 'nodded;own_fit' and R.mbkg_scale == 0.0 and abs(R.mbkg_scale_capped) >= 0.03
+    assert R.model.mbkg_sigma is None
+
+
 def test_the_solve_with_the_term_is_the_joint_least_squares():
     """The scale eliminated through the spectrum's factorisation equals the dense solve of
     [A | b] with the allowance on the scale's diagonal: spectrum, scale, covariance, and the

@@ -69,6 +69,7 @@ class ChainConfig:
     min_clean_fraction_exposure: float = 0.3
     default_width: float = None          # width of the default shape (None: the prior median width)
     mbkg_scale_sigma: float = 0.01       # allowance of the master-background scale term (mbkg_extraction); 0: off
+    mbkg_scale_cap: float = 0.03         # a fitted |scale| this large: set to zero, refitted without the term
 
     def default_shape(self):
         """Shape dict of the default candidate for ``profile_fit.fit_fixed`` (None: the prior median width)."""
@@ -102,7 +103,8 @@ class ChainConfig:
                    min_clean_fraction=float(g('contam_min_clean_fraction', 0.5)),
                    min_clean_fraction_exposure=float(g('contam_min_clean_fraction_exposure', 0.3)),
                    default_width=(None if dwidth is None else float(dwidth)),
-                   mbkg_scale_sigma=float(g('mbkg_scale_allowance', 0.01)))
+                   mbkg_scale_sigma=float(g('mbkg_scale_allowance', 0.01)),
+                   mbkg_scale_cap=float(g('mbkg_scale_cap', 0.03)))
 
 
 @dataclass
@@ -176,6 +178,7 @@ class ChainResult:
             # the master-background scale term (master-background spectrum only; NaN, left out, otherwise)
             'MBKGSCL': float(getattr(self.result, 'mbkg_scale', np.nan)),
             'MBKGSCLE': float(getattr(self.result, 'mbkg_scale_err', np.nan)),
+            'MBKGSCLC': float(getattr(self.result, 'mbkg_scale_capped', np.nan)),   # only when the cap applied
         }
         sl = exps[0].slit_loss if exps else None
         if sl is not None:

@@ -206,6 +206,10 @@
     # out of SCI_MBKG too, and is written as MBKGSCL / MBKGSCLE in the SPEC1D_MBKG header. The nodded
     # spectrum has no such term: the master background cancels in a nod difference.
     mbkg_scale_allowance = 0.01
+    # A fitted |scale| of this size or more is not a level error of the master background but light the
+    # term would take for background (on zenith_p15 an extended source fitted +0.23): the scale is set to
+    # zero and the fit redone without the term; MBKGSCL = 0 and MBKGSCLC holds the value fitted.
+    mbkg_scale_cap = 0.03
     # Same-slitlet neighbor scan on the residuals: the target refitted at its chosen shape
     # on the nod differences as stage 2b made them, leaving out (not modeling) every pixel
     # another slitlet's source shutter lights in any frame of the difference (trace maps),

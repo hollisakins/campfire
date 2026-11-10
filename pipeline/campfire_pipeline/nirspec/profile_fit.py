@@ -558,6 +558,7 @@ class FitResult:
     model: 'ProfileModel' = field(repr=False, default=None)
     mbkg_scale: float = np.nan        # fitted master-background scale (``ProfileModel.mbkg_sigma``); NaN without the term
     mbkg_scale_err: float = np.nan
+    mbkg_scale_capped: float = np.nan  # the scale fitted before the cap set it to zero (mbkg_extraction.own_shape)
 
     @property
     def chi2_red(self):
