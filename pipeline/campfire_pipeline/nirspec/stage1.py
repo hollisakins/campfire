@@ -153,6 +153,7 @@ def mask_slits(
     from jwst.assign_wcs.nirspec import generate_compound_bbox, slitlets_wcs
     from gwcs.wcs import WCS
     from jwst.assign_wcs import AssignWcsStep
+    from jwst.assign_wcs.util import NoDataOnDetectorError
 
     filt = input_model.meta.instrument.filter
     grating = input_model.meta.instrument.grating
@@ -188,18 +189,32 @@ def mask_slits(
         step = AssignWcsStep()
         step.input_dir = input_dir
         step.override_wavelengthrange = wavelengthrange_file
-        processed_model = step.run(input_model)
     else:
         step = AssignWcsStep()
         step.input_dir = input_dir
+
+    try:
         processed_model = step.run(input_model)
+        has_science = True
+    except NoDataOnDetectorError:
+        # No open shutter projects onto this detector (typically NRS2, #681):
+        # there are no source traces to mask. The failed-open shutters below
+        # build their own WCS from the reference files, so they are still
+        # masked. Work on a copy: slitlets_wcs writes wcsinfo onto its input.
+        log(f"No open slits fall on {input_model.meta.instrument.detector}; "
+            "masking failed-open shutters only")
+        processed_model = input_model.copy()
+        has_science = False
 
     # # processed_model = _make_processed_rate_image(model, single_mask=True, input_dir=os.path.dirname(rate_file), exp_type="NRS_MSASPEC", mask_science_regions=True, flat=None)
 
     msaoper_reffile = MSAFlagOpenStep().get_reference_file(processed_model, "msaoper")
     failed_slits = create_slitlets(msaoper_reffile)
 
-    source_slits = processed_model.meta.wcs.get_transform("gwa", "slit_frame").slits
+    if has_science:
+        source_slits = processed_model.meta.wcs.get_transform("gwa", "slit_frame").slits
+    else:
+        source_slits = []
     # slits = slits + failed_slits
 
     wcs_reffile_names = create_reference_filename_dictionary(processed_model)
@@ -208,6 +223,8 @@ def mask_slits(
 
     from jwst.datamodels import ImageModel
     for slits in [source_slits, failed_slits]:
+        if not slits:
+            continue
         pipeline = slitlets_wcs(processed_model, wcs_reffile_names, slits)
         wcs = WCS(pipeline)
 
@@ -365,6 +382,7 @@ def _prefetch_crds_references(rate_files):
     """
     from jwst.datamodels import ImageModel
     from jwst.assign_wcs import AssignWcsStep
+    from jwst.assign_wcs.util import NoDataOnDetectorError
     from jwst.msaflagopen.msaflagopen_step import MSAFlagOpenStep
 
     seen_detectors = set()
@@ -380,7 +398,15 @@ def _prefetch_crds_references(rate_files):
             # Run AssignWcsStep to trigger download of all WCS reference files
             step = AssignWcsStep()
             step.input_dir = os.path.dirname(rate_file)
-            processed = step.run(model)
+            try:
+                processed = step.run(model)
+            except NoDataOnDetectorError:
+                # No open shutter projects onto this detector (#681). The step
+                # resolves its reference files before it builds the WCS, so
+                # they are cached already; msaoper keys on the header alone.
+                log(f"  No open slits fall on {det} in {os.path.basename(rate_file)}; "
+                    "WCS references are cached, continuing")
+                processed = model
 
             # Trigger msaoper reference download
             MSAFlagOpenStep().get_reference_file(processed, "msaoper")
@@ -813,21 +839,39 @@ def run_stage1_single_uncal(
 
     try:
         from jwst.pipeline import Detector1Pipeline
-        steps = {
-                'clean_flicker_noise' :{
-                    'skip': not do_clean_flicker_noise,
-                    'mask_science_regions':mask_science_regions,
-                    'save_mask': False,
-                },
-                'jump': {
-                    'skip': False, # testing, should be False normally
-                    'expand_large_events': True, # testing, should be True normally
+        from jwst.assign_wcs.util import NoDataOnDetectorError
+
+        def _call(mask_science_regions):
+            steps = {
+                    'clean_flicker_noise' :{
+                        'skip': not do_clean_flicker_noise,
+                        'mask_science_regions':mask_science_regions,
+                        'save_mask': False,
+                    },
+                    'jump': {
+                        'skip': False, # testing, should be False normally
+                        'expand_large_events': True, # testing, should be True normally
+                    }
                 }
-            }
-        Detector1Pipeline.call(uncal_file,
-            save_results=True,
-            steps=steps,
-        )
+            Detector1Pipeline.call(uncal_file,
+                save_results=True,
+                steps=steps,
+            )
+
+        try:
+            _call(mask_science_regions)
+        except NoDataOnDetectorError:
+            # clean_flicker_noise runs assign_wcs to find the science regions,
+            # which raises when no open shutter projects onto this detector
+            # (typically NRS2, #681). There are then no source traces to mask
+            # (failed-open shutters are left to the step's sigma clip); without
+            # the rerun no rate file is written and every later stage trips
+            # over the gap.
+            if not (do_clean_flicker_noise and mask_science_regions):
+                raise
+            log(f"No open slits fall on the detector for {uncal_file}; "
+                "re-running Detector1Pipeline with mask_science_regions=False")
+            _call(False)
         if cleanup_uncal:
             log(f'Finished Detector1Pipeline for {uncal_file}, removing...')
             os.remove(uncal_file)
