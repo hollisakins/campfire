@@ -257,6 +257,16 @@ Release procedure: edit the `## Unreleased` section below, then run
     rate file; canonicals and bkgslits files carry `CFVARPS` and are remade when it differs from
     their rate's, step 1 keys on it (`MBKGVARP`), and the `_spec.fits` records it. Reported fluxes of
     faint sources rise (master-background spectra most, about +7 % below integrated S/N 10).
+  - *Outliers are Spec3's; the profile fit no longer clips against its model.* The 5-sigma clip of
+    pixels against the fitted model removed real light where the model is worst (zenith_p15 547856:
+    257 master-background fit pixels, 1.9 % of the light, mostly above the model). Now the pixels
+    Spec3's outlier detection flagged in the crf (`OUTLIER`) are left out of the nodded fit too (in
+    each exposure's difference and in every difference it was subtracted from;
+    `profile_fit.mask_crf_outliers`, one decision function `crf_outliers` shared with the
+    master-background frames), and `profile_fit.fit`, `fit_fixed` and `detection_snr` fit every other
+    usable pixel (their `clip` / `n_clip` parameters are removed). The drizzled products already
+    excluded the crf's flags. The joint first pass runs before Spec3 and gets no flags; it and
+    `profile_extend` keep their own clips on their residuals.
   - The width prior (median 0.15, ln sigma 0.6) is provisional and now decides the shape of every
     faint source; how to re-derive it from the archive is in `docs/design-nirspec-pipeline-v2.md` 6.6.
 - **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every

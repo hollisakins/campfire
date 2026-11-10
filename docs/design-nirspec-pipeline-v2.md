@@ -949,6 +949,53 @@ it. The master-background fit's variance still leaves out the master background'
 which its drizzle includes (plan open question 3). `mbkg_extraction._shifted_median` was not moved
 into `variance.py` (it works along both axes; the plan's suggested merge is cosmetic).
 
+### 6.12 Outlier pixels: Spec3's flags, no clip against the model
+
+User decision 2026-11-10. **Rule:** pixels Spec3's outlier detection flagged (`OUTLIER` in the crf's
+DQ) are left out of the profile fits and of the products; the profile fit no longer clips pixels
+against its own model.
+
+**Why.** On bright extended sources the 5-sigma clip against the model removed real light where the
+model is worst: zenith_p15 547856 lost 257 of 27,144 master-background fit pixels, 189 of them above
+the model, 1.9 % of the light, clustered at 1.0-2.5, 3.5-4.5 and 4.9-5.1 um
+(`scratch/claude/mask_where.py`, `transmission_547856.png`). A clip against a model is a clip of
+whatever the model does not describe.
+
+**One decision point.** `profile_fit.crf_outliers(crf_dq, live_dq=None)`: `OUTLIER` in the crf, less
+what the canonical's live DQ already had. The master-background frames (`mbkg_extraction.outlier_flags`,
+with the hot-pixel mask on top) and the nod differences (`profile_fit.mask_crf_outliers`) both call it.
+In a nod difference a pixel is left out when the same detector pixel is flagged in that exposure's crf
+or in the crf of any exposure it was differenced with (a cosmic ray in a partner's frame is in this
+difference too, at -1/n). The crf exposures are on the canonical cutouts (`drizzle_map.crf_dq` reads
+them by file name); a crf DQ of another shape is an error.
+
+**Who gets the flags.**
+- The product's own fit (`profile_product.analyse_product`, from `run_product`): the nodded chain
+  (`profile_chain.choose_shape`, the PRISM and sibling-grating candidates included), the same-slitlet
+  scan (its copies are taken after the masking) and the scan's preview figure. The crf exists then:
+  `run_product` checks for it first and falls back to the 3-pixel boxcar without one
+  (`FALLBACK_NO_CRF`, logged); stage 3 keeps every crf until its product's profile fit ends, and the
+  grating products a transfer may redo keep theirs until the transfer is done
+  (`stage3`, `keep_crfs`). `analyse_product` called without flags logs that nothing but the
+  canonicals' DO_NOT_USE was left out.
+- The master-background fit: as before (`outlier_flags`).
+- The drizzled products (SCI, SCI_MBKG, PROF2D, CONTAM2D) and `fnu` extracted from them: as before,
+  through the crf's DQ in `drizzle_map` (test `test_spec3_outliers_in_the_crf_are_left_out_of_every_drizzled_image`).
+- Not: the joint first pass (`joint_first_pass`, its member shapes through `profile_fit.fit`, and
+  `profile_extend`) runs before Spec3, so there is no crf yet; its member shapes are now fitted with no
+  clip at all and only the canonicals' DO_NOT_USE masked. `nod_scan` sees what the product's fit sees.
+
+**No clip in `profile_fit`.** `fit`, `fit_fixed` and `detection_snr` fit every usable pixel; their
+`clip` / `n_clip` parameters are gone (`fit_fixed(use=...)` still takes a fixed mask).
+`mean_square_scale` keeps its 5-sigma cut (`NOISE_CLIP`): it estimates the noise level for the
+detection S/N and masks nothing.
+
+**Remaining model-based clips** (left alone, listed): `joint_first_pass.solve_target` (5 sigma, two
+rounds, on the joint solve's residuals; no crf exists when it runs), `profile_extend._solve_end` (the
+light past the cutout, same reason), and `failed_open.solve` (its own clip on the
+failed-open solve's residuals, in the master-background fit). `profile_contam.smooth_spectrum` clips a
+pass-1 spectrum against its running mean (not pixels).
+
 ---
 
 ## 7. The boundary with jwst's references

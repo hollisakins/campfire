@@ -224,14 +224,64 @@ def test_no_signal_gives_zero_flux_within_errors():
     assert abs(np.mean(chi)) < 0.2 and 0.8 < np.std(chi) < 1.2
 
 
-def test_outlier_pixels_are_masked():
+def _cosmic_ray(exps, k, r, cols, amp=500.0):
+    """A cosmic ray in exposure k's frame at row r, columns ``cols``: in k's own nod difference
+    as it is, in each difference k is a partner of at -1/n of it."""
+    for i, e in enumerate(exps):
+        if i == k:
+            e.diff[r, cols] += amp
+        elif k in e.partners:
+            e.diff[r, cols] -= amp / len(e.partners)
+
+
+def test_a_cosmic_ray_flagged_in_the_crf_is_left_out_of_its_difference_and_its_partners():
+    """Spec3 flagged the hit in exposure 1's crf only: the pixel is left out of exposure 1's
+    difference and of the two differences it was subtracted from, and the fit is unbiased."""
     exps = _exposures()
     _inject(exps, TRUTH, [0, 0, 0], flux_scale=50.0, noise=1.0, seed=7)
-    exps[1].diff[NY // 2, 40:43] += 500.0            # cosmic-ray-like hits
+    r, cols = NY // 2, slice(40, 43)
+    _cosmic_ray(exps, 1, r, cols)
+    dq = np.zeros((NY, NX), np.uint32)
+    dq[r, cols] = PF.OUTLIER | PF.DO_NOT_USE
+    n, missing = PF.mask_crf_outliers(exps, {exps[1].name: dq})
+    assert n == 9 and missing == [exps[0].name, exps[2].name]
+    for e in exps:
+        assert not e.ok[r, cols].any() and e.ok[r, 45]
     R = PF.fit(exps, chromatic=False)
-    assert (~R.model.use).sum() >= 3
+    assert R.model.use.all()                               # nothing clipped by the fit itself
     good = np.isfinite(R.flux) & (R.lam > 1.0) & (R.lam < 4.8)
     assert abs(np.median(R.flux[good] / (50.0 * _spectrum(R.lam[good]))) - 1) < 0.03
+    with pytest.raises(ValueError):                        # the crf must be on the canonical cutout
+        PF.mask_crf_outliers(exps, {exps[1].name: dq[:-1]})
+
+
+def test_crf_outliers_is_the_one_decision():
+    """OUTLIER in the crf, less what the canonical's live DQ already had (the master-background
+    frames' rule, ``mbkg_extraction.outlier_flags``, is this function)."""
+    crf = np.array([[0, 16, 17, 16]], np.uint32)
+    live = np.array([[0, 0, 0, 16]], np.uint32)
+    np.testing.assert_array_equal(PF.crf_outliers(crf), [[False, True, True, True]])
+    np.testing.assert_array_equal(PF.crf_outliers(crf, live), [[False, True, True, False]])
+
+
+def test_real_light_that_departs_from_the_model_is_not_masked():
+    """A compact knot beside the source, which a single Gaussian cannot describe: its pixels sit
+    far from the model, and the fit keeps every one of them (until 2026-11-10 they were
+    clipped at 5 sigma, and with them real light)."""
+    exps = _exposures()
+    _inject(exps, TRUTH, [0, 0, 0], flux_scale=50.0, noise=1.0, seed=7)
+    knot = _truth_result(exps, dict(centre=0.45, drift=0.0, width=0.02, width_change=0.0), [0, 0, 0], 20.0)
+    for k, e in enumerate(exps):
+        e.diff = e.diff + np.nan_to_num(PF.model_frame(knot, k, applied_pathloss=False))
+    R = PF.fit(exps, chromatic=False)
+    M = R.model
+    r = (M.pix['d'] - M.linear_solve(PF._qvec(R)[0], R.eoff).model) / np.sqrt(M.pix['v'])
+    assert np.sum(np.abs(r) > 5) > 20                      # the clip would have taken these
+    assert R.model.use.all() and R.use.all()
+    F = PF.fit_fixed(model=M)
+    assert F.use.all()
+    snr, det = PF.detection_snr(M)
+    assert M.use.all() and snr > 0
 
 
 def test_reported_factor_is_one_for_a_point_source_anywhere():

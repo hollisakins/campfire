@@ -493,6 +493,54 @@ def partners_from_headers(cal_files, heads):
     return out
 
 
+OUTLIER = 16              # jwst DQ OUTLIER: set by Spec3's outlier detection in the crf
+
+
+def crf_outliers(crf_dq, live_dq=None):
+    """The pixels Spec3's outlier detection flagged in one exposure: ``OUTLIER`` in the crf's DQ
+    (on the canonical's cutout), less any the canonical's live DQ ``live_dq`` already had. The one
+    place this choice is made, for the nodded fit (``mask_crf_outliers``) and the master-background
+    frames (``mbkg_extraction.outlier_flags``)."""
+    flagged = (np.asarray(crf_dq) & OUTLIER) > 0
+    if live_dq is not None:
+        flagged &= (np.asarray(live_dq) & OUTLIER) == 0
+    return flagged
+
+
+def mask_crf_outliers(exps, crf_dq):
+    """Leave Spec3's outliers out of the nod differences (in place, ``Exposure.ok``; user,
+    2026-11-10: the fits no longer clip against their own model). ``crf_dq``: {canonical file
+    name: the crf's DQ of that exposure, on its cutout} (``drizzle_map.crf_dq``). A nod difference's
+    pixel is left out when the same detector pixel is flagged in that exposure or in any exposure
+    it was differenced with (a cosmic ray in a partner's frame is in this difference too, with the
+    opposite sign). Exposures share their group's common frame, so a detector pixel is the same
+    array position in all of them. Returns (pixels left out, names of science exposures with no
+    entry in ``crf_dq``)."""
+    flags = {}
+    for k, e in enumerate(exps):
+        dq = crf_dq.get(e.name)
+        if dq is None or e.cutout is None:
+            continue
+        r0, c0, ny, nx = e.cutout
+        if np.shape(dq) != (ny, nx):
+            raise ValueError(f'{e.name}: crf DQ {np.shape(dq)} is not on the canonical cutout {(ny, nx)}')
+        m = np.zeros(e.y.shape, bool)
+        m[r0:r0 + ny, c0:c0 + nx] = crf_outliers(dq)
+        flags[k] = m
+    missing = [e.name for e in exps if e.use_data and e.name not in crf_dq]
+    n = 0
+    for k, e in enumerate(exps):
+        if not e.use_data:
+            continue
+        bad = np.zeros(e.y.shape, bool)
+        for j in [k] + list(e.partners or []):
+            if j in flags:
+                bad |= flags[j]
+        n += int(np.sum(bad & e.ok))
+        e.ok = e.ok & ~bad
+    return n, missing
+
+
 def load_source(groups, bkg_overrides=None, science=None, single_frames=False, pre_bkgsub=False, bar_offsets=None,
                 slit_loss=None):
     """All exposures of a source: ``groups`` is a list of canonical-file lists, one per
@@ -1114,13 +1162,15 @@ class ProfileModel:
             self.use = saved
 
 
-def fit(exps, chromatic=True, priors=None, clip=5.0, n_clip=2, grid=None, bounds=None, model=None):
+def fit(exps, chromatic=True, priors=None, grid=None, bounds=None, model=None):
     """Fit the shape (with priors) and the shared spectrum of one source.
 
-    Pixels deviating by more than ``clip`` sigma from the model are masked and the
-    fit repeated, ``n_clip`` times. ``model``: reuse a ``ProfileModel`` of the same
-    exposures (its outlier mask is reset). The result's ``bound_bits`` records any
-    parameter that ended on a bound.
+    Every usable pixel is fitted: no pixel is clipped against the model (user,
+    2026-11-10). The outliers are Spec3's (``mask_crf_outliers``, already out of the
+    exposures' ``ok``); a clip against the model removed real light where the model is
+    worst (an extended source's wings). ``model``: reuse a ``ProfileModel`` of the same
+    exposures (its pixel mask ``use`` is reset to all). The result's ``bound_bits``
+    records any parameter that ended on a bound.
     """
     if model is not None:
         M = model
@@ -1129,18 +1179,8 @@ def fit(exps, chromatic=True, priors=None, clip=5.0, n_clip=2, grid=None, bounds
         M = ProfileModel(exps, chromatic=chromatic, priors=priors, grid=grid, bounds=bounds)
     lo, hi = M.bounds()
     q = np.clip(M.start(), lo + 1e-6, hi - 1e-6)
-    for it in range(n_clip + 1):
-        # 1e-5: shape changes far below its uncertainty, at a fifth of the evaluations of the default 1e-8
-        res = least_squares(M.residuals, q, bounds=(lo, hi), x_scale='jac', ftol=1e-5, xtol=1e-5, gtol=1e-5)
-        q = res.x
-        if it == n_clip:
-            break
-        p, eoff = M.unpack(q)
-        r = (M.pix['d'] - M.linear_solve(p, eoff).model) / np.sqrt(M.pix['v'])
-        new = np.abs(r) < clip
-        if np.array_equal(new, M.use):
-            break
-        M.use = new
+    # 1e-5: shape changes far below its uncertainty, at a fifth of the evaluations of the default 1e-8
+    q = least_squares(M.residuals, q, bounds=(lo, hi), x_scale='jac', ftol=1e-5, xtol=1e-5, gtol=1e-5).x
     p, eoff = M.unpack(q)
     s = M.linear_solve(p, eoff, covariance=True)
     r = (M.pix['d'] - s.model) / np.sqrt(M.pix['v'])
@@ -1167,31 +1207,22 @@ def shape_vector(shape, c_prior, width_default):
     return np.array([c_prior + q['centre_offset'], q['drift'], np.log(max(q['width'], W_FLOOR)), q['width_change']])
 
 
-def fit_fixed(exps=None, shape=None, eoff=None, clip=5.0, n_clip=2, model=None,
-              use=None, chromatic=True, priors=None, grid=None, bounds=None):
-    """Spectrum at a fixed shape: a linear solve.
+def fit_fixed(exps=None, shape=None, eoff=None, model=None, use=None, chromatic=True, priors=None, grid=None,
+              bounds=None):
+    """Spectrum at a fixed shape: a linear solve on every usable pixel (no clip against the
+    model, as ``fit``).
 
     shape : dict(centre_offset, drift, width, width_change) at this model's pivot; the
         default is the default shape (star PSF x the prior median width at the planned
         position, no chromatic terms).
     eoff : per-exposure pointing offsets, held (default zero, as every fit now takes them).
-    use : a fixed pixel mask (no clipping); otherwise ``n_clip`` rounds of clipping at
-        ``clip`` sigma.
+    use : a pixel mask to fit on (default: every pixel of the model).
     The returned chi2 is the data chi2 only (no prior terms)."""
     M = model if model is not None else ProfileModel(exps, chromatic=chromatic, priors=priors, grid=grid,
                                                      bounds=bounds)
     M.use = np.ones(M.npix, bool) if use is None else use.copy()
     p = shape_vector(shape, M.c_prior, M.priors.width_median)
     e = np.zeros(len(M.exps)) if eoff is None else np.asarray(eoff, float).copy()
-    nit = 0 if use is not None else n_clip
-    for it in range(nit + 1):
-        if it == nit:
-            break
-        r = (M.pix['d'] - M.linear_solve(p, e).model) / np.sqrt(M.pix['v'])
-        new = np.abs(r) < clip
-        if np.array_equal(new, M.use):
-            break
-        M.use = new
     s = M.linear_solve(p, e, covariance=True)
     r = (M.pix['d'] - s.model) / np.sqrt(M.pix['v'])
     chi2 = float(np.sum(r[M.use] ** 2))
@@ -1209,12 +1240,16 @@ def fit_fixed(exps=None, shape=None, eoff=None, clip=5.0, n_clip=2, model=None,
     return R
 
 
-def mean_square_scale(M, r, clip=5.0):
+NOISE_CLIP = 5.0        # mean_square_scale: residuals beyond this do not count in the noise level (nothing is masked)
+
+
+def mean_square_scale(M, r, clip=NOISE_CLIP):
     """Calibration of the stated errors from the normalised residuals ``r`` of a fit:
     the mean square of the residuals within ``clip`` sigma, per independent value
     (``ProfileModel.dof_weight``). It includes the noise's own tails: on blank
     sources a MAD reads 10-20 % below the mean square, and dividing a chi2 by it
-    inflates the detection S/N of nothing."""
+    inflates the detection S/N of nothing. The clip only keeps a few strong residuals
+    out of the noise estimate; no pixel is left out of any fit."""
     u = np.isfinite(r) & (np.abs(r) < clip)
     if u.sum() < 10:
         return 1.0
@@ -1222,7 +1257,7 @@ def mean_square_scale(M, r, clip=5.0):
     return c if np.isfinite(c) and c > 0 else 1.0
 
 
-def detection_snr(M, clip=5.0, n_clip=2):
+def detection_snr(M):
     """Integrated detection S/N of a source (``DETSNR``). Reported; the shape chains take
     no decision on it.
 
@@ -1236,17 +1271,10 @@ def detection_snr(M, clip=5.0, n_clip=2):
     (``mean_square_scale``), and the number of spectrum points is subtracted (its
     expectation for no source): snr_det = sqrt(max(dchi2 / c - n, 0)).
 
-    Outlier pixels are clipped first at the default shape. Returns
-    (snr_det, dict with dchi2, n, c, best shape vector)."""
+    Every usable pixel counts (no clip against the model; the outliers are Spec3's,
+    ``mask_crf_outliers``). Returns (snr_det, dict with dchi2, n, c, best shape vector)."""
     M.use = np.ones(M.npix, bool)
-    p0 = shape_vector(None, M.c_prior, M.priors.width_median)
     e0 = np.zeros(len(M.exps))
-    for _ in range(n_clip):
-        r = (M.pix['d'] - M.linear_solve(p0, e0).model) / np.sqrt(M.pix['v'])
-        new = np.abs(r) < clip
-        if np.array_equal(new, M.use):
-            break
-        M.use = new
     best = None
     for p in M.start_grid():
         s = M.linear_solve(p, e0)
@@ -1255,7 +1283,7 @@ def detection_snr(M, clip=5.0, n_clip=2):
     s, p = best
     d, n = s.dchi2, int(s.good.sum())
     r = (M.pix['d'] - s.model) / np.sqrt(M.pix['v'])
-    c = mean_square_scale(M, r, clip=clip)
+    c = mean_square_scale(M, r)
     s2 = d / c - n
     return float(np.sqrt(max(s2, 0.0))), dict(dchi2=d, n=n, c=c, shape=p)
 

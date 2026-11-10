@@ -119,6 +119,24 @@ def test_an_image_takes_the_data_masks():
     assert np.nanmax(np.abs(half['data'])) == 0.0
 
 
+def test_spec3_outliers_in_the_crf_are_left_out_of_every_drizzled_image():
+    """A pixel Spec3's outlier detection flagged (OUTLIER | DO_NOT_USE in the crf) takes no
+    weight in a model drawn on the exposures (PROF2D, CONTAM2D), whatever the model holds
+    there: the products' 2-D images and fnu respect the crf's flags."""
+    exps = _exposures()
+    out_wcs = _wcs(0.0, 0.0, shape=(NY + 2, NX + 2))
+    clean = _map(exps, out_wcs)
+    for e in exps:
+        e['dq'][7, 6] |= 16 | 1                                # flagged by Spec3 in both exposures
+    flagged = _map(exps, out_wcs)
+    spike = {e['name']: np.where((np.arange(NY)[:, None] == 7) & (np.arange(NX)[None, :] == 6), 1e6, 1.0)
+             for e in exps}
+    a, b = clean.drizzle(spike), flagged.drizzle(spike)
+    assert np.nanmax(a['data']) > 1e3                          # unflagged, the spike gets through
+    assert np.nanmax(b['data']) < 2.0                          # flagged, it is left out
+    assert b['wht'].sum() < a['wht'].sum()
+
+
 def test_a_frame_replaces_every_array():
     """A dict of arrays (the master-background frames) is drizzled as data: its own
     masks, NaNs and variances, nothing of the crf's."""

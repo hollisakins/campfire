@@ -232,8 +232,9 @@ def outlier_flags(frame, crf_dq, hot):
     - its hot pixels (``hot``, ``hot_pixels``), which cancel in the nod differences.
     jwst's outlier detection is not run on the frames. Before 2026-11-02 they had a Spec3
     run of their own and its outlier detection on them."""
+    from campfire_pipeline.nirspec.profile_fit import crf_outliers
     a = frame.arrays
-    new = ((np.asarray(crf_dq) & OUTLIER) > 0) & ((np.asarray(frame.live_dq) & OUTLIER) == 0)
+    new = crf_outliers(crf_dq, frame.live_dq)       # the nodded fit takes the same flags (mask_crf_outliers)
     out = dict(a)
     out['dq'] = (a['dq'] | np.where(new | np.asarray(hot, bool), OUTLIER | DO_NOT_USE, 0)).astype(a['dq'].dtype)
     return out

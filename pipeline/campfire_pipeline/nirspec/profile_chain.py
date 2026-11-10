@@ -29,9 +29,10 @@ extraction profile:
    contamination masking left too little of the trace, the fit raised, or the planned
    positions disagree between exposures (``srcypos``).
 
-Every candidate that runs is compared on the same pixels (a pixel is kept when any
-candidate's outlier clipping keeps it), with the spectrum re-solved and without
-prior terms, so the choice can be redone offline from the header.
+Every candidate that runs is compared on the same pixels (every usable pixel: the fits
+no longer clip against their model; Spec3's outliers are already out,
+``profile_fit.mask_crf_outliers``), with the spectrum re-solved and without prior terms,
+so the choice can be redone offline from the header.
 
 The integrated detection S/N (``profile_fit.detection_snr``) is reported (``DETSNR``)
 and decides nothing here except the PRISM comparison's ``own_vs_prism_min_gate``.
