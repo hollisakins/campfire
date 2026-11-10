@@ -31,7 +31,7 @@ More detailed summaries of individual steps are given in [Slit losses](/docs/red
 
 ## Uncertainties
 
-`fnu_err` is statistical, including the noise of the subtracted background exposures. It excludes the systematic uncertainty of the contamination prediction (`fnu_contam_err`) and, for sources with the default profile (`SHAPE = default`), the uncertainty of the assumed size, roughly ±15 % in flux.
+`fnu_err` is statistical, including the noise of the subtracted background exposures. It excludes the systematic uncertainty of the contamination prediction (`fnu_contam_err`) and the uncertainty of the source's size where the data do not measure it (`SHAPE = default`, or a faint fit held near the prior width), roughly ±10 % in flux.
 
 ## Departures from the CRDS calibration
 

@@ -6,7 +6,7 @@ Stage 3 produces one 1-D spectrum per source and disperser from the background-s
 
 Each source is modeled as a circular Gaussian with a width and position that may vary smoothly with wavelength. In each exposure the model is the source's image through that exposure's shutters, minus its images at the positions of the subtracted background exposures. A single spectrum, common to all exposures, is solved wavelength by wavelength together with the spatial parameters.
 
-![Four PRISM sources. Each row: the combined 2-D spectrum (rows along the slitlet), the fitted model, and the residual on a common scale, with the spatial profile summed over wavelength (data gray, model orange). Positive (red) and negative (blue) signal correspond to the source in its own shutter and its negative images from nod subtraction. From top: a bright compact source, two extended sources (one adjacent to a bar), and a faint source fitted with the default profile. The extended sources leave a small central residual, reflecting departures from a Gaussian profile.](/docs/nirspec/extraction_prism.png)
+![Four PRISM sources. Each row: the combined 2-D spectrum (rows along the slitlet), the fitted model, and the residual on a common scale, with the spatial profile summed over wavelength (data gray, model orange). Positive (red) and negative (blue) signal correspond to the source in its own shutter and its negative images from nod subtraction. From top: a bright compact source, two extended sources (one adjacent to a bar), and a faint source. The extended sources leave a small central residual, reflecting departures from a Gaussian profile.](/docs/nirspec/extraction_prism.png)
 
 ### Profile selection
 
@@ -61,7 +61,7 @@ All exposures of a source in a given disperser enter a single fit. Repeated MSA 
 
 ## Units and uncertainties
 
-`wave` is in µm, `fnu` and related columns in µJy, and the `flam` columns in erg s⁻¹ cm⁻² Å⁻¹. `fnu_err` is statistical, propagated from the 2-D error array including the noise of the subtracted exposures. It excludes the uncertainty of the contamination prediction (`fnu_contam_err`) and, for sources with the default profile, the uncertainty of the assumed size, which corresponds to roughly ±15 % in flux.
+`wave` is in µm, `fnu` and related columns in µJy, and the `flam` columns in erg s⁻¹ cm⁻² Å⁻¹. `fnu_err` is statistical, propagated from the 2-D error array including the noise of the subtracted exposures. It excludes the uncertainty of the contamination prediction (`fnu_contam_err`) and the uncertainty of the source's size where the data do not measure it (`SHAPE = default`, or a faint fit held near the prior width), roughly ±10 % in flux.
 
 ## Master-background spectrum
 
