@@ -384,7 +384,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         exps, C, P, clean, cstate, S = A.exps, A.chain, A.prediction, A.clean, A.contam_state, A.scan
         R = C.result
         p = R.params
-        log(f"{product_name}: shape {C.shape} ({C.reason}), gate {C.snr_det:.1f}/{C.gate:.0f}, "
+        log(f"{product_name}: shape {C.shape} ({C.reason}), detection S/N {C.snr_det:.1f}, "
             f"centre {p['centre']:+.3f} (plan {p['centre_prior']:+.3f}), width {p['width']:.3f}")
         if S is not None:
             if S.error:

@@ -41,6 +41,8 @@ CARDS = {
     'CONTNSEP': 'Fraction of fnu_prof not separable',
     'SELFSUB': 'Own flux removed by nod subtraction',
     'NFOPEN': 'Failed-open shutters on the trace',
+    'MBKGSCL': 'Master background level fitted (0.01 = 1%)',
+    'MBKGSCLE': 'Uncertainty of MBKGSCL',
     # same-slitlet neighbor scan
     'NBRDET': 'Neighbor above the proposal threshold',
     'NBRDELTA': 'Neighbor offset from target [slit units]',

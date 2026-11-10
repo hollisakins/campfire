@@ -193,21 +193,30 @@ def test_fits_take_no_pointing_offsets():
 # ---------------------------------------------------------------------------
 # the chain
 # ---------------------------------------------------------------------------
-def test_chain_picks_default_below_gate():
+def test_a_faint_source_takes_its_own_fit_and_the_prior_decides_its_shape():
+    """No detection gate (user, 2026-11-10): a source far below the old gates takes its own
+    fit, and with little in the data its width and centre stay near the prior's (median
+    width 0.15 at the planned position), so the extraction is close to the default shape's.
+    The detection S/N is still measured and reported."""
     exps = T._exposures()
     _fill(exps, dict(width=0.15), 0.3, seed=3)
-    C = PC.choose_shape(exps, _cfg(), is_prism=True)
-    assert C.shape == 'default' and C.reason == 'below_gate'
-    assert 'own' not in C.candidates and np.isfinite(C.chi2['default'])
+    for sc in (dict(), dict(gate_snr_prism=1e6)):            # the gate keys no longer reach the chain
+        C = PC.choose_shape(exps, PC.ChainConfig.from_stage_config(sc), is_prism=True)
+        assert C.shape == 'own' and C.reason.split(';')[0] == 'own_fit'
+        assert np.isfinite(C.snr_det) and C.snr_det < 25
+        assert 'own' in C.candidates and np.isfinite(C.chi2['default'])
+        p = C.result.params
+        assert 0.05 < p['width'] < 0.45 and abs(p['centre'] - p['centre_prior']) < 0.2
 
 
-def test_chain_picks_own_above_gate():
+def test_chain_picks_own_fit():
     exps = T._exposures()
     _fill(exps, dict(centre_offset=0.1, width=0.25), 30.0, seed=3)
     C = PC.choose_shape(exps, _cfg(), is_prism=True)
-    assert C.shape == 'own' and C.reason == 'gate_passed'
+    assert C.shape == 'own' and C.reason == 'own_fit'
     assert C.result.params['width'] == pytest.approx(0.25, abs=0.04)
     assert C.chi2['own'] < C.chi2['default']
+    assert 'MBKGSCL' not in C.header_cards() or not np.isfinite(C.header_cards()['MBKGSCL'])   # nodded: no term
 
 
 def _prism_of(shape, pivot, c_prior, pa=np.nan):
@@ -229,9 +238,10 @@ def test_chain_picks_prism_when_own_not_better():
 
 
 def test_sibling_grating_shape_is_held_over_the_wavelengths_and_labelled_grating():
-    """Below the gate a grating takes the shape of its source's other grating that passed its
-    gate: its centre offset and width at that grating's pivot, without the chromatic terms
-    (they would be extrapolated an octave), labelled 'grating'."""
+    """A grating takes the shape of its source's other grating that took its own fit, as it
+    takes a PRISM shape (kept unless its own fit is better and different at detection S/N
+    ``own_vs_prism_min_gate``): its centre offset and width at that grating's pivot, without
+    the chromatic terms (they would be extrapolated an octave), labelled 'grating'."""
     from campfire_pipeline.nirspec import profile_contam as CT
     truth = dict(centre_offset=0.12, width=0.08, drift=0.0, width_change=0.0)
     exps = _grating(T._exposures(src_y=0.05))
@@ -245,8 +255,9 @@ def test_sibling_grating_shape_is_held_over_the_wavelengths_and_labelled_grating
     M = PF.ProfileModel(exps)
     x = PF.map_shape(ref.params, 2 * M.pivot)                # held, wherever the target's pivot is
     assert x['centre_offset'] == pytest.approx(0.12) and x['width'] == pytest.approx(0.08)
-    C = PC.choose_shape(exps, _cfg(gate_snr_grating=1e6), is_prism=False, prism=ref)
-    assert C.transfer == 'used' and C.shape == 'grating' and C.reason == 'below_gate;prism'
+    C = PC.choose_shape(exps, _cfg(own_vs_prism_min_gate=1e6), is_prism=False, prism=ref)
+    assert C.transfer == 'used' and C.shape == 'grating'
+    assert C.reason in ('shapes_agree', 'prism_kept', 'prism_kept:gate') and 'own' in C.candidates
     assert C.result.params['width'] == pytest.approx(0.08)
     assert C.header_cards()['SHAPESRC'] == 'obs_g235m_f170lp_7'
 
@@ -320,38 +331,45 @@ def test_chain_no_transfer_at_a_different_roll():
     assert C.transfer == 'pa_mismatch' and 'prism' not in C.candidates
 
 
-def test_bound_hit_detected_and_chain_keeps_own_when_fallback_is_worse():
-    """A bright source 0.45 off plan (bound 0.3): the own fit ends on the centre
-    bound, the default shape describes the data far worse, so the own fit is kept
-    and flagged (review: never fall back to a clearly worse shape)."""
+def test_a_centre_on_its_bound_is_kept_and_flagged():
+    """A bright source 0.45 off plan (bound 0.3): the own fit ends on the centre bound; it is
+    kept, and the bits and SHAPEWHY say so."""
     exps = T._exposures(src_y=0.0)
     _fill(exps, dict(centre_offset=0.45, width=0.05), 60.0, seed=8)
     C = PC.choose_shape(exps, _cfg(), is_prism=True)
     assert C.bound_bits & PF.BOUND_BITS['centre']
-    assert C.shape == 'own' and C.reason.startswith('bound_kept')
+    assert C.shape == 'own' and C.reason == 'own_fit;bound:centre'
 
 
-def test_width_on_its_bound_falls_back_even_when_the_fallback_is_worse():
+def test_a_width_on_its_bound_is_kept_and_reports_more_of_the_flux_than_the_default():
     """A bright source wider than the width bound: the own fit ends on the width bound and
-    beats the default shape by far, but a width (or drift) on its bound is the fit reaching
-    for other light, not a real offset, so the chain falls back (p1 629668; user, 2026-11-06)."""
+    is kept, flagged (user, 2026-11-10; until then a width on its bound fell back to the
+    default shape). The fit on its bound reports more of the source's flux than the
+    default shape would: the reason for keeping it."""
     exps = T._exposures(src_y=0.0)
-    _fill(exps, dict(centre_offset=0.0, width=0.35), 60.0, seed=8)
+    R_true = _fill(exps, dict(centre_offset=0.0, width=0.35), 60.0, seed=8)
     C = PC.choose_shape(exps, _cfg(bound_width_max=0.2), is_prism=True)
     assert C.bound_bits & PF.BOUND_BITS['width']
-    assert C.chi2['default'] - C.chi2['own'] > 100            # the old rule would have kept it
-    assert C.shape == 'default' and C.reason.startswith('bound:') and 'width' in C.reason
+    assert C.shape == 'own' and C.reason.startswith('own_fit;bound:') and 'width' in C.reason
+    assert C.result.params['width'] == pytest.approx(0.2, rel=1e-2)
+    assert C.chi2['default'] - C.chi2['own'] > 100
+
+    def reported(R):
+        g = np.isfinite(R.flux) & (R.lam > 1.0) & (R.lam < 4.8)
+        return float(np.sum((R.flux * PF.reported_factor(R, R.lam))[g]))
+    truth = reported(R_true)
+    own, default = reported(C.result) / truth, reported(C.candidates['default']) / truth
+    assert abs(own - 1) < abs(default - 1)
 
 
-def test_bound_hit_falls_back_when_fallback_fits_as_well():
+def test_bound_bits_never_change_the_choice():
+    """A noisy fit pushed onto a tight width bound is kept as well; only the flag differs."""
     exps = T._exposures(src_y=0.0)
     _fill(exps, dict(centre_offset=0.0, width=0.15), 4.0, seed=9)
-    cfg = _cfg(bound_width_max=0.16, prior_width_log_sigma=5.0, gate_snr_prism=1.0)
+    cfg = _cfg(bound_width_max=0.16, prior_width_log_sigma=5.0)
     C = PC.choose_shape(exps, cfg, is_prism=True)
-    if C.bound_bits:                       # the noise pushed the width onto its (tight) bound
-        assert C.shape == 'default' and C.reason.startswith('bound:')
-    else:
-        assert C.shape == 'own'
+    assert C.shape == 'own'
+    assert ('bound:' in C.reason) == bool(C.bound_bits)
 
 
 def test_chain_masked_fraction_skips_own_fit():

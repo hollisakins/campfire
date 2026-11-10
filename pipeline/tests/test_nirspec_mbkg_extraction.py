@@ -21,18 +21,37 @@ from test_nirspec_profile_fit import NX, NY, TRUTH, _exposures, _spectrum, _trut
 # ---------------------------------------------------------------------------
 # the fit on single frames
 # ---------------------------------------------------------------------------
-def _single_frames(params, flux_scale, noise, seed=2, src_y=0.1):
+def _master_background(e, level=50.0):
+    """A master background on exposure ``e``'s pixels (units of ``diff``): rising with
+    wavelength, darker towards the shutter edges (the bars' shadow)."""
+    from campfire_pipeline.nirspec.constants import MSA_SLIT_PITCH
+    edge = (1.0 - np.cos(2 * np.pi * e.y / MSA_SLIT_PITCH)) / 2.0         # 0 at shutter centres, 1 at the bars
+    return level * (1.0 + 0.1 * e.wav) * (1.0 - 0.5 * edge ** 4)
+
+
+def _single_frames(params, flux_scale, noise, seed=2, src_y=0.1, mbkg_error=0.0):
     """The three exposures of ``_exposures`` as single frames (nothing subtracted), each
-    the source's own light plus noise, and the truth."""
+    the source's own light plus noise, and the truth. Each carries its master background
+    (``Exposure.mbkg``, ``_master_background``); ``mbkg_error`` of it is left in the frame,
+    as when the master background subtracted was that much too faint in the slitlet."""
     exps = _exposures(src_y=src_y)
     for e in exps:
         e.partners = []
     R = _truth_result(exps, params, [0.0, 0.0, 0.0], flux_scale)
     rng = np.random.default_rng(seed)
     for k, e in enumerate(exps):
-        e.diff = PF.model_frame(R, k, applied_pathloss=False) + noise * rng.normal(size=(NY, NX))
+        e.mbkg = _master_background(e)
+        e.diff = (PF.model_frame(R, k, applied_pathloss=False) + mbkg_error * e.mbkg
+                  + noise * rng.normal(size=(NY, NX)))
         e.var = np.full((NY, NX), noise ** 2)
     return exps, R
+
+
+def _reported_ratio(R, truth, lo=1.0, hi=4.8):
+    """Summed reported flux of ``R`` over the truth's (same grid)."""
+    g = np.isfinite(R.flux) & (R.lam > lo) & (R.lam < hi)
+    rep = lambda X: float(np.sum((X.flux * PF.reported_factor(X, X.lam))[g]))     # noqa: E731
+    return rep(R) / rep(truth)
 
 
 def test_single_frames_at_a_fixed_shape_recover_the_spectrum():
@@ -58,14 +77,15 @@ def test_self_subtraction_is_small_for_a_compact_source_and_large_for_a_wide_one
     assert MX.self_subtraction(wide, exps) > 0.10
 
 
-def _nodded_choice(exps, width):
+def _nodded_choice(exps, width, mbkg_sigma=0.01):
     """What ``fit_product`` hands ``own_shape``: the nodded chain's shape (here a given width at
-    the truth's centre) refitted on the single frames, and its ``ChainResult``."""
+    the truth's centre) refitted on the single frames with the master-background scale term,
+    and its ``ChainResult``."""
     from campfire_pipeline.nirspec import profile_chain as PC
-    M = PF.ProfileModel(exps, chromatic=True)
+    M = PF.ProfileModel(exps, chromatic=True, mbkg_sigma=mbkg_sigma)
     shape = dict(centre_offset=TRUTH['centre'] - M.c_prior, drift=0.0, width=width, width_change=0.0)
     R0 = PF.fit_fixed(model=M, shape=shape)
-    return R0, shape, PC.ChainResult(result=R0, shape='own', chain='gated', reason='gate_passed')
+    return R0, shape, PC.ChainResult(result=R0, shape='own', chain='gated', reason='own_fit')
 
 
 def test_the_master_background_frames_fit_a_wide_source_wider_than_the_nodded_shape():
@@ -76,31 +96,165 @@ def test_the_master_background_frames_fit_a_wide_source_wider_than_the_nodded_sh
     assert (C.shape, C.reason) == ('own', 'mbkg_own')
     assert R.params['width'] == pytest.approx(0.9, rel=0.1)
     assert shape['width'] == R.params['width']
-    assert C.header_cards()['SRCWIDTH'] == R.params['width']
-    assert C.snr_det > C.gate
+    cards = C.header_cards()
+    assert cards['SRCWIDTH'] == R.params['width']
+    assert C.snr_det > 0
+    # the scale term ran, found nothing to take up, and is in the cards
+    assert abs(R.mbkg_scale) < 3 * R.mbkg_scale_err and 0 < R.mbkg_scale_err < 0.01
+    assert (cards['MBKGSCL'], cards['MBKGSCLE']) == (R.mbkg_scale, R.mbkg_scale_err)
 
 
-def test_a_faint_source_keeps_the_nodded_shape():
+def test_a_faint_source_takes_its_own_fit_too():
+    """No detection gate (user, 2026-11-10): a faint source takes its own fit on these
+    frames, the prior deciding its shape."""
     exps, _ = _single_frames(TRUTH, flux_scale=0.3, noise=1.0)
     R0, shape0, chain = _nodded_choice(exps, 0.2)
     R, shape, C = MX.own_shape(R0, shape0, chain, {})
-    assert R is R0 and shape is shape0
-    assert (C.shape, C.reason) == ('own', 'nodded;below_gate')
+    assert R is not R0 and C.shape == 'own' and C.reason.split(';')[0] == 'mbkg_own'
+    assert np.isfinite(C.snr_det) and 0.05 < R.params['width'] < 0.45
 
 
 def test_the_fixed_chain_keeps_the_nodded_shape():
     exps, _ = _single_frames(TRUTH, flux_scale=200.0, noise=1.0)
     R0, shape0, chain = _nodded_choice(exps, 0.2)
     R, _, C = MX.own_shape(R0, shape0, chain, {'profile_fit_shape': 'fixed'})
-    assert R is R0 and C.reason == 'nodded;gate_passed'
+    assert R is R0 and C.reason == 'nodded;own_fit'
 
 
-def test_a_width_on_its_bound_keeps_the_nodded_shape():
+def test_a_width_on_its_bound_is_kept_and_flagged():
+    """A source wider than the width bound: the fit on its bound is kept, flagged (until
+    2026-11-10 it fell back to the nodded shape)."""
     wide = dict(TRUTH, width=0.9, width_change=0.0)
     exps, _ = _single_frames(wide, flux_scale=200.0, noise=1.0)
     R0, shape0, chain = _nodded_choice(exps, 0.4)
     R, _, C = MX.own_shape(R0, shape0, chain, {'bound_width_max': 0.5})
-    assert R is R0 and C.reason.startswith('nodded;bound:') and 'width' in C.reason
+    assert R is not R0 and C.shape == 'own'
+    assert C.reason.startswith('mbkg_own;bound:') and 'width' in C.reason
+    assert C.bound_bits & PF.BOUND_BITS['width'] and R.params['width'] == pytest.approx(0.5, rel=1e-2)
+
+
+# ---------------------------------------------------------------------------
+# the master-background scale term
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize('error', [0.02, -0.02])
+def test_the_scale_term_takes_up_a_master_background_level_error(error):
+    """A compact source on frames whose master background was 2 % off in the slitlet: a fit
+    without the term reports a biased flux; with it, the scale comes out at the error and
+    the flux at the truth, at the true shape and in the free fit (``own_shape``)."""
+    exps, truth = _single_frames(TRUTH, flux_scale=30.0, noise=1.0, mbkg_error=error)
+    M = PF.ProfileModel(exps, chromatic=True)
+    shape = dict(centre_offset=TRUTH['centre'] - M.c_prior, drift=TRUTH['drift'], width=TRUTH['width'],
+                 width_change=TRUTH['width_change'])
+    plain = PF.fit_fixed(model=M, shape=shape)
+    term = PF.fit_fixed(model=PF.ProfileModel(exps, chromatic=True, mbkg_sigma=0.01), shape=shape)
+    assert abs(_reported_ratio(plain, truth) - 1) > 0.05
+    assert term.mbkg_scale == pytest.approx(error, abs=4 * term.mbkg_scale_err)
+    assert abs(_reported_ratio(term, truth) - 1) < 0.03
+    R0, shape0, chain = _nodded_choice(exps, 0.2)
+    R, _, C = MX.own_shape(R0, shape0, chain, {})
+    assert C.reason.split(';')[0] == 'mbkg_own' and R.mbkg_scale == pytest.approx(error, abs=0.002)
+    assert R.params['width'] == pytest.approx(TRUTH['width'], abs=0.05)
+    assert abs(_reported_ratio(R, truth) - 1) < 0.05
+
+
+def test_the_solve_with_the_term_is_the_joint_least_squares():
+    """The scale eliminated through the spectrum's factorisation equals the dense solve of
+    [A | b] with the allowance on the scale's diagonal: spectrum, scale, covariance, and the
+    chi2 improvement over the no-source fit (the scale solved alone)."""
+    exps, _ = _single_frames(TRUTH, flux_scale=30.0, noise=1.0, mbkg_error=0.01)
+    sigma = 0.01
+    M = PF.ProfileModel(exps, chromatic=True, mbkg_sigma=sigma)
+    p = PF.shape_vector(dict(width=0.2), M.c_prior, 0.15)
+    s = M.linear_solve(p, np.zeros(3), covariance=True)
+    g = s.good
+    X = np.column_stack([s.A.toarray()[:, g], M.pix['b']])
+    w = 1.0 / M.pix['v']
+    N = X.T @ (w[:, None] * X)
+    N[np.arange(g.sum()), np.arange(g.sum())] += 1e-9 * np.median(np.diag(N)[:g.sum()])
+    N[-1, -1] += 1.0 / sigma ** 2
+    rhs = X.T @ (w * M.pix['d'])
+    x = np.linalg.solve(N, rhs)
+    np.testing.assert_allclose(s.f[g], x[:-1], rtol=1e-6, atol=1e-8 * np.abs(x[:-1]).max())
+    assert s.scale == pytest.approx(x[-1], rel=1e-6)
+    cov = np.linalg.inv(N)
+    assert s.scale_err == pytest.approx(np.sqrt(cov[-1, -1]), rel=1e-6)
+    np.testing.assert_allclose(s.cov[np.ix_(g, g)], cov[:-1, :-1], rtol=1e-5, atol=1e-10 * np.abs(cov).max())
+    np.testing.assert_allclose(s.model, X @ x, rtol=1e-6, atol=1e-8)
+    d, B = M.pix['d'], M.pix['b']
+    chi2_src = np.sum(w * (d - X @ x) ** 2) + (x[-1] / sigma) ** 2
+    s0 = np.sum(w * B * d) / (np.sum(w * B * B) + 1 / sigma ** 2)
+    chi2_none = np.sum(w * (d - s0 * B) ** 2) + (s0 / sigma) ** 2
+    assert s.dchi2 == pytest.approx(chi2_none - chi2_src, rel=1e-5)
+
+
+def test_the_allowance_holds_a_scale_the_data_do_not_measure_at_zero():
+    exps, _ = _single_frames(TRUTH, flux_scale=30.0, noise=1.0)
+    for e in exps:
+        e.mbkg = np.zeros_like(e.mbkg)                     # nothing to scale
+    M = PF.ProfileModel(exps, chromatic=True, mbkg_sigma=0.01)
+    s = M.linear_solve(PF.shape_vector(None, M.c_prior, 0.15), np.zeros(3))
+    assert s.scale == 0.0 and s.scale_err == pytest.approx(0.01)
+
+
+def test_the_detection_snr_does_not_count_a_level_error_as_a_source():
+    """Empty frames whose master background was 2 % too faint: without the term the
+    leftover background reads as a strong detection; with it in both the fit and the
+    no-source comparison, the detection S/N is that of noise."""
+    exps, _ = _single_frames(TRUTH, flux_scale=0.0, noise=1.0, mbkg_error=0.02)
+    plain, _ = PF.detection_snr(PF.ProfileModel(exps, chromatic=True))
+    term, _ = PF.detection_snr(PF.ProfileModel(exps, chromatic=True, mbkg_sigma=0.01))
+    assert plain > 20 and term < 8
+
+
+def test_the_term_is_refused_where_it_does_not_belong():
+    """Not on nod differences (the master background cancels there), not without each
+    exposure's master background, never a silent model whose prediction is not A @ f."""
+    with pytest.raises(ValueError):
+        PF.ProfileModel(_exposures(), chromatic=True, mbkg_sigma=0.01)       # nod differences
+    exps, _ = _single_frames(TRUTH, flux_scale=30.0, noise=1.0)
+    exps[1].mbkg = None
+    with pytest.raises(ValueError):
+        PF.ProfileModel(exps, chromatic=True, mbkg_sigma=0.01)
+    with pytest.raises(ValueError):
+        PF.ProfileModel(_single_frames(TRUTH, 30.0, 1.0)[0], chromatic=True, mbkg_sigma=-0.01)
+    M = PF.ProfileModel(_single_frames(TRUTH, 30.0, 1.0)[0], chromatic=True, mbkg_sigma=0.01)
+    with pytest.raises(ValueError):
+        M.solve(PF.shape_vector(None, M.c_prior, 0.15), np.zeros(3))
+    # a model without the term: solve and linear_solve agree, the scale is zero
+    M0 = PF.ProfileModel(_single_frames(TRUTH, 30.0, 1.0)[0], chromatic=True, mbkg_sigma=0)
+    p = PF.shape_vector(None, M0.c_prior, 0.15)
+    f, _, _, A = M0.solve(p, np.zeros(3))
+    s = M0.linear_solve(p, np.zeros(3))
+    np.testing.assert_array_equal(f, s.f)
+    np.testing.assert_array_equal(A @ f, s.model)
+    assert s.scale == 0.0 and np.isnan(PF.fit_fixed(model=M0).mbkg_scale)
+
+
+def test_own_shape_needs_the_master_background_unless_the_term_is_off():
+    exps, _ = _single_frames(TRUTH, flux_scale=200.0, noise=1.0)
+    R0, shape0, chain = _nodded_choice(exps, 0.2, mbkg_sigma=None)
+    for e in R0.model.exps:
+        e.mbkg = None
+    with pytest.raises(ValueError):
+        MX.own_shape(R0, shape0, chain, {})
+    R, _, C = MX.own_shape(R0, shape0, chain, {'mbkg_scale_allowance': 0.0})
+    assert C.reason == 'mbkg_own' and np.isnan(R.mbkg_scale)
+    assert not np.isfinite(C.header_cards()['MBKGSCL'])       # left out of the header (extraction_cards.put)
+
+
+def test_corrected_inputs_take_the_fitted_level_out_of_the_data():
+    data = np.full((3, 4), 10.0, np.float32)
+    dq = np.zeros((3, 4), np.uint32)
+    dq[0, 0] = PF.DO_NOT_USE
+    bg = np.full((3, 4), 100.0)
+    bg[0, 0] = np.nan                                      # no master background there (DO_NOT_USE)
+    inputs = {'a': dict(data=data, dq=dq, err=np.ones((3, 4), np.float32))}
+    out = MX.corrected_inputs(inputs, {'a': MX.Frame(inputs['a'], dq, background=bg)}, 0.02)
+    assert out['a']['data'].dtype == np.float32
+    np.testing.assert_allclose(out['a']['data'][1:], 8.0)
+    assert out['a']['data'][0, 0] == 10.0
+    assert out['a']['dq'] is dq and out['a']['err'] is inputs['a']['err']
+    np.testing.assert_array_equal(inputs['a']['data'], 10.0)            # the inputs are untouched
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +320,7 @@ def test_frame_arrays_subtract_the_master_background(tmp_path, monkeypatch):
     np.testing.assert_allclose(frame['err'][1:, :], np.sqrt(3.75))
     assert {frame[k].dtype for k in ('data', 'err', 'var_poisson')} == {np.dtype(np.float32)}
     np.testing.assert_array_equal(live, live_dq)
+    np.testing.assert_array_equal(f.background, sky)         # what was subtracted: the scale term's column
 
 
 def test_frame_arrays_without_a_master_background(tmp_path, monkeypatch):
@@ -359,6 +514,14 @@ def test_single_frame_exposures_from_the_nodded_load():
         flagged[n] = a
     out2 = MX.single_frame_exposures(exps, flagged)
     assert all(not x.ok[4, 6] for x in out2) and all(x.ok[4, 7] for x in out2)
+    assert all(x.mbkg is None for x in out2)
+    # with the master backgrounds: placed like the frames, times the path loss (units of diff)
+    bgs = {e.name: np.full((NY, NX), 7.0) for e in exps}
+    out3 = MX.single_frame_exposures(exps, frames, backgrounds=bgs)
+    for x, e in zip(out3, exps[1:]):
+        np.testing.assert_array_equal(x.mbkg, 7.0 * e.pl_applied[pad:pad + NY])
+    M3 = PF.ProfileModel(out3, chromatic=True, mbkg_sigma=0.01)
+    assert M3.pix['b'].size == M3.npix and np.all(np.isfinite(M3.pix['b']))
 
 
 # ---------------------------------------------------------------------------

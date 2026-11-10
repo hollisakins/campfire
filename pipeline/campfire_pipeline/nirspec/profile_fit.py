@@ -243,6 +243,9 @@ class Exposure:
     bar_offset: float = 0.0        # added to ``y`` and ``src_y`` (slit units): where the observation's bars sit
                                    # against jwst's slit frame (``bar_offset``)
     slit_loss: CR.SlitLoss = CR.SlitLoss()   # whose path loss the model takes, per direction (``throughput``)
+    mbkg: np.ndarray = None        # a single frame's master background, in the units of ``diff`` on the same
+                                   # frame (``mbkg_extraction.single_frame_exposures``): the column of the
+                                   # master-background scale term (``ProfileModel``, ``mbkg_sigma``)
 
     @property
     def dy(self):
@@ -518,7 +521,7 @@ def load_source(groups, bkg_overrides=None, science=None, single_frames=False, p
 @dataclass
 class Priors:
     """Gaussian priors of the shape. The defaults are the original (V0) values; the
-    gated chain (``profile_chain``) passes the recalibrated ones from the config."""
+    shape chain (``profile_chain``) passes the recalibrated ones from the config."""
     centre_sigma: float = 0.15        # centre vs the planned position (SRCYPOS), slit units
     drift_sigma: float = 0.05         # centre change per octave of wavelength
     width_median: float = 0.15        # galaxy Gaussian sigma, slit units (bright-galaxy population)
@@ -553,10 +556,25 @@ class FitResult:
     nfree: int
     chromatic: bool
     model: 'ProfileModel' = field(repr=False, default=None)
+    mbkg_scale: float = np.nan        # fitted master-background scale (``ProfileModel.mbkg_sigma``); NaN without the term
+    mbkg_scale_err: float = np.nan
 
     @property
     def chi2_red(self):
         return self.chi2 / max(self.npix - self.nfree, 1)
+
+
+@dataclass
+class Solution:
+    """The linear solve at one shape (``ProfileModel.linear_solve``)."""
+    f: np.ndarray                     # spectrum on the grid (0 where unconstrained)
+    cov: np.ndarray                   # its covariance (on request; NaN where unconstrained), else None
+    good: np.ndarray                  # grid points constrained by the data
+    A: object                         # design matrix (sparse): the source's part of the model is A @ f
+    model: np.ndarray                 # the whole model on the fitted pixels (source + scale x master background)
+    dchi2: float                      # chi2 improvement over no source (the scale term in both)
+    scale: float = 0.0                # master-background scale; 0 without the term
+    scale_err: float = np.nan
 
 
 def fit_pixel_masks(exps):
@@ -654,15 +672,24 @@ class ProfileModel:
         position shared by every exposure (to measure the offsets themselves).
     optics : the diffraction model, a list with one ``optics.Optics`` (or an object with its
         ``image`` and ``transmission``) per exposure, e.g. one being calibrated; None takes
-        the shipped model of each exposure's detector (``model_optics``)."""
+        the shipped model of each exposure's detector (``model_optics``).
+    mbkg_sigma : the master-background scale term, for single frames with their master
+        background subtracted (``mbkg_extraction``): the model adds one constant times each
+        exposure's master background (``Exposure.mbkg``), the same constant for every
+        exposure, solved with the spectrum at every shape and held near zero by a Gaussian
+        of this width (the penalty (scale / mbkg_sigma)^2 joins the chi2). It takes up an
+        error in the master background's level in the slitlet (about 1 % either way), which
+        a source model would otherwise fit as a wide source. None (or 0): no term. Not for
+        nod differences, where the master background cancels."""
 
     centre_law_tables = None
     nod_law = None
     nod_shift = None
     optics = None
+    mbkg_sigma = None
 
     def __init__(self, exps, chromatic=True, priors=None, grid=None, bounds=None, c_prior=None,
-                 centre_law_tables=None, nod_law=None, optics=None):
+                 centre_law_tables=None, nod_law=None, optics=None, mbkg_sigma=None):
         self.exps = exps
         self.chromatic = chromatic
         self.centre_law_tables = centre_law_tables
@@ -675,6 +702,7 @@ class ProfileModel:
         if c_prior is not None:
             self.c_prior = float(c_prior)
         self._build_pixels()
+        self._mbkg_term(mbkg_sigma)
         self.lam_grid = self._grid() if grid is None else np.asarray(grid, float)
         lam = self.pix['lam']
         self.pivot = float(np.exp(np.median(np.log(lam))))
@@ -710,6 +738,26 @@ class ProfileModel:
         self.pix = dict(d=np.concatenate(d), v=np.concatenate(v), e=np.concatenate(e_idx), lam=np.concatenate(lam))
         self.npix = self.pix['d'].size
         self.use = np.ones(self.npix, bool)       # outlier mask
+
+    def _mbkg_term(self, sigma):
+        """The master-background scale term (``mbkg_sigma``): each fitted exposure's master
+        background on the fitted pixels, ``pix['b']``. Refused, not skipped, on nod
+        differences or without the master background."""
+        if sigma is None or sigma == 0:
+            self.mbkg_sigma = None
+            return
+        if not sigma > 0:
+            raise ValueError(f'profile fit: mbkg_sigma must be positive, got {sigma!r}')
+        fitted = [self.exps[k] for k, _ in self.pix_masks]
+        if any(e.partners for e in fitted):
+            raise ValueError('profile fit: the master-background scale term is for single frames, '
+                             'not nod differences')
+        if any(e.mbkg is None for e in fitted):
+            raise ValueError('profile fit: the master-background scale term needs every exposure\'s master '
+                             'background (Exposure.mbkg)')
+        self.mbkg_sigma = float(sigma)
+        self.pix['b'] = np.concatenate([np.nan_to_num(np.asarray(self.exps[k].mbkg, float)[m])
+                                        for k, m in self.pix_masks])
 
     def diff_variance(self, k):
         """Variance to weight exposure k's nod difference with.
@@ -934,37 +982,78 @@ class ProfileModel:
         return sp.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
                              shape=(self.npix, self.lam_grid.size))
 
-    def solve(self, p, eoff, covariance=False):
-        """Weighted least squares for the spectrum at fixed shape. The normal matrix is
-        banded (each pixel touches a few neighbouring grid points), so it is solved
-        sparse; the dense covariance is formed only on request."""
+    def linear_solve(self, p, eoff, covariance=False):
+        """Weighted least squares at fixed shape: the spectrum, and with the
+        master-background term (``mbkg_sigma``) its scale, solved together. The normal
+        matrix of the spectrum is banded (each pixel touches a few neighbouring grid
+        points), so it is solved sparse; the scale adds one row and column, eliminated
+        through the same factorisation, and its Gaussian allowance adds 1 / mbkg_sigma^2 to
+        its diagonal. The dense covariance is formed only on request. Returns a
+        ``Solution``."""
         A = self.design(p, eoff)
+        d = self.pix['d']
         wgt = np.where(self.use, 1.0 / self.pix['v'], 0.0)
         AtW = A.T.multiply(wgt).tocsr()
         N = (AtW @ A).tocsc()
-        b = AtW @ self.pix['d']
+        b = AtW @ d
         diag = N.diagonal()
         good = diag > 1e-3 * np.median(diag[diag > 0])
         gi = np.flatnonzero(good)
         Ng = N[gi][:, gi] + sp.identity(gi.size, format='csc') * 1e-9 * np.median(diag[good])
+        lu = splu(Ng)
+        x = lu.solve(b[good])
         f = np.zeros(diag.size)
-        f[good] = splu(Ng).solve(b[good])
+        scale, scale_err = 0.0, np.nan
+        if self.mbkg_sigma is None:
+            f[good] = x
+            model = A @ f
+            dchi2 = float(f[good] @ b[good])
+        else:
+            # [N u; u^T c] [f; s] = [b; bd]: s from the Schur complement S = c - u^T N^-1 u
+            B = self.pix['b']
+            u = np.asarray(AtW @ B)[good]
+            y = lu.solve(u)
+            bd = float(np.sum(wgt * B * d))
+            c = float(np.sum(wgt * B * B)) + 1.0 / self.mbkg_sigma ** 2
+            S = c - float(u @ y)
+            scale = (bd - float(u @ x)) / S
+            scale_err = 1.0 / np.sqrt(S)
+            f[good] = x - scale * y
+            model = A @ f + scale * B
+            # chi2 + penalty: min over (f, s) against min over s alone (no source)
+            dchi2 = float(f[good] @ b[good]) + scale * bd - bd ** 2 / c
         cov = None
         if covariance:
+            inv = np.linalg.inv(Ng.toarray())
+            if self.mbkg_sigma is not None:
+                inv = inv + np.outer(y, y) / S
             cov = np.full((diag.size, diag.size), np.nan)
-            cov[np.ix_(good, good)] = np.linalg.inv(Ng.toarray())
-        return f, cov, good, A
+            cov[np.ix_(good, good)] = inv
+        return Solution(f=f, cov=cov, good=good, A=A, model=model, dchi2=dchi2, scale=scale, scale_err=scale_err)
+
+    def solve(self, p, eoff, covariance=False):
+        """(spectrum, covariance, good, A) of ``linear_solve``, for a model whose prediction
+        is A @ f: without the master-background term (refused with it; use
+        ``linear_solve`` and its ``model``)."""
+        if self.mbkg_sigma is not None:
+            raise ValueError('profile fit: a model with the master-background term is not A @ f; use linear_solve')
+        s = self.linear_solve(p, eoff, covariance=covariance)
+        return s.f, s.cov, s.good, s.A
 
     def residuals(self, q):
+        """Normalised data residuals and prior terms at shape ``q``, the spectrum (and the
+        master-background scale, with its allowance as one more term) solved there."""
         p, eoff = self.unpack(q)
-        f, _, _, A = self.solve(p, eoff)
-        r = (self.pix['d'] - A @ f) / np.sqrt(self.pix['v'])
+        s = self.linear_solve(p, eoff)
+        r = (self.pix['d'] - s.model) / np.sqrt(self.pix['v'])
         r = np.where(self.use, r, 0.0)
         pr = self.priors
         pri = [(p[0] - self.c_prior) / pr.centre_sigma,
                (p[2] - np.log(pr.width_median)) / pr.width_log_sigma]
         if self.chromatic:
             pri += [p[1] / pr.drift_sigma, p[3] / pr.width_change_sigma]
+        if self.mbkg_sigma is not None:
+            pri.append(s.scale / self.mbkg_sigma)
         return np.concatenate([r, pri])
 
     def bounds(self):
@@ -1018,8 +1107,7 @@ class ProfileModel:
         if use is not None:
             self.use = use
         try:
-            f, _, _, A = self.solve(p, eoff)
-            r = (self.pix['d'] - A @ f) / np.sqrt(self.pix['v'])
+            r = (self.pix['d'] - self.linear_solve(p, eoff).model) / np.sqrt(self.pix['v'])
             return float(np.sum(r[self.use] ** 2))
         finally:
             self.use = saved
@@ -1047,23 +1135,24 @@ def fit(exps, chromatic=True, priors=None, clip=5.0, n_clip=2, grid=None, bounds
         if it == n_clip:
             break
         p, eoff = M.unpack(q)
-        f, _, _, A = M.solve(p, eoff)
-        r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+        r = (M.pix['d'] - M.linear_solve(p, eoff).model) / np.sqrt(M.pix['v'])
         new = np.abs(r) < clip
         if np.array_equal(new, M.use):
             break
         M.use = new
     p, eoff = M.unpack(q)
-    f, cov, good, A = M.solve(p, eoff, covariance=True)
-    r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+    s = M.linear_solve(p, eoff, covariance=True)
+    r = (M.pix['d'] - s.model) / np.sqrt(M.pix['v'])
     chi2 = float(np.sum(r[M.use] ** 2))
     n_eff = float(np.sum(M.dof_weight()[M.use]))
-    flux = np.where(good, f, np.nan)
-    err = np.where(good, np.sqrt(np.abs(np.diag(cov))), np.nan)
+    flux = np.where(s.good, s.f, np.nan)
+    err = np.where(s.good, np.sqrt(np.abs(np.diag(s.cov))), np.nan)
     params = dict(centre=float(p[0]), drift=float(p[1]), width=float(np.exp(p[2])),
                   width_change=float(p[3]), pivot=M.pivot, centre_prior=M.c_prior)
+    term = M.mbkg_sigma is not None
     R = FitResult(params=params, eoff=eoff, lam=M.lam_grid, flux=flux, flux_err=err, chi2=chi2,
-                  npix=int(round(n_eff)), nfree=int(good.sum()) + len(q), chromatic=M.chromatic, model=M)
+                  npix=int(round(n_eff)), nfree=int(s.good.sum()) + len(q) + int(term), chromatic=M.chromatic,
+                  model=M, mbkg_scale=s.scale if term else np.nan, mbkg_scale_err=s.scale_err)
     R.bound_bits = M.bound_hits(q)
     R.use = M.use.copy()
     return R
@@ -1097,22 +1186,23 @@ def fit_fixed(exps=None, shape=None, eoff=None, clip=5.0, n_clip=2, model=None,
     for it in range(nit + 1):
         if it == nit:
             break
-        f, _, _, A = M.solve(p, e)
-        r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+        r = (M.pix['d'] - M.linear_solve(p, e).model) / np.sqrt(M.pix['v'])
         new = np.abs(r) < clip
         if np.array_equal(new, M.use):
             break
         M.use = new
-    f, cov, good, A = M.solve(p, e, covariance=True)
-    r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+    s = M.linear_solve(p, e, covariance=True)
+    r = (M.pix['d'] - s.model) / np.sqrt(M.pix['v'])
     chi2 = float(np.sum(r[M.use] ** 2))
     n_eff = float(np.sum(M.dof_weight()[M.use]))
     params = dict(centre=float(p[0]), drift=float(p[1]), width=float(np.exp(p[2])), width_change=float(p[3]),
                   pivot=M.pivot, centre_prior=M.c_prior)
-    R = FitResult(params=params, eoff=e, lam=M.lam_grid, flux=np.where(good, f, np.nan),
-                  flux_err=np.where(good, np.sqrt(np.abs(np.diag(cov))), np.nan), chi2=chi2,
-                  npix=int(round(n_eff)), nfree=int(good.sum()),
-                  chromatic=bool(p[1] != 0 or p[3] != 0), model=M)    # the held shape varies with wavelength
+    term = M.mbkg_sigma is not None
+    R = FitResult(params=params, eoff=e, lam=M.lam_grid, flux=np.where(s.good, s.f, np.nan),
+                  flux_err=np.where(s.good, np.sqrt(np.abs(np.diag(s.cov))), np.nan), chi2=chi2,
+                  npix=int(round(n_eff)), nfree=int(s.good.sum()) + int(term),
+                  chromatic=bool(p[1] != 0 or p[3] != 0), model=M,     # the held shape varies with wavelength
+                  mbkg_scale=s.scale if term else np.nan, mbkg_scale_err=s.scale_err)
     R.bound_bits = 0
     R.use = M.use.copy()
     return R
@@ -1132,15 +1222,18 @@ def mean_square_scale(M, r, clip=5.0):
 
 
 def detection_snr(M, clip=5.0, n_clip=2):
-    """Integrated detection S/N of a source, the gate of the shape chain.
+    """Integrated detection S/N of a source (``DETSNR``). Reported; the shape chains take
+    no decision on it.
 
     For each starting shape of the fit (``ProfileModel.start_grid``) the spectrum is
     solved and its chi2 improvement over no source, dchi2 = f . (A^T W d), is
     computed; the best is used, so compact or offset sources are not penalised by
-    the default template. dchi2 is divided by a noise scale c measured from the
-    residuals at that best shape (``mean_square_scale``), and the number of spectrum
-    points is subtracted (its expectation for no source):
-    snr_det = sqrt(max(dchi2 / c - n, 0)).
+    the default template. With the master-background term (``ProfileModel.mbkg_sigma``)
+    the scale is solved in both, the source's fit and the no-source comparison, each
+    with its allowance, so a master-background level error is not counted as a source.
+    dchi2 is divided by a noise scale c measured from the residuals at that best shape
+    (``mean_square_scale``), and the number of spectrum points is subtracted (its
+    expectation for no source): snr_det = sqrt(max(dchi2 / c - n, 0)).
 
     Outlier pixels are clipped first at the default shape. Returns
     (snr_det, dict with dchi2, n, c, best shape vector)."""
@@ -1148,23 +1241,19 @@ def detection_snr(M, clip=5.0, n_clip=2):
     p0 = shape_vector(None, M.c_prior, M.priors.width_median)
     e0 = np.zeros(len(M.exps))
     for _ in range(n_clip):
-        f, _, _, A = M.solve(p0, e0)
-        r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+        r = (M.pix['d'] - M.linear_solve(p0, e0).model) / np.sqrt(M.pix['v'])
         new = np.abs(r) < clip
         if np.array_equal(new, M.use):
             break
         M.use = new
     best = None
-    wgt = None
     for p in M.start_grid():
-        f, _, good, A = M.solve(p, e0)
-        wgt = np.where(M.use, 1.0 / M.pix['v'], 0.0)
-        b = A.T @ (wgt * M.pix['d'])
-        d = float(f[good] @ b[good])
-        if best is None or d > best[0]:
-            best = (d, p, int(good.sum()), A, f)
-    d, p, n, A, f = best
-    r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+        s = M.linear_solve(p, e0)
+        if best is None or s.dchi2 > best[0].dchi2:
+            best = (s, p)
+    s, p = best
+    d, n = s.dchi2, int(s.good.sum())
+    r = (M.pix['d'] - s.model) / np.sqrt(M.pix['v'])
     c = mean_square_scale(M, r, clip=clip)
     s2 = d / c - n
     return float(np.sqrt(max(s2, 0.0))), dict(dchi2=d, n=n, c=c, shape=p)
@@ -1312,17 +1401,18 @@ def boxcar_factor(result, lam):
     return out / n if n else np.full(lam.shape, np.nan)
 
 
-def refit_at_shape(result, exps):
+def refit_at_shape(result, exps, mbkg_sigma=None):
     """The spectrum of ``exps`` at the shape a fit chose (``result``, e.g. a shape chain's
     result: its model's priors, bounds, grid, prior centre and pivot, the shape defined at
     that pivot): the same source on other data (the scan's pixels, the frames minus the
-    master background). Returns (FitResult, shape dict as ``fit_fixed`` takes it)."""
+    master background, there with the master-background scale term ``mbkg_sigma``).
+    Returns (FitResult, shape dict as ``fit_fixed`` takes it)."""
     M0 = result.model
     by_detector = {e.detector: o for e, o in zip(M0.exps, M0.optics)}
     optics = [by_detector.get(e.detector) for e in exps]
     M = ProfileModel(exps, chromatic=M0.chromatic, priors=M0.priors, bounds=M0.bounds_cfg, c_prior=M0.c_prior,
                      grid=M0.lam_grid, centre_law_tables=M0.centre_law_tables, nod_law=M0.nod_law,
-                     optics=optics if all(o is not None for o in optics) else None)
+                     optics=optics if all(o is not None for o in optics) else None, mbkg_sigma=mbkg_sigma)
     # the shape is defined at the fit's pivot and clamped at the fit's wavelength range (``_x``)
     M.pivot, M.lam_rng = M0.pivot, M0.lam_rng
     p = result.params
@@ -1347,5 +1437,5 @@ def drizzle_arrays(frame_of, dmap):
     return dmap.drizzle({name: frame_of(name) for name in dmap.names})['data']
 
 
-FIT_VERSION = '9'                   # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset); 8: exact shutter edges in the optics tables (optics engine 2); 9: a SRCYPOS placeholder found with the bar offset applied
+FIT_VERSION = '10'                  # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset); 8: exact shutter edges in the optics tables (optics engine 2); 9: a SRCYPOS placeholder found with the bar offset applied; 10: no detection gate and fits on a bound kept (profile_chain), the master-background scale term (mbkg_extraction)
 

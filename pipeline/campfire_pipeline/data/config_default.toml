@@ -107,21 +107,23 @@
     profile_fit_chromatic = true    # center and width vary linearly with log wavelength
     # Shape of the extraction profile (nirspec/profile_chain.py): "gated" (a grating keeps the PRISM
     # shape of the same source unless its own fit is better and different at detection S/N
-    # own_vs_prism_min_gate; otherwise the own fit above the detection gate; else the shape of
-    # another grating; else the default shape), "fixed" (default shape only).
+    # own_vs_prism_min_gate; otherwise the source's own fit, at every S/N, kept and flagged when a
+    # parameter ends on its bound; the default shape only where there is no own fit: masked,
+    # failed, or planned positions that disagree), "fixed" (default shape only). The name "gated"
+    # is kept for existing configs; the chain has no detection gate since 2026-11-10.
     profile_fit_shape = "gated"
     profile_fit_prism_transfer = true        # gratings may take the PRISM shape
     profile_fit_grating_transfer = true      # without a PRISM shape, a grating that fell to the default takes the
-                                             # shape of the source's grating that passed its gate (its center
+                                             # shape of the source's grating that took its own fit (its center
                                              # offset and width; stage3.grating_transfer_plan)
-    # Detection S/N gate for the own fit (noise scale = clipped mean square of the residuals).
-    # Injection tests with a realistic mix of source shapes (2026-10-23): on PRISM the own fit is
-    # unbiased (|bias| < 0.5 %) from 25 and delivers more S/N than the default shape there; on
-    # G395M it has outliers below 70. A null test on real faint sources with their own continuum
-    # removed gave a highest detection S/N of 16 (47 PRISM sources) and 26 (126 G395M sources).
+    # Detection S/N gate of the joint first pass's member shapes only (joint_first_pass.shape_for: a
+    # neighbor below it is predicted with the default shape). The shape chains of the nodded and
+    # master-background spectra have no gate (2026-11-10): falling back to the default shape reported
+    # about a quarter of the flux of sources of width >= 1 slit unit at every S/N. The detection S/N
+    # stays a reported number (DETSNR; noise scale = clipped mean square of the residuals).
     gate_snr_prism = 25.0
     gate_snr_grating = 70.0
-    # Default shape (below the gate, no other shape): a Gaussian of this width (slit units; 0.15 is
+    # Default shape (no own fit, no other shape): a Gaussian of this width (slit units; 0.15 is
     # 0.16 arcsec FWHM) at the planned position, through the optics model. Own fits on p1 have a
     # median width of 0.143; a default-shape source's reported flux scales with this width, and
     # the spread of real widths is about +-15 % in flux. No per-exposure pointing offsets are fitted (any
@@ -134,8 +136,11 @@
     own_vs_prism_log_width = 0.3             # or this in ln width
     # Shape priors and bounds. PROVISIONAL: calibrated on two observations (ember_cosmos_p14 and
     # ember_cosmos_p9; PRISM fits at S/N >= 100: center std 0.082 / MAD 0.055, width median
-    # 0.157, ln width std 0.77 / MAD 0.51, drift std 0.030, width change std 0.042). Re-derive
-    # on more observations before release.
+    # 0.157, ln width std 0.77 / MAD 0.51, drift std 0.030, width change std 0.042), after wide
+    # sources had already fallen to the default shape, and the measured ln width spread 0.77 was
+    # narrowed to 0.6. With no gate the width prior now decides the shape of every faint source:
+    # re-derive it from the archive (docs/design-nirspec-pipeline-v2.md 6.6, "Re-deriving the width
+    # prior") before release.
     prior_centre_sigma = 0.08
     prior_width_median = 0.15
     prior_width_log_sigma = 0.6
@@ -143,8 +148,8 @@
     prior_width_change_sigma = 0.04
     # The width limits were 0.6 and +-0.3 until 2026-11-09: extended sources (uds_p2 37057, 43168,
     # zenith_p15 546037; fitted widths 0.85-1.25, their master-background frames agreeing) hit them
-    # and fell to the default shape, reporting 3-6x too little flux. Sources whose fit only reaches
-    # for other light still run to 1.5 and fall back (a width on its bound always does).
+    # and fell to the default shape, reporting 3-6x too little flux. Since 2026-11-10 a fit that ends
+    # on a bound is kept and flagged (SHAPEWHY ";bound:<names>"), never replaced by the default shape.
     bound_centre = 0.3                       # +- around the planned position
     bound_width_max = 1.5
     bound_drift = 0.3
@@ -192,6 +197,15 @@
     # the source's own light in its own shutter.
     mbkg_spectrum = true
     mbkg_extended_frac = 0.10
+    # The master-background spectrum's fit adds one constant times the master background (one number
+    # for the whole product), solved with the spectrum at every shape and in the detection S/N, held
+    # near zero by a Gaussian of this width (0.01 = 1 % of the master background; 0 turns it off). It
+    # takes up an error of the master background's level in the slitlet, measured at about 1 % either
+    # way on zenith_p15 (15 % of slitlets below -1 %, 23 % above +2 %), which a plain fit turns into a
+    # wide source of biased flux (+3 %: a compact faint source at 4x its flux). The fitted value comes
+    # out of SCI_MBKG too, and is written as MBKGSCL / MBKGSCLE in the SPEC1D_MBKG header. The nodded
+    # spectrum has no such term: the master background cancels in a nod difference.
+    mbkg_scale_allowance = 0.01
     # Same-slitlet neighbor scan on the residuals: the target refitted at its chosen shape
     # on the nod differences as stage 2b made them, leaving out (not modeling) every pixel
     # another slitlet's source shutter lights in any frame of the difference (trace maps),

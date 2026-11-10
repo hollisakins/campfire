@@ -209,6 +209,32 @@ Release procedure: edit the `## Unreleased` section below, then run
       exposure (no open slit on that detector).
     - The profile fit's row height is defined on a slit's first and last row, so slitlets longer
       than three shutters no longer fail with "Residuals are not finite".
+- **NIRSpec shape chain: no detection gate, fits on a bound kept, and a master-background scale term**
+  (`profile_chain.py`, `mbkg_extraction.py`, `profile_fit.py`, `FIT_VERSION` 10; flux values change).
+  This replaces the gate, bound and fallback rules described in the v2 entry above.
+  - *No gate.* The source's own fit runs at every detection S/N, in the nodded chain and in the
+    master-background spectrum's; where the data say little, the width and centre priors decide.
+    `DETSNR` stays a reported number. `gate_snr_prism` / `gate_snr_grating` now govern only the
+    joint first pass's neighbor shapes (`joint_first_pass.shape_for`).
+  - *A fit on a bound is kept and flagged* (`SHAPEWHY` `own_fit;bound:<names>`, `mbkg_own;bound:<names>`),
+    never replaced by the default or the nodded shape. On synthetic zenith_p15 frames, falling back
+    to the default reported about 0.25 of the flux of sources 1 slit unit wide or wider at every S/N
+    up to 400 (0.05-0.12 in the nodded spectrum); the fit on its bound reported 0.95-1.10.
+    `SHAPEWHY` `gate_passed` is now `own_fit`; `below_gate`, `bound:` and `bound_kept:` are gone.
+    The default shape remains only where there is no own fit (masked, fit failed, `srcypos`).
+  - *Master-background scale term* (`mbkg_scale_allowance = 0.01`). The master-background
+    spectrum's fit adds one constant times the master background, for the whole product, solved
+    with the spectrum at every shape and in the detection S/N's no-source comparison, held near zero
+    by a 1 % Gaussian allowance. It takes up the slitlet's error in the master background's level
+    (about 1 % either way on zenith_p15), which a plain fit turned into a wide source: on synthetic
+    frames, +3 % reported a compact faint source at 4x its flux and -2 % at 0.6x, and 50-96 % of
+    empty fits ran to the width bound; with the term the flux is within a few % at every level and
+    19 % of empty fits run wide. The fitted scale is also removed from `SCI_MBKG` before the
+    extraction and recorded as `MBKGSCL` / `MBKGSCLE` in the `SPEC1D_MBKG` header. Sources about as
+    wide as the slitlet pay for it (width 2.5 slit units: about 0.6 of their flux). The nodded
+    spectrum has no term: the master background cancels in a nod difference.
+  - The width prior (median 0.15, ln sigma 0.6) is provisional and now decides the shape of every
+    faint source; how to re-derive it from the archive is in `docs/design-nirspec-pipeline-v2.md` 6.6.
 - **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every
   `source_id <= 0`, so a genuine source 0 (PID 2750's `2750_0`) was never extracted.
   ID 0 is also the metafile's value for empty background shutters, so it now counts as

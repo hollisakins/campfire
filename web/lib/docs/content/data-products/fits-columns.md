@@ -89,7 +89,7 @@ The extraction adds the keywords below. Lengths along the slit are in units of t
 | `SHAPE`, `SHAPEWHY` | Profile adopted (`own`, `prism`, `grating`, `default`) and the reason |
 | `SHAPESRC` | Product the profile was taken from (`prism`, `grating`) |
 | `PA_V3` | Position angle of the science exposures, used to match a PRISM profile |
-| `DETSNR` | Detection S/N of the source, compared with the threshold for an own profile |
+| `DETSNR` | Detection S/N of the source |
 | `SRCCEN`, `SRCCENPL` | Fitted and planned center along the slit, at `SRCPIVOT` |
 | `SRCWIDTH` | Fitted Gaussian σ of the source at `SRCPIVOT` |
 | `SRCDRIFT`, `SRCDWID` | Change of the center and of σ per octave in wavelength |
@@ -106,7 +106,7 @@ The extraction adds the keywords below. Lengths along the slit are in units of t
 | `NBRPROP` | Background exposures proposed for exclusion |
 | `NBRXDISP` | Whether the other disperser's scan agrees (`single`, `agree`, `disagree`, `none`) |
 
-The `SPEC1D_MBKG` extension header carries the same keywords for the master-background fit, plus `NFOPEN`, the number of failed-open shutters included on the trace; those in the primary header refer to the nod-subtracted spectrum.
+The `SPEC1D_MBKG` extension header carries the same keywords for the master-background fit, plus `NFOPEN`, the number of failed-open shutters included on the trace, and `MBKGSCL` / `MBKGSCLE`, the correction to the master background's level fitted with the source (0.01 = 1 %) and its uncertainty; those in the primary header refer to the nod-subtracted spectrum.
 
 ## Redshift file
 

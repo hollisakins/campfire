@@ -668,7 +668,7 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
             res = [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]
         results += res
     if gxfer:
-        # a source's gratings take the shape of the one that passed its gate where they fell to the default
+        # a source's gratings take the shape of the one that took its own fit where they fell to the default
         plan = {p: ref for p, ref in grating_transfer_plan(results).items() if p in task_of}
         if plan:
             redo = []
@@ -677,7 +677,7 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                 t[10] = cleanup_crfs
                 redo.append(tuple(t) + (ref,))          # run_product's shape_product
             log(f"Profile fit: {len(redo)} grating products again with the shape of their source's grating that "
-                f"passed its gate")
+                f"took its own fit")
             with TM.phase(f'products grating transfer ({len(redo)})'):
                 res = [r for r in dispatch(run_product, redo, n_processes=n_processes, use_starmap=True) or [] if r]
             again = {r['product']: r for r in res}
