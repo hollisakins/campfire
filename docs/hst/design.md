@@ -338,6 +338,17 @@ All of these are estimates to be replaced by measurements in P0 to P2. File size
 
 **Reference cache.** ACS darks and biases change every anneal cycle. A field with data from many epochs needs many of them; size *to be measured* in P0 by a `bestrefs` dry run over one field's exposure list.
 
+## 8a. P0 results so far (2026-11-11, on the development Mac)
+
+Measured, in a throwaway conda environment cloned from `campfire` (Apple silicon, 24 cores):
+
+- **Install.** `pip install drizzlepac acstools wfc3tools astroscrappy` added `drizzlepac 3.11.0`, `acstools 3.8.2`, `wfc3tools 1.6.1`, `astroscrappy 1.3.0` and changed none of `jwst 1.20.2`, `stcal`, `stdatamodels`, `drizzle 2.1.1`, `tweakwcs`, `gwcs`, `astropy`, `numpy`, `photutils`, `scipy`, `pandas`; `pip check` reports no broken requirements. `conda install -c conda-forge hstcal` added `hstcal 3.2.0` (calacs 10.4.1; conda-forge is one release behind the 3.3.0 tag) with only `cfitsio` and `libcurl`-related additions. `jwst`, `drizzlepac`, `stwcs` and the `drizzle` package import together. This answers open question 9 for macOS; the Linux cluster still has to be checked.
+- **Reference selection.** `crds bestrefs --new-context hst_1372.pmap --update-bestrefs --sync-references=1` on one ACS/WFC RAW file downloaded 16 reference files, 1.3 GB, into a private cache. The cache is laid out as `references/hst/acs/` with a `jref` entry beside it.
+- **`calacs`.** One full-frame ACS/WFC exposure (F606W, 400 s, 2020), RAW to FLT and FLC: **67.5 s wall on 24 threads**, of which about 48 s is the CTE correction. *(single-thread time: pending)*
+- **File sizes.** RAW 34.3 MB (the 70 MB in section 8 was an overestimate); FLC 167.8 MB, as derived; calacs also writes an FLT of the same size, which can be deleted.
+- **MAST access.** The legacy portal product-listing call timed out after 600 s, and a CAOM TAP query selecting by target position did not return within 10 minutes. Direct download by product URI took one second. The HST downloader should query TAP by observation identifiers, as the JWST path does, and avoid position ranges and the portal API.
+- **Test suite.** Eight tests fail on this machine at the base commit, before any change of mine: seven in `pipeline/tests/test_align_apply.py` (the coarse matcher declines the gross shift and the pool ends `NOT_ALIGNED`) and `test_linefit.py::test_observation_carries_line_fitting_overrides`. Cause not yet investigated. Since `align` is the production path, the first of these has to be understood before the refactor's acceptance gate is meaningful.
+
 ## 9. Scope notes
 
 - **`nep` (NEXUS)** has no HST imaging to reduce. Fields declare their HST filters explicitly, so a field with none is simply skipped.
