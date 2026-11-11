@@ -76,7 +76,7 @@ from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec.coverage import (coverage_from_wcs, cutoffs_for, default_cache_dir, cache_path,
                                                  geometry_cache_path, slit_geometry_extended)
 
-ALGORITHM_VERSION = '1.9'    # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
+ALGORITHM_VERSION = '1.10'   # 1.1: painted past the calibrated range; 1.2: count-rate sky from step 1 (2026-10-31);
 #                               1.3: equal shutter weights, sky divided to the open-shutter centre (2026-10-31)
 #                               1.4: the group pool painted unless the exposure differs (pool_check) (2026-10-31)
 #                               1.5: step-1 tables read from the rate file, no MBKG1DR copy, 2-D extensions
@@ -91,6 +91,9 @@ ALGORITHM_VERSION = '1.9'    # 1.1: painted past the calibrated range; 1.2: coun
 #                               1.9: a shared shutter taken once by its index in the slitlet; the extended
 #                                    footprint cut at the disperser's wavelengths; stuck shutters not painted
 #                                    in the slitlets without a slit; the skip key reads CFS2ATIM (2026-11-08)
+#                               1.10: PRISM: shutters passing the background that neither the metafile nor
+#                                    msaoper lists, found in the light left fixed on the detector
+#                                    (unlisted_open), painted like the failed-open shutters (2026-11-11)
 # The derivation's settings. Fixed in the code since the 2026-11-06 configuration audit
 # (Hollis: "30 master bkg thresholds is a *ton*"); the only one left in the config is
 # USER_OPTIONS. Every product records the ones that shape it in its header.
@@ -1201,10 +1204,13 @@ def _worker_paint(args):
     (``failed_open_transmission``; light above it, an object behind the shutter, is
     contamination).
     Each slitlet is painted once (two sources of one slitlet get cutouts a pixel apart);
-    the layers are combined by ``merge_painted``.
+    the layers are combined by ``merge_painted``. ``unlisted``: shutters found passing
+    the background without being in the metafile or the msaoper list
+    (``unlisted_open.detect``, dicts with ``q`` / ``x`` / ``y``), painted exactly like the
+    msaoper failed-open shutters.
     """
     (rate_path, product, canonicals, bs_path, counter_path, centres, rate_sky, opt, rate_q,
-     geometry_path, stuck) = args
+     geometry_path, stuck, unlisted) = args
     table = B.load_table(bs_path)
     prod = load_product(product)
     rate, _, _, counter = _rate_frame(rate_path, counter_path)
@@ -1296,6 +1302,12 @@ def _worker_paint(args):
             paint(pix // nx_d, pix % nx_d, b['lam'], val, b['is_open'])
             n_geometry += 1
             painted.add((b['name'], b['quadrant']))
+    if rs_fin and unlisted:
+        from campfire_pipeline.nirspec import unlisted_open as U
+        for b in U.failed_blocks(rate_path, [(u['q'], u['x'], u['y']) for u in unlisted], rate.shape):
+            val = _rate_sky_through(b['lam'], b['seg'], b['yseg'], b['j'], len(b['state']),
+                                    rate_q.get(int(b['quadrant']), np.nan), centres, rate_sky, table, floor_bs)
+            fo_layers.append((b, val))
     if fo_layers:
         # a failed-open shutter passes anything from none to all of an empty shutter's sky
         # (measured 2026-11-02, repeatable between nods), so it is painted at its own
@@ -1346,7 +1358,7 @@ def _worker_paint(args):
         if f['scale'] <= 0:
             cover.ravel()[f['pix'][f['alone']]] -= 1    # painted at 0 alone at its spot: no light from there
     counts = dict(slits=n_painted, extension_px=n_ext, failed_open=n_failed_open, geometry=n_geometry,
-                  failed_open_amps=fo_amps)
+                  failed_open_amps=fo_amps, unlisted=list(unlisted or []))
     return rate_path, mb, dq, np.clip(cover, 0, 255).astype(np.uint8), counts, failures, ratio
 
 
@@ -1526,6 +1538,39 @@ def _failed_open_over_nods(obs, fo_of, tol):
         hdul.append(fits.CompImageHDU(dq, name='MBKG2DDQ', compression_type='RICE_1'))
         hdul[0].header['MBKGNFO'], hdul[0].header['MBKGFOSC'] = n_fo, how
         atomic_save(hdul, out)
+
+
+def _unlisted_open(rate_paths):
+    """Shutters passing the background that neither the metafile nor the msaoper list
+    knows (``unlisted_open.detect``), per configuration x detector of the painted rate
+    files. They pass light only in some MSA configurations (one next to a commanded
+    slitlet; 2026-11-11: none of zenith_p15's or ember_cosmos_p1's leaked in the other), so
+    they are searched for in every observation. Returns ({rate base: [found shutters]},
+    {rate base: the MBKGUOS card})."""
+    from campfire_pipeline.nirspec import unlisted_open as U
+    groups = defaultdict(list)
+    for p in rate_paths:
+        groups[U.group_key(p)].append(p)
+    found_of, status_of = {}, {}
+    for key, ps in sorted(groups.items()):
+        grating, det = key[2], key[4]
+        bases = [rate_base_of(p) for p in ps]
+        if grating.upper() not in U.GRATINGS:
+            status_of.update({b: f'not searched ({grating})' for b in bases})
+            continue
+        tag = f'{os.path.basename(key[0])[:-len("_msa.fits")]} config {key[1]} {grating} {det}'
+        try:
+            found = U.detect(sorted(ps), logger=lambda s: log(f'master background: unlisted open, {tag}: {s}'))
+        except Exception as e:                       # noqa: BLE001 - the products stand without it
+            log(f'master background: unlisted open, {tag}: search failed', e)
+            status_of.update({b: 'search failed' for b in bases})
+            continue
+        status_of.update({b: f'searched, {len(found)} found' for b in bases})
+        log(f'master background: unlisted open, {tag}: {len(ps)} exposures, '
+            + (', '.join(f'q{f["q"]} x{f["x"]} y{f["y"]}' for f in found) if found else 'none'))
+        if found:
+            found_of.update({b: found for b in bases})
+    return found_of, status_of
 
 
 def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True):
@@ -1743,7 +1788,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
         resolved = S.load_obs(obs)
         paint_args = [(rate, out, cans, bs_path, counter, centres_of.get(rate_base_of(rate)),
                        rate_skies.get(rate_base_of(rate)), o, rate_q.get(rate_base_of(rate), {}), geometries.get(rate),
-                       frozenset(S.stuck_set(resolved, S.root_of(rate_base_of(rate)))))
+                       frozenset(S.stuck_set(resolved, S.root_of(rate_base_of(rate)))), ())
                       for (rate, out, cans, bs_path, counter, o), key in paint_args]
 
         fo_of = {}
@@ -1757,7 +1802,7 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             rate_sky = rate_skies.get(base)
             centres_ext = centres_of.get(base)
             with fits.open(out, memmap=False) as h:
-                hdul = fits.HDUList([x.copy() for x in h])
+                hdul = fits.HDUList([x.copy() for x in h if x.name not in ('MBKG2D', 'MBKG2DN', 'MBKG2DDQ', 'UNLISTED')])
             blue, red = cutoffs_of.get(rate, (None, None))
             hdul[0].header['MBKGN2D'] = (n_painted, 'slits painted into MBKG2D')
             hdul[0].header['MBKGNEXT'] = (int(n_ext), 'pixels painted past the calibrated range')
@@ -1765,6 +1810,13 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
             hdul[0].header['MBKGFOSC'] = ('measured, exposure',
                                           'failed-open transmission: how, over what')
             hdul[0].header['MBKGNGEO'] = (int(counts['geometry']), 'slitlets painted with no slit (rate units)')
+            unl = counts.get('unlisted', [])
+            hdul[0].header['MBKGNUO'] = (len(unl), 'unlisted shutters passing background, painted')
+            if unl:
+                hdul.append(fits.BinTableHDU(Table(rows=[(u['q'], u['x'], u['y'], u['t'], u['chi2n'], u['ratio_lo'], u['ratio_hi'])
+                                                         for u in unl],
+                                                   names=('quadrant', 'x', 'y', 't_found', 'chi2n', 'ratio_lo', 'ratio_hi')),
+                                             name='UNLISTED'))
             hdul[0].header['MBKGCBLU'] = (float(blue) if blue is not None else 'edge', 'footprint blue cutoff [um]')
             hdul[0].header['MBKGCRED'] = (float(red) if red is not None else 'edge', 'footprint red cutoff [um]')
             if np.isfinite(ratio):
@@ -1785,15 +1837,31 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
                 + (f', in-range / rate-unit sky {ratio:.3f}' if np.isfinite(ratio) else ''))
             if fails:
                 log(f'master background: {rate_base_of(rate)}: {len(fails)} slit(s) not painted, e.g. {fails[0]}')
-        if n_processes > 1:
-            with Pool(min(n_processes, len(paint_args))) as pool:
-                for res in pool.imap_unordered(_worker_paint, paint_args):
-                    _finish(res)
-        else:
-            for a in paint_args:
-                _finish(_worker_paint(a))
+        def _paint_all(args_list):
+            if n_processes > 1 and len(args_list) > 1:
+                with Pool(min(n_processes, len(args_list))) as pool:
+                    for res in pool.imap_unordered(_worker_paint, args_list):
+                        _finish(res)
+            else:
+                for a in args_list:
+                    _finish(_worker_paint(a))
+
+        _paint_all(paint_args)
         if any(fo_of.values()):
             _failed_open_over_nods(obs, fo_of, float(opt['failed_open_nod_tol']))
+        # shutters passing the background that nothing listed: found in the light the
+        # painted products leave fixed on the detector, then painted like the msaoper
+        # failed-open shutters (their own transmission per exposure, combined over nods)
+        unlisted_of, status_of = _unlisted_open([a[0] for a in paint_args])
+        redo = [a[:-1] + (unlisted_of[rate_base_of(a[0])],) for a in paint_args if unlisted_of.get(rate_base_of(a[0]))]
+        if redo:
+            _paint_all(redo)
+            sub = {rate_base_of(a[0]): fo_of[rate_base_of(a[0])] for a in redo}
+            if any(sub.values()):
+                _failed_open_over_nods(obs, sub, float(opt['failed_open_nod_tol']))
+        for base, st in status_of.items():
+            with fits.open(product_path(obs, base), mode='update', memmap=False) as h:
+                h[0].header['MBKGUOS'] = (st, 'unlisted open shutters: search')
 
     if plot:
         for out in written:

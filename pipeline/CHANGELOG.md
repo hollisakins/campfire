@@ -284,6 +284,23 @@ Release procedure: edit the `## Unreleased` section below, then run
     with its neighbors combined over the exposures above 5 sigma, at least 2 sigma in every one
     (`HOT_FLOOR`) and in at least 2 exposures. Pixels above 5 sigma in the master-background 2-D of
     the four test sources: 23 to 5, 41 to 36, 34 to 16 (548358's 923 to 912 is its bright band).
+  - *Unlisted open shutters are painted (PRISM, master background 1.10).* Some shutters pass
+    the background without being in the metafile or msaoper's failed-open list: mostly listed
+    failed closed, next to a commanded slitlet, and dark in a configuration with nothing commanded
+    nearby (none of zenith_p15's five or ember_cosmos_p1's four leaked in the other). Nodding
+    cancels their light; the master background left it in the source's spectrum (zenith_p15
+    549120 read twice the background on one shutter). `unlisted_open.detect` finds them per MSA
+    configuration and detector after the first painting: rate minus `MBKG2D`, the minimum over nod
+    positions, traces in it, every MSA shutter placed on the detector through one reference slit
+    per quadrant, the best candidates painted exactly and kept when the trace has the
+    background's spectrum (six wavelength bands within 15 %, chi2/n < 2). Those are painted
+    like msaoper failed-open shutters (own transmission per exposure, combined over nods) and
+    the configuration repainted; `MBKGNUO`, `MBKGUOS` and an `UNLISTED` table record them. It
+    rediscovers ember_cosmos_p1's msaoper failed-open shutters at their listed positions. In
+    zenith_p15, master background minus nodded (median fnu): 549120 0.92 to 0.03, 547188 0.12 to
+    0.01, 543127 0.16 to 0.07. Not searched on the gratings: G395M's featureless background
+    places a shutter only to about 10 shutters along the dispersion, and its failed-open shutters
+    pass a fraction rising with wavelength.
   - The width prior (median 0.15, ln sigma 0.6) is provisional and now decides the shape of every
     faint source; how to re-derive it from the archive is in `docs/design-nirspec-pipeline-v2.md` 6.6.
 - **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every
