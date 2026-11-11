@@ -296,7 +296,7 @@ def resample_step(filtname, exposure_files, field, step_config,
                 tile, pixel_scale=pixel_scale_str,
             )
 
-            implementation = step_config.get('implementation', 'jwst')
+            implementation = step_config.get('implementation', 'campfire')
             if implementation == 'campfire':
                 drizzle_fn = _drizzle_tile_via_campfire
             elif implementation == 'jwst':

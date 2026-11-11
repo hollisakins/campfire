@@ -456,7 +456,7 @@ def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status,
 def _run_outlier(field, config, filtname, n_processes, overwrite, status,
                  tiles=None, epoch=None):
     cfg = get_nircam_step_config('outlier', config, field)
-    implementation = cfg.get('implementation', 'jwst')
+    implementation = cfg.get('implementation', 'campfire')
     if implementation not in ('jwst', 'campfire'):
         raise ValueError(
             f"Unknown outlier.implementation {implementation!r}; "
@@ -468,7 +468,7 @@ def _run_outlier(field, config, filtname, n_processes, overwrite, status,
 
 
 def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
-                           implementation='jwst', tiles=None, epoch=None):
+                           implementation='campfire', tiles=None, epoch=None):
     """Per-visit outlier dispatcher.
 
     Both implementations share the same orchestration (visit grouping,
@@ -668,20 +668,57 @@ def _scan_status(field, filters, overwrite=False):
     return StepStatus.scan(paths)
 
 
-def _active_process_steps(config, field):
-    """``PROCESS_STEPS`` with the ``jhat`` step swapped for ``align`` when the
-    field has opted into the astrometric ``align`` step.
+def align_enabled(config, field):
+    """True when the field runs the astrometric ``align`` step (the default).
 
-    A field that runs ``align`` (``[<field>.align].enabled = true``) uses exactly
-    one alignment engine, so ``jhat`` is replaced by ``align`` in place (it runs
-    where jhat did — last, on post-``image2`` cal data). ``wcs_shift`` is
-    **kept**: it applies manual per-exposure offsets for corrupted-metadata
-    exposures and feeds a good input WCS into align. When align is off (the
-    default), the full ``PROCESS_STEPS`` list runs unchanged.
+    The single reader of ``[nircam.align].enabled`` / ``[<field>.align].enabled``.
+    Align is ON unless a field opts out with ``enabled = false`` (which selects
+    the ``jhat`` step instead); the fallback here matches the package default in
+    ``config_default.toml`` so a config dict without the block behaves the same.
     """
-    align_mode = get_nircam_step_config('align', config, field).get(
-        'enabled', False)
-    if not align_mode:
+    return bool(get_nircam_step_config('align', config, field).get(
+        'enabled', True))
+
+
+def check_align_config(config, field):
+    """Fail early if align is enabled but the field names no usable refcat.
+
+    Align is the last process step, so without this check a field with no
+    ``[<field>.align].refcat`` would run every earlier step and only then stop.
+    Raises ``ValueError`` with the two ways out; a no-op when align is off.
+    """
+    if not align_enabled(config, field):
+        return
+    align_cfg = get_nircam_step_config('align', config, field)
+    name = align_cfg.get('refcat')
+    hint = (
+        f"Set [{field.name}.align].refcat = \"<file>.ecsv\" in fields.toml (a "
+        f"Gaia-tied campfire-refcat-v1 ECSV in the field's astrometric-catalog "
+        f"directory), or opt out of align with [{field.name}.align].enabled = "
+        f"false to use the jhat step instead.")
+    if not name:
+        raise ValueError(
+            f"align is enabled for field '{field.name}' (the default) but no "
+            f"reference catalog is configured. {hint}")
+    refcat_dir = getattr(field, 'refcat_dir', None)
+    if refcat_dir and not os.path.exists(os.path.join(refcat_dir, name)):
+        raise ValueError(
+            f"align reference catalog for field '{field.name}' not found: "
+            f"{os.path.join(refcat_dir, name)}. {hint}")
+
+
+def _active_process_steps(config, field):
+    """``PROCESS_STEPS`` with the ``jhat`` step swapped for ``align`` unless the
+    field has opted out of the astrometric ``align`` step.
+
+    A field that runs ``align`` (the default; ``[<field>.align].enabled``) uses
+    exactly one alignment engine, so ``jhat`` is replaced by ``align`` in place
+    (it runs where jhat did — last, on post-``image2`` cal data). ``wcs_shift``
+    is **kept**: it applies manual per-exposure offsets for corrupted-metadata
+    exposures and feeds a good input WCS into align. When a field sets
+    ``enabled = false``, the full ``PROCESS_STEPS`` list (with ``jhat``) runs.
+    """
+    if not align_enabled(config, field):
         return PROCESS_STEPS
     return [('align', 'CFP_ALGN') if n == 'jhat' else (n, k)
             for n, k in PROCESS_STEPS]
@@ -751,6 +788,9 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False,
         # scan happen once for the whole phase instead of once per step.
         from campfire_pipeline.nircam.geometry import reset_sregion_cache
         reset_sregion_cache()
+    # Align runs last; stop now, not after hours of detector-level work, if the
+    # field has no reference catalog to align to.
+    check_align_config(config, field)
     status = _scan_status(field, filters, overwrite=overwrite)
     log(f"=== Process phase: field={field.name}, filters={filters} ===")
     prefetch_process_references(field, filters, status=status,
@@ -900,7 +940,7 @@ def _run_align(field, config, filtname, n_processes, overwrite, status,
     this channel, so pools stay complete at tile edges.
     """
     align_cfg = get_nircam_step_config('align', config, field)
-    if not align_cfg.get('enabled', False):
+    if not align_enabled(config, field):
         return
 
     from campfire_pipeline.nircam.association import (
@@ -1008,9 +1048,8 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
 
     # For an align-enabled field, quarantine NOT_ALIGNED exposures from the
     # ensemble (they'd drizzle with a raw WCS). --include-unaligned overrides.
-    align_enabled = get_nircam_step_config('align', config, field).get(
-        'enabled', False)
-    exclude_not_aligned = align_enabled and not include_unaligned
+    exclude_not_aligned = (align_enabled(config, field)
+                           and not include_unaligned)
 
     log(f"=== Combine phase: field={field.name}, filters={filters}"
         f"{f', epoch={epoch}' if epoch else ''} ===")
@@ -1064,8 +1103,9 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
     # A standalone ensemble step honours the same NOT_ALIGNED quarantine as the
     # full combine phase for align-enabled fields (no --include-unaligned escape
     # hatch on the per-step CLI — the full `combine` command is where you opt in).
-    exclude_not_aligned = get_nircam_step_config('align', config, field).get(
-        'enabled', False)
+    exclude_not_aligned = align_enabled(config, field)
+    if step_name == 'align':
+        check_align_config(config, field)
 
     for filt in filters:
         # A standalone combine ensemble step needs the working copies present

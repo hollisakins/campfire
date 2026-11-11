@@ -212,6 +212,9 @@ def test_cli_run_tiles_allowed_with_process(monkeypatch):
 
     calls = {}
     monkeypatch.setattr(cli, '_setup', lambda c, f: ({}, object()))
+    # The field is a stub here, so the align-refcat preflight has nothing to
+    # inspect; this test is about --tiles reaching run_process.
+    monkeypatch.setattr(cli, '_preflight_align', lambda c, f: None)
     monkeypatch.setattr(cli, '_resolve_filters', lambda flt, fo: ['f200w'])
     monkeypatch.setattr(cli, 'run_process',
                         lambda *a, **k: calls.setdefault('tiles', k.get('tiles')))

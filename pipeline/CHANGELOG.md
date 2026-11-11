@@ -58,6 +58,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   (their WCS reference files are resolved from CRDS directly, since `assign_wcs` records none).
   Adds rate files for exposures that used to fail; every other exposure is unchanged.
   Stage 2a already skipped such a detector.
+- **NIRCam package defaults now match the production path.** `[nircam.align].enabled`
+  defaults to `true` (the `align` step replaces `jhat`), and `[nircam.outlier]` /
+  `[nircam.resample]` `implementation` default to `"campfire"`. Every production field
+  already set all three in `fields.toml`, so their products do not change; a field that
+  relied on the old defaults now aligns with `align` and combines with the native
+  drizzle (ERR differs from the `jwst` backend by a few percent, see the
+  `nircam/drizzle.py` docstring). `implementation` is not part of the tile config hash,
+  so existing mosaics are not marked stale by this change. A field with align enabled and
+  no `[<field>.align].refcat` (or a refcat file that does not exist) now stops at the
+  start of `process` / `run` / `align` with a message naming the two ways out, instead
+  of failing at the last step of the process phase. `jhat` and the `jwst` backends
+  remain available: `[<field>.align].enabled = false` and `implementation = "jwst"`.
 - **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every
   `source_id <= 0`, so a genuine source 0 (PID 2750's `2750_0`) was never extracted.
   ID 0 is also the metafile's value for empty background shutters, so it now counts as

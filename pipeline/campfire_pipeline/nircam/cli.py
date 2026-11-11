@@ -148,6 +148,21 @@ def _resolve_filters(filters, field_obj):
     return list(field_obj.filters)
 
 
+def _preflight_align(cfg, field_obj):
+    """Stop with a clean message if align is on but the field has no refcat.
+
+    Align is the default astrometric step and runs last in the process phase;
+    without a reference catalog it cannot run. ``orchestrate`` performs the same
+    check for programmatic callers — this wrapper only turns its ``ValueError``
+    into a Click error so the user sees the message, not a traceback.
+    """
+    from campfire_pipeline.nircam.orchestrate import check_align_config
+    try:
+        check_align_config(cfg, field_obj)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+
 # ---------------------------------------------------------------------------
 # Top-level group
 # ---------------------------------------------------------------------------
@@ -175,6 +190,7 @@ def process(config, field, filters, processes, overwrite, tiles):
     reduced without processing the whole field.
     """
     cfg, field_obj = _setup(config, field)
+    _preflight_align(cfg, field_obj)
     run_process(field_obj, cfg,
                 filters=_resolve_filters(filters, field_obj),
                 n_processes=processes, overwrite=overwrite,
@@ -188,13 +204,14 @@ def process(config, field, filters, processes, overwrite, tiles):
 def align(config, field, filters, processes, overwrite, tiles):
     """Re-run the per-filter astrometric align step.
 
-    Align runs automatically inside the process phase for align-enabled fields
-    (it replaces jhat); this command re-runs just the align step — e.g. after
-    retuning [<field>.align] in fields.toml. Opt-in per field via
-    [<field>.align].enabled = true; a no-op for fields that still use jhat.
+    Align runs automatically inside the process phase (it replaces jhat); this
+    command re-runs just the align step — e.g. after retuning [<field>.align]
+    in fields.toml. Align is on by default; a field opts out with
+    [<field>.align].enabled = false, for which this command is a no-op.
     ``--tiles`` restricts to exposures overlapping the named tile(s).
     """
     cfg, field_obj = _setup(config, field)
+    _preflight_align(cfg, field_obj)
     run_step('align', field_obj, cfg,
              filters=_resolve_filters(filters, field_obj),
              n_processes=processes, overwrite=overwrite,
@@ -234,9 +251,9 @@ def combine(config, field, filters, processes, overwrite, tiles, epoch,
               help='Run the process phase (includes align for align-enabled '
                    'fields, where it replaces jhat).')
 @click.option('--align', 'do_align', is_flag=True,
-              help='Re-run only the per-filter align step (opt-in via '
-                   '[<field>.align].enabled; align otherwise runs inside '
-                   'process).')
+              help='Re-run only the per-filter align step (align otherwise '
+                   'runs inside process; a no-op for fields that set '
+                   '[<field>.align].enabled = false).')
 @click.option('--combine', 'do_combine', is_flag=True,
               help='Run the combine phase.')
 @click.option('--all', 'do_all', is_flag=True,
@@ -266,6 +283,8 @@ def run(config, field, filters, processes, overwrite, tiles, epoch,
     cfg, field_obj = _setup(config, field)
     filter_list = _resolve_filters(filters, field_obj)
 
+    if do_process or do_align:
+        _preflight_align(cfg, field_obj)
     if do_process:
         run_process(field_obj, cfg, filters=filter_list,
                     n_processes=processes, overwrite=overwrite,

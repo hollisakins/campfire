@@ -102,7 +102,7 @@ def test_visit_membership_detects_dropped_member():
 def test_active_process_steps_swaps_jhat_for_align():
     off = [n for n, _ in _active_process_steps({}, _field(False))]
     on = [n for n, _ in _active_process_steps({}, _field(True))]
-    # align off (default): the JHAT path runs, no align step
+    # align off (per-field opt-out): the JHAT path runs, no align step
     assert 'jhat' in off and 'align' not in off
     # align on: jhat is swapped out for align (exactly one alignment engine)
     assert 'jhat' not in on and 'align' in on
@@ -110,6 +110,69 @@ def test_active_process_steps_swaps_jhat_for_align():
     assert 'wcs_shift' in off and 'wcs_shift' in on
     # everything else untouched
     assert 'bkg' in on and 'detector1' in on
+
+
+def _bare_field(**align):
+    """A field with only the given ``[<field>.align]`` keys (maybe none)."""
+    overrides = {'align': align} if align else {}
+    return Field(name='cosmos', filters=['f200w'], files=['jw01727*'],
+                 tangent_point=(80.0, -30.0), tiles={},
+                 step_overrides=overrides)
+
+
+def test_align_is_the_default_engine():
+    # No [<field>.align] block and no [nircam.align] block at all: align runs
+    # (the code fallback), and so it does under the packaged defaults.
+    # (_load_package_defaults, not load_config: a developer's own
+    # $CAMPFIRE_ROOT/config/config.toml must not decide this test.)
+    from campfire_pipeline.config import _load_package_defaults
+    from campfire_pipeline.nircam.orchestrate import align_enabled
+
+    bare = [n for n, _ in _active_process_steps({}, _bare_field())]
+    assert 'align' in bare and 'jhat' not in bare
+
+    cfg = _load_package_defaults()
+    assert align_enabled(cfg, _bare_field()) is True
+    packaged = [n for n, _ in _active_process_steps(cfg, _bare_field())]
+    assert 'align' in packaged and 'jhat' not in packaged
+    # the per-field opt-out still selects jhat under the packaged defaults
+    assert align_enabled(cfg, _bare_field(enabled=False)) is False
+
+
+def test_combine_backends_default_to_campfire():
+    # The production combine path is the campfire-native outlier + drizzle.
+    from campfire_pipeline.config import (
+        _load_package_defaults, get_nircam_step_config,
+    )
+
+    cfg = _load_package_defaults()
+    for step in ('outlier', 'resample'):
+        assert get_nircam_step_config(step, cfg, _bare_field())[
+            'implementation'] == 'campfire'
+
+
+def test_check_align_config_requires_a_refcat(tmp_path):
+    from campfire_pipeline.nircam.orchestrate import check_align_config
+
+    # enabled (default) with no refcat named: stop, and say both ways out
+    with pytest.raises(ValueError) as exc:
+        check_align_config({}, _bare_field())
+    assert 'refcat' in str(exc.value) and 'enabled = false' in str(exc.value)
+
+    # refcat named but the file is missing from the field's catalog dir
+    field = _bare_field(refcat='missing.ecsv')
+    field.refcat_dir = str(tmp_path)
+    with pytest.raises(ValueError, match='not found'):
+        check_align_config({}, field)
+
+    # refcat present: fine
+    (tmp_path / 'present.ecsv').write_text('')
+    ok = _bare_field(refcat='present.ecsv')
+    ok.refcat_dir = str(tmp_path)
+    check_align_config({}, ok)
+
+    # opted out: nothing to check, whatever the refcat
+    check_align_config({}, _bare_field(enabled=False))
 
 
 def test_align_cfp_key_resolves_and_shows_in_status():

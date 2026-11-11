@@ -67,8 +67,13 @@
 #       enabled = true
 #       theta_min = 25.0
 #       theta_max = 35.0
-#   [field.jhat]                             # single catalog for all filters
-#       refcat = "gaia_dr3.cat"
+#   [field.align]                            # astrometric alignment (default)
+#       refcat = "field_refcat.ecsv"         # required: Gaia-tied reference
+#                                            # catalog in the field's
+#                                            # astrom_cats directory
+#       # enabled = false                    # opt out: use the jhat step below
+#   [field.jhat]                             # only used when align is disabled
+#       refcat = "gaia_dr3.cat"              # single catalog for all filters
 #   [field.jhat.refcat_dict]                 # or per-filter catalogs
 #       f444w = "gaia_dr3_f444w.cat"
 #       f200w = "gaia_dr3_f200w.cat"
@@ -103,6 +108,10 @@
     files = ['jw01727*', 'jw05893*']
     # skip = ['jw01727099*']   # exclude a known-bad visit from every step
     tangent_point = [150.1163213, 2.200973097]
+
+    # Align is on by default and needs a reference catalog.
+    [example_cosmos.align]
+        refcat = "cosmos_refcat.ecsv"
 
     [example_cosmos.A1]
         rotation = 20

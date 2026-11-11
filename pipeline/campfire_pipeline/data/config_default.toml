@@ -665,16 +665,19 @@
 
 [nircam.align]
     # Adaptive astrometric alignment (replaces the JHAT-based jhat/wcs_shift).
-    # Opt-in per field: default OFF so existing reductions are unchanged. A
-    # field enables it — and names its Gaia-tied reference catalog — in
-    # fields.toml:
+    # ON by default: this is the production path for every field. Each field
+    # names its Gaia-tied reference catalog in fields.toml:
     #     [<field>.align]
-    #         enabled = true
     #         refcat  = "<file>.ecsv"   # in the field's astrom_cats dir
+    # A field with align enabled and no refcat stops at the start of the
+    # process phase with a message saying so. To use JHAT instead, opt out
+    # per field:
+    #     [<field>.align]
+    #         enabled = false
     # With align enabled the process phase replaces `jhat` with `align`
     # (`wcs_shift` still runs first, to apply manual offsets for exposures with
     # corrupted pointing metadata).
-    enabled = false
+    enabled = true
     # --- Coarse: pooled per-module (or per-channel) shift+rotation --------------
     # One rshift is fit from all of a module's detectors at once (SIAF fixed),
     # matched to the refcat by the JHAT-ported OffsetHistogramMatch: a 2-D
@@ -941,7 +944,9 @@
     # rotation — same convention jwst uses internally). Same
     # observable contract: per-visit `outlier_<visit>_manifest.json`,
     # per-exposure CFP_OUT stamping. Issue #138 Phase 2.
-    implementation = "jwst"
+    # "campfire" is the default: it is what every production field runs.
+    # "jwst" remains available as an option.
+    implementation = "campfire"
     max_radius = 20
     good_bits = "~DO_NOT_USE"
     weight_type = "ivm"
@@ -1010,7 +1015,9 @@
     # slicing, no per-component variance bookkeeping. The two paths
     # produce SCI bit-equal mod accumulation order on ivm weighting;
     # ERR agrees to ~1%. See issue #138.
-    implementation = "jwst"
+    # "campfire" is the default: it is what every production field runs
+    # (faster and far lighter on memory). "jwst" remains available.
+    implementation = "campfire"
     pixel_scale = "30mas"
     # Version-free mosaic naming (epic #261, N2 / D3): one canonical mosaic per
     # (field, filter, tile, pixel_scale). Do not reintroduce a [version] segment.
