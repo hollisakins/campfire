@@ -86,7 +86,7 @@ Combine phase, per filter, order from `COMBINE_STEPS` (`nircam/orchestrate.py:65
 | 14 | outlier | visit | working copies | `OUTLIER` DQ bits; per-visit manifest | `jwst` `Image3Pipeline` or own drizzle + `stcal` median + `jwst` `flag_resampled_model_crs` (`nircam/outlier_detect.py:1-31`, `128-131`) | `CFP_OUT` |
 | 15 | resample | tile | working copies with `CFP_OUT` | `_i2d.fits` (SCI, ERR, WHT, CON, EXPTIME, NEXP), then mosaic background subtraction, split `_sci/_err/_wht/_srcmask/_exp` files, thumbnails, `_manifest.json` | `jwst` `Image3Pipeline` or own drizzle on the `drizzle` package (`steps/resample.py:43-198`, `nircam/drizzle.py:580-772`) | `CMPFRVER`, `CMPFRTIM`, `CFP_BKGS` on the mosaic |
 
-Two backends exist for both outlier and resample, selected by `implementation = "jwst" | "campfire"`; the default is `"jwst"` for both (`config_default.toml:945`, `1013`).
+Two backends exist for both outlier and resample, selected by `implementation = "jwst" | "campfire"`; the default is `"jwst"` for both (`config_default.toml:945`, `1013`). In production every field overrides this: all use `align` (not `jhat`) and the `campfire` backend for both combine steps (stated by H. Akins on review, 2026-11-11; the overrides live in the local `fields.toml`, not in the repo). The package defaults therefore do not describe the production path.
 
 ### 1.5 Mosaic grids and tangent points
 

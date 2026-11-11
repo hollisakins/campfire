@@ -10,6 +10,14 @@ Confirmed at the checkpoint:
 2. **Start from RAW**, as the NIRCam pipeline starts from `uncal`. Archive FLT/FLC ingest stays available as a second mode (section 2.2 explains why both).
 3. **30 mas for everything by default**, as a configuration value. Coarser products are made by block-downsampling the 30 mas mosaic, a path that would also serve MIRI later.
 
+Added after review of the first draft of this document:
+
+4. **`ERR` maps are not rescaled for correlated noise.** The mosaic `ERR` keeps the meaning it has for NIRCam: the formal per-pixel variance from the drizzle. Correlated noise is the business of downstream catalog codes, which measure it with random apertures.
+5. **The NIRCam production path is `align` plus the `campfire` backend** for outlier and resample, in every field. Those are the only NIRCam code paths the shared machinery has to preserve, and they should become the package defaults (section 7, P0).
+6. **`hstcal` from conda-forge and a local HST reference cache are acceptable** on the reduction machines.
+7. **`fields.toml` gets a symmetric multi-instrument layout** in place of "JWST at top level, HST in a sub-table" (section 3.2).
+8. **Block alignment is the rule for coarser grids.** The explicit 60 mas COSMOS tile entries are unused and can be ignored.
+
 Terms used below. HST file suffixes: `RAW` is the uncalibrated exposure (the counterpart of JWST `uncal`); `IMA` exists for WFC3/IR only and holds every non-destructive read after per-read calibration, before the ramp fit; `FLT` is the calibrated single exposure (flat-fielded, not resampled; electrons for ACS, electrons per second for WFC3/IR); `FLC` is an ACS FLT with the charge-transfer correction applied; `DRZ`/`DRC` are drizzled mosaics. `calacs` and `calwf3` are the C calibration programs in the `hstcal` package.
 
 Evidence tags as in the other two documents: statements about upstream tools rest on `feasibility.md`; anything new and unverified here is marked *inferred* or *to be measured*.
@@ -106,7 +114,7 @@ The JWST CRDS variables stay as they are. The HST server URL, context and the `i
 **6. Align.** The method is the NIRCam one (`nircam/align/solve.py:1-58`): detect sources, clip the reference catalog to the footprint, find the gross offset with the offset-histogram matcher, fit a pooled shift and rotation, then a gated finer fit.
 
 - *Pool.* All chips of all exposures of one visit and filter, because within a visit HST exposures share guide stars and are rigid to a few mas, while a single short exposure in a sparse field has too few sources to stand alone. The fine fit is per exposure, shift only, accepted by the same significance test as for NIRCam detectors.
-- *Reference.* The field's NIRCam reference catalog (the one its NIRCam `align` uses), or a catalog extracted from the CAMPFIRE NIRCam mosaic with `refcat extract`. HST is then tied to the NIRCam frame directly. Where HST extends beyond NIRCam, the catalog is extended with `refcat query` and `merge`. Stars need care across a 10 to 20 year baseline: Gaia stars are propagated to the exposure epoch (`refcat/motion.py`), and stars without proper motions are down-weighted or dropped in favour of galaxies.
+- *Reference.* The same reference catalog the field's NIRCam `align` uses. For most fields that is Legacy Surveys positions, which are on the Gaia frame and far denser than Gaia itself (the same choice the CEERS HST mosaics made). HST and NIRCam are then tied to one catalog. A catalog extracted from the CAMPFIRE NIRCam mosaic with `refcat extract` is the alternative where a tighter HST-to-NIRCam tie is wanted, and `refcat query` plus `merge` extend coverage where HST reaches beyond NIRCam. Stars need care across a 10 to 20 year baseline: Gaia stars are propagated to the exposure epoch (`refcat/motion.py`), and stars without proper motions are down-weighted or dropped in favour of galaxies.
 - *Cosmic rays in the detection image.* ACS exposures are full of cosmic rays before step 7. Detection runs on a copy cleaned with L.A.Cosmic (`astroscrappy`); that mask is used for detection only and never written to the science DQ.
 - *Write-back.* The corrected WCS is written into each `SCI` header with a CAMPFIRE `WCSNAME` that includes the reference-catalog hash; the pre-alignment WCS is archived as an alternate WCS in the same file (`stwcs`), which plays the role `ALGN_BAK` plays for NIRCam. `CFP_ALGN` has the same format, and exposures that fail are quarantined from the combine phase exactly as for NIRCam (`nircam/field.py:878-925`).
 
@@ -165,7 +173,43 @@ class Chip(Protocol):
 
 **Mosaic writer.** NIRCam keeps writing through the JWST datamodel. HST mosaics are written by a plain FITS writer producing the same extension layout (`SCI`, `ERR`, `WHT`, `CON`, `EXPTIME`, `NEXP`) and the same primary keywords the downstream steps read (`CMPFRVER`, `CMPFRTIM`, `CFP_BKGS`, `BUNIT`, `PIXAR_SR`, `PIXAR_A2`), with a per-input table in place of the JWST `HDRTAB`.
 
-**Field.** `FieldBase` holds tiles, epochs, skip lists, the workspace and the working-copy logic. `NircamField` adds the `jw` glob rules and raw layout; `HstField` adds sky-based selection. Both read the same `fields.toml` table, so HST and NIRCam mosaics of a field share one tile definition by construction. HST settings live in a `[<field>.hst]` sub-table (filters per detector, selection lists, step overrides); `Field.load` has to learn to treat `hst` as a reserved key (`nircam/field.py:445-453`).
+**Field.** `FieldBase` holds the geometry (tangent point, tiles), epochs, the workspace and the working-copy logic. `NircamField` adds the `jw` glob rules and raw layout; `HstField` adds sky-based selection. Both read the same field table, so HST and NIRCam mosaics of a field share one tile definition by construction.
+
+**`fields.toml` layout.** Today everything at the top of a field table is implicitly NIRCam: `filters`, `files`, `skip`, step overrides, and tiles as any sub-table that happens to contain `crpix` and `naxis` (`nircam/field.py:433-453`). Proposed layout: geometry is shared and explicit, and each instrument has its own sub-table, named with the token used in product names.
+
+```toml
+[cosmos]
+    tangent_point  = [150.1163213, 2.200973097]
+    fiducial_tiles = ['A1', 'A2']
+
+    [cosmos.tiles.A1]            # shared grid: no instrument owns it
+        rotation = 20
+        [cosmos.tiles.A1.30mas]
+            crpix = [-22990, 23090]
+            naxis = [19200, 24910]
+
+    [cosmos.nircam]              # everything that is NIRCam today
+        filters = ['f115w', 'f150w', 'f277w', 'f444w']
+        files   = ['jw01727*', 'jw05893*']
+        skip    = []
+        [cosmos.nircam.align]
+            refcat = 'cosmos_ls_dr10.ecsv'
+        [cosmos.nircam.epochs.CW]
+            files = ['jw05893*']
+
+    [cosmos.acswfc]
+        filters = ['f435w', 'f606w', 'f814w']
+        exclude_programs = []
+    [cosmos.wfc3ir]
+        filters = ['f125w', 'f140w', 'f160w']
+        exclude_programs = [14114, 16259]     # DASH
+```
+
+Points to decide when this is designed in detail:
+
+- Whether a field-level block should hold settings both HST detectors share (the reference catalog, program exclusions), or whether the two detector tables simply repeat them.
+- Epochs: a date range is instrument-neutral, a file glob is not. The sketch puts epochs under the instrument; a shared date-range epoch could live at field level.
+- Migration. The loader would accept the current flat layout as "all NIRCam" for a transition period, and a converter rewrites a file in place (comment-preserving, with `tomlkit` as `campfire config pull` already does). The change is wider than the pipeline: the config plane mirrors each field section into `fields.config` with a hash, and the deploy client and web app read `filters` and tiles from it (`nircam-fit.md` section 1.7). It therefore needs its own short design and is a separate phase (section 7), not something to fold into the mosaic refactor.
 
 ### 3.3 Order of refactoring, and how we know NIRCam did not change
 
@@ -180,7 +224,7 @@ Every step below is its own PR with a PATCH-level Infrastructure changelog entry
 
 Acceptance for R1 to R4: the full test suite passes without edits to test logic; the synthetic golden hashes are unchanged; the real-data baseline is **bit-identical** in every array, with header differences limited to `CMPFRTIM` and `CMPFRVER`. No tolerance is needed because R1 to R4 change no arithmetic and no ordering. If a step cannot meet that, it is split until it can, or the difference is reported before merging. R5 does not touch the NIRCam path.
 
-Two things to settle before R0: which production fields run `implementation = "campfire"` for outlier and resample (the default is `"jwst"`, `config_default.toml:945`, `1013`), since the HST module can only use the native backend and the baseline must cover whatever production uses; and whether the pipeline CI job should become a required check once the golden test exists.
+The baseline covers the production path only: `align` for astrometry and `implementation = "campfire"` for outlier and resample, which every production field uses. The `jhat` step and the `jwst` backends are not shared with HST and are not part of the acceptance test; whether to keep them at all is a separate decision. One thing still to settle before R0: whether the pipeline CI job should become a required check once the golden test exists.
 
 ## 4. Output grids
 
@@ -194,13 +238,13 @@ Two things to settle before R0: which production fields run `implementation = "c
 | WFC3/IR | 128 mas | 30 mas | 1.0 | 4.6 |
 | WFC3/IR | 128 mas | 30 mas | 0.8 | 3.8 |
 
-R is the ratio between the true noise on large scales and the pixel-to-pixel scatter. At 30 mas a WFC3/IR mosaic looks about four times smoother than it is. This does not lose information, but every noise estimate made from pixel scatter must be corrected, and the `ERR` map must be validated against empty-aperture measurements (section 6). The measured factor is written to the mosaic header.
+R is the ratio between the true noise on large scales and the pixel-to-pixel scatter. At 30 mas a WFC3/IR mosaic looks about four times smoother than it is. This loses no information. The `ERR` map is not rescaled for it: as for NIRCam, `ERR` is the formal per-pixel variance from the drizzle, and aperture noise including the covariance between pixels is measured downstream with random apertures. The table is here so that nobody reads pixel scatter in an HST mosaic as its depth.
 
 `pixfrac` and kernel are configuration; starting values are 0.8 (ACS) and 1.0 (WFC3/IR, where two-exposure coverage is common), square kernel, to be tuned on the proof of concept by PSF width and weight uniformity.
 
-**Downsampled products.** `downsample` makes an N x N block-binned mosaic from the 30 mas one: weighted mean for `SCI`, sum for `WHT` and `EXPTIME`, and `ERR` propagated with the measured correlation factor. With N = 2 or 4 this gives 60 or 120 mas products whose pixels are exact unions of 30 mas pixels, which is the grid `Field.get_tile_wcs` derives when a scale is not declared (`nircam/field.py:975-981`). This is the route for WFC3/IR users who prefer near-native sampling, and for a future MIRI.
+**Downsampled products.** `downsample` makes an N x N block-binned mosaic from the 30 mas one: weighted mean for `SCI`, sum for `WHT` and `EXPTIME`, and `ERR` propagated formally from the per-pixel variances (same meaning as in the parent mosaic, no covariance term). With N = 2 or 4 this gives 60 or 120 mas products whose pixels are exact unions of 30 mas pixels, which is the grid `Field.get_tile_wcs` derives when a scale is not declared (`nircam/field.py:975-981`). This is the route for WFC3/IR users who prefer near-native sampling, and for a future MIRI.
 
-One inconsistency to be aware of: the COSMOS tiles declare explicit 60 mas grids with `crpix60 = crpix30 / 2`, which is offset by 15 mas from the block-aligned grid (`nircam-fit.md` section 1.5). Block-binned products cannot land on those explicit grids. I propose block alignment as the rule for derived products and leaving the existing explicit NIRCam 60 mas tiles as they are.
+Block alignment is the rule for every coarser grid. The explicit 60 mas entries in the COSMOS tiles follow a different convention (`nircam-fit.md` section 1.5); they are unused and are ignored here.
 
 **Sparse coverage.** HST often covers a small part of a NIRCam tile (the Abell 2744 tile is 56759 x 22171 pixels; the Frontier Fields core is a few arcminutes). The mosaic keeps the full tile shape so the grids stay identical, and is mostly NaN. Split files are already gzip-compressed for upload. If local disk becomes a problem, the alternative is HST sub-tiles defined as integer-pixel crops of a NIRCam tile, which keeps the pixel grid; I would not add that until it is needed.
 
@@ -208,7 +252,7 @@ One inconsistency to be aware of: the COSMOS tiles declare explicit 60 mas grids
 
 **Names.** `mosaic_<instrument>_<filter>_<field>_<scale>_<tile>[_<epoch>]`, with instrument tokens `acswfc` and `wfc3ir` (NIRCam stays `nircam`). This is the existing template with the instrument made a variable (`nircam/manifest.py:185`). WFC3/UVIS would later be `wfc3uvis`, which keeps its F606W and F814W apart from ACS.
 
-**Mosaic headers.** `BUNIT = MJy/sr`, `PIXAR_SR`, `PIXAR_A2`; `TELESCOP`, `INSTRUME`, `DETECTOR`, `FILTER`; `CMPFRVER`, `CMPFRTIM`; calibration provenance (`hstcal` version, HST CRDS context, or `archive` plus retrieval date); versions of `drizzlepac`, `stwcs`, `drizzle`; reference-catalog hash; `pixfrac`, kernel, weight type; the measured correlation factor. The per-input table records for each chip: root name, proposal, date, exposure time, `PHOTFNU` used, sky value, WCS name, `CAL_VER`.
+**Mosaic headers.** `BUNIT = MJy/sr`, `PIXAR_SR`, `PIXAR_A2`; `TELESCOP`, `INSTRUME`, `DETECTOR`, `FILTER`; `CMPFRVER`, `CMPFRTIM`; calibration provenance (`hstcal` version, HST CRDS context, or `archive` plus retrieval date); versions of `drizzlepac`, `stwcs`, `drizzle`; reference-catalog hash; `pixfrac`, kernel, weight type. The per-input table records for each chip: root name, proposal, date, exposure time, `PHOTFNU` used, sky value, WCS name, `CAL_VER`.
 
 **Manifest.** Same JSON as NIRCam. The input identity must cover both chips of an ACS file and the full HST WCS (linear terms, SIP, and the lookup-table extensions or at least `WCSNAME`), which the current hash recipes do not (`nircam/manifest.py:49-75`).
 
@@ -230,7 +274,7 @@ These deserve their own design document once the pipeline side has produced real
 1. `pg004` cluster core (proof of concept): 12 ACS/WFC and 16 WFC3/IR exposures from one 2016 program, seven filters, dense Gaia, existing CAMPFIRE NIRCam mosaic. Reference: RELICS 30 and 60 mas mosaics (WISE-based frame; fit and remove the offset first).
 2. One CANDELS WFC3 tile in EGS with its overlapping ACS (both 2004-05 and post-2009 data, several programs, few Gaia stars). Reference: the CEERS HST release v1.9 (Gaia-tied, 30 mas, science, weight and rms maps).
 3. Abell 2744 as the first scale test. References: BUFFALO v1.0 and the UNCOVER/DJA mosaics.
-4. For COSMOS, the externally made HST mosaics already on the CAMPFIRE tile grid (`scripts/cosmos_inspec.py:52-55`), if available, and the IRSA ACS v2.0 mosaic.
+4. For COSMOS, A. Koekemoer's HST mosaics on the COSMOS-Web 30 mas tile grid. The files `scripts/cosmos_inspec.py:52-55` reads are usable; newer versions probably exist and are to be located before this comparison is run.
 
 **Metrics and targets.** Targets are starting values to be revised after the proof of concept.
 
@@ -240,7 +284,7 @@ These deserve their own design document once the pipeline side has produced real
 | Astrometry, internal | Per-exposure residuals from the align diagnostics; residual vector map across the chip (tests distortion and the ACS skew) | no coherent pattern above 5 mas; stellar FWHM in the mosaic within 5% of the reference mosaic |
 | Photometry | Aperture and total fluxes, ours over reference, against magnitude, for isolated sources; zeropoint check on stars; ACS F814W against NIRCam F090W stellar locus | median ratio within 2% for 20 < m < 25; no trend with position on the chip (tests the pixel-area and unit handling) |
 | Combination | Pixel-level difference between our drizzle and AstroDrizzle run on the same inputs, grid and weights (proof of concept only) | differences consistent with interpolation of the pixel map; no flux scale offset |
-| Noise | Empty-aperture scatter against the `ERR`-map prediction, as a function of aperture size; weight against exposure time; depth (5 sigma) against the reference at matched aperture | ratio constant with aperture after the correlation factor; depth within 0.1 mag of the reference for the same exposures |
+| Noise | Random-aperture scatter as a function of aperture size, reported as a diagnostic and compared with the reference mosaic (no `ERR` rescaling); `ERR` against the reference rms map in blank sky; weight against exposure time; depth (5 sigma) against the reference at matched aperture | large-aperture noise and depth within 0.1 mag of the reference for the same exposures; `WHT` proportional to exposure time at fixed background |
 | Artifacts | Unmatched compact detections per arcmin^2 (in ours, absent from the reference and from NIRCam); count of residual trails and persistence images by inspection of previews; fraction of pixels masked per exposure | residual cosmic-ray density no higher than the reference; every masked trail confirmed |
 | Calibration modes | Mosaic from `source = "raw"` against `source = "archive"` for the same exposures | differences explained by reference-file vintage and ramp repair |
 | NIRCam regression | Section 3.3 | bit-identical |
@@ -251,8 +295,9 @@ Sizes are rough: S is about one working session, M two to three, L four or more.
 
 | Phase | Content | Size | Exit criterion |
 | --- | --- | --- | --- |
-| P0 | Environment and baselines: install `drizzlepac`, `acstools`, `wfc3tools`, `hstcal` next to the pipeline in a throwaway environment on the reduction machine; time `calacs` on one exposure; NIRCam golden test and real-data baseline (R0) | S-M | install works or a blocking conflict is documented; baselines stored |
+| P0 | Environment and baselines: install `drizzlepac`, `acstools`, `wfc3tools`, `hstcal` next to the pipeline in a throwaway environment on the reduction machine; time `calacs` on one exposure; size the reference cache with a `bestrefs` dry run. Make the production NIRCam path the package default (`implementation = "campfire"` for outlier and resample, `align` in place of `jhat`), as its own small PR. Then the NIRCam golden test and real-data baseline (R0) | S-M | install works or a blocking conflict is documented; defaults flipped with production output unchanged; baselines stored |
 | P1 | Refactor R1 to R4 | M-L | NIRCam bit-identical |
+| P1b | `fields.toml` multi-instrument layout (section 3.2): short design, loader with legacy fallback, converter, config-plane and deploy readers | M | existing fields load identically from old and new layouts |
 | P2 | First light on `pg004`, archive mode: download, `HstChip` (units, variance, DQ), `wcs_init`, FITS grid and writer, drizzle one ACS and one WFC3/IR filter onto the `venus` tile using the archive's own WCS and cosmic-ray flags | M | mosaics exist on the NIRCam grid; flux scale agrees with AstroDrizzle and RELICS |
 | P3 | Process phase proper: quality gate, sky and quadrant offsets, align to the NIRCam catalog with write-back, per-visit cosmic rays, previews; all seven `pg004` filters | L | astrometry and photometry targets met on `pg004` |
 | P4 | RAW mode: `bestrefs`, `calacs`, `calwf3`, variable-background repair, HST context in configuration | M | RAW and archive mosaics compared and understood |
@@ -301,14 +346,13 @@ All of these are estimates to be replaced by measurements in P0 to P2. File size
 
 ## 10. Open questions
 
-For you:
+Answered in review (recorded in section 0): the production NIRCam path is `align` plus the `campfire` backend everywhere; `hstcal` and a reference cache are fine; the COSMOS HST mosaics on the tile grid are A. Koekemoer's and usable, with newer ones to be located; block alignment is the rule; the CEERS HST mosaics are on the Gaia frame through Legacy Surveys positions, which is also how most CAMPFIRE NIRCam fields are aligned.
 
-1. Which production fields use `implementation = "campfire"` for outlier and resample? If the answer is "none yet", the HST module would be the first production user of the native drizzle, and P1 should include a NIRCam comparison of the two backends on a full tile.
-2. Is `hstcal` from conda-forge acceptable on the reduction cluster (CANDIDE), and is there disk for an HST reference cache?
-3. Are the HST mosaics that `scripts/cosmos_inspec.py` reads (COSMOS-Web tile grid, 30 mas) available as a comparison reference, and who made them?
-4. Should the HST section of a field live inside the field's table in `fields.toml` (proposed) or in a separate file? This also affects the config plane (`campfire config push`), which mirrors `fields.toml` sections to the cloud.
-5. Block-aligned grids for downsampled products, given the existing explicit COSMOS 60 mas tiles use the other convention: acceptable?
-6. You recalled that the CEERS HST mosaics were aligned to Legacy Surveys before NIRCam data existed. The release README says the frame is Gaia EDR3, and my notes contain one unverified hint that Legacy Surveys was the intermediate catalog. Both can be true (Gaia frame, carried by a denser catalog); I could not confirm it. It matters only for how we interpret residual offsets against that reference.
+Still for you:
+
+1. The `fields.toml` layout sketched in section 3.2: is a table per instrument (`nircam`, `acswfc`, `wfc3ir`) the right symmetry, or would you rather group by observatory (`jwst`, `hst`) with detectors beneath?
+2. Flipping the package defaults to `align` changes what a field with no reference catalog does: today it falls back to `jhat`'s configuration, afterwards it should stop with a clear message. Is a hard stop what you want? Under the versioning policy a default change that alters output for default-config users is an Algorithm entry, even though no production field changes.
+3. Should `jhat` and the `jwst` outlier and resample backends be kept as options or retired? Retiring them would shrink the refactor.
 
 To be answered by measurement or reading, in the phase noted:
 
