@@ -275,6 +275,15 @@ Release procedure: edit the `## Unreleased` section below, then run
     usable pixel (their `clip` / `n_clip` parameters are removed). The drizzled products already
     excluded the crf's flags. The joint first pass runs before Spec3 and gets no flags; it and
     `profile_extend` keep their own clips on their residuals.
+  - *Master-background frames get their own outlier detection.* They took the nodded Spec3's
+    flags, which miss what cancels in a nod difference: a hot pixel and the pixels it spills into
+    showed in the master-background 2-D as groups of three, one per nod (zenith_p15 549280, 552073).
+    Spec3 now runs on copies of the exposures with the frames in place of the data, stopping after
+    outlier detection at jwst's defaults (`mbkg_extraction.own_outliers`, about 20 s per product,
+    skipped for a single exposure). The hot-pixel test also takes the spill-over: a pixel's contrast
+    with its neighbors combined over the exposures above 5 sigma, at least 2 sigma in every one
+    (`HOT_FLOOR`) and in at least 2 exposures. Pixels above 5 sigma in the master-background 2-D of
+    the four test sources: 23 to 5, 41 to 36, 34 to 16 (548358's 923 to 912 is its bright band).
   - The width prior (median 0.15, ln sigma 0.6) is provisional and now decides the shape of every
     faint source; how to re-derive it from the archive is in `docs/design-nirspec-pipeline-v2.md` 6.6.
 - **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every

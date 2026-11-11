@@ -14,10 +14,10 @@ per product, built from the nodded Spec3 crf), before any 1-D extraction:
    with the master background's variance added to the Poisson term and DO_NOT_USE where
    it has none. Nothing is written.
 2. ``drizzle_2d``: those frames drizzled as data onto the nodded grid, with their outlier
-   flags (``outlier_flags``: the choice is there): the nodded Spec3's, plus the pixels
-   fixed high on the detector in every exposure (``hot_pixels``), which cancel in the nod
-   differences. Into ``{workspace}/mbkg/{product}_mbkg_s2d.fits`` (SCI, ERR, WHT). The
-   grid is the nodded one by construction.
+   flags (``outlier_flags``: the choice is there): Spec3's outlier detection run on the
+   frames themselves (``own_outliers``), plus the pixels fixed high on the detector in
+   every exposure (``hot_pixels``). Into ``{workspace}/mbkg/{product}_mbkg_s2d.fits`` (SCI,
+   ERR, WHT). The grid is the nodded one by construction.
 3. ``fit_product``: the nodded fit's exposures with their frame minus master background
    in place of the nod difference, as single frames (``single_frame_exposures``: nothing
    subtracted from them), the forward model at the frames' own shape (``own_shape``: the
@@ -138,8 +138,9 @@ def frames_for(canonicals):
 # ---------------------------------------------------------------------------
 # Outlier flags of the master-background frames: the choice is here, and only here
 # ---------------------------------------------------------------------------
-HOT_SIGMA = 5.0          # a hot pixel stands this many sigma above its row and its column neighbors ...
-HOT_MIN_EXPOSURES = 2    # ... in every exposure that sees the detector pixel, at least this many
+HOT_SIGMA = 5.0          # a hot pixel stands this many sigma above its row and its column neighbors, combined over the exposures ...
+HOT_FLOOR = 2.0        # ... and at least this many in every exposure that sees the detector pixel ...
+HOT_MIN_EXPOSURES = 2    # ... at least this many
 HOT_ROW_HALF = 3         # row neighbors: +-3 pixels along the dispersion
 HOT_COL_HALF = 2         # column neighbors: +-2 pixels across it
 
@@ -184,10 +185,17 @@ def local_contrast(frame):
 def hot_pixels(frames):
     """Pixels fixed high on the detector: {name: boolean mask on its cutout}.
 
-    A detector pixel is hot where ``local_contrast`` exceeds ``HOT_SIGMA`` in every
-    exposure (on the same detector) that has a usable value there, and at least
-    ``HOT_MIN_EXPOSURES`` do. Such a pixel cancels in the nod differences, so the nodded
-    outlier detection never flags it, but it stays in a frame minus master background.
+    A detector pixel is hot where ``local_contrast`` combined over the exposures (on the
+    same detector) that have a usable value there (their sum over the square root of their
+    number) exceeds ``HOT_SIGMA``, it exceeds ``HOT_FLOOR`` in every one of them, and at
+    least ``HOT_MIN_EXPOSURES`` do. Combining finds the neighbors of a hot pixel, which its
+    light spills into at a few sigma per exposure (a test of each exposure alone at
+    ``HOT_SIGMA`` missed them in some exposures, and they showed in the 2-D as groups of
+    three, one per nod position). Such a pixel cancels in the nod differences, so the nodded
+    outlier detection never flags it, but it stays in a frame minus master background. The
+    frames' own outlier detection (``own_outliers``) flags most of them, but not where a 2-D
+    pixel is covered by few nod positions (the slit's ends; a 2-nod pattern), whose median
+    then carries the hot pixel: this test does not depend on that median.
     Sky light, the source and neighbors move on the detector between nods, so they cannot
     be high at one detector pixel in every exposure (the source of a product with no nod
     at all could; its exposures would then count as one). With one exposure nothing tells
@@ -205,6 +213,7 @@ def hot_pixels(frames):
         x1 = max(frames[n].origin[1] + frames[n].arrays['data'].shape[1] for n in mem)
         seen = np.zeros((y1 - y0, x1 - x0), int)
         high = np.zeros((y1 - y0, x1 - x0), int)
+        total = np.zeros((y1 - y0, x1 - x0))
         cut, usable = {}, {}
         for n in mem:
             f = frames[n]
@@ -214,40 +223,98 @@ def hot_pixels(frames):
             s = local_contrast(f)
             usable[n] = np.isfinite(s)
             seen[cut[n]] += usable[n]
-            high[cut[n]] += usable[n] & (s > HOT_SIGMA)
-        hot = (seen >= HOT_MIN_EXPOSURES) & (high == seen)
+            high[cut[n]] += usable[n] & (s > HOT_FLOOR)
+            total[cut[n]] += np.where(usable[n], s, 0.0)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            combined = total / np.sqrt(seen)
+        hot = (seen >= HOT_MIN_EXPOSURES) & (high == seen) & (combined > HOT_SIGMA)
         for n in mem:
             out[n] = hot[cut[n]] & usable[n]
     return out
 
 
-def outlier_flags(frame, crf_dq, hot):
+def outlier_flags(frame, outliers, hot):
     """A master-background frame's arrays with its outlier flags: the decision of where
-    they come from is here, and only here (user, 2026-11-02).
+    they come from is here, and only here (user, 2026-11-11).
 
     Flagged ``OUTLIER`` and DO_NOT_USE, on top of its own mask (no master background:
     DO_NOT_USE, ``frame_arrays``):
-    - what the nodded Spec3's outlier detection flagged in this exposure (``OUTLIER`` in
-      the nodded crf's DQ that the canonical's live DQ does not have);
-    - its hot pixels (``hot``, ``hot_pixels``), which cancel in the nod differences.
-    jwst's outlier detection is not run on the frames. Before 2026-11-02 they had a Spec3
-    run of their own and its outlier detection on them."""
-    from campfire_pipeline.nirspec.profile_fit import crf_outliers
+    - what Spec3's outlier detection flagged in this frame when run on the master-background
+      frames themselves (``outliers``, ``own_outliers``; None: nothing);
+    - its hot pixels (``hot``, ``hot_pixels``).
+    From 2026-11-02 to 2026-11-11 the frames took the nodded Spec3's flags instead, which
+    cannot see what cancels in the nod differences."""
     a = frame.arrays
-    new = crf_outliers(crf_dq, frame.live_dq)       # the nodded fit takes the same flags (mask_crf_outliers)
+    bad = np.asarray(hot, bool)
+    if outliers is not None:
+        bad = bad | np.asarray(outliers, bool)
     out = dict(a)
-    out['dq'] = (a['dq'] | np.where(new | np.asarray(hot, bool), OUTLIER | DO_NOT_USE, 0)).astype(a['dq'].dtype)
+    out['dq'] = (a['dq'] | np.where(bad, OUTLIER | DO_NOT_USE, 0)).astype(a['dq'].dtype)
     return out
 
 
-def flagged_inputs(dmap, frames):
+def flagged_inputs(dmap, frames, outliers=None):
     """The drizzle inputs of the master-background frames: ``frames`` ({name: Frame},
-    every exposure of the map) with their outlier flags (``outlier_flags``), {name: arrays}."""
+    every exposure of the map) with their outlier flags (``outlier_flags``; ``outliers``:
+    {name: mask} of ``own_outliers``), {name: arrays}."""
     missing = [x.name for x in dmap.exposures if x.name not in frames]
     if missing:
         raise ValueError(f'master background: no frame for {missing}')
     hot = hot_pixels({x.name: frames[x.name] for x in dmap.exposures})
-    return {x.name: outlier_flags(frames[x.name], x.arrays['dq'], hot[x.name]) for x in dmap.exposures}
+    outliers = outliers or {}
+    return {x.name: outlier_flags(frames[x.name], outliers.get(x.name), hot[x.name]) for x in dmap.exposures}
+
+
+def own_outliers(product_name, workspace, source_id, frames):
+    """Spec3's outlier detection run on the master-background frames themselves: {name:
+    boolean mask on the canonical's cutout} of the pixels it flagged (``OUTLIER`` in its
+    output that the frame's own DQ did not have).
+
+    Each canonical is copied with its SCI, ERR, VAR_POISSON, VAR_RNOISE and DQ replaced by
+    its frame (``frame_arrays``) into ``{workspace}/mbkg/{product}_mbkg_od/``, and Spec3 runs
+    on the copies with jwst's default outlier detection and nothing after it; the folder is
+    removed. Unlike a nod difference, a frame minus master background holds what is fixed on
+    the detector (hot pixels and the pixels around them), and the source moves between nods
+    with the sky, so the median of the frames flags the former and keeps the source. With
+    one exposure jwst flags nothing."""
+    import shutil
+    from astropy.io import fits
+    from jwst import associations
+    from jwst.associations import asn_from_list  # noqa: F401  (registers the submodule)
+    from jwst.pipeline import Spec3Pipeline
+    from campfire_pipeline.nirspec import drizzle_map as DM
+    from campfire_pipeline.nirspec.profile_fit import crf_outliers
+
+    d = os.path.join(subdir(workspace), f'{product_name}{SUFFIX}_od')
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    try:
+        names = sorted(frames)
+        for n in names:
+            a = frames[n].arrays
+            with fits.open(os.path.join(workspace, n)) as h:
+                h['SCI'].data = a['data']
+                h['ERR'].data = a['err']
+                h['VAR_POISSON'].data = a['var_poisson']
+                h['VAR_RNOISE'].data = a['var_rnoise']
+                h['DQ'].data = a['dq'].astype(h['DQ'].data.dtype)
+                h.writeto(os.path.join(d, n))
+        name = f'{product_name}{SUFFIX}'
+        asn = associations.asn_from_list.asn_from_list([(n, 'science') for n in names], with_exptype=True,
+                                                       product_name=name)
+        asn_path = os.path.join(d, f'{name}_spec3.json')
+        with open(asn_path, 'w') as fh:
+            fh.write(asn.dump()[1])
+        skip = {s: {'skip': True} for s in ('pixel_replace', 'resample_spec', 'cube_build', 'extract_1d',
+                                             'photom', 'combine_1d', 'spectral_leak')}
+        Spec3Pipeline.call(asn_path, save_results=True, output_dir=d, steps=skip)
+        crf = DM.crf_path(name, source_id, d)
+        if not os.path.exists(crf):
+            raise RuntimeError(f'{product_name}: master-background outlier detection wrote no crf ({crf})')
+        dq = DM.crf_dq(crf)
+        return {n: crf_outliers(dq[n], frames[n].arrays['dq']) for n in names if n in dq}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def drizzle_2d(dmap, inputs):
@@ -291,7 +358,11 @@ def write_2d(product_name, workspace, source_id, dmap, log=None):
     except NoMasterBackground as e:
         log(f'{product_name}: no master-background spectrum ({e})')
         return None
-    inputs = flagged_inputs(dmap, frames)
+    outliers = own_outliers(product_name, workspace, source_id, frames) if len(frames) > 1 else None
+    if outliers is not None:
+        log(f'{product_name}: master-background frames: {sum(int(m.sum()) for m in outliers.values())} pixels '
+            f'flagged by their own outlier detection')
+    inputs = flagged_inputs(dmap, frames, outliers)
     write_2d_file(product_paths(workspace, product_name, source_id)['s2d'], drizzle_2d(dmap, inputs))
     return frames, inputs
 
@@ -299,8 +370,12 @@ def write_2d(product_name, workspace, source_id, dmap, log=None):
 def cleanup(workspace, product_name):
     """Remove a product's master-background files (2-D, profile fit) once its
     ``_spec.fits`` is written."""
+    import shutil
     for p in glob.glob(os.path.join(subdir(workspace), f'{product_name}{SUFFIX}_*')):
-        os.remove(p)
+        if os.path.isdir(p):                    # an interrupted run's outlier-detection folder (own_outliers)
+            shutil.rmtree(p, ignore_errors=True)
+        else:
+            os.remove(p)
 
 
 def single_frame_exposures(exps, frames, backgrounds=None):

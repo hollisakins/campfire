@@ -371,25 +371,26 @@ def test_frame_arrays_without_a_master_background(tmp_path, monkeypatch):
         MX.frame_arrays(str(tmp_path / 'jw07076001001_03101_00001_nrs1_7.fits'))
 
 
-def test_outlier_flags_are_the_nodded_crf_and_the_hot_pixels():
-    """The one place of the choice: what the nodded Spec3 flagged in this exposure and the
-    hot pixels are flagged in its master-background frame, on top of its own mask; flags
-    the canonical already had are not taken from the crf (the frame keeps its own DQ)."""
+def test_outlier_flags_are_the_frames_own_outliers_and_the_hot_pixels():
+    """The one place of the choice: what the frames' own outlier detection flagged in this
+    exposure and the hot pixels are flagged in its master-background frame, on top of its
+    own mask; the nodded Spec3's flags (the canonical's live DQ) are not taken."""
     a = dict(data=np.ones((4, 5), np.float32), dq=np.zeros((4, 5), np.uint32))
     a['dq'][3, 4] = PF.DO_NOT_USE                          # no master background there
     live = np.zeros((4, 5), np.uint32)
-    live[0, 0] = MX.OUTLIER | PF.DO_NOT_USE                # in the nod difference before Spec3
-    crf = live.copy()
-    crf[2, 1] = MX.OUTLIER | PF.DO_NOT_USE                 # flagged by the nodded Spec3
-    crf[1, 3] = 4                                          # another flag: not an outlier
+    live[0, 0] = MX.OUTLIER | PF.DO_NOT_USE                # in the nod difference: not this frame's
+    own = np.zeros((4, 5), bool)
+    own[2, 1] = True                                       # flagged by the frames' own outlier detection
     hot = np.zeros((4, 5), bool)
     hot[0, 4] = True
-    out = MX.outlier_flags(MX.Frame(a, live), crf, hot)
+    out = MX.outlier_flags(MX.Frame(a, live), own, hot)
     assert out['dq'][2, 1] == MX.OUTLIER | PF.DO_NOT_USE and out['dq'][0, 4] == MX.OUTLIER | PF.DO_NOT_USE
-    assert out['dq'][0, 0] == 0 and out['dq'][1, 3] == 0 and out['dq'][3, 4] == PF.DO_NOT_USE
+    assert out['dq'][0, 0] == 0 and out['dq'][3, 4] == PF.DO_NOT_USE
     assert int(np.sum(out['dq'] > 0)) == 3
     assert a['dq'][2, 1] == 0                              # the frame itself is untouched
     assert out['dq'].dtype == np.uint32
+    none = MX.outlier_flags(MX.Frame(a, live), None, hot)  # no outlier detection (one exposure)
+    assert int(np.sum(none['dq'] > 0)) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +428,20 @@ def test_a_hot_pixel_fixed_in_every_exposure_is_flagged():
     hot = MX.hot_pixels(frames)
     for n, m in hot.items():
         assert m[10, 30] and int(m.sum()) == 1, n
+
+
+def test_the_pixels_a_hot_pixel_spills_into_are_flagged():
+    """Its two neighbors along the row (6 sigma in every exposure) fall below HOT_SIGMA in
+    some exposures, but stand out combined over the nine: flagged, and nothing else."""
+    frames = _scene(n_exp=9)
+    for f in frames.values():
+        f.arrays['data'][10, 29] += 6.0
+        f.arrays['data'][10, 31] += 6.0
+    lc = np.array([MX.local_contrast(f) for f in frames.values()])
+    assert (lc[:, 10, 29] < MX.HOT_SIGMA).any() and (lc[:, 10, 31] < MX.HOT_SIGMA).any()
+    hot = MX.hot_pixels(frames)
+    for n, m in hot.items():
+        assert m[10, 30] and m[10, 29] and m[10, 31] and int(m.sum()) == 3, n
 
 
 def test_a_fixed_smooth_band_and_a_moving_source_are_not_flagged():
@@ -471,13 +486,15 @@ def test_one_exposure_flags_nothing_two_must_agree():
 
 
 def test_master_background_two_d_through_the_nodded_map():
-    """``drizzle_2d``: the frames drizzled as data through the product's map, with the
-    nodded outlier flags and the hot pixels masking their pixels."""
+    """``drizzle_2d``: the frames drizzled as data through the product's map, with their
+    own outlier flags and the hot pixels masking their pixels."""
     from test_nirspec_drizzle_map import NX as DX, NY as DY, _exposures as _dexps, _map, _wcs
     exps = _dexps()
     out_wcs = _wcs(0.0, 0.0, shape=(DY, DX))
     d = _map(exps, out_wcs)
-    d.exposures[0].arrays['dq'][6, 6] |= MX.OUTLIER | PF.DO_NOT_USE      # the nodded Spec3's flag
+    own = {e['name']: np.zeros((DY, DX), bool) for e in exps}
+    own[exps[0]['name']][6, 6] = True                                  # the frames' own outlier detection
+    d.exposures[1].arrays['dq'][7, 7] |= MX.OUTLIER | PF.DO_NOT_USE      # the nodded Spec3's: not taken
     frames = {}
     for e in exps:
         frame = {k: np.array(e[k]) for k in ('data', 'err', 'var_poisson', 'var_rnoise', 'var_flat')}
@@ -485,11 +502,11 @@ def test_master_background_two_d_through_the_nodded_map():
         frame['data'][9, 14] = 3.0 + 50 * frame['err'][9, 14]          # a hot pixel, in both
         frame['dq'] = np.zeros((DY, DX), np.uint32)
         frames[e['name']] = MX.Frame(frame, np.zeros((DY, DX), np.uint32), 'NRS1', (1, 1))
-    inputs = MX.flagged_inputs(d, frames)
+    inputs = MX.flagged_inputs(d, frames, own)
     out = MX.drizzle_2d(d, inputs)
     hot = np.zeros((DY, DX), int)
     hot[9, 14] = MX.OUTLIER | PF.DO_NOT_USE
-    outlier = [np.where((x.arrays['dq'] & MX.OUTLIER) > 0, MX.OUTLIER | PF.DO_NOT_USE, 0) | hot for x in d.exposures]
+    outlier = [np.where(own[e['name']], MX.OUTLIER | PF.DO_NOT_USE, 0) | hot for e in exps]
     flagged = d.drizzle({e['name']: {**frames[e['name']].arrays, 'dq': (frames[e['name']].arrays['dq'] | outlier[k])}
                          for k, e in enumerate(exps)}, variances=True)
     clean = d.drizzle({e['name']: frames[e['name']].arrays for e in exps}, variances=True)
