@@ -13,9 +13,9 @@ Confirmed at the checkpoint:
 Added after review of the first draft of this document:
 
 4. **`ERR` maps are not rescaled for correlated noise.** The mosaic `ERR` keeps the meaning it has for NIRCam: the formal per-pixel variance from the drizzle. Correlated noise is the business of downstream catalog codes, which measure it with random apertures.
-5. **The NIRCam production path is `align` plus the `campfire` backend** for outlier and resample, in every field. Those are the only NIRCam code paths the shared machinery has to preserve, and they should become the package defaults (section 7, P0).
+5. **The NIRCam production path is `align` plus the `campfire` backend** for outlier and resample, in every field. Those are the only NIRCam code paths the shared machinery has to preserve bit for bit. They become the package defaults (section 7, P0); a field with `align` on and no reference catalog stops with a clear message. `jhat` and the `jwst` backends stay available as options.
 6. **`hstcal` from conda-forge and a local HST reference cache are acceptable** on the reduction machines.
-7. **`fields.toml` gets a symmetric multi-instrument layout** in place of "JWST at top level, HST in a sub-table" (section 3.2).
+7. **`fields.toml` gets a symmetric layout with one sub-table per instrument** (`nircam`, `acswfc`, `wfc3ir`) in place of "JWST at top level, HST in a sub-table" (section 3.2).
 8. **Block alignment is the rule for coarser grids.** The explicit 60 mas COSMOS tile entries are unused and can be ignored.
 
 Terms used below. HST file suffixes: `RAW` is the uncalibrated exposure (the counterpart of JWST `uncal`); `IMA` exists for WFC3/IR only and holds every non-destructive read after per-read calibration, before the ramp fit; `FLT` is the calibrated single exposure (flat-fielded, not resampled; electrons for ACS, electrons per second for WFC3/IR); `FLC` is an ACS FLT with the charge-transfer correction applied; `DRZ`/`DRC` are drizzled mosaics. `calacs` and `calwf3` are the C calibration programs in the `hstcal` package.
@@ -114,7 +114,7 @@ The JWST CRDS variables stay as they are. The HST server URL, context and the `i
 **6. Align.** The method is the NIRCam one (`nircam/align/solve.py:1-58`): detect sources, clip the reference catalog to the footprint, find the gross offset with the offset-histogram matcher, fit a pooled shift and rotation, then a gated finer fit.
 
 - *Pool.* All chips of all exposures of one visit and filter, because within a visit HST exposures share guide stars and are rigid to a few mas, while a single short exposure in a sparse field has too few sources to stand alone. The fine fit is per exposure, shift only, accepted by the same significance test as for NIRCam detectors.
-- *Reference.* The same reference catalog the field's NIRCam `align` uses. For most fields that is Legacy Surveys positions, which are on the Gaia frame and far denser than Gaia itself (the same choice the CEERS HST mosaics made). HST and NIRCam are then tied to one catalog. A catalog extracted from the CAMPFIRE NIRCam mosaic with `refcat extract` is the alternative where a tighter HST-to-NIRCam tie is wanted, and `refcat query` plus `merge` extend coverage where HST reaches beyond NIRCam. Stars need care across a 10 to 20 year baseline: Gaia stars are propagated to the exposure epoch (`refcat/motion.py`), and stars without proper motions are down-weighted or dropped in favour of galaxies.
+- *Reference.* The same reference catalog the field's NIRCam `align` uses. For most fields that is a NIRCam catalog, extracted from a NIRCam mosaic that was itself aligned to Legacy Surveys positions (which are on the Gaia frame and far denser than Gaia; the CEERS HST mosaics used Legacy Surveys the same way). HST and NIRCam exposures are then tied to one catalog, and that catalog is the NIRCam sky itself. Where HST reaches beyond the NIRCam footprint, `refcat query` plus `merge` extend the catalog with Legacy Surveys or Gaia sources. Stars need care across a 10 to 20 year baseline: Gaia stars are propagated to the exposure epoch (`refcat/motion.py`), and stars without proper motions are down-weighted or dropped in favour of galaxies.
 - *Cosmic rays in the detection image.* ACS exposures are full of cosmic rays before step 7. Detection runs on a copy cleaned with L.A.Cosmic (`astroscrappy`); that mask is used for detection only and never written to the science DQ.
 - *Write-back.* The corrected WCS is written into each `SCI` header with a CAMPFIRE `WCSNAME` that includes the reference-catalog hash; the pre-alignment WCS is archived as an alternate WCS in the same file (`stwcs`), which plays the role `ALGN_BAK` plays for NIRCam. `CFP_ALGN` has the same format, and exposures that fail are quarantined from the combine phase exactly as for NIRCam (`nircam/field.py:878-925`).
 
@@ -224,7 +224,7 @@ Every step below is its own PR with a PATCH-level Infrastructure changelog entry
 
 Acceptance for R1 to R4: the full test suite passes without edits to test logic; the synthetic golden hashes are unchanged; the real-data baseline is **bit-identical** in every array, with header differences limited to `CMPFRTIM` and `CMPFRVER`. No tolerance is needed because R1 to R4 change no arithmetic and no ordering. If a step cannot meet that, it is split until it can, or the difference is reported before merging. R5 does not touch the NIRCam path.
 
-The baseline covers the production path only: `align` for astrometry and `implementation = "campfire"` for outlier and resample, which every production field uses. The `jhat` step and the `jwst` backends are not shared with HST and are not part of the acceptance test; whether to keep them at all is a separate decision. One thing still to settle before R0: whether the pipeline CI job should become a required check once the golden test exists.
+The baseline covers the production path only: `align` for astrometry and `implementation = "campfire"` for outlier and resample, which every production field uses. The `jhat` step and the `jwst` backends are kept as options. They are not shared with HST, so they stay in `nircam/` and must keep working through the refactor (the existing tests cover their wiring), but they are not held to the bit-identical test. One thing still to settle before R0: whether the pipeline CI job should become a required check once the golden test exists.
 
 ## 4. Output grids
 
@@ -346,13 +346,14 @@ All of these are estimates to be replaced by measurements in P0 to P2. File size
 
 ## 10. Open questions
 
-Answered in review (recorded in section 0): the production NIRCam path is `align` plus the `campfire` backend everywhere; `hstcal` and a reference cache are fine; the COSMOS HST mosaics on the tile grid are A. Koekemoer's and usable, with newer ones to be located; block alignment is the rule; the CEERS HST mosaics are on the Gaia frame through Legacy Surveys positions, which is also how most CAMPFIRE NIRCam fields are aligned.
+Answered in review (recorded in section 0): the production NIRCam path is `align` plus the `campfire` backend everywhere; `hstcal` and a reference cache are fine; the COSMOS HST mosaics on the tile grid are A. Koekemoer's and usable, with newer ones to be located; block alignment is the rule; the CEERS HST mosaics are on the Gaia frame through Legacy Surveys positions; most CAMPFIRE NIRCam fields are aligned to a NIRCam catalog taken from a mosaic that was aligned to Legacy Surveys.
 
-Still for you:
+Also answered: one `fields.toml` sub-table per instrument; the default flips are approved (logged as an Algorithm changelog entry, since default-config output changes even though no production field does); `jhat` and the `jwst` backends are kept.
 
-1. The `fields.toml` layout sketched in section 3.2: is a table per instrument (`nircam`, `acswfc`, `wfc3ir`) the right symmetry, or would you rather group by observatory (`jwst`, `hst`) with detectors beneath?
-2. Flipping the package defaults to `align` changes what a field with no reference catalog does: today it falls back to `jhat`'s configuration, afterwards it should stop with a clear message. Is a hard stop what you want? Under the versioning policy a default change that alters output for default-config users is an Algorithm entry, even though no production field changes.
-3. Should `jhat` and the `jwst` outlier and resample backends be kept as options or retired? Retiring them would shrink the refactor.
+Still for you, none blocking P0:
+
+1. In the new `fields.toml` layout, where should settings shared by both HST detectors go (reference catalog, program exclusions): repeated in `acswfc` and `wfc3ir`, or in a field-level block?
+2. Should the pipeline CI job become a required check once the golden mosaic test exists?
 
 To be answered by measurement or reading, in the phase noted:
 
