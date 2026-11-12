@@ -302,7 +302,7 @@ def _pool_fit(detectors, wcs_by_det, refcat, match, *, key, fitgeom, nclip, sigm
 
 
 def _coarse(detectors, wcs_by_det, refcat, key, *, match0, match_iter, niter,
-            nclip, sigma):
+            nclip, sigma, fitgeom='rshift'):
     """Iterate a pooled ``rshift`` to convergence; return
     ``(correctors, last_info, first_info, wcs_by_det, diag)`` or
     ``(None, {}, {}, wcs_by_det, {})``.
@@ -328,7 +328,7 @@ def _coarse(detectors, wcs_by_det, refcat, key, *, match0, match_iter, niter,
         match = match0 if i == 0 else match_iter
         try:
             c, fi = _pool_fit(detectors, wcs_by_det, refcat, match, key=key,
-                              fitgeom='rshift', nclip=nclip, sigma=sigma)
+                              fitgeom=fitgeom, nclip=nclip, sigma=sigma)
         except Exception as e:  # noqa: BLE001 — a matcher/fit crash degrades to
             # NOT_ALIGNED, never aborts the worker. Keep any prior good pass.
             log(f"align solve[{key}]: coarse pass {i} raised "
@@ -468,7 +468,8 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          ref_border_arcmin=1.2, nclip=3, sigma=3.0,
                          max_residual_arcsec=0.1,
                          dva_repivot=True, dva_pivot='pool',
-                         fine_min_significance=1.4, gross_min_keep_frac=0.8):
+                         fine_min_significance=1.4, gross_min_keep_frac=0.8,
+                         coarse_fitgeom='rshift'):
     """Solve one pool of detectors; return a :class:`GroupSolution`.
 
     *detectors* is one pool (a module, or a whole channel when the caller pooled
@@ -598,7 +599,7 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     correctors, last_info, first_info, wcs_by_det, diag = _coarse(
         detectors, wcs_by_det, refcat, key,
         match0=match0, match_iter=match_iter,
-        niter=refine_niter, nclip=nclip, sigma=sigma)
+        niter=refine_niter, nclip=nclip, sigma=sigma, fitgeom=coarse_fitgeom)
     if correctors is None or not _succeeded(last_info):
         log(f"align solve[{key}]: coarse fit "
             f"{last_info.get('status', 'FAILED')}; NOT_ALIGNED (WCS preserved).")

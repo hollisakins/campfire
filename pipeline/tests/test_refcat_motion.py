@@ -85,3 +85,94 @@ def test_propagate_moves_star_keeps_galaxy():
 def test_propagate_noop_without_motion():
     t = _plain_table()
     assert propagate_to_epoch(t, 60000.0) is t      # same object, no work done
+
+
+# --- Gaia proper motions for a position-only catalog --------------------------
+
+def _mosaic_catalog_and_gaia(epoch=2025.8, frame_offset_mas=(0.0, 0.0)):
+    """A catalog extracted at ``epoch`` (40 moving stars, 60 galaxies, no motion
+    columns) and the Gaia table of 30 of those stars plus 5 stars not in the
+    catalog. The catalog frame can sit off Gaia's by ``frame_offset_mas``."""
+    from astropy.time import Time
+
+    rng = np.random.default_rng(3)
+    n_star, n_gal = 40, 60
+    ra16 = 150.0 + rng.uniform(-0.03, 0.03, n_star)
+    dec16 = 2.0 + rng.uniform(-0.03, 0.03, n_star)
+    pmra = rng.normal(-2.0, 4.0, n_star)
+    pmdec = rng.normal(-5.0, 4.0, n_star)
+    gaia_all = Table({'RA': ra16, 'DEC': dec16, 'ref_epoch': np.full(n_star, 2016.0),
+                      'pmra': pmra, 'pmdec': pmdec, 'source_id': np.arange(1, n_star + 1),
+                      'pmra_err': np.full(n_star, 0.1), 'pmdec_err': np.full(n_star, 0.1),
+                      'parallax': np.full(n_star, 0.5)})
+    at_epoch = propagate_to_epoch(gaia_all, Time(epoch, format='jyear').mjd)
+    cosd = np.cos(np.radians(2.0))
+    off_ra = frame_offset_mas[0] / 3.6e6 / cosd
+    off_dec = frame_offset_mas[1] / 3.6e6
+    cat = Table({
+        'RA': np.concatenate([np.asarray(at_epoch['RA']) + off_ra,
+                              150.0 + rng.uniform(-0.03, 0.03, n_gal) + off_ra]),
+        'DEC': np.concatenate([np.asarray(at_epoch['DEC']) + off_dec,
+                               2.0 + rng.uniform(-0.03, 0.03, n_gal) + off_dec]),
+        'mag': np.full(n_star + n_gal, 20.0, 'float32'),
+        'mag_err': np.full(n_star + n_gal, 0.02, 'float32'),
+    })
+    gaia = gaia_all[:30]
+    extra = Table({'RA': 150.2 + rng.uniform(0, 0.01, 5), 'DEC': np.full(5, 2.2),
+                   'ref_epoch': np.full(5, 2016.0), 'pmra': np.full(5, 1.0),
+                   'pmdec': np.full(5, 1.0), 'source_id': np.arange(900, 905),
+                   'pmra_err': np.full(5, 0.1), 'pmdec_err': np.full(5, 0.1),
+                   'parallax': np.full(5, 0.5)})
+    from astropy.table import vstack
+    return cat, vstack([gaia, extra]), gaia_all, (off_ra, off_dec)
+
+
+def test_attach_gaia_motion_puts_stars_back_at_an_earlier_epoch():
+    from astropy.time import Time
+    from campfire_pipeline.imaging.refcat.motion import attach_gaia_motion
+
+    cat, gaia, truth, _ = _mosaic_catalog_and_gaia()
+    out, info = attach_gaia_motion(cat, gaia, 2025.8)
+    assert info['n_matched'] == 30 and info['n_with_motion'] == 30
+    assert has_proper_motion(out)
+    moving = np.isfinite(np.asarray(out['pmra'], float))
+    assert moving.sum() == 30 and np.all(moving[:30]) and not np.any(moving[30:])
+    assert np.all(np.asarray(out['ref_epoch'], float)[moving] == 2025.8)
+    # positions are the catalog's own, untouched
+    assert np.array_equal(np.asarray(out['RA']), np.asarray(cat['RA']))
+
+    # An exposure from 2016.6: the 30 stars land where Gaia says they were,
+    # the 10 stars Gaia did not supply and every galaxy stay put.
+    mjd = Time(2016.6, format='jyear').mjd
+    moved = propagate_to_epoch(out, mjd)
+    want = propagate_to_epoch(truth, mjd)
+    cosd = np.cos(np.radians(2.0))
+    dra = (np.asarray(moved['RA'])[:30] - np.asarray(want['RA'])[:30]) * cosd * 3.6e6
+    dde = (np.asarray(moved['DEC'])[:30] - np.asarray(want['DEC'])[:30]) * 3.6e6
+    assert np.max(np.hypot(dra, dde)) < 0.05            # mas
+    assert np.array_equal(np.asarray(moved['RA'])[30:], np.asarray(cat['RA'])[30:])
+
+
+def test_attach_gaia_motion_allows_a_frame_offset_and_keeps_existing_motion():
+    from campfire_pipeline.imaging.refcat.motion import attach_gaia_motion
+
+    cat, gaia, _, _ = _mosaic_catalog_and_gaia(frame_offset_mas=(120.0, -90.0))
+    out, info = attach_gaia_motion(cat, gaia, 2025.8, match_radius=0.05)
+    assert info['n_with_motion'] == 30                  # offset removed before matching
+    assert abs(info['offset_mas'][0] - 120.0) < 1.0
+    assert abs(info['offset_mas'][1] + 90.0) < 1.0
+
+    # A row that already has a proper motion keeps it.
+    out['pmra'][0], out['pmdec'][0], out['ref_epoch'][0] = 99.0, -99.0, 2020.0
+    again, info2 = attach_gaia_motion(out, gaia, 2025.8, match_radius=0.05)
+    assert again['pmra'][0] == 99.0 and again['ref_epoch'][0] == 2020.0
+    assert info2['n_with_motion'] == 0
+
+
+def test_attach_gaia_motion_rejects_an_mjd_epoch():
+    import pytest
+    from campfire_pipeline.imaging.refcat.motion import attach_gaia_motion
+
+    cat, gaia, _, _ = _mosaic_catalog_and_gaia()
+    with pytest.raises(ValueError, match='Julian year'):
+        attach_gaia_motion(cat, gaia, 60953.0)

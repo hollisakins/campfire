@@ -158,6 +158,31 @@ def test_align_visit_corrects_and_records(visit):
         assert h['WCSNAME'].count(ALIGN_SUFFIX) == 1
 
 
+def test_a_linear_visit_fit_removes_a_skew_of_the_whole_field(visit):
+    """A scale-and-skew error common to both chips is not a shift and rotation.
+    ``coarse_fitgeom = "general"`` fits it; the rigid default leaves it."""
+    files, refcat, crvals = visit
+    m = np.array([[1 + 4e-4, 5e-4], [5e-4, 1 - 4e-4]])
+    for f in files:
+        with fits.open(f, mode='update') as hdul:
+            for v in (1, 2):
+                h = hdul['SCI', v].header
+                cd = m @ np.array([[h['CD1_1'], h['CD1_2']], [h['CD2_1'], h['CD2_2']]])
+                h['CD1_1'], h['CD1_2'], h['CD2_1'], h['CD2_2'] = (float(c) for c in cd.ravel())
+
+    align_visit(files, refcat, key='jal01', config={'fine_fitgeom': 'none'})
+    rigid = max(_offset_from_truth(f, crvals[f]) for f in files)
+    assert 'vis=rshift' in cfp.step_value(files[0], 'CFP_ALGN', keyset=cfp.HST)
+
+    align_visit(files, refcat, key='jal01', overwrite=True,
+                config={'fine_fitgeom': 'none', 'coarse_fitgeom': 'general'})
+    linear = max(_offset_from_truth(f, crvals[f]) for f in files)
+    assert 'vis=general' in cfp.step_value(files[0], 'CFP_ALGN', keyset=cfp.HST)
+
+    assert rigid > 0.006                    # arcsec: the skew survives a rigid fit
+    assert linear < 0.003
+
+
 def test_without_the_relative_stage_the_exposures_stay_apart(visit):
     """One rigid fit of the visit cannot remove an offset between its exposures.
     The exposure-to-exposure stage does, and so does the per-chip refinement

@@ -21,6 +21,13 @@ differs is which pools are fitted against what, and the WCS representation:
   that error is several milliarcseconds, larger than anything it could
   correct, and ``fine_fitgeom = "none"`` turns it off (measurements in
   docs/hst/design.md, section 8b).
+* **Option: a linear fit of the visit.** ``coarse_fitgeom = "general"`` gives
+  the visit's fit a linear term (scale and skew, six numbers in all) instead
+  of shift and rotation. On three ACS/WFC visits measured against Gaia, what
+  a shift and rotation left was such a term across the whole field (a skew of
+  3 to 7 mas per 100 arcsec, the same in every exposure), not a shift of each
+  chip; one linear fit removed it where the per-chip refinement removed part
+  (design.md, section 8b). Not the default.
 * **WCS.** An HST chip's WCS is an ``astropy.wcs.WCS`` (FITS keywords, SIP and
   lookup-table distortion). It goes to the solver without ``wcsinfo``, which
   selects the arcsec-plane FITS corrector
@@ -171,6 +178,9 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
     stage; the ``detect_*`` keys and ``snr_min`` the detection; the rest are
     passed to ``solve_exposure_group`` (``coarse_searchrad``, ``match_radius``,
     ``min_matched``, ``max_residual_arcsec``, ``fine_fitgeom``, ...).
+    ``coarse_fitgeom`` is the geometry of the visit's fit to the reference
+    catalog: ``rshift`` (shift and rotation, the default) or ``general`` (a
+    linear term for the whole visit, six numbers; see the module docstring).
     """
     from campfire_pipeline.imaging.refcat.motion import propagate_to_epoch
     from campfire_pipeline.nircam.align.solve import (
@@ -233,7 +243,8 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
         res = max(d.residual_arcsec for _, d in summary[f])
         n = sum(d.n_matched for _, d in summary[f])
         dofs = ','.join(d.dof for _, d in summary[f])
-        value = f'dof={dofs} res={res * 1000:.1f}mas n={n} rel={rel[f]}{rc}'
+        value = (f'dof={dofs} res={res * 1000:.1f}mas n={n} '
+                 f'vis={cfg.get("coarse_fitgeom", "rshift")} rel={rel[f]}{rc}')
         _write_back(f, by_file[f], value)
         log(f'align[{key}]: {os.path.basename(f)} {value}')
     return sol
@@ -259,7 +270,10 @@ def _relative(by_exposure, *, key, min_matched, solve, config):
         dec.append(c)
     relcat = Table({'RA': np.concatenate(ra), 'DEC': np.concatenate(dec)})
 
-    cfg = {k: v for k, v in config.items() if k not in ('min_matched', 'fine_fitgeom')}
+    # The tie between exposures is always rigid: `coarse_fitgeom` is the geometry
+    # of the visit's fit to the reference catalog only.
+    cfg = {k: v for k, v in config.items()
+           if k not in ('min_matched', 'fine_fitgeom', 'coarse_fitgeom')}
     token = {reference: 'ref'}
     for f, dets in by_exposure.items():
         if f == reference:
