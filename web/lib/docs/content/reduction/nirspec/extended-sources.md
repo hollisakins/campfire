@@ -57,7 +57,8 @@ from campfire_pipeline.nirspec import forward as fw
 from campfire_pipeline.nirspec.forward import plots
 
 files = fw.files_for('products/nirspec/<obs>', 547856, 'PRISM/CLEAR')
-model = fw.ForwardModel(fw.load(files))          # the nod differences, as stage 3 fitted them
+exps = fw.load(files, frames=True)               # each exposure minus its master background
+model = fw.ForwardModel(exps, mbkg_sigma=0.01)   # with stage 3's correction to the background level
 
 north = fw.Param(0.0, bounds=(-0.3, 0.3))        # one center, shared by both components
 bulge = fw.Sersic(dx=0.0, dy=north, n=4.0, r_e=fw.Param(0.05, bounds=(0.01, 0.5)), q=1.0)
@@ -111,13 +112,15 @@ Priors on one parameter are `Normal`, `LogNormal` and `Uniform`, or any object w
 
 `nonnegative=True` (or a list of component names) holds those spectra at or above zero. It removes the downward noise of a faint component, so that component's spectrum is biased high where it has no light; it is an option, not the default.
 
-To fit the master-background frames instead of the nod differences, load them with `fw.load(files, frames=True)` and give the model the master-background scale term stage 3 uses, `fw.ForwardModel(exps, mbkg_sigma=0.01)`, which fits a common correction to the master background's level with an allowance of 1 %. Stage 3 also drops the term and refits when the fitted correction reaches 3 %, since a correction that large is light from a source rather than an error in the master background's level; `Fit` does not, and the fitted value is in `result.solution.scale`.
+### Master-background frames or nod differences
+
+For an extended source the master-background frames are usually the better data to fit: each exposure is the frame minus its master background, so the source appears once and none of its outer light is subtracted. `fw.load(files)` without `frames=True` gives the nod differences stage 3 fits for `fnu`, where each exposure also holds the source's negative images from the subtracted background exposures, and the model reproduces those too.
+
+On the frames, `mbkg_sigma=0.01` is the master-background scale term stage 3 uses: a common correction to the master background's level, with an allowance of 1 %. Stage 3 also drops the term and refits when the fitted correction reaches 3 %, since a correction that large is light from a source rather than an error in the master background's level; `Fit` does not, and the fitted value is in `result.solution.scale`.
 
 ### An example
 
-A round, centered bulge (n = 4) plus disk (n = 1) with non-negative spectra, fitted to the six PRISM exposures of a zenith_p15 galaxy: the bulge's spectrum goes to zero and its radius to the lower bound, the disk settles at r_e = 0.37″, and χ²/dof is 7.3. The residuals change sign between nod positions, because the light's position along the slit moves with wavelength, which two round components on one center cannot follow. The model is wrong for this source, and the 2-D residuals show how.
-
-> **Placeholder figure.** Data, model and residual for each exposure, and the component spectra. To be redrawn from the current products.
+> **Placeholder.** A bulge-plus-disk fit to the master-background frames of one extended galaxy: data, model and residual for each exposure, the component spectra, and what the residuals show. To be fitted and drawn from the ember_cosmos_p1 products at the current fit version.
 
 ### Current limitations
 
