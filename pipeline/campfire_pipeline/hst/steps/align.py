@@ -12,11 +12,15 @@ differs is which pools are fitted against what, and the WCS representation:
   stage that can measure offsets that small: the reference catalog usually has
   too few sources per exposure (a Gaia-only field gives 10-15).
 * **Then the visit to the reference catalog.** All chips of all exposures, as
-  one rigid pool, get one shift and rotation. The per-chip refinement NIRCam
-  uses is off by default (``fine_fitgeom = "none"``): NIRCam detectors carry
-  individual offsets, HST chips within a visit do not, and on the first real
-  visit a per-chip fit from 5-8 Gaia stars made the exposures agree worse with
-  each other (docs/hst/design.md, section 8b).
+  one rigid pool, get one shift and rotation, followed by the solver's
+  per-chip refinement, on by default as for NIRCam: production fields are
+  aligned to a dense NIRCam-derived catalog, where a chip has hundreds of
+  matches. The refinement fits each chip of each exposure on its own, so its
+  error is the per-source scatter over the square root of the chip's matches.
+  With a sparse or imprecise reference (Gaia alone, Legacy Surveys directly)
+  that error is several milliarcseconds, larger than anything it could
+  correct, and ``fine_fitgeom = "none"`` turns it off (measurements in
+  docs/hst/design.md, section 8b).
 * **WCS.** An HST chip's WCS is an ``astropy.wcs.WCS`` (FITS keywords, SIP and
   lookup-table distortion). It goes to the solver without ``wcsinfo``, which
   selects the arcsec-plane FITS corrector
@@ -32,8 +36,11 @@ the solve summary, or ``NOT_ALIGNED`` when the pool or one of the file's chips
 was rejected; the WCS is left as it was in that case.
 
 Detection uses the adapter's arrays, so cosmic rays flagged by ``crreject`` and
-bad pixels are already excluded. If ``crreject`` has not run yet on CCD data,
-run it first: an ACS exposure's cosmic rays outnumber its sources.
+bad pixels are already excluded. CCD exposures need those flags before this
+step: a 400 s ACS exposure gave about 10,000 detections per chip without them
+against 140-400 with them, the exposure-to-exposure stage then failed, and a
+fit to a dense catalog was rejected (design.md, section 8b). WFC3/IR ramps
+reject cosmic rays in ``calwf3`` and do not depend on the order.
 """
 
 import dataclasses
@@ -183,7 +190,6 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
     detect_cfg = {k: cfg.pop(k) for k in detect_keys if k in cfg}
     relative = bool(cfg.pop('relative', True))
     relative_min_matched = int(cfg.pop('relative_min_matched', 20))
-    cfg.setdefault('fine_fitgeom', 'none')
 
     mjd = _mid_mjd(files[0])
     if mjd is not None:

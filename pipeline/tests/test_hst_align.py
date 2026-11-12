@@ -129,7 +129,7 @@ def test_align_visit_corrects_and_records(visit):
     for f in files:
         assert _offset_from_truth(f, crvals[f]) < 0.005          # 5 mas
         value = cfp.step_value(f, 'CFP_ALGN', keyset=cfp.HST)
-        assert value.startswith('dof=coarse,coarse') and 'rc=abc123' in value
+        assert value.startswith('dof=') and 'rc=abc123' in value
         tokens.append(value.split('rel=')[1].split()[0])
         with fits.open(f) as hdul:
             for v in (1, 2):
@@ -159,15 +159,25 @@ def test_align_visit_corrects_and_records(visit):
 
 
 def test_without_the_relative_stage_the_exposures_stay_apart(visit):
-    """One rigid fit of the visit cannot remove an offset between its exposures;
-    the exposure-to-exposure stage is what does."""
+    """One rigid fit of the visit cannot remove an offset between its exposures.
+    The exposure-to-exposure stage does, and so does the per-chip refinement
+    when the reference catalog is dense and precise (as this synthetic one is)."""
     files, refcat, crvals = visit
-    sol = align_visit(files, refcat, key='jal01', config={'relative': False})
+    sol = align_visit(files, refcat, key='jal01',
+                      config={'relative': False, 'fine_fitgeom': 'none'})
     assert sol.status == 'SOLVED'
     worst = [_offset_from_truth(f, crvals[f]) for f in files]
     assert max(worst) > 0.010                       # ~half of the 30 mas each
     for f in files:
-        assert 'rel=0' in cfp.step_value(f, 'CFP_ALGN', keyset=cfp.HST)
+        value = cfp.step_value(f, 'CFP_ALGN', keyset=cfp.HST)
+        assert value.startswith('dof=coarse,coarse') and 'rel=0' in value
+
+    # per-chip refinement (the default) on its own, against the same catalog
+    sol = align_visit(files, refcat, key='jal01', config={'relative': False},
+                      overwrite=True)
+    assert sol.status == 'SOLVED'
+    assert max(_offset_from_truth(f, crvals[f]) for f in files) < 0.005
+    assert any(d.dof != 'coarse' for d in sol.detectors)
 
 
 def test_sources_on_saturated_pixels_are_not_used(visit):

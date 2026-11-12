@@ -75,9 +75,11 @@ def process_visit(visit, refcat=None, *, reference_env=None, config=None,
     Returns ``{'key', 'cosmic_rays', 'align', 'ready'}``. ``cosmic_rays`` is
     ``'visit'`` when the exposures were cleaned against each other, ``'ramp'``
     for a single WFC3/IR exposure (the up-the-ramp fit has removed most hits)
-    and ``'none'`` for a single ACS exposure, which cannot be combined into a
-    mosaic until it is cleaned from its own pixels (not built yet); ``ready``
-    is false for that case and for a visit that failed to align.
+    and ``'none'`` for a single ACS exposure. That exposure cannot go into a
+    mosaic until its cosmic rays are flagged, either against overlapping
+    exposures of other visits in the field-level outlier pass or from its own
+    pixels where nothing overlaps (neither built yet); ``ready`` is false for
+    that case and for a visit that failed to align.
     """
     from campfire_pipeline.hst.steps.align import align_visit
     from campfire_pipeline.hst.steps.crreject import crreject_step
