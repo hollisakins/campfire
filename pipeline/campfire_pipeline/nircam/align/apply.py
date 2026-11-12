@@ -163,8 +163,12 @@ def _deserialize_gwcs_from_hdu(hdu):
         return af['wcs']
 
 
-def _stamp_algn(path, value):
+def _stamp_algn(path, value, diag_updates=None):
     """Atomically set CFP_ALGN=*value* (header only; WCS untouched).
+
+    *diag_updates* (``{keyword: (value, comment)}``, as
+    :func:`_diag_header_updates` builds) are the rejected attempt's own scalar
+    diagnostics; without them (a solve that raised) every key is ``UNDEF``.
 
     Also marks any ``ALGNCAT`` from an earlier successful solve as **stale**
     (``ALGNSTAL``), because this path leaves the extension in place: the WCS it
@@ -183,11 +187,13 @@ def _stamp_algn(path, value):
         # Every scalar diagnostic describes ONE solve. A file re-solved to
         # NOT_ALIGNED must not keep the counts and peak contrasts of an earlier
         # successful run standing beside the rejection — that would read as
-        # provenance for the rejected attempt. Reset them all to UNDEF; the
+        # provenance for the rejected attempt. Overwrite every key with the
+        # rejected attempt's own value (UNDEF where it measured nothing); the
         # all-keys-on-every-solve contract is what makes staleness impossible.
         for key in ALGN_DIAG_COMMENTS:
             if key != 'ALGNSTAL':
-                hdul[0].header[key] = (ALGN_UNDEF, ALGN_DIAG_COMMENTS[key])
+                hdul[0].header[key] = (diag_updates or {}).get(
+                    key, (ALGN_UNDEF, ALGN_DIAG_COMMENTS[key]))
         hdul[0].header['ALGNSTAL'] = (True, ALGN_DIAG_COMMENTS['ALGNSTAL'])
         hdul.writeto(tmp, overwrite=True)
     os.replace(tmp, path)
@@ -230,17 +236,20 @@ def _hdr_num(value):
     return int(value) if isinstance(value, (int, np.integer)) else v
 
 
-def _diag_header_updates(solution, det):
+def _diag_header_updates(solution, det, n_detected=None):
     """``{keyword: (value, comment)}`` for the scalar align diagnostics.
 
     Every :data:`ALGN_DIAG_COMMENTS` key is present (undefined where unmeasured)
     so a re-solve overwrites the previous solve's numbers wholesale. ``det`` is
     this detector's :class:`~...solve.DetectorSolution`, *solution* its pool.
+    *n_detected* overrides ``det.n_detected``, which a pool-level reject leaves
+    at its default of 0.
     """
     diag = solution.diagnostics or {}
     values = {kw: _hdr_num(diag.get(k))
               for k, kw in _ALGN_DIAG_KEYWORDS.items()}
-    values['ALGNNDET'] = _hdr_num(getattr(det, 'n_detected', None))
+    values['ALGNNDET'] = _hdr_num(n_detected if n_detected is not None
+                                  else getattr(det, 'n_detected', None))
     values['ALGNNMAT'] = _hdr_num(det.n_matched)
     values['ALGNNREF'] = _hdr_num(solution.n_refcat_in_footprint)
     # This solve wrote a matching ALGNCAT, so nothing is stale.
@@ -547,7 +556,17 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
                             diag_updates=_diag_header_updates(solution,
                                                               det_sol))
         else:
-            _stamp_algn(m.path, NOT_ALIGNED_SENTINEL)
+            # The rejected attempt's own numbers (the gross guard's tight-pair
+            # counts above all) are what explain a rejection, so they are
+            # stamped rather than blanked.
+            det_in = by_input.get(m.detector)
+            updates = None
+            if det_sol is not None:
+                updates = _diag_header_updates(
+                    solution, det_sol,
+                    n_detected=(len(det_in.catalog) if det_in is not None
+                                else None))
+            _stamp_algn(m.path, NOT_ALIGNED_SENTINEL, diag_updates=updates)
 
     log(f"align[{key}]: {solution.status} "
         f"({len(members)} detectors, n_matched={solution.n_matched})")

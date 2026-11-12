@@ -745,7 +745,7 @@
                                       # (= JHAT's 10px/2048px ~ 0.28 deg)
     slope_nsteps      = 200     # rotation-scan steps across [-slope_max, +]
     # The gross shift must EARN its keep. `_gross_shift` is an argmax over a
-    # 2*coarse_searchrad square of 0.5" bins, and its risk grows as the fraction
+    # 2*coarse_searchrad square of 0.25" bins, and its risk grows as the fraction
     # of true counterparts falls: on a sparse catalog (EGS f470n: ~26 true
     # refcat counterparts per detector against several hundred detections) a
     # clustering-scale peak outvotes the true one and drags the pool 6-63".
@@ -753,19 +753,19 @@
     # consistent - the 1-NN re-pairing happens at the shifted positions, d2d_max
     # confines the survivors to the false offset, and the fit's rmse is measured
     # on those same pairs (reported 0.0-0.2" on a WCS tens of arcsec wrong).
-    # So the candidate shift is vetted: count image sources with a reference
-    # within the consensus rough-cut radius (2.5 px) with and without it, and
-    # adopt it only if it retains this fraction of them. Relative, so there is
-    # no per-filter value. What it separates, measured on real pools, is "this
-    # pool NEEDS a translation prior" (COSMOS acquisition failure: 2 -> 418
-    # tight pairs, ratio 209) from "it does not" - both the 16 mis-locked EGS
-    # f470n/f460m pools (ratio 0.019-0.32) AND clean dense COSMOS pools
-    # (1248 -> 41, 0.033: the gross proposal is itself only good to ~0.25", so
-    # a CORRECT proposal also loses tight pairs). Declining a redundant prior
-    # is a measured no-op - same WCS, same 16.4/14.8 mas - while declining a
-    # harmful one is the fix. So 0.8 decides between >= 209 and <= 0.32.
-    # Declining costs only a redundant translation prior: the matcher then runs
-    # its searchrad=None path, the one every iterate pass already uses.
+    # So the candidate shift is refined to the median 1-NN offset inside its own
+    # peak, then vetted: count image sources with a reference within the
+    # consensus rough-cut radius (2.5 px) with and without it, and adopt it only
+    # if it retains this fraction of them. Relative, so there is no per-filter
+    # value. Measured on real pools (before refinement): the COSMOS acquisition
+    # failure scores 209 (2 -> 418 tight pairs), the 16 mis-locked EGS
+    # f470n/f460m pools 0.019-0.32. So 0.8 decides between >= 209 and <= 0.32.
+    # Refinement matters because the raw proposal is only good to ~0.25": vetted
+    # raw, a CORRECT shift also lost tight pairs (clean COSMOS 1248 -> 41), and
+    # where the pointing error exceeds d2d_max a declined correct shift leaves
+    # the pool NOT_ALIGNED. Below d2d_max, declining costs only a redundant
+    # translation prior: the matcher then runs its searchrad=None path, the one
+    # every iterate pass already uses.
     # 0 disables the check (A/B arm only).
     gross_min_keep_frac = 0.8
     # delta_mag_lim = [-3.0, 4.0]   # keep a 1-NN pair only if image_mag -

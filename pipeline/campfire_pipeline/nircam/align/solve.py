@@ -306,7 +306,10 @@ def _coarse(detectors, wcs_by_det, refcat, key, *, match0, match_iter, niter,
     overwrites the per-axis consensus keys, so the result is pass 0's gross peak
     plus the final accepted pass's consensus peaks. Snapshotted only for passes
     that succeeded, since a crashing or failing pass is discarded (and the loop
-    can break at any i, so the last call is not necessarily the last pass).
+    can break at any i, so the last call is not necessarily the last pass) —
+    except pass 0's ``gross_*`` keys, kept whatever its outcome: the gross stage
+    runs on pass 0 alone, so when that pass fails they are the numbers that say
+    why the pool rejected.
     """
     correctors, last_info, first_info, diag = None, {}, {}, {}
     for i in range(max(1, int(niter))):
@@ -319,6 +322,11 @@ def _coarse(detectors, wcs_by_det, refcat, key, *, match0, match_iter, niter,
             log(f"align solve[{key}]: coarse pass {i} raised "
                 f"{type(e).__name__}: {e}; keeping the last good transform.")
             break
+        finally:
+            if i == 0:
+                diag.update({k: v for k, v in
+                             (getattr(match, 'diag', None) or {}).items()
+                             if k.startswith('gross_')})
         if not _succeeded(fi):
             break  # keep the last good pass (or None -> reject upstream)
         correctors, last_info = c, fi
