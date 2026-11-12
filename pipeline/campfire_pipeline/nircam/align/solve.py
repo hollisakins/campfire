@@ -156,6 +156,10 @@ class GroupSolution:
     # consensus keys from the last pass that was KEPT.
     n_refcat_in_footprint: Optional[int] = None
     diagnostics: Optional[dict] = None
+    # Only with ``fine_groups`` and ``fine_trial``: the alternative solution in
+    # which every detector also has a fit of its own, same order as
+    # ``detectors``. The caller chooses between the two.
+    trial_detectors: Optional[List[DetectorSolution]] = None
 
 
 def _has_radec(refcat):
@@ -476,8 +480,8 @@ def _fine_groups_fit(correctors, detectors, prelim, refcat, ref_sky, groups, *,
     sources. A source matched in four exposures carries the same catalog error
     four times and is one measurement of the detector's offset, not four.
 
-    Returns ``{detector: None | (wcs, geom, resid, n, src_idx, ref_idx, keep,
-    sep)}``; ``None`` keeps the pooled attitude.
+    Returns ``{detector: None | (corrector, geom, resid, n, src_idx, ref_idx,
+    keep, sep)}``; ``None`` keeps the pooled attitude.
     """
     out = {d.detector: None for d in detectors}
     by_label = {}
@@ -550,7 +554,7 @@ def _fine_groups_fit(correctors, detectors, prelim, refcat, ref_sky, groups, *,
         if np.isfinite(tstat) and tstat > fine_min_significance and not degraded:
             for t, i, n in zip(trials, members, new):
                 if np.isfinite(n[0]):
-                    out[detectors[i].detector] = (t.wcs, geom) + tuple(n)
+                    out[detectors[i].detector] = (t, geom) + tuple(n)
     return out
 
 
@@ -568,7 +572,8 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          max_residual_arcsec=0.1,
                          dva_repivot=True, dva_pivot='pool',
                          fine_min_significance=1.4, gross_min_keep_frac=0.8,
-                         coarse_fitgeom='rshift', fine_groups=None):
+                         coarse_fitgeom='rshift', fine_groups=None,
+                         fine_trial=False):
     """Solve one pool of detectors; return a :class:`GroupSolution`.
 
     *detectors* is one pool (a module, or a whole channel when the caller pooled
@@ -750,7 +755,7 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     #    longer gates anything; it is the reporting threshold for `within`.
     #    With `fine_groups` (a pool of several exposures of one visit) the
     #    detectors sharing a label get ONE fit between them; see
-    #    _fine_groups_fit. Without it, exactly the per-detector loop below.
+    #    _fine_groups_fit. Without it, exactly the per-detector fit below.
     group_fit = {}
     if fine_groups:
         group_fit = _fine_groups_fit(
@@ -759,18 +764,16 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
             min_coverage_arcsec=min_coverage_arcsec, nclip=nclip, sigma=sigma,
             match_radius=match_radius,
             fine_min_significance=fine_min_significance)
-    solutions = []
-    for corr, d, (resid, nmatch, src_idx, ref_idx, keep, sep) in zip(
-            correctors, detectors, prelim):
-        within = bool(np.isfinite(resid) and resid <= tolerance)
-        dof, out_wcs = 'coarse', corr.wcs
 
-        if d.detector in group_fit:
-            if group_fit[d.detector] is not None:
-                (out_wcs, dof, resid, nmatch, src_idx, ref_idx, keep,
-                 sep) = group_fit[d.detector]
-                within = bool(resid <= tolerance)
-        elif np.isfinite(resid):
+    def detector_solution(d, corr, pre, dof, individual):
+        """One detector's outcome from the corrector it starts with (the pooled
+        one, or the one its group's shared fit produced). With *individual* it
+        also gets a fit of its own on top, under the acceptance rules."""
+        resid, nmatch, src_idx, ref_idx, keep, sep = pre
+        within = bool(np.isfinite(resid) and resid <= tolerance)
+        out_wcs = corr.wcs
+
+        if individual and np.isfinite(resid):
             det_cov = _coverage_arcsec(ref_sky.ra.deg[ref_idx],
                                        ref_sky.dec.deg[ref_idx])
             geom = _choose_fitgeom(len(ref_idx), det_cov, fine_fitgeom, mins,
@@ -821,17 +824,29 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
             log(f"align solve[{key}]: {d.detector} residual {resid:.3f}\" "
                 f"exceeds max_residual_arcsec={float(max_residual_arcsec):g}; "
                 f"rejecting this detector to NOT_ALIGNED (WCS preserved).")
-            solutions.append(DetectorSolution(d.detector,
-                                              original_wcs.get(d.detector,
-                                                               d.wcs),
-                                              'identity',
-                                              resid, nmatch, False,
-                                              aligned=False, **per_source))
-            continue
+            return DetectorSolution(d.detector,
+                                    original_wcs.get(d.detector, d.wcs),
+                                    'identity', resid, nmatch, False,
+                                    aligned=False, **per_source)
+        return DetectorSolution(d.detector, out_wcs, dof, resid, nmatch, within,
+                                **per_source)
 
-        solutions.append(DetectorSolution(d.detector, out_wcs, dof,
-                                          resid, nmatch, within,
-                                          **per_source))
+    # Where each detector starts: from its group's shared fit when that was
+    # accepted, else from the pooled attitude.
+    start = []
+    for corr, d, pre in zip(correctors, detectors, prelim):
+        shared = group_fit.get(d.detector)
+        if shared is not None:
+            start.append((d, shared[0], tuple(shared[2:]), shared[1]))
+        else:
+            start.append((d, corr, pre, 'coarse'))
+    solutions = [detector_solution(*s, individual=not fine_groups) for s in start]
+    # With `fine_trial`, also the solution in which every detector of every
+    # exposure gets a fit of its own on top of the shared one. The caller
+    # decides between the two (apply.align_visit_pools judges them on the
+    # sources the exposures share).
+    trial_solutions = ([detector_solution(*s, individual=True) for s in start]
+                       if fine_groups and fine_trial else None)
 
     # If the gate rejected every detector, the pool as a whole failed — report
     # NOT_ALIGNED so the orchestration surfaces it in the end-of-run warning.
@@ -846,4 +861,5 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     return GroupSolution(key, status, shift, rot_deg, rmse,
                          group_nmatched, solutions,
                          n_refcat_in_footprint=n_ref_footprint,
-                         diagnostics=(diag or None))
+                         diagnostics=(diag or None),
+                         trial_detectors=trial_solutions)

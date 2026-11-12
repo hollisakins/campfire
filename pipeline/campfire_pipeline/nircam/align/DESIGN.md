@@ -280,6 +280,28 @@ Sections 3.1 to 3.4 describe one exposure solved on its own, which is
    exposure of a visit (measured to 0.1 to 0.4 mas over four dithers), so it is
    estimated once.
 
+4. **Tie again.** A correction of a detector in its own frame, above all its
+   rotation, moves a source by a different amount in each dither (the rotation
+   times the dither step), so after step 3 the tie of step 1 is slightly off:
+   milliarcseconds when the dithers are 25 arcsec apart. When any shared fit
+   was accepted the exposures are tied once more with the corrected detectors
+   and steps 2 and 3 are repeated from there.
+5. **A fit per detector and exposure, when the catalog supports it.** On top of
+   the shared fits, every detector of every exposure gets the fit of 3.4
+   against the reference catalog, for the whole visit or not at all
+   (`apply._keep_exposure_fits`, recorded as `ALGNXFIT`). It is kept when the
+   catalog can place one detector of one exposure to `exposure_fit_max_error`
+   (1 mas; scatter per match over the square root of the matches, median over
+   the detectors). The rule is about absolute accuracy. Agreement between the
+   exposures was tried as the judge and failed a check against COSMOS2025:
+   the solution whose exposures agreed best (1.4 mas) sat furthest from the
+   catalog (3.8 mas per detector, against 2.8 with the per-exposure fits).
+   Making common sources coincide turns a small scale or rotation error of the
+   detector geometry into a position error of each exposure, of that error
+   times the dither step; a dense catalog ties every detector of every
+   exposure down directly and removes it. A sparse catalog cannot (Legacy
+   Surveys: 6.8 mas), and there the per-exposure fits are noise.
+
 **Fallback, always to 3.1 to 3.4.** A visit of one exposure; an exposure that
 shares fewer than `tie_min_matched` sources with the others (those are tried
 among themselves first, so two separate pointings in one visit become two
@@ -291,8 +313,9 @@ of a milliarcsecond. With a sparse catalog (a first alignment to Gaia or Legacy
 Surveys, 20 to 80 matches per detector) exposures fitted on their own ended 3.5
 to 8 mas apart, against 0.5 mas when tied (docs/hst/design.md, section 8b).
 
-Recorded per file: `ALGNNEXP` (exposures fitted together, 1 = on its own) and
-`ALGNTIE` (sources shared with the visit's reference exposure).
+Recorded per file: `ALGNNEXP` (exposures fitted together, 1 = on its own),
+`ALGNTIE` (sources shared with the visit's reference exposure) and `ALGNXFIT`
+(whether the per-exposure fits of step 5 were kept).
 
 Note on 3.1: `pool_modules = true` is the package default now (both modules of
 a channel are one pool); the per-module split is `pool_modules = false`.

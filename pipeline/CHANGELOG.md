@@ -122,8 +122,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   every tied exposure (`solve_exposure_group(fine_groups=...)`, counted on distinct
   reference sources). An exposure that shares fewer than `tie_min_matched` (20)
   sources with the others, a visit of one exposure, or a visit whose joint fit fails
-  is fitted on its own exactly as before. A visit with any pending exposure is
-  re-solved as a whole. New header keywords `ALGNNEXP` and `ALGNTIE`. Existing
+  is fitted on its own exactly as before. When a shared fit is accepted the
+  exposures are tied a second time with the corrected detectors. On top of the
+  shared fits every detector of every exposure gets its own fit against the catalog,
+  for the whole visit or not at all, when the catalog can place one detector of one
+  exposure to `exposure_fit_max_error` (1 mas): kept with a dense NIRCam-derived
+  catalog, not with Legacy Surveys or Gaia alone. A visit with any pending exposure
+  is re-solved as a whole. New header keywords `ALGNNEXP`, `ALGNTIE`, `ALGNXFIT`. Existing
   alignments are not touched until a field is re-aligned; a re-aligned field's WCS
   changes at the sub-milliarcsecond to few-milliarcsecond level depending on its
   reference catalog (measurements in docs/hst/design.md section 8b and

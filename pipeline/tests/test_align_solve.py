@@ -16,6 +16,7 @@ from astropy.table import Table
 from _align_gwcs import HAVE_MOCK_WCS, make_mock_wcs
 from campfire_pipeline.nircam.align.solve import (
     DetectorInput,
+    DetectorSolution,
     solve_exposure_group,
 )
 from campfire_pipeline.nircam.align.solve import _match
@@ -406,7 +407,35 @@ def test_fine_groups_share_one_fit_per_detector_across_exposures():
 
     # Without the grouping, exactly the per-detector behaviour as before.
     plain = solve_exposure_group(detectors, vstack([ref_a, ref_b]), key='visit')
-    assert plain.status == 'SOLVED'
+    assert plain.status == 'SOLVED' and plain.trial_detectors is None
+
+    # `fine_trial` also returns the alternative in which every detector of every
+    # exposure has a fit of its own on top of the shared one; the caller picks.
+    both = solve_exposure_group(detectors, vstack([ref_a, ref_b]), key='visit',
+                                fine_groups=groups, fine_trial=True)
+    assert [d.detector for d in both.trial_detectors] == [d.detector for d in both.detectors]
+    assert all(d.aligned and d.residual_arcsec < 0.01 for d in both.trial_detectors)
+
+
+def test_per_exposure_fits_are_kept_only_when_the_catalog_can_place_a_detector(monkeypatch):
+    # The decision of pool = "visit" between shared fits and per-exposure fits:
+    # by the expected error of one detector's fit in one exposure, not by how
+    # well the exposures agree with each other.
+    from campfire_pipeline.nircam.align import apply
+
+    def solution(n, resid_mas, aligned=True):
+        return DetectorSolution('d', None, 'rshift', resid_mas / 1000.0, n, True,
+                                aligned=aligned)
+
+    # relative agreement says "shared is better" in both cases; it must not decide
+    monkeypatch.setattr(apply, '_between_exposures', lambda group, wcs: (1.0, 0.5, 6))
+    dense = {f'e{i}|d': solution(400, 6.0) for i in range(4)}       # 0.25 mas
+    sparse = {f'e{i}|d': solution(80, 70.0) for i in range(4)}      # 6.6 mas
+    assert apply._keep_exposure_fits({}, dense, dense, 'v', 1.0) is True
+    assert apply._keep_exposure_fits({}, sparse, sparse, 'v', 1.0) is False
+    # a trial that loses a detector the shared solution had is never kept
+    lost = dict(dense, **{'e0|d': solution(400, 6.0, aligned=False)})
+    assert apply._keep_exposure_fits({}, dense, lost, 'v', 1.0) is False
 
 
 def test_fine_removes_subtolerance_systematic_offset():

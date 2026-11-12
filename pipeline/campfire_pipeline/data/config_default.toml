@@ -728,6 +728,20 @@
     # ended 3.5-8 mas apart, against 0.5 mas when tied.
     pool              = "visit"   # "visit" | "exposure"
     tie_min_matched   = 20        # common sources needed to tie two exposures
+    # With pool = "visit": on top of the fits per detector for the visit, every
+    # detector of every exposure also gets a fit of its own against the
+    # reference catalog (what "exposure" does), for the whole visit or not at
+    # all, when the catalog can place a single detector of a single exposure to
+    # this many mas (its scatter per match over the square root of its matches,
+    # median over the detectors). A dense NIRCam-derived catalog does
+    # (0.1-0.3 mas) and then each detector of each exposure is tied to the
+    # catalog directly, which is what ABSOLUTE accuracy needs: tying exposures
+    # on their common sources alone turns a small scale or rotation error of
+    # the detector geometry into a position error of that error times the
+    # dither step (COSMOS-Web, 25" dithers, checked against COSMOS2025).
+    # A sparse catalog does not (Legacy Surveys: 6 mas) and the fits would be
+    # noise. Recorded as ALGNXFIT. 0: never.
+    exposure_fit_max_error = 1.0
     # --- Differential velocity aberration (DVA) re-reference ------------------
     # jwst's assign_wcs corrects DVA per detector, scaling about THAT detector's
     # own aperture reference (dva_corr_model(va_scale, v2_ref, v3_ref) builds
