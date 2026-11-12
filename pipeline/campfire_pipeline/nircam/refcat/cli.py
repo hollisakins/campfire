@@ -133,6 +133,13 @@ def refcat():
               help="Upper magnitude cut applied server-side.")
 @click.option("--no-point-sources", is_flag=True,
               help="ls_dr10 / hsc_ssp: include extended sources too.")
+@click.option("--stars", type=click.Choice(["gaia", "keep"]), default=None,
+              help="ls_dr10 only. 'gaia' (default): Gaia stars carry their "
+                   "proper motion (the align step moves them to each "
+                   "exposure's date), and point sources bright enough to be "
+                   "recognized as stars that have no proper motion are "
+                   "dropped. 'keep': sources as listed, which puts Gaia "
+                   "stars at their 2016 positions.")
 @click.option("--row-limit", default=-1, type=int,
               help="gaia only: cap on returned rows (-1 = unlimited).")
 @click.option("--hsc-release", "hsc_release",
@@ -154,7 +161,7 @@ def refcat():
               help="Free-form note stamped into the catalog meta.")
 @click.option("--overwrite", is_flag=True)
 def query(config, field_name, backend, center, radius_deg, mag_band, mag_max,
-          no_point_sources, row_limit, hsc_release, hsc_user, hsc_password,
+          no_point_sources, stars, row_limit, hsc_release, hsc_user, hsc_password,
           out_path, notes, overwrite):
     """Query an external catalog over the field."""
     _, field_obj = _refcat_setup(config, field_name)
@@ -162,12 +169,17 @@ def query(config, field_name, backend, center, radius_deg, mag_band, mag_max,
 
     if mag_band is None:
         mag_band = "G" if backend == "gaia" else "i"
+    if stars is not None and backend != "ls_dr10":
+        raise click.ClickException(
+            f"--stars applies to the ls_dr10 backend only (got backend {backend!r})."
+        )
 
     kwargs = {"mag_band": mag_band, "mag_max": mag_max}
     if backend == "gaia":
         kwargs["row_limit"] = row_limit
     elif backend == "ls_dr10":
         kwargs["point_sources"] = not no_point_sources
+        kwargs["stars"] = stars or "gaia"
     elif backend == "hsc_ssp":
         kwargs["point_sources"] = not no_point_sources
         kwargs["release"] = hsc_release

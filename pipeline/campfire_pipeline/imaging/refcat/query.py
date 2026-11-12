@@ -10,7 +10,9 @@ Backends:
               point sources with finite magnitude errors.
     ls_dr10   DESI Legacy Surveys DR10 ``tractor`` table via the NOIRLab
               Astro Data Lab TAP service (``ls_dr10.tractor``). Defaults
-              to ``brick_primary=1``, ``maskbits=0``, ``type='PSF'``.
+              to ``brick_primary=1``, ``maskbits=0``, ``type='PSF'``, and
+              ``stars='gaia'``: Gaia stars carry their proper motion and
+              recognizable stars without one are dropped.
     hsc_ssp   HSC SSP PDR3 cone search via the async catalog_jobs API.
               Requires an HSC SSP account; credentials are resolved from
               the ``user``/``password`` kwargs, the
@@ -316,8 +318,12 @@ def _hsc_cone_table(target, center, radius_deg, band, *,
 # Legacy Surveys DR10 (NOIRLab Data Lab TAP)
 # ---------------------------------------------------------------------------
 
+LS_STARS_MODES = ("keep", "gaia")
+
+
 def query_ls_dr10(center, radius_deg, *, mag_band="i", point_sources=True,
-                  brick_primary=True, maskbits_zero=True, mag_max=None):
+                  brick_primary=True, maskbits_zero=True, mag_max=None,
+                  stars="gaia", star_snr_min=20.0):
     """Legacy Surveys DR10 ``tractor`` cone search.
 
     Mirrors the cuts in ``campfire-data/reference/nircam/rj0911/astrom_cats/
@@ -330,19 +336,44 @@ def query_ls_dr10(center, radius_deg, *, mag_band="i", point_sources=True,
     radius_deg : float
     mag_band : {'g', 'r', 'i', 'z'}
     point_sources : bool
-        Apply ``type = 'PSF'``.
+        Apply ``type = 'PSF'``. Fainter than a signal-to-noise of about 20
+        that type is the survey's fallback, and most such sources are
+        galaxies it could not resolve (see ``stars``).
     brick_primary : bool
         Apply ``brick_primary = 1`` (drop duplicate rows on brick edges).
     maskbits_zero : bool
         Apply ``maskbits = 0`` (drop sources flagged by the LS bitmask).
     mag_max : float, optional
         Upper magnitude cut on the chosen band.
+    stars : {'gaia', 'keep'}
+        ``"gaia"`` (default): a catalog that holds at any epoch, by the same
+        rule as ``refcat.motion.use_gaia_for_stars``. A Gaia star with a
+        proper motion carries ``ref_epoch`` / ``pmra`` / ``pmdec`` (and
+        ``source_id``, ``parallax``, the errors), so the align step moves it
+        to each exposure's date. A point source that is recognizably one and
+        has no proper motion is dropped, since it is a star moving by an
+        unknown amount: a Gaia point source without a proper motion, or a
+        ``type = 'PSF'`` source Gaia does not list with a signal-to-noise of
+        ``star_snr_min`` or more in the band. Everything else is kept where
+        it is listed.
+        ``"keep"``: every selected source at its listed position. Legacy
+        Surveys lists the stars it takes from Gaia at Gaia's own position and
+        epoch (2016.0 in DR10), so they enter the catalog where they were
+        in 2016.
+    star_snr_min : float
+        Signal-to-noise in ``mag_band`` at or above which a ``PSF`` source
+        counts as a recognized point source. Measured in COSMOS against
+        COSMOS2025 (docs/hst/design.md, section 8b): unlisted point sources
+        above 20 had moved with the Gaia stars, those below 20 sat with the
+        galaxies.
     """
     import pyvo
 
     band = mag_band.lower()
     if band not in ("g", "r", "i", "z"):
         raise ValueError(f"mag_band must be g/r/i/z (got {mag_band!r})")
+    if stars not in LS_STARS_MODES:
+        raise ValueError(f"stars must be one of {LS_STARS_MODES!r} (got {stars!r})")
 
     where = [f"'t' = q3c_radial_query(ra, dec, "
              f"{center[0]:.6f}, {center[1]:.6f}, {radius_deg:g})"]
@@ -356,25 +387,95 @@ def query_ls_dr10(center, radius_deg, *, mag_band="i", point_sources=True,
         where.append(f"mag_{band} < {mag_max:g}")
 
     adql = f"""
-        SELECT ra, dec, mag_{band}, flux_{band}, flux_ivar_{band}
+        SELECT ra, dec, mag_{band}, flux_{band}, flux_ivar_{band},
+               type, ref_cat, ref_id, ref_epoch, pmra, pmdec, parallax,
+               pmra_ivar, pmdec_ivar
         FROM ls_dr10.tractor
         WHERE {' AND '.join(where)}
     """
     tap = pyvo.dal.TAPService("https://datalab.noirlab.edu/tap")
     result = tap.search(adql).to_table()
+    out, info = _ls_dr10_table(result, band, stars, star_snr_min)
+    if stars == "gaia":
+        log(f"refcat query: ls_dr10 stars=gaia: {info['n_gaia_stars']} Gaia stars carry a "
+            f"proper motion; dropped {info['n_dropped_no_motion']} Gaia point sources "
+            f"without one and {info['n_dropped_point']} other point sources at S/N >= "
+            f"{float(star_snr_min):g}; kept {info['n_faint_point']} fainter point sources "
+            f"and {info['n_extended']} extended sources")
+    return out
 
-    flux = np.asarray(result[f"flux_{band}"], dtype=float)
-    ivar = np.asarray(result[f"flux_ivar_{band}"], dtype=float)
-    mag = np.asarray(result[f"mag_{band}"], dtype=float)
+
+def _ls_dr10_table(result, band, stars, star_snr_min=20.0):
+    """The refcat table for one ``ls_dr10.tractor`` result; returns
+    ``(table, info)``. Separate from the query so it can be tested offline."""
+    def text(name):
+        col = result[name]
+        col = col.filled("") if hasattr(col, "filled") else col
+        return np.array([str(v).strip() for v in col])
+
+    flux = _float_col(result, f"flux_{band}")
+    ivar = _float_col(result, f"flux_ivar_{band}")
+    mag = _float_col(result, f"mag_{band}")
     with np.errstate(divide="ignore", invalid="ignore"):
         snr = flux * np.sqrt(np.where(ivar > 0, ivar, np.nan))
         mag_err = 2.5 / np.log(10) / snr
-
     keep = np.isfinite(mag) & np.isfinite(mag_err) & (mag_err > 0)
+    info = {"stars": stars}
+    if stars == "keep":
+        out = Table({
+            "RA": _float_col(result, "ra")[keep],
+            "DEC": _float_col(result, "dec")[keep],
+            "mag": mag[keep],
+            "mag_err": mag_err[keep],
+        })
+        return out, info
+
+    # Sources Legacy Surveys took from Gaia carry ref_cat 'GE' (Gaia EDR3; 'G2'
+    # in older releases) and Gaia's position at ref_epoch. A Gaia source with
+    # no proper motion is listed with zero motion and zero inverse variance;
+    # some of those are galaxies (type SER / DEV), which stay as galaxies.
+    gaia = np.char.startswith(text("ref_cat"), "G")
+    point = text("type") == "PSF"
+    pmra = _float_col(result, "pmra")
+    pmdec = _float_col(result, "pmdec")
+    pmra_ivar = _float_col(result, "pmra_ivar")
+    pmdec_ivar = _float_col(result, "pmdec_ivar")
+    epoch = _float_col(result, "ref_epoch")
+    moving = (gaia & np.isfinite(pmra) & np.isfinite(pmdec) & np.isfinite(epoch)
+              & (pmra_ivar > 0) & (pmdec_ivar > 0))
+    # A point source with no proper motion is dropped when it is recognizably a
+    # point source: Gaia lists it, or the survey measured it well enough to
+    # tell. Below that signal-to-noise 'PSF' is the fallback type.
+    with np.errstate(invalid="ignore"):
+        recognized = gaia | (snr >= float(star_snr_min))
+    dropped = point & ~moving & recognized
+    extended = ~moving & ~point
+    keep &= ~dropped
+
+    def of_stars(values):
+        return np.where(moving, values, np.nan)[keep]
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pmra_err = 1.0 / np.sqrt(pmra_ivar)
+        pmdec_err = 1.0 / np.sqrt(pmdec_ivar)
+    source_id = np.zeros(len(result), dtype=np.int64)
+    source_id[moving] = np.asarray(result["ref_id"])[moving].astype(np.int64)
     out = Table({
-        "RA": np.asarray(result["ra"], dtype=float)[keep],
-        "DEC": np.asarray(result["dec"], dtype=float)[keep],
+        "source_id": source_id[keep],
+        "RA": _float_col(result, "ra")[keep],
+        "DEC": _float_col(result, "dec")[keep],
+        "ref_epoch": of_stars(epoch),
+        "pmra": of_stars(pmra),
+        "pmdec": of_stars(pmdec),
+        "parallax": of_stars(_float_col(result, "parallax")),
+        "pmra_err": of_stars(pmra_err),
+        "pmdec_err": of_stars(pmdec_err),
         "mag": mag[keep],
         "mag_err": mag_err[keep],
     })
-    return out
+    info.update(n_gaia_stars=int((moving & keep).sum()),
+                n_dropped_no_motion=int((dropped & gaia).sum()),
+                n_dropped_point=int((dropped & ~gaia).sum()),
+                n_faint_point=int((point & ~moving & keep).sum()),
+                n_extended=int((extended & keep).sum()))
+    return out, info

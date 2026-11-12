@@ -146,6 +146,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   rebuilt. Measured on `pg004` across nine years: galaxies landed 25 mas from their
   catalog positions with the catalog as extracted and 4 mas with the cleaned one
   (docs/hst/design.md, section 8b).
+- **`cfpipe nircam refcat query --backend ls_dr10` treats stars the same way**
+  (`--stars gaia`, the new default; `--stars keep` gives the previous catalog).
+  Legacy Surveys DR10 lists the stars it takes from Gaia at their 2016.0 positions;
+  the query now fetches their proper motions, so the align step moves them to each
+  exposure's date. Point sources that are recognizably stars and have no proper
+  motion are dropped: Gaia point sources without one, and `PSF` sources Gaia does not
+  list with a signal-to-noise of 20 or more in the band (`star_snr_min`). Fainter
+  `PSF` sources stay: at that depth the type is the survey's fallback and they sit
+  with the galaxies. Existing catalogs are unchanged; a field's alignment changes
+  only when its catalog is queried again. Measured in COSMOS (docs/hst/design.md,
+  section 8b): unlisted point sources above that signal-to-noise had moved by about
+  30 mas in 2023 against the galaxies, and Gaia stars moved to the date scatter 10 to
+  15 mas about COSMOS2025 against 35 mas at their listed positions.
+  `imaging/refcat/query.py`, `tests/test_refcat_query.py`.
 - **Stage 1 finishes an exposure with no open shutter on the detector (#681).** `jwst`
   raises `NoDataOnDetectorError` when nothing projects onto a detector (e.g. NRS2 of
   `jw01747017001_03101`). `clean_flicker_noise` with `mask_science_regions = true` hit
