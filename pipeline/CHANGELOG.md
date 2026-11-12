@@ -70,7 +70,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   no astrometry database, reference variables scoped to the call) and
   `hst/steps/sky.py` (per-chip sky recorded as `CFSKY`, ACS amplifier offsets removed
   from the pixels, and `CFVARSC`, the ratio of measured sky variance to the `ERR`
-  model, which the adapter applies to its background variance).
+  model, which the adapter applies to its background variance),
+  `hst/steps/calibrate.py` (RAW to canonical FLC/FLT with `crds bestrefs` at a pinned
+  HST context and `calacs` / `calwf3`, the HST CRDS and reference variables confined to
+  the subprocesses) and `hst/steps/crreject.py` (AstroDrizzle's `minmed` / `driz_cr`
+  rejection per visit and filter, flags transferred to the canonical DQ as bit 4096).
+  A three-exposure ACS/WFC visit has been reduced end to end with these steps.
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.
