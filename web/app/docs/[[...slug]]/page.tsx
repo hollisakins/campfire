@@ -26,6 +26,7 @@ import nirspecDetectorContent from '@/lib/docs/content/reduction/nirspec/detecto
 import nirspecBackgroundsContent from '@/lib/docs/content/reduction/nirspec/backgrounds.md';
 import nirspecSlitLossesContent from '@/lib/docs/content/reduction/nirspec/slit-losses.md';
 import nirspecExtractionContent from '@/lib/docs/content/reduction/nirspec/extraction.md';
+import nirspecExtendedContent from '@/lib/docs/content/reduction/nirspec/extended-sources.md';
 import nirspecRedshiftsContent from '@/lib/docs/content/reduction/nirspec/redshifts.md';
 import nirspecDescribingContent from '@/lib/docs/content/reduction/nirspec/describing.md';
 import nircamContent from '@/lib/docs/content/reduction/nircam.md';
@@ -53,6 +54,7 @@ const contentMap: Record<string, string> = {
   'reduction/nirspec/backgrounds': nirspecBackgroundsContent,
   'reduction/nirspec/slit-losses': nirspecSlitLossesContent,
   'reduction/nirspec/extraction': nirspecExtractionContent,
+  'reduction/nirspec/extended-sources': nirspecExtendedContent,
   'reduction/nirspec/redshifts': nirspecRedshiftsContent,
   'reduction/nirspec/describing': nirspecDescribingContent,
   'reduction/nircam': nircamContent,

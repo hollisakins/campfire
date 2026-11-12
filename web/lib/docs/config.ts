@@ -117,6 +117,11 @@ export const docsNav: DocPage[] = [
             description: 'The source model, overlapping spectra, the reported flux',
           },
           {
+            title: 'Extended sources',
+            slug: 'reduction/nirspec/extended-sources',
+            description: 'Reading the 2-D spectrum, and fitting your own source model',
+          },
+          {
             title: 'Redshifts and lines',
             slug: 'reduction/nirspec/redshifts',
             description: 'Template redshifts and emission-line fluxes',
