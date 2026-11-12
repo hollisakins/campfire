@@ -120,7 +120,7 @@ On the frames, `mbkg_sigma=0.01` is the master-background scale term stage 3 use
 
 ### An example
 
-> **Placeholder.** A bulge-plus-disk fit to the master-background frames of one extended galaxy: data, model and residual for each exposure, the component spectra, and what the residuals show. To be fitted and drawn from the ember_cosmos_p1 products at the current fit version.
+> **Placeholder.** A two-component fit to the master-background frames of zenith_p15 547856, a dusty galaxy whose Hα is suppressed at the continuum peak while Paα is strongest there: data, model and residual for each exposure, and the two component spectra, which should show the difference in their lines. To be fitted and drawn from the zenith_p15 products at the current fit version.
 
 ### Current limitations
 
