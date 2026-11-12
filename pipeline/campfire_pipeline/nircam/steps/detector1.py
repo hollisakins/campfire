@@ -166,6 +166,12 @@ def detector1_step(uncal_file, field, step_config, overwrite=False,
                 'skip': False,
                 'algorithm': 'OLS_C',
                 'maximum_cores': 'none',
+                # Keep one-good-group ramps (a core saturated by group 2 is fit
+                # from group 0). The jwst default (True) turns them into NaN +
+                # DO_NOT_USE holes in bright-source cores. STScI sets False for
+                # NIRCam full frame from CRDS pars-detector1pipeline_0008 on
+                # (jwst_1584); jwst_1481 selects _0005, which leaves the default.
+                'suppress_one_group': False,
             },
             'gain_scale': {'skip': False},
         },

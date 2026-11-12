@@ -28,6 +28,18 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Calibration
+- **NIRCam ramp fitting keeps one-good-group pixels (`suppress_one_group = False`).**
+  Under `jwst_1481` the CRDS Detector1 parameter file (`pars-detector1pipeline_0005`) leaves
+  `ramp_fit.suppress_one_group` at the jwst default (True), so every pixel saturated by the
+  second group became NaN + DO_NOT_USE: holes in the cores of moderately bright sources in
+  every exposure and mosaic (132 of 1323 sources extracted from the MACS0647 F444W mosaic).
+  STScI's `pars-detector1pipeline_0008` (`jwst_1584`) sets it False; campfire now sets it
+  explicitly. On one F444W detector this recovers 40 of 54 holed cores (the other 14 saturate
+  in the first group) and reproduces MAST's rate there. Changes pixel values -> MINOR. The `jackknife`
+  calibration ramp fit passes the same setting, so it still matches production exactly (its output is
+  bit-identical either way on real data: one-group pixels carry SATURATED, which it excludes).
+
 ### Infrastructure
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
