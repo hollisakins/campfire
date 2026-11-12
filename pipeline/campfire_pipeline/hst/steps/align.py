@@ -24,14 +24,17 @@ field (measurements in docs/hst/design.md, section 8b).
   a linear term to ``linear_max_error`` (3 mas per 100 arcsec) and the rigid
   fit otherwise. A dense NIRCam-derived catalog or a rich Gaia field passes;
   HSC or Legacy Surveys used directly do not.
-* **Then the chips, the way the NIRCam step treats its detectors**
-  (``chip_fits``, ``exposure_fits``). One fit per chip for the visit, shared
-  by that chip in every tied exposure and accepted only when significant; if
-  one is accepted the exposures are tied a second time and the pool is fitted
-  again. On top, a fit of every chip in every exposure, each accepted when its
-  shift is significant against its own standard error (all its matches). With
-  the linear fit in place these rarely have anything left to correct, and the
-  evidence decides.
+* **Chip fits are off by default** (``chip_fits = False``). With them on, the
+  chips are treated the way the NIRCam step treats its detectors: one fit per
+  chip for the visit, shared by that chip in every tied exposure and accepted
+  only when significant; if one is accepted the exposures are tied a second
+  time and the pool is fitted again; on top (``exposure_fits``), a fit of every
+  chip in every exposure, each accepted when its shift is significant against
+  its own standard error. ACS/WFC showed no chip offsets for these to correct:
+  on nine visits a chip fit never improved the check against an independent
+  catalog, and on one visit with precise catalogs it made the check worse in
+  both directions of the comparison (design.md, section 8b). The linear fit of
+  the pool is the ACS geometry correction.
 * **WCS.** An HST chip's WCS is an ``astropy.wcs.WCS`` (FITS keywords, SIP and
   lookup-table distortion). It goes to the solver without ``wcsinfo``, which
   selects the arcsec-plane FITS corrector
@@ -95,11 +98,15 @@ DEFAULTS = {
     # the pool, shared by that chip in every tied exposure and accepted only
     # when significant (the NIRCam rule, counted on distinct reference sources).
     # When one is accepted the exposures are tied a second time.
-    'chip_fits': True,
-    # On top of that, a fit of every chip in every exposure, each accepted when
-    # its shift is significant against the shift's own standard error (all of
-    # the chip's matches; the solver's `fine_min_significance` /
-    # `exposure_min_significance`). Same setting and rule as [nircam.align].
+    # Off by default: on nine ACS/WFC visits a chip fit never improved the
+    # check against an independent catalog, and on one visit it made the check
+    # worse whichever catalog was fitted (design.md, section 8b).
+    'chip_fits': False,
+    # With chip_fits: on top of the shared fits, a fit of every chip in every
+    # exposure, each accepted when its shift is significant against the shift's
+    # own standard error (all of the chip's matches; the solver's
+    # `fine_min_significance` / `exposure_min_significance`). Same setting and
+    # rule as [nircam.align]. Without chip_fits it has no effect.
     'exposure_fits': True,
     # Common sources needed to fit one exposure to another.
     'tie_min_matched': 20,
@@ -213,8 +220,8 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
 
     ``refcat`` is a campfire reference catalog table (``RA``, ``DEC``, optional
     proper-motion columns). ``config`` holds the recipe settings of
-    :data:`DEFAULTS` (``pool``, ``fit``, ``linear_max_error``, ``per_chip_fit``,
-    ``tie_min_matched``), the detection settings (``detect_*``, ``snr_min``,
+    :data:`DEFAULTS` (``pool``, ``fit``, ``linear_max_error``, ``chip_fits``,
+    ``exposure_fits``, ``tie_min_matched``), the detection settings (``detect_*``, ``snr_min``,
     ``saturation_grow``) and matching settings passed to the solver
     (``coarse_searchrad``, ``match_radius``, ``min_matched``,
     ``max_residual_arcsec``, ...). The NIRCam names for the fit geometry
@@ -420,10 +427,10 @@ def _fit_pool(detectors, refcat, *, key, fit, linear_max_error, chip_fits,
     ``linear_max_error`` (mas per 100 arcsec).
 
     With ``chip_fits`` each chip then gets a fit of its own: one for the pool,
-    shared by that chip in every exposure (``groups``), and the solution also
-    carries the alternative with a fit per chip and exposure plus the solver's
-    verdict on which is closer to held-out reference sources. A pool of one
-    exposure has no ``groups``; its chip fits are simply its own.
+    shared by that chip in every exposure (``groups``), and with
+    ``exposure_fits`` a fit per chip and exposure on top, each accepted on the
+    significance of its shift. A pool of one exposure has no ``groups``; its
+    chip fits are simply its own.
     """
     if not chip_fits:
         chips = {'fine_fitgeom': 'none'}

@@ -251,10 +251,28 @@ refit consumes the detector's own mutual-NN pairs *as a pre-matched list*: the
 row-aligned pair catalogs go to `align_wcs` with `match=None` — precisely
 JHAT's `already_matched=True` design (no matcher runs in the fit; the
 sigma-clipped fit alone decides) — on a deep-copied corrector so a rejected
-trial never touches the shared solution, and the new WCS is **accepted only if
-it measurably reduces** the one-to-one residual. The chosen geometry is
+trial never touches the shared solution. The chosen geometry is
 recorded per detector as the `dof` (`coarse` | `shift` | `rshift` | `general` |
 `identity`). No `tweakwcs.XYXYMatch` remains anywhere in `align`.
+
+**Acceptance (`solve._fine_significance`, `fine_min_significance = 3`).** The
+new WCS is taken when the shift it applies, measured at the matched sources,
+exceeds `fine_min_significance` times the shift's standard error, and the
+median residual does not rise by more than a quarter. The standard error is the
+per-axis rms of the pairs the fit averaged, after the fit's own clipping
+(`solve._averaged_scatter`), over the square root of their number, with a
+factor for the geometry's free parameters. Until 2026-11-12 the scatter was
+inferred from the median separation, which is the same thing for Gaussian
+residuals and too small when part of the pairs scatter a few times more than
+the rest (stars that moved since the catalog's epoch): on ACS visits the rms of
+the averaged pairs was 1.4 to 3 times that estimate and fits that were noise
+scored 3 to 6. With the scatter measured, the real detector offsets of a
+pg004 F200W visit score 6 to 14 and noise fits stay near or below 3. The
+threshold was 1.4 before that date, a value derived with every detector
+carrying a real offset of 3 to 5 mas against about 1 mas of fit noise; raised
+to 3 on four checks against independent catalogs in which 3 was equal or
+better (docs/hst/design.md section 8b). Not rechecked: a field where the real
+offsets sit between 1.4 and 3 standard errors, where a bar of 3 leaves them in.
 
 ### 3.5 Pooling the exposures of a visit (`pool = "visit"`, the default)
 
@@ -494,6 +512,8 @@ All knobs live in `config_default.toml`; per-field overrides go in
 | `fine_min_general` | `10` | ≥ this many 1-to-1 matches ⇒ allow `general` |
 | `fine_min_rshift` | `4` | ≥ this ⇒ allow `rshift` |
 | `fine_min_shift` | `3` | ≥ this ⇒ allow `shift`; below ⇒ keep coarse (= jhat's `minobj`) |
+| `fine_min_significance` | `3.0` | a per-detector fit is taken when its shift exceeds this many standard errors (3.4) |
+| `exposure_min_significance` | unset | the same bar for the per-exposure fits of 3.5 alone; unset ⇒ `fine_min_significance` |
 | `tolerance` | `0.05` | arcsec — QA/reporting only (`within_tolerance` flag); gates nothing |
 | `match_radius` | `0.5` | arcsec — 1-to-1 NN radius for residuals + fine match |
 | `min_matched` | `6` | per-pool reject-to-NOT_ALIGNED floor (1-to-1 count) |

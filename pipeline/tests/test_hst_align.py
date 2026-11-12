@@ -221,11 +221,14 @@ def test_no_pool_relies_on_the_dither_offsets_in_the_headers(visit):
     assert all('pool=exposure' in v for v in stamps())           # each on its own
     assert sorted(v.split('rel=')[1].split()[0] for v in stamps()) == ['0', 'ref']
 
-    # the per-chip fit can be turned on, and is then recorded per chip
+    # chip fits are off by default
+    sol = align_visit(files, refcat, key='jal01', overwrite=True)
+    assert all('pool=visit' in v and 'chip=-' in v for v in stamps())
+    # they can be turned on, and a fit per chip and exposure is then recorded
     sol = align_visit(files, refcat, key='jal01', overwrite=True,
-                      config={'exposure_min_significance': 0.0})
+                      config={'chip_fits': True, 'exposure_min_significance': 0.0})
     assert all('chip=x' in v for v in stamps())
-    # and the chip fits can be turned off altogether
+    # and turned off again explicitly
     sol = align_visit(files, refcat, key='jal01', overwrite=True,
                       config={'chip_fits': False})
     assert all('chip=-' in v for v in stamps())

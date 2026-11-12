@@ -84,12 +84,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   `fine_fitgeom = "none"` turns the per-detector stage off (the default keeps it on,
   for HST as for NIRCam). NIRCam solves are unchanged (JWST corrector whenever
   `wcsinfo` is given; the default `fine_fitgeom` is as before). The HST step has its own
-  settings (`pool`, `fit`, `per_chip_fit`; `hst/steps/align.py::DEFAULTS`): exposures
+  settings (`pool`, `fit`, `chip_fits`, `exposure_fits`;
+  `hst/steps/align.py::DEFAULTS`): exposures
   of a visit are fitted to each other, then to the catalog as one body with a linear
   term (shift, rotation, scale, skew) when the catalog can hold one and a shift and
-  rotation otherwise; then the chips as NIRCam treats its detectors (one fit per chip
-  for the visit, a second tie, per-exposure chip fits accepted on the significance of
-  their shift; `chip_fits`, `exposure_fits`). For this the solver takes
+  rotation otherwise. Fits per chip, the way NIRCam treats its detectors (one fit per
+  chip for the visit, a second tie, per-exposure chip fits accepted on the
+  significance of their shift), are available with `chip_fits = true` and off by
+  default: on nine ACS/WFC visits they never improved the check against an
+  independent catalog and on one they made it worse. For this the solver takes
   `coarse_fitgeom` (default `"rshift"`, the pooled fit as before; not a key the NIRCam
   step passes on).
   HST detection uses the background-only error and drops sources on saturated pixels
@@ -135,6 +138,27 @@ Release procedure: edit the `## Unreleased` section below, then run
   changes at the sub-milliarcsecond to few-milliarcsecond level depending on its
   reference catalog (measurements in docs/hst/design.md section 8b and
   `nircam/align/DESIGN.md` 3.5).
+- **NIRCam `align`: the significance of a per-detector fit uses the scatter of the
+  pairs the fit averaged, and the bar is 3 (`[nircam.align].fine_min_significance`,
+  was 1.4).** A per-detector fit is taken when its shift exceeds the bar times the
+  shift's standard error. The standard error was built from the median separation of
+  the matched pairs, which is right for Gaussian residuals and too small when part
+  of the pairs scatter a few times more than the rest and stay inside the fit's
+  clipping (stars that moved since the catalog's epoch). It is now built from the
+  per-axis rms of the pairs after that clipping (`solve._averaged_scatter`), for the
+  fits shared across a visit and the per-exposure fits alike. Found on ACS, where
+  the two estimates differ by 1.4 to 3 and chip fits that were noise scored 3 to 6.
+  For NIRCam (one pg004 F200W visit, checked against catalogs the fit did not use):
+  the real detector offsets score 6 to 14 instead of 10 to 21 and are taken as
+  before, pooled or with every exposure fitted alone; per-exposure fits on top of
+  them, which reached 6, now reach 3.3 and are mostly refused, and the exposures
+  agree better (0.9 against 1.2 mas) with the check unchanged. Against Gaia stars
+  alone the higher bar is the better one (5.5 against 5.9 mas per detector, 4.8
+  with no detector fit at all). Existing alignments are not touched until a field is
+  re-aligned; a re-aligned field changes at the milliarcsecond level. Not rerun with
+  the new estimate: the COSMOS f410m / f210m measurement that gave 1.4, a case with
+  real offsets between 1.4 and 3 standard errors, which a bar of 3 leaves in.
+  Measurements in docs/hst/design.md section 8b; `nircam/align/DESIGN.md` 3.4.
 - **`cfpipe nircam refcat extract` makes catalogs that hold at any epoch**
   (`--stars gaia`, the new default; `--stars keep` gives the previous behaviour).
   Sources matched to a Gaia star take Gaia's position, epoch and proper motion, and

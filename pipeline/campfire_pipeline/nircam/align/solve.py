@@ -405,7 +405,41 @@ def _fine_shift_arcsec(coarse, trial, catalog, src_idx):
     return float(np.median(np.hypot(d_ra, d_dec)) * 3600.0)
 
 
-def _fine_significance(shift_arcsec, new_resid, new_n, geom='shift'):
+def _averaged_scatter(sep, nclip, sigma):
+    """Per-axis rms (arcsec) of the pairs a fit averages, and how many they are.
+
+    *sep* holds the separations of the matched pairs after the fit. The fit is
+    an unweighted least-squares fit that drops pairs beyond *sigma* times the
+    rms, *nclip* times; the same passes are applied here, so the result is the
+    scatter of the pairs that set the fitted shift. For a 2-D Gaussian the mean
+    squared separation is twice the per-axis variance.
+
+    This, not the median separation, is what the noise of the fitted shift
+    follows. The two agree for Gaussian residuals. They do not when part of the
+    pairs scatter a few times more than the rest and stay inside the clipping
+    (stars that moved since the catalog's epoch, faint stars with uncertain
+    proper motions): measured on three ACS visits against a NIRCam-derived
+    catalog and against Gaia, the rms of the averaged pairs was 1.4 to 3 times
+    the sigma inferred from the median, and chip fits that were noise scored 3
+    to 6 (docs/hst/design.md section 8b). Wrong pairs spread over the whole
+    match radius are removed by the clipping and do not count here either.
+    """
+    sep = np.asarray(sep, dtype=float)
+    sep = sep[np.isfinite(sep)]
+    for _ in range(int(nclip or 0)):
+        if sep.size < 2:
+            break
+        kept = sep[sep <= float(sigma) * np.sqrt(np.mean(sep ** 2))]
+        if kept.size == sep.size:
+            break
+        sep = kept
+    if sep.size == 0:
+        return float('nan'), 0
+    return float(np.sqrt(0.5 * np.mean(sep ** 2))), int(sep.size)
+
+
+def _fine_significance(shift_arcsec, new_resid, new_n, geom='shift',
+                       sigma_axis=None):
     """``t = |shift| / se(geom)`` — the fine fit's shift measured against the
     estimation noise that adopting it costs.
 
@@ -420,8 +454,11 @@ def _fine_significance(shift_arcsec, new_resid, new_n, geom='shift'):
     f410m/f210m: median t ~ 3.1-3.4 against a null expectation of 1.18, yet the
     residual test accepted only 44-59%).
 
-    ``sigma_axis`` comes from the post-fit residual: for a 2-D Gaussian the
-    median radial deviation is ``sqrt(2 ln 2)`` per-axis sigmas.
+    *sigma_axis* is the per-axis scatter of the pairs the fit averaged
+    (``_averaged_scatter``) and *new_n* their number. Without it the scatter is
+    inferred from the median residual *new_resid* (for a 2-D Gaussian the median
+    radial deviation is ``sqrt(2 ln 2)`` per-axis sigmas), which understates the
+    noise of the fitted shift whenever the residuals have a long tail.
 
     **Normalized for the fit geometry.** A richer geometry moves sources further
     on noise alone: summing the leverage over the fitted points gives a mean
@@ -437,8 +474,11 @@ def _fine_significance(shift_arcsec, new_resid, new_n, geom='shift'):
             or new_n < 2 or new_resid <= 0):
         return float('nan')
     nparam = _FITGEOM_NPARAM.get(geom, 2)
-    se = (np.sqrt(nparam / 2.0) * (new_resid / _RAYLEIGH_MEDIAN)
-          / np.sqrt(new_n))
+    if sigma_axis is None:
+        sigma_axis = new_resid / _RAYLEIGH_MEDIAN
+    elif not np.isfinite(sigma_axis) or sigma_axis <= 0:
+        return float('nan')
+    se = np.sqrt(nparam / 2.0) * sigma_axis / np.sqrt(new_n)
     return float('inf') if se <= 0 else float(shift_arcsec / se)
 
 
@@ -554,7 +594,13 @@ def _fine_groups_fit(correctors, detectors, prelim, refcat, ref_sky, groups, *,
                   for t, i in zip(trials, members)]
         weights = [len(prelim[i][2]) for i in members]
         shift = float(np.average(shifts, weights=weights))
-        tstat = _fine_significance(shift, new_resid, n_distinct, geom)
+        # The noise of the shift: the scatter of the pairs the fit averaged,
+        # over the distinct sources among them (a source seen in four
+        # exposures is one measurement of the detector's offset).
+        scatter, n_averaged = _averaged_scatter(seps, nclip, sigma)
+        tstat = _fine_significance(
+            shift, new_resid, n_distinct * n_averaged / seps.size, geom,
+            sigma_axis=scatter)
         if tstats is not None:
             tstats[label] = float(tstat)
         degraded = new_resid > old_resid * _FINE_MAX_DEGRADE
@@ -585,7 +631,7 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          ref_border_arcmin=1.2, nclip=3, sigma=3.0,
                          max_residual_arcsec=0.1,
                          dva_repivot=True, dva_pivot='pool',
-                         fine_min_significance=1.4, gross_min_keep_frac=0.8,
+                         fine_min_significance=3.0, gross_min_keep_frac=0.8,
                          coarse_fitgeom='rshift', fine_groups=None,
                          fine_individual=False,
                          exposure_min_significance=None):
@@ -812,9 +858,11 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                     # improvement (see _fine_significance) — but never adopt a
                     # fit that materially degrades the residual, however
                     # significant its shift.
+                    scatter, n_averaged = _averaged_scatter(
+                        new_sep[new_keep], nclip, sigma)
                     tstat = _fine_significance(
                         _fine_shift_arcsec(corr, trial, d.catalog, src_idx),
-                        new_resid, new_n, geom)
+                        new_resid, n_averaged, geom, sigma_axis=scatter)
                     degraded = (np.isfinite(new_resid) and np.isfinite(resid)
                                 and new_resid > resid * _FINE_MAX_DEGRADE)
                     if (np.isfinite(new_resid) and np.isfinite(tstat)

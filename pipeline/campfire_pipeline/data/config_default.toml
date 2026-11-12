@@ -843,8 +843,24 @@
     # Theory agrees: minimum MSE sits at sqrt(2 - 1/M) = 1.22 (M=2) .. 1.41
     # (M=8), and the empirical optimum landed on exactly those values. The
     # optimum is FLAT over 1.0-1.5, so the exact choice is not delicate.
+    #
+    # Since 2026-11-12 the default is 3, and sigma is measured differently.
+    # sigma used to be inferred from the median separation, which is too small
+    # when part of the pairs scatter a few times more than the rest (stars that
+    # moved since the catalog's epoch): on ACS visits the pairs the fit
+    # averages had 1.4 to 3 times that scatter, and fits that were noise scored
+    # 3 to 6. sigma is now the per-axis rms of the pairs the fit averaged,
+    # after its own clipping. With it, in a pg004 F200W visit the real detector
+    # offsets score 6 to 14 and are taken at 3 whether the exposures are pooled
+    # or fitted alone (31 of 32 alone), and against independent catalogs 3 was
+    # equal to 1.4 with a dense catalog and better with Gaia stars alone, where
+    # a fit of 20 to 30 stars adds more error than the offset it removes
+    # (docs/hst/design.md section 8b). The paragraph above still describes the
+    # trade: where real offsets sit between 1.4 and 3 standard errors, 3 leaves
+    # them in. That case (the f410m / f210m measurement) has not been rerun
+    # with the new sigma.
     # 0 accepts every fit that does not degrade the residual.
-    fine_min_significance = 1.4
+    fine_min_significance = 3.0
     tolerance         = 0.05      # arcsec; QA/reporting only — flags a detector
                                   # as within tolerance; gates nothing
     match_radius      = 0.5       # arcsec; 1-to-1 NN radius for residuals + fine match
