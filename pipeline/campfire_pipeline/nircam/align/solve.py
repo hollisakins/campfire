@@ -558,7 +558,14 @@ def _fine_groups_fit(correctors, detectors, prelim, refcat, ref_sky, groups, *,
         if tstats is not None:
             tstats[label] = float(tstat)
         degraded = new_resid > old_resid * _FINE_MAX_DEGRADE
-        if np.isfinite(tstat) and tstat > fine_min_significance and not degraded:
+        accept = bool(np.isfinite(tstat) and tstat > fine_min_significance
+                      and not degraded)
+        log(f"align solve[{key}]: fit shared by {label} over {len(members)} "
+            f"exposures ({geom}, {n_distinct} distinct sources): shift "
+            f"{shift * 1000:.2f} mas, {tstat:.1f} sigma, residual "
+            f"{old_resid * 1000:.1f} -> {new_resid * 1000:.1f} mas: "
+            f"{'taken' if accept else 'not taken'}.")
+        if accept:
             for t, i, n in zip(trials, members, new):
                 if np.isfinite(n[0]):
                     out[detectors[i].detector] = (t, geom) + tuple(n)
