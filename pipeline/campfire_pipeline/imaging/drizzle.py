@@ -76,6 +76,7 @@ import numpy as np
 from astropy.io import fits
 
 from campfire_pipeline.common.io import log
+from campfire_pipeline.imaging.exposure import is_chip
 
 
 def _build_output_wcs(crf_files, crpix, crval, shape, rotation, pixel_scale):
@@ -506,7 +507,16 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
 
     Shared by ``drizzle_tile`` (accumulate mode for resample) and
     ``drizzle_tile_singles`` (per-input rasters for outlier).
+
+    ``crf_file`` may instead be a :class:`~campfire_pipeline.imaging.exposure.Chip`
+    (an instrument-neutral input; ``output_wcs`` is then a
+    :class:`~campfire_pipeline.imaging.grid.TileGrid`), in which case
+    ``_prepare_chip_input`` builds the same dict without any JWST datamodel.
     """
+    if is_chip(crf_file):
+        return _prepare_chip_input(crf_file, output_wcs, out_shape,
+                                   weight_type=weight_type)
+
     from jwst.datamodels.dqflags import pixel as pixel_flags
     from stcal.resample.utils import build_driz_weight, resample_range
     from stdatamodels.jwst.datamodels import ImageModel
@@ -562,6 +572,77 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
         'sly': sly, 'slx': slx,
         'bbox_shape': (sly.stop - sly.start, slx.stop - slx.start),
     }
+
+
+def _prepare_chip_input(chip, grid, out_shape, *, weight_type):
+    """``_prepare_drizzle_input`` for a :class:`Chip` on a :class:`TileGrid`.
+
+    Returns the same dict shape as the JWST route (or ``None`` when the chip
+    does not overlap the tile), so everything downstream — the accumulators,
+    the variance pass, the exposure maps — is shared code.
+
+    Differences from the JWST route, all on the instrument side of the seam:
+    the pixel map goes through ``chip.pixel_to_world`` and the grid's FITS WCS;
+    the weight comes from :func:`exposure.chip_weight` (zero, not one, where the
+    variance is unusable); and the whole frame is drizzled (there is no gwcs
+    bounding box to trim to).
+    """
+    from campfire_pipeline.imaging.exposure import chip_weight
+
+    arrays = chip.load()
+    data = np.asarray(arrays.sci, dtype=np.float32)
+    in_ny, in_nx = in_shape = data.shape
+
+    iy, ix = np.indices(in_shape, dtype=np.float64)
+    ra, dec = chip.pixel_to_world(ix, iy)
+    out_x, out_y = grid.world_to_pixel(ra, dec)
+    pixmap = np.empty((in_ny, in_nx, 2), dtype=np.float64)
+    pixmap[..., 0] = out_x
+    pixmap[..., 1] = out_y
+
+    bbox = _output_bbox_in_tile(pixmap, out_shape)
+    if bbox is None:
+        return None
+    sly, slx = bbox
+
+    exptime = float(chip.exptime)
+    weight = chip_weight(arrays, weight_type, exptime=exptime)
+    var_total, var_weight = _sanitize_variance(
+        np.asarray(arrays.var_rnoise, dtype=np.float32),
+        np.asarray(arrays.var_poisson, dtype=np.float32),
+        np.asarray(arrays.var_flat, dtype=np.float32),
+        weight,
+    )
+    with np.errstate(invalid='ignore'):
+        err = np.sqrt(var_total).astype(np.float32)
+
+    return {
+        'data': data, 'err': err,
+        'var_total': var_total, 'weight': weight, 'var_weight': var_weight,
+        'pixmap': pixmap, 'exptime': exptime, 'xposure': float(chip.xposure),
+        'xmin': 0, 'xmax': in_nx - 1, 'ymin': 0, 'ymax': in_ny - 1,
+        'in_shape': in_shape, 'input_gwcs': None,
+        'input_pixelarea_a2': float(chip.pixel_area_arcsec2),
+        'sly': sly, 'slx': slx,
+        'bbox_shape': (sly.stop - sly.start, slx.stop - slx.start),
+    }
+
+
+def _all_chips(inputs):
+    """True if every input is a Chip, False if none is; mixing is an error."""
+    flags = [is_chip(i) for i in inputs]
+    if all(flags) and flags:
+        return True
+    if any(flags):
+        raise TypeError(
+            "drizzle inputs must be all file paths (JWST datamodels) or all "
+            "Chip objects, not a mixture")
+    return False
+
+
+def _input_label(item):
+    """Log label of a drizzle input: a chip's key, or a file's basename."""
+    return item.key if is_chip(item) else os.path.basename(item)
 
 
 def _add_image_kwargs(prep, pixfrac):
@@ -623,12 +704,22 @@ def drizzle_tile(
 
     log(f"  campfire drizzle: {n_inputs} inputs into {nx}x{ny} tile")
 
-    output_wcs = _build_output_wcs(
-        crf_files, crpix, crval, shape, rotation, pixel_scale,
-    )
+    # Two kinds of input share everything below except how an input is read and
+    # how the result is written: JWST datamodel files (paths; the NIRCam route,
+    # unchanged) and instrument-neutral Chip objects on a plain FITS grid.
+    chips = _all_chips(crf_files)
+    if chips:
+        from campfire_pipeline.imaging.grid import TileGrid
+        output_wcs = TileGrid(crval=tuple(crval), crpix=tuple(crpix),
+                              shape=(nx, ny), rotation=rotation,
+                              pixel_scale=pixel_scale)
+    else:
+        output_wcs = _build_output_wcs(
+            crf_files, crpix, crval, shape, rotation, pixel_scale,
+        )
 
     blender = None
-    if blendheaders:
+    if blendheaders and not chips:
         from jwst.model_blender.blender import ModelBlender
         # Pixel area and WCS are recomputed for the output grid in
         # _apply_output_metadata / update_fits_wcsinfo, so they must not be
@@ -690,8 +781,9 @@ def drizzle_tile(
 
     skipped = 0
     input_pixelarea_a2 = None
+    used_inputs = []
     for i, crf_file in enumerate(crf_files, start=1):
-        basename = os.path.basename(crf_file)
+        basename = _input_label(crf_file)
         prep = _prepare_drizzle_input(
             crf_file, output_wcs, out_shape,
             weight_type=weight_type, good_bits=good_bits, blender=blender,
@@ -700,6 +792,7 @@ def drizzle_tile(
             skipped += 1
             log(f"  [{i}/{n_inputs}] {basename}: no tile overlap, skipping")
             continue
+        used_inputs.append(crf_file)
 
         if input_pixelarea_a2 is None:
             input_pixelarea_a2 = prep['input_pixelarea_a2']
@@ -749,6 +842,25 @@ def drizzle_tile(
     pixel_scale_ratio = None
     if input_pixelarea_a2:
         pixel_scale_ratio = float(pixel_scale) / float(np.sqrt(input_pixelarea_a2))
+
+    if chips:
+        from campfire_pipeline.imaging.mosaic_io import write_mosaic_fits
+        write_mosaic_fits(
+            output_path,
+            sci=outsci, err=outerr, wht=outwht, ctx=outctx,
+            grid=output_wcs, chips=used_inputs,
+            reduction_version=reduction_version,
+            exptime=total_exptime,
+            pixfrac=pixfrac, kernel=kernel, weight_type=weight_type,
+            n_pointings=contributing if contributing > 0 else None,
+            pixel_scale_ratio=pixel_scale_ratio,
+            compress_context=compress_context,
+            exp_planes=(outexpt, outnexp), exp_inputs=contributing,
+            exp_used=exp_used,
+        )
+        log(f"  wrote {os.path.basename(output_path)} "
+            f"({contributing} contributing chips)")
+        return
 
     _write_i2d_fits(
         output_path,

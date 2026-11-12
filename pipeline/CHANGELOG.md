@@ -47,6 +47,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   and the instrument-neutral alignment modules (`align.{detect,footprint,histmatch}`)
   the same way; the `cfpipe nircam refcat` command group, the align solver and I/O, and
   the outlier step stay under `nircam/` for now.
+- **Instrument-neutral inputs for the tile drizzle.** `imaging/exposure.py` defines the
+  `Chip` interface (pixels as surface brightness, three variance components, a
+  good-pixel mask, pixel-to-sky), `imaging/grid.py` builds a tile's tangent plane as a
+  plain FITS WCS (`TileGrid`), and `imaging/mosaic_io.py` writes a mosaic without JWST
+  datamodels (same `SCI`/`ERR`/`CON`/`WHT`/`EXPTIME`/`NEXP` layout, an `INPUTS` table in
+  place of `HDRTAB`). `drizzle_tile` and `drizzle_tile_singles` accept either file
+  paths (the JWST route, code unchanged) or `Chip` objects. Not used by any NIRCam step.
+  On the golden scene the FITS grid equals the `stcal` grid to 4e-9 pixel at rotations
+  0, 20 and -51.5 degrees, and the chip route reproduces the JWST-route mosaic to
+  float32 rounding.
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.
