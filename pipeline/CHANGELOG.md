@@ -113,6 +113,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **NIRCam `align` pools the exposures of a visit (`[nircam.align].pool = "visit"`,
+  the new default; `"exposure"` is the previous behaviour).** The exposures of one
+  visit and filter are first fitted to each other on their common sources, which
+  measures the offsets between dithers instead of fitting each exposure to the
+  reference catalog on its own; the tied exposures are then fitted to the catalog as
+  one body, and each detector gets one fit for the visit, shared by that detector in
+  every tied exposure (`solve_exposure_group(fine_groups=...)`, counted on distinct
+  reference sources). An exposure that shares fewer than `tie_min_matched` (20)
+  sources with the others, a visit of one exposure, or a visit whose joint fit fails
+  is fitted on its own exactly as before. A visit with any pending exposure is
+  re-solved as a whole. New header keywords `ALGNNEXP` and `ALGNTIE`. Existing
+  alignments are not touched until a field is re-aligned; a re-aligned field's WCS
+  changes at the sub-milliarcsecond to few-milliarcsecond level depending on its
+  reference catalog (measurements in docs/hst/design.md section 8b and
+  `nircam/align/DESIGN.md` 3.5).
 - **`cfpipe nircam refcat extract` makes catalogs that hold at any epoch**
   (`--stars gaia`, the new default; `--stars keep` gives the previous behaviour).
   Sources matched to a Gaia star take Gaia's position, epoch and proper motion, and

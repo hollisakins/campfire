@@ -256,6 +256,47 @@ it measurably reduces** the one-to-one residual. The chosen geometry is
 recorded per detector as the `dof` (`coarse` | `shift` | `rshift` | `general` |
 `identity`). No `tweakwcs.XYXYMatch` remains anywhere in `align`.
 
+### 3.5 Pooling the exposures of a visit (`pool = "visit"`, the default)
+
+Sections 3.1 to 3.4 describe one exposure solved on its own, which is
+`pool = "exposure"`. With `pool = "visit"` (`apply.align_visit_pools`,
+`orchestrate._visit_tasks`) the exposures of one visit and filter go together:
+
+1. **Tie.** Each exposure, all of its pool's detectors as one body, is fitted
+   with one shift and rotation to the detections of the visit's richest
+   exposure (`apply._tie_exposures`; the same solver, per-detector stage off).
+   This measures the offsets between dithers from hundreds to thousands of
+   common sources. The header pointing is only the starting point, as it is for
+   a fit to the reference catalog; it is not trusted (measured: one dither of a
+   four-dither visit 16 mas from where its header put it relative to the
+   others).
+2. **Visit fit.** The tied exposures are fitted to the reference catalog as one
+   pool: one shift and rotation for all of them.
+3. **One fit per detector for the visit.** The same detector in every tied
+   exposure shares one fit (`solve._fine_groups_fit`), under the rules of 3.4
+   with one difference: the match count is of distinct reference sources, since
+   a source matched in four exposures carries the same catalog error four
+   times. A detector's offset from the pooled attitude is the same in every
+   exposure of a visit (measured to 0.1 to 0.4 mas over four dithers), so it is
+   estimated once.
+
+**Fallback, always to 3.1 to 3.4.** A visit of one exposure; an exposure that
+shares fewer than `tie_min_matched` sources with the others (those are tried
+among themselves first, so two separate pointings in one visit become two
+groups); a visit whose joint fit fails. A visit with any pending pool is
+re-solved as a whole, so its exposures always share one recipe.
+
+**Why.** With a dense NIRCam-derived catalog the two ways agree to a fraction
+of a milliarcsecond. With a sparse catalog (a first alignment to Gaia or Legacy
+Surveys, 20 to 80 matches per detector) exposures fitted on their own ended 3.5
+to 8 mas apart, against 0.5 mas when tied (docs/hst/design.md, section 8b).
+
+Recorded per file: `ALGNNEXP` (exposures fitted together, 1 = on its own) and
+`ALGNTIE` (sources shared with the visit's reference exposure).
+
+Note on 3.1: `pool_modules = true` is the package default now (both modules of
+a channel are one pool); the per-module split is `pool_modules = false`.
+
 ---
 
 ## 4. Detection (`detect.py`)

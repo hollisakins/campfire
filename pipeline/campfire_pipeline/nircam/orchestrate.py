@@ -852,6 +852,40 @@ def _align_group_worker(key, members, *, refcat, config, overwrite, status):
                                 overwrite=overwrite, status=status)
 
 
+def _align_visit_worker(key, pools, *, refcat, config, overwrite, status):
+    """``dispatch`` worker: align the pools of one visit together. Module-level
+    for pickling. Returns one solution per pool."""
+    from campfire_pipeline.nircam.align.apply import align_visit_pools
+    return align_visit_pools(pools, refcat, key=key, config=config,
+                             overwrite=overwrite, status=status)
+
+
+def _visit_tasks(pools, pending):
+    """Group pools by visit for ``pool = "visit"``; return ``(tasks, solved)``.
+
+    A task is ``(visit key, [(pool key, members), ...])``: the same pool (the
+    channel, or one module) in every exposure of one visit. A visit with any
+    pending pool is solved as a whole, so its exposures always share one recipe;
+    *solved* lists every pool that will be (re)solved.
+    """
+    def visit_of(pool):
+        visit = pool.members[0].rootname.split('_')[0]        # jwPPPPPOOOVVV
+        suffix = pool.key.split(':', 1)[1] if ':' in pool.key else ''
+        return f'{visit}:{suffix}' if suffix else visit
+
+    by_visit = {}
+    for p in pools:
+        by_visit.setdefault(visit_of(p), []).append(p)
+    pending_keys = {p.key for p in pending}
+    tasks, solved = [], []
+    for visit, members in by_visit.items():
+        if not any(p.key in pending_keys for p in members):
+            continue
+        tasks.append((visit, [(p.key, list(p.members)) for p in members]))
+        solved.extend(members)
+    return tasks, solved
+
+
 def _warn_not_aligned(field, failed_groups):
     """Loudly report detectors that failed alignment, and how to resolve them.
 
@@ -985,10 +1019,25 @@ def _run_align(field, config, filtname, n_processes, overwrite, status,
         f"({len(refcat)} sources, rc={refcat_hash}); solving {len(pending)} "
         f"pool(s)")
     worker_cfg = {**align_cfg, '_refcat_hash': refcat_hash}
-    tasks = [(p.key, list(p.members)) for p in pending]
-    results = dispatch(_align_group_worker, tasks, n_processes=n_processes,
-                       use_starmap=True, refcat=refcat, config=worker_cfg,
-                       overwrite=overwrite, status=status)
+    pool_mode = str(align_cfg.get('pool', 'visit')).lower()
+    if pool_mode not in ('visit', 'exposure'):
+        raise ValueError(f"[nircam.align].pool = {pool_mode!r}: expected "
+                         f"'visit' or 'exposure'")
+    if pool_mode == 'visit':
+        # The exposures of a visit are fitted to each other, then to the
+        # reference catalog as one body; anything that cannot go that way is
+        # fitted on its own, as with pool = "exposure".
+        tasks, pending = _visit_tasks(pools, pending)
+        log(f"align[{filtname}]: {len(pending)} pool(s) in {len(tasks)} visit(s)")
+        nested = dispatch(_align_visit_worker, tasks, n_processes=n_processes,
+                          use_starmap=True, refcat=refcat, config=worker_cfg,
+                          overwrite=True, status=status)
+        results = [r for group in nested if group for r in group]
+    else:
+        tasks = [(p.key, list(p.members)) for p in pending]
+        results = dispatch(_align_group_worker, tasks, n_processes=n_processes,
+                           use_starmap=True, refcat=refcat, config=worker_cfg,
+                           overwrite=overwrite, status=status)
 
     # Workers stamped CFP_ALGN on disk in child processes; sync the parent cache
     # so a later step/phase in the same run sees the fresh stamps.

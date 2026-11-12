@@ -707,6 +707,27 @@
     # per-module pool is a single detector), which should help sparse or
     # low-match exposures — the regime that is still untested.
     pool_modules      = true
+    # --- Which exposures are fitted to the reference catalog together ---------
+    # "visit": the exposures of one visit (same filter) are first fitted to
+    #   each other on their common sources, each exposure's detectors as one
+    #   body. That MEASURES the offsets between dithers (the pointing in the
+    #   headers is only the starting point, and can be off by 15 mas between
+    #   dithers of one visit). The tied exposures are then fitted to the
+    #   reference catalog as one body, and each detector gets ONE fit for the
+    #   visit, shared by that detector in every tied exposure: a detector's
+    #   offset is the same in every exposure of a visit (measured to 0.1-0.4
+    #   mas), so it is estimated once from all of them.
+    #   Fallback, always: an exposure that shares fewer than `tie_min_matched`
+    #   sources with the others, a visit of one exposure, or a visit whose
+    #   joint fit fails, is fitted on its own exactly as with "exposure".
+    # "exposure": every exposure is fitted to the reference catalog on its own
+    #   (the behaviour before this setting existed).
+    # Measured (docs/hst/design.md section 8b): with a dense NIRCam-derived
+    # catalog the two agree to a fraction of a mas; with a sparse catalog (a
+    # first alignment to Gaia or Legacy Surveys) exposures fitted on their own
+    # ended 3.5-8 mas apart, against 0.5 mas when tied.
+    pool              = "visit"   # "visit" | "exposure"
+    tie_min_matched   = 20        # common sources needed to tie two exposures
     # --- Differential velocity aberration (DVA) re-reference ------------------
     # jwst's assign_wcs corrects DVA per detector, scaling about THAT detector's
     # own aperture reference (dva_corr_model(va_scale, v2_ref, v3_ref) builds

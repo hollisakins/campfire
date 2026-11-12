@@ -370,6 +370,45 @@ def test_delta_mag_lim_plumbs_through_solve():
 
 # --- fine fit is no longer gated on tolerance --------------------------------
 
+def test_fine_groups_share_one_fit_per_detector_across_exposures():
+    # A pool of two exposures of one visit (pool = "visit"). Detector 2 sits
+    # 0.03" off in both. With `fine_groups` the two copies of each detector get
+    # ONE fit between them: the offset is removed in both exposures, by the
+    # same correction, so the exposures keep their relative positions.
+    import dataclasses
+    from astropy.table import vstack
+
+    extra = {2: (0.0, 0.03)}
+    a, ref_a = _build_group(n_det=3, offset=(2.0, 0.0), per_det_extra=extra, seed=1)
+    b, ref_b = _build_group(n_det=3, offset=(2.0, 0.0), per_det_extra=extra, seed=2)
+    detectors = ([dataclasses.replace(d, detector=f'e1|{d.detector}') for d in a]
+                 + [dataclasses.replace(d, detector=f'e2|{d.detector}') for d in b])
+    groups = {d.detector: d.detector.split('|')[1] for d in detectors}
+    sol = solve_exposure_group(detectors, vstack([ref_a, ref_b]), key='visit',
+                               fine_groups=groups)
+    assert sol.status == 'SOLVED' and len(sol.detectors) == 6
+    by_name = {d.detector: d for d in sol.detectors}
+    for exposure in ('e1', 'e2'):
+        biased = by_name[f'{exposure}|nrc2']
+        assert biased.dof in ('rshift', 'shift', 'general')
+        assert biased.residual_arcsec < 0.01
+    # the same detector took the same geometry in both exposures ...
+    for det in ('nrc0', 'nrc1', 'nrc2'):
+        assert by_name[f'e1|{det}'].dof == by_name[f'e2|{det}'].dof
+    # ... and the same correction: where the centre of nrc2 was moved to.
+    moved = []
+    for d_in in detectors:
+        if d_in.detector.endswith('nrc2'):
+            r0, c0 = d_in.wcs(512.0, 1024.0)
+            r1, c1 = by_name[d_in.detector].wcs(512.0, 1024.0)
+            moved.append(((r1 - r0) * _COSD * 3.6e6, (c1 - c0) * 3.6e6))
+    assert np.hypot(moved[0][0] - moved[1][0], moved[0][1] - moved[1][1]) < 0.5   # mas
+
+    # Without the grouping, exactly the per-detector behaviour as before.
+    plain = solve_exposure_group(detectors, vstack([ref_a, ref_b]), key='visit')
+    assert plain.status == 'SOLVED'
+
+
 def test_fine_removes_subtolerance_systematic_offset():
     # The motivating case for removing the tolerance gate: one detector carries
     # a small systematic offset (0.03" ~ one SW pixel) that stays UNDER the
