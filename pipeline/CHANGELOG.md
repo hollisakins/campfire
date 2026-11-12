@@ -38,6 +38,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   the WCS cards of a real combine run so two runs can be shown identical. Both exist to
   protect the move of the mosaic machinery into a shared package for HST
   (docs/hst/design.md); no pipeline behavior changes.
+- **New `campfire_pipeline.imaging` package; first modules moved.** `geometry`, `manifest`,
+  `mosaic_exp` and `bkgsub` move from `nircam/` to `imaging/` unchanged (one internal
+  import updated). The old paths `campfire_pipeline.nircam.<name>` remain as aliases of
+  the same module objects, so imports and monkeypatches are unaffected. The golden test
+  is bit-identical across the move.
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.

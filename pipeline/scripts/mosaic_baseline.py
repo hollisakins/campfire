@@ -43,7 +43,7 @@ import sys
 
 from astropy.io import fits
 
-from campfire_pipeline.nircam.manifest import compute_wcs_hash
+from campfire_pipeline.imaging.manifest import compute_wcs_hash
 
 _VOLATILE_MANIFEST_KEYS = ('created_at', 'pipeline_version')
 _VOLATILE_INPUT_KEYS = ('size', 'mtime_ns')
