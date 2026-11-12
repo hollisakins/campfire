@@ -7,6 +7,38 @@ agreed stage-2 infrastructure ([design-data-releases-infra-proposal.md](design-d
 (§0, §3, §7 unchanged); where code or production contradicts the design, the phase says so
 and §11 collects the proposed amendments. Nothing here changes the design silently.
 
+## Status 2026-10-30 — paused until the full re-reduction
+
+Everything this plan schedules before the first real release is merged and live. The data-release
+code is complete through P5 (clients, #670–#674), P6 (release pages, the `?dr=` browsing mode,
+the release files) is merged behind `NEXT_PUBLIC_DR_PAGES`, the production rehearsal ran end to end
+on 2026-10-28 (frozen, archived, exported, purged), and the catalog read model (phases 0–4, the
+`campfire_reader` SQL role included) is deployed. Nothing is in flight. The first real release waits
+on the jwst 2.0.1 re-reduction campaign (D-P4-4).
+
+**Resume checklist, in order**, once the re-reduction is deployed:
+
+1. `campfire dr status` until it reports no drafts, no leases, no stale line fits you care about;
+   then `campfire dr build --tag DR2026.1 --nirspec --field ...` (freeze → archive → export,
+   resumable), `campfire dr page push`, `campfire dr publish DR2026.1 --doi ...` (the DOI comes
+   from P7's deposit; publish without one first if the deposit needs the published counts).
+2. **Turn the pages on**: `NEXT_PUBLIC_DR_PAGES` is a build arg of `web/Dockerfile` that
+   `.github/workflows/deploy.yml` never passes. Add `NEXT_PUBLIC_DR_PAGES=${{ vars.DEPLOY_NEXT_PUBLIC_DR_PAGES }}`
+   to its `build-args`, set the repo variable to `admin` first and `all` at publish; a redeploy follows.
+3. **Web cite block reading the roster** (small, web only): `web/app/releases/[tag]/page.tsx`'s Cite
+   section prints `releaseCitation()` (the generic DOI line + BibTeX). Make it the §4.5 sentence
+   `campfire cite` prints, from `fetchProgramRoster()` under the viewer's slugs (signed-out: the DOI
+   line only). Inherits the pages flag; no new gate.
+4. **P7**: Zenodo deposit script writing `dr_releases.doi`, flat CSV + FITS exports of the public join
+   (D-P7-1), `programs.public_since`. Gate: a Zenodo sandbox deposit.
+5. **TAP** (DaCHS over `campfire_reader`), after the first real release.
+6. Optional hardening: the pooler → db hop independent of the reader password (`pg_hba.conf` line
+   scoped to the compose network, or a client cert; `ops/README.md`, "Public read-only SQL").
+   The heal timer bounds the damage today to two minutes.
+
+P8 (bundles) stays unplanned. The client floor is 0.5.0, the client 0.7.0; a release of the client
+is not needed for step 1. The log of every PR is §13.
+
 ## 0. How to read a phase
 
 Every phase has the same eight parts: goal and what users see; code surface (file:line for
