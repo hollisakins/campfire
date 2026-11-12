@@ -23,15 +23,24 @@ from scipy.special import gamma, gammaincinv
 
 from campfire_pipeline.nirspec import optics as O
 from campfire_pipeline.nirspec import profile_fit as PF
+from campfire_pipeline.nirspec.forward import params as FP
 
 
 class Component:
-    """Base: a component has named parameters (``names``, ``values``) and its light per pixel."""
+    """Base: a component has named parameters (``names``, ``values``) and its light per pixel. A
+    parameter may be a number, a ``params.Param`` or a ``params.Tied`` (``forward.params``); the
+    model evaluates the component at their values (``resolved``)."""
     names = ()
 
     @property
     def values(self):
-        return np.array([getattr(self, n) for n in self.names], float)
+        return np.array([FP.value_of(getattr(self, n)) for n in self.names], float)
+
+    def resolved(self):
+        """The component with every parameter at its value (itself when all are numbers)."""
+        if not any(FP.is_parameter(getattr(self, n)) for n in self.names):
+            return self
+        return self.with_values(self.values)
 
     def with_values(self, v):
         """A copy with parameters ``v`` (in the order of ``names``)."""
@@ -47,7 +56,8 @@ class Component:
         raise NotImplementedError
 
     def __repr__(self):
-        args = ', '.join(f'{n}={getattr(self, n):.4g}' for n in self.names)
+        args = ', '.join(f'{n}={getattr(self, n)!r}' if FP.is_parameter(getattr(self, n))
+                         else f'{n}={getattr(self, n):.4g}' for n in self.names)
         return f'{type(self).__name__}({args})'
 
 
@@ -95,8 +105,8 @@ class SlitGaussian(Component):
     names = ('centre', 'drift', 'width', 'width_change')
 
     def __init__(self, centre, drift=0.0, width=0.15, width_change=0.0, eoff=None):
-        self.centre, self.drift, self.width, self.width_change = float(centre), float(drift), float(width), \
-            float(width_change)
+        self.centre, self.drift, self.width, self.width_change = (FP.keep(centre), FP.keep(drift), FP.keep(width),
+                                                                  FP.keep(width_change))
         self.eoff = eoff                 # per-exposure pointing offsets (slit units), not fitted; None for none
 
     def width_at(self, M, lam):
@@ -149,7 +159,7 @@ class Point(_SkyComponent):
     names = ('dx', 'dy')
 
     def __init__(self, dx=0.0, dy=0.0):
-        self.dx, self.dy = float(dx), float(dy)
+        self.dx, self.dy = FP.keep(dx), FP.keep(dy)
 
     def brightness(self, east, north):
         raise ValueError('forward: a point source has no surface brightness; it is placed directly')
@@ -168,7 +178,7 @@ class Gaussian(_SkyComponent):
     names = ('dx', 'dy', 'sigma')
 
     def __init__(self, dx=0.0, dy=0.0, sigma=0.05):
-        self.dx, self.dy, self.sigma = float(dx), float(dy), float(sigma)
+        self.dx, self.dy, self.sigma = FP.keep(dx), FP.keep(dy), FP.keep(sigma)
 
     def brightness(self, east, north):
         s = max(self.sigma, 1e-4)
@@ -209,8 +219,8 @@ class Sersic(_SkyComponent):
     names = ('dx', 'dy', 'n', 'r_e', 'q', 'pa')
 
     def __init__(self, dx=0.0, dy=0.0, n=1.0, r_e=0.2, q=1.0, pa=0.0):
-        self.dx, self.dy, self.n, self.r_e, self.q, self.pa = (float(dx), float(dy), float(n), float(r_e), float(q),
-                                                               float(pa))
+        self.dx, self.dy, self.n, self.r_e, self.q, self.pa = (FP.keep(dx), FP.keep(dy), FP.keep(n), FP.keep(r_e),
+                                                               FP.keep(q), FP.keep(pa))
 
     def _b(self):
         return float(gammaincinv(2.0 * self.n, 0.5))
@@ -242,6 +252,9 @@ class Sum(list):
         super().__init__(components)
         w = np.ones(len(components)) if weights is None else np.asarray(weights, float)
         self.weights = w / w.sum()
+
+    def resolved(self):
+        return Sum([c.resolved() for c in self], weights=self.weights)
 
     def light(self, M, k, y, lam, dy):
         return sum(w * c.light(M, k, y, lam, dy) for w, c in zip(self.weights, self))

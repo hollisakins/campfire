@@ -305,6 +305,11 @@ def run_stage3_single_source(
         # master-background 2-D or profile fit (mbkg_spectrum_hdus reads what exists)
         from campfire_pipeline.nirspec import mbkg_extraction as MX
         MX.cleanup(workspace_dir, product_name)
+        # the outlier flags an earlier stage 3 wrote into the canonicals (DQ bit 4) would enter this
+        # run's crf and read as found again: Spec3 starts from what stage 2 wrote
+        from campfire_pipeline.nirspec import canonical as CN
+        for file in cal_files:
+            CN.clear_stage3(file)
 
         association= [(file, 'science') for file in cal_files]
 

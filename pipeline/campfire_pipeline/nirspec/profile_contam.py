@@ -843,6 +843,31 @@ def apply(exps, P, kappa=1.0):
                 failed_open=tot_fo / tot_b if tot_b else 0.0)
 
 
+def mask_level(P, k):
+    """Exposure k's level that ``apply`` compares with ``kappa`` times the noise to leave a pixel
+    out: the larger of the prediction's uncertainty and the light of contaminants that are only
+    masked (``pred_unreliable``), in diff units."""
+    lv = np.nan_to_num(np.asarray(P.dpred[k], float))
+    if P.pred_unreliable is not None:
+        lv = np.maximum(lv, np.abs(np.nan_to_num(np.asarray(P.pred_unreliable[k], float))))
+    return lv
+
+
+def stored_planes(exps, P):
+    """{file name: (predicted light, masking level)} per science exposure in the live canonical
+    units on its cutout: what a fit needs to repeat ``apply`` (``canonical.write_stage3``)."""
+    out = {}
+    for k, e in enumerate(exps):
+        if not e.use_data or e.partners is None:
+            continue
+        r0, c0, ny, nx = e.cutout
+        with np.errstate(invalid='ignore', divide='ignore'):
+            pred = np.nan_to_num(np.asarray(P.pred[k], float) / e.pl_applied)
+            lv = mask_level(P, k) / e.pl_applied
+        out[e.name] = (pred[r0:r0 + ny, c0:c0 + nx], np.nan_to_num(lv[r0:r0 + ny, c0:c0 + nx]))
+    return out
+
+
 def live_frames(exps, P, what='pred'):
     """Predicted light per science exposure in the live canonical units (path loss
     re-applied) on its cutout, keyed by file name, for drizzling (``CONTAM2D``).

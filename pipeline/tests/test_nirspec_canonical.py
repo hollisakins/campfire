@@ -306,3 +306,59 @@ def test_bkg_nods_cards():
     flag = 'every background exposure: ' + why                    # partners kept, the nod flagged
     assert C.bkg_nods_cards([2, 3], overridden=False, why=flag)['BKGWHY'][0] == flag[:68]
     assert C.bkg_nods_cards([2, 3], overridden=False, why='')['BKGWHY'][0] == ''
+
+
+# --- what stage 3 writes into the file (write_stage3) ------------------------
+
+def _subtracted(tmp_path, live_dq, pre_dq):
+    pre = C.make_prefixed_hdus({'SCI': np.zeros((3, 4), 'f4'), 'DQ': pre_dq}, C.PRE_BKGSUB_PREFIX)
+    p = _slit_fits(tmp_path / 'c.fits', extras=pre, CFP_BKG='t')
+    with fits.open(p, mode='update') as h:
+        h['DQ'].data = live_dq
+    return p
+
+
+def test_write_stage3_round_trip_and_clear(tmp_path):
+    live = np.array([[0, 1, 0, 4]] * 3, 'i4')          # DO_NOT_USE and another bit already set
+    pre = np.array([[0, 0, 2, 0]] * 3, 'i4')
+    p = _subtracted(tmp_path, live, pre)
+    nod = np.zeros((3, 4), bool); nod[0, 0] = nod[1, 3] = True
+    frame = np.zeros((3, 4), bool); frame[2, 2] = True
+    pred = np.arange(12, dtype='f4').reshape(3, 4) * 1e-3
+    C.write_stage3(p, nod_outliers=nod, frame_outliers=frame, bar_offset=-0.012,
+                   contam=dict(planes={'NOD': pred, 'NODMASK': pred / 10}, kappa=1.0, state='subtracted'))
+    with fits.open(p) as h:
+        assert np.array_equal(h['DQ'].data & C.OUTLIER_BIT > 0, nod)
+        assert np.array_equal(h['DQ'].data & ~C.OUTLIER_BIT, live)          # the other bits untouched
+        assert np.array_equal(h['PRE_BKGSUB_DQ'].data & C.OUTLIER_BIT > 0, frame)
+        assert h[0].header['BAROFFS'] == -0.012 and h[0].header['CFOUTL']
+    c = C.read_contam(p)
+    assert np.array_equal(c['planes']['NOD'], pred) and c['kappa'] == 1.0 and c['state'] == 'subtracted'
+    # a second write replaces the flags, it does not add to them
+    C.write_stage3(p, nod_outliers=np.zeros((3, 4), bool))
+    with fits.open(p) as h:
+        assert not np.any(h['DQ'].data & C.OUTLIER_BIT) and 'CONTAM' not in h and 'BAROFFS' not in h[0].header
+    assert C.clear_stage3(p)
+    with fits.open(p) as h:
+        assert np.array_equal(h['DQ'].data, live) and np.array_equal(h['PRE_BKGSUB_DQ'].data, pre)
+        assert not any(k in h[0].header for k in C.STAGE3_CARDS)
+    assert not C.clear_stage3(p)                       # nothing left: the file is not rewritten
+
+
+def test_restore_pre_bkgsub_drops_what_stage_3_wrote(tmp_path):
+    p = _subtracted(tmp_path, np.zeros((3, 4), 'i4'), np.zeros((3, 4), 'i4'))
+    frame = np.ones((3, 4), bool)
+    C.write_stage3(p, frame_outliers=frame, bar_offset=0.01,
+                   contam=dict(planes={'NOD': np.ones((3, 4)), 'NODMASK': np.ones((3, 4))}, kappa=1.0))
+    C.restore_pre_bkgsub(p)
+    with fits.open(p) as h:
+        assert not np.any(h['DQ'].data & C.OUTLIER_BIT)    # the frame's flags do not come back as live ones
+        assert 'CONTAM' not in h and not any(k in h[0].header for k in C.STAGE3_CARDS)
+
+
+def test_write_stage3_refuses_flags_off_the_cutout(tmp_path):
+    p = _subtracted(tmp_path, np.zeros((3, 4), 'i4'), np.zeros((3, 4), 'i4'))
+    with pytest.raises(ValueError, match='flags'):
+        C.write_stage3(p, nod_outliers=np.zeros((2, 4), bool))
+    with pytest.raises(ValueError, match='unknown planes'):
+        C.write_stage3(p, contam=dict(planes={'XYZ': np.zeros((3, 4))}))

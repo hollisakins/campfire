@@ -16,8 +16,15 @@ Stage 3's profile fit is one application: a single ``components.SlitGaussian`` o
 differences (``profile_fit.ProfileModel``).
 
 Modules: ``model`` (the data, placement, design matrix and solve), ``components`` (point, round
-Gaussian, Sersic, the pipeline's Gaussian along the slit, and the general projection).
+Gaussian, Sersic, the pipeline's Gaussian along the slit, and the general projection), ``products``
+(``load``: a target's exposures from its deployed canonicals, prepared as stage 3 prepared them),
+``params`` (free, fixed, tied parameters and priors), ``fit`` (the shape fit), ``plots`` (data, model
+and residual per exposure).
 """
+from campfire_pipeline.nirspec.forward.products import files_for, load  # noqa: F401
+from campfire_pipeline.nirspec.forward.params import (JointPrior, LogNormal, Normal, Param, Tied,  # noqa: F401
+                                                      Uniform)
+from campfire_pipeline.nirspec.forward.fit import Fit, FitResult  # noqa: F401
 from campfire_pipeline.nirspec.forward.components import (Component, Gaussian, Point, Sersic, SlitGaussian,  # noqa: F401
                                                           Sum, project, slit_offsets)
 from campfire_pipeline.nirspec.forward.model import ForwardModel, Solution  # noqa: F401

@@ -664,7 +664,7 @@ def own_shape(R0, shape0, chain, stage_config, P=None, kappa=1.0, log=None):
 
 
 def fit_product(product_name, workspace, exps, science, source_id, chain, stage_config, dmap,
-                pass1_products=None, log=None, stuck_keys=None):
+                pass1_products=None, log=None, stuck_keys=None, record=None):
     """The master-background 2-D and ``{product}_mbkg_pf.fits`` of a product (module doc,
     1-3), after its nodded chain ``chain`` (``profile_chain.ChainResult``) chose the shape
     on the nodded exposures ``exps``; everything drizzled through the product's map
@@ -672,7 +672,12 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
     ``fnu`` is then its 3-pixel boxcar). Returns the file's path, or None when an
     exposure has no master background (no master-background spectrum at all).
     ``stuck_keys``: the stuck physical shutters left out of the trace maps
-    (``profile_contam.trace_maps``)."""
+    (``profile_contam.trace_maps``).
+
+    record : a dict to receive what stage 3 stores in the canonicals (``canonical.write_stage3``):
+        ``frame_outliers`` ({name: the frame's outlier and hot-pixel flags on its cutout}) and, when the
+        other sources' light was predicted, ``frame_planes`` ({name: (predicted light, masking level)}:
+        the prediction the shape fit subtracted, before the failed-open shutters' light is added)."""
     from astropy.io import fits
     from campfire_pipeline.nirspec import failed_open as FO
     from campfire_pipeline.nirspec import profile_chain as PC
@@ -687,6 +692,8 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
     if made is None:
         return None
     frames, inputs = made
+    if record is not None:
+        record['frame_outliers'] = {n: (np.asarray(a['dq']) & OUTLIER) > 0 for n, a in inputs.items()}
     fl = PP.stage_flags(stage_config)
     sigma = PC.ChainConfig.from_stage_config(stage_config).mbkg_scale_sigma or None
     P = maps = None
@@ -705,6 +712,8 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
                 pass1_for, why_missing = CT.pass1_lookup(workspace, pass1_products)
                 near = same_slitlet_sources(exps[0].path, workspace, source_id)
                 P = CT.predict(mexps, source_id, maps, pass1_for, workspace, why_missing=why_missing, include=near)
+        if record is not None and P is not None:
+            record['frame_planes'] = CT.stored_planes(mexps, P)
         R, shape, chain = own_shape(R0, shape0, chain, stage_config, P=P, kappa=fl['kappa'], log=log)
         log(f'{product_name}: master-background shape {chain.shape} ({chain.reason}), width '
             f'{R.params["width"]:.3f} (nodded {R0.params["width"]:.3f}), master-background scale '

@@ -55,7 +55,9 @@ S2D_BKGSUB_PREFIX = 'S2D_BKGSUB'
 # increments — every v2 file carries ``CFSCHEMA = 2`` and everything else is v1.
 SCHEMA_VERSION_KEYWORD = 'CFSCHEMA'
 SCHEMA_VERSION_COMMENT = 'campfire: canonical file format version'
-CANONICAL_SCHEMA_VERSION = 1
+# 2: stage 3 writes its outlier flags into DQ bit 4, the other sources' predicted light (``CONTAM``)
+# and the bar offset (``BAROFFS``) into the file (``write_stage3``)
+CANONICAL_SCHEMA_VERSION = 2
 
 # EXTNAME prefixes for the non-schema HDUs this module manages. These are the
 # HDUs that must be preserved across a ``DataModel.save()`` (which drops them).
@@ -303,5 +305,135 @@ def restore_pre_bkgsub(path, slit_extver=1):
         for card in ('CFP_BKG', 'CFP_S2D') + BKG_NODS_CARDS:
             if card in out[0].header:
                 del out[0].header[card]
+        _drop_stage3(out, slit_extver)            # its flags and prediction were for the subtraction undone
         out.writeto(tmp, overwrite=True)
     os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------------------
+# What stage 3 leaves in the file (``write_stage3``): everything the forward model needs besides
+# the file's own arrays and the exposure's ``_mbkg.fits`` (``forward.load``)
+# ---------------------------------------------------------------------------
+OUTLIER_BIT = 16           # jwst DQ OUTLIER (bit 4). Nothing before stage 3 sets it in a canonical, so
+                           # DQ & ~OUTLIER_BIT is the DQ stage 2 wrote
+CONTAM_EXTNAME = 'CONTAM'
+STAGE3_CARDS = {
+    'CFOUTL': 'stage 3 outliers in DQ bit 4 (16)',
+    'BAROFFS': 'bar offset added to slit y [slit units]',
+}
+# the planes of CONTAM, in order; the single-frame pair only when the master-background fit ran
+CONTAM_PLANES = (
+    ('NOD', 'other sources predicted light in the nod difference, as SCI'),
+    ('NODMASK', 'nod difference: pixels left out where this > CONTKAPP x noise'),
+    ('FRAME', 'the same in the frame minus master background, as SCI'),
+    ('FRAMEMSK', 'frame: pixels left out where this > CONTKAPP x noise'),
+)
+
+
+def _drop_stage3(hdul, slit_extver=1):
+    """In an open HDUList: bit 4 cleared in the live and pre-subtraction DQ, ``CONTAM`` and the
+    stage-3 cards removed. Returns True when anything changed."""
+    changed = False
+    for name in ('DQ', f'{PRE_BKGSUB_PREFIX}_DQ'):
+        try:
+            h = hdul[(name, slit_extver)]
+        except KeyError:
+            continue
+        if h.data is not None and np.any(np.asarray(h.data) & OUTLIER_BIT):
+            h.data = (np.asarray(h.data) & ~np.uint32(OUTLIER_BIT)).astype(h.data.dtype)
+            changed = True
+    for i in reversed(range(len(hdul))):
+        if (hdul[i].name or '').upper() == CONTAM_EXTNAME:
+            del hdul[i]
+            changed = True
+    for card in STAGE3_CARDS:
+        if card in hdul[0].header:
+            del hdul[0].header[card]
+            changed = True
+    return changed
+
+
+def has_stage3(path):
+    """True when stage 3 left its flags, prediction or cards in the file."""
+    with fits.open(path, memmap=False) as hdul:
+        return (any(c in hdul[0].header for c in STAGE3_CARDS)
+                or any((h.name or '').upper() == CONTAM_EXTNAME for h in hdul))
+
+
+def clear_stage3(path, slit_extver=1):
+    """Remove what stage 3 wrote (``write_stage3``) before Spec3 runs again: a flag left in the DQ
+    would enter its crf and read as found again. Rewrites the file only when there is something to
+    remove. Returns True when it did."""
+    if not has_stage3(path):
+        return False
+    tmp = _tmp_path(path)
+    with fits.open(path, memmap=False) as hdul:
+        out = fits.HDUList([h.copy() for h in hdul])
+        _drop_stage3(out, slit_extver)
+        out.writeto(tmp, overwrite=True)
+    os.replace(tmp, path)
+    return True
+
+
+def write_stage3(path, nod_outliers=None, frame_outliers=None, contam=None, bar_offset=None, slit_extver=1):
+    """Stage 3's inputs to the fit, into the canonical (in place, atomic): what the forward model
+    needs besides the file's arrays and the exposure's ``_mbkg.fits`` (``forward.load``).
+
+    nod_outliers : boolean mask on the cutout of the pixels Spec3's outlier detection flagged in this
+        exposure (the nod differences' fit): DQ bit 4 of the live DQ.
+    frame_outliers : the same for the frame minus master background (its own outlier detection and
+        hot pixels, ``mbkg_extraction.outlier_flags``): bit 4 of ``PRE_BKGSUB_DQ``.
+    contam : dict(planes={plane name: array on the cutout} of ``CONTAM_PLANES``, kappa=..., state=...)
+        or None: one losslessly compressed ``CONTAM`` image (planes x cutout).
+    bar_offset : the bar offset added to the slit positions [slit units], ``BAROFFS``.
+
+    Bit 4 is replaced, not added to: the file then carries exactly this run's flags."""
+    tmp = _tmp_path(path)
+    with fits.open(path, memmap=False) as hdul:
+        out = fits.HDUList([h.copy() for h in hdul])
+        _drop_stage3(out, slit_extver)
+        for name, mask in (('DQ', nod_outliers), (f'{PRE_BKGSUB_PREFIX}_DQ', frame_outliers)):
+            if mask is None:
+                continue
+            h = out[(name, slit_extver)]
+            mask = np.asarray(mask, bool)
+            if mask.shape != h.data.shape:
+                raise ValueError(f'{os.path.basename(path)}: {name} is {h.data.shape}, flags {mask.shape}')
+            h.data = (np.asarray(h.data) | np.where(mask, OUTLIER_BIT, 0)).astype(h.data.dtype)
+        out[0].header['CFOUTL'] = (nod_outliers is not None or frame_outliers is not None, STAGE3_CARDS['CFOUTL'])
+        if bar_offset is not None:
+            out[0].header['BAROFFS'] = (float(bar_offset), STAGE3_CARDS['BAROFFS'])
+        if contam is not None and contam.get('planes'):
+            out.append(_contam_hdu(contam, out[('SCI', slit_extver)].data.shape))
+        out.writeto(tmp, overwrite=True)
+    os.replace(tmp, path)
+
+
+def _contam_hdu(contam, shape):
+    names = [n for n, _ in CONTAM_PLANES if n in contam['planes']]
+    unknown = set(contam['planes']) - {n for n, _ in CONTAM_PLANES}
+    if unknown:
+        raise ValueError(f'CONTAM: unknown planes {sorted(unknown)}')
+    cube = np.stack([np.nan_to_num(np.asarray(contam['planes'][n], np.float32)) for n in names])
+    if cube.shape[1:] != tuple(shape):
+        raise ValueError(f'CONTAM: planes {cube.shape[1:]} are not on the cutout {tuple(shape)}')
+    h = fits.CompImageHDU(cube, name=CONTAM_EXTNAME, compression_type='GZIP_2', quantize_level=0.0)
+    for i, n in enumerate(names, 1):
+        h.header[f'PLANE{i}'] = (n, dict(CONTAM_PLANES)[n][:47])
+    h.header['BUNIT'] = ('MJy', 'as SCI')
+    if contam.get('kappa') is not None:
+        h.header['CONTKAPP'] = (float(contam['kappa']), 'mask threshold, in the pixel noise')
+    if contam.get('state'):
+        h.header['CONTSTAT'] = (str(contam['state'])[:68], 'how the nod-difference fit used it')
+    return h
+
+
+def read_contam(path):
+    """``CONTAM`` of a canonical as dict(planes={name: array}, kappa, state), or None."""
+    with fits.open(path, memmap=False) as hdul:
+        if CONTAM_EXTNAME not in hdul:
+            return None
+        h = hdul[CONTAM_EXTNAME]
+        cube = np.asarray(h.data, float)
+        names = [h.header[f'PLANE{i}'] for i in range(1, cube.shape[0] + 1)]
+        return dict(planes=dict(zip(names, cube)), kappa=h.header.get('CONTKAPP'), state=h.header.get('CONTSTAT', ''))

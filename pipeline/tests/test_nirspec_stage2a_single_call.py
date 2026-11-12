@@ -223,7 +223,8 @@ def test_split_spec2_result_writes_canonicals_and_bkgslits(tmp_path, monkeypatch
         assert h['PRIMARY'].header['MSAMETFL'] == 'orig_msa.fits'
         assert h['PRIMARY'].header['STKSHTRS'] == 'N/A'
         assert 'CFP_CAL' in h['PRIMARY'].header
-        assert h['PRIMARY'].header['CFSCHEMA'] == 1
+        from campfire_pipeline.nirspec import canonical
+        assert h['PRIMARY'].header['CFSCHEMA'] == canonical.CANONICAL_SCHEMA_VERSION
         assert np.all(h[('SCI', 1)].data == 1.0)
         assert h[('SCI', 1)].header['SOURCEID'] == 1001
         assert ('SCI', 2) not in h

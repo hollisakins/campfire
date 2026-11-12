@@ -229,6 +229,7 @@ class ForwardModel:
 
     def component_matrix(self, comp):
         """Sparse (n_pixels x n_grid) block of one component: model = block @ spectrum."""
+        comp = comp.resolved()                                   # its parameters at their values
         fixed = self.__dict__.setdefault('_tau_fixed', {})       # per exposure, on its image pixels
         G = {}
         for j, q in self.image_pix.items():

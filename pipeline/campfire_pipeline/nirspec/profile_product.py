@@ -338,6 +338,35 @@ def shape_header(C, exps=None):
     return hdr
 
 
+def store_inputs(workspace_dir, science, crf_dq, exps=None, P=None, contam_state='', kappa=None, record=None):
+    """Write into each science canonical what this product's fits took from files stage 3 does not
+    keep (``canonical.write_stage3``), so the fit can be repeated from the deployed files alone
+    (``forward.load``): Spec3's outlier flags (the crf is removed), the master-background frames' own
+    flags, the other sources' predicted light and its masking level for the nod differences and the
+    frames, and the bar offset. ``exps``: the product's nodded exposures (None after a fallback:
+    the outlier flags only)."""
+    from campfire_pipeline.nirspec import canonical as CN
+    from campfire_pipeline.nirspec import profile_contam as CT
+    from campfire_pipeline.nirspec import profile_fit as PF
+    record = record or {}
+    by_name = {e.name: e for e in exps or []}
+    nod = CT.stored_planes(exps, P) if exps is not None and P is not None else {}
+    frame = record.get('frame_planes') or {}
+    for name in science:
+        planes = {}
+        if name in nod:
+            planes['NOD'], planes['NODMASK'] = nod[name]
+        if name in frame:
+            planes['FRAME'], planes['FRAMEMSK'] = frame[name]
+        dq = crf_dq.get(name)
+        e = by_name.get(name)
+        CN.write_stage3(os.path.join(workspace_dir, name),
+                        nod_outliers=PF.crf_outliers(dq) if dq is not None else None,
+                        frame_outliers=(record.get('frame_outliers') or {}).get(name),
+                        contam=dict(planes=planes, kappa=kappa, state=contam_state) if planes else None,
+                        bar_offset=e.bar_offset if e is not None else None)
+
+
 def run_product(product_name, workspace_dir, groups, overrides, science, source_id, stage_config,
                 is_prism, prism_product='', pass1_products=None, cleanup_crfs=True, stuck_keys=None,
                 shape_product=None):
@@ -374,6 +403,11 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
     path = os.path.join(workspace_dir, f'{product_name}_pf.fits')
     mbkg = bool(stage_config.get('mbkg_spectrum', True))
     try:
+        from campfire_pipeline.nirspec import canonical as CN
+        for name in science:
+            # a run before (the grating shape transfer's second pass) left its flags: the
+            # master-background frames' own outlier detection must not see them as known
+            CN.clear_stage3(os.path.join(workspace_dir, name))
         crf = DM.crf_path(product_name, source_id)
         if not os.path.exists(crf):
             # nothing to drizzle through: no master-background 2-D either
@@ -385,13 +419,15 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             # the product's grid and every exposure's pixel map onto it, once (drizzle_map)
             with TM.step('map'):
                 return DM.DrizzleMap.from_crf(crf, DM.step_settings(f'{product_name}_s2d.fits'))
+        crf_dq = DM.crf_dq(crf)
         try:
             A = analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                                 prism_product=prism_product, pass1_products=pass1_products,
                                 log=lambda m: log(f'{product_name}: {m}'), stuck_keys=stuck_keys,
-                                shape_product=shape_product, crf_dq=DM.crf_dq(crf))
+                                shape_product=shape_product, crf_dq=crf_dq)
         except PF.ProfileFitFallback as e:
             log(f"{product_name}: {e}; 3-pixel boxcar ({e.reason})")
+            store_inputs(workspace_dir, science, crf_dq)
             write_fallback(path, e.reason)
             if mbkg:
                 with TM.step('mbkg'):
@@ -445,12 +481,16 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         out = fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus)
         out.writeto(path, overwrite=True)
         TM.stop('write', t_mark)
+        record = {}
         if mbkg:
             # the master-background 2-D and spectrum at the shape this chain chose, through
             # the same pixel maps (mbkg_extraction)
             with TM.step('mbkg'):
                 MX.fit_product(product_name, workspace_dir, exps, science, source_id, C, stage_config, dmap,
-                               pass1_products=pass1_products, log=log, stuck_keys=stuck_keys)
+                               pass1_products=pass1_products, log=log, stuck_keys=stuck_keys, record=record)
+        with TM.step('store'):
+            store_inputs(workspace_dir, science, crf_dq, exps=exps, P=P, contam_state=cstate,
+                         kappa=stage_flags(stage_config)['kappa'], record=record)
         TM.report(f'product {product_name}', log=log)
         return dict(product=product_name, source_id=int(source_id), shape=C.shape, reason=C.reason,
                     is_prism=bool(is_prism), snr_det=float(C.snr_det), transfer=C.transfer,

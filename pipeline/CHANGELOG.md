@@ -35,6 +35,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   exposure's WCS (`profile_fit.slit_axes`, `Exposure.pa_slit_x` / `pa_slit_y`). Their spectra are
   solved together, with the full covariance. Stage 3's `ProfileModel` is now this model with one
   `SlitGaussian` component: its design matrix and residuals equal the previous code's to 1e-16.
+  - *From the deployed files alone* (`forward.load`, `forward/products.py`). Stage 3 now writes into
+    each science canonical what its fits took from files it does not keep
+    (`canonical.write_stage3`; canonical format `CFSCHEMA` 2): Spec3's outlier flags in DQ bit 4
+    (jwst's OUTLIER), the master-background frames' own flags in bit 4 of `PRE_BKGSUB_DQ`, the other
+    sources' predicted light with the level above which a pixel is left out in one losslessly
+    compressed `CONTAM` extension (2 planes, 4 with the master-background fit; about 3 % of the file),
+    and the bar offset (`BAROFFS`). Nothing before stage 3 sets bit 4, so clearing it gives stage 2's
+    DQ; stage 2b's revert and every Spec3 run clear what stage 3 wrote (`canonical.clear_stage3`).
+    On zenith_p15 547856 and 549120 the exposures `load` builds equal the ones stage 3's fits used
+    (pixels, data, variances, nod differences and master-background frames), and stage 3's model
+    fitted through them gives 547856's product shape (centre 0.3268 against 0.3267, width 0.5195).
+  - *Shape fits of any components* (`forward.Fit`, `forward.params`). A parameter is a number, a
+    `Param` (free or fixed, bounds, a prior) or `Tied` to others; one `Param` in several components
+    is one parameter; `JointPrior` puts a prior on several (`JointPrior.gaussian` from posterior
+    samples, e.g. a fit to imaging). The spectra are solved exactly at each shape; `run` fits,
+    `log_posterior` and `residuals` serve the caller's own optimiser or sampler.
+    `forward.plots.panels` draws data, model and residual per exposure on its own pixels.
 - **NIRSpec joint first pass, faster** (`joint_first_pass.py`, `profile_joint.py`; results
   unchanged). Each source's shape is fitted once per disperser before the workers start, not by
   every worker that builds the source; the design assigns each pixel with one sort and skips
