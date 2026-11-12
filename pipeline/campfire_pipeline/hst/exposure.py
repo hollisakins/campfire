@@ -51,7 +51,8 @@ from campfire_pipeline.hst.instruments import Detector, detector_for, filter_nam
 from campfire_pipeline.imaging.exposure import ChipArrays
 
 _ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
-SKY_KEY = 'CFSKY'
+SKY_KEY = 'CFSKY'          # per-chip sky level, native SCI units (sky step)
+VARSCALE_KEY = 'CFVARSC'   # measured / modelled background variance (sky step)
 
 
 def photfnu(header):
@@ -78,6 +79,7 @@ class HstChip:
     idcscale: float                # arcsec, reference pixel scale
     is_rate: bool                  # True when SCI is already e-/s
     header_sky: float = None       # CFSKY, native SCI units, if present
+    var_scale: float = 1.0         # CFVARSC: measured / modelled sky variance
     tolerated_bits: int = None
     rootname: str = ''
     proposid: int = 0
@@ -127,15 +129,10 @@ class HstChip:
                 if good.any() else 0.0
         self._sky_used = sky
 
-        # Everything to count rate (e-/s) and its variance.
-        if self.is_rate:
-            t_eff = np.full(sci.shape, self.exptime) if time is None else time
-            rate, var_rate = sci - sky, err ** 2
-        else:
-            t_eff = np.full(sci.shape, self.exptime)
-            rate, var_rate = (sci - sky) / self.exptime, (err / self.exptime) ** 2
+        rate, var_rate, t_eff = self.to_rate(sci, err, time, sky)
         good &= t_eff > 0
-        var_background = self._background_variance(rate, var_rate, t_eff, good)
+        var_background = self.var_scale * self._background_variance(
+            rate, var_rate, t_eff, good)
         # Whatever ERR**2 holds above the background level: the Poisson noise
         # of sources, and any local excess (e.g. dark noise of a warm pixel).
         var_excess = np.clip(var_rate - var_background, 0.0, None)
@@ -148,6 +145,15 @@ class HstChip:
             var_flat=np.zeros(sci.shape, dtype=np.float32),
             good=good,
         )
+
+    def to_rate(self, sci, err, time, sky):
+        """Native SCI/ERR to sky-subtracted count rate (e-/s), its variance and
+        the effective exposure time per pixel. Shared with the sky step."""
+        if self.is_rate:
+            t_eff = np.full(sci.shape, self.exptime) if time is None else time
+            return sci - sky, err ** 2, t_eff
+        t_eff = np.full(sci.shape, self.exptime)
+        return (sci - sky) / self.exptime, (err / self.exptime) ** 2, t_eff
 
     @staticmethod
     def _background_variance(rate, var_rate, t_eff, good):
@@ -185,6 +191,7 @@ class HstChip:
             'idcscale': self.idcscale,
             'sky': np.nan if self._sky_used is None else self._sky_used,
             'sky_src': 'header' if self.header_sky is not None else 'median',
+            'var_scale': self.var_scale,
             'wcsname': self.wcsname, 'cal_ver': self.cal_ver,
         }
 
@@ -229,6 +236,7 @@ def open_exposure(path, tolerated_bits=None):
                 shape=hdu.data.shape, photfnu=fnu, idcscale=float(idcscale),
                 is_rate=(bunit == 'ELECTRONS/S'),
                 header_sky=(float(h[SKY_KEY]) if SKY_KEY in h else None),
+                var_scale=float(h.get(VARSCALE_KEY, 1.0)),
                 tolerated_bits=tolerated_bits, rootname=rootname,
                 proposid=int(primary.get('PROPOSID') or 0),
                 date_obs=str(primary.get('DATE-OBS') or ''),

@@ -65,7 +65,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   mask). Needs only astropy; nothing in the NIRCam or NIRSpec paths imports it. Checked
   on one real ACS/WFC exposure: the shared drizzle reproduces AstroDrizzle on the same
   30 mas grid (flux ratio 1.000000 overall and at each chip centre). See
-  docs/hst/design.md section 8b.
+  docs/hst/design.md section 8b. Also: an `HST` step-stamp key set in `common/cfp.py`,
+  `hst/steps/wcs_init.py` (distortion model into the headers with `stwcs.updatewcs`,
+  no astrometry database, reference variables scoped to the call) and
+  `hst/steps/sky.py` (per-chip sky recorded as `CFSKY`, ACS amplifier offsets removed
+  from the pixels, and `CFVARSC`, the ratio of measured sky variance to the `ERR`
+  model, which the adapter applies to its background variance).
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.

@@ -124,6 +124,39 @@ NIRSPEC = Keyset(
 )
 
 
+# --- HST canonical-exposure chain (ACS/WFC and WFC3/IR) ---------------------
+# One canonical calibrated FITS per exposure (`<rootname>_flc.fits` or
+# `<rootname>_flt.fits`, native HST layout), mutated in place by the process
+# steps in this order. See docs/hst/design.md, section 2.
+HST = Keyset(
+    name='hst',
+    keys=[
+        'CFP_CAL',   # calibration: calacs / calwf3 at a pinned context, or archive
+        'CFP_WCS',   # distortion model written into the headers (stwcs)
+        'CFP_QUAL',  # guiding / smear quality gate
+        'CFP_HMSK',  # detector masks: satellite trails, persistence, bad pixels
+        'CFP_SKY',   # per-chip sky, ACS amplifier offsets, variance scale
+        'CFP_ALGN',  # astrometric align
+        'CFP_CR',    # cosmic-ray flags (per visit)
+        'CFP_PREV',  # preview PNG
+        'CFP_MASK',  # user region masks
+        'CFP_OUT',   # second-pass outlier detection (combine working copies)
+    ],
+    comments={
+        'CFP_CAL':  'campfire: calibration source, version, context',
+        'CFP_WCS':  'campfire: distortion WCS written',
+        'CFP_QUAL': 'campfire: quality gate result',
+        'CFP_HMSK': 'campfire: detector masks applied',
+        'CFP_SKY':  'campfire: sky, amp offsets, variance scale',
+        'CFP_ALGN': 'campfire: align solve',
+        'CFP_CR':   'campfire: cosmic rays flagged',
+        'CFP_PREV': 'campfire: preview PNG rendered',
+        'CFP_MASK': 'campfire: user masks applied',
+        'CFP_OUT':  'campfire: outlier detection done',
+    },
+)
+
+
 # Backward-compatible module-level aliases: legacy NIRCam call sites and
 # nircam/status.py reference ``cfp.CFP_KEYS`` / ``cfp.CFP_COMMENTS`` directly.
 CFP_KEYS = NIRCAM.keys
