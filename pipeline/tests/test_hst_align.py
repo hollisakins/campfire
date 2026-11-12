@@ -130,7 +130,7 @@ def test_align_visit_corrects_and_records(visit):
         assert _offset_from_truth(f, crvals[f]) < 0.005          # 5 mas
         value = cfp.step_value(f, 'CFP_ALGN', keyset=cfp.HST)
         assert value.startswith('fit=') and 'pool=visit' in value
-        assert 'rc=abc123' in value and 'chips=' not in value    # no per-chip fit
+        assert 'rc=abc123' in value and 'chip=' in value
         tokens.append(value.split('rel=')[1].split()[0])
         with fits.open(f) as hdul:
             for v in (1, 2):
@@ -223,8 +223,12 @@ def test_no_pool_relies_on_the_dither_offsets_in_the_headers(visit):
 
     # the per-chip fit can be turned on, and is then recorded per chip
     sol = align_visit(files, refcat, key='jal01', overwrite=True,
-                      config={'per_chip_fit': True})
-    assert all('chips=' in v for v in stamps())
+                      config={'exposure_fits': 'always'})
+    assert all('chip=x' in v for v in stamps())
+    # and the chip fits can be turned off altogether
+    sol = align_visit(files, refcat, key='jal01', overwrite=True,
+                      config={'chip_fits': False})
+    assert all('chip=-' in v for v in stamps())
 
 
 def test_nircam_names_for_the_fit_are_refused(visit):

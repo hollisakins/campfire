@@ -417,25 +417,52 @@ def test_fine_groups_share_one_fit_per_detector_across_exposures():
     assert all(d.aligned and d.residual_arcsec < 0.01 for d in both.trial_detectors)
 
 
-def test_per_exposure_fits_are_kept_only_when_the_catalog_can_place_a_detector(monkeypatch):
-    # The decision of pool = "visit" between shared fits and per-exposure fits:
-    # by the expected error of one detector's fit in one exposure, not by how
-    # well the exposures agree with each other.
-    from campfire_pipeline.nircam.align import apply
+def _two_exposures(extra_a, extra_b, n_src=40, ref_noise_arcsec=0.0):
+    import dataclasses
+    from astropy.table import vstack
 
-    def solution(n, resid_mas, aligned=True):
-        return DetectorSolution('d', None, 'rshift', resid_mas / 1000.0, n, True,
-                                aligned=aligned)
+    a, ref_a = _build_group(n_det=3, n_src=n_src, offset=(2.0, 0.0),
+                            per_det_extra=extra_a, seed=1)
+    b, ref_b = _build_group(n_det=3, n_src=n_src, offset=(2.0, 0.0),
+                            per_det_extra=extra_b, seed=2)
+    detectors = ([dataclasses.replace(d, detector=f'e1|{d.detector}') for d in a]
+                 + [dataclasses.replace(d, detector=f'e2|{d.detector}') for d in b])
+    refcat = vstack([ref_a, ref_b])
+    if ref_noise_arcsec:
+        rng = np.random.default_rng(7)
+        refcat['RA'] = refcat['RA'] + rng.normal(0, ref_noise_arcsec / 3600.0,
+                                                 len(refcat)) / _COSD
+        refcat['DEC'] = refcat['DEC'] + rng.normal(0, ref_noise_arcsec / 3600.0,
+                                                   len(refcat))
+    groups = {d.detector: d.detector.split('|')[1] for d in detectors}
+    return detectors, refcat, groups
 
-    # relative agreement says "shared is better" in both cases; it must not decide
-    monkeypatch.setattr(apply, '_between_exposures', lambda group, wcs: (1.0, 0.5, 6))
-    dense = {f'e{i}|d': solution(400, 6.0) for i in range(4)}       # 0.25 mas
-    sparse = {f'e{i}|d': solution(80, 70.0) for i in range(4)}      # 6.6 mas
-    assert apply._keep_exposure_fits({}, dense, dense, 'v', 1.0) is True
-    assert apply._keep_exposure_fits({}, sparse, sparse, 'v', 1.0) is False
-    # a trial that loses a detector the shared solution had is never kept
-    lost = dict(dense, **{'e0|d': solution(400, 6.0, aligned=False)})
-    assert apply._keep_exposure_fits({}, dense, lost, 'v', 1.0) is False
+
+def test_held_out_sources_prefer_per_exposure_fits_when_a_detector_moves():
+    # Detector 2 sits +0.03" off in one exposure and -0.03" off in the other: one
+    # fit for the visit cannot remove that, a fit per exposure can. Scored on
+    # reference sources held out of both fits, the per-exposure fits are closer.
+    detectors, refcat, groups = _two_exposures({2: (0.0, 0.03)}, {2: (0.0, -0.03)})
+    sol = solve_exposure_group(detectors, refcat, key='visit', fine_groups=groups,
+                               fine_trial=True)
+    assert sol.status == 'SOLVED' and sol.trial_preferred is True
+    d = sol.diagnostics
+    assert d['held_out_exposure_mas'] < d['held_out_shared_mas']
+    # the shared solution still carries the offsets; the alternative does not
+    shared = {s.detector: s for s in sol.detectors}
+    own = {s.detector: s for s in sol.trial_detectors}
+    assert shared['e1|nrc2'].residual_arcsec > 0.02
+    assert own['e1|nrc2'].residual_arcsec < 0.01
+
+
+def test_held_out_sources_keep_shared_fits_when_the_catalog_is_poor():
+    # No detector is off; the catalog is sparse and noisy (12 sources per
+    # detector, 50 mas each). Per-exposure fits can only add noise, and on
+    # held-out sources they are no closer.
+    detectors, refcat, groups = _two_exposures({}, {}, n_src=12, ref_noise_arcsec=0.05)
+    sol = solve_exposure_group(detectors, refcat, key='visit', fine_groups=groups,
+                               fine_trial=True, max_residual_arcsec=None)
+    assert sol.status == 'SOLVED' and sol.trial_preferred is False
 
 
 def test_fine_removes_subtolerance_systematic_offset():

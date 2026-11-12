@@ -87,7 +87,9 @@ Release procedure: edit the `## Unreleased` section below, then run
   settings (`pool`, `fit`, `per_chip_fit`; `hst/steps/align.py::DEFAULTS`): exposures
   of a visit are fitted to each other, then to the catalog as one body with a linear
   term (shift, rotation, scale, skew) when the catalog can hold one and a shift and
-  rotation otherwise; no per-chip fit by default. For this the solver takes
+  rotation otherwise; then the chips as NIRCam treats its detectors (one fit per chip
+  for the visit, a second tie, per-exposure chip fits decided on held-out reference
+  sources; `chip_fits`, `exposure_fits`). For this the solver takes
   `coarse_fitgeom` (default `"rshift"`, the pooled fit as before; not a key the NIRCam
   step passes on).
   HST detection uses the background-only error and drops sources on saturated pixels
@@ -125,9 +127,9 @@ Release procedure: edit the `## Unreleased` section below, then run
   is fitted on its own exactly as before. When a shared fit is accepted the
   exposures are tied a second time with the corrected detectors. On top of the
   shared fits every detector of every exposure gets its own fit against the catalog,
-  for the whole visit or not at all, when the catalog can place one detector of one
-  exposure to `exposure_fit_max_error` (1 mas): kept with a dense NIRCam-derived
-  catalog, not with Legacy Surveys or Gaia alone. A visit with any pending exposure
+  for the whole visit or not at all (`exposure_fits = "auto"`), when that is closer
+  to the reference catalog on sources held out of both fits (two random halves of
+  the reference sources, each solution fitted to one and scored on the other). A visit with any pending exposure
   is re-solved as a whole. New header keywords `ALGNNEXP`, `ALGNTIE`, `ALGNXFIT`. Existing
   alignments are not touched until a field is re-aligned; a re-aligned field's WCS
   changes at the sub-milliarcsecond to few-milliarcsecond level depending on its

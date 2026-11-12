@@ -24,9 +24,14 @@ field (measurements in docs/hst/design.md, section 8b).
   a linear term to ``linear_max_error`` (3 mas per 100 arcsec) and the rigid
   fit otherwise. A dense NIRCam-derived catalog or a rich Gaia field passes;
   HSC or Legacy Surveys used directly do not.
-* **No per-chip fit by default** (``per_chip_fit``). It can be turned on; it
-  then fits each chip of each exposure on its own, as NIRCam fits each
-  detector.
+* **Then the chips, the way the NIRCam step treats its detectors**
+  (``chip_fits``, ``exposure_fits``). One fit per chip for the visit, shared
+  by that chip in every tied exposure and accepted only when significant; if
+  one is accepted the exposures are tied a second time and the pool is fitted
+  again. On top, a fit per chip and exposure, kept for the whole visit when it
+  is closer to the reference catalog on sources held out of both fits. With
+  the linear fit in place these rarely have anything left to correct, and the
+  evidence decides.
 * **WCS.** An HST chip's WCS is an ``astropy.wcs.WCS`` (FITS keywords, SIP and
   lookup-table distortion). It goes to the solver without ``wcsinfo``, which
   selects the arcsec-plane FITS corrector
@@ -86,10 +91,17 @@ DEFAULTS = {
     # mas per 100 arcsec. The term to be corrected is 3 to 7; a fit that cannot
     # do better than about 3 would add as much error as it removes.
     'linear_max_error': 3.0,
-    # A further shift and rotation for each chip of each exposure, as the NIRCam
-    # step does for each detector. Off: on ACS it corrected part of what the
-    # linear fit corrects in full, and cost agreement between exposures.
-    'per_chip_fit': False,
+    # After the pool's fit, a shift and rotation for each chip: one per chip for
+    # the pool, shared by that chip in every tied exposure and accepted only
+    # when significant (the NIRCam rule, counted on distinct reference sources).
+    # When one is accepted the exposures are tied a second time.
+    'chip_fits': True,
+    # On top of that, a fit per chip AND exposure, for the whole pool or not at
+    # all. 'auto': kept when it is closer to the reference catalog on sources
+    # held out of both fits (the catalog's sources are split in two halves,
+    # each solution is fitted to one and scored on the other). 'never',
+    # 'always': no decision. Same setting and rule as [nircam.align].
+    'exposure_fits': 'auto',
     # Common sources needed to fit one exposure to another.
     'tie_min_matched': 20,
 }
@@ -238,6 +250,9 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
         raise ValueError(f"pool = {opt['pool']!r}: expected 'visit' or 'exposure'")
     if opt['fit'] not in ('auto', 'linear', 'rigid'):
         raise ValueError(f"fit = {opt['fit']!r}: expected 'auto', 'linear' or 'rigid'")
+    if opt['exposure_fits'] not in ('auto', 'never', 'always'):
+        raise ValueError(f"exposure_fits = {opt['exposure_fits']!r}: expected "
+                         f"'auto', 'never' or 'always'")
 
     mjd = _mid_mjd(files[0])
     if mjd is not None:
@@ -271,14 +286,54 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
 
     rc = f' rc={refcat_hash}' if refcat_hash else ''
     solved, all_detectors, n_matched, first, fits_used = False, [], 0, None, []
+    chip_marks = []
+
+    def fit_pool(members, inputs, pool_key):
+        dets = [d for f in members for d in inputs[f]]
+        # the same chip in every exposure of the pool shares one fit
+        groups = ({d.detector: d.detector.rsplit('_', 1)[1] for d in dets}
+                  if len(members) > 1 else None)
+        return _fit_pool(
+            dets, refcat, key=pool_key, fit=opt['fit'],
+            linear_max_error=float(opt['linear_max_error']),
+            chip_fits=bool(opt['chip_fits']), exposure_fits=opt['exposure_fits'],
+            groups=groups, solve=solve_exposure_group, config=cfg)
+
     for members in pools:
         together = len(members) > 1
         pool_key = key if together else f'{key}:{os.path.basename(members[0])[:9]}'
-        sol, used, lin_err = _fit_pool(
-            [d for f in members for d in by_exposure[f]], refcat, key=pool_key,
-            fit=opt['fit'], linear_max_error=float(opt['linear_max_error']),
-            per_chip_fit=bool(opt['per_chip_fit']), solve=solve_exposure_group,
-            config=cfg)
+        sol, used, lin_err = fit_pool(members, by_exposure, pool_key)
+        carried = False
+        if (together and sol.status == 'SOLVED'
+                and sol.chosen(opt['exposure_fits'])[1] != 'pooled'
+                and any(d.dof not in ('coarse', 'identity') for d in sol.detectors)):
+            # A chip was corrected in its own frame after the exposures were
+            # tied; its rotation moves a source by a different amount in each
+            # dither, so the tie is slightly off. Tie once more with the
+            # corrected chips and fit again from there (as the NIRCam step does).
+            fitted = {d.detector: d.wcs for d in sol.detectors}
+            corrected = {f: [dataclasses.replace(d, wcs=fitted[d.detector])
+                             for d in by_exposure[f]] for f in members}
+            again = _tie(corrected, key=key, min_matched=int(opt['tie_min_matched']),
+                         solve=solve_exposure_group, config=cfg)
+            if all(t != '0' for t in again.values()):
+                second = fit_pool(members, corrected, pool_key)
+                if second[0].status == 'SOLVED':
+                    sol, used, lin_err = second
+                    carried = True
+        # Which chip fits to keep, for the whole pool: none, one per chip for
+        # the visit, or also one per chip and exposure. The solver's verdict
+        # from reference sources held out of the fits (as for NIRCam).
+        chosen, which = sol.chosen(opt['exposure_fits'])
+        has_fit = any(d.dof not in ('coarse', 'identity') for d in chosen)
+        if which == 'exposure' or (not together and has_fit):
+            mark = 'x'          # an exposure fitted alone: its chip fits are its own
+        elif carried or (which == 'shared' and has_fit):
+            mark = 'v'
+        else:
+            mark = '-'
+        sol = dataclasses.replace(sol, detectors=list(chosen))
+        chip_marks.append(mark)
         first = first or sol
         fits_used.append(used)
         all_detectors.extend(sol.detectors)
@@ -298,17 +353,18 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
             res = max(d.residual_arcsec for _, d in summary[f])
             n = sum(d.n_matched for _, d in summary[f])
             n_matched += n
+            # chip: '-' no chip fit, 'v' one fit per chip for the visit,
+            #       'x' a fit per chip and exposure
             value = (f'fit={used} pool={"visit" if together else "exposure"} '
-                     f'res={res * 1000:.1f}mas n={n} rel={rel[f]}{rc}')
-            if opt['per_chip_fit']:
-                value += ' chips=' + ','.join(d.dof for _, d in summary[f])
+                     f'chip={mark} res={res * 1000:.1f}mas n={n} rel={rel[f]}{rc}')
             _write_back(f, by_file[f], value)
             log(f'align[{key}]: {os.path.basename(f)} {value}')
     return GroupSolution(
         key=key, status='SOLVED' if solved else 'NOT_ALIGNED', shift=first.shift,
         rot_deg=first.rot_deg, rmse_arcsec=first.rmse_arcsec, n_matched=n_matched,
         detectors=all_detectors,
-        diagnostics={'fit': fits_used, 'pools': [len(m) for m in pools]})
+        diagnostics={'fit': fits_used, 'pools': [len(m) for m in pools],
+                     'chip': chip_marks})
 
 
 def _linear_term_error(sol, detectors):
@@ -361,8 +417,8 @@ def _linear_term_error(sol, detectors):
     return float(np.mean(scatter) / (np.sqrt(len(sources)) * spread) * 100.0)
 
 
-def _fit_pool(detectors, refcat, *, key, fit, linear_max_error, per_chip_fit, solve,
-              config):
+def _fit_pool(detectors, refcat, *, key, fit, linear_max_error, chip_fits,
+              exposure_fits, groups, solve, config):
     """Fit one pool of chips to the reference catalog; return
     ``(solution, 'rigid' | 'linear', expected linear-term error)``.
 
@@ -370,23 +426,45 @@ def _fit_pool(detectors, refcat, *, key, fit, linear_max_error, per_chip_fit, so
     skew (six numbers). With ``fit = 'auto'`` the rigid fit runs first and the
     linear fit replaces it when the matches can hold a linear term to
     ``linear_max_error`` (mas per 100 arcsec).
+
+    With ``chip_fits`` each chip then gets a fit of its own: one for the pool,
+    shared by that chip in every exposure (``groups``), and the solution also
+    carries the alternative with a fit per chip and exposure plus the solver's
+    verdict on which is closer to held-out reference sources. A pool of one
+    exposure has no ``groups``; its chip fits are simply its own.
     """
-    chips = {} if per_chip_fit else {'fine_fitgeom': 'none'}
+    if not chip_fits:
+        chips = {'fine_fitgeom': 'none'}
+    elif groups:
+        chips = {'fine_groups': groups, 'fine_trial': True}
+    else:
+        chips = {}
     if fit == 'linear':
         sol = solve(detectors, refcat, key=key, dva_repivot=False,
                     coarse_fitgeom='general', **chips, **config)
         return sol, 'linear', float('nan')
-    sol = solve(detectors, refcat, key=key, dva_repivot=False,
-                coarse_fitgeom='rshift', **chips, **config)
-    err = _linear_term_error(sol, detectors) if sol.status == 'SOLVED' else float('inf')
-    if fit == 'auto' and err <= linear_max_error:
+    if fit == 'rigid':
+        sol = solve(detectors, refcat, key=key, dva_repivot=False,
+                    coarse_fitgeom='rshift', **chips, **config)
+        return sol, 'rigid', float('nan')
+    # 'auto': can the matches hold a linear term? Judged on the pooled shift
+    # and rotation alone. Chip fits would absorb part of a field-wide term chip
+    # by chip and leave residuals that no single linear term describes.
+    probe = solve(detectors, refcat, key=key, dva_repivot=False,
+                  coarse_fitgeom='rshift', fine_fitgeom='none', **config)
+    err = (_linear_term_error(probe, detectors) if probe.status == 'SOLVED'
+           else float('inf'))
+    if err <= linear_max_error:
         lin = solve(detectors, refcat, key=key, dva_repivot=False,
                     coarse_fitgeom='general', **chips, **config)
         if lin.status == 'SOLVED' and all(d.aligned for d in lin.detectors):
             log(f'align[{key}]: linear fit (a linear term can be held to '
                 f'{err:.1f} mas per 100 arcsec; limit {linear_max_error:g})')
             return lin, 'linear', err
-    if fit == 'auto' and sol.status == 'SOLVED':
+    sol = (solve(detectors, refcat, key=key, dva_repivot=False,
+                 coarse_fitgeom='rshift', **chips, **config)
+           if chip_fits and probe.status == 'SOLVED' else probe)
+    if sol.status == 'SOLVED':
         log(f'align[{key}]: shift and rotation only (a linear term would be '
             f'uncertain by {err:.1f} mas per 100 arcsec; limit {linear_max_error:g})')
     return sol, 'rigid', err

@@ -710,49 +710,6 @@ def _between_exposures(group, wcs_of):
     return float(np.sqrt(np.mean(med2))), float(np.sqrt(np.mean(var))), len(med2)
 
 
-def _keep_exposure_fits(group, baseline, trial, key, max_error_mas):
-    """Decide between the two solutions of a visit: per-detector fits shared by
-    the visit (*baseline*), or those plus a fit of every detector in every
-    exposure against the reference catalog (*trial*). Both are
-    ``{name: DetectorSolution}``; the answer holds for the whole visit.
-
-    The trial is kept when the reference catalog can place a single detector of
-    a single exposure well: when the expected error of such a fit (scatter per
-    match over the square root of its matches, median over the detectors) is at
-    most *max_error_mas*. Then every detector of every exposure is tied to the
-    catalog directly, which is what absolute accuracy needs. Otherwise the fits
-    would be noise and the baseline stands.
-
-    Agreement between the exposures on their common sources is logged for both
-    but does NOT decide. It was tried as the judge and failed an absolute check:
-    on a COSMOS-Web visit (dithers of 25 arcsec) aligned to half of COSMOS2025,
-    the baseline had the exposures agreeing better (1.4 against 1.8 mas) and
-    sat further from the other half of the catalog (3.8 against 2.7 mas per
-    detector). Making common sources coincide turns a small error of scale or
-    rotation in the detector geometry into an error of each exposure's
-    position, of that error times the dither step.
-    """
-    if any(baseline[n].aligned and not trial[n].aligned for n in baseline):
-        log(f"align[{key}]: per-exposure detector fits rejected a detector the "
-            f"shared solution accepted; keeping the shared solution.")
-        return False
-    errors = [d.residual_arcsec / 1.1774 / np.sqrt(d.n_matched) * 1000.0
-              for d in trial.values()
-              if d.aligned and d.n_matched > 0 and np.isfinite(d.residual_arcsec)]
-    if not errors:
-        return False
-    expected = float(np.median(errors))
-    keep = expected <= float(max_error_mas)
-    rms_b, floor, n = _between_exposures(group, {k: v.wcs for k, v in baseline.items()})
-    rms_t, _, _ = _between_exposures(group, {k: v.wcs for k, v in trial.items()})
-    log(f"align[{key}]: a fit of one detector in one exposure is good to "
-        f"{expected:.2f} mas against this catalog (limit {float(max_error_mas):g}): "
-        f"{'keeping the per-exposure fits' if keep else 'keeping the shared fits'}. "
-        f"For information, between exposures: {rms_b:.2f} mas shared, {rms_t:.2f} "
-        f"mas per-exposure (floor {floor:.2f}, {n} detectors).")
-    return bool(keep)
-
-
 def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
                       status=None):
     """Align the exposures of one visit together; write the results.
@@ -792,8 +749,10 @@ def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
                 for k, m in pools]
 
     solve_cfg = {k: config[k] for k in _SOLVE_KEYS if k in config}
-    max_error = float(config.get('exposure_fit_max_error', 1.0))   # mas; 0 = never
-    judge = max_error > 0
+    exposure_fits = str(config.get('exposure_fits', 'auto')).lower()
+    if exposure_fits not in ('auto', 'never', 'always'):
+        raise ValueError(f"[nircam.align].exposure_fits = {exposure_fits!r}: "
+                         f"expected 'auto', 'never' or 'always'")
     members_of = dict(pools)
     results, loaded = {}, {}
     for k, members in pools:
@@ -835,7 +794,7 @@ def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
             return solve_exposure_group(
                 detectors, ref, key=visit_key,
                 **{**solve_cfg, 'dva_repivot': False}, fine_groups=groups_of,
-                fine_trial=judge)
+                fine_trial=True)
         except Exception as e:  # noqa: BLE001 — fall back to the per-exposure fit
             log(f"align[{visit_key}]: joint fit raised {type(e).__name__}: {e}")
             return None
@@ -847,6 +806,7 @@ def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
         sol = joint(group, visit_key)
         first_dof = {}
         if (sol is not None and sol.status == 'SOLVED'
+                and sol.chosen(exposure_fits)[1] != 'pooled'
                 and any(d.dof not in ('coarse', 'identity') for d in sol.detectors)):
             # The exposures were tied before the detectors were corrected. A
             # correction of a detector in its own frame (above all its rotation)
@@ -876,13 +836,12 @@ def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
             continue
         log(f"align[{visit_key}]: SOLVED ({len(group)} exposures, "
             f"{len(sol.detectors)} detectors, n_matched={sol.n_matched})")
-        by_name = {d.detector: d for d in sol.detectors}
-        kept = False
-        if judge and sol.trial_detectors is not None:
-            trial = {d.detector: d for d in sol.trial_detectors}
-            kept = _keep_exposure_fits(group, by_name, trial, visit_key, max_error)
-            if kept:
-                by_name = trial
+        # Which detector fits to keep, for the whole visit: none, one per
+        # detector for the visit, or also one per detector and exposure. The
+        # solver's verdict from reference sources held out of the fits.
+        chosen, which = sol.chosen(exposure_fits)
+        by_name = {d.detector: d for d in chosen}
+        kept = which == 'exposure'
         # After a second pass a detector whose shared fit was made in the first
         # reads 'coarse'; report the fit it actually carries.
         for name, dof in first_dof.items():

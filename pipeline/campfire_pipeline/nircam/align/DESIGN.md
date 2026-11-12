@@ -289,11 +289,16 @@ Sections 3.1 to 3.4 describe one exposure solved on its own, which is
 5. **A fit per detector and exposure, when the catalog supports it.** On top of
    the shared fits, every detector of every exposure gets the fit of 3.4
    against the reference catalog, for the whole visit or not at all
-   (`apply._keep_exposure_fits`, recorded as `ALGNXFIT`). It is kept when the
-   catalog can place one detector of one exposure to `exposure_fit_max_error`
-   (1 mas; scatter per match over the square root of the matches, median over
-   the detectors). The rule is about absolute accuracy. Agreement between the
-   exposures was tried as the judge and failed a check against COSMOS2025:
+   (`exposure_fits = "auto"`, recorded as `ALGNXFIT`). It is kept when it is
+   closer to the reference catalog on sources neither solution was fitted to:
+   the reference sources are split at random into two halves, both solutions
+   are fitted to one half, every detector of every exposure is scored by the
+   median offset of its matches in the other half, and the halves swap
+   (`solve_exposure_group(fine_trial=True)`; on the sources they were fitted
+   to, the per-exposure fits would win by construction). What is written is
+   fitted to all the sources. The rule is about absolute accuracy. Agreement
+   between the exposures was tried as the judge and failed a check against
+   COSMOS2025:
    the solution whose exposures agreed best (1.4 mas) sat furthest from the
    catalog (3.8 mas per detector, against 2.8 with the per-exposure fits).
    Making common sources coincide turns a small scale or rotation error of the
