@@ -31,9 +31,12 @@ scratch paths of each figure, is in git history up to commit 7887b615. Scratch r
 `~/campfire-data/scratch/claude/` on the reduction machine and are not part of the repository.
 
 **Units.** Positions along a slitlet are in slit units: the open height of one shutter is 1
-(0.46 arcsec), the shutter pitch 1.15. Positions across a shutter (along the dispersion) are in
-shutter widths (SRCXPOS, 0.20 arcsec open, 0.27 arcsec pitch). jwst's planned position along the
-slit (SRCYPOS) is in shutter pitches.
+(0.46 arcsec), the shutter pitch 1.15. jwst's planned positions are both in shutter pitches:
+SRCXPOS across a shutter (along the dispersion; 0.27 arcsec pitch, 0.20 arcsec open) and SRCYPOS
+along the slit (0.53 arcsec). Checked through the slit WCS on zenith_p15's 282 slits (2026-11-12):
+the catalog position lands at 1.346 x SRCXPOS open widths across the shutter (0.27 / 0.198 = 1.364)
+and 1.146 x SRCYPOS open heights along the slit (0.53 / 0.46 = 1.152), so the pipeline's
+conversions of both (`X_PITCH` 0.27 arcsec) are right.
 
 **Datasets.** The observations named below: p1 is `ember_cosmos_p1` (PRISM and G395M), uncover2
 a PRISM observation of two visits, spurs_gds a SPURS field (G140M, G235M, G395M). The calibration
@@ -63,6 +66,8 @@ Version 2 changes six things.
    smoothly with wavelength, seen through a diffraction model of the MSA, in every exposure and
    in its negative images from the nod subtraction. `fnu` is extracted with this model as the
    weights. The reported flux of an extended source is its light that entered the shutter across the dispersion (all of it along the slit).
+   The same forward model is a public package that fits users' own source models (points, Gaussians,
+   Sérsics, each with its own spectrum) to a target's deployed files (section 13).
 4. **Other slitlets' light** is solved jointly with each source's neighbors and reported as its
    own column, `fnu_contam`, never subtracted from `fnu`.
 5. **Same-slitlet neighbors.** A background exposure that puts a cataloged neighbor on the
@@ -91,7 +96,7 @@ Version 2 changes six things.
 | Every 2-D image drizzled once per product | stage 3 | `drizzle_map.py` | 6.10 |
 | Boundary with jwst's references | stage 3 | `crds_refs.py`, `data/nirspec_calibrations.toml` | 7 |
 
-Versions at the time of writing: `FIT_VERSION` 9, optics model `2026.11-r8` (engine 2), master
+Versions at the time of writing: `FIT_VERSION` 12, canonical format `CFSCHEMA` 2, optics model `2026.11-r8` (engine 2), master
 background `CFMBKGV` 1.9 (step 1 1.6), `JOINT_PASS_VERSION` 5, `PASS1_VERSION` 11, bar offset
 `MEASURE_VERSION` 5, trace map version 3.
 
@@ -462,7 +467,14 @@ from the same drizzled data as the other extractions.
   the joint solve (p1 629668's false 5.05 um line).
 - **The center law**: the trace's drift by MSA quadrant and with wavelength, measured through the
   optics model on 497 stars (`profile_fit.CENTRE_LAW`). Held out by observation it leaves a scatter
-  of 0.001-0.011 slit units over 0.85-4.7 um on NRS1.
+  of 0.001-0.011 slit units over 0.85-4.7 um on NRS1. The law magnifies positions along the slit by
+  1 + alpha (up to 1.3 %), so the source's width is stretched by the same factor as its offsets
+  (`FIT_VERSION` 12; before, only the center moved).
+- **The shape fit** is a `forward.Fit` of one `forward.SlitGaussian` (`ProfileModel.shape_fit`, section
+  13): center, drift, ln width and width change are its parameters, with the priors below. The spectrum
+  (and, on frames, the master-background scale) is solved exactly at every trial shape. Derivatives are
+  taken at relative steps of 1e-4 and the fit stops when a step improves chi2 by less than 0.01
+  (`FIT_DIFF_STEP`, `FIT_DCHI2`; `FIT_VERSION` 12, appendix C).
 - **Bar offset**: each pixel's slit position and the planned position move by the observation's bar
   offset (6.4).
 - **Priors and bounds** on center, width, drift and width change (`prior_*`, `bound_*` in
@@ -1120,6 +1132,17 @@ name.
 **Per exposure.** `<base>_rate.fits` carries step 1's tables and the trace map;
 `<base>_mbkg.fits` (layout kind `nirspec_mbkg`); the canonicals; `bkgslits/` (local, regenerable).
 
+**What stage 3 writes into the canonicals** (`canonical.write_stage3`, `CFSCHEMA` 2), so that its fit
+can be rebuilt from deployed files alone (section 13):
+- Spec3's outlier flags in DQ bit 4 (16), and the master-background frames' own flags (6.9) in bit 4
+  of `PRE_BKGSUB_DQ`. Nothing earlier sets bit 4 in a canonical, so clearing it recovers stage 2's
+  DQ; stage 2b's revert and every Spec3 run clear it first (`clear_stage3`). `CFOUTL` records that the
+  flags are there.
+- One `CONTAM` extension: the other sources' predicted light and the level at which its uncertainty
+  masks a pixel, for the nod difference and for the frame, as planes of one losslessly compressed
+  cube (about 3 % of the file; user, 2026-11-12: one extension, to keep the files small).
+- `BAROFFS`: the observation's bar offset (6.4) added to the slit positions.
+
 **Deploy and database.** The deploy writes `<base>_spec_mbkg.json` (layout kind
 `spectrum_mbkg_json`) beside the spectrum sidecars, and the `spectra` columns `mbkg_preferred`,
 `mbkg_reason`, `n_exp` and `n_exp_bkg`. The stuck list's database shape is in section 4.3.
@@ -1728,6 +1751,7 @@ marks made with the old ordinal buttons do not show there.
 | Trace maps | `nirspec/trace_overlap.py` |
 | Same-slitlet neighbors | `nirspec/slitlet_neighbours.py`, `nirspec/stage2.py` |
 | Source model, shape chain, products | `nirspec/profile_fit.py`, `nirspec/profile_chain.py`, `nirspec/profile_product.py` |
+| Forward model (user source models, section 13) | `nirspec/forward/` (`model.py`, `components.py`, `params.py`, `fit.py`, `products.py`, `plots.py`), `nirspec/canonical.py` (`write_stage3`), `nirspec/optics.py` (`image_kernel`) |
 | Optics model and its calibration | `nirspec/optics.py`, `data/nirspec_optics.json`, `nirspec/optics_calibration.py`, `scripts/nirspec_optics_checks.py` (under `pipeline/`) |
 | Bar offset | `nirspec/bar_offset.py` |
 | Joint first pass, other slitlets' light | `nirspec/joint_first_pass.py`, `nirspec/profile_joint.py`, `nirspec/profile_extend.py`, `nirspec/profile_contam.py` |
@@ -1745,28 +1769,98 @@ explicitly.
 
 ---
 
-## 13. Stretch goal: user source models (future work)
+## 13. User source models: the forward model
 
 **Goal.** A user fits their own source model to one target's data with the same forward model stage 3
-uses: a Sérsic profile, a bulge plus a disk, or clumps. The end state: the web portal offers a target's
-intermediate products for download, and the user points their own agent at them and asks it to "fit this
-with a Sérsic model."
+uses: a Sérsic profile, a bulge plus a disk, or clumps, each with its own spectrum. The end state: the
+web portal offers a target's intermediate products for download, and the user points their own agent at
+them and asks it to "fit this with a Sérsic model" (user, 2026-11-12: inputs from files already deployed,
+"ideally it wouldn't be another file"; stage 3's fit "a specific application of this"; not a one-track
+tool: sizes fixed, parameters tied, outside information such as NIRCam decomposition posteriors fed in
+from the user's own scripts).
 
-The machinery exists today (`profile_fit.ProfileModel` and its design matrix, the optics model, the
-exposure loading), but it is internal and undocumented. It would need some generalization, and
-documenting as a public API of the `cfpipe` package. What it would take:
+**Status (2026-11-12).** Built on `claude/extraction-v2` as `campfire_pipeline.nirspec.forward`, and
+stage 3's shape fit runs on it. Not yet reached: web access to a target's files and the user-facing
+documentation (below).
 
-1. **A small documented layer** over the forward model: load a target's exposures, render a source
-   model through the optics and shutters, and solve for the spectrum at a given shape.
-2. **Image models beyond round Gaussians:** elliptical components, or an arbitrary image such as a
-   NIRCam stamp.
-3. **A per-target bundle of intermediate products:** everything the forward model needs for one target,
-   so a user can run it without the archive.
-4. **Web access to that bundle.** Access rules probably allow it already; it is not exposed.
-5. **Agent-friendly documentation:** what the bundle holds, the API, and worked examples.
+**The model.** Exposure k's value at pixel p is
 
-**Open.** The exact form of the intermediate products, and how this relates to the 2-D transmission or
-profile-model products we will ship (still under discussion).
+    sum over components i of  tau_k(lam) f_i(lam) L_ik(y, lam)
+        (minus the same for each exposure subtracted from it, in a nod difference)
+        + the other sources' predicted light (held)  [+ s x the master background, on frames]
+
+with L_ik component i's light at the pixel per unit of its total light, seen through the optics model
+(6.3), the exposure's shutters, bar offset and center law (6.2); tau_k the throughput no source changes;
+f_i the component's total light per wavelength, on the grid of the reported spectrum. With the shapes
+fixed the model is linear in every f_i (and s), so all spectra are solved together, with their full
+covariance (`ForwardModel.solve`); only the shapes are searched. The spectra are profiled (their best
+values at each shape), not marginalized: with hundreds of spectral points per component that is the
+practical choice. The shapes' errors come from the curvature at the minimum, the spectra's at the best
+shape.
+
+**Components** (`forward.components`):
+- `SlitGaussian`: stage 3's source, a Gaussian along the slit whose center and width vary linearly
+  with log wavelength.
+- `Point`, `Gaussian` (round) and `Sersic` (index, effective radius, axis ratio, position angle),
+  placed on the sky as offsets east and north of the catalog position. Each exposure's slit axes on the
+  sky come from its WCS, so exposures at different roll angles see the same source correctly.
+- `Sum`: several shapes sharing one spectrum (clumps of one galaxy).
+- Any other image: a subclass that gives a surface brightness on the sky and an extent. The general
+  projection weights the image by the share the shutter passes along the dispersion, collapses it onto
+  the slit and places it through the optics tables. A NIRCam stamp is such a subclass; none is shipped.
+
+**Parameters** (`forward.params`). Any component parameter is a number (fixed), a `Param` (free or
+fixed, with bounds and a prior: `Normal`, `LogNormal`, `Uniform`) or `Tied` (a function of other
+parameters). One `Param` given to several components is one parameter, so two components share a center
+by passing the same object. A `JointPrior` constrains several parameters at once, for example a Gaussian
+built from a NIRCam fit's posterior samples.
+
+**The fit** (`forward.fit.Fit`). `Fit(model, components, names, priors, nonnegative)` exposes the free
+parameters' labels, start values and bounds, `log_posterior(theta)` (for a sampler), `residuals(theta)`
+(for least squares) and `run()` (least squares, or minimization when a prior has no residuals). With the
+master-background term on, its allowance enters the objective as in stage 3. `nonnegative` holds chosen
+spectra at or above zero at every shape (an exact non-negative solve; points held at zero are flagged and
+do not count as free in chi2 per degree of freedom). It is an option, not the default: holding a faint
+component at zero removes its downward noise, so its spectrum is biased high where it has no light.
+`forward.plots.panels` draws data, model and residual in 2-D per exposure.
+
+**Inputs: the deployed files** (`forward.load`). A target's science canonicals (background exposures
+included) and, for the master-background frames, each exposure's `_mbkg.fits`. Stage 3 writes into the
+canonicals what its fit took from files that are not kept (section 8: outlier flags in DQ bit 4, the
+`CONTAM` extension, `BAROFFS`), so `load` rebuilds the same pixels, variances and data stage 3 fitted:
+checked on zenith_p15 547856, 549120, 551366 and 575943 to 2e-8 of the peak, for nod differences and
+frames. Files written before `CFSCHEMA` 2 load with a warning and without those three.
+
+**Stage 3 is one application.** `ProfileModel.shape_fit()` is a `Fit` of one `SlitGaussian` with its
+priors; center, drift, ln width (the width `Tied` to it) and width change are its parameters (6.2).
+Against the code before the port, on four zenith_p15 sources: 547856 and 575943 identical, 551366 within
+7e-5 slit units, and 549120 (a source barely constrained along the slit) stopping at a slightly lower
+chi2 with its center at 0.200 against 0.209, its spectrum within 0.07 sigma. Its objective changes by
+0.4 over 0.04 slit units of center, so both stopping points are equally good fits.
+
+**Speed.** For extended components, each exposure's optics tables are put on its pixels once (about 16 MB
+for a PRISM exposure; `Optics.image_kernel`), and components that did not change are reused between the
+fit's derivative steps. A bulge-plus-disk fit of six PRISM exposures takes about a minute (52-63 s on
+547856, from 208 s), the same light to 1e-7 of the peak. Stage 3's own Gaussian takes the direct path
+and is unchanged.
+
+**First use.** zenith_p15 547856 with a round, centered Sérsic bulge (n = 4) plus disk (n = 1): with the
+spectra non-negative the bulge's spectrum goes to zero and its radius to the lower bound, the disk settles
+at r_e 0.37 arcsec, chi2 per degree of freedom 7.3, and the residuals change sign between nods: the light's
+position along the slit moves with wavelength, which two round components on one center cannot follow.
+That is a statement about this source, and the kind of answer the tool is for.
+
+**Left to do.**
+1. **Web access to a target's files.** The canonicals and `_mbkg.fits` are deployed intermediates
+   (`campfire pull --intermediate` fetches an observation's); the portal does not yet offer one target's.
+2. **User-facing documentation**: what the files hold, the API, worked examples (one source, two
+   components, a NIRCam prior), written so a user's agent can follow it.
+3. **Neighbors fitted together.** Other sources' light is held at stage 3's prediction; fitting a
+   neighbor as a component of its own is possible with the same machinery but not wired to `load`.
+4. **Speed for sampling.** A minute per fit is fine for least squares; a sampler needs many more
+   evaluations. The remaining cost is the placement of every projected point on every pixel.
+5. **The 2-D products** (transmission or the source model over the MSA, appendix B 2026-11-09): how they
+   relate to this is still under discussion.
 
 ---
 
@@ -1958,6 +2052,11 @@ The user's decisions that shaped what ships, by date.
   test at a 2 sigma floor; replaces the 2026-11-02 choice of the nodded flags (6.9). Shutters open
   without being listed are found per observation and painted into the master background, PRISM
   only for now (4.5).
+- **2026-11-12** The user source models (section 13) are built from deployed files, with no new
+  file; stage 3's fit is one application of them, and the center law's width stretch reaches stage 3.
+  The other sources' predicted light goes into the canonicals as one extension. Parameters can be
+  fixed, tied or given priors from the user's own scripts. A non-negative option for the spectra.
+  Phases 3 and 4 are built before zenith_p15 and p1 are rerun.
 
 ---
 
@@ -1999,3 +2098,18 @@ Kept because each one changed a conclusion recorded at the time.
   background and no contamination keys.
 - **The profile fit's row height** was undefined on a slit's first and last rows, which slitlets longer
   than three shutters reach.
+- **The shape fit stopped short of its minimum** (found 2026-11-12, every `FIT_VERSION` before 12). The
+  optics tables are float32, so least squares' default derivative step (about 1e-8) returned rounding
+  noise, and the relative stopping tolerance quit at chi2 steps of about 0.2; each fit reported
+  convergence at a point set by rounding (549120: center 0.205 in the old code, 0.247 in a
+  mathematically identical rewrite, minimum at 0.177). Steps of 1e-4 and a stop at a chi2 change of
+  0.01 bring both to the same minimum on a well-constrained source; on 549120, where the objective is
+  nearly flat along the slit, they stop within about 0.5 in chi2 of it (section 13). The calibration-star fit (`optics_calibration`) had the same
+  step and is fixed; the shipped optics tables were fitted before the fix and stay until that
+  calibration is rerun.
+- **The source's width ignored the center law's magnification** (before `FIT_VERSION` 12): the law
+  stretches positions along the slit by up to 1.3 %, and stage 3 moved the center but not the width.
+- **SRCXPOS was suspected to be in open widths** (2026-11-12): one slit-frame unit across the shutter
+  is 0.198 arcsec in the WCS while the pipeline converts SRCXPOS with the 0.27 arcsec pitch. The WCS
+  check (Units, top) showed SRCXPOS is in pitches and the conversion was right; the units paragraph had
+  said otherwise.
