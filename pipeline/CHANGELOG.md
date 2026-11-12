@@ -76,6 +76,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   the subprocesses) and `hst/steps/crreject.py` (AstroDrizzle's `minmed` / `driz_cr`
   rejection per visit and filter, flags transferred to the canonical DQ as bit 4096).
   A three-exposure ACS/WFC visit has been reduced end to end with these steps.
+  `hst/steps/align.py` ties a visit to the field's reference catalog: exposures to each
+  other on their common sources, then one shift and rotation for the visit; `CRVAL` /
+  `CD` written back, the pre-alignment values kept in `CFOCRV*` / `CFOCD*`. For this the
+  align solver accepts FITS WCS chips (`imaging/align/fitswcs.py`, chosen when a
+  detector has no `wcsinfo`), the footprint clip reads an `astropy.wcs.WCS`, and
+  `fine_fitgeom = "none"` turns the per-detector stage off. NIRCam solves are unchanged
+  (JWST corrector whenever `wcsinfo` is given; the default `fine_fitgeom` is as before).
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.

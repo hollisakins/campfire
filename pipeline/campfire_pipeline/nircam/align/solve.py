@@ -264,6 +264,21 @@ def _not_aligned(key, detectors, wcs_getter, *, n_refcat=None, diag=None):
     )
 
 
+def _make_corrector(wcs, wcsinfo, meta):
+    """The ``tweakwcs`` corrector for one detector's WCS.
+
+    A JWST gwcs comes with its ``wcsinfo`` (``v2_ref`` / ``v3_ref`` /
+    ``roll_ref``) and gets a ``JWSTWCSCorrector``, as always. ``wcsinfo=None``
+    marks a WCS stored the HST way (an ``astropy.wcs.WCS`` with SIP and
+    lookup-table distortion); it gets the arcsec-plane FITS corrector, so every
+    arcsec-valued setting of the solve keeps its meaning.
+    """
+    if wcsinfo is None:
+        from campfire_pipeline.imaging.align.fitswcs import ArcsecFITSWCSCorrector
+        return ArcsecFITSWCSCorrector(wcs, meta=meta)
+    return JWSTWCSCorrector(wcs, wcsinfo, meta=meta)
+
+
 def _pool_fit(detectors, wcs_by_det, refcat, match, *, key, fitgeom, nclip, sigma):
     """Fit one shared correction over the pool and return
     ``(correctors, fit_info)``.
@@ -274,7 +289,7 @@ def _pool_fit(detectors, wcs_by_det, refcat, match, *, key, fitgeom, nclip, sigm
     place on success, so the caller reads the corrected WCS back off them.
     """
     correctors = [
-        JWSTWCSCorrector(
+        _make_corrector(
             wcs_by_det[d.detector], d.wcsinfo,
             meta={'catalog': d.catalog, 'group_id': key, 'name': d.detector},
         )
@@ -339,8 +354,11 @@ def _choose_fitgeom(n, coverage, ceiling, mins, min_coverage):
     Falls to a lower geometry when *n* matches are too few for the chosen one,
     and skips rotating geometries (``general``/``rshift``) when *coverage* is
     below *min_coverage* (an unconditioned rotation). ``None`` = keep the coarse
-    attitude for this detector.
+    attitude for this detector. A *ceiling* of ``'none'`` (or ``None``) turns
+    the per-detector stage off: every detector keeps the pooled attitude.
     """
+    if ceiling is None or str(ceiling).lower() == 'none':
+        return None
     try:
         start = _FINE_LADDER.index(ceiling)
     except ValueError:

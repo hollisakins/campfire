@@ -62,15 +62,26 @@ def _detector_corner_sky(wcs, in_shape=_DEFAULT_SHAPE):
     xm, ym = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
     xs = np.array([x0, xm, x1, x1, x1, xm, x0, x0], dtype=float)
     ys = np.array([y0, y0, y0, ym, y1, y1, y1, ym], dtype=float)
-    ra, dec = wcs(xs, ys)
+    if _is_fits_wcs(wcs):
+        ra, dec = wcs.all_pix2world(xs, ys, 0)
+    else:
+        ra, dec = wcs(xs, ys)
     ra = np.asarray(ra, dtype=float)
     dec = np.asarray(dec, dtype=float)
     good = np.isfinite(ra) & np.isfinite(dec)
     return ra[good], dec[good]
 
 
+def _is_fits_wcs(wcs):
+    """True for an ``astropy.wcs.WCS`` (an HST-style chip), False for a gwcs."""
+    return hasattr(wcs, 'all_pix2world') and not callable(wcs)
+
+
 def _pixel_extent(wcs, in_shape):
     """``((x0, x1), (y0, y1))`` pixel bounds for *wcs* (bounding_box or frame)."""
+    if _is_fits_wcs(wcs) and getattr(wcs, 'pixel_shape', None):
+        nx, ny = wcs.pixel_shape
+        return (0.0, float(nx - 1)), (0.0, float(ny - 1))
     bb = getattr(wcs, 'bounding_box', None)
     try:
         # gwcs bounding_box is ((x_lo, x_hi), (y_lo, y_hi)); tolerate the
