@@ -12,6 +12,8 @@ the pieces separately, so a script can use its own optimiser or sampler:
     fit.residuals(theta)       # the whitened data residuals, and the priors' residuals
     result = fit.run()         # least squares (or minimisation when a prior has no residuals)
 
+``Fit(..., nonnegative=['bulge', 'disk'])`` holds those spectra at or above zero at every shape.
+
 The spectra are profiled, not marginalised: at each shape they take their best values. With
 hundreds of spectral points per component that is the practical choice; the shape parameters'
 errors (``FitResult.errors``) come from the curvature at the minimum, and the spectra's errors
@@ -57,14 +59,17 @@ class Fit:
         own ``name`` keeps it. A parameter shared by several components appears once.
     priors : ``params.JointPrior`` objects on several parameters at once (each ``Param``'s own prior is
         taken from it).
+    nonnegative : hold spectra at or above zero (``ForwardModel.solve_components``): True for every
+        component, or the names (or indices) of those held.
     """
 
-    def __init__(self, model, components, names=None, priors=()):
+    def __init__(self, model, components, names=None, priors=(), nonnegative=False):
         self.model = model
         self.components = list(components)
         self.names = list(names) if names is not None else [f'c{i}' for i in range(len(self.components))]
         if len(self.names) != len(self.components):
             raise ValueError('Fit: one name per component')
+        self.nonnegative = self._nonnegative_flags(nonnegative)
         self.joint = list(priors)
         self.free, self.labels = [], []
         for cname, comp in zip(self.names, self.components):
@@ -80,6 +85,16 @@ class Fit:
                     raise ValueError('Fit: a joint prior is on Param objects')
                 if all(p is not q for q in self.free):
                     raise ValueError(f'Fit: a joint prior names {p!r}, which is not a free parameter of the components')
+
+    def _nonnegative_flags(self, nonnegative):
+        n = len(self.components)
+        if nonnegative is True or nonnegative is False or nonnegative is None:
+            return None if not nonnegative else [True] * n
+        flags = [False] * n
+        for x in nonnegative:
+            i = self.names.index(x) if isinstance(x, str) else int(x)
+            flags[i] = True
+        return flags
 
     @staticmethod
     def _parts(cname, comp):
@@ -113,7 +128,7 @@ class Fit:
         """The spectra at shape ``theta`` (default: the current values): a ``model.Solution``."""
         if theta is not None:
             self.set(theta)
-        return self.model.solve(self.current(), covariance=covariance)
+        return self.model.solve_components(self.current(), covariance=covariance, nonnegative=self.nonnegative)
 
     def chi2(self, theta=None):
         return self.model.chi2(self.solve(theta))
@@ -132,12 +147,13 @@ class Fit:
         return lp
 
     def log_posterior(self, theta):
-        """-chi2 / 2 at the best spectra for shape ``theta`` plus the log-priors (-inf outside the
-        bounds): what a sampler takes."""
+        """-chi2 / 2 at the best spectra for shape ``theta`` (with the master-background scale's
+        allowance, when the model has the term) plus the log-priors (-inf outside the bounds): what
+        a sampler takes."""
         lp = self.log_prior(theta)
         if not np.isfinite(lp):
             return -np.inf
-        return -0.5 * self.chi2(theta) + lp
+        return -0.5 * float(np.sum(self.profile_residuals(theta) ** 2)) + lp
 
     def prior_residuals(self):
         """Residuals of the priors at the current values (their squared sum is -2 log-prior up to a
@@ -157,13 +173,25 @@ class Fit:
     def data_residuals(self, theta):
         """The data's residuals over their noise on the fitted pixels (0 elsewhere) at the best spectra
         for shape ``theta``."""
-        s = self.solve(theta)
+        return self._data_residuals(self.solve(theta))
+
+    def _data_residuals(self, s):
         M = self.model
         return np.where(M.use, (M.pix['d'] - s.model) / np.sqrt(M.pix['v']), 0.0)
 
+    def profile_residuals(self, theta):
+        """``data_residuals``, and with the master-background term the scale over its allowance
+        (the term the spectra and scale were solved with): what the shape fit minimises before
+        the priors."""
+        s = self.solve(theta)
+        r = self._data_residuals(s)
+        if self.model.mbkg_sigma is not None:
+            r = np.append(r, s.scale / self.model.mbkg_sigma)
+        return r
+
     def residuals(self, theta):
-        """``data_residuals`` followed by the priors' residuals."""
-        return np.concatenate([self.data_residuals(theta), self.prior_residuals()])
+        """``profile_residuals`` followed by the priors' residuals."""
+        return np.concatenate([self.profile_residuals(theta), self.prior_residuals()])
 
     def _least_squares_ok(self):
         try:
@@ -187,8 +215,8 @@ class Fit:
         success, message, J = True, '', None
         if theta0.size:
             theta0 = np.clip(theta0, lo, hi)
-            chi2_start = self.chi2(theta0)
             if self._least_squares_ok():
+                chi2_start = float(np.sum(self.residuals(theta0) ** 2))
                 opts = dict(x_scale='jac', diff_step=diff_step, ftol=dchi2 / max(chi2_start, 1.0), xtol=1e-10,
                             gtol=1e-10)
                 opts.update(kw)
@@ -207,7 +235,8 @@ class Fit:
         M = self.model
         chi2 = M.chi2(s)
         npix = float(np.sum(M.dof_weight()[M.use]))
-        nfree = len(self.free) + int(s.good.sum()) + (1 if M.mbkg_sigma is not None else 0)
+        nfree = (len(self.free) + int(s.good.sum()) - int(s.at_zero.sum())
+                 + (1 if M.mbkg_sigma is not None else 0))
         cov = np.full((len(self.free), len(self.free)), np.nan)
         if J is not None and len(self.free):
             try:
@@ -225,7 +254,7 @@ class Fit:
         """Forward-difference Jacobian of the residuals at ``theta`` (relative steps, as least squares):
         the priors' too when they all have residuals, else the data's alone (the errors then leave
         the priors out)."""
-        resid = self.residuals if self._least_squares_ok() else self.data_residuals
+        resid = self.residuals if self._least_squares_ok() else self.profile_residuals
         r0 = resid(theta)
         J = np.zeros((r0.size, theta.size))
         for i in range(theta.size):

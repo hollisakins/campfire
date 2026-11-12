@@ -12,8 +12,8 @@ throughput no source changes (``ForwardModel.throughput_fixed``), f_i the compon
 per wavelength. With the shapes fixed the model is linear in every f_i, so all spectra are solved
 together (``ForwardModel.solve``); shapes are fitted around that solve.
 
-Stage 3's profile fit is one application: a single ``components.SlitGaussian`` on the nod
-differences (``profile_fit.ProfileModel``).
+Stage 3's profile fit is one application: a ``Fit`` of a single ``components.SlitGaussian`` on the
+nod differences, with its priors on the shape (``profile_fit.ProfileModel.shape_fit``).
 
 Modules: ``model`` (the data, placement, design matrix and solve), ``components`` (point, round
 Gaussian, Sersic, the pipeline's Gaussian along the slit, and the general projection), ``products``

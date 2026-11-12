@@ -142,6 +142,116 @@ def test_stored_prediction_is_applied_as_stage_3_applies_it():
     assert all(np.array_equal(x.diff, e.diff) and np.array_equal(x.ok, e.ok) for x, e in zip(c, exps))
 
 
+def test_the_kernel_places_points_as_the_table_interpolation_does():
+    # Optics.image_kernel + profile_from_kernel (what project uses) against image_profile, on a table
+    # of random numbers: the same light, points beyond the table's source positions included
+    rng = np.random.default_rng(3)
+    o = object.__new__(O.Optics)
+    tab = rng.random((O.LAM.size, O.C.size, O.Y.size)).astype(np.float32)
+    o.image_table = lambda mask: tab
+    npx = 300
+    y = rng.uniform(-2.0, 2.0, npx)
+    lam = np.exp(rng.uniform(np.log(0.6), np.log(5.3), npx))
+    centres = np.vstack([rng.uniform(-2.0, 2.0, (40, npx)),
+                         np.full((1, npx), O.C[0] - 0.004), np.full((1, npx), O.C[-1] + 0.004),
+                         np.full((1, npx), O.C[0] + 0.003), np.full((1, npx), O.C[-1])])
+    weights = rng.normal(size=centres.shape)
+    a = o.profile_from_kernel(o.image_kernel(None, y, lam), centres, weights, chunk=16)
+    b = o.image_profile(None, y, lam, centres, weights)
+    assert np.allclose(a, b, rtol=1e-5, atol=1e-6)
+
+
+def test_a_components_block_is_kept_for_the_same_values():
+    F = FW.ForwardModel(_sky_exposures())
+    a = F.component_matrix(FW.Gaussian(sigma=0.05))
+    assert F.component_matrix(FW.Gaussian(sigma=FW.Param(0.05))) is a       # same values: the kept block
+    assert F.component_matrix(FW.Gaussian(sigma=0.06)) is not a
+    s = FW.SlitGaussian(0.1, eoff=np.zeros(3))                              # holds an array: not kept
+    assert F.component_matrix(s) is not F.component_matrix(s)
+
+
+def test_the_nonnegative_solve_is_the_bounded_least_squares():
+    from scipy.optimize import lsq_linear
+    import scipy.sparse as sp
+    from campfire_pipeline.nirspec.forward.model import nonnegative_normal_solve
+    rng = np.random.default_rng(5)
+    X = rng.normal(size=(200, 40))
+    d = X @ rng.normal(size=40) + rng.normal(size=200)
+    con = np.arange(40) % 3 != 0                         # every third unknown left free
+    x, free, _ = nonnegative_normal_solve(sp.csc_matrix(X.T @ X), X.T @ d, con)
+    ref = lsq_linear(X, d, bounds=(np.where(con, 0.0, -np.inf), np.inf), tol=1e-12).x
+    assert np.allclose(x, ref, atol=1e-8)
+    assert np.all(x[con] >= 0) and np.any(~free) and np.all(free[~con])
+
+
+def test_nonnegative_spectra():
+    # a point and a faint blob whose spectrum is zero below 2.5 um: the free solve puts noise either
+    # side of zero there; held non-negative, nothing goes below zero, the held points are marked, and
+    # the chi2 is the least it can be within the bound
+    comps = [FW.Point(dy=0.0), FW.Gaussian(dy=0.25 * O.SLIT, sigma=0.05)]
+    F, truth = _model_with(comps, noise=0.02)
+    truth[1] = np.where(F.lam_grid < 2.5, 0.0, truth[1])
+    F.pix['d'] = F.design(comps) @ truth.ravel() + 0.02 * np.random.default_rng(0).normal(size=F.npix)
+    free = F.solve(comps)
+    assert np.any(free.spectra[1][free.good[1]] < 0)
+    held = F.solve(comps, covariance=True, nonnegative=[False, True])
+    assert np.all(held.spectra[1] >= 0)
+    assert held.at_zero[1].any() and not held.at_zero[0].any()
+    assert F.chi2(held) >= F.chi2(free)
+    assert np.all(np.isfinite(held.errors()[held.good]))
+    r = FW.Fit(F, [FW.Point(dy=0.0), FW.Gaussian(dy=0.25 * O.SLIT, sigma=FW.Param(0.04, bounds=(0.01, 0.2)))],
+               names=['point', 'blob'], nonnegative=['blob']).run()
+    assert np.all(r.spectra[1] >= 0) and r.solution.at_zero[1].any()
+    assert r.nfree == 1 + int(r.solution.good.sum()) - int(r.solution.at_zero.sum())
+
+
+def test_nonnegative_spectra_with_the_master_background_scale():
+    # single frames with the scale term: the bounded solve over spectra and scale (scale free) against
+    # the dense bounded least squares with the scale's allowance as one more row
+    from scipy.optimize import lsq_linear
+    from test_nirspec_mbkg_extraction import _single_frames
+    from test_nirspec_profile_fit import TRUTH
+    exps, _ = _single_frames(TRUTH, flux_scale=30.0, noise=1.0, mbkg_error=0.01)
+    for e in exps:
+        e.pa_slit_x, e.pa_slit_y = 90.0, 0.0
+    sigma = 0.01
+    F = FW.ForwardModel(exps, mbkg_sigma=sigma)
+    comps = [FW.SlitGaussian(F.c_prior, width=0.15), FW.Gaussian(dy=-0.3 * O.SLIT, sigma=0.05)]
+    s = F.solve(comps, nonnegative=True)
+    assert s.at_zero.any()
+    g = s.good.ravel()
+    w = np.sqrt(1.0 / F.pix['v'])
+    X = np.column_stack([F.design(comps).toarray()[:, g], F.pix['b']]) * w[:, None]
+    X = np.vstack([X, np.r_[np.zeros(g.sum()), 1.0 / sigma]])
+    rhs = np.r_[F.pix['d'] * w, 0.0]
+    ref = lsq_linear(X, rhs, bounds=(np.r_[np.zeros(g.sum()), -np.inf], np.inf), tol=1e-12).x
+    peak = np.abs(ref[:-1]).max()
+    assert np.allclose(s.spectra.ravel()[g], ref[:-1], atol=1e-5 * peak)
+    assert s.scale == pytest.approx(ref[-1], abs=1e-5 * abs(ref[-1]) + 1e-9)
+
+
+def test_stage_3s_fit_is_a_fit_of_one_slit_gaussian():
+    # ProfileModel.shape_fit: the parameters in the order of the fit vector, the width as its log,
+    # and the residuals' squared sum the data chi2 + the scale's allowance + the shape priors
+    from test_nirspec_mbkg_extraction import _single_frames
+    from campfire_pipeline.nirspec import profile_fit as PF
+    from test_nirspec_profile_fit import TRUTH
+    exps, _ = _single_frames(TRUTH, flux_scale=30.0, noise=1.0, mbkg_error=0.01)
+    M = PF.ProfileModel(exps, chromatic=True, mbkg_sigma=0.01)
+    F = M.shape_fit()
+    assert F.labels == ['centre', 'drift', 'ln_width', 'width_change']
+    q = np.array([M.c_prior + 0.05, 0.02, np.log(0.2), -0.03])
+    p, eoff = M.unpack(q)
+    s = M.linear_solve(p, eoff)
+    chi2 = np.sum((M.pix['d'] - s.model) ** 2 / M.pix['v'])
+    pr = M.priors
+    prior = (((q[0] - M.c_prior) / pr.centre_sigma) ** 2 + (q[1] / pr.drift_sigma) ** 2
+             + ((q[2] - np.log(pr.width_median)) / pr.width_log_sigma) ** 2 + (q[3] / pr.width_change_sigma) ** 2)
+    assert np.sum(F.residuals(q) ** 2) == pytest.approx(chi2 + (s.scale / 0.01) ** 2 + prior, rel=1e-10)
+    assert F.log_posterior(q) == pytest.approx(-0.5 * np.sum(F.residuals(q) ** 2), rel=1e-10)
+    assert not PF.ProfileModel(exps, chromatic=False, mbkg_sigma=0.01).shape_fit().labels.count('drift')
+
+
 def test_two_components_with_free_shapes_and_their_own_spectra():
     truth_comps = [FW.Point(dy=0.0), FW.Gaussian(dy=0.25 * O.SLIT, sigma=0.05)]
     F, truth = _model_with(truth_comps, noise=1e-3)

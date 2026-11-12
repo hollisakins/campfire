@@ -19,6 +19,60 @@ from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec import profile_fit as PF
 
 
+def nonnegative_normal_solve(N, b, constrained, max_iter=None):
+    """Minimise x.N.x / 2 - b.x with x >= 0 where ``constrained`` (N sparse, symmetric positive
+    definite): block principal pivoting on the normal equations (Portugal, Judice & Vicente 1994),
+    which swaps every point that breaks the optimality conditions at once, and falls back to one at a
+    time (Murty's rule, which always ends) when that stops reducing their number. Returns
+    (x, free, lu): the solution, which unknowns are free (the rest held at zero), and the LU of N on
+    the free ones."""
+    b = np.asarray(b, float)
+    con = np.asarray(constrained, bool)
+    n = b.size
+    max_iter = 20 * n + 100 if max_iter is None else max_iter
+    tol_y = 1e-12 * max(float(np.max(np.abs(b))), 1e-300)
+    free = np.ones(n, bool)
+    best, chances = n + 1, 3
+    for _ in range(max_iter):
+        x = np.zeros(n)
+        fi = np.flatnonzero(free)
+        lu = splu(N[fi][:, fi].tocsc()) if fi.size else None
+        if fi.size:
+            x[fi] = lu.solve(b[fi])
+        y = N @ x - b                                 # the gradient; >= 0 for an unknown held at zero
+        tol_x = 1e-12 * max(float(np.max(np.abs(x))), 1e-300)
+        bad = con & ((free & (x < -tol_x)) | (~free & (y < -tol_y)))
+        nb = int(bad.sum())
+        if nb == 0:
+            x[con] = np.maximum(x[con], 0.0)
+            return x, free, lu
+        if nb < best:
+            best, chances = nb, 3
+            free[bad] = ~free[bad]
+        elif chances > 0:
+            chances -= 1
+            free[bad] = ~free[bad]
+        else:
+            i = np.flatnonzero(bad)[-1]
+            free[i] = ~free[i]
+    raise RuntimeError('forward: the non-negative solve did not converge')
+
+
+def _block_key(comp):
+    """A hashable identity of a resolved component for the block cache: its type and attributes when
+    they are all numbers, strings or None (a ``components.Sum``: its weights and its members'); None
+    (not cached) otherwise, e.g. a component holding an array."""
+    if isinstance(comp, list):
+        keys = [_block_key(c) for c in comp]
+        if any(k is None for k in keys):
+            return None
+        return (type(comp), tuple(float(w) for w in getattr(comp, 'weights', ())), tuple(keys))
+    items = getattr(comp, '__dict__', None)
+    if items is None or not all(v is None or isinstance(v, (bool, int, float, str)) for v in items.values()):
+        return None
+    return (type(comp), tuple(sorted(items.items())))
+
+
 @dataclass
 class Solution:
     """The linear solve at fixed component shapes (``ForwardModel.solve``)."""
@@ -30,6 +84,7 @@ class Solution:
     dchi2: float                      # chi2 improvement over no source (the scale term in both)
     scale: float = 0.0                # master-background scale; 0 without the term
     scale_err: float = np.nan
+    at_zero: np.ndarray = None        # (n_components, n_grid): held at zero by ``nonnegative``
 
     def errors(self):
         """(n_components, n_grid) one-sigma errors from the covariance's diagonal (NaN where
@@ -219,6 +274,18 @@ class ForwardModel:
         t = o.transmission(PF.REF_APERTURE, lam, np.full(np.shape(lam), c_ref), np.full(np.shape(lam), PF.W_FLOOR))
         return pl / np.maximum(t, 1e-6)
 
+    def image_kernel(self, k, y, lam):
+        """Exposure k's optics table at every source position, on the pixels (y, lam)
+        (``Optics.image_kernel``), built once per exposure and set of pixels: ``project`` places
+        every point of an extended source through it. About 3.5 kB per pixel (16 MB for a
+        PRISM exposure's 4500)."""
+        cache = self.__dict__.setdefault('_kernels', {})
+        y, lam = np.ascontiguousarray(y, float).ravel(), np.ascontiguousarray(lam, float).ravel()
+        key = (k, y.size, hash(y.tobytes()), hash(lam.tobytes()))
+        if key not in cache:
+            cache[key] = self.optics[k].image_kernel(self.exps[k].open_k, y, lam)
+        return cache[key]
+
     # -- the model -------------------------------------------------------------
     def frame_light(self, comp, j, y, lam, dy, fixed=None):
         """Exposure j's frame of component ``comp`` per unit total light: the fixed throughput
@@ -227,9 +294,26 @@ class ForwardModel:
             fixed = self.throughput_fixed(j, lam, dy)
         return fixed * comp.light(self, j, y, lam, dy)
 
+    BLOCK_CACHE = 8          # component blocks kept (a fit's derivative steps move one component at a time)
+
     def component_matrix(self, comp):
-        """Sparse (n_pixels x n_grid) block of one component: model = block @ spectrum."""
+        """Sparse (n_pixels x n_grid) block of one component: model = block @ spectrum. The last
+        ``BLOCK_CACHE`` blocks are kept, keyed by the component's type and values, for components
+        whose attributes are all numbers (``_block_key``)."""
         comp = comp.resolved()                                   # its parameters at their values
+        key = _block_key(comp)
+        cache = self.__dict__.setdefault('_blocks', {})
+        if key is not None and key in cache:
+            cache[key] = cache.pop(key)                          # most recently used last
+            return cache[key]
+        block = self._component_matrix(comp)
+        if key is not None:
+            cache[key] = block
+            while len(cache) > self.BLOCK_CACHE:
+                cache.pop(next(iter(cache)))
+        return block
+
+    def _component_matrix(self, comp):
         fixed = self.__dict__.setdefault('_tau_fixed', {})       # per exposure, on its image pixels
         G = {}
         for j, q in self.image_pix.items():
@@ -252,9 +336,9 @@ class ForwardModel:
         """Sparse (n_pixels x n_components * n_grid) design matrix, one block per component."""
         return self.design_matrix(components)
 
-    def solve(self, components, covariance=False):
+    def solve(self, components, covariance=False, nonnegative=None):
         """The spectra of ``components`` solved together (``solve_components``)."""
-        return self.solve_components(components, covariance=covariance)
+        return self.solve_components(components, covariance=covariance, nonnegative=nonnegative)
 
     # an application with its own parametrisation (``profile_fit.ProfileModel``) redefines design
     # and solve in its own terms and builds on these two
@@ -263,14 +347,20 @@ class ForwardModel:
         blocks = [self.component_matrix(c) for c in components]
         return blocks[0] if len(blocks) == 1 else sp.hstack(blocks, format='csr')
 
-    def solve_components(self, components, covariance=False):
+    def solve_components(self, components, covariance=False, nonnegative=None):
         """Weighted least squares at fixed shapes: every component's spectrum, and with the
         master-background term its scale, solved together. The normal matrix is sparse (each
         pixel touches a few neighbouring grid points of each component), solved by LU; the scale
         adds one row and column, eliminated through the same factorisation, with its allowance
         1 / mbkg_sigma^2 on its diagonal. Where two components land on the same pixels their
-        spectra are correlated; the covariance (formed only on request) carries it. Returns a
-        ``Solution``."""
+        spectra are correlated; the covariance (formed only on request) carries it.
+
+        nonnegative : True, or one flag per component: those spectra are held at or above zero
+            (``_solve_nonnegative``), e.g. a bulge and a disk that would otherwise trade light,
+            one going negative where the other overshoots. Only when the free solve has a
+            negative point; otherwise the free solve is the answer. A faint component's noise is
+            then cut at zero, so its spectrum is biased high where it has no light.
+        Returns a ``Solution``."""
         A = self.design_matrix(components)
         d = self.pix['d']
         wgt = np.where(self.use, 1.0 / self.pix['v'], 0.0)
@@ -301,6 +391,10 @@ class ForwardModel:
             f[good] = x - scale * y
             model = A @ f + scale * B
             dchi2 = float(f[good] @ b[good]) + scale * bd - bd ** 2 / c
+        n = len(components)
+        con = self._nonnegative_mask(nonnegative, n, diag.size)[good]
+        if con.any() and np.any(f[good][con] < 0):
+            return self._solve_nonnegative(components, A, AtW, Ng, b[good], good, con, f, covariance)
         cov = None
         if covariance:
             inv = np.linalg.inv(Ng.toarray())
@@ -308,9 +402,73 @@ class ForwardModel:
                 inv = inv + np.outer(y, y) / S
             cov = np.full((diag.size, diag.size), np.nan)
             cov[np.ix_(good, good)] = inv
-        n = len(components)
         return Solution(spectra=f.reshape(n, -1), cov=cov, good=good.reshape(n, -1), A=A, model=model,
-                        dchi2=dchi2, scale=scale, scale_err=scale_err)
+                        dchi2=dchi2, scale=scale, scale_err=scale_err, at_zero=np.zeros((n, f.size // n), bool))
+
+    @staticmethod
+    def _nonnegative_mask(nonnegative, n, size):
+        """Per unknown (component-major), whether its spectrum is held at or above zero."""
+        if nonnegative is None or nonnegative is False:
+            return np.zeros(size, bool)
+        if nonnegative is True:
+            flags = np.ones(n, bool)
+        else:
+            flags = np.asarray(nonnegative, bool)
+            if flags.shape != (n,):
+                raise ValueError(f'forward: nonnegative takes True, False or one flag per component ({n})')
+        return np.repeat(flags, size // n)
+
+    def _solve_nonnegative(self, components, A, AtW, Ng, b, good, con, f_free, covariance):
+        """The solve with the flagged spectra held at or above zero (``solve_components``): the same
+        weighted least squares (and master-background scale with its allowance, never constrained),
+        minimised over the allowed region (``nonnegative_normal_solve``). Grid points held at zero are
+        marked in ``Solution.at_zero``; their errors are the unconstrained ones (the spread the data
+        allow there, without the bound), their covariances with the other points zero."""
+        d = self.pix['d']
+        wgt = np.where(self.use, 1.0 / self.pix['v'], 0.0)
+        ng = Ng.shape[0]
+        term = self.mbkg_sigma is not None
+        if term:
+            B = self.pix['b']
+            u = np.asarray(AtW @ B)[good]
+            bd = float(np.sum(wgt * B * d))
+            c = float(np.sum(wgt * B * B)) + 1.0 / self.mbkg_sigma ** 2
+            N = sp.bmat([[Ng, sp.csc_matrix(u[:, None])], [sp.csc_matrix(u[None, :]), sp.csc_matrix([[c]])]],
+                        format='csc')
+            rhs, con_all = np.append(b, bd), np.append(con, False)
+        else:
+            N, rhs, con_all = Ng, b, con
+        x, free, lu = nonnegative_normal_solve(N, rhs, con_all)
+        f = np.zeros(f_free.size)
+        f[good] = x[:ng]
+        scale = float(x[ng]) if term else 0.0
+        model = A @ f + (scale * B if term else 0.0)
+        r2 = float(np.sum(wgt * (d - model) ** 2))
+        if term:
+            dchi2 = (float(np.sum(wgt * d * d)) - bd ** 2 / c) - (r2 + scale ** 2 / self.mbkg_sigma ** 2)
+        else:
+            dchi2 = float(np.sum(wgt * d * d)) - r2
+        fi = np.flatnonzero(free)
+        scale_err = np.nan
+        if term:
+            e = np.zeros(fi.size)
+            e[-1] = 1.0                                  # the scale is always free, and last
+            scale_err = float(np.sqrt(lu.solve(e)[-1]))
+        cov = None
+        if covariance:
+            Nd = N.toarray()
+            full = np.full((ng + term, ng + term), 0.0)
+            full[np.ix_(fi, fi)] = np.linalg.inv(Nd[np.ix_(fi, fi)])
+            held = np.flatnonzero(~free)
+            if held.size:
+                full[held, held] = np.diag(np.linalg.inv(Nd))[held]
+            cov = np.full((f.size, f.size), np.nan)
+            cov[np.ix_(good, good)] = full[:ng, :ng]
+        n = len(components)
+        at_zero = np.zeros(f.size, bool)
+        at_zero[np.flatnonzero(good)[~free[:ng]]] = True
+        return Solution(spectra=f.reshape(n, -1), cov=cov, good=good.reshape(n, -1), A=A, model=model,
+                        dchi2=dchi2, scale=scale, scale_err=scale_err, at_zero=at_zero.reshape(n, -1))
 
     def chi2(self, solution):
         """Data chi2 of a solution on the current pixel mask (no prior or allowance terms)."""

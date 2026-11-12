@@ -308,6 +308,15 @@ def project(comp, M, k, y, lam, dy):
     if keep.size == 0:
         return np.zeros(y.size)
     ln_nodes, ln_lam = np.log(nodes), np.log(lam)
-    weights = np.array([np.interp(ln_lam, ln_nodes, S[:, j]) for j in keep])
-    centres = np.array([M.trace_centre(k, lam, M.c_prior + vs[j]) for j in keep])
-    return o.image_profile(e.open_k, y, lam, centres, weights) * _row_scale(dy)
+    # every point's weight interpolated in ln(lambda) at once (np.interp's clamping at the ends)
+    i = np.clip(np.searchsorted(ln_nodes, ln_lam) - 1, 0, nodes.size - 2)
+    t = np.clip((ln_lam - ln_nodes[i]) / (ln_nodes[i + 1] - ln_nodes[i]), 0.0, 1.0)
+    Sk = S[:, keep]
+    weights = (Sk[i] * (1.0 - t)[:, None] + Sk[i + 1] * t[:, None]).T
+    centres = M.trace_centre(k, lam, (M.c_prior + vs[keep])[:, None])      # (n_points, n_pixels)
+    centres = np.broadcast_to(centres, weights.shape)
+    if hasattr(o, 'profile_from_kernel'):
+        out = o.profile_from_kernel(M.image_kernel(k, y, lam), centres, weights)
+    else:
+        out = o.image_profile(e.open_k, y, lam, centres, weights)
+    return out * _row_scale(dy)

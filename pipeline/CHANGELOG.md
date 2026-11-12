@@ -52,6 +52,19 @@ Release procedure: edit the `## Unreleased` section below, then run
     samples, e.g. a fit to imaging). The spectra are solved exactly at each shape; `run` fits,
     `log_posterior` and `residuals` serve the caller's own optimiser or sampler.
     `forward.plots.panels` draws data, model and residual per exposure on its own pixels.
+    `nonnegative` holds chosen components' spectra at or above zero (block principal pivoting on
+    the normal equations; the master-background scale stays free).
+  - *Stage 3's shape fit is a `forward.Fit`* (`ProfileModel.shape_fit`): one `SlitGaussian` with
+    its centre, drift, ln width and width change as `Param`s carrying the same priors and bounds.
+    On four zenith_p15 sources three fits are unchanged (to 1e-4 slit units); 549120, whose
+    objective is flat to 0.4 over 0.04 slit units of centre, stops at a lower chi2 (centre 0.1995
+    against 0.2086, spectrum within 0.07 sigma). `Fit`'s residuals and log-posterior now carry the
+    master-background scale's allowance.
+  - *Faster extended components*: `project` places a source's points through a per-exposure
+    table of the optics model at every source position on the fitted pixels
+    (`Optics.image_kernel`, built once, ~16 MB per PRISM exposure), equal to the direct
+    interpolation to 1e-7 of the peak, and the model keeps its last blocks per component values.
+    A bulge + disk fit on 547856 took 208 s, now 52-63 s.
 - **NIRSpec joint first pass, faster** (`joint_first_pass.py`, `profile_joint.py`; results
   unchanged). Each source's shape is fitted once per disperser before the workers start, not by
   every worker that builds the source; the design assigns each pixel with one sort and skips

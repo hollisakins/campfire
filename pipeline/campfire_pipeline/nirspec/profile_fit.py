@@ -36,13 +36,14 @@ import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.optimize import least_squares
 
 from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec.constants import MSA_SLIT_MARGIN, MSA_SLIT_PITCH
 # the forward model's modules read this one's helpers only when called, and this one reads the
-# components only when called, so the import cycle is safe from either end
+# forward model's only when called, so the import cycle is safe from either end
 from campfire_pipeline.nirspec.forward import components as FC
+from campfire_pipeline.nirspec.forward import fit as FF
+from campfire_pipeline.nirspec.forward import params as FP
 from campfire_pipeline.nirspec.forward.model import ForwardModel
 
 # ---------------------------------------------------------------------------
@@ -880,21 +881,31 @@ class ProfileModel(ForwardModel):
         s = self.linear_solve(p, eoff, covariance=covariance)
         return s.f, s.cov, s.good, s.A
 
-    def residuals(self, q):
-        """Normalised data residuals and prior terms at shape ``q``, the spectrum (and the
-        master-background scale, with its allowance as one more term) solved there."""
-        p, eoff = self.unpack(q)
-        s = self.linear_solve(p, eoff)
-        r = (self.pix['d'] - s.model) / np.sqrt(self.pix['v'])
-        r = np.where(self.use, r, 0.0)
+    def shape_fit(self):
+        """Stage 3's shape fit as a forward-model fit (``forward.Fit``): one ``forward.SlitGaussian``
+        whose centre, drift, width and width change are ``forward.Param`` objects with this model's
+        Gaussian priors and bounds, the width fitted as its natural log (``ln_width``; the
+        component's width is tied to its exponential), drift and width change held at zero without
+        the chromatic terms. The free parameters are in the order of the fit vector q
+        (``param_names``)."""
+        lo, hi = self.bounds()
         pr = self.priors
-        pri = [(p[0] - self.c_prior) / pr.centre_sigma,
-               (p[2] - np.log(pr.width_median)) / pr.width_log_sigma]
-        if self.chromatic:
-            pri += [p[1] / pr.drift_sigma, p[3] / pr.width_change_sigma]
-        if self.mbkg_sigma is not None:
-            pri.append(s.scale / self.mbkg_sigma)
-        return np.concatenate([r, pri])
+        prior = dict(centre=FP.Normal(self.c_prior, pr.centre_sigma), drift=FP.Normal(0.0, pr.drift_sigma),
+                     width=FP.Normal(np.log(pr.width_median), pr.width_log_sigma),
+                     width_change=FP.Normal(0.0, pr.width_change_sigma))
+        start = dict(centre=self.c_prior, drift=0.0, width=np.log(pr.width_median), width_change=0.0)
+        P = {n: FP.Param(np.clip(start[n], a, b), bounds=(a, b), prior=prior[n],
+                         name='ln_width' if n == 'width' else n)
+             for n, a, b in zip(self.param_names(), lo, hi)}
+        comp = FC.SlitGaussian(P['centre'], P.get('drift', 0.0), FP.Tied(np.exp, P['width']),
+                               P.get('width_change', 0.0))
+        return FF.Fit(self, [comp], names=['source'])
+
+    def residuals(self, q):
+        """Normalised data residuals, the master-background scale over its allowance (with the
+        term) and the prior terms at shape ``q``, the spectrum (and scale) solved there
+        (``shape_fit``'s ``residuals``)."""
+        return self.shape_fit().residuals(np.asarray(q, float))
 
     def bounds(self):
         c, B = self.c_prior, self.bounds_cfg
@@ -933,9 +944,10 @@ class ProfileModel(ForwardModel):
 
     def start(self):
         best = None
+        F = self.shape_fit()
         for p in self.start_grid():
             q = list(p) if self.chromatic else [p[0], p[2]]
-            s = float(np.sum(self.residuals(np.array(q)) ** 2))
+            s = float(np.sum(F.residuals(np.array(q)) ** 2))
             if best is None or s < best[0]:
                 best = (s, np.array(q))
         return best[1]
@@ -980,26 +992,22 @@ def fit(exps, chromatic=True, priors=None, grid=None, bounds=None, model=None):
         M.use = np.ones(M.npix, bool)
     else:
         M = ProfileModel(exps, chromatic=chromatic, priors=priors, grid=grid, bounds=bounds)
-    lo, hi = M.bounds()
-    q = np.clip(M.start(), lo + 1e-6, hi - 1e-6)
-    chi2_start = float(np.sum(M.residuals(q) ** 2))
-    q = least_squares(M.residuals, q, bounds=(lo, hi), x_scale='jac', diff_step=FIT_DIFF_STEP,
-                      ftol=FIT_DCHI2 / max(chi2_start, 1.0), xtol=1e-10, gtol=1e-10).x
+    F = M.shape_fit()
+    lo, hi = F.bounds
+    r = F.run(start=np.clip(M.start(), lo + 1e-6, hi - 1e-6))
+    q = np.array([r.params[k] for k in r.labels])
     p, eoff = M.unpack(q)
-    s = M.linear_solve(p, eoff, covariance=True)
-    r = (M.pix['d'] - s.model) / np.sqrt(M.pix['v'])
-    chi2 = float(np.sum(r[M.use] ** 2))
-    n_eff = float(np.sum(M.dof_weight()[M.use]))
-    flux = np.where(s.good, s.f, np.nan)
-    err = np.where(s.good, np.sqrt(np.abs(np.diag(s.cov))), np.nan)
+    s = r.solution
+    flux = np.where(s.good[0], s.spectra[0], np.nan)
     params = dict(centre=float(p[0]), drift=float(p[1]), width=float(np.exp(p[2])),
                   width_change=float(p[3]), pivot=M.pivot, centre_prior=M.c_prior)
     term = M.mbkg_sigma is not None
-    R = FitResult(params=params, eoff=eoff, lam=M.lam_grid, flux=flux, flux_err=err, chi2=chi2,
-                  npix=int(round(n_eff)), nfree=int(s.good.sum()) + len(q) + int(term), chromatic=M.chromatic,
-                  model=M, mbkg_scale=s.scale if term else np.nan, mbkg_scale_err=s.scale_err)
+    R = FitResult(params=params, eoff=eoff, lam=M.lam_grid, flux=flux, flux_err=r.spectra_err[0], chi2=r.chi2,
+                  npix=r.npix, nfree=r.nfree, chromatic=M.chromatic, model=M,
+                  mbkg_scale=s.scale if term else np.nan, mbkg_scale_err=s.scale_err)
     R.bound_bits = M.bound_hits(q)
     R.use = M.use.copy()
+    R.shape_errors = dict(r.errors)       # one-sigma, from the curvature; the width's as ln_width
     return R
 
 

@@ -461,6 +461,44 @@ class Optics:
             out += w * map_coordinates(tab, np.vstack([li, self._ci(c), yi]), order=1, mode='constant', cval=0.0)
         return out
 
+    def image_kernel(self, mask, y, lam, chunk=256):
+        """(len(C), n_pixels) float32: the point-source table at every source position of ``C``,
+        interpolated to each pixel's wavelength and slit position. It depends on the pixels alone, so
+        one built per set of pixels serves every source placed on them (``profile_from_kernel``):
+        the interpolation is linear in each axis, so the table at a source position between two of
+        ``C`` is the two rows' linear blend, which is what ``image_profile`` interpolates."""
+        tab = self.image_table(mask)
+        y, lam = np.asarray(y, float).ravel(), np.asarray(lam, float).ravel()
+        li, yi = self._li(lam), (y - Y[0]) / (Y[1] - Y[0])
+        K = np.zeros((C.size, y.size), np.float32)
+        for a in range(0, C.size, chunk):
+            b = min(a + chunk, C.size)
+            n = b - a
+            coords = np.vstack([np.tile(li, n), np.repeat(np.arange(a, b, dtype=float), y.size), np.tile(yi, n)])
+            K[a:b] = map_coordinates(tab, coords, order=1, mode='constant', cval=0.0).reshape(n, y.size)
+        return K
+
+    @staticmethod
+    def profile_from_kernel(K, centres, weights, chunk=128):
+        """``image_profile`` from a pixel set's ``image_kernel``: the same light per DY_ROW-high row
+        of points at ``centres`` carrying ``weights`` (both (n_points, n_pixels))."""
+        centres = np.atleast_2d(np.asarray(centres, float))
+        weights = np.atleast_2d(np.asarray(weights, float))
+        m, npx = K.shape
+        flat = K.ravel()
+        cols = np.arange(npx)[None, :]
+        out = np.zeros(npx)
+        for a in range(0, centres.shape[0], chunk):
+            ci = (centres[a:a + chunk] - C[0]) / (C[1] - C[0])
+            inside = (ci >= 0) & (ci <= m - 1)          # map_coordinates' 'constant' mode: 0 off the table
+            ci = np.clip(ci, 0, m - 1)
+            j0 = np.minimum(ci.astype(np.int64), m - 2)
+            t = ci - j0
+            i0 = j0 * npx + cols
+            v = (1.0 - t) * np.take(flat, i0) + t * np.take(flat, i0 + npx)
+            out += np.sum(np.where(inside, weights[a:a + chunk] * v, 0.0), axis=0)
+        return out
+
     def x_pass(self, lam, x):
         """(len(lam), len(x)) the light of a point source at ``x`` (arcsec from the shutter centre
         along the dispersion, the convention of ``x_transmission_table``) one shutter passes, at
