@@ -407,14 +407,36 @@ def test_fine_groups_share_one_fit_per_detector_across_exposures():
 
     # Without the grouping, exactly the per-detector behaviour as before.
     plain = solve_exposure_group(detectors, vstack([ref_a, ref_b]), key='visit')
-    assert plain.status == 'SOLVED' and plain.trial_detectors is None
+    assert plain.status == 'SOLVED' and plain.shared_detectors is None
+    # The shared-only solution is returned beside the final one for the caller's
+    # second tie; here, with no per-exposure fits, the two are the same.
+    assert [d.dof for d in sol.shared_detectors] == [d.dof for d in sol.detectors]
+    assert sol.diagnostics['shared_fits'] == ['nrc2'] or 'nrc2' in sol.diagnostics['shared_fits']
+    assert sol.diagnostics['shared_tstat']['nrc2'] > 3.0
 
-    # `fine_trial` also returns the alternative in which every detector of every
-    # exposure has a fit of its own on top of the shared one; the caller picks.
-    both = solve_exposure_group(detectors, vstack([ref_a, ref_b]), key='visit',
-                                fine_groups=groups, fine_trial=True)
-    assert [d.detector for d in both.trial_detectors] == [d.detector for d in both.detectors]
-    assert all(d.aligned and d.residual_arcsec < 0.01 for d in both.trial_detectors)
+
+def test_per_exposure_fit_on_top_of_the_shared_one_when_its_shift_is_significant():
+    # Detector 2 sits +0.03" off in one exposure and -0.03" off in the other: the
+    # fit shared by the visit cannot remove that. With `fine_individual` each
+    # detector of each exposure also gets a fit of its own, accepted when its
+    # shift is significant against its own standard error (all of its matches).
+    detectors, refcat, groups = _two_exposures({2: (0.0, 0.03)}, {2: (0.0, -0.03)})
+    shared = solve_exposure_group(detectors, refcat, key='visit', fine_groups=groups)
+    both = solve_exposure_group(detectors, refcat, key='visit', fine_groups=groups,
+                                fine_individual=True)
+    s = {d.detector: d for d in shared.detectors}
+    b = {d.detector: d for d in both.detectors}
+    assert s['e1|nrc2'].residual_arcsec > 0.02 and not s['e1|nrc2'].own_fit
+    for name in ('e1|nrc2', 'e2|nrc2'):
+        assert b[name].own_fit and b[name].tstat > 5 and b[name].residual_arcsec < 0.01
+
+    # A higher bar for the per-exposure fits alone leaves the detectors that
+    # have nothing of their own to correct on the shared solution.
+    strict = solve_exposure_group(detectors, refcat, key='visit', fine_groups=groups,
+                                  fine_individual=True, exposure_min_significance=5.0)
+    t = {d.detector: d for d in strict.detectors}
+    assert t['e1|nrc2'].own_fit and t['e2|nrc2'].own_fit
+    assert not any(t[n].own_fit for n in t if not n.endswith('nrc2'))
 
 
 def _two_exposures(extra_a, extra_b, n_src=40, ref_noise_arcsec=0.0):
@@ -436,33 +458,6 @@ def _two_exposures(extra_a, extra_b, n_src=40, ref_noise_arcsec=0.0):
                                                    len(refcat))
     groups = {d.detector: d.detector.split('|')[1] for d in detectors}
     return detectors, refcat, groups
-
-
-def test_held_out_sources_prefer_per_exposure_fits_when_a_detector_moves():
-    # Detector 2 sits +0.03" off in one exposure and -0.03" off in the other: one
-    # fit for the visit cannot remove that, a fit per exposure can. Scored on
-    # reference sources held out of both fits, the per-exposure fits are closer.
-    detectors, refcat, groups = _two_exposures({2: (0.0, 0.03)}, {2: (0.0, -0.03)})
-    sol = solve_exposure_group(detectors, refcat, key='visit', fine_groups=groups,
-                               fine_trial=True)
-    assert sol.status == 'SOLVED' and sol.trial_preferred is True
-    d = sol.diagnostics
-    assert d['held_out_exposure_mas'] < d['held_out_shared_mas']
-    # the shared solution still carries the offsets; the alternative does not
-    shared = {s.detector: s for s in sol.detectors}
-    own = {s.detector: s for s in sol.trial_detectors}
-    assert shared['e1|nrc2'].residual_arcsec > 0.02
-    assert own['e1|nrc2'].residual_arcsec < 0.01
-
-
-def test_held_out_sources_keep_shared_fits_when_the_catalog_is_poor():
-    # No detector is off; the catalog is sparse and noisy (12 sources per
-    # detector, 50 mas each). Per-exposure fits can only add noise, and on
-    # held-out sources they are no closer.
-    detectors, refcat, groups = _two_exposures({}, {}, n_src=12, ref_noise_arcsec=0.05)
-    sol = solve_exposure_group(detectors, refcat, key='visit', fine_groups=groups,
-                               fine_trial=True, max_residual_arcsec=None)
-    assert sol.status == 'SOLVED' and sol.trial_preferred is False
 
 
 def test_fine_removes_subtolerance_systematic_offset():

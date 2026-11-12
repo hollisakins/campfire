@@ -109,7 +109,8 @@ ALGN_DIAG_COMMENTS = {
     'ALGNSTAL': 'align: ALGNCAT does not match the current WCS',
     'ALGNNEXP': 'align: exposures fitted together (1 = alone)',
     'ALGNTIE':  'align: sources shared with the visit reference',
-    'ALGNXFIT': 'align: per-exposure detector fits kept',
+    'ALGNXFIT': 'align: this detector took its own fit',
+    'ALGNTSIG': 'align: significance of its own fit shift',
 }
 
 # GroupSolution.diagnostics key -> FITS keyword (see histmatch's ``diag``).
@@ -143,7 +144,8 @@ _SOLVE_KEYS = ('coarse_searchrad', 'refine_niter',
                'fine_min_rshift', 'fine_min_shift', 'tolerance', 'match_radius',
                'min_matched', 'min_coverage_arcsec', 'ref_border_arcmin',
                'nclip', 'sigma', 'max_residual_arcsec',
-               'dva_repivot', 'dva_pivot', 'fine_min_significance')
+               'dva_repivot', 'dva_pivot', 'fine_min_significance',
+               'exposure_min_significance')
 _DETECT_KEYS = ('fwhm', 'snr_thresh', 'minarea', 'deblend_nthresh',
                 'deblend_cont', 'edge', 'snr_min', 'objmag_lim')
 
@@ -253,9 +255,10 @@ def _diag_header_updates(solution, det):
     # exposure, 0 for the reference itself), or on its own.
     values['ALGNNEXP'] = int(diag.get('visit_n_exposures', 1))
     values['ALGNTIE'] = int(diag.get('visit_tie', 0))
-    # In a visit pool: were fits per detector AND exposure kept on top of the
-    # fits per detector for the visit (kept when the catalog can place one detector of one exposure well)?
-    values['ALGNXFIT'] = bool(diag.get('visit_exposure_fits', False))
+    # Did this detector take a fit of its own in this exposure (on top of any
+    # fit shared by the visit), and how significant was that fit's shift?
+    values['ALGNXFIT'] = bool(getattr(det, 'own_fit', False))
+    values['ALGNTSIG'] = _hdr_num(getattr(det, 'tstat', None))
     return {kw: (values[kw], ALGN_DIAG_COMMENTS[kw])
             for kw in ALGN_DIAG_COMMENTS}
 
@@ -749,10 +752,9 @@ def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
                 for k, m in pools]
 
     solve_cfg = {k: config[k] for k in _SOLVE_KEYS if k in config}
-    exposure_fits = str(config.get('exposure_fits', 'auto')).lower()
-    if exposure_fits not in ('auto', 'never', 'always'):
-        raise ValueError(f"[nircam.align].exposure_fits = {exposure_fits!r}: "
-                         f"expected 'auto', 'never' or 'always'")
+    # On top of the fits shared by the visit, a fit of every detector in every
+    # exposure, each accepted on the significance of its own shift.
+    exposure_fits = bool(config.get('exposure_fits', True))
     members_of = dict(pools)
     results, loaded = {}, {}
     for k, members in pools:
@@ -775,7 +777,8 @@ def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
     from tweakwcs.wcsimage import WCSGroupCatalog
     def joint(group, visit_key):
         """Fit a tied group to the reference catalog as one pool, with one fit
-        per detector for the visit (and the per-exposure trial when judged)."""
+        per detector for the visit and, with `exposure_fits`, a fit of every
+        detector in every exposure on top."""
         detectors, groups_of = [], {}
         for k, (dets, _) in group.items():
             for d in dets:
@@ -794,7 +797,7 @@ def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
             return solve_exposure_group(
                 detectors, ref, key=visit_key,
                 **{**solve_cfg, 'dva_repivot': False}, fine_groups=groups_of,
-                fine_trial=True)
+                fine_individual=exposure_fits)
         except Exception as e:  # noqa: BLE001 — fall back to the per-exposure fit
             log(f"align[{visit_key}]: joint fit raised {type(e).__name__}: {e}")
             return None
@@ -806,15 +809,15 @@ def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
         sol = joint(group, visit_key)
         first_dof = {}
         if (sol is not None and sol.status == 'SOLVED'
-                and sol.chosen(exposure_fits)[1] != 'pooled'
-                and any(d.dof not in ('coarse', 'identity') for d in sol.detectors)):
+                and (sol.diagnostics or {}).get('shared_fits')):
             # The exposures were tied before the detectors were corrected. A
             # correction of a detector in its own frame (above all its rotation)
             # moves a source by a different amount in each dither, by the
             # rotation times the dither step, so the tie is now slightly off:
             # with 25" between dithers, by milliarcseconds. Tie once more with
             # the corrected detectors, then fit again from there.
-            fitted = {d.detector: d for d in sol.detectors}
+            # (from the shared fits alone, not from the per-exposure ones).
+            fitted = {d.detector: d for d in sol.shared_detectors}
             corrected = {k: [dataclasses.replace(d, wcs=fitted[f'{k}|{d.detector}'].wcs)
                              for d in dets] for k, (dets, _) in group.items()}
             try:
@@ -827,7 +830,7 @@ def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
             if len(again) == 1 and set(again[0]) == set(group):
                 second = joint(again[0], visit_key)
                 if second is not None and second.status == 'SOLVED':
-                    first_dof = {d.detector: d.dof for d in sol.detectors}
+                    first_dof = {d.detector: d.dof for d in sol.shared_detectors}
                     group, sol = again[0], second
         if sol is None or sol.status != 'SOLVED':
             log(f"align[{visit_key}]: the joint fit of {len(group)} exposures did "
@@ -836,12 +839,7 @@ def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
             continue
         log(f"align[{visit_key}]: SOLVED ({len(group)} exposures, "
             f"{len(sol.detectors)} detectors, n_matched={sol.n_matched})")
-        # Which detector fits to keep, for the whole visit: none, one per
-        # detector for the visit, or also one per detector and exposure. The
-        # solver's verdict from reference sources held out of the fits.
-        chosen, which = sol.chosen(exposure_fits)
-        by_name = {d.detector: d for d in chosen}
-        kept = which == 'exposure'
+        by_name = {d.detector: d for d in sol.detectors}
         # After a second pass a detector whose shared fit was made in the first
         # reads 'coarse'; report the fit it actually carries.
         for name, dof in first_dof.items():
@@ -858,8 +856,7 @@ def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
                 n_refcat_in_footprint=sol.n_refcat_in_footprint,
                 diagnostics={**(sol.diagnostics or {}),
                              'visit_n_exposures': len(group),
-                             'visit_tie': n_shared,
-                             'visit_exposure_fits': kept})
+                             'visit_tie': n_shared})
             _write_pool(members_of[k], pool_sol, loaded[k], refcat_hash)
             results[k] = pool_sol
 

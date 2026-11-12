@@ -28,8 +28,8 @@ field (measurements in docs/hst/design.md, section 8b).
   (``chip_fits``, ``exposure_fits``). One fit per chip for the visit, shared
   by that chip in every tied exposure and accepted only when significant; if
   one is accepted the exposures are tied a second time and the pool is fitted
-  again. On top, a fit per chip and exposure, kept for the whole visit when it
-  is closer to the reference catalog on sources held out of both fits. With
+  again. On top, a fit of every chip in every exposure, each accepted when its
+  shift is significant against its own standard error (all its matches). With
   the linear fit in place these rarely have anything left to correct, and the
   evidence decides.
 * **WCS.** An HST chip's WCS is an ``astropy.wcs.WCS`` (FITS keywords, SIP and
@@ -96,12 +96,11 @@ DEFAULTS = {
     # when significant (the NIRCam rule, counted on distinct reference sources).
     # When one is accepted the exposures are tied a second time.
     'chip_fits': True,
-    # On top of that, a fit per chip AND exposure, for the whole pool or not at
-    # all. 'auto': kept when it is closer to the reference catalog on sources
-    # held out of both fits (the catalog's sources are split in two halves,
-    # each solution is fitted to one and scored on the other). 'never',
-    # 'always': no decision. Same setting and rule as [nircam.align].
-    'exposure_fits': 'auto',
+    # On top of that, a fit of every chip in every exposure, each accepted when
+    # its shift is significant against the shift's own standard error (all of
+    # the chip's matches; the solver's `fine_min_significance` /
+    # `exposure_min_significance`). Same setting and rule as [nircam.align].
+    'exposure_fits': True,
     # Common sources needed to fit one exposure to another.
     'tie_min_matched': 20,
 }
@@ -244,16 +243,13 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
     if borrowed:
         raise ValueError(
             f'{", ".join(borrowed)}: not a setting of the HST align step. Its recipe '
-            f'is set with pool, fit and per_chip_fit (see hst/steps/align.py).')
+            f'is set with pool, fit, chip_fits and exposure_fits '
+            f'(see hst/steps/align.py).')
     opt = {k: cfg.pop(k, v) for k, v in DEFAULTS.items()}
     if opt['pool'] not in ('visit', 'exposure'):
         raise ValueError(f"pool = {opt['pool']!r}: expected 'visit' or 'exposure'")
     if opt['fit'] not in ('auto', 'linear', 'rigid'):
         raise ValueError(f"fit = {opt['fit']!r}: expected 'auto', 'linear' or 'rigid'")
-    if opt['exposure_fits'] not in ('auto', 'never', 'always'):
-        raise ValueError(f"exposure_fits = {opt['exposure_fits']!r}: expected "
-                         f"'auto', 'never' or 'always'")
-
     mjd = _mid_mjd(files[0])
     if mjd is not None:
         refcat = propagate_to_epoch(refcat, mjd)
@@ -305,13 +301,13 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
         sol, used, lin_err = fit_pool(members, by_exposure, pool_key)
         carried = False
         if (together and sol.status == 'SOLVED'
-                and sol.chosen(opt['exposure_fits'])[1] != 'pooled'
-                and any(d.dof not in ('coarse', 'identity') for d in sol.detectors)):
+                and (sol.diagnostics or {}).get('shared_fits')):
             # A chip was corrected in its own frame after the exposures were
             # tied; its rotation moves a source by a different amount in each
             # dither, so the tie is slightly off. Tie once more with the
-            # corrected chips and fit again from there (as the NIRCam step does).
-            fitted = {d.detector: d.wcs for d in sol.detectors}
+            # corrected chips (the shared fits alone) and fit again from there,
+            # as the NIRCam step does.
+            fitted = {d.detector: d.wcs for d in sol.shared_detectors}
             corrected = {f: [dataclasses.replace(d, wcs=fitted[d.detector])
                              for d in by_exposure[f]] for f in members}
             again = _tie(corrected, key=key, min_matched=int(opt['tie_min_matched']),
@@ -321,18 +317,14 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
                 if second[0].status == 'SOLVED':
                     sol, used, lin_err = second
                     carried = True
-        # Which chip fits to keep, for the whole pool: none, one per chip for
-        # the visit, or also one per chip and exposure. The solver's verdict
-        # from reference sources held out of the fits (as for NIRCam).
-        chosen, which = sol.chosen(opt['exposure_fits'])
-        has_fit = any(d.dof not in ('coarse', 'identity') for d in chosen)
-        if which == 'exposure' or (not together and has_fit):
-            mark = 'x'          # an exposure fitted alone: its chip fits are its own
-        elif carried or (which == 'shared' and has_fit):
+        # chip: 'x' some chip of this pool took a fit of its own in one
+        # exposure, 'v' a fit shared by the visit only, '-' no chip fit.
+        if any(getattr(d, 'own_fit', False) for d in sol.detectors):
+            mark = 'x'
+        elif carried or (sol.diagnostics or {}).get('shared_fits'):
             mark = 'v'
         else:
             mark = '-'
-        sol = dataclasses.replace(sol, detectors=list(chosen))
         chip_marks.append(mark)
         first = first or sol
         fits_used.append(used)
@@ -436,7 +428,7 @@ def _fit_pool(detectors, refcat, *, key, fit, linear_max_error, chip_fits,
     if not chip_fits:
         chips = {'fine_fitgeom': 'none'}
     elif groups:
-        chips = {'fine_groups': groups, 'fine_trial': True}
+        chips = {'fine_groups': groups, 'fine_individual': bool(exposure_fits)}
     else:
         chips = {}
     if fit == 'linear':

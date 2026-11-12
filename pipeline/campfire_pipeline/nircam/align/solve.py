@@ -130,6 +130,11 @@ class DetectorSolution:
     matched: Optional[object] = None    # bool array: row paired one-to-one
     sep_arcsec: Optional[object] = None  # float array: separation to the NEAREST
                              # refcat source (all rows, matched or not)
+    tstat: float = float('nan')         # significance of this detector's OWN
+                             # fit (its shift over the shift's standard error,
+                             # from all of its matches), accepted or not; nan
+                             # when no such fit was attempted
+    own_fit: bool = False    # True: that fit was accepted
     ref_ra: Optional[object] = None     # float array: matched refcat RA (deg),
     ref_dec: Optional[object] = None    # ... and Dec; nan on unmatched rows.
                              # VALUES, not indices: they index the
@@ -156,37 +161,10 @@ class GroupSolution:
     # consensus keys from the last pass that was KEPT.
     n_refcat_in_footprint: Optional[int] = None
     diagnostics: Optional[dict] = None
-    # Only with ``fine_groups`` and ``fine_trial``: the alternative solution in
-    # which every detector also has a fit of its own, same order as
-    # ``detectors``. The caller chooses between the two.
-    trial_detectors: Optional[List[DetectorSolution]] = None
-    # ... and the verdict: True when the alternative is closer to reference
-    # sources held out of both fits (``solve_exposure_group``, held_out).
-    trial_preferred: Optional[bool] = None
-    # The third candidate, the pool's fit with no detector fit at all, and the
-    # name of the candidate closest to held-out reference sources: 'pooled',
-    # 'shared' (``detectors``) or 'exposure' (``trial_detectors``).
-    pooled_detectors: Optional[List[DetectorSolution]] = None
-    preferred: Optional[str] = None
-
-    def chosen(self, exposure_fits='auto'):
-        """``(detectors, name)`` to use under an ``exposure_fits`` setting:
-        'auto' takes the held-out verdict among the three candidates, 'never'
-        the verdict between 'pooled' and 'shared', 'always' the per-exposure
-        fits. Without candidates (no ``fine_trial``) it is ``detectors``."""
-        if self.trial_detectors is None or self.preferred is None:
-            return self.detectors, 'shared'
-        name = self.preferred
-        if exposure_fits == 'always':
-            name = 'exposure'
-        elif exposure_fits == 'never' and name == 'exposure':
-            name = 'shared'
-        if name == 'exposure' and any(
-                b.aligned and not t.aligned
-                for b, t in zip(self.detectors, self.trial_detectors)):
-            name = 'shared'
-        return {'pooled': self.pooled_detectors, 'shared': self.detectors,
-                'exposure': self.trial_detectors}[name], name
+    # Only with ``fine_groups``: the solution with the fits shared by each
+    # group and nothing more, same order as ``detectors`` (which may add a fit
+    # of each detector's own). The caller ties the exposures again from these.
+    shared_detectors: Optional[List[DetectorSolution]] = None
 
 
 def _has_radec(refcat):
@@ -487,32 +465,9 @@ def _fine_fit(corr, detector, catalog, refcat, src_idx, ref_idx, geom, *,
     return trial, trial.meta.get('fit_info', {})
 
 
-def _wcs_world(wcs, x, y):
-    """Sky position under a gwcs (JWST) or an ``astropy.wcs.WCS`` (HST)."""
-    if hasattr(wcs, 'all_pix2world'):
-        ra, dec = wcs.all_pix2world(x, y, 0)
-    else:
-        ra, dec = wcs(x, y)
-    return np.asarray(ra, dtype=float), np.asarray(dec, dtype=float)
-
-
-def _subset_pairs(pre, use_ref):
-    """A detector's match tuple ``(resid, n, src_idx, ref_idx, keep, sep)`` cut
-    down to the pairs whose reference source is flagged in *use_ref* (a boolean
-    array over the reference catalog)."""
-    resid, n, src_idx, ref_idx, keep, sep = pre
-    if len(ref_idx) == 0:
-        return pre
-    sel = np.asarray(use_ref, dtype=bool)[ref_idx]
-    new_keep = np.zeros_like(keep)
-    new_keep[src_idx[sel]] = True
-    new_resid = float(np.median(sep[new_keep])) if sel.any() else float('nan')
-    return (new_resid, int(sel.sum()), src_idx[sel], ref_idx[sel], new_keep, sep)
-
-
 def _fine_groups_fit(correctors, detectors, prelim, refcat, ref_sky, groups, *,
                      key, fine_fitgeom, mins, min_coverage_arcsec, nclip, sigma,
-                     match_radius, fine_min_significance):
+                     match_radius, fine_min_significance, tstats=None):
     """One fine fit per GROUP of detectors instead of one per detector.
 
     Used when a pool holds several exposures of one visit: *groups* maps each
@@ -600,6 +555,8 @@ def _fine_groups_fit(correctors, detectors, prelim, refcat, ref_sky, groups, *,
         weights = [len(prelim[i][2]) for i in members]
         shift = float(np.average(shifts, weights=weights))
         tstat = _fine_significance(shift, new_resid, n_distinct, geom)
+        if tstats is not None:
+            tstats[label] = float(tstat)
         degraded = new_resid > old_resid * _FINE_MAX_DEGRADE
         if np.isfinite(tstat) and tstat > fine_min_significance and not degraded:
             for t, i, n in zip(trials, members, new):
@@ -623,7 +580,8 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          dva_repivot=True, dva_pivot='pool',
                          fine_min_significance=1.4, gross_min_keep_frac=0.8,
                          coarse_fitgeom='rshift', fine_groups=None,
-                         fine_trial=False):
+                         fine_individual=False,
+                         exposure_min_significance=None):
     """Solve one pool of detectors; return a :class:`GroupSolution`.
 
     *detectors* is one pool (a module, or a whole channel when the caller pooled
@@ -806,22 +764,24 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     #    With `fine_groups` (a pool of several exposures of one visit) the
     #    detectors sharing a label get ONE fit between them; see
     #    _fine_groups_fit. Without it, exactly the per-detector fit below.
-    group_fit = {}
+    group_fit, shared_tstats = {}, {}
     if fine_groups:
         group_fit = _fine_groups_fit(
             correctors, detectors, prelim, refcat, ref_sky, fine_groups, key=key,
             fine_fitgeom=fine_fitgeom, mins=mins,
             min_coverage_arcsec=min_coverage_arcsec, nclip=nclip, sigma=sigma,
             match_radius=match_radius,
-            fine_min_significance=fine_min_significance)
+            fine_min_significance=fine_min_significance, tstats=shared_tstats)
 
-    def detector_solution(d, corr, pre, dof, individual):
+    def detector_solution(d, corr, pre, dof, individual, threshold):
         """One detector's outcome from the corrector it starts with (the pooled
         one, or the one its group's shared fit produced). With *individual* it
-        also gets a fit of its own on top, under the acceptance rules."""
+        also gets a fit of its own on top, accepted when its shift exceeds
+        *threshold* times the shift's standard error (all of its matches)."""
         resid, nmatch, src_idx, ref_idx, keep, sep = pre
         within = bool(np.isfinite(resid) and resid <= tolerance)
         out_wcs = corr.wcs
+        tstat, own_fit = float('nan'), False
 
         if individual and np.isfinite(resid):
             det_cov = _coverage_arcsec(ref_sky.ra.deg[ref_idx],
@@ -851,7 +811,8 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                     degraded = (np.isfinite(new_resid) and np.isfinite(resid)
                                 and new_resid > resid * _FINE_MAX_DEGRADE)
                     if (np.isfinite(new_resid) and np.isfinite(tstat)
-                            and tstat > fine_min_significance and not degraded):
+                            and tstat > threshold and not degraded):
+                        own_fit = True
                         out_wcs, dof = trial.wcs, geom
                         resid, nmatch = new_resid, new_n
                         within = bool(resid <= tolerance)
@@ -879,7 +840,7 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                                     'identity', resid, nmatch, False,
                                     aligned=False, **per_source)
         return DetectorSolution(d.detector, out_wcs, dof, resid, nmatch, within,
-                                **per_source)
+                                tstat=float(tstat), own_fit=own_fit, **per_source)
 
     # Where each detector starts: from its group's shared fit when that was
     # accepted, else from the pooled attitude.
@@ -890,114 +851,30 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
             start.append((d, shared[0], tuple(shared[2:]), shared[1]))
         else:
             start.append((d, corr, pre, 'coarse'))
-    solutions = [detector_solution(*s, individual=not fine_groups) for s in start]
-    # With `fine_trial`, two more solutions are built beside the shared-fit one
-    # (the pooled attitude with no detector fit at all, and the shared fits plus
-    # a fit of every detector in every exposure), and `preferred` names the one
-    # closest to the reference catalog on held-out sources (held_out below).
-    trial_solutions, pooled_solutions, preferred, held = None, None, None, {}
-    if fine_groups and fine_trial:
-        trial_solutions = [detector_solution(*s, individual=True) for s in start]
-        pooled_solutions = [detector_solution(d, corr, pre, 'coarse', individual=False)
-                            for corr, d, pre in zip(correctors, detectors, prelim)]
-
-        def held_out():
-            """Which solution is closest to the reference catalog, measured on
-            sources none of them was fitted to.
-
-            Three candidates, each adding freedom to the one before: 'pooled'
-            (the pool's fit alone), 'shared' (plus one fit per detector for the
-            visit), 'exposure' (plus a fit per detector and exposure). Compared
-            on the sources they were fitted to, more freedom wins by
-            construction: each fit minimizes exactly those residuals. So the
-            reference sources are split at random into two halves. The fits
-            are made again from the pooled attitude using one half only, and
-            each detector of each exposure is scored by the median offset of
-            its matches in the OTHER half; then the halves swap. 'exposure'
-            replaces 'shared' when its mean squared held-out offset is the
-            smaller ('pooled' is scored for the log only; see the note at the
-            verdict below). The noise of the held-out sources is the same for
-            all three and cancels; what is left is the detector offsets a
-            candidate failed to remove plus the noise of its own fits, which is
-            the trade the choice is about. No margin is required: a rule of
-            twice the uncertainty turned down per-exposure fits that an outside
-            catalog showed to be a milliarcsecond closer. The solutions written
-            to the files are fitted to ALL the sources; the halves only decide.
-            """
-            fold_of = np.random.default_rng(0).integers(0, 2, len(refcat))
-            cosd = np.cos(np.radians(float(np.mean(ref_sky.dec.deg))))
-            sq = {'pooled': [], 'shared': [], 'exposure': []}
-            for fold in (0, 1):
-                train = fold_of != fold
-                pre_train = [_subset_pairs(p, train) for p in prelim]
-                fold_fit = _fine_groups_fit(
-                    correctors, detectors, pre_train, refcat, ref_sky,
-                    fine_groups, key=key, fine_fitgeom=fine_fitgeom, mins=mins,
-                    min_coverage_arcsec=min_coverage_arcsec, nclip=nclip,
-                    sigma=sigma, match_radius=match_radius,
-                    fine_min_significance=fine_min_significance)
-                for corr, d, pre, pt in zip(correctors, detectors, prelim, pre_train):
-                    got = fold_fit.get(d.detector)
-                    if got is not None:
-                        c0, dof0 = got[0], got[1]
-                        p0 = _subset_pairs(tuple(got[2:]), train)
-                    else:
-                        c0, dof0, p0 = corr, 'coarse', pt
-                    own = detector_solution(d, c0, p0, dof0, individual=True)
-                    test = ~train[pre[3]]
-                    if test.sum() < 5 or not own.aligned:
-                        continue
-                    x = np.asarray(d.catalog['x'], dtype=float)[pre[2][test]]
-                    y = np.asarray(d.catalog['y'], dtype=float)[pre[2][test]]
-                    ref_ra = ref_sky.ra.deg[pre[3][test]]
-                    ref_dec = ref_sky.dec.deg[pre[3][test]]
-                    for name, wcs in (('pooled', corr.wcs), ('shared', c0.wcs),
-                                      ('exposure', own.wcs)):
-                        ra, dec = _wcs_world(wcs, x, y)
-                        sq[name].append(
-                            np.median((ra - ref_ra) * cosd * 3.6e6) ** 2
-                            + np.median((dec - ref_dec) * 3.6e6) ** 2)
-            if len(sq['pooled']) < 4:
-                return 'shared', {}
-            mean = {k: float(np.mean(v)) for k, v in sq.items()}
-            # The verdict is between 'shared' and 'exposure' only. 'pooled' is
-            # scored and logged but cannot win: inside a half the shared fits
-            # are scored before the exposures are tied a second time, which
-            # penalizes them for something the real sequence then repairs, and
-            # with 'pooled' in the running the verdict disagreed with an outside
-            # catalog (COSMOS-Web F277W: 'pooled' scored 2.6 mas against 4.1 and
-            # 3.7, while COSMOS2025 had the per-exposure fits closest, 2.8 mas
-            # against 3.7). Until the whole sequence is cross-validated, the
-            # shared fits stay under the significance rule alone.
-            best = 'exposure' if mean['exposure'] < mean['shared'] else 'shared'
-            scores = {f'held_out_{k}_mas': float(np.sqrt(v)) for k, v in mean.items()}
-            scores['held_out_n'] = len(sq['pooled'])
-            return best, scores
-
-        try:
-            preferred, held = held_out()
-        except Exception as e:  # noqa: BLE001 — no verdict: the shared fits stand
-            log(f"align solve[{key}]: held-out comparison raised "
-                f"{type(e).__name__}: {e}; keeping the shared fits.")
-            preferred, held = 'shared', {}
-        if preferred == 'exposure' and any(
-                b.aligned and not t.aligned
-                for b, t in zip(solutions, trial_solutions)):
-            preferred = 'shared'            # never lose a detector to more freedom
-        if held:
-            log(f"align solve[{key}]: against reference sources held out of the "
-                f"fits, per detector and exposure: {held['held_out_pooled_mas']:.2f} "
-                f"mas with the pooled fit alone, {held['held_out_shared_mas']:.2f} "
-                f"mas with one fit per detector for the visit, "
-                f"{held['held_out_exposure_mas']:.2f} mas with a fit per detector "
-                f"and exposure ({held['held_out_n']} comparisons). Closest: "
-                f"{preferred}.")
-
+    # Without groups: every detector's own fit, as always. With groups: the
+    # shared fits, and, with `fine_individual`, on top of them a fit of every
+    # detector in every exposure, each accepted on the significance of its own
+    # shift (`exposure_min_significance`, default `fine_min_significance`).
+    shared_solutions = None
+    own_threshold = (fine_min_significance if exposure_min_significance is None
+                     else float(exposure_min_significance))
+    if fine_groups:
+        shared_solutions = [detector_solution(*s, individual=False, threshold=0.0)
+                            for s in start]
+        solutions = ([detector_solution(*s, individual=True, threshold=own_threshold)
+                      for s in start] if fine_individual else shared_solutions)
+        diag = {**(diag or {}),
+                'shared_tstat': dict(shared_tstats),
+                'shared_fits': sorted({fine_groups.get(d.detector, d.detector)
+                                       for d in detectors
+                                       if group_fit.get(d.detector) is not None})}
+    else:
+        solutions = [detector_solution(*s, individual=True,
+                                       threshold=fine_min_significance)
+                     for s in start]
     # If the gate rejected every detector, the pool as a whole failed — report
     # NOT_ALIGNED so the orchestration surfaces it in the end-of-run warning.
     status = ('SOLVED' if any(s.aligned for s in solutions) else 'NOT_ALIGNED')
-    if held:
-        diag = {**(diag or {}), **held}
     if dva_info is not None:
         diag = dict(diag or {})
         diag['dva_applied'] = bool(dva_info.get('applied'))
@@ -1009,8 +886,4 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          group_nmatched, solutions,
                          n_refcat_in_footprint=n_ref_footprint,
                          diagnostics=(diag or None),
-                         trial_detectors=trial_solutions,
-                         pooled_detectors=pooled_solutions,
-                         preferred=preferred,
-                         trial_preferred=(None if preferred is None
-                                          else preferred == 'exposure'))
+                         shared_detectors=shared_solutions)

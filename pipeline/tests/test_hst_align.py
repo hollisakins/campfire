@@ -223,7 +223,7 @@ def test_no_pool_relies_on_the_dither_offsets_in_the_headers(visit):
 
     # the per-chip fit can be turned on, and is then recorded per chip
     sol = align_visit(files, refcat, key='jal01', overwrite=True,
-                      config={'exposure_fits': 'always'})
+                      config={'exposure_min_significance': 0.0})
     assert all('chip=x' in v for v in stamps())
     # and the chip fits can be turned off altogether
     sol = align_visit(files, refcat, key='jal01', overwrite=True,

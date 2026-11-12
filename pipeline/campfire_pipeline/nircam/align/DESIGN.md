@@ -286,26 +286,21 @@ Sections 3.1 to 3.4 describe one exposure solved on its own, which is
    milliarcseconds when the dithers are 25 arcsec apart. When any shared fit
    was accepted the exposures are tied once more with the corrected detectors
    and steps 2 and 3 are repeated from there.
-5. **A fit per detector and exposure, when the catalog supports it.** On top of
-   the shared fits, every detector of every exposure gets the fit of 3.4
-   against the reference catalog, for the whole visit or not at all
-   (`exposure_fits = "auto"`, recorded as `ALGNXFIT`). It is kept when it is
-   closer to the reference catalog on sources neither solution was fitted to:
-   the reference sources are split at random into two halves, both solutions
-   are fitted to one half, every detector of every exposure is scored by the
-   median offset of its matches in the other half, and the halves swap
-   (`solve_exposure_group(fine_trial=True)`; on the sources they were fitted
-   to, the per-exposure fits would win by construction). What is written is
-   fitted to all the sources. The rule is about absolute accuracy. Agreement
-   between the exposures was tried as the judge and failed a check against
-   COSMOS2025:
-   the solution whose exposures agreed best (1.4 mas) sat furthest from the
-   catalog (3.8 mas per detector, against 2.8 with the per-exposure fits).
-   Making common sources coincide turns a small scale or rotation error of the
+5. **A fit per detector and exposure, where its shift is significant.** On top
+   of the shared fits, every detector of every exposure gets the fit of 3.4
+   against the reference catalog (`exposure_fits = true`), accepted detector by
+   detector by the same test as every per-detector fit: its shift against the
+   shift's own standard error, from all of that detector's matches
+   (`fine_min_significance`, or `exposure_min_significance` for these fits
+   alone). Recorded per file as `ALGNXFIT` and `ALGNTSIG`. Why it is needed
+   at all: agreement between the exposures is not absolute accuracy. Making
+   common sources coincide turns a small scale or rotation error of the
    detector geometry into a position error of each exposure, of that error
    times the dither step; a dense catalog ties every detector of every
-   exposure down directly and removes it. A sparse catalog cannot (Legacy
-   Surveys: 6.8 mas), and there the per-exposure fits are noise.
+   exposure down directly and removes it (COSMOS-Web, 25 arcsec dithers,
+   against COSMOS2025: 2.8 mas per detector with these fits, 3.8 without). A
+   sparse catalog cannot, the shifts are not significant there, and the fits
+   are not taken.
 
 **Fallback, always to 3.1 to 3.4.** A visit of one exposure; an exposure that
 shares fewer than `tie_min_matched` sources with the others (those are tried
