@@ -94,21 +94,35 @@ class SlitGaussian(Component):
     component."""
     names = ('centre', 'drift', 'width', 'width_change')
 
-    def __init__(self, centre, drift=0.0, width=0.15, width_change=0.0):
+    def __init__(self, centre, drift=0.0, width=0.15, width_change=0.0, eoff=None):
         self.centre, self.drift, self.width, self.width_change = float(centre), float(drift), float(width), \
             float(width_change)
+        self.eoff = eoff                 # per-exposure pointing offsets (slit units), not fitted; None for none
 
     def width_at(self, M, lam):
+        """Its width on the sky (slit units)."""
         return np.maximum(self.width + self.width_change * M.log2_lam(lam), PF.W_FLOOR)
 
+    def image_width(self, M, k, lam):
+        """Its width where it lands in exposure k: stretched as the trace-centre law stretches
+        positions along the slit (``ForwardModel.trace_stretch``)."""
+        return self.width_at(M, lam) * M.trace_stretch(k, lam)
+
     def centre_at(self, M, k, lam):
-        return M.trace_centre(k, lam, self.centre + self.drift * M.log2_lam(lam))
+        eoff = 0.0 if self.eoff is None else self.eoff[k]
+        return M.trace_centre(k, lam, self.centre + self.drift * M.log2_lam(lam), eoff)
+
+    def image(self, M, k, y, lam, dy):
+        """Along the slit: its light per pixel through the tables."""
+        e, o = M.exps[k], M.optics[k]
+        return o.image(e.open_k, y, lam, self.centre_at(M, k, lam), self.image_width(M, k, lam)) * _row_scale(dy)
+
+    def x_ratio(self, M, k, lam):
+        """Across the shutter: the light it gets through over a point source's at the planned SRCXPOS."""
+        return M.optics[k].x_extended_ratio(lam, M.exps[k].src_x_jwst, self.width_at(M, lam))
 
     def light(self, M, k, y, lam, dy):
-        e, o = M.exps[k], M.optics[k]
-        w = self.width_at(M, lam)
-        return (o.image(e.open_k, y, lam, self.centre_at(M, k, lam), w) * _row_scale(dy)
-                * o.x_extended_ratio(lam, e.src_x_jwst, w))
+        return self.image(M, k, y, lam, dy) * self.x_ratio(M, k, lam)
 
 
 class _SkyComponent(Component):
@@ -168,21 +182,21 @@ class Gaussian(_SkyComponent):
         return int(np.clip(np.ceil(2.0 * PROJ_STEP_X / max(self.sigma, 1e-4)), 1, 5))
 
     def light(self, M, k, y, lam, dy):
-        return _round_light(M, k, y, lam, dy, self.dx, self.dy, max(self.sigma / O.SLIT, PF.W_FLOOR), stretch=True)
+        return _round_light(M, k, y, lam, dy, self.dx, self.dy, max(self.sigma / O.SLIT, PF.W_FLOOR))
 
 
-def _round_light(M, k, y, lam, dy, dx, dn, width, stretch=False):
+def _round_light(M, k, y, lam, dy, dx, dn, width):
     """A round Gaussian of ``width`` (slit units) at sky offset (dx, dn): along the slit through the
-    tables at its slit position (with ``stretch``, its width scaled by the trace-centre law's
-    stretch, ``ForwardModel.trace_stretch``, as ``project`` places an extended source), across the
-    shutter the round ratio at its own position times the point ratio of that position against the
-    planned one."""
+    tables at its slit position, its width stretched as the trace-centre law stretches positions
+    (``ForwardModel.trace_stretch``, as ``project`` places an extended source and ``SlitGaussian``
+    its width), across the shutter the round ratio at its own position times the point ratio of
+    that position against the planned one."""
     e, o = M.exps[k], M.optics[k]
     u, v = slit_offsets(e, dx, dn)
     c = M.trace_centre(k, lam, M.c_prior + v)
     srcx = (float(e.src_x_jwst) if np.isfinite(e.src_x_jwst) else 0.0) + float(u) / O.X_PITCH
     w = np.full(np.shape(lam), width)
-    w_y = w * M.trace_stretch(k, lam) if stretch else w
+    w_y = w * M.trace_stretch(k, lam)
     return (o.image(e.open_k, y, lam, c, w_y) * _row_scale(dy) * o.x_extended_ratio(lam, srcx, w)
             * _x_offset_ratio(o, e, lam, float(u)))
 

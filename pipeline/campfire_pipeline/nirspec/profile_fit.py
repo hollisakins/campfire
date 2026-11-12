@@ -36,12 +36,14 @@ import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
-import scipy.sparse as sp
-from scipy.sparse.linalg import splu
 from scipy.optimize import least_squares
 
 from campfire_pipeline.nirspec import crds_refs as CR
 from campfire_pipeline.nirspec.constants import MSA_SLIT_MARGIN, MSA_SLIT_PITCH
+# the forward model's modules read this one's helpers only when called, and this one reads the
+# components only when called, so the import cycle is safe from either end
+from campfire_pipeline.nirspec.forward import components as FC
+from campfire_pipeline.nirspec.forward.model import ForwardModel
 
 # ---------------------------------------------------------------------------
 # Geometry and PSF
@@ -733,8 +735,11 @@ def optics_version():
     return O.version()
 
 
-class ProfileModel:
-    """Pixel table, spectrum grid and the linear model for a set of exposures.
+class ProfileModel(ForwardModel):
+    """Stage 3's model: one source, a Gaussian along the slit (``forward.SlitGaussian``), on the
+    forward model's pixels, spectrum grid and placement (``forward.ForwardModel``), with its shape
+    as a parameter vector p = (centre, drift, ln width, width change), Gaussian priors and bounds
+    for the non-linear fit (``fit``).
 
     centre_law_tables : replaces ``CENTRE_LAW`` for this model (``centre_law``), e.g.
         ``NO_CENTRE_LAW`` to measure the trace centre on stars; None uses the module's.
@@ -760,161 +765,11 @@ class ProfileModel:
 
     def __init__(self, exps, chromatic=True, priors=None, grid=None, bounds=None, c_prior=None,
                  centre_law_tables=None, nod_law=None, optics=None, mbkg_sigma=None):
-        self.exps = exps
         self.chromatic = chromatic
-        self.centre_law_tables = centre_law_tables
-        self.optics = model_optics(exps, optics)
-        self.nod_law = nod_law
-        self.nod_shift = nod_shifts(exps, nod_law)
         self.priors = priors or Priors()
         self.bounds_cfg = bounds or Bounds()
-        self.c_prior, self.srcy_flag = planned_position(exps)
-        if c_prior is not None:
-            self.c_prior = float(c_prior)
-        self._build_pixels()
-        self._mbkg_term(mbkg_sigma)
-        self.lam_grid = self._grid() if grid is None else np.asarray(grid, float)
-        lam = self.pix['lam']
-        self.pivot = float(np.exp(np.median(np.log(lam))))
-        self.lam_rng = (float(np.percentile(lam, 2)), float(np.percentile(lam, 98)))
-        self._interp_tables()
-
-    # -- pixels --------------------------------------------------------------
-    def _terms(self, k, mask):
-        """(exposure, y, lam, dy, sign/weight) for the source term and each partner term
-        of exposure k's pixels selected by mask (frames without the source omitted,
-        ``term_weights``)."""
-        out = []
-        for j, w in term_weights(self.exps, k):
-            p = self.exps[j]
-            out.append((j, p.y[mask], p.wav[mask], p.dy[mask], w))
-        return out
-
-    def _region(self, e):
-        m = np.zeros(e.y.shape, bool)
-        for lo, hi in open_intervals(e.open_k):
-            m |= (e.y > lo - FIT_MARGIN) & (e.y < hi + FIT_MARGIN)
-        return m
-
-    def _build_pixels(self):
-        rows = fit_pixel_masks(self.exps)
-        if sum(int(m.sum()) for _, m in rows) == 0:
-            raise NoUsablePixels('profile fit: no usable pixels')
-        self.pix_masks = rows
-        d, v, e_idx, lam = [], [], [], []
-        for k, m in rows:
-            e = self.exps[k]
-            d.append(e.diff[m]); v.append(self.diff_variance(k)[m]); e_idx.append(np.full(m.sum(), k)); lam.append(e.wav[m])
-        self.pix = dict(d=np.concatenate(d), v=np.concatenate(v), e=np.concatenate(e_idx), lam=np.concatenate(lam))
-        self.npix = self.pix['d'].size
-        self.use = np.ones(self.npix, bool)       # outlier mask
-
-    def _mbkg_term(self, sigma):
-        """The master-background scale term (``mbkg_sigma``): each fitted exposure's master
-        background on the fitted pixels, ``pix['b']``. Refused, not skipped, on nod
-        differences or without the master background."""
-        if sigma is None or sigma == 0:
-            self.mbkg_sigma = None
-            return
-        if not sigma > 0:
-            raise ValueError(f'profile fit: mbkg_sigma must be positive, got {sigma!r}')
-        fitted = [self.exps[k] for k, _ in self.pix_masks]
-        if any(e.partners for e in fitted):
-            raise ValueError('profile fit: the master-background scale term is for single frames, '
-                             'not nod differences')
-        if any(e.mbkg is None for e in fitted):
-            raise ValueError('profile fit: the master-background scale term needs every exposure\'s master '
-                             'background (Exposure.mbkg)')
-        self.mbkg_sigma = float(sigma)
-        self.pix['b'] = np.concatenate([np.nan_to_num(np.asarray(self.exps[k].mbkg, float)[m])
-                                        for k, m in self.pix_masks])
-
-    def diff_variance(self, k):
-        """Variance to weight exposure k's nod difference with.
-
-        The N = n + 1 differences of a nod set share their frames' noise and carry
-        only N - 1 independent values per pixel: D_i = N/(N-1) (F_i - mean F). For
-        equal frame variances s2, treating them as independent with variance
-        (N/(N-1))**2 * s2 gives exactly the frame-level chi2 (the sky profiled out),
-        hence the correct spectrum and its errors; s2 is the mean frame variance
-        of the set. Degrees of freedom are counted as (N-1)/N per pixel
-        (``dof_weight``).
-
-        An exposure with no partners (an empty list: a single frame with the background
-        subtracted some other way, e.g. the master background) is its own frame: its
-        variance as given, one independent value per pixel."""
-        e = self.exps[k]
-        return nod_variance(e.var, [self.exps[j].var for j in e.partners])
-
-    def dof_weight(self):
-        """Independent values per fitted pixel, (N-1)/N for a set of N nods, 1 for a
-        frame with no partners."""
-        n = np.array([len(self.exps[k].partners) for k in self.pix['e']])
-        return np.where(n == 0, 1.0, n / (n + 1.0))
-
-    def _grid(self):
-        """Spectrum grid: native sampling at the source row of the first fitted
-        exposure on each detector, extended at its ends (``cover``) to the wavelengths of
-        every frame the detector's fitted pixels take (other rows and nods, and the partner
-        frames, could reach past that row's), merged across detectors. On p1 no source
-        needed the extension: the row runs on over the pixels without a flat field, which
-        are never fitted."""
-        lams = []
-        for det in sorted({e.detector for e in self.exps if e.use_data}):
-            cand = [x for x in self.exps if x.use_data and x.detector == det]
-            e = next((x for x in cand if x.has_source), cand[0])
-            yy = np.where(np.isfinite(e.y), e.y, np.inf)
-            r = np.argmin(np.abs(yy - e.src_y), axis=0)
-            lam = e.wav[r, np.arange(e.wav.shape[1])]
-            lam = np.unique(lam[np.isfinite(lam)])
-            used = [self.exps[j].wav[m] for k, m in self.pix_masks if self.exps[k].detector == det
-                    for j, _ in term_weights(self.exps, k)]
-            used = np.concatenate([u[np.isfinite(u)] for u in used]) if used else np.zeros(0)
-            if lam.size >= 2 and used.size:
-                lam = cover(lam, used.min(), used.max())
-            lams.append(lam)
-        g = np.unique(np.concatenate(lams))
-        if g.size < 3:
-            raise TooFewWavelengths('profile fit: too few wavelength samples')
-        step = np.median(np.diff(g))
-        keep = [g[0]]
-        for x in g[1:]:
-            if x - keep[-1] > 0.5 * step:
-                keep.append(x)
-        return np.array(keep)
-
-    def _interp_tables(self):
-        """Precompute, per term, the spectrum-grid interpolation and the throughput.
-        Everything that does not depend on the shape parameters."""
-        self.terms = []
-        g = self.lam_grid
-        n = 0
-        term_masks = []
-        for k, m in self.pix_masks:
-            rows = np.arange(n, n + int(m.sum()))      # term rows map onto the pixel table in order
-            n += int(m.sum())
-            for (j, y, lam, dy, w) in self._terms(k, m):
-                idx = np.clip(np.searchsorted(g, lam) - 1, 0, g.size - 2)
-                t = np.clip((lam - g[idx]) / (g[idx + 1] - g[idx]), 0.0, 1.0)
-                inside = (lam >= g[0]) & (lam <= g[-1])
-                self.terms.append(dict(k=k, j=j, y=y, lam=lam, dy=dy, w=w, idx=idx, t=t, inside=inside, rows=rows))
-                term_masks.append(m)
-        # each exposure's image is needed at the same detector pixels by every set it
-        # appears in (as the source term or a partner), so it is evaluated once per
-        # exposure on the union of those pixels and looked up per term
-        union = {}
-        for T, m in zip(self.terms, term_masks):
-            union[T['j']] = union.get(T['j'], np.zeros(m.shape, bool)) | m
-        self.image_pix = {}
-        for j, U in union.items():
-            e = self.exps[j]
-            pos = np.full(U.shape, -1)
-            pos[U] = np.arange(U.sum())
-            self.image_pix[j] = dict(y=e.y[U], lam=e.wav[U], dy=e.dy[U], pos=pos)
-        for T, mask in zip(self.terms, term_masks):
-            T['upos'] = self.image_pix[T['j']]['pos'][mask]
-        self._pl_curves()
-        self._tau_fixed = {}
+        super().__init__(exps, grid=grid, optics=optics, centre_law_tables=centre_law_tables, nod_law=nod_law,
+                         c_prior=c_prior, mbkg_sigma=mbkg_sigma)
 
     @classmethod
     def for_placement(cls, exps, grid, priors=None, bounds=None, optics=None):
@@ -935,15 +790,6 @@ class ProfileModel:
         M._pl_curves()
         return M
 
-    def _pl_curves(self):
-        # along-dispersion throughput per exposure: jwst point-source path loss along
-        # the trace, as a function of wavelength
-        self.pl_curve = [_row_curve(e, e.pl_point) for e in self.exps]
-        good = [c for c in self.pl_curve if c[0].size > 3]
-        for i, c in enumerate(self.pl_curve):     # source off the shutter in this exposure: borrow
-            if c[0].size <= 3 and good:
-                self.pl_curve[i] = good[0]
-
     # -- shape ---------------------------------------------------------------
     def unpack(self, q):
         """(shape vector, per-exposure pointing offsets) of fit parameters ``q``. The
@@ -956,39 +802,41 @@ class ProfileModel:
             c0, lnw = q[:2]; dc = dw = 0.0
         return np.array([c0, dc, lnw, dw]), np.zeros(len(self.exps))
 
+    def component(self, p, eoff=None):
+        """The source of shape vector ``p`` as a forward-model component."""
+        return FC.SlitGaussian(p[0], p[1], np.exp(p[2]), p[3], eoff=eoff)
+
     def _x(self, lam):
-        lo, hi = np.log2(self.lam_rng[0] / self.pivot), np.log2(self.lam_rng[1] / self.pivot)
-        return np.clip(np.log2(lam / self.pivot), lo, hi)
+        return self.log2_lam(lam)
 
     def centre(self, p, eoff, k, lam):
         """Exposure k's trace centre: the shared source centre moved to the source's planned
         position in exposure k (``nod_shift``), plus k's offset, then the centre law."""
-        e = self.exps[k]
-        cg = p[0] + p[1] * self._x(lam)
-        if self.nod_shift is not None:
-            cg = cg + self.nod_shift[k]
-        D, a = centre_law(lam, e.detector, e.quadrant, law=self.centre_law_tables)
-        return cg + eoff[k] + D + a * cg
+        return self.component(p, eoff).centre_at(self, k, lam)
 
     def width(self, p, lam):
-        return np.maximum(np.exp(p[2]) + p[3] * self._x(lam), W_FLOOR)
+        """The source's width (slit units) on the sky, before the trace-centre law's stretch."""
+        return self.component(p).width_at(self, lam)
+
+    def image_width(self, p, k, lam):
+        """The source's width (slit units) where it lands in exposure k: ``width`` times the
+        trace-centre law's stretch (``ForwardModel.trace_stretch``)."""
+        return self.component(p).image_width(self, k, lam)
 
     def image(self, p, eoff, k, y, lam, dy):
         """Exposure k's source image at slit positions y (pixel-integrated, per unit
         total flux, before the along-dispersion throughput): the galaxy through the
         diffraction model (``optics``) and the open shutters, from its tables, scaled from
         their row height to this pixel's."""
-        from campfire_pipeline.nirspec.optics import DY_ROW
-        c = self.centre(p, eoff, k, lam)
-        w = self.width(p, lam)
-        return self.optics[k].image(self.exps[k].open_k, y, lam, c, w) * (np.asarray(dy, float) / DY_ROW)
+        return self.component(p, eoff).image(self, k, y, lam, dy)
 
     def transmission(self, p, eoff, k, lam, dy, width=None, aperture=REF_APERTURE, centre=None):
         """Cross-slit transmission (the light that passes the shutters and the spectrograph's
-        stop) through an aperture of shutters, for the fitted source (width=None) or a point
-        source (width=0), at the fitted centre or at a given slit position."""
+        stop) through an aperture of shutters, for the fitted source (width=None: its width
+        where it lands, ``image_width``) or a point source (width=0), at the fitted centre or
+        at a given slit position."""
         c = self.centre(p, eoff, k, lam) if centre is None else centre
-        w = self.width(p, lam) if width is None else width
+        w = self.image_width(p, k, lam) if width is None else width
         return self.optics[k].transmission(aperture, lam, c, np.maximum(np.asarray(w, float), W_FLOOR))
 
     def throughput(self, p, eoff, k, lam, dy, fixed=None):
@@ -1007,99 +855,21 @@ class ProfileModel:
         with the fitted position and width; a point source at the planned position gets jwst's
         loss exactly); x = "jwst" leaves out ``x_correction``. ``fixed``: ``throughput_fixed``
         at these wavelengths, when already at hand."""
-        e = self.exps[k]
         if fixed is None:
             fixed = self.throughput_fixed(k, lam, dy)
-        return fixed * self.optics[k].x_extended_ratio(lam, e.src_x_jwst, self.width(p, lam))
-
-    def throughput_fixed(self, k, lam, dy):
-        """The part of ``throughput`` that does not depend on the shape: everything but the
-        extended-source ratio along the dispersion."""
-        L, P = self.pl_curve[k]
-        pl = np.interp(lam, L, P)
-        e = self.exps[k]
-        o = self.optics[k]
-        sl = e.slit_loss
-        if sl.y == 'optics':
-            if e.pl_ref and np.isfinite(e.src_y_jwst):
-                pl = pl * CR.point_y_ratio(e.pl_ref, lam, e.src_y_jwst)
-            c_ref = 0.0
-        else:
-            c_ref = e.src_y if np.isfinite(e.src_y) else 0.0
-        if sl.x == 'corrected':
-            pl = pl * o.x_correction(lam, e.src_x_jwst)
-        t = o.transmission(REF_APERTURE, lam, np.full(np.shape(lam), c_ref), np.full(np.shape(lam), W_FLOOR))
-        return pl / np.maximum(t, 1e-6)
+        return fixed * self.component(p).x_ratio(self, k, lam)
 
     def design(self, p, eoff):
         """Sparse (npix x ngrid) matrix A with model = A @ f."""
-        rows, cols, vals = [], [], []
-        fixed = self.__dict__.setdefault('_tau_fixed', {})       # per exposure, on its image pixels
-        G = {}
-        for j, q in self.image_pix.items():
-            if j not in fixed:
-                fixed[j] = self.throughput_fixed(j, q['lam'], q['dy'])
-            G[j] = (self.throughput(p, eoff, j, q['lam'], q['dy'], fixed=fixed[j])
-                    * self.image(p, eoff, j, q['y'], q['lam'], q['dy']))
-        for T in self.terms:
-            g = T['w'] * G[T['j']][T['upos']]
-            g = np.where(T['inside'], g, 0.0)
-            rows += [T['rows'], T['rows']]
-            cols += [T['idx'], T['idx'] + 1]
-            vals += [g * (1 - T['t']), g * T['t']]
-        if not vals:
-            return sp.csr_matrix((self.npix, self.lam_grid.size))
-        return sp.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
-                             shape=(self.npix, self.lam_grid.size))
+        return self.design_matrix([self.component(p, eoff)])
 
     def linear_solve(self, p, eoff, covariance=False):
-        """Weighted least squares at fixed shape: the spectrum, and with the
-        master-background term (``mbkg_sigma``) its scale, solved together. The normal
-        matrix of the spectrum is banded (each pixel touches a few neighbouring grid
-        points), so it is solved sparse; the scale adds one row and column, eliminated
-        through the same factorisation, and its Gaussian allowance adds 1 / mbkg_sigma^2 to
-        its diagonal. The dense covariance is formed only on request. Returns a
-        ``Solution``."""
-        A = self.design(p, eoff)
-        d = self.pix['d']
-        wgt = np.where(self.use, 1.0 / self.pix['v'], 0.0)
-        AtW = A.T.multiply(wgt).tocsr()
-        N = (AtW @ A).tocsc()
-        b = AtW @ d
-        diag = N.diagonal()
-        good = diag > 1e-3 * np.median(diag[diag > 0])
-        gi = np.flatnonzero(good)
-        Ng = N[gi][:, gi] + sp.identity(gi.size, format='csc') * 1e-9 * np.median(diag[good])
-        lu = splu(Ng)
-        x = lu.solve(b[good])
-        f = np.zeros(diag.size)
-        scale, scale_err = 0.0, np.nan
-        if self.mbkg_sigma is None:
-            f[good] = x
-            model = A @ f
-            dchi2 = float(f[good] @ b[good])
-        else:
-            # [N u; u^T c] [f; s] = [b; bd]: s from the Schur complement S = c - u^T N^-1 u
-            B = self.pix['b']
-            u = np.asarray(AtW @ B)[good]
-            y = lu.solve(u)
-            bd = float(np.sum(wgt * B * d))
-            c = float(np.sum(wgt * B * B)) + 1.0 / self.mbkg_sigma ** 2
-            S = c - float(u @ y)
-            scale = (bd - float(u @ x)) / S
-            scale_err = 1.0 / np.sqrt(S)
-            f[good] = x - scale * y
-            model = A @ f + scale * B
-            # chi2 + penalty: min over (f, s) against min over s alone (no source)
-            dchi2 = float(f[good] @ b[good]) + scale * bd - bd ** 2 / c
-        cov = None
-        if covariance:
-            inv = np.linalg.inv(Ng.toarray())
-            if self.mbkg_sigma is not None:
-                inv = inv + np.outer(y, y) / S
-            cov = np.full((diag.size, diag.size), np.nan)
-            cov[np.ix_(good, good)] = inv
-        return Solution(f=f, cov=cov, good=good, A=A, model=model, dchi2=dchi2, scale=scale, scale_err=scale_err)
+        """Weighted least squares at fixed shape (``ForwardModel.solve`` with the one
+        component): the spectrum, and with the master-background term (``mbkg_sigma``) its
+        scale, solved together. Returns a ``Solution``."""
+        s = self.solve_components([self.component(p, eoff)], covariance=covariance)
+        return Solution(f=s.spectra[0], cov=s.cov, good=s.good[0], A=s.A, model=s.model, dchi2=s.dchi2,
+                        scale=s.scale, scale_err=s.scale_err)
 
     def solve(self, p, eoff, covariance=False):
         """(spectrum, covariance, good, A) of ``linear_solve``, for a model whose prediction
@@ -1183,6 +953,18 @@ class ProfileModel:
             self.use = saved
 
 
+# The shape fit's numerics. The optics tables are float32, so one model evaluation is good to about
+# 1e-7 and least_squares' default finite-difference step (1.5e-8) returns noise for the derivatives:
+# the fit then stopped wherever no step it tried lowered the chi2, short of the minimum and at a
+# point set by rounding (zenith_p15 549120: the centre at 0.205 or 0.247 slit units, the minimum
+# at 0.177). A step of 1e-4 in each parameter (slit units, ln width) is far above that noise and
+# far below any shape's uncertainty. The fit stops when a step lowers the chi2 by less than
+# FIT_DCHI2 (a shape 0.1 sigma from the minimum is 0.01 above it); a relative ftol of 1e-5 stopped
+# at steps of 0.2 on a chi2 of 18000.
+FIT_DIFF_STEP = 1e-4
+FIT_DCHI2 = 0.01
+
+
 def fit(exps, chromatic=True, priors=None, grid=None, bounds=None, model=None):
     """Fit the shape (with priors) and the shared spectrum of one source.
 
@@ -1200,8 +982,9 @@ def fit(exps, chromatic=True, priors=None, grid=None, bounds=None, model=None):
         M = ProfileModel(exps, chromatic=chromatic, priors=priors, grid=grid, bounds=bounds)
     lo, hi = M.bounds()
     q = np.clip(M.start(), lo + 1e-6, hi - 1e-6)
-    # 1e-5: shape changes far below its uncertainty, at a fifth of the evaluations of the default 1e-8
-    q = least_squares(M.residuals, q, bounds=(lo, hi), x_scale='jac', ftol=1e-5, xtol=1e-5, gtol=1e-5).x
+    chi2_start = float(np.sum(M.residuals(q) ** 2))
+    q = least_squares(M.residuals, q, bounds=(lo, hi), x_scale='jac', diff_step=FIT_DIFF_STEP,
+                      ftol=FIT_DCHI2 / max(chi2_start, 1.0), xtol=1e-10, gtol=1e-10).x
     p, eoff = M.unpack(q)
     s = M.linear_solve(p, eoff, covariance=True)
     r = (M.pix['d'] - s.model) / np.sqrt(M.pix['v'])
@@ -1521,7 +1304,7 @@ def transmission_frame(result, k):
     m = np.isfinite(e.y) & np.isfinite(e.wav)
     out = np.full(e.y.shape, np.nan)
     y, lam = e.y[m], e.wav[m]
-    c, w = M.centre(p, eoff, k, lam), M.width(p, lam)
+    c, w = M.centre(p, eoff, k, lam), M.image_width(p, k, lam)
     num = M.optics[k].image(e.open_k, y, lam, c, w)
     den = M.optics[k].without_msa().image(O.ALL_OPEN, y, lam, c, w)
     ok = den > T_MIN_LIGHT * np.max(den, initial=0.0)
@@ -1539,5 +1322,5 @@ def drizzle_transmission(result, dmap):
                           dmap)
 
 
-FIT_VERSION = '11'                  # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset); 8: exact shutter edges in the optics tables (optics engine 2); 9: a SRCYPOS placeholder found with the bar offset applied; 10: no detection gate and fits on a bound kept (profile_chain), the master-background scale term (mbkg_extraction); 11: the reported flux is the light that entered the shutter across the dispersion (no 0.8" circle)
+FIT_VERSION = '12'                  # 2: no per-exposure pointing offsets fitted; 3: each nod at its planned position; 4: three-component smooth PSF; 5: geometric shutter with smooth transmission; 6: every disperser through the diffraction model (optics); 7: the observation's bar offset from its background (bar_offset); 8: exact shutter edges in the optics tables (optics engine 2); 9: a SRCYPOS placeholder found with the bar offset applied; 10: no detection gate and fits on a bound kept (profile_chain), the master-background scale term (mbkg_extraction); 11: the reported flux is the light that entered the shutter across the dispersion (no 0.8" circle); 12: the source's width stretched along the slit by the trace-centre law as its position is, the shape fit's derivatives at steps of 1e-4 and stopped at a chi2 change of 0.01 (FIT_DIFF_STEP, FIT_DCHI2)
 

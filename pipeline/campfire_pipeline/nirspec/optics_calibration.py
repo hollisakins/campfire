@@ -304,7 +304,8 @@ class RangeFit:
         x = np.clip(x, lo + 1e-6, hi - 1e-6)
         nround = 0 if use is not None else clip_rounds
         for it in range(nround + 1):
-            res = least_squares(resid, x, bounds=(lo, hi), x_scale='jac', ftol=1e-6, xtol=1e-6, gtol=1e-6)
+            res = least_squares(resid, x, bounds=(lo, hi), x_scale='jac', diff_step=PF.FIT_DIFF_STEP,
+                                ftol=1e-6, xtol=1e-6, gtol=1e-6)
             x = res.x
             if it == nround:
                 break

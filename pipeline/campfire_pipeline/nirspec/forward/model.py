@@ -195,8 +195,8 @@ class ForwardModel:
     def trace_stretch(self, k, lam):
         """d(trace centre) / d(slit position) in exposure k: 1 + alpha of the trace-centre law. A
         source's extent along the slit lands stretched by it (``project`` places every point
-        through ``trace_centre``; ``components.Gaussian`` scales its width by it). Stage 3's
-        ``SlitGaussian`` moves only its centre (alpha is at most about 0.013)."""
+        through ``trace_centre``; the round components scale their width by it). Alpha is at
+        most about 0.013."""
         e = self.exps[k]
         return 1.0 + PF.centre_law(lam, e.detector, e.quadrant, law=self.centre_law_tables)[1]
 
@@ -229,7 +229,7 @@ class ForwardModel:
 
     def component_matrix(self, comp):
         """Sparse (n_pixels x n_grid) block of one component: model = block @ spectrum."""
-        fixed = self._tau_fixed
+        fixed = self.__dict__.setdefault('_tau_fixed', {})       # per exposure, on its image pixels
         G = {}
         for j, q in self.image_pix.items():
             if j not in fixed:
@@ -249,10 +249,20 @@ class ForwardModel:
 
     def design(self, components):
         """Sparse (n_pixels x n_components * n_grid) design matrix, one block per component."""
+        return self.design_matrix(components)
+
+    def solve(self, components, covariance=False):
+        """The spectra of ``components`` solved together (``solve_components``)."""
+        return self.solve_components(components, covariance=covariance)
+
+    # an application with its own parametrisation (``profile_fit.ProfileModel``) redefines design
+    # and solve in its own terms and builds on these two
+    def design_matrix(self, components):
+        """``design``."""
         blocks = [self.component_matrix(c) for c in components]
         return blocks[0] if len(blocks) == 1 else sp.hstack(blocks, format='csr')
 
-    def solve(self, components, covariance=False):
+    def solve_components(self, components, covariance=False):
         """Weighted least squares at fixed shapes: every component's spectrum, and with the
         master-background term its scale, solved together. The normal matrix is sparse (each
         pixel touches a few neighbouring grid points of each component), solved by LU; the scale
@@ -260,7 +270,7 @@ class ForwardModel:
         1 / mbkg_sigma^2 on its diagonal. Where two components land on the same pixels their
         spectra are correlated; the covariance (formed only on request) carries it. Returns a
         ``Solution``."""
-        A = self.design(components)
+        A = self.design_matrix(components)
         d = self.pix['d']
         wgt = np.where(self.use, 1.0 / self.pix['v'], 0.0)
         AtW = A.T.multiply(wgt).tocsr()

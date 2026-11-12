@@ -66,6 +66,21 @@ def test_projection_of_a_round_gaussian_is_its_direct_placement(sigma):
     assert np.max(np.abs(general - direct)) < 1e-6 * np.max(direct)
 
 
+@pytest.mark.parametrize('sigma', [0.03, 0.08])
+def test_stage3s_gaussian_is_the_projection_of_a_round_source(sigma):
+    # the projection places every point of the source through the trace-centre law, so its width
+    # lands stretched as positions are; stage 3's Gaussian must land the same way
+    exps = _sky_exposures()
+    for e, dy in zip(exps, (0.0, 0.012, -0.009)):
+        e.src_y += dy
+    F = FW.ForwardModel(exps)
+    for k, q in F.image_pix.items():
+        assert np.ptp(F.trace_stretch(k, q['lam'])) > 1e-3        # the law stretches here
+        general = FW.project(FW.Gaussian(sigma=sigma), F, k, q['y'], q['lam'], q['dy'])
+        stage3 = FW.SlitGaussian(F.c_prior, width=sigma / O.SLIT).light(F, k, q['y'], q['lam'], q['dy'])
+        assert np.max(np.abs(general - stage3)) < 1e-6 * np.max(stage3)
+
+
 def test_projection_needs_the_slit_orientation():
     exps = _exposures()
     F = FW.ForwardModel(exps)

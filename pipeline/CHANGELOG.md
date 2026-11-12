@@ -29,6 +29,12 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- **NIRSpec forward model** (`nirspec/forward/`). Sources made of components (a point source, a
+  round Gaussian, a Sersic, or stage 3's Gaussian along the slit), each with its own spectrum, are
+  placed on a target's exposures by their sky offsets and the slit's orientation from each
+  exposure's WCS (`profile_fit.slit_axes`, `Exposure.pa_slit_x` / `pa_slit_y`). Their spectra are
+  solved together, with the full covariance. Stage 3's `ProfileModel` is now this model with one
+  `SlitGaussian` component: its design matrix and residuals equal the previous code's to 1e-16.
 - **NIRSpec joint first pass, faster** (`joint_first_pass.py`, `profile_joint.py`; results
   unchanged). Each source's shape is fitted once per disperser before the workers start, not by
   every worker that builds the source; the design assigns each pixel with one sort and skips
@@ -301,6 +307,21 @@ Release procedure: edit the `## Unreleased` section below, then run
     0.01, 543127 0.16 to 0.07. Not searched on the gratings: G395M's featureless background
     places a shutter only to about 10 shutters along the dispersion, and its failed-open shutters
     pass a fraction rising with wavelength.
+  - *The shape fit reaches its minimum, and the width lands stretched (`FIT_VERSION` 12).* The
+    optics tables are float32, so a model evaluation is good to about 1e-7, and `least_squares`'
+    default finite-difference step (1.5e-8) returned noise for the shape derivatives. The fit
+    then stopped short of the minimum, at a point set by rounding. For zenith_p15 549120 the
+    centre came out at 0.205 or 0.247 slit units depending on 1e-16 differences, against a
+    minimum at 0.177. Derivatives now use steps of 1e-4 (`FIT_DIFF_STEP`). The fit stops when a
+    step lowers chi2 by less than 0.01 (`FIT_DCHI2`); the old relative ftol of 1e-5 stopped at
+    steps of about 0.2 on a chi2 of 18000. The source's width along the slit is now stretched by
+    the trace-centre law (1 + alpha, up to 1.3 %), as its position already was
+    (`SlitGaussian.image_width`); the reported flux across the dispersion keeps the width on the
+    sky. On 14 zenith_p15 PRISM sources (S/N 2-280): the fluxes of sources with S/N > 3 change by
+    0.2-0.7 %; faint sources' shapes move by up to 0.04 slit units in centre and 15 % in width,
+    their spectra by 0.35 sigma at most (95th percentile per source) and their errors by up to
+    12 %. The same derivative step is used in the star fits of `optics_calibration`; the shipped
+    optics model was fitted before this change.
   - The width prior (median 0.15, ln sigma 0.6) is provisional and now decides the shape of every
     faint source; how to re-derive it from the archive is in `docs/design-nirspec-pipeline-v2.md` 6.6.
 - **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every

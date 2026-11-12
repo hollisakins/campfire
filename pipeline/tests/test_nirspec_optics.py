@@ -222,7 +222,11 @@ def test_model_image_and_throughput_from_the_optics(monkeypatch):
     e = exps[0]
     y, lam, dy = e.y[:, 40], e.wav[:, 40], e.dy[:, 40]
     c = M.centre(p, np.zeros(3), 0, lam)
-    want = Analytic().image(e.open_k, y, lam, c, 0.05) * dy / O.DY_ROW
+    # the width where the source lands: 0.05 on the sky, stretched along the slit by the
+    # trace-centre law as its position is
+    w = 0.05 * M.trace_stretch(0, lam)
+    assert np.allclose(M.image_width(p, 0, lam), w) and np.ptp(w) > 0
+    want = Analytic().image(e.open_k, y, lam, c, w) * dy / O.DY_ROW
     assert np.allclose(M.image(p, np.zeros(3), 0, y, lam, dy), want)
     tau = M.throughput(p, np.zeros(3), 0, lam, dy)
     t0 = Analytic().transmission(PF.REF_APERTURE, lam, 0.0, PF.W_FLOOR)
