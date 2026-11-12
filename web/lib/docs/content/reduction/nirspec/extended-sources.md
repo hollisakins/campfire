@@ -12,13 +12,13 @@ Three extensions describe the fitted model on the grid of `SCI`:
 |---|---|
 | `PROF2D` | The fitted source, per µJy of reported flux, negative images included |
 | `CONTAM2D` | Other sources' predicted light |
-| `TRANS2D` | The share of the source's light at each pixel that the MSA passes |
+| `TRANS2D` | The share of the source's light at each pixel that the MSA passes along the slit |
 
 The full model is `PROF2D × (fnu_prof - fnu_contam) + CONTAM2D`, and `SCI` minus the model shows where the source departs from a Gaussian. A residual that changes sign between the source's position and its negative images, or along the dispersion, points to a profile the model does not describe.
 
 The master-background spectrum offers a second view. `SCI_MBKG` is made from the same exposures with the master background subtracted instead of a nod partner, so nothing of the source is subtracted from itself, and its fit (`PROF2D_MBKG`, `TRANS2D_MBKG`, `CONTAM2D_MBKG`) measures the source's profile again on these frames. For an extended source the two fits differ: on one zenith_p15 galaxy the width along the slit is 0.70 shutter heights on the master-background frames and 0.50 on the nod differences, and the master-background flux is 8–16 % higher.
 
-`SCI_MBKG / TRANS2D_MBKG` shows the source as it would look with no MSA in the way: the bar shadows and the light lost at the shutter edges divided out. `TRANS2D` comes from the fitted profile, so in the faint wings it depends on that profile and can exceed 1, where diffraction at the shutters spreads light from the core outward; where it is small the division amplifies the noise. The master background models only the light through known shutters, so other light that is the same in every nod remains in `SCI_MBKG` (see [Master-background spectra](/docs/reduction/nirspec/backgrounds#master-background-spectra)).
+`SCI_MBKG / TRANS2D_MBKG` shows the source along the slit as it would look with no MSA in the way: the bar shadows, the slitlet's ends and the diffraction along the slit are divided out. The loss across the shutter's width is not, so the divided 2-D, like `fnu`, holds the light that entered the shutter across the dispersion. `TRANS2D` comes from the fitted profile, so in the faint wings it depends on that profile and can exceed 1, where diffraction at the shutters spreads light from the core outward; where it is small the division amplifies the noise. The master background models only the light through known shutters, so other light that is the same in every nod remains in `SCI_MBKG` (see [Master-background spectra](/docs/reduction/nirspec/backgrounds#master-background-spectra)).
 
 > **Placeholder.** A stored version of the divided 2-D spectrum is planned; its form and name are not decided.
 
@@ -71,6 +71,8 @@ plots.panels(fit, result, path='fit.png')        # data, model and residual for 
 
 `result.spectra` holds one spectrum per component on the wavelength grid `result.lam` (µm), in MJy (× 10¹² for µJy), with errors in `result.spectra_err`. A bulge-plus-disk fit of six PRISM exposures takes about a minute.
 
+Each component's spectrum is its total light on the sky, not limited to the shutter. The data contain only what the shutter passes across the dispersion, so the light outside it is extrapolated from the assumed shape; this is why the pipeline reports the light within the shutter's 0.22″ width (`FLUXWID`). To compare a component with `fnu_prof`, multiply its spectrum by its share of light within ±0.11″ of the planned position across the shutter. Stage 3 does this for its Gaussian; for other components the share is not computed for you.
+
 ### Components
 
 | Component | Parameters |
@@ -109,7 +111,7 @@ Priors on one parameter are `Normal`, `LogNormal` and `Uniform`, or any object w
 
 `nonnegative=True` (or a list of component names) holds those spectra at or above zero. It removes the downward noise of a faint component, so that component's spectrum is biased high where it has no light; it is an option, not the default.
 
-To fit the master-background frames instead of the nod differences, load them with `fw.load(files, frames=True)` and give the model the master-background scale term stage 3 uses, `fw.ForwardModel(exps, mbkg_sigma=0.01)`, which fits a common correction to the master background's level with an allowance of 1 %.
+To fit the master-background frames instead of the nod differences, load them with `fw.load(files, frames=True)` and give the model the master-background scale term stage 3 uses, `fw.ForwardModel(exps, mbkg_sigma=0.01)`, which fits a common correction to the master background's level with an allowance of 1 %. Stage 3 also drops the term and refits when the fitted correction reaches 3 %, since a correction that large is light from a source rather than an error in the master background's level; `Fit` does not, and the fitted value is in `result.solution.scale`.
 
 ### An example
 
