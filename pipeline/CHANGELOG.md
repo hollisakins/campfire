@@ -29,6 +29,15 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- **Golden-pixel test and baseline tool for the NIRCam combine path.**
+  `tests/test_nircam_mosaic_golden.py` runs four synthetic exposures through the
+  campfire-native outlier step and tile drizzle and compares the mosaic planes (SCI, ERR,
+  WHT, EXPTIME, NEXP) and each input's outlier mask with `tests/data/nircam_mosaic_golden.npz`:
+  to `rtol = 1e-5` on any platform, and bit for bit on the platform that wrote the
+  reference. `scripts/mosaic_baseline.py snapshot | compare` hashes every image HDU and
+  the WCS cards of a real combine run so two runs can be shown identical. Both exist to
+  protect the move of the mosaic machinery into a shared package for HST
+  (docs/hst/design.md); no pipeline behavior changes.
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.
