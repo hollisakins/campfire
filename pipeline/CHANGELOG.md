@@ -48,6 +48,28 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **`align`: the gross shift is refined before it is vetted, so a correct one is no
+  longer declined for the histogram's bin error.** The gross-shift guard
+  (`gross_min_keep_frac`) counts tight 1-NN pairs (2.5 px: 0.078" SW / 0.157" LW) before
+  and after the candidate shift, but the raw histogram proposal is only good to
+  ~0.1-0.25" (it snaps to a 0.25" bin centre), so a CORRECT shift kept almost none and
+  passed only through the `n_before == 0` bypass. One coincidental tight pair at the input
+  WCS closed it: the shift was declined, the fallback around the input WCS cannot reach
+  past `d2d_max` (1.5"), and a pool with a larger pointing error rejected to NOT_ALIGNED.
+  On an SW fixture with a 1.8" offset and one chance pair, the raw proposal matched 0 of
+  60 sources; refined, 60 of 60. The proposal is now moved to the median 1-NN offset inside
+  its own +-2-bin peak (`histmatch._refine_gross_shift`) and that is what the guard vets.
+  The window cannot leave the chosen peak, so a false peak is still declined (synthetic
+  mis-lock sweep: 355 / 800 false peaks adopted before and after). Expected effects on real
+  data, **not yet re-measured** on the pools the guard was validated against (EGS
+  F470N/F460M, COSMOS `jw06368013001_09201_00003`, EGS `jw06368060001`): pools with a
+  >1.5" pointing error that were NOT_ALIGNED can now solve; `ALGNGKR` rises towards 1 on
+  clean pools (median 0.119 over 1,624 EGS F115W pools before), where adopting rather than
+  declining the prior was a measured no-op. Also: a rejected exposure's header now carries
+  that attempt's own scalar diagnostics (`ALGNGTB` / `ALGNGTA` / `ALGNGKR`, the detection
+  and refcat counts) instead of `UNDEF`, and coarse pass 0's gross-stage numbers are kept
+  when that pass fails, so a declined shift is visible from the header. Fixes the 7
+  `test_align_apply.py` failures the pipeline CI job has shown since it was added.
 - **Stage 1 finishes an exposure with no open shutter on the detector (#681).** `jwst`
   raises `NoDataOnDetectorError` when nothing projects onto a detector (e.g. NRS2 of
   `jw01747017001_03101`). `clean_flicker_noise` with `mask_science_regions = true` hit

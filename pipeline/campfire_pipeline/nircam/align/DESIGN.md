@@ -197,16 +197,26 @@ from `tweakwcs.XYXYMatch`:
   relative, so no per-filter value exists to forget. What it separates,
   measured on real pools (jobs 871040/871048), is *needs a prior* from *doesn't*:
   the COSMOS acquisition failure scores 209 (2 → 418 tight pairs), while all 16
-  mis-locked EGS F470N/F460M pools score 0.019–0.32 **and so do clean, dense
-  COSMOS pools** (1248 → 41, 0.033) — the gross proposal is itself only good to
-  ~0.25″, so a correct proposal also loses tight pairs, and declining it there
-  is a measured no-op (identical WCS, identical 16.4/14.8 mas). The threshold
-  therefore decides between ≥ 209 and ≤ 0.32. A radius sweep (0.05″–1.0″) gives
-  the same verdict everywhere below ~0.25″; above ~0.5″ random pairs refill the
-  annulus and the discriminator dies (F470N at 0.5″: 57 → 57). Declining costs only a redundant translation prior — the
-  matcher falls back to its `searchrad=None` path, the one every iterate pass
-  already runs. `gross_keep_ratio` is recorded on every pass and stamped as
-  `ALGNGKR`, so a silent mis-lock is a header grep, not a re-reduction.
+  mis-locked EGS F470N/F460M pools score 0.019–0.32. Clean, dense COSMOS pools
+  scored low too (1248 → 41, 0.033) when the raw proposal was vetted: it is
+  only good to ~0.25″, so even a correct proposal lost tight pairs. Declining
+  there is a measured no-op (identical WCS, identical 16.4/14.8 mas), but where
+  the pointing error exceeds `d2d_max` it is not: the fallback recovers
+  nothing, and one coincidental tight pair at the input WCS (closing the
+  `n_before == 0` bypass) turned a correct shift into a NOT_ALIGNED pool. So the
+  proposal is first **refined** to the median 1-NN offset inside its own ±2-bin
+  peak (`_refine_gross_shift`) and the refined shift is vetted: a correct one
+  keeps its tight pairs, a false peak refines onto itself and still loses them.
+  (The real-pool numbers above predate refinement and have not been
+  re-measured.) The threshold therefore decides between ≥ 209 and ≤ 0.32. A
+  radius sweep (0.05″–1.0″) gives the same verdict everywhere below ~0.25″;
+  above ~0.5″ random pairs refill the annulus and the discriminator dies (F470N
+  at 0.5″: 57 → 57). Below `d2d_max`, declining costs only a redundant
+  translation prior — the matcher falls back to its `searchrad=None` path, the
+  one every iterate pass already runs. `gross_keep_ratio` is recorded on every
+  pass and stamped as `ALGNGKR` (with `ALGNGTB` / `ALGNGTA`), on a rejected
+  exposure too, so both a silent mis-lock and a declined shift are a header
+  grep, not a re-reduction.
 
 Later passes start from the corrected WCS and re-match with the same consensus
 matcher minus the gross stage (JHAT's `iterate_with_xyshifts`, generalized:
@@ -317,7 +327,9 @@ fraction on the affected exposures: 22–31% → 87–91%; validated in
 `CFP_ALGN = "dof=<geom> res=<median-resid-arcsec> n=<n_matched> rc=<refcat-hash>"`
 — per-detector and short enough to fit one 80-char FITS card (the pool-level
 coarse shift/rot is logged once per pool, not stamped on every card). A rejected
-exposure gets the sentinel `CFP_ALGN = NOT_ALIGNED`.
+exposure gets the sentinel `CFP_ALGN = NOT_ALIGNED`, with the rejected attempt's
+own scalar diagnostics (`UNDEF` where it measured nothing, never an earlier
+solve's values).
 
 **`rc=` refcat hash.** `orchestrate._refcat_hash` is the first 8 hex of the refcat
 file's SHA-256 — cheap, computed before the catalog is even loaded. Stamping it on
