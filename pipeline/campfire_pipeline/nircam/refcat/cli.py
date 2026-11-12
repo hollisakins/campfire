@@ -46,6 +46,35 @@ def _parse_center(center_str, field_obj):
         raise click.BadParameter(f"--center parse error: {e}")
 
 
+def _stars_from_gaia(table, gaia_catalog, epoch_hint):
+    """Apply ``motion.use_gaia_for_stars`` to an extracted catalog; the Gaia
+    table is read from *gaia_catalog* or queried over the catalog's extent."""
+    import numpy as np
+    from astropy.coordinates import SkyCoord
+
+    from campfire_pipeline.imaging.refcat.motion import use_gaia_for_stars
+
+    if gaia_catalog:
+        gaia = read_refcat(gaia_catalog)
+    else:
+        sky = SkyCoord(np.asarray(table["RA"], float), np.asarray(table["DEC"], float),
+                       unit="deg")
+        center = SkyCoord(np.median(sky.ra.deg), np.median(sky.dec.deg), unit="deg")
+        radius = float(center.separation(sky).max().deg) + 0.01
+        log(f"refcat extract: querying Gaia within {radius * 60:.1f}' of "
+            f"({center.ra.deg:.5f}, {center.dec.deg:.5f})")
+        gaia = query_external("gaia", (center.ra.deg, center.dec.deg), radius)
+    out, info = use_gaia_for_stars(table, gaia, epoch_hint=epoch_hint)
+    log(f"refcat extract: {info['n_gaia_stars']} Gaia stars now carry Gaia's "
+        f"position and proper motion; dropped {info['n_dropped_no_motion']} Gaia "
+        f"stars without a proper motion and {info['n_dropped_compact']} compact "
+        f"sources not in Gaia; {info['n_kept']} of {info['n_catalog']} kept.")
+    if info["size_limit"] is None:
+        log("refcat extract: too few Gaia stars to say what a point source "
+            "looks like here; no source was dropped for being compact.")
+    return out, info
+
+
 def _parse_mag_range(spec):
     """``--mag-range MIN,MAX`` parser → ``(float, float)`` or ``None``."""
     if spec is None:
@@ -205,12 +234,25 @@ def query(config, field_name, backend, center, radius_deg, mag_band, mag_max,
 @click.option("--out", "out_path", default=None,
               help="Output path; default = "
                    "<field.refcat_dir>/<field>_<filter>_extract_refcat.ecsv.")
+@click.option("--stars", type=click.Choice(["gaia", "keep"]), default="gaia",
+              show_default=True,
+              help="gaia: stars take their Gaia position and proper motion, "
+                   "and compact sources without a proper motion are dropped, "
+                   "so the catalog holds at any epoch. keep: the catalog as "
+                   "extracted.")
+@click.option("--gaia-catalog", "gaia_catalog", default=None,
+              help="A Gaia catalog already on disk (from 'refcat query "
+                   "--backend gaia'), instead of a new query.")
+@click.option("--epoch-hint", "epoch_hint", default=None, type=float,
+              help="Rough date of the mosaic's data as a year (e.g. 2025.8). "
+                   "Only helps pair fast stars with Gaia; not written to "
+                   "the catalog.")
 @click.option("--notes", default=None,
               help="Free-form note stamped into the catalog meta.")
 @click.option("--overwrite", is_flag=True)
 def extract(config, field_name, mosaic_path, filter_name, tile, scale,
-            err_path, snr_thresh, minarea, snr_min, mag_range, out_path,
-            notes, overwrite):
+            err_path, snr_thresh, minarea, snr_min, mag_range, stars,
+            gaia_catalog, epoch_hint, out_path, notes, overwrite):
     """Build a refcat by extracting sources from a mosaic.
 
     Two ways to point at the mosaic:
@@ -245,6 +287,8 @@ def extract(config, field_name, mosaic_path, filter_name, tile, scale,
         snr_thresh=snr_thresh, minarea=minarea,
         snr_min=snr_min, mag_range=mag_range_t,
     )
+    if stars == "gaia":
+        table, info["stars"] = _stars_from_gaia(table, gaia_catalog, epoch_hint)
 
     table.meta.update(make_meta(
         field_obj.name, source="extract",

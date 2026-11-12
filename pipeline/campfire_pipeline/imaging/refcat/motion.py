@@ -104,85 +104,83 @@ def propagate_to_epoch(refcat, epoch_mjd):
     return out
 
 
-def attach_gaia_motion(refcat, gaia, epoch, *, match_radius=0.2):
-    """Give the stars of a position-only catalog their Gaia proper motions.
+def use_gaia_for_stars(refcat, gaia, *, match_radius=0.3, epoch_hint=None,
+                       size_column='rhalf', nsigma=3.0, min_stars=8):
+    """Make a catalog safe to use at any epoch: stars come from Gaia, point
+    sources Gaia cannot vouch for are dropped, galaxies stay.
 
-    ``refcat`` holds positions measured at ``epoch`` (a Julian year): sources
-    extracted from a mosaic observed then, or a survey catalog at its own
-    epoch. ``gaia`` is a Gaia table with ``RA``/``DEC``/``ref_epoch``/``pmra``/
-    ``pmdec`` (the output of ``query.query_gaia``). Without this step such a
-    catalog holds every star where it was at ``epoch``, and an exposure taken
-    years earlier or later is pulled toward positions the stars did not have
-    (pg004: stars moving a median 4.6 mas/yr put a 2016 HST visit 17 mas from
-    its galaxies when it was aligned to a 2025 NIRCam catalog;
-    docs/hst/design.md, section 8b).
+    A catalog extracted from a mosaic holds every star where it was when the
+    mosaic's exposures were taken, which may span years. An exposure from
+    another epoch aligned to it is pulled toward positions the stars did not
+    have then (pg004, a low-latitude field: a 2016 HST visit landed 20 mas from
+    its galaxies against a 2025 NIRCam catalog; docs/hst/design.md, section
+    8b). After this step:
 
-    Gaia is moved to ``epoch`` and matched to the catalog: the median offset
-    between the two is removed first, then a pair is kept when each is the
-    other's nearest neighbour within ``match_radius`` arcsec. A matched row
-    keeps its own position, which is in the catalog's frame, and gains
-    ``ref_epoch = epoch`` with the star's ``pmra``/``pmdec`` (and ``source_id``,
-    ``parallax``, ``pmra_err``, ``pmdec_err`` where Gaia has them), so
-    :func:`propagate_to_epoch` moves it from the catalog's epoch to any
-    exposure's. Rows without a match, and matches to a Gaia star that has no
-    proper motion, are left stationary (NaN). A row that already carries a
-    finite proper motion is not touched.
+    * a source matched to a Gaia star with a proper motion carries **Gaia's**
+      position, ``ref_epoch`` and ``pmra``/``pmdec`` (and ``source_id``,
+      ``parallax``, the errors), so :func:`propagate_to_epoch` moves it from
+      Gaia's epoch to each exposure's own. The mosaic's epoch is not used;
+    * a source matched to a Gaia star without a proper motion is dropped;
+    * an unmatched source as compact as the Gaia stars is dropped: it is a
+      star (or something as small) that moves by an unknown amount. "As compact"
+      means ``size_column`` at or below the stars' median plus ``nsigma`` times
+      their scatter. This needs the size column (``extract`` writes ``rhalf``,
+      the half-light radius) and at least ``min_stars`` matched stars to say
+      what a point source looks like in this catalog; without either, nothing
+      is dropped on size, and ``info`` says so;
+    * everything else (extended sources) is kept where it is.
 
-    Returns ``(table, info)``; ``info`` has the counts and the median offset
-    (catalog minus Gaia at ``epoch``, mas).
+    ``gaia`` is a Gaia table (``RA``/``DEC``/``ref_epoch``/``pmra``/``pmdec``;
+    the output of ``query.query_gaia``). Matching is mutual nearest neighbour
+    within ``match_radius`` arcsec. ``epoch_hint`` (a Julian year, the rough
+    date of the catalog's data) only helps the matching: Gaia is moved there
+    first, so fast stars still pair up. It is never written to the catalog.
+
+    Returns ``(table, info)``.
     """
     import astropy.units as u
     from astropy.coordinates import SkyCoord
     from astropy.time import Time
 
-    epoch = float(epoch)
-    if not _EPOCH_MIN_JYEAR < epoch < _EPOCH_MAX_JYEAR:
-        raise ValueError(
-            f"epoch {epoch!r} is outside the plausible range ({_EPOCH_MIN_JYEAR:g}, "
-            f"{_EPOCH_MAX_JYEAR:g}); it must be a Julian year (e.g. 2025.76), not MJD.")
     if not has_proper_motion(gaia):
         raise ValueError("the Gaia table has no ref_epoch/pmra/pmdec columns")
-
+    n = len(refcat)
     out = refcat.copy()
-    n = len(out)
     for name in ('ref_epoch', 'pmra', 'pmdec', 'parallax', 'pmra_err', 'pmdec_err'):
         out[name] = _float_col(out, name) if name in out.colnames else np.full(n, np.nan)
     if 'source_id' not in out.colnames:
         out['source_id'] = np.zeros(n, dtype=np.int64)
-    info = {'epoch': epoch, 'n_catalog': n, 'n_gaia': len(gaia), 'n_matched': 0,
-            'n_with_motion': 0, 'match_radius_arcsec': float(match_radius),
-            'offset_mas': [float('nan'), float('nan')]}
+    info = {'n_catalog': n, 'n_gaia': len(gaia), 'match_radius_arcsec': float(match_radius),
+            'epoch_hint': None if epoch_hint is None else float(epoch_hint),
+            'n_gaia_stars': 0, 'n_dropped_no_motion': 0, 'n_dropped_compact': 0,
+            'size_column': None, 'size_limit': None, 'n_kept': n}
     if n == 0 or len(gaia) == 0:
         return out, info
 
-    moved = propagate_to_epoch(gaia, Time(epoch, format='jyear').mjd)
+    at = gaia if epoch_hint is None else propagate_to_epoch(
+        gaia, Time(float(epoch_hint), format='jyear').mjd)
     cat = SkyCoord(_float_col(out, 'RA') * u.deg, _float_col(out, 'DEC') * u.deg)
-    g_ra, g_dec = _float_col(moved, 'RA'), _float_col(moved, 'DEC')
-    cosd = np.cos(np.radians(np.nanmedian(g_dec)))
-
-    # Median offset between the two frames, from every Gaia star with a catalog
-    # source within 1"; a catalog tied to another survey can sit tens of mas
-    # from Gaia, which would otherwise eat into the match radius.
-    idx, d2d, _ = SkyCoord(g_ra * u.deg, g_dec * u.deg).match_to_catalog_sky(cat)
-    near = d2d.arcsec < 1.0
-    d_ra = d_dec = 0.0
-    if near.sum() >= 5:
-        d_ra = float(np.median((cat.ra.deg[idx[near]] - g_ra[near]) * cosd))
-        d_dec = float(np.median(cat.dec.deg[idx[near]] - g_dec[near]))
-        info['offset_mas'] = [d_ra * 3.6e6, d_dec * 3.6e6]
-    gsky = SkyCoord((g_ra + d_ra / cosd) * u.deg, (g_dec + d_dec) * u.deg)
-
+    gsky = SkyCoord(_float_col(at, 'RA') * u.deg, _float_col(at, 'DEC') * u.deg)
     g2c, d2d, _ = gsky.match_to_catalog_sky(cat)
     c2g, _, _ = cat.match_to_catalog_sky(gsky)
     pair = (c2g[g2c] == np.arange(len(gsky))) & (d2d.arcsec <= float(match_radius))
-    info['n_matched'] = int(pair.sum())
 
     pmra, pmdec = _float_col(gaia, 'pmra'), _float_col(gaia, 'pmdec')
-    src = np.flatnonzero(pair & np.isfinite(pmra) & np.isfinite(pmdec))
-    rows = g2c[src]
-    free = ~(np.isfinite(out['pmra'][rows]) & np.isfinite(out['pmdec'][rows]))
-    rows, src = rows[free], src[free]
-    out['ref_epoch'][rows] = epoch
+    epoch = _float_col(gaia, 'ref_epoch')
+    moving = pair & np.isfinite(pmra) & np.isfinite(pmdec) & np.isfinite(epoch)
+    src, rows = np.flatnonzero(moving), g2c[moving]
+    if epoch_hint is not None and len(rows) >= 5:
+        # How far the catalog's own star positions sit from Gaia at the hinted
+        # epoch: the catalog's frame against Gaia's (plus any error in the
+        # hint). Stars take Gaia's frame below and galaxies keep the catalog's,
+        # so a large value means the two halves of the result disagree.
+        cosd = np.cos(np.radians(np.nanmedian(cat.dec.deg[rows])))
+        info['frame_offset_mas'] = [
+            float(np.median((cat.ra.deg[rows] - gsky.ra.deg[src]) * cosd) * 3.6e6),
+            float(np.median(cat.dec.deg[rows] - gsky.dec.deg[src]) * 3.6e6)]
+    out['RA'][rows] = _float_col(gaia, 'RA')[src]
+    out['DEC'][rows] = _float_col(gaia, 'DEC')[src]
+    out['ref_epoch'][rows] = epoch[src]
     out['pmra'][rows] = pmra[src]
     out['pmdec'][rows] = pmdec[src]
     for name in ('parallax', 'pmra_err', 'pmdec_err'):
@@ -190,5 +188,24 @@ def attach_gaia_motion(refcat, gaia, epoch, *, match_radius=0.2):
             out[name][rows] = _float_col(gaia, name)[src]
     if 'source_id' in gaia.colnames:
         out['source_id'][rows] = np.asarray(gaia['source_id'])[src]
-    info['n_with_motion'] = int(len(rows))
+    is_star = np.zeros(n, bool)
+    is_star[rows] = True
+    drop = np.zeros(n, bool)
+    drop[g2c[pair & ~moving]] = True
+    info['n_gaia_stars'] = int(is_star.sum())
+    info['n_dropped_no_motion'] = int(drop.sum())
+
+    if size_column in out.colnames:
+        size = _float_col(out, size_column)
+        ref = size[is_star & np.isfinite(size) & (size > 0)]
+        if len(ref) >= int(min_stars):
+            med = float(np.median(ref))
+            mad = float(1.4826 * np.median(np.abs(ref - med)))
+            limit = med + float(nsigma) * max(mad, 0.05 * med)
+            compact = ~is_star & ~drop & np.isfinite(size) & (size <= limit)
+            drop |= compact
+            info.update(size_column=size_column, size_limit=limit,
+                        n_dropped_compact=int(compact.sum()))
+    out = out[~drop]
+    info['n_kept'] = len(out)
     return out, info

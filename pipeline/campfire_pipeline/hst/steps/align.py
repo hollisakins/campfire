@@ -2,32 +2,31 @@
 
 The solver is the NIRCam ``align`` solver (``nircam/align/solve.py``): clip the
 reference catalog to the footprint, find the gross offset with the
-offset-histogram matcher, fit one shift and rotation for a pool of chips. What
-differs is which pools are fitted against what, and the WCS representation:
+offset-histogram matcher, fit a pool of chips. The recipe is HST's own and is
+set with HST's own settings (:data:`DEFAULTS`); it differs from the NIRCam
+recipe on purpose, because the two instruments are wrong in different ways.
+NIRCam's ten detectors each sit at an offset of their own, so the NIRCam step
+fits each detector. The two ACS/WFC chips are one focal plane and do not stand
+apart; what a shift and rotation leaves there is a linear term across the whole
+field (measurements in docs/hst/design.md, section 8b).
 
-* **Exposure to exposure first.** The exposures of a visit share guide stars
-  and a distortion model, so they differ by a few milliarcseconds at most, and
-  they share hundreds of sources. Each exposure (its chips as one rigid pool)
-  is fitted to the detections of the visit's richest exposure. This is the only
-  stage that can measure offsets that small: the reference catalog usually has
-  too few sources per exposure (a Gaia-only field gives 10-15).
-* **Then the visit to the reference catalog.** All chips of all exposures, as
-  one rigid pool, get one shift and rotation, followed by the solver's
-  per-chip refinement, on by default as for NIRCam: production fields are
-  aligned to a dense NIRCam-derived catalog, where a chip has hundreds of
-  matches. The refinement fits each chip of each exposure on its own, so its
-  error is the per-source scatter over the square root of the chip's matches.
-  With a sparse or imprecise reference (Gaia alone, Legacy Surveys directly)
-  that error is several milliarcseconds, larger than anything it could
-  correct, and ``fine_fitgeom = "none"`` turns it off (measurements in
-  docs/hst/design.md, section 8b).
-* **Option: a linear fit of the visit.** ``coarse_fitgeom = "general"`` gives
-  the visit's fit a linear term (scale and skew, six numbers in all) instead
-  of shift and rotation. On three ACS/WFC visits measured against Gaia, what
-  a shift and rotation left was such a term across the whole field (a skew of
-  3 to 7 mas per 100 arcsec, the same in every exposure), not a shift of each
-  chip; one linear fit removed it where the per-chip refinement removed part
-  (design.md, section 8b). Not the default.
+* **Exposure to exposure first** (``pool = "visit"``, the default). Each
+  exposure, its chips as one body, is fitted to the detections of the visit's
+  richest exposure on their common sources (hundreds to thousands). The dither
+  offsets in the headers are not relied on: they are measured here, to better
+  than a milliarcsecond, which a reference catalog with tens of sources per
+  exposure cannot do. An exposure that cannot be fitted to the others is fitted
+  to the reference catalog on its own. ``pool = "exposure"`` fits every
+  exposure to the catalog on its own, as the NIRCam step does.
+* **Then the pool to the reference catalog** (``fit``). ``"rigid"`` is one shift
+  and rotation; ``"linear"`` adds scale and skew, six numbers for the whole
+  pool; ``"auto"`` (the default) uses the linear fit when the matches can hold
+  a linear term to ``linear_max_error`` (3 mas per 100 arcsec) and the rigid
+  fit otherwise. A dense NIRCam-derived catalog or a rich Gaia field passes;
+  HSC or Legacy Surveys used directly do not.
+* **No per-chip fit by default** (``per_chip_fit``). It can be turned on; it
+  then fits each chip of each exposure on its own, as NIRCam fits each
+  detector.
 * **WCS.** An HST chip's WCS is an ``astropy.wcs.WCS`` (FITS keywords, SIP and
   lookup-table distortion). It goes to the solver without ``wcsinfo``, which
   selects the arcsec-plane FITS corrector
@@ -65,6 +64,35 @@ from campfire_pipeline.hst.exposure import open_exposure
 _BACKUP = {'CRVAL1': 'CFOCRV1', 'CRVAL2': 'CFOCRV2', 'CD1_1': 'CFOCD11',
            'CD1_2': 'CFOCD12', 'CD2_1': 'CFOCD21', 'CD2_2': 'CFOCD22'}
 ALIGN_SUFFIX = '-CFALIGN'
+
+# The recipe of the HST align step and its defaults. These settings are HST's
+# own ([hst.align] once the configuration is wired); the NIRCam step
+# ([nircam.align]) has a different recipe and different settings.
+DEFAULTS = {
+    # Which exposures are fitted to the reference catalog together.
+    #   'visit'    : the exposures of a visit are first fitted to each other on
+    #                their common sources, then fitted to the catalog as one body.
+    #   'exposure' : every exposure is fitted to the catalog on its own (what
+    #                the NIRCam step does).
+    'pool': 'visit',
+    # What is fitted for a pool against the reference catalog.
+    #   'rigid'  : one shift and one rotation.
+    #   'linear' : shift, rotation, scale and skew (six numbers), for the whole
+    #              pool. ACS/WFC needs this: its two chips do not stand apart,
+    #              the field as a whole carries a skew of 3 to 7 mas per 100".
+    #   'auto'   : linear when the matches can hold a linear term to
+    #              `linear_max_error`, rigid otherwise.
+    'fit': 'auto',
+    # mas per 100 arcsec. The term to be corrected is 3 to 7; a fit that cannot
+    # do better than about 3 would add as much error as it removes.
+    'linear_max_error': 3.0,
+    # A further shift and rotation for each chip of each exposure, as the NIRCam
+    # step does for each detector. Off: on ACS it corrected part of what the
+    # linear fit corrects in full, and cost agreement between exposures.
+    'per_chip_fit': False,
+    # Common sources needed to fit one exposure to another.
+    'tie_min_matched': 20,
+}
 
 # Matched-filter width (native pixels) for source detection, per detector.
 _DETECT_FWHM = {'acswfc': 2.2, 'wfc3ir': 1.3}
@@ -173,18 +201,20 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
     (or ``None`` when every file is already aligned and ``overwrite`` is unset).
 
     ``refcat`` is a campfire reference catalog table (``RA``, ``DEC``, optional
-    proper-motion columns). ``config`` keys: ``relative`` (default true) and
-    ``relative_min_matched`` (default 20) control the exposure-to-exposure
-    stage; the ``detect_*`` keys and ``snr_min`` the detection; the rest are
-    passed to ``solve_exposure_group`` (``coarse_searchrad``, ``match_radius``,
-    ``min_matched``, ``max_residual_arcsec``, ``fine_fitgeom``, ...).
-    ``coarse_fitgeom`` is the geometry of the visit's fit to the reference
-    catalog: ``rshift`` (shift and rotation, the default) or ``general`` (a
-    linear term for the whole visit, six numbers; see the module docstring).
+    proper-motion columns). ``config`` holds the recipe settings of
+    :data:`DEFAULTS` (``pool``, ``fit``, ``linear_max_error``, ``per_chip_fit``,
+    ``tie_min_matched``), the detection settings (``detect_*``, ``snr_min``,
+    ``saturation_grow``) and matching settings passed to the solver
+    (``coarse_searchrad``, ``match_radius``, ``min_matched``,
+    ``max_residual_arcsec``, ...). The NIRCam names for the fit geometry
+    (``fine_fitgeom``, ``coarse_fitgeom``) are refused here.
+
+    The returned solution lists every chip; its ``diagnostics`` give the fit
+    used by each pool and the number of exposures in it.
     """
     from campfire_pipeline.imaging.refcat.motion import propagate_to_epoch
     from campfire_pipeline.nircam.align.solve import (
-        DetectorInput, solve_exposure_group,
+        DetectorInput, GroupSolution, solve_exposure_group,
     )
 
     files = sorted(exposure_files)
@@ -198,8 +228,16 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
     detect_keys = ('detect_fwhm', 'detect_snr_thresh', 'detect_minarea', 'snr_min',
                    'saturation_grow')
     detect_cfg = {k: cfg.pop(k) for k in detect_keys if k in cfg}
-    relative = bool(cfg.pop('relative', True))
-    relative_min_matched = int(cfg.pop('relative_min_matched', 20))
+    borrowed = sorted(set(cfg) & {'relative', 'fine_fitgeom', 'coarse_fitgeom'})
+    if borrowed:
+        raise ValueError(
+            f'{", ".join(borrowed)}: not a setting of the HST align step. Its recipe '
+            f'is set with pool, fit and per_chip_fit (see hst/steps/align.py).')
+    opt = {k: cfg.pop(k, v) for k, v in DEFAULTS.items()}
+    if opt['pool'] not in ('visit', 'exposure'):
+        raise ValueError(f"pool = {opt['pool']!r}: expected 'visit' or 'exposure'")
+    if opt['fit'] not in ('auto', 'linear', 'rigid'):
+        raise ValueError(f"fit = {opt['fit']!r}: expected 'auto', 'linear' or 'rigid'")
 
     mjd = _mid_mjd(files[0])
     if mjd is not None:
@@ -219,44 +257,151 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
             where[chip.key] = (f, chip.extver)
             log(f'align[{key}]: {chip.key} {len(catalog)} sources')
 
+    # Which exposures are fitted to the reference catalog together. No pool
+    # ever relies on the dither offsets in the headers: exposures share a pool
+    # only after they have been fitted to each other, and an exposure that
+    # could not be fitted to the others is fitted to the catalog on its own.
     rel = {f: '0' for f in files}
-    if relative and len(files) > 1:
-        rel = _relative(by_exposure, key=key, min_matched=relative_min_matched,
-                        solve=solve_exposure_group, config=cfg)
+    pools = [[f] for f in files]
+    if opt['pool'] == 'visit' and len(files) > 1:
+        rel = _tie(by_exposure, key=key, min_matched=int(opt['tie_min_matched']),
+                   solve=solve_exposure_group, config=cfg)
+        pools = ([[f for f in files if rel[f] != '0']]
+                 + [[f] for f in files if rel[f] == '0'])
 
-    detectors = [d for f in files for d in by_exposure[f]]
-    sol = solve_exposure_group(detectors, refcat, key=key, dva_repivot=False, **cfg)
-
-    by_file = {f: {} for f in files}
-    summary = {f: [] for f in files}
-    for d in sol.detectors:
-        f, extver = where[d.detector]
-        ok = sol.status == 'SOLVED' and d.aligned
-        by_file[f][extver] = d.wcs if ok else None
-        summary[f].append((ok, d))
     rc = f' rc={refcat_hash}' if refcat_hash else ''
-    for f in files:
-        if sol.status != 'SOLVED' or not all(ok for ok, _ in summary[f]):
-            _write_back(f, {v: None for v in by_file[f]}, cfp.NOT_ALIGNED)
-            log(f'align[{key}]: {os.path.basename(f)} NOT_ALIGNED (WCS preserved)')
+    solved, all_detectors, n_matched, first, fits_used = False, [], 0, None, []
+    for members in pools:
+        together = len(members) > 1
+        pool_key = key if together else f'{key}:{os.path.basename(members[0])[:9]}'
+        sol, used, lin_err = _fit_pool(
+            [d for f in members for d in by_exposure[f]], refcat, key=pool_key,
+            fit=opt['fit'], linear_max_error=float(opt['linear_max_error']),
+            per_chip_fit=bool(opt['per_chip_fit']), solve=solve_exposure_group,
+            config=cfg)
+        first = first or sol
+        fits_used.append(used)
+        all_detectors.extend(sol.detectors)
+        by_file = {f: {} for f in members}
+        summary = {f: [] for f in members}
+        for d in sol.detectors:
+            f, extver = where[d.detector]
+            ok = sol.status == 'SOLVED' and d.aligned
+            by_file[f][extver] = d.wcs if ok else None
+            summary[f].append((ok, d))
+        for f in members:
+            if sol.status != 'SOLVED' or not all(ok for ok, _ in summary[f]):
+                _write_back(f, {v: None for v in by_file[f]}, cfp.NOT_ALIGNED)
+                log(f'align[{key}]: {os.path.basename(f)} NOT_ALIGNED (WCS preserved)')
+                continue
+            solved = True
+            res = max(d.residual_arcsec for _, d in summary[f])
+            n = sum(d.n_matched for _, d in summary[f])
+            n_matched += n
+            value = (f'fit={used} pool={"visit" if together else "exposure"} '
+                     f'res={res * 1000:.1f}mas n={n} rel={rel[f]}{rc}')
+            if opt['per_chip_fit']:
+                value += ' chips=' + ','.join(d.dof for _, d in summary[f])
+            _write_back(f, by_file[f], value)
+            log(f'align[{key}]: {os.path.basename(f)} {value}')
+    return GroupSolution(
+        key=key, status='SOLVED' if solved else 'NOT_ALIGNED', shift=first.shift,
+        rot_deg=first.rot_deg, rmse_arcsec=first.rmse_arcsec, n_matched=n_matched,
+        detectors=all_detectors,
+        diagnostics={'fit': fits_used, 'pools': [len(m) for m in pools]})
+
+
+def _linear_term_error(sol, detectors):
+    """Expected error of a linear term fitted to this solution's matches, in
+    mas per 100 arcsec, or ``inf`` when it cannot be estimated.
+
+    For a slope fitted to N independent points with scatter s per axis over
+    positions of spread d, the error is ``s / (sqrt(N) * d)``. N counts
+    distinct reference sources (a source matched in four exposures carries the
+    same catalog error four times). s is the scatter of the matches about a
+    linear term (fitted here to the residuals with clipping, so that a real
+    term is not counted as noise), and d is the spread of the matched sources
+    along the direction in which they are most narrowly distributed.
+    """
+    catalogs = {d.detector: d.catalog for d in detectors}
+    rows = []
+    for d in sol.detectors:
+        if d.matched is None or not d.aligned:
             continue
-        res = max(d.residual_arcsec for _, d in summary[f])
-        n = sum(d.n_matched for _, d in summary[f])
-        dofs = ','.join(d.dof for _, d in summary[f])
-        value = (f'dof={dofs} res={res * 1000:.1f}mas n={n} '
-                 f'vis={cfg.get("coarse_fitgeom", "rshift")} rel={rel[f]}{rc}')
-        _write_back(f, by_file[f], value)
-        log(f'align[{key}]: {os.path.basename(f)} {value}')
-    return sol
+        m = np.asarray(d.matched, bool)
+        cat = catalogs[d.detector]
+        ra, dec = d.wcs.all_pix2world(np.asarray(cat['x'], float)[m],
+                                      np.asarray(cat['y'], float)[m], 0)
+        rows.append(np.column_stack([np.asarray(d.ref_ra, float)[m],
+                                     np.asarray(d.ref_dec, float)[m], ra, dec]))
+    if not rows:
+        return float('inf')
+    a = np.vstack(rows)
+    sources = np.unique(a[:, :2], axis=0)
+    if len(sources) < 6:
+        return float('inf')
+    cosd = np.cos(np.radians(sources[:, 1].mean()))
+    xi = (a[:, 0] - sources[:, 0].mean()) * cosd * 3600.0
+    eta = (a[:, 1] - sources[:, 1].mean()) * 3600.0
+    design = np.column_stack([np.ones(len(a)), xi, eta])
+    scatter = []
+    for resid in ((a[:, 2] - a[:, 0]) * cosd * 3.6e6, (a[:, 3] - a[:, 1]) * 3.6e6):
+        keep = np.ones(len(a), bool)
+        for _ in range(4):
+            coef, *_ = np.linalg.lstsq(design[keep], resid[keep], rcond=None)
+            r = resid - design @ coef
+            mad = 1.4826 * np.median(np.abs(r[keep] - np.median(r[keep])))
+            keep = np.abs(r - np.median(r[keep])) <= 3 * max(mad, 1e-6)
+        scatter.append(mad)
+    sx = (sources[:, 0] - sources[:, 0].mean()) * cosd * 3600.0
+    sy = (sources[:, 1] - sources[:, 1].mean()) * 3600.0
+    spread = np.sqrt(max(np.linalg.eigvalsh(np.cov(np.vstack([sx, sy])))[0], 0.0))
+    if not spread > 0:
+        return float('inf')
+    return float(np.mean(scatter) / (np.sqrt(len(sources)) * spread) * 100.0)
 
 
-def _relative(by_exposure, *, key, min_matched, solve, config):
-    """Tie each exposure to the visit's richest one, in place.
+def _fit_pool(detectors, refcat, *, key, fit, linear_max_error, per_chip_fit, solve,
+              config):
+    """Fit one pool of chips to the reference catalog; return
+    ``(solution, 'rigid' | 'linear', expected linear-term error)``.
+
+    ``rigid`` is one shift and rotation for the pool. ``linear`` adds scale and
+    skew (six numbers). With ``fit = 'auto'`` the rigid fit runs first and the
+    linear fit replaces it when the matches can hold a linear term to
+    ``linear_max_error`` (mas per 100 arcsec).
+    """
+    chips = {} if per_chip_fit else {'fine_fitgeom': 'none'}
+    if fit == 'linear':
+        sol = solve(detectors, refcat, key=key, dva_repivot=False,
+                    coarse_fitgeom='general', **chips, **config)
+        return sol, 'linear', float('nan')
+    sol = solve(detectors, refcat, key=key, dva_repivot=False,
+                coarse_fitgeom='rshift', **chips, **config)
+    err = _linear_term_error(sol, detectors) if sol.status == 'SOLVED' else float('inf')
+    if fit == 'auto' and err <= linear_max_error:
+        lin = solve(detectors, refcat, key=key, dva_repivot=False,
+                    coarse_fitgeom='general', **chips, **config)
+        if lin.status == 'SOLVED' and all(d.aligned for d in lin.detectors):
+            log(f'align[{key}]: linear fit (a linear term can be held to '
+                f'{err:.1f} mas per 100 arcsec; limit {linear_max_error:g})')
+            return lin, 'linear', err
+    if fit == 'auto' and sol.status == 'SOLVED':
+        log(f'align[{key}]: shift and rotation only (a linear term would be '
+            f'uncertain by {err:.1f} mas per 100 arcsec; limit {linear_max_error:g})')
+    return sol, 'rigid', err
+
+
+def _tie(by_exposure, *, key, min_matched, solve, config):
+    """Fit each exposure to the visit's richest one on their common sources, in
+    place. The offsets between exposures are measured here, not read from the
+    headers.
 
     ``by_exposure`` maps file -> its chips' ``DetectorInput``; the WCS of every
     exposure that solves is replaced by the corrected one. Returns file -> the
     ``rel=`` token for the step stamp: ``ref`` for the reference exposure, the
-    number of matched sources for a corrected one, ``0`` for one left alone.
+    number of matched sources for a fitted one, ``0`` for one that could not be
+    fitted (the caller then fits it to the reference catalog on its own).
     """
     from astropy.table import Table
 
@@ -270,10 +415,8 @@ def _relative(by_exposure, *, key, min_matched, solve, config):
         dec.append(c)
     relcat = Table({'RA': np.concatenate(ra), 'DEC': np.concatenate(dec)})
 
-    # The tie between exposures is always rigid: `coarse_fitgeom` is the geometry
-    # of the visit's fit to the reference catalog only.
-    cfg = {k: v for k, v in config.items()
-           if k not in ('min_matched', 'fine_fitgeom', 'coarse_fitgeom')}
+    # Always one shift and rotation per exposure, both chips together.
+    cfg = {k: v for k, v in config.items() if k != 'min_matched'}
     token = {reference: 'ref'}
     for f, dets in by_exposure.items():
         if f == reference:
@@ -283,8 +426,9 @@ def _relative(by_exposure, *, key, min_matched, solve, config):
                     fine_fitgeom='none', min_matched=min_matched, **cfg)
         if sol.status != 'SOLVED' or not all(d.aligned for d in sol.detectors):
             token[f] = '0'
-            log(f'align[{key}]: {name} not tied to {os.path.basename(reference)} '
-                f'(too few common sources); left as it is')
+            log(f'align[{key}]: {name} could not be fitted to '
+                f'{os.path.basename(reference)} (too few common sources); it is '
+                f'fitted to the reference catalog on its own')
             continue
         fitted = {d.detector: d.wcs for d in sol.detectors}
         by_exposure[f] = [dataclasses.replace(d, wcs=fitted[d.detector])

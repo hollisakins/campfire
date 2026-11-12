@@ -83,12 +83,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   detector has no `wcsinfo`), the footprint clip reads an `astropy.wcs.WCS`, and
   `fine_fitgeom = "none"` turns the per-detector stage off (the default keeps it on,
   for HST as for NIRCam). NIRCam solves are unchanged (JWST corrector whenever
-  `wcsinfo` is given; the default `fine_fitgeom` is as before). The solver also takes
-  `coarse_fitgeom` (default `"rshift"`, the pooled fit as before); for an HST visit
-  `"general"` fits one linear term for the visit, and the `CFP_ALGN` stamp records it
-  as `vis=`. `imaging/refcat/motion.py::attach_gaia_motion` gives the stars of a
-  position-only reference catalog their Gaia proper motions (not yet called by any
-  command).
+  `wcsinfo` is given; the default `fine_fitgeom` is as before). The HST step has its own
+  settings (`pool`, `fit`, `per_chip_fit`; `hst/steps/align.py::DEFAULTS`): exposures
+  of a visit are fitted to each other, then to the catalog as one body with a linear
+  term (shift, rotation, scale, skew) when the catalog can hold one and a shift and
+  rotation otherwise; no per-chip fit by default. For this the solver takes
+  `coarse_fitgeom` (default `"rshift"`, the pooled fit as before; not a key the NIRCam
+  step passes on).
   HST detection uses the background-only error and drops sources on saturated pixels
   (both found on real data, docs/hst/design.md section 8b). `hst/visit.py` groups
   exposures into visits and runs the per-visit chain (`wcs_init`, `sky`, `crreject`,
@@ -112,6 +113,17 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **`cfpipe nircam refcat extract` makes catalogs that hold at any epoch**
+  (`--stars gaia`, the new default; `--stars keep` gives the previous behaviour).
+  Sources matched to a Gaia star take Gaia's position, epoch and proper motion, and
+  compact sources without a proper motion are dropped
+  (`imaging/refcat/motion.py::use_gaia_for_stars`); extended sources are kept.
+  Extracted catalogs gain a `rhalf` column (half-light radius, arcsec). The command
+  queries Gaia unless `--gaia-catalog` names a table on disk. Existing catalogs and
+  the align step are unchanged: a field's alignment changes only when its catalog is
+  rebuilt. Measured on `pg004` across nine years: galaxies landed 25 mas from their
+  catalog positions with the catalog as extracted and 4 mas with the cleaned one
+  (docs/hst/design.md, section 8b).
 - **Stage 1 finishes an exposure with no open shutter on the detector (#681).** `jwst`
   raises `NoDataOnDetectorError` when nothing projects onto a detector (e.g. NRS2 of
   `jw01747017001_03101`). `clean_flicker_noise` with `mask_science_regions = true` hit

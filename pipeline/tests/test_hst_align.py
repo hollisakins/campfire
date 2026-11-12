@@ -129,7 +129,8 @@ def test_align_visit_corrects_and_records(visit):
     for f in files:
         assert _offset_from_truth(f, crvals[f]) < 0.005          # 5 mas
         value = cfp.step_value(f, 'CFP_ALGN', keyset=cfp.HST)
-        assert value.startswith('dof=') and 'rc=abc123' in value
+        assert value.startswith('fit=') and 'pool=visit' in value
+        assert 'rc=abc123' in value and 'chips=' not in value    # no per-chip fit
         tokens.append(value.split('rel=')[1].split()[0])
         with fits.open(f) as hdul:
             for v in (1, 2):
@@ -160,7 +161,9 @@ def test_align_visit_corrects_and_records(visit):
 
 def test_a_linear_visit_fit_removes_a_skew_of_the_whole_field(visit):
     """A scale-and-skew error common to both chips is not a shift and rotation.
-    ``coarse_fitgeom = "general"`` fits it; the rigid default leaves it."""
+    ``fit = "linear"`` removes it and ``fit = "rigid"`` leaves it. The default,
+    ``"auto"``, takes the linear fit when the catalog can hold it (this dense
+    one can) and the rigid fit when it cannot."""
     files, refcat, crvals = visit
     m = np.array([[1 + 4e-4, 5e-4], [5e-4, 1 - 4e-4]])
     for f in files:
@@ -170,39 +173,65 @@ def test_a_linear_visit_fit_removes_a_skew_of_the_whole_field(visit):
                 cd = m @ np.array([[h['CD1_1'], h['CD1_2']], [h['CD2_1'], h['CD2_2']]])
                 h['CD1_1'], h['CD1_2'], h['CD2_1'], h['CD2_2'] = (float(c) for c in cd.ravel())
 
-    align_visit(files, refcat, key='jal01', config={'fine_fitgeom': 'none'})
+    def stamp():
+        return cfp.step_value(files[0], 'CFP_ALGN', keyset=cfp.HST)
+
+    align_visit(files, refcat, key='jal01', config={'fit': 'rigid'})
     rigid = max(_offset_from_truth(f, crvals[f]) for f in files)
-    assert 'vis=rshift' in cfp.step_value(files[0], 'CFP_ALGN', keyset=cfp.HST)
-
-    align_visit(files, refcat, key='jal01', overwrite=True,
-                config={'fine_fitgeom': 'none', 'coarse_fitgeom': 'general'})
-    linear = max(_offset_from_truth(f, crvals[f]) for f in files)
-    assert 'vis=general' in cfp.step_value(files[0], 'CFP_ALGN', keyset=cfp.HST)
-
+    assert 'fit=rigid' in stamp()
     assert rigid > 0.006                    # arcsec: the skew survives a rigid fit
-    assert linear < 0.003
+
+    align_visit(files, refcat, key='jal01', overwrite=True, config={'fit': 'linear'})
+    assert 'fit=linear' in stamp()
+    assert max(_offset_from_truth(f, crvals[f]) for f in files) < 0.003
+
+    sol = align_visit(files, refcat, key='jal01', overwrite=True)        # auto
+    assert 'fit=linear' in stamp() and sol.diagnostics['fit'] == ['linear']
+    assert max(_offset_from_truth(f, crvals[f]) for f in files) < 0.003
+
+    # A catalog of 12 sources with 40 mas of scatter cannot hold a linear term.
+    rng = np.random.default_rng(11)
+    few = refcat[:12].copy()
+    few['RA'] = few['RA'] + rng.normal(0, 0.040 / 3600.0, 12) / np.cos(np.radians(26.0))
+    few['DEC'] = few['DEC'] + rng.normal(0, 0.040 / 3600.0, 12)
+    sol = align_visit(files, few, key='jal01', overwrite=True)
+    assert sol.status == 'SOLVED' and 'fit=rigid' in stamp()
 
 
-def test_without_the_relative_stage_the_exposures_stay_apart(visit):
-    """One rigid fit of the visit cannot remove an offset between its exposures.
-    The exposure-to-exposure stage does, and so does the per-chip refinement
-    when the reference catalog is dense and precise (as this synthetic one is)."""
+def test_no_pool_relies_on_the_dither_offsets_in_the_headers(visit):
+    """The second exposure's header is 30 mas off the first. With the default
+    pool the offset is measured between the exposures; with ``pool =
+    "exposure"`` each exposure is fitted to the catalog on its own; and an
+    exposure that cannot be fitted to the others is fitted on its own too."""
     files, refcat, crvals = visit
-    sol = align_visit(files, refcat, key='jal01',
-                      config={'relative': False, 'fine_fitgeom': 'none'})
-    assert sol.status == 'SOLVED'
-    worst = [_offset_from_truth(f, crvals[f]) for f in files]
-    assert max(worst) > 0.010                       # ~half of the 30 mas each
-    for f in files:
-        value = cfp.step_value(f, 'CFP_ALGN', keyset=cfp.HST)
-        assert value.startswith('dof=coarse,coarse') and 'rel=0' in value
 
-    # per-chip refinement (the default) on its own, against the same catalog
-    sol = align_visit(files, refcat, key='jal01', config={'relative': False},
-                      overwrite=True)
-    assert sol.status == 'SOLVED'
+    def stamps():
+        return [cfp.step_value(f, 'CFP_ALGN', keyset=cfp.HST) for f in files]
+
+    sol = align_visit(files, refcat, key='jal01', config={'pool': 'exposure'})
+    assert sol.status == 'SOLVED' and sol.diagnostics['pools'] == [1, 1]
     assert max(_offset_from_truth(f, crvals[f]) for f in files) < 0.005
-    assert any(d.dof != 'coarse' for d in sol.detectors)
+    assert all('pool=exposure' in v and 'rel=0' in v for v in stamps())
+
+    # more common sources demanded than exist: the exposures cannot be tied
+    sol = align_visit(files, refcat, key='jal01', overwrite=True,
+                      config={'tie_min_matched': 100000})
+    assert sol.status == 'SOLVED' and len(sol.detectors) == 4
+    assert max(_offset_from_truth(f, crvals[f]) for f in files) < 0.005
+    assert all('pool=exposure' in v for v in stamps())           # each on its own
+    assert sorted(v.split('rel=')[1].split()[0] for v in stamps()) == ['0', 'ref']
+
+    # the per-chip fit can be turned on, and is then recorded per chip
+    sol = align_visit(files, refcat, key='jal01', overwrite=True,
+                      config={'per_chip_fit': True})
+    assert all('chips=' in v for v in stamps())
+
+
+def test_nircam_names_for_the_fit_are_refused(visit):
+    files, refcat, _ = visit
+    for key in ('fine_fitgeom', 'coarse_fitgeom', 'relative'):
+        with pytest.raises(ValueError, match='not a setting of the HST align step'):
+            align_visit(files, refcat, key='jal01', config={key: 'none'})
 
 
 def test_sources_on_saturated_pixels_are_not_used(visit):
