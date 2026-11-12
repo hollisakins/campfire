@@ -314,9 +314,49 @@ At the end of stage 2a, per exposure and detector:
   G235M/F170LP 1.55 / 5.05 um, G395M/F290LP 2.60 / 5.7 um);
 - failed-open shutters are included at their measured transmission (0 to 1, combined over the nods
   that agree), with the margins of crossing traces kept;
+- on PRISM, shutters found open in the observation that neither the metafile nor the MSA
+  operations reference lists are included the same way (below);
 - where two slitlets' footprints light a pixel at the same position along the dispersion (within
   one column, `same_spot_px`), that is the light of one MSA shutter, and it is counted once, not
   once per slitlet.
+
+**Unlisted open shutters** (`unlisted_open.py`, master background 1.10, user 2026-11-11, PRISM
+only). Some shutters pass the background although neither the metafile nor the MSA operations
+reference's failed-open list has them. Most are listed failed closed and sit next to a commanded
+slitlet, often one shutter past its end (slitlets of three shutters with the leak one row beyond, one cut to two shutters with the leak in the third place; 549120's one step along the
+dispersion from its slitlet), and one was 22 shutters from anything commanded. They leak in one
+configuration and not in another: in the same disperser and at the same detector pixels, none of
+zenith_p15's five leaked in ember_cosmos_p1 and none of p1's four in zenith_p15. So they are found
+per observation, not kept as a list. Nodding cancels their light; the master background did not
+contain it, so it stayed in the master-background spectrum of a source whose cutout it crossed
+(zenith_p15 549120 read about twice the background over one shutter).
+
+The search runs after the first painting, per MSA configuration and detector (metafile,
+configuration, disperser, filter, detector), with at least two nod positions:
+1. the light the painting leaves: each exposure's rate minus `MBKG2D`, averaged per nod position,
+   and the minimum over nod positions, so a source (which moves with the nod) drops out and light
+   fixed on the detector stays;
+2. traces in that map, skipping the fixed slits, traces whose light changes between nods (spread
+   above 0.2 with chi2/dof above 9) and traces more than 30 % on pixels a listed failed-open
+   shutter already paints (`MBKG2DDQ` bit 8);
+3. candidate shutters for each trace from every MSA shutter placed on the detector through one
+   reference slit per quadrant, the best of them painted exactly and compared with the trace;
+4. kept when the trace has the background's spectrum: at least 3 wavelength bands, a median
+   ratio to the painted background above 0.05, every band within 15 % of the median, chi2/n
+   below 2.
+
+The shutters kept are painted like the MSA operations reference's failed-open shutters (their
+own transmission per exposure, combined over the nods), the configuration is painted again, and
+its products carry `MBKGNUO` (how many), `MBKGUOS` (searched, how many found, or not searched)
+and an `UNLISTED` table (quadrant, x, y, transmission, chi2/n, band ratio range). On p1 the
+search rediscovers the MSA operations reference's failed-open shutters at their listed
+positions. On zenith_p15 it finds five, transmissions 0.95-1.00, and the light left
+on the detector there drops to the level of no light; master background minus nodded (median
+fnu): 549120 0.92 to 0.03, 547188 0.12 to 0.01, 543127 0.16 to 0.07. 543127 keeps faint bands
+below 2 um and 549120 a small excess below 1.3 um, not yet explained. The gratings are not
+searched: G395M's featureless background places a trace only to about +-10 shutters along the
+dispersion, and its failed-open shutters pass a fraction of the background that rises with
+wavelength, so the background-shape test cannot decide.
 
 No per-slitlet scale, no smooth row or column scaling, and no smoothing of the grating background
 (appendix A). The settings are fixed in `master_bkg.SETTINGS` and recorded in the header; only
@@ -846,7 +886,7 @@ again.
     fit on the cleaned frames, the spectrum on the frames as they are, or the nodded shape's refit)
     is not a level error, which the slitlet study measured within 1-3 %, but light the term would
     take for background: on zenith_p15, with other sources' light not subtracted, the extended
-    547856 fitted +0.23 and 549120 +0.90, the frames measuring s to a few 0.1 %, so the 1 %
+    547856 fitted +0.23 and 549120 +0.90 (light from an unlisted open shutter, painted since, 4.5), the frames measuring s to a few 0.1 %, so the 1 %
     allowance alone does not hold it. Then s is set to zero and everything is fitted again without
     the term (the shape, the detection S/N, the spectrum); `fit_product` takes nothing out of
     `SCI_MBKG` or the failed-open solve. Cards: `MBKGSCL` = 0 and `MBKGSCLC` = the value fitted
@@ -864,13 +904,22 @@ again.
   spectrum's contamination and its error (card `NFOPEN`). On p1 109 of 681 products have failed-open pixels on the source's
   shutter. The nodded spectrum is unchanged: the background behind a failed-open shutter cancels in
   the nod difference.
-- Outlier flags: the nodded Spec3's, the pixels without a master background, and a hot-pixel mask.
-  A pixel that stays high at one detector pixel in every exposure cancels in the nod differences,
-  so the nodded detection never flags it. `local_contrast` is the smaller of the value minus the
-  median of its row neighbors (+-3) and minus the median of its column neighbors (+-2), over its
-  error. A pixel above 5 sigma (`HOT_SIGMA`) in every exposure on that detector, at least 2
-  (`HOT_MIN_EXPOSURES`), is flagged. Background, source and neighbors move between nods; a hot
-  pixel does not. With one exposure nothing is flagged.
+- Outlier flags: the frames' own outlier detection, the pixels without a master background, and a
+  hot-pixel mask (user, 2026-11-11; until then the frames took the nodded Spec3's flags). The
+  nodded detection runs on nod differences, so it misses whatever cancels in them: a hot pixel and
+  the pixels it spills into showed in the master-background 2-D as groups of three, one per nod
+  (zenith_p15 549280, 552073).
+  - Own detection (`own_outliers`): Spec3 on copies of the exposures with these frames in place of
+    the data, stopped after outlier detection, at jwst's defaults. About 20 s per product; skipped
+    for a single exposure.
+  - Hot pixels (`hot_pixels`): `local_contrast` is the smaller of the value minus the median of
+    its row neighbors (+-3) and minus the median of its column neighbors (+-2), over its error. A
+    pixel is flagged when its contrast combined over the exposures on that detector is above
+    5 sigma (`HOT_SIGMA`), it is at least 2 sigma (`HOT_FLOOR`) in every one of them, and there are
+    at least 2 (`HOT_MIN_EXPOSURES`). Background, source and neighbors move between nods; a hot
+    pixel does not. The 2 sigma floor (rather than 5 in every exposure) takes the spill-over.
+  - On the four test sources, pixels above 5 sigma in the master-background 2-D went from 23 to 5,
+    41 to 36 and 34 to 16 (548358's 923 to 912 is its bright band).
 - Extensions `SPEC1D_MBKG` (SPEC1D's columns, same `wave`), `SCI_MBKG`, `ERR_MBKG`, `PROF1D_MBKG`.
 - Primary cards `NEXP`, `NEXPBKG`, `MBKGNEXP`, and `MBKGPREF` / `MBKGWHY` when the master-background
   spectrum is likely better, with the first of: `no_clear_background` (every background exposure of
@@ -1143,6 +1192,10 @@ Removed before they reached any release, so not warned about: `profile_fit_shape
     5 %. The outliers are other slitlets' light that v2 marks (39341, 34904: half or more of their
     wavelengths not separable; on the separable ones G395M / PRISM is 1.25 and 1.02; 196166, 43281),
     light through a shutter no list knows (below), and the faint G395M deficit (below).
+- zenith_p15 (PRISM, 213 products), on the code of 2026-11-11 (master background 1.10): stage 2b
+  and stage 3 rerun after the unlisted open shutters were painted (4.5), no errors. The five
+  shutters found brought the master-background spectra of the sources they touched back to the
+  nodded ones (549120 0.92 to 0.03 in median fnu; 4.5).
 
 **Runtime.** On p1 (12 workers): stage 3 94 min. Its largest parts are the G395M joint pass (about
 30 min with the second pass) and the G395M products (23 min). Stage 2's rectification (25 min) and
@@ -1199,9 +1252,14 @@ background group, which also refits `x_loss` with 1133).
   9214, 2026-08-23, between and after the two EMBER visits of 2025-11-27 and 2026-07-25) is at the
   background level there (0.0001 against 0.05-0.08 DN/s). So a fixed mask per disperser would be
   wrong, and finding it per observation would have to tell it from a large source that fills its own
-  slitlet, which is also the same in every nod. It is left as a limitation (user, 2026-11-09). A map
-  of light that is the same in every nod and that no model explains, with the fixed slits' light and
-  a few fainter traces, is designed in `scratch/claude/open_shutter_design/design.md`.
+  slitlet, which is also the same in every nod. It is left as a limitation (user, 2026-11-09). The
+  map of light that is the same in every nod (designed in
+  `scratch/claude/open_shutter_design/design.md`) is now built for the unlisted open shutters (4.5),
+  on PRISM only; it does not paint this light, which has no shutter and not the background's
+  spectrum.
+- *Unlisted open shutters on the gratings.* The search of 4.5 runs on PRISM only. On G395M a
+  shutter open without being listed still leaves its light in the master-background spectrum of a
+  source whose cutout its trace crosses (the nodded spectrum is unaffected).
 - *Faint G395M below PRISM.* Between the two dispersers, at faint fluxes, the 3-pixel boxcar
   differs by about -0.005 to -0.014 uJy (G395M lower) in every flux bin, on uds_p2 and on p1, in
   v1 and v2, and with every extraction and both backgrounds; above 0.5 uJy it is invisible. Against
@@ -1893,6 +1951,13 @@ The user's decisions that shaped what ships, by date.
 - **2026-11-09** Shape bounds widened (width 1.5, width change 0.6 per octave). The
   master-background spectrum fits its own shape. A divided 2-D (the master-background 2-D over
   the fitted source's transmission through the MSA) is wanted as a product, form to be decided.
+- **2026-11-10** The reported flux is the light that entered the shutter across the dispersion,
+  all of it along the slit; the 0.8 arcsec circle is gone (6.5). The master-background scale term
+  (allowance 0.01) and its cap (0.03).
+- **2026-11-11** The master-background frames get their own outlier detection plus the hot-pixel
+  test at a 2 sigma floor; replaces the 2026-11-02 choice of the nodded flags (6.9). Shutters open
+  without being listed are found per observation and painted into the master background, PRISM
+  only for now (4.5).
 
 ---
 
