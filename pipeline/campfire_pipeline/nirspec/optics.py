@@ -442,6 +442,36 @@ class Optics:
                                             mode='constant', cval=0.0)
         return out.reshape(shape)
 
+    def image_profile(self, mask, y, lam, centres, weights):
+        """Light per DY_ROW-high detector row at slit positions ``y`` (wavelengths ``lam``, one per
+        pixel) of a source made of points: point n at slit position ``centres[n]`` carrying
+        ``weights[n]`` of the light (both (n_points, n_pixels), so a point's position and weight
+        may change with each pixel's wavelength). A Gaussian source through ``image`` is the
+        case of Gaussian weights; ``forward.project`` builds any other profile this way."""
+        tab = self.image_table(mask)
+        y, lam = np.asarray(y, float).ravel(), np.asarray(lam, float).ravel()
+        centres = np.atleast_2d(np.asarray(centres, float))
+        weights = np.atleast_2d(np.asarray(weights, float))
+        li = self._li(lam)
+        yi = (y - Y[0]) / (Y[1] - Y[0])
+        out = np.zeros(y.size)
+        for c, w in zip(centres, weights):
+            if not np.any(w):
+                continue
+            out += w * map_coordinates(tab, np.vstack([li, self._ci(c), yi]), order=1, mode='constant', cval=0.0)
+        return out
+
+    def x_pass(self, lam, x):
+        """(len(lam), len(x)) the light of a point source at ``x`` (arcsec from the shutter centre
+        along the dispersion, the convention of ``x_transmission_table``) one shutter passes, at
+        wavelengths ``lam``: the table interpolated linearly in ln(lambda) and in x."""
+        tab = self.x_transmission_table()
+        lam, x = np.atleast_1d(np.asarray(lam, float)), np.atleast_1d(np.asarray(x, float))
+        li = np.repeat(self._li(lam), x.size)
+        xi = np.tile((x - XC[0]) / (XC[1] - XC[0]), lam.size)
+        return map_coordinates(np.asarray(tab, float), np.vstack([li, xi]), order=1, mode='nearest').reshape(
+            lam.size, x.size)
+
     def transmission(self, mask, lam, centre, width):
         """The light of a Gaussian source the open shutters ``mask`` pass."""
         tab = self.transmission_table(mask)

@@ -245,6 +245,9 @@ class Exposure:
     mbkg: np.ndarray = None        # a single frame's master background, in the units of ``diff`` on the same
                                    # frame (``mbkg_extraction.single_frame_exposures``): the column of the
                                    # master-background scale term (``ProfileModel``, ``mbkg_sigma``)
+    pa_slit_x: float = np.nan      # position angle on the sky [deg, east of north] of the slit frame's +x
+    pa_slit_y: float = np.nan      # (along the dispersion) and +y (along the slit), from the slit's WCS
+                                   # (``slit_axes``): how a source model on the sky lies in this exposure
 
     @property
     def dy(self):
@@ -292,6 +295,24 @@ def _pa_v3(path):
         return float(v) if v is not None else np.nan
     except (OSError, IndexError, ValueError, TypeError):
         return np.nan
+
+
+def slit_axes(slit):
+    """(position angle of the slit frame's +x, of its +y) on the sky [deg, east of north] for a
+    jwst slit with a WCS: the two axes traced from the slit's centre through ``slit_frame`` to
+    ``world`` at 2 um (the directions do not change with wavelength). NaN without a WCS."""
+    lam = 2.0e-6
+    try:
+        t = slit.meta.wcs.get_transform('slit_frame', 'world')
+        ra0, dec0, _ = t(0.0, 0.0, lam)
+
+        def pa(dx, dy):
+            ra, dec, _ = t(dx, dy, lam)
+            e = (ra - ra0) * np.cos(np.radians(dec0))
+            return float(np.degrees(np.arctan2(e, dec - dec0)) % 360.0)
+        return pa(0.25, 0.0), pa(0.0, 0.25)
+    except Exception:                               # noqa: BLE001 - no usable WCS: no orientation, not an error here
+        return np.nan, np.nan
 
 
 def own_variance(path, slit):
@@ -444,6 +465,7 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
         detector = str(m.meta.instrument.detector).upper()
         quadrant = int(s.quadrant) if s.quadrant is not None else None
         bar = float((bar_offsets or {}).get(grating, {}).get(quadrant, 0.0))
+        pa_x, pa_y = slit_axes(s)
         exps.append(Exposure(
             name=name, group=group, detector=detector, grating=grating, quadrant=quadrant,
             diff=_place(diff, s, y0, x0, shape), var=_place(var * pl ** 2, s, y0, x0, shape),
@@ -455,7 +477,7 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
             partners=part, use_data=(part is not None) and (science is None or name in science),
             cutout=(s.ystart - y0, s.xstart - x0, ny, nx), path=str(f), origin=(y0, x0),
             has_source=bool(has_src), pa_v3=_pa_v3(f), pl_ref=_pathloss_ref(m), slit_loss=slit_loss or CR.SlitLoss(),
-            src_x_jwst=_float_or_nan(getattr(s, 'source_xpos', None))))
+            src_x_jwst=_float_or_nan(getattr(s, 'source_xpos', None)), pa_slit_x=pa_x, pa_slit_y=pa_y))
     for m in models:
         m.close()
     for e in exps:

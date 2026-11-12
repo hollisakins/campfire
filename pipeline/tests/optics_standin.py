@@ -30,6 +30,16 @@ class Analytic:
         """The same PSF with nothing cut: every opening as wide as the pitch."""
         return NoMSA()
 
+    def image_profile(self, mask, y, lam, centres, weights):
+        y, lam = np.asarray(y, float).ravel(), np.asarray(lam, float).ravel()
+        out = np.zeros(y.size)
+        for c, w in zip(np.atleast_2d(centres), np.atleast_2d(weights)):
+            out += w * self.image(mask, y, lam, c, 0.0)
+        return out
+
+    def x_pass(self, lam, x):
+        return np.ones((np.size(lam), np.size(x)))
+
     def x_correction(self, lam, srcx):
         return np.ones(np.shape(lam))
 
