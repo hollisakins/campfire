@@ -54,6 +54,9 @@ ALIGN_SUFFIX = '-CFALIGN'
 
 # Matched-filter width (native pixels) for source detection, per detector.
 _DETECT_FWHM = {'acswfc': 2.2, 'wfc3ir': 1.3}
+# DQ value of a saturated pixel in calibrated ACS and WFC3 files (the DQ flag
+# tables of the ACS and WFC3 Data Handbooks give 256 for both).
+SATURATED_BIT = 256
 
 
 def _original_wcs(chip, header):
@@ -69,19 +72,42 @@ def _original_wcs(chip, header):
 
 
 def _detect(chip, config):
-    """Source catalog of one chip (0-indexed pixels), from the adapter arrays."""
+    """Source catalog of one chip (0-indexed pixels), from the adapter arrays.
+
+    Sources on or next to saturated pixels are dropped. The adapter masks a
+    saturated core, so what is left of such a star is detected as one or more
+    pieces of its wings with centroids off by tens of milliarcseconds; on the
+    first real visit two saturated stars supplied 14 of 40 matches to Gaia and
+    pulled the fit by about 10 mas (docs/hst/design.md, section 8b).
+    """
+    from scipy.ndimage import maximum_filter
+
     from campfire_pipeline.imaging.align.detect import detect_sources
 
     a = chip.load()
+    # Background noise only (the adapter's source-independent variance). The
+    # shared extraction measures positions on sci / err; with the source's own
+    # Poisson noise in err that image goes as the square root of the flux for a
+    # bright star, its wings outweigh its core, and the position moved by a
+    # quarter of an ACS pixel (12 mas) on real stars.
     with np.errstate(invalid='ignore'):
-        err = np.sqrt(a.var_rnoise.astype(np.float64) + a.var_poisson)
-    return detect_sources(
+        err = np.sqrt(a.var_rnoise.astype(np.float64))
+    cat = detect_sources(
         a.sci.astype(np.float64), err, mask=~a.good,
         fwhm=float(config.get('detect_fwhm', _DETECT_FWHM[chip.instrument])),
         snr_thresh=float(config.get('detect_snr_thresh', 3.0)),
         minarea=int(config.get('detect_minarea', 9)),
         snr_min=config.get('snr_min', 10.0),
     )
+    grow = int(config.get('saturation_grow', 5))
+    if len(cat) and grow >= 0:
+        dq = fits.getdata(chip.path, ('DQ', chip.extver))
+        near = maximum_filter((dq & SATURATED_BIT) != 0, size=2 * grow + 1)
+        ny, nx = near.shape
+        i = np.clip(np.rint(np.asarray(cat['x'], float)).astype(int), 0, nx - 1)
+        j = np.clip(np.rint(np.asarray(cat['y'], float)).astype(int), 0, ny - 1)
+        cat = cat[~near[j, i]]
+    return cat
 
 
 def _mid_mjd(path):
@@ -152,7 +178,8 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
             log(f'Skipping align on visit {key}: CFP_ALGN already set')
             return None
 
-    detect_keys = ('detect_fwhm', 'detect_snr_thresh', 'detect_minarea', 'snr_min')
+    detect_keys = ('detect_fwhm', 'detect_snr_thresh', 'detect_minarea', 'snr_min',
+                   'saturation_grow')
     detect_cfg = {k: cfg.pop(k) for k in detect_keys if k in cfg}
     relative = bool(cfg.pop('relative', True))
     relative_min_matched = int(cfg.pop('relative_min_matched', 20))

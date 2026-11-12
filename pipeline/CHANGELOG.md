@@ -83,6 +83,10 @@ Release procedure: edit the `## Unreleased` section below, then run
   detector has no `wcsinfo`), the footprint clip reads an `astropy.wcs.WCS`, and
   `fine_fitgeom = "none"` turns the per-detector stage off. NIRCam solves are unchanged
   (JWST corrector whenever `wcsinfo` is given; the default `fine_fitgeom` is as before).
+  HST detection uses the background-only error and drops sources on saturated pixels
+  (both found on real data, docs/hst/design.md section 8b). `hst/visit.py` groups
+  exposures into visits and runs the per-visit chain (`wcs_init`, `sky`, `crreject`,
+  `align`).
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.

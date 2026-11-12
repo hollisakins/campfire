@@ -170,6 +170,27 @@ def test_without_the_relative_stage_the_exposures_stay_apart(visit):
         assert 'rel=0' in cfp.step_value(f, 'CFP_ALGN', keyset=cfp.HST)
 
 
+def test_sources_on_saturated_pixels_are_not_used(visit):
+    """A star with a saturated core is detected as biased pieces of its wings;
+    detection drops anything on or next to DQ 256."""
+    from campfire_pipeline.hst.steps.align import _detect
+
+    files, _, _ = visit
+    chip = open_exposure(files[0])[0]
+    before = _detect(chip, {})
+    x0, y0 = float(before['x'][0]), float(before['y'][0])       # the brightest
+    with fits.open(files[0], mode='update') as hdul:
+        j, i = int(round(y0)), int(round(x0))
+        hdul['DQ', chip.extver].data[j - 1:j + 2, i - 1:i + 2] = 256
+    after = _detect(open_exposure(files[0])[0], {})
+    near = np.hypot(np.asarray(after['x']) - x0, np.asarray(after['y']) - y0) < 6
+    assert not near.any()
+    assert len(after) >= len(before) - 2            # nothing else was lost
+    # the cut can be switched off, and then the star's remains come back
+    kept = _detect(open_exposure(files[0])[0], {'saturation_grow': -1})
+    assert len(kept) > len(after)
+
+
 def test_a_failed_solve_preserves_the_wcs_and_says_so(visit):
     files, refcat, crvals = visit
     far = Table({'RA': refcat['RA'] + 1.0, 'DEC': refcat['DEC']})   # 1 degree away
