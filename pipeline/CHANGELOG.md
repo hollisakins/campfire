@@ -57,6 +57,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   On the golden scene the FITS grid equals the `stcal` grid to 4e-9 pixel at rotations
   0, 20 and -51.5 degrees, and the chip route reproduces the JWST-route mosaic to
   float32 rounding.
+- **First piece of the HST imaging module (not yet a command).** New package
+  `campfire_pipeline.hst` with `instruments.py` (ACS/WFC and WFC3/IR definitions, DQ
+  policy, filter naming) and `exposure.py` (`open_exposure`: calibrated FLC/FLT chips as
+  `Chip` objects in MJy/sr with a per-exposure zeropoint, sky subtraction, a
+  source-independent background variance for the drizzle weight, and a good-pixel
+  mask). Needs only astropy; nothing in the NIRCam or NIRSpec paths imports it. Checked
+  on one real ACS/WFC exposure: the shared drizzle reproduces AstroDrizzle on the same
+  30 mas grid (flux ratio 1.000000 overall and at each chip centre). See
+  docs/hst/design.md section 8b.
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.
