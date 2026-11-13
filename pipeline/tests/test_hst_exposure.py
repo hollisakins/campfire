@@ -10,7 +10,8 @@ import pytest
 from astropy.io import fits
 
 from campfire_pipeline.hst import instruments
-from campfire_pipeline.hst.exposure import SKY_KEY, open_exposure, photfnu
+from campfire_pipeline.hst.exposure import (SKY_KEY, VARSCALE_KEY, open_exposure,
+                                            photfnu)
 
 _ARCSEC = np.pi / (180.0 * 3600.0)
 _PHOTFLAM, _PHOTPLAM = 7.8981816e-20, 5921.8926      # ACS/WFC F606W, 2020
@@ -174,8 +175,11 @@ def test_wfc3ir_rate_file_uses_the_time_array(tmp_path):
     err = np.sqrt(sci / time + 0.001).astype('float32')
     dq = np.zeros((ny, nx), 'int16')
     dq[1, 1], dq[1, 2] = 16, 512                       # stable hot, blob
+    # CFVARSC as the sky step measures it on real WFC3/IR frames (pixel scatter
+    # below ERR). It is recorded but must not be applied for this detector:
+    # neighboring pixels are correlated, so the pixel scatter is not the noise.
     extra = {'BUNIT': 'ELECTRONS/S', 'PHOTFNU': 1.5246e-07, 'IDCSCALE': 0.1282500,
-             SKY_KEY: 1.0}
+             SKY_KEY: 1.0, VARSCALE_KEY: 0.7}
     hdul = fits.HDUList([primary] + _imset(1, sci, err, dq,
                                            _wcs_cards(0.128, (34.4, -5.2)), extra))
     hdul.append(fits.ImageHDU(data=time, name='TIME', ver=1))
@@ -184,6 +188,7 @@ def test_wfc3ir_rate_file_uses_the_time_array(tmp_path):
 
     (c,) = open_exposure(path)
     assert c.instrument == 'wfc3ir' and c.is_rate and c.filter == 'f160w'
+    assert c.var_scale == 1.0                          # 0.7 in the header, unused
     a = c.load()
     f = c.sb_per_rate
     assert a.sci[5, 5] == pytest.approx(10.0 * f, rel=1e-5)

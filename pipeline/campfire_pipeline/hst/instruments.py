@@ -31,18 +31,33 @@ class Detector:
     calibrated_suffix: str  # canonical calibrated file suffix
     tolerated_bits: int     # DQ bits that do not make a pixel bad
     native_scale: float     # nominal arcsec / pixel (for reporting only)
+    apply_var_scale: bool   # scale the ERR-based background variance by the
+                            # measured pixel scatter (CFVARSC of the sky step)
 
 
+# The sky step measures, for every detector, the scatter of blank background
+# against the variance derived from ERR and records the ratio as CFVARSC.
+# Whether the adapter then scales its variance by that ratio is per detector:
+#
+# * ACS/WFC, yes. On CTE-corrected data ERR is low by tens of percent in
+#   variance, and CCD pixels are independent, so the pixel scatter is the noise.
+# * WFC3/IR, no. The pixel scatter is 0.63 to 0.80 of ERR**2 (eight exposures of
+#   one visit, four filters), but neighboring pixels are correlated: the
+#   variance of 2x2 block averages times 4 is 1.09 to 1.17 times the
+#   single-pixel variance, and of 4x4 blocks times 16 is 1.27 to 1.50 times.
+#   ERR is therefore about right for an aperture a few pixels across, and
+#   scaling to the pixel scatter would understate aperture noise by about 15
+#   percent (docs/hst/design.md section 8b, 2026-11-13).
 ACS_WFC = Detector(
     token='acswfc', instrume='ACS', detector='WFC',
     sci_extvers=(1, 2), calibrated_suffix='flc',
-    tolerated_bits=64, native_scale=0.05,
+    tolerated_bits=64, native_scale=0.05, apply_var_scale=True,
 )
 
 WFC3_IR = Detector(
     token='wfc3ir', instrume='WFC3', detector='IR',
     sci_extvers=(1,), calibrated_suffix='flt',
-    tolerated_bits=16, native_scale=0.128,
+    tolerated_bits=16, native_scale=0.128, apply_var_scale=False,
 )
 
 DETECTORS = {d.token: d for d in (ACS_WFC, WFC3_IR)}

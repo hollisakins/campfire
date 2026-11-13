@@ -13,10 +13,13 @@ Per-exposure step on a canonical HST file. For each chip it
    **not** subtracted from the file: the adapter subtracts it when it hands the
    chip to the mosaic code, and the cosmic-ray step needs the true counts;
 4. compares the measured scatter of blank sky with the background variance the
-   adapter derives from ``ERR`` and records the ratio as ``CFVARSC``. The
-   adapter multiplies its background variance by it, so drizzle weights and the
-   mosaic ``ERR`` follow the noise that is actually in the frame. On
-   CTE-corrected ACS data ``ERR`` is low by tens of percent in variance.
+   adapter derives from ``ERR`` and records the ratio as ``CFVARSC``. For
+   ACS/WFC the adapter multiplies its background variance by it, so drizzle
+   weights and the mosaic ``ERR`` follow the noise that is actually in the
+   frame: on CTE-corrected ACS data ``ERR`` is low by tens of percent in
+   variance. For WFC3/IR the ratio is recorded and not applied, because
+   neighboring pixels are correlated there and the pixel scatter understates
+   the noise in an aperture (``hst/instruments.py``).
 
 Header keywords written to each chip's ``SCI`` header: ``CFSKY``, ``CFSKYSIG``
 (measured sky scatter per pixel, native units), ``CFVARSC``, and for ACS

@@ -236,7 +236,10 @@ def open_exposure(path, tolerated_bits=None):
                 shape=hdu.data.shape, photfnu=fnu, idcscale=float(idcscale),
                 is_rate=(bunit == 'ELECTRONS/S'),
                 header_sky=(float(h[SKY_KEY]) if SKY_KEY in h else None),
-                var_scale=float(h.get(VARSCALE_KEY, 1.0)),
+                # recorded for every detector, applied only where the pixel
+                # scatter is the noise (see instruments.py)
+                var_scale=(float(h.get(VARSCALE_KEY, 1.0))
+                           if det.apply_var_scale else 1.0),
                 tolerated_bits=tolerated_bits, rootname=rootname,
                 proposid=int(primary.get('PROPOSID') or 0),
                 date_obs=str(primary.get('DATE-OBS') or ''),

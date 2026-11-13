@@ -70,7 +70,8 @@ Release procedure: edit the `## Unreleased` section below, then run
   no astrometry database, reference variables scoped to the call) and
   `hst/steps/sky.py` (per-chip sky recorded as `CFSKY`, ACS amplifier offsets removed
   from the pixels, and `CFVARSC`, the ratio of measured sky variance to the `ERR`
-  model, which the adapter applies to its background variance),
+  model, which the adapter applies to its background variance for ACS/WFC and only
+  records for WFC3/IR, where neighboring pixels are correlated),
   `hst/steps/calibrate.py` (RAW to canonical FLC/FLT with `crds bestrefs` at a pinned
   HST context and `calacs` / `calwf3`, the HST CRDS and reference variables confined to
   the subprocesses) and `hst/steps/crreject.py` (AstroDrizzle's `minmed` / `driz_cr`
