@@ -27,12 +27,7 @@ The fit uses `fnu`, which by default includes the flux of overlapping sources (s
 
 ## Emission lines
 
-Line fluxes are measured after inspection, at the inspected redshift, for objects with redshift quality "probable" or better (`min_quality = 3`):
-
-```bash
-campfire pull --obs <observation>           # inspected redshifts, written to reference/nirspec/<observation>/redshifts.toml
-cfpipe nirspec linefit --obs <observation>  # line fits at those redshifts
-```
+Line fluxes are measured after inspection, at the inspected redshift, for objects with redshift quality "probable" or better.
 
 1. **Line windows.** Each line in the line list that falls within the spectral range is assigned a window about its expected wavelength; lines with overlapping windows are fitted together.
 2. **Model.** Within each window, one Gaussian per line, convolved with the instrumental resolution, on a linear local continuum. Fixed-ratio doublets are tied.

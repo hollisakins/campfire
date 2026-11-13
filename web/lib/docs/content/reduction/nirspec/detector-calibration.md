@@ -1,6 +1,6 @@
 # Detector and calibration
 
-Stages 1 and 2a of the [NIRSpec pipeline](/docs/reduction/nirspec) produce count-rate images and calibrated 2-D spectra for each source and exposure, using the standard `jwst` pipeline and the CRDS flat-field, wavelength and flux calibrations. The detector background is subtracted before calibration.
+Stages 1 and 2a of the [NIRSpec pipeline](/docs/reduction/nirspec) produce count-rate images and calibrated 2-D spectra for each source and exposure, using the standard `jwst` pipeline and the CRDS flat-field, wavelength and flux calibrations. Before calibration, stage 1 subtracts the detector background: patterns from the detector and its readout (the picture frame and 1/f noise), not the astronomical background, which is removed later (see [Backgrounds](/docs/reduction/nirspec/backgrounds)).
 
 ## Ramp fitting
 
@@ -71,9 +71,15 @@ Stage 2a also performs steps around the `jwst` call, described in [Background es
 
 ### Optional calibration overrides
 
-Two options replace `jwst` reference files at this stage; both are disabled by default.
+Two options replace `jwst` reference files at this stage; both are disabled by default and set in the configuration file:
+
+```toml
+[nirspec.stage2]
+empirical_wavecorr = true
+extend_g140m_g235m = true
+```
 
 | Option | Effect |
 |---|---|
-| `[nirspec.stage2] empirical_wavecorr = true` | Adds the JADES wavelength zero-point correction (Scholtz et al. 2025) to the `jwst` correction for source position across the shutter |
-| `[nirspec.stage2] extend_g140m_g235m = true` | Extends G140M/F100LP and G235M/F170LP to 5.3 µm, beyond the red limit of the CRDS references, using flats and wavelength ranges generated on the fly and a flux calibration derived against the SPURS program. The Stage 1 footprints reach 5.3 µm for these grating/filter combinations whether or not the option is set |
+| `empirical_wavecorr` | Adds the JADES wavelength zero-point correction (Scholtz et al. 2025) to the `jwst` correction for source position across the shutter |
+| `extend_g140m_g235m` | Extends G140M/F100LP and G235M/F170LP to 5.3 µm, beyond the red limit of the CRDS references, using flats and wavelength ranges generated on the fly and a flux calibration derived against the SPURS program. The Stage 1 footprints reach 5.3 µm for these grating/filter combinations whether or not the option is set |

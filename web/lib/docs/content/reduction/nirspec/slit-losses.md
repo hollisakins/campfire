@@ -1,8 +1,8 @@
 # Slit losses and the MSA optics
 
-An MSA shutter subtends about 0.2″ × 0.46″, smaller than the point-spread function at long wavelengths and than most galaxies. The fraction of a source's flux lost to the shutter bars and edges (the path loss, or slit loss) depends on wavelength, source size, and position within the shutter.
+An MSA shutter subtends about 0.2″ × 0.46″, smaller than the point-spread function at long wavelengths and than most galaxies. The spatial profile of the spectral trace, and the fraction of the source's flux lost to the shutter bars and edges (the path loss, or slit loss), depend on wavelength, source size, and position within the shutter.
 
-`jwst` corrects path losses with two references, one for a point source and one for uniform illumination; real galaxies lie between the two. Along the slit, CAMPFIRE replaces this correction with a diffraction model of the MSA optics, valid for a source of any size and position. Across the shutter, it retains the `jwst` point-source reference with an empirical correction derived from stars.
+`jwst` corrects path losses with two references, one for a point source and one for uniform illumination; real galaxies mostly lie between the two. CAMPFIRE replaces this correction with a diffraction model of the MSA optics, valid for a source of any size and position.
 
 ## Optical model
 
@@ -46,10 +46,17 @@ The model requires the position of the shutter edges on the detector. The offset
 
 ## Reverting to the jwst references
 
+```toml
+[nirspec.stage3]
+slit_loss_y = "jwst"
+slit_loss_x = "jwst"
+bar_offset = "off"
+```
+
 | Option | Effect |
 |---|---|
-| `[nirspec.stage3] slit_loss_y = "jwst"` | Along the slit: `jwst` point-source path loss at the planned position; the model determines only the spatial profile |
-| `[nirspec.stage3] slit_loss_x = "jwst"` | Across the shutter: `jwst` reference without the stellar correction; the extended-source ratio is still applied |
-| `[nirspec.stage3] bar_offset = "off"` | No bar offset |
+| `slit_loss_y = "jwst"` | Along the slit: `jwst` point-source path loss at the planned position; the model determines only the spatial profile |
+| `slit_loss_x = "jwst"` | Across the shutter: `jwst` reference without the stellar correction; the extended-source ratio is still applied |
+| `bar_offset = "off"` | No bar offset |
 
 The settings are recorded in `SLOSSY`, `SLOSSX` and `BAROFF`. The boxcar and optimal extractions in the same file (`fnu_3px`, `fnu_4px`, `fnu_5px`, `fnu_opt`) always carry the `jwst` path-loss correction applied in Stage 2 (point-source for nearly all sources) and no bar-shadow correction.

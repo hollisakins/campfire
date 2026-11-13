@@ -29,13 +29,13 @@ For describing the reduction in a publication, [Describing the reduction](/docs/
 
 ## Replaced calibrations
 
-CAMPFIRE replaces parts of two `jwst` reference files, the MSA path loss and the bar shadow. Each spectrum records which were applied.
+CAMPFIRE replaces parts of two `jwst` reference files, the MSA path loss and the bar shadow. Each spectrum records which were applied. The options that revert to the `jwst` reference are in the `[nirspec.stage3]` section of the configuration.
 
 | CAMPFIRE calibration | Replaces | Reverting to the `jwst` reference |
 |---|---|---|
-| Optics model, along the slit | Path-loss dependence on position along the slit | `[nirspec.stage3] slit_loss_y = "jwst"` |
-| Correction across the shutter | Part of the path-loss dependence on position across the shutter | `[nirspec.stage3] slit_loss_x = "jwst"` |
-| Per-observation bar offset | Position of the bars relative to the `jwst` slit frame | `[nirspec.stage3] bar_offset = "off"` |
+| Optics model, along the slit | Path-loss dependence on position along the slit | `slit_loss_y = "jwst"` |
+| Correction across the shutter | Part of the path-loss dependence on position across the shutter | `slit_loss_x = "jwst"` |
+| Per-observation bar offset | Position of the bars relative to the `jwst` slit frame | `bar_offset = "off"` |
 | Measured bar-shadow tables | Bar-shadow reference, in the master background | No option: the measured table is used wherever one exists (PRISM, G140M, G235M, G395M); the high-resolution gratings use the CRDS reference |
 
 The calibration files, their inputs, and the reference files they were derived against are listed in `pipeline/campfire_pipeline/data/nirspec_calibrations.toml`. Their derivation is described in [Slit losses and the MSA optics](/docs/reduction/nirspec/slit-losses).

@@ -55,10 +55,6 @@ Neighbors in the target's own slitlet also affect the nod subtraction (see [Excl
 
 All exposures of a source in a given disperser enter a single fit. Repeated MSA configurations (multiple exposure groups) are combined in the same fit by default (`combine_method = "2d"`). The `EXPOSURES` table lists each exposure used and the background exposures subtracted from it.
 
-## Units and uncertainties
-
-`wave` is in µm, `fnu` and related columns in µJy, and the `flam` columns in erg s⁻¹ cm⁻² Å⁻¹. `fnu_err` is statistical, propagated from the 2-D error array including the noise of the subtracted exposures. It excludes the uncertainty of the contamination prediction (`fnu_contam_err`) and the uncertainty of the source's size where the data do not measure it (`SHAPE = default`, or a faint fit held near the prior width), roughly ±10 % in flux.
-
 ## Master-background spectrum
 
 Each file also contains a spectrum extracted identically from the same exposures with the master background subtracted in place of the nod subtraction; see [Master-background spectra](/docs/reduction/nirspec/backgrounds#master-background-spectra).
