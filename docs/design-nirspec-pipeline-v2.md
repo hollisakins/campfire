@@ -1825,7 +1825,9 @@ component at zero removes its downward noise, so its spectrum is biased high whe
 `forward.plots.panels` draws data, model and residual in 2-D per exposure.
 
 **Inputs: the deployed files** (`forward.load`). A target's science canonicals (background exposures
-included) and, for the master-background frames, each exposure's `_mbkg.fits`. Stage 3 writes into the
+included) and, for the master-background frames, each exposure's `_mbkg.fits` and the `_rate.fits` its
+master background was painted on (`MBKGRATE`; without it the master background would fall back to the
+slit's own slitlet, too low where other traces cross, so `load` raises and names what is missing). Stage 3 writes into the
 canonicals what its fit took from files that are not kept (section 8: outlier flags in DQ bit 4, the
 `CONTAM` extension, `BAROFFS`), so `load` rebuilds the same pixels, variances and data stage 3 fitted:
 checked on zenith_p15 547856, 549120, 551366 and 575943 to 2e-8 of the peak, for nod differences and
