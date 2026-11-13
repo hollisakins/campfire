@@ -418,3 +418,80 @@ def test_gross_bin_resolves_an_arcsec_scale_offset():
     assert n_fine >= 50
     # ... and the test must not be vacuous: a coarser bin does measurably worse
     assert frac_fine >= frac_coarse
+
+
+# --- a pile of detections on one reference source is not a consensus ---------
+
+def _sparse_stars_with_a_pile(seed=3, n_true=13, n_ref=51, n_field=690,
+                              n_pile=22, pile_offset=(3.4, 17.6),
+                              pile_sigma=0.08):
+    """MACS0647 F480M against Gaia (JWST 1433 obs 020), in miniature.
+
+    A sparse star catalog: ``n_ref`` reference sources in the footprint, of
+    which ``n_true`` are detected, at their catalog positions (true shift 0).
+    The image catalog also holds ``n_field`` unrelated detections and one pile
+    of ``n_pile`` detections within about 0.3" of one another (what the
+    detection step makes of one bright or damaged object). The pile sits
+    ``pile_offset`` away from ONE reference source, so shifting the image by
+    that vector puts all ``n_pile`` detections on that single source.
+    """
+    rng = np.random.default_rng(seed)
+    extent = np.array([310.0, 165.0])
+    ref = rng.uniform(0, 1, (n_ref, 2)) * extent
+    im_true = ref[:n_true] + rng.normal(0, 0.005, (n_true, 2))
+    im_field = rng.uniform(0, 1, (n_field, 2)) * extent
+    im_pile = (ref[n_true] - np.asarray(pile_offset)
+               + rng.normal(0, pile_sigma, (n_pile, 2)))
+    return (_tab(ref), _tab(np.vstack([im_true, im_field, im_pile])), n_true,
+            np.asarray(pile_offset))
+
+
+def test_a_pile_of_detections_on_one_reference_is_not_adopted_as_the_shift():
+    ref_tab, im_tab, n_true, pile_offset = _sparse_stars_with_a_pile()
+    m = OffsetHistogramMatch(searchrad=70.0)
+    ri, ii = m(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+    # the detected stars are found, each paired with its own catalog entry
+    assert len(ii) >= n_true - 2
+    assert np.all(ii < n_true)
+    assert np.array_equal(ri, ii)
+    # and the gross histogram did not rank the pile first: its best offset is
+    # supported by the n_true stars, not by one reference counted 22 times
+    assert m.diag['gross_mass'] <= n_true + 3
+
+
+def test_tight_pairs_count_distinct_reference_sources():
+    # The vet alone, handed the pile's offset as the candidate: 22 detections
+    # land on one reference source. That is one pair, against 13 before.
+    from scipy.spatial import cKDTree
+    ref_tab, im_tab, n_true, pile_offset = _sparse_stars_with_a_pile()
+    ref_xy = np.column_stack([ref_tab['TPx'], ref_tab['TPy']])
+    im_xy = np.column_stack([im_tab['TPx'], im_tab['TPy']])
+    m = OffsetHistogramMatch(searchrad=70.0)
+    shift = m._vet_gross_shift(cKDTree(ref_xy), im_xy, pile_offset,
+                               2.5 * LW_PSCALE)
+    assert m.diag['gross_tight_before'] == n_true
+    assert m.diag['gross_tight_after'] <= 2
+    assert np.allclose(shift, 0.0)
+
+
+def test_sparse_catalog_at_zero_shift_returns_zero_not_a_chance_peak():
+    # 13 stars, about 700 detections, no pile, true shift 0.
+    ref_tab, im_tab, n_true, _ = _sparse_stars_with_a_pile(n_pile=0, n_field=712)
+    m = OffsetHistogramMatch(searchrad=70.0)
+    ri, ii = m(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+    assert len(ii) >= n_true - 2
+    assert np.array_equal(ri, ii)
+
+
+def test_acquisition_failure_is_recovered_past_a_pile_of_detections():
+    # A real 40" pointing error on a sparse star field, with the same pile in
+    # the image. No tight pair exists at the input pointing, so the vet has no
+    # evidence and adopts whatever the histogram proposes: the histogram itself
+    # has to prefer 13 stars over one star counted 22 times.
+    ref_tab, im_tab, n_true, _ = _sparse_stars_with_a_pile()
+    offset = np.array([40.0, -12.0])
+    im_tab = _tab(np.column_stack([im_tab['TPx'], im_tab['TPy']]) - offset)
+    m = OffsetHistogramMatch(searchrad=70.0)
+    ri, ii = m(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+    assert len(ii) >= n_true - 2
+    assert np.array_equal(ri, ii)

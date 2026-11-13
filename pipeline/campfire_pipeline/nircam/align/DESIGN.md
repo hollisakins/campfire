@@ -207,6 +207,26 @@ from `tweakwcs.XYXYMatch`:
   matcher falls back to its `searchrad=None` path, the one every iterate pass
   already runs. `gross_keep_ratio` is recorded on every pass and stamped as
   `ALGNGKR`, so a silent mis-lock is a header grep, not a re-reduction.
+- **Both gross-stage counts are of distinct sources (2026-11-13).** A bin of
+  the gross histogram holds the number of distinct sources with a pair in it,
+  on the side with fewer, and the vet counts the reference sources that have an
+  image source inside the tight radius. Both used to count pairs by image
+  source, so several detections beside one reference source were several
+  votes. JWST 1433 obs 020 F480M against Gaia (13 detected stars, about 730
+  detections per pool, raw WCS within 10 mas): 22 detections within 0.3″ of
+  one another made the tallest bin, 17.6″ from the truth (62.6″ in the next
+  pool), at a peak contrast of 1.0; the vet then scored that shift 13 → 22 and
+  adopted it, and all four pools ended `NOT_ALIGNED`. Counted by reference
+  source the same shift is 13 → 1. With both counts distinct the histogram
+  itself picks the 13 stars (contrast 2.0–3.25), and the four pools solve at
+  the default 70″ radius with 12–13 matches, 4–6 mas rms and shifts under
+  10 mas. Chance pairs were not the cause: 13 stars against 700 unrelated
+  detections with no pile solve correctly with the earlier code
+  (`test_sparse_catalog_at_zero_shift_returns_zero_not_a_chance_peak`). On
+  dense catalogs the two counts differ by 2–13% and nothing else moves:
+  three MACS0647 F200W pools give identical solutions, and four F480M pools
+  give the same matches with detector fits identical and the pooled solution
+  within 0.1 mas.
 
 Later passes start from the corrected WCS and re-match with the same consensus
 matcher minus the gross stage (JHAT's `iterate_with_xyshifts`, generalized:

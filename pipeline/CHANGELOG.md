@@ -158,6 +158,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   re-aligned; a re-aligned field changes at the milliarcsecond level. Not rerun with
   the new estimate: the COSMOS f410m / f210m measurement that gave 1.4, a case with
   real offsets between 1.4 and 3 standard errors, which a bar of 3 leaves in.
+- **`align` gross-shift stage counts distinct sources.** The first coarse pass looks
+  for a large pointing error as the tallest bin of the histogram of image-to-reference
+  offsets within `coarse_searchrad` (70" by default), and adopts it only if it does
+  not lose close pairs. Both counts were of pairs by image source, so several
+  detections beside one reference source were several votes. On JWST 1433 obs 020
+  F480M against Gaia (13 detected stars, about 730 detections per pool, raw WCS
+  within 10 mas) a group of 22 detections within 0.3" of one another made the tallest
+  bin 17.6" from the truth, the check scored that shift 13 -> 22 close pairs and
+  adopted it, and all four pools ended NOT_ALIGNED. Now a bin holds the number of
+  distinct sources with a pair in it (on the side with fewer) and the check counts
+  reference sources (13 -> 1 for that shift). The four pools solve at the default
+  radius with 12-13 matches, 4-6 mas rms and shifts under 10 mas. Dense catalogs
+  are not affected beyond 0.1 mas (MACS0647 F200W: identical; F480M: detector fits
+  identical, pooled solution within 0.1 mas). A field that set a small
+  `coarse_searchrad` to work around this no longer needs it. `ALGNGKR` and the
+  gross-histogram diagnostics in headers written from now on use the new counts.
   Measurements in docs/hst/design.md section 8b; `nircam/align/DESIGN.md` 3.4.
 - **`cfpipe nircam refcat extract` makes catalogs that hold at any epoch**
   (`--stars gaia`, the new default; `--stars keep` gives the previous behaviour).
