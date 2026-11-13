@@ -266,7 +266,7 @@ def test_two_components_with_free_shapes_and_their_own_spectra():
 
 
 def test_frames_need_the_rate_file(tmp_path):
-    """load(frames=True) names what the master background needs and is missing (the _mbkg.fits,
+    """load(background='master') names what the master background needs and is missing (the _mbkg.fits,
     its MBKG2D, the rate file it was painted on) instead of falling back to the slit's own slitlet."""
     from astropy.io import fits
     from campfire_pipeline.nirspec.forward import products as FPR
@@ -283,6 +283,18 @@ def test_frames_need_the_rate_file(tmp_path):
                                                         'jw07417015001_03101_00001_nrs1_mbkg.fits)']
     fits.PrimaryHDU().writeto(tmp_path / 'jw07417015001_03101_00001_nrs1_rate.fits')
     assert FPR.master_background_inputs_missing([c]) == []
+
+
+def test_background_is_nod_or_master():
+    """The background is named by method; anything else (the old frames=True among it) is refused."""
+    from campfire_pipeline.nirspec.forward import product2d as P2
+    from campfire_pipeline.nirspec.forward import products as FPR
+    assert FPR.check_background('nod') == 'nod' and FPR.check_background('master') == 'master'
+    for bad in (True, False, 'frames', 'mbkg'):
+        with pytest.raises(ValueError, match="'nod'.*'master'"):
+            FPR.load([], background=bad)
+        with pytest.raises(ValueError, match="'nod'.*'master'"):
+            P2.data_2d(object(), background=bad)
 
 
 def _rolled(exps, pa_y):

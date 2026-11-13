@@ -12,7 +12,8 @@ prepares the exposures as stage 3 prepared them for its fit, so a model built on
 (``ForwardModel(load(files))``) sees the pixels stage 3's fit saw.
 
     files = forward.files_for('products/nirspec/zenith_p15', 547856)
-    exps = forward.load(files)                        # the nod differences
+    exps = forward.load(files)                        # the nod differences (background='nod')
+    exps = forward.load(files, background='master')   # each exposure minus its master background
     F = forward.ForwardModel(exps)
     s = F.solve([forward.Point()], covariance=True)
 """
@@ -133,13 +134,25 @@ def master_background_inputs_missing(canonicals):
     return list(dict.fromkeys(out))
 
 
-def load(files, frames=False, outliers=True, contam=True, slit_loss=None):
+BACKGROUNDS = ('nod', 'master')
+
+
+def check_background(background):
+    """``background`` is 'nod' (the nod differences, the product's ``SCI`` / ``SPEC1D``) or 'master'
+    (each exposure minus its master background, ``SCI_MBKG`` / ``SPEC1D_MBKG``); else ValueError."""
+    if background not in BACKGROUNDS:
+        raise ValueError(f"forward: background={background!r}; 'nod' (nod subtraction) or 'master' "
+                         '(master background)')
+    return background
+
+
+def load(files, background='nod', outliers=True, contam=True, slit_loss=None):
     """The exposures of one target (one disperser) prepared as stage 3 prepared them for its fit.
 
     files : every canonical of the target (``files_for``), background exposures included; they are
         put in their background groups from their headers.
-    frames : False, the nod differences (stage 3's fit); True, the frames minus the master background
-        (the master-background fit), with ``Exposure.mbkg`` set for the scale term
+    background : 'nod', the nod differences (stage 3's fit); 'master', each exposure minus its master
+        background (the master-background fit), with ``Exposure.mbkg`` set for the scale term
         (``ForwardModel(..., mbkg_sigma=...)``). The master background is the one stage 3 stored in
         each canonical (``CONTAM`` planes ``MBKG`` / ``MBKGVAR``, ``CFSCHEMA`` 3); a file written
         before that needs its exposure's ``_mbkg.fits`` and ``_rate.fits`` beside it, else
@@ -151,6 +164,7 @@ def load(files, frames=False, outliers=True, contam=True, slit_loss=None):
     slit_loss : whose path loss the model takes (``crds_refs.SlitLoss``; None: the pipeline's default).
 
     A file stage 3 has not written (no ``CFOUTL`` card) is used as it is, with a warning."""
+    check_background(background)
     files = [str(f) for f in files]
     groups = groups_of(files)
     science = science_names(files)
@@ -167,7 +181,7 @@ def load(files, frames=False, outliers=True, contam=True, slit_loss=None):
         PF.mask_crf_outliers(exps, dq)              # bit 4, the bit Spec3's crf carries
     planes_of = {e.name: CN.read_contam(e.path) for e in exps if e.use_data} if contam else {}
     planes_of = {k: v for k, v in planes_of.items() if v is not None}
-    if not frames:
+    if background == 'nod':
         if contam:
             _subtract_contam(exps, planes_of, 'NOD', 'NODMASK')
         return exps
@@ -179,7 +193,7 @@ def load(files, frames=False, outliers=True, contam=True, slit_loss=None):
     else:
         missing = master_background_inputs_missing([e.path for e in sci if stored[e.name] is None])
         if missing:
-            raise FileNotFoundError('forward.load(frames=True): these canonicals carry no master background '
+            raise FileNotFoundError("forward.load(background='master'): these canonicals carry no master background "
                                     '(written before CFSCHEMA 3), which then needs, beside them, ' + '; '.join(missing))
         fr = MX.frames_for([e.path for e in sci], backgrounds={k: v for k, v in stored.items() if v is not None})
     inputs = {}

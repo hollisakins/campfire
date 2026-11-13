@@ -39,7 +39,7 @@ tag = args.grating.replace('/', '_').lower()
 base = os.path.join(ws, f'{args.obs}_{tag}_{args.source}')
 
 # --- the fit, as printed on the page
-exps = fw.load(fw.files_for(ws, args.source, args.grating), frames=True)
+exps = fw.load(fw.files_for(ws, args.source, args.grating), background='master')
 model = fw.ForwardModel(exps, mbkg_sigma=0.01 if args.mbkg_term else None)
 names = ['core', 'southwest', 'northeast']
 across = fw.Param(0.0, bounds=(-0.15, 0.15), name='across')
@@ -56,7 +56,7 @@ for k in result.labels:
 
 # --- on the product's 2-D grid: the data, stage 3's one-component model, and the three components
 grid = fw.product_grid(fw.files_for(ws, args.source, args.grating))
-d2 = fw.data_2d(grid, frames=True)
+d2 = fw.data_2d(grid, background='master')
 sci, err = np.asarray(d2['data'], float), np.asarray(d2['err'], float)
 model3 = np.asarray(fw.model_2d(fit, result, grid), float)
 with fits.open(base + '_spec.fits') as h:
