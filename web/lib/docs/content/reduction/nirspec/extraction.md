@@ -6,7 +6,7 @@ Stage 3 produces one 1-D spectrum per source and disperser from the background-s
 
 Each source is modeled as a circular Gaussian with a width and position that may vary smoothly with wavelength. In each exposure the model is the source's image through that exposure's shutters, minus its images at the positions of the subtracted background exposures. A single spectrum, common to all exposures, is solved wavelength by wavelength together with the spatial parameters.
 
-![Four PRISM sources. Each row: the combined 2-D spectrum (rows along the slitlet), the fitted model, and the residual on a common scale, with the spatial profile summed over wavelength (data gray, model orange). Positive (red) and negative (blue) signal correspond to the source in its own shutter and its negative images from nod subtraction. From top: a bright compact source, two extended sources (one adjacent to a bar), and a faint source. The extended sources leave a small central residual, reflecting departures from a Gaussian profile.](/docs/nirspec/extraction_prism.png)
+![Four PRISM sources: the combined 2-D spectrum, model and residual on a common scale, and the profile along the slit (data gray, model orange). From top: bright and compact, two extended (one next to a bar), faint.](/docs/nirspec/extraction_prism.png)
 
 ### Profile selection
 
@@ -29,11 +29,11 @@ The optimal (`fnu_opt`) and boxcar (`fnu_3px`, `fnu_4px`, `fnu_5px`) extractions
 
 On the gratings, long traces and dense MSA configurations cause spectra from different slitlets to overlap on the detector, so that many pixels receive flux from more than one source.
 
-![One G395M exposure. Top: the number of slitlets contributing to each pixel of both detectors. Middle: count rate in a detector strip. Bottom: the same strip with each slitlet's footprint outlined and labeled by source.](/docs/nirspec/overlap.png)
+![One G395M exposure. Top: the number of slitlets contributing to each pixel. Middle and bottom: a detector strip, without and with each slitlet's footprint outlined.](/docs/nirspec/overlap.png)
 
 CAMPFIRE maps the footprint of every shutter in every exposure, including the light beyond the calibrated wavelength range, and fits each source jointly with all sources whose traces overlap it, each with a fixed profile, on the same nod-subtracted frames. This first pass yields each neighbor's contribution to the target's pixels, which is removed before the target's own profile is fitted and retained as `CONTAM2D` and `fnu_contam`.
 
-![A G395M source contaminated by eight other sources. Top: data, model of the target, predicted contamination, and residual (some signal remains on the trace at 3–4.5 µm). Bottom: uncorrected spectrum (gray), predicted contamination (yellow), decontaminated spectrum (blue), and the same source's uncontaminated PRISM spectrum (dashed).](/docs/nirspec/contamination_g395m.png)
+![A G395M source with eight overlapping neighbors. Top: data, target model, predicted contamination and residual. Bottom: uncorrected (gray), contamination (yellow), decontaminated (blue), and the same source's uncontaminated PRISM spectrum (dashed).](/docs/nirspec/contamination_g395m.png)
 
 The contamination is reported, not subtracted:
 
@@ -62,7 +62,3 @@ All exposures of a source in a given disperser enter a single fit. Repeated MSA 
 ## Master-background spectrum
 
 Each file also contains a spectrum extracted identically from the same exposures with the master background subtracted in place of the nod subtraction; see [Master-background spectra](/docs/reduction/nirspec/backgrounds#master-background-spectra).
-
-## Summary for publications
-
-> Each source's 2-D spectrum was fitted simultaneously in all exposures with a Gaussian source model convolved with a model of the MSA optics; the reported flux is that of the fitted intrinsic profile within the open width of the shutter across the dispersion and over its full extent along the slit. Priors on the profile's width and center govern sources too faint to constrain their own profile.
