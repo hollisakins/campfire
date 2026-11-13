@@ -1,6 +1,6 @@
 """A target's exposures for the forward model, from the deployed files alone: its canonicals
 (``campfire pull --obs X --intermediate``) and, for single frames, each exposure's ``_mbkg.fits``
-beside them.
+and the ``_rate.fits`` its master background was painted on, beside them.
 
 Stage 3 leaves in each canonical what its fits took from files it does not keep
 (``canonical.write_stage3``): Spec3's outlier flags in DQ bit 4, the master-background frames' own
@@ -108,14 +108,38 @@ def _subtract_contam(exps, planes_of, pred_key, mask_key):
     return states
 
 
+def master_background_inputs_missing(canonicals):
+    """What the master background on these canonicals' cutouts needs and is not there: each
+    exposure's ``_mbkg.fits`` with its painted 2-D (``MBKG2D``), and the rate file it was painted
+    on (``MBKGRATE``), beside the canonicals. Without the rate file ``master_bkg.sky_for_slit``
+    falls back to the slit's own slitlet, a master background too low wherever other traces
+    cross the cutout. Returns a list of descriptions (empty when complete)."""
+    from campfire_pipeline.nirspec.stage2 import _mbkg_path
+    out = []
+    for c in dict.fromkeys(str(p) for p in canonicals):
+        m = _mbkg_path(c)
+        if m is None:
+            out.append(f'the _mbkg.fits of {os.path.basename(c)}')
+            continue
+        with fits.open(m) as h:
+            has_2d = 'MBKG2D' in h
+            rate = str(h[0].header.get('MBKGRATE', ''))
+        if not has_2d:
+            out.append(f'{os.path.basename(m)} has no MBKG2D (rerun the master background)')
+        elif not rate or not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(m)), rate)):
+            out.append(f'{rate or "the rate file"} (for {os.path.basename(m)})')
+    return list(dict.fromkeys(out))
+
+
 def load(files, frames=False, outliers=True, contam=True, slit_loss=None):
     """The exposures of one target (one disperser) prepared as stage 3 prepared them for its fit.
 
     files : every canonical of the target (``files_for``), background exposures included; they are
         put in their background groups from their headers.
     frames : False, the nod differences (stage 3's fit); True, the frames minus the master background
-        (the master-background fit; each exposure's ``_mbkg.fits`` beside its canonical), with
-        ``Exposure.mbkg`` set for the scale term (``ForwardModel(..., mbkg_sigma=...)``).
+        (the master-background fit; each exposure's ``_mbkg.fits`` and its ``_rate.fits`` beside its
+        canonical, else ``FileNotFoundError``), with ``Exposure.mbkg`` set for the scale term
+        (``ForwardModel(..., mbkg_sigma=...)``).
     outliers : leave out the pixels stage 3 flagged in DQ bit 4 (in a nod difference also those
         flagged in the frames it was differenced with).
     contam : subtract the other sources' predicted light and leave out the pixels where its
@@ -145,6 +169,10 @@ def load(files, frames=False, outliers=True, contam=True, slit_loss=None):
         return exps
     from campfire_pipeline.nirspec import mbkg_extraction as MX
     sci = [e for e in exps if e.use_data]
+    missing = master_background_inputs_missing([e.path for e in sci])
+    if missing:
+        raise FileNotFoundError('forward.load(frames=True): the master background needs, beside the canonicals, '
+                                + '; '.join(missing))
     fr = MX.frames_for([e.path for e in sci])
     inputs = {}
     for n, f in fr.items():

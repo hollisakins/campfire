@@ -263,3 +263,23 @@ def test_two_components_with_free_shapes_and_their_own_spectra():
     good = r.solution.good
     pull = (r.spectra - truth)[good] / r.spectra_err[good]
     assert np.sqrt(np.mean(pull ** 2)) < 2.0
+
+
+def test_frames_need_the_rate_file(tmp_path):
+    """load(frames=True) names what the master background needs and is missing (the _mbkg.fits,
+    its MBKG2D, the rate file it was painted on) instead of falling back to the slit's own slitlet."""
+    from astropy.io import fits
+    from campfire_pipeline.nirspec.forward import products as FPR
+    c = tmp_path / 'jw07417015001_03101_00001_nrs1_547856.fits'
+    fits.PrimaryHDU().writeto(c)
+    assert 'the _mbkg.fits of' in FPR.master_background_inputs_missing([c])[0]
+    m = tmp_path / 'jw07417015001_03101_00001_nrs1_mbkg.fits'
+    h0 = fits.PrimaryHDU()
+    h0.header['MBKGRATE'] = 'jw07417015001_03101_00001_nrs1_rate.fits'
+    fits.HDUList([h0]).writeto(m)
+    assert 'has no MBKG2D' in FPR.master_background_inputs_missing([c])[0]
+    fits.HDUList([h0, fits.ImageHDU(np.zeros((2, 2)), name='MBKG2D')]).writeto(m, overwrite=True)
+    assert FPR.master_background_inputs_missing([c]) == ['jw07417015001_03101_00001_nrs1_rate.fits (for '
+                                                        'jw07417015001_03101_00001_nrs1_mbkg.fits)']
+    fits.PrimaryHDU().writeto(tmp_path / 'jw07417015001_03101_00001_nrs1_rate.fits')
+    assert FPR.master_background_inputs_missing([c]) == []
