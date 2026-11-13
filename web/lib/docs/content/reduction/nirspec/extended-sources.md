@@ -60,9 +60,9 @@ files = fw.files_for('products/nirspec/<obs>', source_id, 'PRISM/CLEAR')
 exps = fw.load(files, frames=True)               # each exposure minus its master background
 model = fw.ForwardModel(exps, mbkg_sigma=0.01)   # with stage 3's correction to the background level
 
-north = fw.Param(0.0, bounds=(-0.3, 0.3))        # one center, shared by both components
-bulge = fw.Sersic(dx=0.0, dy=north, n=4.0, r_e=fw.Param(0.05, bounds=(0.01, 0.5)), q=1.0)
-disk = fw.Sersic(dx=0.0, dy=north, n=1.0, r_e=fw.Param(0.2, bounds=(0.05, 1.5)), q=1.0)
+dx, dy = fw.slit_frame_offset(exps, along=fw.Param(0.0, bounds=(-0.3, 0.3), name='along'))
+bulge = fw.Sersic(dx=dx, dy=dy, n=4.0, r_e=fw.Param(0.05, bounds=(0.01, 0.5), name='bulge.r_e'), q=1.0)
+disk = fw.Sersic(dx=dx, dy=dy, n=1.0, r_e=fw.Param(0.2, bounds=(0.05, 1.5), name='disk.r_e'), q=1.0)
 
 fit = fw.Fit(model, [bulge, disk], names=['bulge', 'disk'])
 result = fit.run()
@@ -84,6 +84,8 @@ Each component's spectrum is its total light on the sky, not limited to the shut
 | `SlitGaussian` | Stage 3's source: `centre` and `width` along the slit (shutter heights), and their change with wavelength (`drift`, `width_change`) |
 | `Sum` | Several components sharing one spectrum, for example the clumps of one galaxy |
 
+Offsets on the sky are east and north. With one position angle the data measure a position along the slit far better than across it, so a component is often easier to place in the slit's frame: `fw.slit_frame_offset(exps, along, across)` returns the `dx`, `dy` of an offset in arcsec along the slit (toward `PA_SLIT_Y`) and across it (toward `PA_SLIT_X`, the dispersion direction), each a number or a parameter. A north offset on a slit at position angle 64°, for example, moves a component 0.9″ across the shutter for every 0.4″ along it. Exposures at more than one position angle have no common slit frame, and the function raises for them.
+
 Any other surface brightness works through a subclass that gives `brightness(east, north)` and an `extent()`; a NIRCam image of the source would be one. Such an image is collapsed onto the slit, weighted at each position across the shutter by the share of light the shutter passes there.
 
 ### Parameters
@@ -96,6 +98,8 @@ r_bulge = fw.Param(0.15, bounds=(0.02, 1.0), prior=fw.LogNormal(0.15, 0.3))    #
 disk = fw.Sersic(dx=east, dy=north, n=1.0, r_e=fw.Tied(lambda r: 3.0 * r, r_bulge),
                  q=fw.Param(0.5, bounds=(0.1, 1.0)), pa=30.0)
 ```
+
+A parameter's `name` labels it in `result.params` and `result.errors`; without one, the label is the first component field it reaches. Names must be distinct.
 
 Priors on one parameter are `Normal`, `LogNormal` and `Uniform`, or any object with a `logpdf`. A prior on several parameters at once goes to the fit as a `JointPrior`; `JointPrior.gaussian(samples, params)` builds one from posterior samples, for example of a fit to NIRCam imaging, with an optional `inflate` for a size measured in another band.
 
@@ -122,7 +126,27 @@ On the frames, `mbkg_sigma=0.01` is the master-background scale term stage 3 use
 
 ### An example
 
-> **Placeholder.** A two-component fit to the master-background frames of zenith_p15 547856, a dusty galaxy whose Hα is suppressed at the continuum peak while Paα is strongest there: data, model and residual for each exposure, and the two component spectra, which should show the difference in their lines. To be fitted and drawn from the zenith_p15 products at the current fit version.
+zenith_p15 547856 is a dusty galaxy at z = 1.64 whose Hα is weak at the continuum peak while Paα is strongest there. On its six master-background frames, one Sérsic profile fits at χ²/dof 4.0, and a compact core inside a disk on the same center reaches 1.69 only with a negative core spectrum. Three round Gaussians placed along the slit, each with its own spectrum, fit at 1.53 with every spectrum positive, free or held non-negative:
+
+```python
+exps = fw.load(fw.files_for('products/nirspec/zenith_p15', 547856, 'PRISM/CLEAR'), frames=True)
+model = fw.ForwardModel(exps)        # MBKGSCL is 0: stage 3 fitted this source without the scale term
+
+across = fw.Param(0.0, bounds=(-0.15, 0.15), name='across')     # one offset across the shutter, shared
+comps = []
+for name, along, sigma in (('core', 0.0, 0.1), ('southwest', -0.5, 0.2), ('northeast', 0.5, 0.2)):
+    dx, dy = fw.slit_frame_offset(exps, along=fw.Param(along, bounds=(-1.2, 1.2), name=f'{name}.along'),
+                                  across=across)
+    comps.append(fw.Gaussian(dx=dx, dy=dy, sigma=fw.Param(sigma, bounds=(0.02, 0.8), name=f'{name}.sigma')))
+
+result = fw.Fit(model, comps, names=['core', 'southwest', 'northeast']).run()
+```
+
+The core lies 0.04″ from the catalog position along the slit with σ = 0.14″; the other two lie 0.44″ to the southwest and 0.33″ to the northeast, with σ = 0.16″ and 0.14″. The fit takes about 20 seconds.
+
+![zenith_p15 547856, three round Gaussians along the slit fitted to the master-background frames. Top: each component's spectrum (its total light) and their sum. Bottom: each component's share of the sum. The core is the reddest and carries the Paα with little Hα; the two outer components are bluer and carry the Hα.](/docs/nirspec/extended_components.png)
+
+The core's share of the light rises from about 15 % at 1 µm to 65 % at 5 µm. Each spectrum is the component's total light, extrapolated across the shutter from its assumed shape, so the sum exceeds the light within the shutter that `fnu` reports. Some blue light far along the slit, in the exposures with the source in the lower shutter, remains in the residual (`plots.panels`).
 
 ### Current limitations
 
