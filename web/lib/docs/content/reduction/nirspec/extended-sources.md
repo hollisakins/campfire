@@ -59,7 +59,7 @@ from campfire_pipeline.nirspec import forward as fw
 from campfire_pipeline.nirspec.forward import plots
 
 files = fw.files_for('products/nirspec/<obs>', source_id, 'PRISM/CLEAR')
-exps = fw.load(files, frames=True)               # each exposure minus its master background
+exps = fw.load(files, background='master')      # each exposure minus its master background
 model = fw.ForwardModel(exps, mbkg_sigma=0.01)   # with stage 3's correction to the background level
 
 dx, dy = fw.slit_frame_offset(exps, along=fw.Param(0.0, bounds=(-0.3, 0.3), name='along'))
@@ -122,7 +122,7 @@ Priors on one parameter are `Normal`, `LogNormal` and `Uniform`, or any object w
 
 ### Master-background frames or nod differences
 
-For an extended source the master-background frames are usually the better data to fit: each exposure is the frame minus its master background, so the source appears once and none of its outer light is subtracted. `fw.load(files)` without `frames=True` gives the nod differences stage 3 fits for `fnu`, where each exposure also holds the source's negative images from the subtracted background exposures, and the model reproduces those too.
+For an extended source the master-background frames are usually the better data to fit: each exposure is the frame minus its master background, so the source appears once and none of its outer light is subtracted. `fw.load(files)` (or `background='nod'`, the default) gives the nod differences stage 3 fits for `fnu`, where each exposure also holds the source's negative images from the subtracted background exposures, and the model reproduces those too.
 
 On the frames, `mbkg_sigma=0.01` is the master-background scale term stage 3 uses: a common correction to the master background's level, with an allowance of 1 %. Stage 3 also drops the term and refits when the fitted correction reaches 3 %, since a correction that large is light from a source rather than an error in the master background's level; `Fit` does not, and the fitted value is in `result.solution.scale`. A bright source that fills much of the slitlet is the usual case: its outer light looks like a change in the background level. When stage 3 dropped the term for a source, `MBKGSCL` is 0 and `MBKGSCLC` holds the value it fitted; fitting such a source without the term (`fw.ForwardModel(exps)`) matches what stage 3 did.
 
@@ -131,7 +131,7 @@ On the frames, `mbkg_sigma=0.01` is the master-background scale term stage 3 use
 zenith_p15 547856 is a dusty galaxy at z = 1.64 whose Hα is weak at the continuum peak while Paα is strongest there. On its six master-background frames, one Sérsic profile fits at χ²/dof 4.0, and a compact core inside a disk on the same center reaches 1.69 only with a negative core spectrum. Three round Gaussians placed along the slit, each with its own spectrum, fit at 1.53 with every spectrum positive, free or held non-negative:
 
 ```python
-exps = fw.load(fw.files_for('products/nirspec/zenith_p15', 547856, 'PRISM/CLEAR'), frames=True)
+exps = fw.load(fw.files_for('products/nirspec/zenith_p15', 547856, 'PRISM/CLEAR'), background='master')
 model = fw.ForwardModel(exps)        # MBKGSCL is 0: stage 3 fitted this source without the scale term
 
 across = fw.Param(0.0, bounds=(-0.15, 0.15), name='across')     # one offset across the shutter, shared
@@ -153,8 +153,8 @@ A fitted model can be drawn on the product's combined 2-D grid, as in the figure
 ```python
 files = fw.files_for('products/nirspec/zenith_p15', 547856, 'PRISM/CLEAR')
 grid = fw.product_grid(files)                 # the product's 2-D grid, rebuilt from the cutouts
-data = fw.data_2d(grid, frames=True)          # data, err: SCI_MBKG and ERR_MBKG
+data = fw.data_2d(grid, background='master')   # data, err: SCI_MBKG and ERR_MBKG
 model = fw.model_2d(fit, result, grid)        # the fitted model on the same grid, in MJy
 ```
 
-`frames=False` gives the nod-differences 2-D (`SCI`) instead. The grid uses stage 3's resample settings unless an `_s2d.fits` is given (`s2d=`). `model_2d` includes the master-background scale term when the fit has one, so it is compared with `data_2d` rather than with `SCI_MBKG` itself. On the combined 2-D spectrum of 547856 the squared residual over the noise averages 6.8 per pixel for stage 3's one component and 1.4 for the three. Each component spectrum is the component's total light, extrapolated across the shutter from its assumed shape, while `fnu_prof` holds the light within the shutter, so the two are not on the same footing. Some blue light far along the slit, in the exposures with the source in the lower shutter, remains in the residual of the individual exposures (`plots.panels`).
+`background='nod'` gives the nod-differences 2-D (`SCI`) instead. The grid uses stage 3's resample settings unless an `_s2d.fits` is given (`s2d=`). `model_2d` includes the master-background scale term when the fit has one, so it is compared with `data_2d` rather than with `SCI_MBKG` itself. On the combined 2-D spectrum of 547856 the squared residual over the noise averages 6.8 per pixel for stage 3's one component and 1.4 for the three. Each component spectrum is the component's total light, extrapolated across the shutter from its assumed shape, while `fnu_prof` holds the light within the shutter, so the two are not on the same footing. Some blue light far along the slit, in the exposures with the source in the lower shutter, remains in the residual of the individual exposures (`plots.panels`).
