@@ -2,8 +2,8 @@
 
 Fits the Extended sources page's example to the master-background frames: a compact core and one component on
 each side of it along the slit, round Gaussians with their own spectra, sharing one offset across the shutter.
-The three-component model is drizzled onto the product's 2-D grid the way stage 3 drizzles its own (the grid
-rebuilt from the calibrated cutouts with Spec3's resample settings from the s2d, since stage 3 removes its crf).
+The data and the three-component model are drawn on the product's 2-D grid with ``fw.product_grid``,
+``fw.data_2d`` and ``fw.model_2d``.
 Top rows: the master-background 2-D spectrum (``SCI_MBKG``), the model and the residual, all on one color
 scale, and the profile along the slit summed over wavelength; first stage 3's one-component fit (``PROF2D_MBKG``
 x (fnu_prof - fnu_contam) + ``CONTAM2D_MBKG``), then the three components. Bottom: stage 3's master-background
@@ -31,11 +31,8 @@ import numpy as np                                                    # noqa: E4
 from astropy.io import fits                                           # noqa: E402
 from matplotlib.colors import AsinhNorm                               # noqa: E402
 
-from campfire_pipeline.nirspec import canonical as CN                 # noqa: E402
-from campfire_pipeline.nirspec import drizzle_map as DM               # noqa: E402
 from campfire_pipeline.nirspec import forward as fw                   # noqa: E402
-from campfire_pipeline.nirspec import mbkg_extraction as MX           # noqa: E402
-from campfire_pipeline.nirspec.forward import plots                   # noqa: E402
+from campfire_pipeline.nirspec.forward import plots                  # noqa: E402
 
 ws = C.workspace(root, args.obs)
 tag = args.grating.replace('/', '_').lower()
@@ -57,31 +54,12 @@ print(f'chi2/dof {result.chi2_red:.3f}')
 for k in result.labels:
     print(f'  {k} = {result.params[k]:.4f} +- {result.errors[k]:.4f}')
 
-
-# --- the product's grid from the cutouts (DrizzleMap.from_crf with the canonicals in place of the crf)
-def product_grid(paths, settings):
-    from jwst import datamodels
-    from jwst.datamodels import SourceModelContainer
-    from jwst.exp_to_source import exp_to_source
-    from jwst.lib.pipe_utils import match_nans_and_flags as jwst_match
-    from jwst.resample.resample_spec import ResampleSpec
-    s = dict(settings)
-    container = SourceModelContainer(next(iter(exp_to_source([datamodels.open(q) for q in paths]).values())))
-    raw = [{k: np.array(getattr(x, k)) for k in DM.NAN_EXTENSIONS + ('dq',) if hasattr(x, k)} for x in container]
-    for x in container:
-        jwst_match(x)
-    resamp = ResampleSpec(container, good_bits=DM.GOOD_BITS, output_wcs=None,
-                          wcs_pars=dict(output_shape=None, pixel_scale=None, pixel_scale_ratio=s['pixel_scale_ratio']),
-                          pixfrac=s['pixfrac'], kernel=s['kernel'], fillval=s['fillval'], weight_type=s['weight_type'],
-                          blendheaders=False, enable_var=True, compute_err='from_var', output=None)
-    ex = [DM.MappedExposure.from_model(x, a, resamp) for x, a in zip(container, raw)]
-    return DM.DrizzleMap(ex, resamp.output_wcs.array_shape, s, resamp.pixel_scale_ratio, wcs=resamp.output_wcs)
-
-
+# --- on the product's 2-D grid: the data, stage 3's one-component model, and the three components
+grid = fw.product_grid(fw.files_for(ws, args.source, args.grating))
+d2 = fw.data_2d(grid, frames=True)
+sci, err = np.asarray(d2['data'], float), np.asarray(d2['err'], float)
+model3 = np.asarray(fw.model_2d(fit, result, grid), float)
 with fits.open(base + '_spec.fits') as h:
-    files = [str(n).strip() for n in h['EXPOSURES'].data['filename']]
-    sci = np.asarray(h['SCI_MBKG'].data, float)
-    err = np.asarray(h['ERR_MBKG'].data, float)
     wav = np.asarray(h['WAVELENGTH'].data, float)
     prof = np.asarray(h['PROF2D_MBKG'].data, float)
     cont = np.nan_to_num(np.asarray(h['CONTAM2D_MBKG'].data, float))
@@ -89,22 +67,6 @@ with fits.open(base + '_spec.fits') as h:
     own = np.asarray(t['fnu_prof'], float) - np.nan_to_num(np.asarray(t['fnu_contam'], float))
     w1, fl1, fe1 = (np.asarray(t[c], float) for c in ('wave', 'flam_prof', 'flam_prof_err'))
 model1 = prof * np.nan_to_num(own)[None, :] + cont
-
-cans = [os.path.join(ws, f) for f in files]
-dmap = product_grid(cans, DM.step_settings(base + '_s2d.fits'))
-frames = MX.frames_for(cans, {os.path.basename(c): CN.master_background_planes(c) for c in cans})
-inputs = MX.flagged_inputs(dmap, frames, None)
-images, n0 = {}, 0
-mvec = np.asarray(result.solution.model, float)
-for k, m in model.pix_masks:
-    # the fit works with the path-loss correction jwst applied undone (data = frame x pl_applied):
-    # back to the frames' units before drizzling
-    pl = np.broadcast_to(np.asarray(exps[k].pl_applied, float), np.shape(m))
-    img = np.zeros(np.shape(m))
-    img[m] = mvec[n0:n0 + int(m.sum())] / pl[m]
-    n0 += int(m.sum())
-    images[os.path.basename(exps[k].name)] = img
-model3 = MX.drizzle_on_frames(dmap, inputs, images)
 
 ok = np.isfinite(sci) & np.isfinite(err) & (err > 0) & np.isfinite(prof)
 sci = np.where(ok, sci, np.nan)

@@ -148,11 +148,19 @@ The core lies 0.04″ from the catalog position along the slit with σ = 0.14″
 
 ![zenith_p15 547856 on its master-background 2-D spectrum. Top two rows: the 2-D spectrum, the model and the residual on one color scale, with the profile along the slit summed over wavelength, for stage 3's one-component fit and for the three components, whose model is drizzled onto the same grid. Bottom: stage 3's master-background spectrum and the three component spectra, each a component's total light. The core is the reddest and has the strongest Paα but little Hα; the two outer components are bluer, with most of the Hα and weaker Paα.](/docs/nirspec/extended_components.png)
 
-On the combined 2-D spectrum the squared residual over the noise averages 6.8 per pixel for stage 3's one component and 1.7 for the three. Each component spectrum is the component's total light, extrapolated across the shutter from its assumed shape, while `fnu_prof` holds the light within the shutter, so the two are not on the same footing. Some blue light far along the slit, in the exposures with the source in the lower shutter, remains in the residual of the individual exposures (`plots.panels`).
+A fitted model can be drawn on the product's combined 2-D grid, as in the figure, and compared with the data there:
+
+```python
+files = fw.files_for('products/nirspec/zenith_p15', 547856, 'PRISM/CLEAR')
+grid = fw.product_grid(files)                 # the product's 2-D grid, rebuilt from the cutouts
+data = fw.data_2d(grid, frames=True)          # data, err: SCI_MBKG and ERR_MBKG
+model = fw.model_2d(fit, result, grid)        # the fitted model on the same grid, in MJy
+```
+
+`frames=False` gives the nod-differences 2-D (`SCI`) instead. The grid uses stage 3's resample settings unless an `_s2d.fits` is given (`s2d=`). `model_2d` includes the master-background scale term when the fit has one, so it is compared with `data_2d` rather than with `SCI_MBKG` itself. On the combined 2-D spectrum of 547856 the squared residual over the noise averages 6.8 per pixel for stage 3's one component and 1.4 for the three. Each component spectrum is the component's total light, extrapolated across the shutter from its assumed shape, while `fnu_prof` holds the light within the shutter, so the two are not on the same footing. Some blue light far along the slit, in the exposures with the source in the lower shutter, remains in the residual of the individual exposures (`plots.panels`).
 
 ### Current limitations
 
 - Other sources' light is held at stage 3's prediction. Fitting a neighbor as a component of its own uses the same machinery but is not yet connected to `forward.load`.
 - `log_posterior` works with any sampler, but at about a minute per least-squares fit, sampling is slow.
 - No NIRCam-image component is shipped yet.
-- Drawing a fitted model on the combined 2-D grid, as in the figure above, is done by the figure's script (`scripts/docs/nirspec/fig_extended_components.py`) and is not yet part of the package.
