@@ -320,3 +320,25 @@ def test_a_slit_frame_offset_needs_one_slit_orientation():
     exps[2].pa_slit_y, exps[2].pa_slit_x = 30.0, -60.0
     with pytest.raises(ValueError, match='roll angle'):
         FW.slit_frame_offset(exps, along=0.1)
+
+
+def test_model_images_are_the_fitted_model_in_the_canonicals_units():
+    from campfire_pipeline.nirspec.forward import plots
+    F, _ = _model_with([FW.Gaussian(dy=0.02, sigma=0.08)], noise=1e-3)
+    fit = FW.Fit(F, [FW.Gaussian(dy=FW.Param(0.0, bounds=(-0.2, 0.2)), sigma=FW.Param(0.05, bounds=(0.01, 0.5)))])
+    r = fit.run()
+    imgs = FW.model_images(fit, r)
+    fitted = plots._images(F, np.asarray(r.solution.model, float))
+    n = 0
+    for k, m in F.pix_masks:
+        e = F.exps[k]
+        r0, c0, ny, nx = e.cutout
+        want = (fitted[k] / np.broadcast_to(e.pl_applied, m.shape))[r0:r0 + ny, c0:c0 + nx]
+        got = imgs[e.name]
+        sel = m[r0:r0 + ny, c0:c0 + nx]
+        assert got.shape == (ny, nx)
+        np.testing.assert_allclose(got[sel], want[sel], rtol=1e-9, atol=1e-12 * np.abs(want[sel]).max())
+        n += int(sel.sum())
+        off = ~np.isfinite(e.y[r0:r0 + ny, c0:c0 + nx])
+        assert np.all(got[off] == 0)                 # nothing drawn off the slitlet
+    assert n > 0

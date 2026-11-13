@@ -29,3 +29,4 @@ from campfire_pipeline.nirspec.forward.components import (Component, Gaussian, P
                                                           Sum, project, slit_frame_offset,
                                                           slit_offsets)
 from campfire_pipeline.nirspec.forward.model import ForwardModel, Solution  # noqa: F401
+from campfire_pipeline.nirspec.forward.product2d import data_2d, model_2d, model_images, product_grid  # noqa: F401
