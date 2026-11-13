@@ -942,7 +942,13 @@ again.
   fit fell back (user, 2026-11-13): the nodded fit sees just the light that survives the subtraction, so
   its shape is narrower than an extended source and its own `SELFSUB` (primary header) low. zenith_p15
   547856 had nodded width 0.52 against 0.70 on the frames, `SELFSUB` 0.088 and `MBKGPREF` False with a
-  master-background flux 40 % above the nodded.
+  master-background flux 40 % above the nodded; at the frames' shape `SELFSUB` is 0.160 and it is
+  preferred. A master-background width on its upper limit (`bound_width_max` 1.5, the width bound bit or
+  within 1 % of it; `mbkg_extraction.width_at_limit`) was not measured: `SELFSUB` stays the nodded fit's,
+  `SPEC1D_MBKG` carries `MBKGWLIM` and `MBKGPREF` is False whatever else applies (user, 2026-11-13). On
+  zenith_p15 the frames' shape alone flagged 32 more products, 19 of them faint (median nodded S/N 3.3)
+  with the width on the limit and `SELFSUB` 0.6-0.97 set by it; in a combined product any group on the
+  limit makes it False.
 - The 1-D combine of several exposure groups carries it as it carries the nodded columns.
 - The science hash leaves out `*_MBKG` extensions and `MBKG*` cards, so this spectrum never marks
   line fits stale.

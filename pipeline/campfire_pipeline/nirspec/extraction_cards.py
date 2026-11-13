@@ -44,6 +44,7 @@ CARDS = {
     'MBKGSCL': 'Master background level fitted (0.01 = 1%)',
     'MBKGSCLE': 'Uncertainty of MBKGSCL',
     'MBKGSCLC': 'Scale fitted, over the cap: MBKGSCL set 0',
+    'MBKGWLIM': 'Master-bkg fit width at its limit',
     # same-slitlet neighbor scan
     'NBRDET': 'Neighbor above the proposal threshold',
     'NBRDELTA': 'Neighbor offset from target [slit units]',

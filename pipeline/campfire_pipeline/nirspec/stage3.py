@@ -1047,10 +1047,11 @@ def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, a
     for key in ex['cards']:
         spec.header[key] = (ex['cards'][key], ex['cards'].comments[key])
     # the master-background fit's own SELFSUB (its shape keeps the wings the nod subtraction removes);
-    # the nodded fit's when that fit fell back
+    # the nodded fit's when that fit fell back or its width ended on the limit (MBKGWLIM)
     selfsub = ex['cards'].get('SELFSUB', primary_hdr.get('SELFSUB'))
     return _mbkg_hdus(spec, table_to_hdu(ex['prof1d']), mb_sci, mb_err, s2dh, exposures, workspace_dir,
-                      selfsub, extended_frac, model_hdus=ex['pf_hdus'])
+                      selfsub, extended_frac, model_hdus=ex['pf_hdus'],
+                      width_limit=bool(ex['cards'].get('MBKGWLIM', False)))
 
 
 def _read_mbkg_2d(path, sci_shape, product_name, what='master-background 2-D'):
@@ -1072,13 +1073,15 @@ def _read_mbkg_2d(path, sci_shape, product_name, what='master-background 2-D'):
     return mb_sci, mb_err, mb_mask
 
 
-def _mbkg_hdus(spec, prof, mb_sci, mb_err, s2dh, exposures, workspace_dir, selfsub, extended_frac, model_hdus=()):
+def _mbkg_hdus(spec, prof, mb_sci, mb_err, s2dh, exposures, workspace_dir, selfsub, extended_frac, model_hdus=(),
+               width_limit=False):
     """The master-background extensions and primary cards of a product, from its 1-D
     columns (``spec``, the extraction cards already on it) and profiles (``prof``):
     ``SPEC1D_MBKG`` with ``MBKGVER`` and the per-exposure ``MBKGSRC``, ``SCI_MBKG`` /
     ``ERR_MBKG`` on the nodded SCI's header, the fit's ``model_hdus`` (``PROF2D`` /
     ``CONTAM2D``) as ``PROF2D_MBKG`` / ``CONTAM2D_MBKG``, ``PROF1D_MBKG``; ``MBKGPREF`` / ``MBKGWHY``
-    (``mbkg_extraction.preferred``, with ``selfsub``) and ``MBKGNEXP``.
+    (``mbkg_extraction.preferred``, with ``selfsub`` and ``width_limit``: False when the
+    master-background fit's width ended on its limit) and ``MBKGNEXP``.
     Returns (hdus, cards)."""
     from campfire_pipeline.nirspec import mbkg_extraction as MX
     sources, version = MX.background_sources(exposures.get('filename', []), workspace_dir)
@@ -1093,7 +1096,7 @@ def _mbkg_hdus(spec, prof, mb_sci, mb_err, s2dh, exposures, workspace_dir, selfs
         m.name = f'{m.name}_MBKG'
         hdus.append(m)
     hdus.append(prof)
-    pref, why = MX.preferred(exposures, selfsub, extended_frac)
+    pref, why = MX.preferred(exposures, selfsub, extended_frac, width_limit=width_limit)
     cards = {'MBKGPREF': (bool(pref), 'master-background spectrum likely better'),
              'MBKGWHY': (why, 'Reason for MBKGPREF'),
              'MBKGNEXP': (int(sum(s == 'exposure' for s in sources)), 'exposures with their own master background')}
@@ -1594,7 +1597,7 @@ def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, co
     if names and all('fnu_prof' in n for n in names):          # as the nodded combine (combine_per_eg_spectra)
         keys['prof'] = ('fnu_prof', 'fnu_prof_err')
     data = {k: {'wavelengths': [], 'fluxes': [], 'errors': []} for k in keys}
-    groups_pf, selfsub = [], []
+    groups_pf, selfsub, width_limit = [], [], False
     for spec_file in per_eg_spec_files:
         with fits.open(os.path.join(workspace_dir, spec_file)) as h:
             t = h['SPEC1D_MBKG'].data
@@ -1607,7 +1610,11 @@ def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, co
                 groups_pf.append(dict(contam=np.array(t['fnu_contam'], float), contam_err=np.array(t['fnu_contam_err'], float),
                                       extract=str(hh.get('EXTRACT', '')), reason=str(hh.get('EXTRWHY', '')),
                                       state=str(hh.get('CONTSTAT', 'off'))))
-            selfsub.append(h[0].header.get('SELFSUB'))
+            # each group's master-background SELFSUB (its nodded one when that fit fell back or its
+            # width ended on the limit); any group on the limit and the product does not prefer it
+            hm = h['SPEC1D_MBKG'].header
+            selfsub.append(hm.get('SELFSUB', h[0].header.get('SELFSUB')))
+            width_limit = width_limit or bool(hm.get('MBKGWLIM', False))
     paths = MX.product_paths(workspace_dir, product_name, source_id)
     mb = _read_mbkg_2d(paths['s2d'], sci_shape, product_name, what='stacked master-background 2-D')
     if mb is None:
@@ -1640,7 +1647,7 @@ def _combined_mbkg(per_eg_spec_files, workspace_dir, product_name, source_id, co
     prof['5px'] = boxcar_profile(cen - 2.5, cen + 2.5, len(collapsed))
     ss = [float(v) for v in selfsub if v is not None and np.isfinite(float(v))]
     return _mbkg_hdus(spec, table_to_hdu(prof), mb_sci, mb_err, s2dh, exposures, workspace_dir,
-                      max(ss) if ss else None, extended_frac)
+                      max(ss) if ss else None, extended_frac, width_limit=width_limit)
 
 
 def combine_per_eg_spectra(

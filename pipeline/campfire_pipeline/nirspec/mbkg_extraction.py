@@ -508,10 +508,24 @@ def self_subtraction_at_shape(R, exps):
     return float(self_subtraction(Rn, exps, spectrum=np.interp(Rn.lam, R.lam, np.nan_to_num(R.flux))))
 
 
-def preferred(exposures, self_sub, extended_frac):
+WIDTH_LIMIT_FRAC = 0.99      # a width this close to the bound is on it (as profile_product's neighbor scan)
+
+
+def width_at_limit(R, bound_bits, width_max):
+    """True when the master-background fit's width ended on its upper limit (``bound_bits`` has
+    the width bit, or the width is within 1 % of ``width_max``): the frames did not measure it,
+    which on faint sources happens often, so its shape says nothing about the source's extent."""
+    from campfire_pipeline.nirspec import profile_fit as PF
+    w = float(R.params.get('width', np.nan))
+    return bool((int(bound_bits or 0) & PF.BOUND_BITS['width']) or (np.isfinite(w) and w >= WIDTH_LIMIT_FRAC * width_max))
+
+
+def preferred(exposures, self_sub, extended_frac, width_limit=False):
     """(``MBKGPREF``, ``MBKGWHY``) of a product from its ``EXPOSURES`` rows (``bkg_why``,
     ``bkg_nods``) and its self-subtraction share (``self_subtraction``): the first of
-    ``WHY`` that applies; (False, '') when none does.
+    ``WHY`` that applies; (False, '') when none does, and always when the master-background
+    fit's width ended on its limit (``width_limit``, card ``MBKGWLIM``; user, 2026-11-13: that
+    fit is not measured, so its spectrum is not offered as the better one).
 
     - ``no_clear_background``: an exposure kept a bright catalogued neighbor in every
       background exposure (``BKGWHY`` 'every background exposure: ...');
@@ -519,6 +533,8 @@ def preferred(exposures, self_sub, extended_frac):
     - ``extended``: the nod subtraction removes more than ``extended_frac`` of the
       source's own light in its main shutter (``self_sub``: stage 3 gives it at the
       master-background fit's shape, ``self_subtraction_at_shape``)."""
+    if width_limit:
+        return False, ''
     why = [str(w) for w in exposures.get('bkg_why', [])]
     if any(w.startswith('every background exposure') for w in why):
         return True, 'no_clear_background'
@@ -746,7 +762,16 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
         log(f'{product_name}: master-background shape {chain.shape} ({chain.reason}), width '
             f'{R.params["width"]:.3f} (nodded {R0.params["width"]:.3f}), master-background scale '
             f'{R.mbkg_scale:+.4f} +- {R.mbkg_scale_err:.4f}')
-        selfsub = self_subtraction_at_shape(R, exps)
+        width_limit = width_at_limit(R, chain.bound_bits,
+                                     PC.ChainConfig.from_stage_config(stage_config).bounds.width_max)
+        if width_limit:
+            # the width is the limit's, not the frames': SELFSUB stays the nodded fit's and the product
+            # does not prefer this spectrum (preferred, MBKGWLIM)
+            selfsub = None
+            log(f'{product_name}: master-background width on its limit: SELFSUB stays the nodded fit\'s, '
+                'MBKGPREF False')
+        else:
+            selfsub = self_subtraction_at_shape(R, exps)
         if selfsub is not None:
             log(f'{product_name}: nod subtraction removes {selfsub:.3f} of the source\'s own light at the '
                 'master-background shape')
@@ -803,5 +828,6 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
         XC.put(hdr, k, v)
     XC.put(hdr, 'NFOPEN', int(fo_cards[0]))
     XC.put(hdr, 'SELFSUB', selfsub)
+    XC.put(hdr, 'MBKGWLIM', True if width_limit else None)
     fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus).writeto(paths['pf'], overwrite=True)
     return paths['pf']

@@ -188,7 +188,9 @@ Release procedure: edit the `## Unreleased` section below, then run
     `MBKGPREF`/`MBKGWHY` saying when it is likely better than the nodded spectrum (no clear
     background, a single exposure, or a source the nod subtraction removes more than 10 % of, judged
     at the master-background fit's shape: the nodded fit's shape is narrower than an extended source,
-    whose `SELFSUB` it underestimates; user, 2026-11-13). Its
+    whose `SELFSUB` it underestimates; user, 2026-11-13), never when that fit's width ended on its
+    upper limit (`MBKGWLIM` in `SPEC1D_MBKG`; the width was not measured, and on faint sources it
+    otherwise sets `SELFSUB`). Its
     fit leaves out the pixels its 2-D flags as outliers or hot pixels. Its shape is the frames' own
     fit, by the nodded chain's rules (the detection gate on these frames, the same priors and
     bounds, other sources' light subtracted first), falling back to the nodded shape (`SHAPEWHY`

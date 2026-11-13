@@ -318,6 +318,21 @@ def test_preferred_takes_the_first_reason_that_applies():
     assert MX.preferred(clear, None, 0.10) == (False, '')
 
 
+def test_a_width_on_its_limit_is_never_preferred():
+    """A master-background fit whose width ended on its limit did not measure the shape: the product
+    does not prefer that spectrum, whatever else applies (user, 2026-11-13)."""
+    from types import SimpleNamespace
+    from campfire_pipeline.nirspec import profile_fit as PF
+    clear = dict(filename=['a', 'b'], bkg_nods=['2', '1'], bkg_why=['', ''])
+    flagged = dict(clear, bkg_why=['every background exposure: neighbor 9 at 0.050 of background', ''])
+    assert MX.preferred(clear, 0.6, 0.10, width_limit=True) == (False, '')
+    assert MX.preferred(flagged, 0.6, 0.10, width_limit=True) == (False, '')
+    assert MX.width_at_limit(SimpleNamespace(params=dict(width=1.4999)), 0, 1.5)
+    assert MX.width_at_limit(SimpleNamespace(params=dict(width=0.7)), PF.BOUND_BITS['width'], 1.5)
+    assert not MX.width_at_limit(SimpleNamespace(params=dict(width=1.40)), PF.BOUND_BITS['centre'], 1.5)
+    assert not MX.width_at_limit(SimpleNamespace(params=dict(width=0.7)), 0, 1.5)
+
+
 # ---------------------------------------------------------------------------
 # the frames, in memory
 # ---------------------------------------------------------------------------
