@@ -6,7 +6,7 @@ For describing the reduction in a publication, [Describing the reduction](/docs/
 
 ## Pipeline overview
 
-![The NIRSpec pipeline, one column per stage; each stage's outputs feed the next. Gray boxes are jwst steps, orange boxes CAMPFIRE steps, and white boxes files written. Dashed outlines mark steps enabled or disabled by a configuration option, shown with its default.](/docs/nirspec/flow.png)
+![The NIRSpec pipeline. Gray: jwst steps; orange: CAMPFIRE steps; white: files written. Dashed outlines mark steps set by a configuration option, shown with its default.](/docs/nirspec/flow.png)
 
 1. **Stage 1** runs `jwst` ramp fitting, including its 1/f cleaning, then fits and subtracts the residual detector background and 1/f noise outside the footprint of every open shutter.
 2. **Stage 2a** maps the detector footprint of every shutter (the trace maps used in Stage 3 to identify overlapping spectra), measures the background spectrum from the empty shutters of each exposure, identifies stuck-closed shutters, and calibrates each source's 2-D spectrum with `jwst`. It ends by building the **master background**: the background spectrum forward-modeled onto the detector, shutter by shutter.

@@ -6,7 +6,7 @@ Each spectrum receives an automatic redshift from template fitting. Redshifts ar
 
 At each redshift on a grid, the spectrum is fitted with a non-negative linear combination of templates; the redshift of minimum χ² is adopted.
 
-![Two PRISM spectra (black, uncertainties in gray) with the best-fit template combination (orange) and the principal emission lines marked at the fitted redshift. Right: Δχ² as a function of redshift, with the minimum marked. The first redshift is constrained by the continuum shape, the second by emission lines.](/docs/nirspec/redshift_fit.png)
+![Two PRISM spectra (black) with their best-fit templates (orange), and Δχ² versus redshift (right). The first redshift rests on the continuum shape, the second on emission lines.](/docs/nirspec/redshift_fit.png)
 
 Template set:
 
@@ -41,7 +41,7 @@ cfpipe nirspec linefit --obs <observation>  # line fits at those redshifts
 5. **Doublet totals.** Doublets with a free ratio ([OII], CIII], [SII] and others) are also reported as a total. Near the resolution limit the components are strongly anti-correlated but their sum is well constrained and comparable across dispersers.
 6. **Broad components.** On the gratings, a broad Gaussian is tested on permitted lines (Hα, Hβ, Paα, Paβ, MgII, CIV and others) and retained when it significantly improves the fit and is itself detected; it is reported as a separate entry (e.g. `Halpha_broad`).
 
-![Line fit of a PRISM spectrum at its inspected redshift. Top: the spectrum (black) and the line model (orange); shaded, the three line groups shown below. Bottom: each group's fitted window, with the model (orange), its local continuum (dashed) and the S/N of each detected line; below, the residual in units of the uncertainty. At PRISM resolution Hα includes [NII] and [SII] is fitted as one line. The lines of this compact source are narrower than the assumed instrumental resolution, so the fitted intrinsic widths reach their lower bound and the model falls below the peak of [OIII]λ5007.](/docs/nirspec/line_fit.png)
+![Line fit of a PRISM spectrum at its inspected redshift: the spectrum with the line model, and three fitted line groups with their residuals. At PRISM resolution Hα includes [NII]. The lines are narrower than the assumed resolution, so the model falls below the [OIII]λ5007 peak.](/docs/nirspec/line_fit.png)
 
 Each line has a flux (erg s⁻¹ cm⁻²) and rest-frame equivalent width. Fluxes are unconstrained in sign, so non-detections carry a measured flux and uncertainty from which limits can be derived. Uncertainties are derived from the fit covariance. Results are written per spectrum as `<spectrum>_lines.fits`, together with the redshift used, its quality and origin, and a hash of the input spectrum; fits are repeated only when the redshift, its quality, the spectrum or the fitter version changes.
 

@@ -18,7 +18,7 @@ NIRSpec count-rate images carry a detector-intrinsic signal in addition to the a
 
 This component is fitted and subtracted before the spectra are extracted and calibrated.
 
-![Stage 1 background subtraction for one PRISM exposure, over the full detector: the count rate before subtraction, the background model, and the count rate after subtraction, on a common scale centered on zero. The model holds the picture-frame pattern (its diagonal features come from the CRDS reference) and the 1/f stripes; the spectral traces are kept out of the fit.](/docs/nirspec/detector_background_full.png)
+![One PRISM exposure before and after the stage 1 background subtraction, with the fitted model between them, on a common scale. The diagonal arcs are part of the CRDS picture-frame reference.](/docs/nirspec/detector_background_full.png)
 
 The model is fitted to unilluminated pixels and subtracted from the full frame. Excluded from the fit are:
 
