@@ -401,6 +401,8 @@ def write_stage3(path, nod_outliers=None, frame_outliers=None, contam=None, bar_
                 raise ValueError(f'{os.path.basename(path)}: {name} is {h.data.shape}, flags {mask.shape}')
             h.data = (np.asarray(h.data) | np.where(mask, OUTLIER_BIT, 0)).astype(h.data.dtype)
         out[0].header['CFOUTL'] = (nod_outliers is not None or frame_outliers is not None, STAGE3_CARDS['CFOUTL'])
+        for key, (val, comment) in schema_version_card().items():   # a canonical born before v2 now holds v2
+            out[0].header[key] = (val, comment)
         if bar_offset is not None:
             out[0].header['BAROFFS'] = (float(bar_offset), STAGE3_CARDS['BAROFFS'])
         if contam is not None and contam.get('planes'):

@@ -332,6 +332,7 @@ def test_write_stage3_round_trip_and_clear(tmp_path):
         assert np.array_equal(h['DQ'].data & ~C.OUTLIER_BIT, live)          # the other bits untouched
         assert np.array_equal(h['PRE_BKGSUB_DQ'].data & C.OUTLIER_BIT > 0, frame)
         assert h[0].header['BAROFFS'] == -0.012 and h[0].header['CFOUTL']
+        assert h[0].header['CFSCHEMA'] == C.CANONICAL_SCHEMA_VERSION      # a file born at v1 now holds v2
     c = C.read_contam(p)
     assert np.array_equal(c['planes']['NOD'], pred) and c['kappa'] == 1.0 and c['state'] == 'subtracted'
     # a second write replaces the flags, it does not add to them
