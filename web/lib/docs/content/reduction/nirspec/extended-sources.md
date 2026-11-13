@@ -44,7 +44,7 @@ With the shapes fixed, the model is linear in every spectrum. At each trial shap
 
 ### The files a fit needs
 
-A fit reads the target's calibrated 2-D cutouts, one per exposure and detector, the background exposures included. Stage 3 records in them what its fit used (outlier flags, other sources' predicted light, the bar offset), so `forward.load` reproduces the pixels stage 3 fitted. Fits to the master-background frames also read each exposure's `_mbkg.fits` and `_rate.fits`, from which the master background is rebuilt; `forward.load` stops with a list of any that are missing.
+A fit reads the target's calibrated 2-D cutouts, one per exposure and detector, the background exposures included. Stage 3 records in them what its fits used (outlier flags, other sources' predicted light, the master background and its variance, the bar offset), so `forward.load` reproduces the pixels stage 3 fitted, for the nod differences and for the master-background frames alike. No other file is needed.
 
 > **Placeholder.** Downloading one target's files. These are deployed intermediate products: `campfire pull --obs <obs> --intermediate` fetches those of a whole observation. A download for a single target is planned.
 
