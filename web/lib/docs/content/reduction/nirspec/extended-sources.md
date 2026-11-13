@@ -1,6 +1,6 @@
 # Extended sources
 
-Stage 3 describes every source as one Gaussian along the slit (see [Extraction](/docs/reduction/nirspec/extraction#source-model)). That is enough to measure the flux of most sources, but a galaxy with a bulge and a disk, clumps, or light that moves along the slit with wavelength does not follow it. Each spectrum file carries what is needed to see where the model departs from the data, and the code that fits the model can fit other source models to the same exposures.
+An extended source raises two problems that a compact one does not. Nod subtraction removes part of its outer light, because the background exposures see the galaxy in the neighboring shutters. And stage 3 describes every source as one Gaussian along the slit (see [Extraction](/docs/reduction/nirspec/extraction#source-model)), which a galaxy with a bulge and a disk, clumps, or light that moves along the slit with wavelength does not follow. Each spectrum file also holds the master-background spectrum, in which nothing of the source is subtracted from itself, and the transmission of the MSA along the slit, which shows the source without the bar shadows. Together with the fitted model they show where a galaxy departs from it, and the code that fits the model can fit other source models to the same exposures.
 
 ## Reading the 2-D spectrum
 
