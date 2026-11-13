@@ -62,7 +62,3 @@ All exposures of a source in a given disperser enter a single fit. Repeated MSA 
 ## Master-background spectrum
 
 Each file also contains a spectrum extracted identically from the same exposures with the master background subtracted in place of the nod subtraction; see [Master-background spectra](/docs/reduction/nirspec/backgrounds#master-background-spectra).
-
-## Summary for publications
-
-> Each source's 2-D spectrum was fitted simultaneously in all exposures with a Gaussian source model convolved with a model of the MSA optics; the reported flux is that of the fitted intrinsic profile within the open width of the shutter across the dispersion and over its full extent along the slit. Priors on the profile's width and center govern sources too faint to constrain their own profile.

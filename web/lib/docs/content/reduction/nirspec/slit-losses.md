@@ -53,7 +53,3 @@ The model requires the position of the shutter edges on the detector. The offset
 | `[nirspec.stage3] bar_offset = "off"` | No bar offset |
 
 The settings are recorded in `SLOSSY`, `SLOSSX` and `BAROFF`. The boxcar and optimal extractions in the same file (`fnu_3px`, `fnu_4px`, `fnu_5px`, `fnu_opt`) always carry the `jwst` path-loss correction applied in Stage 2 (point-source for nearly all sources) and no bar-shadow correction.
-
-## Summary for publications
-
-> Slit losses along the slit were computed with a diffraction model of the MSA (telescope pupil, open shutters of each exposure, spectrograph pupil stop and detector response, with an empirical kernel fitted to calibration stars), evaluated for a Gaussian source of the fitted width and position. Across the shutter, the `jwst` point-source path loss was used with an empirical correction fitted to stars.

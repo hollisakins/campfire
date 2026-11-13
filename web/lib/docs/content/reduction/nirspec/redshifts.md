@@ -50,5 +50,3 @@ Line fits, like the redshift fits, use `fnu`, which includes contamination by de
 ## Adopted redshifts
 
 The adopted redshift is the inspected value and its quality, available from the portal and the catalog (`Campfire.query_objects()` in the Python client). `ZBEST` in the redshift file is the automatic fit of an individual spectrum; the redshift in the line-fit file is the inspected redshift plus the fitted velocity offset.
-
-> Redshifts were measured by fitting each spectrum with a non-negative combination of stellar-population, emission-line and blackbody templates, and were visually inspected; we use inspected redshifts of quality "probable" or better. Emission-line fluxes were measured at the inspected redshift with Gaussian profiles on a local linear continuum, with a common velocity offset and width per spectrum set by the strongest lines; close doublets are reported as totals.
