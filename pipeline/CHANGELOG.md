@@ -184,7 +184,9 @@ Release procedure: edit the `## Unreleased` section below, then run
   - *The master-background spectrum.* The same extraction on the exposures less their master
     background, as `SPEC1D_MBKG`, `SCI_MBKG`, `ERR_MBKG` and `PROF1D_MBKG` of the `_spec.fits`, with
     `MBKGPREF`/`MBKGWHY` saying when it is likely better than the nodded spectrum (no clear
-    background, a single exposure, or a source the nod subtraction removes more than 10 % of). Its
+    background, a single exposure, or a source the nod subtraction removes more than 10 % of, judged
+    at the master-background fit's shape: the nodded fit's shape is narrower than an extended source,
+    whose `SELFSUB` it underestimates; user, 2026-11-13). Its
     fit leaves out the pixels its 2-D flags as outliers or hot pixels. Its shape is the frames' own
     fit, by the nodded chain's rules (the detection gate on these frames, the same priors and
     bounds, other sources' light subtracted first), falling back to the nodded shape (`SHAPEWHY`

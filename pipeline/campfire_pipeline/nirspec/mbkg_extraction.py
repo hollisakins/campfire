@@ -460,11 +460,12 @@ def same_slitlet_sources(canonical, workspace, source_id):
     return {n.source_id for n in nbs}
 
 
-def self_subtraction(R, exps):
+def self_subtraction(R, exps, spectrum=None):
     """Share of the source's own light in its main shutter that the nod subtraction
     removes: per fitted exposure, the mean of its background exposures' model light
     on its main-shutter pixels over its own model light there, weighted by that light.
-    0 for a compact source; large for one wider than the nod step (``extended``)."""
+    0 for a compact source; large for one wider than the nod step (``extended``).
+    ``spectrum``: the source's spectrum on ``R.lam`` in place of ``R``'s own."""
     from campfire_pipeline.nirspec import profile_contam as CT
     from campfire_pipeline.nirspec import profile_fit as PF
 
@@ -474,7 +475,7 @@ def self_subtraction(R, exps):
 
     def frame(j):
         if j not in frames:
-            frames[j] = np.nan_to_num(PF.frame_image(R, j))
+            frames[j] = np.nan_to_num(PF.frame_image(R, j, spectrum=spectrum))
         return frames[j]
 
     for k, e in enumerate(exps):
@@ -490,6 +491,23 @@ def self_subtraction(R, exps):
     return num / den if den > 0 else 0.0
 
 
+def self_subtraction_at_shape(R, exps):
+    """``self_subtraction`` of the source at the shape fit ``R`` chose (the master-background fit's),
+    on the nodded exposures ``exps``: the source placed on them at that shape (``refit_at_shape``)
+    with ``R``'s own spectrum (the frames', which an extended source's nod differences
+    underestimate), then the share of its own light in the main shutter that the nod subtraction
+    removes. The nodded fit
+    sees only the light that survives the subtraction, so its shape is narrower than an extended
+    source and its own ``SELFSUB`` low; the frames keep the wings (user, 2026-11-13: ``MBKGPREF``
+    follows the master-background fit's shape). None when the refit fails."""
+    from campfire_pipeline.nirspec import profile_fit as PF
+    try:
+        Rn, _ = PF.refit_at_shape(R, exps)
+    except (PF.ProfileFitFallback, PF.NoUsablePixels, ValueError):
+        return None
+    return float(self_subtraction(Rn, exps, spectrum=np.interp(Rn.lam, R.lam, np.nan_to_num(R.flux))))
+
+
 def preferred(exposures, self_sub, extended_frac):
     """(``MBKGPREF``, ``MBKGWHY``) of a product from its ``EXPOSURES`` rows (``bkg_why``,
     ``bkg_nods``) and its self-subtraction share (``self_subtraction``): the first of
@@ -499,7 +517,8 @@ def preferred(exposures, self_sub, extended_frac):
       background exposure (``BKGWHY`` 'every background exposure: ...');
     - ``single_exposure``: an exposure had no background exposure (``n_exp_bkg`` 0);
     - ``extended``: the nod subtraction removes more than ``extended_frac`` of the
-      source's own light in its main shutter."""
+      source's own light in its main shutter (``self_sub``: stage 3 gives it at the
+      master-background fit's shape, ``self_subtraction_at_shape``)."""
     why = [str(w) for w in exposures.get('bkg_why', [])]
     if any(w.startswith('every background exposure') for w in why):
         return True, 'no_clear_background'
@@ -727,6 +746,10 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
         log(f'{product_name}: master-background shape {chain.shape} ({chain.reason}), width '
             f'{R.params["width"]:.3f} (nodded {R0.params["width"]:.3f}), master-background scale '
             f'{R.mbkg_scale:+.4f} +- {R.mbkg_scale_err:.4f}')
+        selfsub = self_subtraction_at_shape(R, exps)
+        if selfsub is not None:
+            log(f'{product_name}: nod subtraction removes {selfsub:.3f} of the source\'s own light at the '
+                'master-background shape')
     except PF.ProfileFitFallback as e:
         log(f'{product_name}: master-background fit: {e}; its fnu is the 3-pixel boxcar ({e.reason})')
         PP.write_fallback(paths['pf'], e.reason)
@@ -779,5 +802,6 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
     for k, v in chain.header_cards().items():
         XC.put(hdr, k, v)
     XC.put(hdr, 'NFOPEN', int(fo_cards[0]))
+    XC.put(hdr, 'SELFSUB', selfsub)
     fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus).writeto(paths['pf'], overwrite=True)
     return paths['pf']

@@ -1025,7 +1025,8 @@ def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, a
     ``PROF2D`` / ``TRANS2D`` / ``CONTAM2D``: the master-background fit's own shape, no nod
     traces) and ``PROF1D_MBKG``;
     and the primary cards ``MBKGPREF`` / ``MBKGWHY``
-    (``mbkg_extraction.preferred``, from the exposures and the nodded fit's ``SELFSUB``)
+    (``mbkg_extraction.preferred``, from the exposures and ``SELFSUB`` at the master-background fit's
+    shape, the nodded fit's when that fit fell back)
     and ``MBKGNEXP``.
 
     Returns (hdus, cards). Named conditions return ([], {}) and log why: no
@@ -1045,8 +1046,11 @@ def mbkg_spectrum_hdus(product_name, workspace_dir, wave, sci_shape, ap_start, a
     spec = table_to_hdu(ex['spec1d'])
     for key in ex['cards']:
         spec.header[key] = (ex['cards'][key], ex['cards'].comments[key])
+    # the master-background fit's own SELFSUB (its shape keeps the wings the nod subtraction removes);
+    # the nodded fit's when that fit fell back
+    selfsub = ex['cards'].get('SELFSUB', primary_hdr.get('SELFSUB'))
     return _mbkg_hdus(spec, table_to_hdu(ex['prof1d']), mb_sci, mb_err, s2dh, exposures, workspace_dir,
-                      primary_hdr.get('SELFSUB'), extended_frac, model_hdus=ex['pf_hdus'])
+                      selfsub, extended_frac, model_hdus=ex['pf_hdus'])
 
 
 def _read_mbkg_2d(path, sci_shape, product_name, what='master-background 2-D'):
@@ -1074,7 +1078,7 @@ def _mbkg_hdus(spec, prof, mb_sci, mb_err, s2dh, exposures, workspace_dir, selfs
     ``SPEC1D_MBKG`` with ``MBKGVER`` and the per-exposure ``MBKGSRC``, ``SCI_MBKG`` /
     ``ERR_MBKG`` on the nodded SCI's header, the fit's ``model_hdus`` (``PROF2D`` /
     ``CONTAM2D``) as ``PROF2D_MBKG`` / ``CONTAM2D_MBKG``, ``PROF1D_MBKG``; ``MBKGPREF`` / ``MBKGWHY``
-    (``mbkg_extraction.preferred``, with the nodded fit's ``selfsub``) and ``MBKGNEXP``.
+    (``mbkg_extraction.preferred``, with ``selfsub``) and ``MBKGNEXP``.
     Returns (hdus, cards)."""
     from campfire_pipeline.nirspec import mbkg_extraction as MX
     sources, version = MX.background_sources(exposures.get('filename', []), workspace_dir)

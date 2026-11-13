@@ -937,7 +937,12 @@ again.
   spectrum is likely better, with the first of: `no_clear_background` (every background exposure of
   an exposure holds a bright neighbor), `single_exposure` (an exposure with no background exposure),
   `extended` (the nod subtraction removes more than `mbkg_extended_frac` = 0.10 of the source's own
-  light in its own shutter, `SELFSUB`).
+  light in its own shutter, `SELFSUB`). That share is computed at the master-background fit's shape
+  (`self_subtraction_at_shape`; `SELFSUB` in `SPEC1D_MBKG`'s header), the nodded fit's only when that
+  fit fell back (user, 2026-11-13): the nodded fit sees just the light that survives the subtraction, so
+  its shape is narrower than an extended source and its own `SELFSUB` (primary header) low. zenith_p15
+  547856 had nodded width 0.52 against 0.70 on the frames, `SELFSUB` 0.088 and `MBKGPREF` False with a
+  master-background flux 40 % above the nodded.
 - The 1-D combine of several exposure groups carries it as it carries the nodded columns.
 - The science hash leaves out `*_MBKG` extensions and `MBKG*` cards, so this spectrum never marks
   line fits stale.
