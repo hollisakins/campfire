@@ -44,7 +44,7 @@ With the shapes fixed, the model is linear in every spectrum. At each trial shap
 
 ### The files a fit needs
 
-A fit reads the target's calibrated 2-D cutouts, one per exposure and detector, the background exposures included. Stage 3 records in them what its fit used (outlier flags, other sources' predicted light, the bar offset), so `forward.load` reproduces the pixels stage 3 fitted. Fits to the master-background frames also read each exposure's `_mbkg.fits`.
+A fit reads the target's calibrated 2-D cutouts, one per exposure and detector, the background exposures included. Stage 3 records in them what its fit used (outlier flags, other sources' predicted light, the bar offset), so `forward.load` reproduces the pixels stage 3 fitted. Fits to the master-background frames also read each exposure's `_mbkg.fits` and `_rate.fits`, from which the master background is rebuilt; `forward.load` stops with a list of any that are missing.
 
 > **Placeholder.** Downloading one target's files. These are deployed intermediate products: `campfire pull --obs <obs> --intermediate` fetches those of a whole observation. A download for a single target is planned.
 
@@ -56,7 +56,7 @@ A fit reads the target's calibrated 2-D cutouts, one per exposure and detector, 
 from campfire_pipeline.nirspec import forward as fw
 from campfire_pipeline.nirspec.forward import plots
 
-files = fw.files_for('products/nirspec/<obs>', 547856, 'PRISM/CLEAR')
+files = fw.files_for('products/nirspec/<obs>', source_id, 'PRISM/CLEAR')
 exps = fw.load(files, frames=True)               # each exposure minus its master background
 model = fw.ForwardModel(exps, mbkg_sigma=0.01)   # with stage 3's correction to the background level
 
@@ -116,7 +116,7 @@ Priors on one parameter are `Normal`, `LogNormal` and `Uniform`, or any object w
 
 For an extended source the master-background frames are usually the better data to fit: each exposure is the frame minus its master background, so the source appears once and none of its outer light is subtracted. `fw.load(files)` without `frames=True` gives the nod differences stage 3 fits for `fnu`, where each exposure also holds the source's negative images from the subtracted background exposures, and the model reproduces those too.
 
-On the frames, `mbkg_sigma=0.01` is the master-background scale term stage 3 uses: a common correction to the master background's level, with an allowance of 1 %. Stage 3 also drops the term and refits when the fitted correction reaches 3 %, since a correction that large is light from a source rather than an error in the master background's level; `Fit` does not, and the fitted value is in `result.solution.scale`.
+On the frames, `mbkg_sigma=0.01` is the master-background scale term stage 3 uses: a common correction to the master background's level, with an allowance of 1 %. Stage 3 also drops the term and refits when the fitted correction reaches 3 %, since a correction that large is light from a source rather than an error in the master background's level; `Fit` does not, and the fitted value is in `result.solution.scale`. A bright source that fills much of the slitlet is the usual case: its outer light looks like a change in the background level. When stage 3 dropped the term for a source, `MBKGSCL` is 0 and `MBKGSCLC` holds the value it fitted; fitting such a source without the term (`fw.ForwardModel(exps)`) matches what stage 3 did.
 
 ### An example
 
