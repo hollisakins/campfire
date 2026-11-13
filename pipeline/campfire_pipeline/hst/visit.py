@@ -77,8 +77,9 @@ def process_visit(visit, refcat=None, *, reference_env=None, config=None,
     for a single WFC3/IR exposure (the up-the-ramp fit has removed most hits)
     and ``'none'`` for a single ACS exposure. That exposure cannot go into a
     mosaic until its cosmic rays are flagged, either against overlapping
-    exposures of other visits in the field-level outlier pass or from its own
-    pixels where nothing overlaps (neither built yet); ``ready`` is false for
+    exposures of other visits in the field-level outlier pass
+    (``hst/steps/outlier.py``, run by the caller once every visit is aligned)
+    or from its own pixels where nothing overlaps (not built); ``ready`` is false for
     that case and for a visit that failed to align.
     """
     from campfire_pipeline.hst.steps.align import align_visit

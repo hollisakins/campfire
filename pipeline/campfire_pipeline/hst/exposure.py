@@ -37,7 +37,8 @@ the per-pixel errors. ``var_flat`` is zero. See
 :meth:`HstChip._background_variance`.
 
 **Good pixels.** No DQ bit set outside the detector's tolerated set
-(``hst/instruments.py``), finite SCI, positive finite ERR.
+(``hst/instruments.py``), finite SCI, positive finite ERR, and not marked in the
+``CFOUT`` extension the field-level outlier pass writes (``hst/steps/outlier.py``).
 """
 
 import os
@@ -53,6 +54,8 @@ from campfire_pipeline.imaging.exposure import ChipArrays
 _ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
 SKY_KEY = 'CFSKY'          # per-chip sky level, native SCI units (sky step)
 VARSCALE_KEY = 'CFVARSC'   # measured / modelled background variance (sky step)
+OUTLIER_EXT = 'CFOUT'      # per-chip image extension, non-zero at an outlier
+                           # found by the field-level pass (outlier step)
 
 
 def photfnu(header):
@@ -81,6 +84,7 @@ class HstChip:
     header_sky: float = None       # CFSKY, native SCI units, if present
     var_scale: float = 1.0         # CFVARSC: measured / modelled sky variance
     tolerated_bits: int = None
+    use_outlier_flags: bool = True  # honor the CFOUT extension when present
     rootname: str = ''
     proposid: int = 0
     date_obs: str = ''
@@ -119,9 +123,14 @@ class HstChip:
             time = None
             if self.is_rate and ('TIME', self.extver) in hdul:
                 time = np.asarray(hdul['TIME', self.extver].data, dtype=np.float64)
+            outlier = None
+            if self.use_outlier_flags and (OUTLIER_EXT, self.extver) in hdul:
+                outlier = np.asarray(hdul[OUTLIER_EXT, self.extver].data) != 0
 
         good = ((dq & ~np.int64(bits)) == 0) & np.isfinite(sci) \
             & np.isfinite(err) & (err > 0)
+        if outlier is not None:
+            good &= ~outlier
 
         sky = self.header_sky
         if sky is None:
@@ -196,8 +205,13 @@ class HstChip:
         }
 
 
-def open_exposure(path, tolerated_bits=None):
-    """The chips of a calibrated HST exposure file, as :class:`HstChip` objects."""
+def open_exposure(path, tolerated_bits=None, use_outlier_flags=True):
+    """The chips of a calibrated HST exposure file, as :class:`HstChip` objects.
+
+    ``use_outlier_flags=False`` ignores the ``CFOUT`` extension of the
+    field-level outlier pass (that pass itself opens its inputs this way, so a
+    re-run does not depend on the previous result).
+    """
     from astropy.wcs import WCS
 
     chips = []
@@ -240,7 +254,8 @@ def open_exposure(path, tolerated_bits=None):
                 # scatter is the noise (see instruments.py)
                 var_scale=(float(h.get(VARSCALE_KEY, 1.0))
                            if det.apply_var_scale else 1.0),
-                tolerated_bits=tolerated_bits, rootname=rootname,
+                tolerated_bits=tolerated_bits,
+                use_outlier_flags=use_outlier_flags, rootname=rootname,
                 proposid=int(primary.get('PROPOSID') or 0),
                 date_obs=str(primary.get('DATE-OBS') or ''),
                 wcsname=str(h.get('WCSNAME') or ''),
