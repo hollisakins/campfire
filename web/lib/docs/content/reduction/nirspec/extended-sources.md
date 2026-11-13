@@ -110,6 +110,8 @@ Priors on one parameter are `Normal`, `LogNormal` and `Uniform`, or any object w
 | `fit.residuals(theta)` | The data residuals over their noise, followed by the priors' residuals |
 | `fit.run()` | Least squares from the start values; returns the parameters, errors, covariance, spectra and χ² |
 
+`run()` searches from one start, so a fit can stop at a local minimum. When adding freedom to a model, starting the larger model from the smaller one's best values (`fit.run(start=...)`, or the parameters' own values) ensures it can only improve on it.
+
 `nonnegative=True` (or a list of component names) holds those spectra at or above zero. It removes the downward noise of a faint component, so that component's spectrum is biased high where it has no light; it is an option, not the default.
 
 ### Master-background frames or nod differences
