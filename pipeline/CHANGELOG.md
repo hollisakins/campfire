@@ -51,6 +51,9 @@ Release procedure: edit the `## Unreleased` section below, then run
     On zenith_p15 547856 and 549120 the exposures `load` builds equal the ones stage 3's fits used
     (pixels, data, variances, nod differences and master-background frames), and stage 3's model
     fitted through them gives 547856's product shape (centre 0.3268 against 0.3267, width 0.5195).
+    `forward.product_grid` / `data_2d` / `model_2d` put the data and a fitted model on the product's
+    combined 2-D grid from the canonicals (`DrizzleMap.from_canonicals`, `drizzle_map.SPEC3_SETTINGS`);
+    the data reproduce 547856's `SCI_MBKG` and `SCI`.
   - *Shape fits of any components* (`forward.Fit`, `forward.params`). A parameter is a number, a
     `Param` (free or fixed, bounds, a prior) or `Tied` to others; one `Param` in several components
     is one parameter; `slit_frame_offset` places a component by offsets along and across the slit

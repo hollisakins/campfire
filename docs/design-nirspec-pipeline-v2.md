@@ -1830,6 +1830,17 @@ do not count as free in chi2 per degree of freedom). It is an option, not the de
 component at zero removes its downward noise, so its spectrum is biased high where it has no light.
 `forward.plots.panels` draws data, model and residual in 2-D per exposure.
 
+**On the product's 2-D** (`forward/product2d.py`). `product_grid(files, s2d=None)` rebuilds the
+product's grid from the canonicals (stage 3 removes its crf; `DrizzleMap.from_canonicals` regroups
+them as Spec3 does, with the s2d's resample settings or `drizzle_map.SPEC3_SETTINGS`). `data_2d(grid,
+frames)` drizzles the master-background frames (their own outlier flags from bit 4 of `PRE_BKGSUB_DQ`,
+the hot pixels) or the nod differences (Spec3's flags, DQ bit 4); `model_2d(fit, result, grid)` draws
+the fitted model on every pixel of each slitlet, back in the canonicals' units (divided by the path-loss
+correction stage 2b applied) and drizzled with the data's masks and weights. On zenith_p15 547856 the
+data reproduce `SCI_MBKG` / `ERR_MBKG` to 8e-8 of the peak and `SCI` / `ERR` exactly; mean
+(residual/error)² on the master-background 2-D is 6.82 for stage 3's one component and 1.38 for three
+round Gaussians along the slit.
+
 **Inputs: the deployed files** (`forward.load`). A target's canonicals (background exposures included),
 nothing else: since `CFSCHEMA` 3 they carry the master background stage 3 subtracted from the frames.
 Files written before need, for the master-background frames, each exposure's `_mbkg.fits` and the

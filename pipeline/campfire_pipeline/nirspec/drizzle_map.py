@@ -68,6 +68,12 @@ def step_settings(s2d_path):
                     weight_type=str(r.weight_type), pixel_scale_ratio=float(r.pixel_scale_ratio or 1.0))
 
 
+# The resample settings Spec3 used for the MSA products (meta.resample of their s2d; CRDS's parameter
+# reference for NIRSpec MOS, weight_type exptime where the step's own default is ivm), for a reader who
+# has the canonicals but not the s2d. Checked on zenith_p15 and ember_cosmos_p1 (2026-11-13).
+SPEC3_SETTINGS = dict(pixfrac=1.0, kernel='square', fillval='NaN', weight_type='exptime', pixel_scale_ratio=1.0)
+
+
 def match_nans_and_flags(arrays):
     """jwst's ``match_nans_and_flags`` on a dict of an exposure's arrays (in place): a pixel
     NaN in any of ``NAN_EXTENSIONS`` or DO_NOT_USE in ``dq`` becomes NaN in all of them and
@@ -142,25 +148,52 @@ class DrizzleMap:
         (``step_settings``)."""
         from jwst import datamodels
         from jwst.datamodels import SourceModelContainer
+
+        with datamodels.open(crf_path) as m:
+            return cls.from_container(SourceModelContainer(m), settings)
+
+    @classmethod
+    def from_canonicals(cls, paths, settings):
+        """The map of a product rebuilt from its exposures' canonicals (stage 3 removes its crf):
+        the files regrouped by source as Spec3 groups them (``jwst.exp_to_source``), then
+        ``from_container``. The grid depends on the exposures' WCS alone, so it is the crf's; each
+        exposure's arrays are the canonical's (its DQ carries Spec3's outlier flags in bit 4 only,
+        not DO_NOT_USE as in the crf)."""
+        from jwst import datamodels
+        from jwst.datamodels import SourceModelContainer
+        from jwst.exp_to_source import exp_to_source
+
+        models = [datamodels.open(str(p)) for p in paths]
+        try:
+            by_source = exp_to_source(models)
+            if len(by_source) != 1:
+                raise ValueError(f'DrizzleMap.from_canonicals: the files hold {len(by_source)} sources, not one')
+            return cls.from_container(SourceModelContainer(next(iter(by_source.values()))), settings)
+        finally:
+            for m in models:
+                m.close()
+
+    @classmethod
+    def from_container(cls, container, settings):
+        """The map of a product from its exposures (a ``SourceModelContainer``), with Spec3's
+        resample ``settings``."""
         from jwst.lib.pipe_utils import match_nans_and_flags as jwst_match
         from jwst.resample.resample_spec import ResampleSpec
 
         s = dict(settings)
-        with datamodels.open(crf_path) as m:
-            container = SourceModelContainer(m)
-            raw = [{k: np.array(getattr(x, k)) for k in NAN_EXTENSIONS + ('dq',) if hasattr(x, k)}
-                   for x in container]
-            for x in container:                  # as ResampleSpecStep, before the grid is built
-                jwst_match(x)
-            resamp = ResampleSpec(container, good_bits=GOOD_BITS, output_wcs=None,
-                                  wcs_pars=dict(output_shape=None, pixel_scale=None,
-                                                pixel_scale_ratio=s['pixel_scale_ratio']),
-                                  pixfrac=s['pixfrac'], kernel=s['kernel'], fillval=s['fillval'],
-                                  weight_type=s['weight_type'], blendheaders=False, enable_var=True,
-                                  compute_err='from_var', output=None)
-            # each exposure keeps the crf's own arrays, from before the matching
-            exposures = [MappedExposure.from_model(x, a, resamp) for x, a in zip(container, raw)]
-            return cls(exposures, resamp.output_wcs.array_shape, s, resamp.pixel_scale_ratio, wcs=resamp.output_wcs)
+        raw = [{k: np.array(getattr(x, k)) for k in NAN_EXTENSIONS + ('dq',) if hasattr(x, k)}
+               for x in container]
+        for x in container:                  # as ResampleSpecStep, before the grid is built
+            jwst_match(x)
+        resamp = ResampleSpec(container, good_bits=GOOD_BITS, output_wcs=None,
+                              wcs_pars=dict(output_shape=None, pixel_scale=None,
+                                            pixel_scale_ratio=s['pixel_scale_ratio']),
+                              pixfrac=s['pixfrac'], kernel=s['kernel'], fillval=s['fillval'],
+                              weight_type=s['weight_type'], blendheaders=False, enable_var=True,
+                              compute_err='from_var', output=None)
+        # each exposure keeps its own arrays, from before the matching
+        exposures = [MappedExposure.from_model(x, a, resamp) for x, a in zip(container, raw)]
+        return cls(exposures, resamp.output_wcs.array_shape, s, resamp.pixel_scale_ratio, wcs=resamp.output_wcs)
 
     def drizzle(self, inputs, variances=False):
         """Drizzle one image per exposure onto the grid (module doc, 2).
