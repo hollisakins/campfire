@@ -158,9 +158,3 @@ model = fw.model_2d(fit, result, grid)        # the fitted model on the same gri
 ```
 
 `frames=False` gives the nod-differences 2-D (`SCI`) instead. The grid uses stage 3's resample settings unless an `_s2d.fits` is given (`s2d=`). `model_2d` includes the master-background scale term when the fit has one, so it is compared with `data_2d` rather than with `SCI_MBKG` itself. On the combined 2-D spectrum of 547856 the squared residual over the noise averages 6.8 per pixel for stage 3's one component and 1.4 for the three. Each component spectrum is the component's total light, extrapolated across the shutter from its assumed shape, while `fnu_prof` holds the light within the shutter, so the two are not on the same footing. Some blue light far along the slit, in the exposures with the source in the lower shutter, remains in the residual of the individual exposures (`plots.panels`).
-
-### Current limitations
-
-- Other sources' light is held at stage 3's prediction. Fitting a neighbor as a component of its own uses the same machinery but is not yet connected to `forward.load`.
-- `log_posterior` works with any sampler, but at a few tens of seconds per least-squares fit, sampling is slow.
-- No NIRCam-image component is shipped yet.
