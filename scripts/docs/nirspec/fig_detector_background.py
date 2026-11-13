@@ -12,8 +12,13 @@ stripes are averaged away). Top right: a region of the detector before (pixels k
 the background model, and after, on one color scale centered on zero. Bottom: the median of the pixels the fit used
 in each detector column of the region, before and after: the detector's offset goes to zero.
 
+With ``--full``: three square panels of the whole detector, before, the background model and after, on one color
+scale centered on zero, and nothing else.
+
     python scripts/docs/nirspec/fig_detector_background.py --root <root> --obs <obs> \
         --exposure jw07076001001_03101_00001_nrs1 --region 0 1300 700 400
+    python scripts/docs/nirspec/fig_detector_background.py --root <root> --obs <obs> \
+        --exposure jw07076001001_03101_00001_nrs1 --full
 """
 import common as C
 
@@ -22,6 +27,7 @@ p.add_argument('--exposure', required=True)
 p.add_argument('--region', type=int, nargs=4, default=[0, 1300, 700, 400], metavar=('X0', 'Y0', 'W', 'H'),
                help='detector region: first column, first row, width, height')
 p.add_argument('--smooth', type=int, default=33, help='median-filter box for the whole-detector panel (pixels)')
+p.add_argument('--full', action='store_true', help='three square whole-detector panels: before, model, after')
 args = p.parse_args()
 root = C.setup_root(args.root)
 
@@ -36,6 +42,32 @@ with fits.open(C.rate_file(C.workspace(root, args.obs), args.exposure)) as h:
     mask = np.asarray(h['CFBKGMASK'].data) > 0
     dq = np.asarray(h['DQ'].data)
     grating = f"{h[0].header.get('GRATING')}/{h[0].header.get('FILTER')}"
+if args.full:
+    bad = (dq & 1) > 0
+    imgs = ((np.where(bad, np.nan, after + bkg), 'Before'), (bkg, 'Background model'),
+            (np.where(bad, np.nan, after), 'After'))
+    used = mask & ~bad
+    res = imgs[2][0][used]
+    v = 4 * 1.4826 * np.nanmedian(np.abs(res - np.nanmedian(res)))
+    plt = C.style()
+    fig = plt.figure(figsize=(15.5, 5.4), constrained_layout=True)
+    gs = fig.add_gridspec(1, 4, width_ratios=[1, 1, 1, 0.05])
+    for k, (img, title) in enumerate(imgs):
+        ax = fig.add_subplot(gs[0, k])
+        im = ax.imshow(img, cmap='Greys_r', vmin=-v, vmax=v, origin='lower', interpolation='antialiased')
+        ax.set_title(title, fontsize=11)
+        ax.set_xlabel('detector column')
+        if k == 0:
+            ax.set_ylabel('detector row')
+        else:
+            ax.set_yticklabels([])
+    cb = fig.colorbar(im, cax=fig.add_subplot(gs[0, 3]))
+    cb.set_label('count rate (DN/s)')
+    fig.suptitle(f'{args.obs} {grating}, {args.exposure}: Stage 1 detector background subtraction',
+                 x=0.01, ha='left', fontsize=10, color=C.MUTED)
+    C.save(fig, args, 'detector_background_full.png')
+    raise SystemExit
+
 x0, y0, w, hgt = args.region
 sl = (slice(y0, y0 + hgt), slice(x0, x0 + w))
 bad = (dq & 1) > 0
