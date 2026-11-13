@@ -343,7 +343,7 @@ def store_inputs(workspace_dir, science, crf_dq, exps=None, P=None, contam_state
     keep (``canonical.write_stage3``), so the fit can be repeated from the deployed files alone
     (``forward.load``): Spec3's outlier flags (the crf is removed), the master-background frames' own
     flags, the other sources' predicted light and its masking level for the nod differences and the
-    frames, and the bar offset. ``exps``: the product's nodded exposures (None after a fallback:
+    frames, the master background the frames were made with, and the bar offset. ``exps``: the product's nodded exposures (None after a fallback:
     the outlier flags only)."""
     from campfire_pipeline.nirspec import canonical as CN
     from campfire_pipeline.nirspec import profile_contam as CT
@@ -352,12 +352,15 @@ def store_inputs(workspace_dir, science, crf_dq, exps=None, P=None, contam_state
     by_name = {e.name: e for e in exps or []}
     nod = CT.stored_planes(exps, P) if exps is not None and P is not None else {}
     frame = record.get('frame_planes') or {}
+    mbkg = record.get('mbkg_planes') or {}
     for name in science:
         planes = {}
         if name in nod:
             planes['NOD'], planes['NODMASK'] = nod[name]
         if name in frame:
             planes['FRAME'], planes['FRAMEMSK'] = frame[name]
+        if name in mbkg and mbkg[name][0] is not None and mbkg[name][1] is not None:
+            planes['MBKG'], planes['MBKGVAR'] = mbkg[name]
         dq = crf_dq.get(name)
         e = by_name.get(name)
         CN.write_stage3(os.path.join(workspace_dir, name),

@@ -96,7 +96,7 @@ Version 2 changes six things.
 | Every 2-D image drizzled once per product | stage 3 | `drizzle_map.py` | 6.10 |
 | Boundary with jwst's references | stage 3 | `crds_refs.py`, `data/nirspec_calibrations.toml` | 7 |
 
-Versions at the time of writing: `FIT_VERSION` 12, canonical format `CFSCHEMA` 2, optics model `2026.11-r8` (engine 2), master
+Versions at the time of writing: `FIT_VERSION` 12, canonical format `CFSCHEMA` 3, optics model `2026.11-r8` (engine 2), master
 background `CFMBKGV` 1.9 (step 1 1.6), `JOINT_PASS_VERSION` 5, `PASS1_VERSION` 11, bar offset
 `MEASURE_VERSION` 5, trace map version 3.
 
@@ -1132,15 +1132,17 @@ name.
 **Per exposure.** `<base>_rate.fits` carries step 1's tables and the trace map;
 `<base>_mbkg.fits` (layout kind `nirspec_mbkg`); the canonicals; `bkgslits/` (local, regenerable).
 
-**What stage 3 writes into the canonicals** (`canonical.write_stage3`, `CFSCHEMA` 2), so that its fit
+**What stage 3 writes into the canonicals** (`canonical.write_stage3`, `CFSCHEMA` 3), so that its fit
 can be rebuilt from deployed files alone (section 13):
 - Spec3's outlier flags in DQ bit 4 (16), and the master-background frames' own flags (6.9) in bit 4
   of `PRE_BKGSUB_DQ`. Nothing earlier sets bit 4 in a canonical, so clearing it recovers stage 2's
   DQ; stage 2b's revert and every Spec3 run clear it first (`clear_stage3`). `CFOUTL` records that the
   flags are there.
 - One `CONTAM` extension: the other sources' predicted light and the level at which its uncertainty
-  masks a pixel, for the nod difference and for the frame, as planes of one losslessly compressed
-  cube (about 3 % of the file; user, 2026-11-12: one extension, to keep the files small).
+  masks a pixel, for the nod difference and for the frame, and the master background subtracted from
+  the frame with its variance (`MBKG`, `MBKGVAR`, `CFSCHEMA` 3), as planes of one losslessly compressed
+  cube (about 5 % of the file; user, 2026-11-12: one extension, to keep the files small, and the master
+  background as planes of it, so a fit to the frames needs neither the rate file nor `_mbkg.fits`).
 - `BAROFFS`: the observation's bar offset (6.4) added to the slit positions.
 
 **Deploy and database.** The deploy writes `<base>_spec_mbkg.json` (layout kind
@@ -1824,12 +1826,14 @@ do not count as free in chi2 per degree of freedom). It is an option, not the de
 component at zero removes its downward noise, so its spectrum is biased high where it has no light.
 `forward.plots.panels` draws data, model and residual in 2-D per exposure.
 
-**Inputs: the deployed files** (`forward.load`). A target's science canonicals (background exposures
-included) and, for the master-background frames, each exposure's `_mbkg.fits` and the `_rate.fits` its
-master background was painted on (`MBKGRATE`; without it the master background would fall back to the
-slit's own slitlet, too low where other traces cross, so `load` raises and names what is missing). Stage 3 writes into the
+**Inputs: the deployed files** (`forward.load`). A target's canonicals (background exposures included),
+nothing else: since `CFSCHEMA` 3 they carry the master background stage 3 subtracted from the frames.
+Files written before need, for the master-background frames, each exposure's `_mbkg.fits` and the
+`_rate.fits` its master background was painted on (`MBKGRATE`; without it the master background would
+fall back to the slit's own slitlet, too low where other traces cross, so `load` raises and names what
+is missing). For 547856 that is 0.4 MB of planes in place of 1 GB of rate files. Stage 3 writes into the
 canonicals what its fit took from files that are not kept (section 8: outlier flags in DQ bit 4, the
-`CONTAM` extension, `BAROFFS`), so `load` rebuilds the same pixels, variances and data stage 3 fitted:
+`CONTAM` extension with the master background, `BAROFFS`), so `load` rebuilds the same pixels, variances and data stage 3 fitted:
 checked on zenith_p15 547856, 549120, 551366 and 575943 to 2e-8 of the peak, for nod differences and
 frames. Files written before `CFSCHEMA` 2 load with a warning and without those three.
 

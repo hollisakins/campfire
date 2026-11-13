@@ -37,11 +37,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   `SlitGaussian` component: its design matrix and residuals equal the previous code's to 1e-16.
   - *From the deployed files alone* (`forward.load`, `forward/products.py`). Stage 3 now writes into
     each science canonical what its fits took from files it does not keep
-    (`canonical.write_stage3`; canonical format `CFSCHEMA` 2): Spec3's outlier flags in DQ bit 4
-    (jwst's OUTLIER), the master-background frames' own flags in bit 4 of `PRE_BKGSUB_DQ`, the other
-    sources' predicted light with the level above which a pixel is left out in one losslessly
-    compressed `CONTAM` extension (2 planes, 4 with the master-background fit; about 3 % of the file),
-    and the bar offset (`BAROFFS`). Nothing before stage 3 sets bit 4, so clearing it gives stage 2's
+    (`canonical.write_stage3`; canonical format `CFSCHEMA` 3): Spec3's outlier flags in DQ bit 4
+    (jwst's OUTLIER), the master-background frames' own flags in bit 4 of `PRE_BKGSUB_DQ`, one
+    losslessly compressed `CONTAM` extension holding the other sources' predicted light with the level
+    above which a pixel is left out (2 planes, 4 with the master-background fit) and the master
+    background subtracted from the frame with its variance (planes `MBKG` / `MBKGVAR`; together about
+    5 % of the file), and the bar offset (`BAROFFS`). A fit to the master-background frames then needs
+    the canonicals alone, not the 117 MB rate files or the `_mbkg.fits` (user, 2026-11-12: planes of
+    `CONTAM`, no new extension); files written before `CFSCHEMA` 3 still load through the rate file
+    beside them, and `load` names what is missing when it is not there. `write_stage3` stamps the
+    format version, so a canonical born at stage 2a before the bump carries it. Nothing before stage 3 sets bit 4, so clearing it gives stage 2's
     DQ; stage 2b's revert and every Spec3 run clear what stage 3 wrote (`canonical.clear_stage3`).
     On zenith_p15 547856 and 549120 the exposures `load` builds equal the ones stage 3's fits used
     (pixels, data, variances, nod differences and master-background frames), and stage 3's model
