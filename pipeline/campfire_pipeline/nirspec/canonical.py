@@ -57,7 +57,9 @@ SCHEMA_VERSION_KEYWORD = 'CFSCHEMA'
 SCHEMA_VERSION_COMMENT = 'campfire: canonical file format version'
 # 2: stage 3 writes its outlier flags into DQ bit 4, the other sources' predicted light (``CONTAM``)
 # and the bar offset (``BAROFFS``) into the file (``write_stage3``)
-CANONICAL_SCHEMA_VERSION = 2
+# 3: and the master background it subtracted from the frame, with its variance (``CONTAM`` planes
+# ``MBKG`` / ``MBKGVAR``), so a fit to the frames needs no rate file or ``_mbkg.fits``
+CANONICAL_SCHEMA_VERSION = 3
 
 # EXTNAME prefixes for the non-schema HDUs this module manages. These are the
 # HDUs that must be preserved across a ``DataModel.save()`` (which drops them).
@@ -327,7 +329,11 @@ CONTAM_PLANES = (
     ('NODMASK', 'nod difference: pixels left out where this > CONTKAPP x noise'),
     ('FRAME', 'the same in the frame minus master background, as SCI'),
     ('FRAMEMSK', 'frame: pixels left out where this > CONTKAPP x noise'),
+    ('MBKG', 'master background subtracted from the frame, as SCI'),
+    ('MBKGVAR', 'its variance, SCI units squared'),
 )
+# planes whose NaNs mean something (no master background there) and are kept; the others store 0
+CONTAM_NAN_PLANES = ('MBKG', 'MBKGVAR')
 
 
 def _drop_stage3(hdul, slit_extver=1):
@@ -384,7 +390,8 @@ def write_stage3(path, nod_outliers=None, frame_outliers=None, contam=None, bar_
     frame_outliers : the same for the frame minus master background (its own outlier detection and
         hot pixels, ``mbkg_extraction.outlier_flags``): bit 4 of ``PRE_BKGSUB_DQ``.
     contam : dict(planes={plane name: array on the cutout} of ``CONTAM_PLANES``, kappa=..., state=...)
-        or None: one losslessly compressed ``CONTAM`` image (planes x cutout).
+        or None: one losslessly compressed ``CONTAM`` image (planes x cutout). Besides the predicted
+        light it holds the master background the frames were made with (``MBKG``, ``MBKGVAR``).
     bar_offset : the bar offset added to the slit positions [slit units], ``BAROFFS``.
 
     Bit 4 is replaced, not added to: the file then carries exactly this run's flags."""
@@ -416,7 +423,8 @@ def _contam_hdu(contam, shape):
     unknown = set(contam['planes']) - {n for n, _ in CONTAM_PLANES}
     if unknown:
         raise ValueError(f'CONTAM: unknown planes {sorted(unknown)}')
-    cube = np.stack([np.nan_to_num(np.asarray(contam['planes'][n], np.float32)) for n in names])
+    cube = np.stack([np.asarray(contam['planes'][n], np.float32) if n in CONTAM_NAN_PLANES
+                     else np.nan_to_num(np.asarray(contam['planes'][n], np.float32)) for n in names])
     if cube.shape[1:] != tuple(shape):
         raise ValueError(f'CONTAM: planes {cube.shape[1:]} are not on the cutout {tuple(shape)}')
     h = fits.CompImageHDU(cube, name=CONTAM_EXTNAME, compression_type='GZIP_2', quantize_level=0.0)
@@ -439,3 +447,13 @@ def read_contam(path):
         cube = np.asarray(h.data, float)
         names = [h.header[f'PLANE{i}'] for i in range(1, cube.shape[0] + 1)]
         return dict(planes=dict(zip(names, cube)), kappa=h.header.get('CONTKAPP'), state=h.header.get('CONTSTAT', ''))
+
+
+def master_background_planes(path):
+    """The master background stage 3 subtracted from a canonical's frame and its variance, on its
+    cutout in SCI's units: (sky, variance) from ``CONTAM``, or None when the file has none (written
+    before ``CFSCHEMA`` 3, or stage 3 made no master-background spectrum)."""
+    c = read_contam(path)
+    if c is None or 'MBKG' not in c['planes'] or 'MBKGVAR' not in c['planes']:
+        return None
+    return c['planes']['MBKG'], c['planes']['MBKGVAR']

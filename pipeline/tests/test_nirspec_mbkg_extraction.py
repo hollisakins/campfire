@@ -365,6 +365,35 @@ def test_frame_arrays_subtract_the_master_background(tmp_path, monkeypatch):
     np.testing.assert_array_equal(f.background, sky)         # what was subtracted: the scale term's column
 
 
+def test_the_stored_master_background_gives_the_same_frame(tmp_path, monkeypatch):
+    """Stage 3 stores the master background and its variance in the canonical (CONTAM planes MBKG /
+    MBKGVAR, NaNs kept); a frame made from them equals the frame made from the master-background
+    product, with no _mbkg.fits or rate file."""
+    from campfire_pipeline.nirspec import canonical as C
+    ny, nx = 6, 8
+    canonical, _ = _canonical(tmp_path, ny, nx)
+    sky = np.linspace(2.0, 4.0, ny * nx).reshape(ny, nx)
+    sky[0, 0] = np.nan
+    var = np.full((ny, nx), 0.5)
+    monkeypatch.setattr('campfire_pipeline.nirspec.stage2.master_background_on', lambda path: (sky, var))
+    f0 = MX.frame_arrays(canonical)
+    np.testing.assert_array_equal(f0.background_var, var)
+    C.write_stage3(canonical, contam=dict(planes={'MBKG': f0.background, 'MBKGVAR': f0.background_var}))
+    monkeypatch.setattr('campfire_pipeline.nirspec.stage2.master_background_on', lambda path: None)
+    stored = C.master_background_planes(canonical)
+    assert stored is not None and np.isnan(stored[0][0, 0])
+    with pytest.raises(MX.NoMasterBackground):
+        MX.frame_arrays(canonical)                         # no product beside it
+    f1 = MX.frames_for([canonical], backgrounds={os.path.basename(canonical): stored})[os.path.basename(canonical)]
+    for k in f0.arrays:                                    # the planes are float32: equal to its rounding
+        np.testing.assert_allclose(f1.arrays[k], f0.arrays[k], rtol=1e-6, atol=0)
+        np.testing.assert_array_equal(np.isnan(np.asarray(f1.arrays[k], float)),
+                                      np.isnan(np.asarray(f0.arrays[k], float)))
+    np.testing.assert_allclose(f1.background, f0.background, rtol=1e-6)
+    with fits.open(canonical) as h:
+        assert h[0].header['CFSCHEMA'] == C.CANONICAL_SCHEMA_VERSION == 3
+
+
 def test_frame_arrays_without_a_master_background(tmp_path, monkeypatch):
     monkeypatch.setattr('campfire_pipeline.nirspec.stage2.master_background_on', lambda path: None)
     with pytest.raises(MX.NoMasterBackground):

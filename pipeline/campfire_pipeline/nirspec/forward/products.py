@@ -1,11 +1,13 @@
 """A target's exposures for the forward model, from the deployed files alone: its canonicals
-(``campfire pull --obs X --intermediate``) and, for single frames, each exposure's ``_mbkg.fits``
-and the ``_rate.fits`` its master background was painted on, beside them.
+(``campfire pull --obs X --intermediate``), nothing else: since ``CFSCHEMA`` 3 they carry the master
+background stage 3 subtracted from the frames (files written before need each exposure's ``_mbkg.fits``
+and ``_rate.fits`` beside them for a fit to the frames).
 
 Stage 3 leaves in each canonical what its fits took from files it does not keep
 (``canonical.write_stage3``): Spec3's outlier flags in DQ bit 4, the master-background frames' own
 flags in bit 4 of ``PRE_BKGSUB_DQ``, the other sources' predicted light with the level above which
-a pixel is left out (``CONTAM``), and the bar offset (``BAROFFS``). ``load`` reads them back and
+a pixel is left out and the master background with its variance (planes of ``CONTAM``), and the bar
+offset (``BAROFFS``). ``load`` reads them back and
 prepares the exposures as stage 3 prepared them for its fit, so a model built on them
 (``ForwardModel(load(files))``) sees the pixels stage 3's fit saw.
 
@@ -137,9 +139,11 @@ def load(files, frames=False, outliers=True, contam=True, slit_loss=None):
     files : every canonical of the target (``files_for``), background exposures included; they are
         put in their background groups from their headers.
     frames : False, the nod differences (stage 3's fit); True, the frames minus the master background
-        (the master-background fit; each exposure's ``_mbkg.fits`` and its ``_rate.fits`` beside its
-        canonical, else ``FileNotFoundError``), with ``Exposure.mbkg`` set for the scale term
-        (``ForwardModel(..., mbkg_sigma=...)``).
+        (the master-background fit), with ``Exposure.mbkg`` set for the scale term
+        (``ForwardModel(..., mbkg_sigma=...)``). The master background is the one stage 3 stored in
+        each canonical (``CONTAM`` planes ``MBKG`` / ``MBKGVAR``, ``CFSCHEMA`` 3); a file written
+        before that needs its exposure's ``_mbkg.fits`` and ``_rate.fits`` beside it, else
+        ``FileNotFoundError``.
     outliers : leave out the pixels stage 3 flagged in DQ bit 4 (in a nod difference also those
         flagged in the frames it was differenced with).
     contam : subtract the other sources' predicted light and leave out the pixels where its
@@ -169,11 +173,15 @@ def load(files, frames=False, outliers=True, contam=True, slit_loss=None):
         return exps
     from campfire_pipeline.nirspec import mbkg_extraction as MX
     sci = [e for e in exps if e.use_data]
-    missing = master_background_inputs_missing([e.path for e in sci])
-    if missing:
-        raise FileNotFoundError('forward.load(frames=True): the master background needs, beside the canonicals, '
-                                + '; '.join(missing))
-    fr = MX.frames_for([e.path for e in sci])
+    stored = {e.name: CN.master_background_planes(e.path) for e in sci}
+    if all(v is not None for v in stored.values()):
+        fr = MX.frames_for([e.path for e in sci], backgrounds=stored)      # stage 3's own (CFSCHEMA 3)
+    else:
+        missing = master_background_inputs_missing([e.path for e in sci if stored[e.name] is None])
+        if missing:
+            raise FileNotFoundError('forward.load(frames=True): these canonicals carry no master background '
+                                    '(written before CFSCHEMA 3), which then needs, beside them, ' + '; '.join(missing))
+        fr = MX.frames_for([e.path for e in sci], backgrounds={k: v for k, v in stored.items() if v is not None})
     inputs = {}
     for n, f in fr.items():
         a = dict(f.arrays)

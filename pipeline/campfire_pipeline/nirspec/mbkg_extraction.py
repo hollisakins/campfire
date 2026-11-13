@@ -90,25 +90,30 @@ class Frame:
     background : the master background subtracted, on the cutout in the units of ``data``
         (NaN where there is none): the column of the master-background scale term
         (``single_frame_exposures``) and what its fitted scale removes from the 2-D
-        (``fit_product``)."""
+        (``fit_product``).
+    background_var : its variance on the cutout (added to ``var_poisson``); with ``background`` what
+        stage 3 stores in the canonical (``canonical.write_stage3``, planes ``MBKG`` / ``MBKGVAR``)."""
     arrays: dict
     live_dq: np.ndarray
     detector: str = ''
     origin: tuple = (1, 1)
     background: np.ndarray = None
+    background_var: np.ndarray = None
 
 
-def frame_arrays(canonical):
+def frame_arrays(canonical, background=None):
     """One canonical's frame minus its master background, in memory (module doc, 1): a
-    ``Frame``. Raises ``NoMasterBackground`` when its exposure has no ``_mbkg.fits``."""
+    ``Frame``. ``background``: (sky, variance) on the cutout in SCI's units, e.g. the planes stage 3
+    stored (``canonical.read_contam``); None to compute it from the exposure's ``_mbkg.fits`` and rate
+    file (``stage2.master_background_on``). Raises ``NoMasterBackground`` when there is none."""
     from astropy.io import fits
     from campfire_pipeline.nirspec import canonical as C
     from campfire_pipeline.nirspec.stage2 import master_background_on
 
-    bg = master_background_on(canonical)
+    bg = master_background_on(canonical) if background is None else background
     if bg is None:
         raise NoMasterBackground(f'{os.path.basename(canonical)}: no master background beside it')
-    sky, sky_var = bg
+    sky, sky_var = (np.asarray(a, float) for a in bg)
     live = C.read_slit_arrays(canonical, exts=('SCI', 'DQ', 'VAR_POISSON', 'VAR_RNOISE', 'VAR_FLAT'))
     pre = C.read_slit_arrays(canonical, prefix=C.PRE_BKGSUB_PREFIX)
     sci = np.asarray(pre.get('SCI', live['SCI']), float)
@@ -126,13 +131,15 @@ def frame_arrays(canonical):
         frame['var_flat'] = np.asarray(live['VAR_FLAT']).astype(np.float32)
     h = fits.getheader(canonical, 'SCI')
     return Frame(frame, np.asarray(live['DQ']).astype(np.uint32), str(fits.getheader(canonical).get('DETECTOR', '')),
-                 (int(h.get('SLTSTRT2', 1)), int(h.get('SLTSTRT1', 1))), np.asarray(sky, float))
+                 (int(h.get('SLTSTRT2', 1)), int(h.get('SLTSTRT1', 1))), np.asarray(sky, float),
+                 np.asarray(sky_var, float))
 
 
-def frames_for(canonicals):
-    """``frame_arrays`` of every canonical, keyed by file name: {name: Frame}. Raises
-    ``NoMasterBackground``."""
-    return {os.path.basename(c): frame_arrays(c) for c in canonicals}
+def frames_for(canonicals, backgrounds=None):
+    """``frame_arrays`` of every canonical, keyed by file name: {name: Frame}. ``backgrounds``:
+    {file name: (sky, variance)} to use instead of computing them. Raises ``NoMasterBackground``."""
+    backgrounds = backgrounds or {}
+    return {os.path.basename(c): frame_arrays(c, backgrounds.get(os.path.basename(c))) for c in canonicals}
 
 
 # ---------------------------------------------------------------------------
@@ -675,7 +682,8 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
     (``profile_contam.trace_maps``).
 
     record : a dict to receive what stage 3 stores in the canonicals (``canonical.write_stage3``):
-        ``frame_outliers`` ({name: the frame's outlier and hot-pixel flags on its cutout}) and, when the
+        ``frame_outliers`` ({name: the frame's outlier and hot-pixel flags on its cutout}),
+        ``mbkg_planes`` ({name: (the master background subtracted, its variance)}) and, when the
         other sources' light was predicted, ``frame_planes`` ({name: (predicted light, masking level)}:
         the prediction the shape fit subtracted, before the failed-open shutters' light is added)."""
     from astropy.io import fits
@@ -694,6 +702,7 @@ def fit_product(product_name, workspace, exps, science, source_id, chain, stage_
     frames, inputs = made
     if record is not None:
         record['frame_outliers'] = {n: (np.asarray(a['dq']) & OUTLIER) > 0 for n, a in inputs.items()}
+        record['mbkg_planes'] = {n: (f.background, f.background_var) for n, f in frames.items()}
     fl = PP.stage_flags(stage_config)
     sigma = PC.ChainConfig.from_stage_config(stage_config).mbkg_scale_sigma or None
     P = maps = None
