@@ -6,6 +6,8 @@ Stage 3 describes every source as one Gaussian along the slit (see [Extraction](
 
 The nod-subtracted 2-D spectrum (`SCI`) shows each source together with its negative images from the subtracted background exposures. For an extended source these overlap the source's own outer light, so part of the galaxy is subtracted from itself (the fraction in its own shutter is `SELFSUB`). The 2-D spectrum alone does not show the galaxy's extent.
 
+![zenith_p15 547856, an extended galaxy in a two-shutter slitlet. The nod differences (SCI), stage 3's model and the residual on one color scale, with the profile along the slit summed over wavelength. The negative images above and below the source are its light in the subtracted background exposures; they overlap the galaxy's outer light, and the residual along them and beside the core shows a galaxy wider than the model. For such a source the master-background spectrum, with none of the source subtracted from itself, is the better measure of its light.](/docs/nirspec/extended_2d_nod.png)
+
 Three extensions describe the fitted model on the grid of `SCI`:
 
 | Extension | Content |
@@ -16,13 +18,13 @@ Three extensions describe the fitted model on the grid of `SCI`:
 
 The full model is `PROF2D × (fnu_prof - fnu_contam) + CONTAM2D`, and `SCI` minus the model shows where the source departs from a Gaussian. A residual that changes sign between the source's position and its negative images, or along the dispersion, points to a profile the model does not describe.
 
-The master-background spectrum offers a second view. `SCI_MBKG` is made from the same exposures with the master background subtracted instead of a nod partner, so nothing of the source is subtracted from itself, and its fit (`PROF2D_MBKG`, `TRANS2D_MBKG`, `CONTAM2D_MBKG`) measures the source's profile again on these frames. For an extended source the two fits differ: on one zenith_p15 galaxy the width along the slit is 0.70 shutter heights on the master-background frames and 0.50 on the nod differences, and the master-background flux is 8–16 % higher.
+The master-background spectrum offers a second view. `SCI_MBKG` is made from the same exposures with the master background subtracted instead of a nod partner, so nothing of the source is subtracted from itself, and its fit (`PROF2D_MBKG`, `TRANS2D_MBKG`, `CONTAM2D_MBKG`) measures the source's profile again on these frames. For an extended source the two fits differ: for 547856 the width along the slit is 0.70 shutter heights on the master-background frames and 0.50 on the nod differences, and the master-background flux is 8–16 % higher.
 
 `SCI_MBKG / TRANS2D_MBKG` shows the source along the slit as it would look with no MSA in the way: the bar shadows, the slitlet's ends and the diffraction along the slit are divided out. The loss across the shutter's width is not, so the divided 2-D, like `fnu`, holds the light that entered the shutter across the dispersion. `TRANS2D` comes from the fitted profile, so in the faint wings it depends on that profile and can exceed 1, where diffraction at the shutters spreads light from the core outward; where it is small the division amplifies the noise. The master background models only the light through known shutters, so other light that is the same in every nod remains in `SCI_MBKG` (see [Master-background spectra](/docs/reduction/nirspec/backgrounds#master-background-spectra)).
 
-> **Placeholder.** A stored version of the divided 2-D spectrum is planned; its form and name are not decided.
+![The same galaxy on its master-background frames: the master-background 2-D spectrum (SCI_MBKG), the share of the source's light the MSA passes along the slit (TRANS2D_MBKG), and their ratio, in which the bar shadows are divided out. On the right, the profiles along the slit of SCI_MBKG and of the ratio, each scaled to its peak.](/docs/nirspec/extended_2d_mbkg.png)
 
-> **Placeholder figure.** One extended source: `SCI`, the model and the residual; `SCI_MBKG`, its model and residual; `SCI_MBKG / TRANS2D_MBKG`. To be drawn from the ember_cosmos_p1 products at the current fit version.
+> **Placeholder.** A stored version of the divided 2-D spectrum is planned; its form and name are not decided.
 
 ## Fitting your own source model
 
@@ -144,12 +146,13 @@ result = fw.Fit(model, comps, names=['core', 'southwest', 'northeast']).run()
 
 The core lies 0.04″ from the catalog position along the slit with σ = 0.14″; the other two lie 0.44″ to the southwest and 0.33″ to the northeast, with σ = 0.16″ and 0.14″. The fit takes about 20 seconds.
 
-![zenith_p15 547856, three round Gaussians along the slit fitted to the master-background frames. Top: each component's spectrum (its total light) and their sum. Bottom: each component's share of the sum. The core is the reddest and has the strongest Paα but little Hα; the two outer components are bluer, with most of the Hα and weaker Paα.](/docs/nirspec/extended_components.png)
+![zenith_p15 547856 on its master-background 2-D spectrum. Top two rows: the 2-D spectrum, the model and the residual on one color scale, with the profile along the slit summed over wavelength, for stage 3's one-component fit and for the three components, whose model is drizzled onto the same grid. Bottom: stage 3's master-background spectrum and the three component spectra, each a component's total light. The core is the reddest and has the strongest Paα but little Hα; the two outer components are bluer, with most of the Hα and weaker Paα.](/docs/nirspec/extended_components.png)
 
-The core's share of the light rises from about 15 % at 1 µm to 65 % at 5 µm. Each spectrum is the component's total light, extrapolated across the shutter from its assumed shape, so the sum exceeds the light within the shutter that `fnu` reports. Some blue light far along the slit, in the exposures with the source in the lower shutter, remains in the residual (`plots.panels`).
+On the combined 2-D spectrum the squared residual over the noise averages 6.8 per pixel for stage 3's one component and 1.7 for the three. Each component spectrum is the component's total light, extrapolated across the shutter from its assumed shape, while `fnu_prof` holds the light within the shutter, so the two are not on the same footing. Some blue light far along the slit, in the exposures with the source in the lower shutter, remains in the residual of the individual exposures (`plots.panels`).
 
 ### Current limitations
 
 - Other sources' light is held at stage 3's prediction. Fitting a neighbor as a component of its own uses the same machinery but is not yet connected to `forward.load`.
 - `log_posterior` works with any sampler, but at about a minute per least-squares fit, sampling is slow.
 - No NIRCam-image component is shipped yet.
+- Drawing a fitted model on the combined 2-D grid, as in the figure above, is done by the figure's script (`scripts/docs/nirspec/fig_extended_components.py`) and is not yet part of the package.
