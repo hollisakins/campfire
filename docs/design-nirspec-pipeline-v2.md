@@ -1806,6 +1806,10 @@ shape.
 - `Point`, `Gaussian` (round) and `Sersic` (index, effective radius, axis ratio, position angle),
   placed on the sky as offsets east and north of the catalog position. Each exposure's slit axes on the
   sky come from its WCS, so exposures at different roll angles see the same source correctly.
+  `slit_frame_offset(exps, along, across)` gives the east / north offsets of a position along and
+  across the slit (towards PA_SLIT_Y / PA_SLIT_X), as numbers or `Tied` to the parameters given;
+  it refuses exposures at more than one roll angle. A fit placed in east / north on a slit far from
+  north-south otherwise moves components mostly across the shutter (547856, PA_SLIT_Y 64.3 deg).
 - `Sum`: several shapes sharing one spectrum (clumps of one galaxy).
 - Any other image: a subclass that gives a surface brightness on the sky and an extent. The general
   projection weights the image by the share the shutter passes along the dispersion, collapses it onto

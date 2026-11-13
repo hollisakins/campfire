@@ -53,7 +53,8 @@ Release procedure: edit the `## Unreleased` section below, then run
     fitted through them gives 547856's product shape (centre 0.3268 against 0.3267, width 0.5195).
   - *Shape fits of any components* (`forward.Fit`, `forward.params`). A parameter is a number, a
     `Param` (free or fixed, bounds, a prior) or `Tied` to others; one `Param` in several components
-    is one parameter; `JointPrior` puts a prior on several (`JointPrior.gaussian` from posterior
+    is one parameter; `slit_frame_offset` places a component by offsets along and across the slit
+    (one roll angle only); `JointPrior` puts a prior on several (`JointPrior.gaussian` from posterior
     samples, e.g. a fit to imaging). The spectra are solved exactly at each shape; `run` fits,
     `log_posterior` and `residuals` serve the caller's own optimiser or sampler.
     `forward.plots.panels` draws data, model and residual per exposure on its own pixels.

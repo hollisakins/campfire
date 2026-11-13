@@ -283,3 +283,40 @@ def test_frames_need_the_rate_file(tmp_path):
                                                         'jw07417015001_03101_00001_nrs1_mbkg.fits)']
     fits.PrimaryHDU().writeto(tmp_path / 'jw07417015001_03101_00001_nrs1_rate.fits')
     assert FPR.master_background_inputs_missing([c]) == []
+
+
+def _rolled(exps, pa_y):
+    for e in exps:
+        e.pa_slit_y, e.pa_slit_x = pa_y, pa_y - 90.0
+    return exps
+
+
+def test_a_slit_frame_offset_is_the_inverse_of_slit_offsets():
+    exps = _rolled(_sky_exposures(), 64.27)
+    exps[1].pa_slit_x += 0.05                        # axes not exactly perpendicular, within tolerance
+    for e in exps:
+        e.pa_slit_y = exps[0].pa_slit_y
+    dx, dy = FW.slit_frame_offset(exps, along=0.33, across=-0.07)
+    across, along = FW.slit_offsets(exps[0], dx, dy)
+    assert across == pytest.approx(-0.07, abs=1e-12) and along * O.SLIT == pytest.approx(0.33, abs=1e-12)
+    # mostly east at this angle, not north
+    assert abs(dx) > abs(dy)
+
+
+def test_a_slit_frame_offset_is_fitted_in_the_slit_frame():
+    exps = _rolled(_sky_exposures(), 64.27)
+    along = FW.Param(0.0, bounds=(-0.5, 0.5), name='along')
+    dx, dy = FW.slit_frame_offset(exps, along=along)
+    fit = FW.Fit(FW.ForwardModel(exps), [FW.Gaussian(dx=dx, dy=dy, sigma=0.1)])
+    assert fit.labels == ['along']
+    fit.set([0.2])
+    g = fit.components[0].resolved()
+    across_, along_ = FW.slit_offsets(exps[0], g.dx, g.dy)
+    assert along_ * O.SLIT == pytest.approx(0.2) and across_ == pytest.approx(0.0, abs=1e-12)
+
+
+def test_a_slit_frame_offset_needs_one_slit_orientation():
+    exps = _sky_exposures()
+    exps[2].pa_slit_y, exps[2].pa_slit_x = 30.0, -60.0
+    with pytest.raises(ValueError, match='roll angle'):
+        FW.slit_frame_offset(exps, along=0.1)

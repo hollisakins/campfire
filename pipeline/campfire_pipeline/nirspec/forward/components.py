@@ -80,6 +80,47 @@ def slit_offsets(e, east, north):
     return east * ux[0] + north * ux[1], (east * uy[0] + north * uy[1]) / O.SLIT
 
 
+SLIT_PA_TOLERANCE = 0.1     # deg: exposures whose slit axes differ by more are not one slit frame on the sky
+
+
+def slit_frame_offset(exps, along=0.0, across=0.0):
+    """A component's (``dx``, ``dy``), arcsec east and north, from offsets in arcsec along the slit
+    (towards ``PA_SLIT_Y``) and across it (towards ``PA_SLIT_X``, the dispersion direction).
+
+        dx, dy = slit_frame_offset(exps, along=Param(0.3, bounds=(-1, 1)), across=0.0)
+        g = Gaussian(sigma=Param(0.2), dx=dx, dy=dy)
+
+    ``along`` / ``across`` are numbers, ``Param`` or ``Tied``; given a parameter the result is a pair
+    of ``Tied``, so the fit varies the offset in the slit frame (name the ``Param``, e.g.
+    ``Param(0.3, name='clump.along')``, or its result label is the first field it reaches, ``c0.dx``). It inverts ``slit_offsets`` exactly
+    (the slit axes from the exposures' WCS, not assumed perpendicular). The exposures must share one
+    slit orientation (within ``SLIT_PA_TOLERANCE``): with two roll angles "along the slit" is not
+    one direction on the sky, so it raises ``ValueError``; place such components in east / north."""
+    from campfire_pipeline.nirspec.forward.params import Tied, is_parameter, value_of
+    exps = list(exps)
+    if not exps:
+        raise ValueError('slit_frame_offset: no exposures')
+    pas = np.array([[e.pa_slit_x, e.pa_slit_y] for e in exps], float)
+    spread = np.abs((pas - pas[0] + 180.0) % 360.0 - 180.0).max(axis=0)
+    if np.any(spread > SLIT_PA_TOLERANCE):
+        raise ValueError(f'slit_frame_offset: the exposures\' slit axes differ by up to {spread.max():.3g} deg '
+                         '(more than one roll angle); "along the slit" is not one direction on the sky, '
+                         'give dx / dy east and north instead')
+    ux, uy = _axes(exps[0])
+    Minv = np.linalg.inv(np.array([ux, uy]))     # rows: (across, along) = M @ (east, north)
+
+    def east(s, c):
+        return Minv[0, 0] * c + Minv[0, 1] * s
+
+    def north(s, c):
+        return Minv[1, 0] * c + Minv[1, 1] * s
+
+    if not (is_parameter(along) or is_parameter(across)):
+        s, c = value_of(along), value_of(across)
+        return float(east(s, c)), float(north(s, c))
+    return Tied(east, along, across), Tied(north, along, across)
+
+
 def _x_planned(e):
     return (float(e.src_x_jwst) if np.isfinite(e.src_x_jwst) else 0.0) * O.X_PITCH
 

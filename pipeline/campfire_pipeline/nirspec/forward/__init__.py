@@ -26,5 +26,6 @@ from campfire_pipeline.nirspec.forward.params import (JointPrior, LogNormal, Nor
                                                       Uniform)
 from campfire_pipeline.nirspec.forward.fit import Fit, FitResult  # noqa: F401
 from campfire_pipeline.nirspec.forward.components import (Component, Gaussian, Point, Sersic, SlitGaussian,  # noqa: F401
-                                                          Sum, project, slit_offsets)
+                                                          Sum, project, slit_frame_offset,
+                                                          slit_offsets)
 from campfire_pipeline.nirspec.forward.model import ForwardModel, Solution  # noqa: F401
