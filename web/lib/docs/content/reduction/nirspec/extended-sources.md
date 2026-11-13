@@ -144,7 +144,7 @@ result = fw.Fit(model, comps, names=['core', 'southwest', 'northeast']).run()
 
 The core lies 0.04″ from the catalog position along the slit with σ = 0.14″; the other two lie 0.44″ to the southwest and 0.33″ to the northeast, with σ = 0.16″ and 0.14″. The fit takes about 20 seconds.
 
-![zenith_p15 547856, three round Gaussians along the slit fitted to the master-background frames. Top: each component's spectrum (its total light) and their sum. Bottom: each component's share of the sum. The core is the reddest and carries the Paα with little Hα; the two outer components are bluer and carry the Hα.](/docs/nirspec/extended_components.png)
+![zenith_p15 547856, three round Gaussians along the slit fitted to the master-background frames. Top: each component's spectrum (its total light) and their sum. Bottom: each component's share of the sum. The core is the reddest and has the strongest Paα but little Hα; the two outer components are bluer, with most of the Hα and weaker Paα.](/docs/nirspec/extended_components.png)
 
 The core's share of the light rises from about 15 % at 1 µm to 65 % at 5 µm. Each spectrum is the component's total light, extrapolated across the shutter from its assumed shape, so the sum exceeds the light within the shutter that `fnu` reports. Some blue light far along the slit, in the exposures with the source in the lower shutter, remains in the residual (`plots.panels`).
 
