@@ -72,7 +72,7 @@ print(result.params, result.errors, result.chi2_red)
 plots.panels(fit, result, path='fit.png')        # data, model and residual for each exposure
 ```
 
-`result.spectra` holds one spectrum per component on the wavelength grid `result.lam` (µm), in MJy (× 10¹² for µJy), with errors in `result.spectra_err`. A bulge-plus-disk fit of six PRISM exposures takes about a minute.
+`result.spectra` holds one spectrum per component on the wavelength grid `result.lam` (µm), in MJy (× 10¹² for µJy), with errors in `result.spectra_err`. A fit to six PRISM exposures takes a few tens of seconds.
 
 Each component's spectrum is its total light on the sky, not limited to the shutter. The data contain only what the shutter passes across the dispersion, so the light outside it is extrapolated from the assumed shape; this is why the pipeline reports the light within the shutter's 0.22″ width (`FLUXWID`). To compare a component with `fnu_prof`, multiply its spectrum by its share of light within ±0.11″ of the planned position across the shutter. Stage 3 does this for its Gaussian; for other components the share is not computed for you.
 
@@ -162,5 +162,5 @@ model = fw.model_2d(fit, result, grid)        # the fitted model on the same gri
 ### Current limitations
 
 - Other sources' light is held at stage 3's prediction. Fitting a neighbor as a component of its own uses the same machinery but is not yet connected to `forward.load`.
-- `log_posterior` works with any sampler, but at about a minute per least-squares fit, sampling is slow.
+- `log_posterior` works with any sampler, but at a few tens of seconds per least-squares fit, sampling is slow.
 - No NIRCam-image component is shipped yet.
