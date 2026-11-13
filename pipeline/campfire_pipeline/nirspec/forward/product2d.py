@@ -2,7 +2,7 @@
 grid of the target's ``s2d`` the way stage 3 drizzles its own, from the canonicals alone.
 
     grid = forward.product_grid(files)                  # the product's 2-D grid
-    data = forward.data_2d(grid, frames=True)           # dict(data, err, wht): SCI_MBKG / ERR_MBKG
+    data = forward.data_2d(grid, background='master')   # dict(data, err, wht): SCI_MBKG / ERR_MBKG
     model2d = forward.model_2d(fit, result, grid)       # the fitted model on the same grid
 
 Stage 3 removes its crf (the exposures Spec3 resampled), so the grid is rebuilt from the canonicals
@@ -22,7 +22,7 @@ from campfire_pipeline.nirspec import canonical as CN
 from campfire_pipeline.nirspec import drizzle_map as DM
 from campfire_pipeline.nirspec import profile_fit as PF
 from campfire_pipeline.nirspec.forward.model import ForwardModel
-from campfire_pipeline.nirspec.forward.products import science_names
+from campfire_pipeline.nirspec.forward.products import check_background, science_names
 
 
 def product_grid(files, s2d=None):
@@ -63,17 +63,19 @@ def _frame_inputs(grid):
     return MX.flagged_inputs(grid, frames, own)
 
 
-def _inputs(grid, frames):
+def _inputs(grid, background):
+    check_background(background)
     if not hasattr(grid, 'paths'):
         raise ValueError('forward: a grid from forward.product_grid is needed (it knows the canonicals)')
-    return _frame_inputs(grid) if frames else _nod_inputs(grid)
+    return _frame_inputs(grid) if background == 'master' else _nod_inputs(grid)
 
 
-def data_2d(grid, frames=True):
-    """The data drizzled onto ``grid`` (``product_grid``): the master-background frames (``frames``
-    True, the product's ``SCI_MBKG`` / ``ERR_MBKG`` before stage 3's scale term) or the nod differences
-    (False, its ``SCI`` / ``ERR``). Returns dict(data, err, wht, var_*)."""
-    return grid.drizzle(_inputs(grid, frames), variances=True)
+def data_2d(grid, background='nod'):
+    """The data drizzled onto ``grid`` (``product_grid``): the nod differences (``background`` 'nod',
+    the product's ``SCI`` / ``ERR``) or each exposure minus its master background ('master', its
+    ``SCI_MBKG`` / ``ERR_MBKG`` before stage 3's scale term). Returns dict(data, err, wht, var_*)."""
+    inputs = _inputs(grid, background)
+    return grid.drizzle(inputs, variances=True)
 
 
 class _WholeSlit(ForwardModel):
@@ -136,12 +138,12 @@ def model_images(fit, result=None):
 
 def model_2d(fit, result, grid):
     """The fitted model on the product's 2-D grid (``product_grid``), drizzled with the masks and
-    weights of the data it was fitted to (``data_2d`` with ``frames`` as the fit's exposures:
-    single frames or nod differences), so ``data_2d(...)['data'] - model_2d(...)`` is the residual
-    on the combined 2-D. Returns the 2-D image in the product's units (MJy)."""
+    weights of the data it was fitted to (``data_2d`` with the fit's ``background``: nod
+    differences or each exposure minus its master background), so ``data_2d(...)['data'] -
+    model_2d(...)`` is the residual on the combined 2-D. Returns the 2-D image in the product's units (MJy)."""
     fitted = [fit.model.exps[k] for k, _ in fit.model.pix_masks]
-    frames = not any(e.partners for e in fitted)
-    inputs = _inputs(grid, frames)
+    background = 'nod' if any(e.partners for e in fitted) else 'master'
+    inputs = _inputs(grid, background)
     images = model_images(fit, result)
     unknown = sorted(set(images) - set(grid.names))
     if unknown:

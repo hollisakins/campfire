@@ -937,7 +937,12 @@ again.
   spectrum is likely better, with the first of: `no_clear_background` (every background exposure of
   an exposure holds a bright neighbor), `single_exposure` (an exposure with no background exposure),
   `extended` (the nod subtraction removes more than `mbkg_extended_frac` = 0.10 of the source's own
-  light in its own shutter, `SELFSUB`).
+  light in its own shutter, `SELFSUB`). That share is computed at the master-background fit's shape
+  (`self_subtraction_at_shape`; `SELFSUB` in `SPEC1D_MBKG`'s header), the nodded fit's only when that
+  fit fell back (user, 2026-11-13): the nodded fit sees just the light that survives the subtraction, so
+  its shape is narrower than an extended source and its own `SELFSUB` (primary header) low. zenith_p15
+  547856 had nodded width 0.52 against 0.70 on the frames, `SELFSUB` 0.088 and `MBKGPREF` False with a
+  master-background flux 40 % above the nodded.
 - The 1-D combine of several exposure groups carries it as it carries the nodded columns.
 - The science hash leaves out `*_MBKG` extensions and `MBKG*` cards, so this spectrum never marks
   line fits stale.
@@ -1833,8 +1838,8 @@ component at zero removes its downward noise, so its spectrum is biased high whe
 **On the product's 2-D** (`forward/product2d.py`). `product_grid(files, s2d=None)` rebuilds the
 product's grid from the canonicals (stage 3 removes its crf; `DrizzleMap.from_canonicals` regroups
 them as Spec3 does, with the s2d's resample settings or `drizzle_map.SPEC3_SETTINGS`). `data_2d(grid,
-frames)` drizzles the master-background frames (their own outlier flags from bit 4 of `PRE_BKGSUB_DQ`,
-the hot pixels) or the nod differences (Spec3's flags, DQ bit 4); `model_2d(fit, result, grid)` draws
+background)` drizzles the nod differences (`'nod'`, Spec3's flags, DQ bit 4) or the master-background
+frames (`'master'`, their own outlier flags from bit 4 of `PRE_BKGSUB_DQ`, the hot pixels); `model_2d(fit, result, grid)` draws
 the fitted model on every pixel of each slitlet, back in the canonicals' units (divided by the path-loss
 correction stage 2b applied) and drizzled with the data's masks and weights. On zenith_p15 547856 the
 data reproduce `SCI_MBKG` / `ERR_MBKG` to 8e-8 of the peak and `SCI` / `ERR` exactly; mean

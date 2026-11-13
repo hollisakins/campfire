@@ -789,3 +789,18 @@ def test_combined_product_carries_the_master_background_spectrum(tmp_path):
     # a stacked 2-D of another shape than the nodded one: no master-background spectrum
     two_d((8, n))
     assert S3._combined_mbkg(*args) == ([], {})
+
+
+def test_self_subtraction_at_the_master_background_shape():
+    # a wide source fitted on single frames: SELFSUB on the nodded exposures at that shape is the
+    # truth's, where the narrower nodded shape gives a smaller share (what MBKGPREF used to read)
+    wide = dict(TRUTH, centre=0.0, width=0.9, width_change=0.0, drift=0.0)
+    frames, _ = _single_frames(wide, flux_scale=200.0, noise=1.0, src_y=0.0)
+    R0, shape0, chain = _nodded_choice(frames, 0.4)
+    R, _, _ = MX.own_shape(R0, shape0, chain, {})
+    nods = _exposures(src_y=0.0)
+    truth = MX.self_subtraction(_truth_result(nods, wide, [0, 0, 0], 1.0), nods)
+    at_frames = MX.self_subtraction_at_shape(R, nods)
+    at_nodded = MX.self_subtraction_at_shape(R0, nods)
+    assert at_frames == pytest.approx(truth, rel=0.15)
+    assert at_nodded < 0.8 * at_frames
