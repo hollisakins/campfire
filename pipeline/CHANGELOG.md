@@ -230,8 +230,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   number (`star_protect: N px released`). Both implementations. A field
   without a catalog, or whose catalog has no proper motions, is not protected.
   The rule is the HST field-level pass's;
-  the two values were measured on WFC3/IR and not on NIRCam, and no NIRCam data
-  with two epochs has been run. On four F277W exposures of one epoch, with every
+  the two values were measured on WFC3/IR and not on NIRCam. Run on public F200W
+  exposures of one EGS patch 2.8 years apart (three of program 1345, eight of
+  program 6434, compared with each other): three Gaia stars moved 1.0 to 1.6
+  pixels; without protection the three earlier exposures lose 62 to 68 percent of
+  each star's flux within 4 pixels to new flags, with protection none, and
+  sources that are not stars are flagged at the cosmic-ray rate either way
+  (docs/hst/design.md, section 8b). On four F277W exposures of one epoch, with every
   catalog star forced on, the circles sit on the stars (brightest pixel 0.4 pixel
   from the center, median over 151) and the flags outside them are identical.
   `nircam/outlier_protect.py`, `tests/test_nircam_outlier_protect.py`.
