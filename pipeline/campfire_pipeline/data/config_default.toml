@@ -873,6 +873,48 @@
     # working copy (good_bits='~DO_NOT_USE'). The former mask_flag / mask_set_nan
     # knobs are gone — the mask now lives purely in the DQ contract.
 
+[nircam.spike_mask]
+    # BETA: developed on one field (MACS0647, two roll angles); not yet tested
+    # on many fields or filters.
+    # Opt-in automatic diffraction-spike mask. For each Gaia star
+    # the published spike model is scaled by the star's predicted in-band flux
+    # and placed on every exposure at the telescope roll; pixels where the
+    # predicted surface brightness exceeds `threshold_sigma` x the exposure's
+    # pixel noise are spike pixels. A spike pixel is masked ONLY where another
+    # roll angle sees the same sky with less predicted spike light (where two
+    # spikes cross, the brighter is masked), so a spike is never traded for a
+    # hole. Recorded as a CFSPIKE extension on the canonical
+    # exposure (SCI/DQ untouched) and applied on the combine working copies.
+    enabled = false
+    # "mask": apply in the combine phase. "report": write CFSPIKE only.
+    mode = "mask"
+    # Stars brighter than this predicted AB magnitude in the filter are used.
+    mag_limit = 16.5
+    # Gaia G limit of the catalog query (deep enough for red stars).
+    gaia_g_max = 19.5
+    # Optional star catalog (ECSV: ra, dec, g, bp_rp, pmra, pmdec; epoch 2016.0)
+    # used instead of the Gaia query.
+    # catalog = "/path/to/stars.ecsv"
+    # Threshold on the predicted ARM surface brightness (the star's smooth
+    # halo is not counted), in units of one exposure's pixel noise. Arms well
+    # below 1 sigma per exposure still show in a mosaic.
+    threshold_sigma = 0.3
+    grow = 2                      # px of dilation
+    roll_tolerance_deg = 0.15     # also mask the pattern rotated by +- this
+    # Real arms are wider across than the pre-flight model. Measured on
+    # MACS0647 F200W (G = 8 star, 35-116"): x1.8 matches the cross-section
+    # down to 0.3 sigma. The long-wavelength model needs no widening
+    # (F277W, same star, 45-200"); x1.8 there masks about twice too much.
+    width_scale = 1.8             # short-wavelength channel
+    width_scale_lw = 1.0          # long-wavelength channel
+    max_radius_arcsec = 300.0     # never mask farther than this from a star
+    pa_cluster_deg = 3.0          # roll angles closer than this are one angle
+    # false: mask every predicted spike pixel whether or not another angle
+    # covers it. Leaves holes; for inspecting the footprints only.
+    require_other_angle = true
+    min_width_px = 6              # drop mask fragments narrower than this
+    gate_cell_arcsec = 0.12       # sky cell used to compare coverage
+
 [nircam.bad_pixel]
     # Opt-in "consistently bad" pixel detector: stacks the DO_NOT_USE bit
     # of cal-file DQ across all exposures of a (filter, detector) and

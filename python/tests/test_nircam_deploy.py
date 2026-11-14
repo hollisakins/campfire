@@ -79,6 +79,26 @@ def test_sci_dq_hash_includes_cfmask(tmp_path):
     assert nc._sci_dq_hash(masked) != nc._sci_dq_hash(plain)
 
 
+def test_sci_dq_hash_includes_cfspike(tmp_path):
+    # The pipeline's diffraction-spike mask follows the CFMASK contract: on the
+    # canonical, SCI/DQ untouched. A changed mask must re-upload the exposure,
+    # and an exposure without one must hash as before.
+    sci = np.arange(16, dtype="float32").reshape(4, 4)
+    dq = np.zeros((4, 4), dtype="int32")
+    plain = _make_exposure(tmp_path / "p.fits", sci, dq)
+    digests = []
+    for k, pix in enumerate([(1, 1), (2, 2)]):
+        path = _make_exposure(tmp_path / f"s{k}.fits", sci, dq)
+        spike = np.zeros((4, 4), dtype="uint8")
+        spike[pix] = 1
+        with fits.open(path, mode="update") as hdul:
+            hdul.append(fits.ImageHDU(data=spike, name="CFSPIKE"))
+            hdul.flush()
+        digests.append(nc._sci_dq_hash(path))
+    assert digests[0] != digests[1]
+    assert nc._sci_dq_hash(plain) not in digests
+
+
 # --- wcs_hash (the astrometric half of the exposure identity) ----------------
 
 def _wcs_cards(crval1=150.0, crval2=2.0):
