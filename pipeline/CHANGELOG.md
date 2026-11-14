@@ -106,10 +106,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   per-chip `CFOUT` extension that the adapter honors. On four ACS/WFC exposures it
   agrees with AstroDrizzle's cosmic-ray flags on about 93 to 95 percent of flagged
   pixels. Given the reference catalog, the pass leaves alone a small circle around
-  each catalog star that has a proper motion, at the star's position on the
-  exposure's date, so stars that moved between epochs are not clipped (WFC3/IR:
-  every such star; ACS/WFC: those that moved 0.15 pixel or more). WFC3/IR has been run from RAW to mosaics on 30 public exposures with these
-  steps.
+  each catalog star whose proper motion moved it 0.15 native pixel or more
+  between the first and last exposure containing it, at the star's position on
+  each exposure's date, so stars that moved between epochs are not clipped. For
+  WFC3/IR the gradient term of the test is 5 (2.5 flagged the peak pixel of
+  about one star image in a hundred). WFC3/IR has been run from RAW to mosaics
+  on 30 public exposures with these steps.
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.

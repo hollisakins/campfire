@@ -24,9 +24,18 @@ the primary header.
 Pixels ``crreject`` or the calibration already flagged are not used in the
 comparison and are not flagged again; this step only adds.
 
-Default thresholds are those of ``crreject`` for each detector: ACS/WFC SNR
-``3.5 3.0`` and scale ``1.2 0.7``; WFC3/IR SNR ``8.0 5.0`` and scale
-``2.5 0.7``.
+Default thresholds. ACS/WFC: those of ``crreject``, SNR ``3.5 3.0`` and scale
+``1.2 0.7``. WFC3/IR: SNR ``8.0 5.0`` as in ``crreject``, and scale
+``5.0 0.7``, twice the first value ``crreject`` uses. The scale multiplies the
+gradient of the model image and is the allowance for a steep source. A WFC3/IR
+star is 1.1 native pixels wide, and its peak pixel changes with the sub-pixel
+position by more than a scale of 2.5 allows: on the 30 exposures of pg004 that
+value flags the peak of about one star image in a hundred, stars that did not
+move included, and 4 of 76 unsaturated Gaia stars lose 1 to 10 percent in the
+F105W mosaic. Flags within 3 pixels of a catalog star that is not protected,
+in F105W, F125W, F140W and F160W: 6, 4, 5 and 9 at scale 2.5; 1, 1, 2 and 0 at
+3.5; none at 5, where no star's flux changes. Flags on flat background do not
+depend on the scale.
 
 **Stars that moved.** Exposures years apart show a star with a proper motion
 at different places, and the comparison would remove its core from the
@@ -40,22 +49,21 @@ Gaia queries write them); without a catalog, or with one that has no proper
 motions, nothing is protected. A cosmic ray inside such a circle is left to
 ``crreject``. ``protect_stars = false`` turns this off.
 
-Defaults. WFC3/IR: ``protect_radius = 0.4``, ``protect_min_motion = 0``, that
-is, every catalog star with a proper motion is protected, moved or not. On the
-18 F105W exposures of pg004 (4 from 2016, 14 from 2022) the flags on stars lie
-within 2.5 native pixels (0.32 arcsec) of the star. Stars that moved more than
-40 mas (0.3 pixel) lose their cores in the minority epoch; with a threshold of
-0.15 pixel those are all recovered, but 4 of 76 unsaturated Gaia stars still
-lose 1 to 10 percent to single flags on their peak pixel, in either epoch, and
-the single-epoch filters show the same (4 to 9 such flags in four exposures):
-the peak pixel of a star 1.1 pixels wide changes with the sub-pixel position
-by more than the test allows. With every catalog star protected none of the 76
-changes. Cosmic rays on this detector are removed up the ramp before this
-step, so little is given up. ACS/WFC: ``protect_radius = 0.25`` (scaled by the
-narrower PSF), ``protect_min_motion = 0.15``, so that in single-epoch data,
-where a visit of one exposure has only this step to find its cosmic rays,
-stars stay in the comparison. Neither ACS value has been measured on two-epoch
-data.
+Defaults. A star is protected only where the catalog predicts a motion that
+matters for the comparison: ``protect_min_motion = 0.15`` native pixel between
+the first and the last exposure that contains it, on both detectors (Hollis,
+2026-11-14). Exposures of one epoch therefore protect nothing and every star
+stays in the comparison. WFC3/IR: ``protect_radius = 0.4``. On the 18 F105W
+exposures of pg004 (4 from 2016, 14 from 2022) the flags on stars lie within
+2.5 native pixels (0.32 arcsec) of the star, and stars lose their cores in the
+minority epoch once they moved more than 40 mas (0.3 pixel), so the threshold
+sits at half the motion that showed a loss. With it 58 of 90 catalog stars are
+protected and all 76 unsaturated Gaia stars keep their flux to 1 percent
+(together with the scale above, which deals with the peak pixels of stars
+that did not move). ``protect_min_motion = 0`` protects every catalog star
+with a proper motion. ACS/WFC: ``protect_radius = 0.25`` (scaled by the
+narrower PSF) and the same 0.15 pixel; neither has been measured on two-epoch
+ACS data.
 """
 
 import os
@@ -71,8 +79,8 @@ from campfire_pipeline.hst.exposure import OUTLIER_EXT, open_exposure
 DEFAULTS = {
     'acswfc': {'snr': (3.5, 3.0), 'scale': (1.2, 0.7),
                'protect_radius': 0.25, 'protect_min_motion': 0.15},
-    'wfc3ir': {'snr': (8.0, 5.0), 'scale': (2.5, 0.7),
-               'protect_radius': 0.4, 'protect_min_motion': 0.0},
+    'wfc3ir': {'snr': (8.0, 5.0), 'scale': (5.0, 0.7),
+               'protect_radius': 0.4, 'protect_min_motion': 0.15},
 }
 _COMMON = {'grow': 1, 'pixfrac': 1.0, 'kernel': 'square',
            'minmed_nsigma': (4.0, 3.0), 'minmed_max_n': 3,

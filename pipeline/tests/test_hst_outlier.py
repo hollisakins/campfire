@@ -133,12 +133,13 @@ def test_exposures_days_apart_and_the_motion_threshold(tmp_path):
         hdul['SCI', 1].data[38:41, 38:41] += 50 * _SIGMA
     star = Table({'RA': [34.4], 'DEC': [-5.2], 'pmra': [0.0], 'pmdec': [50.0],
                   'ref_epoch': [2016.5]})
-    # with a motion threshold the star has not moved, and stays in the comparison
-    outlier_step(files, refcat=star, step_config={'protect_min_motion': 0.15})
+    # by default a star that has not moved stays in the comparison
+    outlier_step(files, refcat=star)
     assert fits.getdata(files[0], (OUTLIER_EXT, 1))[38:41, 38:41].sum() >= 7
     assert ' prot=0 ' in cfp.step_value(files[0], 'CFP_OUT', keyset=cfp.HST)
-    # the WFC3/IR default protects every catalog star with a proper motion
-    outlier_step(files, refcat=star, overwrite=True)
+    # a threshold of zero protects every catalog star with a proper motion
+    outlier_step(files, refcat=star, step_config={'protect_min_motion': 0},
+                 overwrite=True)
     assert fits.getdata(files[0], (OUTLIER_EXT, 1))[36:43, 36:43].sum() == 0
     assert ' prot=1 ' in cfp.step_value(files[0], 'CFP_OUT', keyset=cfp.HST)
 
