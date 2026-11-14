@@ -213,18 +213,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   30 mas in 2023 against the galaxies, and Gaia stars moved to the date scatter 10 to
   15 mas about COSMOS2025 against 35 mas at their listed positions.
   `imaging/refcat/query.py`, `tests/test_refcat_query.py`.
-- **NIRCam `outlier` protects catalog stars that moved, with
-  `cross_program_overlap = true` only.** Exposures of different programs can be
-  years apart, and a star with a proper motion is then at a different place in
-  each; the comparison would remove its core. With the cross-program comparison
-  on, a star of the field's reference catalog (`[<field>.align].refcat`) is left
+- **NIRCam `outlier` protects catalog stars that moved between the exposures
+  compared.** Those exposures can be months or years apart (a program that
+  returns to a field, or other programs with `cross_program_overlap = true`),
+  and a star with a proper motion is then at a different place in each; the
+  comparison would remove its core. The motion is the only gate: a visit
+  compared with exposures taken within days protects nothing and is flagged
+  exactly as before, so single-epoch fields are unchanged; a field where one
+  program returned, or a cross-program run, changes at the cores of the stars
+  that moved. A star of the field's reference catalog (`[<field>.align].refcat`) is left
   alone where the catalog proper motion moves it `protect_min_motion` (0.15)
   native pixels or more between the first and last exposure compared that contain
   it, within `protect_radius` (0.4 arcsec) of its position on each exposure's
   date; `protect_stars = false` turns it off. A flag the test sets there is taken
   back with the pixel values, before the region grow, and `CFP_OUT` records the
-  number (`star_protect: N px released`). Both implementations. The default
-  intra-program comparison is unchanged. The rule is the HST field-level pass's;
+  number (`star_protect: N px released`). Both implementations. A field
+  without a catalog, or whose catalog has no proper motions, is not protected.
+  The rule is the HST field-level pass's;
   the two values were measured on WFC3/IR and not on NIRCam, and no NIRCam data
   with two epochs has been run. On four F277W exposures of one epoch, with every
   catalog star forced on, the circles sit on the stars (brightest pixel 0.4 pixel

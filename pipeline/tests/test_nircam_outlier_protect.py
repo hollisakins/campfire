@@ -1,4 +1,4 @@
-"""Star protection in the NIRCam outlier step (cross-program comparison).
+"""Star protection in the NIRCam outlier step.
 
 Synthetic NIRCam files with a gwcs, three exposures of one pointing: two on one
 date and one three years later. The catalog has a fast star (50 mas/yr), a slow
@@ -95,16 +95,17 @@ def test_a_catalog_without_proper_motions_or_a_file_without_a_date(tmp_path):
     assert outlier_protect.protection_for_visit(files, files, catalog)[0] == {}
 
 
-def test_only_the_cross_program_comparison_is_protected(tmp_path):
+def test_the_step_protects_on_motion_alone(tmp_path):
     files, catalog, _ = _scene(tmp_path)
-    assert _star_protection({}, False, files, files, catalog) == {}
-    assert _star_protection({'protect_stars': False}, True, files, files,
-                            catalog) == {}
-    assert _star_protection({}, True, files, files, None) == {}
-    assert set(_star_protection({}, True, files, files, catalog)) == set(files)
+    # whichever exposures are compared; the settings are the only switches
+    assert set(_star_protection({}, files, files, catalog)) == set(files)
+    assert _star_protection({'protect_stars': False}, files, files, catalog) == {}
+    assert _star_protection({}, files, files, None) == {}
     # with a threshold no star reaches, nothing
-    assert _star_protection({'protect_min_motion': 10.0}, True, files, files,
+    assert _star_protection({'protect_min_motion': 10.0}, files, files,
                             catalog) == {}
+    # the two exposures of one date, compared alone
+    assert _star_protection({}, files[:2], files[:2], catalog) == {}
 
 
 def test_release_takes_back_the_flags_and_the_blanked_values(tmp_path):

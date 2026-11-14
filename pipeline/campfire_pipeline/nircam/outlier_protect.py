@@ -1,9 +1,12 @@
 """Star protection for the NIRCam outlier step.
 
-With ``[nircam.outlier].cross_program_overlap = true`` a visit is compared with
-every exposure that overlaps it, whatever the program, and those can be years
-apart. A star with a proper motion then sits at a different place in the other
-exposures, and the comparison removes its core from the visit. The rule is the
+A visit is compared with the exposures that overlap it: those of its own
+program by default, every program's with
+``[nircam.outlier].cross_program_overlap = true``. Either set can span months
+or years (a program that returns to a field; different programs). A star with
+a proper motion then sits at a different place in the other exposures, and the
+comparison removes its core from the visit. The gate is the motion alone
+(Hollis, 2026-11-14), whichever exposures are compared. The rule is the
 one the HST field-level pass uses (``imaging/outlier.py::star_protection``): a
 star of the reference catalog is protected where the catalog proper motion
 moves it by ``protect_min_motion`` native pixels or more between the first and
@@ -17,7 +20,9 @@ pixel values the test blanked. One difference from the HST pass follows: a
 flag inside a circle can still lower the threshold for its neighbors just
 outside it.
 
-Nothing here runs with the default intra-program comparison.
+A comparison set taken within days protects nothing: no catalog star is fast
+enough, no exposure is opened, and the step runs exactly as it did without
+this module.
 """
 
 import numpy as np

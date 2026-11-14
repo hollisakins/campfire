@@ -472,28 +472,38 @@ def _outlier_refcat(field, config, cfg):
     """The field's reference catalog for the outlier step's star protection,
     or ``None``.
 
-    Needed only with ``cross_program_overlap`` (exposures of different
-    programs can be years apart, and a star with a proper motion is then at a
-    different place in each). The catalog is the one align uses,
-    ``[<field>.align].refcat``; a field without one, or whose file is missing,
-    runs without protection and says so.
+    Exposures compared with each other can be months or years apart (one
+    program returning to a field, or the cross-program comparison), and a star
+    with a proper motion is then at a different place in each. The catalog is
+    the one align uses, ``[<field>.align].refcat``; only its rows with a
+    proper motion are kept, since nothing else can be protected. A field
+    without a catalog, or whose catalog has no proper motions, runs without
+    protection and says so.
     """
-    if not cfg.get('cross_program_overlap', False) \
-            or not cfg.get('protect_stars', True):
+    if not cfg.get('protect_stars', True):
         return None
     name = get_nircam_step_config('align', config, field).get('refcat')
     refcat_dir = getattr(field, 'refcat_dir', None)
     path = os.path.join(refcat_dir, name) if name and refcat_dir else None
     if path is None or not os.path.exists(path):
-        log("outlier: cross_program_overlap is on but the field has no "
-            "reference catalog ([<field>.align].refcat), so stars that moved "
-            "between programs are not protected")
+        log("outlier: the field has no reference catalog "
+            "([<field>.align].refcat), so stars that moved between exposures "
+            "are not protected")
         return None
+    from campfire_pipeline.imaging.refcat.io import has_proper_motion
     from campfire_pipeline.nircam.refcat.io import read_refcat
     refcat = read_refcat(path)
+    if not has_proper_motion(refcat):
+        log(f"outlier: {os.path.basename(path)} has no proper motions, so "
+            f"stars that moved between exposures are not protected")
+        return None
+    import numpy as np
+    from campfire_pipeline.imaging.refcat.motion import _float_col
+    moving = np.isfinite(_float_col(refcat, 'pmra')) \
+        & np.isfinite(_float_col(refcat, 'pmdec'))
     log(f"outlier: star protection from {os.path.basename(path)} "
-        f"({len(refcat)} sources)")
-    return refcat
+        f"({int(moving.sum())} stars with a proper motion)")
+    return refcat[moving] if moving.any() else None
 
 
 def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,

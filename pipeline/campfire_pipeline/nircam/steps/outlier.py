@@ -336,30 +336,31 @@ def _compute_overlap_inputs(visit_files, filter_files, sregions, cross_program):
     return visit_files + overlap_files
 
 
-def _star_protection(step_config, cross_program, all_inputs, visit_files,
-                     refcat):
+def _star_protection(step_config, all_inputs, visit_files, refcat):
     """Masks around catalog stars that moved between the exposures compared
     (``nircam/outlier_protect.py``), or ``{}``.
 
-    Only with ``cross_program_overlap``: the default comparison stays inside a
-    program and is left exactly as it was. ``protect_stars = false`` turns the
-    protection off; without a reference catalog there is nothing to go by.
+    The gate is the motion alone, whichever exposures are compared: a visit
+    whose comparison set was taken within days protects nothing and runs
+    exactly as before; one program returning to a field a year later, or the
+    cross-program comparison, protects the stars that moved
+    ``protect_min_motion`` native pixels or more. ``protect_stars = false``
+    turns the protection off; without a reference catalog there is nothing to
+    go by.
     """
-    if not cross_program or not step_config.get('protect_stars', True):
-        return {}
-    if refcat is None:
-        log("  outlier: no reference catalog, so no star is protected")
+    if not step_config.get('protect_stars', True) or refcat is None:
         return {}
     from campfire_pipeline.nircam.outlier_protect import protection_for_visit
 
+    min_motion = float(step_config.get('protect_min_motion', 0.15))
     masks, info = protection_for_visit(
         all_inputs, visit_files, refcat,
         radius=float(step_config.get('protect_radius', 0.4)),
-        min_motion=float(step_config.get('protect_min_motion', 0.15)))
-    log(f"  outlier: exposures span {info['span_years']:.2f} yr; "
-        f"{info['n_protected']} catalog star(s) moved "
-        f"{float(step_config.get('protect_min_motion', 0.15)):g} px or more "
-        f"and are protected")
+        min_motion=min_motion)
+    if info['n_protected']:
+        log(f"  outlier: exposures span {info['span_years']:.2f} yr; "
+            f"{info['n_protected']} catalog star(s) moved {min_motion:g} px "
+            f"or more and are protected")
     return masks
 
 
@@ -418,9 +419,8 @@ def outlier_step(visit, visit_files, filter_files, sregions,
                  refcat=None):
     """Run outlier detection on one visit's exposures.
 
-    ``refcat`` is the field's reference catalog; with
-    ``cross_program_overlap`` its stars that moved between the exposures
-    compared are protected (see ``_star_protection``).
+    ``refcat`` is the field's reference catalog; its stars that moved between
+    the exposures compared are protected (see ``_star_protection``).
 
     Parameters
     ----------
@@ -469,8 +469,7 @@ def outlier_step(visit, visit_files, filter_files, sregions,
         os.path.basename(f).removesuffix('.fits'): _capture_extras(f)
         for f in visit_files
     }
-    protect = _star_protection(step_config, cross_program, all_inputs,
-                               visit_files, refcat)
+    protect = _star_protection(step_config, all_inputs, visit_files, refcat)
 
     params = {
         'assign_mtwcs': {'skip': True},
@@ -687,8 +686,8 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
         extras_per_visit=saved_extras,
         plot=do_plot,
         grow=grow,
-        protect=_star_protection(step_config, cross_program, all_inputs,
-                                 visit_files, refcat),
+        protect=_star_protection(step_config, all_inputs, visit_files,
+                                 refcat),
     )
 
     _write_outlier_manifest(visit, field, filtname, all_inputs, manifest_path)
