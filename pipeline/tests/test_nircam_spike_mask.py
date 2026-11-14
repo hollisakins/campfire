@@ -44,7 +44,8 @@ def test_band_mag_redder_star_is_brighter_in_the_near_ir():
 def test_model_sample_and_reach_continue_past_the_raster():
     m = _toy_model()
     on_arm = m.sample(np.array([0.0, 0.0]), np.array([5.0, 60.0]))
-    assert on_arm[0] == pytest.approx(1e-3 * 5.0 ** sm.ARM_SLOPE, rel=0.05)
+    # the table is an envelope (maximum over neighbouring samples): a little high
+    assert on_arm[0] == pytest.approx(1e-3 * 5.0 ** sm.ARM_SLOPE, rel=0.1)
     # 60" is beyond the 20" raster: power-law continuation of the arm
     assert on_arm[1] == pytest.approx(1e-3 * 60.0 ** sm.ARM_SLOPE, rel=0.15)
     off_arm = m.sample(np.array([30.0, 3.0]), np.array([30.0, 3.0]))

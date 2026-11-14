@@ -140,10 +140,11 @@ class SpikeModel:
     returns the fraction of total flux per raw pixel **in the spike arms only**:
     the smooth halo (the median over azimuth at each radius) is removed, because
     a mask is wanted for the narrow arms, not for the star's broad scattered
-    light, which the background steps handle. Inside the raster it is a
-    nearest-pixel lookup (the mask grade is a block maximum, which must not be
-    interpolated down); outside, the value on a ring just inside the raster
-    edge at the same azimuth, continued with the arm power law.
+    light, which the background steps handle. The value comes from a table per
+    arm (distance along the arm, offset across it) that falls monotonically
+    away from the arm axis and with distance, so a threshold gives one clean
+    strip per arm; beyond the raster the outermost cross-section is continued
+    with the arm power law at constant width in arcsec.
 
     ``width_scale`` stretches every arm across its own axis: real arms are wider
     than this pre-flight model (see ``[nircam.spike_mask].width_scale``).
@@ -152,6 +153,7 @@ class SpikeModel:
     # arm directions [deg from +y toward +x]: six from the hexagonal segments,
     # two from the vertical secondary-mirror strut
     ARMS = np.array([0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 90.0, 270.0])
+    P_MAX = 15.0        # arcsec: tabulated half-width across an arm
 
     def __init__(self, img, pixscl, ctr, pixarea0, wave):
         img = np.asarray(img, dtype=np.float32)
@@ -178,26 +180,33 @@ class SpikeModel:
         self.img = np.maximum(img - halo[rbin].reshape(img.shape), 0.0)
         del yy, xx
 
-        # ring profile: maximum over a few-pixel radial window, 0.05 deg bins
-        # (finer than a model pixel at the ring, so arm widths are kept)
-        self._naz = 7200
-        az = (np.arange(self._naz) + 0.5) * 2 * math.pi / self._naz
-        ring = np.zeros(self._naz, dtype=np.float32)
-        for dr in np.arange(-3, 4):
-            rr = self.r_ring / self.pixscl + dr
-            ix = np.rint(self.ctr + rr * np.sin(az)).astype(int)
-            iy = np.rint(self.ctr + rr * np.cos(az)).astype(int)
-            ring = np.maximum(ring, self.img[iy, ix])
-        self._ring = ring
-
-        # brightest value at each radius (for "how far does this star reach")
-        yy, xx = np.indices(self.img.shape)
-        rpx = np.hypot(yy - self.ctr, xx - self.ctr)
-        rbin = np.minimum(rpx.astype(int), int(half_px))
-        env = np.zeros(int(half_px) + 1, dtype=np.float64)
-        np.maximum.at(env, rbin.ravel(), self.img.ravel())
-        env = env[:int(self.r_ring / self.pixscl)]
-        self._env = np.maximum.accumulate(env[::-1])[::-1]   # non-increasing
+        # Arm tables: each arm resampled to (distance along the arm, offset
+        # across it), folded about its axis, then made monotone: falling away
+        # from the axis (so a threshold gives one strip, without detached
+        # speckles) and falling with distance (so a strip has no gaps). A
+        # thresholded raster has ragged, dashed edges; these do not.
+        from scipy.ndimage import maximum_filter
+        self._dp = 0.5 * self.pixscl
+        n_r = int(self.r_ring / self.pixscl) + 1
+        n_p = int(self.P_MAX / self._dp) + 1
+        rr = np.arange(n_r) * self.pixscl
+        pp = np.arange(n_p) * self._dp
+        tab = np.zeros((len(self.ARMS), n_r, n_p), dtype=np.float32)
+        for k, a in enumerate(np.radians(self.ARMS)):
+            for side in (-1.0, 1.0):
+                x = rr[:, None] * math.sin(a) + side * pp[None, :] * math.cos(a)
+                y = rr[:, None] * math.cos(a) - side * pp[None, :] * math.sin(a)
+                ix = np.rint(self.ctr + x / self.pixscl).astype(int)
+                iy = np.rint(self.ctr + y / self.pixscl).astype(int)
+                ok = (ix >= 0) & (ix < n) & (iy >= 0) & (iy < n)
+                v = np.where(ok, self.img[np.clip(iy, 0, n - 1),
+                                          np.clip(ix, 0, n - 1)], 0.0)
+                tab[k] = np.maximum(tab[k], v)
+        tab = maximum_filter(tab, size=(1, 3, 3))
+        tab = np.minimum.accumulate(tab, axis=2)                    # across
+        tab = np.maximum.accumulate(tab[:, ::-1], axis=1)[:, ::-1]  # along
+        self._tab = np.log(np.maximum(tab, 1e-30)).astype(np.float32)
+        self._env = tab[:, :, 0].max(axis=0).astype(np.float64)
 
     @classmethod
     def from_fits(cls, path):
@@ -209,33 +218,29 @@ class SpikeModel:
 
     def sample(self, x, y, width_scale=1.0):
         r = np.hypot(x, y)
-        if width_scale != 1.0:
-            # move each position toward its nearest arm axis by 1/width_scale
-            az = np.degrees(np.arctan2(x, y))
-            d = (az[..., None] - self.ARMS + 180.0) % 360.0 - 180.0
-            k = np.argmin(np.abs(d), axis=-1)
-            dk = np.take_along_axis(d, k[..., None], axis=-1)[..., 0]
-            az = np.radians(self.ARMS[k] + dk / width_scale)
-            x, y = r * np.sin(az), r * np.cos(az)
-        out = np.empty(r.shape, dtype=np.float32)
-        inside = r < self.r_ring
-        ix = np.rint(self.ctr + x[inside] / self.pixscl).astype(int)
-        iy = np.rint(self.ctr + y[inside] / self.pixscl).astype(int)
-        out[inside] = self.img[iy, ix]
-        o = ~inside
-        if o.any():
-            # An arm keeps its width in arcsec, not in angle: look the ring up
-            # at the azimuth with the same offset across the nearest arm axis.
-            az = np.degrees(np.arctan2(x[o], y[o]))
-            d = (az[..., None] - self.ARMS + 180.0) % 360.0 - 180.0
-            ka = np.argmin(np.abs(d), axis=-1)
-            dk = np.take_along_axis(d, ka[..., None], axis=-1)[..., 0]
-            perp = r[o] * np.sin(np.radians(dk)) / self.r_ring
-            on = np.abs(perp) < 0.5
-            azr = np.radians(self.ARMS[ka] + np.degrees(np.arcsin(np.where(on, perp, 0.0))))
-            k = ((azr % (2 * math.pi)) * self._naz / (2 * math.pi)).astype(int) % self._naz
-            out[o] = np.where(on, self._ring[k] * (r[o] / self.r_ring) ** ARM_SLOPE, 0.0)
-        return out
+        az = np.degrees(np.arctan2(x, y))
+        d = (az[..., None] - self.ARMS + 180.0) % 360.0 - 180.0
+        k = np.argmin(np.abs(d), axis=-1)
+        dk = np.radians(np.take_along_axis(d, k[..., None], axis=-1)[..., 0])
+        # an arm keeps its width in arcsec at every distance
+        p = r * np.abs(np.sin(dk)) / width_scale
+        n_r, n_p = self._tab.shape[1:]
+        r_in = np.minimum(r, self.r_ring)
+        fr = np.clip(r_in / self.pixscl, 0, n_r - 1.001)
+        fp = p / self._dp
+        on = fp < n_p - 1.001
+        fp = np.where(on, fp, 0.0)
+        i0, j0 = fr.astype(int), fp.astype(int)
+        wr, wp = (fr - i0).astype(np.float32), (fp - j0).astype(np.float32)
+        t = self._tab
+        val = ((1 - wr) * (1 - wp) * t[k, i0, j0] + wr * (1 - wp) * t[k, i0 + 1, j0]
+               + (1 - wr) * wp * t[k, i0, j0 + 1] + wr * wp * t[k, i0 + 1, j0 + 1])
+        out = np.exp(val)
+        out[out < 1e-25] = 0.0
+        far = r > self.r_ring
+        if far.any():
+            out[far] *= (r[far] / self.r_ring) ** ARM_SLOPE
+        return np.where(on, out, 0.0).astype(np.float32)
 
     def reach(self, level):
         """Largest radius [arcsec] at which any pixel is at or above ``level``."""
