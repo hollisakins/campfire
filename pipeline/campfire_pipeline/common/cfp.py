@@ -79,6 +79,7 @@ NIRCAM = Keyset(
         'CFP_JHAT',  # WCS alignment
         'CFP_ALGN',  # adaptive astrometric align (replaces jhat/wcs_shift)
         'CFP_MASK',  # user region masks
+        'CFP_SPKE',  # diffraction-spike mask (opt-in ensemble step)
         'CFP_BPIX',  # bad pixel mask
         'CFP_OUT',   # outlier detection (per-visit ensemble)
     ],
@@ -96,6 +97,7 @@ NIRCAM = Keyset(
         'CFP_JHAT': 'campfire: jhat refcat used',
         'CFP_ALGN': 'campfire: align solve',
         'CFP_MASK': 'campfire: user masks applied',
+        'CFP_SPKE': 'campfire: spike mask recorded',
         'CFP_BPIX': 'campfire: bad pixel mask applied',
         'CFP_OUT':  'campfire: outlier detection done',
     },

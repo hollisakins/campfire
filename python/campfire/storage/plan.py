@@ -53,7 +53,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .hashing import exposure_identities_parallel, hash_files_parallel
 
-# Product types whose push identity is the science-only SCI+DQ+CFMASK digest.
+# Product types whose push identity is the science-only SCI+DQ+CFMASK+CFSPIKE digest.
 IDENTITY_SCI_DQ_TYPES = frozenset({'nircam_exposure'})
 
 # mtime comparison tolerance (matches verify_local_objects).

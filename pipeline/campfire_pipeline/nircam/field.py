@@ -114,7 +114,7 @@ def _read_date_obs(path):
 _DO_NOT_USE = np.uint32(1)
 
 
-def _prime_work_copy(path):
+def _prime_work_copy(path, fuse_spike=False):
     """Prime a freshly-copied combine working copy for the ensemble steps.
 
     Fuses the canonical's CFMASK extension into the working copy's DQ as
@@ -129,7 +129,17 @@ def _prime_work_copy(path):
             dq = np.asarray(hdul['DQ'].data)
             dq[masked] |= _DO_NOT_USE
             hdul['DQ'].data = dq          # reassign so astropy flushes the change
+        # Diffraction-spike mask (spike_mask step): same contract as CFMASK, but
+        # only when the step is enabled in mask mode for this run and the
+        # extension itself was written to be applied (not a report-only pass).
+        if (fuse_spike and 'CFSPIKE' in hdul and 'DQ' in hdul
+                and hdul['CFSPIKE'].header.get('SPKFUSE', False)):
+            masked = np.asarray(hdul['CFSPIKE'].data).astype(bool)
+            dq = np.asarray(hdul['DQ'].data)
+            dq[masked] |= _DO_NOT_USE
+            hdul['DQ'].data = dq
         hdr = hdul[0].header
+        hdr['SPKFUSED'] = (bool(fuse_spike), 'campfire: CFSPIKE fused into DQ')
         for key in ('CFP_BPIX', 'CFP_OUT'):
             if key in hdr:
                 del hdr[key]
@@ -434,7 +444,7 @@ class Field:
             'detector1', 'jackknife', 'persistence', 'wisp', 'image2',
             'edge', 'bkg', 'diag_striping',
             'wcs_shift', 'jhat', 'align',
-            'apply_mask', 'bad_pixel', 'outlier', 'resample',
+            'apply_mask', 'spike_mask', 'bad_pixel', 'outlier', 'resample',
         }
 
         # Parse tile WCS definitions. A tile is any non-reserved sub-table
@@ -812,7 +822,7 @@ class Field:
                             f'{rootname}.fits')
 
     def materialize_work(self, filter_name, status=None, overwrite=False,
-                         exclude_not_aligned=False):
+                         exclude_not_aligned=False, fuse_spike=False):
         """Refresh the combine working copies for a filter; return their paths.
 
         The combine phase must not mutate the canonical per-exposure FITS (those
@@ -863,12 +873,15 @@ class Field:
                 overwrite
                 or not os.path.exists(dst)
                 or os.path.getmtime(src) > os.path.getmtime(dst)
+                # the spike mask was switched on or off since this copy was made
+                or bool(fits.getheader(dst, 0).get('SPKFUSED', False))
+                != bool(fuse_spike)
             )
             if not stale:
                 continue
             tmp = dst + '.tmp'
             shutil.copyfile(src, tmp)      # content only → work copy gets a fresh mtime
-            _prime_work_copy(tmp)          # fuse mask + clear combine stamps on the tmp
+            _prime_work_copy(tmp, fuse_spike=fuse_spike)          # fuse mask + clear combine stamps on the tmp
             os.replace(tmp, dst)           # atomic reveal of the primed copy
 
         if status is not None:

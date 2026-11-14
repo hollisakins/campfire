@@ -64,6 +64,7 @@ PROCESS_STEPS = [
 
 COMBINE_STEPS = [
     ('apply_mask', 'CFP_MASK'),
+    ('spike_mask', 'CFP_SPKE'),
     ('bad_pixel',  'CFP_BPIX'),
     ('outlier',    'CFP_OUT'),
     ('resample',   None),
@@ -417,6 +418,38 @@ def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status,
     status.rescan(pending)
 
 
+def _spike_fuse(field, config):
+    """True when the spike mask should be applied to the combine working copies."""
+    cfg = get_nircam_step_config('spike_mask', config, field)
+    return bool(cfg.get('enabled', False)) and cfg.get('mode', 'mask') == 'mask'
+
+
+def _run_spike_mask(field, config, filtname, n_processes, overwrite, status,
+                    tiles=None, epoch=None):
+    """Opt-in diffraction-spike mask (``[nircam.spike_mask].enabled``).
+
+    An ensemble step: a spike pixel is masked only where exposures at another
+    roll angle cover the same sky, so the whole filter is recomputed whenever
+    any exposure lacks ``CFP_SPKE``. Writes the canonical's CFSPIKE extension.
+    """
+    cfg = get_nircam_step_config('spike_mask', config, field)
+    if not cfg.get('enabled', False):
+        log(f"spike_mask: disabled by config; skipping {filtname}")
+        return
+    exposures = field.get_exposure_files(filtname, tiles=tiles, epoch=epoch)
+    if not exposures:
+        log(f"spike_mask: no exposures for {filtname}")
+        return
+    pending, _ = _filter_pending('spike_mask', exposures, 'CFP_SPKE', status,
+                                 overwrite)
+    if not pending:
+        return
+    from campfire_pipeline.nircam.steps.spike_mask import spike_mask_filter
+    spike_mask_filter(filtname, exposures, field, cfg, overwrite=overwrite,
+                      status=status)
+    status.mark_all(exposures, 'CFP_SPKE')
+
+
 def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status,
                    tiles=None, epoch=None):
     # Combine phase: operate on the working copies, never the frozen canonical.
@@ -615,6 +648,7 @@ _RUNNERS = {
     'preview':     functools.partial(_run_per_exposure, 'preview'),
     'jhat':        functools.partial(_run_per_exposure, 'jhat'),
     'apply_mask':  functools.partial(_run_per_exposure, 'apply_mask'),
+    'spike_mask':  _run_spike_mask,
     'bad_pixel':   _run_bad_pixel,
     'outlier':     _run_outlier,
     # 'resample' handled in run_combine/run_step (needs reduction_version)
@@ -1017,16 +1051,18 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
     for filt in filters:
         log(f"--- Combine: {filt} ---")
         for step_name, _ in COMBINE_STEPS:
-            if step_name == 'apply_mask':
-                # apply_mask writes the canonical (CFMASK extension only) — the
-                # last thing to touch the frozen canonical this phase. Then
-                # refresh the disposable working copies the ensemble steps
-                # mutate (copy canonical -> work where stale, fuse CFMASK ->
-                # DO_NOT_USE) and rescan them into the status cache.
+            if step_name == 'spike_mask':
+                # apply_mask and spike_mask write the canonical (CFMASK /
+                # CFSPIKE extensions only); spike_mask is the last thing to
+                # touch the frozen canonical this phase. Then refresh the
+                # disposable working copies the ensemble steps mutate (copy
+                # canonical -> work where stale, fuse CFMASK and, when enabled,
+                # CFSPIKE -> DO_NOT_USE) and rescan them into the status cache.
                 _RUNNERS[step_name](field, config, filt, n_processes,
                                     overwrite, status, tiles=tiles, epoch=epoch)
                 field.materialize_work(filt, status=status, overwrite=overwrite,
-                                       exclude_not_aligned=exclude_not_aligned)
+                                       exclude_not_aligned=exclude_not_aligned,
+                                       fuse_spike=_spike_fuse(field, config))
             elif step_name == 'resample':
                 _run_resample(field, config, filt, n_processes, overwrite,
                               status, reduction_version, tiles=tiles,
@@ -1072,7 +1108,8 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
         # and primed (canonical -> work, CFMASK -> DO_NOT_USE) before it runs.
         if step_name in _COMBINE_WORK_STEPS:
             field.materialize_work(filt, status=status, overwrite=overwrite,
-                                   exclude_not_aligned=exclude_not_aligned)
+                                   exclude_not_aligned=exclude_not_aligned,
+                                   fuse_spike=_spike_fuse(field, config))
         if step_name == 'resample':
             reduction_version = _resolve_reduction_version(config)
             _run_resample(field, config, filt, n_processes, overwrite,
