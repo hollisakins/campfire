@@ -336,6 +336,33 @@ def _compute_overlap_inputs(visit_files, filter_files, sregions, cross_program):
     return visit_files + overlap_files
 
 
+def _star_protection(step_config, cross_program, all_inputs, visit_files,
+                     refcat):
+    """Masks around catalog stars that moved between the exposures compared
+    (``nircam/outlier_protect.py``), or ``{}``.
+
+    Only with ``cross_program_overlap``: the default comparison stays inside a
+    program and is left exactly as it was. ``protect_stars = false`` turns the
+    protection off; without a reference catalog there is nothing to go by.
+    """
+    if not cross_program or not step_config.get('protect_stars', True):
+        return {}
+    if refcat is None:
+        log("  outlier: no reference catalog, so no star is protected")
+        return {}
+    from campfire_pipeline.nircam.outlier_protect import protection_for_visit
+
+    masks, info = protection_for_visit(
+        all_inputs, visit_files, refcat,
+        radius=float(step_config.get('protect_radius', 0.4)),
+        min_motion=float(step_config.get('protect_min_motion', 0.15)))
+    log(f"  outlier: exposures span {info['span_years']:.2f} yr; "
+        f"{info['n_protected']} catalog star(s) moved "
+        f"{float(step_config.get('protect_min_motion', 0.15)):g} px or more "
+        f"and are protected")
+    return masks
+
+
 def _visit_is_up_to_date(visit, visit_files, all_inputs, manifest_path, status):
     """Decide whether a visit can skip outlier detection.
 
@@ -387,8 +414,13 @@ def _write_outlier_manifest(visit, field, filtname, all_inputs, manifest_path):
 
 
 def outlier_step(visit, visit_files, filter_files, sregions,
-                 field, step_config, overwrite=False, status=None):
+                 field, step_config, overwrite=False, status=None,
+                 refcat=None):
     """Run outlier detection on one visit's exposures.
+
+    ``refcat`` is the field's reference catalog; with
+    ``cross_program_overlap`` its stars that moved between the exposures
+    compared are protected (see ``_star_protection``).
 
     Parameters
     ----------
@@ -437,6 +469,8 @@ def outlier_step(visit, visit_files, filter_files, sregions,
         os.path.basename(f).removesuffix('.fits'): _capture_extras(f)
         for f in visit_files
     }
+    protect = _star_protection(step_config, cross_program, all_inputs,
+                               visit_files, refcat)
 
     params = {
         'assign_mtwcs': {'skip': True},
@@ -520,9 +554,25 @@ def outlier_step(visit, visit_files, filter_files, sregions,
                     sci_before = hdul['SCI'].data.copy()
                     dq_before = hdul['DQ'].data.copy()
 
+            star_mask = protect.get(canonical)
+            kept = None
+            if star_mask is not None:
+                # canonical on disk is still pre-outlier here
+                from campfire_pipeline.nircam import outlier_protect
+                with ImageModel(canonical) as before:
+                    kept = outlier_protect.snapshot(before, star_mask)
+
             with ImageModel(scratch_out) as model:
                 cfp_val = None
                 grow_added = None
+                if kept is not None:
+                    from jwst.datamodels.dqflags import pixel as pf
+                    n_released = outlier_protect.release(
+                        model, star_mask, kept, pf['OUTLIER'])
+                    cfp_val = f'star_protect: {n_released} px released'
+                    if n_released:
+                        log(f"  outlier: {rootname} — {n_released} px "
+                            f"released around catalog stars that moved")
                 if step_config.get('grow_large_regions', False):
                     # canonical on disk is still pre-outlier here: its DQ
                     # gives the weight-carrying state before detection, so
@@ -535,8 +585,9 @@ def outlier_step(visit, visit_files, filter_files, sregions,
                     n_large, n_added, grow_added = grow_outlier_regions(
                         model.data, model.dq, preexisting_dnu=dnu_before,
                         **_grow_kwargs(step_config))
-                    cfp_val = (f'grow_large_regions: {n_large} regions, '
-                               f'+{n_added} px')
+                    grown = (f'grow_large_regions: {n_large} regions, '
+                             f'+{n_added} px')
+                    cfp_val = f'{cfp_val}; {grown}' if cfp_val else grown
                     if n_large:
                         log(f"  outlier grow: {rootname} — {n_large} large "
                             f"regions, +{n_added} px flagged")
@@ -571,7 +622,8 @@ def outlier_step(visit, visit_files, filter_files, sregions,
 
 
 def outlier_step_campfire(visit, visit_files, filter_files, sregions,
-                          field, step_config, overwrite=False, status=None):
+                          field, step_config, overwrite=False, status=None,
+                          refcat=None):
     """Per-visit outlier using campfire-native drizzle (issue #138 Phase 2 v2).
 
     Same orchestration as ``outlier_step`` (intra-program overlap
@@ -635,6 +687,8 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
         extras_per_visit=saved_extras,
         plot=do_plot,
         grow=grow,
+        protect=_star_protection(step_config, cross_program, all_inputs,
+                                 visit_files, refcat),
     )
 
     _write_outlier_manifest(visit, field, filtname, all_inputs, manifest_path)

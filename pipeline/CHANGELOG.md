@@ -213,6 +213,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   30 mas in 2023 against the galaxies, and Gaia stars moved to the date scatter 10 to
   15 mas about COSMOS2025 against 35 mas at their listed positions.
   `imaging/refcat/query.py`, `tests/test_refcat_query.py`.
+- **NIRCam `outlier` protects catalog stars that moved, with
+  `cross_program_overlap = true` only.** Exposures of different programs can be
+  years apart, and a star with a proper motion is then at a different place in
+  each; the comparison would remove its core. With the cross-program comparison
+  on, a star of the field's reference catalog (`[<field>.align].refcat`) is left
+  alone where the catalog proper motion moves it `protect_min_motion` (0.15)
+  native pixels or more between the first and last exposure compared that contain
+  it, within `protect_radius` (0.4 arcsec) of its position on each exposure's
+  date; `protect_stars = false` turns it off. A flag the test sets there is taken
+  back with the pixel values, before the region grow, and `CFP_OUT` records the
+  number (`star_protect: N px released`). Both implementations. The default
+  intra-program comparison is unchanged. The rule is the HST field-level pass's;
+  the two values were measured on WFC3/IR and not on NIRCam, and no NIRCam data
+  with two epochs has been run. On four F277W exposures of one epoch, with every
+  catalog star forced on, the circles sit on the stars (brightest pixel 0.4 pixel
+  from the center, median over 151) and the flags outside them are identical.
+  `nircam/outlier_protect.py`, `tests/test_nircam_outlier_protect.py`.
 - **Stage 1 finishes an exposure with no open shutter on the detector (#681).** `jwst`
   raises `NoDataOnDetectorError` when nothing projects onto a detector (e.g. NRS2 of
   `jw01747017001_03101`). `clean_flicker_noise` with `mask_science_regions = true` hit

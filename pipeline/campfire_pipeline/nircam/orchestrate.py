@@ -464,11 +464,41 @@ def _run_outlier(field, config, filtname, n_processes, overwrite, status,
         )
     _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
                            implementation=implementation, tiles=tiles,
-                           epoch=epoch)
+                           epoch=epoch,
+                           refcat=_outlier_refcat(field, config, cfg))
+
+
+def _outlier_refcat(field, config, cfg):
+    """The field's reference catalog for the outlier step's star protection,
+    or ``None``.
+
+    Needed only with ``cross_program_overlap`` (exposures of different
+    programs can be years apart, and a star with a proper motion is then at a
+    different place in each). The catalog is the one align uses,
+    ``[<field>.align].refcat``; a field without one, or whose file is missing,
+    runs without protection and says so.
+    """
+    if not cfg.get('cross_program_overlap', False) \
+            or not cfg.get('protect_stars', True):
+        return None
+    name = get_nircam_step_config('align', config, field).get('refcat')
+    refcat_dir = getattr(field, 'refcat_dir', None)
+    path = os.path.join(refcat_dir, name) if name and refcat_dir else None
+    if path is None or not os.path.exists(path):
+        log("outlier: cross_program_overlap is on but the field has no "
+            "reference catalog ([<field>.align].refcat), so stars that moved "
+            "between programs are not protected")
+        return None
+    from campfire_pipeline.nircam.refcat.io import read_refcat
+    refcat = read_refcat(path)
+    log(f"outlier: star protection from {os.path.basename(path)} "
+        f"({len(refcat)} sources)")
+    return refcat
 
 
 def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
-                           implementation='campfire', tiles=None, epoch=None):
+                           implementation='campfire', tiles=None, epoch=None,
+                           refcat=None):
     """Per-visit outlier dispatcher.
 
     Both implementations share the same orchestration (visit grouping,
@@ -568,7 +598,7 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
     dispatch(visit_step, tasks, n_processes=n_processes, use_starmap=True,
              filter_files=exposures, sregions=sregions,
              field=field, step_config=cfg,
-             overwrite=overwrite, status=status)
+             overwrite=overwrite, status=status, refcat=refcat)
     # Each worker writes CFP_OUT on-disk via atomic_save; sync the parent's
     # in-memory cache so the resample step later in the combine phase sees
     # freshly-stamped exposures.

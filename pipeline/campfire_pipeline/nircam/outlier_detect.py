@@ -39,6 +39,7 @@ from astropy.io import fits
 
 from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import atomic_save, log
+from campfire_pipeline.nircam import outlier_protect
 
 
 def _build_visit_wcs(crf_files):
@@ -86,6 +87,7 @@ def outlier_detect_for_visit(
     extras_per_visit=None,
     plot=False,
     grow=None,
+    protect=None,
 ):
     """Per-visit campfire-native outlier across ``all_inputs``, flag ``visit_files``.
 
@@ -119,6 +121,12 @@ def outlier_detect_for_visit(
     plot : bool
         If True, write ``<rootname>_outlier.pdf`` next to each visit
         exposure showing SCI plus the newly flagged OUTLIER pixels.
+    protect : dict, optional
+        ``{path: bool array}`` from
+        ``outlier_protect.protection_for_visit``: pixels around catalog
+        stars that moved between the exposures compared. A flag the test
+        sets there is taken back before the grow and the save, and
+        ``CFP_OUT`` records the number released.
 
     Notes
     -----
@@ -198,6 +206,9 @@ def outlier_detect_for_visit(
             # form on pixels that were already DO_NOT_USE (edge trim)
             dnu_before = (model.dq & pixel_flags['DO_NOT_USE']) != 0
             sci_for_plot = model.data.copy() if plot else None
+            star_mask = (protect or {}).get(crf)
+            kept = (outlier_protect.snapshot(model, star_mask)
+                    if star_mask is not None else None)
             # Match jwst.outlier_detection.imaging.detect_outliers: pass
             # only median_sci. flag_resampled_model_crs falls back to the
             # input model's own ERR for the SNR comparison when median_err
@@ -210,12 +221,20 @@ def outlier_detect_for_visit(
                 scale1=scale[0], scale2=scale[1],
                 backg=backg,
             )
+            rootname = os.path.basename(crf).removesuffix('.fits')
+            cfp_val = None
+            if kept is not None:
+                # before the grow, so a star's core cannot seed a region
+                n_released = outlier_protect.release(
+                    model, star_mask, kept, OUTLIER_BIT)
+                cfp_val = f'star_protect: {n_released} px released'
+                if n_released:
+                    log(f"  outlier: {rootname} — {n_released} px released "
+                        f"around catalog stars that moved")
             dq_after = (model.dq & OUTLIER_BIT) != 0
             n_flagged_total += int((dq_after & ~dq_before).sum())
             n_visit_flagged += 1
 
-            rootname = os.path.basename(crf).removesuffix('.fits')
-            cfp_val = None
             grow_added = None
             if grow is not None:
                 # lazy import: steps.outlier imports this module
@@ -224,8 +243,9 @@ def outlier_detect_for_visit(
                 )
                 n_large, n_added, grow_added = grow_outlier_regions(
                     model.data, model.dq, preexisting_dnu=dnu_before, **grow)
-                cfp_val = (f'grow_large_regions: {n_large} regions, '
-                           f'+{n_added} px')
+                grown = (f'grow_large_regions: {n_large} regions, '
+                         f'+{n_added} px')
+                cfp_val = f'{cfp_val}; {grown}' if cfp_val else grown
                 if n_large:
                     log(f"  outlier grow: {rootname} — {n_large} large "
                         f"regions, +{n_added} px flagged")

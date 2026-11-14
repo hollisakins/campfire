@@ -189,7 +189,8 @@ def _world_to_pixel(chip, ra, dec, iterations=6):
     return x, y
 
 
-def star_protection(chips, stars, epochs, *, radius=0.4, min_motion=0.15):
+def star_protection(chips, stars, epochs, *, radius=0.4, min_motion=0.15,
+                    masks_for=None):
     """Masks of the pixels around stars that moved between the exposures.
 
     The comparison in :func:`detect_outliers` assumes the sky is the same in
@@ -209,14 +210,18 @@ def star_protection(chips, stars, epochs, *, radius=0.4, min_motion=0.15):
     Returns ``(masks, info)``: ``masks`` is ``{chip.key: bool array}`` (True
     where :func:`detect_outliers` should not flag), ``info`` counts the stars
     with a proper motion on the chips, the stars protected and the pixels
-    masked.
+    masked. ``masks_for`` limits the masks to those chip keys (every chip
+    still counts for where and when a star was seen); a caller that flags only
+    some of the exposures it compares does not pay for the rest.
     """
     from campfire_pipeline.imaging.refcat.io import has_proper_motion
     from campfire_pipeline.imaging.refcat.motion import (_float_col,
                                                          propagate_to_epoch)
 
     chips = list(chips)
-    masks = {c.key: np.zeros(c.shape, dtype=bool) for c in chips}
+    wanted = None if masks_for is None else set(masks_for)
+    masks = {c.key: np.zeros(c.shape, dtype=bool) for c in chips
+             if wanted is None or c.key in wanted}
     info = {'n_stars': 0, 'n_protected': 0, 'n_pixels': 0,
             'radius': float(radius), 'min_motion': float(min_motion)}
     if stars is None or len(stars) == 0 or not has_proper_motion(stars):
@@ -240,8 +245,21 @@ def star_protection(chips, stars, epochs, *, radius=0.4, min_motion=0.15):
             at_epoch[mjd] = (_float_col(moved, 'RA'), _float_col(moved, 'DEC'))
         x, y = _world_to_pixel(c, *at_epoch[mjd])
         ny, nx = c.shape
-        on = (x > -0.5) & (x < nx - 0.5) & (y > -0.5) & (y < ny - 0.5)
-        positions[c.key] = (x, y, on)
+        native = float(np.sqrt(c.pixel_area_arcsec2))
+        pad = float(radius) / native + 1.0
+        close = (x > -pad) & (x < nx + pad) & (y > -pad) & (y < ny + pad)
+        if close.any():
+            # a position far off a distorted chip can land anywhere; keep
+            # only those that map back to the star (0.1 native pixel)
+            ra, dec = at_epoch[mjd]
+            back_ra, back_dec = c.pixel_to_world(x[close], y[close])
+            miss = np.hypot(
+                ((np.asarray(back_ra, float) - ra[close] + 180.0) % 360.0 - 180.0)
+                * np.cos(np.radians(dec[close])),
+                np.asarray(back_dec, float) - dec[close]) * 3600.0
+            close[np.nonzero(close)[0][~(miss < 0.1 * native)]] = False
+        on = close & (x > -0.5) & (x < nx - 0.5) & (y > -0.5) & (y < ny - 0.5)
+        positions[c.key] = (x, y, close)
         first[on] = np.minimum(first[on], mjd)
         last[on] = np.maximum(last[on], mjd)
     seen = np.isfinite(first)
@@ -254,11 +272,13 @@ def star_protection(chips, stars, epochs, *, radius=0.4, min_motion=0.15):
         return masks, info
 
     for c in chips:
-        x, y, _ = positions[c.key]
+        if c.key not in masks:
+            continue
+        x, y, close = positions[c.key]
         r = float(radius) / float(np.sqrt(c.pixel_area_arcsec2))
         ny, nx = c.shape
         mask = masks[c.key]
-        near = protect & (x > -r) & (x < nx + r) & (y > -r) & (y < ny + r)
+        near = protect & close & (x > -r) & (x < nx + r) & (y > -r) & (y < ny + r)
         for a, b in zip(x[near], y[near]):
             x0, x1 = max(int(np.floor(a - r)), 0), min(int(np.ceil(a + r)) + 1, nx)
             y0, y1 = max(int(np.floor(b - r)), 0), min(int(np.ceil(b + r)) + 1, ny)

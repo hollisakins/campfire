@@ -1015,6 +1015,19 @@
     # dominant cost driver in heavily-observed footprints (COSMOS center).
     # CR statistics within the program are unchanged.
     cross_program_overlap = false
+    # Star protection, only with cross_program_overlap = true. Exposures of
+    # different programs can be years apart; a star with a proper motion then
+    # sits at a different place in each, and the comparison would remove its
+    # core. A star of the field's reference catalog ([<field>.align].refcat)
+    # is left alone where the catalog proper motion moves it protect_min_motion
+    # native pixels or more between the first and the last exposure compared
+    # that contain it, inside protect_radius arcsec of its position on each
+    # exposure's date. Same rule as the HST field-level pass; the two values
+    # are the ones measured there on WFC3/IR and have not been measured on
+    # NIRCam. The default intra-program comparison is not affected.
+    protect_stars = true
+    protect_radius = 0.4
+    protect_min_motion = 0.15
     plot = true
 
 [nircam.resample]
