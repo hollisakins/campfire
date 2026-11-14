@@ -150,11 +150,135 @@ def _blot(image, pixmap, in_shape, interp):
         interp=interp, sinscl=1.0)
 
 
+def _world_to_pixel(chip, ra, dec, iterations=6):
+    """Pixel positions of sky positions on ``chip``, from ``pixel_to_world``
+    alone (Newton steps with a numerical Jacobian, started at the chip center).
+
+    The chip interface only maps pixels to the sky. Detector distortion is
+    smooth, so the steps converge to well under a hundredth of a pixel for a
+    position on or near the chip; a position far off the chip comes back far
+    off the chip, which is all a caller needs to discard it.
+    """
+    ra = np.atleast_1d(np.asarray(ra, float))
+    dec = np.atleast_1d(np.asarray(dec, float))
+    ny, nx = chip.shape
+    x = np.full(ra.shape, 0.5 * (nx - 1))
+    y = np.full(ra.shape, 0.5 * (ny - 1))
+    cosd = np.cos(np.radians(dec))
+    limit = 4.0 * max(nx, ny)
+
+    def sky(px, py):
+        a, d = chip.pixel_to_world(px, py)
+        return np.asarray(a, float), np.asarray(d, float)
+
+    for _ in range(int(iterations)):
+        a0, d0 = sky(x, y)
+        ax, dx_ = sky(x + 1.0, y)
+        ay, dy_ = sky(x, y + 1.0)
+        wrap = lambda v: (v + 180.0) % 360.0 - 180.0     # noqa: E731
+        # offsets on the sky in degrees, east and north
+        j11, j21 = wrap(ax - a0) * cosd, dx_ - d0        # d(east, north) / dx
+        j12, j22 = wrap(ay - a0) * cosd, dy_ - d0        # d(east, north) / dy
+        e, n = wrap(ra - a0) * cosd, dec - d0
+        det = j11 * j22 - j12 * j21
+        with np.errstate(divide='ignore', invalid='ignore'):
+            step_x = (e * j22 - n * j12) / det
+            step_y = (n * j11 - e * j21) / det
+        x = np.clip(x + np.nan_to_num(step_x), -limit, limit)
+        y = np.clip(y + np.nan_to_num(step_y), -limit, limit)
+    return x, y
+
+
+def star_protection(chips, stars, epochs, *, radius=0.4, min_motion=0.15):
+    """Masks of the pixels around stars that moved between the exposures.
+
+    The comparison in :func:`detect_outliers` assumes the sky is the same in
+    every exposure. A star with a proper motion breaks that when the exposures
+    are years apart: its core sits at a different place in the later ones, the
+    median follows the majority, and the test removes the core from the rest.
+    Those pixels are real signal, and the star comes out too faint.
+
+    ``stars`` is a reference catalog with ``RA``, ``DEC``, ``pmra``, ``pmdec``
+    (mas/yr) and ``ref_epoch`` (Julian year); rows without a finite proper
+    motion are ignored. ``epochs`` maps ``chip.key`` to the exposure date (MJD).
+    A star is protected when, between the earliest and the latest exposure that
+    contains it, it moved by at least ``min_motion`` native pixels. It is then
+    protected in every exposure that contains it, inside a circle of ``radius``
+    arcsec around its position on that exposure's date.
+
+    Returns ``(masks, info)``: ``masks`` is ``{chip.key: bool array}`` (True
+    where :func:`detect_outliers` should not flag), ``info`` counts the stars
+    with a proper motion on the chips, the stars protected and the pixels
+    masked.
+    """
+    from campfire_pipeline.imaging.refcat.io import has_proper_motion
+    from campfire_pipeline.imaging.refcat.motion import (_float_col,
+                                                         propagate_to_epoch)
+
+    chips = list(chips)
+    masks = {c.key: np.zeros(c.shape, dtype=bool) for c in chips}
+    info = {'n_stars': 0, 'n_protected': 0, 'n_pixels': 0,
+            'radius': float(radius), 'min_motion': float(min_motion)}
+    if stars is None or len(stars) == 0 or not has_proper_motion(stars):
+        return masks, info
+    pmra, pmdec = _float_col(stars, 'pmra'), _float_col(stars, 'pmdec')
+    moving = np.isfinite(pmra) & np.isfinite(pmdec) \
+        & np.isfinite(_float_col(stars, 'ref_epoch'))
+    if not moving.any():
+        return masks, info
+    stars = stars[moving]
+    speed = np.hypot(pmra[moving], pmdec[moving]) / 1000.0      # arcsec / yr
+
+    at_epoch = {}
+    positions = {}                 # chip.key -> (x, y, on chip)
+    first = np.full(len(stars), np.inf)
+    last = np.full(len(stars), -np.inf)
+    for c in chips:
+        mjd = float(epochs[c.key])
+        if mjd not in at_epoch:
+            moved = propagate_to_epoch(stars, mjd)
+            at_epoch[mjd] = (_float_col(moved, 'RA'), _float_col(moved, 'DEC'))
+        x, y = _world_to_pixel(c, *at_epoch[mjd])
+        ny, nx = c.shape
+        on = (x > -0.5) & (x < nx - 0.5) & (y > -0.5) & (y < ny - 0.5)
+        positions[c.key] = (x, y, on)
+        first[on] = np.minimum(first[on], mjd)
+        last[on] = np.maximum(last[on], mjd)
+    seen = np.isfinite(first)
+    info['n_stars'] = int(seen.sum())
+    scale = float(np.sqrt(np.median([c.pixel_area_arcsec2 for c in chips])))
+    span = np.where(seen, last - first, 0.0) / 365.25           # years
+    protect = seen & (speed * span >= float(min_motion) * scale)
+    info['n_protected'] = int(protect.sum())
+    if not protect.any():
+        return masks, info
+
+    for c in chips:
+        x, y, _ = positions[c.key]
+        r = float(radius) / float(np.sqrt(c.pixel_area_arcsec2))
+        ny, nx = c.shape
+        mask = masks[c.key]
+        near = protect & (x > -r) & (x < nx + r) & (y > -r) & (y < ny + r)
+        for a, b in zip(x[near], y[near]):
+            x0, x1 = max(int(np.floor(a - r)), 0), min(int(np.ceil(a + r)) + 1, nx)
+            y0, y1 = max(int(np.floor(b - r)), 0), min(int(np.ceil(b + r)) + 1, ny)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            yy, xx = np.mgrid[y0:y1, x0:x1]
+            mask[y0:y1, x0:x1] |= np.hypot(xx - a, yy - b) <= r
+        info['n_pixels'] += int(mask.sum())
+    return masks, info
+
+
 def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7), grow=1,
                     pixfrac=1.0, kernel='square', pixel_scale=None,
                     minmed_nsigma=(4.0, 3.0), minmed_max_n=3,
-                    min_contributors=2, block=1024, workdir=None):
+                    min_contributors=2, block=1024, workdir=None,
+                    protect=None):
     """Outlier masks for ``chips`` (one detector and filter, one frame).
+
+    ``protect`` is an optional ``{chip.key: bool array}`` of pixels that are
+    never flagged (see :func:`star_protection`); they still enter the median.
 
     Returns ``{'flags': {chip.key: bool array, True at an outlier},
     'stats': {chip.key: {...}}, 'grid': TileGrid, 'median': float32 array,
@@ -273,6 +397,10 @@ def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7), grow=1,
             covered = _blot(solid, pixmap, in_shape, 'linear') > 0.999
             shared = _blot(enough, pixmap, in_shape, 'nearest') > 0.5
             testable = good & covered & shared & np.isfinite(model)
+            kept_out = 0
+            if protect is not None and protect.get(chip.key) is not None:
+                kept_out = int((testable & protect[chip.key]).sum())
+                testable &= ~protect[chip.key]
             sigma = np.sqrt(var_bg + coefficient * np.clip(model, 0, None))
             gradient = abs_gradient(model)
             with np.errstate(invalid='ignore'):
@@ -289,6 +417,7 @@ def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7), grow=1,
             stats[chip.key] = {
                 'n_flagged': int(mask.sum()), 'n_first_pass': int(first.sum()),
                 'n_testable': int(testable.sum()), 'n_good': int(good.sum()),
+                'n_protected': kept_out,
                 'poisson_coefficient': coefficient,
             }
             del prep, model, pixmap

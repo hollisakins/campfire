@@ -19,10 +19,12 @@ _SKY = 1.0                       # e-/s
 _SIGMA = np.sqrt(_SKY / _T + 0.001)
 
 
-def _ir_file(path, root, crpix, rng, aligned='fit=rigid pool=visit'):
+def _ir_file(path, root, crpix, rng, aligned='fit=rigid pool=visit', mjd=None):
     primary = fits.PrimaryHDU()
     primary.header.update({'INSTRUME': 'WFC3', 'DETECTOR': 'IR', 'ROOTNAME': root,
                            'FILTER': 'F160W', 'EXPTIME': _T})
+    if mjd is not None:
+        primary.header.update({'EXPSTART': mjd, 'EXPEND': mjd + _T / 86400.0})
     if aligned is not None:
         for key, val in cfp.format(keyset=cfp.HST, CFP_ALGN=aligned).items():
             primary.header[key] = val
@@ -74,6 +76,71 @@ def test_flags_go_to_the_cfout_extension_and_the_adapter_honors_them(tmp_path):
     assert not chip.load().good[31, 51]                # dropped from the mosaic
     (raw,) = open_exposure(files[0], use_outlier_flags=False)
     assert raw.load().good[31, 51]                     # still there when asked
+
+
+def _two_epochs(tmp_path):
+    """Three exposures, the first 6 years before the others, with a hit at the
+    place of a catalog star that moved 0.3 arcsec in between."""
+    from astropy.table import Table
+    from astropy.time import Time
+
+    rng = np.random.default_rng(7)
+    dates = (57600.0, 59800.0, 59800.1)
+    files = [_ir_file(tmp_path / f'itest03a{k}q_flt.fits', f'itest03a{k}q', crpix, rng,
+                      mjd=mjd)
+             for k, (crpix, mjd) in enumerate(zip(
+                 ((40.0, 40.0), (43.4, 38.7), (37.2, 42.6)), dates))]
+    with fits.open(files[0], mode='update') as hdul:
+        hdul['SCI', 1].data[38:41, 38:41] += 50 * _SIGMA      # on the star
+        hdul['SCI', 1].data[60:63, 20:23] += 50 * _SIGMA      # away from it
+    # the star is at the reference position (pixel 39, 39 of the first file)
+    # on the first date
+    star = Table({'RA': [34.4], 'DEC': [-5.2], 'pmra': [0.0], 'pmdec': [50.0],
+                  'ref_epoch': [float(Time(dates[0] + 0.5 * _T / 86400.0,
+                                           format='mjd').jyear)]})
+    return files, star
+
+
+def test_a_catalog_star_that_moved_is_left_alone(tmp_path):
+    files, star = _two_epochs(tmp_path)
+    outlier_step(files, refcat=star)
+    with fits.open(files[0]) as hdul:
+        flag = hdul[OUTLIER_EXT, 1].data
+        assert flag[36:43, 36:43].sum() == 0           # within 0.4 arcsec of the star
+        assert flag[60:63, 20:23].sum() >= 7           # the other hit is found
+    assert ' prot=1 ' in cfp.step_value(files[0], 'CFP_OUT', keyset=cfp.HST)
+
+
+def test_without_a_catalog_or_when_turned_off_no_star_is_protected(tmp_path):
+    files, star = _two_epochs(tmp_path)
+    outlier_step(files)
+    assert fits.getdata(files[0], (OUTLIER_EXT, 1))[38:41, 38:41].sum() >= 7
+    assert ' prot=nocat ' in cfp.step_value(files[0], 'CFP_OUT', keyset=cfp.HST)
+    outlier_step(files, refcat=star, step_config={'protect_stars': False},
+                 overwrite=True)
+    assert fits.getdata(files[0], (OUTLIER_EXT, 1))[38:41, 38:41].sum() >= 7
+    assert ' prot=off ' in cfp.step_value(files[0], 'CFP_OUT', keyset=cfp.HST)
+
+
+def test_exposures_days_apart_and_the_motion_threshold(tmp_path):
+    from astropy.table import Table
+
+    rng = np.random.default_rng(8)
+    files = [_ir_file(tmp_path / f'itest04a{k}q_flt.fits', f'itest04a{k}q', crpix, rng,
+                      mjd=57600.0 + k)
+             for k, crpix in enumerate(((40.0, 40.0), (43.4, 38.7), (37.2, 42.6)))]
+    with fits.open(files[0], mode='update') as hdul:
+        hdul['SCI', 1].data[38:41, 38:41] += 50 * _SIGMA
+    star = Table({'RA': [34.4], 'DEC': [-5.2], 'pmra': [0.0], 'pmdec': [50.0],
+                  'ref_epoch': [2016.5]})
+    # with a motion threshold the star has not moved, and stays in the comparison
+    outlier_step(files, refcat=star, step_config={'protect_min_motion': 0.15})
+    assert fits.getdata(files[0], (OUTLIER_EXT, 1))[38:41, 38:41].sum() >= 7
+    assert ' prot=0 ' in cfp.step_value(files[0], 'CFP_OUT', keyset=cfp.HST)
+    # the WFC3/IR default protects every catalog star with a proper motion
+    outlier_step(files, refcat=star, overwrite=True)
+    assert fits.getdata(files[0], (OUTLIER_EXT, 1))[36:43, 36:43].sum() == 0
+    assert ' prot=1 ' in cfp.step_value(files[0], 'CFP_OUT', keyset=cfp.HST)
 
 
 def test_rerun_replaces_the_flags_and_does_not_depend_on_them(tmp_path):

@@ -10,8 +10,9 @@ import pytest
 from astropy.wcs import WCS
 
 from campfire_pipeline.imaging.exposure import ChipArrays
-from campfire_pipeline.imaging.outlier import (abs_gradient, detect_outliers,
-                                               stack_grid)
+from campfire_pipeline.imaging.outlier import (_world_to_pixel, abs_gradient,
+                                               detect_outliers, stack_grid,
+                                               star_protection)
 
 SCALE = 0.1                    # arcsec per pixel
 CENTER = (150.0, 2.0)          # deg
@@ -235,3 +236,118 @@ def test_bad_pixels_are_neither_used_nor_reported():
     assert res['flags']['c0'][50:60, 50:60].sum() == 0
     for c in chips[1:]:                          # and it did not reach the median
         assert res['flags'][c.key].sum() < 2e-3 * c.sci.size
+
+
+# -- stars that moved between the exposures ---------------------------------
+
+_MJD_A, _MJD_B = 57600.0, 59700.0        # 2016.6 and 2022.3: 5.75 years apart
+_PM_FAST, _PM_SLOW = 26.0, 1.0           # mas/yr: 0.15 and 0.006 arcsec over that
+
+
+def _year(mjd):
+    from astropy.time import Time
+    return float(Time(mjd, format='mjd').jyear)
+
+
+def _moving_scene(rng):
+    """Five chips at one date and two 5.75 years later, of one fast star, one
+    slow star and one that does not move; plus the catalog of the two with a
+    proper motion (positions at 2016.0)."""
+    from astropy.table import Table
+
+    start = {'fast': (-3.0, -2.0), 'slow': (4.0, 3.0), 'fixed': (0.0, 5.0)}
+    rate = {'fast': _PM_FAST / 1000.0, 'slow': _PM_SLOW / 1000.0, 'fixed': 0.0}
+
+    def stars_at(mjd):
+        dt = _year(mjd) - 2016.0
+        return [(x, y + rate[name] * dt, 2000.0) for name, (x, y) in start.items()]
+
+    shape = (160, 160)
+    chips, epochs = [], {}
+    for k in range(7):
+        mjd = _MJD_A if k < 5 else _MJD_B
+        dx, dy = rng.uniform(-4, 4, 2)
+        chips.append(FakeChip(f'c{k}', shape, _wcs(shape, dx, dy),
+                              stars_at(mjd), 0.2, rng))
+        epochs[f'c{k}'] = mjd
+    cosd = np.cos(np.radians(CENTER[1]))
+    names = ('fast', 'slow')
+    catalog = Table({
+        'RA': [CENTER[0] + start[n][0] / 3600.0 / cosd for n in names],
+        'DEC': [CENTER[1] + start[n][1] / 3600.0 for n in names],
+        'pmra': [0.0, 0.0], 'pmdec': [_PM_FAST, _PM_SLOW],
+        'ref_epoch': [2016.0, 2016.0]})
+    return chips, epochs, catalog, stars_at
+
+
+def _near(chip, star, radius_px):
+    """Pixels of ``chip`` within ``radius_px`` of a star (arcsec offsets)."""
+    cosd = np.cos(np.radians(CENTER[1]))
+    x, y = chip._w.all_world2pix(CENTER[0] + star[0] / 3600.0 / cosd,
+                                 CENTER[1] + star[1] / 3600.0, 0)
+    yy, xx = np.indices(chip.shape)
+    return np.hypot(xx - x, yy - y) <= radius_px
+
+
+def test_world_to_pixel_inverts_the_chip_mapping():
+    shape = (200, 300)
+    rng = np.random.default_rng(8)
+    chip = FakeChip('r', shape, _wcs(shape, dx=3.3, dy=-2.1, rot=27.0), [], 0.2,
+                    rng, noise=False)
+    x = rng.uniform(-20, shape[1] + 20, 50)
+    y = rng.uniform(-20, shape[0] + 20, 50)
+    ra, dec = chip.pixel_to_world(x, y)
+    bx, by = _world_to_pixel(chip, ra, dec)
+    assert np.max(np.hypot(bx - x, by - y)) < 1e-3
+
+
+def test_a_star_that_moved_is_clipped_without_protection():
+    # the case the protection exists for: the two later chips lose the core
+    rng = np.random.default_rng(9)
+    chips, epochs, catalog, stars_at = _moving_scene(rng)
+    res = detect_outliers(chips)
+    fast_late = stars_at(_MJD_B)[0]
+    for c in chips[5:]:
+        assert (res['flags'][c.key] & _near(c, fast_late, 3.0)).sum() >= 3
+
+
+def test_moved_stars_are_protected_and_nothing_else_is():
+    rng = np.random.default_rng(9)
+    chips, epochs, catalog, stars_at = _moving_scene(rng)
+    hits = {c.key: _hit(c, rng, 40, 40.0) for c in chips}
+    masks, info = star_protection(chips, catalog, epochs, radius=0.4,
+                                  min_motion=0.15)
+    # both catalog stars are on the chips; only the fast one moved 0.15 pixel
+    assert info['n_stars'] == 2 and info['n_protected'] == 1
+    for c in chips:
+        fast, slow, fixed = stars_at(epochs[c.key])
+        assert masks[c.key][_near(c, fast, 3.5)].all()       # 0.4 arcsec = 4 px
+        assert not masks[c.key][_near(c, slow, 6.0)].any()
+        assert not masks[c.key][~_near(c, fast, 5.0)].any()
+
+    res = detect_outliers(chips, protect=masks)
+    for c in chips:
+        flags = res['flags'][c.key]
+        assert (flags & masks[c.key]).sum() == 0             # the star is left alone
+        assert res['stats'][c.key]['n_protected'] > 0
+        away = hits[c.key] & ~masks[c.key]
+        assert (flags & away).sum() > 0.9 * away.sum()       # hits are still found
+        for other in stars_at(epochs[c.key])[1:]:            # still stars are clean
+            assert (flags & _near(c, other, 3.0) & ~hits[c.key]).sum() <= 1
+
+
+def test_no_protection_when_the_exposures_are_close_in_time():
+    rng = np.random.default_rng(10)
+    chips, epochs, catalog, _ = _moving_scene(rng)
+    same = {key: _MJD_A + 0.01 * k for k, key in enumerate(epochs)}
+    masks, info = star_protection(chips, catalog, same)
+    assert info['n_stars'] == 2 and info['n_protected'] == 0
+    assert not any(m.any() for m in masks.values())
+
+
+def test_a_catalog_without_proper_motions_protects_nothing():
+    rng = np.random.default_rng(11)
+    chips, epochs, catalog, _ = _moving_scene(rng)
+    masks, info = star_protection(chips, catalog['RA', 'DEC'], epochs)
+    assert info['n_protected'] == 0
+    assert not any(m.any() for m in masks.values())
