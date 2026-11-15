@@ -117,6 +117,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   nowhere else (`config.get_hst_step_config`). The background variance of both
   detectors follows the measured pixel scatter (`CFVARSC`), the rule the NIRCam
   `bkg` step applies.
+- **New `cfpipe query`: what MAST holds, for JWST or HST, without downloading.**
+  Select by `--program`, by a field's tiles (`--field`, `--tiles`) or by position
+  (`--target "RA Dec"` or a name, `--radius`), for `--telescope jwst|hst` or
+  single instruments (`nircam`, `nirspec`, `acswfc`, `wfc3ir`). The summary lists
+  exposures, exposure time, dates and PI per program and filter and ends with the
+  file glob of each program to paste into `fields.toml`; `--format exposures`
+  lists every file set and `--format json` is machine-readable. One CAOM catalog
+  query per instrument, footprints tested against the region locally
+  (`common/mast_query.py`). `cfpipe download` is unchanged.
 - **A CRDS context can be pinned per instrument, and the wrong observatory's is
   refused.** `[nircam].crds_context` / `[nirspec].crds_context` replace
   `[environment].CRDS_CONTEXT` for that instrument's commands; neither is set

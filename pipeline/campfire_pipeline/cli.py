@@ -263,5 +263,132 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
         sys.exit(130)
 
 
+def _parse_target(text):
+    """``"RA Dec"`` (decimal degrees, space or comma) or an object name, to
+    ``(ra, dec)`` in degrees."""
+    parts = text.replace(',', ' ').split()
+    if len(parts) == 2:
+        try:
+            ra, dec = float(parts[0]), float(parts[1])
+        except ValueError:
+            pass
+        else:
+            if not (0.0 <= ra < 360.0 and -90.0 <= dec <= 90.0):
+                raise click.BadParameter(
+                    f'--target "{text}": RA must be in [0, 360) and Dec in '
+                    f'[-90, 90] (decimal degrees).')
+            return ra, dec
+    from astropy.coordinates import SkyCoord
+    try:
+        c = SkyCoord.from_name(text)
+    except Exception as e:                      # resolver or network failure
+        raise click.BadParameter(
+            f'--target "{text}" is not an "RA Dec" pair in decimal degrees '
+            f'and could not be resolved as an object name ({e}).')
+    return float(c.ra.deg), float(c.dec.deg)
+
+
+@main.command()
+@click.option('--telescope', type=click.Choice(['jwst', 'hst'],
+              case_sensitive=False), default=None,
+              help='Telescope. With no --instrument, every supported '
+                   'instrument of it.')
+@click.option('--instrument', 'instruments', multiple=True,
+              type=click.Choice(['nircam', 'nirspec', 'acswfc', 'wfc3ir'],
+                                case_sensitive=False),
+              help='Instrument (repeat for several). Implies the telescope.')
+@click.option('--program', 'programs', type=int, multiple=True,
+              help='Proposal number (repeat for several).')
+@click.option('--field', 'field_name', default=None,
+              help='Field in fields.toml: exposures whose footprint touches '
+                   'one of its tiles.')
+@click.option('--tiles', default=None,
+              help='With --field: comma-separated tile names (default: all).')
+@click.option('--target', default=None,
+              help='Position: "RA Dec" in decimal degrees, or an object name.')
+@click.option('--radius', type=float, default=3.0, show_default=True,
+              help='With --target: radius in arcminutes.')
+@click.option('--filters', 'filters', multiple=True,
+              help='Keep these filters only (repeat for several).')
+@click.option('--include-calibration', is_flag=True,
+              help='Also list calibration exposures (darks, flats, ...).')
+@click.option('--format', 'fmt', default='summary', show_default=True,
+              type=click.Choice(['summary', 'exposures', 'json'],
+                                case_sensitive=False),
+              help='summary: per program and filter, with the file globs for '
+                   'fields.toml. exposures: one line per file set. json: '
+                   'every field, machine-readable.')
+def query(telescope, instruments, programs, field_name, tiles, target, radius,
+          filters, include_calibration, fmt):
+    """List what MAST holds, for JWST or HST, without downloading anything.
+
+    Select by program, by a field's tiles, by position, or a combination
+    (program AND region). Examples:
+
+    \b
+      cfpipe query --telescope hst --field pg004
+      cfpipe query --instrument acswfc --target "289.27 -33.52" --radius 4
+      cfpipe query --instrument nircam --program 6882 --format exposures
+
+    The summary ends with the file globs that select each program, to paste
+    into fields.toml: which exposures belong to a field is decided there, not
+    by this query.
+    """
+    from campfire_pipeline.common import mast_query
+    from campfire_pipeline.common.query import MastQueryError
+
+    try:
+        chosen = mast_query.resolve_instruments(telescope, instruments)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+    if field_name and target:
+        raise click.UsageError('give --field or --target, not both')
+    if tiles and not field_name:
+        raise click.UsageError('--tiles needs --field')
+
+    regions = None
+    if field_name:
+        from campfire_pipeline.nircam.field import Field
+        try:
+            field_obj = Field.load(field_name)
+            regions = mast_query.field_polygons(
+                field_obj, [t.strip() for t in tiles.split(',')] if tiles else None)
+        except (FileNotFoundError, ValueError) as e:
+            raise click.ClickException(str(e))
+    elif target:
+        if radius <= 0:
+            raise click.BadParameter('--radius must be positive.')
+        ra, dec = _parse_target(target)
+        regions = [mast_query.cone_polygon(ra, dec, radius / 60.0)]
+    if not programs and regions is None:
+        raise click.UsageError('give --program, --field or --target')
+
+    quiet = fmt.lower() == 'json'
+    try:
+        exposures = mast_query.query_exposures(
+            chosen, programs=list(programs) or None, regions=regions,
+            filters=list(filters) or None,
+            science_only=not include_calibration,
+            log=(lambda msg: click.echo(msg, err=True)) if quiet else click.echo)
+    except MastQueryError as e:
+        raise click.ClickException(str(e))
+    except requests_errors() as e:
+        raise click.ClickException(f'MAST could not be reached: {e}')
+
+    if fmt.lower() == 'json':
+        click.echo(mast_query.to_json(exposures))
+    elif fmt.lower() == 'exposures':
+        click.echo(mast_query.format_exposures(exposures))
+    else:
+        click.echo()
+        click.echo(mast_query.format_summary(exposures))
+
+
+def requests_errors():
+    """The network exception classes of ``requests``, imported on demand."""
+    import requests
+    return (requests.Timeout, requests.ConnectionError, requests.HTTPError)
+
+
 if __name__ == '__main__':
     main()
