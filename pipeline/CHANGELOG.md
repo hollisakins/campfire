@@ -28,6 +28,18 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- **NIRCam per-exposure background: deeper source mask, less growth.**
+  `[nircam.bkg.mask]` defaults change from `tier_nsigma = 1.5` to `0.5` in every tier and
+  `tier_dilate_size` from `[33, 25, 21, 19]` to `[17, 13, 11, 9]`. The 1.5-sigma mask left
+  the faint outskirts of sources and of diffraction spikes in the background fit, which
+  over-subtracted beside them (negative troughs along spikes on MACS0647); detecting
+  deeper covers them where growing the mask did not. Changes pixel values of every
+  exposure reprocessed from the `bkg` step. Chosen by eye on per-exposure masks and test
+  mosaics of one field (MACS0647, F200W and F277W); not yet checked on a blank field. The
+  mosaic-level mask settings in `[nircam.resample]` are unchanged. To keep the previous
+  behaviour set the two lists back in `[nircam.bkg.mask]` or per field.
+
 ### Infrastructure
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
