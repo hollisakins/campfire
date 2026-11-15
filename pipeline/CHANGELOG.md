@@ -41,28 +41,35 @@ Release procedure: edit the `## Unreleased` section below, then run
   (SCI/DQ untouched) and fused into the working copy's DQ as DO_NOT_USE; the working copy
   records whether it was fused (`SPKFUSED`) so switching the step on or off refreshes it.
   Core in `nircam/spike_mask.py`.
-  - *Arm profile* (`model = "measured"`, default): one table measured from six isolated
+  - *Arm profile* (`model = "measured"`, default): measured from six isolated
     G = 8.0-10.2 stars in F070W-F480M (public programs 1433, 1727, 1837, 3293, 3990, 5398,
     5893, 6882, 7814), on exposures taken through the standard process phase, so after the
-    per-exposure background step (which removes the faint wings beside an arm: half-width
-    at 1% of the axis roughly halves far from the star). Divided by the star's flux, the
-    arms of every filter and star follow one curve on wavelength-scaled axes, so the table
-    (`data/nircam_spike_profile_v1.fits`) serves every filter. A cell is the median of the
-    star-filter cross-sections sensitive enough to see it (non-detections included), zero
-    where that is under 3x its uncertainty. The six segment arms are detected to ~183
-    arcsec/um (slope -2.30, continued as a power law, widening as distance^0.34); the two
-    strut arms to ~35 arcsec/um and are absent from 39 outward. `model = "preflight"`
-    keeps the published WebbPSF-based models (with `width_scale` / `width_scale_lw`),
-    which over-predict the arms by 1.5-5x depending on filter and distance. Both are
-    evaluated as per-arm tables that fall monotonically from the axis and with distance,
-    so mask edges are smooth strips.
+    per-exposure background step (which removes the faintest wings beside an arm). Two
+    measured facts set its form (`data/nircam_spike_profile_v2.fits`): along an arm, the
+    axis brightness x wavelength^2 / star flux is one curve for every filter and star
+    against distance / wavelength; across an arm, the cross-section as a fraction of the
+    axis value is the same in every filter against the offset in arcsec (against offset /
+    wavelength the filters spread apart by a factor of several). A cell is the median of
+    the star-filter cross-sections sensitive enough to see it (non-detections included),
+    zero where that is under 3x its uncertainty. The six segment arms are detected to ~117
+    arcsec/um (slope -2.15, continued as a power law); the two strut arms to ~28 arcsec/um
+    and are absent from 39 outward; the table starts 0.6 arcsec/um from the star.
+    `model = "preflight"` keeps the published WebbPSF-based models (with `width_scale` /
+    `width_scale_lw`), which over-predict the arms by 1.5-5x depending on filter and
+    distance. Both are evaluated as per-arm tables that fall monotonically from the axis
+    and with distance, so mask edges are smooth strips.
   - *Star brightness*: an SED interpolated through Gaia G, RP and the 2MASS / AllWISE
     magnitudes of the Gaia archive's cross-match; colour relations fitted to ~900 stars
     stand in where there is no match. Against aperture photometry of 1400 unsaturated
     stars the median error is within 0.06 mag with 2MASS / WISE, ~0.13 mag from Gaia alone.
   - On MACS0647: the model axis is the telescope V3 (no detector rotation). Its G = 8 star
-    is one of the six profile stars and the only one constraining the arms beyond ~130
-    arcsec/um, so the field is not an independent test of the profile.
+    is one of the six profile stars and the only one constraining the arms far from a
+    star, so the field is not an independent test of the profile. Checked by eye with
+    every predicted spike masked in all seven filters; the predicted axis brightness of
+    that star is 10-45% low (worst in F115W).
+  - `mag_limit` (now AB 19) only bounds run time: whether a star's arms are masked is
+    decided by the profile against `threshold_sigma`. The cached star list is reused by
+    every filter of a field (a cached cone that contains the needed one).
   **Beta:** coverage rule tested in one field at two roll angles; the profile comes from
   six saturated stars spanning two magnitudes, the far field from one of them; the coverage grid is held in memory (not yet
   sized for very large fields). `require_other_angle = false` masks every predicted spike

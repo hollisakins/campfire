@@ -1,6 +1,6 @@
 # Measured diffraction-spike arm profile
 
-How `campfire_pipeline/data/nircam_spike_profile_v1.fits` was built (2026-11-14).
+How `campfire_pipeline/data/nircam_spike_profile_v2.fits` was built (2026-11-14/15).
 These are the scripts as run, with the paths of the machine they ran on; they are
 kept for provenance, not as a maintained tool.
 
@@ -18,9 +18,12 @@ kept for provenance, not as a maintained tool.
    directions, the median brightness in bins of distance from the star and
    offset across the arm. MACS0647's G = 8 star is measured the same way from
    the production field's exposures.
-5. `build_profile.py pipe` — divides each cross-section by the star's flux
+5. `build_profile2.py` — divides each cross-section by the star's flux
    (`gaia_sed.py`: Gaia + 2MASS + AllWISE), puts it on wavelength-scaled axes
-   and combines the stars and filters into the table.
+   and builds the two tables: axis brightness against distance / wavelength,
+   and the shape across the arm against distance and offset in arcsec.
+   `wing_scaling.py` is the test that the shape is fixed in arcsec;
+   `strut_by_filter.py` compares the strut arms with the segment arms.
 6. `flux_test.py` — aperture photometry of ~1400 unsaturated Gaia stars against
    the brightness predictions.
 
@@ -30,6 +33,6 @@ at RA 11.25, Dec -73.23) is in the Small Magellanic Cloud; the background step
 fails there and it is excluded.
 
 Known limits: all six stars are saturated and span two magnitudes; beyond about
-130 arcsec/um the segment arms rest on the MACS0647 star alone; exposures that
+100 arcsec/um the segment arms rest on the MACS0647 star alone; exposures that
 failed to align to Gaia are included without a test of whether they broaden the
 profile.

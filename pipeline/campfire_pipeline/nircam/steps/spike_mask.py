@@ -31,6 +31,7 @@ from campfire_pipeline.nircam import spike_mask as sm
 
 _DO_NOT_USE = 1
 _NIR_COLS = ('rp', 'j', 'h', 'ks', 'w1', 'w2')
+_QUERY_PAD_DEG = 0.05
 
 
 def _decimal_year(date_obs):
@@ -74,10 +75,12 @@ def _load_stars(field, cfg, ra0, dec0, radius_deg):
                                               'spike_stars.ecsv')
     if os.path.exists(path):
         t = Table.read(path)
+        # the cached cone must contain the one needed now (each filter of a
+        # field asks for a slightly different centre and radius)
+        sep = np.hypot((t.meta.get('ra0', 1e9) - ra0) * np.cos(np.radians(dec0)),
+                       t.meta.get('dec0', 1e9) - dec0)
         covers = (cfg.get('catalog') or (
-            abs(t.meta.get('ra0', 1e9) - ra0) * np.cos(np.radians(dec0)) < 1e-3
-            and abs(t.meta.get('dec0', 1e9) - dec0) < 1e-3
-            and t.meta.get('radius_deg', 0) >= radius_deg - 1e-6
+            sep + radius_deg <= t.meta.get('radius_deg', 0) + 1e-6
             and t.meta.get('g_max', 0) >= cfg['gaia_g_max']
             and 'ks' in t.colnames))        # older caches lack 2MASS / WISE
         if covers:
@@ -88,6 +91,7 @@ def _load_stars(field, cfg, ra0, dec0, radius_deg):
                 out[k] = (np.asarray(t[k], dtype=float) if k in t.colnames
                           else np.full(len(t), np.nan))
             return out
+    radius_deg += _QUERY_PAD_DEG      # so the other filters reuse this query
     log(f"spike_mask: querying Gaia DR3 ({radius_deg * 60:.1f}' radius, "
         f"G < {cfg['gaia_g_max']})")
     stars = sm.query_gaia(ra0, dec0, radius_deg, g_max=cfg['gaia_g_max'])

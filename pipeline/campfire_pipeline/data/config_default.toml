@@ -888,8 +888,10 @@
     enabled = false
     # "mask": apply in the combine phase. "report": write CFSPIKE only.
     mode = "mask"
-    # Stars brighter than this predicted AB magnitude in the filter are used.
-    mag_limit = 16.5
+    # Stars fainter than this predicted AB magnitude in the filter are not
+    # considered at all. Only a bound on run time: whether a star's arms are
+    # masked is decided by the profile against threshold_sigma.
+    mag_limit = 19.0
     # Gaia G limit of the catalog query (deep enough for red stars).
     gaia_g_max = 19.5
     # Optional star catalog (ECSV: ra, dec, g, bp_rp, pmra, pmdec; epoch 2016.0)
@@ -901,9 +903,10 @@
     threshold_sigma = 0.3
     grow = 2                      # px of dilation
     roll_tolerance_deg = 0.15     # also mask the pattern rotated by +- this
-    # Arm profile: "measured" = one profile built from real stars (six
-    # isolated G = 8.4-10.2 stars, F070W-F444W), valid for every filter by
-    # wavelength scaling; "preflight" = the published WebbPSF-based models.
+    # Arm profile: "measured" = built from real stars (six isolated
+    # G = 8.0-10.2 stars, F070W-F480M, after the standard process phase):
+    # brightness along an arm scales with wavelength, the shape across it is
+    # fixed in arcsec. "preflight" = the published WebbPSF-based models.
     model = "measured"
     # width_scale* apply to model = "preflight" only.
     # Real arms are wider across than the pre-flight model. Measured on

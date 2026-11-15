@@ -320,7 +320,7 @@ class SpikeModel:
             return cls(hdul[0].data, h['PIXELSCL'], h['CFSPKCTR'],
                        h['PIXAREA0'], h['CFSPKWAV'])
 
-    def sample(self, x, y, width_scale=1.0):
+    def sample(self, x, y, width_scale=1.0, lam=1.0):
         r = np.hypot(x, y)
         az = np.degrees(np.arctan2(x, y))
         d = (az[..., None] - self.ARMS + 180.0) % 360.0 - 180.0
@@ -356,76 +356,96 @@ class SpikeModel:
 
 
 class MeasuredSpikeModel:
-    """Arm profile measured from real stars, one table for every filter.
+    """Arm profile measured from real stars, for every filter.
 
-    Cross-sections of the arms of six isolated G = 8.0-10.2 stars in ten
-    filters (F070W-F480M), on exposures taken through the standard process
-    phase (so after the per-exposure background step, which removes the faint
-    wings), divided by the star's in-band flux, follow a single curve on
-    wavelength-scaled axes: distance and offset divided by wavelength
-    [arcsec/um] against brightness x wavelength^2 / flux [um^2/sr]. The table
-    (``data/nircam_spike_profile_v1.fits``; HEX = the six segment arms, STRUT =
-    the two strut arms) is, per cell, the median of the cross-sections
-    sensitive enough to see it (non-detections included), zero where that is
-    under 3x its uncertainty, and made monotone like ``SpikeModel``'s arm
-    tables. The segment arms are detected to about 183 arcsec/um and continue
-    as a power law (slope -2.3); the strut arms are detected to about 35
-    arcsec/um and are absent from 39 outward.
+    Built from the arms of six isolated G = 8.0-10.2 stars in ten filters
+    (F070W-F480M), on exposures taken through the standard process phase (so
+    after the per-exposure background step, which removes the faintest wings).
+    Two measured facts set its form:
+
+    - **Along an arm** the brightness on the axis, times wavelength^2 and
+      divided by the star's in-band flux, is one curve for every filter and
+      star against distance / wavelength [arcsec/um] (``*_AXIS``, um^2/sr).
+    - **Across an arm** the cross-section, as a fraction of its axis value, is
+      the same in every filter against the offset in *arcsec* at a given
+      distance in arcsec (``*_SHAPE``); against offset / wavelength the filters
+      spread apart.
+
+    ``HEX_*`` are the six segment arms, ``STRUT_*`` the two strut arms. Each
+    cell is the median of the star-filter cross-sections sensitive enough to
+    see it (non-detections included) and is zero where that is under 3x its
+    uncertainty. The segment arms are detected to about 117 arcsec/um and
+    continue as a power law (slope -2.15); the strut arms are detected to about
+    28 arcsec/um and are absent from 39 outward.
 
     Same interface as ``SpikeModel`` with ``wave = 1`` um and
     ``pixarea0 = 1`` arcsec^2, so the callers' wavelength scaling applies
-    unchanged. **Beta**: six stars, all saturated, two magnitudes of range;
-    one of them is MACS0647's, the field the step was developed on.
+    unchanged; ``sample`` additionally needs ``lam`` (the wavelength in um) to
+    turn its wavelength-scaled inputs back into arcsec for the shape.
+    **Beta**: six stars, all saturated, two magnitudes of range; one of them is
+    MACS0647's, the field the step was developed on.
     """
 
     ARMS = SpikeModel.ARMS
     wave = 1.0
     pixarea0 = 1.0
 
-    def __init__(self, hexarm, strut, u0, u1, dv, slope):
-        tab = np.maximum(np.stack([hexarm, strut]).astype(np.float64), 1e-30)
-        # table is per sr; pixarea0 = 1 arcsec^2, so store per arcsec^2
-        self._tab = (np.log(tab) + math.log(ARCSEC2_TO_SR)).astype(np.float32)
-        self._nu, self._nv = hexarm.shape
+    def __init__(self, axis, shape, u0, u1, slope, r0, r1, dp):
+        # axis: (2, nu) um^2/sr; stored per arcsec^2 (pixarea0 = 1 arcsec^2)
+        self._axis = (np.log(np.maximum(np.asarray(axis, np.float64), 1e-30))
+                      + math.log(ARCSEC2_TO_SR)).astype(np.float32)
+        self._nu = self._axis.shape[1]
         self._lu0 = math.log(u0)
         self._dlu = (math.log(u1) - math.log(u0)) / self._nu
-        self._dv = float(dv)
-        self.slope = float(slope)
         self._uc = np.exp(self._lu0 + (np.arange(self._nu) + 0.5) * self._dlu)
+        self.slope = float(slope)
         self.r_ring = float(self._uc[-1])
-        self._env = np.exp(self._tab[:, :, 0].max(axis=0).astype(np.float64))
+        self._shape = np.asarray(shape, np.float32)          # (2, nr, np)
+        self._nr, self._np = self._shape.shape[1:]
+        self._lr0 = math.log(r0)
+        self._dlr = (math.log(r1) - math.log(r0)) / self._nr
+        self._dp = float(dp)
+        self._env = np.exp(self._axis.max(axis=0).astype(np.float64))
 
     @classmethod
     def from_fits(cls, path):
         from astropy.io import fits
         with fits.open(path) as hdul:
-            h = hdul['HEX'].header
-            return cls(hdul['HEX'].data, hdul['STRUT'].data,
-                       h['U0'], h['U1'], h['DV'], h['SLOPE'])
+            ha, hs = hdul['HEX_AXIS'].header, hdul['HEX_SHAPE'].header
+            return cls(np.stack([hdul['HEX_AXIS'].data, hdul['STRUT_AXIS'].data]),
+                       np.stack([hdul['HEX_SHAPE'].data, hdul['STRUT_SHAPE'].data]),
+                       ha['U0'], ha['U1'], ha['SLOPE'], hs['R0'], hs['R1'], hs['DP'])
 
-    def sample(self, x, y, width_scale=1.0):
-        r = np.hypot(x, y)
+    def sample(self, x, y, width_scale=1.0, lam=1.0):
+        r = np.hypot(x, y)                                   # arcsec/um
         az = np.degrees(np.arctan2(x, y))
         d = (az[..., None] - self.ARMS + 180.0) % 360.0 - 180.0
         k = np.argmin(np.abs(d), axis=-1)
         dk = np.radians(np.take_along_axis(d, k[..., None], axis=-1)[..., 0])
-        v = r * np.abs(np.sin(dk)) / width_scale
-        c = (k >= 6).astype(int)                       # 0 segment, 1 strut
+        c = (k >= 6).astype(int)                             # 0 segment, 1 strut
+        # on the axis: interpolate log brightness in log distance
         fu = (np.log(np.maximum(r, 1e-6)) - self._lu0) / self._dlu - 0.5
         fu = np.clip(fu, 0.0, self._nu - 1.001)
-        fv = v / self._dv - 0.5
-        on = fv < self._nv - 1.001
-        fv = np.clip(np.where(on, fv, 0.0), 0.0, None)
-        i0, j0 = fu.astype(int), fv.astype(int)
-        wu, wv = (fu - i0).astype(np.float32), (fv - j0).astype(np.float32)
-        t = self._tab
-        val = ((1 - wu) * (1 - wv) * t[c, i0, j0] + wu * (1 - wv) * t[c, i0 + 1, j0]
-               + (1 - wu) * wv * t[c, i0, j0 + 1] + wu * wv * t[c, i0 + 1, j0 + 1])
-        out = np.exp(val)
+        i0 = fu.astype(int)
+        wu = (fu - i0).astype(np.float32)
+        out = np.exp((1 - wu) * self._axis[c, i0] + wu * self._axis[c, i0 + 1])
         far = r > self.r_ring
         if far.any():
             out[far] *= (r[far] / self.r_ring) ** self.slope
-        return np.where(on, out, 0.0).astype(np.float32)
+        # across the arm: fraction of the axis value, in arcsec
+        r_as = r * lam
+        p_as = r_as * np.abs(np.sin(dk)) / width_scale
+        fr = (np.log(np.maximum(r_as, 1e-6)) - self._lr0) / self._dlr - 0.5
+        fr = np.clip(fr, 0.0, self._nr - 1.001)
+        fp = p_as / self._dp - 0.5
+        on = fp < self._np - 1.001
+        fp = np.clip(np.where(on, fp, 0.0), 0.0, None)
+        j0, q0 = fr.astype(int), fp.astype(int)
+        wr, wp = (fr - j0).astype(np.float32), (fp - q0).astype(np.float32)
+        t = self._shape
+        frac = ((1 - wr) * (1 - wp) * t[c, j0, q0] + wr * (1 - wp) * t[c, j0 + 1, q0]
+                + (1 - wr) * wp * t[c, j0, q0 + 1] + wr * wp * t[c, j0 + 1, q0 + 1])
+        return np.where(on, out * frac, 0.0).astype(np.float32)
 
     def reach(self, level):
         """Largest distance [arcsec/um] at which an arm axis reaches ``level``."""
@@ -442,7 +462,7 @@ def load_measured_model():
     import campfire_pipeline
     return MeasuredSpikeModel.from_fits(
         Path(campfire_pipeline.__file__).parent / 'data'
-        / 'nircam_spike_profile_v1.fits')
+        / 'nircam_spike_profile_v2.fits')
 
 
 def load_model(channel, pivot_um):
@@ -565,7 +585,8 @@ def predict_spike_sb(ra, dec, star_ra, star_dec, amp, model, lam_scale,
         for d in ((0.0, roll_tol, -roll_tol) if roll_tol > 0 else (0.0,)):
             phi = phi0 - math.radians(d)
             v = a * model.sample(r * np.sin(phi) / lam_scale,
-                                 r * np.cos(phi) / lam_scale, width_scale)
+                                 r * np.cos(phi) / lam_scale, width_scale,
+                                 lam=lam_scale)
             val = v if val is None else np.maximum(val, v)
         if (val >= level).any():
             used.append(i)
