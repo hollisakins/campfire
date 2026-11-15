@@ -114,7 +114,11 @@ _BLAS_THREAD_VARS = (
 
 # Which observatory an instrument block of the config belongs to. Each has its
 # own CRDS server and its own context series; they cannot be mixed.
-_OBSERVATORY = {'nircam': 'jwst', 'nirspec': 'jwst', 'hst': 'hst'}
+_OBSERVATORY = {'nircam': 'jwst', 'nirspec': 'jwst',
+                'acswfc': 'hst', 'wfc3ir': 'hst'}
+# The [environment] keys holding each observatory's default context and server.
+_CRDS_KEYS = {'jwst': ('CRDS_CONTEXT', 'CRDS_SERVER_URL'),
+              'hst': ('HST_CRDS_CONTEXT', 'HST_CRDS_SERVER_URL')}
 
 
 def check_crds_context(context, observatory, where):
@@ -136,7 +140,8 @@ def check_crds_context(context, observatory, where):
             f'{where} = {text!r} is a {other.upper()} CRDS context, but this '
             f'setting is for {observatory.upper()} data. JWST contexts go in '
             f'[environment].CRDS_CONTEXT (or [nircam] / [nirspec].crds_context), '
-            f'HST contexts in [hst].crds_context.')
+            f'HST contexts in [environment].HST_CRDS_CONTEXT (or [acswfc] / '
+            f'[wfc3ir].crds_context).')
     if not low.startswith((f'{observatory}_', f'{observatory}-')):
         raise ValueError(
             f'{where} = {text!r} is not a {observatory.upper()} CRDS context '
@@ -157,37 +162,52 @@ def check_crds_server(url, observatory, where):
 def crds_context_for(config, instrument):
     """The CRDS context one instrument's reductions use.
 
-    ``nircam`` / ``nirspec``: ``[<instrument>].crds_context`` when set,
-    otherwise ``[environment].CRDS_CONTEXT`` (the JWST default, and the line
-    the release rule names). ``hst``: ``[hst].crds_context``; HST never reads
-    the JWST default. A context of the wrong observatory raises ``ValueError``
-    (:func:`check_crds_context`). Returns ``None`` for a JWST instrument when
-    nothing is set anywhere (CRDS then uses its own default).
+    ``[<instrument>].crds_context`` when set, otherwise the default of the
+    instrument's observatory in ``[environment]``: ``CRDS_CONTEXT`` for
+    ``nircam`` / ``nirspec`` (the line the release rule names),
+    ``HST_CRDS_CONTEXT`` for ``acswfc`` / ``wfc3ir``. An HST instrument never
+    reads the JWST default, nor the reverse, and a context of the wrong
+    observatory raises ``ValueError`` (:func:`check_crds_context`). Returns
+    ``None`` for a JWST instrument when nothing is set anywhere (CRDS then
+    uses its own default); an HST instrument with nothing set is an error,
+    since its calibration takes the context explicitly.
     """
     observatory = _OBSERVATORY[instrument]
     block = config.get(instrument, {})
     own = block.get('crds_context') if isinstance(block, dict) else None
     if own:
         return check_crds_context(own, observatory, f'[{instrument}].crds_context')
-    if observatory == 'hst':
-        return check_crds_context(None, 'hst', '[hst].crds_context')
-    default = config.get('environment', {}).get('CRDS_CONTEXT')
-    if default:
-        return check_crds_context(default, 'jwst', '[environment].CRDS_CONTEXT')
+    key = _CRDS_KEYS[observatory][0]
+    default = config.get('environment', {}).get(key)
+    if default or observatory == 'hst':
+        return check_crds_context(default, observatory, f'[environment].{key}')
     return None
+
+
+def crds_server_for(config, instrument):
+    """The CRDS server of an instrument's observatory, from ``[environment]``
+    (``CRDS_SERVER_URL`` or ``HST_CRDS_SERVER_URL``); the other observatory's
+    server there raises ``ValueError``. ``None`` when unset."""
+    observatory = _OBSERVATORY[instrument]
+    key = _CRDS_KEYS[observatory][1]
+    url = config.get('environment', {}).get(key)
+    return check_crds_server(url, observatory, f'[environment].{key}') if url else None
 
 
 def setup_environment(config, instrument=None):
     """Set environment variables from config file.
 
-    ``instrument`` (``'nircam'`` or ``'nirspec'``) is the instrument the
-    command reduces. Its block may pin a CRDS context of its own,
+    ``instrument`` is the instrument the command reduces. A JWST instrument
+    (``'nircam'``, ``'nirspec'``) may pin a CRDS context of its own,
     ``[<instrument>].crds_context``, which then replaces
     ``[environment].CRDS_CONTEXT`` for this process; a command runs one
-    instrument, so the pins never meet. The JWST settings are checked on the
-    way: an HST context or the HST server in a JWST setting stops the command
-    (:func:`check_crds_context`). HST settings are never exported; the HST
-    calibrate step hands them to its subprocesses.
+    instrument, so the pins never meet. For an HST instrument (``'acswfc'``,
+    ``'wfc3ir'``) its context is resolved here only to fail early when it is
+    missing or wrong: HST settings (the ``HST_*`` keys of ``[environment]``
+    and the pins) are never exported, the HST calibrate step hands them to its
+    subprocesses. Every CRDS setting is checked on the way: a context or
+    server of the other observatory stops the command
+    (:func:`check_crds_context`).
 
     For CRDS_PATH, priority is:
     1. Existing $CRDS_PATH in the user's environment
@@ -204,10 +224,10 @@ def setup_environment(config, instrument=None):
     that lost a thread-spawn race inside an astropy.modeling call. Setting
     the env vars here propagates to fork-pool children automatically.
     """
-    if instrument is not None and _OBSERVATORY.get(instrument) != 'jwst':
+    if instrument is not None and instrument not in _OBSERVATORY:
         raise ValueError(
-            f'setup_environment: {instrument!r} is not a JWST instrument; '
-            f'HST settings are not exported into the process')
+            f'setup_environment: unknown instrument {instrument!r}; expected '
+            f'one of {", ".join(_OBSERVATORY)}')
 
     # BLAS thread caps must be set in the parent before pool forks; OpenBLAS
     # re-reads OPENBLAS_NUM_THREADS in each child on first numpy use.
@@ -221,21 +241,24 @@ def setup_environment(config, instrument=None):
         if 'CRDS_PATH' not in env and 'CRDS_PATH' not in os.environ:
             env['CRDS_PATH'] = str(cache_path('crds'))
 
-        if env.get('CRDS_CONTEXT'):
-            check_crds_context(env['CRDS_CONTEXT'], 'jwst',
-                               '[environment].CRDS_CONTEXT')
-        if env.get('CRDS_SERVER_URL'):
-            check_crds_server(env['CRDS_SERVER_URL'], 'jwst',
-                              '[environment].CRDS_SERVER_URL')
+        for observatory, (context_key, server_key) in _CRDS_KEYS.items():
+            if env.get(context_key):
+                check_crds_context(env[context_key], observatory,
+                                   f'[environment].{context_key}')
+            if env.get(server_key):
+                check_crds_server(env[server_key], observatory,
+                                  f'[environment].{server_key}')
 
         for key, value in env.items():
             if key == 'CRDS_PATH' and 'CRDS_PATH' in os.environ:
                 continue
+            if key.startswith('HST_'):
+                continue                  # HST settings stay out of the process
             os.environ[key] = str(value)
 
     if instrument is not None:
         context = crds_context_for(config, instrument)
-        if context:
+        if context and _OBSERVATORY[instrument] == 'jwst':
             os.environ['CRDS_CONTEXT'] = context
 
 
@@ -473,35 +496,38 @@ _HST_DEFAULTS = None
 
 
 def get_hst_step_config(step_name, detector, config=None, overrides=None):
-    """Effective settings of one HST step for one detector.
+    """Effective settings of one step of an HST instrument.
 
-    HST settings are written out per detector, ``[hst.<detector>.<step>]`` with
-    ``<detector>`` one of the product-name tokens (``acswfc``, ``wfc3ir``):
-    the two detectors differ in almost every threshold, and a block that reads
-    for one detector only cannot be misread for the other. Merged, highest
-    priority last:
+    Each HST detector is an instrument with a block of its own,
+    ``[<instrument>.<step>]`` with ``<instrument>`` the product-name token
+    (``acswfc``, ``wfc3ir``), on the same footing as ``[nircam.<step>]``: the
+    detectors differ in almost every threshold, and a block that reads for one
+    cannot be misread for the other. ``detector`` is that token. Merged,
+    highest priority last:
 
         1. ``config_default.toml`` and the user config (already merged by
            :func:`load_config`). With ``config=None`` the shipped defaults
            alone, so a step called outside the command line runs with exactly
            what ``cfpipe config`` prints.
-        2. ``overrides``: the field's ``[<field>.<detector>.<step>]`` table.
+        2. ``overrides``: the field's ``[<field>.<instrument>.<step>]`` table.
 
     The shipped file is the only place a default lives; the step modules carry
-    none. An unknown detector raises ``KeyError``.
+    none. A name that is not an HST instrument raises ``KeyError``.
     """
     global _HST_DEFAULTS
+    hst_instruments = sorted(k for k, v in _OBSERVATORY.items() if v == 'hst')
+    if detector not in hst_instruments:
+        raise KeyError(
+            f'{detector!r} is not an HST instrument; expected one of '
+            f'{", ".join(hst_instruments)}')
     if config is None:
         if _HST_DEFAULTS is None:
-            _HST_DEFAULTS = _load_package_defaults().get('hst', {})
-        hst = _HST_DEFAULTS
-    else:
-        hst = config.get('hst', {})
-    if detector not in hst or not isinstance(hst[detector], dict):
-        raise KeyError(
-            f'no [hst.{detector}] settings; detectors configured: '
-            f'{sorted(k for k, v in hst.items() if isinstance(v, dict))}')
-    return deep_merge(hst[detector].get(step_name, {}), overrides or {})
+            shipped = _load_package_defaults()
+            _HST_DEFAULTS = {k: shipped.get(k, {}) for k in hst_instruments}
+        config = _HST_DEFAULTS
+    block = config.get(detector, {})
+    step = block.get(step_name, {}) if isinstance(block, dict) else {}
+    return deep_merge(step if isinstance(step, dict) else {}, overrides or {})
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
-"""HST settings live in the default config, per detector, and a field names
-one reference catalog for every instrument.
+"""Each HST detector is an instrument with its own blocks in the default config
+(``[acswfc.*]``, ``[wfc3ir.*]``), and a field names one reference catalog for
+every instrument.
 """
 
 import os
@@ -16,14 +17,17 @@ _STEPS = ('sky', 'crreject', 'align', 'outlier')
 
 
 def test_every_step_of_every_detector_has_its_block():
-    hst = _load_package_defaults()['hst']
-    assert hst['crds_context'].startswith('hst_') and hst['crds_server']
+    shipped = _load_package_defaults()
+    assert 'hst' not in shipped                 # no telescope-level block
+    env = shipped['environment']
+    assert env['HST_CRDS_CONTEXT'].startswith('hst_') and env['HST_CRDS_SERVER_URL']
     for detector in _DETECTORS:
         for step in _STEPS:
-            assert hst[detector][step], f'[hst.{detector}.{step}] is empty'
-    # the two detectors carry the same keys, written out for each
+            assert shipped[detector][step], f'[{detector}.{step}] is empty'
+        assert 'crds_context' not in shipped[detector]     # a pin, unset
+    # the two instruments carry the same keys, written out for each
     for step in _STEPS:
-        assert set(hst['acswfc'][step]) == set(hst['wfc3ir'][step])
+        assert set(shipped['acswfc'][step]) == set(shipped['wfc3ir'][step])
 
 
 def test_the_shipped_values_are_the_measured_ones():
@@ -40,7 +44,7 @@ def test_the_shipped_values_are_the_measured_ones():
 
 
 def test_user_config_and_field_overrides_take_precedence():
-    user = {'hst': {'wfc3ir': {'outlier': {'snr': '9 6', 'grow': 1}}}}
+    user = {'wfc3ir': {'outlier': {'snr': '9 6', 'grow': 1}}}
     # a user config replaces the shipped file as the base
     assert get_hst_step_config('outlier', 'wfc3ir', user) == {'snr': '9 6', 'grow': 1}
     # the field's table wins over both, and other keys are kept
@@ -55,8 +59,8 @@ def test_user_config_and_field_overrides_take_precedence():
 def test_an_unknown_detector_is_refused():
     with pytest.raises(KeyError, match='wfc3uvis'):
         get_hst_step_config('sky', 'wfc3uvis')
-    with pytest.raises(KeyError):
-        get_hst_step_config('sky', 'crds_context')      # a scalar, not a detector
+    with pytest.raises(KeyError, match='not an HST instrument'):
+        get_hst_step_config('align', 'nircam')          # an instrument, not HST's
 
 
 _FIELDS = """
@@ -125,7 +129,8 @@ def test_one_reference_catalog_per_field(tmp_path):
 # --- CRDS: one context series per observatory, pins per instrument -----------
 
 from campfire_pipeline.config import (check_crds_context, check_crds_server,  # noqa: E402
-                                      crds_context_for, setup_environment)
+                                      crds_context_for, crds_server_for,
+                                      setup_environment)
 
 _JWST, _HST = 'jwst_1481.pmap', 'hst_1372.pmap'
 
@@ -136,7 +141,7 @@ def test_a_context_of_the_other_observatory_is_refused_loudly():
     with pytest.raises(ValueError, match='is a HST CRDS context'):
         check_crds_context(_HST, 'jwst', '[environment].CRDS_CONTEXT')
     with pytest.raises(ValueError, match='is a JWST CRDS context'):
-        check_crds_context(_JWST, 'hst', '[hst].crds_context')
+        check_crds_context(_JWST, 'hst', '[environment].HST_CRDS_CONTEXT')
     with pytest.raises(ValueError, match='not a HST CRDS context'):
         check_crds_context('latest.pmap', 'hst', 'x')
     with pytest.raises(ValueError, match='no CRDS context'):
@@ -148,46 +153,76 @@ def test_a_context_of_the_other_observatory_is_refused_loudly():
 
 
 def test_each_instrument_resolves_its_own_context():
-    cfg = {'environment': {'CRDS_CONTEXT': _JWST}, 'hst': {'crds_context': _HST}}
+    cfg = {'environment': {'CRDS_CONTEXT': _JWST, 'HST_CRDS_CONTEXT': _HST,
+                           'CRDS_SERVER_URL': 'https://jwst-crds.stsci.edu',
+                           'HST_CRDS_SERVER_URL': 'https://hst-crds.stsci.edu'}}
     assert crds_context_for(cfg, 'nircam') == _JWST
     assert crds_context_for(cfg, 'nirspec') == _JWST
-    assert crds_context_for(cfg, 'hst') == _HST
-    # an instrument's own pin replaces the JWST default, for that instrument only
-    pinned = dict(cfg, nircam={'crds_context': 'jwst_1500.pmap'})
+    assert crds_context_for(cfg, 'acswfc') == _HST
+    assert crds_context_for(cfg, 'wfc3ir') == _HST
+    assert crds_server_for(cfg, 'nircam') == 'https://jwst-crds.stsci.edu'
+    assert crds_server_for(cfg, 'wfc3ir') == 'https://hst-crds.stsci.edu'
+    # an instrument's own pin replaces its observatory's default, for that
+    # instrument only
+    pinned = dict(cfg, nircam={'crds_context': 'jwst_1500.pmap'},
+                  wfc3ir={'crds_context': 'hst_1400.pmap'})
     assert crds_context_for(pinned, 'nircam') == 'jwst_1500.pmap'
     assert crds_context_for(pinned, 'nirspec') == _JWST
+    assert crds_context_for(pinned, 'wfc3ir') == 'hst_1400.pmap'
+    assert crds_context_for(pinned, 'acswfc') == _HST
     # HST never falls back to the JWST default
-    with pytest.raises(ValueError, match='no CRDS context'):
-        crds_context_for({'environment': {'CRDS_CONTEXT': _JWST}}, 'hst')
+    with pytest.raises(ValueError, match='HST_CRDS_CONTEXT: no CRDS context'):
+        crds_context_for({'environment': {'CRDS_CONTEXT': _JWST}}, 'acswfc')
     # and the wrong series is refused wherever it is put
     with pytest.raises(ValueError, match='JWST CRDS context'):
-        crds_context_for({'hst': {'crds_context': _JWST}}, 'hst')
+        crds_context_for({'acswfc': {'crds_context': _JWST}}, 'acswfc')
+    with pytest.raises(ValueError, match='JWST CRDS context'):
+        crds_context_for({'environment': {'HST_CRDS_CONTEXT': _JWST}}, 'wfc3ir')
     with pytest.raises(ValueError, match='HST CRDS context'):
         crds_context_for(dict(cfg, nirspec={'crds_context': _HST}), 'nirspec')
     with pytest.raises(ValueError, match='HST CRDS context'):
         crds_context_for({'environment': {'CRDS_CONTEXT': _HST}}, 'nircam')
+    with pytest.raises(ValueError, match='JWST CRDS server'):
+        crds_server_for({'environment': {
+            'HST_CRDS_SERVER_URL': 'https://jwst-crds.stsci.edu'}}, 'acswfc')
     # the shipped file passes its own rules
     shipped = _load_package_defaults()
     assert crds_context_for(shipped, 'nircam').startswith('jwst_')
-    assert crds_context_for(shipped, 'hst').startswith('hst_')
+    for detector in _DETECTORS:
+        assert crds_context_for(shipped, detector).startswith('hst_')
+        assert 'hst-crds' in crds_server_for(shipped, detector)
 
 
 def test_the_environment_takes_the_instrument_pin(monkeypatch):
     for key in ('CRDS_CONTEXT', 'CRDS_SERVER_URL', 'CRDS_PATH'):
         monkeypatch.setenv(key, 'placeholder')
-    cfg = {'environment': {'CRDS_CONTEXT': _JWST},
+    for key in ('HST_CRDS_CONTEXT', 'HST_CRDS_SERVER_URL'):
+        monkeypatch.delenv(key, raising=False)
+    cfg = {'environment': {'CRDS_CONTEXT': _JWST, 'HST_CRDS_CONTEXT': _HST,
+                           'HST_CRDS_SERVER_URL': 'https://hst-crds.stsci.edu'},
            'nircam': {'crds_context': 'jwst_1500.pmap'}}
     setup_environment(cfg, instrument='nirspec')
     assert os.environ['CRDS_CONTEXT'] == _JWST
     setup_environment(cfg, instrument='nircam')
     assert os.environ['CRDS_CONTEXT'] == 'jwst_1500.pmap'
-    # an HST context in the JWST default stops the command, whatever runs
+    # an HST command exports nothing of HST's and leaves the JWST context of
+    # the process as the default
+    setup_environment(cfg, instrument='acswfc')
+    assert os.environ['CRDS_CONTEXT'] == _JWST
+    assert 'HST_CRDS_CONTEXT' not in os.environ
+    assert 'HST_CRDS_SERVER_URL' not in os.environ
+    # a context of the wrong observatory stops the command, whatever runs
     with pytest.raises(ValueError, match='HST CRDS context'):
         setup_environment({'environment': {'CRDS_CONTEXT': _HST}})
-    # HST settings are never exported
-    with pytest.raises(ValueError, match='not a JWST instrument'):
+    with pytest.raises(ValueError, match='JWST CRDS context'):
+        setup_environment({'environment': {'HST_CRDS_CONTEXT': _JWST}},
+                          instrument='nircam')
+    # an HST command with no HST context anywhere stops at the start
+    with pytest.raises(ValueError, match='no CRDS context'):
+        setup_environment({'environment': {'CRDS_CONTEXT': _JWST}},
+                          instrument='wfc3ir')
+    with pytest.raises(ValueError, match='unknown instrument'):
         setup_environment(cfg, instrument='hst')
-    assert os.environ['CRDS_CONTEXT'] == 'jwst_1500.pmap'
 
 
 def test_hst_calibrate_refuses_a_jwst_context_before_running(tmp_path):

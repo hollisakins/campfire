@@ -3,7 +3,7 @@
 The solver is the NIRCam ``align`` solver (``nircam/align/solve.py``): clip the
 reference catalog to the footprint, find the gross offset with the
 offset-histogram matcher, fit a pool of chips. The recipe is HST's own and is
-set with HST's own settings (``[hst.<detector>.align]``); it differs from the NIRCam
+set with HST's own settings (``[<instrument>.align]``); it differs from the NIRCam
 recipe on purpose, because the two instruments are wrong in different ways.
 NIRCam's ten detectors each sit at an offset of their own, so the NIRCam step
 fits each detector. The two ACS/WFC chips are one focal plane and do not stand
@@ -75,7 +75,7 @@ _BACKUP = {'CRVAL1': 'CFOCRV1', 'CRVAL2': 'CFOCRV2', 'CD1_1': 'CFOCD11',
 ALIGN_SUFFIX = '-CFALIGN'
 
 # The settings that choose the recipe of the HST align step. Their meaning and
-# defaults are in config_default.toml, [hst.<detector>.align]; the NIRCam step
+# defaults are in config_default.toml, [<instrument>.align]; the NIRCam step
 # ([nircam.align]) has a different recipe and different settings.
 RECIPE_KEYS = ('pool', 'fit', 'linear_max_error', 'chip_fits', 'exposure_fits',
                'tie_min_matched')
@@ -186,7 +186,7 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
 
     ``refcat`` is a campfire reference catalog table (``RA``, ``DEC``, optional
     proper-motion columns). ``config`` overrides the shipped
-    ``[hst.<detector>.align]`` settings: the recipe (``pool``, ``fit``, ``linear_max_error``, ``chip_fits``,
+    ``[<instrument>.align]`` settings: the recipe (``pool``, ``fit``, ``linear_max_error``, ``chip_fits``,
     ``exposure_fits``, ``tie_min_matched``), the detection settings (``detect_*``, ``snr_min``,
     ``saturation_grow``) and matching settings passed to the solver
     (``coarse_searchrad``, ``match_radius``, ``min_matched``,

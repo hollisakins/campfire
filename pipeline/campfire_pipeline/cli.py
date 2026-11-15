@@ -197,8 +197,8 @@ def download(program, telescope, instrument, field_name, tiles, from_path,
     NIRSpec layout: $CAMPFIRE_ROOT/raw/nirspec/{PID}/{filename}
     NIRCam layout:  $CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/{filename}
                     plus a manifest.ecsv per PID directory.
-    HST layout:     $CAMPFIRE_ROOT/raw/hst/{detector}/{PID}/{filter}/{rootname}_raw.fits
-                    plus a manifest.ecsv per detector and PID.
+    HST layout:     $CAMPFIRE_ROOT/raw/{acswfc,wfc3ir}/{PID}/{filter}/{rootname}_raw.fits
+                    plus a manifest.ecsv per instrument and PID.
 
     JWST downloads are by --program. Auxiliary metafiles (e.g. NIRSpec MSA
     metadata) are fetched first so reduction can begin while uncal files are

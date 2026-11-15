@@ -24,7 +24,7 @@ the primary header.
 Pixels ``crreject`` or the calibration already flagged are not used in the
 comparison and are not flagged again; this step only adds.
 
-Default thresholds (``[hst.<detector>.outlier]`` in the default config, the
+Default thresholds (``[<instrument>.outlier]`` in the default config, the
 only place they are set). ACS/WFC: those of ``crreject``, SNR ``3.5 3.0`` and scale
 ``1.2 0.7``. WFC3/IR: SNR ``8.0 5.0`` as in ``crreject``, and scale
 ``5.0 0.7``, twice the first value ``crreject`` uses. The scale multiplies the

@@ -358,13 +358,18 @@ _register(ProductSpec(
     lifecycle=LC.EXTERNAL_MAST, scope_keys=("pid", "filt"),
     subdir=lambda s: f"nircam/{s.pid}/{s.filt}",
 ))
-# HST: partitioned by detector token ('acswfc', 'wfc3ir'), then proposal number
-# and filter like NIRCam. An HST file name carries no proposal number, so the
-# directory is the only place it is recorded on disk.
+# HST instruments: by proposal number and filter, like NIRCam. An HST file name
+# carries no proposal number, so the directory is the only place it is recorded
+# on disk.
 _register(ProductSpec(
-    name="raw_hst", instrument=Instrument.HST, tree="raw", bucket=None,
-    lifecycle=LC.EXTERNAL_MAST, scope_keys=("detector", "pid", "filt"),
-    subdir=lambda s: f"hst/{s.detector}/{s.pid}/{s.filt}",
+    name="raw_acswfc", instrument=Instrument.ACSWFC, tree="raw", bucket=None,
+    lifecycle=LC.EXTERNAL_MAST, scope_keys=("pid", "filt"),
+    subdir=lambda s: f"acswfc/{s.pid}/{s.filt}",
+))
+_register(ProductSpec(
+    name="raw_wfc3ir", instrument=Instrument.WFC3IR, tree="raw", bucket=None,
+    lifecycle=LC.EXTERNAL_MAST, scope_keys=("pid", "filt"),
+    subdir=lambda s: f"wfc3ir/{s.pid}/{s.filt}",
 ))
 
 

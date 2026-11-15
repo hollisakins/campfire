@@ -8,13 +8,23 @@
     # version = "experimental-bkg-tweak"
 
 [environment]
-    # JWST reference files. CRDS_CONTEXT is the context of every JWST
-    # reduction unless an instrument pins its own: [nircam].crds_context or
-    # [nirspec].crds_context replaces it for that instrument's commands. HST
-    # has a different server and context series and is configured in [hst];
-    # an HST context here, or a JWST one there, stops the command.
+    # Reference files (CRDS), one server and one context per observatory.
+    #
+    # JWST: CRDS_CONTEXT is the context of every JWST reduction unless an
+    # instrument pins its own: [nircam].crds_context or [nirspec].crds_context
+    # replaces it for that instrument's commands.
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
     CRDS_CONTEXT = "jwst_1481.pmap"
+    # HST: the same for the HST instruments, with [acswfc].crds_context and
+    # [wfc3ir].crds_context as the pins. HST has its own server and its own
+    # context series; these two values are handed to the `crds bestrefs`,
+    # `calacs` and `calwf3` subprocesses only and are never exported into the
+    # pipeline process.
+    HST_CRDS_SERVER_URL = "https://hst-crds.stsci.edu"
+    HST_CRDS_CONTEXT = "hst_1372.pmap"
+    # A context or server of the wrong observatory in any of these settings
+    # stops the command. Changing a context changes pixel values: a
+    # Calibration changelog entry and a MINOR release, for either observatory.
 
 # All pipeline data lives under a single $CAMPFIRE_ROOT (default ~/campfire):
 # raw/, products/, reference/, cache/. Relocate the whole tree by setting
@@ -1188,38 +1198,36 @@
     thumbnail_max_dim = 500   # table thumbnail PNG: long-side cap (px)
     quicklook_max_dim = 4096  # popup quick-look PNG: long-side cap (px)
 
-# === HST imaging (ACS/WFC, WFC3/IR) ===
+# === HST ACS/WFC ===
 #
-# [hst] holds what the detectors share. Every step's settings are written out
-# per detector, [hst.<detector>.<step>], with <detector> the token used in
-# product names (acswfc, wfc3ir): the two detectors differ in almost every
-# threshold, and nothing here is shared with [nircam.*] either. A field
-# overrides a value in fields.toml under [<field>.<detector>.<step>].
-# This file is the only place a default lives; the step modules carry none.
+# Each HST detector is an instrument of its own here, on the same footing as
+# [nircam]: its own block, its own commands (`cfpipe acswfc`), its own
+# directories (products/acswfc/<field>/<filter>/). The name is the token used
+# in product names. Every step's settings are written out in full for each
+# instrument, [<instrument>.<step>], even where two instruments agree: nothing
+# is shared between [acswfc.*], [wfc3ir.*] and [nircam.*]. A field overrides a
+# value in fields.toml under [<field>.<instrument>.<step>]. This file is the
+# only place a default lives; the step modules carry none.
 
-[hst]
-    # Reference files. HST has its own CRDS server and its own context series,
-    # so it cannot use [environment].CRDS_CONTEXT (that one is JWST's). These
-    # two values are handed to the `crds bestrefs`, `calacs` and `calwf3`
-    # subprocesses only and are never exported into the pipeline process.
-    # Same policy as the JWST context: changing crds_context changes pixel
-    # values, is a Calibration changelog entry and implies a MINOR release.
-    crds_server = "https://hst-crds.stsci.edu"
-    crds_context = "hst_1372.pmap"
+[acswfc]
+    # Pin a CRDS context for ACS/WFC alone (default:
+    # [environment].HST_CRDS_CONTEXT). Changing it is a Calibration changelog
+    # entry, like the default.
+    # crds_context = "hst_1372.pmap"
 
-[hst.acswfc.sky]
+[acswfc.sky]
     # Source mask for the sky and amplifier-offset measurement: threshold in
     # sigma, and the number of pixels the mask is grown by.
     mask_nsigma = 3.0
     mask_grow = 3
 
-[hst.acswfc.crreject]
+[acswfc.crreject]
     # Per-visit cosmic-ray flags (AstroDrizzle's driz_cr): two-pass S/N
     # thresholds and gradient scales. The survey-standard ACS/WFC values.
     driz_cr_snr = "3.5 3.0"
     driz_cr_scale = "1.2 0.7"
 
-[hst.acswfc.align]
+[acswfc.align]
     # Which exposures are fitted to the reference catalog together.
     #   "visit"    : the exposures of a visit are first fitted to each other
     #                on their common sources, then to the catalog as one body.
@@ -1262,7 +1270,7 @@
     max_residual_arcsec = 0.1
     fine_min_significance = 3.0
 
-[hst.acswfc.outlier]
+[acswfc.outlier]
     # Field-level outlier pass: two-pass S/N thresholds and gradient scales
     # (those of crreject), growth of a flag (pixels), and the single-drizzle
     # settings.
@@ -1286,18 +1294,29 @@
     protect_radius = 0.25
     protect_min_motion = 0.15
 
-[hst.wfc3ir.sky]
+# === HST WFC3/IR ===
+#
+# Same layout as [acswfc.*]: one block per step, every value written out. The
+# comments there give the meaning of each key; the ones here say where this
+# detector differs.
+
+[wfc3ir]
+    # Pin a CRDS context for WFC3/IR alone (default:
+    # [environment].HST_CRDS_CONTEXT).
+    # crds_context = "hst_1372.pmap"
+
+[wfc3ir.sky]
     mask_nsigma = 3.0
     mask_grow = 3
 
-[hst.wfc3ir.crreject]
+[wfc3ir.crreject]
     # Looser than ACS/WFC: the up-the-ramp fit has already removed most hits.
     driz_cr_snr = "8.0 5.0"
     driz_cr_scale = "2.5 0.7"
 
-[hst.wfc3ir.align]
-    # Same recipe and meaning as [hst.acswfc.align]; written out so that a
-    # change for one detector never reaches the other.
+[wfc3ir.align]
+    # Same recipe and meaning as [acswfc.align]; written out so that a change
+    # for one instrument never reaches the other.
     pool = "visit"
     fit = "auto"
     linear_max_error = 3.0
@@ -1316,7 +1335,7 @@
     max_residual_arcsec = 0.1
     fine_min_significance = 3.0
 
-[hst.wfc3ir.outlier]
+[wfc3ir.outlier]
     # The first scale is 5, not crreject's 2.5: a WFC3/IR star is 1.1 native
     # pixels wide and 2.5 flags the peak pixel of about one star image in a
     # hundred (docs/hst/design.md, section 8b).

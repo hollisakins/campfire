@@ -111,10 +111,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   each exposure's date, so stars that moved between epochs are not clipped. For
   WFC3/IR the gradient term of the test is 5 (2.5 flagged the peak pixel of
   about one star image in a hundred). WFC3/IR has been run from RAW to mosaics
-  on 30 public exposures with these steps. The steps' settings are in the default
-  config, one block per detector and step (`[hst.acswfc.align]`,
-  `[hst.wfc3ir.outlier]`, ...; `[hst]` for the HST CRDS server and context), and
-  nowhere else (`config.get_hst_step_config`). The background variance of both
+  on 30 public exposures with these steps. Each HST detector is an instrument of
+  its own, on the same footing as NIRCam: the steps' settings are in the default
+  config, one block per instrument and step (`[acswfc.align]`,
+  `[wfc3ir.outlier]`, ...), and nowhere else (`config.get_hst_step_config`); the
+  HST CRDS server and context are `[environment].HST_CRDS_SERVER_URL` and
+  `HST_CRDS_CONTEXT`. The background variance of both
   detectors follows the measured pixel scatter (`CFVARSC`), the rule the NIRCam
   `bkg` step applies.
 - **New `cfpipe query`: what MAST holds, for JWST or HST, without downloading.**
@@ -130,16 +132,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--instrument acswfc|wfc3ir` it takes the selection of `cfpipe query`
   (`--program`, `--field`, `--target`, `--filters`) or the exposures query listed
   (`--from FILE`, `--from -`), and writes `<rootname>_raw.fits` to
-  `raw/hst/<detector>/<proposal>/<filter>/` with a `manifest.ecsv` per detector
-  and proposal; files already on disk are skipped. New layout kind `raw_hst`
-  (local only). JWST downloads are unchanged; `--program` is now checked by the
+  `raw/acswfc/<proposal>/<filter>/` or `raw/wfc3ir/<proposal>/<filter>/` (the
+  NIRCam shape) with a `manifest.ecsv` per instrument and proposal; files already
+  on disk are skipped. New layout instruments `acswfc` and `wfc3ir` with the
+  local-only kinds `raw_acswfc` and `raw_wfc3ir`. JWST downloads are unchanged; `--program` is now checked by the
   command instead of by the option parser, with the same effect.
 - **A CRDS context can be pinned per instrument, and the wrong observatory's is
   refused.** `[nircam].crds_context` / `[nirspec].crds_context` replace
-  `[environment].CRDS_CONTEXT` for that instrument's commands; neither is set
-  in the shipped file, so nothing changes until one is. An HST context or
-  server in a JWST setting, or a JWST one in `[hst]`, stops the command and names
-  the setting (`config.check_crds_context`, `setup_environment(config,
+  `[environment].CRDS_CONTEXT` for that instrument's commands, and
+  `[acswfc].crds_context` / `[wfc3ir].crds_context` replace
+  `[environment].HST_CRDS_CONTEXT`; none is set in the shipped file, so nothing
+  changes until one is. An HST context or server in a JWST setting, or a JWST
+  one in an HST setting, stops the command and names the setting (`config.check_crds_context`, `setup_environment(config,
   instrument=...)`).
 - **A field names its reference catalog at field level.** `refcat = "<file>.ecsv"`
   directly under `[<field>]` in `fields.toml` is the one catalog every instrument

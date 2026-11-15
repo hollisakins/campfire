@@ -155,16 +155,13 @@ def raw_dir(instrument=None, scope: Optional[Scope] = None, *,
             return base / "nircam"
         sub = base / "nircam" / scope.pid
         return sub / scope.filt if scope.filt is not None else sub
-    if inst == Instrument.HST.value:
-        # hst/<detector>/<pid>/<filt>, each level only when the ones above
-        # it are given
+    if inst in (Instrument.ACSWFC.value, Instrument.WFC3IR.value):
+        # <instrument>/<pid>/<filt>, the NIRCam shape
         scope = scope or Scope()
-        sub = base / "hst"
-        for part in (scope.detector, scope.pid, scope.filt):
-            if part is None:
-                break
-            sub = sub / part
-        return sub
+        if scope.pid is None:
+            return base / inst
+        sub = base / inst / scope.pid
+        return sub / scope.filt if scope.filt is not None else sub
     raise LayoutError(f"unknown instrument '{inst}'")
 
 

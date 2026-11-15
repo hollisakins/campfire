@@ -22,9 +22,10 @@ class LayoutError(ValueError):
 class Instrument(str, Enum):
     NIRSPEC = "nirspec"
     NIRCAM = "nircam"
-    # HST imaging. One member for the telescope: its detectors (the tokens
-    # 'acswfc', 'wfc3ir') partition the tree below it, as Scope.detector.
-    HST = "hst"
+    # HST imaging: each detector is an instrument of its own, on the same
+    # footing as NIRCam (own tree, own commands, own config block).
+    ACSWFC = "acswfc"
+    WFC3IR = "wfc3ir"
 
 
 class LifecycleClass(str, Enum):

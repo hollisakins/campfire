@@ -239,7 +239,7 @@ def test_hst_raw_files_land_where_the_layout_says(tmp_path, fetched):
     assert counts == {'selected': 5, 'missing': 1, 'present': 0,
                       'downloaded': 4, 'errors': 0}
     assert 'no RAW file in the archive: jd0001aaq' in messages[0]
-    raw = tmp_path / 'raw' / 'hst' / 'acswfc'
+    raw = tmp_path / 'raw' / 'acswfc'
     assert (raw / '14096' / 'f814w' / 'jczgo1aaq_raw.fits').stat().st_size == 30
     assert (raw / '14096' / 'f435w' / 'jczgo1acq_raw.fits').exists()
     assert (raw / '15000' / 'f606w' / 'jd0003aaq_raw.fits').exists()
@@ -266,7 +266,7 @@ def test_a_dry_run_writes_nothing_and_jwst_exposures_are_refused(tmp_path, fetch
                              log=lines.append)
     assert counts['downloaded'] == 0 and fetched == []
     assert not (tmp_path / 'raw').exists()
-    assert any('would download raw/hst/acswfc/14096/f814w/jczgo1aaq_raw.fits' in m
+    assert any('would download raw/acswfc/14096/f814w/jczgo1aaq_raw.fits' in m
                for m in lines)
 
     # what query wrote as JSON comes back as the same exposures
@@ -298,7 +298,7 @@ def test_the_download_command_takes_the_query_selection(tmp_path, monkeypatch,
                                    '--program', '14096', '--download-dir', raw,
                                    '--dry-run'])
     assert res.exit_code == 0, res.output
-    assert 'would download raw/hst/acswfc/14096/f435w/jczgo1acq_raw.fits' in res.output
+    assert 'would download raw/acswfc/14096/f435w/jczgo1acq_raw.fits' in res.output
     assert fetched == []
 
     # the JSON of `cfpipe query`, from a file and from standard input
@@ -309,7 +309,7 @@ def test_the_download_command_takes_the_query_selection(tmp_path, monkeypatch,
     res = runner.invoke(cli.main, ['download', '--from', str(tmp_path / 'sel.json'),
                                    '--download-dir', raw])
     assert res.exit_code == 0, res.output
-    assert (tmp_path / 'raw/hst/acswfc/14096/f814w/jczgo1aaq_raw.fits').exists()
+    assert (tmp_path / 'raw/acswfc/14096/f814w/jczgo1aaq_raw.fits').exists()
     res = runner.invoke(cli.main, ['download', '--from', '-', '--download-dir', raw],
                         input=text)
     # (the stand-in archive does not apply the program cut, so all five come)

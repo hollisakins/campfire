@@ -643,17 +643,34 @@
       "compressed_suffixes": []
     },
     {
-      "name": "raw_hst",
-      "instrument": "hst",
+      "name": "raw_acswfc",
+      "instrument": "acswfc",
       "tree": "raw",
       "lifecycle": "external-MAST",
       "bucket": null,
       "scope_keys": [
-        "detector",
         "pid",
         "filt"
       ],
-      "subdir": "hst/{detector}/{pid}/{filt}",
+      "subdir": "acswfc/{pid}/{filt}",
+      "filename": null,
+      "suffix": null,
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "raw_wfc3ir",
+      "instrument": "wfc3ir",
+      "tree": "raw",
+      "lifecycle": "external-MAST",
+      "bucket": null,
+      "scope_keys": [
+        "pid",
+        "filt"
+      ],
+      "subdir": "wfc3ir/{pid}/{filt}",
       "filename": null,
       "suffix": null,
       "legacy_prefix": null,

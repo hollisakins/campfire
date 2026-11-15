@@ -210,8 +210,8 @@ def parse_relpath(relpath: str) -> ParsedKey:
         return ParsedKey("raw_nirspec", Scope(data_subdir=seg[2]), seg[-1])
     if tree == "raw" and len(seg) >= 5 and seg[1] == "nircam":
         return ParsedKey("raw_nircam", Scope(pid=seg[2], filt=seg[3]), seg[-1])
-    if tree == "raw" and len(seg) >= 6 and seg[1] == "hst":
-        return ParsedKey("raw_hst", Scope(detector=seg[2], pid=seg[3], filt=seg[4]), seg[-1])
+    if tree == "raw" and len(seg) >= 5 and seg[1] in ("acswfc", "wfc3ir"):
+        return ParsedKey(f"raw_{seg[1]}", Scope(pid=seg[2], filt=seg[3]), seg[-1])
 
     raise LayoutError(f"unrecognized relpath '{relpath}'")
 

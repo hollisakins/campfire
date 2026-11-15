@@ -396,14 +396,26 @@
       "tree_class": "external-MAST"
     },
     {
-      "product_type": "raw_hst",
+      "product_type": "raw_acswfc",
       "scope": {
-        "detector": "wfc3ir",
+        "pid": "14096",
+        "filt": "f814w"
+      },
+      "filename": "jczgo1aaq_raw.fits",
+      "relpath": "raw/acswfc/14096/f814w/jczgo1aaq_raw.fits",
+      "key_legacy": null,
+      "key_canonical": null,
+      "bucket": null,
+      "tree_class": "external-MAST"
+    },
+    {
+      "product_type": "raw_wfc3ir",
+      "scope": {
         "pid": "14096",
         "filt": "f160w"
       },
       "filename": "iczgo2dlq_raw.fits",
-      "relpath": "raw/hst/wfc3ir/14096/f160w/iczgo2dlq_raw.fits",
+      "relpath": "raw/wfc3ir/14096/f160w/iczgo2dlq_raw.fits",
       "key_legacy": null,
       "key_canonical": null,
       "bucket": null,

@@ -23,7 +23,7 @@ only during the final drizzle, which is not run here.
 A step that reports zero flagged pixels on a real CCD exposure has failed; the
 step raises in that case instead of stamping the files.
 
-Default thresholds (``[hst.<detector>.crreject]``): ACS/WFC uses the values of the legacy surveys and the
+Default thresholds (``[<instrument>.crreject]``): ACS/WFC uses the values of the legacy surveys and the
 AstroDrizzle defaults (SNR ``3.5 3.0``, scale ``1.2 0.7``); WFC3/IR uses looser
 ones (SNR ``8.0 5.0``, scale ``2.5 0.7``), because its up-the-ramp fit has
 already removed most hits and its undersampled stellar cores are easily

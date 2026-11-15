@@ -437,7 +437,8 @@ def from_json(text):
 # JWST downloads stay with `common/query.py::download_jwst_data` (uncal files,
 # NIRSpec MSA metadata, the NIRCam manifest). HST is new and goes through the
 # exposures of this module: one `<rootname>_raw.fits` per exposure, written to
-# raw/hst/<detector>/<proposal>/<filter>/ (layout kind `raw_hst`).
+# raw/<instrument>/<proposal>/<filter>/ (layout kinds `raw_acswfc`,
+# `raw_wfc3ir`).
 
 def raw_products(exposures, tap=None, batch=100):
     """The archive's RAW file of each HST exposure.
@@ -513,9 +514,10 @@ def download_hst(exposures, campfire_root, *, token=None, workers=4,
                  dry_run=False, tap=None, log=print):
     """Download the RAW file of every HST exposure given.
 
-    Files go to ``raw/hst/<detector>/<proposal>/<filter>/<rootname>_raw.fits``
-    under ``campfire_root``; a file already there at the archive's size is
-    skipped, so a re-run resumes. Each ``<detector>/<proposal>`` directory
+    Files go to ``raw/<instrument>/<proposal>/<filter>/<rootname>_raw.fits``
+    under ``campfire_root`` (``raw/acswfc/...``, ``raw/wfc3ir/...``, the
+    NIRCam shape); a file already there at the archive's size is skipped, so
+    a re-run resumes. Each ``<instrument>/<proposal>`` directory
     gets a ``manifest.ecsv`` with what the archive said about its exposures
     (filter, date, exposure time, footprint). Returns
     ``{'selected', 'missing', 'present', 'downloaded', 'errors'}`` counts.
@@ -541,11 +543,10 @@ def download_hst(exposures, campfire_root, *, token=None, workers=4,
         if product is None:
             missing.append(e.obs_id)
             continue
-        scope = Scope(detector=e.instrument, pid=e.program, filt=e.filter_dir)
-        files.append(dict(product, _path=raw_path('hst', scope,
+        scope = Scope(pid=e.program, filt=e.filter_dir)
+        files.append(dict(product, _path=raw_path(e.instrument, scope,
                                                   product['filename'], root=root)))
-        manifest_dir = raw_dir('hst', Scope(detector=e.instrument, pid=e.program),
-                               root=root)
+        manifest_dir = raw_dir(e.instrument, Scope(pid=e.program), root=root)
         rows.setdefault(manifest_dir, []).append(_hst_manifest_row(e, product))
 
     todo, present = _split_existing(files)
