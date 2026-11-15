@@ -140,11 +140,15 @@ class HstChip:
 
         rate, var_rate, t_eff = self.to_rate(sci, err, time, sky)
         good &= t_eff > 0
-        var_background = self.var_scale * self._background_variance(
-            rate, var_rate, t_eff, good)
-        # Whatever ERR**2 holds above the background level: the Poisson noise
-        # of sources, and any local excess (e.g. dark noise of a warm pixel).
-        var_excess = np.clip(var_rate - var_background, 0.0, None)
+        var_model = self._background_variance(rate, var_rate, t_eff, good)
+        # The background term follows the measured pixel scatter (CFVARSC).
+        var_background = self.var_scale * var_model
+        # Whatever ERR**2 holds above the modelled background level: the
+        # Poisson noise of sources, and any local excess (e.g. dark noise of a
+        # warm pixel). Taken against the unscaled model, so that scaling the
+        # background term neither eats into the source term (scale above 1)
+        # nor moves background variance into it (scale below 1).
+        var_excess = np.clip(var_rate - var_model, 0.0, None)
 
         f = self.sb_per_rate
         return ChipArrays(
@@ -250,10 +254,9 @@ def open_exposure(path, tolerated_bits=None, use_outlier_flags=True):
                 shape=hdu.data.shape, photfnu=fnu, idcscale=float(idcscale),
                 is_rate=(bunit == 'ELECTRONS/S'),
                 header_sky=(float(h[SKY_KEY]) if SKY_KEY in h else None),
-                # recorded for every detector, applied only where the pixel
-                # scatter is the noise (see instruments.py)
-                var_scale=(float(h.get(VARSCALE_KEY, 1.0))
-                           if det.apply_var_scale else 1.0),
+                # applied for every detector: the variance follows the
+                # measured pixel scatter (see instruments.py)
+                var_scale=float(h.get(VARSCALE_KEY, 1.0)),
                 tolerated_bits=tolerated_bits,
                 use_outlier_flags=use_outlier_flags, rootname=rootname,
                 proposid=int(primary.get('PROPOSID') or 0),

@@ -2,6 +2,8 @@
 one reference catalog for every instrument.
 """
 
+import os
+
 import pytest
 
 from campfire_pipeline.config import _load_package_defaults, get_hst_step_config
@@ -118,3 +120,83 @@ def test_one_reference_catalog_per_field(tmp_path):
     missing.refcat_dir = str(tmp_path)
     with pytest.raises(ValueError, match='not found'):
         check_align_config({}, missing)
+
+
+# --- CRDS: one context series per observatory, pins per instrument -----------
+
+from campfire_pipeline.config import (check_crds_context, check_crds_server,  # noqa: E402
+                                      crds_context_for, setup_environment)
+
+_JWST, _HST = 'jwst_1481.pmap', 'hst_1372.pmap'
+
+
+def test_a_context_of_the_other_observatory_is_refused_loudly():
+    assert check_crds_context(_JWST, 'jwst', 'x') == _JWST
+    assert check_crds_context(_HST, 'hst', 'x') == _HST
+    with pytest.raises(ValueError, match='is a HST CRDS context'):
+        check_crds_context(_HST, 'jwst', '[environment].CRDS_CONTEXT')
+    with pytest.raises(ValueError, match='is a JWST CRDS context'):
+        check_crds_context(_JWST, 'hst', '[hst].crds_context')
+    with pytest.raises(ValueError, match='not a HST CRDS context'):
+        check_crds_context('latest.pmap', 'hst', 'x')
+    with pytest.raises(ValueError, match='no CRDS context'):
+        check_crds_context('', 'hst', 'x')
+    with pytest.raises(ValueError, match='JWST CRDS server'):
+        check_crds_server('https://jwst-crds.stsci.edu', 'hst', 'x')
+    with pytest.raises(ValueError, match='HST CRDS server'):
+        check_crds_server('https://hst-crds.stsci.edu', 'jwst', 'x')
+
+
+def test_each_instrument_resolves_its_own_context():
+    cfg = {'environment': {'CRDS_CONTEXT': _JWST}, 'hst': {'crds_context': _HST}}
+    assert crds_context_for(cfg, 'nircam') == _JWST
+    assert crds_context_for(cfg, 'nirspec') == _JWST
+    assert crds_context_for(cfg, 'hst') == _HST
+    # an instrument's own pin replaces the JWST default, for that instrument only
+    pinned = dict(cfg, nircam={'crds_context': 'jwst_1500.pmap'})
+    assert crds_context_for(pinned, 'nircam') == 'jwst_1500.pmap'
+    assert crds_context_for(pinned, 'nirspec') == _JWST
+    # HST never falls back to the JWST default
+    with pytest.raises(ValueError, match='no CRDS context'):
+        crds_context_for({'environment': {'CRDS_CONTEXT': _JWST}}, 'hst')
+    # and the wrong series is refused wherever it is put
+    with pytest.raises(ValueError, match='JWST CRDS context'):
+        crds_context_for({'hst': {'crds_context': _JWST}}, 'hst')
+    with pytest.raises(ValueError, match='HST CRDS context'):
+        crds_context_for(dict(cfg, nirspec={'crds_context': _HST}), 'nirspec')
+    with pytest.raises(ValueError, match='HST CRDS context'):
+        crds_context_for({'environment': {'CRDS_CONTEXT': _HST}}, 'nircam')
+    # the shipped file passes its own rules
+    shipped = _load_package_defaults()
+    assert crds_context_for(shipped, 'nircam').startswith('jwst_')
+    assert crds_context_for(shipped, 'hst').startswith('hst_')
+
+
+def test_the_environment_takes_the_instrument_pin(monkeypatch):
+    for key in ('CRDS_CONTEXT', 'CRDS_SERVER_URL', 'CRDS_PATH'):
+        monkeypatch.setenv(key, 'placeholder')
+    cfg = {'environment': {'CRDS_CONTEXT': _JWST},
+           'nircam': {'crds_context': 'jwst_1500.pmap'}}
+    setup_environment(cfg, instrument='nirspec')
+    assert os.environ['CRDS_CONTEXT'] == _JWST
+    setup_environment(cfg, instrument='nircam')
+    assert os.environ['CRDS_CONTEXT'] == 'jwst_1500.pmap'
+    # an HST context in the JWST default stops the command, whatever runs
+    with pytest.raises(ValueError, match='HST CRDS context'):
+        setup_environment({'environment': {'CRDS_CONTEXT': _HST}})
+    # HST settings are never exported
+    with pytest.raises(ValueError, match='not a JWST instrument'):
+        setup_environment(cfg, instrument='hst')
+    assert os.environ['CRDS_CONTEXT'] == 'jwst_1500.pmap'
+
+
+def test_hst_calibrate_refuses_a_jwst_context_before_running(tmp_path):
+    from campfire_pipeline.hst.steps.calibrate import calibrate_step
+
+    with pytest.raises(ValueError, match='JWST CRDS context'):
+        calibrate_step(str(tmp_path / 'absent_raw.fits'), str(tmp_path),
+                       crds_context=_JWST, crds_path=str(tmp_path))
+    with pytest.raises(ValueError, match='JWST CRDS server'):
+        calibrate_step(str(tmp_path / 'absent_raw.fits'), str(tmp_path),
+                       crds_context=_HST, crds_path=str(tmp_path),
+                       crds_server='https://jwst-crds.stsci.edu')

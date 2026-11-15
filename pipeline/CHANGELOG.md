@@ -114,7 +114,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   on 30 public exposures with these steps. The steps' settings are in the default
   config, one block per detector and step (`[hst.acswfc.align]`,
   `[hst.wfc3ir.outlier]`, ...; `[hst]` for the HST CRDS server and context), and
-  nowhere else (`config.get_hst_step_config`).
+  nowhere else (`config.get_hst_step_config`). The background variance of both
+  detectors follows the measured pixel scatter (`CFVARSC`), the rule the NIRCam
+  `bkg` step applies.
+- **A CRDS context can be pinned per instrument, and the wrong observatory's is
+  refused.** `[nircam].crds_context` / `[nirspec].crds_context` replace
+  `[environment].CRDS_CONTEXT` for that instrument's commands; neither is set
+  in the shipped file, so nothing changes until one is. An HST context or
+  server in a JWST setting, or a JWST one in `[hst]`, stops the command and names
+  the setting (`config.check_crds_context`, `setup_environment(config,
+  instrument=...)`).
 - **A field names its reference catalog at field level.** `refcat = "<file>.ecsv"`
   directly under `[<field>]` in `fields.toml` is the one catalog every instrument
   of the field is aligned to. `[<field>.align].refcat` is still read, so no field

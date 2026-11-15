@@ -126,7 +126,7 @@ def epoch_option(f):
 def _setup(config_path, field_name):
     """Load config + environment + field; set up the workspace."""
     config = load_config(config_path)
-    setup_environment(config)
+    setup_environment(config, instrument='nircam')
     try:
         field_obj = Field.load(field_name)
     except FileNotFoundError as e:

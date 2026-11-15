@@ -176,8 +176,8 @@ def test_wfc3ir_rate_file_uses_the_time_array(tmp_path):
     dq = np.zeros((ny, nx), 'int16')
     dq[1, 1], dq[1, 2] = 16, 512                       # stable hot, blob
     # CFVARSC as the sky step measures it on real WFC3/IR frames (pixel scatter
-    # below ERR). It is recorded but must not be applied for this detector:
-    # neighboring pixels are correlated, so the pixel scatter is not the noise.
+    # below ERR). It is applied, as for ACS/WFC and NIRCam: the background
+    # variance follows the pixel scatter.
     extra = {'BUNIT': 'ELECTRONS/S', 'PHOTFNU': 1.5246e-07, 'IDCSCALE': 0.1282500,
              SKY_KEY: 1.0, VARSCALE_KEY: 0.7}
     hdul = fits.HDUList([primary] + _imset(1, sci, err, dq,
@@ -188,7 +188,7 @@ def test_wfc3ir_rate_file_uses_the_time_array(tmp_path):
 
     (c,) = open_exposure(path)
     assert c.instrument == 'wfc3ir' and c.is_rate and c.filter == 'f160w'
-    assert c.var_scale == 1.0                          # 0.7 in the header, unused
+    assert c.var_scale == 0.7                          # from the header, applied
     a = c.load()
     f = c.sb_per_rate
     assert a.sci[5, 5] == pytest.approx(10.0 * f, rel=1e-5)
@@ -196,10 +196,13 @@ def test_wfc3ir_rate_file_uses_the_time_array(tmp_path):
     # pixel whose ramp was cut to 500 s carries twice the variance (half the
     # weight) of its 1000 s neighbours, whatever its flux.
     assert a.var_rnoise[5, 5] == pytest.approx(2.0 * a.var_rnoise[6, 6], rel=1e-5)
-    assert a.var_rnoise[6, 6] == pytest.approx(0.002 * f * f, rel=1e-4)
-    # and the rest of ERR**2 there is the source term
-    total = (11.0 / 500.0 + 0.001) * f * f
-    assert a.var_rnoise[5, 5] + a.var_poisson[5, 5] == pytest.approx(total, rel=1e-4)
+    assert a.var_rnoise[6, 6] == pytest.approx(0.7 * 0.002 * f * f, rel=1e-4)
+    # blank sky carries no source term: its whole variance is the scaled one
+    assert a.var_poisson[6, 6] == pytest.approx(0.0, abs=1e-6 * f * f)
+    # at the source, the part of ERR**2 above the modelled background (0.004
+    # at 500 s) is the source term, untouched by the scale
+    source = (11.0 / 500.0 + 0.001 - 0.004) * f * f
+    assert a.var_poisson[5, 5] == pytest.approx(source, rel=1e-4)
     assert a.good[1, 1] and not a.good[1, 2]           # hot kept, blob dropped
     # a caller may tolerate the blob bit for filters with the delta-flat fix
     (c2,) = open_exposure(path, tolerated_bits=16 + 512)

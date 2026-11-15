@@ -79,6 +79,10 @@ def calibrate_step(raw_file, out_dir, *, crds_context, crds_path,
     """
     if not crds_context or not crds_path:
         raise ValueError('calibrate needs an explicit HST crds_context and crds_path')
+    # a JWST context or the JWST server here stops before anything runs
+    from campfire_pipeline.config import check_crds_context, check_crds_server
+    check_crds_context(crds_context, 'hst', 'HST calibrate: crds_context')
+    check_crds_server(crds_server, 'hst', 'HST calibrate: crds_server')
 
     with fits.open(raw_file, memmap=False) as hdul:
         primary = hdul[0].header

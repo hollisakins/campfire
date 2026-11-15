@@ -8,6 +8,11 @@
     # version = "experimental-bkg-tweak"
 
 [environment]
+    # JWST reference files. CRDS_CONTEXT is the context of every JWST
+    # reduction unless an instrument pins its own: [nircam].crds_context or
+    # [nirspec].crds_context replaces it for that instrument's commands. HST
+    # has a different server and context series and is configured in [hst];
+    # an HST context here, or a JWST one there, stops the command.
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
     CRDS_CONTEXT = "jwst_1481.pmap"
 
@@ -20,6 +25,11 @@
     format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 # === NIRSpec ===
+
+[nirspec]
+    # Pin a CRDS context for NIRSpec alone (default: [environment].CRDS_CONTEXT).
+    # Changing it is a Calibration changelog entry, like the default.
+    # crds_context = "jwst_1481.pmap"
 
 [nirspec.stage1]
     do_clean_flicker_noise = true # handled by iterative bkg subtraction
@@ -172,6 +182,9 @@
 # (ensemble through resample).
 
 [nircam]
+    # Pin a CRDS context for NIRCam alone (default: [environment].CRDS_CONTEXT).
+    # Changing it is a Calibration changelog entry, like the default.
+    # crds_context = "jwst_1481.pmap"
 
 # --- process phase (per-exposure) ---
 

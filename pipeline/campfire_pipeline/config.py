@@ -112,8 +112,82 @@ _BLAS_THREAD_VARS = (
 )
 
 
-def setup_environment(config):
+# Which observatory an instrument block of the config belongs to. Each has its
+# own CRDS server and its own context series; they cannot be mixed.
+_OBSERVATORY = {'nircam': 'jwst', 'nirspec': 'jwst', 'hst': 'hst'}
+
+
+def check_crds_context(context, observatory, where):
+    """Refuse a CRDS context of the wrong observatory, loudly.
+
+    A JWST context is ``jwst_<n>.pmap`` (or a ``jwst-...`` tag), an HST one
+    ``hst_<n>.pmap``. Handing one to the other observatory's calibration would
+    at best fail deep inside CRDS and at worst select nothing sensible, so it
+    stops here with the place the value came from (``where``). Returns the
+    context.
+    """
+    text = str(context or '').strip()
+    other = 'hst' if observatory == 'jwst' else 'jwst'
+    if not text:
+        raise ValueError(f'{where}: no CRDS context set')
+    low = text.lower()
+    if low.startswith((f'{other}_', f'{other}-')):
+        raise ValueError(
+            f'{where} = {text!r} is a {other.upper()} CRDS context, but this '
+            f'setting is for {observatory.upper()} data. JWST contexts go in '
+            f'[environment].CRDS_CONTEXT (or [nircam] / [nirspec].crds_context), '
+            f'HST contexts in [hst].crds_context.')
+    if not low.startswith((f'{observatory}_', f'{observatory}-')):
+        raise ValueError(
+            f'{where} = {text!r} is not a {observatory.upper()} CRDS context '
+            f'(expected something like "{observatory}_1234.pmap")')
+    return text
+
+
+def check_crds_server(url, observatory, where):
+    """Refuse the other observatory's CRDS server. Returns the url."""
+    other = 'hst' if observatory == 'jwst' else 'jwst'
+    if f'{other}-crds' in str(url or '').lower():
+        raise ValueError(
+            f'{where} = {url!r} is the {other.upper()} CRDS server, but this '
+            f'setting is for {observatory.upper()} data')
+    return url
+
+
+def crds_context_for(config, instrument):
+    """The CRDS context one instrument's reductions use.
+
+    ``nircam`` / ``nirspec``: ``[<instrument>].crds_context`` when set,
+    otherwise ``[environment].CRDS_CONTEXT`` (the JWST default, and the line
+    the release rule names). ``hst``: ``[hst].crds_context``; HST never reads
+    the JWST default. A context of the wrong observatory raises ``ValueError``
+    (:func:`check_crds_context`). Returns ``None`` for a JWST instrument when
+    nothing is set anywhere (CRDS then uses its own default).
+    """
+    observatory = _OBSERVATORY[instrument]
+    block = config.get(instrument, {})
+    own = block.get('crds_context') if isinstance(block, dict) else None
+    if own:
+        return check_crds_context(own, observatory, f'[{instrument}].crds_context')
+    if observatory == 'hst':
+        return check_crds_context(None, 'hst', '[hst].crds_context')
+    default = config.get('environment', {}).get('CRDS_CONTEXT')
+    if default:
+        return check_crds_context(default, 'jwst', '[environment].CRDS_CONTEXT')
+    return None
+
+
+def setup_environment(config, instrument=None):
     """Set environment variables from config file.
+
+    ``instrument`` (``'nircam'`` or ``'nirspec'``) is the instrument the
+    command reduces. Its block may pin a CRDS context of its own,
+    ``[<instrument>].crds_context``, which then replaces
+    ``[environment].CRDS_CONTEXT`` for this process; a command runs one
+    instrument, so the pins never meet. The JWST settings are checked on the
+    way: an HST context or the HST server in a JWST setting stops the command
+    (:func:`check_crds_context`). HST settings are never exported; the HST
+    calibrate step hands them to its subprocesses.
 
     For CRDS_PATH, priority is:
     1. Existing $CRDS_PATH in the user's environment
@@ -130,6 +204,11 @@ def setup_environment(config):
     that lost a thread-spawn race inside an astropy.modeling call. Setting
     the env vars here propagates to fork-pool children automatically.
     """
+    if instrument is not None and _OBSERVATORY.get(instrument) != 'jwst':
+        raise ValueError(
+            f'setup_environment: {instrument!r} is not a JWST instrument; '
+            f'HST settings are not exported into the process')
+
     # BLAS thread caps must be set in the parent before pool forks; OpenBLAS
     # re-reads OPENBLAS_NUM_THREADS in each child on first numpy use.
     for var in _BLAS_THREAD_VARS:
@@ -142,10 +221,22 @@ def setup_environment(config):
         if 'CRDS_PATH' not in env and 'CRDS_PATH' not in os.environ:
             env['CRDS_PATH'] = str(cache_path('crds'))
 
+        if env.get('CRDS_CONTEXT'):
+            check_crds_context(env['CRDS_CONTEXT'], 'jwst',
+                               '[environment].CRDS_CONTEXT')
+        if env.get('CRDS_SERVER_URL'):
+            check_crds_server(env['CRDS_SERVER_URL'], 'jwst',
+                              '[environment].CRDS_SERVER_URL')
+
         for key, value in env.items():
             if key == 'CRDS_PATH' and 'CRDS_PATH' in os.environ:
                 continue
             os.environ[key] = str(value)
+
+    if instrument is not None:
+        context = crds_context_for(config, instrument)
+        if context:
+            os.environ['CRDS_CONTEXT'] = context
 
 
 def resolve_paths(config=None):

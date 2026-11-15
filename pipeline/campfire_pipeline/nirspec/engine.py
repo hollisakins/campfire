@@ -24,7 +24,7 @@ class ReductionEngine:
     def __init__(self, config_path=None):
         self.config = load_config(config_path)
         self.config_path = config_path
-        setup_environment(self.config)
+        setup_environment(self.config, instrument='nirspec')
 
         paths = resolve_paths(self.config)
         self.data_dir = paths['data_dir']

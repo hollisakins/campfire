@@ -79,7 +79,7 @@ def _setup(config_path, obs_name):
     data_dir, products_dir.
     """
     config = load_config(config_path)
-    setup_environment(config)
+    setup_environment(config, instrument='nirspec')
     paths = resolve_paths(config)
     obs = Observation.load(obs_name)
     obs.setup_workspace_directory(paths['data_dir'], paths['products_dir'], overwrite=False)
@@ -215,7 +215,7 @@ def linefit(config, obs, source_ids, processes, overwrite, allow_auto, gratings)
         # (config plane) is used when present, for per-observation overrides,
         # and is not required.
         cfg = load_config(config)
-        setup_environment(cfg)
+        setup_environment(cfg, instrument='nirspec')
         obs_obj = resolve_linefit_observation(obs_name, cfg)
         sids = _resolve_source_ids(source_ids)
         sids_list = sids if sids != 'all' else None
@@ -628,7 +628,7 @@ def make_templates(config):
     from campfire_pipeline.nirspec.templates import make_template_grid, make_sfhz_template_grid
 
     cfg = load_config(config)
-    setup_environment(cfg)
+    setup_environment(cfg, instrument='nirspec')
 
     template_grids_config = resolve_template_grid_paths(cfg)
     if not template_grids_config:
