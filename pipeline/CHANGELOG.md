@@ -111,7 +111,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   each exposure's date, so stars that moved between epochs are not clipped. For
   WFC3/IR the gradient term of the test is 5 (2.5 flagged the peak pixel of
   about one star image in a hundred). WFC3/IR has been run from RAW to mosaics
-  on 30 public exposures with these steps.
+  on 30 public exposures with these steps. The steps' settings are in the default
+  config, one block per detector and step (`[hst.acswfc.align]`,
+  `[hst.wfc3ir.outlier]`, ...; `[hst]` for the HST CRDS server and context), and
+  nowhere else (`config.get_hst_step_config`).
+- **A field names its reference catalog at field level.** `refcat = "<file>.ecsv"`
+  directly under `[<field>]` in `fields.toml` is the one catalog every instrument
+  of the field is aligned to. `[<field>.align].refcat` is still read, so no field
+  needs editing; naming two different files is refused. `[<field>.acswfc]` and
+  `[<field>.wfc3ir]` are reserved for the HST detectors and ignored by the NIRCam
+  loader. No output changes.
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.

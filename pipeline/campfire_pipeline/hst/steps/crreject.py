@@ -23,7 +23,7 @@ only during the final drizzle, which is not run here.
 A step that reports zero flagged pixels on a real CCD exposure has failed; the
 step raises in that case instead of stamping the files.
 
-Default thresholds: ACS/WFC uses the values of the legacy surveys and the
+Default thresholds (``[hst.<detector>.crreject]``): ACS/WFC uses the values of the legacy surveys and the
 AstroDrizzle defaults (SNR ``3.5 3.0``, scale ``1.2 0.7``); WFC3/IR uses looser
 ones (SNR ``8.0 5.0``, scale ``2.5 0.7``), because its up-the-ramp fit has
 already removed most hits and its undersampled stellar cores are easily
@@ -39,14 +39,10 @@ from astropy.io import fits
 
 from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import log
+from campfire_pipeline.config import get_hst_step_config
 from campfire_pipeline.hst.exposure import open_exposure
 
 CR_BIT = 4096
-
-DEFAULTS = {
-    'acswfc': {'driz_cr_snr': '3.5 3.0', 'driz_cr_scale': '1.2 0.7'},
-    'wfc3ir': {'driz_cr_snr': '8.0 5.0', 'driz_cr_scale': '2.5 0.7'},
-}
 
 
 def _read_crmasks(work, rootname, extvers):
@@ -124,8 +120,7 @@ def crreject_step(exposure_files, step_config=None, overwrite=False):
             f'{sorted(tokens)} / {sorted(filters)}')
     token = tokens.pop()
     first = chips[files[0]][0]
-    params = dict(DEFAULTS[token])
-    params.update(step_config or {})
+    params = get_hst_step_config('crreject', token, overrides=step_config)
     bits = first.detector.tolerated_bits
 
     from drizzlepac import astrodrizzle

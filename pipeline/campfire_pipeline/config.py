@@ -378,6 +378,41 @@ def get_nircam_step_config(step_name, config, field):
     return deep_merge(base, field.step_overrides.get(step_name, {}))
 
 
+_HST_DEFAULTS = None
+
+
+def get_hst_step_config(step_name, detector, config=None, overrides=None):
+    """Effective settings of one HST step for one detector.
+
+    HST settings are written out per detector, ``[hst.<detector>.<step>]`` with
+    ``<detector>`` one of the product-name tokens (``acswfc``, ``wfc3ir``):
+    the two detectors differ in almost every threshold, and a block that reads
+    for one detector only cannot be misread for the other. Merged, highest
+    priority last:
+
+        1. ``config_default.toml`` and the user config (already merged by
+           :func:`load_config`). With ``config=None`` the shipped defaults
+           alone, so a step called outside the command line runs with exactly
+           what ``cfpipe config`` prints.
+        2. ``overrides``: the field's ``[<field>.<detector>.<step>]`` table.
+
+    The shipped file is the only place a default lives; the step modules carry
+    none. An unknown detector raises ``KeyError``.
+    """
+    global _HST_DEFAULTS
+    if config is None:
+        if _HST_DEFAULTS is None:
+            _HST_DEFAULTS = _load_package_defaults().get('hst', {})
+        hst = _HST_DEFAULTS
+    else:
+        hst = config.get('hst', {})
+    if detector not in hst or not isinstance(hst[detector], dict):
+        raise KeyError(
+            f'no [hst.{detector}] settings; detectors configured: '
+            f'{sorted(k for k, v in hst.items() if isinstance(v, dict))}')
+    return deep_merge(hst[detector].get(step_name, {}), overrides or {})
+
+
 # ---------------------------------------------------------------------------
 # Template grid paths
 # ---------------------------------------------------------------------------

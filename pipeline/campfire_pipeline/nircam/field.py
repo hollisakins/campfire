@@ -342,6 +342,11 @@ class Field:
     # (FitsGL, epic #337). Empty when undeclared; `fiducial_tile_set()` also honors
     # a per-tile `fiducial = true` fallback.
     fiducial_tiles: List[str] = field(default_factory=list)
+    # Field-level `refcat = "<file>.ecsv"`: the one reference catalog every
+    # instrument of the field is aligned to (a file name in `refcat_dir`).
+    # None when undeclared; `[<field>.align].refcat` is the older place and is
+    # still read (orchestrate.field_refcat_name).
+    refcat: Optional[str] = None
 
     # Populated by setup_workspace()
     campfire_root: Optional[str] = None
@@ -442,8 +447,12 @@ class Field:
         # provides at least one `<scale>mas` subsection with `crpix`+`naxis`
         # — in the latter case corners are derived on demand from the WCS.
         tiles = {}
+        # The HST detector tokens are reserved as well: [<field>.acswfc] and
+        # [<field>.wfc3ir] hold that detector's files, filters and step
+        # overrides (read by the HST field object), never a NIRCam tile.
         reserved_keys = ({'filters', 'files', 'skip', 'tangent_point', 'rgb',
-                          'epochs', 'fiducial_tiles'} | known_steps)
+                          'epochs', 'fiducial_tiles', 'refcat',
+                          'acswfc', 'wfc3ir'} | known_steps)
         for key, value in fc.items():
             if key in reserved_keys:
                 continue
@@ -494,6 +503,11 @@ class Field:
                 f"{unknown}. Declared tiles: {list(tiles.keys())}"
             )
 
+        refcat = fc.get('refcat')
+        if refcat is not None and not (isinstance(refcat, str) and refcat):
+            raise ValueError(
+                f"Field '{name}': `refcat` must be a file name, got {refcat!r}")
+
         return cls(
             name=name,
             filters=filters,
@@ -506,6 +520,7 @@ class Field:
             wcs_shift_rules=wcs_shift_rules,
             epochs=epochs,
             fiducial_tiles=list(raw_fiducial),
+            refcat=refcat,
         )
 
     @property

@@ -40,6 +40,7 @@ from scipy.ndimage import binary_dilation, uniform_filter
 
 from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import log
+from campfire_pipeline.config import get_hst_step_config
 from campfire_pipeline.hst.exposure import SKY_KEY, VARSCALE_KEY, HstChip, open_exposure
 
 SKYSIG_KEY = 'CFSKYSIG'
@@ -140,13 +141,13 @@ def sky_step(exposure_file, step_config=None, overwrite=False):
     """Run the sky step on one canonical HST exposure. Returns per-chip results,
     or ``None`` when the file already carries ``CFP_SKY`` and ``overwrite`` is
     not set."""
-    cfg = step_config or {}
     rootname = os.path.basename(exposure_file).split('_')[0]
     if cfp.should_skip(exposure_file, 'CFP_SKY', rootname, 'sky', None, overwrite,
                        keyset=cfp.HST):
         return None
 
     chips = open_exposure(exposure_file)
+    cfg = get_hst_step_config('sky', chips[0].instrument, overrides=step_config)
     tmp = f'{exposure_file}.sky.tmp'
     results = {}
     try:
@@ -164,8 +165,8 @@ def sky_step(exposure_file, step_config=None, overwrite=False):
                     time = np.asarray(hdul['TIME', v].data, dtype=np.float64)
                 slices = amplifier_slices(chip, primary)
                 res = measure_chip(chip, sci, err, dq, time, slices,
-                                   nsigma=float(cfg.get('mask_nsigma', 3.0)),
-                                   grow=int(cfg.get('mask_grow', 3)))
+                                   nsigma=float(cfg['mask_nsigma']),
+                                   grow=int(cfg['mask_grow']))
                 h = sci_hdu.header
                 if len(slices) > 1:
                     for sl, off in zip(slices, res['offsets']):

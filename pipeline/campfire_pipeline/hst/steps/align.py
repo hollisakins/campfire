@@ -3,7 +3,7 @@
 The solver is the NIRCam ``align`` solver (``nircam/align/solve.py``): clip the
 reference catalog to the footprint, find the gross offset with the
 offset-histogram matcher, fit a pool of chips. The recipe is HST's own and is
-set with HST's own settings (:data:`DEFAULTS`); it differs from the NIRCam
+set with HST's own settings (``[hst.<detector>.align]``); it differs from the NIRCam
 recipe on purpose, because the two instruments are wrong in different ways.
 NIRCam's ten detectors each sit at an offset of their own, so the NIRCam step
 fits each detector. The two ACS/WFC chips are one focal plane and do not stand
@@ -67,53 +67,18 @@ from astropy.time import Time
 
 from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import log
+from campfire_pipeline.config import get_hst_step_config
 from campfire_pipeline.hst.exposure import open_exposure
 
 _BACKUP = {'CRVAL1': 'CFOCRV1', 'CRVAL2': 'CFOCRV2', 'CD1_1': 'CFOCD11',
            'CD1_2': 'CFOCD12', 'CD2_1': 'CFOCD21', 'CD2_2': 'CFOCD22'}
 ALIGN_SUFFIX = '-CFALIGN'
 
-# The recipe of the HST align step and its defaults. These settings are HST's
-# own ([hst.align] once the configuration is wired); the NIRCam step
+# The settings that choose the recipe of the HST align step. Their meaning and
+# defaults are in config_default.toml, [hst.<detector>.align]; the NIRCam step
 # ([nircam.align]) has a different recipe and different settings.
-DEFAULTS = {
-    # Which exposures are fitted to the reference catalog together.
-    #   'visit'    : the exposures of a visit are first fitted to each other on
-    #                their common sources, then fitted to the catalog as one body.
-    #   'exposure' : every exposure is fitted to the catalog on its own (what
-    #                the NIRCam step does).
-    'pool': 'visit',
-    # What is fitted for a pool against the reference catalog.
-    #   'rigid'  : one shift and one rotation.
-    #   'linear' : shift, rotation, scale and skew (six numbers), for the whole
-    #              pool. ACS/WFC needs this: its two chips do not stand apart,
-    #              the field as a whole carries a skew of 3 to 7 mas per 100".
-    #   'auto'   : linear when the matches can hold a linear term to
-    #              `linear_max_error`, rigid otherwise.
-    'fit': 'auto',
-    # mas per 100 arcsec. The term to be corrected is 3 to 7; a fit that cannot
-    # do better than about 3 would add as much error as it removes.
-    'linear_max_error': 3.0,
-    # After the pool's fit, a shift and rotation for each chip: one per chip for
-    # the pool, shared by that chip in every tied exposure and accepted only
-    # when significant (the NIRCam rule, counted on distinct reference sources).
-    # When one is accepted the exposures are tied a second time.
-    # Off by default: on nine ACS/WFC visits a chip fit never improved the
-    # check against an independent catalog, and on one visit it made the check
-    # worse whichever catalog was fitted (design.md, section 8b).
-    'chip_fits': False,
-    # With chip_fits: on top of the shared fits, a fit of every chip in every
-    # exposure, each accepted when its shift is significant against the shift's
-    # own standard error (all of the chip's matches; the solver's
-    # `fine_min_significance` / `exposure_min_significance`). Same setting and
-    # rule as [nircam.align]. Without chip_fits it has no effect.
-    'exposure_fits': True,
-    # Common sources needed to fit one exposure to another.
-    'tie_min_matched': 20,
-}
-
-# Matched-filter width (native pixels) for source detection, per detector.
-_DETECT_FWHM = {'acswfc': 2.2, 'wfc3ir': 1.3}
+RECIPE_KEYS = ('pool', 'fit', 'linear_max_error', 'chip_fits', 'exposure_fits',
+               'tie_min_matched')
 # DQ value of a saturated pixel in calibrated ACS and WFC3 files (the DQ flag
 # tables of the ACS and WFC3 Data Handbooks give 256 for both).
 SATURATED_BIT = 256
@@ -144,6 +109,7 @@ def _detect(chip, config):
 
     from campfire_pipeline.imaging.align.detect import detect_sources
 
+    config = get_hst_step_config('align', chip.instrument, overrides=config)
     a = chip.load()
     # Background noise only (the adapter's source-independent variance). The
     # shared extraction measures positions on sci / err; with the source's own
@@ -154,12 +120,12 @@ def _detect(chip, config):
         err = np.sqrt(a.var_rnoise.astype(np.float64))
     cat = detect_sources(
         a.sci.astype(np.float64), err, mask=~a.good,
-        fwhm=float(config.get('detect_fwhm', _DETECT_FWHM[chip.instrument])),
-        snr_thresh=float(config.get('detect_snr_thresh', 3.0)),
-        minarea=int(config.get('detect_minarea', 9)),
-        snr_min=config.get('snr_min', 10.0),
+        fwhm=float(config['detect_fwhm']),
+        snr_thresh=float(config['detect_snr_thresh']),
+        minarea=int(config['detect_minarea']),
+        snr_min=config['snr_min'],
     )
-    grow = int(config.get('saturation_grow', 5))
+    grow = int(config['saturation_grow'])
     if len(cat) and grow >= 0:
         dq = fits.getdata(chip.path, ('DQ', chip.extver))
         near = maximum_filter((dq & SATURATED_BIT) != 0, size=2 * grow + 1)
@@ -219,8 +185,8 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
     (or ``None`` when every file is already aligned and ``overwrite`` is unset).
 
     ``refcat`` is a campfire reference catalog table (``RA``, ``DEC``, optional
-    proper-motion columns). ``config`` holds the recipe settings of
-    :data:`DEFAULTS` (``pool``, ``fit``, ``linear_max_error``, ``chip_fits``,
+    proper-motion columns). ``config`` overrides the shipped
+    ``[hst.<detector>.align]`` settings: the recipe (``pool``, ``fit``, ``linear_max_error``, ``chip_fits``,
     ``exposure_fits``, ``tie_min_matched``), the detection settings (``detect_*``, ``snr_min``,
     ``saturation_grow``) and matching settings passed to the solver
     (``coarse_searchrad``, ``match_radius``, ``min_matched``,
@@ -236,7 +202,8 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
     )
 
     files = sorted(exposure_files)
-    cfg = dict(config or {})
+    cfg = get_hst_step_config('align', open_exposure(files[0])[0].instrument,
+                              overrides=config)
     if not overwrite:
         values = [cfp.step_value(f, 'CFP_ALGN', keyset=cfp.HST) for f in files]
         if all(v is not None and v != cfp.NOT_ALIGNED for v in values):
@@ -252,7 +219,7 @@ def align_visit(exposure_files, refcat, *, key, config=None, refcat_hash=None,
             f'{", ".join(borrowed)}: not a setting of the HST align step. Its recipe '
             f'is set with pool, fit, chip_fits and exposure_fits '
             f'(see hst/steps/align.py).')
-    opt = {k: cfg.pop(k, v) for k, v in DEFAULTS.items()}
+    opt = {k: cfg.pop(k) for k in RECIPE_KEYS}
     if opt['pool'] not in ('visit', 'exposure'):
         raise ValueError(f"pool = {opt['pool']!r}: expected 'visit' or 'exposure'")
     if opt['fit'] not in ('auto', 'linear', 'rigid'):

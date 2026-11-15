@@ -24,7 +24,8 @@ the primary header.
 Pixels ``crreject`` or the calibration already flagged are not used in the
 comparison and are not flagged again; this step only adds.
 
-Default thresholds. ACS/WFC: those of ``crreject``, SNR ``3.5 3.0`` and scale
+Default thresholds (``[hst.<detector>.outlier]`` in the default config, the
+only place they are set). ACS/WFC: those of ``crreject``, SNR ``3.5 3.0`` and scale
 ``1.2 0.7``. WFC3/IR: SNR ``8.0 5.0`` as in ``crreject``, and scale
 ``5.0 0.7``, twice the first value ``crreject`` uses. The scale multiplies the
 gradient of the model image and is the allowance for a steep source. A WFC3/IR
@@ -74,17 +75,9 @@ from astropy.io import fits
 
 from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import log
+from campfire_pipeline.config import get_hst_step_config
 from campfire_pipeline.hst.exposure import OUTLIER_EXT, open_exposure
 
-DEFAULTS = {
-    'acswfc': {'snr': (3.5, 3.0), 'scale': (1.2, 0.7),
-               'protect_radius': 0.25, 'protect_min_motion': 0.15},
-    'wfc3ir': {'snr': (8.0, 5.0), 'scale': (5.0, 0.7),
-               'protect_radius': 0.4, 'protect_min_motion': 0.15},
-}
-_COMMON = {'grow': 1, 'pixfrac': 1.0, 'kernel': 'square',
-           'minmed_nsigma': (4.0, 3.0), 'minmed_max_n': 3,
-           'min_contributors': 2, 'protect_stars': True}
 _PROTECT_KEYS = ('protect_stars', 'protect_radius', 'protect_min_motion')
 
 
@@ -169,9 +162,7 @@ def outlier_step(exposure_files, step_config=None, overwrite=False, refcat=None)
             f'{sorted(tokens)} / {sorted(filters)}')
     token = tokens.pop()
 
-    params = dict(_COMMON)
-    params.update(DEFAULTS[token])
-    params.update(step_config or {})
+    params = get_hst_step_config('outlier', token, overrides=step_config)
     for name in ('snr', 'scale', 'minmed_nsigma'):
         params[name] = _pair(params[name])
 

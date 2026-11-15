@@ -1174,3 +1174,147 @@
     plot_downsample = 4
     thumbnail_max_dim = 500   # table thumbnail PNG: long-side cap (px)
     quicklook_max_dim = 4096  # popup quick-look PNG: long-side cap (px)
+
+# === HST imaging (ACS/WFC, WFC3/IR) ===
+#
+# [hst] holds what the detectors share. Every step's settings are written out
+# per detector, [hst.<detector>.<step>], with <detector> the token used in
+# product names (acswfc, wfc3ir): the two detectors differ in almost every
+# threshold, and nothing here is shared with [nircam.*] either. A field
+# overrides a value in fields.toml under [<field>.<detector>.<step>].
+# This file is the only place a default lives; the step modules carry none.
+
+[hst]
+    # Reference files. HST has its own CRDS server and its own context series,
+    # so it cannot use [environment].CRDS_CONTEXT (that one is JWST's). These
+    # two values are handed to the `crds bestrefs`, `calacs` and `calwf3`
+    # subprocesses only and are never exported into the pipeline process.
+    # Same policy as the JWST context: changing crds_context changes pixel
+    # values, is a Calibration changelog entry and implies a MINOR release.
+    crds_server = "https://hst-crds.stsci.edu"
+    crds_context = "hst_1372.pmap"
+
+[hst.acswfc.sky]
+    # Source mask for the sky and amplifier-offset measurement: threshold in
+    # sigma, and the number of pixels the mask is grown by.
+    mask_nsigma = 3.0
+    mask_grow = 3
+
+[hst.acswfc.crreject]
+    # Per-visit cosmic-ray flags (AstroDrizzle's driz_cr): two-pass S/N
+    # thresholds and gradient scales. The survey-standard ACS/WFC values.
+    driz_cr_snr = "3.5 3.0"
+    driz_cr_scale = "1.2 0.7"
+
+[hst.acswfc.align]
+    # Which exposures are fitted to the reference catalog together.
+    #   "visit"    : the exposures of a visit are first fitted to each other
+    #                on their common sources, then to the catalog as one body.
+    #   "exposure" : every exposure is fitted to the catalog on its own.
+    pool = "visit"
+    # What is fitted for a pool against the catalog.
+    #   "rigid"  : one shift and one rotation.
+    #   "linear" : shift, rotation, scale and skew for the whole pool. ACS/WFC
+    #              needs it: the field carries a skew of 3 to 7 mas per 100".
+    #   "auto"   : linear when the matches can hold a linear term to
+    #              linear_max_error (mas per 100"), rigid otherwise.
+    fit = "auto"
+    linear_max_error = 3.0
+    # A shift and rotation per chip after the pool's fit. Off: on nine ACS/WFC
+    # visits a chip fit never improved the check against an independent
+    # catalog (docs/hst/design.md, section 8b). exposure_fits (a fit of every
+    # chip in every exposure, on top) has no effect without chip_fits.
+    chip_fits = false
+    exposure_fits = true
+    # Common sources needed to fit one exposure to another.
+    tie_min_matched = 20
+    # Source detection: matched-filter width (native pixels), per-pixel S/N
+    # threshold, minimum area, minimum integrated S/N, and the distance
+    # (pixels) from a saturated pixel inside which a detection is dropped.
+    detect_fwhm = 2.2
+    detect_snr_thresh = 3.0
+    detect_minarea = 9
+    snr_min = 10.0
+    saturation_grow = 5
+    # Matching and acceptance (the shared solver; the remaining matcher
+    # internals keep the solver's own defaults). Search radius of the gross
+    # shift (arcsec), one-to-one match radius (arcsec), matches and sky
+    # coverage (arcsec) a pool needs, the residual above which a chip is
+    # refused (arcsec), and the significance a chip fit's shift must reach
+    # (used with chip_fits only).
+    coarse_searchrad = 70.0
+    match_radius = 0.5
+    min_matched = 6
+    min_coverage_arcsec = 5.0
+    max_residual_arcsec = 0.1
+    fine_min_significance = 3.0
+
+[hst.acswfc.outlier]
+    # Field-level outlier pass: two-pass S/N thresholds and gradient scales
+    # (those of crreject), growth of a flag (pixels), and the single-drizzle
+    # settings.
+    snr = "3.5 3.0"
+    scale = "1.2 0.7"
+    grow = 1
+    pixfrac = 1.0
+    kernel = "square"
+    # Where two or three exposures overlap the median is replaced by the
+    # minimum when it stands above it by this many sigma (second value: next
+    # to such a pixel). A pixel is tested only where min_contributors
+    # exposures went into the median.
+    minmed_nsigma = "4.0 3.0"
+    minmed_max_n = 3
+    min_contributors = 2
+    # Catalog stars that moved protect_min_motion native pixels or more
+    # between the first and last exposure containing them are left alone
+    # within protect_radius arcsec. Neither value is measured on two-epoch
+    # ACS data (the radius is WFC3/IR's scaled by the narrower PSF).
+    protect_stars = true
+    protect_radius = 0.25
+    protect_min_motion = 0.15
+
+[hst.wfc3ir.sky]
+    mask_nsigma = 3.0
+    mask_grow = 3
+
+[hst.wfc3ir.crreject]
+    # Looser than ACS/WFC: the up-the-ramp fit has already removed most hits.
+    driz_cr_snr = "8.0 5.0"
+    driz_cr_scale = "2.5 0.7"
+
+[hst.wfc3ir.align]
+    # Same recipe and meaning as [hst.acswfc.align]; written out so that a
+    # change for one detector never reaches the other.
+    pool = "visit"
+    fit = "auto"
+    linear_max_error = 3.0
+    chip_fits = false
+    exposure_fits = true
+    tie_min_matched = 20
+    detect_fwhm = 1.3
+    detect_snr_thresh = 3.0
+    detect_minarea = 9
+    snr_min = 10.0
+    saturation_grow = 5
+    coarse_searchrad = 70.0
+    match_radius = 0.5
+    min_matched = 6
+    min_coverage_arcsec = 5.0
+    max_residual_arcsec = 0.1
+    fine_min_significance = 3.0
+
+[hst.wfc3ir.outlier]
+    # The first scale is 5, not crreject's 2.5: a WFC3/IR star is 1.1 native
+    # pixels wide and 2.5 flags the peak pixel of about one star image in a
+    # hundred (docs/hst/design.md, section 8b).
+    snr = "8.0 5.0"
+    scale = "5.0 0.7"
+    grow = 1
+    pixfrac = 1.0
+    kernel = "square"
+    minmed_nsigma = "4.0 3.0"
+    minmed_max_n = 3
+    min_contributors = 2
+    protect_stars = true
+    protect_radius = 0.4
+    protect_min_motion = 0.15

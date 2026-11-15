@@ -482,13 +482,13 @@ def _outlier_refcat(field, config, cfg):
     """
     if not cfg.get('protect_stars', True):
         return None
-    name = get_nircam_step_config('align', config, field).get('refcat')
+    name = field_refcat_name(field, get_nircam_step_config('align', config, field))
     refcat_dir = getattr(field, 'refcat_dir', None)
     path = os.path.join(refcat_dir, name) if name and refcat_dir else None
     if path is None or not os.path.exists(path):
-        log("outlier: the field has no reference catalog "
-            "([<field>.align].refcat), so stars that moved between exposures "
-            "are not protected")
+        log("outlier: the field has no reference catalog (refcat under "
+            "[<field>]), so stars that moved between exposures are not "
+            "protected")
         return None
     from campfire_pipeline.imaging.refcat.io import has_proper_motion
     from campfire_pipeline.nircam.refcat.io import read_refcat
@@ -720,19 +720,38 @@ def align_enabled(config, field):
         'enabled', True))
 
 
+def field_refcat_name(field, align_cfg=None):
+    """File name of the field's reference catalog, or ``None``.
+
+    One catalog serves every instrument of a field, so it is a field-level
+    key: ``refcat = "<file>.ecsv"`` directly under ``[<field>]``. The older
+    place, ``[<field>.align].refcat``, is still read. Naming both with
+    different files is refused: two steps of one field would otherwise be
+    tied to different catalogs without anyone having asked for that.
+    """
+    top = getattr(field, 'refcat', None)
+    old = (align_cfg or {}).get('refcat')
+    if top and old and top != old:
+        raise ValueError(
+            f"field '{field.name}' names two reference catalogs: refcat = "
+            f"{top!r} under [{field.name}] and {old!r} under "
+            f"[{field.name}.align]. Keep the first.")
+    return top or old or None
+
+
 def check_align_config(config, field):
     """Fail early if align is enabled but the field names no usable refcat.
 
     Align is the last process step, so without this check a field with no
-    ``[<field>.align].refcat`` would run every earlier step and only then stop.
+    reference catalog would run every earlier step and only then stop.
     Raises ``ValueError`` with the two ways out; a no-op when align is off.
     """
     if not align_enabled(config, field):
         return
     align_cfg = get_nircam_step_config('align', config, field)
-    name = align_cfg.get('refcat')
+    name = field_refcat_name(field, align_cfg)
     hint = (
-        f"Set [{field.name}.align].refcat = \"<file>.ecsv\" in fields.toml (a "
+        f"Set refcat = \"<file>.ecsv\" under [{field.name}] in fields.toml (a "
         f"Gaia-tied campfire-refcat-v1 ECSV in the field's astrometric-catalog "
         f"directory), or opt out of align with [{field.name}.align].enabled = "
         f"false to use the jhat step instead.")
@@ -847,19 +866,21 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False,
                                 status, tiles=tiles)
 
 
-def _resolve_align_refcat(align_cfg, refcat_dir):
+def _resolve_align_refcat(align_cfg, field):
     """Resolve the single per-field align reference-catalog path.
 
     Align ties a whole multi-filter exposure to ONE refcat, so — unlike jhat —
-    there is no per-filter mapping; just ``[<field>.align].refcat``.
+    there is no per-filter mapping; just the field's catalog
+    (:func:`field_refcat_name`).
     """
-    name = align_cfg.get('refcat')
+    name = field_refcat_name(field, align_cfg)
     if not name:
         raise ValueError(
-            "align config missing 'refcat'. Set [<field>.align].refcat = "
-            '"<file>" in fields.toml (a Gaia-tied campfire-refcat-v1 ECSV in '
-            "the field's astrometric-catalog directory).")
-    return os.path.join(refcat_dir, name)
+            f"field '{field.name}' has no reference catalog. Set refcat = "
+            f'"<file>" under [{field.name}] in fields.toml (a Gaia-tied '
+            f"campfire-refcat-v1 ECSV in the field's astrometric-catalog "
+            f"directory).")
+    return os.path.join(field.refcat_dir, name)
 
 
 def _refcat_hash(path):
@@ -1041,7 +1062,7 @@ def _run_align(field, config, filtname, n_processes, overwrite, status,
             f"with --filters / --tiles.")
 
     pools = split_pools(groups, pool_modules=align_cfg.get('pool_modules', True))
-    refcat_path = _resolve_align_refcat(align_cfg, field.refcat_dir)
+    refcat_path = _resolve_align_refcat(align_cfg, field)
     refcat_hash = _refcat_hash(refcat_path)   # cheap; drives the staleness skip
     pending, retry = _pending_pools(pools, status, overwrite, refcat_hash)
     skipped = len(pools) - len(pending)
