@@ -125,7 +125,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   file glob of each program to paste into `fields.toml`; `--format exposures`
   lists every file set and `--format json` is machine-readable. One CAOM catalog
   query per instrument, footprints tested against the region locally
-  (`common/mast_query.py`). `cfpipe download` is unchanged.
+  (`common/mast_query.py`).
+- **`cfpipe download` fetches HST raw files.** With `--telescope hst` or
+  `--instrument acswfc|wfc3ir` it takes the selection of `cfpipe query`
+  (`--program`, `--field`, `--target`, `--filters`) or the exposures query listed
+  (`--from FILE`, `--from -`), and writes `<rootname>_raw.fits` to
+  `raw/hst/<detector>/<proposal>/<filter>/` with a `manifest.ecsv` per detector
+  and proposal; files already on disk are skipped. New layout kind `raw_hst`
+  (local only). JWST downloads are unchanged; `--program` is now checked by the
+  command instead of by the option parser, with the same effect.
 - **A CRDS context can be pinned per instrument, and the wrong observatory's is
   refused.** `[nircam].crds_context` / `[nirspec].crds_context` replace
   `[environment].CRDS_CONTEXT` for that instrument's commands; neither is set

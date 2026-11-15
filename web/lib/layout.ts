@@ -47,7 +47,7 @@ export interface Scope {
   y?: number;
 }
 
-export type Instrument = 'nirspec' | 'nircam';
+export type Instrument = 'nirspec' | 'nircam' | 'hst';
 export type LifecycleClass =
   | 'cloud-backed-product'
   | 'user-state'
@@ -346,6 +346,7 @@ export function parseRelpath(relpath: string): ParsedKey {
   }
   if (tree === 'raw' && seg.length >= 4 && seg[1] === 'nirspec') return live({ productType: 'raw_nirspec', scope: { data_subdir: seg[2] }, filename: seg[seg.length - 1] });
   if (tree === 'raw' && seg.length >= 5 && seg[1] === 'nircam') return live({ productType: 'raw_nircam', scope: { pid: seg[2], filt: seg[3] }, filename: seg[seg.length - 1] });
+  if (tree === 'raw' && seg.length >= 6 && seg[1] === 'hst') return live({ productType: 'raw_hst', scope: { detector: seg[2], pid: seg[3], filt: seg[4] }, filename: seg[seg.length - 1] });
 
   throw new LayoutError(`unrecognized relpath '${relpath}'`);
 }

@@ -184,3 +184,141 @@ def test_the_command(monkeypatch):
             (['query', '--telescope', 'hst', '--target', '400 2'], 'RA must be')):
         res = runner.invoke(cli.main, args)
         assert res.exit_code != 0 and message in res.output, res.output
+
+
+# --- HST download -------------------------------------------------------------
+
+def _archive(rows, without_raw=()):
+    """A catalog stand-in answering both queries: exposures, and their RAW
+    files (30 bytes each)."""
+    def run(adql):
+        run.seen.append(adql)
+        if 'caomartifact' not in adql:
+            return list(rows)
+        out = []
+        for r in rows:
+            obs = r['observationid']
+            if f"'{obs}'" in adql and obs not in without_raw:
+                out.append({'observationid': obs, 'productfilename': f'{obs}_raw.fits',
+                            'datauri': f'mast:HST/product/{obs}_raw.fits',
+                            'contentlength': '30', 'contentchecksum': 'md5:x'})
+                out.append({'observationid': obs, 'productfilename': f'{obs}_spt.fits',
+                            'datauri': 'x', 'contentlength': '5',
+                            'contentchecksum': ''})
+        return out
+    run.seen = []
+    return run
+
+
+@pytest.fixture
+def fetched(monkeypatch):
+    """Replace the network download: write each file at its stated size."""
+    from campfire_pipeline.common import query as jwst_query
+
+    calls = []
+
+    def fake(files, token=None, workers=4, desc=''):
+        for f in files:
+            f['_path'].parent.mkdir(parents=True, exist_ok=True)
+            f['_path'].write_bytes(b'x' * f['size'])
+        calls.append([f['filename'] for f in files])
+        return 0
+    monkeypatch.setattr(jwst_query, 'download_files', fake)
+    return calls
+
+
+def test_hst_raw_files_land_where_the_layout_says(tmp_path, fetched):
+    from astropy.table import Table
+
+    tap = _archive(_HST_ROWS, without_raw=('jd0001aaq',))
+    exposures = mq.query_exposures([mq.INSTRUMENTS['acswfc']],
+                                   programs=[14096, 15000], tap=tap,
+                                   log=lambda m: None)
+    messages = []
+    counts = mq.download_hst(exposures, tmp_path, tap=tap, log=messages.append)
+    assert counts == {'selected': 5, 'missing': 1, 'present': 0,
+                      'downloaded': 4, 'errors': 0}
+    assert 'no RAW file in the archive: jd0001aaq' in messages[0]
+    raw = tmp_path / 'raw' / 'hst' / 'acswfc'
+    assert (raw / '14096' / 'f814w' / 'jczgo1aaq_raw.fits').stat().st_size == 30
+    assert (raw / '14096' / 'f435w' / 'jczgo1acq_raw.fits').exists()
+    assert (raw / '15000' / 'f606w' / 'jd0003aaq_raw.fits').exists()
+    assert not list(raw.rglob('*_spt.fits'))
+    manifest = Table.read(raw / '14096' / 'manifest.ecsv')
+    assert list(manifest['rootname']) == ['jczgo1aaq', 'jczgo1abq', 'jczgo1acq']
+    assert manifest['filter'][2] == 'f435w' and str(manifest['program'][0]) == '14096'
+    assert manifest['s_region'][0].startswith('POLYGON ICRS 289.')
+
+    # a second run downloads nothing and keeps the manifest rows
+    again = mq.download_hst(exposures, tmp_path, tap=tap, log=messages.append)
+    assert again['present'] == 4 and again['downloaded'] == 0
+    assert fetched == [['jczgo1aaq_raw.fits', 'jczgo1abq_raw.fits',
+                        'jczgo1acq_raw.fits', 'jd0003aaq_raw.fits'], []]
+    assert len(Table.read(raw / '14096' / 'manifest.ecsv')) == 3
+
+
+def test_a_dry_run_writes_nothing_and_jwst_exposures_are_refused(tmp_path, fetched):
+    tap = _archive(_HST_ROWS)
+    exposures = mq.query_exposures([mq.INSTRUMENTS['acswfc']], programs=[14096],
+                                   tap=tap, log=lambda m: None)
+    lines = []
+    counts = mq.download_hst(exposures, tmp_path, tap=tap, dry_run=True,
+                             log=lines.append)
+    assert counts['downloaded'] == 0 and fetched == []
+    assert not (tmp_path / 'raw').exists()
+    assert any('would download raw/hst/acswfc/14096/f814w/jczgo1aaq_raw.fits' in m
+               for m in lines)
+
+    # what query wrote as JSON comes back as the same exposures
+    assert mq.from_json(mq.to_json(exposures)) == exposures
+    with pytest.raises(ValueError, match='not the JSON'):
+        mq.from_json('acswfc 14096')
+
+    jwst = mq.Exposure('nircam', 'jwst', 'jw06882060001_02101_00001_nrca1', '6882',
+                       '', '', 'f200w', 311.0, 60953.0, 'PUBLIC', ())
+    with pytest.raises(ValueError, match='JWST'):
+        mq.download_hst([jwst], tmp_path, tap=tap)
+    # an open filter-wheel position is not part of the directory name
+    two = mq.Exposure('acswfc', 'hst', 'jx', '1', '', '', 'f606w;clear2l', 1.0,
+                      1.0, '', ())
+    assert two.filter_dir == 'f606w'
+
+
+def test_the_download_command_takes_the_query_selection(tmp_path, monkeypatch,
+                                                        fetched):
+    from campfire_pipeline import cli
+    from campfire_pipeline.common import query as jwst_query
+
+    tap = _archive(_HST_ROWS)
+    monkeypatch.setattr(jwst_query, '_tap_query', tap)
+    runner = CliRunner()
+    raw = str(tmp_path / 'raw')
+
+    res = runner.invoke(cli.main, ['download', '--instrument', 'acswfc',
+                                   '--program', '14096', '--download-dir', raw,
+                                   '--dry-run'])
+    assert res.exit_code == 0, res.output
+    assert 'would download raw/hst/acswfc/14096/f435w/jczgo1acq_raw.fits' in res.output
+    assert fetched == []
+
+    # the JSON of `cfpipe query`, from a file and from standard input
+    listed = runner.invoke(cli.main, ['query', '--instrument', 'acswfc',
+                                      '--program', '14096', '--format', 'json'])
+    text = listed.output[listed.output.index('['):]
+    (tmp_path / 'sel.json').write_text(text)
+    res = runner.invoke(cli.main, ['download', '--from', str(tmp_path / 'sel.json'),
+                                   '--download-dir', raw])
+    assert res.exit_code == 0, res.output
+    assert (tmp_path / 'raw/hst/acswfc/14096/f814w/jczgo1aaq_raw.fits').exists()
+    res = runner.invoke(cli.main, ['download', '--from', '-', '--download-dir', raw],
+                        input=text)
+    # (the stand-in archive does not apply the program cut, so all five come)
+    assert res.exit_code == 0 and '5 already on disk' in res.output, res.output
+
+    for args, message in (
+            (['download', '--telescope', 'hst'], '--program, --field, --target'),
+            (['download', '--from', 'x.json', '--program', '1'], 'as listed'),
+            (['download', '--instrument', 'nircam'], '--program is required'),
+            (['download', '--program', '1', '--field', 'x'], 'HST exposures')):
+        res = runner.invoke(cli.main, args)
+        assert res.exit_code != 0 and message in res.output, res.output

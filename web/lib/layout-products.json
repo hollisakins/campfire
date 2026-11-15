@@ -641,6 +641,25 @@
       "mirrored": true,
       "scheme_invariant": false,
       "compressed_suffixes": []
+    },
+    {
+      "name": "raw_hst",
+      "instrument": "hst",
+      "tree": "raw",
+      "lifecycle": "external-MAST",
+      "bucket": null,
+      "scope_keys": [
+        "detector",
+        "pid",
+        "filt"
+      ],
+      "subdir": "hst/{detector}/{pid}/{filt}",
+      "filename": null,
+      "suffix": null,
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
     }
   ],
   "dispatch": {

@@ -139,11 +139,27 @@ INSTRUMENT_DEFAULTS = {
 
 
 @main.command()
-@click.option('--program', type=int, required=True,
-              help='JWST program ID.')
-@click.option('--instrument', type=click.Choice(['nirspec', 'nircam'],
-              case_sensitive=False), default='nirspec',
-              help='Instrument (default: nirspec).')
+@click.option('--program', type=int, default=None,
+              help='Program (proposal) number. Required for JWST; one way to '
+                   'select HST exposures.')
+@click.option('--telescope', type=click.Choice(['jwst', 'hst'],
+              case_sensitive=False), default=None,
+              help='Telescope. "hst" with no --instrument means ACS/WFC and '
+                   'WFC3/IR.')
+@click.option('--instrument', type=click.Choice(
+              ['nirspec', 'nircam', 'acswfc', 'wfc3ir'], case_sensitive=False),
+              default=None,
+              help='Instrument (default: nirspec, or both HST detectors with '
+                   '--telescope hst).')
+@click.option('--field', 'field_name', default=None,
+              help='HST: exposures whose footprint touches a tile of this '
+                   'field (as `cfpipe query --field`).')
+@click.option('--tiles', default=None,
+              help='With --field: comma-separated tile names (default: all).')
+@click.option('--from', 'from_path', default=None,
+              help='HST: download the exposures listed in the JSON that '
+                   '`cfpipe query --format json` wrote ("-" reads it from '
+                   'standard input).')
 @click.option('--obs-id', 'obs_ids', type=int, multiple=True,
               help='JWST observation number(s); repeat for multiple (e.g. --obs-id 1 --obs-id 2).')
 @click.option('--filters', 'filters', multiple=True,
@@ -173,21 +189,52 @@ INSTRUMENT_DEFAULTS = {
                    'in one request; "search" uses the JWST Search API '
                    '(/search + /list_products), which can take very long '
                    'under load. --target always uses "search".')
-def download(program, instrument, obs_ids, filters, targets, radius, radius_units,
+def download(program, telescope, instrument, field_name, tiles, from_path,
+             obs_ids, filters, targets, radius, radius_units,
              exp_type, download_dir, dry_run, token, processes, backend):
-    """Download raw JWST data from MAST.
+    """Download raw data from MAST.
 
     NIRSpec layout: $CAMPFIRE_ROOT/raw/nirspec/{PID}/{filename}
     NIRCam layout:  $CAMPFIRE_ROOT/raw/nircam/{PID}/{filter}/{filename}
                     plus a manifest.ecsv per PID directory.
+    HST layout:     $CAMPFIRE_ROOT/raw/hst/{detector}/{PID}/{filter}/{rootname}_raw.fits
+                    plus a manifest.ecsv per detector and PID.
 
-    Auxiliary metafiles (e.g. NIRSpec MSA metadata) are fetched first so
-    reduction can begin while uncal files are still downloading.
+    JWST downloads are by --program. Auxiliary metafiles (e.g. NIRSpec MSA
+    metadata) are fetched first so reduction can begin while uncal files are
+    still downloading.
+
+    HST downloads take the selection of `cfpipe query` (--program, --field,
+    --target with --radius, --filters), or the exposures query listed:
+
+    \b
+      cfpipe download --telescope hst --field pg004 --dry-run
+      cfpipe query --instrument wfc3ir --program 14096 --format json \\
+          | cfpipe download --from -
     """
     import requests
     from campfire_pipeline.common.query import (
         MastQueryError, MastTransientError, download_jwst_data,
     )
+
+    if processes < 1:
+        raise click.BadParameter('--processes must be >= 1')
+    token = token or os.environ.get('MAST_API_TOKEN')
+    hst = ((telescope or '').lower() == 'hst'
+           or (instrument or '').lower() in ('acswfc', 'wfc3ir')
+           or from_path is not None)
+    if hst:
+        _download_hst(program, telescope, instrument, field_name, tiles,
+                      from_path, filters, targets, radius, radius_units,
+                      download_dir, dry_run, token, processes)
+        return
+    if program is None:
+        raise click.UsageError('--program is required for JWST downloads')
+    if field_name or tiles:
+        raise click.UsageError(
+            '--field selects HST exposures; JWST downloads are by --program '
+            '(`cfpipe query --telescope jwst --field ...` lists the programs)')
+    instrument = instrument or 'nirspec'
 
     instrument_upper = instrument.upper()
 
@@ -198,14 +245,9 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
         from campfire_pipeline.config import _get_campfire_root
         download_dir = os.path.join(_get_campfire_root(), 'raw')
 
-    token = token or os.environ.get('MAST_API_TOKEN')
-
     if filters and instrument_upper != 'NIRCAM':
         click.echo("Warning: --filters is ignored for NIRSpec.")
         filters = ()
-
-    if processes < 1:
-        raise click.BadParameter('--processes must be >= 1')
 
     radius_units_full = {'arcmin': 'arcminutes', 'arcsec': 'arcseconds'}[
         radius_units.lower()
@@ -261,6 +303,68 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
     except KeyboardInterrupt:
         click.echo("\n\nInterrupted. Re-run to resume (existing files will be skipped).")
         sys.exit(130)
+
+
+def _download_hst(program, telescope, instrument, field_name, tiles, from_path,
+                  filters, targets, radius, radius_units, download_dir, dry_run,
+                  token, processes):
+    """The HST branch of ``cfpipe download``: select as ``cfpipe query`` does
+    (or read its JSON), then fetch the RAW files."""
+    from pathlib import Path
+
+    from campfire_pipeline.common import mast_query
+    from campfire_pipeline.common.query import MastQueryError
+    from campfire_pipeline.config import _get_campfire_root
+
+    root = (Path(download_dir).parent if download_dir
+            else Path(_get_campfire_root()))
+    try:
+        if from_path is not None:
+            if program is not None or field_name or targets or filters:
+                raise click.UsageError(
+                    '--from takes the exposures as listed; select with '
+                    '`cfpipe query`, not here')
+            text = (click.get_text_stream('stdin').read() if from_path == '-'
+                    else Path(from_path).read_text())
+            exposures = mast_query.from_json(text)
+        else:
+            chosen = mast_query.resolve_instruments(
+                telescope or 'hst', [instrument] if instrument else None)
+            if field_name and targets:
+                raise click.UsageError('give --field or --target, not both')
+            if len(targets) > 1:
+                raise click.UsageError('one --target at a time for HST')
+            regions = None
+            if field_name:
+                from campfire_pipeline.nircam.field import Field
+                regions = mast_query.field_polygons(
+                    Field.load(field_name),
+                    [t.strip() for t in tiles.split(',')] if tiles else None)
+            elif targets:
+                arcmin = 3.0 if radius is None else (
+                    radius if radius_units.lower() == 'arcmin' else radius / 60.0)
+                ra, dec = _parse_target(targets[0])
+                regions = [mast_query.cone_polygon(ra, dec, arcmin / 60.0)]
+            if program is None and regions is None:
+                raise click.UsageError(
+                    'give --program, --field, --target or --from')
+            exposures = mast_query.query_exposures(
+                chosen, programs=[program] if program is not None else None,
+                regions=regions, filters=list(filters) or None, log=click.echo)
+        counts = mast_query.download_hst(
+            exposures, root, token=token, workers=processes, dry_run=dry_run,
+            log=click.echo)
+    except (FileNotFoundError, ValueError, MastQueryError) as e:
+        raise click.ClickException(str(e))
+    except requests_errors() as e:
+        raise click.ClickException(f'MAST could not be reached: {e}')
+    except KeyboardInterrupt:
+        click.echo("\n\nInterrupted. Re-run to resume (existing files will be skipped).")
+        sys.exit(130)
+    if counts['errors']:
+        raise click.ClickException(
+            f"{counts['errors']} file(s) failed to download; re-run to retry "
+            f"(files already on disk are skipped)")
 
 
 def _parse_target(text):

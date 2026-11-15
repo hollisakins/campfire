@@ -130,6 +130,27 @@ class Exposure:
         out['glob'] = self.glob
         return out
 
+    @classmethod
+    def from_dict(cls, d):
+        """Back from :meth:`to_dict` (the JSON ``cfpipe query`` writes)."""
+        return cls(
+            instrument=str(d['instrument']), telescope=str(d['telescope']),
+            obs_id=str(d['obs_id']), program=str(d.get('program') or ''),
+            pi=str(d.get('pi') or ''), target=str(d.get('target') or ''),
+            filter=str(d.get('filter') or ''),
+            exptime=_float(d.get('exptime'), 0.0), mjd=_float(d.get('mjd')),
+            rights=str(d.get('rights') or ''),
+            footprint=tuple(tuple((float(r), float(c)) for r, c in poly)
+                            for poly in d.get('footprint') or ()))
+
+    @property
+    def filter_dir(self):
+        """The filter as a directory name: the bandpass elements that are not
+        an open position, joined by '-' ('f606w', 'f606w-pol0v')."""
+        parts = [p for p in self.filter.split(';')
+                 if p and not p.startswith('clear')]
+        return '-'.join(parts) or 'unknown'
+
 
 # --- regions on the sky -------------------------------------------------------
 
@@ -396,5 +417,152 @@ def format_exposures(exposures):
 
 
 def to_json(exposures):
-    """The exposures as a JSON list (the form ``cfpipe download`` will read)."""
+    """The exposures as a JSON list (the form ``cfpipe download --from`` reads)."""
     return json.dumps([e.to_dict() for e in exposures], indent=1)
+
+
+def from_json(text):
+    """Exposures from the JSON ``cfpipe query --format json`` writes."""
+    try:
+        listed = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f'not the JSON of `cfpipe query --format json`: {e}')
+    if not isinstance(listed, list):
+        raise ValueError('expected a JSON list of exposures')
+    return [Exposure.from_dict(d) for d in listed]
+
+
+# --- HST download -------------------------------------------------------------
+#
+# JWST downloads stay with `common/query.py::download_jwst_data` (uncal files,
+# NIRSpec MSA metadata, the NIRCam manifest). HST is new and goes through the
+# exposures of this module: one `<rootname>_raw.fits` per exposure, written to
+# raw/hst/<detector>/<proposal>/<filter>/ (layout kind `raw_hst`).
+
+def raw_products(exposures, tap=None, batch=100):
+    """The archive's RAW file of each HST exposure.
+
+    Returns ``{obs_id: {'filename', 'uri', 'size', 'checksum'}}``; an exposure
+    the archive lists no ``<rootname>_raw.fits`` for is absent.
+    """
+    if tap is None:
+        from campfire_pipeline.common.query import _tap_query as tap
+    ids = sorted({e.obs_id for e in exposures})
+    bad = [i for i in ids if not i.isalnum()]
+    if bad:
+        raise ValueError(f'not HST rootnames: {bad[:3]}')
+    found = {}
+    for k in range(0, len(ids), batch):
+        chunk = ids[k:k + batch]
+        listed = ', '.join(f"'{i}'" for i in chunk)
+        rows = tap(
+            'SELECT o.observationid, a.productfilename, a.datauri, '
+            'a.contentlength, a.contentchecksum FROM dbo.caomobservation o '
+            'JOIN dbo.caomplane p ON p.observationtid = o.observationtid '
+            'JOIN dbo.caomartifact a ON a.planetid = p.planetid '
+            f"WHERE o.collection = 'HST' AND o.observationid IN ({listed}) "
+            "AND a.productfilename LIKE '%raw.fits'")
+        for row in rows:
+            obs_id = str(row.get('observationid') or '').strip()
+            name = str(row.get('productfilename') or '').strip()
+            if name != f'{obs_id}_raw.fits' or obs_id in found:
+                continue
+            found[obs_id] = {'filename': name, 'uri': row['datauri'],
+                             'size': int(_float(row.get('contentlength'), 0)),
+                             'checksum': row.get('contentchecksum') or ''}
+    return found
+
+
+def _hst_manifest_row(exposure, product):
+    from datetime import datetime, timezone
+    polygons = ' '.join(
+        'POLYGON ICRS ' + ' '.join(f'{r:.9f} {d:.9f}' for r, d in poly)
+        for poly in exposure.footprint)
+    return {
+        'filename': product['filename'], 'rootname': exposure.obs_id,
+        'detector': exposure.instrument, 'program': exposure.program,
+        'filter': exposure.filter_dir, 'target': exposure.target,
+        'pi': exposure.pi, 'date_obs': exposure.date,
+        'mjd': exposure.mjd, 'exptime': exposure.exptime,
+        's_region': polygons, 'size_bytes': int(product['size']),
+        'downloaded_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+    }
+
+
+def _write_hst_manifest(directory, rows):
+    """Upsert rows into ``<directory>/manifest.ecsv`` (one per detector and
+    proposal), keyed on the file name, as the NIRCam download does."""
+    from astropy.table import Table, vstack
+
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / 'manifest.ecsv'
+    table = Table(rows=rows)
+    if path.exists():
+        try:
+            old = Table.read(path, format='ascii.ecsv')
+            keep = [name not in set(table['filename']) for name in old['filename']]
+            table = vstack([old[keep], table], join_type='outer')
+        except Exception as e:
+            print(f'  Warning: could not read {path} ({e}); overwriting.')
+    table.sort('filename')
+    table.write(path, format='ascii.ecsv', overwrite=True)
+    return path
+
+
+def download_hst(exposures, campfire_root, *, token=None, workers=4,
+                 dry_run=False, tap=None, log=print):
+    """Download the RAW file of every HST exposure given.
+
+    Files go to ``raw/hst/<detector>/<proposal>/<filter>/<rootname>_raw.fits``
+    under ``campfire_root``; a file already there at the archive's size is
+    skipped, so a re-run resumes. Each ``<detector>/<proposal>`` directory
+    gets a ``manifest.ecsv`` with what the archive said about its exposures
+    (filter, date, exposure time, footprint). Returns
+    ``{'selected', 'missing', 'present', 'downloaded', 'errors'}`` counts.
+    """
+    from pathlib import Path
+
+    from campfire_layout import Scope, raw_dir, raw_path
+
+    from campfire_pipeline.common.query import (_split_existing, download_files,
+                                                format_size)
+
+    exposures = list(exposures)
+    foreign = sorted({e.telescope for e in exposures} - {'hst'})
+    if foreign:
+        raise ValueError(
+            f'download_hst got {", ".join(foreign).upper()} exposures; JWST '
+            f'data are downloaded by program (cfpipe download --program)')
+    root = Path(campfire_root)
+    products = raw_products(exposures, tap=tap)
+    files, rows, missing = [], {}, []
+    for e in exposures:
+        product = products.get(e.obs_id)
+        if product is None:
+            missing.append(e.obs_id)
+            continue
+        scope = Scope(detector=e.instrument, pid=e.program, filt=e.filter_dir)
+        files.append(dict(product, _path=raw_path('hst', scope,
+                                                  product['filename'], root=root)))
+        manifest_dir = raw_dir('hst', Scope(detector=e.instrument, pid=e.program),
+                               root=root)
+        rows.setdefault(manifest_dir, []).append(_hst_manifest_row(e, product))
+
+    todo, present = _split_existing(files)
+    log(f'{len(exposures)} exposures selected: {len(todo)} to download '
+        f'({format_size(sum(f["size"] for f in todo))}), {len(present)} already '
+        f'on disk' + (f', {len(missing)} with no RAW file in the archive: '
+                      f'{", ".join(missing[:5])}' if missing else ''))
+    counts = {'selected': len(exposures), 'missing': len(missing),
+              'present': len(present), 'downloaded': 0, 'errors': 0}
+    if dry_run:
+        for f in todo:
+            log(f'  would download {f["_path"].relative_to(root)}')
+        return counts
+    counts['errors'] = download_files(todo, token=token, workers=workers,
+                                      desc='HST raw')
+    counts['downloaded'] = len(todo) - counts['errors']
+    for directory, members in rows.items():
+        path = _write_hst_manifest(directory, members)
+        log(f'  manifest: {path.relative_to(root)} ({len(members)} rows written)')
+    return counts
