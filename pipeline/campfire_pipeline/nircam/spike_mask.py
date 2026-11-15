@@ -90,36 +90,140 @@ def band_ab_mag(g, bp_rp, pivot_um, default_color=1.5):
     return g_ab + t * (ks_ab - g_ab)
 
 
+# Bands used to predict in-band brightness: pivot [um] and Vega -> AB offset.
+SED_BANDS = (('g', 0.622, 0.114), ('rp', 0.777, 0.356), ('j', 1.235, 0.91),
+             ('h', 1.662, 1.39), ('ks', 2.159, 1.85), ('w1', 3.353, 2.699),
+             ('w2', 4.603, 3.339))
+# G - X (Vega) as a cubic in BP-RP (highest power first), for stars with no
+# 2MASS / AllWISE match. Fitted to ~900 (2MASS) / ~450 (WISE) Gaia stars with
+# G < 17.5 in six high-latitude fields; scatter 0.09-0.18 mag. Beta.
+SED_LOCUS = {
+    'j': (-0.0382, 0.0465, 1.2276, 0.0804),
+    'h': (-0.1702, 0.5075, 1.2406, 0.1792),
+    'ks': (-0.1241, 0.4196, 1.2644, 0.3190),
+    'w1': (-0.0293, 0.0501, 1.8280, 0.0622),
+    'w2': (0.0198, -0.1402, 2.0231, -0.1218),
+}
+
+
+def sed_ab_mag(stars, pivot_um, default_color=1.5):
+    """Predicted AB magnitude at ``pivot_um`` from an interpolated SED.
+
+    Each star's AB magnitudes in G, RP, J, H, Ks, W1, W2 are interpolated in
+    log wavelength (Rayleigh-Jeans beyond W2). J..W2 are the measured 2MASS /
+    AllWISE values where the Gaia archive's cross-match has them (``stars``
+    keys ``j h ks w1 w2``; absent keys or NaN mean no measurement), otherwise
+    the colour relations ``SED_LOCUS``. Against aperture photometry of 1400
+    unsaturated stars (F070W-F444W) the median error is within 0.06 mag with
+    2MASS / WISE and about 0.13 mag from Gaia alone.
+    """
+    g = np.atleast_1d(np.asarray(stars['g'], dtype=float))
+    n = g.size
+    c = np.atleast_1d(np.asarray(stars['bp_rp'], dtype=float))
+    c = np.clip(np.where(np.isfinite(c), c, default_color), 0.2, 3.5)
+    lam, mags = [], []
+    for name, wl, off in SED_BANDS:
+        if name == 'g':
+            v = g
+        else:
+            v = stars.get(name) if hasattr(stars, 'get') else None
+            v = (np.full(n, np.nan) if v is None
+                 else np.atleast_1d(np.asarray(v, dtype=float)))
+            if name != 'rp':
+                v = np.where(np.isfinite(v), v,
+                             g - np.polyval(SED_LOCUS[name], c))
+        lam.append(wl)
+        mags.append(v + off)
+    lam, mags = np.array(lam), np.array(mags).T            # (n, nband)
+    x, xl = math.log(pivot_um), np.log(lam)
+    out = np.empty(n)
+    for i in range(n):
+        ok = np.isfinite(mags[i])
+        if x <= xl[ok][-1]:
+            out[i] = np.interp(x, xl[ok], mags[i][ok])
+        else:
+            out[i] = mags[i][ok][-1] + 5.0 * math.log10(pivot_um / lam[ok][-1])
+    return out
+
+
 def star_amplitude(ab_mag, pixarea0_arcsec2):
     """Scale from model units (fraction of total flux per raw pixel) to MJy/sr."""
     f_mjy = 3631.0e-6 * 10.0 ** (-0.4 * np.asarray(ab_mag, dtype=float))
     return f_mjy / (pixarea0_arcsec2 * ARCSEC2_TO_SR)
 
 
-def query_gaia(ra, dec, radius_deg, g_max=19.5, max_rows=2000):
+def query_gaia(ra, dec, radius_deg, g_max=19.5, max_rows=2000, nir=True):
     """Gaia DR3 cone query (synchronous; the archive's async queue can hang).
 
-    Returns a dict of float arrays: ra, dec [deg, epoch 2016.0], g, bp_rp,
-    pmra, pmdec [mas/yr; 0 where Gaia has none].
+    Returns a dict of float arrays: ra, dec [deg, epoch 2016.0], g, bp_rp, rp,
+    pmra, pmdec [mas/yr; 0 where Gaia has none] and, with ``nir``, the 2MASS
+    ``j h ks`` and AllWISE ``w1 w2`` Vega magnitudes of the archive's own
+    cross-match (NaN where there is none). The cross-match is looked up in
+    batches of source ids: one joined query times out.
     """
     from astroquery.gaia import Gaia
+
+    def run(sql):
+        # the archive drops connections now and then; a query is idempotent
+        import time
+        for attempt in range(3):
+            try:
+                return Gaia.launch_job(sql).get_results()
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(5 * (attempt + 1))
+
     adql = (
-        f"select top {int(max_rows)} ra, dec, phot_g_mean_mag, bp_rp, pmra, pmdec "
+        f"select top {int(max_rows)} source_id, ra, dec, phot_g_mean_mag, bp_rp, "
+        "phot_rp_mean_mag, pmra, pmdec "
         "from gaiadr3.gaia_source where 1=contains(point(ra,dec),"
         f"circle({ra:.7f},{dec:.7f},{radius_deg:.5f})) "
         f"and phot_g_mean_mag < {g_max:.2f} order by phot_g_mean_mag"
     )
-    tbl = Gaia.launch_job(adql).get_results()
+    tbl = run(adql)
+    tbl.rename_columns(tbl.colnames, [c.lower() for c in tbl.colnames])
 
-    def col(name):
-        return np.ma.filled(np.ma.asarray(tbl[name], dtype=float), np.nan)
+    def col(t, name):
+        return np.ma.filled(np.ma.asarray(t[name], dtype=float), np.nan)
 
-    return dict(
-        ra=col('ra'), dec=col('dec'), g=col('phot_g_mean_mag'),
-        bp_rp=col('bp_rp'),
-        pmra=np.nan_to_num(col('pmra')), pmdec=np.nan_to_num(col('pmdec')),
+    out = dict(
+        ra=col(tbl, 'ra'), dec=col(tbl, 'dec'), g=col(tbl, 'phot_g_mean_mag'),
+        bp_rp=col(tbl, 'bp_rp'), rp=col(tbl, 'phot_rp_mean_mag'),
+        pmra=np.nan_to_num(col(tbl, 'pmra')),
+        pmdec=np.nan_to_num(col(tbl, 'pmdec')),
         truncated=len(tbl) >= max_rows,
     )
+    n = len(tbl)
+    for k in ('j', 'h', 'ks', 'w1', 'w2'):
+        out[k] = np.full(n, np.nan)
+    if nir and n:
+        ids = np.asarray(tbl['source_id']).astype(np.int64)
+        row = {int(v): i for i, v in enumerate(ids)}
+        lookups = (
+            ("select xt.source_id, tm.j_m as j, tm.h_m as h, tm.ks_m as ks "
+             "from gaiadr3.tmass_psc_xsc_best_neighbour as xt "
+             "join gaiadr3.tmass_psc_xsc_join as xj "
+             "on xt.clean_tmass_psc_xsc_oid = xj.clean_tmass_psc_xsc_oid "
+             "join gaiadr1.tmass_original_valid as tm "
+             "on xj.original_psc_source_id = tm.designation "
+             "where xt.source_id in ({ids})", ('j', 'h', 'ks')),
+            ("select xa.source_id, aw.w1mpro as w1, aw.w2mpro as w2 "
+             "from gaiadr3.allwise_best_neighbour as xa "
+             "join gaiadr1.allwise_original_valid as aw "
+             "on xa.original_ext_source_id = aw.designation "
+             "where xa.source_id in ({ids})", ('w1', 'w2')),
+        )
+        for i0 in range(0, n, 200):
+            chunk = ','.join(str(int(v)) for v in ids[i0:i0 + 200])
+            for sql, cols in lookups:
+                r = run(sql.format(ids=chunk))
+                r.rename_columns(r.colnames, [c.lower() for c in r.colnames])
+                for j in range(len(r)):
+                    i = row[int(r['source_id'][j])]
+                    for k in cols:
+                        out[k][i] = col(r, k)[j]
+    return out
 
 
 def stars_at_epoch(stars, year):
@@ -249,6 +353,96 @@ class SpikeModel:
             return self.r_ring * (level / env[-1]) ** (1.0 / ARM_SLOPE)
         above = np.nonzero(env >= level)[0]
         return (above[-1] + 1) * self.pixscl if above.size else 0.0
+
+
+class MeasuredSpikeModel:
+    """Arm profile measured from real stars, one table for every filter.
+
+    Cross-sections of the arms of six isolated G = 8.0-10.2 stars in ten
+    filters (F070W-F480M), on exposures taken through the standard process
+    phase (so after the per-exposure background step, which removes the faint
+    wings), divided by the star's in-band flux, follow a single curve on
+    wavelength-scaled axes: distance and offset divided by wavelength
+    [arcsec/um] against brightness x wavelength^2 / flux [um^2/sr]. The table
+    (``data/nircam_spike_profile_v1.fits``; HEX = the six segment arms, STRUT =
+    the two strut arms) is, per cell, the median of the cross-sections
+    sensitive enough to see it (non-detections included), zero where that is
+    under 3x its uncertainty, and made monotone like ``SpikeModel``'s arm
+    tables. The segment arms are detected to about 183 arcsec/um and continue
+    as a power law (slope -2.3); the strut arms are detected to about 35
+    arcsec/um and are absent from 39 outward.
+
+    Same interface as ``SpikeModel`` with ``wave = 1`` um and
+    ``pixarea0 = 1`` arcsec^2, so the callers' wavelength scaling applies
+    unchanged. **Beta**: six stars, all saturated, two magnitudes of range;
+    one of them is MACS0647's, the field the step was developed on.
+    """
+
+    ARMS = SpikeModel.ARMS
+    wave = 1.0
+    pixarea0 = 1.0
+
+    def __init__(self, hexarm, strut, u0, u1, dv, slope):
+        tab = np.maximum(np.stack([hexarm, strut]).astype(np.float64), 1e-30)
+        # table is per sr; pixarea0 = 1 arcsec^2, so store per arcsec^2
+        self._tab = (np.log(tab) + math.log(ARCSEC2_TO_SR)).astype(np.float32)
+        self._nu, self._nv = hexarm.shape
+        self._lu0 = math.log(u0)
+        self._dlu = (math.log(u1) - math.log(u0)) / self._nu
+        self._dv = float(dv)
+        self.slope = float(slope)
+        self._uc = np.exp(self._lu0 + (np.arange(self._nu) + 0.5) * self._dlu)
+        self.r_ring = float(self._uc[-1])
+        self._env = np.exp(self._tab[:, :, 0].max(axis=0).astype(np.float64))
+
+    @classmethod
+    def from_fits(cls, path):
+        from astropy.io import fits
+        with fits.open(path) as hdul:
+            h = hdul['HEX'].header
+            return cls(hdul['HEX'].data, hdul['STRUT'].data,
+                       h['U0'], h['U1'], h['DV'], h['SLOPE'])
+
+    def sample(self, x, y, width_scale=1.0):
+        r = np.hypot(x, y)
+        az = np.degrees(np.arctan2(x, y))
+        d = (az[..., None] - self.ARMS + 180.0) % 360.0 - 180.0
+        k = np.argmin(np.abs(d), axis=-1)
+        dk = np.radians(np.take_along_axis(d, k[..., None], axis=-1)[..., 0])
+        v = r * np.abs(np.sin(dk)) / width_scale
+        c = (k >= 6).astype(int)                       # 0 segment, 1 strut
+        fu = (np.log(np.maximum(r, 1e-6)) - self._lu0) / self._dlu - 0.5
+        fu = np.clip(fu, 0.0, self._nu - 1.001)
+        fv = v / self._dv - 0.5
+        on = fv < self._nv - 1.001
+        fv = np.clip(np.where(on, fv, 0.0), 0.0, None)
+        i0, j0 = fu.astype(int), fv.astype(int)
+        wu, wv = (fu - i0).astype(np.float32), (fv - j0).astype(np.float32)
+        t = self._tab
+        val = ((1 - wu) * (1 - wv) * t[c, i0, j0] + wu * (1 - wv) * t[c, i0 + 1, j0]
+               + (1 - wu) * wv * t[c, i0, j0 + 1] + wu * wv * t[c, i0 + 1, j0 + 1])
+        out = np.exp(val)
+        far = r > self.r_ring
+        if far.any():
+            out[far] *= (r[far] / self.r_ring) ** self.slope
+        return np.where(on, out, 0.0).astype(np.float32)
+
+    def reach(self, level):
+        """Largest distance [arcsec/um] at which an arm axis reaches ``level``."""
+        env = self._env
+        if env[-1] >= level:
+            return self.r_ring * (level / env[-1]) ** (1.0 / self.slope)
+        above = np.nonzero(env >= level)[0]
+        return float(self._uc[min(above[-1] + 1, self._nu - 1)]) if above.size else 0.0
+
+
+def load_measured_model():
+    """The measured arm profile shipped with the package."""
+    from pathlib import Path
+    import campfire_pipeline
+    return MeasuredSpikeModel.from_fits(
+        Path(campfire_pipeline.__file__).parent / 'data'
+        / 'nircam_spike_profile_v1.fits')
 
 
 def load_model(channel, pivot_um):

@@ -30,6 +30,7 @@ from campfire_pipeline.common import cfp
 from campfire_pipeline.nircam import spike_mask as sm
 
 _DO_NOT_USE = 1
+_NIR_COLS = ('rp', 'j', 'h', 'ks', 'w1', 'w2')
 
 
 def _decimal_year(date_obs):
@@ -77,11 +78,15 @@ def _load_stars(field, cfg, ra0, dec0, radius_deg):
             abs(t.meta.get('ra0', 1e9) - ra0) * np.cos(np.radians(dec0)) < 1e-3
             and abs(t.meta.get('dec0', 1e9) - dec0) < 1e-3
             and t.meta.get('radius_deg', 0) >= radius_deg - 1e-6
-            and t.meta.get('g_max', 0) >= cfg['gaia_g_max']))
+            and t.meta.get('g_max', 0) >= cfg['gaia_g_max']
+            and 'ks' in t.colnames))        # older caches lack 2MASS / WISE
         if covers:
             log(f"spike_mask: {len(t)} stars from {path}")
             out = {k: np.asarray(t[k], dtype=float)
                    for k in ('ra', 'dec', 'g', 'bp_rp', 'pmra', 'pmdec')}
+            for k in _NIR_COLS:             # optional in a user catalog
+                out[k] = (np.asarray(t[k], dtype=float) if k in t.colnames
+                          else np.full(len(t), np.nan))
             return out
     log(f"spike_mask: querying Gaia DR3 ({radius_deg * 60:.1f}' radius, "
         f"G < {cfg['gaia_g_max']})")
@@ -89,9 +94,11 @@ def _load_stars(field, cfg, ra0, dec0, radius_deg):
     if stars.pop('truncated'):
         log("spike_mask: WARNING Gaia query hit its row limit; the faintest "
             "stars are missing (lower gaia_g_max or supply `catalog`)")
-    t = Table({k: stars[k] for k in ('ra', 'dec', 'g', 'bp_rp', 'pmra', 'pmdec')})
+    t = Table({k: stars[k] for k in ('ra', 'dec', 'g', 'bp_rp', 'pmra', 'pmdec')
+               + _NIR_COLS})
     t.meta.update(ra0=ra0, dec0=dec0, radius_deg=radius_deg,
-                  g_max=cfg['gaia_g_max'], source='Gaia DR3, epoch 2016.0')
+                  g_max=cfg['gaia_g_max'],
+                  source='Gaia DR3, epoch 2016.0; 2MASS / AllWISE cross-match')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     t.write(path, overwrite=True)
     return stars
@@ -107,7 +114,12 @@ def build_spike_masks(filtname, exposures, field, cfg):
     pivot = sm.PIVOT_UM[filtname.upper()]
     meta = {p: _read_exposure(p) for p in exposures}
     channels = {m['channel'] for m in meta.values()}
-    models = {ch: sm.load_model(ch, pivot) for ch in channels}
+    measured = cfg.get('model', 'measured') == 'measured'
+    if measured:
+        one = sm.load_measured_model()
+        models = {ch: one for ch in channels}
+    else:
+        models = {ch: sm.load_model(ch, pivot) for ch in channels}
 
     # field centre / extent from the exposure reference points
     ras = np.array([m['ra_ref'] for m in meta.values()])
@@ -118,7 +130,7 @@ def build_spike_masks(filtname, exposures, field, cfg):
     max_radius = float(cfg['max_radius_arcsec'])
     stars = _load_stars(field, cfg, ra0, dec0, (half + max_radius) / 3600.0)
 
-    mag = sm.band_ab_mag(stars['g'], stars['bp_rp'], pivot)
+    mag = sm.sed_ab_mag(stars, pivot)
     keep = mag < float(cfg['mag_limit'])
     stars = {k: v[keep] for k, v in stars.items()}
     mag = mag[keep]
@@ -149,8 +161,9 @@ def build_spike_masks(filtname, exposures, field, cfg):
             ra, dec, s_ra, s_dec, amp, model, pivot / model.wave,
             m['roll_ref'], m['ra_ref'], m['dec_ref'], level, max_radius,
             roll_tol=float(cfg['roll_tolerance_deg']),
-            width_scale=float(cfg['width_scale_lw'] if m['channel'] == 'LW'
-                              else cfg['width_scale']))
+            width_scale=(1.0 if measured else
+                         float(cfg['width_scale_lw'] if m['channel'] == 'LW'
+                               else cfg['width_scale'])))
         raw = (sb >= level).reshape(ny, nx)
         if cfg['grow'] > 0 and raw.any():
             raw = binary_dilation(raw, iterations=int(cfg['grow']))

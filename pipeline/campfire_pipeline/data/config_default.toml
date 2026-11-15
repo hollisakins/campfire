@@ -901,6 +901,11 @@
     threshold_sigma = 0.3
     grow = 2                      # px of dilation
     roll_tolerance_deg = 0.15     # also mask the pattern rotated by +- this
+    # Arm profile: "measured" = one profile built from real stars (six
+    # isolated G = 8.4-10.2 stars, F070W-F444W), valid for every filter by
+    # wavelength scaling; "preflight" = the published WebbPSF-based models.
+    model = "measured"
+    # width_scale* apply to model = "preflight" only.
     # Real arms are wider across than the pre-flight model. Measured on
     # MACS0647 F200W (G = 8 star, 35-116"): x1.8 matches the cross-section
     # down to 0.3 sigma. The long-wavelength model needs no widening

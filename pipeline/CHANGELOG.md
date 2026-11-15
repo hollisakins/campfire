@@ -31,25 +31,43 @@ Release procedure: edit the `## Unreleased` section below, then run
 ### Algorithm
 - **NIRCam `spike_mask` combine step (beta, opt-in).** New ensemble step between
   `apply_mask` and `bad_pixel`, disabled by default (`[nircam.spike_mask].enabled`), so
-  existing reductions are unchanged. For each Gaia DR3 star the published mask-grade spike
-  model (arms only: the smooth halo is removed) is scaled by the star's predicted in-band
-  flux (Gaia G and BP-RP; nothing is fitted to the exposure, so off-detector stars are
-  handled) and placed on every exposure at the telescope roll. Pixels whose predicted arm
-  surface brightness exceeds `threshold_sigma` (0.3) times the exposure noise are spike
+  existing reductions are unchanged. For each Gaia DR3 star an arm profile is scaled by the
+  star's predicted in-band flux (nothing is fitted to the exposure, so off-detector stars
+  are handled) and placed on every exposure at the telescope roll. Pixels whose predicted
+  arm surface brightness exceeds `threshold_sigma` (0.3) times the exposure noise are spike
   pixels; one is masked only where another roll angle sees the same sky with less predicted
   spike light (where two spikes cross, the brighter is masked), so a spike is never traded
   for a hole. Recorded as a `CFSPIKE` extension + `CFP_SPKE` on the canonical exposure
   (SCI/DQ untouched) and fused into the working copy's DQ as DO_NOT_USE; the working copy
   records whether it was fused (`SPKFUSED`) so switching the step on or off refreshes it.
-  Core in `nircam/spike_mask.py`. Measured on MACS0647 F200W: the model's +y axis is the
-  telescope V3 (no detector rotation), real arms are 1.8x wider across than the pre-flight
-  model (`width_scale`), and the predicted peak matches a G = 8 star within ~20% out to
-  205"; in F277W the long-wavelength model needs no widening (`width_scale_lw = 1.0`) and
-  the peak is over-predicted ~3x beyond 90". **Beta:** one field, two roll angles; the flux prediction is crude blueward of
-  2 um and over-predicts some stars; the coverage grid is held in memory (not yet sized
-  for very large fields). `require_other_angle = false` masks every predicted spike pixel,
-  for inspecting footprints. The G0 harness (`experiments/spike_g0_footprint`) is added,
-  with `--dtheta` / `--pad-arcsec`.
+  Core in `nircam/spike_mask.py`.
+  - *Arm profile* (`model = "measured"`, default): one table measured from six isolated
+    G = 8.0-10.2 stars in F070W-F480M (public programs 1433, 1727, 1837, 3293, 3990, 5398,
+    5893, 6882, 7814), on exposures taken through the standard process phase, so after the
+    per-exposure background step (which removes the faint wings beside an arm: half-width
+    at 1% of the axis roughly halves far from the star). Divided by the star's flux, the
+    arms of every filter and star follow one curve on wavelength-scaled axes, so the table
+    (`data/nircam_spike_profile_v1.fits`) serves every filter. A cell is the median of the
+    star-filter cross-sections sensitive enough to see it (non-detections included), zero
+    where that is under 3x its uncertainty. The six segment arms are detected to ~183
+    arcsec/um (slope -2.30, continued as a power law, widening as distance^0.34); the two
+    strut arms to ~35 arcsec/um and are absent from 39 outward. `model = "preflight"`
+    keeps the published WebbPSF-based models (with `width_scale` / `width_scale_lw`),
+    which over-predict the arms by 1.5-5x depending on filter and distance. Both are
+    evaluated as per-arm tables that fall monotonically from the axis and with distance,
+    so mask edges are smooth strips.
+  - *Star brightness*: an SED interpolated through Gaia G, RP and the 2MASS / AllWISE
+    magnitudes of the Gaia archive's cross-match; colour relations fitted to ~900 stars
+    stand in where there is no match. Against aperture photometry of 1400 unsaturated
+    stars the median error is within 0.06 mag with 2MASS / WISE, ~0.13 mag from Gaia alone.
+  - On MACS0647: the model axis is the telescope V3 (no detector rotation). Its G = 8 star
+    is one of the six profile stars and the only one constraining the arms beyond ~130
+    arcsec/um, so the field is not an independent test of the profile.
+  **Beta:** coverage rule tested in one field at two roll angles; the profile comes from
+  six saturated stars spanning two magnitudes, the far field from one of them; the coverage grid is held in memory (not yet
+  sized for very large fields). `require_other_angle = false` masks every predicted spike
+  pixel, for inspecting footprints. The G0 harness (`experiments/spike_g0_footprint`) is
+  added, with `--dtheta` / `--pad-arcsec`.
 
 ### Infrastructure
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the

@@ -94,3 +94,33 @@ def test_work_copy_fuses_spike_mask_only_when_asked(tmp_path):
     write(p, False)                            # report-only extension
     _prime_work_copy(p, fuse_spike=True)
     assert fits.getdata(p, 'DQ').sum() == 0
+
+
+def test_measured_profile_scales_with_wavelength_and_is_monotone():
+    m = sm.load_measured_model()
+    # on the axis of a segment arm (+y) the brightness falls with distance
+    u = np.array([3.0, 10.0, 30.0, 100.0, 400.0])
+    on = m.sample(np.zeros(5), u)
+    assert np.all(np.diff(on) < 0) and on[-1] > 0
+    # and away from the axis at fixed distance
+    v = np.array([0.0, 0.2, 0.5, 1.0, 4.4])
+    across = m.sample(v, np.full(5, 20.0))
+    assert np.all(np.diff(across) <= 0) and across[-1] < 1e-3 * across[0]
+    # the strut arms (+x) are fainter than the segment arms
+    assert m.sample(np.array([20.0]), np.array([0.0]))[0] < on[2]
+    # reach inverts the on-axis profile
+    assert m.reach(float(on[2])) == pytest.approx(30.0, rel=0.15)
+    assert m.reach(float(on[4])) == pytest.approx(400.0, rel=0.15)
+
+
+def test_sed_magnitude_uses_measured_near_infrared_when_present():
+    stars = dict(g=np.array([15.0, 15.0]), bp_rp=np.array([1.0, 1.0]),
+                 rp=np.array([14.4, 14.4]),
+                 ks=np.array([np.nan, 11.0]))        # second star: bright in Ks
+    ab = sm.sed_ab_mag(stars, 2.159)
+    assert ab[1] == pytest.approx(11.0 + 1.85, abs=1e-6)
+    # no measurement: the colour relation, G - Ks ~ 1.9 at BP-RP = 1
+    assert ab[0] == pytest.approx(15.0 - np.polyval(sm.SED_LOCUS['ks'], 1.0) + 1.85)
+    assert 12.5 < ab[0] < 15.5
+    # beyond W2: Rayleigh-Jeans, fainter in AB
+    assert sm.sed_ab_mag(stars, 4.8)[0] > sm.sed_ab_mag(stars, 4.4)[0]
