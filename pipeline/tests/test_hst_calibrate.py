@@ -131,6 +131,31 @@ def test_a_failing_subprocess_leaves_no_product(fake_tools, tmp_path, failing):
     assert os.listdir(out_dir) == []
 
 
+def test_a_crds_server_failure_is_retried_and_other_failures_are_not(monkeypatch):
+    waits, calls = [], []
+    monkeypatch.setattr(calibrate.time, 'sleep', waits.append)
+
+    def flaky(cmd, *, cwd, env, what):
+        calls.append(cmd)
+        if len(calls) < 3:
+            raise RuntimeError("crds failed (exit 1):\nServiceError: CRDS jsonrpc "
+                               "failure 'get_mapping_names' HTTP Error 504: "
+                               "Gateway Time-out")
+        return 'ok'
+    monkeypatch.setattr(calibrate, '_run', flaky)
+    assert calibrate._run_crds(['x'], cwd='.', env={}, what='crds') == 'ok'
+    assert len(calls) == 3 and waits == [30.0, 60.0]
+
+    def broken(cmd, *, cwd, env, what):
+        calls.append(cmd)
+        raise RuntimeError('crds failed (exit 1):\nno match for this file')
+    calls.clear()
+    monkeypatch.setattr(calibrate, '_run', broken)
+    with pytest.raises(RuntimeError, match='no match'):
+        calibrate._run_crds(['x'], cwd='.', env={}, what='crds')
+    assert len(calls) == 1                         # not the server's fault
+
+
 def test_requirements_are_explicit(monkeypatch, tmp_path):
     raw = str(tmp_path / 'jcal01aaq_raw.fits')
     _raw(raw)

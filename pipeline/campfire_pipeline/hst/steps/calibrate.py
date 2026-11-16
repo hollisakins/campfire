@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 from astropy.io import fits
 
@@ -69,6 +70,34 @@ def _run(cmd, *, cwd, env, what):
     return proc
 
 
+# What a failure of the CRDS server (not of the request) looks like in the
+# output of `crds bestrefs`. The server is asked for the context's mappings on
+# every call, also when every reference file is already in the cache.
+_SERVER_TROUBLE = ('ServiceError', 'HTTP Error 5', 'Gateway Time-out',
+                   'timed out', 'Connection reset', 'Temporary failure',
+                   'Service Unavailable')
+
+
+def _run_crds(cmd, *, cwd, env, what, attempts=4, wait=30.0):
+    """``_run`` for a CRDS call, repeated when the server fails.
+
+    One 504 from the server stopped a run of twenty exposures after forty
+    minutes (2026-11-16); the same call succeeded a minute later. A failure
+    that is not the server's (a bad context, a file CRDS cannot classify) is
+    raised at once.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return _run(cmd, cwd=cwd, env=env, what=what)
+        except RuntimeError as e:
+            transient = any(s in str(e) for s in _SERVER_TROUBLE)
+            if not transient or attempt == attempts:
+                raise
+            log(f'{what}: the CRDS server failed (attempt {attempt} of '
+                f'{attempts}); trying again in {wait * attempt:.0f} s')
+            time.sleep(wait * attempt)
+
+
 def prefetch_references(raw_files, *, crds_context, crds_path,
                         crds_server=HST_CRDS_SERVER, batch=100):
     """Download every reference file the RAW files need, in one process.
@@ -92,7 +121,7 @@ def prefetch_references(raw_files, *, crds_context, crds_path,
     log(f'calibrate: checking reference files for {len(files)} RAW files '
         f'under {crds_context} (cache: {crds_path})')
     for i in range(0, len(files), batch):
-        _run([sys.executable, '-m', 'crds.bestrefs', '--files',
+        _run_crds([sys.executable, '-m', 'crds.bestrefs', '--files',
               *files[i:i + batch], '--new-context', crds_context,
               '--sync-references=1'],
              cwd=str(crds_path), env=env, what='crds bestrefs (reference prefetch)')
@@ -140,7 +169,7 @@ def calibrate_step(raw_file, out_dir, *, crds_context, crds_path,
         crds_env = dict(os.environ, CRDS_SERVER_URL=crds_server,
                         CRDS_PATH=str(crds_path), CRDS_CONTEXT=crds_context)
         crds_env.pop('CRDS_OBSERVATORY', None)
-        _run([sys.executable, '-m', 'crds.bestrefs', '--files', local_raw,
+        _run_crds([sys.executable, '-m', 'crds.bestrefs', '--files', local_raw,
               '--new-context', crds_context, '--update-bestrefs',
               '--sync-references=1'],
              cwd=work, env=crds_env, what=f'crds bestrefs ({rootname})')

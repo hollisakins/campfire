@@ -1322,10 +1322,14 @@
     min_contributors = 2
     # Catalog stars that moved protect_min_motion native pixels or more
     # between the first and last exposure containing them are left alone
-    # within protect_radius arcsec. Neither value is measured on two-epoch
-    # ACS data (the radius is WFC3/IR's scaled by the narrower PSF).
+    # within protect_radius arcsec. Measured on COSMOS F814W of 2004 and
+    # 2011-2012 (docs/hst/design.md, section 8b): stars that moved 1.6 pixels
+    # or more lost 36 to 61 percent of their core flux without protection and
+    # none with it; two that moved 0.6 pixel lost nothing either way, so
+    # 0.15 pixel is on the safe side. Around bright moved stars the flags
+    # reach 0.5 arcsec, which is why the radius is twice the first value.
     protect_stars = true
-    protect_radius = 0.25
+    protect_radius = 0.5
     protect_min_motion = 0.15
     # The pass compares all exposures of a filter that overlap, on one grid
     # at the native pixel scale covering all of them. A group whose grid

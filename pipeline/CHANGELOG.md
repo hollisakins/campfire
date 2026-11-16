@@ -163,8 +163,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   the usual 5, which on ACS/WFC flags the cores of stars; it catches 85 to 92
   percent of the cosmic-ray flux a four-exposure visit finds, and the
   field-level outlier pass removes the rest where the exposure overlaps others.
-  Not built: the quality gate, trail and persistence masks, previews, and upload
-  of HST products. Run on real data: WFC3/IR on pg004 (31 exposures,
+  Star protection in the ACS/WFC outlier pass is measured on two epochs of COSMOS
+  F814W (stars that moved 1.6 pixels or more lose 36 to 61 percent of their core
+  flux without it, none with it) and its radius is 0.5 arcsec. `calibrate`
+  repeats a CRDS call when the server fails. Not built: the quality gate, trail
+  and persistence masks, previews, and upload of HST products. Run on real data: WFC3/IR on pg004 (31 exposures,
   four filters) and ACS/WFC F814W on COSMOS (19 exposures), the latter compared
   with an existing reference mosaic on the same pixel grid: fluxes agree to 0.3
   percent, depth is equal, positions agree to 4 mas (docs/hst/design.md,

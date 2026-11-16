@@ -62,9 +62,14 @@ sits at half the motion that showed a loss. With it 58 of 90 catalog stars are
 protected and all 76 unsaturated Gaia stars keep their flux to 1 percent
 (together with the scale above, which deals with the peak pixels of stars
 that did not move). ``protect_min_motion = 0`` protects every catalog star
-with a proper motion. ACS/WFC: ``protect_radius = 0.25`` (scaled by the
-narrower PSF) and the same 0.15 pixel; neither has been measured on two-epoch
-ACS data.
+with a proper motion. ACS/WFC: ``protect_radius = 0.5`` and the same 0.15
+pixel. Measured on COSMOS F814W of 2004 and 2011-2012 (seven catalog stars on
+both epochs, ``acs_star_protection.py``): the four that moved 1.6 to 6.7
+pixels lost 36 to 61 percent of the flux within 0.2 arcsec in one epoch
+without protection and none with it; one that moved 0.66 and one that moved
+0.61 pixel lost nothing either way. Around those four (three of them
+saturated) 10 to 12 percent of pixels were flagged at 0.25 to 0.4 arcsec and
+3 to 6 percent at 0.4 to 0.6, beyond the first radius of 0.25, hence 0.5.
 """
 
 import os

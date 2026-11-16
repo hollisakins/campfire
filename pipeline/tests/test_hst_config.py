@@ -40,7 +40,7 @@ def test_the_shipped_values_are_the_measured_ones():
     assert get_hst_step_config('crreject', 'acswfc')['driz_cr_snr'] == '3.5 3.0'
     assert get_hst_step_config('crreject', 'wfc3ir')['driz_cr_scale'] == '2.5 0.7'
     assert get_hst_step_config('outlier', 'wfc3ir')['scale'] == '5.0 0.7'
-    assert get_hst_step_config('outlier', 'acswfc')['protect_radius'] == 0.25
+    assert get_hst_step_config('outlier', 'acswfc')['protect_radius'] == 0.5
     assert get_hst_step_config('align', 'acswfc')['detect_fwhm'] == 2.2
     assert get_hst_step_config('align', 'wfc3ir')['detect_fwhm'] == 1.3
     for detector in _DETECTORS:
