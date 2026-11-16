@@ -46,9 +46,10 @@ def _parse_center(center_str, field_obj):
         raise click.BadParameter(f"--center parse error: {e}")
 
 
-def _stars_from_gaia(table, gaia_catalog, epoch_hint):
-    """Apply ``motion.use_gaia_for_stars`` to an extracted catalog; the Gaia
-    table is read from *gaia_catalog* or queried over the catalog's extent."""
+def _stars_from_gaia(table, gaia_catalog, epoch_hint, *, size_column="rhalf",
+                     match_radius=0.3, command="refcat extract"):
+    """Apply ``motion.use_gaia_for_stars`` to a catalog; the Gaia table is
+    read from *gaia_catalog* or queried over the catalog's extent."""
     import numpy as np
     from astropy.coordinates import SkyCoord
 
@@ -61,17 +62,30 @@ def _stars_from_gaia(table, gaia_catalog, epoch_hint):
                        unit="deg")
         center = SkyCoord(np.median(sky.ra.deg), np.median(sky.dec.deg), unit="deg")
         radius = float(center.separation(sky).max().deg) + 0.01
-        log(f"refcat extract: querying Gaia within {radius * 60:.1f}' of "
+        log(f"{command}: querying Gaia within {radius * 60:.1f}' of "
             f"({center.ra.deg:.5f}, {center.dec.deg:.5f})")
         gaia = query_external("gaia", (center.ra.deg, center.dec.deg), radius)
-    out, info = use_gaia_for_stars(table, gaia, epoch_hint=epoch_hint)
-    log(f"refcat extract: {info['n_gaia_stars']} Gaia stars now carry Gaia's "
+    out, info = use_gaia_for_stars(table, gaia, epoch_hint=epoch_hint,
+                                   size_column=size_column,
+                                   match_radius=match_radius)
+    log(f"{command}: {info['n_gaia_stars']} Gaia stars now carry Gaia's "
         f"position and proper motion; dropped {info['n_dropped_no_motion']} Gaia "
         f"stars without a proper motion and {info['n_dropped_compact']} compact "
         f"sources not in Gaia; {info['n_kept']} of {info['n_catalog']} kept.")
+    if info.get("frame_offset_mas"):
+        dra, ddec = info["frame_offset_mas"]
+        log(f"{command}: at the hinted epoch the catalog's own positions of "
+            f"those stars sit ({dra:+.1f}, {ddec:+.1f}) mas in RA, Dec from "
+            f"Gaia's. The stars now follow Gaia and the galaxies keep the "
+            f"catalog's frame, so that is how far the two parts disagree.")
     if info["size_limit"] is None:
-        log("refcat extract: too few Gaia stars to say what a point source "
-            "looks like here; no source was dropped for being compact.")
+        if size_column not in table.colnames:
+            log(f"{command}: the catalog has no '{size_column}' column, so no "
+                f"source was dropped for being compact. Point sources that are "
+                f"not in Gaia remain at the catalog's own epoch.")
+        else:
+            log(f"{command}: too few Gaia stars to say what a point source "
+                f"looks like here; no source was dropped for being compact.")
     return out, info
 
 
@@ -105,7 +119,8 @@ def _resolve_output(out_arg, default_name, field_obj):
 
 @click.group()
 def refcat():
-    """Manage astrometric reference catalogs (query / extract / merge / compare)."""
+    """Manage astrometric reference catalogs (query / extract / add-gaia /
+    merge / compare)."""
     pass
 
 
@@ -320,6 +335,108 @@ def extract(config, field_name, mosaic_path, filter_name, tile, scale,
         out = os.path.abspath(out_path)
     write_refcat(table, out, overwrite=overwrite)
     log(f"refcat extract: wrote {out}")
+
+
+# ---------------------------------------------------------------------------
+# add-gaia
+# ---------------------------------------------------------------------------
+
+def _read_any_catalog(path):
+    """A catalog in the reference-catalog layout from any table file astropy
+    reads (ECSV, FITS, ...), with the usual column aliases applied."""
+    from astropy.table import Table
+
+    from .io import REFCAT_COLUMNS, _canonicalize_columns
+
+    if str(path).endswith(".ecsv"):
+        table = read_refcat(path)
+    else:
+        table = Table.read(path)
+        _canonicalize_columns(table)
+    missing = [c for c in REFCAT_COLUMNS if c not in table.colnames]
+    if missing:
+        raise click.ClickException(
+            f"{path} is not in the reference-catalog layout: no column(s) "
+            f"{missing}. A reference catalog has RA and DEC (degrees, ICRS), "
+            f"mag and mag_err; found {table.colnames[:12]}"
+            f"{' ...' if len(table.colnames) > 12 else ''}.")
+    return table
+
+
+@refcat.command(name="add-gaia")
+@click.option("--field", "field_name", required=True,
+              help="Field name from fields.toml (the catalog's home and the "
+                   "name recorded in it).")
+@click.argument("catalog", type=click.Path(exists=True))
+@click.option("--out", "out_path", default=None,
+              help="Output path; default = <field's catalog directory>/"
+                   "<input name>_gaia.ecsv.")
+@click.option("--size-column", default="rhalf", show_default=True,
+              help="Column that measures source size, in any unit. Sources "
+                   "not in Gaia that are as small as the Gaia stars in this "
+                   "column are dropped (they are stars with an unknown "
+                   "motion). Without the column nothing is dropped on size.")
+@click.option("--match-radius", default=0.3, type=float, show_default=True,
+              help="Match radius to Gaia in arcsec.")
+@click.option("--gaia-catalog", "gaia_catalog", default=None,
+              help="A Gaia catalog already on disk (from 'refcat query "
+                   "--backend gaia'), instead of a new query.")
+@click.option("--epoch-hint", "epoch_hint", default=None, type=float,
+              help="Rough date of the catalog's positions as a year (e.g. "
+                   "2023.3). Gaia is moved there before matching, so fast "
+                   "stars still pair up; not written to the catalog.")
+@click.option("--notes", default=None,
+              help="Free-form note stamped into the catalog meta.")
+@click.option("--overwrite", is_flag=True)
+def add_gaia(field_name, catalog, out_path, size_column, match_radius,
+             gaia_catalog, epoch_hint, notes, overwrite):
+    """Give an existing catalog Gaia's stars, so it holds at any epoch.
+
+    What `refcat extract` does to a catalog it has just made, for a catalog
+    that already exists (a survey catalog, an older reference catalog). CATALOG
+    is in the reference-catalog layout: RA, DEC, mag, mag_err. In the result
+
+    \b
+      - a source matched to a Gaia star takes Gaia's position, epoch and
+        proper motion; the align steps move it to each exposure's date;
+      - a source matched to a Gaia star without a proper motion is dropped;
+      - a source not in Gaia but as small as the Gaia stars (--size-column)
+        is dropped;
+      - every other source stays where it is.
+
+    A catalog without proper motions holds stars only at the date of its own
+    imaging: on COSMOS ACS data from 2004, the stars of a 2023 catalog sat 70
+    mas away and pulled the alignment by 6 mas.
+
+    \b
+    Example:
+        cfpipe nircam refcat add-gaia --field cosmos cosmos2025_cut.ecsv \\
+            --size-column radius_sersic --epoch-hint 2023.3
+    """
+    from campfire_layout import Scope, dir_for
+    from campfire_pipeline.nircam.field import Field
+
+    try:
+        field_obj = Field.load_grid(field_name)
+    except (FileNotFoundError, ValueError) as e:
+        raise click.ClickException(str(e))
+    table = _read_any_catalog(catalog)
+    log(f"refcat add-gaia: {catalog}: {len(table)} sources")
+    table, info = _stars_from_gaia(table, gaia_catalog, epoch_hint,
+                                   size_column=size_column,
+                                   match_radius=match_radius,
+                                   command="refcat add-gaia")
+    info["input"] = os.path.abspath(catalog)
+    table.meta.update(make_meta(field_obj.name, source="add-gaia",
+                                params=info, notes=notes))
+    if out_path is None:
+        stem = os.path.splitext(os.path.basename(catalog))[0]
+        refcat_dir = dir_for("nircam_astrom_cat", Scope(field=field_obj.name))
+        out = os.path.join(str(refcat_dir), f"{stem}_gaia.ecsv")
+    else:
+        out = os.path.abspath(out_path)
+    write_refcat(table, out, overwrite=overwrite)
+    log(f"refcat add-gaia: wrote {out}")
 
 
 # ---------------------------------------------------------------------------

@@ -1323,9 +1323,11 @@
     # of an ACS mosaic and of the NIRCam mosaic of a tile are the same sky.
     pixel_scale = "30mas"
     mosaic_name = "mosaic_acswfc_[filter]_[field_name]_[pixel_scale]_[tile]"
-    # 50 mas native pixels onto 30 mas: the usual survey choice. Not tuned
-    # here yet (docs/hst/design.md, section 4).
-    pixfrac = 0.8
+    # 1.0, as for NIRCam and WFC3/IR (Hollis, 2026-11-16). Against a COSMOS
+    # reference mosaic made with 1.0, a run at 0.8 gave stars 3 percent
+    # narrower and 5 percent more noise in small apertures at equal depth
+    # (docs/hst/design.md, section 8b).
+    pixfrac = 1.0
     kernel = "square"
     # "ivm": weight by the inverse of the background variance, as NIRCam.
     weight_type = "ivm"

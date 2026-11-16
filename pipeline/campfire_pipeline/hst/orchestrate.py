@@ -315,9 +315,10 @@ def _warn_no_motions(refcat, refcat_path):
         log(f'align: WARNING: {os.path.basename(refcat_path)} has no proper '
             f'motions. Stars in it are at the positions of the catalog\'s own '
             f'epoch and pull the fit of exposures from another epoch (6 mas '
-            f'measured over 19 years). Build the catalog with `cfpipe nircam '
-            f'refcat extract` (Gaia stars get their motion, compact sources '
-            f'without one are dropped), or remove point sources from it.')
+            f'measured over 19 years). `cfpipe nircam refcat add-gaia` gives '
+            f'an existing catalog Gaia\'s stars with their motions and drops '
+            f'the other point sources; `refcat extract` does the same to a '
+            f'catalog it makes.')
 
 
 def _algn_pending(files, refcat_hash, overwrite):

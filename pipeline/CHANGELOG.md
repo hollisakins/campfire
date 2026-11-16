@@ -166,6 +166,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   section 8b). The HST `align` step warns when the field's reference catalog
   carries no proper motions: in that comparison the stars of such a catalog
   pulled the alignment by 6 mas over a 19 year baseline.
+- **New `cfpipe nircam refcat add-gaia`: give an existing catalog Gaia's stars.**
+  What `refcat extract` does to a catalog it has just made, for one that already
+  exists (a survey catalog, an older reference catalog) in the reference-catalog
+  layout, from any table file astropy reads: sources matched to Gaia take Gaia's
+  position, epoch and proper motion, Gaia stars without a motion are dropped, and
+  sources not in Gaia that are as small as the Gaia stars in `--size-column` are
+  dropped; everything else stays. Works for a field without NIRCam exposures.
+  The HST `align` step names it when a field's catalog has no proper motions.
 - **The part of the NIRCam resample step that follows the drizzle moved to
   `imaging/mosaic_finish.py`**, unchanged, so the HST resample step runs the same
   background subtraction, split files and plots. Mosaic manifests can record an
