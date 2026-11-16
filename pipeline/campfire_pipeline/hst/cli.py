@@ -30,13 +30,15 @@ from campfire_pipeline.common.io import log
 NAMES = {'acswfc': 'ACS/WFC', 'wfc3ir': 'WFC3/IR'}
 
 _LABELS = {'calibrate': 'cal', 'wcs_init': 'wcs', 'sky': 'sky',
-           'crreject': 'cr', 'align': 'algn', 'outlier': 'out'}
+           'trails': 'trl', 'crreject': 'cr', 'preview': 'prev',
+           'align': 'algn', 'apply_masks': 'mask', 'outlier': 'out'}
 
 # `reset --from` clears stamps so that a step runs again. That is safe for
-# the steps that only write flags or a WCS. The others change the pixels the
-# later steps were built on (or, for wcs_init, the WCS the alignment started
-# from), so they are redone from the RAW file.
-_RESET_FROM = ('crreject', 'align', 'outlier')
+# the steps that only write flags, a mask, a preview or a WCS. The others
+# change the pixels the later steps were built on (or, for wcs_init, the WCS
+# the alignment started from), so they are redone from the RAW file.
+_RESET_FROM = ('trails', 'crreject', 'preview', 'align', 'apply_masks',
+               'outlier')
 
 
 def _common(f):
@@ -100,8 +102,15 @@ def make_group(instrument):
     def group():
         pass
 
-    @group.command(help='Run the per-exposure process phase '
-                        '(calibrate, wcs_init, sky, crreject, align).')
+    from campfire_pipeline.hst.orchestrate import (
+        COMBINE_STEPS, PROCESS_STEPS, steps_for,
+    )
+    process_names = ', '.join(n for n, _ in steps_for(instrument, PROCESS_STEPS))
+    combine_names = ', '.join(n for n, _ in steps_for(instrument, COMBINE_STEPS))
+    step_names = [n for n, _ in steps_for(instrument)]
+    reset_from = [n for n in _RESET_FROM if n in step_names]
+
+    @group.command(help=f'Run the per-exposure process phase ({process_names}).')
     @_common
     @_processing
     def process(config, field, filters, processes, overwrite):
@@ -110,8 +119,8 @@ def make_group(instrument):
         _guard(run_process, fld, cfg, filters=list(filters) or None,
                n_processes=processes, overwrite=overwrite)
 
-    @group.command(help='Run the combine phase (outlier, resample) on working '
-                        'copies of the aligned exposures.')
+    @group.command(help=f'Run the combine phase ({combine_names}); outlier and '
+                        f'resample work on copies of the aligned exposures.')
     @_common
     @_processing
     @_tiles
@@ -167,8 +176,8 @@ def make_group(instrument):
                    tiles=list(tiles) or None)
         return _tiles(_cmd) if with_tiles else _cmd
 
-    from campfire_pipeline.hst.orchestrate import ALL_STEPS, STEP_NAMES
-    for name in STEP_NAMES:
+    all_steps = steps_for(instrument)
+    for name in step_names:
         group.add_command(_step_command(name, with_tiles=(name == 'resample')))
 
     @group.command(help='Show which steps are done on each canonical exposure.')
@@ -179,7 +188,7 @@ def make_group(instrument):
         from campfire_pipeline.common import cfp
         from campfire_pipeline.hst.orchestrate import exposure_status
         _cfg, fld = _setup(config, field, instrument)
-        columns = [(n, k) for n, k in ALL_STEPS if k is not None]
+        columns = [(n, k) for n, k in all_steps if k is not None]
         for filt in (list(filters) or fld.filters):
             n_raw = len(fld.get_raw_files(filt))
             rows = exposure_status(fld, filt)
@@ -244,9 +253,9 @@ def make_group(instrument):
     @click.option('--filters', multiple=True, default=None, cls=VariadicOption,
                   help='Filters to reset (default: all).')
     @click.option('--from', 'from_step', default=None,
-                  type=click.Choice(STEP_NAMES),
+                  type=click.Choice(step_names),
                   help='Clear the stamp of this step and of every later one. '
-                       f'Allowed: {", ".join(_RESET_FROM)}.')
+                       f'Allowed: {", ".join(reset_from)}.')
     @click.option('--raw', 'raw', is_flag=True,
                   help='Delete every calibrated exposure and working copy of '
                        'the selected filters; the next process run starts '
@@ -257,20 +266,20 @@ def make_group(instrument):
         from campfire_pipeline.hst.orchestrate import OUTLIER_MANIFEST
         if bool(raw) == bool(from_step):
             raise click.UsageError('Specify exactly one of --raw or --from <step>.')
-        if from_step and from_step not in _RESET_FROM:
+        if from_step and from_step not in reset_from:
             raise click.ClickException(
                 f'--from {from_step}: the later steps were built on what this '
                 f'step wrote (the pixels, or the WCS the alignment started '
                 f'from), so it cannot be redone in place. Use --raw to start '
                 f'again from the RAW files. --from accepts: '
-                f'{", ".join(_RESET_FROM)}.')
+                f'{", ".join(reset_from)}.')
         _cfg, fld = _setup(config, field, instrument)
         filter_list = list(filters) or fld.filters
 
         canonical = [f for filt in filter_list for f in fld.get_exposure_files(filt)]
         work = [f for filt in filter_list
                 for f in fld.get_exposure_files(filt, work=True)]
-        key = dict(ALL_STEPS).get(from_step)
+        key = dict(all_steps).get(from_step)
         if raw:
             action = (f'DELETE {len(canonical)} calibrated exposures and '
                       f'{len(work)} working copies')

@@ -227,6 +227,40 @@ def test_combine_flags_outliers_on_copies_and_drizzles_the_tile(field, config):
     assert cfp.step_value(work[0], 'CFP_OUT', keyset=cfp.HST).startswith('field n=2')
 
 
+def test_a_region_drawn_after_a_mosaic_reaches_the_next_one(field, config):
+    """The reviewer's loop: combine, draw a region on an exposure, combine
+    again. No reset; only what the region touches is redone."""
+    pytest.importorskip('regions')
+    from campfire_pipeline.hst.exposure import MASK_EXT
+
+    files = _exposures(field, hit=False)
+    orchestrate.run_combine(field, config)
+    d = field.filter_dir('f160w')
+    exp = os.path.join(d, 'mosaic_wfc3ir_f160w_tf_30mas_T1_exp.fits')
+    before = fits.getdata(exp).astype(float)
+    work = field.get_exposure_files('f160w', work=True)
+    times = [os.path.getmtime(w) for w in work]
+
+    reg = field.mask_file(files[0], 'f160w')
+    assert reg.endswith('reference/wfc3ir/tf/masks/f160w/itest01a0q_flt.reg')
+    os.makedirs(os.path.dirname(reg))
+    with open(reg, 'w') as f:
+        f.write('# Region file format: DS9\nimage\nbox(40.5,40.5,20,20,0)\n')
+    orchestrate.run_combine(field, config)
+
+    assert fits.getdata(files[0], (MASK_EXT, 1)).sum() == 400
+    assert not cfp.has_step(files[1], 'CFP_MASK', keyset=cfp.HST)   # untouched
+    assert os.path.getmtime(work[0]) > times[0]                     # new copy
+    assert fits.getdata(work[0], (MASK_EXT, 1)).sum() == 400
+    # the mosaic lost that exposure's time under the region, nowhere else
+    after = fits.getdata(exp).astype(float)
+    lost = before - after
+    assert lost.max() > 0 and lost.min() >= 0
+    assert 0.02 < (lost > 0).mean() < 0.12
+    status = orchestrate.stale_tiles(field, config, 'f160w')
+    assert [(r['tile'], r['stale']) for r in status][0] == ('T1', False)
+
+
 def test_status_reads_the_outlier_stamp_from_the_copy(field, config):
     _exposures(field, hit=False)
     orchestrate.run_combine(field, config, steps=('outlier',))
@@ -249,9 +283,12 @@ def test_each_instrument_has_the_nircam_command_set(field, monkeypatch):
     for instrument in ('acswfc', 'wfc3ir'):
         out = runner.invoke(main, [instrument, '--help']).output
         for command in ('process', 'combine', 'run', 'status', 'check', 'reset',
-                        'calibrate', 'wcs_init', 'sky', 'crreject', 'align',
-                        'outlier', 'resample'):
+                        'calibrate', 'wcs_init', 'sky', 'crreject', 'preview',
+                        'align', 'apply_masks', 'outlier', 'resample'):
             assert command in out
+    # satellite trails are an ACS/WFC step
+    assert '  trails ' in runner.invoke(main, ['acswfc', '--help']).output
+    assert '  trails ' not in runner.invoke(main, ['wfc3ir', '--help']).output
 
 
 def test_status_and_reset_commands(field, monkeypatch):

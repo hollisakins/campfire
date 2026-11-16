@@ -124,9 +124,14 @@
 #   [field.acswfc]
 #       filters = ['f814w']
 #       files   = ['jczgo1*']
+#       [field.acswfc.trails]                # satellite trails are masked
+#           ignore = ['jczgo1abq']           # without review; this undoes one
 #   Raw files: $CAMPFIRE_ROOT/raw/{acswfc,wfc3ir}/{proposal}/{filter}/*_raw.fits
 #   (`cfpipe download --telescope hst --field <field>`). A field with HST data
 #   only needs no top-level `filters` / `files`.
+#   Hand masks and reviewer exclusions work as for NIRCam, per instrument:
+#   $CAMPFIRE_ROOT/reference/{acswfc,wfc3ir}/<field>/masks/<filter>/<file>.reg
+#   (DS9 regions; e.g. j8pu6eicq_flc.reg) and .../<field>/exposures.json.
 
 [example_cosmos]
     filters = ['f115w', 'f150w', 'f200w', 'f277w', 'f356w', 'f410m', 'f444w']

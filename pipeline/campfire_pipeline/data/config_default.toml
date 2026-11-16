@@ -1231,6 +1231,41 @@
     mask_nsigma = 3.0
     mask_grow = 3
 
+[acswfc.trails]
+    # Satellite trails, found per chip with the STScI finder
+    # (acstools.findsat_mrt) and flagged in DQ (bit 16384) without review.
+    # ACS/WFC only: on WFC3/IR calwf3 rejects the reads a satellite crosses.
+    #
+    # The finder works on the chip binned by `binsize` and keeps a streak
+    # whose peak in the transform stands `detect_threshold` sigma above the
+    # noise, that is at most `max_width` and at least `min_length` binned
+    # pixels, and that is present along `min_persistence` of its length.
+    binsize = 2
+    detect_threshold = 5.0
+    max_width = 75
+    min_length = 25
+    # What is masked. The finder's own cuts (S/N 5, persistence 0.5) also pass
+    # diffraction spikes of bright stars and other faint linear structure,
+    # each of which would cost a stripe across the chip. Persistence, the
+    # share of a streak's length along which it is detected, is what tells
+    # them apart: on 40 COSMOS F814W exposures the five false ones have 0.56
+    # to 0.67 (S/N 6 to 9) and the six satellite trails 0.86 to 1 (S/N 10 to
+    # 660). Nobody reviews this mask, so only a streak with at least this
+    # persistence and S/N is masked. A fainter trail, or a streak that does
+    # not run the length of the chip, is left to the cosmic-ray and outlier
+    # steps and to a hand-drawn mask. binsize 4 is twice as fast and loses
+    # the faintest of the six.
+    min_snr = 8.0
+    min_persistence = 0.8
+    # Pixels by which the mask of a trail is grown on each side. The finder's
+    # mask covers the core; around the brightest trail measured (S/N 660, on
+    # blank background) the light outside it is 0.29 sigma per pixel in the
+    # first 2 pixels, 0.04 sigma at 8 to 12, and nothing beyond 12.
+    grow = 12
+    # Rootnames whose trails are reported but not masked (set per field,
+    # [<field>.acswfc.trails]): the way to undo a wrong one.
+    ignore = []
+
 [acswfc.crreject]
     # Per-visit cosmic-ray flags (AstroDrizzle's driz_cr): two-pass S/N
     # thresholds and gradient scales. The survey-standard ACS/WFC values.
@@ -1260,6 +1295,15 @@
     single_objlim = 10.0
     single_niter = 4
     single_grow = 1
+
+[acswfc.preview]
+    # The two review PNGs of each exposure, as for NIRCam: a thumbnail whose
+    # long axis is max_dim pixels, and a render of every detector pixel that a
+    # mask editor draws on. Signal-to-noise per pixel, with the pixels the
+    # pipeline already leaves out (cosmic rays, satellite trails, bad pixels)
+    # at zero, both chips stacked ([SCI,1] below [SCI,2]).
+    max_dim = 1024
+    cmap = "Greys"
 
 [acswfc.align]
     # Which exposures are fitted to the reference catalog together.
@@ -1422,6 +1466,14 @@
     combine_grow = 1
     driz_cr_grow = 1
     driz_cr_ctegrow = 0
+
+    # There is no [wfc3ir.trails]: calwf3 rejects the reads of a ramp that a
+    # satellite crosses, as it does a cosmic ray.
+
+[wfc3ir.preview]
+    # Same keys and meaning as [acswfc.preview]; one chip.
+    max_dim = 1024
+    cmap = "Greys"
 
 [wfc3ir.align]
     # Same recipe and meaning as [acswfc.align]; written out so that a change

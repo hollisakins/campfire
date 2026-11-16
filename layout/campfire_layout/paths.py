@@ -132,9 +132,10 @@ def reference_dir(instrument, scope: Scope, *, root: Optional[Path] = None) -> P
     if inst == Instrument.NIRSPEC.value:
         scope.require("obs")
         rel = f"reference/nirspec/{scope.obs}"
-    elif inst == Instrument.NIRCAM.value:
+    elif inst in (Instrument.NIRCAM.value, Instrument.ACSWFC.value,
+                  Instrument.WFC3IR.value):
         scope.require("field")
-        rel = f"reference/nircam/{scope.field}"
+        rel = f"reference/{inst}/{scope.field}"
     else:
         raise LayoutError(f"unknown instrument '{inst}'")
     return roots(root).campfire_root / PurePosixPath(rel)

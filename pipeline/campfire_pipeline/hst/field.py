@@ -34,12 +34,17 @@ Directories (the NIRCam shape, layout contract):
                  (ACS/WFC) or ``..._flt.fits`` (WFC3/IR); mosaics in the same
                  directory
 * working copies ``products/<instrument>_work/<field>/<filter>/``
+* reviewer input ``reference/<instrument>/<field>/``: ``masks/<filter>/<file
+                 name>.reg`` (hand-drawn regions, ``steps/apply_masks.py``)
+                 and ``exposures.json`` (exposures a reviewer excluded, dropped
+                 like ``skip``). The NIRCam files, per instrument.
 
-The process phase writes the canonical files; the combine phase works on
-copies, so the field-level outlier flags (``CFOUT``) never reach a canonical
-file.
+The process phase writes the canonical files; the outlier pass and the drizzle
+work on copies, so the field-level outlier flags (``CFOUT``) never reach a
+canonical file.
 """
 
+import json
 import os
 import shutil
 from dataclasses import dataclass, field as dc_field
@@ -48,7 +53,7 @@ from typing import List, Optional
 
 import toml
 
-from campfire_layout import Scope, dir_for, imaging_work_dir, raw_dir
+from campfire_layout import Scope, dir_for, imaging_work_dir, raw_dir, reference_dir
 from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import log
 from campfire_pipeline.hst.instruments import DETECTORS
@@ -59,7 +64,8 @@ from campfire_pipeline.nircam.field import Field, _expand_braces, parse_tiles
 ROOTNAME_LETTER = {'acswfc': 'j', 'wfc3ir': 'i'}
 
 # The steps a field may override, [<field>.<instrument>.<step>].
-STEP_TABLES = ('calibrate', 'sky', 'crreject', 'align', 'outlier', 'resample')
+STEP_TABLES = ('calibrate', 'sky', 'trails', 'crreject', 'preview', 'align',
+               'outlier', 'resample')
 
 _KEYS = {'filters', 'files', 'skip'} | set(STEP_TABLES)
 
@@ -108,6 +114,11 @@ class HstField:
     campfire_root: Optional[str] = None
     raw_root: Optional[str] = None      # raw/<instrument>
     refcat_dir: Optional[str] = None
+    reference_dir: Optional[str] = None  # reference/<instrument>/<field>
+    mask_dir: Optional[str] = None       # .../masks: hand-drawn region files
+    # Rootnames a reviewer excluded, per filter, from
+    # reference/<instrument>/<field>/exposures.json; dropped like `skip`.
+    excluded_exposures: dict = dc_field(default_factory=dict)
 
     @classmethod
     def load(cls, name, instrument, fields_file=None):
@@ -222,9 +233,53 @@ class HstField:
         # where the NIRCam one does.
         self.refcat_dir = str(dir_for('nircam_astrom_cat', Scope(field=self.name),
                                       root=campfire_root))
+        # What a reviewer decides about this instrument's exposures has the
+        # NIRCam shape: reference/<instrument>/<field>/masks/<filter>/ holds
+        # one region file per exposure, exposures.json the exclusions.
+        scope = Scope(field=self.name)
+        self.reference_dir = str(reference_dir(self.instrument, scope,
+                                               root=campfire_root))
+        self.mask_dir = str(dir_for(f'{self.instrument}_mask', scope,
+                                    root=campfire_root))
+        self.excluded_exposures = self._load_excluded_exposures()
         for filt in self.filters:
             os.makedirs(self.filter_dir(filt), exist_ok=True)
         log(f"Workspace ready for field '{self.name}' ({self.instrument})")
+
+    def _load_excluded_exposures(self):
+        """Reviewer exclusions from ``reference/<instrument>/<field>/exposures.json``.
+
+        The NIRCam file and meaning (``nircam/field.py``)::
+
+            {"excluded": {"f814w": ["j8pu6eicq_flc", ...]}}
+
+        A name is an exposure's file name without ``.fits``, or its bare
+        rootname. Returns ``{filter: [rootname]}``. A missing file is no
+        exclusions; an unreadable one is a warning and no exclusions, since a
+        reduction must not fail over an advisory list.
+        """
+        path = os.path.join(self.reference_dir, 'exposures.json')
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path) as f:
+                doc = json.load(f)
+            out = {str(filt).lower(): sorted({str(n).split('_')[0].strip().lower()
+                                              for n in (names or [])})
+                   for filt, names in (doc.get('excluded') or {}).items()}
+        except (ValueError, OSError, AttributeError) as e:
+            log(f'Warning: could not read {path}: {e}; ignoring exclusions.')
+            return {}
+        n = sum(len(v) for v in out.values())
+        if n:
+            log(f'Excluding {n} reviewer-flagged exposure(s) per {path}')
+        return out
+
+    def mask_file(self, exposure_file, filter_name):
+        """Where the hand-drawn region file of an exposure is looked for:
+        ``<mask_dir>/<filter>/<file name without .fits>.reg``."""
+        base = os.path.basename(exposure_file).removesuffix('.fits')
+        return os.path.join(self.mask_dir, filter_name, base + '.reg')
 
     def filter_dir(self, filter_name, work=False):
         if self.campfire_root is None:
@@ -245,10 +300,11 @@ class HstField:
 
     # -- exposures -----------------------------------------------------------
 
-    def _select(self, directories, suffix, skip=None):
-        """Files matching the field's globs, less the skip globs, in the given
-        directories. A glob is a rootname prefix: ``iczg*`` and ``iczg`` select
-        the same files."""
+    def _select(self, directories, suffix, skip=None, filter_name=None):
+        """Files matching the field's globs, less the skip globs and the
+        reviewer exclusions of ``filter_name``, in the given directories. A
+        glob is a rootname prefix: ``iczg*`` and ``iczg`` select the same
+        files."""
         def matches(patterns):
             found = set()
             for d in directories:
@@ -259,6 +315,7 @@ class HstField:
         selected = matches(self.files)
         skip_patterns = list(self.skip) + [
             p.strip().lower() for raw in (skip or []) for p in _expand_braces(raw)]
+        skip_patterns += list(self.excluded_exposures.get(filter_name, []))
         if skip_patterns:
             selected -= matches(skip_patterns)
         return sorted(selected)
@@ -269,13 +326,14 @@ class HstField:
         if self.raw_root is None:
             raise RuntimeError('setup_workspace() must be called first')
         dirs = sorted(glob(os.path.join(self.raw_root, '*', filter_name)))
-        return self._select(dirs, '_raw.fits', skip=skip)
+        return self._select(dirs, '_raw.fits', skip=skip, filter_name=filter_name)
 
     def get_exposure_files(self, filter_name, skip=None, work=False):
         """Canonical calibrated exposures of this filter (or, with ``work``,
         their combine working copies)."""
         return self._select([self.filter_dir(filter_name, work=work)],
-                            self.canonical_suffix, skip=skip)
+                            self.canonical_suffix, skip=skip,
+                            filter_name=filter_name)
 
     def canonical_path(self, raw_file, filter_name):
         """Where the canonical exposure of a RAW file goes."""
@@ -286,9 +344,10 @@ class HstField:
     def combine_ready(self, exposure_file, include_unaligned=False):
         """Whether a canonical exposure may go into a mosaic, and why not.
 
-        Two things keep an exposure out: no solved alignment (it would be
-        drizzled where it is not), and, on ACS/WFC, no cosmic-ray flags
-        (``crreject`` has not run on it). Returns ``(ready, reason)``.
+        What keeps an exposure out: no solved alignment (it would be drizzled
+        where it is not), and, on ACS/WFC, no cosmic-ray flags (``crreject``
+        has not run on it) or no search for satellite trails (``trails``).
+        Returns ``(ready, reason)``.
         """
         steps = cfp.get_steps(exposure_file, keyset=cfp.HST)
         algn = steps.get('CFP_ALGN')
@@ -299,6 +358,9 @@ class HstField:
                 return False, 'alignment failed (NOT_ALIGNED)'
         if self.instrument == 'acswfc' and 'CFP_CR' not in steps:
             return False, 'no cosmic-ray flags yet (crreject has not run)'
+        if self.instrument == 'acswfc' and 'CFP_TRL' not in steps:
+            return False, ('not searched for satellite trails yet (trails '
+                           'has not run)')
         return True, ''
 
     def materialize_work(self, filter_name, overwrite=False,

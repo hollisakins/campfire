@@ -435,6 +435,82 @@
       "tree_class": "cloud-backed-product"
     },
     {
+      "product_type": "acswfc_exposure_preview",
+      "scope": {
+        "field": "pg004",
+        "filt": "f814w"
+      },
+      "filename": "jczgo1aaq_flc_preview.png",
+      "relpath": "products/acswfc/pg004/f814w/jczgo1aaq_flc_preview.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/acswfc/pg004/f814w/jczgo1aaq_flc_preview.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "acswfc_exposure_full",
+      "scope": {
+        "field": "pg004",
+        "filt": "f814w"
+      },
+      "filename": "jczgo1aaq_flc_full.png",
+      "relpath": "products/acswfc/pg004/f814w/jczgo1aaq_flc_full.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/acswfc/pg004/f814w/jczgo1aaq_flc_full.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "acswfc_mask",
+      "scope": {
+        "field": "pg004"
+      },
+      "filename": "jczgo1aaq_flc.reg",
+      "relpath": "reference/acswfc/pg004/masks/jczgo1aaq_flc.reg",
+      "key_legacy": null,
+      "key_canonical": "data/reference/acswfc/pg004/masks/jczgo1aaq_flc.reg",
+      "bucket": "data",
+      "tree_class": "user-state"
+    },
+    {
+      "product_type": "wfc3ir_exposure_preview",
+      "scope": {
+        "field": "pg004",
+        "filt": "f160w"
+      },
+      "filename": "iczgo2dlq_flt_preview.png",
+      "relpath": "products/wfc3ir/pg004/f160w/iczgo2dlq_flt_preview.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/wfc3ir/pg004/f160w/iczgo2dlq_flt_preview.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "wfc3ir_exposure_full",
+      "scope": {
+        "field": "pg004",
+        "filt": "f160w"
+      },
+      "filename": "iczgo2dlq_flt_full.png",
+      "relpath": "products/wfc3ir/pg004/f160w/iczgo2dlq_flt_full.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/wfc3ir/pg004/f160w/iczgo2dlq_flt_full.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "wfc3ir_mask",
+      "scope": {
+        "field": "pg004"
+      },
+      "filename": "iczgo2dlq_flt.reg",
+      "relpath": "reference/wfc3ir/pg004/masks/iczgo2dlq_flt.reg",
+      "key_legacy": null,
+      "key_canonical": "data/reference/wfc3ir/pg004/masks/iczgo2dlq_flt.reg",
+      "bucket": "data",
+      "tree_class": "user-state"
+    },
+    {
       "product_type": "acswfc_mosaic",
       "scope": {
         "field": "pg004",

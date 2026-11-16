@@ -133,23 +133,22 @@ HST = Keyset(
     keys=[
         'CFP_CAL',   # calibration: calacs / calwf3 at a pinned context, or archive
         'CFP_WCS',   # distortion model written into the headers (stwcs)
-        'CFP_QUAL',  # guiding / smear quality gate
-        'CFP_HMSK',  # detector masks: satellite trails, persistence, bad pixels
         'CFP_SKY',   # per-chip sky, ACS amplifier offsets, variance scale
+        'CFP_TRL',   # satellite trails flagged in DQ (ACS/WFC)
         # crreject runs before align (align detects on the cleaned pixels), so
-        # a reset from crreject clears the alignment as well.
+        # a reset from crreject clears the alignment as well. The preview
+        # shows the pixels left after the flags, so it is cleared with them.
         'CFP_CR',    # cosmic-ray flags (per visit)
-        'CFP_ALGN',  # astrometric align
         'CFP_PREV',  # preview PNG
-        'CFP_MASK',  # user region masks
+        'CFP_ALGN',  # astrometric align
+        'CFP_MASK',  # user region masks (CFMASK extension)
         'CFP_OUT',   # second-pass outlier detection (combine working copies)
     ],
     comments={
         'CFP_CAL':  'campfire: calibration source, version, context',
         'CFP_WCS':  'campfire: distortion WCS written',
-        'CFP_QUAL': 'campfire: quality gate result',
-        'CFP_HMSK': 'campfire: detector masks applied',
         'CFP_SKY':  'campfire: sky, amp offsets, variance scale',
+        'CFP_TRL':  'campfire: satellite trails flagged',
         'CFP_ALGN': 'campfire: align solve',
         'CFP_CR':   'campfire: cosmic rays flagged',
         'CFP_PREV': 'campfire: preview PNG rendered',

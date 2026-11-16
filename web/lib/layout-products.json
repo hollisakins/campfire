@@ -370,6 +370,59 @@
       "compressed_suffixes": []
     },
     {
+      "name": "acswfc_exposure_preview",
+      "instrument": "acswfc",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "acswfc/{field}/{filt}",
+      "filename": null,
+      "suffix": "_preview.png",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "acswfc_exposure_full",
+      "instrument": "acswfc",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "acswfc/{field}/{filt}",
+      "filename": null,
+      "suffix": "_full.png",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "acswfc_mask",
+      "instrument": "acswfc",
+      "tree": "reference",
+      "lifecycle": "user-state",
+      "bucket": "data",
+      "scope_keys": [
+        "field"
+      ],
+      "subdir": "acswfc/{field}/masks",
+      "filename": null,
+      "suffix": null,
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
       "name": "acswfc_mosaic",
       "instrument": "acswfc",
       "tree": "products",
@@ -402,6 +455,59 @@
       "subdir": "wfc3ir/{field}/{filt}",
       "filename": null,
       "suffix": ".fits",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "wfc3ir_exposure_preview",
+      "instrument": "wfc3ir",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "wfc3ir/{field}/{filt}",
+      "filename": null,
+      "suffix": "_preview.png",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "wfc3ir_exposure_full",
+      "instrument": "wfc3ir",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "wfc3ir/{field}/{filt}",
+      "filename": null,
+      "suffix": "_full.png",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "wfc3ir_mask",
+      "instrument": "wfc3ir",
+      "tree": "reference",
+      "lifecycle": "user-state",
+      "bucket": "data",
+      "scope_keys": [
+        "field"
+      ],
+      "subdir": "wfc3ir/{field}/masks",
+      "filename": null,
+      "suffix": null,
       "legacy_prefix": null,
       "mirrored": true,
       "scheme_invariant": false,

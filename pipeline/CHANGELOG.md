@@ -141,9 +141,10 @@ Release procedure: edit the `## Unreleased` section below, then run
   command instead of by the option parser, with the same effect.
 - **New command groups `cfpipe acswfc` and `cfpipe wfc3ir`: HST imaging from RAW
   to mosaics on the field's tiles.** The NIRCam command set per HST instrument:
-  `process` (calibrate, wcs_init, sky, crreject, align), `combine` (field-level
-  outlier pass per overlap group on working copies, then resample), `run`, one
-  command per step, `status`, `check`, `reset`. A field declares an instrument's
+  `process` (calibrate, wcs_init, sky, trails on ACS/WFC, crreject, preview,
+  align), `combine` (apply_masks, then the field-level outlier pass per overlap
+  group and resample on working copies), `run`, one command per step, `status`,
+  `check`, `reset`. A field declares an instrument's
   exposures in `fields.toml` as `[<field>.acswfc]` / `[<field>.wfc3ir]` with
   `filters`, `files` (HST rootname globs) and `skip`; tiles, tangent point and
   reference catalog are the field's, so an HST mosaic
@@ -166,14 +167,48 @@ Release procedure: edit the `## Unreleased` section below, then run
   Star protection in the ACS/WFC outlier pass is measured on two epochs of COSMOS
   F814W (stars that moved 1.6 pixels or more lose 36 to 61 percent of their core
   flux without it, none with it) and its radius is 0.5 arcsec. `calibrate`
-  repeats a CRDS call when the server fails. Not built: the quality gate, trail
-  and persistence masks, previews, and upload of HST products. Run on real data: WFC3/IR on pg004 (31 exposures,
+  repeats a CRDS call when the server fails. Not built: WFC3/IR persistence
+  masks, upload of HST products and their portal pages (so previews are not
+  reviewed in the browser yet, and masks are region files written by hand), and
+  an outlier pass that works per visit, which a contiguous field the size of
+  COSMOS needs. Run on real data: WFC3/IR on pg004 (31 exposures,
   four filters) and ACS/WFC F814W on COSMOS (19 exposures), the latter compared
   with an existing reference mosaic on the same pixel grid: fluxes agree to 0.3
   percent, depth is equal, positions agree to 4 mas (docs/hst/design.md,
   section 8b). The HST `align` step warns when the field's reference catalog
   carries no proper motions: in that comparison the stars of such a catalog
   pulled the alignment by 6 mas over a 19 year baseline.
+- **HST masking: satellite trails without review, and the NIRCam reviewer
+  workflow.** Three steps in `cfpipe acswfc` / `cfpipe wfc3ir`. `trails`
+  (ACS/WFC only, between `sky` and `crreject`; `hst/steps/trails.py`,
+  `[acswfc.trails]`): the STScI finder `acstools.findsat_mrt` on each chip, and
+  DQ bit 16384 on every trail it is confident of, grown by 12 pixels. Nobody
+  reviews this mask, so the cuts are stricter than the finder's own: on 40
+  COSMOS F814W exposures its defaults report 11 trails, 6 real (persistence 0.86
+  to 1) and 5 not (diffraction spikes, a line through two galaxies, a
+  scattered-light arc; persistence 0.56 to 0.67), and the step masks a streak
+  only at persistence 0.8 and signal-to-noise 8 or more, which keeps the six
+  and none of the five. `ignore` in `[<field>.acswfc.trails]` lists rootnames
+  whose trails are not masked. A streak that does not run the length of the
+  chip is not masked by this step. About 2.5 core-minutes per exposure. An
+  ACS/WFC exposure that has not been searched is held back from a mosaic.
+  `preview` (after `crreject`; `hst/steps/preview.py`, `[<instrument>.preview]`):
+  the NIRCam pair `<file>_preview.png` and `<file>_full.png`, signal-to-noise
+  per pixel with the chips stacked ([SCI,1] below [SCI,2]) and the pixels the
+  pipeline already leaves out drawn at zero. `apply_masks` (first in `combine`;
+  `hst/steps/apply_masks.py`): DS9 region files in
+  `reference/<instrument>/<field>/masks/<filter>/<file>.reg` become `CFMASK`
+  extensions on the canonical exposure, which the adapter leaves out of the
+  outlier pass and the drizzle; sky regions go through each chip's WCS, image
+  regions are in the frame of the preview. The step keys on the hash of the
+  region file, so an added, edited or removed file takes effect on the next
+  `combine` with no reset, and an exposure nobody drew on is not rewritten.
+  Reviewer exclusions are read from `reference/<instrument>/<field>/exposures.json`
+  as for NIRCam. Layout: reserved kinds `<instrument>_exposure_preview`,
+  `<instrument>_exposure_full` and `<instrument>_mask`. The automatic quality
+  gate of the design (exposure flags, guiding, broadened stars) is dropped: HST
+  gets what NIRCam has and no more. The HST step-stamp key set loses
+  `CFP_QUAL` / `CFP_HMSK` (never written) and gains `CFP_TRL`.
 - **New `cfpipe nircam refcat add-gaia`: give an existing catalog Gaia's stars.**
   What `refcat extract` does to a catalog it has just made, for one that already
   exists (a survey catalog, an older reference catalog) in the reference-catalog

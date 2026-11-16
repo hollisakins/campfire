@@ -8,13 +8,22 @@ one field at a time (``cfpipe acswfc ...`` / ``cfpipe wfc3ir ...``):
     calibrate   RAW -> <rootname>_flc.fits / _flt.fits at the pinned context
     wcs_init    distortion model into the headers
     sky         per-chip sky, ACS amplifier offsets, variance scale
+    trails      satellite trails flagged in DQ (ACS/WFC only)
     crreject    cosmic rays, per visit (two or more exposures)
+    preview     the two review PNGs of each exposure
     align       per visit, to the field's reference catalog
 
-**combine**, on working copies::
+**combine**::
 
+    apply_masks hand-drawn region files -> CFMASK on the canonical exposures
     outlier     flags across everything that overlaps, per overlap group
     resample    drizzle onto the field's tiles; background, split files, plots
+
+``outlier`` and ``resample`` work on copies. What a reviewer decides reaches a
+reduction as it does for NIRCam: ``reference/<instrument>/<field>/`` holds
+``masks/<filter>/<file>.reg`` and ``exposures.json`` (exposures left out
+altogether). There is no automatic quality gate beyond the satellite trails
+(Hollis, 2026-11-16: no heavier than NIRCam).
 
 Every step is recorded by its ``CFP_*`` stamp (``common/cfp.py``, key set
 ``HST``) and is skipped where the stamp is present, so any command can be
@@ -45,15 +54,29 @@ PROCESS_STEPS = [
     ('calibrate', 'CFP_CAL'),
     ('wcs_init',  'CFP_WCS'),
     ('sky',       'CFP_SKY'),
+    ('trails',    'CFP_TRL'),
     ('crreject',  'CFP_CR'),
+    ('preview',   'CFP_PREV'),
     ('align',     'CFP_ALGN'),
 ]
 COMBINE_STEPS = [
+    ('apply_masks', 'CFP_MASK'),
     ('outlier',  'CFP_OUT'),
     ('resample', None),
 ]
 ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
 STEP_NAMES = [name for name, _ in ALL_STEPS]
+
+# Steps an instrument does not have. Satellite trails are an ACS/WFC step:
+# calwf3 rejects the reads of a WFC3/IR ramp that a satellite crosses.
+_NOT_FOR = {'wfc3ir': ('trails',)}
+
+
+def steps_for(instrument, steps=None):
+    """``(name, CFP key)`` of the steps of one instrument, in order."""
+    skip = _NOT_FOR.get(instrument, ())
+    return [(n, k) for n, k in (ALL_STEPS if steps is None else steps)
+            if n not in skip]
 
 OUTLIER_MANIFEST = 'outlier_groups.json'
 
@@ -162,6 +185,20 @@ def _sky_worker(exposure_file, *, cfg, overwrite):
     return exposure_file
 
 
+def _trails_worker(exposure_file, *, cfg, overwrite, processes):
+    from campfire_pipeline.hst.steps.trails import trails_step
+    found = trails_step(exposure_file, step_config=cfg, overwrite=overwrite,
+                        processes=processes)
+    masked = sum(1 for ts in (found or {}).values() for t in ts if t['masked'])
+    return exposure_file, masked
+
+
+def _preview_worker(exposure_file, *, cfg, overwrite):
+    from campfire_pipeline.hst.steps.preview import preview_step
+    preview_step(exposure_file, step_config=cfg, overwrite=overwrite)
+    return exposure_file
+
+
 def _crreject_worker(key, files, *, cfg, overwrite):
     from campfire_pipeline.hst.steps.crreject import crreject_step
     crreject_step(list(files), step_config=cfg, overwrite=overwrite)
@@ -248,6 +285,50 @@ def _run_sky(field, config, filt, n_processes, overwrite):
         return
     dispatch(_sky_worker, pending, n_processes=n_processes,
              cfg=step_config('sky', field, config), overwrite=overwrite)
+
+
+def _run_trails(field, config, filt, n_processes, overwrite):
+    """Satellite trails, ACS/WFC only. One exposure per worker; with a single
+    worker the finder itself spreads over ``n_processes``."""
+    if 'trails' in _NOT_FOR.get(field.instrument, ()):
+        return
+    files = [f for f in field.get_exposure_files(filt) if _has(f, 'CFP_SKY')]
+    pending = [f for f in files if overwrite or not _has(f, 'CFP_TRL')]
+    log(f'trails: {len(files)} {filt} exposures, {len(pending)} to search')
+    if not pending:
+        return
+    workers = max(1, min(n_processes, len(pending)))
+    results = dispatch(_trails_worker, pending, n_processes=workers,
+                       cfg=step_config('trails', field, config),
+                       overwrite=overwrite,
+                       processes=(n_processes if workers == 1 else 1))
+    hit = sorted(os.path.basename(f).split('_')[0] for f, n in results if n)
+    if hit:
+        log(f'trails: satellite trails masked on {len(hit)} of {len(pending)} '
+            f'{filt} exposure(s): {", ".join(hit)}')
+
+
+def _run_preview(field, config, filt, n_processes, overwrite):
+    """Review PNGs, once the flags they blank are in: after crreject on
+    ACS/WFC (every exposure gets cosmic-ray flags there), after sky on
+    WFC3/IR."""
+    from campfire_pipeline.hst.steps.preview import PREVIEW_KIND, preview_paths
+
+    need = 'CFP_CR' if field.instrument == 'acswfc' else 'CFP_SKY'
+    files = [f for f in field.get_exposure_files(filt) if _has(f, need)]
+
+    def done(f):
+        return (all(os.path.exists(p) for p in preview_paths(f))
+                and str(cfp.step_value(f, 'CFP_PREV', keyset=cfp.HST)
+                        ).startswith(PREVIEW_KIND))
+
+    pending = [f for f in files if overwrite or not done(f)]
+    log(f'preview: {len(files)} {filt} exposures, {len(pending)} to render')
+    if not pending:
+        return
+    dispatch(_preview_worker, pending,
+             n_processes=max(1, min(n_processes, len(pending))),
+             cfg=step_config('preview', field, config), overwrite=True)
 
 
 def _visits(field, filt, need):
@@ -399,7 +480,9 @@ _PROCESS_RUNNERS = {
     'calibrate': _run_calibrate,
     'wcs_init': _run_wcs_init,
     'sky': _run_sky,
+    'trails': _run_trails,
     'crreject': _run_crreject,
+    'preview': _run_preview,
     'align': _run_align,
 }
 
@@ -413,7 +496,7 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
         f'filters={filters} ===')
     for filt in filters:
         log(f'--- Process: {field.instrument} {filt} ---')
-        for name, _ in PROCESS_STEPS:
+        for name, _ in steps_for(field.instrument, PROCESS_STEPS):
             _PROCESS_RUNNERS[name](field, config, filt, n_processes, overwrite)
 
 
@@ -462,6 +545,25 @@ def _load_outlier_manifest(work_dir):
             return list(json.load(f).get('groups', []))
     except (ValueError, OSError):
         return []
+
+
+def _run_apply_masks(field, filt, overwrite=False):
+    """Bring ``CFMASK`` on the canonical exposures of a filter in line with
+    the hand-drawn region files. Cheap when nothing changed (one header read
+    and one small hash per exposure), so every combine does it first: an
+    edited region file takes effect on the next combine, with no reset."""
+    from campfire_pipeline.hst.steps.apply_masks import (
+        apply_masks_step, is_current,
+    )
+
+    files = field.get_exposure_files(filt)
+    pending = [f for f in files
+               if overwrite or not is_current(f, field.mask_file(f, filt))]
+    with_reg = sum(1 for f in files if os.path.exists(field.mask_file(f, filt)))
+    log(f'apply_masks: {len(files)} {filt} exposures, {with_reg} with a region '
+        f'file in {os.path.join(field.mask_dir, filt)}, {len(pending)} to update')
+    for f in pending:
+        apply_masks_step(f, field.mask_file(f, filt), overwrite=True)
 
 
 def _materialize(field, filt, overwrite, include_unaligned):
@@ -547,9 +649,15 @@ def _run_resample(field, config, filt, overwrite, reduction_version, tiles, path
 
 
 def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
-                tiles=None, include_unaligned=False, steps=('outlier', 'resample')):
-    """Run the combine phase over each filter: refresh the working copies,
-    flag outliers across overlapping exposures, drizzle the tiles.
+                tiles=None, include_unaligned=False,
+                steps=('apply_masks', 'outlier', 'resample')):
+    """Run the combine phase over each filter: apply the hand-drawn masks,
+    refresh the working copies, flag outliers across overlapping exposures,
+    drizzle the tiles.
+
+    The masks are brought up to date whichever steps are asked for: a working
+    copy is made from the canonical file, and one made before its mask was
+    applied would put masked pixels into a mosaic without a word.
 
     ``tiles`` limits which mosaics are built; the outlier pass always sees
     every exposure of the filter, so a tile's mosaic does not depend on which
@@ -563,6 +671,10 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
         f'filters={filters} ===')
     for filt in filters:
         log(f'--- Combine: {field.instrument} {filt} ---')
+        _run_apply_masks(field, filt,
+                         overwrite=overwrite and 'apply_masks' in steps)
+        if not set(steps) & {'outlier', 'resample'}:
+            continue
         paths = _materialize(field, filt, overwrite, include_unaligned)
         if not paths:
             log(f'combine: no {filt} exposure is ready for a mosaic')
@@ -576,9 +688,11 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
 def run_step(step_name, field, config, filters=None, n_processes=1,
              overwrite=False, tiles=None):
     """Run one named step over the field's filters."""
-    if step_name not in STEP_NAMES:
-        raise ValueError(f"Unknown step '{step_name}'. Known: {STEP_NAMES}")
-    if step_name in ('outlier', 'resample'):
+    names = [n for n, _ in steps_for(field.instrument)]
+    if step_name not in names:
+        raise ValueError(
+            f"Unknown {field.instrument} step '{step_name}'. Known: {names}")
+    if step_name in ('apply_masks', 'outlier', 'resample'):
         return run_combine(field, config, filters=filters,
                            n_processes=n_processes, overwrite=overwrite,
                            tiles=tiles, steps=(step_name,))

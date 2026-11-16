@@ -158,12 +158,51 @@ def test_only_aligned_and_cleaned_exposures_get_a_working_copy(root):
     assert 'CFP_OUT' not in fits.getheader(work)
 
 
-def test_an_acs_exposure_without_cosmic_ray_flags_is_held_back(root):
+def test_an_acs_exposure_without_its_flags_is_held_back(root):
+    """An ACS exposure goes into a mosaic only with its cosmic-ray flags and
+    after the search for satellite trails."""
     acs = HstField.load('pg', 'acswfc')
     acs.setup_workspace()
     d = acs.filter_dir('f814w')
-    _stamped(f'{d}/jczgo1aaq_flc.fits', CFP_CR='adz n=2', CFP_ALGN='fit=linear')
-    lone = _stamped(f'{d}/jczgo5aaq_flc.fits', CFP_ALGN='fit=rigid')
+    _stamped(f'{d}/jczgo1aaq_flc.fits', CFP_TRL='findsat n=0 px=0',
+             CFP_CR='adz n=2', CFP_ALGN='fit=linear')
+    lone = _stamped(f'{d}/jczgo5aaq_flc.fits', CFP_TRL='findsat n=0 px=0',
+                    CFP_ALGN='fit=rigid')
+    unsearched = _stamped(f'{d}/jczgo6aaq_flc.fits', CFP_CR='adz n=2',
+                          CFP_ALGN='fit=linear')
     paths, held = acs.materialize_work('f814w')
     assert [os.path.basename(p) for p in paths] == ['jczgo1aaq_flc.fits']
-    assert held == [(lone, 'no cosmic-ray flags yet (crreject has not run)')]
+    assert held == [
+        (lone, 'no cosmic-ray flags yet (crreject has not run)'),
+        (unsearched, 'not searched for satellite trails yet (trails has not run)'),
+    ]
+
+
+def test_reviewer_exclusions_drop_exposures_like_skip(root):
+    """reference/<instrument>/<field>/exposures.json, the NIRCam file: a
+    name is the file name without .fits, or the bare rootname."""
+    import json
+
+    ir = HstField.load('pg', 'wfc3ir')
+    ir.setup_workspace()
+    d = ir.filter_dir('f160w')
+    for name in ('iczgo2aaq', 'iczgo2abq', 'iczgo2acq'):
+        _stamped(f'{d}/{name}_flt.fits', CFP_ALGN='fit=linear')
+    assert len(ir.get_exposure_files('f160w')) == 3
+
+    os.makedirs(ir.reference_dir, exist_ok=True)
+    with open(os.path.join(ir.reference_dir, 'exposures.json'), 'w') as f:
+        json.dump({'excluded': {'f160w': ['iczgo2abq_flt', 'iczgo2acq'],
+                                'f125w': ['iczgo2aaq_flt']}}, f)
+    ir.setup_workspace()
+    assert [os.path.basename(p) for p in ir.get_exposure_files('f160w')] == [
+        'iczgo2aaq_flt.fits']
+    # the mask of an exposure is looked for under its file name
+    assert ir.mask_file(f'{d}/iczgo2aaq_flt.fits', 'f160w').endswith(
+        'reference/wfc3ir/pg/masks/f160w/iczgo2aaq_flt.reg')
+
+    # an unreadable list is a warning, not a failed reduction
+    with open(os.path.join(ir.reference_dir, 'exposures.json'), 'w') as f:
+        f.write('{not json')
+    ir.setup_workspace()
+    assert len(ir.get_exposure_files('f160w')) == 3
