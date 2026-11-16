@@ -189,8 +189,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   scattered-light arc; persistence 0.56 to 0.67), and the step masks a streak
   only at persistence 0.8 and signal-to-noise 8 or more, which keeps the six
   and none of the five. `ignore` in `[<field>.acswfc.trails]` lists rootnames
-  whose trails are not masked. A streak that does not run the length of the
-  chip is not masked by this step. About 2.5 core-minutes per exposure. An
+  whose trails are not masked. In the COSMOS test mosaic the three trails had
+  left, after the cosmic-ray and outlier steps, a line at 0.1 to 0.4 of the
+  pixel scatter; with the masks the mosaic along them is level. A streak that
+  does not run the length of the chip is not masked by this step. About 2.5
+  core-minutes per exposure. An
   ACS/WFC exposure that has not been searched is held back from a mosaic.
   `preview` (after `crreject`; `hst/steps/preview.py`, `[<instrument>.preview]`):
   the NIRCam pair `<file>_preview.png` and `<file>_full.png`, signal-to-noise
