@@ -78,3 +78,65 @@ def test_step_guards(tmp_path):
             for k, v in cfp.format(keyset=cfp.HST, CFP_CR='adz n=2').items():
                 hdul[0].header[k] = v
     assert crreject.crreject_step([a, b]) is None
+
+
+def _lone_acs(path, rate=False):
+    """A 120 x 120 two-chip exposure: sky with noise, one star 2.2 pixels wide
+    at (60, 60) and, on chip 1, four single-pixel hits and a three-pixel track."""
+    from test_hst_exposure import _imset, _wcs_cards
+
+    ny = nx = 120
+    rng = np.random.default_rng(4)
+    primary = fits.PrimaryHDU()
+    primary.header.update({
+        'INSTRUME': 'WFC3' if rate else 'ACS', 'DETECTOR': 'IR' if rate else 'WFC',
+        'ROOTNAME': 'jlone01aq', 'EXPTIME': 500.0, 'READNSEA': 5.0,
+        'READNSEB': 5.0, 'READNSEC': 5.0, 'READNSED': 5.0})
+    if rate:
+        primary.header['FILTER'] = 'F160W'
+    else:
+        primary.header.update({'FILTER1': 'CLEAR1L', 'FILTER2': 'F814W'})
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    star = 3000.0 * np.exp(-((yy - 60) ** 2 + (xx - 60) ** 2) / (2 * (2.2 / 2.355) ** 2))
+    hits = [(20, 30), (40, 90), (85, 25), (100, 100)]
+    hdul = fits.HDUList([primary])
+    for extver in ((1,) if rate else (1, 2)):
+        sci = rng.poisson(80.0 + star).astype(float) + rng.normal(0, 5.0, (ny, nx))
+        if extver == 1:
+            for i, j in hits:
+                sci[i, j] += 800.0
+            sci[70, 40:43] += 600.0
+        err = np.sqrt(np.clip(sci, 1, None) + 25.0)
+        extra = {'BUNIT': 'ELECTRONS/S' if rate else 'ELECTRONS', 'PHOTFNU': 1e-7,
+                 'IDCSCALE': 0.05, 'WCSNAME': 'IDC_test'}
+        hdul += _imset(extver, sci.astype('float32'), err.astype('float32'),
+                       np.zeros((ny, nx), 'int16'),
+                       _wcs_cards(0.05, (40.0 + 0.01 * extver, 26.0)), extra)
+    hdul.writeto(path)
+    return hits
+
+
+def test_a_lone_exposure_is_cleaned_from_its_own_pixels(tmp_path):
+    pytest.importorskip('astroscrappy')
+    path = str(tmp_path / 'jlone01aq_flc.fits')
+    hits = _lone_acs(path)
+    n = crreject.crreject_single_step(path)
+    with fits.open(path) as hdul:
+        cr = (hdul['DQ', 1].data & crreject.CR_BIT) != 0
+        other = (hdul['DQ', 2].data & crreject.CR_BIT) != 0
+        stamp = hdul[0].header['CFP_CR']
+    assert all(cr[i, j] for i, j in hits) and cr[70, 40:43].all()
+    assert cr[hits[0][0] + 1, hits[0][1]]              # grown by one pixel
+    # the star's core is as sharp as a hit on this detector and is left alone
+    assert not cr[58:63, 58:63].any() and not other[58:63, 58:63].any()
+    assert n == cr.sum() + other.sum() and n < 0.02 * cr.size
+    assert stamp.startswith('lacosmic n=1 sigclip=4.5 objlim=10')
+    # stamped: a second call does nothing
+    assert crreject.crreject_single_step(path) is None
+
+
+def test_the_single_exposure_method_is_for_ccds(tmp_path):
+    path = str(tmp_path / 'ilone01aq_flt.fits')
+    _lone_acs(path, rate=True)
+    with pytest.raises(ValueError, match='ramp fit'):
+        crreject.crreject_single_step(path)

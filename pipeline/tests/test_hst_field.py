@@ -166,4 +166,4 @@ def test_an_acs_exposure_without_cosmic_ray_flags_is_held_back(root):
     lone = _stamped(f'{d}/jczgo5aaq_flc.fits', CFP_ALGN='fit=rigid')
     paths, held = acs.materialize_work('f814w')
     assert [os.path.basename(p) for p in paths] == ['jczgo1aaq_flc.fits']
-    assert held == [(lone, 'no cosmic-ray flags (single exposure of its visit)')]
+    assert held == [(lone, 'no cosmic-ray flags yet (crreject has not run)')]

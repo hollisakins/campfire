@@ -126,13 +126,118 @@ def _transfer_flags(canonical, masks):
     return counts
 
 
+def single_exposure_masks(exposure_file, params):
+    """Cosmic-ray masks of one CCD exposure from its own pixels.
+
+    L.A.Cosmic (van Dokkum 2001; the ``astroscrappy`` implementation): a
+    cosmic ray is sharper than anything the telescope can image, so a pixel is
+    flagged where the Laplacian of the image stands above the noise by
+    ``single_sigclip`` and above the fine structure of a real source by
+    ``single_objlim``; neighbors are added down to ``single_sigfrac`` of the
+    threshold. The image is in electrons with its sky, which is what the noise
+    model of the method needs. Pixels the calibration already calls bad are
+    handed over as a mask and are never returned. Each flagged region is then
+    grown by ``single_grow`` pixels.
+
+    Measured against the flags of four-exposure visits on the same pixels
+    (two COSMOS F814W exposures, 2004 and 2015; ``lacosmic_vs_visit.py``,
+    docs/hst/design.md section 8b). At the method's usual contrast limit of 5
+    it flags the core of 21 of 27 and 27 of 38 stars: ACS/WFC undersamples a
+    star, and its core is as sharp as a cosmic ray. At the shipped 10, with
+    one pixel of growth: 0 of 27 and 3 of 38 star cores, 92 and 85 percent of
+    the cosmic-ray flux caught, and 0.08 and 0.21 percent of pixels left that
+    the visit flagged and that stand more than 5 sigma above the sky. A single
+    exposure cannot be cleaned as well as a visit.
+
+    Returns ``{extver: bool array}``.
+    """
+    import astroscrappy
+
+    masks = {}
+    chips = open_exposure(exposure_file)
+    with fits.open(exposure_file, memmap=False) as hdul:
+        primary = hdul[0].header
+        noise = [float(primary[k]) for k in ('READNSEA', 'READNSEB', 'READNSEC',
+                                             'READNSED') if primary.get(k)]
+        readnoise = float(np.mean(noise)) if noise else 5.0
+        for chip in chips:
+            v = chip.extver
+            sci = np.asarray(hdul['SCI', v].data, dtype=np.float32)
+            dq = np.asarray(hdul['DQ', v].data).astype(np.int64)
+            bad = ((dq & ~np.int64(chip.detector.tolerated_bits | CR_BIT)) != 0) \
+                | ~np.isfinite(sci)
+            found, _ = astroscrappy.detect_cosmics(
+                sci, inmask=bad, gain=1.0, readnoise=readnoise, satlevel=1e30,
+                sigclip=float(params['single_sigclip']),
+                sigfrac=float(params['single_sigfrac']),
+                objlim=float(params['single_objlim']),
+                niter=int(params['single_niter']),
+                # fsmode 'median' is the method as published. The variant for
+                # undersampled images ('convolve' with a Gaussian of 2.2 or 3
+                # pixels) caught 3 to 7 percent of the cosmic rays on ACS/WFC
+                # at any contrast limit tried (5 to 20) and is not offered.
+                sepmed=True, cleantype='meanmask', fsmode='median',
+                verbose=False)
+            grow = int(params['single_grow'])
+            if grow > 0:
+                # the faint skirt of a hit, as driz_cr_grow does for a visit
+                from scipy.ndimage import binary_dilation
+                found = binary_dilation(found, iterations=grow)
+            masks[v] = found & ~bad
+    return masks
+
+
+def crreject_single_step(exposure_file, step_config=None, overwrite=False):
+    """Flag cosmic rays in a CCD exposure that is alone in its visit.
+
+    There is nothing to compare it with, so the flags come from its own
+    pixels (:func:`single_exposure_masks`) and go to DQ bit 4096 like those of
+    :func:`crreject_step`. Where the exposure overlaps exposures of other
+    visits, the field-level outlier pass compares it with them afterwards.
+    WFC3/IR is refused: its ramp fit has rejected cosmic rays already.
+
+    Returns the number of flagged pixels, or ``None`` when the file already
+    carries ``CFP_CR`` and ``overwrite`` is not set.
+    """
+    if not overwrite and cfp.has_step(exposure_file, 'CFP_CR', keyset=cfp.HST):
+        log(f'Skipping crreject on {os.path.basename(exposure_file)}: CFP_CR '
+            f'already set')
+        return None
+    chips = open_exposure(exposure_file)
+    token = chips[0].instrument
+    if chips[0].is_rate:
+        raise ValueError(
+            f'{os.path.basename(exposure_file)} is a {token} exposure; cosmic '
+            f'rays are rejected in its ramp fit, and the single-exposure '
+            f'method is for CCD exposures')
+    params = get_hst_step_config('crreject', token, overrides=step_config)
+    masks = single_exposure_masks(exposure_file, params)
+    counts = _transfer_flags(exposure_file, masks)
+    npix = sum(c.shape[0] * c.shape[1] for c in chips)
+    frac = sum(counts) / npix
+    if frac == 0.0:
+        raise RuntimeError(
+            f'crreject: no cosmic rays flagged in '
+            f'{os.path.basename(exposure_file)}; refusing to stamp CFP_CR on a '
+            f'result that cannot be right')
+    with fits.open(exposure_file, mode='update', memmap=False) as hdul:
+        value = (f"lacosmic n=1 sigclip={float(params['single_sigclip']):g} "
+                 f"objlim={float(params['single_objlim']):g} frac={frac:.4f}")
+        for key, val in cfp.format(keyset=cfp.HST, CFP_CR=value).items():
+            hdul[0].header[key] = val
+    log(f'crreject: {os.path.basename(exposure_file)} alone in its visit: '
+        f'flagged {sum(counts)} px ({100 * frac:.2f}%) from its own pixels')
+    return sum(counts)
+
+
 def crreject_step(exposure_files, step_config=None, overwrite=False):
     """Flag cosmic rays in the exposures of one visit and filter.
 
     ``exposure_files`` are canonical files of one detector and filter that
     overlap on the sky. Returns ``{path: flagged pixel count}``, or ``None``
     when every file already carries ``CFP_CR`` and ``overwrite`` is not set.
-    A single exposure cannot be treated this way and raises ``ValueError``.
+    A single exposure cannot be treated this way and raises ``ValueError``
+    (:func:`crreject_single_step` is for that).
     """
     files = sorted(exposure_files)
     if not overwrite and all(cfp.has_step(f, 'CFP_CR', keyset=cfp.HST) for f in files):
@@ -140,8 +245,8 @@ def crreject_step(exposure_files, step_config=None, overwrite=False):
         return None
     if len(files) < 2:
         raise ValueError(
-            'crreject needs at least two exposures; a single exposure has to be '
-            'cleaned from its own pixels (not implemented yet)')
+            'crreject needs at least two exposures; a single exposure is cleaned '
+            'from its own pixels by crreject_single_step')
 
     chips = {f: open_exposure(f) for f in files}
     tokens = {c.instrument for cs in chips.values() for c in cs}

@@ -75,12 +75,10 @@ def process_visit(visit, refcat=None, *, reference_env=None, config=None,
     Returns ``{'key', 'cosmic_rays', 'align', 'ready'}``. ``cosmic_rays`` is
     ``'visit'`` when the exposures were cleaned against each other, ``'ramp'``
     for a single WFC3/IR exposure (the up-the-ramp fit has removed most hits)
-    and ``'none'`` for a single ACS exposure. That exposure cannot go into a
-    mosaic until its cosmic rays are flagged, either against overlapping
-    exposures of other visits in the field-level outlier pass
-    (``hst/steps/outlier.py``, run by the caller once every visit is aligned)
-    or from its own pixels where nothing overlaps (not built); ``ready`` is false for
-    that case and for a visit that failed to align.
+    and ``'single'`` for a single ACS exposure, which is cleaned from its own
+    pixels (``crreject_single_step``; less complete than a visit, and refined
+    by the field-level outlier pass where the exposure overlaps others).
+    ``ready`` is false for a visit that failed to align.
     """
     from campfire_pipeline.hst.steps.align import align_visit
     from campfire_pipeline.hst.steps.crreject import crreject_step
@@ -99,9 +97,12 @@ def process_visit(visit, refcat=None, *, reference_env=None, config=None,
     elif visit.instrument == 'wfc3ir':
         cosmic_rays = 'ramp'
     else:
-        cosmic_rays, ready = 'none', False
-        log(f'visit {visit.key}: a single {visit.instrument} exposure; its cosmic '
-            f'rays are not flagged, so it is held back from the mosaic')
+        from campfire_pipeline.hst.steps.crreject import crreject_single_step
+        crreject_single_step(visit.files[0], step_config=cfg.get('crreject'),
+                             overwrite=overwrite)
+        cosmic_rays = 'single'
+        log(f'visit {visit.key}: a single {visit.instrument} exposure, cleaned '
+            f'from its own pixels')
 
     status = None
     if refcat is not None:

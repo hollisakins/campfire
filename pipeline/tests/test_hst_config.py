@@ -25,9 +25,15 @@ def test_every_step_of_every_detector_has_its_block():
         for step in _STEPS:
             assert shipped[detector][step], f'[{detector}.{step}] is empty'
         assert 'crds_context' not in shipped[detector]     # a pin, unset
-    # the two instruments carry the same keys, written out for each
+    # the two instruments carry the same keys, written out for each; the
+    # single-exposure cosmic-ray settings exist for the CCD only (a WFC3/IR
+    # ramp rejects cosmic rays itself)
     for step in _STEPS:
-        assert set(shipped['acswfc'][step]) == set(shipped['wfc3ir'][step])
+        acs = {k for k in shipped['acswfc'][step] if not k.startswith('single_')}
+        assert acs == set(shipped['wfc3ir'][step])
+    assert {k for k in shipped['acswfc']['crreject'] if k.startswith('single_')} == {
+        'single_sigclip', 'single_sigfrac', 'single_objlim', 'single_niter',
+        'single_grow'}
 
 
 def test_the_shipped_values_are_the_measured_ones():

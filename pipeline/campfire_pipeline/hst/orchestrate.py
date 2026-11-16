@@ -168,6 +168,12 @@ def _crreject_worker(key, files, *, cfg, overwrite):
     return key
 
 
+def _crreject_single_worker(exposure_file, *, cfg, overwrite):
+    from campfire_pipeline.hst.steps.crreject import crreject_single_step
+    crreject_single_step(exposure_file, step_config=cfg, overwrite=overwrite)
+    return exposure_file
+
+
 def _align_worker(key, files, *, refcat, cfg, refcat_hash):
     from campfire_pipeline.hst.steps.align import align_visit
     sol = align_visit(list(files), refcat, key=key, config=cfg,
@@ -268,9 +274,17 @@ def _run_crreject(field, config, filt, n_processes, overwrite):
                 f'the ramp fit of calwf3 has removed most cosmic rays, and the '
                 f'field-level outlier pass sees them where they overlap others')
         else:
+            lone = [v.files[0] for v in single
+                    if overwrite or not _has(v.files[0], 'CFP_CR')]
             log(f'crreject: {len(single)} visit(s) of a single exposure ({names}) '
-                f'get no cosmic-ray flags and are HELD BACK from the mosaic. '
-                f'Cleaning a lone CCD exposure from its own pixels is not built.')
+                f'are cleaned from their own pixels, {len(lone)} to do. That '
+                f'removes most cosmic rays, not all (about 0.1 to 0.2 percent of '
+                f'pixels keep one above 5 sigma); where such an exposure overlaps '
+                f'others the field-level outlier pass removes the rest.')
+            if lone:
+                dispatch(_crreject_single_worker, lone, n_processes=n_processes,
+                         cfg=step_config('crreject', field, config),
+                         overwrite=overwrite)
     if tasks:
         dispatch(_crreject_worker, tasks, n_processes=n_processes,
                  use_starmap=True, cfg=step_config('crreject', field, config),
@@ -345,8 +359,7 @@ def _run_align(field, config, filt, n_processes, overwrite):
     refcat_hash = _refcat_hash(refcat_path)
     # A CCD exposure is aligned on its cosmic-ray-cleaned pixels: without the
     # flags a 400 s ACS exposure gives thousands of false detections and the
-    # fit fails. A visit that has no flags (not through crreject yet, or a
-    # single exposure, which is held back from the mosaic anyway) is not
+    # fit fails. A visit that has not been through crreject yet is not
     # solved. WFC3/IR does not depend on it.
     visits = _visits(field, filt, 'CFP_SKY')
     if field.instrument == 'acswfc':

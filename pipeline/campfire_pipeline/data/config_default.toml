@@ -1245,6 +1245,21 @@
     combine_grow = 1
     driz_cr_grow = 1
     driz_cr_ctegrow = 0
+    # An exposure that is alone in its visit has nothing to compare with and
+    # is cleaned from its own pixels with L.A.Cosmic: detection threshold in
+    # sigma, the fraction of it at which neighbors are added, the contrast
+    # over a real source's fine structure, the number of passes, and the
+    # pixels by which each flagged region is grown afterwards.
+    # single_objlim is 10, twice the method's usual value: at 5 it flags the
+    # cores of three stars in four (ACS/WFC undersamples them), at 10 almost
+    # none, for 2 to 3 percent less of the cosmic-ray flux caught. About 0.1
+    # to 0.2 percent of pixels keep a cosmic ray above 5 sigma; where such an
+    # exposure overlaps others the field-level outlier pass removes those.
+    single_sigclip = 4.5
+    single_sigfrac = 0.3
+    single_objlim = 10.0
+    single_niter = 4
+    single_grow = 1
 
 [acswfc.align]
     # Which exposures are fitted to the reference catalog together.

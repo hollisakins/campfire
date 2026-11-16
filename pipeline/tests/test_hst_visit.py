@@ -56,6 +56,8 @@ def recorder(monkeypatch):
     monkeypatch.setattr(sky, 'sky_step', lambda f, **kw: calls.append(('sky', f)))
     monkeypatch.setattr(crreject, 'crreject_step',
                         lambda files, **kw: calls.append(('crreject', tuple(files))))
+    monkeypatch.setattr(crreject, 'crreject_single_step',
+                        lambda f, **kw: calls.append(('crreject_single', f)))
 
     def fake_align(files, refcat, **kw):
         calls.append(('align', tuple(files), kw['key']))
@@ -77,8 +79,10 @@ def test_chain_order_and_result(recorder):
 
 def test_single_exposures_and_failed_alignment(recorder):
     calls, Solution = recorder
+    # a lone CCD exposure is cleaned from its own pixels and goes on
     acs = process_visit(Visit('je2860', 'acswfc', 'f606w', ('a.fits',)), refcat=object())
-    assert acs['cosmic_rays'] == 'none' and acs['ready'] is False
+    assert acs['cosmic_rays'] == 'single' and acs['ready'] is True
+    assert ('crreject_single', 'a.fits') in calls
     ir = process_visit(Visit('ie2860', 'wfc3ir', 'f160w', ('c.fits',)), refcat=object())
     assert ir['cosmic_rays'] == 'ramp' and ir['ready'] is True
     assert 'crreject' not in [c[0] for c in calls]

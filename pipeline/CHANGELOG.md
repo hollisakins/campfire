@@ -157,9 +157,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   `products/<instrument>/<field>/<filter>/`, working copies under
   `products/<instrument>_work/`, cache kind `crds_hst`. The HST software
   (`hstcal`, `stwcs`, `drizzlepac`) is needed only when one of these commands
-  runs. Not built: cosmic rays on a lone ACS exposure (such an exposure is held
-  back from mosaics), the quality gate, trail and persistence masks, previews,
-  and upload of HST products. Run on real data: WFC3/IR on pg004 (31 exposures,
+  runs. An ACS/WFC exposure that is alone in its visit is cleaned from its own
+  pixels with L.A.Cosmic (`astroscrappy`; `crreject_single_step`,
+  `[acswfc.crreject].single_*`), with the source-contrast limit at 10 instead of
+  the usual 5, which on ACS/WFC flags the cores of stars; it catches 85 to 92
+  percent of the cosmic-ray flux a four-exposure visit finds, and the
+  field-level outlier pass removes the rest where the exposure overlaps others.
+  Not built: the quality gate, trail and persistence masks, previews, and upload
+  of HST products. Run on real data: WFC3/IR on pg004 (31 exposures,
   four filters) and ACS/WFC F814W on COSMOS (19 exposures), the latter compared
   with an existing reference mosaic on the same pixel grid: fluxes agree to 0.3
   percent, depth is equal, positions agree to 4 mas (docs/hst/design.md,
