@@ -32,7 +32,9 @@ mistaken for cosmic rays.
 
 import os
 import shutil
+import sys
 import tempfile
+from contextlib import contextmanager
 
 import numpy as np
 from astropy.io import fits
@@ -43,6 +45,36 @@ from campfire_pipeline.config import get_hst_step_config
 from campfire_pipeline.hst.exposure import open_exposure
 
 CR_BIT = 4096
+
+
+@contextmanager
+def _output_to(path):
+    """Send everything written to standard output and error to ``path`` for
+    the duration of the block, at the file-descriptor level, so that it also
+    catches what a library prints from C or through its own log handlers."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    saved = os.dup(1), os.dup(2)
+    try:
+        with open(path, 'w') as f:
+            os.dup2(f.fileno(), 1)
+            os.dup2(f.fileno(), 2)
+            try:
+                yield
+            finally:
+                for stream in (sys.stdout, sys.stderr):
+                    try:
+                        stream.flush()
+                    except Exception:
+                        pass
+                os.dup2(saved[0], 1)
+                os.dup2(saved[1], 2)
+    finally:
+        os.close(saved[0])
+        os.close(saved[1])
 
 
 def _read_crmasks(work, rootname, extvers):
@@ -134,24 +166,38 @@ def crreject_step(exposure_files, step_config=None, overwrite=False):
             shutil.copyfile(f, os.path.join(work, os.path.basename(f)))
             names.append(os.path.basename(f))
         os.chdir(work)
-        astrodrizzle.AstroDrizzle(
-            # clean=False: the per-chip cosmic-ray masks are the product we
-            # want; the whole work directory is removed below.
-            names, output='crrej', build=False, preserve=False, clean=False,
-            context=False, num_cores=1, updatewcs=False,
-            resetbits=CR_BIT, crbit=CR_BIT,
-            static=True, skysub=True, skymethod='localmin',
-            driz_separate=True, driz_sep_bits=bits,
-            median=True, combine_type=params.get('combine_type', 'minmed'),
-            combine_nsigma=params.get('combine_nsigma', '4 3'),
-            combine_grow=int(params.get('combine_grow', 1)),
-            blot=True, driz_cr=True, driz_cr_corr=False,
-            driz_cr_snr=params['driz_cr_snr'],
-            driz_cr_scale=params['driz_cr_scale'],
-            driz_cr_grow=int(params.get('driz_cr_grow', 1)),
-            driz_cr_ctegrow=int(params.get('driz_cr_ctegrow', 0)),
-            driz_combine=False,
-        )
+        # AstroDrizzle prints several hundred lines per visit. They go to a
+        # file in the work directory; its end is shown only if the run fails.
+        adz_log = os.path.join(work, 'astrodrizzle_output.txt')
+        try:
+            with _output_to(adz_log):
+                astrodrizzle.AstroDrizzle(
+                    # clean=False: the per-chip cosmic-ray masks are the
+                    # product we want; the whole work directory is removed
+                    # below.
+                    names, output='crrej', build=False, preserve=False,
+                    clean=False, context=False, num_cores=1, updatewcs=False,
+                    resetbits=CR_BIT, crbit=CR_BIT,
+                    static=True, skysub=True, skymethod='localmin',
+                    driz_separate=True, driz_sep_bits=bits,
+                    median=True, combine_type=params['combine_type'],
+                    combine_nsigma=params['combine_nsigma'],
+                    combine_grow=int(params['combine_grow']),
+                    blot=True, driz_cr=True, driz_cr_corr=False,
+                    driz_cr_snr=params['driz_cr_snr'],
+                    driz_cr_scale=params['driz_cr_scale'],
+                    driz_cr_grow=int(params['driz_cr_grow']),
+                    driz_cr_ctegrow=int(params['driz_cr_ctegrow']),
+                    driz_combine=False,
+                )
+        except Exception as e:
+            tail = ''
+            if os.path.exists(adz_log):
+                with open(adz_log, errors='replace') as f:
+                    tail = f.read()[-3000:]
+            raise RuntimeError(
+                f'crreject: AstroDrizzle failed on {names}: {e}\n'
+                f'--- end of its output ---\n{tail}') from e
         os.chdir(cwd)
 
         stamp_params = f"snr={params['driz_cr_snr']} scale={params['driz_cr_scale']}"

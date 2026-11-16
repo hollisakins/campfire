@@ -133,7 +133,9 @@ def outlier_step(exposure_files, step_config=None, overwrite=False, refcat=None)
     exposures, and for any exposure without a solved alignment.
     """
     from campfire_pipeline.hst.steps.align import _mid_mjd
-    from campfire_pipeline.imaging.outlier import detect_outliers, star_protection
+    from campfire_pipeline.imaging.outlier import (
+        detect_outliers, stack_grid, star_protection,
+    )
 
     files = sorted(exposure_files)
     if not overwrite and all(cfp.has_step(f, 'CFP_OUT', keyset=cfp.HST)
@@ -165,6 +167,19 @@ def outlier_step(exposure_files, step_config=None, overwrite=False, refcat=None)
     params = get_hst_step_config('outlier', token, overrides=step_config)
     for name in ('snr', 'scale', 'minmed_nsigma'):
         params[name] = _pair(params[name])
+
+    # One grid at the native scale covers every chip given. Refuse a set whose
+    # grid would not fit in memory, before any pixel is read.
+    limit = float(params.pop('max_grid_megapixels'))
+    nx, ny = stack_grid(chips, pixel_scale=params.get('pixel_scale')).shape
+    if nx * ny > limit * 1e6:
+        raise ValueError(
+            f'outlier: the {len(files)} overlapping {token} {next(iter(filters))} '
+            f'exposures span a {nx} x {ny} pixel grid ({nx * ny / 1e6:.0f} '
+            f'megapixels), above [{token}.outlier].max_grid_megapixels = '
+            f'{limit:g}. A contiguous mosaic of this size needs the pass run '
+            f'per visit against its neighbors, which is not built; raise the '
+            f'limit if the machine has the memory (about 14 bytes per pixel).')
 
     protect_cfg = {k: params.pop(k) for k in _PROTECT_KEYS}
     protect, prot = None, 'off'

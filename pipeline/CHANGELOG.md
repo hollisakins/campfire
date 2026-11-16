@@ -124,7 +124,9 @@ Release procedure: edit the `## Unreleased` section below, then run
   (`--target "RA Dec"` or a name, `--radius`), for `--telescope jwst|hst` or
   single instruments (`nircam`, `nirspec`, `acswfc`, `wfc3ir`). The summary lists
   exposures, exposure time, dates and PI per program and filter and ends with the
-  file glob of each program to paste into `fields.toml`; `--format exposures`
+  file globs to paste into `fields.toml`, one line per program naming the visits
+  found (`iczg{o2,o4}*`, `jw06882060*`; a program often covers several fields, so
+  a program-wide glob would select the others' files); `--format exposures`
   lists every file set and `--format json` is machine-readable. One CAOM catalog
   query per instrument, footprints tested against the region locally
   (`common/mast_query.py`).
@@ -137,6 +139,32 @@ Release procedure: edit the `## Unreleased` section below, then run
   on disk are skipped. New layout instruments `acswfc` and `wfc3ir` with the
   local-only kinds `raw_acswfc` and `raw_wfc3ir`. JWST downloads are unchanged; `--program` is now checked by the
   command instead of by the option parser, with the same effect.
+- **New command groups `cfpipe acswfc` and `cfpipe wfc3ir`: HST imaging from RAW
+  to mosaics on the field's tiles.** The NIRCam command set per HST instrument:
+  `process` (calibrate, wcs_init, sky, crreject, align), `combine` (field-level
+  outlier pass per overlap group on working copies, then resample), `run`, one
+  command per step, `status`, `check`, `reset`. A field declares an instrument's
+  exposures in `fields.toml` as `[<field>.acswfc]` / `[<field>.wfc3ir]` with
+  `filters`, `files` (HST rootname globs) and `skip`; tiles, tangent point and
+  reference catalog are the field's, so an HST mosaic
+  (`mosaic_<instrument>_<filter>_<field>_<scale>_<tile>`) is on the pixel grid of
+  the NIRCam one (`hst/field.py`, `hst/orchestrate.py`, `hst/steps/resample.py`,
+  `hst/cli.py`). New config blocks `[acswfc.calibrate]`, `[acswfc.resample]`,
+  `[wfc3ir.calibrate]`, `[wfc3ir.resample]`; `crreject` and `outlier` list every
+  setting they use. HST reference files go to `cache/crds_hst` (or
+  `[environment].HST_CRDS_PATH`), never to the JWST `CRDS_PATH`. Layout: reserved
+  product kinds `<instrument>_exposure` and `<instrument>_mosaic` under
+  `products/<instrument>/<field>/<filter>/`, working copies under
+  `products/<instrument>_work/`, cache kind `crds_hst`. The HST software
+  (`hstcal`, `stwcs`, `drizzlepac`) is needed only when one of these commands
+  runs. Not built: cosmic rays on a lone ACS exposure (such an exposure is held
+  back from mosaics), the quality gate, trail and persistence masks, previews,
+  and upload of HST products.
+- **The part of the NIRCam resample step that follows the drizzle moved to
+  `imaging/mosaic_finish.py`**, unchanged, so the HST resample step runs the same
+  background subtraction, split files and plots. Mosaic manifests can record an
+  input by the hash of the whole file (`hash_kind = "file"`, used for HST
+  exposures); NIRCam manifests are written and compared as before.
 - **A CRDS context can be pinned per instrument, and the wrong observatory's is
   refused.** `[nircam].crds_context` / `[nirspec].crds_context` replace
   `[environment].CRDS_CONTEXT` for that instrument's commands, and

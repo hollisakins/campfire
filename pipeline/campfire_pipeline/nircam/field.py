@@ -151,6 +151,43 @@ def _tile_has_wcs_subsection(value):
     )
 
 
+# Known per-step keys for the canonical-exposure pipeline. Used both to
+# recognize per-field step overrides and to keep them out of the tile
+# detection below.
+KNOWN_STEPS = frozenset({
+    'detector1', 'jackknife', 'persistence', 'wisp', 'image2',
+    'edge', 'bkg', 'diag_striping',
+    'wcs_shift', 'jhat', 'align',
+    'apply_mask', 'bad_pixel', 'outlier', 'resample',
+})
+
+# Keys of a field table that are never a tile. The HST instrument names are
+# among them: [<field>.acswfc] and [<field>.wfc3ir] hold that instrument's
+# files, filters and step overrides (read by hst/field.py).
+RESERVED_KEYS = frozenset({
+    'filters', 'files', 'skip', 'tangent_point', 'rgb', 'epochs',
+    'fiducial_tiles', 'refcat', 'acswfc', 'wfc3ir',
+}) | KNOWN_STEPS
+
+
+def parse_tiles(fc):
+    """Tile definitions of one field table of fields.toml.
+
+    A tile is any non-reserved sub-table that either declares explicit sky
+    ``corners`` (legacy / override) or provides at least one ``<scale>mas``
+    subsection with ``crpix`` + ``naxis``; in the latter case corners are
+    derived on demand from the WCS. The tiles belong to the field, not to an
+    instrument: every instrument of the field drizzles onto the same ones.
+    """
+    tiles = {}
+    for key, value in fc.items():
+        if key in RESERVED_KEYS or not isinstance(value, dict):
+            continue
+        if 'corners' in value or _tile_has_wcs_subsection(value):
+            tiles[key] = value
+    return tiles
+
+
 _WCS_SHIFT_REQUIRED = {'files', 'delta_ra', 'delta_dec'}
 _WCS_SHIFT_ALLOWED = (
     _WCS_SHIFT_REQUIRED | {'filters', 'delta_roll', 'scale'}
@@ -432,34 +469,8 @@ class Field:
 
         tangent_point = tuple(fc['tangent_point'])
 
-        # Known per-step keys for the canonical-exposure pipeline. Used both
-        # to recognize per-field step overrides and to exclude them from the
-        # tile-detection loop below.
-        known_steps = {
-            'detector1', 'jackknife', 'persistence', 'wisp', 'image2',
-            'edge', 'bkg', 'diag_striping',
-            'wcs_shift', 'jhat', 'align',
-            'apply_mask', 'bad_pixel', 'outlier', 'resample',
-        }
-
-        # Parse tile WCS definitions. A tile is any non-reserved sub-table
-        # that either declares explicit sky `corners` (legacy / override) or
-        # provides at least one `<scale>mas` subsection with `crpix`+`naxis`
-        # — in the latter case corners are derived on demand from the WCS.
-        tiles = {}
-        # The HST detector tokens are reserved as well: [<field>.acswfc] and
-        # [<field>.wfc3ir] hold that detector's files, filters and step
-        # overrides (read by the HST field object), never a NIRCam tile.
-        reserved_keys = ({'filters', 'files', 'skip', 'tangent_point', 'rgb',
-                          'epochs', 'fiducial_tiles', 'refcat',
-                          'acswfc', 'wfc3ir'} | known_steps)
-        for key, value in fc.items():
-            if key in reserved_keys:
-                continue
-            if not isinstance(value, dict):
-                continue
-            if 'corners' in value or _tile_has_wcs_subsection(value):
-                tiles[key] = value
+        known_steps = KNOWN_STEPS
+        tiles = parse_tiles(fc)
 
         # Optional [<field>.rgb] block, consumed only by `cfpipe nircam rgb`.
         # Validation of channel filters against `filters` happens at use-site
@@ -522,6 +533,32 @@ class Field:
             fiducial_tiles=list(raw_fiducial),
             refcat=refcat,
         )
+
+    @classmethod
+    def load_grid(cls, name, fields_file=None):
+        """The field's tiles and tangent point alone, as a ``Field`` without
+        exposures.
+
+        For what needs the geometry of a field and nothing of NIRCam: the
+        archive query by field (``cfpipe query --field``), and a field that
+        has HST exposures only and therefore no top-level ``filters`` /
+        ``files``.
+        """
+        from campfire_pipeline.config import resolve_fields_file
+
+        fields_file = resolve_fields_file(fields_file)
+        with open(fields_file, 'r') as f:
+            fields_config = toml.load(f)
+        if name not in fields_config:
+            raise ValueError(
+                f"Field '{name}' not found in {fields_file}. "
+                f"Available: {list(fields_config)}")
+        fc = fields_config[name]
+        if 'tangent_point' not in fc:
+            raise ValueError(f"Field '{name}' has no tangent_point")
+        return cls(name=name, filters=[], files=[],
+                   tangent_point=tuple(fc['tangent_point']),
+                   tiles=parse_tiles(fc))
 
     @property
     def pids(self):

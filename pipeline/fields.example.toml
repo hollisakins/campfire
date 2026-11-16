@@ -102,6 +102,31 @@
 #           f444w = [0.0, 0.4, 0.0]          #   pure-G push from the LW
 #           f356w = [0.4, 0.2, 0.0]          #   R + G mid-IR
 #           f150w = [0.0, 0.4, 1.0]          #   G + B SW
+#
+# The field's reference catalog, one for every instrument of the field:
+#   refcat = "field_refcat.ecsv"             # directly under [field]; the older
+#                                            # [field.align].refcat is still read
+#
+# HST imaging (`cfpipe acswfc`, `cfpipe wfc3ir`). Each HST detector is an
+# instrument with a table of its own under the field. The tiles, the tangent
+# point and the reference catalog are the field's, so an HST mosaic lands on
+# the same pixel grid as the NIRCam one:
+#   [field.wfc3ir]
+#       filters = ['f125w', 'f160w']
+#       files   = ['iczg{o2,o4}*']           # HST rootname globs: instrument
+#                                            # letter (i = WFC3, j = ACS), the
+#                                            # three-character program code, the
+#                                            # visit. `cfpipe query --telescope
+#                                            # hst --field <field>` prints them.
+#       skip    = ['iczgo2dlq']              # optional
+#       [field.wfc3ir.outlier]               # step overrides for this instrument
+#           protect_radius = 0.5
+#   [field.acswfc]
+#       filters = ['f814w']
+#       files   = ['jczgo1*']
+#   Raw files: $CAMPFIRE_ROOT/raw/{acswfc,wfc3ir}/{proposal}/{filter}/*_raw.fits
+#   (`cfpipe download --telescope hst --field <field>`). A field with HST data
+#   only needs no top-level `filters` / `files`.
 
 [example_cosmos]
     filters = ['f115w', 'f150w', 'f200w', 'f277w', 'f356w', 'f410m', 'f444w']

@@ -170,6 +170,17 @@ def parse_relpath(relpath: str) -> ParsedKey:
             if fname.endswith(".fits"):
                 return ParsedKey("nircam_exposure", scope, fname)
 
+    if tree == "products" and len(seg) == 5 and seg[1] in ("acswfc", "wfc3ir"):
+        # HST instruments: the NIRCam shape, two kinds. Everything named after a
+        # mosaic is the mosaic; any other FITS file is a canonical exposure.
+        inst, fname = seg[1], seg[4]
+        scope = Scope(field=seg[2], filt=seg[3])
+        if fname.startswith("mosaic"):
+            return ParsedKey(f"{inst}_mosaic", scope,
+                             _plain_filename(f"{inst}_mosaic", fname))
+        if fname.endswith(".fits"):
+            return ParsedKey(f"{inst}_exposure", scope, fname)
+
     if tree == "reference" and len(seg) >= 4 and seg[1] == "nirspec":
         obs = seg[2]
         fname = seg[-1]

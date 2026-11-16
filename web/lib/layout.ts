@@ -321,6 +321,14 @@ export function parseRelpath(relpath: string): ParsedKey {
       if (fname.endsWith('.fits')) return live({ productType: 'nircam_exposure', scope: { field, filt }, filename: fname });
     }
   }
+  if (tree === 'products' && seg.length === 5 && (seg[1] === 'acswfc' || seg[1] === 'wfc3ir')) {
+    // HST instruments: the NIRCam shape, two kinds. Everything named after a
+    // mosaic is the mosaic; any other FITS file is a canonical exposure.
+    const scope = { field: seg[2], filt: seg[3] };
+    const fname = seg[4];
+    if (fname.startsWith('mosaic')) return live({ productType: `${seg[1]}_mosaic`, scope, filename: plainFilename(`${seg[1]}_mosaic`, fname) });
+    if (fname.endsWith('.fits')) return live({ productType: `${seg[1]}_exposure`, scope, filename: fname });
+  }
   if (tree === 'reference' && seg.length >= 4 && seg[1] === 'nirspec') {
     const obs = seg[2];
     const fname = seg[seg.length - 1];

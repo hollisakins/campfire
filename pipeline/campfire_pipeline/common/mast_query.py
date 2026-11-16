@@ -107,13 +107,19 @@ class Exposure:
 
     @property
     def glob(self):
-        """The file glob that selects this exposure's program in
-        ``fields.toml``. JWST names carry the program number. HST rootnames
-        carry a three-character program code after the instrument letter
-        instead, which the archive does not translate back."""
+        """The file glob that selects this exposure's visit in ``fields.toml``.
+
+        One visit, not the whole program: a program often covers several
+        fields (RELICS, program 14096, observed 41 clusters), and a
+        program-wide glob in one field's table would select the others' files
+        as soon as they are on disk. JWST: program and observation,
+        ``jw06882060*``. HST: instrument letter, the three-character program
+        code and the visit, ``iczgo2*`` (an HST rootname carries no proposal
+        number).
+        """
         if self.telescope == 'jwst':
-            return f'jw{int(self.program):05d}*'
-        return f'{self.obs_id[:4]}*'
+            return f'{self.obs_id[:10]}*'
+        return f'{self.obs_id[:6]}*'
 
     @property
     def date(self):
@@ -391,19 +397,38 @@ def format_summary(exposures):
                 f"{r['n_exposures']:4d} exposures {r['exptime']:9.0f} s  "
                 f"{span}  {r['pi']}{rights}")
         lines.append('')
-        lines.append(f'  globs for fields.toml ({instrument}):')
-        by_glob = {}
+        lines.append(f'  globs for fields.toml ({instrument}), one per program, '
+                     f'naming the visits found:')
+        by_program = {}
         for r in mine:
-            for g in r['globs']:
-                by_glob.setdefault(g, []).append(r)
-        for g, members in sorted(by_glob.items()):
-            programs = ', '.join(dict.fromkeys(m['program'] for m in members))
+            by_program.setdefault(r['program'], []).append(r)
+        for program, members in by_program.items():
             filters = ' '.join(dict.fromkeys(m['filter'] for m in members))
             n = sum(m['n_exposures'] for m in members)
-            lines.append(f"    '{g}',   # {programs}  {members[0]['pi']}  "
-                         f"{filters}  {n} exposures")
+            for g in brace_globs({g for m in members for g in m['globs']}):
+                lines.append(f"    '{g}',   # {program}  {members[0]['pi']}  "
+                             f"{filters}  {n} exposures")
         lines.append('')
     return '\n'.join(lines).rstrip()
+
+
+def brace_globs(globs):
+    """Visit globs that share a program prefix, written as one brace glob:
+    ``iczgo1*`` and ``iczgo2*`` become ``iczg{o1,o2}*``; ``jw06882060*`` and
+    ``jw06882061*`` become ``jw06882{060,061}*``. The field loaders expand the
+    braces again."""
+    groups = {}
+    for g in sorted(globs):
+        stem = g.rstrip('*')
+        n = 7 if stem.startswith('jw') else 4
+        groups.setdefault(stem[:n], []).append(stem[n:])
+    out = []
+    for prefix, tails in sorted(groups.items()):
+        if len(tails) == 1:
+            out.append(f'{prefix}{tails[0]}*')
+        else:
+            out.append(f"{prefix}{{{','.join(tails)}}}*")
+    return out
 
 
 def format_exposures(exposures):

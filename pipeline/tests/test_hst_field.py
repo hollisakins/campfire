@@ -1,0 +1,169 @@
+"""The HST instruments' part of a field: what fields.toml says, where the files
+are, and which exposures may go into a mosaic.
+
+The files here are empty FITS headers with the step stamps under test; no HST
+software is needed.
+"""
+
+import os
+import time
+
+import pytest
+from astropy.io import fits
+
+from campfire_pipeline.common import cfp
+from campfire_pipeline.hst.field import HstField
+from campfire_pipeline.nircam.field import Field
+
+FIELDS = """
+[pg]
+filters = ["f444w"]
+files = ["jw06882*"]
+tangent_point = [289.27, -33.52]
+refcat = "pg_f444w.ecsv"
+
+[pg.A1]
+rotation = 0
+[pg.A1.30mas]
+crpix = [500.5, 500.5]
+naxis = [1000, 1000]
+
+[pg.wfc3ir]
+filters = ["F160W", "f105w"]
+files = ["iczg*", "iepl{71,72}*"]
+skip = ["iepl72i1q"]
+[pg.wfc3ir.outlier]
+protect_radius = 0.5
+
+[pg.acswfc]
+filters = ["f814w"]
+files = ["jczg*"]
+
+[hstonly]
+tangent_point = [10.0, 2.0]
+[hstonly.T]
+rotation = 0
+[hstonly.T.30mas]
+crpix = [50.5, 50.5]
+naxis = [100, 100]
+[hstonly.acswfc]
+filters = ["f606w"]
+files = ["jabc*"]
+"""
+
+
+@pytest.fixture
+def root(tmp_path, monkeypatch):
+    (tmp_path / 'config').mkdir()
+    (tmp_path / 'config' / 'fields.toml').write_text(FIELDS)
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
+    return tmp_path
+
+
+def _stamped(path, **stamps):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    hdu = fits.PrimaryHDU()
+    for key, val in cfp.format(keyset=cfp.HST, **stamps).items():
+        hdu.header[key] = val
+    hdu.writeto(path, overwrite=True)
+    return str(path)
+
+
+def test_the_instrument_table_is_the_selection(root):
+    f = HstField.load('pg', 'wfc3ir')
+    assert f.filters == ['f160w', 'f105w']                 # lower case
+    assert f.files == ['iczg*', 'iepl71*', 'iepl72*']      # braces expanded
+    assert f.skip == ['iepl72i1q']
+    assert f.step_overrides == {'outlier': {'protect_radius': 0.5}}
+    assert f.refcat == 'pg_f444w.ecsv'                     # the field's catalog
+    assert f.canonical_suffix == '_flt.fits'
+    assert HstField.load('pg', 'acswfc').canonical_suffix == '_flc.fits'
+
+
+def test_tiles_are_the_fields_and_shared_with_nircam(root):
+    hst = HstField.load('pg', 'wfc3ir')
+    nircam = Field.load('pg')
+    assert list(hst.tiles) == list(nircam.tiles) == ['A1']
+    assert hst.get_tile_wcs('A1', '30mas') == nircam.get_tile_wcs('A1', '30mas')
+    assert hst.get_tile_corners('A1') == nircam.get_tile_corners('A1')
+
+
+def test_a_field_needs_no_nircam_exposures(root):
+    f = HstField.load('hstonly', 'acswfc')
+    assert list(f.tiles) == ['T'] and f.refcat is None
+
+
+@pytest.mark.parametrize('edit, message', [
+    (('[pg.acswfc]', '[pg.acsxxx]'), 'has no [pg.acswfc] table'),
+    (('files = ["jczg*"]', 'files = ["iczg*"]'), "starts with 'j'"),
+    (('files = ["jczg*"]', 'files = ["j*"]'), 'program code'),
+    (('files = ["jczg*"]', 'files = []'), 'files is empty'),
+    (('files = ["jczg*"]', 'files = ["jczg*"]\ntiles = ["A1"]'), 'unknown key'),
+])
+def test_a_wrong_table_stops_with_the_reason(root, edit, message):
+    path = root / 'config' / 'fields.toml'
+    path.write_text(FIELDS.replace(*edit))
+    with pytest.raises(ValueError, match=message.replace('[', r'\[')):
+        HstField.load('pg', 'acswfc')
+
+
+def test_raw_files_are_found_in_every_proposal_directory(root):
+    f = HstField.load('pg', 'wfc3ir')
+    f.setup_workspace()
+    made = {}
+    for pid, name in (('14096', 'iczgo2dlq'), ('16729', 'iepl71abq'),
+                      ('16729', 'iepl72i1q'),          # skipped
+                      ('15000', 'idxx01abq')):         # no glob selects it
+        made[name] = _stamped(str(root / 'raw' / 'wfc3ir' / pid / 'f160w'
+                                  / f'{name}_raw.fits'))
+    _stamped(str(root / 'raw' / 'wfc3ir' / '14096' / 'f105w' / 'iczgo3aaq_raw.fits'))
+    assert f.get_raw_files('f160w') == sorted([made['iczgo2dlq'], made['iepl71abq']])
+    assert f.get_raw_files('f160w', skip=['iczgo2*']) == [made['iepl71abq']]
+    assert len(f.get_raw_files('f105w')) == 1
+    assert f.canonical_path(made['iczgo2dlq'], 'f160w') == str(
+        root / 'products' / 'wfc3ir' / 'pg' / 'f160w' / 'iczgo2dlq_flt.fits')
+    assert f.filter_dir('f160w', work=True) == str(
+        root / 'products' / 'wfc3ir_work' / 'pg' / 'f160w')
+    assert f.refcat_path() == str(
+        root / 'reference' / 'nircam' / 'pg' / 'astrom_cats' / 'pg_f444w.ecsv')
+
+
+def test_only_aligned_and_cleaned_exposures_get_a_working_copy(root):
+    ir = HstField.load('pg', 'wfc3ir')
+    ir.setup_workspace()
+    d = ir.filter_dir('f160w')
+    good = _stamped(f'{d}/iczgo2aaq_flt.fits', CFP_ALGN='fit=rigid rc=abc')
+    _stamped(f'{d}/iczgo2abq_flt.fits', CFP_ALGN=cfp.NOT_ALIGNED)
+    _stamped(f'{d}/iczgo2acq_flt.fits', CFP_SKY='1.0')
+    paths, held = ir.materialize_work('f160w')
+    assert [os.path.basename(p) for p in paths] == ['iczgo2aaq_flt.fits']
+    assert sorted(reason for _, reason in held) == [
+        'alignment failed (NOT_ALIGNED)', 'not aligned yet']
+    # everything that has pixels can be forced in
+    paths, held = ir.materialize_work('f160w', include_unaligned=True)
+    assert len(paths) == 3 and not held
+    # and a copy of an exposure that is no longer ready is removed again
+    paths, _ = ir.materialize_work('f160w')
+    assert os.listdir(ir.filter_dir('f160w', work=True)) == ['iczgo2aaq_flt.fits']
+
+    # a working copy is replaced only when the canonical file is newer
+    work = paths[0]
+    with fits.open(work, mode='update') as hdul:
+        hdul[0].header['CFP_OUT'] = 'field n=2'
+    ir.materialize_work('f160w')
+    assert fits.getheader(work)['CFP_OUT'] == 'field n=2'
+    later = time.time() + 5
+    os.utime(good, (later, later))
+    ir.materialize_work('f160w')
+    assert 'CFP_OUT' not in fits.getheader(work)
+
+
+def test_an_acs_exposure_without_cosmic_ray_flags_is_held_back(root):
+    acs = HstField.load('pg', 'acswfc')
+    acs.setup_workspace()
+    d = acs.filter_dir('f814w')
+    _stamped(f'{d}/jczgo1aaq_flc.fits', CFP_CR='adz n=2', CFP_ALGN='fit=linear')
+    lone = _stamped(f'{d}/jczgo5aaq_flc.fits', CFP_ALGN='fit=rigid')
+    paths, held = acs.materialize_work('f814w')
+    assert [os.path.basename(p) for p in paths] == ['jczgo1aaq_flc.fits']
+    assert held == [(lone, 'no cosmic-ray flags (single exposure of its visit)')]

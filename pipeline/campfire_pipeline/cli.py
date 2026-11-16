@@ -59,6 +59,13 @@ from campfire_pipeline.nircam.cli import main as nircam_cli
 main.add_command(nirspec_cli, 'nirspec')
 main.add_command(nircam_cli, 'nircam')
 
+# Each HST detector is an instrument of its own, with the NIRCam command set.
+# Building the groups imports no HST software; that happens when a command runs.
+from campfire_pipeline.hst.cli import make_group as _hst_group
+
+main.add_command(_hst_group('acswfc'), 'acswfc')
+main.add_command(_hst_group('wfc3ir'), 'wfc3ir')
+
 
 # ---------------------------------------------------------------------------
 # config command
@@ -338,7 +345,7 @@ def _download_hst(program, telescope, instrument, field_name, tiles, from_path,
             if field_name:
                 from campfire_pipeline.nircam.field import Field
                 regions = mast_query.field_polygons(
-                    Field.load(field_name),
+                    Field.load_grid(field_name),
                     [t.strip() for t in tiles.split(',')] if tiles else None)
             elif targets:
                 arcmin = 3.0 if radius is None else (
@@ -434,9 +441,10 @@ def query(telescope, instruments, programs, field_name, tiles, target, radius,
       cfpipe query --instrument acswfc --target "289.27 -33.52" --radius 4
       cfpipe query --instrument nircam --program 6882 --format exposures
 
-    The summary ends with the file globs that select each program, to paste
-    into fields.toml: which exposures belong to a field is decided there, not
-    by this query.
+    The summary ends with the file globs that select the visits found, to
+    paste into fields.toml: which exposures belong to a field is decided
+    there, not by this query. A glob names a visit, not a program, because a
+    program often covers several fields.
     """
     from campfire_pipeline.common import mast_query
     from campfire_pipeline.common.query import MastQueryError
@@ -454,7 +462,7 @@ def query(telescope, instruments, programs, field_name, tiles, target, radius,
     if field_name:
         from campfire_pipeline.nircam.field import Field
         try:
-            field_obj = Field.load(field_name)
+            field_obj = Field.load_grid(field_name)
             regions = mast_query.field_polygons(
                 field_obj, [t.strip() for t in tiles.split(',')] if tiles else None)
         except (FileNotFoundError, ValueError) as e:

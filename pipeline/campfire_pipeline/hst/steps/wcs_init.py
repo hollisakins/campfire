@@ -69,6 +69,18 @@ def wcs_init_step(exposure_file, reference_env=None, overwrite=False):
             raise RuntimeError(
                 f"{os.path.basename(exposure_file)}: updatewcs ran but left no "
                 f"distortion polynomial in [SCI,1] (WCSNAME={wcsname!r})")
+        # updatewcs has replaced the WCS, and with it any alignment a previous
+        # run wrote. Remove that run's traces (the stamp and the pre-alignment
+        # backup keywords), so the exposure reads as not aligned and the next
+        # solve starts from the WCS just written.
+        from campfire_pipeline.hst.steps.align import _BACKUP
+        for hdu in hdul:
+            if hdu.name == 'SCI':
+                for backup in _BACKUP.values():
+                    if backup in hdu.header:
+                        del hdu.header[backup]
+        if 'CFP_ALGN' in hdul[0].header:
+            del hdul[0].header['CFP_ALGN']
         for key, val in cfp.format(keyset=cfp.HST, CFP_WCS=wcsname or None).items():
             hdul[0].header[key] = val
     log(f"wcs_init: {rootname} -> {wcsname}")

@@ -422,6 +422,58 @@
       "tree_class": "external-MAST"
     },
     {
+      "product_type": "acswfc_exposure",
+      "scope": {
+        "field": "pg004",
+        "filt": "f814w"
+      },
+      "filename": "jczgo1aaq_flc.fits",
+      "relpath": "products/acswfc/pg004/f814w/jczgo1aaq_flc.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/acswfc/pg004/f814w/jczgo1aaq_flc.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "acswfc_mosaic",
+      "scope": {
+        "field": "pg004",
+        "filt": "f814w"
+      },
+      "filename": "mosaic_acswfc_f814w_pg004_30mas_A1_sci.fits",
+      "relpath": "products/acswfc/pg004/f814w/mosaic_acswfc_f814w_pg004_30mas_A1_sci.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/acswfc/pg004/f814w/mosaic_acswfc_f814w_pg004_30mas_A1_sci.fits.gz",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "wfc3ir_exposure",
+      "scope": {
+        "field": "pg004",
+        "filt": "f160w"
+      },
+      "filename": "iczgo2dlq_flt.fits",
+      "relpath": "products/wfc3ir/pg004/f160w/iczgo2dlq_flt.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/wfc3ir/pg004/f160w/iczgo2dlq_flt.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "wfc3ir_mosaic",
+      "scope": {
+        "field": "pg004",
+        "filt": "f160w"
+      },
+      "filename": "mosaic_wfc3ir_f160w_pg004_30mas_A1_manifest.json",
+      "relpath": "products/wfc3ir/pg004/f160w/mosaic_wfc3ir_f160w_pg004_30mas_A1_manifest.json",
+      "key_legacy": null,
+      "key_canonical": "data/products/wfc3ir/pg004/f160w/mosaic_wfc3ir_f160w_pg004_30mas_A1_manifest.json",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
       "product_type": "summary",
       "scope": {
         "obs": "ember_egs_p1"

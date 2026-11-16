@@ -1215,6 +1215,16 @@
     # entry, like the default.
     # crds_context = "hst_1372.pmap"
 
+[acswfc.calibrate]
+    # calacs from RAW under the pinned context. Its CTE correction is the
+    # slowest step of the whole reduction and runs on this many threads per
+    # exposure; `-p N` calibrates N exposures at once, so N x nthreads cores
+    # are busy.
+    nthreads = 4
+    # Keep what calacs writes besides the canonical FLC (the uncorrected FLT,
+    # the intermediate files) next to it.
+    keep_intermediates = false
+
 [acswfc.sky]
     # Source mask for the sky and amplifier-offset measurement: threshold in
     # sigma, and the number of pixels the mask is grown by.
@@ -1226,6 +1236,15 @@
     # thresholds and gradient scales. The survey-standard ACS/WFC values.
     driz_cr_snr = "3.5 3.0"
     driz_cr_scale = "1.2 0.7"
+    # The comparison image: a median that takes the minimum where it stands
+    # above it by combine_nsigma (two passes), flags grown by combine_grow
+    # pixels in the median and driz_cr_grow in the exposure, and
+    # driz_cr_ctegrow pixels along the readout direction (0: off).
+    combine_type = "minmed"
+    combine_nsigma = "4 3"
+    combine_grow = 1
+    driz_cr_grow = 1
+    driz_cr_ctegrow = 0
 
 [acswfc.align]
     # Which exposures are fitted to the reference catalog together.
@@ -1293,6 +1312,65 @@
     protect_stars = true
     protect_radius = 0.25
     protect_min_motion = 0.15
+    # The pass compares all exposures of a filter that overlap, on one grid
+    # at the native pixel scale covering all of them. A group whose grid
+    # would exceed this many megapixels stops with a message instead of
+    # exhausting memory (about 14 bytes per pixel are held).
+    max_grid_megapixels = 2000
+
+[acswfc.resample]
+    # Same tiles and the same scale label as [nircam.resample]: pixel (i, j)
+    # of an ACS mosaic and of the NIRCam mosaic of a tile are the same sky.
+    pixel_scale = "30mas"
+    mosaic_name = "mosaic_acswfc_[filter]_[field_name]_[pixel_scale]_[tile]"
+    # 50 mas native pixels onto 30 mas: the usual survey choice. Not tuned
+    # here yet (docs/hst/design.md, section 4).
+    pixfrac = 0.8
+    kernel = "square"
+    # "ivm": weight by the inverse of the background variance, as NIRCam.
+    weight_type = "ivm"
+    # The context cube (see [nircam.resample] for what it costs).
+    write_context = true
+    compress_context = true
+    # 2D background subtraction of the mosaic, the NIRCam method with the
+    # NIRCam values (the comments in [nircam.resample] explain each key; the
+    # sizes are in output pixels, which are the same 30 mas).
+    background_subtract = true
+    keep_pre_bkgsub = true
+    ring_radius_in = 80
+    ring_width = 4
+    ring_downsample = 4
+    ring_clip_max_sigma = 5.0
+    ring_clip_box_size = 100
+    ring_clip_filter_size = 3
+    tier_kernel_size = [25, 15, 5, 2]
+    tier_npixels = [15, 10, 3, 1]
+    tier_nsigma = [1.5, 1.5, 1.5, 1.5]
+    tier_dilate_size = [33, 25, 21, 19]
+    bg_box_size = 10
+    bg_filter_size = 5
+    bg_exclude_percentile = 90
+    bg_sigma = 3
+    bg_interpolator = "zoom"
+    wht_aware = true
+    bg_reject = false
+    bg_reject_sigma_hi = 4.0
+    bg_reject_sigma_lo = 3.0
+    bg_reject_percentile = 60.0
+    bg_reject_dilate = 40.0
+    bg_guard = true
+    guard_ceiling_boxes = [32, 64, 128]
+    guard_ceiling_k = 2.0
+    guard_ceiling_sigma_upper = 1.0
+    guard_trough_sigmas = [5.0, 15.0]
+    guard_trough_t = 2.0
+    guard_trough_npix = 8.0
+    guard_trough_max_iter = 12
+    split_extensions = true
+    plot = true
+    plot_downsample = 4
+    thumbnail_max_dim = 500
+    quicklook_max_dim = 4096
 
 # === HST WFC3/IR ===
 #
@@ -1305,6 +1383,11 @@
     # [environment].HST_CRDS_CONTEXT).
     # crds_context = "hst_1372.pmap"
 
+[wfc3ir.calibrate]
+    # calwf3 from RAW under the pinned context (single-threaded, so there is
+    # no nthreads here). Keep the per-read IMA file next to the canonical FLT.
+    keep_intermediates = false
+
 [wfc3ir.sky]
     mask_nsigma = 3.0
     mask_grow = 3
@@ -1313,6 +1396,11 @@
     # Looser than ACS/WFC: the up-the-ramp fit has already removed most hits.
     driz_cr_snr = "8.0 5.0"
     driz_cr_scale = "2.5 0.7"
+    combine_type = "minmed"
+    combine_nsigma = "4 3"
+    combine_grow = 1
+    driz_cr_grow = 1
+    driz_cr_ctegrow = 0
 
 [wfc3ir.align]
     # Same recipe and meaning as [acswfc.align]; written out so that a change
@@ -1350,3 +1438,52 @@
     protect_stars = true
     protect_radius = 0.4
     protect_min_motion = 0.15
+    max_grid_megapixels = 2000
+
+[wfc3ir.resample]
+    # Same keys and meaning as [acswfc.resample].
+    pixel_scale = "30mas"
+    mosaic_name = "mosaic_wfc3ir_[filter]_[field_name]_[pixel_scale]_[tile]"
+    # 128 mas native pixels onto 30 mas; 1.0 because two-exposure coverage
+    # is common and a smaller value leaves holes.
+    pixfrac = 1.0
+    kernel = "square"
+    weight_type = "ivm"
+    write_context = true
+    compress_context = true
+    background_subtract = true
+    keep_pre_bkgsub = true
+    ring_radius_in = 80
+    ring_width = 4
+    ring_downsample = 4
+    ring_clip_max_sigma = 5.0
+    ring_clip_box_size = 100
+    ring_clip_filter_size = 3
+    tier_kernel_size = [25, 15, 5, 2]
+    tier_npixels = [15, 10, 3, 1]
+    tier_nsigma = [1.5, 1.5, 1.5, 1.5]
+    tier_dilate_size = [33, 25, 21, 19]
+    bg_box_size = 10
+    bg_filter_size = 5
+    bg_exclude_percentile = 90
+    bg_sigma = 3
+    bg_interpolator = "zoom"
+    wht_aware = true
+    bg_reject = false
+    bg_reject_sigma_hi = 4.0
+    bg_reject_sigma_lo = 3.0
+    bg_reject_percentile = 60.0
+    bg_reject_dilate = 40.0
+    bg_guard = true
+    guard_ceiling_boxes = [32, 64, 128]
+    guard_ceiling_k = 2.0
+    guard_ceiling_sigma_upper = 1.0
+    guard_trough_sigmas = [5.0, 15.0]
+    guard_trough_t = 2.0
+    guard_trough_npix = 8.0
+    guard_trough_max_iter = 12
+    split_extensions = true
+    plot = true
+    plot_downsample = 4
+    thumbnail_max_dim = 500
+    quicklook_max_dim = 4096

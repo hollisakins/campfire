@@ -254,6 +254,34 @@ _register(ProductSpec(
     suffix="_layout.png", legacy_prefix=None,
 ))
 
+# --- HST imaging products/ (ACS/WFC, WFC3/IR) -----------------------------------
+#
+# Each HST detector is an instrument with the NIRCam shape:
+# products/<instrument>/<field>/<filter>/. Two kinds each, both reserved (a
+# local home and a defined key; nothing uploads them yet, and the database and
+# the portal do not know them):
+#   <instrument>_exposure  the canonical calibrated exposure, in its native HST
+#                          name ('<rootname>_flc.fits' for ACS/WFC,
+#                          '<rootname>_flt.fits' for WFC3/IR)
+#   <instrument>_mosaic    the drizzled tile and everything named after it
+#                          ('mosaic_<instrument>_...': i2d, split files,
+#                          manifest, thumbnails), gzipped in the cloud like the
+#                          NIRCam mosaic
+
+for _inst in (Instrument.ACSWFC, Instrument.WFC3IR):
+    _hst_dir = (lambda s, _i=_inst.value: f"{_i}/{s.field}/{s.filt}")
+    _register(ProductSpec(
+        name=f"{_inst.value}_exposure", instrument=_inst, tree="products",
+        bucket="data", lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
+        subdir=_hst_dir, suffix=".fits", legacy_prefix=None,
+    ))
+    _register(ProductSpec(
+        name=f"{_inst.value}_mosaic", instrument=_inst, tree="products",
+        bucket="data", lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
+        subdir=_hst_dir, suffix=None, legacy_prefix=None,
+        compressed_suffixes=(".fits",),
+    ))
+
 # --- Map tiles (separate 'tiles' bucket, scheme-invariant, stays on R2) ---------
 
 _register(ProductSpec(

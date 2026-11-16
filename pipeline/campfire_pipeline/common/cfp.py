@@ -136,8 +136,10 @@ HST = Keyset(
         'CFP_QUAL',  # guiding / smear quality gate
         'CFP_HMSK',  # detector masks: satellite trails, persistence, bad pixels
         'CFP_SKY',   # per-chip sky, ACS amplifier offsets, variance scale
-        'CFP_ALGN',  # astrometric align
+        # crreject runs before align (align detects on the cleaned pixels), so
+        # a reset from crreject clears the alignment as well.
         'CFP_CR',    # cosmic-ray flags (per visit)
+        'CFP_ALGN',  # astrometric align
         'CFP_PREV',  # preview PNG
         'CFP_MASK',  # user region masks
         'CFP_OUT',   # second-pass outlier detection (combine working copies)

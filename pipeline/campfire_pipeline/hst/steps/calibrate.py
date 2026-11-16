@@ -69,6 +69,35 @@ def _run(cmd, *, cwd, env, what):
     return proc
 
 
+def prefetch_references(raw_files, *, crds_context, crds_path,
+                        crds_server=HST_CRDS_SERVER, batch=100):
+    """Download every reference file the RAW files need, in one process.
+
+    ``calibrate_step`` fetches what it is missing, but several of them running
+    at once would download the same file into the same cache at the same
+    time. This runs ``crds bestrefs`` over all the files first, without
+    touching them (no ``--update-bestrefs``), so the parallel calibrations
+    find the cache complete.
+    """
+    from campfire_pipeline.config import check_crds_context, check_crds_server
+    check_crds_context(crds_context, 'hst', 'HST calibrate: crds_context')
+    check_crds_server(crds_server, 'hst', 'HST calibrate: crds_server')
+    files = [str(f) for f in raw_files]
+    if not files:
+        return
+    os.makedirs(str(crds_path), exist_ok=True)
+    env = dict(os.environ, CRDS_SERVER_URL=crds_server,
+               CRDS_PATH=str(crds_path), CRDS_CONTEXT=crds_context)
+    env.pop('CRDS_OBSERVATORY', None)
+    log(f'calibrate: checking reference files for {len(files)} RAW files '
+        f'under {crds_context} (cache: {crds_path})')
+    for i in range(0, len(files), batch):
+        _run([sys.executable, '-m', 'crds.bestrefs', '--files',
+              *files[i:i + batch], '--new-context', crds_context,
+              '--sync-references=1'],
+             cwd=str(crds_path), env=env, what='crds bestrefs (reference prefetch)')
+
+
 def calibrate_step(raw_file, out_dir, *, crds_context, crds_path,
                    crds_server=HST_CRDS_SERVER, nthreads=None, overwrite=False,
                    keep_intermediates=False):

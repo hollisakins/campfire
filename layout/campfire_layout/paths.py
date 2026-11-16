@@ -106,6 +106,22 @@ def nircam_work_dir(scope: Scope, *, root: Optional[Path] = None) -> Path:
     return roots(root).campfire_root / "products" / "nircam_work" / scope.field / scope.filt
 
 
+def imaging_work_dir(instrument, scope: Scope, *, root: Optional[Path] = None) -> Path:
+    """Combine working-copy dir of an imaging instrument:
+    ``products/<instrument>_work/<field>/<filt>/``.
+
+    The NIRCam one is :func:`nircam_work_dir`; this is the same tree for any
+    imaging instrument (``nircam``, ``acswfc``, ``wfc3ir``), with the same
+    standing: local only, regenerable, no storage key, never parsed back.
+    """
+    inst = _instrument_value(instrument)
+    if inst not in (Instrument.NIRCAM.value, Instrument.ACSWFC.value,
+                    Instrument.WFC3IR.value):
+        raise LayoutError(f"no combine working tree for instrument '{inst}'")
+    scope.require("field", "filt")
+    return roots(root).campfire_root / "products" / f"{inst}_work" / scope.field / scope.filt
+
+
 # ---------------------------------------------------------------------------
 # Tree-level helpers (span products, used by Observation/Field setup)
 # ---------------------------------------------------------------------------
@@ -176,6 +192,9 @@ def raw_path(instrument, scope: Scope, filename: str, *, root: Optional[Path] = 
 # layout contract and relocating them would change behavior for no benefit.)
 _CACHE_KINDS = {
     "crds": "crds",
+    # HST reference files and mappings, apart from the JWST cache: the JWST one
+    # is often a shared, read-only directory named by $CRDS_PATH.
+    "crds_hst": "crds_hst",
     "templates": "templates",
     "wisps": "wisps",
     "spike_models": "spike_models",

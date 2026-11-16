@@ -128,8 +128,29 @@ def file_stat(filepath):
     return st.st_size, st.st_mtime_ns
 
 
+def compute_whole_file_hash(filepath):
+    """SHA-256 of a file's bytes, prefixed with ``sha256:``.
+
+    The input identity of an HST exposure. :func:`compute_file_hash` reads the
+    first ``SCI`` and ``DQ`` extensions only, which misses the second chip of
+    an ACS/WFC file, and neither it nor :func:`compute_wcs_hash` sees what else
+    decides an HST exposure's contribution to a mosaic: the outlier flags in
+    ``CFOUT``, the sky and variance-scale keywords of each chip, the distortion
+    lookup tables. Every one of those is in the file, so the file is hashed.
+    """
+    h = hashlib.sha256()
+    with open(filepath, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 22), b''):
+            h.update(chunk)
+    return f'sha256:{h.hexdigest()}'
+
+
 def file_unchanged(filepath, old_entry):
     """True if *filepath* still matches the recorded *old_entry*.
+
+    An entry written with ``hash_kind = 'file'`` (HST exposures) is compared
+    by :func:`compute_whole_file_hash` and has no separate astrometric digest.
+
 
     Fast path: when the manifest carries ``size`` and ``mtime_ns`` AND they
     match the current stat, the file hasn't been rewritten — skip the
@@ -149,6 +170,8 @@ def file_unchanged(filepath, old_entry):
         cur_size, cur_mtime = file_stat(filepath)
         if cur_size == size and cur_mtime == mtime_ns:
             return True
+    if old_entry.get('hash_kind') == 'file':
+        return compute_whole_file_hash(filepath) == old_entry.get('file_hash')
     if compute_file_hash(filepath) != old_entry.get('file_hash'):
         return False
     old_wcs = old_entry.get('wcs_hash')
@@ -321,9 +344,32 @@ def _resample_config_hash(resample_cfg, pixel_scale):
 # Manifest creation / I/O
 # ---------------------------------------------------------------------------
 
+def whole_file_entry(filepath, extra=None):
+    """Manifest input record for a file identified by all of its bytes
+    (:func:`compute_whole_file_hash`); see :func:`file_unchanged`."""
+    size, mtime_ns = file_stat(filepath)
+    entry = {
+        'filename': os.path.basename(filepath),
+        'file_hash': compute_whole_file_hash(filepath),
+        'hash_kind': 'file',
+        'size': size,
+        'mtime_ns': mtime_ns,
+    }
+    if extra:
+        entry.update(extra)
+    return entry
+
+
 def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
-                    input_files, stage_config, epoch=None):
+                    input_files, stage_config, epoch=None, inputs=None,
+                    instrument=None):
     """Build a manifest dict for a completed mosaic tile.
+
+    ``inputs`` (optional) are ready-made input records, one per file, for an
+    instrument whose files are not JWST exposures (the HST step passes
+    :func:`whole_file_entry` records); ``instrument`` is then recorded too.
+    Without them the records are built here for JWST files, as before.
+
 
     Parameters
     ----------
@@ -352,8 +398,9 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
     """
     resample_cfg = stage_config.get('resample', {})
 
-    inputs = []
-    for f in sorted(input_files):
+    given = inputs
+    inputs = list(given) if given is not None else []
+    for f in ([] if given is not None else sorted(input_files)):
         parts = os.path.basename(f).split('_')
         extra = {
             'visit': parts[0] if len(parts) > 0 else '',
@@ -371,7 +418,7 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
     # Hash the relevant processing config so we can detect config changes too
     config_hash = _resample_config_hash(resample_cfg, pixel_scale)
 
-    return {
+    manifest = {
         'mosaic_name': mosaic_name,
         'field': field.name,
         'filter': filtname,
@@ -389,6 +436,9 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
             'kernel': resample_cfg.get('kernel', 'square'),
         },
     }
+    if instrument:
+        manifest['instrument'] = instrument
+    return manifest
 
 
 def write_manifest(manifest, manifest_dir_or_path):

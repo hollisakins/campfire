@@ -21,6 +21,7 @@ import types
 import numpy as np
 from astropy.io import fits
 
+import campfire_pipeline.imaging.mosaic_finish as finish_mod
 import campfire_pipeline.nircam.manifest as manifest_mod
 import campfire_pipeline.nircam.steps.resample as resample_mod
 from campfire_pipeline.nircam.manifest import (
@@ -91,17 +92,20 @@ def _run(tmp_path, monkeypatch, step_config=None):
     monkeypatch.setattr(resample_mod, 'select_overlapping_files',
                         lambda files, poly: ['exp1.fits'])
     monkeypatch.setattr(resample_mod, 'log', captured.append)
+    # The part of the step under test (what happens to a tile after the
+    # drizzle) lives in imaging/mosaic_finish.py, shared with the HST step.
+    monkeypatch.setattr(finish_mod, 'log', captured.append)
     monkeypatch.setattr(manifest_mod, 'check_inputs_changed',
                         lambda *a, **k: (False, []))
     monkeypatch.setattr(manifest_mod, 'check_config_changed',
                         lambda *a, **k: False)
-    # resample_step imports SubtractBackground lazily from
-    # campfire_pipeline.nircam.bkgsub; pre-seeding sys.modules intercepts
-    # that import without loading the real module (and its jwst/photutils
+    # finish_mosaic imports SubtractBackground lazily from
+    # campfire_pipeline.imaging.bkgsub; pre-seeding sys.modules intercepts
+    # that import without loading the real module (and its photutils
     # stack), which the control flow under test never needs.
-    fake_bkgsub_mod = types.ModuleType('campfire_pipeline.nircam.bkgsub')
+    fake_bkgsub_mod = types.ModuleType('campfire_pipeline.imaging.bkgsub')
     fake_bkgsub_mod.SubtractBackground = FakeSubtractBackground
-    monkeypatch.setitem(sys.modules, 'campfire_pipeline.nircam.bkgsub',
+    monkeypatch.setitem(sys.modules, 'campfire_pipeline.imaging.bkgsub',
                         fake_bkgsub_mod)
 
     field = types.SimpleNamespace(

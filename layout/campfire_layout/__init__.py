@@ -41,6 +41,7 @@ from .paths import (
     dr_dir,
     dr_relpath,
     glob_pattern,
+    imaging_work_dir,
     is_dr_tag,
     local_path,
     local_relpath,
@@ -67,7 +68,7 @@ __all__ = [
     "PRODUCTS", "ProductSpec", "get", "is_archivable",
     # paths
     "Roots", "roots", "campfire_root", "dir_for", "local_path", "local_relpath",
-    "nircam_work_dir", "dr_dir", "dr_relpath", "is_dr_tag",
+    "nircam_work_dir", "imaging_work_dir", "dr_dir", "dr_relpath", "is_dr_tag",
     "reference_dir", "shared_reference_dir", "raw_dir", "raw_path", "cache_path",
     "glob_pattern",
     # keys

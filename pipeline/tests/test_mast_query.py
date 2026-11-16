@@ -110,7 +110,7 @@ def test_exposures_are_selected_by_footprint_filter_and_kind():
     e = got[0]
     assert (e.instrument, e.telescope, e.program) == ('acswfc', 'hst', '14096')
     assert e.filter == 'f814w' and e.exptime == 500.0 and e.date == '2016-08-15'
-    assert e.glob == 'jczg*' and e.exposure == 'jczgo1aaq'
+    assert e.glob == 'jczgo1*' and e.exposure == 'jczgo1aaq'    # the visit
 
     only = mq.query_exposures([mq.INSTRUMENTS['acswfc']], regions=region,
                               filters=['F435W'], tap=tap, log=messages.append)
@@ -131,7 +131,7 @@ def test_jwst_detector_files_count_as_one_exposure():
                           289.27, -33.52), timmin=''))             # not taken
     got = mq.query_exposures([mq.INSTRUMENTS['nircam']], programs=[6882],
                              tap=_tap(rows), log=lambda m: None)
-    assert len(got) == 7 and got[0].glob == 'jw06882*'
+    assert len(got) == 7 and got[0].glob == 'jw06882060*'
     assert got[0].exposure == 'jw06882060001_02101_00001'
     (row,) = mq.summarize(got)
     assert row['n_files'] == 7 and row['n_exposures'] == 3
@@ -146,13 +146,17 @@ def test_the_summary_ends_with_the_globs_to_paste():
                              tap=_tap(_HST_ROWS), log=lambda m: None)
     text = mq.format_summary(got)
     assert 'acswfc: 5 exposures in 2 programs' in text
-    assert "'jczg*',   # 14096  Coe, Dan  f435w f814w  3 exposures" in text
-    assert "'jd00*',   # 15000" in text
+    # one visit of 14096 is named, not the program: its other visits are
+    # other clusters
+    assert "'jczgo1*',   # 14096  Coe, Dan  f435w f814w  3 exposures" in text
+    assert "'jd00{01,03}*',   # 15000" in text
+    assert mq.brace_globs({'jw06882060*', 'jw06882061*', 'jw01727001*'}) == [
+        'jw01727001*', 'jw06882{060,061}*']
     assert mq.format_summary([]) == 'no exposures found'
     lines = mq.format_exposures(got).splitlines()
     assert len(lines) == 5 and lines[0].split()[:3] == ['acswfc', '14096', 'jczgo1aaq']
     listed = json.loads(mq.to_json(got))
-    assert listed[0]['glob'] == 'jczg*' and len(listed[0]['footprint'][0]) == 4
+    assert listed[0]['glob'] == 'jczgo1*' and len(listed[0]['footprint'][0]) == 4
 
 
 def test_the_command(monkeypatch):
@@ -166,7 +170,7 @@ def test_the_command(monkeypatch):
     res = runner.invoke(cli.main, ['query', '--instrument', 'acswfc', '--target',
                                    '289.27 -33.52', '--radius', '3'])
     assert res.exit_code == 0, res.output
-    assert "'jczg*'" in res.output and 'f814w' in res.output
+    assert "'jczgo1*'" in res.output and 'f814w' in res.output
     assert 'trgposra' in tap.seen[-1]
 
     res = runner.invoke(cli.main, ['query', '--telescope', 'hst', '--program',
