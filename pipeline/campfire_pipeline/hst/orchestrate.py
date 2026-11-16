@@ -292,6 +292,34 @@ def check_align_config(field):
     return path
 
 
+def _warn_no_motions(refcat, refcat_path):
+    """Say so when a reference catalog carries no proper motion at all.
+
+    HST exposures are often a decade or two from the imaging a catalog was
+    made from. A catalog built by ``cfpipe nircam refcat extract`` gives Gaia
+    stars their proper motions and drops compact sources that have none; one
+    without any proper motion has skipped that, and whatever stars it holds
+    are at the catalog's epoch only. Measured on COSMOS ACS F814W of 2004
+    against a plain cut of a 2023 catalog: the stars sat 70 mas from their
+    catalog positions and pulled the alignment 6 mas off the galaxies
+    (docs/hst/design.md, section 8b).
+    """
+    import numpy as np
+
+    names = set(refcat.colnames)
+    has = False
+    if {'pmra', 'pmdec'} <= names:
+        pm = np.asarray(refcat['pmra'], dtype=float)
+        has = bool(np.isfinite(pm).any())
+    if not has:
+        log(f'align: WARNING: {os.path.basename(refcat_path)} has no proper '
+            f'motions. Stars in it are at the positions of the catalog\'s own '
+            f'epoch and pull the fit of exposures from another epoch (6 mas '
+            f'measured over 19 years). Build the catalog with `cfpipe nircam '
+            f'refcat extract` (Gaia stars get their motion, compact sources '
+            f'without one are dropped), or remove point sources from it.')
+
+
 def _algn_pending(files, refcat_hash, overwrite):
     """Whether a visit still needs a solve: any exposure without a stamp, left
     ``NOT_ALIGNED`` (the settings may have been retuned), or solved against a
@@ -329,6 +357,7 @@ def _run_align(field, config, filt, n_processes, overwrite):
     if not tasks:
         return
     refcat = read_refcat(refcat_path)
+    _warn_no_motions(refcat, refcat_path)
     results = dispatch(_align_worker, tasks, n_processes=n_processes,
                        use_starmap=True, refcat=refcat,
                        cfg=step_config('align', field, config),

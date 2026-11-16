@@ -159,7 +159,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   (`hstcal`, `stwcs`, `drizzlepac`) is needed only when one of these commands
   runs. Not built: cosmic rays on a lone ACS exposure (such an exposure is held
   back from mosaics), the quality gate, trail and persistence masks, previews,
-  and upload of HST products.
+  and upload of HST products. Run on real data: WFC3/IR on pg004 (31 exposures,
+  four filters) and ACS/WFC F814W on COSMOS (19 exposures), the latter compared
+  with an existing reference mosaic on the same pixel grid: fluxes agree to 0.3
+  percent, depth is equal, positions agree to 4 mas (docs/hst/design.md,
+  section 8b). The HST `align` step warns when the field's reference catalog
+  carries no proper motions: in that comparison the stars of such a catalog
+  pulled the alignment by 6 mas over a 19 year baseline.
 - **The part of the NIRCam resample step that follows the drizzle moved to
   `imaging/mosaic_finish.py`**, unchanged, so the HST resample step runs the same
   background subtraction, split files and plots. Mosaic manifests can record an

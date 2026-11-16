@@ -144,6 +144,22 @@ def test_align_needs_the_fields_reference_catalog(field, config):
         orchestrate.check_align_config(field)
 
 
+def test_a_catalog_without_proper_motions_is_called_out(monkeypatch):
+    from astropy.table import Table
+
+    said = []
+    monkeypatch.setattr(orchestrate, 'log', said.append)
+    plain = Table({'RA': [1.0, 2.0], 'DEC': [1.0, 2.0]})
+    orchestrate._warn_no_motions(plain, '/x/plain.ecsv')
+    assert len(said) == 1 and 'plain.ecsv has no proper motions' in said[0]
+    said.clear()
+    # one star with a motion is enough: the catalog went through the rule
+    moving = Table({'RA': [1.0, 2.0], 'DEC': [1.0, 2.0],
+                    'pmra': [np.nan, 3.0], 'pmdec': [np.nan, -1.0]})
+    orchestrate._warn_no_motions(moving, '/x/moving.ecsv')
+    assert said == []
+
+
 # -- combine --------------------------------------------------------------------
 
 def test_exposures_are_grouped_by_overlap(field):
