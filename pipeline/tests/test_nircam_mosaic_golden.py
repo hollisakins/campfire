@@ -153,7 +153,7 @@ def _run(workdir):
         _build_exposure(path, i, rng, sky_sources)
         files.append(path)
 
-    outlier_detect_for_visit(files, files, in_memory=True, plot=False,
+    outlier_detect_for_visit(files, files, plot=False,
                              tempdir=str(workdir))
 
     i2d = os.path.join(workdir, 'mosaic_nircam_f200w_golden_30mas_T_i2d.fits')

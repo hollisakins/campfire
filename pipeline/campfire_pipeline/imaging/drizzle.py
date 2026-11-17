@@ -901,8 +901,7 @@ def drizzle_tile_singles(
     full-tile buffer. The pixmap is shifted by ``(slx.start, sly.start)``
     so cdriz writes into bbox-local coordinates. ``prep['sly']`` and
     ``prep['slx']`` carry the slice into the full tile so the caller can
-    paste each raster into a tile-shape scratch buffer when feeding
-    ``MedianComputer`` (which requires full-shape input).
+    place each raster in the stack it builds the median from.
 
     Avoiding per-input full-tile allocation is the point: with N inputs at
     COSMOS-Web tile scale, the old full-tile path zero-init'd ~70 GB of
@@ -910,16 +909,13 @@ def drizzle_tile_singles(
     ratio of input-footprint area to tile area (~5×).
 
     Only SCI is drizzled — matches ``jwst.outlier_detection``'s
-    ``ResampleImage(enable_var=False, compute_err=None)`` setup.
-    ``flag_resampled_model_crs`` falls back to the input model's own ERR
-    for the SNR comparison when ``median_err`` is not supplied, which is
-    the upstream default and what we want here.
+    ``ResampleImage(enable_var=False, compute_err=None)`` setup. The
+    noise the comparison needs comes from the ``prep`` dict (the weight
+    and the variance of the input), not from a drizzled error map.
 
-    Used by ``outlier_detect_for_visit`` to feed a streaming median for
-    cosmic-ray rejection. The caller builds ``output_wcs`` and
-    ``out_shape`` appropriately (per-visit intermediate WCS for outlier,
-    tile WCS for resample) and reuses them across this function and the
-    downstream blot pass.
+    Used by ``imaging/outlier.py::detect_outliers`` to build the median
+    for outlier rejection. The caller builds ``output_wcs`` and
+    ``out_shape`` (the visit's grid) and reuses them for the blot.
 
     Yields
     ------

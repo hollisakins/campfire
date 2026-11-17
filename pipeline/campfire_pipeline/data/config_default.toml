@@ -1009,27 +1009,41 @@
     # implementation = "jwst" routes outlier detection through
     # `jwst.pipeline.calwebb_image3.Image3Pipeline` per visit (with
     # intra-program cross-visit overlap padding). "campfire" runs the
-    # same per-visit grouping and intra-program scoping but routes
-    # the drizzle/median/blot through campfire's bbox-sliced drizzle
-    # primitive + `MedianComputer`, with a per-visit intermediate WCS
-    # built via `wcs_from_sregions` (input native pscale, ref-input
-    # rotation — same convention jwst uses internally). Same
-    # observable contract: per-visit `outlier_<visit>_manifest.json`,
-    # per-exposure CFP_OUT stamping. Issue #138 Phase 2.
+    # same per-visit grouping and intra-program scoping on the
+    # instrument-neutral outlier code (imaging/outlier.py), the code the
+    # HST instruments run: each exposure drizzled alone onto a north-up
+    # grid at the native scale, the median blotted back, the two-pass
+    # test. Same observable contract: per-visit
+    # `outlier_<visit>_manifest.json`, per-exposure CFP_OUT stamping.
     # "campfire" is the default: it is what every production field runs.
     # "jwst" remains available as an option.
     implementation = "campfire"
     max_radius = 20
     good_bits = "~DO_NOT_USE"
+    # weight_type and backg are settings of the "jwst" implementation.
+    # "campfire" weights by the inverse background variance and compares
+    # background-subtracted exposures; it refuses other values.
     weight_type = "ivm"
     pixfrac = 1.0
     kernel = "square"
     fillval = "INDEF"
+    # A single drizzle's pixel enters the median only if its weight is at
+    # least this fraction of that exposure's median weight.
     maskpt = 0.1
     scale = "1.2 0.7"
     snr = "3.0 2.0"
     backg = 0.0
     resample_data = true
+    # "campfire" only; the same keys and meaning as [acswfc.outlier] and
+    # [wfc3ir.outlier]. Where two or three exposures overlap, the median is
+    # not robust (with two it is the mean): there the minimum is taken
+    # instead when the median stands above it by minmed_nsigma times the
+    # noise (second value: next to such a pixel). minmed_max_n = 1 turns
+    # this off. A pixel is tested only where min_contributors exposures
+    # went into the median.
+    minmed_nsigma = "4.0 3.0"
+    minmed_max_n = 3
+    min_contributors = 2
     # cross_program_overlap: when true, each visit's outlier median pool
     # includes any spatially-overlapping exposure regardless of program
     # (legacy behavior). When false (default), the pool is scoped to the
@@ -1378,6 +1392,10 @@
     minmed_nsigma = "4.0 3.0"
     minmed_max_n = 3
     min_contributors = 2
+    # A single drizzle's pixel enters the median only if its weight is at
+    # least this fraction of that exposure's median weight (the same key as
+    # [nircam.outlier]).
+    maskpt = 0.7
     # Catalog stars that moved protect_min_motion native pixels or more
     # between the first and last exposure containing them are left alone
     # within protect_radius arcsec. Measured on COSMOS F814W of 2004 and
@@ -1560,6 +1578,7 @@
     minmed_nsigma = "4.0 3.0"
     minmed_max_n = 3
     min_contributors = 2
+    maskpt = 0.7
     protect_stars = true
     protect_radius = 0.4
     protect_min_motion = 0.15

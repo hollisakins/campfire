@@ -412,6 +412,20 @@ def resolve_selections(args, state):
         sel["dev"] = (interactive()
                       and confirm("Include dev extras (pytest, black, mypy)?", False))
 
+    # HST imaging (cfpipe acswfc / cfpipe wfc3ir): the [hst] extra of the
+    # pipeline, plus hstcal (calacs.e, calwf3.e) from conda-forge.
+    if "reduction" in sel["profiles"]:
+        if args.hst is not None:
+            sel["hst"] = args.hst
+        elif "hst" in state:
+            sel["hst"] = state["hst"]
+        else:
+            sel["hst"] = (interactive() and confirm(
+                "Include the HST imaging software (drizzlepac, stwcs, acstools; "
+                "hstcal from conda-forge)?", False))
+    else:
+        sel["hst"] = False
+
     # Client plotting extras ([all] = plotly + specutils)
     if any(p in sel["profiles"] for p in PY_PROFILES):
         if args.extras:
@@ -512,6 +526,16 @@ def prepare_env(env, sel, args):
     floor, ceiling, why = required_python(sel["profiles"])
     conda_pkgs = ["numba"] if isinstance(env, CondaEnv) and (
         "reduction" in sel["profiles"]) else []
+    # hstcal holds the compiled calibration programs (calacs.e, calwf3.e). It
+    # is a conda-forge package and has no pip counterpart.
+    want_hstcal = bool(sel.get("hst"))
+    if want_hstcal and isinstance(env, CondaEnv):
+        conda_pkgs.append("hstcal")
+    elif want_hstcal:
+        Ui.warn("HST: a venv cannot install hstcal (conda-forge only). The "
+                "calibrate step needs calacs.e and calwf3.e on PATH; install "
+                "hstcal with conda and put its bin directory on PATH, or use "
+                "a conda environment.")
 
     if not env.exists():
         if isinstance(env, VenvEnv):
@@ -549,11 +573,18 @@ def prepare_env(env, sel, args):
     label = ".".join(map(str, version))
     if ok:
         Ui.note(f"Reusing {env.describe()} (python {label}).")
-        if conda_pkgs:
+        missing = []
+        if "numba" in conda_pkgs:
             probe = run([env.python(), "-c", "import numba"], capture=True, check=False)
             if probe.returncode != 0:
-                Ui.note("Adding numba from conda-forge.")
-                env.conda_install(conda_pkgs)
+                missing.append("numba")
+        if "hstcal" in conda_pkgs and not all(
+                (Path(env.python()).parent / exe).exists()
+                for exe in ("calacs.e", "calwf3.e")):
+            missing.append("hstcal")
+        if missing:
+            Ui.note(f"Adding {' and '.join(missing)} from conda-forge.")
+            env.conda_install(missing)
         return
     Ui.warn(f"{env.describe()} has python {label}, but {why}.")
     if args.recreate_env or confirm("Recreate the environment? (destroys its "
@@ -611,7 +642,7 @@ def build_py_targets(sel):
         if sel["dev"]:
             targets[-1] = "./layout[test]"
     if "reduction" in profiles:
-        targets.append("./pipeline")
+        targets.append("./pipeline[hst]" if sel.get("hst") else "./pipeline")
     if sel["fitsgl"] == "sibling":
         targets.append(str(Path("..") / "fitsgl" / "fitsgl-py") + "[deploy]")
     if "client" in profiles or "deploy" in profiles:
@@ -704,6 +735,19 @@ def doctor(env, sel):
         probe_cli("cfpipe CLI", "cfpipe")
         probe_import("jwst stack", "jwst")
         probe_import("numba", "numba")
+        if sel.get("hst"):
+            probe_import("HST: stwcs", "stwcs")
+            probe_import("HST: drizzlepac", "drizzlepac")
+            probe_import("HST: acstools trail finder", "acstools.findsat_mrt",
+                         "import skimage")
+            probe_import("HST: astroscrappy", "astroscrappy")
+            py = env.python() if env else None
+            for exe in ("calacs.e", "calwf3.e"):
+                found = bool(py) and (Path(py).parent / exe).exists()
+                checks.append((f"HST: {exe} (hstcal)", found,
+                               "" if found else
+                               "not in the environment: conda install -c "
+                               "conda-forge hstcal"))
     if "deploy" in profiles:
         probe_import("deploy round-trips (pipeline in env)", "campfire_pipeline")
         probe_import("supabase client", "supabase")
@@ -791,6 +835,8 @@ def build_plan(env, sel):
             plan.append(f"Create {env.describe()} from {env.base_python}")
         else:
             extra = " + conda-forge numba" if "reduction" in sel["profiles"] else ""
+            if sel.get("hst"):
+                extra += " and hstcal"
             plan.append(f"Create {env.describe()} with python {sel['python']}{extra}")
         mode = "editable (-e)" if sel["editable"] else "regular"
         for target in build_py_targets(sel):
@@ -820,6 +866,10 @@ def main(argv=None):
                         help="FitsGL producer mode for the deploy profile")
     parser.add_argument("--dev", action="store_true", default=None,
                         help="include dev extras (pytest, black, mypy)")
+    parser.add_argument("--hst", action=argparse.BooleanOptionalAction, default=None,
+                        help="HST imaging with the reduction profile: "
+                             "campfire-pipeline[hst] and, in a conda env, "
+                             "hstcal (calacs.e, calwf3.e) from conda-forge")
     parser.add_argument("--extras", choices=["all", "none"],
                         help="client plotting extras ([all] = plotly + specutils)")
     parser.add_argument("--no-editable", action="store_true", default=None,
@@ -874,7 +924,7 @@ def main(argv=None):
             run(["npm", "install"], cwd=REPO_ROOT / "web")
 
         save_state({k: sel[k] for k in
-                    ("profiles", "editable", "dev", "extras", "fitsgl",
+                    ("profiles", "editable", "dev", "extras", "fitsgl", "hst",
                      "env_name", "python", "manager", "venv_path")})
 
         ok = True

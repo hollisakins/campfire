@@ -13,12 +13,10 @@ moves it by ``protect_min_motion`` native pixels or more between the first and
 the last exposure that contains it, inside a circle of ``protect_radius`` arcsec
 around its position on each exposure's date.
 
-The NIRCam test (``jwst``'s ``flag_resampled_model_crs``) takes no mask, so the
-protection is applied afterwards: the values of the protected pixels are kept
-before the test, and a flag the test sets there is taken back together with the
-pixel values the test blanked. One difference from the HST pass follows: a
-flag inside a circle can still lower the threshold for its neighbors just
-outside it.
+This module finds the masks. They are handed to the shared comparison
+(``imaging/outlier.py::detect_outliers(protect=...)``), which does not test a
+protected pixel: it is never flagged and never lowers the threshold of a
+neighbor, exactly as in the HST pass.
 
 A comparison set taken within days protects nothing: no catalog star is fast
 enough, no exposure is opened, and the step runs exactly as it did without
@@ -29,9 +27,6 @@ import numpy as np
 from astropy.io import fits
 
 from campfire_pipeline.common.io import log
-
-# the arrays jwst blanks (NaN) where it sets DO_NOT_USE
-_ARRAYS = ('data', 'err', 'var_poisson', 'var_rnoise', 'var_flat')
 
 
 class _WcsChip:
@@ -112,42 +107,3 @@ def protection_for_visit(all_inputs, visit_files, refcat, *, radius=0.4,
     info['n_stars'] = found['n_stars']
     info['n_protected'] = found['n_protected']
     return {f: m for f, m in masks.items() if m.any()}, info
-
-
-def _array(model, name):
-    """``model.<name>`` when the model carries an array of that name."""
-    has = getattr(model, 'hasattr', None)
-    if has is not None and not has(name):
-        return None
-    return getattr(model, name, None)
-
-
-def snapshot(model, mask):
-    """The values of ``model`` at the pixels of ``mask``, to give back to
-    :func:`release` after the outlier test."""
-    kept = {'dq': np.array(model.dq[mask])}
-    for name in _ARRAYS:
-        arr = _array(model, name)
-        if arr is not None and getattr(arr, 'shape', None) == mask.shape:
-            kept[name] = np.array(arr[mask])
-    return kept
-
-
-def release(model, mask, kept, outlier_bit):
-    """Take back the outlier flags set at pixels of ``mask`` since
-    :func:`snapshot`, with the pixel values blanked along with them.
-
-    A pixel that already carried the outlier bit is left as it is. Returns
-    the number of pixels released.
-    """
-    now = model.dq[mask]
-    new = ((now & outlier_bit) != 0) & ((kept['dq'] & outlier_bit) == 0)
-    if not new.any():
-        return 0
-    rows, cols = np.nonzero(mask)
-    at = (rows[new], cols[new])
-    model.dq[at] = kept['dq'][new]
-    for name in _ARRAYS:
-        if name in kept:
-            _array(model, name)[at] = kept[name][new]
-    return int(new.sum())

@@ -517,9 +517,9 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
 
     - ``implementation='jwst'`` → ``outlier_step``: ``Image3Pipeline``
       with stcal Resample, classic per-visit ASN flow.
-    - ``implementation='campfire'`` → ``outlier_step_campfire``: builds
-      a per-visit intermediate WCS via ``wcs_from_sregions`` and runs
-      campfire's bbox-sliced drizzle primitive + ``MedianComputer``.
+    - ``implementation='campfire'`` → ``outlier_step_campfire``: the
+      instrument-neutral comparison (``imaging/outlier.py``), the code
+      the HST instruments run.
 
     Parallelization
     ---------------

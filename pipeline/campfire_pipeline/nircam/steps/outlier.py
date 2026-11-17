@@ -23,17 +23,15 @@ Two implementations live here, dispatched by the orchestrator based on
   where a single CRF would otherwise be drizzled once for its own
   visit plus once for every other program's visit it overlaps.
 
-- ``outlier_step_campfire`` (campfire, the default) — per-visit pass using
-  the campfire-native drizzle primitive (issue #138 Phase 2 v2). Same
-  visit grouping, intra-program overlap padding, and manifest
-  conventions as ``outlier_step``. Differs in the drizzle/median/blot
-  path: builds a per-visit intermediate WCS via ``wcs_from_sregions``
-  (input native pscale, ref-input rotation — same convention jwst
-  uses internally), routes the per-input drizzle through
-  ``drizzle.drizzle_tile_singles`` (bbox-sliced, variance-trick-ready),
-  streams sci+err rasters through ``MedianComputer``, and flags CRs
-  via ``flag_resampled_model_crs``. CFP_OUT stamping is per-visit
-  (same semantic as ``outlier_step``).
+- ``outlier_step_campfire`` (campfire, the default) — per-visit pass on the
+  instrument-neutral outlier code, ``imaging/outlier.py::detect_outliers``,
+  which the HST instruments run too (``nircam/outlier_detect.py`` is the
+  NIRCam side of it). Same visit grouping, intra-program overlap padding
+  and manifest conventions as ``outlier_step``. The visit's exposures are
+  drizzled one by one onto a north-up grid at the native scale, the median
+  (the minimum where two or three exposures overlap) is blotted back, and
+  the two-pass test flags what disagrees. ``CFP_OUT`` is stamped per
+  visit, as by ``outlier_step``.
 """
 
 import os
@@ -618,16 +616,20 @@ def outlier_step(visit, visit_files, filter_files, sregions,
 def outlier_step_campfire(visit, visit_files, filter_files, sregions,
                           field, step_config, overwrite=False, status=None,
                           refcat=None):
-    """Per-visit outlier using campfire-native drizzle (issue #138 Phase 2 v2).
+    """Per-visit outlier pass on the instrument-neutral code.
 
     Same orchestration as ``outlier_step`` (intra-program overlap
-    padding, manifest staleness check, CFP_OUT stamping); the
-    drizzle/median/blot path runs through campfire's
-    ``outlier_detect_for_visit`` instead of ``Image3Pipeline``. Builds
-    a per-visit intermediate WCS via ``wcs_from_sregions`` (jwst-style
-    auto-derivation of pscale/rotation/shape) and uses the bbox-sliced
-    ``drizzle_tile_singles`` primitive. CFP_OUT stamping is performed
-    inside ``outlier_detect_for_visit`` via ``atomic_save``.
+    padding, manifest staleness check, CFP_OUT stamping); the comparison
+    is ``imaging/outlier.py::detect_outliers`` through
+    ``outlier_detect_for_visit``, instead of ``Image3Pipeline``. CFP_OUT
+    stamping is performed inside ``outlier_detect_for_visit`` via
+    ``atomic_save``.
+
+    The shared comparison weights the single drizzles by the inverse
+    background variance and expects background-subtracted exposures (the
+    ``bkg`` step's output), so ``weight_type`` other than ``"ivm"`` and a
+    non-zero ``backg`` are refused here; both remain settings of the
+    ``"jwst"`` implementation.
     """
     if not visit_files:
         return
@@ -661,23 +663,36 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
 
     from campfire_pipeline.nircam.outlier_detect import outlier_detect_for_visit
 
-    snr_str = step_config.get('snr', '3.0 2.0')
-    scale_str = step_config.get('scale', '1.2 0.7')
-    snr = tuple(float(x) for x in snr_str.split())
-    scale = tuple(float(x) for x in scale_str.split())
+    def pair(name, default):
+        value = step_config.get(name, default)
+        if isinstance(value, str):
+            value = value.split()
+        first, second = (float(x) for x in value)
+        return first, second
+
+    if step_config.get('weight_type', 'ivm') != 'ivm':
+        raise ValueError(
+            f"[nircam.outlier].weight_type = {step_config['weight_type']!r}: "
+            f"the campfire implementation weights the single drizzles by the "
+            f"inverse background variance ('ivm') only")
+    if float(step_config.get('backg', 0.0)) != 0.0:
+        raise ValueError(
+            "[nircam.outlier].backg is not zero: the campfire implementation "
+            "compares background-subtracted exposures and adds no level")
 
     grow = (_grow_kwargs(step_config)
             if step_config.get('grow_large_regions', False) else None)
 
     outlier_detect_for_visit(
         all_inputs, visit_files,
-        snr=snr, scale=scale,
-        backg=float(step_config.get('backg', 0.0)),
+        snr=pair('snr', '3.0 2.0'), scale=pair('scale', '1.2 0.7'),
         pixfrac=float(step_config.get('pixfrac', 1.0)),
         kernel=step_config.get('kernel', 'square'),
-        weight_type=step_config.get('weight_type', 'ivm'),
         good_bits=step_config.get('good_bits', '~DO_NOT_USE'),
-        in_memory=bool(step_config.get('in_memory', False)),
+        minmed_nsigma=pair('minmed_nsigma', '4.0 3.0'),
+        minmed_max_n=int(step_config.get('minmed_max_n', 3)),
+        min_contributors=int(step_config.get('min_contributors', 2)),
+        maskpt=float(step_config.get('maskpt', 0.7)),
         extras_per_visit=saved_extras,
         plot=do_plot,
         grow=grow,

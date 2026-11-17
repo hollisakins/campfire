@@ -80,7 +80,7 @@ def scene(tmp_path_factory):
         path = str(workdir / f'jw01727001001_02101_0000{i + 1}_nrca1.fits')
         golden._build_exposure(path, i, rng, sources)
         files.append(path)
-    outlier_detect_for_visit(files, files, in_memory=True, plot=False,
+    outlier_detect_for_visit(files, files, plot=False,
                              tempdir=str(workdir))
     return workdir, files
 

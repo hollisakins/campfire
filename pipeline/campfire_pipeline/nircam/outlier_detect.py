@@ -1,74 +1,40 @@
 """
-outlier_detect: campfire-native per-visit cosmic-ray rejection.
+outlier_detect: per-visit outlier rejection for NIRCam, on the shared code.
 
-For each visit, drizzles all (visit + intra-program-overlap) inputs into a
-**per-visit intermediate WCS** (input native pscale, ref-input rotation,
-union-bbox shape — the same convention ``jwst.outlier_detection`` uses
-internally), streams sci rasters through ``MedianComputer``, blots
-median back via ``gwcs_blot``, and flags CRs in input DQ via
-``flag_resampled_model_crs``. DQ updates land on the visit's own canonical
-files via ``atomic_save`` with ``CFP_OUT`` stamped.
+A visit's exposures are compared with each other and with the exposures of
+other visits that overlap them (``nircam/steps/outlier.py`` selects those).
+The comparison itself is ``imaging/outlier.py::detect_outliers``, the
+instrument-neutral routine the HST instruments run: every exposure drizzled
+alone onto one north-up grid at the native pixel scale, a per-pixel median
+(the minimum where two or three exposures overlap and the median stands above
+it by more than the noise allows), the median blotted back onto each
+exposure, and the two-pass test ``|pixel - blot| > scale * gradient + snr *
+sigma``. NIRCam reaches it through :class:`~campfire_pipeline.nircam.exposure.NircamChip`.
 
-Only SCI is drizzled, matching ``jwst.outlier_detection``'s
-``ResampleImage(enable_var=False, compute_err=None)`` setup. The
-SNR comparison inside ``flag_resampled_model_crs`` uses each input
-model's own native ERR — a blotted-median ERR would be smoother than
-native and systematically inflate computed SNRs (over-flagging).
+What stays NIRCam's, because it is about a JWST file and not about the
+comparison:
 
-Reuses campfire's bbox-sliced drizzle primitive
-(``drizzle.drizzle_tile_singles``) and stcal/jwst's median + flag helpers.
-The per-visit intermediate WCS is small (~visit footprint at native scale,
-not full mosaic tile), so per-input drizzle scaffolding and the median
-buffer are both bounded by visit size — avoids the per-input full-tile
-allocation cost that ``stcal.resample.Resample`` pays inside
-``Image3Pipeline``.
+* the flags go into ``DQ`` as ``OUTLIER | DO_NOT_USE``, and the arrays are
+  blanked where ``DO_NOT_USE`` is set, as the JWST pipeline leaves them;
+* large flagged regions can be grown (``grow_large_regions``,
+  ``nircam/steps/outlier.py``);
+* the diagnostic ``<rootname>_outlier.pdf``;
+* ``CFP_OUT`` is stamped through ``atomic_save``.
 
-Replaces the dead-end per-tile path (issue #138 Phase 2 v1). The
-per-visit framing keeps the rotation/scale alignment quality of the
-jwst path while routing the heavy lifting through the campfire drizzle
-primitive (variance trick, bbox-sliced output, no Python-level masked
-accumulator updates).
+Until 2026-11 this module was a second implementation of the same method
+(its own grid in the instrument frame, a plain median, a linear blot, the
+exposure's ``ERR`` as the noise). The differences that matter to a NIRCam
+user are listed in ``pipeline/CHANGELOG.md`` under the release that made the
+move.
 """
 
 import os
 import tempfile
-from copy import deepcopy
 
 import numpy as np
-from astropy.io import fits
 
 from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import atomic_save, log
-from campfire_pipeline.nircam import outlier_protect
-
-
-def _build_visit_wcs(crf_files):
-    """Build per-visit intermediate WCS via ``wcs_from_sregions`` auto-derivation.
-
-    With ``pscale=None``, ``rotation=None``, ``shape=None`` (all defaults),
-    ``wcs_from_sregions`` derives:
-    - pixel scale from the reference CRF's gwcs at the field reference point
-      (``compute_scale``);
-    - rotation from ``ref_wcsinfo['roll_ref']`` / ``v3yangle`` / ``vparity``
-      (instrument frame, not ICRS-aligned);
-    - shape sized to enclose the union footprint of all input s_regions.
-
-    The resulting gwcs has ``.pixel_shape = (Nx, Ny)`` baked in. Returning
-    array-shape ``(Ny, Nx)`` for downstream use is the caller's job.
-    """
-    from stcal.alignment.util import wcs_from_sregions
-    from stdatamodels.jwst.datamodels import ImageModel
-
-    sregions = []
-    with ImageModel(crf_files[0], memmap=False) as ref:
-        ref_wcs = deepcopy(ref.meta.wcs)
-        ref_wcsinfo = ref.meta.wcsinfo.instance
-        sregions.append(ref.meta.wcsinfo.s_region)
-    for crf in crf_files[1:]:
-        sregions.append(fits.getheader(crf, extname='SCI')['S_REGION'])
-    return wcs_from_sregions(
-        sregions, ref_wcs=ref_wcs, ref_wcsinfo=ref_wcsinfo,
-    )
 
 
 def outlier_detect_for_visit(
@@ -77,163 +43,116 @@ def outlier_detect_for_visit(
     *,
     snr=(3.0, 2.0),
     scale=(1.2, 0.7),
-    backg=0.0,
     pixfrac=1.0,
     kernel='square',
-    weight_type='ivm',
     good_bits='~DO_NOT_USE',
-    in_memory=False,
+    minmed_nsigma=(4.0, 3.0),
+    minmed_max_n=3,
+    min_contributors=2,
+    maskpt=0.7,
     tempdir=None,
     extras_per_visit=None,
     plot=False,
     grow=None,
     protect=None,
 ):
-    """Per-visit campfire-native outlier across ``all_inputs``, flag ``visit_files``.
+    """Flag outliers on ``visit_files`` against ``all_inputs``.
 
     Parameters
     ----------
     all_inputs : list of str
-        CRF paths to include in the median pool (visit's own files plus
-        spatially-overlapping intra-program files). Drizzled into the
-        per-visit intermediate WCS.
+        The exposures compared: the visit's own files and the ones of other
+        visits that overlap them.
     visit_files : list of str
-        The visit's own canonical CRF paths — the only files whose DQ
-        gets updated and saved. Must be a subset of ``all_inputs``.
-    snr, scale : tuples of float
-        Two-pass ``(snr1, snr2)`` thresholds and ``(scale1, scale2)``
-        derivative scaling factors for the median-comparison CR test.
-    backg : float
-        Scalar background added to the blotted image before the SNR
-        comparison (overridden per-input by
-        ``model.meta.background.level`` when ``subtracted=False``).
-    pixfrac, kernel, weight_type, good_bits : drizzle parameters.
-    in_memory : bool
-        Hold per-input rasters in RAM
-        (~``n_inputs × visit_wcs_pixels × float32 × 2``). At native scale
-        per-visit this is typically a few hundred MB even for dense
-        overlap regions — feasible at COSMOS scale.
+        The visit's files, a subset of ``all_inputs``: the only ones flagged
+        and saved.
+    snr, scale : pairs of float
+        Thresholds of the two-pass test (the second pair applies next to the
+        pixels the first pair flags).
+    pixfrac, kernel : single-drizzle settings.
+    good_bits : str
+        DQ bits that do not make a pixel bad (``[nircam.outlier].good_bits``).
+    minmed_nsigma, minmed_max_n, min_contributors, maskpt :
+        Passed to :func:`campfire_pipeline.imaging.outlier.detect_outliers`,
+        which documents them.
     tempdir : str, optional
-        Parent dir for ``MedianComputer`` temp files when ``in_memory=False``.
+        Where the single drizzles are kept while the median is built
+        (default: the system temporary directory).
     extras_per_visit : dict, optional
-        Map ``{rootname: [HDU, ...]}`` of extras (SRCMASK/CFMASK)
-        captured before the run, preserved through ``atomic_save``.
+        ``{rootname: [HDU, ...]}`` of extensions the JWST datamodel does not
+        know (SRCMASK, CFMASK), captured before the run and written back.
     plot : bool
-        If True, write ``<rootname>_outlier.pdf`` next to each visit
-        exposure showing SCI plus the newly flagged OUTLIER pixels.
+        Write ``<rootname>_outlier.pdf`` next to each visit exposure.
+    grow : dict, optional
+        Keyword arguments of ``grow_outlier_regions``; ``None`` turns the
+        growth off.
     protect : dict, optional
         ``{path: bool array}`` from
-        ``outlier_protect.protection_for_visit``: pixels around catalog
-        stars that moved between the exposures compared. A flag the test
-        sets there is taken back before the grow and the save, and
-        ``CFP_OUT`` records the number released.
+        ``outlier_protect.protection_for_visit``: pixels around catalog stars
+        that moved between the exposures compared. They are not tested, so
+        they are never flagged and never lower the threshold of a neighbor.
 
-    Notes
-    -----
-    DQ updates are written via ``atomic_save`` with ``CFP_OUT`` stamped
-    on the primary header. Caller does not need to re-stamp.
+    ``CFP_OUT`` is stamped on each visit file as it is saved.
     """
     from jwst.datamodels.dqflags import pixel as pixel_flags
-    from jwst.outlier_detection.utils import flag_resampled_model_crs
-    from stcal.outlier_detection.median import MedianComputer
+    from jwst.lib.pipe_utils import match_nans_and_flags
     from stdatamodels.jwst.datamodels import ImageModel
 
-    from campfire_pipeline.nircam.drizzle import drizzle_tile_singles
+    from campfire_pipeline.imaging.outlier import detect_outliers
+    from campfire_pipeline.nircam.exposure import open_exposure
 
-    n_inputs = len(all_inputs)
-    if n_inputs == 0:
+    if not all_inputs:
         log("  outlier (per-visit): no inputs")
         return
 
-    output_wcs = _build_visit_wcs(all_inputs)
-    nx, ny = output_wcs.pixel_shape
-    out_shape = (ny, nx)
+    chips = {f: open_exposure(f, good_bits=good_bits) for f in all_inputs}
+    missing = [f for f in visit_files if f not in chips]
+    if missing:
+        raise ValueError(
+            f'outlier: visit files that are not among the inputs: {missing}')
+    star_masks = {chips[f].key: mask for f, mask in (protect or {}).items()
+                  if f in chips}
 
-    log(f"  campfire outlier (per-visit): {n_inputs} inputs into "
-        f"{nx}x{ny} visit WCS")
-
-    # tempdir='' makes MedianComputer drop its on-disk median scratch in the
-    # current working directory (stcal/outlier_detection/median.py:269 calls
-    # tempfile.TemporaryDirectory(dir=tempdir), and dir='' resolves against
-    # CWD, not $TMPDIR). On networked-FS clusters CWD is the user's home
-    # dir, which fills the home quota. Force a real tempdir.
-    sci_mc = MedianComputer(
-        full_shape=(n_inputs,) + out_shape,
-        in_memory=in_memory, tempdir=tempdir or tempfile.gettempdir(),
+    result = detect_outliers(
+        list(chips.values()),
+        snr=snr, scale=scale, pixfrac=pixfrac, kernel=kernel,
+        minmed_nsigma=minmed_nsigma, minmed_max_n=minmed_max_n,
+        min_contributors=min_contributors, maskpt=maskpt,
+        workdir=tempdir or tempfile.gettempdir(),
+        protect=star_masks or None,
+        flag_keys=[chips[f].key for f in visit_files],
     )
 
-    # Reusable visit-shape scratch for pasting bbox-sliced rasters into
-    # the full-shape array MedianComputer requires.
-    scratch_sci = np.full(out_shape, np.nan, dtype=np.float32)
-
-    contributing_paths = []
-    for idx, ((sci_bbox, _wht_bbox, prep), crf) in enumerate(zip(
-        drizzle_tile_singles(
-            all_inputs, output_wcs, out_shape,
-            pixfrac=pixfrac, kernel=kernel,
-            weight_type=weight_type, good_bits=good_bits,
-        ),
-        all_inputs,
-    )):
-        sly, slx = prep['sly'], prep['slx']
-
-        scratch_sci[sly, slx] = sci_bbox
-        sci_mc.append(scratch_sci, idx=idx)
-        scratch_sci[sly, slx] = np.nan
-
-        contributing_paths.append(crf)
-
-    log("  computing median...")
-    median_sci = sci_mc.evaluate()
-    del sci_mc
-
-    snr_str = f"{snr[0]:.2f} {snr[1]:.2f}"
-    scale_str = f"{scale[0]:.2f} {scale[1]:.2f}"
-    log(f"  flagging CRs (snr={snr_str}, scale={scale_str})...")
-
-    OUTLIER_BIT = pixel_flags['OUTLIER']
-    visit_set = set(visit_files)
+    outlier_bit = np.uint32(pixel_flags['OUTLIER'])
+    dnu_bit = np.uint32(pixel_flags['DO_NOT_USE'])
     extras_per_visit = extras_per_visit or {}
 
     n_flagged_total = 0
-    n_visit_flagged = 0
-    for crf in contributing_paths:
-        if crf not in visit_set:
-            continue  # only flag and save the visit's own files
+    for crf in visit_files:
+        key = chips[crf].key
+        mask = result['flags'][key]
+        stats = result['stats'][key]
+        rootname = os.path.basename(crf).removesuffix('.fits')
         with ImageModel(crf, memmap=False) as model:
-            dq_before = (model.dq & OUTLIER_BIT) != 0
+            dq_before = (model.dq & outlier_bit) != 0
             # weight-carrying state before detection: grow seeds must not
             # form on pixels that were already DO_NOT_USE (edge trim)
-            dnu_before = (model.dq & pixel_flags['DO_NOT_USE']) != 0
+            dnu_before = (model.dq & dnu_bit) != 0
             sci_for_plot = model.data.copy() if plot else None
-            star_mask = (protect or {}).get(crf)
-            kept = (outlier_protect.snapshot(model, star_mask)
-                    if star_mask is not None else None)
-            # Match jwst.outlier_detection.imaging.detect_outliers: pass
-            # only median_sci. flag_resampled_model_crs falls back to the
-            # input model's own ERR for the SNR comparison when median_err
-            # is None — using a blotted-median ERR instead would
-            # systematically over-flag (median_err is smoother than
-            # native model.err, which inflates computed SNRs).
-            flag_resampled_model_crs(
-                model, median_sci, output_wcs,
-                snr1=snr[0], snr2=snr[1],
-                scale1=scale[0], scale2=scale[1],
-                backg=backg,
-            )
-            rootname = os.path.basename(crf).removesuffix('.fits')
-            cfp_val = None
-            if kept is not None:
-                # before the grow, so a star's core cannot seed a region
-                n_released = outlier_protect.release(
-                    model, star_mask, kept, OUTLIER_BIT)
-                cfp_val = f'star_protect: {n_released} px released'
-                if n_released:
-                    log(f"  outlier: {rootname} — {n_released} px released "
-                        f"around catalog stars that moved")
-            dq_after = (model.dq & OUTLIER_BIT) != 0
+
+            model.dq |= mask.astype(np.uint32) * (dnu_bit | outlier_bit)
+            # every array NaN where DO_NOT_USE is set, as the JWST outlier
+            # step leaves a file
+            match_nans_and_flags(model)
+
+            dq_after = (model.dq & outlier_bit) != 0
             n_flagged_total += int((dq_after & ~dq_before).sum())
-            n_visit_flagged += 1
+            cfp_val = None
+            if key in star_masks:
+                cfp_val = f"star_protect: {stats['n_protected']} px not tested"
+                if stats['n_protected']:
+                    log(f"  outlier: {rootname} — {stats['n_protected']} px "
+                        f"around catalog stars that moved were not tested")
 
             grow_added = None
             if grow is not None:
@@ -257,8 +176,8 @@ def outlier_detect_for_visit(
 
             if plot:
                 from campfire_pipeline.nircam.steps._plots import plot_outlier
-                # dq_after was snapshotted before the grow, so new_outlier
-                # is detections only; grown pixels ride the second overlay
+                # dq_after was taken before the grow, so new_outlier is the
+                # detections only; grown pixels ride the second overlay
                 new_outlier = dq_after & ~dq_before
                 out_pdf = os.path.join(
                     os.path.dirname(crf), f'{rootname}_outlier.pdf',
@@ -266,9 +185,9 @@ def outlier_detect_for_visit(
                 plot_outlier(
                     sci_for_plot, new_outlier, grown=grow_added,
                     save_file=out_pdf,
-                    title=f'{rootname}: outlier (campfire)',
+                    title=f'{rootname}: outlier',
                 )
                 log(f"  saved {os.path.basename(out_pdf)}")
 
     log(f"  outlier: flagged {n_flagged_total} new pixels across "
-        f"{n_visit_flagged} visit exposures")
+        f"{len(visit_files)} visit exposures")

@@ -13,8 +13,6 @@ pytest.importorskip('jwst')
 from astropy.io import fits  # noqa: E402
 from astropy.table import Table  # noqa: E402
 from astropy.time import Time  # noqa: E402
-from jwst.datamodels import ImageModel  # noqa: E402
-from jwst.datamodels.dqflags import pixel as pf  # noqa: E402
 
 from _align_gwcs import HAVE_PERSISTABLE_WCS, build_canonical  # noqa: E402
 from campfire_pipeline.nircam import outlier_protect  # noqa: E402
@@ -108,37 +106,5 @@ def test_the_step_protects_on_motion_alone(tmp_path):
     assert _star_protection({}, files[:2], files[:2], catalog) == {}
 
 
-def test_release_takes_back_the_flags_and_the_blanked_values(tmp_path):
-    files, catalog, _ = _scene(tmp_path)
-    masks, _ = outlier_protect.protection_for_visit(files, files[:1], catalog)
-    mask = masks[files[0]]
-    flagged = np.uint32(pf['OUTLIER'] | pf['DO_NOT_USE'])
-    with ImageModel(files[0]) as model:
-        model.dq[70, 62] = pf['OUTLIER'] | pf['DO_NOT_USE']   # flagged before
-        model.data[70, 62] = np.nan
-        model.dq[72, 58] = pf['SATURATED']
-        before = {name: np.array(getattr(model, name)) for name in ('data', 'err', 'dq')}
-        kept = outlier_protect.snapshot(model, mask)
-
-        # what the outlier test does: flag, and blank the values
-        core = _disk(_SHAPE, *_FAST, 2.0)
-        ray = _disk(_SHAPE, 130.0, 130.0, 1.5)
-        for hit in (core, ray):
-            model.dq[hit] |= flagged
-            model.data[hit] = np.nan
-            model.err[hit] = np.nan
-
-        n = outlier_protect.release(model, mask, kept, pf['OUTLIER'])
-        assert n == int(core.sum()) - 1                # one carried the bit already
-        assert np.array_equal(model.dq[core], before['dq'][core])
-        assert np.array_equal(model.data[mask], before['data'][mask],
-                              equal_nan=True)
-        assert np.isnan(model.data[70, 62])            # still blank, as before
-        assert np.isfinite(model.err[core]).sum() == int(core.sum()) - 1
-        assert np.array_equal(model.dq[mask], before['dq'][mask])
-        assert model.dq[72, 58] == pf['SATURATED']
-        # away from the star the cosmic ray stays flagged and blank
-        assert np.all(model.dq[ray] & pf['OUTLIER'])
-        assert np.isnan(model.data[ray]).all()
-        # a second call finds nothing left to do
-        assert outlier_protect.release(model, mask, kept, pf['OUTLIER']) == 0
+# What the outlier pass does with these masks (a protected pixel is not
+# tested) is checked on the pass itself: test_nircam_outlier_shared.py.

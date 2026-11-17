@@ -29,6 +29,15 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- **`campfire-pipeline[hst]`: the HST software as an install extra.** `pip install -e
+  "./pipeline[hst]"` adds what `cfpipe acswfc` / `cfpipe wfc3ir` import (`stwcs`,
+  `drizzlepac`, `astroscrappy`, `acstools`, `scikit-image`), with lower bounds at the
+  versions the module was developed with beside `jwst` 1.20.2. The calibration programs
+  `calacs.e` / `calwf3.e` are compiled code in the conda-forge package `hstcal` and cannot
+  come through pip; `python install.py --hst` (or the prompt of the reduction profile)
+  installs the extra and, in a conda environment, `hstcal`, and its verification step
+  checks the imports and the two programs. Nothing HST is imported until an HST command
+  runs, so the base install is unchanged.
 - **Exposure maps and the field layout plot for the HST instruments.** `cfpipe acswfc
   expmap` / `cfpipe wfc3ir expmap` build the per-filter exposure maps (FITS, light PDF, dark
   PNG), the instrument's `<field>_layout.png` + coverage JSON and the footprint regions under
@@ -314,6 +323,38 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **NIRCam's outlier pass runs the instrument-neutral code (changes NIRCam outlier flags).**
+  `[nircam.outlier].implementation = "campfire"`, the default, was NIRCam's own
+  implementation of the per-visit comparison; the HST instruments ran a second one
+  (`imaging/outlier.py::detect_outliers`) of the same method. NIRCam now runs that one,
+  through a NIRCam exposure adapter (`nircam/exposure.py::NircamChip`), so there is one
+  implementation (Hollis, 2026-11-17). Unchanged: which exposures a visit is compared with,
+  the manifests, `CFP_OUT`, the thresholds (`snr = "3.0 2.0"`, `scale = "1.2 0.7"`), where
+  the flags go (`OUTLIER | DO_NOT_USE` in DQ, arrays blanked), `grow_large_regions`, the
+  diagnostic PDF, and the `"jwst"` implementation. What changes for the same exposures:
+  1. *The noise in the test* is the exposure's noise model at the comparison value
+     (background variance plus a source term), not the pixel's own `ERR`, which is inflated
+     by the very cosmic ray being tested.
+  2. *Two or three exposures overlapping*: the median gives way to the minimum where it
+     stands more than 4 sigma above it (`minmed_nsigma`, `minmed_max_n`). With two
+     exposures the median is their mean, so a strong hit used to pull the comparison up
+     and could get the clean pixel of the other exposure flagged as well.
+  3. *A pixel is tested only where at least two exposures went into the median*
+     (`min_contributors`), and only a few pixels inside the edge of the covered sky (the
+     blot interpolates over six pixels and is kept away from empty ones).
+  4. *The blot* uses the quintic interpolation of the `drizzle` package; it was linear.
+  5. *The grid* is north-up at the native pixel scale over the visit's exposures; it was in
+     the detector frame over everything compared.
+  6. *The weight cut* (`maskpt`) applies: a single-drizzle pixel enters the median only if
+     its weight is at least `maskpt` (0.1 for NIRCam) of that exposure's median weight.
+  7. *Star protection* no longer flags and then un-flags: a protected pixel is not tested,
+     so it cannot lower the threshold of a neighbor.
+  New keys in `[nircam.outlier]`: `minmed_nsigma`, `minmed_max_n`, `min_contributors`
+  (the keys and meaning of `[acswfc.outlier]` / `[wfc3ir.outlier]`, which gain `maskpt`
+  with their previous fixed value 0.7). Under `"campfire"`, `weight_type` other than
+  `"ivm"` and a non-zero `backg` are refused instead of honored (`in_memory` is no longer
+  read). The golden-pixel baseline of the NIRCam combine path
+  (`tests/data/nircam_mosaic_golden.npz`) was regenerated for this change.
 - **The exposure-map grid is the field's (`cfpipe nircam|acswfc|wfc3ir expmap`).** The
   canonical maps used a grid centered on the footprints of the filters of one run, so maps
   from a run of some filters, or of another instrument, were not registered with the rest.

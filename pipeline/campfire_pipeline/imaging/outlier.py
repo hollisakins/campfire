@@ -6,21 +6,20 @@ rest of the stack: cosmic rays a two-exposure visit could not reject (a hit
 at the same place in both frames), residual trails, persistence that moves
 with the dither.
 
-This is NIRCam's method (``nircam/outlier_detect.py``, the default
-``[nircam.outlier].implementation = "campfire"``), written against
+One implementation for every imaging instrument, written against
 :class:`~campfire_pipeline.imaging.exposure.Chip` so that it needs no
-instrument's file layout. What the two run in common, literally: the single
-drizzles (``imaging/drizzle.py::drizzle_tile_singles``), the blot (the
-``drizzle`` package's ``blot_image``; NIRCam reaches it through ``gwcs_blot``)
-and the test (``stcal.outlier_detection.utils.flag_resampled_crs``; NIRCam
-reaches it through ``jwst``'s ``flag_resampled_model_crs``). What differs,
-because a JWST datamodel is not available here or because HST needs it: the
-grid comes from the chips' footprints instead of ``S_REGION`` keywords; the
-error handed to the test is the chip's noise model at the blotted value
-instead of the exposure's own ``ERR`` (an HST ``ERR`` includes the Poisson
-noise of the cosmic ray being tested); and the median falls back to the
-minimum where few chips overlap (below), which a visit of two HST exposures
-needs and a NIRCam visit of many does not.
+instrument's file layout: ACS/WFC and WFC3/IR reach it through
+``hst/steps/outlier.py``, NIRCam through ``nircam/outlier_detect.py`` (the
+default ``[nircam.outlier].implementation = "campfire"``). What an instrument
+sets is in its ``[<instrument>.outlier]`` block: the two thresholds, the
+single-drizzle settings, the minimum rule, the weight cut. The method came
+from NIRCam's own pass, which until 2026-11 was a second copy of it; three
+choices made here replaced NIRCam's when it moved over: the grid is north-up
+over the chips to be flagged (NIRCam's was in the detector frame, over
+everything compared); the error handed to the test is the chip's noise model
+at the blotted value, not the exposure's own ``ERR``, which includes the
+Poisson noise of the cosmic ray being tested; and the median gives way to the
+minimum where two or three chips overlap (below).
 
 1. **Single drizzles.** Each chip is drizzled by itself onto one north-up grid
    at about the native pixel scale (:func:`stack_grid`), in the surface
@@ -44,7 +43,7 @@ needs and a NIRCam visit of many does not.
    the pixel's own, possibly contaminated, value). The test runs twice: with
    ``snr[0]`` / ``scale[0]`` everywhere, then with the lower ``snr[1]`` /
    ``scale[1]`` on the pixels next to those the first pass found. It is
-   ``stcal``'s ``flag_resampled_crs``, the routine NIRCam's pass runs.
+   ``stcal``'s ``flag_resampled_crs``, the routine the JWST pipeline runs.
 
 A pixel is tested only where at least ``min_contributors`` chips went into the
 median. Where a chip stands alone the median is the chip itself and nothing can
@@ -286,9 +285,13 @@ def star_protection(chips, stars, epochs, *, radius=0.4, min_motion=0.15,
 def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7),
                     pixfrac=1.0, kernel='square', pixel_scale=None,
                     minmed_nsigma=(4.0, 3.0), minmed_max_n=3,
-                    min_contributors=2, block=1024, workdir=None,
-                    protect=None, flag_keys=None):
-    """Outlier masks for ``chips`` (one detector and filter, one frame).
+                    min_contributors=2, maskpt=_MASKPT, block=1024,
+                    workdir=None, protect=None, flag_keys=None):
+    """Outlier masks for ``chips`` (one filter, one frame).
+
+    ``maskpt``: a single drizzle's pixel enters the median only if its weight
+    is at least this fraction of that chip's median weight (0 lets every
+    pixel with any weight in).
 
     ``protect`` is an optional ``{chip.key: bool array}`` of pixels that are
     never flagged (see :func:`star_protection`); they still enter the median.
@@ -350,7 +353,9 @@ def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7),
             good, var_bg, coefficient = _noise_terms(prep)
             positive = wht[wht > 0]
             if positive.size:
-                sci = np.where(wht >= _MASKPT * np.median(positive), sci, np.nan)
+                sci = np.where(
+                    (wht > 0) & (wht >= float(maskpt) * np.median(positive)),
+                    sci, np.nan)
             path = os.path.join(tmp, f'{len(singles):05d}.npy')
             np.save(path, sci.astype(np.float32))
             level = float(np.median(var_bg[good])) if good.any() else np.inf
@@ -436,8 +441,8 @@ def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7),
                 kept_out = int((testable & protect[chip.key]).sum())
                 testable &= ~protect[chip.key]
             sigma = np.sqrt(var_bg + coefficient * np.clip(model, 0, None))
-            # The test is the routine NIRCam's pass runs (through jwst's
-            # flag_resampled_model_crs): |pixel - blot| against
+            # The test is the routine the JWST pipeline's outlier step runs
+            # (stcal's flag_resampled_crs): |pixel - blot| against
             # scale * gradient(blot) + snr * error, a first pass and a second,
             # lower one on the pixels next to what the first found. A pixel
             # that is not to be tested is handed over equal to the blot, so
