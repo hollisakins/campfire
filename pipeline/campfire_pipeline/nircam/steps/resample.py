@@ -7,9 +7,11 @@ produce ``_i2d.fits`` mosaic tiles in ``field.filter_dir(filter)`` — the
 same flat directory that holds the canonical exposures, split-extension
 files, and manifests for that (field, filter) pair.
 
-Input source for the canonical-exposure layout is
-``field.get_exposure_files(filter, with_step='CFP_OUT')`` — only exposures
-that have completed outlier detection are eligible to be drizzled.
+Input source is the filter's combine working copies. Only exposures that have
+completed outlier detection (``CFP_OUT``) are drizzled, and the orchestrator
+(``_run_resample``) hands a filter over only when every one of its working
+copies carries the stamp: a mosaic is made of all of its exposures or not at
+all.
 
 Mosaic outputs: ``CMPFRTIM`` / ``CMPFRVER`` stamping on the primary header,
 optional 2D background subtraction via ``SubtractBackground``, and optional

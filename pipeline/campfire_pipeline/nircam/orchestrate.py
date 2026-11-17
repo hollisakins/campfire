@@ -624,16 +624,53 @@ def _run_resample(field, config, filtname, n_processes, overwrite, status,
     # tiles to drizzle (its own precise per-tile SCI-WCS selection narrows
     # further within this set). ``epoch`` subsets the drizzle inputs to the
     # named epoch and labels the mosaics with the epoch name.
-    exposures = field.get_exposure_files(filtname, with_step='CFP_OUT',
-                                         status=status, work=True, tiles=tiles,
-                                         epoch=epoch)
+    #
+    # Returns the rootnames that kept the filter from being drizzled (empty
+    # when it was). Only exposures the outlier pass has stamped go into a
+    # mosaic, and a mosaic is made of all of its exposures or not at all: a
+    # working copy without CFP_OUT is fresh (its canonical file changed since
+    # the last pass, or the pass never ran), which happens only when resample
+    # runs without the outlier step. Drizzling it would put uncompared pixels
+    # in the mosaic; drizzling the rest would rebuild the mosaic short of it
+    # with nothing said (what this did until 2026-11). The HST instruments
+    # refuse the same way (hst/orchestrate.py).
+    exposures = field.get_exposure_files(filtname, status=status, work=True,
+                                         tiles=tiles, epoch=epoch)
     if not exposures:
-        log(f"resample: no CFP_OUT-stamped exposures for {filtname}")
-        return
+        log(f"resample: no exposures for {filtname}")
+        return []
+    unflagged = sorted(os.path.basename(f).removesuffix('.fits')
+                       for f in exposures if not status.has(f, 'CFP_OUT'))
+    if unflagged:
+        _report_unflagged(field, filtname, unflagged, len(exposures))
+        return unflagged
     from campfire_pipeline.nircam.steps.resample import resample_step
     cfg = get_nircam_step_config('resample', config, field)
     resample_step(filtname, exposures, field, cfg, reduction_version,
                   overwrite=overwrite, tiles=tiles, epoch=epoch)
+    return []
+
+
+def _report_unflagged(field, filtname, unflagged, n_total):
+    """Say that ``filtname`` was not drizzled, which exposures are why, and
+    what to run."""
+    bar = '!' * 72
+    log('')
+    log(bar)
+    log(f"resample: {filtname} NOT DRIZZLED. {len(unflagged)} of {n_total} "
+        f"exposure(s) have not been through the outlier pass")
+    log("(their working copies have no CFP_OUT), and a mosaic is made of all "
+        "of its")
+    log("exposures or not at all. Existing mosaics of this filter are left as "
+        "they are.")
+    for name in unflagged[:20]:
+        log(f"      {name}")
+    if len(unflagged) > 20:
+        log(f"      ... and {len(unflagged) - 20} more")
+    log(f"Run `cfpipe nircam combine --field {field.name}` (or `outlier`, then "
+        f"`resample`).")
+    log(bar)
+    log('')
 
 
 # Dispatch table: step name → callable that takes (field, config, filtname,
@@ -1163,6 +1200,7 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
 
     log(f"=== Combine phase: field={field.name}, filters={filters}"
         f"{f', epoch={epoch}' if epoch else ''} ===")
+    not_drizzled = {}
     for filt in filters:
         log(f"--- Combine: {filt} ---")
         for step_name, _ in COMBINE_STEPS:
@@ -1177,12 +1215,23 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
                 field.materialize_work(filt, status=status, overwrite=overwrite,
                                        exclude_not_aligned=exclude_not_aligned)
             elif step_name == 'resample':
-                _run_resample(field, config, filt, n_processes, overwrite,
-                              status, reduction_version, tiles=tiles,
-                              epoch=epoch)
+                unflagged = _run_resample(field, config, filt, n_processes,
+                                          overwrite, status, reduction_version,
+                                          tiles=tiles, epoch=epoch)
+                if unflagged:
+                    not_drizzled[filt] = unflagged
             else:
                 _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
                                     status, tiles=tiles, epoch=epoch)
+    _summarize_not_drizzled(not_drizzled)
+    return not_drizzled
+
+
+def _summarize_not_drizzled(not_drizzled):
+    """Say it again where a long log ends: these filters have no new mosaic."""
+    for filt, unflagged in not_drizzled.items():
+        log(f"resample: WARNING: {filt} was not drizzled ({len(unflagged)} "
+            f"exposure(s) not through the outlier pass; see above).")
 
 
 def run_step(step_name, field, config, filters=None, n_processes=1,
@@ -1217,16 +1266,29 @@ def run_step(step_name, field, config, filters=None, n_processes=1,
     if step_name == 'align':
         check_align_config(config, field)
 
+    not_drizzled = {}
     for filt in filters:
         # A standalone combine ensemble step needs the working copies present
         # and primed (canonical -> work, CFMASK -> DO_NOT_USE) before it runs.
+        # --overwrite replaces every working copy with a fresh one, which has
+        # no bad-pixel or outlier flags, so it does that only for a step that
+        # goes on to flag: `resample --overwrite` on its own re-drizzles from
+        # the flagged copies that are there (it used to re-copy them all and
+        # then find nothing stamped to drizzle).
         if step_name in _COMBINE_WORK_STEPS:
-            field.materialize_work(filt, status=status, overwrite=overwrite,
-                                   exclude_not_aligned=exclude_not_aligned)
+            field.materialize_work(
+                filt, status=status,
+                overwrite=overwrite and step_name != 'resample',
+                exclude_not_aligned=exclude_not_aligned)
         if step_name == 'resample':
             reduction_version = _resolve_reduction_version(config)
-            _run_resample(field, config, filt, n_processes, overwrite,
-                          status, reduction_version, tiles=tiles, epoch=epoch)
+            unflagged = _run_resample(field, config, filt, n_processes,
+                                      overwrite, status, reduction_version,
+                                      tiles=tiles, epoch=epoch)
+            if unflagged:
+                not_drizzled[filt] = unflagged
         else:
             _RUNNERS[step_name](field, config, filt, n_processes, overwrite,
                                 status, tiles=tiles)
+    _summarize_not_drizzled(not_drizzled)
+    return not_drizzled

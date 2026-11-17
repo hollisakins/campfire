@@ -60,6 +60,7 @@ PROCESS_STEPS = [
     ('sky',       'CFP_SKY'),
     ('trails',    'CFP_TRL'),
     ('crreject',  'CFP_CR'),
+    ('persist',   'CFP_PERS'),
     ('preview',   'CFP_PREV'),
     ('align',     'CFP_ALGN'),
 ]
@@ -71,9 +72,9 @@ COMBINE_STEPS = [
 ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
 STEP_NAMES = [name for name, _ in ALL_STEPS]
 
-# Steps an instrument does not have (none at present: every HST instrument
-# runs every step).
-_NOT_FOR = {}
+# Steps an instrument does not have. Persistence is a property of the IR
+# detector; a CCD has none.
+_NOT_FOR = {'acswfc': ('persist',)}
 
 
 def steps_for(instrument, steps=None):
@@ -330,6 +331,54 @@ def _run_trails(field, config, filt, n_processes, overwrite):
             f'files in {os.path.join(field.mask_dir, filt)}.')
 
 
+def unmasked_for_persistence(field, filt):
+    """Rootnames of the filter's calibrated exposures that carry no persistence
+    mask (always empty for an instrument without the step)."""
+    if 'persist' in _NOT_FOR.get(field.instrument, ()):
+        return []
+    return sorted(os.path.basename(f).split('_')[0]
+                  for f in field.get_exposure_files(filt)
+                  if _has(f, 'CFP_SKY') and not _has(f, 'CFP_PERS'))
+
+
+def _run_persist(field, config, filt, n_processes, overwrite):
+    """Persistence masks from the archive's predictions (WFC3/IR). One
+    process: the work is a download per visit and a threshold per exposure."""
+    from campfire_pipeline.hst.steps.persist import persist_exposures
+
+    files = [f for f in field.get_exposure_files(filt) if _has(f, 'CFP_SKY')]
+    pending = [f for f in files if overwrite or not _has(f, 'CFP_PERS')]
+    log(f'persist: {len(files)} {filt} exposures, {len(pending)} to do')
+    if not pending:
+        return
+    reasons = persist_exposures(pending, field.raw_root,
+                                step_config=step_config('persist', field, config),
+                                overwrite=overwrite)
+    if reasons:
+        _warn_no_persistence(field, filt, reasons)
+
+
+def _warn_no_persistence(field, filt, reasons):
+    bar = '!' * 72
+    log('')
+    log(bar)
+    log(f'persist: WARNING: {len(reasons)} {filt} exposure(s) have NO persistence '
+        f'mask, because no')
+    log('prediction could be had from the archive. They are not held back: they '
+        'go into')
+    log('the mosaic as they are.')
+    by_reason = {}
+    for root, reason in sorted(reasons.items()):
+        by_reason.setdefault(reason, []).append(root)
+    for reason, roots in by_reason.items():
+        log(f'  {reason}:')
+        log(f'      {", ".join(roots)}')
+    log(f'To try again: `cfpipe {field.instrument} persist --field {field.name}` '
+        f'(only these are retried).')
+    log(bar)
+    log('')
+
+
 def _run_preview(field, config, filt, n_processes, overwrite):
     """Review PNGs, once the flags they blank are in: after crreject on
     ACS/WFC (every exposure gets cosmic-ray flags there), after sky on
@@ -504,6 +553,7 @@ _PROCESS_RUNNERS = {
     'sky': _run_sky,
     'trails': _run_trails,
     'crreject': _run_crreject,
+    'persist': _run_persist,
     'preview': _run_preview,
     'align': _run_align,
 }
@@ -814,6 +864,14 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
         if not paths:
             log(f'combine: no {filt} exposure is ready for a mosaic')
             continue
+        # Not a reason to hold an exposure back, but never unsaid: these go
+        # into the mosaic without a persistence mask.
+        bare = unmasked_for_persistence(field, filt)
+        if bare:
+            log(f'combine: WARNING: {len(bare)} {filt} exposure(s) have no '
+                f'persistence mask ({", ".join(bare)}). Run `cfpipe '
+                f'{field.instrument} persist --field {field.name}`, then '
+                f'`combine`, to mask them.')
         if 'outlier' in steps:
             _run_outlier(field, config, filt, n_processes, overwrite, paths)
         if 'resample' in steps:

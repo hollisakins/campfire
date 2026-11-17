@@ -139,6 +139,8 @@ HST = Keyset(
         # a reset from crreject clears the alignment as well. The preview
         # shows the pixels left after the flags, so it is cleared with them.
         'CFP_CR',    # cosmic-ray flags (per visit)
+        'CFP_PERS',  # persistence flagged in DQ from the archive's prediction
+                     # (WFC3/IR)
         'CFP_PREV',  # preview PNG
         'CFP_ALGN',  # astrometric align
         'CFP_MASK',  # user region masks (CFMASK extension)
@@ -151,6 +153,7 @@ HST = Keyset(
         'CFP_TRL':  'campfire: satellite trails flagged',
         'CFP_ALGN': 'campfire: align solve',
         'CFP_CR':   'campfire: cosmic rays flagged',
+        'CFP_PERS': 'campfire: persistence flagged',
         'CFP_PREV': 'campfire: preview PNG rendered',
         'CFP_MASK': 'campfire: user masks applied',
         'CFP_OUT':  'campfire: outlier detection done',

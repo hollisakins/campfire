@@ -1498,6 +1498,24 @@
     driz_cr_grow = 1
     driz_cr_ctegrow = 0
 
+[wfc3ir.persist]
+    # Persistence: charge an IR pixel keeps releasing for hours after it was
+    # filled, by an earlier exposure of the visit or by whatever the detector
+    # observed before. STScI predicts it for every WFC3/IR exposure from all
+    # the WFC3/IR exposures of the hours before (the WFC3 Persistence Project;
+    # Data Handbook 8.2), and the step masks the pixels whose prediction
+    # exceeds `threshold` (DQ bit 16384). SCI is not changed.
+    #
+    # threshold    predicted persistence above which a pixel is masked, in
+    #              electrons per second. 0.01 is the handbook's example level
+    #              (8.3). For scale, the F160W background of a `macs0647`
+    #              exposure is 0.5 e-/s.
+    # archive_url  where the per-visit archives of predictions are served
+    # timeout      seconds allowed for one visit's download
+    threshold = 0.01
+    archive_url = "https://archive.stsci.edu/pub/wfc3_persist"
+    timeout = 600
+
 [wfc3ir.trails]
     # Satellite trails, written as polygons into the exposure's region file
     # like those of ACS/WFC. calwf3 removes a trail only where it adds more

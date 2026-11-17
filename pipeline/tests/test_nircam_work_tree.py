@@ -155,3 +155,67 @@ def test_materialize_quarantines_not_aligned(tmp_path):
     assert not os.path.exists(os.path.join(work_dir, f'{rej_root}.fits'))
     assert not os.path.exists(os.path.join(work_dir, f'{unstamped_root}.fits'))
     assert os.path.exists(os.path.join(work_dir, f'{_ROOT}.fits'))
+
+
+def _stamp_out(path):
+    with fits.open(path, mode='update') as hdul:
+        hdul[0].header['CFP_OUT'] = '2026-11-17T00:00:00'
+        hdul.flush()
+
+
+def test_resample_alone_never_drizzles_short_of_an_unflagged_exposure(
+        tmp_path, monkeypatch, capsys):
+    """A mosaic is made of every exposure of the filter or not at all, as for
+    the HST instruments. Resample on its own used to drop a working copy the
+    outlier pass had not stamped and drizzle the rest with nothing said, and
+    `resample --overwrite` on its own re-copied every working copy and then
+    found nothing to drizzle."""
+    import sys
+    import types
+
+    from campfire_pipeline.nircam import orchestrate
+
+    drizzled = []
+    fake = types.ModuleType('campfire_pipeline.nircam.steps.resample')
+    fake.resample_step = lambda filt, exposures, *a, **k: drizzled.append(
+        sorted(os.path.basename(e) for e in exposures))
+    monkeypatch.setitem(sys.modules,
+                        'campfire_pipeline.nircam.steps.resample', fake)
+
+    f = _make_field(tmp_path)
+    d = f.filter_dir('f444w')
+    other = 'jw01727028001_04101_00004_nrcalong'
+    canon = [os.path.join(d, f'{r}.fits') for r in (_ROOT, other)]
+    for c in canon:
+        _write_canonical(c, stamps=('CFP_JHAT', 'CFP_MASK'))
+        _stamp_algn(c, 'dof=shared res=0.01 n=30')
+
+    # nothing has been through the outlier pass: nothing is drizzled
+    left = orchestrate.run_step('resample', f, {})
+    assert left == {'f444w': sorted([_ROOT, other])}
+    assert not drizzled
+    assert 'NOT DRIZZLED' in capsys.readouterr().out
+
+    # the pass stamps both working copies: resample drizzles both
+    work = f.materialize_work('f444w')
+    for w in work:
+        _stamp_out(w)
+    assert orchestrate.run_step('resample', f, {}) == {}
+    assert drizzled == [[f'{_ROOT}.fits', f'{other}.fits']]
+
+    # resample --overwrite re-drizzles from the flagged copies, not fresh ones
+    assert orchestrate.run_step('resample', f, {}, overwrite=True) == {}
+    assert len(drizzled) == 2 and drizzled[1] == drizzled[0]
+    with fits.open(work[0]) as hdul:
+        assert 'CFP_OUT' in hdul[0].header
+
+    # one canonical exposure changes, so its working copy is fresh: the filter
+    # is held back whole, not drizzled short of that exposure
+    later = os.path.getmtime(work[1]) + 10
+    os.utime(canon[1], (later, later))
+    capsys.readouterr()
+    left = orchestrate.run_step('resample', f, {})
+    assert left == {'f444w': [other]}
+    assert len(drizzled) == 2
+    out = capsys.readouterr().out
+    assert other in out and 'cfpipe nircam combine --field cosmos' in out

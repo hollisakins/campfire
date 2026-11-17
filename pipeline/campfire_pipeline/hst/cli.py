@@ -31,15 +31,16 @@ from campfire_pipeline.common.io import log
 NAMES = {'acswfc': 'ACS/WFC', 'wfc3ir': 'WFC3/IR'}
 
 _LABELS = {'calibrate': 'cal', 'wcs_init': 'wcs', 'sky': 'sky',
-           'trails': 'trl', 'crreject': 'cr', 'preview': 'prev',
+           'trails': 'trl', 'crreject': 'cr', 'persist': 'pers',
+           'preview': 'prev',
            'align': 'algn', 'apply_masks': 'mask', 'outlier': 'out'}
 
 # `reset --from` clears stamps so that a step runs again. That is safe for
 # the steps that only write flags, a mask, a preview or a WCS. The others
 # change the pixels the later steps were built on (or, for wcs_init, the WCS
 # the alignment started from), so they are redone from the RAW file.
-_RESET_FROM = ('trails', 'crreject', 'preview', 'align', 'apply_masks',
-               'outlier')
+_RESET_FROM = ('trails', 'crreject', 'persist', 'preview', 'align',
+               'apply_masks', 'outlier')
 
 
 def _common(f):

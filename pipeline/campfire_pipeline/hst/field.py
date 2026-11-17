@@ -64,8 +64,8 @@ from campfire_pipeline.nircam.field import Field, _expand_braces, parse_tiles
 ROOTNAME_LETTER = {'acswfc': 'j', 'wfc3ir': 'i'}
 
 # The steps a field may override, [<field>.<instrument>.<step>].
-STEP_TABLES = ('calibrate', 'sky', 'trails', 'crreject', 'preview', 'align',
-               'outlier', 'resample')
+STEP_TABLES = ('calibrate', 'sky', 'trails', 'crreject', 'persist', 'preview',
+               'align', 'outlier', 'resample')
 
 _KEYS = {'filters', 'files', 'skip'} | set(STEP_TABLES)
 
