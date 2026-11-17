@@ -188,8 +188,10 @@ CREATE INDEX IF NOT EXISTS idx_list_audit_user_id
 -- spectra
 -- =============================================================================
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_target_grating
-    ON public.spectra USING btree (target_id, grating);
+-- A spectrum is one disperser setup of one target: G140M/F070LP and
+-- G140M/F100LP are two rows (#683). Deploy upserts on this key.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_target_grating_filter
+    ON public.spectra USING btree (target_id, grating, filter);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_fits_path
     ON public.spectra USING btree (fits_path);
@@ -773,7 +775,7 @@ CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_program
 CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_observation
     ON public.dr_spectra USING btree (tag, observation);
 CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_target
-    ON public.dr_spectra USING btree (tag, target_id, grating);
+    ON public.dr_spectra USING btree (tag, target_id, grating, filter);
 CREATE INDEX IF NOT EXISTS idx_dr_spectra_search_text_trgm
     ON public.dr_spectra USING gin (search_text public.gin_trgm_ops);
 -- "which DRs is this spectrum in" (provenance line, identify).

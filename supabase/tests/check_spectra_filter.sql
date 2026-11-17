@@ -8,6 +8,10 @@
 --      fits_path update, re-derives it when fits_path moves and the filter
 --      does not, and never overrides a filter the writer changed; a
 --      non-admin cannot change it (enforce_spectra_dq_user_update_scope).
+--   2b. (target_id, grating, filter) is the unique key: two filters of one
+--      grating coexist, a repeated setup is refused or upserted in place, and
+--      a G140M/H write that names no filter fails NOT NULL (the other
+--      gratings take their only filter).
 --   3. The predicate tree takes `filter` on spectra, and through an exists at
 --      the objects root.
 --   4. The freeze copies it into dr_spectra.
@@ -35,7 +39,7 @@ BEGIN
   END IF;
 
   -- 2. the trigger -----------------------------------------------------------
-  -- a seed target without a G140H spectrum, so the (target_id, grating) key is free
+  -- a seed target without a G140H spectrum, so its G140H keys are free
   SELECT t.target_id INTO v_target
   FROM targets t
   WHERE NOT EXISTS (SELECT 1 FROM spectra s WHERE s.target_id = t.target_id AND s.grating = 'G140H')
@@ -87,6 +91,62 @@ BEGIN
     NULL;
   END;
   PERFORM set_config('request.jwt.claims', '', true);
+
+  -- 2b. the key (#683) ---------------------------------------------------------
+  -- the row above is G140H/F170LP now; one grating through two filters is two
+  -- spectra
+  INSERT INTO spectra (target_id, grating, fits_path, deploy_status)
+  VALUES (v_target, 'G140H', 'nirspec/zz/zz_obs_g140h_f100lp_4_spec.fits', 'draft');
+  INSERT INTO spectra (target_id, grating, fits_path, deploy_status)
+  VALUES (v_target, 'G140H', 'nirspec/zz/zz_obs_g140h_f070lp_4_spec.fits', 'draft');
+  SELECT count(*) INTO v_n FROM spectra WHERE target_id = v_target AND grating = 'G140H';
+  IF v_n <> 3 THEN
+    RAISE EXCEPTION 'one target, G140H through three filters: expected 3 rows, got %', v_n;
+  END IF;
+
+  -- the same setup twice is refused, and the deploy's upsert updates in place
+  BEGIN
+    INSERT INTO spectra (target_id, grating, fits_path, deploy_status)
+    VALUES (v_target, 'G140H', 'nirspec/zz/zz_other_g140h_f100lp_4_spec.fits', 'draft');
+    RAISE EXCEPTION 'a second G140H/F100LP row for one target was accepted';
+  EXCEPTION WHEN unique_violation THEN
+    NULL;
+  END;
+  INSERT INTO spectra (target_id, grating, filter, fits_path, deploy_status)
+  VALUES (v_target, 'G140H', 'F100LP', 'nirspec/zz/zz_obs_g140h_f100lp_4_spec.fits', 'draft')
+  ON CONFLICT (target_id, grating, filter) DO UPDATE SET exposure_time = 123;
+  SELECT count(*) INTO v_n FROM spectra
+  WHERE target_id = v_target AND grating = 'G140H' AND filter = 'F100LP' AND exposure_time = 123;
+  IF v_n <> 1 THEN
+    RAISE EXCEPTION 'upsert on (target_id, grating, filter) did not update the row in place';
+  END IF;
+
+  -- a path naming no filter, sent without one, never lands outside the key;
+  -- the trigger fills a NULL filter before the arbiter check, so a write
+  -- without the column still upserts on the right row
+  -- (a grating with one possible filter takes it: PRISM is always CLEAR)
+  INSERT INTO spectra (target_id, grating, fits_path, deploy_status)
+  VALUES (v_target, 'PRISM', 'nirspec/zz/not_a_spectrum_prism.fits', 'draft')
+  ON CONFLICT (target_id, grating, filter) DO NOTHING;
+  SELECT filter INTO v_filter FROM spectra WHERE fits_path = 'nirspec/zz/not_a_spectrum_prism.fits';
+  IF v_filter IS NOT NULL AND v_filter <> 'CLEAR' THEN
+    RAISE EXCEPTION 'PRISM with an unparseable path: expected CLEAR, got %', v_filter;
+  END IF;
+  BEGIN
+    INSERT INTO spectra (target_id, grating, fits_path, deploy_status)
+    VALUES (v_target, 'G140M', 'nirspec/zz/not_a_spectrum.fits', 'draft');
+    RAISE EXCEPTION 'a G140M spectrum without a filter was accepted';
+  EXCEPTION WHEN not_null_violation THEN
+    NULL;
+  END;
+  INSERT INTO spectra (target_id, grating, fits_path, deploy_status)
+  VALUES (v_target, 'G140H', 'nirspec/zz/zz_obs_g140h_f070lp_4_spec.fits', 'draft')
+  ON CONFLICT (target_id, grating, filter) DO UPDATE SET exposure_time = 456;
+  SELECT count(*) INTO v_n FROM spectra
+  WHERE target_id = v_target AND grating = 'G140H' AND filter = 'F070LP' AND exposure_time = 456;
+  IF v_n <> 1 THEN
+    RAISE EXCEPTION 'an upsert without the filter column missed its row';
+  END IF;
 
   -- 3. the predicate tree ----------------------------------------------------
   SELECT count(*) INTO v_n FROM spectra WHERE filter = 'F070LP';

@@ -6345,7 +6345,9 @@ RETURNS TABLE(
   band_snr DOUBLE PRECISION,
   -- the several-columns maps (phase 3c, #660)
   line_columns JSONB,
-  band_columns JSONB
+  band_columns JSONB,
+  -- the NIRSpec filter (#683): with grating the disperser setup
+  filter TEXT
 )
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
@@ -6402,7 +6404,7 @@ BEGIN
     GROUP BY olm.object_id
   ),
   filtered_spectra AS (
-    SELECT s.id, s.spectrum_id, t.target_id, s.grating, t.field, t.ra, t.dec,
+    SELECT s.id, s.spectrum_id, t.target_id, s.grating, s.filter, t.field, t.ra, t.dec,
       o.redshift, o.redshift_quality,
       s.redshift_auto,
       s.signal_to_noise, s.exposure_time, s.fits_path, t.program_slug, t.observation,
@@ -6491,7 +6493,7 @@ BEGIN
     df.signal_to_noise, df.exposure_time, df.fits_path, df.program_slug,
     pr.program_name, df.last_inspected_at, up.full_name AS last_inspected_by,
     df.distance, df.dq_flags, df.lists, df.line_snr, df.band_mag, df.band_snr,
-    df.line_columns, df.band_columns
+    df.line_columns, df.band_columns, df.filter
   FROM distance_filtered df
   LEFT JOIN programs pr ON pr.slug = df.program_slug
   LEFT JOIN user_profiles up ON up.user_id = df.last_inspected_by
