@@ -108,16 +108,52 @@ def test_migration_era_commands_deleted():
         assert nirspec.commands[name].hidden, name
 
 
-def test_status_accepts_scope_flags():
-    cli = _cli()
-    params = {p.name for p in cli.commands['status'].params}
-    assert {'obs_scope', 'field_scope'} <= params
+def test_status_scope_points_at_a_push_dry_run():
+    res = CliRunner().invoke(_cli(), ['status', '--obs', 'a', 'b', '--field', 'nep'])
+    assert res.exit_code == 2
+    assert 'campfire push spec --obs a b --dry-run' in res.output
+    assert 'campfire push im --field nep --dry-run' in res.output
 
 
-def test_verify_has_cloud_and_json_flags():
+def test_verify_has_cloud_and_json_flags_and_modality_scopes():
     cli = _cli()
-    params = {p.name for p in cli.commands['verify'].params}
-    assert {'cloud', 'as_json', 'obs_filter'} <= params
+    verify = cli.commands['verify']
+    assert {'cloud', 'as_json', 'deep', 'local'} <= {p.name for p in verify.params}
+    assert set(verify.commands) == {'spectroscopy', 'imaging'}
+    runner = CliRunner()
+    for args in (['verify', 'spec', '--help'], ['verify', 'im', '--help']):
+        assert runner.invoke(cli, args).exit_code == 0, args
+    # --cloud is catalog-wide: no modality
+    res = runner.invoke(cli, ['verify', '--cloud', 'im', '--field', 'nep'])
+    assert res.exit_code == 2 and 'whole catalog' in res.output
+    # the old flag is answered with the new command
+    res = runner.invoke(cli, ['verify', '--obs', 'ember_uds_p4'])
+    assert res.exit_code == 2 and 'campfire verify spec --obs ember_uds_p4' in res.output
+
+
+def test_verify_scopes_the_local_scan_by_modality(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeStore:
+        def verify_local_objects(self, root, **kw):
+            calls.append(kw)
+            return {'cleared': 0, 'rehashed': 0, 'discovered': 0}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main_cli, '_open_store', lambda: FakeStore())
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
+    runner = CliRunner()
+    assert runner.invoke(_cli(), ['verify', 'im', '--field', 'nep']).exit_code == 0
+    assert runner.invoke(_cli(), ['verify', '--deep', 'spec', '--obs', 'o1']).exit_code == 0
+    assert runner.invoke(_cli(), ['verify']).exit_code == 0
+    im, spec, whole = calls
+    assert im['fields'] == ['nep'] and im['observations'] is None
+    assert set(im['product_types']) == {'nircam_mosaic', 'nircam_exposure', 'nircam_expmap'}
+    assert spec['observations'] == ['o1'] and spec['deep'] is True
+    assert set(spec['product_types']) == {'nirspec_spec', 'nirspec_spectrum_exposure'}
+    assert whole['product_types'] is None and whole['observations'] is None and whole['fields'] is None
 
 
 # --- deploy --no-mosaics ----------------------------------------------------

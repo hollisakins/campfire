@@ -534,23 +534,23 @@ def format_budget_lines(budget: dict) -> list[str]:
 
 
 @cli.command()
-@click.option("--obs", "obs_scope", multiple=True, cls=_VariadicOption,
-              help="Also show the push-side diff for these observation(s) "
-                   "(admin, deploy extra)")
-@click.option("--field", "field_scope", multiple=True, cls=_VariadicOption,
-              help="Also show the push-side diff for these NIRCam field(s)")
+# Removed in 0.8: the scoped push-side diff is `campfire push spec|im ... --dry-run`.
+@click.option("--obs", "obs_scope", multiple=True, cls=_VariadicOption, hidden=True)
+@click.option("--field", "field_scope", multiple=True, cls=_VariadicOption, hidden=True)
 @click.option("--base-url", default=None, help="API base URL")
 def status(obs_scope, field_scope, base_url: Optional[str]):
     """Check credentials, catalog, and the local↔cloud storage state.
 
-    Unscoped: consumer view — what the cloud has vs what is materialized
-    locally, plus staleness and (for admins) the storage budget.
-
-    Scoped with --obs/--field (operators): additionally runs the push planner
-    in dry mode and reports the other direction — how many local tree products
-    are new / changed / unchanged relative to the cloud registry (what
-    `campfire push` would transfer).
+    What the cloud has vs what is materialized locally, plus staleness and
+    (for admins) the storage budget. What a push would transfer is
+    `campfire push spec --obs X --dry-run` / `campfire push im --field Y --dry-run`.
     """
+    if obs_scope or field_scope:
+        lines = ["`campfire status` no longer takes a scope; what a push would transfer is a "
+                 "push dry run:"]
+        lines += [f"  campfire push spec --obs {' '.join(obs_scope)} --dry-run"] if obs_scope else []
+        lines += [f"  campfire push im --field {' '.join(field_scope)} --dry-run"] if field_scope else []
+        raise click.UsageError("\n".join(lines))
     base_url = base_url or resolve_base_url()
 
     try:
@@ -658,28 +658,6 @@ def status(obs_scope, field_scope, base_url: Optional[str]):
         click.echo(f"\nDisk usage: {format_size(total)}")
 
     store.close()
-
-    # Push-side diff (operators): what `campfire push` would transfer for the
-    # requested scope — new / changed / unchanged local tree products vs the
-    # cloud registry (live key-scoped fetch + the mirror's stat fast path).
-    if obs_scope or field_scope:
-        try:
-            from campfire.deploy.config import load_config
-            from campfire.deploy.push import push_field, push_observation
-        except ImportError:
-            click.echo("\n✗ --obs/--field status needs the deploy extra: "
-                       "pip install campfire[deploy]")
-            return
-        try:
-            config = load_config(None)
-        except Exception as e:
-            click.echo(f"\n✗ Push-side status unavailable: {e}")
-            return
-        click.echo("\nPush-side diff (what `campfire push` would transfer):")
-        for name in obs_scope:
-            push_observation(name, config, dry_run=True, dry_run_note=False)
-        for name in field_scope:
-            push_field(name, config, dry_run=True, dry_run_note=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1821,34 +1799,81 @@ def _maybe_pull_annotations(obs_names, nircam_fields, disabled: bool) -> None:
         click.echo(f"  (annotations skipped: {e})")
 
 
-@cli.command()
-@click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption,
-              help="Limit to observation(s)")
+def _verify_options(f):
+    f = click.option("--json", "as_json", is_flag=True,
+                     help="Machine-readable report (for CI); exit 1 on drift")(f)
+    f = click.option("--deep", is_flag=True,
+                     help="Content-hash changed/discovered files instead of the "
+                          "size-match quick check (reads every such file)")(f)
+    return f
+
+
+@cli.group(name="verify", cls=ModalityGroup, legacy_flags=("--obs", "--field"),
+           invoke_without_command=True)
 @click.option("--cloud", "cloud", is_flag=True,
               help="Also verify the cloud registry against the actual buckets "
                    "(admin; needs S3 LIST credentials — OSN primary, legacy R2)")
-@click.option("--deep", is_flag=True,
-              help="Content-hash changed/discovered files instead of the "
-                   "size-match quick check (reads every such file)")
-@click.option("--json", "as_json", is_flag=True,
-              help="Machine-readable report (for CI); exit 1 on drift")
 @click.option("--local", is_flag=True,
               help="--cloud against local Supabase (127.0.0.1:54321)")
-def verify(obs_filter, cloud, deep, as_json, local):
+@_verify_options
+@click.pass_context
+def verify(ctx, cloud, local, deep, as_json):
     """Verify local tree ↔ index, and optionally index ↔ cloud buckets.
 
     Without --cloud: reconciles the local products tree against the storage
     index via one bulk directory scan (no file reads): clears vanished files,
     and adopts present files whose size matches the cloud object (rsync-style
     quick check — the server hash is presumed, not re-computed). --deep
-    additionally content-hashes every changed/discovered file.
+    additionally content-hashes every changed/discovered file. The whole tree
+    by default; `verify spec --obs X` / `verify im --field Y` scope the scan.
 
     With --cloud (admin): additionally compares live DB pointers vs the
     registry vs actual bucket LISTs — OSN first (the data home), then the
     legacy R2 data bucket. Exits non-zero when live pointers lack registry
     rows (missing) or registry rows lack bucket objects (dangling), so a
-    scheduled CI run can alarm on drift.
+    scheduled CI run can alarm on drift. It checks the whole catalog, so it
+    takes no modality.
     """
+    if ctx.invoked_subcommand:
+        if cloud or local:
+            raise click.UsageError("--cloud checks the whole catalog; run it without "
+                                   "spec / im.", ctx)
+        ctx.obj = dict(deep=deep, as_json=as_json)
+        return
+    _verify(None, None, None, cloud=cloud, deep=deep, as_json=as_json, local=local)
+
+
+@click.command(name="spectroscopy")
+@click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption, required=True,
+              help="Observation name(s)")
+@_verify_options
+@click.pass_context
+def verify_spectroscopy(ctx, obs_filter, deep, as_json):
+    """The local spectra and exposures of these observations."""
+    parent = ctx.obj or {}
+    _verify(normalize_names(obs_filter), None, SPECTROSCOPY,
+            cloud=False, deep=deep or parent.get("deep", False),
+            as_json=as_json or parent.get("as_json", False), local=False)
+
+
+@click.command(name="imaging")
+@click.option("--field", "field_filter", multiple=True, cls=_VariadicOption, required=True,
+              help="Field name(s)")
+@_verify_options
+@click.pass_context
+def verify_imaging(ctx, field_filter, deep, as_json):
+    """The local mosaics, exposures and expmaps of these fields."""
+    parent = ctx.obj or {}
+    _verify(None, normalize_names(field_filter), IMAGING,
+            cloud=False, deep=deep or parent.get("deep", False),
+            as_json=as_json or parent.get("as_json", False), local=False)
+
+
+verify.add_modality(verify_spectroscopy, SPECTROSCOPY.alias)
+verify.add_modality(verify_imaging, IMAGING.alias)
+
+
+def _verify(observations, fields, modality, *, cloud, deep, as_json, local):
     import json as _json
 
     from .config import products_dir as _products_dir
@@ -1857,9 +1882,16 @@ def verify(obs_filter, cloud, deep, as_json, local):
     if not as_json:
         click.echo("Verifying local tree against the index...")
     store = _open_store()
+    product_types = None
+    if modality is not None:
+        product_types = modality.pull_types(
+            [n for n in modality.product_names()
+             if any(k.pullable for k in modality.kinds([n]))])
     local_totals = store.verify_local_objects(
         _products_dir(),
-        observations=list(obs_filter) or None,
+        product_types=product_types,
+        observations=observations or None,
+        fields=fields or None,
         deep=deep,
         show_progress=not as_json,
     )

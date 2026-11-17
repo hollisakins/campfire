@@ -260,11 +260,12 @@ products live on OSN; map tiles are the sole R2 exception.**
 
 ```bash
 campfire sync                          # refresh the local index (never touches the tree)
-campfire status [--obs X | --field Y]  # bidirectional diff; scoped = push-side dry run
+campfire status                        # cloud vs local, staleness, budget (push side: push … --dry-run)
 campfire pull spec --obs X [--products spectra,exposures]   # cloud→local (+ redshifts, review annotations)
 campfire pull im --field Y [--products mosaics,exposures,expmaps] [--filters …] [--tile …]
 campfire push spec --obs X | push im --field Y                # local→cloud bytes ONLY — no catalog, no publication
 campfire verify [--cloud] [--deep]     # tree↔index (bulk scan, size-match quick check); --cloud adds registry↔bucket
+campfire verify spec --obs X | verify im --field Y            # the same scan, scoped to one modality
 campfire drop-local --obs X --yes      # delete local files verified in cloud
 ```
 
@@ -285,7 +286,9 @@ and one that matches nothing in the selection is an error. `--tile` narrows mosa
 (exposures and expmaps are whole-field); `pull` reads the tile from the mosaic filename
 (`modality.mosaic_tile`), `push` from the mosaic manifest. Bare `pull` keeps only what spans
 modalities (`--stale`, `--provenance`); the pre-0.8 flag syntax is answered with the
-equivalent new command (`ModalityGroup`), not accepted.
+equivalent new command (`ModalityGroup`), not accepted. `verify` takes the same optional
+modality scope (`verify spec --obs` / `verify im --field`; bare `verify` and `--cloud` are
+catalog-wide), and `status` no longer takes a scope: its old push-side diff is `push … --dry-run`.
 
 **What `campfire sync` mirrors.** The five `/api/v1/sync/*` streams (objects,
 spectra, storage, photometry, line fits) are walked concurrently with keyset

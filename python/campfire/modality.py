@@ -207,7 +207,7 @@ def migration_hint(verb: str, args: Sequence[str]) -> str:
     if not modalities:
         modalities = [SPECTROSCOPY, IMAGING]
 
-    lines = [f"`campfire {verb}` now takes a modality first: "
+    lines = [f"`campfire {verb}` scopes by modality: "
              f"`campfire {verb} spectroscopy` (spec) or `campfire {verb} imaging` (im).", ""]
     if len(modalities) == 2 and "--field" in flags:
         lines.append("A field holds both spectroscopy and imaging; pick one:")
