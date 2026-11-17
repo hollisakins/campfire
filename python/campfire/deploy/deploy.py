@@ -73,8 +73,8 @@ from campfire.deploy.summary import (
     get_zfit_scalar_updates,
     get_zfit_paths,
     load_summary,
-    spectrum_filter_from_path,
     spectrum_key,
+    summary_row_filter,
 )
 
 
@@ -1303,14 +1303,13 @@ def deploy_thumbnails(
             # summary predates the column.
             for row in summary:
                 if row['spec_file'] == spec_path.name:
-                    filt = (str(row['filter']).strip() if 'filter' in summary.colnames else '') \
-                        or spectrum_filter_from_path(spec_path.name)
+                    filt = summary_row_filter(summary, row)
                     if not filt:
                         raise ValueError('no NIRSpec filter in the summary or the file name')
                     sb.table('spectra').update(thumbs).eq(
                         'target_id', row['object_id']
                     ).eq('grating', row['grating']).eq(
-                        'filter', str(filt).upper()
+                        'filter', filt
                     ).execute()
                     updated += 1
                     break

@@ -253,6 +253,22 @@ def test_get_spectra_records_refuses_an_ambiguous_grating_without_a_filter():
         get_spectra_records(t, 'obs1')
 
 
+def test_summary_row_filter_treats_an_empty_cell_as_absent():
+    """A masked / '--' / 'None' cell is no filter: the file name, then the
+    grating's only filter decide (never a filter named '--')."""
+    from campfire.deploy.summary import summary_row_filter
+    t = _spectra_table()
+    t['grating'] = ['G140M', 'G395M']
+    t['fits_filename'] = ['obs1_g140m_f070lp_1_spec.fits', 'b_spec.fits']
+    for empty in ('--', 'None', ''):
+        t['filter'] = [empty, empty]
+        assert summary_row_filter(t, t[0]) == 'F070LP'
+        assert summary_row_filter(t, t[1]) == 'F290LP'
+    t['grating'] = ['G140M', 'G140H']
+    t['fits_filename'] = ['a_spec.fits', 'b_spec.fits']
+    assert summary_row_filter(t, t[1]) is None
+
+
 def test_spectrum_key_and_filter_parser():
     from campfire.deploy.summary import spectrum_filter_from_path, spectrum_key
     # mirrors public.spectrum_filter_from_path (check_spectra_filter.sql)
