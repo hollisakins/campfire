@@ -347,6 +347,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   (`NDRIZ` stays the number of chips). The `INPUTS` table gains `crds_ctx`, `expstart`,
   `expend`. No pixel changes. A mosaic drizzled before this keeps its old header until it
   is drizzled again (`resample --overwrite`).
+- **An HST mosaic is made only of exposures the outlier pass has stamped, as NIRCam's is.**
+  `cfpipe acswfc|wfc3ir resample` run on its own drizzled whatever working copies it found,
+  including fresh ones with no outlier flags, and `resample --overwrite` first replaced every
+  working copy with a fresh one: the mosaic was then drizzled with no field-level outlier
+  rejection and no message. Now the working copies are replaced only in a run that includes
+  the outlier step, so `resample --overwrite` re-drizzles from the flagged copies; and when
+  any working copy of a filter lacks `CFP_OUT` (its canonical exposure changed since the
+  last outlier pass), resample alone leaves that filter's mosaics as they are, names the
+  exposures and says to run `combine`. A full `combine` is unchanged: it flags first.
 - **NIRCam `align` pools the exposures of a visit (`[nircam.align].pool = "visit"`,
   the new default; `"exposure"` is the previous behaviour).** The exposures of one
   visit and filter are first fitted to each other on their common sources, which

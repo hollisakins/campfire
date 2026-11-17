@@ -244,6 +244,60 @@ def test_combine_flags_outliers_on_copies_and_drizzles_the_tile(field, config):
     assert cfp.step_value(work[0], 'CFP_OUT', keyset=cfp.HST).startswith('visit n=2')
 
 
+def test_resample_alone_never_drizzles_what_the_outlier_pass_has_not_seen(
+        field, config, capsys):
+    """Only exposures the outlier pass has stamped go into a mosaic, as for
+    NIRCam. `resample --overwrite` on its own re-drizzles from the flagged
+    working copies; it does not replace them with fresh ones. And when a
+    working copy is fresh (its canonical file changed), resample alone leaves
+    the mosaic as it is and says to run combine, instead of drizzling the
+    unflagged exposure or rebuilding the mosaic without it."""
+    files = _exposures(field)
+    d = field.filter_dir('f160w')
+    mosaic = os.path.join(d, 'mosaic_wfc3ir_f160w_tf_30mas_T1_i2d.fits')
+
+    # nothing has been flagged yet: resample alone drizzles nothing
+    left = orchestrate.run_step('resample', field, config)
+    assert not os.path.exists(mosaic)
+    assert len(left['f160w'][orchestrate._NO_OUTLIER_PASS]) == 3
+    assert 'not drizzled' in capsys.readouterr().out
+
+    orchestrate.run_combine(field, config)
+    work = field.get_exposure_files('f160w', work=True)
+    flags = [fits.getdata(w, (OUTLIER_EXT, 1)).sum() for w in work]
+    assert flags[0] > 0
+
+    # resample --overwrite: the mosaic is rewritten, the flags are kept
+    before = os.path.getmtime(mosaic)
+    os.utime(mosaic, (before - 10, before - 10))
+    left = orchestrate.run_step('resample', field, config, overwrite=True)
+    assert not left
+    assert os.path.getmtime(mosaic) > before - 10
+    assert [fits.getdata(w, (OUTLIER_EXT, 1)).sum() for w in work] == flags
+    assert all(cfp.has_step(w, 'CFP_OUT', keyset=cfp.HST) for w in work)
+    with fits.open(mosaic) as hdul:
+        assert len(hdul['INPUTS'].data) == 3
+
+    # a canonical exposure changes (a later timestamp is enough for a fresh
+    # copy): resample alone holds the filter back and rewrites nothing
+    later = os.path.getmtime(work[1]) + 5
+    os.utime(files[1], (later, later))
+    stamp = os.path.getmtime(mosaic)
+    capsys.readouterr()
+    left = orchestrate.run_step('resample', field, config)
+    assert left['f160w'][orchestrate._NO_OUTLIER_PASS] == [
+        os.path.basename(files[1]).split('_')[0]]
+    assert os.path.getmtime(mosaic) == stamp
+    assert 'cfpipe wfc3ir combine --field tf' in capsys.readouterr().out
+    with fits.open(mosaic) as hdul:
+        assert len(hdul['INPUTS'].data) == 3
+
+    # combine flags it again and the mosaic has all three
+    assert not orchestrate.run_combine(field, config)
+    with fits.open(mosaic) as hdul:
+        assert len(hdul['INPUTS'].data) == 3
+
+
 def test_visits_of_two_programs_are_flagged_separately_unless_asked(field, config):
     """Two visits on the same sky, one per program. By default each is
     compared with itself only; with cross_program_overlap each also sees the

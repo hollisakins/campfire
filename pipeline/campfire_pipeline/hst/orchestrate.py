@@ -608,8 +608,12 @@ def _run_apply_masks(field, filt, overwrite=False):
 
 
 _NOT_CALIBRATED = 'not calibrated yet (RAW file selected, no calibrated exposure)'
+_NO_OUTLIER_PASS = 'not through the outlier pass (its working copy has no CFP_OUT)'
 _HELD_BACK_FIX = {
     _NOT_CALIBRATED: 'run `cfpipe {inst} process --field {field}`',
+    _NO_OUTLIER_PASS:
+        'run `cfpipe {inst} combine --field {field}` (or `outlier`, then '
+        '`resample`)',
     'not aligned yet': 'run `cfpipe {inst} align --field {field}`',
     'alignment failed (NOT_ALIGNED)':
         'change [{field}.{inst}.align] and run `cfpipe {inst} align` again, '
@@ -794,7 +798,12 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
                          overwrite=overwrite and 'apply_masks' in steps)
         if not set(steps) & {'outlier', 'resample'}:
             continue
-        paths, reasons = _materialize(field, filt, overwrite, include_unaligned)
+        # A working copy is replaced by a fresh one (which has no outlier
+        # flags) only in a run that goes on to flag it. `resample --overwrite`
+        # on its own re-drizzles from the flagged copies that are there.
+        paths, reasons = _materialize(field, filt,
+                                      overwrite and 'outlier' in steps,
+                                      include_unaligned)
         missing = uncalibrated(field, filt)
         if missing:
             reasons = dict(reasons)
@@ -808,6 +817,27 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
         if 'outlier' in steps:
             _run_outlier(field, config, filt, n_processes, overwrite, paths)
         if 'resample' in steps:
+            # Only exposures the outlier pass has stamped go into a mosaic, as
+            # for NIRCam (the pass stamps every exposure it handles, one that
+            # nothing overlaps included). A working copy without the stamp is
+            # fresh: made after its canonical file changed, or never flagged.
+            # That happens only when resample runs without the outlier step.
+            # Drizzling it would put its uncompared pixels in the mosaic, and
+            # drizzling the rest would rebuild the mosaic short of it; the
+            # filter is left as it is and the run says what to do.
+            unflagged = sorted(os.path.basename(p).split('_')[0]
+                               for p in paths if not _has(p, 'CFP_OUT'))
+            if unflagged:
+                reasons = dict(reasons)
+                reasons[_NO_OUTLIER_PASS] = unflagged
+                left_out[filt] = reasons
+                _report_held_back(field, filt, {_NO_OUTLIER_PASS: unflagged})
+                log(f'resample: {filt} not drizzled: {len(unflagged)} of '
+                    f'{len(paths)} exposure(s) have not been through the '
+                    f'outlier pass, and a mosaic is made of all of them or '
+                    f'not at all. Run `cfpipe {field.instrument} combine '
+                    f'--field {field.name}`.')
+                continue
             _run_resample(field, config, filt, overwrite, version, tiles, paths)
     # Say it again where a long log ends: the mosaics above are missing these.
     for filt, reasons in left_out.items():
