@@ -416,14 +416,14 @@ CREATE INDEX IF NOT EXISTS idx_download_log_user_id
 
 
 -- =============================================================================
--- nircam_images
+-- mosaics
 -- =============================================================================
 
-CREATE INDEX IF NOT EXISTS idx_images_field
-    ON public.nircam_images USING btree (field);
+CREATE INDEX IF NOT EXISTS idx_mosaics_field
+    ON public.mosaics USING btree (field);
 
-CREATE INDEX IF NOT EXISTS idx_images_filter
-    ON public.nircam_images USING btree (filter);
+CREATE INDEX IF NOT EXISTS idx_mosaics_filter
+    ON public.mosaics USING btree (filter);
 
 
 -- =============================================================================
@@ -840,9 +840,9 @@ CREATE INDEX IF NOT EXISTS idx_dr_photometry_tag_band_mag
     ON public.dr_photometry USING btree (tag, band, mag);
 CREATE INDEX IF NOT EXISTS idx_dr_photometry_tag_band_snr
     ON public.dr_photometry USING btree (tag, band, snr DESC);
--- dr_nircam_images
-CREATE INDEX IF NOT EXISTS idx_dr_nircam_images_tag_field
-    ON public.dr_nircam_images USING btree (tag, field);
+-- dr_mosaics
+CREATE INDEX IF NOT EXISTS idx_dr_mosaics_tag_field
+    ON public.dr_mosaics USING btree (tag, field);
 -- P6b-2: the remaining live twins the catalog RPCs sort or filter on
 -- (idx_spectra_grating / _snr / _exposure_time / _dq_flags,
 -- idx_objects_redshift_quality, idx_targets_target_id_trgm), plus a tag-less

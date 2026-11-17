@@ -1912,7 +1912,7 @@ def _dr_client(local: bool, *, what: str):
               help="Release tag, e.g. DR2026.1 (letters, digits, . _ -)")
 @click.option("--nirspec", is_flag=True, help="Include the NIRSpec catalog component")
 @click.option("--field", "fields", multiple=True, metavar="FIELD",
-              help="Include the published NIRCam mosaics of FIELD (repeatable)")
+              help="Include the published mosaics of FIELD: NIRCam's, or one instrument's as INSTRUMENT/FIELD, e.g. acswfc/cosmos (repeatable)")
 @click.option("--photometry", "photometry", multiple=True, metavar="FIELD/CATALOG",
               help="Include a photometry catalog component, e.g. cosmos/'COSMOS v1.2' (repeatable)")
 @click.option("--notes", default=None, help="Free-text notes stored on the release row")
@@ -1931,7 +1931,7 @@ def dr_freeze(tag, nirspec, fields, photometry, notes, inline, no_wait, poll, ti
 
     Writes the frozen tables for TAG in one snapshot (P4a; full-row copies
     since P6b): dr_spectra, dr_targets, dr_objects, dr_line_fits,
-    dr_lines, dr_catalog_matches, dr_photometry, dr_nircam_images,
+    dr_lines, dr_catalog_matches, dr_photometry, dr_mosaics,
     dr_fields, dr_filter_options and dr_manifest. Refused while a deploy
     lease is live or TAG is already published; re-freezing an unpublished
     tag rewrites it. Nothing is visible to non-admins until `dr publish`.
@@ -2141,7 +2141,9 @@ def dr_export(tag, as_json, local):
 @dr_group.command(name="archive")
 @click.option("--tag", required=True, metavar="TAG", help="Release tag whose member bytes to archive")
 @click.option("--obs", default=None, metavar="OBS", help="Only the NIRSpec members of one observation (the staged first run)")
-@click.option("--field", default=None, metavar="FIELD", help="Only the NIRCam mosaic members of one field")
+@click.option("--field", default=None, metavar="FIELD", help="Only the imaging members of one field (one instrument: see --instrument)")
+@click.option("--instrument", type=click.Choice(["nircam", "acswfc", "wfc3ir"]), default="nircam", show_default=True,
+              help="With --field: which instrument's members of that field")
 @click.option("--workers", type=int, default=8, show_default=True, help="Parallel transfers")
 @click.option("--limit", type=int, default=None, help="Process at most N members this run")
 @click.option("--retry-failed", is_flag=True, help="Take up members a previous run marked failed")
@@ -2149,7 +2151,7 @@ def dr_export(tag, as_json, local):
 @click.option("--status", "status_only", is_flag=True, help="Only print the byte-pass progress")
 @click.option("--json", "as_json", is_flag=True, help="Print the report as JSON")
 @click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
-def dr_archive(tag, obs, field, workers, limit, retry_failed, dry_run, status_only, as_json, local):
+def dr_archive(tag, obs, field, instrument, workers, limit, retry_failed, dry_run, status_only, as_json, local):
     """Archive the files of a frozen release (P4c): its manifest, under archive/.
 
     Every file is first verified against the hash recorded at the freeze.
@@ -2181,7 +2183,7 @@ def dr_archive(tag, obs, field, workers, limit, retry_failed, dry_run, status_on
     if obs:
         prefix = key_prefix('nirspec_spec', Scope(obs=obs), scheme=KeyScheme.CANONICAL) + '/'
     elif field:
-        prefix = key_prefix('nircam_mosaic', Scope(field=field, filt='x'), scheme=KeyScheme.CANONICAL).rsplit('/', 1)[0] + '/'
+        prefix = key_prefix(f'{instrument}_mosaic', Scope(field=field, filt='x'), scheme=KeyScheme.CANONICAL).rsplit('/', 1)[0] + '/'
 
     if status_only:
         try:
@@ -2250,7 +2252,7 @@ def dr_archive(tag, obs, field, workers, limit, retry_failed, dry_run, status_on
 @click.option("--tag", required=True, metavar="TAG", help="Release tag, e.g. DR2026.1")
 @click.option("--nirspec", is_flag=True, help="Freeze with the NIRSpec catalog component (first run only)")
 @click.option("--field", "fields", multiple=True, metavar="FIELD",
-              help="Freeze with the published NIRCam mosaics of FIELD (repeatable; first run only)")
+              help="Freeze with the published mosaics of FIELD: NIRCam's, or one instrument's as INSTRUMENT/FIELD (repeatable; first run only)")
 @click.option("--photometry", "photometry", multiple=True, metavar="FIELD/CATALOG",
               help="Freeze with a photometry catalog component (repeatable; first run only)")
 @click.option("--notes", default=None, help="Free-text notes stored on the release row (first run only)")

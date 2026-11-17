@@ -468,24 +468,54 @@ def push_field(
     dry_run: bool = False,
     workers: Optional[int] = None,
     dry_run_note: bool = True,
+    instrument: Optional[str] = None,
 ) -> dict:
-    """Push a NIRCam field's tree products to OSN (bytes only).
+    """Push an imaging field's tree products to OSN (bytes only).
 
-    Covers canonical exposures (sci_dq identity), expmaps, preview/full PNGs,
-    and mosaics (whole-file identity). No deployment is recorded and no
-    ``nircam_exposures``/``nircam_images`` rows are touched — a later
+    Every imaging instrument with products of the field on this machine
+    (NIRCam, ACS/WFC, WFC3/IR), one after another, or the one named by
+    ``instrument``. Covers canonical exposures (exposure identity), expmaps,
+    preview/full PNGs, and mosaics (whole-file identity). No deployment is
+    recorded and no ``exposures``/``mosaics`` rows are touched — a later
     ``campfire deploy --field`` attaches everything to a deployment and
     dedup-skips the bytes this push landed.
     """
+    from campfire.deploy.nircam import instruments_on_disk
+
+    instruments = [instrument] if instrument else (instruments_on_disk(field) or ['nircam'])
+    total = {'planned': 0, 'pushed': 0, 'failed': 0, 'skipped': 0}
+    for inst in instruments:
+        # the dry-run note once, after the last instrument
+        last = inst == instruments[-1]
+        counts = _push_field_instrument(
+            field, config, inst, filters=filters, dry_run=dry_run, workers=workers,
+            dry_run_note=dry_run_note and last)
+        for k in total:
+            total[k] += counts.get(k, 0)
+    return total
+
+
+def _push_field_instrument(
+    field: str,
+    config: dict,
+    instrument: str,
+    *,
+    filters: Optional[list[str]] = None,
+    dry_run: bool = False,
+    workers: Optional[int] = None,
+    dry_run_note: bool = True,
+) -> dict:
+    """One instrument's share of :func:`push_field`."""
     from campfire.deploy.nircam import (
-        _discover_filters, _resolve_nircam_dirs, build_fits_upload_tasks,
+        _discover_filters, _resolve_imaging_dirs, build_fits_upload_tasks,
         build_upload_tasks, deployable_mosaics, discover_expmap_tasks,
-        discover_exposures, discover_mosaics, scope_mosaics_to_fields_toml,
-        _read_field_provenance,
+        discover_exposures, discover_mosaics, imaging_profile,
+        scope_mosaics_to_fields_toml, _read_field_provenance,
     )
     from campfire.deploy.supabase import get_supabase_client, get_user_id_from_token
 
-    dirs = _resolve_nircam_dirs(field)
+    profile = imaging_profile(instrument)
+    dirs = _resolve_imaging_dirs(instrument, field)
     if not dirs['products'].exists():
         print(f"Error: Products directory not found: {dirs['products']}")
         return {'planned': 0, 'pushed': 0, 'failed': 0, 'skipped': 0}
@@ -506,22 +536,23 @@ def push_field(
     else:
         filters = available
 
-    exposures = discover_exposures(dirs, filters)
-    tasks: list[UploadTask] = list(build_fits_upload_tasks(field, exposures))
-    tasks += list(discover_expmap_tasks(dirs, field, filters))
-    tasks += [t[0] for t in build_upload_tasks(dirs, field, filters)]
+    exposures = discover_exposures(dirs, filters, profile)
+    tasks: list[UploadTask] = list(build_fits_upload_tasks(field, exposures, profile))
+    if profile.has_field_plots:
+        tasks += list(discover_expmap_tasks(dirs, field, filters))
+    tasks += [t[0] for t in build_upload_tasks(dirs, field, filters, profile)]
     # Scope mosaics to the current fields.toml — a stray on-disk tile/epoch must
     # not have its bytes pushed to OSN (they would sit orphaned, un-indexed).
     try:
         scoped_mosaics = scope_mosaics_to_fields_toml(
-            deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
+            deployable_mosaics(discover_mosaics(dirs, field, filters, profile)), field)
     except ValueError as e:
         print(f"Error: {e}")
         return {'planned': 0, 'pushed': 0, 'failed': 0, 'skipped': 0}
     tasks += [UploadTask(m['path'], m['storage_key'], m['content_type'])
               for m in scoped_mosaics]
 
-    print(f"Field: {field}")
+    print(f"Field: {field} ({profile.label})")
     print(f"  Filters: {', '.join(filters)}")
     print(f"  Tree products discovered: {len(tasks)}")
     if not tasks:
@@ -542,7 +573,7 @@ def push_field(
         return {'planned': len(tasks), 'pushed': 0, 'failed': 0,
                 'skipped': len(plan.unchanged)}
 
-    cfpipe_version, _jwst, _crds = _read_field_provenance(dirs, field, filters)
+    cfpipe_version, _jwst, _crds = _read_field_provenance(dirs, field, filters, profile=profile)
     user_id = get_user_id_from_token(config)
     # Transport-compressed uploads (gzipped mosaics) report their stored byte
     # count; the flusher writes it to registry.stored_size_bytes. Wired here as

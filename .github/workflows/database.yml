@@ -53,7 +53,7 @@ jobs:
               - 'python/tests/_localdb.py'
               - 'python/tests/test_*_rls.py'
               - 'python/tests/test_nircam_field_deploy_gate.py'
-              - 'python/tests/test_nircam_images_lifecycle.py'
+              - 'python/tests/test_mosaics_lifecycle.py'
               - '.github/workflows/database.yml'
 
   check:
@@ -155,7 +155,7 @@ jobs:
             python/tests/test_multireducer_rls.py \
             python/tests/test_nircam_exposure_rls.py \
             python/tests/test_nircam_field_deploy_gate.py \
-            python/tests/test_nircam_images_lifecycle.py \
+            python/tests/test_mosaics_lifecycle.py \
             python/tests/test_storage_scope_rls.py
 
       - name: Migration header check (new files in this PR)

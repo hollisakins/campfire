@@ -31,6 +31,18 @@ describe('visibility', () => {
     expect(openComponentScopes([1, 'nircam/x']).has('nircam/x')).toBe(true);
   });
 
+  it('an HST imaging component of the release is open like NIRCam\'s', () => {
+    const hst = openComponentScopes(['nircam/cosmos', 'acswfc/cosmos', 'wfc3ir/cosmos']);
+    const held = new Set<string>();
+    expect(fileVisible('manifest', 'acswfc/cosmos', held, hst)).toBe(true);
+    expect(fileVisible('manifest', 'wfc3ir/cosmos', held, hst)).toBe(true);
+    // not on a program stream, and not a component the release did not freeze
+    expect(fileVisible('spectra', 'acswfc/cosmos', held, hst)).toBe(false);
+    expect(fileVisible('manifest', 'acswfc/egs', held, hst)).toBe(false);
+    // an instrument the layout does not know is a program name like any other
+    expect(openComponentScopes(['miri/cosmos']).size).toBe(0);
+  });
+
   it('readers see published releases only; admins every state', () => {
     expect(releaseVisible({ state: 'published' }, false)).toBe(true);
     expect(releaseVisible({ state: 'frozen' }, false)).toBe(false);

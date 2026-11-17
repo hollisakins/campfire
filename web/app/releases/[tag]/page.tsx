@@ -197,6 +197,26 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
               : browse('/nircam')}
           />
         )}
+        {s.hst && (
+          <InstrumentCard
+            icon={Camera}
+            title="HST"
+            stats={[
+              { value: n(s.hst.fields.length), label: plural(s.hst.fields.length, 'field', 'fields') },
+              { value: [...new Set(s.hst.components.map((c) => c.label))].join(' · '), label: 'instruments' },
+              { value: n(s.hst.mosaics), label: plural(s.hst.mosaics, 'mosaic', 'mosaics') },
+              { value: formatBytes(s.hst.bytes), label: 'data volume' },
+            ]}
+            foot={s.hst.fields.map((f) => (
+              <Link key={f} href={browse(`/nircam/${encodeURIComponent(f)}`)} className="hover:underline">
+                {f}
+              </Link>
+            ))}
+            href={s.hst.fields.length === 1
+              ? browse(`/nircam/${encodeURIComponent(s.hst.fields[0])}`)
+              : browse('/nircam')}
+          />
+        )}
       </div>
 
       <Section title="Download">

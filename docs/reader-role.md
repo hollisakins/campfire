@@ -84,13 +84,14 @@ Live catalog, the rows a signed-out reader of the portal sees:
 | `lines` | one row per visible spectrum × line (`line`, `component`, `flux`, `snr`, `ew_rest`, kinematics); `object_id` is the owning object |
 | `catalog_matches` | the photometry cross-match of each visible object |
 | `photometry` | one row per match × band (`band`, `flux`, `flux_err` in µJy, `mag`, `snr`); `object_id` is the owning object |
-| `nircam_images` | published mosaics |
+| `mosaics` | published mosaics of every imaging instrument (`instrument`: `nircam`, `acswfc`, `wfc3ir`; one row per instrument, field, tile, filter, pixel scale, extension and epoch; `file_path` is the storage key). Named `nircam_images` until November 2026 |
 | `fields` | fields with a published mosaic |
 
 Published data releases, frozen as they were at the freeze: `dr_releases`
 (`tag`, `state`, `doi`, `frozen_at`, `counts`) and the twins `dr_objects`,
 `dr_targets`, `dr_spectra`, `dr_line_fits`, `dr_lines`, `dr_catalog_matches`,
-`dr_photometry`, `dr_nircam_images`, `dr_fields`, `dr_manifest`, each keyed by
+`dr_photometry`, `dr_mosaics` (`dr_nircam_images` until November 2026),
+`dr_fields`, `dr_manifest`, each keyed by
 `tag`, each with the live table's columns. A release's public rows are the ones
 public at the freeze (the frozen `is_public` column), so a release reads the
 same way forever; `dr_manifest` (the release's file list: storage key, hashes,

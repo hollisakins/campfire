@@ -66,11 +66,11 @@ def test_format_readiness_renders_every_section():
     i6 = text.index("0.6.0"); i4 = text.index("0.4.1"); i5 = text.index("0.5.0+dirty")
     assert i6 < i4 < i5
     assert "70,000" in text and "3 version string(s)" in text
-    assert "Drafts:  0 spectra · 280 nircam_images · 2 deployments" in text
+    assert "Drafts:  0 spectra · 280 mosaics · 2 deployments" in text
     assert "Deploy leases: 2" in text
     assert "observation:ember_uds_p4" in text and "hollis" in text and "candide" in text
     assert "service-role" in text and "STALE" in text and "live" in text
-    assert "Re-drafted NIRCam fields: 1" in text and "cosmos" in text
+    assert "Re-drafted imaging fields: 1" in text and "cosmos" in text
     assert "Dangling nirspec_spec registry rows (no spectra row): 280" in text
     assert "old_obs" in text
     assert "Provisional etag: hashes (active rows): 4,317" in text

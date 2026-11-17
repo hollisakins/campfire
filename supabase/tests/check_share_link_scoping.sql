@@ -105,7 +105,7 @@ WHERE o.object_id IN ('ZZZ-OBJ-SHARED', 'ZZZ-OBJ-SIBLING', 'ZZZ-OBJ-OPEN');
 
 -- NIRCam: a published mosaic in each field, plus a draft AND a revoked one in
 -- the shared field -- include_drafts must reach the former and never the latter.
-INSERT INTO nircam_images (field, tile, filter, pixel_scale, extension, file_path, deploy_status) VALUES
+INSERT INTO mosaics (field, tile, filter, pixel_scale, extension, file_path, deploy_status) VALUES
   ('zzz_sl_field', 'A1', 'F444W', '30mas', 'sci', '/tmp/zzz_shared_sci.fits', 'published'),
   ('zzz_sl_field', 'A2', 'F444W', '30mas', 'sci', '/tmp/zzz_shared_drf.fits', 'draft'),
   ('zzz_sl_field', 'A3', 'F444W', '30mas', 'sci', '/tmp/zzz_shared_rvk.fits', 'revoked'),
@@ -185,7 +185,7 @@ LANGUAGE sql STABLE AS $$
     'spectra',     (SELECT count(*) FROM spectra         WHERE target_id LIKE 'zzz%'),
     'objects',     (SELECT count(*) FROM objects         WHERE object_id LIKE 'ZZZ%'),
     'photometry',  (SELECT count(*) FROM catalog_matches WHERE catalog_name = 'zzz_cat'),
-    'nircam',      (SELECT count(*) FROM nircam_images   WHERE field LIKE 'zzz%'),
+    'nircam',      (SELECT count(*) FROM mosaics   WHERE field LIKE 'zzz%'),
     'fields',      (SELECT count(*) FROM fields          WHERE name LIKE 'zzz%'),
     'map_layers',  (SELECT count(*) FROM map_layers      WHERE field LIKE 'zzz%'),
     'deployments', (SELECT count(*) FROM deployments     WHERE id BETWEEN 990001 AND 990005),

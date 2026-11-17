@@ -169,7 +169,9 @@ def test_push_paths_wire_stored_sizes(monkeypatch):
 
     from campfire.deploy import push as push_mod
 
-    for fn in (push_mod.push_observation, push_mod.push_field):
+    # push_field loops over the field's imaging instruments; the transfer of
+    # one instrument is _push_field_instrument
+    for fn in (push_mod.push_observation, push_mod._push_field_instrument):
         src = inspect.getsource(fn)
         assert 'stored_sizes=stored_sizes' in src, fn.__name__
         assert 'stored_sizes_out=stored_sizes' in src, fn.__name__

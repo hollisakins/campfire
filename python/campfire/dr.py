@@ -109,7 +109,7 @@ def format_readiness(report: dict) -> str:
     revoked = report.get('revoked') or {}
     lines.append('')
     lines.append(
-        f"Drafts:  {_n(drafts.get('spectra'))} spectra · {_n(drafts.get('nircam_images'))} nircam_images · "
+        f"Drafts:  {_n(drafts.get('spectra'))} spectra · {_n(drafts.get('nircam_images'))} mosaics · "
         f"{_n(drafts.get('deployments'))} deployments")
     lines.append(
         f"Revoked: {_n(revoked.get('spectra'))} spectra · {_n(revoked.get('deployments'))} deployments")
@@ -133,7 +133,7 @@ def format_readiness(report: dict) -> str:
 
     redrafted = report.get('redrafted_nircam_fields') or []
     lines.append('')
-    lines.append(f"Re-drafted NIRCam fields: {len(redrafted)}" + ('' if redrafted else '  (none)'))
+    lines.append(f"Re-drafted imaging fields: {len(redrafted)}" + ('' if redrafted else '  (none)'))
     if redrafted:
         lines.extend(_table(
             [[str(f.get('field')), _n(f.get('draft_images')), _n(f.get('published_images')),
@@ -183,21 +183,37 @@ def format_readiness(report: dict) -> str:
 FREEZE_TERMINAL_STATES = frozenset({'frozen', 'failed', 'exporting', 'exported', 'copying',
                                     'ready', 'purging', 'published', 'withdrawn'})
 
+# The imaging instruments a release component can name (dr_parse_components).
+IMAGING_INSTRUMENTS = ('nircam', 'acswfc', 'wfc3ir')
+
 
 def components_from_options(*, nirspec: bool, fields: tuple[str, ...] | list[str] = (),
                             photometry: tuple[str, ...] | list[str] = ()) -> list[str]:
     """Build the components array ``dr_enqueue_freeze`` validates.
 
-    ``fields`` are NIRCam field names (``nircam/<field>``); ``photometry``
-    entries are ``<field>/<catalog_name>`` (``photometry/<field>/<catalog>``).
+    ``fields`` name imaging components, one instrument of one field each:
+    ``<instrument>/<field>`` (``acswfc/cosmos``), or a bare field name, which is
+    its NIRCam component (``nircam/<field>``). ``photometry`` entries are
+    ``<field>/<catalog_name>`` (``photometry/<field>/<catalog>``).
     Order and duplicates are normalised so the same selection always produces
     the same array.
     """
     out: list[str] = []
     if nirspec:
         out.append('nirspec')
-    for f in sorted(set(fields)):
-        out.append(f'nircam/{f}')
+    imaging = set()
+    for f in fields:
+        head, sep, rest = f.partition('/')
+        if not sep:
+            imaging.add(f'nircam/{f}')
+        elif head in IMAGING_INSTRUMENTS and rest and '/' not in rest:
+            imaging.add(f)
+        else:
+            raise ValueError(
+                f"--field expects a field name or <instrument>/<field> with one of "
+                f"{', '.join(IMAGING_INSTRUMENTS)}; got {f!r}")
+    for f in sorted(imaging):
+        out.append(f)
     for p in sorted(set(photometry)):
         if '/' not in p:
             raise ValueError(f"--photometry expects <field>/<catalog_name>, got {p!r}")

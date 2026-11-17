@@ -18,7 +18,7 @@ keys), derives a ``stage`` value from the highest completed CFP key, and:
   surface) to **OSN** under canonical keys and registers them too (epic #261,
   N5) — the admin UI serves both via short-lived presigned OSN GET URLs, so the
   R2 legacy keys + the ``/api/nircam-preview`` proxy are retired;
-* upserts ``nircam_exposures`` while preserving web-triage fields
+* upserts ``exposures`` while preserving web-triage fields
   (``review_status``, ``correction``, ``notes``).
 
 A normal deploy publishes immediately; ``--draft`` holds the field admin-only for
@@ -105,7 +105,7 @@ class ImagingProfile:
     """
 
     def __init__(self, instrument, label, exposure_glob, cfp_to_stage,
-                 first_stage, combine_stamps, has_field_plots, deploys_mosaics):
+                 first_stage, combine_stamps, has_field_plots, has_map_pyramid):
         self.instrument = instrument
         self.label = label
         # The canonical exposures of a filter directory. Mosaics are
@@ -119,7 +119,9 @@ class ImagingProfile:
         self.combine_stamps = combine_stamps
         # Exposure maps and the field layout plot (NIRCam's field products).
         self.has_field_plots = has_field_plots
-        self.deploys_mosaics = deploys_mosaics
+        # The FitsGL map pyramid is built from this instrument's mosaics
+        # (`campfire fitsgl build`); the HST bands are not in it yet.
+        self.has_map_pyramid = has_map_pyramid
 
     def kind(self, product):
         """Layout product kind: ``kind('exposure_preview')`` -> ``acswfc_exposure_preview``."""
@@ -140,15 +142,15 @@ class ImagingProfile:
 IMAGING_PROFILES = {
     'nircam': ImagingProfile(
         'nircam', 'NIRCam', 'jw*.fits', _CFP_TO_STAGE, 'detector1',
-        ('CFP_BPIX', 'CFP_OUT'), has_field_plots=True, deploys_mosaics=True),
+        ('CFP_BPIX', 'CFP_OUT'), has_field_plots=True, has_map_pyramid=True),
     # ACS/WFC keeps its calibrated exposures as <rootname>_flc.fits, WFC3/IR as
     # <rootname>_flt.fits (the names the HST software gives them).
     'acswfc': ImagingProfile(
         'acswfc', 'ACS/WFC', '*_flc.fits', _HST_CFP_TO_STAGE, 'calibrate',
-        ('CFP_OUT',), has_field_plots=False, deploys_mosaics=False),
+        ('CFP_OUT',), has_field_plots=False, has_map_pyramid=False),
     'wfc3ir': ImagingProfile(
         'wfc3ir', 'WFC3/IR', '*_flt.fits', _HST_CFP_TO_STAGE, 'calibrate',
-        ('CFP_OUT',), has_field_plots=False, deploys_mosaics=False),
+        ('CFP_OUT',), has_field_plots=False, has_map_pyramid=False),
 }
 
 
@@ -589,25 +591,29 @@ def _read_field_provenance(dirs, field, filters, *, prefer_mosaic=True, profile=
     whole point of that mode is that the exposures have moved on from it.
     """
     try:
-        mosaics = discover_mosaics(dirs, field, filters) if prefer_mosaic else []
+        mosaics = discover_mosaics(dirs, field, filters, profile) if prefer_mosaic else []
     except Exception:
         mosaics = []
+    found = (None, None, None)
     if mosaics:
         chosen = next((m for m in mosaics if m.get('extension') == 'i2d'), mosaics[0])
-        prov = _provenance_from_header(chosen['path'])
-        if any(prov):
-            return prov
+        found = _provenance_from_header(chosen['path'])
+        if all(found):
+            return found
 
-    # No mosaic (or an unstamped one): read a representative exposure header.
+    # No mosaic, an unstamped one, or one that carries only some of the cards
+    # (an HST mosaic has the CAMPFIRE version but not the calibration
+    # software's or the CRDS context): a representative exposure header
+    # supplies what is missing, never overriding what the mosaic gave.
     try:
         exposures = discover_exposures(dirs, filters, profile)
     except Exception:
-        return None, None, None
+        return found
     for info in exposures.values():
         prov = _provenance_from_header(info['path'])
         if any(prov):
-            return prov
-    return None, None, None
+            return tuple(m if m else e for m, e in zip(found, prov))
+    return found
 
 
 def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
@@ -617,7 +623,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     Records a **field-scoped deployment** (provenance + the draft->published
     lifecycle), uploads the canonical exposure FITS (+ any field expmaps) to OSN
     under ``campfire-layout`` canonical keys (content-hash deduped on
-    ``sha256(SCI+DQ+CFMASK)``), uploads preview PNGs to OSN, upserts ``nircam_exposures``,
+    ``sha256(SCI+DQ+CFMASK)``), uploads preview PNGs to OSN, upserts ``exposures``,
     and registers every landed object in ``storage_objects`` tagged with that
     ``deployment_id``.
 
@@ -683,15 +689,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     # Scope mosaic discovery to what the current fields.toml declares — a stray
     # on-disk tile/epoch from a former config must not ride into the cloud (this is
     # the guard; the count + the actual upload both use this same scoped list).
-    if not profile.deploys_mosaics:
-        # Stated, not silent: the mosaic index and the portal pages are
-        # NIRCam's until they carry an instrument, so this instrument's
-        # mosaics stay on disk.
-        skip_mosaics = True
-        mosaics_to_deploy = []
-        print(f"Mosaics: NOT DEPLOYED for {profile.label} yet — exposures, previews "
-              f"and the review table only. The mosaics stay on this machine.")
-    elif skip_mosaics:
+    if skip_mosaics:
         # Skip discovery too, not just the upload: with no mosaic shipping this
         # run, a stray on-disk tile is not this deploy's problem, and the
         # fields.toml scope check would otherwise abort a perfectly good
@@ -702,7 +700,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     else:
         try:
             mosaics_to_deploy = scope_mosaics_to_fields_toml(
-                deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
+                deployable_mosaics(discover_mosaics(dirs, field, filters, profile)), field)
         except ValueError as e:
             print(f"Error: {e}")
             sys.exit(1)
@@ -811,7 +809,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     # Record the field-scoped deployment up front — it is the provenance anchor and
     # the draft/published visibility gate every registered object hangs off.
     deployment_id = insert_deployment(
-        client, field=field, deployed_by=user_id,
+        client, field=field, instrument=instrument, deployed_by=user_id,
         status='draft' if draft else 'published', n_targets=len(records),
         cfpipe_version=cfpipe_version, jwst_version=jwst_version, crds_context=crds_context)
     print(f"Deployment #{deployment_id} recorded "
@@ -903,7 +901,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
         mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
                                              deployment_id, draft, user_id, store=store,
                                              mosaics=mosaics_to_deploy,
-                                             heartbeat=lease.heartbeat)
+                                             heartbeat=lease.heartbeat, profile=profile)
 
     # --- Field registry: upsert the fields.toml config + deploy-computed survey
     # area (issue #303). Rides the deploy so a field row exists exactly for fields
@@ -943,7 +941,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     # (pyramid builds are expensive; epic #337, Phase 3). Best-effort + fully guarded
     # so a missing fitsgl extra / dataset table never touches the deploy result.
     try:
-        if profile.deploys_mosaics:
+        if profile.has_map_pyramid:
             from campfire.fitsgl.deploy import suggest_fitsgl_rebuild
             suggest_fitsgl_rebuild(client, field)
     except Exception:
@@ -1136,10 +1134,10 @@ def _upsert_exposures(client, records, batch_size=500, instrument='nircam',
 
 
 # ---------------------------------------------------------------------------
-# Mosaic deploy (epic #261, N2) — combined mosaics → OSN + nircam_images index
+# Mosaic deploy (epic #261, N2) — combined mosaics → OSN + mosaics index
 # ---------------------------------------------------------------------------
 
-# Split-extension products the resample step emits, mapped to the nircam_images
+# Split-extension products the resample step emits, mapped to the mosaics
 # `extension` value. A slot deploys only the files that exist on disk.
 _MOSAIC_EXTENSIONS = (
     ('_i2d.fits', 'i2d'),
@@ -1159,7 +1157,7 @@ _MOSAIC_EXTENSIONS = (
 # primary-header CMPFRVER/CAL_VER/CRDS_CTX cards (the split extensions inherit
 # only the SCI *extension* header and carry none of them — see resample.py), and
 # the FitsGL map pyramid falls back to it when a tile has no split sci. It is
-# simply never uploaded to the cloud or indexed in nircam_images. Every
+# simply never uploaded to the cloud or indexed in mosaics. Every
 # cloud-bound path runs discovered mosaics through `deployable_mosaics` first.
 _UNDEPLOYED_MOSAIC_EXTENSIONS = frozenset({'i2d'})
 
@@ -1170,15 +1168,21 @@ def deployable_mosaics(mosaics):
     ``discover_mosaics`` intentionally returns every extension on disk because
     local consumers need i2d (provenance stamping, the FitsGL pyramid fallback);
     the deploy and ``campfire deploy push`` paths run its output through this
-    filter so i2d bytes never leave the reducer and no ``nircam_images`` i2d row
+    filter so i2d bytes never leave the reducer and no ``mosaics`` i2d row
     is written.
     """
     return [m for m in mosaics
             if m['extension'] not in _UNDEPLOYED_MOSAIC_EXTENSIONS]
 
 
-def discover_mosaics(dirs, field, filters):
+def discover_mosaics(dirs, field, filters, profile=None):
     """Discover mosaic products via their manifests.
+
+    ``profile`` is the instrument's :class:`ImagingProfile` (NIRCam when
+    omitted). Every instrument's combine writes the same family of files under
+    ``mosaic_<instrument>_<filter>_<field>_<scale>_<tile>``; the instrument
+    decides the expected name and the layout kind of the storage key, and each
+    returned dict carries it as ``instrument``.
 
     Returns every extension present on disk, including the ``i2d`` cube — local
     consumers (deployment provenance, the FitsGL pyramid) read it. The cloud
@@ -1196,6 +1200,9 @@ def discover_mosaics(dirs, field, filters):
     filename so the storage key is unique without any layout change.
     """
     import json
+    profile = profile or IMAGING_PROFILES['nircam']
+    instrument = profile.instrument
+    mosaic_kind = profile.kind('mosaic')
     products = dirs['products']
     out = []
     for filtname in filters:
@@ -1220,13 +1227,13 @@ def discover_mosaics(dirs, field, filters):
             # reduced before N2 keeps its old `..._v0_1_..._manifest.json` on
             # disk after re-combine; without this guard that stale slot would
             # both re-upload a version-bearing key to OSN AND collide with the
-            # version-free row on the nircam_images (field,tile,filter,scale,
+            # version-free row on the mosaics (field,tile,filter,scale,
             # extension,epoch) conflict key, crashing the batch upsert. Reconstruct
             # the expected name deploy-side (deploy must not import the pipeline) —
             # the same version-free contract rgb._find_mosaic enforces. An epoch
             # mosaic appends a trailing ``_<epoch>`` segment (see
             # manifest.build_mosaic_name), so fold it into the expected name.
-            expected = f'mosaic_nircam_{mfilter}_{mfield}_{pixel_scale}_{tile}'
+            expected = f'mosaic_{instrument}_{mfilter}_{mfield}_{pixel_scale}_{tile}'
             if epoch:
                 expected += f'_{epoch}'
             if base != expected:
@@ -1235,7 +1242,7 @@ def discover_mosaics(dirs, field, filters):
                 fpath = filter_dir / f'{base}{suffix}'
                 if not fpath.exists():
                     continue
-                key = storage_key('nircam_mosaic', Scope(field=field, filt=filtname),
+                key = storage_key(mosaic_kind, Scope(field=field, filt=filtname),
                                   fpath.name, scheme=KeyScheme.CANONICAL)
                 out.append({
                     'path': fpath, 'filter': mfilter, 'tile': tile,
@@ -1244,6 +1251,7 @@ def discover_mosaics(dirs, field, filters):
                     'content_type': (_GZIP_CONTENT_TYPE if is_compressed_key(key)
                                      else _FITS_CONTENT_TYPE),
                     'mosaic_name': base,
+                    'instrument': instrument,
                 })
     return out
 
@@ -1259,7 +1267,7 @@ def scope_mosaics_to_fields_toml(mosaics, field):
     build, so the cloud-bound paths (``campfire deploy --field`` / ``campfire
     push``) run discovery through this filter: a mosaic whose tile isn't a declared
     tile — or whose epoch isn't a declared epoch — is skipped (logged, not silently
-    dropped) and never uploaded to OSN or indexed in ``nircam_images``.
+    dropped) and never uploaded to OSN or indexed in ``mosaics``.
 
     Raises ``ValueError`` if the field has mosaics on disk but no ``[<field>]``
     section in fields.toml: we can't tell declared from stray, so refuse to deploy
@@ -1291,10 +1299,12 @@ def scope_mosaics_to_fields_toml(mosaics, field):
 
 
 # The thumbnail pair the pipeline writes per mosaic base (derived from the
-# i2d): a small table rendition + a large quick-look for the web popup.
+# i2d): a small table rendition + a large quick-look for the web popup. The
+# layout kind is ``<instrument>_<product>`` (``nircam_mosaic_thumbnail``,
+# ``acswfc_mosaic_thumbnail``, ...).
 _MOSAIC_PNG_RENDITIONS = (
-    ('_thumb.png', 'nircam_mosaic_thumbnail'),
-    ('_quicklook.png', 'nircam_mosaic_quicklook'),
+    ('_thumb.png', 'mosaic_thumbnail'),
+    ('_quicklook.png', 'mosaic_quicklook'),
 )
 
 
@@ -1316,12 +1326,13 @@ def discover_mosaic_thumbnail_tasks(mosaics, field):
         if key_id in seen:
             continue
         seen.add(key_id)
+        instrument = m.get('instrument', 'nircam')
         for suffix, product in _MOSAIC_PNG_RENDITIONS:
             png_path = m['path'].parent / f"{m['mosaic_name']}{suffix}"
             if png_path.exists():
                 tasks.append(UploadTask(
                     local_path=png_path,
-                    r2_key=storage_key(product,
+                    r2_key=storage_key(f'{instrument}_{product}',
                                        Scope(field=field, filt=filt),
                                        png_path.name, scheme=KeyScheme.CANONICAL),
                     content_type=_PNG_CONTENT_TYPE))
@@ -1329,8 +1340,12 @@ def discover_mosaic_thumbnail_tasks(mosaics, field):
 
 
 def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
-                          draft, user_id, store=None, mosaics=None, heartbeat=None):
+                          draft, user_id, store=None, mosaics=None, heartbeat=None,
+                          profile=None):
     """Deploy this field's mosaics under the field deployment (epic #261, N2).
+
+    One instrument's mosaics (``profile``; NIRCam when omitted): the rows are
+    written with that instrument, which is part of a ``mosaics`` row's identity.
 
     Called from :func:`deploy_nircam` so ``campfire deploy --field`` ships exposures
     and mosaics as one field deployment. Uploads each deployable mosaic product (the
@@ -1338,7 +1353,7 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     discovered but filtered out by :func:`deployable_mosaics`) to OSN under canonical
     keys — whole-file content-hash deduped via the push planner (with the pushed_*
     stat fast path, so an unchanged multi-GB mosaic is skipped without re-hashing)
-    — upserts one ``nircam_images`` row per
+    — upserts one ``mosaics`` row per
     ``(field, tile, filter, pixel_scale, extension)`` carrying ``deploy_status``
     (draft/published to match the deployment) + ``deployment_id``, and registers
     ``nircam_mosaic`` storage objects tagged with the deployment. Re-combine
@@ -1354,9 +1369,10 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     # cloud deploy ships only the deployable extensions AND only the tiles/epochs
     # the current fields.toml declares. deploy_nircam passes that scoped list in;
     # fall back to computing it here for any direct caller.
+    profile = profile or IMAGING_PROFILES['nircam']
     if mosaics is None:
         mosaics = scope_mosaics_to_fields_toml(
-            deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
+            deployable_mosaics(discover_mosaics(dirs, field, filters, profile)), field)
     if not mosaics:
         return None
     print(f"\nMosaics: {len(mosaics)} product(s)")
@@ -1369,7 +1385,7 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
 
     # Per-mosaic science thumbnails ride the same plan/registration (see
     # discover_mosaic_thumbnail_tasks): they get a nircam_mosaic_thumbnail
-    # storage_objects row (key-derived product_type) but NO nircam_images row —
+    # storage_objects row (key-derived product_type) but NO mosaics row —
     # the web shows them on the sci extension row.
     thumb_tasks = discover_mosaic_thumbnail_tasks(mosaics, field)
     if thumb_tasks:
@@ -1380,7 +1396,7 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     unchanged_keys = {t.r2_key for t in plan.unchanged}
     print(f"  Plan: {plan.summary()}")
 
-    # Local file size for nircam_images.file_size: the plan stat()s every file.
+    # Local file size for mosaics.file_size: the plan stat()s every file.
     for m in mosaics:
         m['size'] = plan.stats.get(m['storage_key'], (None, None))[1]
 
@@ -1406,7 +1422,7 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
         if flusher.flushed:
             print(f"  Registered {flusher.flushed} mosaic storage object(s)")
 
-    # A failed upload must NOT get a nircam_images row (it would advertise a
+    # A failed upload must NOT get a mosaics row (it would advertise a
     # file_path with no object + no registry row; the slot 404s). A re-run heals.
     present = set(uploaded) | unchanged_keys
     # PUBLISHED: (re-)index every present mosaic under this deployment. DRAFT is
@@ -1416,15 +1432,16 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     img_status = 'draft' if draft else 'published'
     indexable = uploaded if draft else present
     img_rows = [{
+        'instrument': profile.instrument,
         'field': field, 'tile': m['tile'], 'filter': m['filter'],
         'pixel_scale': m['pixel_scale'], 'extension': m['extension'],
         'epoch': m.get('epoch', ''),
         'file_path': m['storage_key'], 'file_size': m['size'],
         'deploy_status': img_status, 'deployment_id': deployment_id,
     } for m in mosaics if m['storage_key'] in indexable]
-    n_img = _upsert_nircam_images(client, img_rows)
-    print(f"  Indexed {n_img} nircam_images row(s) ({img_status})")
-    # Only mosaic FITS get nircam_images rows — thumbnails (also in `present`) do
+    n_img = _upsert_mosaics(client, img_rows)
+    print(f"  Indexed {n_img} mosaic row(s) ({img_status})")
+    # Only mosaic FITS get mosaics rows — thumbnails (also in `present`) do
     # not, so count failures against mosaic keys alone or every thumb reads as a
     # non-indexed mosaic.
     mosaic_keys = {m['storage_key'] for m in mosaics}
@@ -1444,14 +1461,21 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
             'indexed': n_img}
 
 
-def _upsert_nircam_images(client, rows, batch_size=500):
-    """Upsert nircam_images rows keyed on
-    (field, tile, filter, pixel_scale, extension, epoch)."""
+def _upsert_mosaics(client, rows, batch_size=500):
+    """Upsert mosaics rows keyed on
+    (instrument, field, tile, filter, pixel_scale, extension, epoch).
+
+    Every row carries its ``instrument`` (the table default would make a row
+    written without one NIRCam's, and the conflict key would then never match
+    another instrument's row)."""
     if not rows:
         return 0
+    for r in rows:
+        if not r.get('instrument'):
+            raise ValueError("a mosaics row needs its instrument")
     for i in range(0, len(rows), batch_size):
         batch = rows[i:i + batch_size]
-        client.table('nircam_images').upsert(
-            batch, on_conflict='field,tile,filter,pixel_scale,extension,epoch',
+        client.table('mosaics').upsert(
+            batch, on_conflict='instrument,field,tile,filter,pixel_scale,extension,epoch',
         ).execute()
     return len(rows)

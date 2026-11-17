@@ -26,12 +26,12 @@ INSERT INTO observations (name, program_slug, jwst_program_id, field)
 
 -- a field that was published and now has one mosaic back in draft
 INSERT INTO deployments (field, status, published_at) VALUES ('zzz_dr_field', 'published', now());
-INSERT INTO nircam_images (field, tile, filter, pixel_scale, extension, epoch, file_path, deploy_status) VALUES
+INSERT INTO mosaics (field, tile, filter, pixel_scale, extension, epoch, file_path, deploy_status) VALUES
   ('zzz_dr_field', 'main', 'f444w', '30mas', 'sci', '', '/tmp/zzz_dr_f444w.fits', 'published'),
   ('zzz_dr_field', 'main', 'f277w', '30mas', 'sci', '', '/tmp/zzz_dr_f277w.fits', 'draft');
 -- a field that has only ever been draft (must NOT be listed)
 INSERT INTO deployments (field, status) VALUES ('zzz_dr_draftonly', 'draft');
-INSERT INTO nircam_images (field, tile, filter, pixel_scale, extension, epoch, file_path, deploy_status) VALUES
+INSERT INTO mosaics (field, tile, filter, pixel_scale, extension, epoch, file_path, deploy_status) VALUES
   ('zzz_dr_draftonly', 'main', 'f444w', '30mas', 'sci', '', '/tmp/zzz_dr_draftonly.fits', 'draft');
 
 -- a registry row for a spectrum that no longer exists + a legacy etag: preview

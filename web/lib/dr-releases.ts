@@ -45,17 +45,27 @@ export function releaseNextStep(state: string, tag: string): string | null {
 }
 
 export interface ReleaseComponent {
-  kind: 'nirspec' | 'nircam' | 'photometry' | 'other';
+  /** 'nircam' and 'hst' are the imaging components, one instrument of one
+   *  field each ('hst' carries which HST instrument in `instrument`). */
+  kind: 'nirspec' | 'nircam' | 'hst' | 'photometry' | 'other';
   label: string;
   raw: string;
+  instrument?: string;
 }
 
-/** `dr_releases.components` (["nirspec", "nircam/<field>", "photometry/<field>/<catalog>"]) for display. */
+/** The HST imaging instruments a component can name, with their display labels. */
+const HST_INSTRUMENT_LABELS: Record<string, string> = { acswfc: 'ACS/WFC', wfc3ir: 'WFC3/IR' };
+
+/** `dr_releases.components` (["nirspec", "<nircam|acswfc|wfc3ir>/<field>", "photometry/<field>/<catalog>"]) for display. */
 export function parseReleaseComponents(components: unknown): ReleaseComponent[] {
   const list = Array.isArray(components) ? components.filter((c): c is string => typeof c === 'string') : [];
   return list.map((raw) => {
     if (raw === 'nirspec') return { kind: 'nirspec', label: 'NIRSpec', raw };
-    if (raw.startsWith('nircam/')) return { kind: 'nircam', label: `NIRCam · ${raw.slice(7)}`, raw };
+    if (raw.startsWith('nircam/')) return { kind: 'nircam', label: `NIRCam · ${raw.slice(7)}`, raw, instrument: 'nircam' };
+    const head = raw.split('/', 1)[0];
+    if (head in HST_INSTRUMENT_LABELS && raw.length > head.length + 1) {
+      return { kind: 'hst', label: `${HST_INSTRUMENT_LABELS[head]} · ${raw.slice(head.length + 1)}`, raw, instrument: head };
+    }
     if (raw.startsWith('photometry/')) {
       const [, field, ...catalog] = raw.split('/');
       return { kind: 'photometry', label: `Photometry · ${field} · ${catalog.join('/')}`, raw };
@@ -101,6 +111,8 @@ function sumComplete(values: (number | null)[]): number | null {
 export interface ReleaseSummary {
   nirspec: { spectra: number | null; objects: number | null; programs: number | null; fields: number | null; bytes: number | null } | null;
   nircam: { fields: { field: string; mosaics: number | null; bytes: number | null; area_arcmin2: number | null }[]; mosaics: number | null; bytes: number | null; area_arcmin2: number | null } | null;
+  /** The HST imaging components (ACS/WFC, WFC3/IR), one per instrument and field. */
+  hst: { components: { instrument: string; label: string; field: string; mosaics: number | null; bytes: number | null }[]; fields: string[]; mosaics: number | null; bytes: number | null } | null;
   photometry: { catalogs: { field: string; catalog: string }[]; rows: number | null } | null;
 }
 
@@ -135,6 +147,25 @@ export function releaseSummary(components: unknown, counts: Record<string, unkno
         area_arcmin2: sumComplete(nircamFields.map((f) => f.area_arcmin2)),
       }
     : null;
+  const hstComponents = parsed
+    .filter((c) => c.kind === 'hst')
+    .map((c) => {
+      const facts = componentFacts(counts, c.raw);
+      const instrument = c.instrument as string;
+      return {
+        instrument, label: HST_INSTRUMENT_LABELS[instrument], field: c.raw.slice(instrument.length + 1),
+        mosaics: facts.mosaics, bytes: facts.bytes,
+      };
+    })
+    .sort((a, b) => a.field.localeCompare(b.field) || a.instrument.localeCompare(b.instrument));
+  const hst = hstComponents.length > 0
+    ? {
+        components: hstComponents,
+        fields: [...new Set(hstComponents.map((c) => c.field))],
+        mosaics: sumComplete(hstComponents.map((c) => c.mosaics)),
+        bytes: sumComplete(hstComponents.map((c) => c.bytes)),
+      }
+    : null;
   const catalogs = parsed
     .filter((c) => c.kind === 'photometry')
     .map((c) => {
@@ -142,7 +173,7 @@ export function releaseSummary(components: unknown, counts: Record<string, unkno
       return { field, catalog: catalog.join('/') };
     });
   const photometry = catalogs.length > 0 ? { catalogs, rows: releaseCount(counts, 'photometry') } : null;
-  return { nirspec, nircam, photometry };
+  return { nirspec, nircam, hst, photometry };
 }
 
 function releaseYear(r: ReleaseCitationInput): string {

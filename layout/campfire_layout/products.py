@@ -269,8 +269,12 @@ _register(ProductSpec(
 #                                  and meaning as the NIRCam pair
 #   <instrument>_mosaic            the drizzled tile and everything named after
 #                                  it ('mosaic_<instrument>_...': i2d, split
-#                                  files, manifest, thumbnails), gzipped in the
-#                                  cloud like the NIRCam mosaic
+#                                  files, manifest), gzipped in the cloud like
+#                                  the NIRCam mosaic
+#   <instrument>_mosaic_thumbnail  its small table rendition ('..._thumb.png')
+#   <instrument>_mosaic_quicklook  its large popup rendition
+#                                  ('..._quicklook.png'); the same pair, names
+#                                  and meaning as NIRCam's
 #   <instrument>_mask              hand-drawn region masks, under reference/
 #                                  like 'nircam_mask'
 
@@ -302,6 +306,16 @@ for _inst in (Instrument.ACSWFC, Instrument.WFC3IR):
         bucket="data", lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
         subdir=_hst_dir, suffix=None, legacy_prefix=None,
         compressed_suffixes=(".fits",),
+    ))
+    _register(ProductSpec(
+        name=f"{_inst.value}_mosaic_thumbnail", instrument=_inst, tree="products",
+        bucket="data", lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
+        subdir=_hst_dir, suffix="_thumb.png", legacy_prefix=None,
+    ))
+    _register(ProductSpec(
+        name=f"{_inst.value}_mosaic_quicklook", instrument=_inst, tree="products",
+        bucket="data", lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
+        subdir=_hst_dir, suffix="_quicklook.png", legacy_prefix=None,
     ))
 
 # --- Map tiles (separate 'tiles' bucket, scheme-invariant, stays on R2) ---------

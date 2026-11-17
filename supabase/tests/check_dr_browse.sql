@@ -281,7 +281,7 @@ DO $$
 DECLARE
   usr uuid := (SELECT id FROM auth.users WHERE email = 'user@campfire.dev');
   adm uuid := (SELECT id FROM auth.users WHERE email = 'admin@campfire.dev');
-  fld text := (SELECT ni.field FROM dr_nircam_images ni WHERE ni.tag = 'DR-seed' LIMIT 1);
+  fld text := (SELECT ni.field FROM dr_mosaics ni WHERE ni.tag = 'DR-seed' LIMIT 1);
   k text := 'data/products/nircam/zzz/layout/zzz_layout_live.png';
   q1 text; q2 text; got text;
 BEGIN
@@ -381,10 +381,10 @@ BEGIN
   -- NIRCam: admins see draft mosaics live (RLS hides them from readers) and
   -- a release holds published mosaics only, so the seed's draft images are
   -- dropped for the comparison (rolled back with the transaction)
-  DELETE FROM nircam_images WHERE deploy_status <> 'published';
+  DELETE FROM mosaics WHERE deploy_status <> 'published';
   PERFORM pg_temp.zzz_same('nircam fields', 'SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_nircam_fields() r)::text');
   PERFORM pg_temp.zzz_same('nircam field summary', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_nircam_field_summary(%L) r)::text',
-                                                          (SELECT ni.field FROM nircam_images ni WHERE ni.deploy_status = 'published' LIMIT 1)));
+                                                          (SELECT ni.field FROM mosaics ni WHERE ni.deploy_status = 'published' LIMIT 1)));
   PERFORM pg_temp.zzz_same('csv objects', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_csv_export_objects(p_program_slugs => %s, p_page_size => 50) r)::text', aps));
   PERFORM pg_temp.zzz_same('csv spectra', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_csv_export_spectra(p_program_slugs => %s, p_page_size => 50) r)::text', aps));
   PERFORM pg_temp.zzz_same('observation manifest', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observation_manifest(%L, %s, false) r)::text', obs, aps));

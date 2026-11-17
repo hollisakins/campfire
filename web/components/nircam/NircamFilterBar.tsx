@@ -3,9 +3,12 @@
 import React from 'react';
 import { X } from 'lucide-react';
 import { FilterChip, FilterOption } from '@/components/ui/FilterChip';
+import { imagingInstrumentLabel } from '@/lib/types';
 
 export interface NircamFilterOptions {
   fields: string[];
+  /** Imaging instrument tokens (nircam, acswfc, wfc3ir). */
+  instruments: string[];
   tiles: string[];
   filters: string[];
   pixel_scales: string[];
@@ -15,6 +18,7 @@ export interface NircamFilterOptions {
 
 export const DEFAULT_NIRCAM_FILTERS: NircamFilterOptions = {
   fields: [],
+  instruments: [],
   tiles: [],
   filters: [],
   pixel_scales: [],
@@ -29,6 +33,9 @@ interface NircamFilterBarProps {
   filterState: NircamFilterOptions;
   onFiltersChange: (filters: NircamFilterOptions) => void;
   availableFields?: string[];
+  /** The instruments the listed products come from; the facet shows only
+   *  when there is more than one. */
+  availableInstruments?: string[];
   availableTiles: string[];
   availableFilters: string[];
   availablePixelScales: string[];
@@ -43,6 +50,7 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
   filterState,
   onFiltersChange,
   availableFields = [],
+  availableInstruments = [],
   availableTiles,
   availableFilters,
   availablePixelScales,
@@ -63,6 +71,13 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
     value: f,
     label: f.toUpperCase(),
   }));
+
+  const instrumentOptions: FilterOption[] = availableInstruments.map((i) => ({
+    value: i,
+    label: imagingInstrumentLabel(i),
+  }));
+  // An axis only when the products span more than one instrument.
+  const hasInstrumentFacet = availableInstruments.length > 1;
 
   const tileOptions: FilterOption[] = availableTiles.map((t) => ({
     value: t,
@@ -96,6 +111,7 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
   // Check if any filters are active
   const hasActiveFilters =
     filterState.fields.length > 0 ||
+    filterState.instruments.length > 0 ||
     filterState.tiles.length > 0 ||
     filterState.filters.length > 0 ||
     filterState.pixel_scales.length > 0 ||
@@ -117,6 +133,16 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
             options={fieldOptions}
             selected={filterState.fields}
             onChange={(selected) => updateFilter('fields', selected as string[])}
+          />
+        )}
+
+        {/* Instrument filter (only when more than one instrument is listed) */}
+        {hasInstrumentFacet && (
+          <FilterChip
+            label="Instrument"
+            options={instrumentOptions}
+            selected={filterState.instruments}
+            onChange={(selected) => updateFilter('instruments', selected as string[])}
           />
         )}
 

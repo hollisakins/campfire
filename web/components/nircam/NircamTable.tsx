@@ -14,7 +14,7 @@ import {
 } from '@tanstack/react-table';
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { useDrTag } from '@/lib/dr/client';
-import type { NircamProductRow } from '@/lib/types';
+import { imagingInstrumentLabel, type NircamProductRow } from '@/lib/types';
 import type { NircamFilterOptions } from './NircamFilterBar';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
@@ -169,6 +169,9 @@ export const NircamTable: React.FC<NircamTableProps> = ({
   // epoch axis) drops out when one of those facets is active.
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
+      if (filters.instruments.length > 0 && !filters.instruments.includes(p.instrument)) {
+        return false;
+      }
       if (filters.filters.length > 0 && !filters.filters.includes(p.filter)) {
         return false;
       }
@@ -202,6 +205,13 @@ export const NircamTable: React.FC<NircamTableProps> = ({
   // the filter bar, which hides its Epoch facet in the same case.
   const hasNamedEpochs = useMemo(
     () => products.some((p) => (p.epoch ?? '') !== ''),
+    [products],
+  );
+
+  // Instrument is an axis only when the field has mosaics of more than one
+  // (NIRCam plus an HST instrument); mirror the filter bar's facet.
+  const hasSeveralInstruments = useMemo(
+    () => new Set(products.map((p) => p.instrument)).size > 1,
     [products],
   );
 
@@ -248,6 +258,19 @@ export const NircamTable: React.FC<NircamTableProps> = ({
           );
         },
       },
+      ...(hasSeveralInstruments
+        ? [{
+            accessorKey: 'instrument',
+            header: ({ column }) => (
+              <SortableHeader column={column}>Instrument</SortableHeader>
+            ),
+            cell: ({ row }) => (
+              <span className="text-sm text-text-primary">
+                {imagingInstrumentLabel(row.original.instrument)}
+              </span>
+            ),
+          } satisfies ColumnDef<NircamProductRow>]
+        : []),
       {
         accessorKey: 'filter',
         header: ({ column }) => (
@@ -358,7 +381,8 @@ export const NircamTable: React.FC<NircamTableProps> = ({
         enableSorting: false,
         cell: ({ row }) => {
           const p = row.original;
-          const canView = p.extension === 'sci' && viewableFilters.has(p.filter);
+          // The map pyramid is built from NIRCam mosaics only.
+          const canView = p.instrument === 'nircam' && p.extension === 'sci' && viewableFilters.has(p.filter);
           return (
             <div className="flex items-center justify-end gap-1">
               {canView && (
@@ -377,7 +401,7 @@ export const NircamTable: React.FC<NircamTableProps> = ({
         },
       },
     ],
-    [thumbnails, quicklooks, viewableFilters, hasNamedEpochs, downloadable]
+    [thumbnails, quicklooks, viewableFilters, hasNamedEpochs, hasSeveralInstruments, downloadable]
   );
 
   const table = useReactTable({

@@ -1375,3 +1375,29 @@ DROP TRIGGER IF EXISTS relink_photometry_from_matches_trigger ON public.catalog_
 CREATE TRIGGER relink_photometry_from_matches_trigger
   AFTER UPDATE OF object_id ON public.catalog_matches
   FOR EACH ROW EXECUTE FUNCTION public.relink_photometry_from_matches();
+
+
+-- =============================================================================
+-- deployments.instrument
+-- =============================================================================
+-- A field deployment belongs to one imaging instrument. A writer that predates
+-- the column (an older client, the seed) inserts a field row without one; that
+-- row is NIRCam's, as every field deployment was before the HST instruments.
+-- BEFORE INSERT, so deployments_instrument_check sees the filled value.
+CREATE OR REPLACE FUNCTION public.deployments_set_instrument()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.field IS NOT NULL AND NEW.instrument IS NULL THEN
+    NEW.instrument := 'nircam';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS deployments_set_instrument_trigger ON public.deployments;
+CREATE TRIGGER deployments_set_instrument_trigger
+  BEFORE INSERT ON public.deployments
+  FOR EACH ROW EXECUTE FUNCTION public.deployments_set_instrument();

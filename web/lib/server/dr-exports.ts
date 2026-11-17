@@ -52,9 +52,12 @@ export interface DrReleaseRow {
   page_md?: string | null;
 }
 
-/** A field-level component name (nircam/<field>, photometry/<field>/<catalog>). */
+/** A field-level component name: an imaging component, one instrument of one
+ *  field (nircam/<field>, acswfc/<field>, wfc3ir/<field>), or
+ *  photometry/<field>/<catalog>. */
 export function isComponentScope(scope: string): boolean {
-  return scope.startsWith('nircam/') || scope.startsWith('photometry/');
+  return scope.startsWith('nircam/') || scope.startsWith('acswfc/') || scope.startsWith('wfc3ir/')
+    || scope.startsWith('photometry/');
 }
 
 /**

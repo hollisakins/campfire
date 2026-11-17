@@ -862,7 +862,7 @@ export async function generateObjectFitsDownloadUrls(
  * keyed by canonical storage key (file_path).
  *
  * Client-supplied keys are never trusted: the authorized set is re-derived
- * server-side by querying `nircam_images` under the caller's RLS session. Because
+ * server-side by querying `mosaics` under the caller's RLS session. Because
  * the table's RLS returns only published mosaics to non-admins (and all rows to
  * admins), the intersection of the requested paths with what the query returns is
  * exactly the set the caller may download — a draft/revoked or forged key simply
@@ -896,11 +896,11 @@ export async function generateNircamMosaicDownloadUrls(
     // query (see authorizeKeysInChunks).
     const supabase = await createClient();
     const dr = await requestDrTag();
-    // cat_nircam_images: the live table, or the release's frozen mosaics.
+    // cat_mosaics: the live table, or the release's frozen mosaics.
     const { keys: authorized, error: queryError } = await authorizeKeysInChunks(
       filePaths,
       'file_path',
-      (chunk) => supabase.from('cat_nircam_images').select('file_path').in('file_path', chunk),
+      (chunk) => supabase.from('cat_mosaics').select('file_path').in('file_path', chunk),
     );
 
     if (queryError) {

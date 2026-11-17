@@ -15,8 +15,16 @@ describe('parseReleaseComponents', () => {
   it('names each component kind', () => {
     expect(parseReleaseComponents(['nirspec', 'nircam/cosmos', 'photometry/cosmos/COSMOS v1.2'])).toEqual([
       { kind: 'nirspec', label: 'NIRSpec', raw: 'nirspec' },
-      { kind: 'nircam', label: 'NIRCam · cosmos', raw: 'nircam/cosmos' },
+      { kind: 'nircam', label: 'NIRCam · cosmos', raw: 'nircam/cosmos', instrument: 'nircam' },
       { kind: 'photometry', label: 'Photometry · cosmos · COSMOS v1.2', raw: 'photometry/cosmos/COSMOS v1.2' },
+    ]);
+  });
+  it('names the HST imaging components by instrument', () => {
+    expect(parseReleaseComponents(['acswfc/cosmos', 'wfc3ir/goods-n', 'miri/cosmos', 'acswfc/'])).toEqual([
+      { kind: 'hst', label: 'ACS/WFC · cosmos', raw: 'acswfc/cosmos', instrument: 'acswfc' },
+      { kind: 'hst', label: 'WFC3/IR · goods-n', raw: 'wfc3ir/goods-n', instrument: 'wfc3ir' },
+      { kind: 'other', label: 'miri/cosmos', raw: 'miri/cosmos' },
+      { kind: 'other', label: 'acswfc/', raw: 'acswfc/' },
     ]);
   });
   it('tolerates a malformed value', () => {
@@ -91,6 +99,27 @@ describe('releaseSummary', () => {
     });
     expect(s.nircam?.area_arcmin2).toBeCloseTo(150);
     expect(s.nircam?.mosaics).toBe(10);
+  });
+  it('keeps the HST instruments apart from NIRCam, one component per instrument and field', () => {
+    const s = releaseSummary(['nircam/cosmos', 'wfc3ir/cosmos', 'acswfc/cosmos', 'acswfc/egs'], {
+      by_component: {
+        'nircam/cosmos': { files: 4, mosaics: 3, bytes: 100 },
+        'acswfc/cosmos': { files: 7, mosaics: 5, bytes: 50 },
+        'wfc3ir/cosmos': { files: 3, mosaics: 2, bytes: 20 },
+        'acswfc/egs': { files: 6, mosaics: 5, bytes: 30 },
+      },
+    });
+    // NIRCam's card counts NIRCam alone
+    expect(s.nircam?.fields.map((f) => f.field)).toEqual(['cosmos']);
+    expect(s.nircam?.mosaics).toBe(3);
+    expect(s.hst?.components.map((c) => `${c.instrument}/${c.field}`)).toEqual(['acswfc/cosmos', 'wfc3ir/cosmos', 'acswfc/egs']);
+    expect(s.hst?.components.map((c) => c.label)).toEqual(['ACS/WFC', 'WFC3/IR', 'ACS/WFC']);
+    expect(s.hst?.fields).toEqual(['cosmos', 'egs']);
+    expect(s.hst?.mosaics).toBe(12);
+    expect(s.hst?.bytes).toBe(100);
+    // an instrument this page does not know is not taken for an imaging component
+    expect(releaseSummary(['miri/cosmos'], {}).hst).toBeNull();
+    expect(releaseSummary(['nircam/cosmos'], {}).hst).toBeNull();
   });
   it('leaves out absent components and tolerates missing sizes', () => {
     const s = releaseSummary(['nircam/a2744'], { spectra: 5 });

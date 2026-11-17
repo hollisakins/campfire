@@ -2029,23 +2029,23 @@ UPDATE public.fields SET latest_deployment_id = 537 WHERE name = 'a2744';
 -- 6c. NIRCam mosaics (one real field; published + one draft)
 -- ============================================
 
-INSERT INTO public.nircam_images (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
+INSERT INTO public.mosaics (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
 VALUES (1613, 'a2744', 'full', 'f200w', '30mas', 'sci', '', 'data/products/nircam/a2744/f200w/mosaic_nircam_f200w_a2744_30mas_full_sci.fits.gz', 5033626560, 'published', 536, '2026-07-29T16:31:02.1594');
-INSERT INTO public.nircam_images (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
+INSERT INTO public.mosaics (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
 VALUES (1614, 'a2744', 'full', 'f200w', '30mas', 'err', '', 'data/products/nircam/a2744/f200w/mosaic_nircam_f200w_a2744_30mas_full_err.fits.gz', 5033626560, 'published', 536, '2026-07-29T16:31:02.1594');
-INSERT INTO public.nircam_images (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
+INSERT INTO public.mosaics (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
 VALUES (1615, 'a2744', 'full', 'f200w', '30mas', 'wht', '', 'data/products/nircam/a2744/f200w/mosaic_nircam_f200w_a2744_30mas_full_wht.fits.gz', 5033626560, 'published', 536, '2026-07-29T16:31:02.1594');
-INSERT INTO public.nircam_images (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
+INSERT INTO public.mosaics (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
 VALUES (1616, 'a2744', 'full', 'f200w', '30mas', 'srcmask', '', 'data/products/nircam/a2744/f200w/mosaic_nircam_f200w_a2744_30mas_full_srcmask.fits.gz', 1258413120, 'published', 536, '2026-07-29T16:31:02.1594');
-INSERT INTO public.nircam_images (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
+INSERT INTO public.mosaics (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
 VALUES (1617, 'a2744', 'full', 'f277w', '30mas', 'sci', '', 'data/products/nircam/a2744/f277w/mosaic_nircam_f277w_a2744_30mas_full_sci.fits.gz', 5033626560, 'published', 536, '2026-07-29T16:31:02.1594');
-INSERT INTO public.nircam_images (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
+INSERT INTO public.mosaics (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
 VALUES (1618, 'a2744', 'full', 'f277w', '30mas', 'err', '', 'data/products/nircam/a2744/f277w/mosaic_nircam_f277w_a2744_30mas_full_err.fits.gz', 5033626560, 'published', 536, '2026-07-29T16:31:02.1594');
-INSERT INTO public.nircam_images (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
+INSERT INTO public.mosaics (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
 VALUES (1619, 'a2744', 'full', 'f277w', '30mas', 'wht', '', 'data/products/nircam/a2744/f277w/mosaic_nircam_f277w_a2744_30mas_full_wht.fits.gz', 5033626560, 'published', 536, '2026-07-29T16:31:02.1594');
-INSERT INTO public.nircam_images (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
+INSERT INTO public.mosaics (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
 VALUES (1620, 'a2744', 'full', 'f277w', '30mas', 'srcmask', '', 'data/products/nircam/a2744/f277w/mosaic_nircam_f277w_a2744_30mas_full_srcmask.fits.gz', 1258413120, 'published', 536, '2026-07-29T16:31:02.1594');
-INSERT INTO public.nircam_images (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
+INSERT INTO public.mosaics (id, field, tile, filter, pixel_scale, extension, epoch, file_path, file_size, deploy_status, deployment_id, created_at)
 VALUES (3153, 'a2744', 'full', 'f070w', '30mas', 'sci', 'ep04', 'data/products/nircam/a2744/f070w/mosaic_nircam_f070w_a2744_30mas_full_ep04_sci.fits.gz', 5033626560, 'draft', 537, '2026-09-12T17:02:26.547384');
 
 -- ============================================
@@ -5427,7 +5427,7 @@ SELECT public.recompute_object_search_text();
 INSERT INTO public.dr_releases (tag, state, components, created_by, freeze_started_at, notes)
 SELECT 'DR-seed', 'freezing',
        (SELECT jsonb_agg(c) FROM (SELECT 'nirspec' AS c UNION ALL
-         SELECT DISTINCT 'nircam/' || field FROM public.nircam_images WHERE deploy_status = 'published' UNION ALL
+         SELECT DISTINCT 'nircam/' || field FROM public.mosaics WHERE deploy_status = 'published' UNION ALL
          -- every photometry catalog with a cross-match on a frozen object (P6b-2: band filters)
          SELECT DISTINCT 'photometry/' || ph.field || '/' || ph.catalog_name
          FROM public.catalog_matches ph JOIN public.objects o ON o.id = ph.object_id
@@ -5452,7 +5452,7 @@ SELECT setval('public.spectra_id_seq', 145561, false);
 SELECT setval('public.comments_id_seq', 188, false);
 SELECT setval('public.flag_audit_log_id_seq', 18018, false);
 SELECT setval('public.deployments_id_seq', 900007, false);
-SELECT setval('public.nircam_images_id_seq', 3154, false);
+SELECT setval('public.mosaics_id_seq', 3154, false);
 SELECT setval('public.catalog_matches_id_seq', 141017, false);
 SELECT setval('public.object_lists_id_seq', COALESCE((SELECT MAX(id) FROM public.object_lists), 0) + 1, false);
 SELECT setval('public.object_list_members_id_seq', COALESCE((SELECT MAX(id) FROM public.object_list_members), 0) + 1, false);

@@ -18,13 +18,16 @@ async function requireAdmin() {
 
 export type DeployStatus = 'draft' | 'published' | 'revoked';
 
-// Scope: exactly one of observation (NIRSpec) / field (NIRCam) is set,
-// mirroring the deployments_scope_check constraint. For NIRCam rows,
-// n_targets carries the exposure count (no n_spectra).
+// Scope: exactly one of observation (NIRSpec) / field (imaging) is set,
+// mirroring the deployments_scope_check constraint. A field deployment is one
+// imaging instrument's (`instrument`: nircam, acswfc, wfc3ir; null for an
+// observation). For field rows, n_targets carries the exposure count (no
+// n_spectra).
 export interface DeploymentRow {
   id: number;
   observation: string | null;
   field: string | null;
+  instrument: string | null;
   status: DeployStatus;
   n_targets: number | null;
   n_spectra: number | null;
@@ -51,7 +54,7 @@ export interface DeploymentsResult {
 
 export async function getDeployments(params?: {
   status?: DeployStatus;
-  instrument?: 'nirspec' | 'nircam';
+  instrument?: 'nirspec' | 'nircam' | 'acswfc' | 'wfc3ir';
   sortColumn?: string;
   sortDirection?: 'asc' | 'desc';
   page?: number;      // 1-based
@@ -185,8 +188,10 @@ export async function setDeploymentLifecycle(
     });
 
     if (error) return { success: false, error: error.message };
-    // The RPC's result shape is instrument-dependent: NIRSpec deployments
-    // report {spectra: {updated}}, NIRCam deployments {nircam_images: {updated}}.
+    // The RPC's result shape depends on the scope: an observation deployment
+    // reports {spectra: {updated}}, a field deployment (any imaging
+    // instrument) {nircam_images: {updated}}: the mosaic rows it flipped, under
+    // the key the table had before it was renamed `mosaics`.
     const spectraUpdated = data?.spectra?.updated as number | undefined;
     const imagesUpdated = data?.nircam_images?.updated as number | undefined;
     const updated = spectraUpdated ?? imagesUpdated ?? 0;

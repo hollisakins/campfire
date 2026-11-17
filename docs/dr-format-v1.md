@@ -55,7 +55,7 @@ real name alongside the url, so a reader never inverts the mapping.
 | `line_fits` | program slug | frozen line fits of that program's spectra |
 | `photometry` | program slug | frozen photometry rows whose object's `programs` contains the slug |
 | `manifest` | program slug | NIRSpec finals + sidecars of that program |
-| `manifest` | `nircam/<field>` | the published mosaics of the field component |
+| `manifest` | `<instrument>/<field>` | the published mosaics and field products of one imaging component: one instrument (`nircam`, `acswfc`, `wfc3ir`) of one field. A release made before the HST instruments has `nircam/<field>` scopes only |
 
 P(z) sidecars are not in the manifest (they are key-only products the layout cannot
 archive; the `photometry` rows carry the catalog values).

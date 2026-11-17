@@ -165,7 +165,7 @@ BEGIN
     RAISE EXCEPTION 'manifest partition for % has % rows', prog, n;
   END IF;
   SELECT count(*) INTO n FROM dr_export_rows('DR-seed', 'manifest', 'nircam/' || fld, NULL, 10000) r;
-  IF n <> (SELECT count(*) FROM nircam_images WHERE field = fld AND deploy_status = 'published') OR n = 0 THEN
+  IF n <> (SELECT count(*) FROM mosaics WHERE field = fld AND deploy_status = 'published') OR n = 0 THEN
     RAISE EXCEPTION 'nircam member partition has % rows', n;
   END IF;
   RAISE NOTICE 'OK 2: partitions equal the live scoped sync (spectra, line fits, objects) and the frozen manifest';

@@ -116,7 +116,9 @@ def test_field_lifecycle_flips_under_the_field_lease(patched, monkeypatch):
     monkeypatch.setattr(dcli, 'load_config', lambda path, **kw: {})
     monkeypatch.setattr(dcli, 'get_supabase_client', lambda config: c)
     monkeypatch.setattr(dcli, 'get_user_id_from_token', lambda config: 'user-1')
-    monkeypatch.setattr(dcli, 'get_field_deployment_ids', lambda client, field: [7, 8])
+    asked = []
+    monkeypatch.setattr(dcli, 'get_field_deployment_ids',
+                        lambda client, field, instrument=None: asked.append(instrument) or [7, 8])
     monkeypatch.setattr(dcli, 'set_deployment_status',
                         lambda client, dep, status, actor=None: order.append(f'flip{dep}') or {})
     ctx = type('Ctx', (), {'obj': {}})()
@@ -124,6 +126,11 @@ def test_field_lifecycle_flips_under_the_field_lease(patched, monkeypatch):
                                to_status='published', verb='Publish', field='cosmos')
     assert seen['p_scope_type'] == 'field' and seen['p_scope_key'] == 'cosmos'
     assert order == ['begin', 'flip7', 'flip8', 'claim']
+    # every instrument of the field unless one is named; the lease is the field's either way
+    assert asked == [None]
+    dcli._lifecycle_transition(ctx, None, (), False, False, to_status='published',
+                               verb='Publish', field='cosmos', instrument='acswfc')
+    assert asked == [None, 'acswfc'] and seen['p_scope_key'] == 'cosmos'
 
 
 def test_field_lifecycle_resolves_deployments_under_the_lease(patched, monkeypatch):
@@ -133,7 +140,7 @@ def test_field_lifecycle_resolves_deployments_under_the_lease(patched, monkeypat
     patched(c)
     calls = []
 
-    def ids(client, field):
+    def ids(client, field, instrument=None):
         calls.append(list(order))
         return [9]
     monkeypatch.setattr(dcli, 'load_config', lambda path, **kw: {})

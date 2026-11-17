@@ -41,7 +41,7 @@ export const maxDuration = 300;
 
 // Must match the Python client's FINAL_PRODUCT_TYPES (python/campfire/db/store.py):
 // the storage mirror carries finals only.
-const FINAL_PRODUCT_TYPES = ['nirspec_spec', 'nircam_mosaic'];
+const FINAL_PRODUCT_TYPES = ['nirspec_spec', 'nircam_mosaic', 'acswfc_mosaic', 'wfc3ir_mosaic'];
 
 const PAGE_SIZE: Record<SyncStreamName, number> = {
   objects: 5000,

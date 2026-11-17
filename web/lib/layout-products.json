@@ -443,6 +443,42 @@
       ]
     },
     {
+      "name": "acswfc_mosaic_thumbnail",
+      "instrument": "acswfc",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "acswfc/{field}/{filt}",
+      "filename": null,
+      "suffix": "_thumb.png",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "acswfc_mosaic_quicklook",
+      "instrument": "acswfc",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "acswfc/{field}/{filt}",
+      "filename": null,
+      "suffix": "_quicklook.png",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
       "name": "wfc3ir_exposure",
       "instrument": "wfc3ir",
       "tree": "products",
@@ -532,6 +568,42 @@
       "compressed_suffixes": [
         ".fits"
       ]
+    },
+    {
+      "name": "wfc3ir_mosaic_thumbnail",
+      "instrument": "wfc3ir",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "wfc3ir/{field}/{filt}",
+      "filename": null,
+      "suffix": "_thumb.png",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "wfc3ir_mosaic_quicklook",
+      "instrument": "wfc3ir",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "wfc3ir/{field}/{filt}",
+      "filename": null,
+      "suffix": "_quicklook.png",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
     },
     {
       "name": "tile",

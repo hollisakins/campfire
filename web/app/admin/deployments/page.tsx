@@ -18,6 +18,7 @@ import {
   type DeploymentRow, type DeployEventRow, type DeployStatus, type LifecycleAction,
 } from '@/lib/actions/deployments';
 import { DEPLOYMENT_SORT_KEYS } from '@/lib/admin/sort-keys';
+import { IMAGING_INSTRUMENTS, imagingInstrumentLabel } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
 // Display helpers
@@ -54,8 +55,10 @@ function scopeOf(d: DeploymentRow): string {
   return d.observation ?? d.field ?? `#${d.id}`;
 }
 
-function instrumentOf(d: DeploymentRow): 'NIRSpec' | 'NIRCam' {
-  return d.observation ? 'NIRSpec' : 'NIRCam';
+// An observation deployment is NIRSpec's; a field deployment is one imaging
+// instrument's (a row from before the column existed is NIRCam's).
+function instrumentOf(d: DeploymentRow): string {
+  return d.observation ? 'NIRSpec' : imagingInstrumentLabel(d.instrument ?? 'nircam');
 }
 
 function instrumentBadge(d: DeploymentRow) {
@@ -99,7 +102,7 @@ const STATUS_OPTIONS = [
 ];
 const INSTRUMENT_OPTIONS = [
   { value: 'nirspec', label: 'NIRSpec' },
-  { value: 'nircam', label: 'NIRCam' },
+  ...IMAGING_INSTRUMENTS.map((i) => ({ value: i as string, label: imagingInstrumentLabel(i) })),
 ];
 // Every value deploy_events_action_check permits. config_sync rows come from
 // `campfire config push/retire`; archive / collect / freeze / publish_dr /
@@ -136,7 +139,7 @@ function DeploymentsPageInner() {
     fetchPage: async (page) => {
       const res = await getDeployments({
         status: (state.debouncedFilters.status || undefined) as DeployStatus | undefined,
-        instrument: (state.debouncedFilters.instrument || undefined) as 'nirspec' | 'nircam' | undefined,
+        instrument: (state.debouncedFilters.instrument || undefined) as 'nirspec' | 'nircam' | 'acswfc' | 'wfc3ir' | undefined,
         sortColumn: state.sort.column,
         sortDirection: state.sort.direction,
         page,
@@ -175,11 +178,11 @@ function DeploymentsPageInner() {
   const onAction = async (dep: DeploymentRow, action: LifecycleAction, label: string) => {
     const verb = label.toLowerCase();
     const scope = scopeOf(dep);
-    const isNirspec = instrumentOf(dep) === 'NIRSpec';
-    const noun = isNirspec ? 'spectra' : 'NIRCam images';
+    const isNirspec = !!dep.observation;
+    const noun = isNirspec ? 'spectra' : `${instrumentOf(dep)} mosaics`;
     const affects = isNirspec
       ? `This affects ${dep.n_spectra ?? '?'} spectra.`
-      : `This affects its NIRCam images.`;
+      : `This affects its ${instrumentOf(dep)} mosaics.`;
     const warn = action === 'revoke'
       ? `Revoke "${scope}"? Its ${noun} will be hidden from users (bytes retained, recoverable).`
       : `${label} "${scope}"? ${affects}`;
@@ -193,7 +196,7 @@ function DeploymentsPageInner() {
       setActionError(res.error ?? `Failed to ${verb}`);
       return;
     }
-    const unit = res.updatedKind === 'images' ? 'images' : 'spectra';
+    const unit = res.updatedKind === 'images' ? 'mosaic files' : 'spectra';
     setNotice(`${PAST_TENSE[action]} ${scope} — ${res.updated ?? 0} ${unit} updated.`);
     queryClient.invalidateQueries({ queryKey: ['admin-deployments'] });
     queryClient.invalidateQueries({ queryKey: ['admin-deploy-events'] });

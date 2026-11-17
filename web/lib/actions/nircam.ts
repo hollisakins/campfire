@@ -8,9 +8,18 @@ import { generateDownloadUrls } from '@/lib/r2';
 import { parseKey } from '@/lib/layout';
 import { listReleaseMembers, listReleaseMembersIn, releaseDownloadUrls, type ReleaseMember } from '@/lib/server/dr-files';
 import { thumbnailBase, quicklookBase } from '@/lib/nircam-product-keys';
-import type {
-  NircamImage, NircamExpmap, NircamFieldCard, NircamFieldSummary,
+import {
+  IMAGING_INSTRUMENTS,
+  type ImagingProvenance, type NircamImage, type NircamExpmap, type NircamFieldCard,
+  type NircamFieldSummary,
 } from '@/lib/types';
+
+// The product types of every imaging instrument's mosaics and of their PNG
+// renditions (`<instrument>_mosaic`, `_mosaic_thumbnail`, `_mosaic_quicklook`):
+// the field page lists NIRCam's and the HST instruments' side by side.
+const MOSAIC_TYPES: string[] = IMAGING_INSTRUMENTS.map((i) => `${i}_mosaic`);
+const THUMBNAIL_TYPES: string[] = IMAGING_INSTRUMENTS.map((i) => `${i}_mosaic_thumbnail`);
+const QUICKLOOK_TYPES: string[] = IMAGING_INSTRUMENTS.map((i) => `${i}_mosaic_quicklook`);
 
 // Presigned-GET lifetime for <img> sources (layout / expmap plots / thumbnails).
 // Raw presigned URLs go straight into <img> tags — no proxy hop, no CORS needed
@@ -58,14 +67,17 @@ export interface NircamFieldImagesResult {
   error?: string;
 }
 
-/** The release's archived members of one field's products, by live key. */
+/** The release's archived members of one field's products, by live key: the
+ *  field's component of every imaging instrument (`<instrument>/<field>`). */
 async function releaseFieldMembers(
   supabase: Awaited<ReturnType<typeof createClient>>,
   tag: string,
   field: string,
   productTypes: readonly string[],
 ): Promise<Map<string, ReleaseMember | null>> {
-  const members = await listReleaseMembers(supabase, tag, { component: `nircam/${field}`, productTypes });
+  const members = await listReleaseMembersIn(supabase, tag, {
+    components: IMAGING_INSTRUMENTS.map((i) => `${i}/${field}`), productTypes: [...productTypes],
+  });
   return new Map(members.map((m) => [m.storageKey, m]));
 }
 
@@ -87,14 +99,15 @@ export async function getNircamImages(field?: string): Promise<NircamImagesResul
   try {
     const { data, error } = await paginateQuery<NircamImage>(
       () => {
-        // cat_nircam_images: live rows, or the release's frozen mosaics
+        // cat_mosaics: live rows, or the release's frozen mosaics
         // while one is browsed (P6c-1)
         let q = supabase
-          .from('cat_nircam_images')
+          .from('cat_mosaics')
           .select('*');
         if (field) q = q.eq('field', field);
         return q
           .order('field', { ascending: true })
+          .order('instrument', { ascending: true })
           .order('filter', { ascending: true })
           .order('tile', { ascending: true })
           .order('id', { ascending: true });
@@ -127,7 +140,7 @@ export async function getNircamImages(field?: string): Promise<NircamImagesResul
 /**
  * Attach the registry's stored (gzipped) byte counts to mosaic rows.
  *
- * `nircam_images.file_size` is the logical (uncompressed) size; the bytes a
+ * `mosaics.file_size` is the logical (uncompressed) size; the bytes a
  * download actually transfers live on `storage_objects.stored_size_bytes`
  * (NULL for verbatim objects). Fails OPEN: any error (including a DB that
  * predates the column) just returns the rows without stored sizes, so the
@@ -147,7 +160,7 @@ async function attachStoredSizes(
         let q = supabase
           .from('storage_objects')
           .select('storage_key, stored_size_bytes')
-          .eq('product_type', 'nircam_mosaic')
+          .in('product_type', MOSAIC_TYPES)
           .eq('status', 'active')
           .not('stored_size_bytes', 'is', null);
         if (field) q = q.eq('field', field);
@@ -186,7 +199,7 @@ function formatPixelScale(arcsec: unknown): string | null {
  * their visibility rides the owning field deployment via RLS: a published field
  * deployment is public to everyone, drafts stay admin-only. We simply select
  * active rows and let `select_storage_objects_by_access` do the gating — no
- * bespoke access logic here, mirroring how mosaics rely on `nircam_images` RLS.
+ * bespoke access logic here, mirroring how mosaics rely on `mosaics` RLS.
  */
 export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsResult> {
   const { user, supabase } = await getRequestIdentity();
@@ -267,7 +280,7 @@ export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsRes
 
 /**
  * The /nircam landing grid: one card per field the caller can see any mosaic
- * of (get_nircam_fields RPC — SECURITY INVOKER, so nircam_images RLS scopes
+ * of (get_nircam_fields RPC — SECURITY INVOKER, so mosaics RLS scopes
  * non-admins to published data). Each row's layout key is presigned into a
  * ready-to-render <img> URL here so the client never handles storage keys.
  */
@@ -365,30 +378,45 @@ export async function getNircamFieldSummary(field: string): Promise<NircamFieldS
     const { layout_key: _lk, ...base } = row;
     void _lk;
 
-    // Reduction provenance from the latest published deployment (the
-    // deployments log is readable by all authenticated users). Fail open —
-    // a missing row just leaves the provenance rows off the overview.
-    let provenance = { cfpipe_version: null as string | null,
-                       jwst_version: null as string | null,
-                       crds_context: null as string | null };
+    // Reduction provenance from the latest published deployment of each
+    // instrument (the deployments log is readable by all authenticated
+    // users; one deploy is one instrument's products of the field). Fail
+    // open — a missing row just leaves the provenance rows off the overview.
+    let provenance: ImagingProvenance = { cfpipe_version: null, jwst_version: null, crds_context: null };
     // Under a release the deployments log is live-only; the frozen summary
     // carries no provenance until P6c-2.
     if (await requestDrTag()) return { summary: { ...base, ...provenance }, isAuthenticated: true };
+    const byInstrument: Record<string, ImagingProvenance> = {};
     try {
-      const { data: dep } = await supabase
+      const { data: deps } = await supabase
         .from('deployments')
-        .select('cfpipe_version, jwst_version, crds_context')
+        .select('instrument, cfpipe_version, jwst_version, crds_context')
         .eq('field', field)
         .eq('status', 'published')
         .order('deployed_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (dep) provenance = dep;
+        .limit(200);
+      for (const d of deps ?? []) {
+        const inst = (d.instrument as string | null) ?? 'nircam';
+        // newest first: the first row seen for an instrument is its latest
+        if (!(inst in byInstrument)) {
+          byInstrument[inst] = {
+            cfpipe_version: d.cfpipe_version, jwst_version: d.jwst_version, crds_context: d.crds_context,
+          };
+        }
+      }
+      // The summary's own three fields stay NIRCam's (another instrument's
+      // deploy must not replace them); a field without NIRCam shows the
+      // first instrument it has.
+      const first = IMAGING_INSTRUMENTS.find((i) => i in byInstrument);
+      if (first) provenance = byInstrument[first];
     } catch (err) {
       console.error('Error fetching deployment provenance (continuing):', err);
     }
 
-    return { summary: { ...base, ...provenance }, isAuthenticated: true };
+    return {
+      summary: { ...base, ...provenance, provenance_by_instrument: byInstrument },
+      isAuthenticated: true,
+    };
   } catch (err) {
     console.error('Unexpected error fetching NIRCam field summary:', err);
     return { summary: null, error: 'An unexpected error occurred', isAuthenticated: true };
@@ -418,16 +446,17 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
     // release holds archived.
     const dr = await requestDrTag();
     if (dr) {
+      const fitsTypes = [...MOSAIC_TYPES, 'nircam_expmap'];
       const byKey = await releaseFieldMembers(supabase, dr, field, [
-        'nircam_layout', 'nircam_expmap_plot', 'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook',
-        'nircam_mosaic', 'nircam_expmap',
+        'nircam_layout', 'nircam_expmap_plot', ...THUMBNAIL_TYPES, ...QUICKLOOK_TYPES,
+        ...fitsTypes,
       ]);
-      const images = new Map([...byKey].filter(([, m]) => m && !['nircam_mosaic', 'nircam_expmap'].includes(m.productType)));
+      const images = new Map([...byKey].filter(([, m]) => m && !fitsTypes.includes(m.productType)));
       const urlByKey = await releaseDownloadUrls(images, IMG_PRESIGN_TTL_SECONDS);
       const result: NircamFieldImagesResult = {
         layoutUrl: null, expmapPlots: {}, thumbnails: {}, quicklooks: {},
         downloadable: [...byKey.values()]
-          .filter((m): m is ReleaseMember => !!m && ['nircam_mosaic', 'nircam_expmap'].includes(m.productType))
+          .filter((m): m is ReleaseMember => !!m && fitsTypes.includes(m.productType))
           .map((m) => m.storageKey),
       };
       for (const [key, m] of images) {
@@ -438,8 +467,8 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
           let filt: string | undefined;
           try { filt = parseKey(key).scope.filt as string | undefined; } catch { filt = undefined; }
           if (filt) result.expmapPlots[filt] = url;
-        } else if (m.productType === 'nircam_mosaic_thumbnail') result.thumbnails[thumbnailBase(key)] = url;
-        else if (m.productType === 'nircam_mosaic_quicklook') result.quicklooks[quicklookBase(key)] = url;
+        } else if (THUMBNAIL_TYPES.includes(m.productType)) result.thumbnails[thumbnailBase(key)] = url;
+        else if (QUICKLOOK_TYPES.includes(m.productType)) result.quicklooks[quicklookBase(key)] = url;
       }
       return result;
     }
@@ -452,7 +481,7 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
         .select('storage_key, product_type, filter')
         .eq('field', field)
         .eq('status', 'active')
-        .in('product_type', ['nircam_layout', 'nircam_expmap_plot', 'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook'])
+        .in('product_type', ['nircam_layout', 'nircam_expmap_plot', ...THUMBNAIL_TYPES, ...QUICKLOOK_TYPES])
         .order('storage_key'),
     );
 
@@ -474,11 +503,11 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
         result.layoutUrl = url;
       } else if (row.product_type === 'nircam_expmap_plot' && row.filter) {
         result.expmapPlots[row.filter] = url;
-      } else if (row.product_type === 'nircam_mosaic_thumbnail') {
+      } else if (THUMBNAIL_TYPES.includes(row.product_type)) {
         // Keyed by mosaic base — the shared contract with the table's
         // mosaicBase() lives in lib/nircam-product-keys.ts.
         result.thumbnails[thumbnailBase(row.storage_key)] = url;
-      } else if (row.product_type === 'nircam_mosaic_quicklook') {
+      } else if (QUICKLOOK_TYPES.includes(row.product_type)) {
         result.quicklooks[quicklookBase(row.storage_key)] = url;
       }
     }

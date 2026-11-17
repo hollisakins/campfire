@@ -664,33 +664,36 @@ def slits(ctx, config_path, obs, dry_run, local):
 
 
 def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, verb,
-                          field=None):
+                          field=None, instrument=None):
     """Shared body for the publish/revoke subcommands (epic #210, B2 / #261).
 
-    Resolves each observation's (or a NIRCam field's) latest deployment and calls
-    set_deployment_status, which flips the deployment + its spectra / nircam_images
-    + writes audit rows server-side.
+    Resolves each observation's (or an imaging field's) latest deployment and calls
+    set_deployment_status, which flips the deployment + its spectra / mosaics
+    + writes audit rows server-side. For a field, ``instrument`` narrows the
+    transition to one imaging instrument's deployments; without it every
+    instrument the field has is flipped.
     """
     config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
     actor = get_user_id_from_token(config)
     if field:
+        scope = f"field {field}" + (f" ({instrument})" if instrument else "")
         # Flip EVERY deployment the field has, not just the latest: a --filter
         # subset re-deploy spreads a field's objects across deployments, so flipping
         # only the newest would partially publish (or leave part of a revoked field
-        # public). set_deployment_status per deployment also flips its nircam_images.
+        # public). set_deployment_status per deployment also flips its mosaics.
         if dry_run:
-            dep_ids = get_field_deployment_ids(sb, field)
+            dep_ids = get_field_deployment_ids(sb, field, instrument)
             if not dep_ids:
-                print(f"  field {field}: no deployment found, skipping")
+                print(f"  {scope}: no deployment found, skipping")
                 return
-            print(f"  [dry-run] {verb} field {field} ({len(dep_ids)} deployment(s): "
+            print(f"  [dry-run] {verb} {scope} ({len(dep_ids)} deployment(s): "
                   f"{', '.join('#'+str(d) for d in dep_ids)})")
             return
         def flip_all():
             # resolved under the lease, so a field deploy that finished just before
             # (even the field's first) is included (Codex on #599)
-            current = get_field_deployment_ids(sb, field)
+            current = get_field_deployment_ids(sb, field, instrument)
             return current, sum(1 for dep_id in current
                                 if set_deployment_status(sb, dep_id, to_status, actor=actor) is not None)
         # One RPC per deployment, so the field lease keeps a data-release
@@ -698,9 +701,9 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
         # field (an observation's flip is a single RPC and needs none).
         current, n_ok = _under_scope_lease(config, 'field', field, False, flip_all)
         if not current:
-            print(f"  field {field}: no deployment found, skipping")
+            print(f"  {scope}: no deployment found, skipping")
             return
-        print(f"  {verb}ed field {field}: {n_ok}/{len(current)} deployment(s) -> {to_status}")
+        print(f"  {verb}ed {scope}: {n_ok}/{len(current)} deployment(s) -> {to_status}")
         return
     for obs_name in obs:
         dep_id = get_latest_deployment_id(sb, obs_name)
@@ -721,22 +724,30 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
 
 @deploy_group.command()
 @shared_options
-@click.option('--field', default=None, help='NIRCam field to publish (instead of --obs).')
+@click.option('--field', default=None, help='Imaging field to publish (instead of --obs).')
+@click.option('--instrument', 'lifecycle_instrument', default=None,
+              type=click.Choice(['nircam', 'acswfc', 'wfc3ir']),
+              help='With --field: only this instrument\'s deployments (default: every instrument of the field).')
 @click.pass_context
-def publish(ctx, config_path, obs, dry_run, local, field):
-    """Publish draft observation(s) or a NIRCam field: make products public."""
+def publish(ctx, config_path, obs, dry_run, local, field, lifecycle_instrument):
+    """Publish draft observation(s) or an imaging field: make products public."""
     _lifecycle_transition(ctx, config_path, obs, dry_run, local,
-                          to_status='published', verb='Publish', field=field)
+                          to_status='published', verb='Publish', field=field,
+                          instrument=lifecycle_instrument)
 
 
 @deploy_group.command()
 @shared_options
-@click.option('--field', default=None, help='NIRCam field to revoke (instead of --obs).')
+@click.option('--field', default=None, help='Imaging field to revoke (instead of --obs).')
+@click.option('--instrument', 'lifecycle_instrument', default=None,
+              type=click.Choice(['nircam', 'acswfc', 'wfc3ir']),
+              help='With --field: only this instrument\'s deployments (default: every instrument of the field).')
 @click.pass_context
-def revoke(ctx, config_path, obs, dry_run, local, field):
-    """Revoke published observation(s) or a NIRCam field: hide products (bytes retained)."""
+def revoke(ctx, config_path, obs, dry_run, local, field, lifecycle_instrument):
+    """Revoke published observation(s) or an imaging field: hide products (bytes retained)."""
     _lifecycle_transition(ctx, config_path, obs, dry_run, local,
-                          to_status='revoked', verb='Revoke', field=field)
+                          to_status='revoked', verb='Revoke', field=field,
+                          instrument=lifecycle_instrument)
 
 
 @deploy_group.command('delete-local')

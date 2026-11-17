@@ -23,10 +23,12 @@ import {
   type NircamFieldImagesResult,
 } from '@/lib/actions/nircam';
 import { getFitsglDatasets } from '@/lib/actions/map';
-import type {
-  NircamFieldCard,
-  NircamFieldSummary,
-  NircamProductRow,
+import {
+  IMAGING_INSTRUMENTS,
+  imagingInstrumentLabel,
+  type NircamFieldCard,
+  type NircamFieldSummary,
+  type NircamProductRow,
 } from '@/lib/types';
 import { LogIn, Loader2, ImageIcon, ExternalLink, Scissors } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
@@ -165,6 +167,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
       const mosaicRows: NircamProductRow[] = (imagesRes.error ? [] : imagesRes.images).map(
         (img) => ({
           kind: 'mosaic',
+          instrument: img.instrument ?? 'nircam',
           field: img.field,
           filter: img.filter,
           tile: img.tile,
@@ -179,6 +182,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
       const expmapRows: NircamProductRow[] = (expmapsRes.error ? [] : expmapsRes.expmaps).map(
         (e) => ({
           kind: 'expmap',
+          instrument: 'nircam',
           field: e.field,
           filter: e.filter,
           tile: null,
@@ -222,6 +226,8 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
   const available = useMemo(() => {
     const mosaics = products.filter((p) => p.kind === 'mosaic');
     return {
+      // in the fixed instrument order (NIRCam first), not alphabetical
+      instruments: IMAGING_INSTRUMENTS.filter((i) => products.some((p) => p.instrument === i)) as string[],
       tiles: [...new Set(mosaics.map((p) => p.tile as string))].sort(tileSort),
       filters: [...new Set(products.map((p) => p.filter))].sort(),
       // Every product with a scale, not just mosaics — expmaps now carry the
@@ -277,8 +283,45 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
   }
 
   const displayName = summary?.display_name ?? field.toUpperCase();
-  const channels = summary ? filterChannelSplit(summary.filters) : null;
+  // The instruments with mosaics of the field, NIRCam first. A field with
+  // NIRCam alone reads exactly as it did before the HST instruments.
+  const instruments = IMAGING_INSTRUMENTS.filter(
+    (i) => (summary?.instruments ?? ['nircam']).includes(i),
+  ) as string[];
+  const nircamOnly = instruments.length === 1 && instruments[0] === 'nircam';
+  // Filters per instrument, from the mosaic rows (the summary's list is the
+  // union); the SW / LW split and the exposure maps are NIRCam's.
+  const filtersOf = (inst: string) =>
+    [...new Set(products.filter((p) => p.instrument === inst).map((p) => p.filter))].sort();
+  const nircamFilters = nircamOnly && summary ? summary.filters : filtersOf('nircam');
+  const channels = summary && nircamFilters.length > 0 ? filterChannelSplit(nircamFilters) : null;
+  // Exposure maps are built for NIRCam only: a field with HST mosaics alone
+  // has no panel to show (and, under a release, neither has one without plots).
+  const showExpmaps = nircamFilters.length > 0
+    && (!readOnly || Object.keys(fieldImages.expmapPlots).length > 0);
   const namedEpochs = summary ? summary.epochs.filter((e) => e !== '') : [];
+  const provenanceRows: [string, React.ReactNode][] = [];
+  if (summary) {
+    const byInstrument = summary.provenance_by_instrument
+      ?? { nircam: { cfpipe_version: summary.cfpipe_version, jwst_version: summary.jwst_version, crds_context: summary.crds_context } };
+    for (const inst of instruments) {
+      const p = byInstrument[inst];
+      if (!p) continue;
+      const tag = nircamOnly ? '' : ` (${imagingInstrumentLabel(inst)})`;
+      if (p.cfpipe_version) {
+        provenanceRows.push([`Pipeline${tag}`,
+          <span key={`cfp-${inst}`} className="font-mono text-xs break-all">cfpipe {p.cfpipe_version}</span>]);
+      }
+      if (p.jwst_version) {
+        provenanceRows.push([inst === 'nircam' ? `jwst${tag}` : `Calibration software${tag}`,
+          <span key={`cal-${inst}`} className="font-mono text-xs">{p.jwst_version}</span>]);
+      }
+      if (p.crds_context) {
+        provenanceRows.push([`CRDS context${tag}`,
+          <span key={`crds-${inst}`} className="font-mono text-xs">{p.crds_context}</span>]);
+      }
+    }
+  }
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -332,7 +375,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
           {/* Field header + map bridge */}
           <div className="flex items-start gap-4 flex-wrap mb-6">
             <h1 className="text-2xl font-bold text-text-primary">
-              {displayName} NIRCam Imaging
+              {displayName} {nircamOnly ? 'NIRCam Imaging' : 'Imaging'}
             </h1>
             <div className="flex-1" />
             {!readOnly && (
@@ -346,20 +389,23 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
                     Cutouts
                   </Link>
                 )}
-                <Link
-                  href={`/map?field=${encodeURIComponent(field)}`}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors"
-                >
-                  Open field in Map
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </Link>
+                {/* the map pyramid is built from NIRCam mosaics */}
+                {nircamFilters.length > 0 && (
+                  <Link
+                    href={`/map?field=${encodeURIComponent(field)}`}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors"
+                  >
+                    Open field in Map
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </Link>
+                )}
               </div>
             )}
           </div>
 
           {/* Field overview: metadata + exposure-map browser */}
           <div className="bg-card border border-border rounded-xl p-5 mb-7">
-            <div className={readOnly && Object.keys(fieldImages.expmapPlots).length === 0 ? '' : 'grid gap-6 md:grid-cols-[2fr_3fr]'}>
+            <div className={showExpmaps ? 'grid gap-6 md:grid-cols-[2fr_3fr]' : ''}>
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-text-tertiary mb-3">
                   Field overview
@@ -367,9 +413,19 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
                 <div className="text-[13px]">
                   {(
                     [
+                      ...(nircamOnly
+                        ? []
+                        : [['Instruments', instruments.map(imagingInstrumentLabel).join(' · ')]]),
                       [
                         'Filters',
-                        channels ? (
+                        !nircamOnly && instruments.length > 1 ? (
+                          <>
+                            {instruments.reduce((n, i) => n + filtersOf(i).length, 0)}{' '}
+                            <span className="text-text-tertiary">
+                              ({instruments.map((i) => `${imagingInstrumentLabel(i)} ${filtersOf(i).length}`).join(' · ')})
+                            </span>
+                          </>
+                        ) : channels ? (
                           <>
                             {summary.filters.length}{' '}
                             <span className="text-text-tertiary">
@@ -407,30 +463,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
                       ...(summary.last_updated
                         ? [['Last reduced', summary.last_updated.slice(0, 10)]]
                         : []),
-                      ...(summary.cfpipe_version
-                        ? [[
-                            'Pipeline',
-                            <span key="cfp" className="font-mono text-xs break-all">
-                              cfpipe {summary.cfpipe_version}
-                            </span>,
-                          ]]
-                        : []),
-                      ...(summary.jwst_version
-                        ? [[
-                            'jwst',
-                            <span key="jwst" className="font-mono text-xs">
-                              {summary.jwst_version}
-                            </span>,
-                          ]]
-                        : []),
-                      ...(summary.crds_context
-                        ? [[
-                            'CRDS context',
-                            <span key="crds" className="font-mono text-xs">
-                              {summary.crds_context}
-                            </span>,
-                          ]]
-                        : []),
+                      ...provenanceRows,
                     ] as [string, React.ReactNode][]
                   ).map(([k, v], i, arr) => (
                     <div
@@ -446,9 +479,9 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
                 </div>
               </div>
 
-              {(!readOnly || Object.keys(fieldImages.expmapPlots).length > 0) && (
+              {showExpmaps && (
                 <ExpmapBrowser
-                  filters={summary.filters}
+                  filters={nircamFilters}
                   expmapPlots={fieldImages.expmapPlots}
                 />
               )}
@@ -468,6 +501,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
               filterState={filters}
               onFiltersChange={setFilters}
               hideFieldFacet
+              availableInstruments={available.instruments}
               availableTiles={available.tiles}
               availableFilters={available.filters}
               availablePixelScales={available.pixel_scales}

@@ -274,7 +274,7 @@ GRANT EXECUTE ON FUNCTION public.member_editable_list_ids() TO authenticated;
 -- was built from is published. The pyramid in the public tiles bucket is built from
 -- ALL of the dataset's on-disk mosaics, so a composite that mixes published + draft
 -- mosaics must stay hidden until they ALL publish (a plain EXISTS-any-published would
--- leak the draft imagery). SECURITY DEFINER so it sees draft nircam_images rows the
+-- leak the draft imagery). SECURITY DEFINER so it sees draft mosaics rows the
 -- caller's own RLS would hide — otherwise the "NOT EXISTS unpublished" check can never
 -- fire for a non-admin. Requires ≥1 backing mosaic present AND none unpublished.
 CREATE OR REPLACE FUNCTION public.fitsgl_dataset_is_public(
@@ -284,12 +284,12 @@ LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = public
 AS $$
   SELECT EXISTS (
-    SELECT 1 FROM nircam_images ni
+    SELECT 1 FROM mosaics ni
     WHERE ni.field = p_field AND ni.tile = ANY (p_tiles)
       AND ni.filter = ANY (p_bands) AND ni.pixel_scale = p_pixel_scale
       AND ni.epoch = '' AND ni.deploy_status = 'published'
   ) AND NOT EXISTS (
-    SELECT 1 FROM nircam_images ni
+    SELECT 1 FROM mosaics ni
     WHERE ni.field = p_field AND ni.tile = ANY (p_tiles)
       AND ni.filter = ANY (p_bands) AND ni.pixel_scale = p_pixel_scale
       AND ni.epoch = '' AND ni.deploy_status <> 'published'
@@ -302,10 +302,10 @@ GRANT EXECUTE ON FUNCTION public.fitsgl_dataset_is_public(text, text[], text[], 
 -- =============================================================================
 -- NIRCam field summaries  (NIRCam page redesign; issue #303 fields table)
 -- =============================================================================
--- Both are SECURITY INVOKER: nircam_images RLS (deploy_status = 'published' OR
+-- Both are SECURITY INVOKER: mosaics RLS (deploy_status = 'published' OR
 -- is_admin()) does the visibility gating, so non-admins get published-only
 -- aggregates and admins see everything with no manual deploy_status filter.
--- Driven by nircam_images so only fields with visible mosaics appear; the fields
+-- Driven by mosaics so only fields with visible mosaics appear; the fields
 -- table (LEFT JOIN) supplies display_name / center / coverage_area, and
 -- storage_objects supplies the deployed layout-plot key for the card preview.
 
@@ -1022,8 +1022,8 @@ COMMENT ON VIEW public.cat_photometry IS 'Catalog source view: photometry for th
 REVOKE ALL ON TABLE public.cat_photometry FROM PUBLIC, anon, authenticated, service_role;
 GRANT SELECT ON TABLE public.cat_photometry TO authenticated, service_role;
 
-DROP VIEW IF EXISTS public.cat_nircam_images;
-CREATE VIEW public.cat_nircam_images
+DROP VIEW IF EXISTS public.cat_mosaics;
+CREATE VIEW public.cat_mosaics
 WITH (security_invoker = true) AS
   SELECT id,
          field,
@@ -1036,7 +1036,8 @@ WITH (security_invoker = true) AS
          file_size,
          deploy_status,
          deployment_id,
-         epoch
+         epoch,
+         instrument
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -1051,8 +1052,9 @@ WITH (security_invoker = true) AS
            file_size,
            deploy_status,
            deployment_id,
-           epoch
-    FROM public.nircam_images
+           epoch,
+           instrument
+    FROM public.mosaics
     UNION ALL
     SELECT 'dr'::text AS cat_src,
            tag AS cat_tag,
@@ -1067,8 +1069,9 @@ WITH (security_invoker = true) AS
            file_size,
            deploy_status,
            deployment_id,
-           epoch
-    FROM public.dr_nircam_images
+           epoch,
+           instrument
+    FROM public.dr_mosaics
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
   -- note above); pushed into each arm, cat_src gates it as a One-Time
@@ -1076,9 +1079,9 @@ WITH (security_invoker = true) AS
   WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
     AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
-COMMENT ON VIEW public.cat_nircam_images IS 'Catalog source view: nircam_images for the live catalog, dr_nircam_images rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
-REVOKE ALL ON TABLE public.cat_nircam_images FROM PUBLIC, anon, authenticated, service_role;
-GRANT SELECT ON TABLE public.cat_nircam_images TO authenticated, service_role;
+COMMENT ON VIEW public.cat_mosaics IS 'Catalog source view: mosaics for the live catalog, dr_mosaics rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_mosaics FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_mosaics TO authenticated, service_role;
 
 DROP VIEW IF EXISTS public.cat_fields;
 CREATE VIEW public.cat_fields
@@ -1255,7 +1258,8 @@ RETURNS TABLE(
   n_files bigint,
   total_bytes bigint,
   last_updated timestamp without time zone,
-  layout_key text
+  layout_key text,
+  instruments text[]
 )
 LANGUAGE sql STABLE SECURITY INVOKER
 SET search_path = public
@@ -1267,7 +1271,8 @@ AS $$
     f.center_dec,
     f.coverage_area_arcmin2,
     f.coverage_area_deg2,
-    COUNT(DISTINCT ni.filter)::integer AS n_filters,
+    -- a filter is an (instrument, filter) pair: two instruments may share a name
+    COUNT(DISTINCT (ni.instrument, ni.filter))::integer AS n_filters,
     COUNT(DISTINCT ni.tile)::integer   AS n_tiles,
     COUNT(*)::bigint                    AS n_files,
     COALESCE(SUM(ni.file_size), 0)::bigint AS total_bytes,
@@ -1287,8 +1292,9 @@ AS $$
            AND m.component = 'nircam/' || ni.field
            AND m.product_type = 'nircam_layout'
          ORDER BY m.storage_key LIMIT 1)
-    END                                 AS layout_key
-  FROM public.cat_nircam_images ni
+    END                                 AS layout_key,
+    array_agg(DISTINCT ni.instrument ORDER BY ni.instrument) AS instruments
+  FROM public.cat_mosaics ni
   LEFT JOIN public.cat_fields f ON f.name = ni.field
   GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
            f.coverage_area_arcmin2, f.coverage_area_deg2
@@ -1315,7 +1321,8 @@ RETURNS TABLE(
   n_files bigint,
   total_bytes bigint,
   last_updated timestamp without time zone,
-  layout_key text
+  layout_key text,
+  instruments text[]
 )
 LANGUAGE sql STABLE SECURITY INVOKER
 SET search_path = public
@@ -1347,8 +1354,9 @@ AS $$
            AND m.component = 'nircam/' || ni.field
            AND m.product_type = 'nircam_layout'
          ORDER BY m.storage_key LIMIT 1)
-    END                                    AS layout_key
-  FROM public.cat_nircam_images ni
+    END                                    AS layout_key,
+    array_agg(DISTINCT ni.instrument ORDER BY ni.instrument)   AS instruments
+  FROM public.cat_mosaics ni
   LEFT JOIN public.cat_fields f ON f.name = ni.field
   WHERE ni.field = p_field
   GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
@@ -8542,7 +8550,7 @@ GRANT EXECUTE ON FUNCTION public.get_activity_users TO authenticated;
 
 CREATE OR REPLACE FUNCTION public.get_admin_deployments(
   p_status text DEFAULT NULL,
-  p_instrument text DEFAULT NULL,       -- 'nirspec' | 'nircam' | NULL
+  p_instrument text DEFAULT NULL,       -- 'nirspec' | 'nircam' | 'acswfc' | 'wfc3ir' | NULL
   p_sort_column text DEFAULT 'deployed_at',
   p_sort_direction text DEFAULT 'desc',
   p_page integer DEFAULT 1,
@@ -8559,7 +8567,9 @@ RETURNS TABLE (
   deployed_at timestamptz,
   published_at timestamptz,
   revoked_at timestamptz,
-  total_count bigint
+  total_count bigint,
+  -- the imaging instrument of a field deployment; NULL for an observation
+  instrument text
 )
 LANGUAGE plpgsql STABLE
 SET search_path = public, pg_temp
@@ -8579,12 +8589,12 @@ BEGIN
   RETURN QUERY
   SELECT d.id, d.observation, d.field, d.status, d.n_targets, d.n_spectra,
          d.cfpipe_version, d.deployed_at, d.published_at, d.revoked_at,
-         count(*) OVER ()
+         count(*) OVER (), d.instrument
   FROM deployments d
   WHERE (p_status IS NULL OR d.status = p_status)
     AND (p_instrument IS NULL
          OR (p_instrument = 'nirspec' AND d.observation IS NOT NULL)
-         OR (p_instrument = 'nircam'  AND d.field IS NOT NULL))
+         OR d.instrument = p_instrument)
   ORDER BY
     CASE WHEN p_sort_column = 'deployed_at' AND p_sort_direction = 'desc' THEN d.deployed_at END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'deployed_at' AND p_sort_direction = 'asc'  THEN d.deployed_at END ASC NULLS LAST,
@@ -9802,6 +9812,7 @@ DECLARE
   v_is_admin boolean;
   v_obs text;
   v_field text;
+  v_instrument text;
   v_action text;
   v_spectrum_ids integer[];
   v_n_images integer;
@@ -9817,14 +9828,14 @@ BEGIN
     RAISE EXCEPTION 'Invalid status: %', p_to;
   END IF;
 
-  SELECT observation, field INTO v_obs, v_field FROM deployments WHERE id = p_deployment_id;
+  SELECT observation, field, instrument INTO v_obs, v_field, v_instrument FROM deployments WHERE id = p_deployment_id;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Deployment % not found', p_deployment_id;
   END IF;
 
   -- NIRCam field-scoped deployment (epic #261, N1/N2): exposure/mosaic FITS
   -- visibility rides deployment.status via the storage_objects gate; the public
-  -- mosaic index (nircam_images) carries its own deploy_status, flipped here to
+  -- mosaic index (mosaics) carries its own deploy_status, flipped here to
   -- match (mirrors how the observation path flips spectra.deploy_status).
   IF v_field IS NOT NULL THEN
     v_action := CASE WHEN p_to = 'revoked' THEN 'revoke'
@@ -9835,19 +9846,22 @@ BEGIN
       revoked_at = CASE WHEN p_to = 'revoked' THEN now() ELSE revoked_at END
     WHERE id = p_deployment_id;
     WITH flipped AS (
-      UPDATE nircam_images SET deploy_status = p_to
+      UPDATE mosaics SET deploy_status = p_to
       WHERE deployment_id = p_deployment_id AND deploy_status <> p_to
       RETURNING 1)
     SELECT count(*) INTO v_n_images FROM flipped;
     INSERT INTO deploy_events (actor, action, deployment_id, field, status_to, host, affected_count, metadata)
       VALUES (p_actor, v_action, p_deployment_id, v_field, p_to, p_host, v_n_images,
               jsonb_build_object(
-                'instrument', 'nircam',
+                'instrument', COALESCE(v_instrument, 'nircam'),
                 'scope', jsonb_build_object('field', v_field),
                 'counts', jsonb_build_object('succeeded', v_n_images),
                 'flags', jsonb_build_object('lifecycle', true)));
+    -- 'nircam_images' is the wire key from before the table was renamed
+    -- `mosaics`; it counts the mosaic rows of this deployment's instrument.
     RETURN json_build_object(
       'deployment_id', p_deployment_id, 'field', v_field, 'status', p_to,
+      'instrument', COALESCE(v_instrument, 'nircam'),
       'nircam_images', json_build_object('updated', v_n_images, 'action', v_action));
   END IF;
 
@@ -10281,7 +10295,7 @@ GRANT EXECUTE ON FUNCTION public.claim_deploy_scope(text, text, integer, uuid) T
 -- docs/design-needs-review.md; the catalog RPCs filter on the same column),
 -- counted over active objects, the rows those RPCs list.
 --
--- redrafted_nircam_fields: nircam_images is UNIQUE on (field, tile, filter,
+-- redrafted_nircam_fields: mosaics is UNIQUE on (field, tile, filter,
 -- pixel_scale, extension, epoch), so a `--draft` re-deploy FLIPS the single
 -- published row to draft (findings §1.2) — there is never a published/draft
 -- pair for one key. "Re-drafted" is therefore detected per field: a field with
@@ -10380,7 +10394,7 @@ BEGIN
   WHERE is_active;
 
   -- 4. NIRCam drafts and deployments by status (small tables).
-  SELECT count(*) INTO v_nircam_drafts FROM nircam_images WHERE deploy_status = 'draft';
+  SELECT count(*) INTO v_nircam_drafts FROM mosaics WHERE deploy_status = 'draft';
 
   SELECT jsonb_build_object(
     'draft', count(*) FILTER (WHERE status = 'draft'),
@@ -10419,7 +10433,7 @@ BEGIN
            count(*) FILTER (WHERE ni.deploy_status = 'published') AS n_published,
            (SELECT count(*) FROM deployments dp
              WHERE dp.field = ni.field AND dp.status = 'published') AS n_published_deployments
-    FROM nircam_images ni
+    FROM mosaics ni
     GROUP BY ni.field
   ) f
   WHERE f.n_draft > 0 AND (f.n_published > 0 OR f.n_published_deployments > 0);
@@ -10447,7 +10461,7 @@ BEGIN
     FROM storage_objects so
     WHERE so.status = 'active'
       AND so.content_hash LIKE 'etag:%'
-      AND (so.backend = 'r2' OR so.product_type IN ('nirspec_spec', 'nircam_mosaic'))
+      AND (so.backend = 'r2' OR so.product_type IN ('nirspec_spec', 'nircam_mosaic', 'acswfc_mosaic', 'wfc3ir_mosaic'))
     GROUP BY so.product_type
   ) x;
 
@@ -11629,13 +11643,43 @@ $$;
 REVOKE ALL ON FUNCTION public.dr_cron_unschedule(text) FROM PUBLIC, anon, authenticated;
 
 
+-- The field-level product types an imaging component freezes besides its
+-- mosaics: what the field page shows (exposure maps and their renders, the
+-- layout plot, mosaic thumbnails and quick-looks). Each type is prefixed with
+-- its instrument token, which is how the freeze assigns a registry row to its
+-- `<instrument>/<field>` component. The HST instruments have the thumbnail
+-- pair only (no exposure map or layout plot is built for them).
+CREATE OR REPLACE FUNCTION public.dr_field_product_types()
+RETURNS text[]
+LANGUAGE sql IMMUTABLE
+SET search_path = public
+AS $$
+  SELECT ARRAY[
+    'nircam_expmap', 'nircam_expmap_plot', 'nircam_layout',
+    'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook',
+    'acswfc_mosaic_thumbnail', 'acswfc_mosaic_quicklook',
+    'wfc3ir_mosaic_thumbnail', 'wfc3ir_mosaic_quicklook'
+  ]::text[];
+$$;
+
+REVOKE ALL ON FUNCTION public.dr_field_product_types() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_field_product_types() TO authenticated, service_role;
+
+
 -- Validate a components array and return its parts. Raises on anything it
--- does not recognise, on a NIRCam field without published mosaics and on a
--- photometry (field, catalog) with no rows.
+-- does not recognise, on an imaging component without published mosaics and
+-- on a photometry (field, catalog) with no rows.
+--
+-- An imaging component is `<instrument>/<field>` for one imaging instrument
+-- (nircam, acswfc, wfc3ir): that instrument's published mosaics of the field
+-- and nothing of another instrument's. `imaging` holds the component strings
+-- themselves (what the freeze matches mosaics and field products against);
+-- `fields` holds the distinct field names behind them (what dr_fields copies).
 CREATE OR REPLACE FUNCTION public.dr_parse_components(p_components jsonb,
                                                        OUT nirspec boolean,
                                                        OUT fields text[],
-                                                       OUT photometry text[])
+                                                       OUT photometry text[],
+                                                       OUT imaging text[])
 LANGUAGE plpgsql STABLE
 SET search_path = public
 AS $$
@@ -11643,20 +11687,25 @@ DECLARE
   c text;
   v_field text;
   v_catalog text;
+  v_instrument text;
 BEGIN
-  nirspec := false; fields := '{}'; photometry := '{}';
+  nirspec := false; fields := '{}'; photometry := '{}'; imaging := '{}';
   IF p_components IS NULL OR jsonb_typeof(p_components) <> 'array' OR jsonb_array_length(p_components) = 0 THEN
-    RAISE EXCEPTION 'components must be a non-empty JSON array of "nirspec", "nircam/<field>", "photometry/<field>/<catalog_name>"';
+    RAISE EXCEPTION 'components must be a non-empty JSON array of "nirspec", "<nircam|acswfc|wfc3ir>/<field>", "photometry/<field>/<catalog_name>"';
   END IF;
   FOR c IN SELECT jsonb_array_elements_text(p_components) LOOP
     IF c = 'nirspec' THEN
       nirspec := true;
-    ELSIF c LIKE 'nircam/%' THEN
-      v_field := substr(c, 8);
-      IF NOT EXISTS (SELECT 1 FROM nircam_images ni WHERE ni.field = v_field AND ni.deploy_status = 'published') THEN
-        RAISE EXCEPTION 'component %: no published NIRCam images for field %', c, v_field;
+    ELSIF split_part(c, '/', 1) IN ('nircam', 'acswfc', 'wfc3ir') AND position('/' IN c) > 0 THEN
+      v_instrument := split_part(c, '/', 1);
+      v_field := substr(c, length(v_instrument) + 2);
+      IF NOT EXISTS (SELECT 1 FROM mosaics ni
+                     WHERE ni.instrument = v_instrument AND ni.field = v_field
+                       AND ni.deploy_status = 'published') THEN
+        RAISE EXCEPTION 'component %: no published % mosaics for field %', c, v_instrument, v_field;
       END IF;
       fields := array_append(fields, v_field);
+      imaging := array_append(imaging, c);
     ELSIF c LIKE 'photometry/%/%' THEN
       v_field := split_part(substr(c, 12), '/', 1);
       v_catalog := substr(substr(c, 12), length(v_field) + 2);
@@ -11670,7 +11719,9 @@ BEGIN
   END LOOP;
   SELECT array_agg(DISTINCT f ORDER BY f) INTO fields FROM unnest(fields) f;
   SELECT array_agg(DISTINCT f ORDER BY f) INTO photometry FROM unnest(photometry) f;
+  SELECT array_agg(DISTINCT f ORDER BY f) INTO imaging FROM unnest(imaging) f;
   fields := COALESCE(fields, '{}'); photometry := COALESCE(photometry, '{}');
+  imaging := COALESCE(imaging, '{}');
   -- Photometry rows hang off the frozen objects (their access scope is the
   -- object's programs), so a photometry component needs the catalog.
   IF cardinality(photometry) > 0 AND NOT nirspec THEN
@@ -11767,7 +11818,7 @@ BEGIN
     DELETE FROM dr_spectra          WHERE tag = p_tag;
     DELETE FROM dr_targets          WHERE tag = p_tag;
     DELETE FROM dr_objects          WHERE tag = p_tag;
-    DELETE FROM dr_nircam_images    WHERE tag = p_tag;
+    DELETE FROM dr_mosaics    WHERE tag = p_tag;
     DELETE FROM dr_fields           WHERE tag = p_tag;
     DELETE FROM dr_filter_options   WHERE tag = p_tag;
     DELETE FROM dr_exports          WHERE tag = p_tag;
@@ -11893,10 +11944,13 @@ BEGIN
       RETURNING 1
     ),
     ins_nircam AS (
-      INSERT INTO dr_nircam_images (tag, id, field, tile, filter, pixel_scale, extension, epoch, file_path, created_at, file_size, deploy_status, deployment_id)
-      SELECT p_tag, ni.id, ni.field, ni.tile, ni.filter, ni.pixel_scale, ni.extension, ni.epoch, ni.file_path, ni.created_at, ni.file_size, ni.deploy_status, ni.deployment_id
-      FROM nircam_images ni
+      INSERT INTO dr_mosaics (tag, id, field, tile, filter, pixel_scale, extension, epoch, file_path, created_at, file_size, deploy_status, deployment_id, instrument)
+      SELECT p_tag, ni.id, ni.field, ni.tile, ni.filter, ni.pixel_scale, ni.extension, ni.epoch, ni.file_path, ni.created_at, ni.file_size, ni.deploy_status, ni.deployment_id, ni.instrument
+      FROM mosaics ni
+      -- one instrument's mosaics per component: `nircam/<field>` never takes
+      -- the field's HST mosaics, which are `acswfc/<field>` / `wfc3ir/<field>`
       WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
+        AND (ni.instrument || '/' || ni.field) = ANY (comp.imaging)
       RETURNING 1
     ),
     ins_fields AS (
@@ -11950,12 +12004,14 @@ BEGIN
         AND so.product_type IN ('zfit', 'nirspec_lines', 'nirspec_lines_json')
         AND so.observation IS NOT DISTINCT FROM c.observation
       UNION ALL
-      -- Published mosaics of each NIRCam field component, joined FROM nircam_images.
-      SELECT p_tag, so.storage_key, 'nircam/' || ni.field, NULL, ni.field, so.product_type,
+      -- Published mosaics of each imaging component (<instrument>/<field>),
+      -- joined FROM mosaics.
+      SELECT p_tag, so.storage_key, ni.instrument || '/' || ni.field, NULL, ni.field, so.product_type,
              NULL, so.backend, so.bucket, so.content_hash, so.science_hash, so.size_bytes, so.id
-      FROM nircam_images ni
+      FROM mosaics ni
       JOIN storage_objects so ON so.storage_key = ni.file_path
       WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
+        AND (ni.instrument || '/' || ni.field) = ANY (comp.imaging)
         AND so.root = 'live' AND so.status = 'active' AND so.backend = 'osn' AND so.bucket = 'data'
         -- the bytes of the PUBLISHED deployment: `campfire push --field` can
         -- register a replacement mosaic (deployment_id NULL) before the deploy
@@ -11967,19 +12023,21 @@ BEGIN
         -- has a NULL deployment, 2026-10-13).
         AND so.deployment_id = ni.deployment_id
       UNION ALL
-      -- Field-level NIRCam products of each component field (P6b-3): exposure
+      -- Field-level products of each imaging component (P6b-3): exposure
       -- maps and their renders, the layout plot, mosaic thumbnails and
       -- quick-looks -- what the field page shows besides the mosaics. Not tied
       -- to a deployment row (they are registered per field by push/deploy), so
       -- the active live registry rows are taken as they stand; archived by the
-      -- byte pass like the mosaics (server-side copy, no stamp).
-      SELECT p_tag, so.storage_key, 'nircam/' || so.field, NULL, so.field, so.product_type,
+      -- byte pass like the mosaics (server-side copy, no stamp). The owning
+      -- instrument is the product type's prefix (dr_field_product_types), so a
+      -- component takes its own instrument's products only.
+      SELECT p_tag, so.storage_key, split_part(so.product_type, '_', 1) || '/' || so.field, NULL, so.field, so.product_type,
              NULL, so.backend, so.bucket, so.content_hash, so.science_hash, so.size_bytes, so.id
       FROM storage_objects so
       WHERE so.field = ANY (comp.fields) AND so.root = 'live' AND so.status = 'active'
         AND so.backend = 'osn' AND so.bucket = 'data'
-        AND so.product_type IN ('nircam_expmap', 'nircam_expmap_plot', 'nircam_layout',
-                                'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook')
+        AND so.product_type = ANY (public.dr_field_product_types())
+        AND (split_part(so.product_type, '_', 1) || '/' || so.field) = ANY (comp.imaging)
         -- the live storage gate shows field-level rows through their
         -- deployment's status: a --draft redeploy registers active rows under
         -- its draft deployment, and those must not be frozen into the open
@@ -12021,13 +12079,14 @@ BEGIN
             GROUP BY b.band
             ORDER BY min(b.wav) NULLS LAST, b.band);
 
-    -- Every published mosaic of a selected field must have become a member: a
-    -- mosaic without an active registry row would otherwise be dropped with no
-    -- trace (there is no frozen NIRCam table to recover it from). Raising here
-    -- rolls the inserts back and records the release as failed (Codex on #599).
+    -- Every published mosaic of a selected imaging component must have become
+    -- a member: a mosaic without an active registry row would otherwise be
+    -- dropped with no trace. Raising here rolls the inserts back and records
+    -- the release as failed (Codex on #599).
     SELECT string_agg(ni.file_path, ', ' ORDER BY ni.file_path) INTO v_missing
-    FROM nircam_images ni
+    FROM mosaics ni
     WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
+      AND (ni.instrument || '/' || ni.field) = ANY (comp.imaging)
       AND NOT EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.storage_key = ni.file_path);
     IF v_missing IS NOT NULL THEN
       RAISE EXCEPTION 'published mosaics without an active registry row of their deployment (finish or redo the field deploy, or leave the field out): %',
@@ -12039,8 +12098,8 @@ BEGIN
     FROM storage_objects so
     WHERE so.field = ANY (comp.fields) AND so.root = 'live' AND so.status = 'active'
       AND so.backend = 'osn' AND so.bucket = 'data'
-      AND so.product_type IN ('nircam_expmap', 'nircam_expmap_plot', 'nircam_layout',
-                              'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook')
+      AND so.product_type = ANY (public.dr_field_product_types())
+      AND (split_part(so.product_type, '_', 1) || '/' || so.field) = ANY (comp.imaging)
       AND so.deployment_id IS NOT NULL
       AND EXISTS (SELECT 1 FROM deployments d
                   WHERE d.id = so.deployment_id AND d.field = so.field AND d.status = 'published')
@@ -12103,21 +12162,27 @@ BEGIN
              'manifest_by_type', (SELECT COALESCE(jsonb_object_agg(t.product_type, t.n), '{}'::jsonb)
                                  FROM (SELECT m.product_type, count(*) AS n FROM dr_manifest m
                                        WHERE m.tag = p_tag AND m.component <> 'page' GROUP BY m.product_type) t),
-             'nircam_fields', to_jsonb(comp.fields), 'photometry_components', to_jsonb(comp.photometry),
-             -- per component (nirspec | nircam/<field> | photometry/...): file
+             -- 'nircam_fields' keeps its meaning (the fields with a nircam/
+             -- component); 'imaging_components' lists every imaging component
+             -- of the release, HST instruments included
+             'nircam_fields', (SELECT COALESCE(jsonb_agg(substr(c, 8) ORDER BY c), '[]'::jsonb)
+                               FROM unnest(comp.imaging) c WHERE c LIKE 'nircam/%'),
+             'imaging_components', to_jsonb(comp.imaging),
+             'photometry_components', to_jsonb(comp.photometry),
+             -- per component (nirspec | <instrument>/<field> | photometry/...): file
              -- count and byte volume, the numbers the /releases pages show
              -- (P6a) without aggregating the manifest at read time
              'by_component', (SELECT COALESCE(jsonb_object_agg(t.component,
                                        jsonb_build_object('files', t.n, 'bytes', t.b)
-                                       -- nircam/<field>: how many of the files are the mosaics themselves
-                                       || CASE WHEN t.component LIKE 'nircam/%' THEN jsonb_build_object('mosaics', t.n_mosaics) ELSE '{}'::jsonb END
+                                       -- <instrument>/<field>: how many of the files are the mosaics themselves
+                                       || CASE WHEN split_part(t.component, '/', 1) IN ('nircam', 'acswfc', 'wfc3ir') THEN jsonb_build_object('mosaics', t.n_mosaics) ELSE '{}'::jsonb END
                                        -- nircam/<field>: the field's deploy-time sky coverage
                                        || COALESCE((SELECT jsonb_build_object('area_arcmin2', f.coverage_area_arcmin2)
                                                     FROM fields f
                                                     WHERE t.component = 'nircam/' || f.name AND f.coverage_area_arcmin2 IS NOT NULL),
                                                    '{}'::jsonb)), '{}'::jsonb)
                               FROM (SELECT m.component, count(*) AS n, COALESCE(sum(m.size_bytes), 0) AS b,
-                                           count(*) FILTER (WHERE m.product_type = 'nircam_mosaic') AS n_mosaics
+                                           count(*) FILTER (WHERE m.product_type IN ('nircam_mosaic', 'acswfc_mosaic', 'wfc3ir_mosaic')) AS n_mosaics
                                     FROM dr_manifest m WHERE m.tag = p_tag AND m.component <> 'page' GROUP BY m.component) t),
              'nirspec_programs', (SELECT count(DISTINCT s.program_slug) FROM dr_spectra s WHERE s.tag = p_tag),
              'nirspec_fields', (SELECT count(DISTINCT t.field) FROM dr_spectra s
@@ -12149,7 +12214,7 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_freeze_job(text) IS 'Data-release freeze (P4a, full-row copies since P6b): rewrites the frozen tables of an UNPUBLISHED tag (dr_spectra, dr_targets, dr_objects, dr_line_fits, dr_lines, dr_catalog_matches, dr_photometry, dr_nircam_images, dr_fields, dr_manifest; then dr_filter_options) in one statement (one snapshot) from the published live rows, then marks the row frozen with counts, snapshot xmin and duration; any error lands in state failed with the message. Runs as postgres from the one-shot pg_cron job dr_enqueue_freeze schedules, inline where pg_cron is absent, and from the seed. Idempotent per tag.';
+COMMENT ON FUNCTION public.dr_freeze_job(text) IS 'Data-release freeze (P4a, full-row copies since P6b): rewrites the frozen tables of an UNPUBLISHED tag (dr_spectra, dr_targets, dr_objects, dr_line_fits, dr_lines, dr_catalog_matches, dr_photometry, dr_mosaics, dr_fields, dr_manifest; then dr_filter_options) in one statement (one snapshot) from the published live rows, then marks the row frozen with counts, snapshot xmin and duration; any error lands in state failed with the message. Runs as postgres from the one-shot pg_cron job dr_enqueue_freeze schedules, inline where pg_cron is absent, and from the seed. Idempotent per tag.';
 
 REVOKE ALL ON FUNCTION public.dr_freeze_job(text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.dr_freeze_job(text) TO service_role;
@@ -12298,7 +12363,7 @@ BEGIN
   DELETE FROM dr_spectra          WHERE tag = p_tag; GET DIAGNOSTICS n_spectra = ROW_COUNT;
   DELETE FROM dr_targets          WHERE tag = p_tag; GET DIAGNOSTICS n_targets = ROW_COUNT;
   DELETE FROM dr_objects          WHERE tag = p_tag; GET DIAGNOSTICS n_objects = ROW_COUNT;
-  DELETE FROM dr_nircam_images    WHERE tag = p_tag; GET DIAGNOSTICS n_nircam = ROW_COUNT;
+  DELETE FROM dr_mosaics    WHERE tag = p_tag; GET DIAGNOSTICS n_nircam = ROW_COUNT;
   DELETE FROM dr_fields           WHERE tag = p_tag; GET DIAGNOSTICS n_fields = ROW_COUNT;
   DELETE FROM dr_filter_options   WHERE tag = p_tag;
   DELETE FROM dr_exports          WHERE tag = p_tag; GET DIAGNOSTICS n_exports = ROW_COUNT;

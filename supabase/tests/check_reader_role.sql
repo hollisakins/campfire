@@ -49,10 +49,10 @@ DECLARE
   -- whole-table SELECT; objects / dr_objects are granted column by column
   -- (the member aggregates left out) and read through reader.objects /
   -- reader.dr_objects, which carry them scoped
-  allow text[] := ARRAY['programs','observations','fields','nircam_images','targets','spectra',
+  allow text[] := ARRAY['programs','observations','fields','mosaics','targets','spectra',
                         'line_fits','lines','catalog_matches','photometry',
                         'dr_releases','dr_targets','dr_spectra','dr_line_fits','dr_lines',
-                        'dr_catalog_matches','dr_photometry','dr_nircam_images','dr_fields','dr_manifest'];
+                        'dr_catalog_matches','dr_photometry','dr_mosaics','dr_fields','dr_manifest'];
   aggregates text[] := ARRAY['programs','observations','gratings','n_targets','n_spectra','max_snr','max_exposure_time','search_text'];
   got text[]; extra text[]; missing text[]; n int; bad text;
 BEGIN
@@ -174,7 +174,7 @@ INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name)
 SELECT o.id, 'zzz_rr_field', o.ra, o.dec, 'zzz_rr_cat' FROM objects o WHERE o.object_id LIKE 'ZZZ-RR-%';
 INSERT INTO photometry (match_id, band, flux, flux_err, wav)
 SELECT m.id, 'f444w', 1.0, 0.1, 4.4 FROM catalog_matches m WHERE m.catalog_name = 'zzz_rr_cat';
-INSERT INTO nircam_images (field, tile, filter, pixel_scale, extension, epoch, file_path, deploy_status) VALUES
+INSERT INTO mosaics (field, tile, filter, pixel_scale, extension, epoch, file_path, deploy_status) VALUES
   ('zzz_rr_field', 'a', 'f444w', 0.03, 'sci', 'e1', '/tmp/zzz_rr_pub.fits', 'published'),
   ('zzz_rr_field', 'a', 'f200w', 0.03, 'sci', 'e1', '/tmp/zzz_rr_draft.fits', 'draft');
 
@@ -211,7 +211,7 @@ DECLARE
     ['programs:private',$q$SELECT count(*) FROM programs WHERE slug LIKE 'zzz_rr_%' AND NOT is_public$q$,           '0'],
     ['observations',    $q$SELECT count(*) FROM observations WHERE name LIKE 'zzz_rr_%'$q$,                          '1'],
     ['fields',          $q$SELECT count(*) FROM fields WHERE name = 'zzz_rr_field'$q$,                               '1'],
-    ['nircam_images',   $q$SELECT count(*) FROM nircam_images WHERE field = 'zzz_rr_field'$q$,                       '1'],
+    ['mosaics',   $q$SELECT count(*) FROM mosaics WHERE field = 'zzz_rr_field'$q$,                       '1'],
     ['objects',         $q$SELECT count(*) FROM objects WHERE object_id LIKE 'ZZZ-RR-%'$q$,                          '3'],
     ['objects:hidden',  $q$SELECT count(*) FROM objects WHERE object_id LIKE 'ZZZ-RR-%' AND (NOT is_public OR NOT is_active OR NOT has_published_spectrum)$q$, '0'],
     ['targets',         $q$SELECT count(*) FROM targets WHERE target_id LIKE 'zzz-rr-%'$q$,                          '3'],
@@ -252,7 +252,7 @@ DO $$
 DECLARE
   tag_pub text; want int; got int; t text;
   twins text[] := ARRAY['dr_objects','dr_targets','dr_spectra','dr_line_fits','dr_lines','dr_catalog_matches',
-                        'dr_photometry','dr_nircam_images','dr_fields','dr_manifest'];
+                        'dr_photometry','dr_mosaics','dr_fields','dr_manifest'];
 BEGIN
   SELECT tag INTO tag_pub FROM dr_releases WHERE state = 'published' ORDER BY tag LIMIT 1;
   IF tag_pub IS NULL THEN

@@ -334,8 +334,12 @@ export interface FlagDefinition {
   description: string | null;
 }
 
+// A row of `mosaics` (the mosaic index of every imaging instrument; the type
+// keeps its name from when the table was NIRCam's alone).
 export interface NircamImage {
   id?: number;
+  /** Imaging instrument token (nircam, acswfc, wfc3ir). */
+  instrument?: string;
   field: string;
   tile: string;
   filter: string;
@@ -379,6 +383,17 @@ export interface NircamFieldCard {
   total_bytes: number;
   last_updated: string | null;
   layout_url: string | null;  // presigned <field>_layout.png GET, if deployed
+  /** The imaging instruments with a visible mosaic of the field. */
+  instruments?: string[];
+}
+
+/** Reduction provenance of one instrument's latest published deployment. */
+export interface ImagingProvenance {
+  cfpipe_version: string | null;
+  /** The calibration software's version: jwst for NIRCam, the HST
+   *  calibration software (CAL_VER) for the HST instruments. */
+  jwst_version: string | null;
+  crds_context: string | null;
 }
 
 // The /nircam/[field] overview (get_nircam_field_summary RPC): the card fields
@@ -396,14 +411,19 @@ export interface NircamFieldSummary extends Omit<NircamFieldCard, 'layout_url'> 
   science_hash?: string | null;
   jwst_version: string | null;
   crds_context: string | null;
+  /** The same, per instrument (each instrument is deployed on its own); the
+   *  three fields above are NIRCam's when the field has NIRCam mosaics. */
+  provenance_by_instrument?: Record<string, ImagingProvenance>;
 }
 
-// One row of the field-page data-products table: a mosaic (from nircam_images)
+// One row of the field-page data-products table: a mosaic (from mosaics)
 // or an exposure map folded in as a synthetic `extension: 'exp'` row with no
 // tile/scale axes. `file_path` doubles as the canonical storage key for both
 // kinds — the download action routes on `kind`.
 export interface NircamProductRow {
   kind: 'mosaic' | 'expmap';
+  /** Imaging instrument token; exposure maps are NIRCam's. */
+  instrument: string;
   field: string;
   filter: string;
   tile: string | null;        // null on expmap rows

@@ -208,6 +208,26 @@ def _apply_storage(store, fetched, updated_since, sync_ts):
 #: spectra catalog instead of several times it.
 MIRRORED_PRODUCT_TYPES = FINAL_PRODUCT_TYPES
 
+# The kinds the local index was last synced with (``_meta``). The storage walk
+# is incremental on ``updated_at`` over the mirrored kinds, so a kind that
+# joins the set (the HST mosaics did, after NIRCam's) has registry rows older
+# than the cursor that an incremental walk would never return. A sync that
+# finds the set grown walks the new kinds once, in full. An index written
+# before the set was recorded mirrored the two kinds below.
+_MIRRORED_META = "mirrored_product_types"
+_MIRRORED_BEFORE_RECORDED = ("nirspec_spec", "nircam_mosaic")
+
+
+def _newly_mirrored_types(store) -> List[str]:
+    """Mirrored kinds the local index has never walked."""
+    raw = store.get_meta(_MIRRORED_META)
+    try:
+        known = set(json.loads(raw)) if raw else set(_MIRRORED_BEFORE_RECORDED)
+    except (TypeError, ValueError):
+        known = set(_MIRRORED_BEFORE_RECORDED)
+    return [t for t in MIRRORED_PRODUCT_TYPES if t not in known]
+
+
 # The five independent /sync/* catalogs, each pinned to a fixed progress row
 # (option A): a stable stacked group so every count stays anchored to a real
 # per-entity total instead of a meaningless catalog-wide sum. Fields:
@@ -484,6 +504,15 @@ def sync_metadata(
     storage_count, storage_purged, storage_orphaned = _apply_storage(
         store, fetched["storage"], cursors["storage"], sync_ts
     )
+    # An incremental walk never returns the older rows of a kind this client
+    # has only now begun to mirror: fetch those kinds whole, once. (A full walk
+    # or a snapshot bootstrap with its catch-up already covers every kind.)
+    if pending is None and cursors["storage"] is not None:
+        new_kinds = _newly_mirrored_types(store)
+        if new_kinds:
+            new_rows, _total, _deleted = api.fetch_all_storage(
+                updated_since=None, product_types=new_kinds)
+            storage_count += store.upsert_storage_objects(new_rows)
     phot_count, phot_purged = _apply_photometry(
         store, fetched["photometry"], cursors["photometry"], sync_ts
     )
@@ -536,6 +565,7 @@ def sync_metadata(
         store.set_meta("snapshot_started_at", pending["started_at"])
     # Every walk that got here completed: nothing left to recover.
     _set_bootstrap_state(store, None)
+    store.set_meta(_MIRRORED_META, json.dumps(sorted(MIRRORED_PRODUCT_TYPES)))
 
     # 3. Sync tag metadata (single request), then export CSVs.
     tags_count = _sync_tags(api, store, show_progress)

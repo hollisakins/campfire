@@ -66,8 +66,12 @@ async function ReleaseList({ principal }: { principal: RequestPrincipal }) {
           const n = s.nircam.fields.length;
           parts.push(`NIRCam · ${n} ${n === 1 ? 'field' : 'fields'}`);
         }
+        if (s.hst) {
+          const n = s.hst.fields.length;
+          parts.push(`HST · ${n} ${n === 1 ? 'field' : 'fields'}`);
+        }
         if (s.photometry) parts.push('Photometry');
-        const bytes = (s.nirspec?.bytes ?? 0) + (s.nircam?.bytes ?? 0);
+        const bytes = (s.nirspec?.bytes ?? 0) + (s.nircam?.bytes ?? 0) + (s.hst?.bytes ?? 0);
         return (
           <li key={r.tag}>
             <Link

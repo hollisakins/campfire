@@ -173,13 +173,13 @@ VALUES ('osn', 'data', 'data/products/photometry/zzz_drf/pz/zzz_1.json', 'sha256
 
 -- NIRCam: two published mosaics + one draft, each with a registry row.
 INSERT INTO deployments (id, field, status, published_at) VALUES (990101, 'zzz_drf', 'published', now());
-INSERT INTO nircam_images (field, tile, filter, pixel_scale, extension, epoch, file_path, deploy_status, deployment_id) VALUES
+INSERT INTO mosaics (field, tile, filter, pixel_scale, extension, epoch, file_path, deploy_status, deployment_id) VALUES
   ('zzz_drf', 'main', 'f444w', '30mas', 'sci', '', 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits', 'published', 990101),
   ('zzz_drf', 'main', 'f444w', '30mas', 'wht', '', 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_wht.fits', 'published', 990101),
   ('zzz_drf', 'main', 'f277w', '30mas', 'sci', '', 'data/products/nircam/zzz_drf/f277w/zzz_drf_f277w_sci.fits', 'draft', 990101);
 INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes, content_type, product_type, instrument, status, field, filter, deployment_id)
 SELECT 'osn', 'data', ni.file_path, 'sha256:' || md5(ni.file_path) || md5(ni.filter), 5000, 'application/fits', 'nircam_mosaic', 'nircam', 'active', ni.field, ni.filter, 990101
-FROM nircam_images ni WHERE ni.field = 'zzz_drf';
+FROM mosaics ni WHERE ni.field = 'zzz_drf';
 -- Field-level products (P6b-3): the active rows of the field's PUBLISHED
 -- deployment become members (expmap, layout, thumbnail, quick-look); rows of
 -- a draft or revoked deployment, with no deployment, revoked rows, and a
@@ -240,7 +240,7 @@ BEGIN
   IF got NOT LIKE 'ERR: unknown component%' THEN RAISE EXCEPTION 'unknown component should be refused, got %', got; END IF;
 
   got := pg_temp.zzz_dr_as('authenticated', admin, $q$SELECT (public.dr_enqueue_freeze('DR-zzz', '["nircam/zzz_drf_nomosaic"]', NULL, true))::text$q$);
-  IF got NOT LIKE 'ERR: component nircam/zzz_drf_nomosaic: no published NIRCam images%' THEN RAISE EXCEPTION 'field without mosaics should be refused, got %', got; END IF;
+  IF got NOT LIKE 'ERR: component nircam/zzz_drf_nomosaic: no published nircam mosaics%' THEN RAISE EXCEPTION 'field without mosaics should be refused, got %', got; END IF;
 
   got := pg_temp.zzz_dr_as('authenticated', admin, $q$SELECT (public.dr_enqueue_freeze('DR-zzz', '["photometry/zzz_drf/nope"]', NULL, true))::text$q$);
   IF got NOT LIKE 'ERR: component photometry/zzz_drf/nope: no photometry rows%' THEN RAISE EXCEPTION 'photometry without rows should be refused, got %', got; END IF;
@@ -491,11 +491,11 @@ BEGIN
   END IF;
 
   -- NIRCam: the published mosaics' rows, the field row, the filter options
-  SELECT count(*) INTO n FROM dr_nircam_images WHERE tag = 'DR-zzz' AND field = 'zzz_drf';
-  IF n <> 2 OR EXISTS (SELECT 1 FROM dr_nircam_images WHERE tag = 'DR-zzz' AND deploy_status <> 'published') THEN
+  SELECT count(*) INTO n FROM dr_mosaics WHERE tag = 'DR-zzz' AND field = 'zzz_drf';
+  IF n <> 2 OR EXISTS (SELECT 1 FROM dr_mosaics WHERE tag = 'DR-zzz' AND deploy_status <> 'published') THEN
     RAISE EXCEPTION 'expected the 2 published mosaic rows, got %', n;
   END IF;
-  IF EXISTS (SELECT 1 FROM dr_nircam_images d JOIN nircam_images ni ON ni.id = d.id WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(ni)) THEN
+  IF EXISTS (SELECT 1 FROM dr_mosaics d JOIN mosaics ni ON ni.id = d.id WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(ni)) THEN
     RAISE EXCEPTION 'frozen mosaic row differs from live';
   END IF;
   -- the component field and the NIRSpec-only field of a frozen target are both frozen
@@ -593,7 +593,7 @@ BEGIN
   UPDATE dr_releases SET state = 'freezing', components = '["nircam/zzz_drf_nomosaic"]' WHERE tag = 'DR-zzz';
   PERFORM public.dr_freeze_job('DR-zzz');
   IF (SELECT state FROM dr_releases WHERE tag = 'DR-zzz') <> 'failed'
-     OR (SELECT error FROM dr_releases WHERE tag = 'DR-zzz') NOT LIKE '%no published NIRCam images%' THEN
+     OR (SELECT error FROM dr_releases WHERE tag = 'DR-zzz') NOT LIKE '%no published nircam mosaics%' THEN
     RAISE EXCEPTION 'failed freeze not recorded: %', (SELECT to_jsonb(r) FROM dr_releases r WHERE tag = 'DR-zzz');
   END IF;
   -- the rows of the failed attempt are gone (the statement never ran) and a
@@ -612,7 +612,7 @@ BEGIN
 
   -- a published mosaic without an active registry row fails the freeze
   -- instead of being dropped silently (Codex on #599)
-  INSERT INTO nircam_images (field, tile, filter, pixel_scale, extension, epoch, file_path, deploy_status, deployment_id)
+  INSERT INTO mosaics (field, tile, filter, pixel_scale, extension, epoch, file_path, deploy_status, deployment_id)
   VALUES ('zzz_drf', 'main', 'f150w', '30mas', 'sci', '', 'data/products/nircam/zzz_drf/f150w/zzz_drf_f150w_sci.fits', 'published', 990101);
   got := pg_temp.zzz_dr_as('authenticated', admin,
     $q$SELECT (public.dr_enqueue_freeze('DR-zzz-mos', '["nircam/zzz_drf"]', NULL, true))->>'state'$q$);
@@ -624,7 +624,7 @@ BEGIN
     RAISE EXCEPTION 'the failed freeze left members behind';
   END IF;
   DELETE FROM dr_releases WHERE tag = 'DR-zzz-mos';
-  DELETE FROM nircam_images WHERE file_path = 'data/products/nircam/zzz_drf/f150w/zzz_drf_f150w_sci.fits';
+  DELETE FROM mosaics WHERE file_path = 'data/products/nircam/zzz_drf/f150w/zzz_drf_f150w_sci.fits';
 
   -- a mosaic `campfire push --field` replaced ahead of its deploy (registry row
   -- re-registered with no deployment) is not frozen under the published image
@@ -645,7 +645,7 @@ BEGIN
 
   -- a legacy image row with no deployment pairs with a pushed row with none:
   -- NULL = NULL proves nothing, so it fails the freeze too (Codex on #599)
-  UPDATE nircam_images SET deployment_id = NULL
+  UPDATE mosaics SET deployment_id = NULL
    WHERE file_path = 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits';
   UPDATE storage_objects SET deployment_id = NULL
    WHERE storage_key = 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits' AND root = 'live';
@@ -656,7 +656,7 @@ BEGIN
     RAISE EXCEPTION 'a NULL/NULL deployment pair should fail the freeze: % / %', got,
       (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-null');
   END IF;
-  UPDATE nircam_images SET deployment_id = 990101
+  UPDATE mosaics SET deployment_id = 990101
    WHERE file_path = 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits';
   UPDATE storage_objects SET deployment_id = 990101
    WHERE storage_key = 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits' AND root = 'live';
@@ -745,7 +745,7 @@ DECLARE
     ['dr_manifest',      $q$SELECT count(*)::text FROM dr_manifest WHERE tag = 'DR-zzz' AND (storage_key LIKE 'data/products/nirspec/zzz_dr_%' OR storage_key LIKE 'data/products/nircam/zzz_drf/%')$q$],
     ['dr_line_fits',     $q$SELECT count(*)::text FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id LIKE 'zzz-dr-t-%'$q$],
     ['dr_catalog_matches',    $q$SELECT count(*)::text FROM dr_catalog_matches WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1'$q$],
-    ['dr_nircam_images', $q$SELECT count(*)::text FROM dr_nircam_images WHERE tag = 'DR-zzz' AND field = 'zzz_drf'$q$],
+    ['dr_mosaics', $q$SELECT count(*)::text FROM dr_mosaics WHERE tag = 'DR-zzz' AND field = 'zzz_drf'$q$],
     ['dr_fields',        $q$SELECT count(*)::text FROM dr_fields WHERE tag = 'DR-zzz' AND name LIKE 'zzz_drf%'$q$],
     ['dr_filter_options',$q$SELECT count(*)::text FROM dr_filter_options WHERE tag = 'DR-zzz'$q$],
     ['dr_exports',       $q$SELECT count(*)::text FROM dr_exports WHERE tag = 'DR-zzz'$q$]
@@ -846,7 +846,7 @@ BEGIN
     UNION ALL SELECT tag FROM dr_objects WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_manifest WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_line_fits WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_catalog_matches WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_targets WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_lines WHERE tag = 'DR-zzz'
-    UNION ALL SELECT tag FROM dr_photometry WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_nircam_images WHERE tag = 'DR-zzz'
+    UNION ALL SELECT tag FROM dr_photometry WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_mosaics WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_fields WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_filter_options WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_exports WHERE tag = 'DR-zzz') x;
   IF n <> 0 THEN RAISE EXCEPTION 'purge left % rows', n; END IF;

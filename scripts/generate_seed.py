@@ -39,7 +39,7 @@ Besides the catalog, the seed carries the lifecycle surface the RLS work needs:
 real `storage_objects` rows (hashes and sizes) for every sampled spectrum and
 its sidecars, real `line_fits` + `lines` and `catalog_matches` + `photometry` rows, one
 published `deployments` row per sampled observation plus a draft and a revoked
-one (each with one spectrum attached), a handful of published `nircam_images`
+one (each with one spectrum attached), a handful of published `mosaics`
 of one real field plus a draft one, the `fields` rows, and two share links
 (one live, one revoked) with their link accounts.
 
@@ -600,22 +600,22 @@ def select_nircam(supabase, fields: list[dict], sampled_fields: set[str],
         + sorted(n for n in names if n in sampled_fields and n != preferred) \
         + sorted(n for n in names if n not in sampled_fields and n != preferred)
     for name in order:
-        n_pub = supabase.table('nircam_images').select('id', count='exact') \
+        n_pub = supabase.table('mosaics').select('id', count='exact') \
             .eq('field', name).eq('deploy_status', 'published').limit(0).execute().count
         if not n_pub:
             continue
         pub_dep = supabase.table('deployments').select('*').eq('field', name) \
             .eq('status', 'published').order('id', desc=True).limit(1).execute().data
         pub_dep = pub_dep[0] if pub_dep else None
-        img_q = supabase.table('nircam_images').select('*').eq('field', name) \
+        img_q = supabase.table('mosaics').select('*').eq('field', name) \
             .eq('deploy_status', 'published').order('id')
         if pub_dep:
             img_q = img_q.eq('deployment_id', pub_dep['id'])
         images = img_q.limit(n_published).execute().data
         if not images and pub_dep:
-            images = supabase.table('nircam_images').select('*').eq('field', name) \
+            images = supabase.table('mosaics').select('*').eq('field', name) \
                 .eq('deploy_status', 'published').order('id').limit(n_published).execute().data
-        draft = supabase.table('nircam_images').select('*').eq('field', name) \
+        draft = supabase.table('mosaics').select('*').eq('field', name) \
             .eq('deploy_status', 'draft').order('id').limit(1).execute().data
         deployments = {}
         if pub_dep:
@@ -1168,8 +1168,8 @@ NIRCAM_IMAGE_COLUMNS = ['id', 'field', 'tile', 'filter', 'pixel_scale', 'extensi
                         'file_path', 'file_size', 'deploy_status', 'deployment_id', 'created_at']
 
 
-def generate_nircam_images_sql(nircam: dict | None) -> str:
-    """Generate INSERT statements for nircam_images (published rows + one draft)."""
+def generate_mosaics_sql(nircam: dict | None) -> str:
+    """Generate INSERT statements for mosaics (published rows + one draft)."""
     lines = ['-- ============================================']
     lines.append('-- 6c. NIRCam mosaics (one real field; published + one draft)')
     lines.append('-- ============================================')
@@ -1183,7 +1183,7 @@ def generate_nircam_images_sql(nircam: dict | None) -> str:
     if nircam['draft_image']:
         images.append(nircam['draft_image'])
     for img in images:
-        lines.append(f"INSERT INTO public.nircam_images ({', '.join(NIRCAM_IMAGE_COLUMNS)})\n"
+        lines.append(f"INSERT INTO public.mosaics ({', '.join(NIRCAM_IMAGE_COLUMNS)})\n"
                      f"VALUES ({sql_row(img, NIRCAM_IMAGE_COLUMNS)});")
 
     lines.append('')
@@ -1669,7 +1669,7 @@ def generate_dr_fixture_sql() -> str:
     lines.append("INSERT INTO public.dr_releases (tag, state, components, created_by, freeze_started_at, notes)")
     lines.append("SELECT 'DR-seed', 'freezing',")
     lines.append("       (SELECT jsonb_agg(c) FROM (SELECT 'nirspec' AS c UNION ALL")
-    lines.append("         SELECT DISTINCT 'nircam/' || field FROM public.nircam_images WHERE deploy_status = 'published' UNION ALL")
+    lines.append("         SELECT DISTINCT 'nircam/' || field FROM public.mosaics WHERE deploy_status = 'published' UNION ALL")
     lines.append("         -- every photometry catalog with a cross-match on a frozen object (P6b-2: band filters)")
     lines.append("         SELECT DISTINCT 'photometry/' || ph.field || '/' || ph.catalog_name")
     lines.append("         FROM public.catalog_matches ph JOIN public.objects o ON o.id = ph.object_id")
@@ -1735,7 +1735,7 @@ def generate_sequence_resets(objects: list[dict], spectra: list[dict],
     nircam_rows = (nircam['images'] + ([nircam['draft_image']] if nircam['draft_image'] else [])) if nircam else []
     max_img_id = max((i['id'] for i in nircam_rows), default=0)
     if max_img_id > 0:
-        lines.append(f"SELECT setval('public.nircam_images_id_seq', {max_img_id + 1}, false);")
+        lines.append(f"SELECT setval('public.mosaics_id_seq', {max_img_id + 1}, false);")
     max_phot_id = max((p['id'] for p in photometry), default=0)
     if max_phot_id > 0:
         lines.append(f"SELECT setval('public.catalog_matches_id_seq', {max_phot_id + 1}, false);")
@@ -1976,7 +1976,7 @@ SET search_path TO public, auth, extensions;
     sql_parts.append(generate_spectra_sql(spectra))
     sql_parts.append(generate_deployments_sql(deployments, observations, obs_deployments, fields,
                                               real_dep_ids, identity, guard))
-    sql_parts.append(generate_nircam_images_sql(nircam))
+    sql_parts.append(generate_mosaics_sql(nircam))
     sql_parts.append(generate_storage_objects_sql(storage_rows, missing_finals, picks, lifecycle_ids,
                                                   nircam, obs_set, real_dep_ids, identity))
     sql_parts.append(generate_line_fits_sql(line_fits, lines_rows, guard))

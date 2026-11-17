@@ -21,7 +21,7 @@ DECLARE
     ['lines',          'dr_lines',   ''],
     ['catalog_matches',       'dr_catalog_matches',       ''],
     ['photometry', 'dr_photometry', ''],
-    ['nircam_images',           'dr_nircam_images',    ''],
+    ['mosaics',           'dr_mosaics',    ''],
     ['fields',                  'dr_fields',           ''],
     ['mv_filter_options',       'dr_filter_options',   '']
   ];

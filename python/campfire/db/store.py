@@ -31,7 +31,12 @@ SCHEMA_VERSION = 12  # 12: line_fits / catalog_matches table names (Catalog Read
 # default download set; --intermediate adds the canonical spectrum-exposures.
 # Both are layout-mirrored (have a local relpath), so the same engine places
 # them. Widen these tuples as more product types become client-fetchable.
-FINAL_PRODUCT_TYPES = ("nirspec_spec", "nircam_mosaic")
+#
+# The mosaics of every imaging instrument are finals. When a kind joins this
+# tuple, an existing local index walks it once in full on its next sync
+# (sync._newly_mirrored_types); the server's snapshot builder keeps the same
+# list (web/app/api/cron/sync-snapshot/route.ts).
+FINAL_PRODUCT_TYPES = ("nirspec_spec", "nircam_mosaic", "acswfc_mosaic", "wfc3ir_mosaic")
 INTERMEDIATE_PRODUCT_TYPES = (
     "nirspec_spectrum_exposure", "nircam_exposure", "nircam_expmap",
     "acswfc_exposure", "wfc3ir_exposure",

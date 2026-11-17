@@ -80,7 +80,7 @@ mapped onto `admin@` / `user@`, comment text is synthetic, the only emails are
 surface: real `storage_objects` rows (hashes, sizes) for every sampled spectrum and
 its sidecars, `line_fits` + `lines`, `catalog_matches` + `photometry`
 (+ bands by trigger), one published deployment per observation plus a draft and a
-revoked one each with one spectrum attached, a few published `nircam_images` of one
+revoked one each with one spectrum attached, a few published `mosaics` of one
 real field plus a draft one, the `fields` rows, and two share links (one live, one
 revoked; password `seed-link-password`). The objects of `castellano3073` are numbered
 first so the seed-anchored harnesses keep objects 1-3. Keep the file under 2 MB

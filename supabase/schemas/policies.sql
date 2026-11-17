@@ -145,7 +145,7 @@ CREATE POLICY "admin_programs_update"
 ALTER TABLE fields ENABLE ROW LEVEL SECURITY;
 
 -- A field is visible once it has at least one published NIRCam mosaic — mirrors
--- the deploy_status gate on nircam_images so a field's config (name, filters,
+-- the deploy_status gate on mosaics so a field's config (name, filters,
 -- tangent point) is not exposed while its data is still draft. Admins see all.
 --
 -- Link accounts (docs/design-public-mirror.md §5.3) see only their own field's
@@ -159,14 +159,14 @@ CREATE POLICY "accessible_fields_select"
     CASE WHEN (SELECT public.is_link_account()) THEN
       name = (SELECT public.link_field())
       AND EXISTS (
-        SELECT 1 FROM nircam_images ni
+        SELECT 1 FROM mosaics ni
         WHERE ni.field = fields.name
           AND (ni.deploy_status = 'published'
                OR (ni.deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
       )
     ELSE
       EXISTS (
-        SELECT 1 FROM nircam_images ni
+        SELECT 1 FROM mosaics ni
         WHERE ni.field = fields.name AND ni.deploy_status = 'published'
       )
       OR (SELECT public.is_admin())
@@ -921,10 +921,10 @@ CREATE POLICY "insert_audit_by_access"
 
 
 -- =============================================================================
--- nircam_images
+-- mosaics
 -- =============================================================================
 
-ALTER TABLE nircam_images ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mosaics ENABLE ROW LEVEL SECURITY;
 
 -- Published mosaics are public science (a field spans multiple programs, so there
 -- is no per-program scope — published => visible to everyone); draft/revoked are
@@ -934,9 +934,9 @@ ALTER TABLE nircam_images ENABLE ROW LEVEL SECURITY;
 -- program gating at all -- a field spans programs, so accessible_program_slugs()
 -- has nothing to say here -- which makes the field name the ONLY thing standing
 -- between a link and every published mosaic in the archive.
-DROP POLICY IF EXISTS "authenticated_select_nircam" ON nircam_images;
-CREATE POLICY "authenticated_select_nircam"
-  ON nircam_images FOR SELECT TO authenticated
+DROP POLICY IF EXISTS "authenticated_select_mosaics" ON mosaics;
+CREATE POLICY "authenticated_select_mosaics"
+  ON mosaics FOR SELECT TO authenticated
   USING (
     CASE WHEN (SELECT public.is_link_account()) THEN
       field = (SELECT public.link_field())
@@ -949,18 +949,18 @@ CREATE POLICY "authenticated_select_nircam"
 
 -- Admins write the mosaic index. The NIRCam mosaic deploy (`campfire deploy
 -- --field`) runs in login mode through RLS and upserts these rows
--- (_upsert_nircam_images = INSERT ... ON CONFLICT DO UPDATE), so BOTH an INSERT
+-- (_upsert_mosaics = INSERT ... ON CONFLICT DO UPDATE), so BOTH an INSERT
 -- and an UPDATE policy are required. Mirrors exposures / fields. Publish
 -- and revoke flip deploy_status via the SECURITY DEFINER set_deployment_status
 -- RPC, which bypasses RLS and so is unaffected.
-DROP POLICY IF EXISTS "admin_insert_nircam" ON nircam_images;
-CREATE POLICY "admin_insert_nircam"
-  ON nircam_images FOR INSERT TO authenticated
+DROP POLICY IF EXISTS "admin_insert_mosaics" ON mosaics;
+CREATE POLICY "admin_insert_mosaics"
+  ON mosaics FOR INSERT TO authenticated
   WITH CHECK ((SELECT public.is_admin()));
 
-DROP POLICY IF EXISTS "admin_update_nircam" ON nircam_images;
-CREATE POLICY "admin_update_nircam"
-  ON nircam_images FOR UPDATE TO authenticated
+DROP POLICY IF EXISTS "admin_update_mosaics" ON mosaics;
+CREATE POLICY "admin_update_mosaics"
+  ON mosaics FOR UPDATE TO authenticated
   USING ((SELECT public.is_admin()))
   WITH CHECK ((SELECT public.is_admin()));
 
@@ -1370,7 +1370,7 @@ CREATE POLICY "Service role has full access to map layers"
 ALTER TABLE fitsgl_datasets ENABLE ROW LEVEL SECURITY;
 
 -- Visibility DERIVES from the backing mosaics — the table carries no
--- deploy_status of its own. A dataset is public iff EVERY nircam_images mosaic it
+-- deploy_status of its own. A dataset is public iff EVERY mosaic (a mosaics row) it
 -- was built from (same field, one of its `tiles`, one of its `bands`, same
 -- pixel_scale, full-field epoch) is published — the pyramid in the public tiles
 -- bucket is built from all of them, so a composite mixing published + draft mosaics
@@ -1845,7 +1845,7 @@ ALTER TABLE dr_line_fits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_catalog_matches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_photometry ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dr_nircam_images ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_mosaics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_fields ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_filter_options ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_exports ENABLE ROW LEVEL SECURITY;
@@ -1960,11 +1960,11 @@ CREATE POLICY "select_dr_photometry"
     )
   );
 
--- nircam_images: authenticated_select_nircam (no link accounts here, so the
+-- mosaics: authenticated_select_mosaics (no link accounts here, so the
 -- non-link branch alone)
-DROP POLICY IF EXISTS "select_dr_nircam_images" ON dr_nircam_images;
-CREATE POLICY "select_dr_nircam_images"
-  ON dr_nircam_images FOR SELECT TO authenticated
+DROP POLICY IF EXISTS "select_dr_mosaics" ON dr_mosaics;
+CREATE POLICY "select_dr_mosaics"
+  ON dr_mosaics FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])
@@ -1981,7 +1981,7 @@ CREATE POLICY "select_dr_fields"
     (SELECT NOT public.is_link_account())
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])
     AND (EXISTS (
-           SELECT 1 FROM public.dr_nircam_images ni
+           SELECT 1 FROM public.dr_mosaics ni
            WHERE ni.tag = dr_fields.tag AND ni.field = dr_fields.name AND ni.deploy_status = 'published'
          )
          OR (SELECT public.is_admin()))
@@ -2027,13 +2027,13 @@ CREATE POLICY "reader_select_observations"
   ON observations FOR SELECT TO campfire_reader
   USING (EXISTS (SELECT 1 FROM public.programs p WHERE p.slug = observations.program_slug AND p.is_public));
 
-CREATE POLICY "reader_select_nircam_images"
-  ON nircam_images FOR SELECT TO campfire_reader
+CREATE POLICY "reader_select_mosaics"
+  ON mosaics FOR SELECT TO campfire_reader
   USING (deploy_status = 'published');
 
 CREATE POLICY "reader_select_fields"
   ON fields FOR SELECT TO campfire_reader
-  USING (EXISTS (SELECT 1 FROM public.nircam_images ni WHERE ni.field = fields.name AND ni.deploy_status = 'published'));
+  USING (EXISTS (SELECT 1 FROM public.mosaics ni WHERE ni.field = fields.name AND ni.deploy_status = 'published'));
 
 CREATE POLICY "reader_select_objects"
   ON objects FOR SELECT TO campfire_reader
@@ -2099,15 +2099,15 @@ CREATE POLICY "reader_select_dr_photometry"
   ON dr_photometry FOR SELECT TO campfire_reader
   USING (EXISTS (SELECT 1 FROM public.dr_catalog_matches p WHERE p.tag = dr_photometry.tag AND p.id = dr_photometry.match_id));
 
-CREATE POLICY "reader_select_dr_nircam_images"
-  ON dr_nircam_images FOR SELECT TO campfire_reader
+CREATE POLICY "reader_select_dr_mosaics"
+  ON dr_mosaics FOR SELECT TO campfire_reader
   USING (deploy_status = 'published'
-         AND EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_nircam_images.tag AND r.state = 'published'));
+         AND EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_mosaics.tag AND r.state = 'published'));
 
 CREATE POLICY "reader_select_dr_fields"
   ON dr_fields FOR SELECT TO campfire_reader
   USING (EXISTS (SELECT 1 FROM public.dr_releases r WHERE r.tag = dr_fields.tag AND r.state = 'published')
-         AND EXISTS (SELECT 1 FROM public.dr_nircam_images ni
+         AND EXISTS (SELECT 1 FROM public.dr_mosaics ni
                      WHERE ni.tag = dr_fields.tag AND ni.field = dr_fields.name AND ni.deploy_status = 'published'));
 
 -- a NIRSpec member is visible exactly when its frozen spectrum is (the frozen

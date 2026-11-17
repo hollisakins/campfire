@@ -282,8 +282,9 @@ def _instrument_of(product_type: Optional[str]) -> Optional[str]:
         return None
     if product_type.startswith('nirspec') or product_type.startswith('spectrum'):
         return 'nirspec'
-    if product_type.startswith('nircam'):
-        return 'nircam'
+    for inst in ('nircam', 'acswfc', 'wfc3ir'):
+        if product_type.startswith(inst):
+            return inst
     return None
 
 

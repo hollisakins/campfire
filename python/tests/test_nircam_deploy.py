@@ -374,7 +374,7 @@ def test_discover_mosaics_ships_exp(tmp_path):
 
 def test_deployable_mosaics_drops_i2d(tmp_path):
     # i2d stays *discoverable* — provenance stamping and the FitsGL pyramid read
-    # it locally — but it must never reach the cloud upload / nircam_images index
+    # it locally — but it must never reach the cloud upload / mosaics index
     # set. deployable_mosaics is the filter every cloud-bound path applies.
     fdir = tmp_path / "products" / "nircam" / "cosmos" / "f444w"
     fdir.mkdir(parents=True)

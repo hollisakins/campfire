@@ -142,6 +142,7 @@ def insert_deployment(
     deployed_by: str | None = None,
     *,
     field: str | None = None,
+    instrument: str | None = None,
     cfpipe_version: str | None = None,
     jwst_version: str | None = None,
     crds_context: str | None = None,
@@ -162,9 +163,11 @@ def insert_deployment(
     ``status`` is the deployment lifecycle (epic #210): 'published' for a normal
     deploy (stamps published_at=now), 'draft' for a draft / incomplete deploy.
 
-    A deployment is anchored to EXACTLY ONE of a NIRSpec ``observation`` or a NIRCam
-    ``field`` (epic #261; enforced by deployments_scope_check). NIRCam field deploys
+    A deployment is anchored to EXACTLY ONE of a NIRSpec ``observation`` or an imaging
+    ``field`` (epic #261; enforced by deployments_scope_check). Field deploys
     record the same provenance and drive the same draft->published->revoked lifecycle.
+    A field deployment belongs to one imaging ``instrument`` (``'nircam'``,
+    ``'acswfc'``, ``'wfc3ir'``); when none is given the database records NIRCam.
 
     The deployment record is ALWAYS written (it is the admin-review anchor for the
     draft lifecycle). On a service-role / `--local` deploy there is no user JWT, so
@@ -173,6 +176,8 @@ def insert_deployment(
     """
     if (observation is None) == (field is None):
         raise ValueError("insert_deployment requires exactly one of observation/field")
+    if instrument is not None and field is None:
+        raise ValueError("insert_deployment: only a field deployment has an imaging instrument")
     data = {
         'observation': observation,
         'field': field,
@@ -187,6 +192,8 @@ def insert_deployment(
     if status == 'published':
         from datetime import datetime, timezone
         data['published_at'] = datetime.now(timezone.utc).isoformat()
+    if instrument is not None:
+        data['instrument'] = instrument
     if cfpipe_version:
         data['cfpipe_version'] = cfpipe_version
     if jwst_version:
@@ -693,20 +700,23 @@ def get_latest_field_deployment_id(client: Client, field: str) -> int | None:
     return None
 
 
-def get_field_deployment_ids(client: Client, field: str) -> list[int]:
-    """ALL deployment ids for a NIRCam field, newest first (epic #261).
+def get_field_deployment_ids(client: Client, field: str,
+                             instrument: str | None = None) -> list[int]:
+    """ALL deployment ids for an imaging field, newest first (epic #261).
 
     publish/revoke act on a whole field, but a field's objects can be spread across
     several deployments (a ``--filter`` subset re-deploy re-points only that subset,
     leaving other filters on an earlier deployment). Flipping just the latest would
     partially publish — or, worse, leave part of a revoked field public — so the
     lifecycle transition flips every deployment the field has.
+
+    ``instrument`` narrows to one imaging instrument's deployments (each deploy
+    is one instrument's); ``None`` is every instrument the field has.
     """
-    resp = (client.table('deployments')
-            .select('id')
-            .eq('field', field)
-            .order('id', desc=True)
-            .execute())
+    query = client.table('deployments').select('id').eq('field', field)
+    if instrument:
+        query = query.eq('instrument', instrument)
+    resp = query.order('id', desc=True).execute()
     return [r['id'] for r in (resp.data or [])]
 
 

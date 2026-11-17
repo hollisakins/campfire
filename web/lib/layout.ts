@@ -322,11 +322,14 @@ export function parseRelpath(relpath: string): ParsedKey {
     }
   }
   if (tree === 'products' && seg.length === 5 && (seg[1] === 'acswfc' || seg[1] === 'wfc3ir')) {
-    // HST instruments: the NIRCam shape. Everything named after a mosaic is the
-    // mosaic; the two per-exposure PNGs are told by their suffix; any other
-    // FITS file is a canonical exposure.
+    // HST instruments: the NIRCam shape. The four PNG renditions are told by
+    // their suffix (checked before the 'mosaic' prefix, as for NIRCam: a
+    // mosaic's thumbnail is named after it); everything else named after a
+    // mosaic is the mosaic; any other FITS file is a canonical exposure.
     const scope = { field: seg[2], filt: seg[3] };
     const fname = seg[4];
+    if (fname.endsWith('_thumb.png')) return live({ productType: `${seg[1]}_mosaic_thumbnail`, scope, filename: fname });
+    if (fname.endsWith('_quicklook.png')) return live({ productType: `${seg[1]}_mosaic_quicklook`, scope, filename: fname });
     if (fname.startsWith('mosaic')) return live({ productType: `${seg[1]}_mosaic`, scope, filename: plainFilename(`${seg[1]}_mosaic`, fname) });
     if (fname.endsWith('_preview.png')) return live({ productType: `${seg[1]}_exposure_preview`, scope, filename: fname });
     if (fname.endsWith('_full.png')) return live({ productType: `${seg[1]}_exposure_full`, scope, filename: fname });

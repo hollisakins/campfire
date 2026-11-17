@@ -25,7 +25,7 @@ UNION ALL SELECT 'db size '||pg_size_pretty(pg_database_size(current_database())
 
 "${PSQL[@]}" -c "DELETE FROM dr_manifest WHERE tag='$TAG'; DELETE FROM dr_line_fits WHERE tag='$TAG'; DELETE FROM dr_catalog_matches WHERE tag='$TAG'; DELETE FROM dr_spectra WHERE tag='$TAG'; DELETE FROM dr_objects WHERE tag='$TAG'; DELETE FROM dr_exports WHERE tag='$TAG'; DELETE FROM dr_releases WHERE tag='$TAG';" >/dev/null
 # nirspec + every NIRCam field with published mosaics
-COMPONENTS=$("${PSQL[@]}" -c "SELECT jsonb_agg(c)::text FROM (SELECT 'nirspec' AS c UNION ALL SELECT DISTINCT 'nircam/'||field FROM nircam_images WHERE deploy_status='published') x")
+COMPONENTS=$("${PSQL[@]}" -c "SELECT jsonb_agg(c)::text FROM (SELECT 'nirspec' AS c UNION ALL SELECT DISTINCT 'nircam/'||field FROM mosaics WHERE deploy_status='published') x")
 echo "== components: $COMPONENTS"
 
 reader_pid=""

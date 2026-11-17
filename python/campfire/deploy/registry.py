@@ -530,7 +530,7 @@ def compute_reconcile(
     identity**, reporting the original keys.
 
     ``live_pointers`` = the union of denormalized DB storage keys
-    (spectra.fits_path, nircam_images.file_path, exposures png paths) — all
+    (spectra.fits_path, mosaics.file_path, exposures png paths) — all
     LEGACY. ``registry_keys`` = storage_objects.storage_key (CANONICAL for objects
     A1 migrated to OSN; LEGACY for the rest). ``bucket_keys`` = actual object keys
     from a bucket LIST (optional; when None, dangling/orphan detection is skipped —
@@ -590,7 +590,7 @@ def _iter_rows(client, table: str, columns: str, *, order_by: str = 'id',
     scan under-covers a large table (and the gap varies run-to-run). That under-
     coverage is why a backfill over ~50k spectra registered only a partial, shifting
     subset. Ordering by a unique key (the PK ``id`` on every table this is used on:
-    spectra / nircam_images / exposures / storage_objects) makes the scan
+    spectra / mosaics / exposures / storage_objects) makes the scan
     complete and repeatable.
 
     Since perf T2-F (#511) the walk is a *keyset* on ``order_by`` — each page
@@ -629,7 +629,7 @@ def _iter_rows(client, table: str, columns: str, *, order_by: str = 'id',
 def live_pointers(client) -> dict[str, list[str]]:
     """Collect the live denormalized storage pointers, grouped by source table."""
     spectra = [r['fits_path'] for r in _iter_rows(client, 'spectra', 'fits_path') if r.get('fits_path')]
-    nircam_images = [r['file_path'] for r in _iter_rows(client, 'nircam_images', 'file_path') if r.get('file_path')]
+    mosaics = [r['file_path'] for r in _iter_rows(client, 'mosaics', 'file_path') if r.get('file_path')]
     nircam_exposures: list[str] = []
     for r in _iter_rows(client, 'exposures', 'png_path, full_png_path'):
         if r.get('png_path'):
@@ -638,7 +638,7 @@ def live_pointers(client) -> dict[str, list[str]]:
             nircam_exposures.append(r['full_png_path'])
     return {
         'spectra': spectra,
-        'nircam_images': nircam_images,
+        'mosaics': mosaics,
         'nircam_exposures': nircam_exposures,
     }
 
@@ -804,7 +804,7 @@ def cloud_reconcile_report(config: dict, client, *, include_buckets: bool = True
     the report (coverage is still checked).
     """
     pointers = live_pointers(client)
-    live = pointers['spectra'] + pointers['nircam_images'] + pointers['nircam_exposures']
+    live = pointers['spectra'] + pointers['mosaics'] + pointers['nircam_exposures']
     reg_keys = registry_keys(client)
 
     base = compute_reconcile(live, reg_keys, None)

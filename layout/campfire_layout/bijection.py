@@ -171,11 +171,16 @@ def parse_relpath(relpath: str) -> ParsedKey:
                 return ParsedKey("nircam_exposure", scope, fname)
 
     if tree == "products" and len(seg) == 5 and seg[1] in ("acswfc", "wfc3ir"):
-        # HST instruments: the NIRCam shape. Everything named after a mosaic is
-        # the mosaic; the two per-exposure PNGs are told by their suffix; any
-        # other FITS file is a canonical exposure.
+        # HST instruments: the NIRCam shape. The four PNG renditions are told
+        # by their suffix (checked before the 'mosaic' prefix, as for NIRCam:
+        # a mosaic's thumbnail is named after it); everything else named after
+        # a mosaic is the mosaic; any other FITS file is a canonical exposure.
         inst, fname = seg[1], seg[4]
         scope = Scope(field=seg[2], filt=seg[3])
+        if fname.endswith("_thumb.png"):
+            return ParsedKey(f"{inst}_mosaic_thumbnail", scope, fname)
+        if fname.endswith("_quicklook.png"):
+            return ParsedKey(f"{inst}_mosaic_quicklook", scope, fname)
         if fname.startswith("mosaic"):
             return ParsedKey(f"{inst}_mosaic", scope,
                              _plain_filename(f"{inst}_mosaic", fname))

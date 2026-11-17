@@ -160,7 +160,7 @@ export async function GET(request: NextRequest) {
     // Service-role authorization, so the link scope is enforced here (see the
     // sibling /fits route): only the link's own field, 404 indistinguishable
     // from a missing dataset. No allow_download gate — a rendered PNG is
-    // display, not FITS bytes, matching the RLS split (nircam_images vs
+    // display, not FITS bytes, matching the RLS split (mosaics vs
     // storage_objects).
     const linkScope = await getLinkScope(userId);
     if (linkScope && (!linkScope.active || linkScope.field === null || linkScope.field !== field)) {

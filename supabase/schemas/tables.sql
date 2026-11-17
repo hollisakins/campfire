@@ -288,13 +288,13 @@ ALTER SEQUENCE "public"."map_layers_id_seq" OWNED BY "public"."map_layers"."id";
 -- FitsGL tile-pyramid datasets (epic #337, Phase 3). One row per *scoped* dataset
 -- deployed to the campfire-tiles bucket: a field's fiducial composite
 -- (kind='field') or a single standalone tile (kind='tile') — NOT one per
--- nircam_images extension. Thin pointer table the map viewer reads; the pyramid
+-- mosaics extension. Thin pointer table the map viewer reads; the pyramid
 -- itself (per-band manifest.json + .fits.fz supertiles + fitsgl.json) lives under
 -- `prefix` in R2. `bands`/`tiles` record what the dataset spans; `source_hashes`
 -- maps each backing mosaic (tile→filter→sha256, from storage_objects.content_hash)
 -- so a rebuild can skip byte-identical inputs. Deliberately carries NO
 -- deploy_status/deployment_id: public visibility DERIVES from the backing
--- nircam_images (RLS in policies.sql), so a deploy against draft mosaics never
+-- mosaics (RLS in policies.sql), so a deploy against draft mosaics never
 -- exposes a manifest.
 CREATE TABLE IF NOT EXISTS "public"."fitsgl_datasets" (
     "prefix" "text" NOT NULL,
@@ -834,8 +834,22 @@ CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "deployments_status_check" CHECK (("status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
     "published_at" timestamp with time zone,
     "revoked_at" timestamp with time zone,
-    -- Exactly one scope: a NIRSpec observation or a NIRCam field (epic #261, N1).
-    CONSTRAINT "deployments_scope_check" CHECK (("num_nonnulls"("observation", "field") = 1))
+    -- The imaging instrument of a field deployment: one deploy is one
+    -- instrument's products of a field (NIRCam, or the HST instruments ACS/WFC
+    -- and WFC3/IR), so a field carries a deployment history per instrument and
+    -- "the field's NIRCam provenance" is a question about this column. NULL on
+    -- an observation (NIRSpec) deployment. The deployments_set_instrument
+    -- trigger fills 'nircam' for a field row written without one, which is what
+    -- every field deployment was before the column existed.
+    "instrument" "text",
+    -- Exactly one scope: a NIRSpec observation or an imaging field (epic #261, N1).
+    CONSTRAINT "deployments_scope_check" CHECK (("num_nonnulls"("observation", "field") = 1)),
+    CONSTRAINT "deployments_instrument_check" CHECK ((
+        ("field" IS NULL AND "instrument" IS NULL)
+        OR ("field" IS NOT NULL AND "instrument" = ANY (ARRAY[
+            'nircam'::"text", 'acswfc'::"text", 'wfc3ir'::"text"
+        ]))
+    ))
 );
 
 
@@ -908,7 +922,7 @@ CREATE TABLE IF NOT EXISTS "public"."fields" (
     -- from <field>_layout.json. One value per field: expmap builds a single
     -- shared auto-WCS across every filter in the invocation, so all of a
     -- field's expmap FITS are pixel-registered on the same grid. Unlike the
-    -- mosaics (whose scale is a key axis in nircam_images) an expmap carries
+    -- mosaics (whose scale is a key axis in mosaics) an expmap carries
     -- its scale only in CDELT1/2, so the web table has nothing else to read.
     "expmap_pixel_scale_arcsec" double precision,
     "latest_deployment_id" integer,
@@ -926,14 +940,18 @@ CREATE TABLE IF NOT EXISTS "public"."fields" (
 ALTER TABLE "public"."fields" OWNER TO "postgres";
 
 
--- One logical mosaic per (field, tile, filter, pixel_scale, extension, epoch).
+-- The mosaic index of every imaging instrument (NIRCam, and the HST
+-- instruments ACS/WFC and WFC3/IR drizzled onto the same tiles). It was
+-- `nircam_images` until HST mosaics joined it.
+-- One logical mosaic per (instrument, field, tile, filter, pixel_scale,
+-- extension, epoch).
 -- The `version` axis is retired (epic #261, N2 / D3): the pipeline emits a
 -- single canonical mosaic name per slot and re-combine overwrites it in place.
 -- `epoch` names an exposure subset (fields.toml [<field>.epochs.<name>]) built
 -- into its own mosaic; `''` is the full-field mosaic. It is NOT NULL DEFAULT ''
 -- (never NULL) so the unique constraint still dedups full-field mosaics —
 -- Postgres treats NULLs as distinct, which would defeat the upsert.
-CREATE TABLE IF NOT EXISTS "public"."nircam_images" (
+CREATE TABLE IF NOT EXISTS "public"."mosaics" (
     "id" integer NOT NULL,
     "field" "text" NOT NULL,
     "tile" "text" NOT NULL,
@@ -949,15 +967,24 @@ CREATE TABLE IF NOT EXISTS "public"."nircam_images" (
     -- `deployment_id` links the mosaic to its NIRCam field deployment (provenance +
     -- the batch the lifecycle transition acts on). `deploy_status` is the public
     -- visibility gate the RLS reads (published => everyone; draft/revoked => admin).
-    "deploy_status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "nircam_images_deploy_status_check" CHECK (("deploy_status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
-    "deployment_id" integer
+    "deploy_status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "mosaics_deploy_status_check" CHECK (("deploy_status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
+    "deployment_id" integer,
+    -- The instrument token of the layout contract and of `cfpipe <instrument>`
+    -- (campfire_layout.Instrument), the same vocabulary as exposures.instrument.
+    -- Part of the row's identity: two instruments may carry a filter of the
+    -- same name on the same tile. Last in the table because it was added to
+    -- existing rows, which are all NIRCam's.
+    "instrument" "text" NOT NULL DEFAULT 'nircam'::"text",
+    CONSTRAINT "mosaics_instrument_check" CHECK (("instrument" = ANY (ARRAY[
+        'nircam'::"text", 'acswfc'::"text", 'wfc3ir'::"text"
+    ])))
 );
 
 
-ALTER TABLE "public"."nircam_images" OWNER TO "postgres";
+ALTER TABLE "public"."mosaics" OWNER TO "postgres";
 
 
-CREATE SEQUENCE IF NOT EXISTS "public"."nircam_images_id_seq"
+CREATE SEQUENCE IF NOT EXISTS "public"."mosaics_id_seq"
     AS integer
     START WITH 1
     INCREMENT BY 1
@@ -966,10 +993,10 @@ CREATE SEQUENCE IF NOT EXISTS "public"."nircam_images_id_seq"
     CACHE 1;
 
 
-ALTER SEQUENCE "public"."nircam_images_id_seq" OWNER TO "postgres";
+ALTER SEQUENCE "public"."mosaics_id_seq" OWNER TO "postgres";
 
 
-ALTER SEQUENCE "public"."nircam_images_id_seq" OWNED BY "public"."nircam_images"."id";
+ALTER SEQUENCE "public"."mosaics_id_seq" OWNED BY "public"."mosaics"."id";
 
 
 -- Per-exposure review rows of every imaging instrument (the review queue,
@@ -1389,7 +1416,8 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     CONSTRAINT "storage_objects_root_status_check" CHECK (
         ("root" = 'live'::"text" AND "status" <> ALL (ARRAY['archived'::"text", 'collected'::"text"]))
         OR ("root" = 'archive'::"text" AND "status" = ANY (ARRAY['archived'::"text", 'collecting'::"text", 'collected'::"text"]) AND "storage_key" LIKE 'archive/%')),
-    CONSTRAINT "storage_objects_instrument_check" CHECK (("instrument" IS NULL OR "instrument" = ANY (ARRAY['nirspec'::"text", 'nircam'::"text"]))),
+    -- The layout contract's instrument tokens (campfire_layout.Instrument).
+    CONSTRAINT "storage_objects_instrument_check" CHECK (("instrument" IS NULL OR "instrument" = ANY (ARRAY['nirspec'::"text", 'nircam'::"text", 'acswfc'::"text", 'wfc3ir'::"text"]))),
     -- content_hash is scheme-prefixed: 'sha256:<hex>' is authoritative (deploy hashes
     -- the local file; spectra backfill reuses spectra.file_hash); 'etag:<hex>' is
     -- provisional from an S3 LIST/HEAD (no GET) for backfilled objects with no stored
@@ -1419,8 +1447,10 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
         'nircam_bad_pixel'::"text", 'nircam_flat'::"text", 'nircam_wisp'::"text",
         'acswfc_exposure'::"text", 'acswfc_exposure_preview'::"text",
         'acswfc_exposure_full'::"text", 'acswfc_mosaic'::"text", 'acswfc_mask'::"text",
+        'acswfc_mosaic_thumbnail'::"text", 'acswfc_mosaic_quicklook'::"text",
         'wfc3ir_exposure'::"text", 'wfc3ir_exposure_preview'::"text",
-        'wfc3ir_exposure_full'::"text", 'wfc3ir_mosaic'::"text", 'wfc3ir_mask'::"text"
+        'wfc3ir_exposure_full'::"text", 'wfc3ir_mosaic'::"text", 'wfc3ir_mask'::"text",
+        'wfc3ir_mosaic_thumbnail'::"text", 'wfc3ir_mosaic_quicklook'::"text"
     ])))
 );
 
@@ -1986,9 +2016,11 @@ ALTER TABLE "public"."dr_photometry" OWNER TO "postgres";
 
 COMMENT ON TABLE "public"."dr_photometry" IS 'Frozen copy of photometry (the unnested photometry the catalog filters on) for the frozen photometry rows of a data release.';
 
--- dr_nircam_images: nircam_images.* of the published mosaics of the release's
--- NIRCam field components (the files themselves are dr_manifest rows).
-CREATE TABLE IF NOT EXISTS "public"."dr_nircam_images" (
+-- dr_mosaics: mosaics.* of the published mosaics of the release's imaging
+-- components, `<instrument>/<field>` (the files themselves are dr_manifest
+-- rows). It was `dr_nircam_images`; rows frozen before the instrument column
+-- existed are NIRCam's, which is the column default.
+CREATE TABLE IF NOT EXISTS "public"."dr_mosaics" (
     "tag" "text" NOT NULL,
     "id" integer NOT NULL,
     "field" "text" NOT NULL,
@@ -2002,12 +2034,13 @@ CREATE TABLE IF NOT EXISTS "public"."dr_nircam_images" (
     "file_size" bigint,
     "deploy_status" "text" NOT NULL,
     "deployment_id" integer,
-    CONSTRAINT "dr_nircam_images_pkey" PRIMARY KEY ("tag", "id")
+    "instrument" "text" NOT NULL DEFAULT 'nircam'::"text",
+    CONSTRAINT "dr_mosaics_pkey" PRIMARY KEY ("tag", "id")
 );
 
-ALTER TABLE "public"."dr_nircam_images" OWNER TO "postgres";
+ALTER TABLE "public"."dr_mosaics" OWNER TO "postgres";
 
-COMMENT ON TABLE "public"."dr_nircam_images" IS 'Frozen copy of nircam_images (every live column, verbatim) for the published mosaics of a data release''s NIRCam field components at the freeze.';
+COMMENT ON TABLE "public"."dr_mosaics" IS 'Frozen copy of mosaics (every live column, verbatim) for the published mosaics of a data release''s imaging components (<instrument>/<field>) at the freeze.';
 
 -- dr_fields: fields.* of the release's NIRCam components and of the fields its
 -- frozen targets belong to (what the field pages read).
@@ -2542,7 +2575,7 @@ ALTER TABLE ONLY "public"."map_layers" ALTER COLUMN "id" SET DEFAULT "nextval"('
 
 
 
-ALTER TABLE ONLY "public"."nircam_images" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nircam_images_id_seq"'::"regclass");
+ALTER TABLE ONLY "public"."mosaics" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."mosaics_id_seq"'::"regclass");
 
 
 
@@ -2693,8 +2726,8 @@ ALTER TABLE ONLY "public"."fitsgl_datasets"
 
 
 
-ALTER TABLE ONLY "public"."nircam_images"
-    ADD CONSTRAINT "nircam_images_pkey" PRIMARY KEY ("id");
+ALTER TABLE ONLY "public"."mosaics"
+    ADD CONSTRAINT "mosaics_pkey" PRIMARY KEY ("id");
 
 
 
@@ -2703,8 +2736,8 @@ ALTER TABLE ONLY "public"."nircam_images"
 -- dropped alongside the `version` axis. `epoch` ('' = full field) is part of the
 -- key so a subset mosaic gets its own row instead of colliding with the
 -- full-field mosaic of the same (field, tile, filter, pixel_scale, extension).
-ALTER TABLE ONLY "public"."nircam_images"
-    ADD CONSTRAINT "nircam_images_unique" UNIQUE ("field", "tile", "filter", "pixel_scale", "extension", "epoch");
+ALTER TABLE ONLY "public"."mosaics"
+    ADD CONSTRAINT "mosaics_unique" UNIQUE ("instrument", "field", "tile", "filter", "pixel_scale", "extension", "epoch");
 
 
 ALTER TABLE ONLY "public"."exposures"
@@ -2995,8 +3028,8 @@ ALTER TABLE ONLY "public"."storage_objects"
 ALTER TABLE ONLY "public"."storage_objects"
     ADD CONSTRAINT "storage_objects_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
 
-ALTER TABLE ONLY "public"."nircam_images"
-    ADD CONSTRAINT "nircam_images_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
+ALTER TABLE ONLY "public"."mosaics"
+    ADD CONSTRAINT "mosaics_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
 
 
 
@@ -3372,9 +3405,9 @@ GRANT ALL ON TABLE "public"."fields" TO "service_role";
 
 
 
-REVOKE ALL ON TABLE "public"."nircam_images" FROM "anon";
-GRANT ALL ON TABLE "public"."nircam_images" TO "authenticated";
-GRANT ALL ON TABLE "public"."nircam_images" TO "service_role";
+REVOKE ALL ON TABLE "public"."mosaics" FROM "anon";
+GRANT ALL ON TABLE "public"."mosaics" TO "authenticated";
+GRANT ALL ON TABLE "public"."mosaics" TO "service_role";
 
 
 REVOKE ALL ON TABLE "public"."exposures" FROM "anon";
@@ -3483,10 +3516,10 @@ REVOKE ALL ON TABLE "public"."dr_photometry" FROM "anon";
 REVOKE ALL ON TABLE "public"."dr_photometry" FROM "authenticated";
 GRANT SELECT ON TABLE "public"."dr_photometry" TO "authenticated";
 GRANT ALL ON TABLE "public"."dr_photometry" TO "service_role";
-REVOKE ALL ON TABLE "public"."dr_nircam_images" FROM "anon";
-REVOKE ALL ON TABLE "public"."dr_nircam_images" FROM "authenticated";
-GRANT SELECT ON TABLE "public"."dr_nircam_images" TO "authenticated";
-GRANT ALL ON TABLE "public"."dr_nircam_images" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_mosaics" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_mosaics" FROM "authenticated";
+GRANT SELECT ON TABLE "public"."dr_mosaics" TO "authenticated";
+GRANT ALL ON TABLE "public"."dr_mosaics" TO "service_role";
 REVOKE ALL ON TABLE "public"."dr_fields" FROM "anon";
 REVOKE ALL ON TABLE "public"."dr_fields" FROM "authenticated";
 GRANT SELECT ON TABLE "public"."dr_fields" TO "authenticated";
@@ -3597,9 +3630,9 @@ GRANT ALL ON SEQUENCE "public"."map_layers_id_seq" TO "service_role";
 
 
 
-REVOKE ALL ON SEQUENCE "public"."nircam_images_id_seq" FROM "anon";
-GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "service_role";
+REVOKE ALL ON SEQUENCE "public"."mosaics_id_seq" FROM "anon";
+GRANT ALL ON SEQUENCE "public"."mosaics_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."mosaics_id_seq" TO "service_role";
 
 
 REVOKE ALL ON SEQUENCE "public"."exposures_id_seq" FROM "anon";
@@ -3699,7 +3732,7 @@ GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "service_role";
 GRANT SELECT ON TABLE "public"."programs" TO "campfire_reader";
 GRANT SELECT ON TABLE "public"."observations" TO "campfire_reader";
 GRANT SELECT ON TABLE "public"."fields" TO "campfire_reader";
-GRANT SELECT ON TABLE "public"."nircam_images" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."mosaics" TO "campfire_reader";
 -- objects / dr_objects: every column except the member aggregates, which
 -- count hidden members (programs, observations, gratings, n_targets, n_spectra,
 -- max_snr, max_exposure_time, search_text; evidence_programs and
@@ -3720,7 +3753,7 @@ GRANT SELECT ON TABLE "public"."dr_line_fits" TO "campfire_reader";
 GRANT SELECT ON TABLE "public"."dr_lines" TO "campfire_reader";
 GRANT SELECT ON TABLE "public"."dr_catalog_matches" TO "campfire_reader";
 GRANT SELECT ON TABLE "public"."dr_photometry" TO "campfire_reader";
-GRANT SELECT ON TABLE "public"."dr_nircam_images" TO "campfire_reader";
+GRANT SELECT ON TABLE "public"."dr_mosaics" TO "campfire_reader";
 GRANT SELECT ON TABLE "public"."dr_fields" TO "campfire_reader";
 GRANT SELECT ON TABLE "public"."dr_manifest" TO "campfire_reader";
 

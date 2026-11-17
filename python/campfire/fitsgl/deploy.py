@@ -4,7 +4,7 @@
 R2 under a per-field/tile prefix via FitsGL's ``deploy_dataset`` (called as a library),
 and upserts a thin ``fitsgl_datasets`` row the web map reads. That row carries no
 lifecycle column of its own — its public visibility DERIVES from the backing mosaics'
-``nircam_images.deploy_status`` (RLS), so a deploy against still-draft mosaics never
+``mosaics.deploy_status`` (RLS), so a deploy against still-draft mosaics never
 surfaces a public manifest.
 
 Credentials, per Supabase auth mode:

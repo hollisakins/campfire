@@ -33,6 +33,7 @@ const ORIGIN = 'https://campfire.example.org';
 function mosaic(field: string, filt: string, name: string, size?: number): NircamProductRow {
   return {
     kind: 'mosaic',
+    instrument: 'nircam',
     field,
     filter: filt,
     tile: 'tile1',
@@ -48,6 +49,7 @@ function mosaic(field: string, filt: string, name: string, size?: number): Nirca
 function expmap(field: string, filt: string, name: string, size?: number): NircamProductRow {
   return {
     kind: 'expmap',
+    instrument: 'nircam',
     field,
     filter: filt,
     tile: null,
