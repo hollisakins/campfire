@@ -85,7 +85,7 @@ export function ReviewPanel({
         <div className="divide-y divide-border">
           <WorkflowRow
             icon={Camera}
-            label="NIRCam exposures"
+            label="Imaging exposures"
             done={review.nircam.done}
             total={review.nircam.total}
             primary={{ value: review.nircam.pending, label: 'pending', href: '/admin/nircam?review=pending' }}

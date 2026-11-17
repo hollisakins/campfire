@@ -23,7 +23,7 @@ const adminNavSections: {
   {
     title: 'Reduction',
     items: [
-      { href: '/admin/nircam', label: 'NIRCam', icon: Camera },
+      { href: '/admin/nircam', label: 'Imaging', icon: Camera },
       { href: '/admin/nirspec/rate', label: 'NIRSpec Rate', icon: Telescope },
       { href: '/admin/nirspec/nods', label: 'NIRSpec Nods', icon: Telescope },
       { href: '/admin/deployments', label: 'Deployments', icon: GitBranch },
