@@ -536,8 +536,10 @@ def _write_hst_manifest(directory, rows):
 
 
 def download_hst(exposures, campfire_root, *, token=None, workers=4,
-                 dry_run=False, tap=None, log=print):
-    """Download the RAW file of every HST exposure given.
+                 dry_run=False, tap=None, log=print, persist_url=None):
+    """Download the RAW file of every HST exposure given, and for WFC3/IR the
+    archive's persistence prediction of each (``common/wfc3_persist.py``; kept
+    under ``raw/wfc3ir/<proposal>/persist/``).
 
     Files go to ``raw/<instrument>/<proposal>/<filter>/<rootname>_raw.fits``
     under ``campfire_root`` (``raw/acswfc/...``, ``raw/wfc3ir/...``, the
@@ -545,7 +547,9 @@ def download_hst(exposures, campfire_root, *, token=None, workers=4,
     a re-run resumes. Each ``<instrument>/<proposal>`` directory
     gets a ``manifest.ecsv`` with what the archive said about its exposures
     (filter, date, exposure time, footprint). Returns
-    ``{'selected', 'missing', 'present', 'downloaded', 'errors'}`` counts.
+    ``{'selected', 'missing', 'present', 'downloaded', 'errors',
+    'persist_missing'}`` counts; a prediction the archive does not hand over
+    is reported and counted, and is not an error of the download.
     """
     from pathlib import Path
 
@@ -580,10 +584,12 @@ def download_hst(exposures, campfire_root, *, token=None, workers=4,
         f'on disk' + (f', {len(missing)} with no RAW file in the archive: '
                       f'{", ".join(missing[:5])}' if missing else ''))
     counts = {'selected': len(exposures), 'missing': len(missing),
-              'present': len(present), 'downloaded': 0, 'errors': 0}
+              'present': len(present), 'downloaded': 0, 'errors': 0,
+              'persist_missing': 0}
     if dry_run:
         for f in todo:
             log(f'  would download {f["_path"].relative_to(root)}')
+        _fetch_persistence(exposures, root, counts, True, persist_url, log)
         return counts
     counts['errors'] = download_files(todo, token=token, workers=workers,
                                       desc='HST raw')
@@ -591,4 +597,45 @@ def download_hst(exposures, campfire_root, *, token=None, workers=4,
     for directory, members in rows.items():
         path = _write_hst_manifest(directory, members)
         log(f'  manifest: {path.relative_to(root)} ({len(members)} rows written)')
+    _fetch_persistence(exposures, root, counts, False, persist_url, log)
     return counts
+
+
+def _fetch_persistence(exposures, root, counts, dry_run, base_url, log):
+    """The archive's persistence predictions of the WFC3/IR exposures given
+    (``common/wfc3_persist.py``), beside their RAW files. A prediction that
+    cannot be had is reported and counted in ``counts['persist_missing']``; it
+    is not a failed download of the data, and ``cfpipe wfc3ir persist`` masks
+    such an exposure by its in-field rule instead."""
+    from campfire_layout import raw_dir
+
+    from campfire_pipeline.common import wfc3_persist
+
+    by_program = {}
+    for e in exposures:
+        if e.instrument == 'wfc3ir':
+            by_program.setdefault(e.program, []).append(e.obs_id)
+    if not by_program:
+        return
+    n = sum(len(v) for v in by_program.values())
+    result = wfc3_persist.fetch_predictions(
+        by_program, raw_dir('wfc3ir', root=root),
+        base_url=base_url or wfc3_persist.ARCHIVE_URL, dry_run=dry_run, log=log)
+    if dry_run:
+        log(f'persistence predictions: {n} WFC3/IR exposures, '
+            f'{result["present"]} already on disk')
+        return
+    missing = result['missing']
+    counts['persist_missing'] = len(missing)
+    log(f'persistence predictions: {n} WFC3/IR exposures, {result["present"]} '
+        f'already on disk, {result["fetched"]} fetched, {len(missing)} not '
+        f'available')
+    if missing:
+        by_reason = {}
+        for rootname, reason in sorted(missing.items()):
+            by_reason.setdefault(reason, []).append(rootname)
+        log('WARNING: no persistence prediction for these exposures (re-run to '
+            'try again; `cfpipe wfc3ir persist` uses its in-field rule for them '
+            'meanwhile):')
+        for reason, roots in by_reason.items():
+            log(f'  {reason}: {", ".join(roots)}')

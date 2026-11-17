@@ -408,22 +408,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   any working copy of a filter lacks `CFP_OUT` (its canonical exposure changed since the
   last outlier pass), resample alone leaves that filter's mosaics as they are, names the
   exposures and says to run `combine`. A full `combine` is unchanged: it flags first.
-- **WFC3/IR persistence is masked from the archive's predictions (`cfpipe wfc3ir persist`,
-  new step after `crreject`; changes WFC3/IR mosaics).** STScI predicts the persistence of
-  every WFC3/IR exposure from all the WFC3/IR exposures of the hours before it, in any
-  program or filter (WFC3 Data Handbook 8.2), which a rule that looks only at the
-  exposures being reduced cannot see. The step downloads a visit's archive of predictions
-  when one is missing (they are outside MAST's API: one `tar.gz` per visit), keeps the
-  `<rootname>_persist.fits` files under `raw/wfc3ir/<proposal>/persist/`, and sets DQ bit
-  16384 where the prediction exceeds `[wfc3ir.persist].threshold` (0.01 e-/s, the
-  handbook's example level), so those pixels are left out of the outlier pass and the
-  mosaic. `SCI` is not changed; `CFP_PERS` records the threshold, the pixel count and the
-  largest prediction. An exposure with no prediction (the archive does not answer, or has
-  not processed it) is not held back: the run names it at the step and again before its
-  mosaic is drizzled, and the next run retries. Exposures calibrated before this get the
-  mask at their next `process`, and their mosaics follow. Tested on synthetic products
-  laid out as the software that writes the real ones lays them out; not yet run on a real
-  one, because the archive's directory refused every download on 2026-11-17.
+- **WFC3/IR persistence is masked (`cfpipe wfc3ir persist`, new step after `crreject`;
+  changes WFC3/IR mosaics).** Flagged pixels get DQ bit 16384, so they are left out of the
+  outlier pass and the mosaic; `SCI` is not changed. Two sources. (1) The archive's
+  prediction, when it is on disk: STScI models the persistence of every WFC3/IR exposure
+  from all the WFC3/IR exposures of the hours before it, in any program or filter (WFC3
+  Data Handbook 8.2); pixels predicted above `[wfc3ir.persist].threshold` (0.01 e-/s, the
+  handbook's example level) are flagged. `cfpipe download --telescope hst` now fetches the
+  predictions with the RAW files (they are outside MAST's API: one `tar.gz` per visit) and
+  keeps `<rootname>_persist.fits` under `raw/wfc3ir/<proposal>/persist/`; the step itself
+  downloads nothing. (2) Without a prediction, NIRCam's rule: a pixel saturated in one
+  exposure of the field, in any filter (`fluence` = 70000 electrons collected, or calwf3's
+  full-well flag), is flagged in the exposures that start within `time` = 2500 s after it.
+  `CFP_PERS` records the source; the step runs again when a prediction arrives or the
+  earlier exposures change, and the run says which exposures were masked by the in-field
+  rule. Exposures calibrated before this get the mask at their next `process`, and their
+  mosaics follow. The archive route is tested on synthetic products only: its directory
+  refused every download on 2026-11-17, so no real prediction has been read.
 - **`cfpipe nircam resample` on its own refuses a filter with an exposure the outlier pass
   has not stamped, as the HST instruments do.** It used to drop that exposure from the
   mosaic and drizzle the rest with nothing said, and `resample --overwrite` on its own

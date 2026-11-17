@@ -1,11 +1,11 @@
-"""WFC3/IR persistence masks from the archive's per-exposure predictions
-(``hst/steps/persist.py``).
+"""WFC3/IR persistence masks (``hst/steps/persist.py``) and the download of
+the archive's predictions (``common/wfc3_persist.py``, ``cfpipe download``).
 
-The products are synthetic and laid out as the software that writes the real
-ones lays them out: a copy of the calibrated exposure whose first extension
-holds the prediction in e-/s, inside ``<proposal>.Visit<VV>.tar.gz``. The
-"archive" is a directory read through a ``file://`` address, so nothing here
-touches the network.
+The predictions are synthetic and laid out as the software that writes the
+real ones lays them out: a copy of the calibrated exposure whose first
+extension holds the prediction in e-/s, inside ``<proposal>.Visit<VV>.tar.gz``.
+The "archive" is a directory read through a ``file://`` address, so nothing
+here touches the network.
 """
 
 import os
@@ -16,8 +16,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from campfire_pipeline.common import cfp
-from campfire_pipeline.config import get_hst_step_config
+from campfire_pipeline.common import cfp, mast_query as mq, wfc3_persist
 from campfire_pipeline.hst import orchestrate
 from campfire_pipeline.hst.exposure import open_exposure
 from campfire_pipeline.hst.field import HstField
@@ -37,7 +36,7 @@ crpix = [250.5, 250.5]
 naxis = [500, 500]
 
 [tf.wfc3ir]
-filters = ["f160w"]
+filters = ["f125w", "f160w"]
 files = ["ites*"]
 
 [tf.acswfc]
@@ -56,14 +55,18 @@ def field(tmp_path, monkeypatch):
     return f
 
 
-def _exposure(directory, root, seed=5):
-    """A calibrated exposure through the sky step, of program 12101."""
+def _exposure(directory, root, seed=5, mjd=57000.0, star=None):
+    """A calibrated exposure through the sky step, of program 12101; ``star``
+    is a pixel (y, x) that collects 100 000 electrons."""
+    os.makedirs(directory, exist_ok=True)
     path = _ir_file(os.path.join(directory, f'{root}_flt.fits'), root,
-                    (40.0, 40.0), np.random.default_rng(seed), mjd=57000.0)
+                    (40.0, 40.0), np.random.default_rng(seed), mjd=mjd)
     with fits.open(path, mode='update') as hdul:
         hdul[0].header['PROPOSID'] = PROPOSAL
         for key, val in cfp.format(keyset=cfp.HST, CFP_SKY=None).items():
             hdul[0].header[key] = val
+        if star is not None:
+            hdul['SCI', 1].data[star] = 100000.0 / hdul[0].header['EXPTIME']
     return path
 
 
@@ -94,17 +97,21 @@ def _archive(tmp_path, visit, members):
     return base.as_uri()
 
 
+def _flagged(path):
+    return (fits.getdata(path, ('DQ', 1)) & persist.PERSIST_BIT) != 0
+
+
+# -- the archive's prediction ---------------------------------------------------
+
 def test_pixels_predicted_above_the_threshold_are_flagged_and_left_out(tmp_path):
     exposure = _exposure(tmp_path, 'ites01a0q')
     before = fits.getdata(exposure, ('SCI', 1)).copy()
     product = _prediction(exposure, tmp_path / 'ites01a0q_persist.fits',
                           bright=[(10, 12), (10, 13)], faint=[(30, 30)])
 
-    assert persist.persist_step(exposure, product) == 2
-    with fits.open(exposure) as hdul:
-        flagged = (hdul['DQ', 1].data & persist.PERSIST_BIT) != 0
-        np.testing.assert_array_equal(hdul['SCI', 1].data, before)
-    assert sorted(zip(*np.nonzero(flagged))) == [(10, 12), (10, 13)]
+    assert persist.persist_step(exposure, product) == (persist.ARCHIVE, 2)
+    assert sorted(zip(*np.nonzero(_flagged(exposure)))) == [(10, 12), (10, 13)]
+    np.testing.assert_array_equal(fits.getdata(exposure, ('SCI', 1)), before)
     stamp = cfp.step_value(exposure, 'CFP_PERS', keyset=cfp.HST)
     assert stamp.startswith('archive model >0.01 e-/s px=2 ')
     # the adapter leaves them out of the outlier pass and the mosaic
@@ -114,13 +121,11 @@ def test_pixels_predicted_above_the_threshold_are_flagged_and_left_out(tmp_path)
     # stamped: nothing to do
     assert persist.persist_step(exposure, product) is None
     # another threshold replaces the first mask, in both directions
-    assert persist.persist_step(exposure, product, {'threshold': 0.001},
-                                overwrite=True) == 3
-    assert persist.persist_step(exposure, product, {'threshold': 0.02},
-                                overwrite=True) == 2
-    assert persist.persist_step(exposure, product, {'threshold': 0.5},
-                                overwrite=True) == 0
-    assert not (fits.getdata(exposure, ('DQ', 1)) & persist.PERSIST_BIT).any()
+    assert persist.persist_step(exposure, product, (), {'threshold': 0.001},
+                                overwrite=True)[1] == 3
+    assert persist.persist_step(exposure, product, (), {'threshold': 0.5},
+                                overwrite=True)[1] == 0
+    assert not _flagged(exposure).any()
 
 
 def test_a_prediction_of_another_shape_is_refused(tmp_path):
@@ -134,54 +139,58 @@ def test_a_prediction_of_another_shape_is_refused(tmp_path):
     assert not os.path.exists(exposure + '.persist.tmp')
 
 
-def test_a_visit_is_fetched_once_and_only_its_predictions_are_kept(field, tmp_path):
-    d = field.filter_dir('f160w')
-    a, b, c = (_exposure(d, f'ites01a{k}q', seed=k) for k in range(3))
-    made = tmp_path / 'made'
-    made.mkdir()
-    base = _archive(tmp_path, '01', {
-        f'{PROPOSAL}.Visit01/ites01a0q_persist.fits':
-            _prediction(a, made / 'a.fits', bright=[(5, 5)]),
-        f'{PROPOSAL}.Visit01/ites01a1q_persist.fits':
-            _prediction(b, made / 'b.fits'),
-        f'{PROPOSAL}.Visit01/ites01a0q_extper.fits':
-            _prediction(a, made / 'x.fits'),
-        # a member that names a place outside the archive's own directory
-        '../../outside_persist.fits': _prediction(a, made / 'o.fits'),
-    })
-    cfg = dict(get_hst_step_config('persist', 'wfc3ir'), archive_url=base)
+# -- the in-field rule ------------------------------------------------------------
 
-    reasons = persist.persist_exposures([a, b, c], field.raw_root, cfg)
+def test_without_a_prediction_a_saturated_pixel_is_masked_in_what_follows(field):
+    """NIRCam's rule, across the filters of the field: the star saturates in
+    the F125W exposure, and the F160W exposures that start within 2500 s are
+    masked there; one a day later is not."""
+    minute = 60.0 / 86400.0
+    stim = _exposure(field.filter_dir('f125w'), 'ites01a0q', mjd=57000.0,
+                     star=(20, 21))
+    soon = _exposure(field.filter_dir('f160w'), 'ites01a1q', seed=1,
+                     mjd=57000.0 + 15 * minute)
+    later = _exposure(field.filter_dir('f160w'), 'ites02a2q', seed=2,
+                      mjd=57001.0)
 
-    # the third exposure is not in the visit's archive: named, not stamped
-    assert list(reasons) == ['ites01a2q']
-    assert 'has no prediction for it' in reasons['ites01a2q']
-    assert not cfp.has_step(c, 'CFP_PERS', keyset=cfp.HST)
-    assert ((fits.getdata(a, ('DQ', 1)) & persist.PERSIST_BIT) != 0).sum() == 1
-    assert cfp.step_value(b, 'CFP_PERS', keyset=cfp.HST).startswith(
-        'archive model >0.01 e-/s px=0 ')
-    kept = persist.persist_dir(field.raw_root, PROPOSAL)
-    assert sorted(os.listdir(kept)) == [
-        'ites01a0q_persist.fits', 'ites01a1q_persist.fits',
-        'outside_persist.fits']
-    assert not os.path.exists(os.path.join(field.raw_root, 'outside_persist.fits'))
+    orchestrate.run_step('persist', field, {})
+
+    assert sorted(zip(*np.nonzero(_flagged(soon)))) == [(20, 21)]
+    assert not _flagged(later).any() and not _flagged(stim).any()
+    stamp = cfp.step_value(soon, 'CFP_PERS', keyset=cfp.HST)
+    assert stamp.startswith('in-field rule n=1 px=1 ')
+    assert cfp.step_value(later, 'CFP_PERS', keyset=cfp.HST).startswith(
+        'in-field rule n=0 px=0 ')
+    assert orchestrate.without_prediction(field, 'f160w') == [
+        'ites01a1q', 'ites02a2q']
+    assert orchestrate.unmasked_for_persistence(field, 'f160w') == []
+
+    # nothing changed: a second run rewrites nothing
+    stamps = [os.path.getmtime(p) for p in (stim, soon, later)]
+    orchestrate.run_step('persist', field, {})
+    assert [os.path.getmtime(p) for p in (stim, soon, later)] == stamps
+
+    # another exposure before `soon` appears: its mask is made again
+    _exposure(field.filter_dir('f125w'), 'ites01a3q', seed=3,
+              mjd=57000.0 + 5 * minute, star=(40, 41))
+    orchestrate.run_step('persist', field, {})
+    assert sorted(zip(*np.nonzero(_flagged(soon)))) == [(20, 21), (40, 41)]
+
+    # the prediction arrives: it replaces the in-field mask
+    product = wfc3_persist.product_path(field.raw_root, PROPOSAL, 'ites01a1q')
+    os.makedirs(os.path.dirname(product))
+    _prediction(soon, product, bright=[(7, 7)])
+    orchestrate.run_step('persist', field, {})
+    assert sorted(zip(*np.nonzero(_flagged(soon)))) == [(7, 7)]
+    assert orchestrate.without_prediction(field, 'f160w') == ['ites02a2q']
 
 
-def test_no_prediction_is_said_and_holds_nothing_back(field, tmp_path, capsys):
-    d = field.filter_dir('f160w')
-    a = _exposure(d, 'ites01a0q')
-    before = open(a, 'rb').read()
-    config = {'wfc3ir': {'persist': {
-        'archive_url': (tmp_path / 'nothing-here').as_uri()}}}
-
-    orchestrate.run_step('persist', field, config)
-
+def test_the_fallback_is_said(field, capsys):
+    _exposure(field.filter_dir('f160w'), 'ites01a0q')
+    orchestrate.run_step('persist', field, {})
     out = capsys.readouterr().out
-    assert 'have NO persistence' in out and 'ites01a0q' in out
-    assert 'could not be fetched' in out
-    assert 'cfpipe wfc3ir persist --field tf' in out
-    assert open(a, 'rb').read() == before
-    assert orchestrate.unmasked_for_persistence(field, 'f160w') == ['ites01a0q']
+    assert 'no archive prediction on disk' in out and 'ites01a0q' in out
+    assert 'cfpipe download --telescope hst --instrument wfc3ir --field tf' in out
 
 
 def test_only_the_ir_detector_has_the_step(field):
@@ -191,3 +200,87 @@ def test_only_the_ir_detector_has_the_step(field):
     acs = HstField.load('tf', 'acswfc')
     acs.setup_workspace()
     assert orchestrate.unmasked_for_persistence(acs, 'f814w') == []
+    assert orchestrate.without_prediction(acs, 'f814w') == []
+
+
+# -- the download -----------------------------------------------------------------
+
+def _ir_exposure(root):
+    return mq.Exposure('wfc3ir', 'hst', root, str(PROPOSAL), '', '', 'f160w',
+                       500.0, 57000.0, 'PUBLIC', ())
+
+
+@pytest.fixture
+def no_raw(monkeypatch):
+    """The RAW half of the download, without the network."""
+    from campfire_pipeline.common import query as jwst_query
+
+    def fake(files, token=None, workers=4, desc=''):
+        for f in files:
+            f['_path'].parent.mkdir(parents=True, exist_ok=True)
+            f['_path'].write_bytes(b'x' * f['size'])
+        return 0
+    monkeypatch.setattr(jwst_query, 'download_files', fake)
+    monkeypatch.setattr(mq, 'raw_products', lambda exposures, tap=None: {
+        e.obs_id: {'filename': f'{e.obs_id}_raw.fits', 'size': 3,
+                   'uri': 'x', 'checksum': ''} for e in exposures})
+    monkeypatch.setattr(mq, '_write_hst_manifest',
+                        lambda directory, rows: directory / 'manifest.ecsv')
+
+
+def test_the_download_fetches_a_visit_once_and_keeps_only_predictions(
+        tmp_path, no_raw):
+    made = tmp_path / 'made'
+    a = _exposure(made, 'ites01a0q')
+    base = _archive(tmp_path, '01', {
+        f'{PROPOSAL}.Visit01/ites01a0q_persist.fits':
+            _prediction(a, made / 'a.fits', bright=[(5, 5)]),
+        f'{PROPOSAL}.Visit01/ites01a1q_persist.fits':
+            _prediction(a, made / 'b.fits'),
+        f'{PROPOSAL}.Visit01/ites01a0q_extper.fits':
+            _prediction(a, made / 'x.fits'),
+        # a member that names a place outside the archive's own directory
+        '../../outside_persist.fits': _prediction(a, made / 'o.fits'),
+    })
+    root = tmp_path / 'root'
+    exposures = [_ir_exposure(f'ites01a{k}q') for k in range(3)]
+    lines = []
+
+    dry = mq.download_hst(exposures, root, dry_run=True, log=lines.append,
+                          persist_url=base)
+    assert dry['persist_missing'] == 0 and not (root / 'raw').exists()
+    assert any('would fetch' in m and 'Visit01' in m for m in lines)
+
+    counts = mq.download_hst(exposures, root, log=lines.append, persist_url=base)
+
+    # the third exposure is not in the visit's archive: named, and counted
+    # apart from the errors of the data download
+    assert counts['errors'] == 0 and counts['persist_missing'] == 1
+    assert any('ites01a2q' in m and 'has no prediction for it' in m for m in lines)
+    kept = root / 'raw' / 'wfc3ir' / str(PROPOSAL) / 'persist'
+    assert sorted(p.name for p in kept.iterdir()) == [
+        'ites01a0q_persist.fits', 'ites01a1q_persist.fits',
+        'outside_persist.fits']
+    assert not list(root.rglob('*extper*'))
+    assert [p for p in tmp_path.rglob('outside_persist.fits')] == [
+        kept / 'outside_persist.fits']
+    assert wfc3_persist.product_path(root / 'raw' / 'wfc3ir', PROPOSAL,
+                                     'ites01a0q') == str(kept / 'ites01a0q_persist.fits')
+
+    # a second run fetches nothing that is there
+    again = wfc3_persist.fetch_predictions(
+        {str(PROPOSAL): ['ites01a0q', 'ites01a1q']}, root / 'raw' / 'wfc3ir',
+        base_url='file:///nowhere')
+    assert again == {'present': 2, 'fetched': 0, 'missing': {}}
+
+
+def test_an_archive_that_does_not_answer_is_reported_not_an_error(tmp_path, no_raw):
+    lines = []
+    counts = mq.download_hst([_ir_exposure('ites01a0q')], tmp_path / 'root',
+                             log=lines.append,
+                             persist_url=(tmp_path / 'nothing-here').as_uri())
+    assert counts['errors'] == 0 and counts['downloaded'] == 1
+    assert counts['persist_missing'] == 1
+    text = '\n'.join(lines)
+    assert 'WARNING: no persistence prediction' in text
+    assert 'could not be fetched' in text and 'ites01a0q' in text

@@ -341,42 +341,46 @@ def unmasked_for_persistence(field, filt):
                   if _has(f, 'CFP_SKY') and not _has(f, 'CFP_PERS'))
 
 
+def without_prediction(field, filt):
+    """Rootnames of the filter's exposures whose persistence mask came from the
+    in-field rule, for want of the archive's prediction."""
+    from campfire_pipeline.hst.steps.persist import IN_FIELD
+    if 'persist' in _NOT_FOR.get(field.instrument, ()):
+        return []
+    return sorted(
+        os.path.basename(f).split('_')[0]
+        for f in field.get_exposure_files(filt)
+        if str(cfp.step_value(f, 'CFP_PERS', keyset=cfp.HST)).startswith(IN_FIELD))
+
+
 def _run_persist(field, config, filt, n_processes, overwrite):
-    """Persistence masks from the archive's predictions (WFC3/IR). One
-    process: the work is a download per visit and a threshold per exposure."""
-    from campfire_pipeline.hst.steps.persist import persist_exposures
+    """Persistence masks (WFC3/IR): from the archive's prediction where
+    `cfpipe download` has fetched one, by the in-field rule otherwise. One
+    process: a threshold per exposure. The in-field rule looks at the
+    exposures of every filter of the field (the detector is one), so an
+    exposure is done again when that set has changed."""
+    from campfire_pipeline.hst.steps.persist import IN_FIELD, persist_exposures
 
-    files = [f for f in field.get_exposure_files(filt) if _has(f, 'CFP_SKY')]
-    pending = [f for f in files if overwrite or not _has(f, 'CFP_PERS')]
-    log(f'persist: {len(files)} {filt} exposures, {len(pending)} to do')
-    if not pending:
+    def ready(f):
+        return _has(f, 'CFP_SKY')
+    files = [f for f in field.get_exposure_files(filt) if ready(f)]
+    everything = sorted({f for other in field.filters
+                         for f in field.get_exposure_files(other) if ready(f)})
+    log(f'persist: {len(files)} {filt} exposures, {len(everything)} in the '
+        f'field to look back over')
+    if not files:
         return
-    reasons = persist_exposures(pending, field.raw_root,
-                                step_config=step_config('persist', field, config),
-                                overwrite=overwrite)
-    if reasons:
-        _warn_no_persistence(field, filt, reasons)
-
-
-def _warn_no_persistence(field, filt, reasons):
-    bar = '!' * 72
-    log('')
-    log(bar)
-    log(f'persist: WARNING: {len(reasons)} {filt} exposure(s) have NO persistence '
-        f'mask, because no')
-    log('prediction could be had from the archive. They are not held back: they '
-        'go into')
-    log('the mosaic as they are.')
-    by_reason = {}
-    for root, reason in sorted(reasons.items()):
-        by_reason.setdefault(reason, []).append(root)
-    for reason, roots in by_reason.items():
-        log(f'  {reason}:')
-        log(f'      {", ".join(roots)}')
-    log(f'To try again: `cfpipe {field.instrument} persist --field {field.name}` '
-        f'(only these are retried).')
-    log(bar)
-    log('')
+    done = persist_exposures(files, everything, field.raw_root,
+                             step_config=step_config('persist', field, config),
+                             overwrite=overwrite)
+    fallback = sorted(r for r, source in done.items() if source == IN_FIELD)
+    if fallback:
+        log(f'persist: WARNING: {len(fallback)} {filt} exposure(s) have no '
+            f'archive prediction on disk and were masked by the in-field rule, '
+            f'which sees only this field\'s own exposures: '
+            f'{", ".join(fallback)}. Fetch the predictions with `cfpipe '
+            f'download --telescope hst --instrument {field.instrument} --field '
+            f'{field.name}`, then run `cfpipe {field.instrument} persist`.')
 
 
 def _run_preview(field, config, filt, n_processes, overwrite):
@@ -570,6 +574,13 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
         log(f'--- Process: {field.instrument} {filt} ---')
         for name, _ in steps_for(field.instrument, PROCESS_STEPS):
             _PROCESS_RUNNERS[name](field, config, filt, n_processes, overwrite)
+    # persist looks back over every filter's exposures, and the first filters
+    # were done before the later ones were calibrated: go round once more (it
+    # rewrites only the exposures whose earlier exposures have changed).
+    if len(filters) > 1 and 'persist' in [
+            n for n, _ in steps_for(field.instrument, PROCESS_STEPS)]:
+        for filt in filters:
+            _run_persist(field, config, filt, n_processes, False)
 
 
 # ---------------------------------------------------------------------------
@@ -864,14 +875,18 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
         if not paths:
             log(f'combine: no {filt} exposure is ready for a mosaic')
             continue
-        # Not a reason to hold an exposure back, but never unsaid: these go
-        # into the mosaic without a persistence mask.
+        # Not a reason to hold an exposure back, but never unsaid.
         bare = unmasked_for_persistence(field, filt)
         if bare:
             log(f'combine: WARNING: {len(bare)} {filt} exposure(s) have no '
                 f'persistence mask ({", ".join(bare)}). Run `cfpipe '
                 f'{field.instrument} persist --field {field.name}`, then '
                 f'`combine`, to mask them.')
+        fallback = without_prediction(field, filt)
+        if fallback:
+            log(f'combine: note: {len(fallback)} {filt} exposure(s) are masked '
+                f'for persistence by the in-field rule, not the archive\'s '
+                f'prediction (none on disk).')
         if 'outlier' in steps:
             _run_outlier(field, config, filt, n_processes, overwrite, paths)
         if 'resample' in steps:

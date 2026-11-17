@@ -1501,20 +1501,27 @@
 [wfc3ir.persist]
     # Persistence: charge an IR pixel keeps releasing for hours after it was
     # filled, by an earlier exposure of the visit or by whatever the detector
-    # observed before. STScI predicts it for every WFC3/IR exposure from all
-    # the WFC3/IR exposures of the hours before (the WFC3 Persistence Project;
-    # Data Handbook 8.2), and the step masks the pixels whose prediction
-    # exceeds `threshold` (DQ bit 16384). SCI is not changed.
+    # observed before. Flagged pixels get DQ bit 16384; SCI is not changed.
     #
+    # With the archive's prediction on disk (`cfpipe download` fetches it;
+    # STScI models every WFC3/IR exposure from all the WFC3/IR exposures of
+    # the hours before, Data Handbook 8.2):
     # threshold    predicted persistence above which a pixel is masked, in
     #              electrons per second. 0.01 is the handbook's example level
     #              (8.3). For scale, the F160W background of a `macs0647`
     #              exposure is 0.5 e-/s.
-    # archive_url  where the per-visit archives of predictions are served
-    # timeout      seconds allowed for one visit's download
+    #
+    # Without one, NIRCam's rule: a pixel saturated in one exposure of the
+    # field (any filter) is masked in the exposures that start within `time`
+    # seconds after it.
+    # time         seconds, start to start (NIRCam's 2500)
+    # fluence      electrons collected (rate x exposure time) that count as
+    #              saturated; 70000 is the level STScI's persistence software
+    #              counts as saturated. calwf3's full-well flag (DQ 256)
+    #              counts as well.
     threshold = 0.01
-    archive_url = "https://archive.stsci.edu/pub/wfc3_persist"
-    timeout = 600
+    time = 2500.0
+    fluence = 70000.0
 
 [wfc3ir.trails]
     # Satellite trails, written as polygons into the exposure's region file

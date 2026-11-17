@@ -241,7 +241,7 @@ def test_hst_raw_files_land_where_the_layout_says(tmp_path, fetched):
     messages = []
     counts = mq.download_hst(exposures, tmp_path, tap=tap, log=messages.append)
     assert counts == {'selected': 5, 'missing': 1, 'present': 0,
-                      'downloaded': 4, 'errors': 0}
+                      'downloaded': 4, 'errors': 0, 'persist_missing': 0}
     assert 'no RAW file in the archive: jd0001aaq' in messages[0]
     raw = tmp_path / 'raw' / 'acswfc'
     assert (raw / '14096' / 'f814w' / 'jczgo1aaq_raw.fits').stat().st_size == 30
