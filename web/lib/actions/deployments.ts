@@ -190,10 +190,10 @@ export async function setDeploymentLifecycle(
     if (error) return { success: false, error: error.message };
     // The RPC's result shape depends on the scope: an observation deployment
     // reports {spectra: {updated}}, a field deployment (any imaging
-    // instrument) {nircam_images: {updated}}: the mosaic rows it flipped, under
-    // the key the table had before it was renamed `mosaics`.
+    // instrument) {mosaics: {updated}}: the mosaic rows it flipped. A database
+    // that predates the 2026-11 rename answers under `nircam_images`.
     const spectraUpdated = data?.spectra?.updated as number | undefined;
-    const imagesUpdated = data?.nircam_images?.updated as number | undefined;
+    const imagesUpdated = (data?.mosaics?.updated ?? data?.nircam_images?.updated) as number | undefined;
     const updated = spectraUpdated ?? imagesUpdated ?? 0;
     const updatedKind = spectraUpdated != null ? 'spectra' as const : 'images' as const;
     return { success: true, updated, updatedKind };

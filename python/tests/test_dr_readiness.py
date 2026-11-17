@@ -29,7 +29,7 @@ SAMPLE = {
         "0.6.0": {"spectra": 70000, "observations": 200},
     },
     "published": {"spectra": 70312, "observations": 204, "programs": 35, "objects": 42452},
-    "drafts": {"spectra": 0, "nircam_images": 280, "deployments": 2},
+    "drafts": {"spectra": 0, "mosaics": 280, "deployments": 2},
     "revoked": {"spectra": 0, "deployments": 0},
     "leases": [{
         "scope_type": "observation", "scope_key": "ember_uds_p4", "version": 3,
@@ -67,6 +67,9 @@ def test_format_readiness_renders_every_section():
     assert i6 < i4 < i5
     assert "70,000" in text and "3 version string(s)" in text
     assert "Drafts:  0 spectra · 280 mosaics · 2 deployments" in text
+    # a database that predates the 2026-11 rename answers under the old key
+    older = dict(SAMPLE, drafts={"spectra": 0, "nircam_images": 281, "deployments": 2})
+    assert "Drafts:  0 spectra · 281 mosaics · 2 deployments" in format_readiness(older)
     assert "Deploy leases: 2" in text
     assert "observation:ember_uds_p4" in text and "hollis" in text and "candide" in text
     assert "service-role" in text and "STALE" in text and "live" in text

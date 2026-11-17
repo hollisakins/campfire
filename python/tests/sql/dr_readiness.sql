@@ -99,8 +99,12 @@ BEGIN
   END IF;
 
   -- drafts: the fixture's draft mosaic rows and draft deployment are counted
-  IF (r->'drafts'->>'nircam_images')::int < 2 OR (r->'drafts'->>'deployments')::int < 1 THEN
+  IF (r->'drafts'->>'mosaics')::int < 2 OR (r->'drafts'->>'deployments')::int < 1 THEN
     RAISE EXCEPTION 'DRAFTS: expected >= 2 draft mosaics and >= 1 draft deployment, got %', r->'drafts';
+  END IF;
+  -- the key until 2026-11, answered for one release beside the new one
+  IF (r->'drafts'->>'nircam_images') IS DISTINCT FROM (r->'drafts'->>'mosaics') THEN
+    RAISE EXCEPTION 'DRAFTS: the nircam_images alias should repeat mosaics, got %', r->'drafts';
   END IF;
 
   -- re-drafted field detected, draft-only field not listed

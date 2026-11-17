@@ -48,7 +48,7 @@ END $$;
 -- 3. PUBLISH via set_deployment_status (as admin) flips mosaics.deploy_status
 DO $$ DECLARE r json; BEGIN
   r := public.set_deployment_status((SELECT id FROM _dep), 'published', NULL, 'testhost');
-  IF ((r->'nircam_images')->>'updated')::int <> 1 THEN
+  IF ((r->'mosaics')->>'updated')::int <> 1 THEN
     RAISE EXCEPTION 'set_deployment_status did not flip 1 mosaic (got %)', r;
   END IF;
 END $$;

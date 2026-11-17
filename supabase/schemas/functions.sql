@@ -9941,11 +9941,15 @@ BEGIN
                 'scope', jsonb_build_object('field', v_field),
                 'counts', jsonb_build_object('succeeded', v_n_images),
                 'flags', jsonb_build_object('lifecycle', true)));
-    -- 'nircam_images' is the wire key from before the table was renamed
-    -- `mosaics`; it counts the mosaic rows of this deployment's instrument.
+    -- 'mosaics' counts the mosaic rows of this deployment's instrument.
+    -- 'nircam_images' is the same block under the key it had until 2026-11,
+    -- kept for one release: the migration lands before the web image is
+    -- swapped, and the image running in between reads the old key. Remove it
+    -- in the release after.
     RETURN json_build_object(
       'deployment_id', p_deployment_id, 'field', v_field, 'status', p_to,
       'instrument', COALESCE(v_instrument, 'nircam'),
+      'mosaics', json_build_object('updated', v_n_images, 'action', v_action),
       'nircam_images', json_build_object('updated', v_n_images, 'action', v_action));
   END IF;
 
@@ -10578,6 +10582,9 @@ BEGIN
     'published', (v_spectra->'published') || jsonb_build_object('objects', v_objects->'published'),
     'drafts', jsonb_build_object(
       'spectra', v_spectra_status->'draft',
+      'mosaics', v_nircam_drafts,
+      -- the key until 2026-11, for a client that predates the rename
+      -- (`campfire dr status` reads it); remove in the release after
       'nircam_images', v_nircam_drafts,
       'deployments', v_deployments->'draft'),
     'revoked', jsonb_build_object(
@@ -12236,7 +12243,7 @@ BEGIN
              'spectra', v_n_spectra, 'objects', v_n_objects, 'line_fits', v_n_lines,
              'photometry', v_n_phot, 'manifest', v_n_manifest,
              'targets', v_n_targets, 'spectrum_lines', v_n_slines, 'photometry_bands', v_n_bands,
-             'nircam_images', v_n_nircam, 'fields', v_n_fields,
+             'mosaics', v_n_nircam, 'fields', v_n_fields,
              -- objects whose live redshift_auto is not the in-snapshot anchor's
              -- value (informational; the row keeps the live value)
              'redshift_auto_mismatch', v_mismatch,
@@ -12465,13 +12472,13 @@ BEGIN
                              'rows', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
                                'line_fits', n_lines, 'photometry', n_phot, 'manifest', n_members,
                                'targets', n_targets, 'spectrum_lines', n_slines, 'photometry_bands', n_bands,
-                               'nircam_images', n_nircam, 'fields', n_fields,
+                               'mosaics', n_nircam, 'fields', n_fields,
                                'exports', n_exports)));
   RETURN jsonb_build_object('tag', p_tag, 'state_before', r.state,
                             'deleted', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
                               'line_fits', n_lines, 'photometry', n_phot, 'manifest', n_members,
                               'targets', n_targets, 'spectrum_lines', n_slines, 'photometry_bands', n_bands,
-                              'nircam_images', n_nircam, 'fields', n_fields,
+                              'mosaics', n_nircam, 'fields', n_fields,
                               'exports', n_exports));
 END;
 $$;

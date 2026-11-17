@@ -153,8 +153,12 @@ BEGIN
   got := pg_temp.zzz_mi_as('authenticated', admin, $q$SELECT public.set_deployment_status(990202, 'draft')::text$q$);
   IF got LIKE 'ERR:%' THEN RAISE EXCEPTION 'set_deployment_status failed: %', got; END IF;
   r := got::json;
-  IF r->>'instrument' <> 'acswfc' OR ((r->'nircam_images')->>'updated')::int <> 1 THEN
+  IF r->>'instrument' <> 'acswfc' OR ((r->'mosaics')->>'updated')::int <> 1 THEN
     RAISE EXCEPTION 'drafting the acswfc deployment should flip its one mosaic and say acswfc: %', got;
+  END IF;
+  -- the key until 2026-11, answered for one release beside the new one
+  IF (r->'nircam_images')::text IS DISTINCT FROM (r->'mosaics')::text THEN
+    RAISE EXCEPTION 'the nircam_images alias should repeat the mosaics block: %', got;
   END IF;
   SELECT count(*) INTO n FROM mosaics WHERE field = 'zzz_mi' AND instrument = 'nircam' AND deploy_status = 'published';
   IF n <> 2 THEN RAISE EXCEPTION 'drafting acswfc touched the nircam mosaics (% still published)', n; END IF;
@@ -227,8 +231,12 @@ BEGIN
   IF n <> 4 THEN RAISE EXCEPTION 'nircam/<field> should hold 4 members, got %', n; END IF;
   SELECT * INTO r FROM dr_releases WHERE tag = 'DR-zzzmi-n';
   IF r.counts->'nircam_fields' <> '["zzz_mi"]'::jsonb OR r.counts->'imaging_components' <> '["nircam/zzz_mi"]'::jsonb
-     OR (r.counts->>'nircam_images')::int <> 2 THEN
+     OR (r.counts->>'mosaics')::int <> 2 THEN
     RAISE EXCEPTION 'nircam-only counts are off: %', r.counts;
+  END IF;
+  -- a release row is permanent, so the old key is not written beside the new
+  IF r.counts ? 'nircam_images' THEN
+    RAISE EXCEPTION 'a freeze still writes counts.nircam_images: %', r.counts;
   END IF;
 
   -- ACS/WFC alone: nothing of NIRCam's

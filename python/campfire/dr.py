@@ -108,8 +108,11 @@ def format_readiness(report: dict) -> str:
     drafts = report.get('drafts') or {}
     revoked = report.get('revoked') or {}
     lines.append('')
+    # `mosaics` since the 2026-11 rename; a database that predates it answers
+    # under `nircam_images`.
+    draft_mosaics = drafts.get('mosaics', drafts.get('nircam_images'))
     lines.append(
-        f"Drafts:  {_n(drafts.get('spectra'))} spectra · {_n(drafts.get('nircam_images'))} mosaics · "
+        f"Drafts:  {_n(drafts.get('spectra'))} spectra · {_n(draft_mosaics)} mosaics · "
         f"{_n(drafts.get('deployments'))} deployments")
     lines.append(
         f"Revoked: {_n(revoked.get('spectra'))} spectra · {_n(revoked.get('deployments'))} deployments")
