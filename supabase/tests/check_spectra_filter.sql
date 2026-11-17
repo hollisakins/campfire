@@ -6,7 +6,8 @@
 --      skipping an observation name that holds a grating token.
 --   2. set_spectrum_filter fills a NULL filter from fits_path on insert and on a
 --      fits_path update, re-derives it when fits_path moves and the filter
---      does not, and never overrides a filter the writer changed.
+--      does not, and never overrides a filter the writer changed; a
+--      non-admin cannot change it (enforce_spectra_dq_user_update_scope).
 --   3. The predicate tree takes `filter` on spectra, and through an exists at
 --      the objects root.
 --   4. The freeze copies it into dr_spectra.
@@ -73,6 +74,19 @@ BEGIN
   IF v_filter IS DISTINCT FROM 'F170LP' THEN
     RAISE EXCEPTION 'a filter changed with the path was overridden: got %', v_filter;
   END IF;
+
+  -- a non-admin (inspector) may change dq_flags only, never the filter
+  PERFORM set_config('request.jwt.claims', json_build_object(
+    'sub', (SELECT id FROM auth.users WHERE email = 'user@campfire.dev'),
+    'role', 'authenticated')::text, true);
+  IF public.is_admin() THEN RAISE EXCEPTION 'fixture: user@campfire.dev is an admin'; END IF;
+  BEGIN
+    UPDATE spectra SET filter = 'F290LP' WHERE id = v_id;
+    RAISE EXCEPTION 'a non-admin changed spectra.filter';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+  PERFORM set_config('request.jwt.claims', '', true);
 
   -- 3. the predicate tree ----------------------------------------------------
   SELECT count(*) INTO v_n FROM spectra WHERE filter = 'F070LP';

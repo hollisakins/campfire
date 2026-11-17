@@ -299,6 +299,7 @@ BEGIN
        OR OLD.program_slug IS DISTINCT FROM NEW.program_slug
        OR OLD.observation IS DISTINCT FROM NEW.observation
        OR OLD.is_public IS DISTINCT FROM NEW.is_public
+       OR OLD.filter IS DISTINCT FROM NEW.filter
     THEN
         RAISE EXCEPTION 'Non-admin updates to spectra may only change dq_flags'
             USING ERRCODE = '42501';  -- insufficient_privilege
