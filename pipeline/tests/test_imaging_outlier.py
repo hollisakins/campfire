@@ -10,7 +10,7 @@ import pytest
 from astropy.wcs import WCS
 
 from campfire_pipeline.imaging.exposure import ChipArrays
-from campfire_pipeline.imaging.outlier import (_world_to_pixel, abs_gradient,
+from campfire_pipeline.imaging.outlier import (_world_to_pixel,
                                                detect_outliers, stack_grid,
                                                star_protection)
 
@@ -98,12 +98,24 @@ def _hit(chip, rng, n, amp):
     return hit
 
 
-def test_abs_gradient_is_the_largest_step_to_a_neighbor():
-    img = np.zeros((5, 5), np.float32)
-    img[2, 2] = 3.0
-    img[2, 3] = 1.0
-    g = abs_gradient(img)
-    assert g[2, 2] == 3.0 and g[2, 3] == 2.0 and g[1, 2] == 3.0 and g[0, 0] == 0.0
+def test_the_flag_test_is_the_library_routine_nircam_runs(monkeypatch):
+    """HST and NIRCam run one flag test, stcal's flag_resampled_crs: the HST
+    pass calls it once per chip to be flagged, with the thresholds given."""
+    import stcal.outlier_detection.utils as su
+
+    calls = []
+    real = su.flag_resampled_crs
+
+    def spy(sci, err, blot, snr1, snr2, scale1, scale2, backg):
+        calls.append((snr1, snr2, scale1, scale2, backg, sci.shape))
+        return real(sci, err, blot, snr1, snr2, scale1, scale2, backg)
+
+    monkeypatch.setattr(su, 'flag_resampled_crs', spy)
+    rng = np.random.default_rng(0)
+    chips = _dithered(rng, 3, [], 0.25)
+    detect_outliers(chips, snr=(4.0, 3.0), scale=(1.5, 0.7),
+                    flag_keys=[chips[0].key])
+    assert calls == [(4.0, 3.0, 1.5, 0.7, 0.0, chips[0].shape)]
 
 
 def test_stack_grid_covers_every_chip():

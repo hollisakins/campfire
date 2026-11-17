@@ -1,14 +1,26 @@
-"""Field-level outlier detection on instrument-neutral chips.
+"""Outlier detection on instrument-neutral chips.
 
-Given every chip of one detector and filter that has been aligned to one
-frame, whatever visit or program it came from, find the pixels that disagree
-with the rest of the stack: cosmic rays a two-exposure visit could not reject
-(a hit at the same place in both frames), residual trails, persistence that
-moves with the dither.
+Given the chips of a visit and of what overlaps it, one detector and filter,
+aligned to one frame, find the pixels of the visit that disagree with the
+rest of the stack: cosmic rays a two-exposure visit could not reject (a hit
+at the same place in both frames), residual trails, persistence that moves
+with the dither.
 
-The method is the one AstroDrizzle and ``jwst.outlier_detection`` use, written
-against :class:`~campfire_pipeline.imaging.exposure.Chip` so that it needs no
-instrument's file layout:
+This is NIRCam's method (``nircam/outlier_detect.py``, the default
+``[nircam.outlier].implementation = "campfire"``), written against
+:class:`~campfire_pipeline.imaging.exposure.Chip` so that it needs no
+instrument's file layout. What the two run in common, literally: the single
+drizzles (``imaging/drizzle.py::drizzle_tile_singles``), the blot (the
+``drizzle`` package's ``blot_image``; NIRCam reaches it through ``gwcs_blot``)
+and the test (``stcal.outlier_detection.utils.flag_resampled_crs``; NIRCam
+reaches it through ``jwst``'s ``flag_resampled_model_crs``). What differs,
+because a JWST datamodel is not available here or because HST needs it: the
+grid comes from the chips' footprints instead of ``S_REGION`` keywords; the
+error handed to the test is the chip's noise model at the blotted value
+instead of the exposure's own ``ERR`` (an HST ``ERR`` includes the Poisson
+noise of the cosmic ray being tested); and the median falls back to the
+minimum where few chips overlap (below), which a visit of two HST exposures
+needs and a NIRCam visit of many does not.
 
 1. **Single drizzles.** Each chip is drizzled by itself onto one north-up grid
    at about the native pixel scale (:func:`stack_grid`), in the surface
@@ -31,16 +43,17 @@ instrument's file layout:
    background variance plus a source term proportional to the model (not to
    the pixel's own, possibly contaminated, value). The test runs twice: with
    ``snr[0]`` / ``scale[0]`` everywhere, then with the lower ``snr[1]`` /
-   ``scale[1]`` on the neighbors of pixels already flagged (``grow``).
+   ``scale[1]`` on the pixels next to those the first pass found. It is
+   ``stcal``'s ``flag_resampled_crs``, the routine NIRCam's pass runs.
 
 A pixel is tested only where at least ``min_contributors`` chips went into the
 median. Where a chip stands alone the median is the chip itself and nothing can
 be said.
 
 What this does not do: it adds nothing along the readout direction of CTE
-trails (AstroDrizzle's ``ctegrow``), and it builds one grid for everything it is
-given, so a caller with a field much larger than a few detector footprints must
-hand it one overlap group at a time.
+trails (AstroDrizzle's ``ctegrow``). The grid covers the chips to be flagged
+(``flag_keys``), so a caller goes visit by visit and the memory needed does
+not grow with the field.
 
 Memory: the single drizzles are kept on disk in a private directory (one array
 per chip, its footprint only) and read back block by block for the median; the
@@ -118,26 +131,6 @@ def _noise_terms(prep):
     coefficient = float(np.median(excess[bright] / data[bright])) \
         if bright.sum() >= 50 else 0.0
     return good, var_bg, coefficient
-
-
-def abs_gradient(image):
-    """Largest absolute difference between each pixel and its four neighbors.
-
-    Neighbors that do not exist (the frame edge) or are not finite count as no
-    difference.
-    """
-    image = np.asarray(image, dtype=np.float32)
-    out = np.zeros(image.shape, dtype=np.float32)
-    for axis in (0, 1):
-        for step in (1, -1):
-            shifted = np.roll(image, step, axis=axis)
-            edge = [slice(None), slice(None)]
-            edge[axis] = 0 if step == 1 else -1
-            shifted[tuple(edge)] = image[tuple(edge)]
-            with np.errstate(invalid='ignore'):
-                d = np.abs(image - shifted)
-            np.fmax(out, d, out=out)
-    return out
 
 
 def _blot(image, pixmap, in_shape, interp):
@@ -290,7 +283,7 @@ def star_protection(chips, stars, epochs, *, radius=0.4, min_motion=0.15,
     return masks, info
 
 
-def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7), grow=1,
+def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7),
                     pixfrac=1.0, kernel='square', pixel_scale=None,
                     minmed_nsigma=(4.0, 3.0), minmed_max_n=3,
                     min_contributors=2, block=1024, workdir=None,
@@ -313,6 +306,7 @@ def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7), grow=1,
     already calls bad is never reported.
     """
     from scipy.ndimage import binary_dilation, binary_erosion
+    from stcal.outlier_detection.utils import flag_resampled_crs
 
     from campfire_pipeline.imaging.drizzle import (_prepare_chip_input,
                                                    drizzle_tile_singles)
@@ -442,20 +436,21 @@ def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7), grow=1,
                 kept_out = int((testable & protect[chip.key]).sum())
                 testable &= ~protect[chip.key]
             sigma = np.sqrt(var_bg + coefficient * np.clip(model, 0, None))
-            gradient = abs_gradient(model)
+            # The test is the routine NIRCam's pass runs (through jwst's
+            # flag_resampled_model_crs): |pixel - blot| against
+            # scale * gradient(blot) + snr * error, a first pass and a second,
+            # lower one on the pixels next to what the first found. A pixel
+            # that is not to be tested is handed over equal to the blot, so
+            # it neither is flagged nor seeds its neighbors.
+            data = np.where(testable, prep['data'], model).astype(np.float32)
             with np.errstate(invalid='ignore'):
-                diff = np.abs(prep['data'] - model)
-                first = testable & (diff > scale[0] * gradient + snr[0] * sigma)
-                mask = first
-                if grow and first.any():
-                    near = binary_dilation(
-                        first, structure=np.ones((3, 3), bool),
-                        iterations=int(grow))
-                    mask = first | (testable & near & (
-                        diff > scale[1] * gradient + snr[1] * sigma))
+                mask = flag_resampled_crs(
+                    data, sigma.astype(np.float32), model.astype(np.float32),
+                    snr[0], snr[1], scale[0], scale[1], 0.0).astype(bool)
+            mask &= testable
             flags[chip.key] = mask
             stats[chip.key] = {
-                'n_flagged': int(mask.sum()), 'n_first_pass': int(first.sum()),
+                'n_flagged': int(mask.sum()),
                 'n_testable': int(testable.sum()), 'n_good': int(good.sum()),
                 'n_protected': kept_out,
                 'poisson_coefficient': coefficient,

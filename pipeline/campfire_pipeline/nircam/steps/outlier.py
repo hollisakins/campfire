@@ -2,9 +2,10 @@
 outlier: cosmic-ray detection on canonical NIRCam exposures.
 
 Two implementations live here, dispatched by the orchestrator based on
-``[nircam.outlier].implementation``:
+``[nircam.outlier].implementation``. The shipped default is ``"campfire"``
+(``outlier_step_campfire``, below); ``"jwst"`` is the alternative.
 
-- ``outlier_step`` (jwst, default) — per-visit pass using
+- ``outlier_step`` (jwst) — per-visit pass using
   ``jwst.pipeline.calwebb_image3.Image3Pipeline``. For each visit, finds
   every spatially overlapping exposure **from the same program** (so the
   cross-visit median has full intra-program statistics on overlap
@@ -22,7 +23,7 @@ Two implementations live here, dispatched by the orchestrator based on
   where a single CRF would otherwise be drizzled once for its own
   visit plus once for every other program's visit it overlaps.
 
-- ``outlier_step_campfire`` (campfire, opt-in) — per-visit pass using
+- ``outlier_step_campfire`` (campfire, the default) — per-visit pass using
   the campfire-native drizzle primitive (issue #138 Phase 2 v2). Same
   visit grouping, intra-program overlap padding, and manifest
   conventions as ``outlier_step``. Differs in the drizzle/median/blot
@@ -316,24 +317,18 @@ def _compute_overlap_inputs(visit_files, filter_files, sregions, cross_program):
     same JWST program (avoids redundantly drizzling each exposure once per
     overlapping program in COSMOS-area footprints); set ``cross_program=True``
     for the legacy all-programs behavior.
-    """
-    sregion_map = dict(zip(filter_files, sregions))
-    visit_set = set(visit_files)
-    visit_program = _program_id(visit_files[0])
 
-    overlap_files = []
-    overlap_set = set()
-    for visit_file in visit_files:
-        region_a = sregion_map[visit_file]
-        for other_file, region_b in zip(filter_files, sregions):
-            if other_file in visit_set or other_file in overlap_set:
-                continue
-            if not cross_program and _program_id(other_file) != visit_program:
-                continue
-            if _polygon_overlap(region_a, region_b):
-                overlap_files.append(other_file)
-                overlap_set.add(other_file)
-    return visit_files + overlap_files
+    The rule is the one every imaging instrument uses
+    (``imaging/outlier_visits.py``); NIRCam supplies its footprints
+    (``S_REGION``) and its program (the file name).
+    """
+    from campfire_pipeline.imaging.outlier_visits import overlap_inputs
+
+    sregion_map = dict(zip(filter_files, sregions))
+    return visit_files + overlap_inputs(
+        visit_files, filter_files,
+        lambda a, b: _polygon_overlap(sregion_map[a], sregion_map[b]),
+        _program_id, cross_program)
 
 
 def _star_protection(step_config, all_inputs, visit_files, refcat):

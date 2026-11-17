@@ -131,21 +131,184 @@ def trail_polygon(p0, p1, half_width, shape):
     return [[float(x), float(y)] for x, y in list(cut.exterior.coords)[:-1]]
 
 
-def chip_trails(exposure_file, extver, params, processes=2):
-    """Find the satellite trails of one chip.
+def lost_time_bands(lost, *, bridge, min_length, min_share, max_rms):
+    """Straight bands in a map of pixels that lost exposure time (WFC3/IR).
 
-    Returns every candidate the finder kept at its own thresholds, each a
-    dict with ``snr``, ``persistence``, ``width`` (native pixels), ``theta``
-    (degrees), ``accepted`` (it passes ``min_snr`` and ``min_persistence``)
-    and, for an accepted one, ``polygon``: its band on the chip
-    (:func:`trail_polygon`), the finder's width plus ``grow`` on each side.
+    ``calwf3`` fits each pixel's ramp and leaves out a read interval in which
+    the pixel jumps; the FLT's ``TIME`` array is then short for that pixel. A
+    cosmic ray does this to a pixel or a small cluster. A satellite does it
+    along a straight band across the detector, wherever it adds more than the
+    jump threshold (about 150 electrons in the interval; docs/hst/design.md,
+    section 8b).
+
+    ``lost`` is the boolean map. Its pixels are joined into groups (after
+    growing each by ``bridge`` pixels, so a band interrupted over a bright
+    source stays one group), and a group is a band when it is long, thin and
+    covers its line: the line fitted through it crosses the detector over at
+    least ``min_length`` pixels, the pixels scatter by at most ``max_rms``
+    pixels across it, and at least ``min_share`` of the line's length has a
+    pixel that lost time within 2 pixels. Returns one dict per band:
+    ``p0``/``p1`` (two points on the line, ``(x, y)``), ``length`` (of the line
+    on the detector), ``share``, ``half_width`` (95th percentile of the
+    pixels' distance from the line) and ``theta`` (degrees from the x axis).
+
+    Measured on 31 real exposures (pg004) and one with six trails added to
+    its RAW ramp: the four added trails above the jump threshold come out at
+    a share of 1.0 over 860 to 1150 pixels; the real exposures give nothing,
+    and their longest group is a cosmic-ray track 190 pixels long.
+    """
+    from scipy.ndimage import binary_dilation, find_objects, label
+
+    ny, nx = lost.shape
+    grown = binary_dilation(lost, iterations=int(bridge)) if bridge else lost
+    lab, _n = label(grown, structure=np.ones((3, 3), dtype=bool))
+    bands = []
+    for k, sl in enumerate(find_objects(lab), start=1):
+        if sl is None:
+            continue
+        if np.hypot(sl[0].stop - sl[0].start, sl[1].stop - sl[1].start) < min_length:
+            continue
+        yy, xx = np.nonzero((lab[sl] == k) & lost[sl])
+        if len(yy) < min_length:
+            continue
+        x, y = xx + sl[1].start, yy + sl[0].start
+        centre = np.array([x.mean(), y.mean()])
+        _u, _s, vt = np.linalg.svd(np.column_stack([x - centre[0], y - centre[1]]),
+                                   full_matrices=False)
+        along, across = vt[0], vt[1]
+        d = (x - centre[0]) * across[0] + (y - centre[1]) * across[1]
+        if float(d.std()) > max_rms:
+            continue                                  # a patch, not a band
+        # where the line enters and leaves the detector
+        ts = []
+        for axis, size in ((0, nx), (1, ny)):
+            if abs(along[axis]) > 1e-9:
+                ts += [(-centre[axis]) / along[axis],
+                       (size - 1 - centre[axis]) / along[axis]]
+        inside = []
+        for t in ts:
+            px, py = centre + along * t
+            if -0.5 <= px <= nx - 0.5 and -0.5 <= py <= ny - 0.5:
+                inside.append(t)
+        if len(inside) < 2:
+            continue
+        t0, t1 = min(inside), max(inside)
+        length = t1 - t0
+        if length < min_length:
+            continue
+        steps = np.arange(t0, t1, 1.0)
+        covered = np.zeros(len(steps), dtype=bool)
+        for off in range(-2, 3):
+            px = np.rint(centre[0] + along[0] * steps + across[0] * off).astype(int)
+            py = np.rint(centre[1] + along[1] * steps + across[1] * off).astype(int)
+            ok = (px >= 0) & (px < nx) & (py >= 0) & (py < ny)
+            covered[ok] |= lost[py[ok], px[ok]]
+        share = float(covered.mean())
+        if share < min_share:
+            continue
+        bands.append({
+            'p0': tuple(centre + along * t0), 'p1': tuple(centre + along * t1),
+            'length': float(length), 'share': share,
+            'half_width': float(np.percentile(np.abs(d), 95)),
+            'theta': float(np.degrees(np.arctan2(along[1], along[0])) % 180.0),
+        })
+    return bands
+
+
+def _ir_trails(exposure_file, extver, params, processes):
+    """Satellite trails of a WFC3/IR exposure, from two signals.
+
+    Bright trails: straight bands of pixels that lost exposure time
+    (:func:`lost_time_bands`). ``calwf3`` has removed the trail there, and
+    left its wings on both sides at up to 1.8 times the pixel error, so the
+    band is widened to ``lost_width_factor`` times its measured half width
+    plus ``grow`` pixels. Trails below ``calwf3``'s jump threshold lose no
+    time and stay in the image whole, at up to 3.6 times the pixel error: for
+    those, the STScI finder on the image itself, as for ACS/WFC.
     """
     import acstools.findsat_mrt as findsat
 
     with fits.open(exposure_file, memmap=False) as hdul:
+        sci = np.asarray(hdul['SCI', extver].data, dtype=float)
+        dq = np.asarray(hdul['DQ', extver].data).astype(np.int64)
+        exptime = float(hdul[0].header['EXPTIME'])
+        time = (np.asarray(hdul['TIME', extver].data, dtype=float)
+                if ('TIME', extver) in hdul else None)
+    shape = sci.shape
+    trails = []
+
+    if time is not None:
+        lost = ((exptime - time) > 1.0) & ((dq & 256) == 0)   # 256: saturation
+        for band in lost_time_bands(
+                lost, bridge=int(params['lost_bridge']),
+                min_length=float(params['lost_min_length']),
+                min_share=float(params['lost_min_share']),
+                max_rms=float(params['lost_max_rms'])):
+            half = (float(params['lost_width_factor']) * band['half_width']
+                    + float(params['grow']))
+            polygon = trail_polygon(band['p0'], band['p1'], half, shape)
+            trails.append({
+                'source': 'lost time', 'share': band['share'],
+                'length': band['length'], 'width': 2 * band['half_width'],
+                'theta': band['theta'], 'snr': float('nan'),
+                'persistence': band['share'],
+                'accepted': polygon is not None, 'polygon': polygon})
+
+    # the image finder, on what calwf3 left: flagged pixels out (bit 16, the
+    # stable hot pixels, is the one the adapter tolerates), background off
+    from campfire_pipeline.hst.instruments import DETECTORS
+    bad = (dq & ~np.int64(DETECTORS['wfc3ir'].tolerated_bits)) != 0
+    image = sci - np.nanmedian(sci[~bad])
+    image[bad] = np.nan
+    with tempfile.TemporaryDirectory() as tmp, _quiet_finder(), \
+            warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        finder = findsat.TrailFinder(
+            image, processes=max(2, int(processes)), output_dir=tmp,
+            threshold=float(params['detect_threshold']),
+            max_width=float(params['max_width']),
+            min_length=float(params['min_length']),
+            check_persistence=True,
+            min_persistence=float(params['min_persistence']),
+            save_catalog=False, save_diagnostic=False, save_mask=False,
+            save_mrt=False)
+        for name in _FINDER_LOGGERS:
+            logging.getLogger(name).setLevel(logging.WARNING)
+        finder.run_mrt()
+        finder.find_mrt_sources()
+        finder.filter_sources()
+    for trail in _finder_trails(finder, params, 1, shape):
+        trail['source'] = 'image'
+        # a candidate wider than a trail can be is diffuse light, not a trail
+        if trail['accepted'] and trail['width'] > float(params['max_trail_width']):
+            trail['accepted'] = False
+            trail.pop('polygon', None)
+        trails.append(trail)
+    return trails
+
+
+def chip_trails(exposure_file, extver, params, processes=2):
+    """Find the satellite trails of one chip.
+
+    Returns every candidate, each a dict with ``snr``, ``persistence``,
+    ``width`` (native pixels), ``theta`` (degrees), ``source``, ``accepted``
+    and, for an accepted one, ``polygon``: its band on the chip
+    (:func:`trail_polygon`). On ACS/WFC the candidates are those the STScI
+    finder kept at its own thresholds, accepted when they pass ``min_snr``
+    and ``min_persistence``, with the finder's width plus ``grow`` on each
+    side. On WFC3/IR see :func:`_ir_trails`.
+    """
+    import acstools.findsat_mrt as findsat
+    from campfire_pipeline.hst.instruments import detector_for
+
+    with fits.open(exposure_file, memmap=False) as hdul:
+        primary = hdul[0].header
+        token = detector_for(primary.get('INSTRUME'), primary.get('DETECTOR')).token
         index = hdul.index_of(('SCI', extver))
         dq_index = hdul.index_of(('DQ', extver))
         shape = (hdul[index].header['NAXIS2'], hdul[index].header['NAXIS1'])
+    if token == 'wfc3ir':
+        return _ir_trails(exposure_file, extver, params, processes)
     if index not in (1, 4) or dq_index != index + 2:
         raise ValueError(
             f'trails: {os.path.basename(exposure_file)} does not have the '
@@ -154,14 +317,24 @@ def chip_trails(exposure_file, extver, params, processes=2):
             f'chips by position')
 
     binsize = int(params['binsize'])
-    # Never one process. With processes <= 1 the finder (acstools 3.8.2,
-    # utils_findsat_mrt.radon) rotates the image with pixels from outside it
-    # filled with zeros, and with more it fills them with NaN; the zeros enter
-    # the medians, and the transform differs. Measured on j8pu6jjiq [SCI,1]:
-    # a satellite trail found at signal-to-noise 10 and persistence 1.0 with
-    # 2 or more processes is not detected at all with one. The cuts of this
-    # step were measured on the multi-process path, which is also the one the
-    # finder's documentation runs.
+    # Never one process. The finder's transform (acstools 3.8.2, the newest
+    # release; utils_findsat_mrt.radon) has two branches. With processes <= 1
+    # it rotates the image with `warp(padded_image, R, clip=False)`, which
+    # fills what the rotation brings in from outside the frame with zeros;
+    # with more it goes through `_rot`, which calls
+    # `warp(image, R, clip=False, cval=np.nan)`. That fill value is the whole
+    # difference: each branch is reproduced bit for bit by a copy that
+    # differs from the other in `cval` alone (findsat_serial_vs_pool.py,
+    # docs/hst/design.md section 8b). The zeros enter the median of every
+    # line that does not cross the padded square (on a 1024 x 2048 binned
+    # chip the median line is 16 percent fill and a third of the transform is
+    # fill only), pulling it to the background and counting fill as line
+    # length: the largest value of the transform is 4.8 with one process and
+    # 48 with several. On j8pu6jjiq [SCI,1] a satellite trail found at
+    # signal-to-noise 10 and persistence 1.0 with several processes is not
+    # detected at all with one. The NaN fill is the median over real pixels,
+    # the path the finder's documentation runs, and the one the cuts of this
+    # step were measured on.
     processes = max(2, int(processes))
     with tempfile.TemporaryDirectory() as tmp, _quiet_finder(), \
             warnings.catch_warnings():
@@ -185,7 +358,24 @@ def chip_trails(exposure_file, extver, params, processes=2):
         finder.run_mrt()
         finder.find_mrt_sources()
         finder.filter_sources()
+    trails = _finder_trails(finder, params, binsize, shape)
+    for trail in trails:
+        trail['source'] = 'image'
+    return trails
 
+
+def _finder_trails(finder, params, binsize, shape):
+    """The finder's candidates that passed its own cuts, as trail dicts.
+
+    One is accepted, and gets a polygon, when it has at least ``min_snr``
+    and its line crosses the chip over at least ``min_trail_length`` native
+    pixels. The length is not a formality: a short chord across a corner
+    that happens to lie on a bright star or two galaxies is detected along
+    all of its length, so the finder gives it full persistence. On WFC3/IR
+    such a chord through a star in a corner came back at signal-to-noise 208
+    and persistence 1.0; on ACS/WFC one through two galaxies was among the
+    false candidates (docs/hst/design.md, section 8b).
+    """
     trails = []
     src = finder.source_list
     if src is None or not len(src):
@@ -197,14 +387,16 @@ def chip_trails(exposure_file, extver, params, processes=2):
     status, snr = column('status'), column('snr')
     persistence, width, theta = column('persistence'), column('width'), column('theta')
     for i in np.flatnonzero(status == 2):
-        accepted = bool(snr[i] >= float(params['min_snr']))
+        # the finder works on the binned chip: binned pixel k covers native
+        # pixels k*binsize .. (k+1)*binsize - 1
+        ends = (np.asarray(src['endpoints'][i], dtype=float) + 0.5) * binsize - 0.5
+        length = float(np.hypot(*(ends[1] - ends[0])))
+        accepted = bool(snr[i] >= float(params['min_snr'])
+                        and length >= float(params['min_trail_length']))
         trail = {'snr': float(snr[i]), 'persistence': float(persistence[i]),
                  'width': float(width[i]) * binsize, 'theta': float(theta[i]),
-                 'accepted': accepted}
+                 'length': length, 'accepted': accepted}
         if accepted:
-            # the finder works on the binned chip: binned pixel k covers
-            # native pixels k*binsize .. (k+1)*binsize - 1
-            ends = (np.asarray(src['endpoints'][i], dtype=float) + 0.5) * binsize - 0.5
             trail['polygon'] = trail_polygon(
                 ends[0], ends[1],
                 0.5 * trail['width'] + float(params['grow']), shape)
@@ -303,12 +495,11 @@ def _stamp(exposure_file, value):
 
 def trails_step(exposure_file, reg_file, step_config=None, overwrite=False,
                 processes=2):
-    """Find the satellite trails of one canonical ACS/WFC exposure and write
-    them to its region file ``reg_file``.
+    """Find the satellite trails of one canonical HST exposure (ACS/WFC or
+    WFC3/IR) and write them to its region file ``reg_file``.
 
     Returns the trails per chip (``{extver: [trail, ...]}``), or ``None`` when
-    the file already carries ``CFP_TRL`` and ``overwrite`` is not set. Raises
-    ``ValueError`` for a file of another detector.
+    the file already carries ``CFP_TRL`` and ``overwrite`` is not set.
     """
     rootname = os.path.basename(exposure_file).split('_')[0]
     if cfp.should_skip(exposure_file, 'CFP_TRL', rootname, 'trails', None,
@@ -318,10 +509,6 @@ def trails_step(exposure_file, reg_file, step_config=None, overwrite=False,
 
     primary = fits.getheader(exposure_file, 0)
     det = detector_for(primary.get('INSTRUME'), primary.get('DETECTOR'))
-    if det.token != 'acswfc':
-        raise ValueError(
-            f'trails: {os.path.basename(exposure_file)} is a {det.token} '
-            f'exposure; the step is for ACS/WFC')
     params = get_hst_step_config('trails', det.token, overrides=step_config)
 
     found, polygons, row = {}, [], 0
@@ -329,10 +516,17 @@ def trails_step(exposure_file, reg_file, step_config=None, overwrite=False,
         trails = chip_trails(exposure_file, v, params, processes=processes)
         found[v] = trails
         for t in trails:
-            what = 'masked' if t['accepted'] else 'not masked (below min_snr)'
-            log(f"trails: {rootname} [SCI,{v}] S/N {t['snr']:.1f}, persistence "
-                f"{t['persistence']:.2f}, width {t['width']:.0f} px, angle "
-                f"{t['theta']:.1f} deg: {what}")
+            what = 'masked' if t['accepted'] else 'not masked (below the cuts)'
+            if t.get('source') == 'lost time':
+                log(f"trails: {rootname} [SCI,{v}] band of pixels that lost "
+                    f"exposure time: {100 * t['share']:.0f}% of a line "
+                    f"{t['length']:.0f} px long, width {t['width']:.0f} px, "
+                    f"angle {t['theta']:.1f} deg: {what}")
+            else:
+                log(f"trails: {rootname} [SCI,{v}] S/N {t['snr']:.1f}, "
+                    f"persistence {t['persistence']:.2f}, width "
+                    f"{t['width']:.0f} px, length {t.get('length', 0):.0f} px, "
+                    f"angle {t['theta']:.1f} deg: {what}")
             if t['accepted']:
                 # the preview stacks the chips bottom to top in this order
                 polygons.append([[x, y + row] for x, y in t['polygon']])

@@ -50,16 +50,16 @@ def test_the_shipped_values_are_the_measured_ones():
 
 
 def test_user_config_and_field_overrides_take_precedence():
-    user = {'wfc3ir': {'outlier': {'snr': '9 6', 'grow': 1}}}
+    user = {'wfc3ir': {'outlier': {'snr': '9 6', 'min_contributors': 2}}}
     # a user config replaces the shipped file as the base
-    assert get_hst_step_config('outlier', 'wfc3ir', user) == {'snr': '9 6', 'grow': 1}
+    assert get_hst_step_config('outlier', 'wfc3ir', user) == {'snr': '9 6', 'min_contributors': 2}
     # the field's table wins over both, and other keys are kept
-    got = get_hst_step_config('outlier', 'wfc3ir', user, overrides={'grow': 2})
-    assert got == {'snr': '9 6', 'grow': 2}
+    got = get_hst_step_config('outlier', 'wfc3ir', user, overrides={'min_contributors': 3})
+    assert got == {'snr': '9 6', 'min_contributors': 3}
     # overrides on the shipped defaults leave the rest alone and do not stick
-    got = get_hst_step_config('outlier', 'wfc3ir', overrides={'grow': 3})
-    assert got['grow'] == 3 and got['scale'] == '5.0 0.7'
-    assert get_hst_step_config('outlier', 'wfc3ir')['grow'] == 1
+    got = get_hst_step_config('outlier', 'wfc3ir', overrides={'min_contributors': 4})
+    assert got['min_contributors'] == 4 and got['scale'] == '5.0 0.7'
+    assert get_hst_step_config('outlier', 'wfc3ir')['min_contributors'] == 2
 
 
 def test_an_unknown_detector_is_refused():

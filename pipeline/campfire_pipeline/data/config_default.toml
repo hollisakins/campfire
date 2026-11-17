@@ -1260,6 +1260,12 @@
     # the faintest of the six.
     min_snr = 8.0
     min_persistence = 0.8
+    # ... and whose line crosses the chip over at least this many native
+    # pixels (a chip is 4096 x 2048). A short chord across a corner that lies
+    # on a bright star or two galaxies is detected along all of its length,
+    # so persistence does not reject it. The shortest of the six real trails
+    # measured is about 1000 pixels long.
+    min_trail_length = 500
     # Pixels by which the mask of a trail is grown on each side. The finder's
     # mask covers the core; around the brightest trail measured (S/N 660, on
     # blank background) the light outside it is 0.29 sigma per pixel in the
@@ -1357,11 +1363,12 @@
     # exposures, at the price of comparing data taken years apart with a
     # different detector state; stars that moved are protected, see below).
     cross_program_overlap = false
-    # Two-pass S/N thresholds and gradient scales (those of crreject),
-    # growth of a flag (pixels), and the single-drizzle settings.
+    # Two-pass S/N thresholds and gradient scales (those of crreject), and
+    # the single-drizzle settings. The same keys and the same test as
+    # [nircam.outlier]: the second pair applies to the pixels next to those
+    # the first pair flags.
     snr = "3.5 3.0"
     scale = "1.2 0.7"
-    grow = 1
     pixfrac = 1.0
     kernel = "square"
     # Where two or three exposures overlap the median is replaced by the
@@ -1473,8 +1480,45 @@
     driz_cr_grow = 1
     driz_cr_ctegrow = 0
 
-    # There is no [wfc3ir.trails]: calwf3 rejects the reads of a ramp that a
-    # satellite crosses, as it does a cosmic ray.
+[wfc3ir.trails]
+    # Satellite trails, written as polygons into the exposure's region file
+    # like those of ACS/WFC. calwf3 removes a trail only where it adds more
+    # than its jump threshold to a pixel in one read interval (about 150
+    # electrons); fainter trails stay whole and bright ones keep their wings
+    # (measured by adding trails to a real RAW ramp; docs/hst/design.md,
+    # section 8b). Two signals find them.
+    #
+    # Bright trails: a straight band of pixels that lost exposure time (the
+    # FLT's TIME array is short where calwf3 left out an interval). Pixels
+    # that lost time are joined into groups after growing each by lost_bridge
+    # pixels; a group is a trail when the line through it crosses the
+    # detector over at least lost_min_length pixels, its pixels scatter by at
+    # most lost_max_rms pixels across the line, and at least lost_min_share
+    # of the line has such a pixel within 2 pixels. Added trails come out at
+    # a share of 1.0 over 860 to 1150 pixels; 31 real exposures give nothing
+    # (their longest group is a cosmic-ray track of 190 pixels).
+    lost_bridge = 2
+    lost_min_length = 300
+    lost_min_share = 0.7
+    lost_max_rms = 6.0
+    # The mask of such a band is lost_width_factor times its measured half
+    # width, plus `grow` pixels, on each side: the band is the part of the
+    # trail above the jump threshold, and the wings beyond it are what is
+    # left in the image.
+    lost_width_factor = 2.2
+    # Faint trails, which lose no time: the STScI finder on the image, as
+    # for ACS/WFC, without binning. Same meaning of the keys as
+    # [acswfc.trails]; min_trail_length is in native pixels of a 1014 x 1014
+    # detector, and max_trail_width drops candidates too broad to be a trail
+    # (diffuse light).
+    detect_threshold = 5.0
+    max_width = 75
+    min_length = 25
+    min_snr = 8.0
+    min_persistence = 0.8
+    min_trail_length = 300
+    max_trail_width = 20
+    grow = 3
 
 [wfc3ir.preview]
     # Same keys and meaning as [acswfc.preview]; one chip.
@@ -1511,7 +1555,6 @@
     # hundred (docs/hst/design.md, section 8b).
     snr = "8.0 5.0"
     scale = "5.0 0.7"
-    grow = 1
     pixfrac = 1.0
     kernel = "square"
     minmed_nsigma = "4.0 3.0"

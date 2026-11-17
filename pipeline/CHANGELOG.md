@@ -195,11 +195,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   COSMOS test mosaic the three trails had left, after the cosmic-ray and
   outlier steps, a line at 0.1 to 0.4 of the pixel scatter; with the masks the
   mosaic along them is level. A streak that does not run the length of the chip
-  is not found by this step. About 2.5 core-minutes per exposure. There is no
-  WFC3/IR trail step yet, and one is needed: `calwf3` removes a trail only
-  where it adds more than about 150 electrons to a pixel in one read interval,
-  and leaves fainter trails and the wings of bright ones in the image
-  (docs/hst/design.md, section 8b).
+  is not found by this step, and a candidate must cross at least 500 pixels of
+  the chip: a short chord across a corner that lies on a bright star is
+  detected along all of its length and would pass on persistence. About 2.5
+  core-minutes per exposure. The step runs on WFC3/IR as well
+  (`[wfc3ir.trails]`), where it is needed: `calwf3` removes a trail only where
+  it adds more than about 150 electrons to a pixel in one read interval and
+  leaves fainter trails, and the wings of bright ones, in the image at up to
+  3.6 times the pixel error (measured by adding trails to a real RAW ramp).
+  There it uses two signals: a straight band of pixels that lost exposure time
+  (the FLT's `TIME` array), widened to cover the wings, and the STScI finder
+  on the image for trails too faint to lose time. On the test exposure it
+  masks five of six added trails (not the one at 1.1 times the pixel error)
+  and nothing of them is left outside the masks; on 31 real exposures it masks
+  nothing (docs/hst/design.md, section 8b).
   `preview` (after `crreject`; `hst/steps/preview.py`, `[<instrument>.preview]`):
   the NIRCam pair `<file>_preview.png` and `<file>_full.png`, signal-to-noise
   per pixel with the chips stacked ([SCI,1] below [SCI,2]) and the pixels the
@@ -231,7 +240,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   neighbors went onto one grid, which in COSMOS is the whole field
   (`imaging/outlier.py::detect_outliers(flag_keys=)`, `hst/steps/outlier.py`,
   `hst/orchestrate.py`). The default now compares within a program, where the
-  first version compared across programs.
+  first version compared across programs. Code shared with NIRCam's default
+  (`"campfire"`) implementation: which exposures a visit is compared with is
+  one function for every imaging instrument
+  (`imaging/outlier_visits.py::overlap_inputs`; NIRCam's
+  `_compute_overlap_inputs` calls it, with no change in what it returns), and
+  the HST flag test is `stcal`'s `flag_resampled_crs`, the routine NIRCam
+  reaches through `jwst`, in place of a copy of the same arithmetic (the flag
+  counts of 20 real exposures are unchanged). `[<instrument>.outlier].grow` is
+  gone: the routine's reach is one pixel, as for NIRCam.
 - **New `cfpipe nircam refcat add-gaia`: give an existing catalog Gaia's stars.**
   What `refcat extract` does to a catalog it has just made, for one that already
   exists (a survey catalog, an older reference catalog) in the reference-catalog

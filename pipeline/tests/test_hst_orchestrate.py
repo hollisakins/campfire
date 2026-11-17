@@ -332,12 +332,9 @@ def test_each_instrument_has_the_nircam_command_set(field, monkeypatch):
     for instrument in ('acswfc', 'wfc3ir'):
         out = runner.invoke(main, [instrument, '--help']).output
         for command in ('process', 'combine', 'run', 'status', 'check', 'reset',
-                        'calibrate', 'wcs_init', 'sky', 'crreject', 'preview',
-                        'align', 'apply_masks', 'outlier', 'resample'):
+                        'calibrate', 'wcs_init', 'sky', 'trails', 'crreject',
+                        'preview', 'align', 'apply_masks', 'outlier', 'resample'):
             assert command in out
-    # satellite trails are an ACS/WFC step
-    assert '  trails ' in runner.invoke(main, ['acswfc', '--help']).output
-    assert '  trails ' not in runner.invoke(main, ['wfc3ir', '--help']).output
 
 
 def test_status_and_reset_commands(field, monkeypatch):

@@ -71,9 +71,9 @@ COMBINE_STEPS = [
 ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
 STEP_NAMES = [name for name, _ in ALL_STEPS]
 
-# Steps an instrument does not have. Satellite trails are an ACS/WFC step:
-# calwf3 rejects the reads of a WFC3/IR ramp that a satellite crosses.
-_NOT_FOR = {'wfc3ir': ('trails',)}
+# Steps an instrument does not have (none at present: every HST instrument
+# runs every step).
+_NOT_FOR = {}
 
 
 def steps_for(instrument, steps=None):
@@ -532,22 +532,17 @@ def program_code(path):
 def overlap_inputs(visit_files, filter_files, polygons, cross_program):
     """Exposures of other visits that overlap a visit's exposures.
 
-    NIRCam's rule (``nircam/steps/outlier.py::_compute_overlap_inputs``): only
-    exposures of the visit's own program by default, of any program with
-    ``cross_program``. ``polygons`` maps each file to its footprint on the
-    sky. Returns the other files, in the order of ``filter_files``.
+    The rule is the one NIRCam uses, one function for every imaging
+    instrument (``imaging/outlier_visits.py``): only exposures of the visit's
+    own program by default, of any program with ``cross_program``. HST
+    supplies its footprints (``polygons`` maps each file to its footprint on
+    the sky) and its program (:func:`program_code`).
     """
-    visit_set = set(visit_files)
-    program = program_code(visit_files[0])
-    others = []
-    for other in filter_files:
-        if other in visit_set:
-            continue
-        if not cross_program and program_code(other) != program:
-            continue
-        if any(polygons[v].intersects(polygons[other]) for v in visit_files):
-            others.append(other)
-    return others
+    from campfire_pipeline.imaging.outlier_visits import overlap_inputs as rule
+
+    return rule(visit_files, filter_files,
+                lambda a, b: polygons[a].intersects(polygons[b]),
+                program_code, cross_program)
 
 
 def _config_hash(cfg):

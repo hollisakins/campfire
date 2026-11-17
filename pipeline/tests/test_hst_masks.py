@@ -145,20 +145,114 @@ def test_a_rerun_that_finds_nothing_removes_its_own_file(tmp_path, monkeypatch):
     assert fits.getheader(path)['CFP_TRL'] == 'findsat n=0 reg=removed'
 
 
-def test_trails_is_an_acs_step(tmp_path):
-    path = str(tmp_path / 'itest01aaq_flt.fits')
-    primary = fits.PrimaryHDU()
-    primary.header.update({'INSTRUME': 'WFC3', 'DETECTOR': 'IR'})
-    primary.writeto(path)
-    with pytest.raises(ValueError, match='ACS/WFC'):
-        trails.trails_step(path, str(tmp_path / 'x.reg'))
-    assert 'trails' in [n for n, _ in orchestrate.steps_for('acswfc')]
-    assert 'trails' not in [n for n, _ in orchestrate.steps_for('wfc3ir')]
+def test_both_instruments_have_a_trail_step():
+    for instrument in ('acswfc', 'wfc3ir'):
+        assert 'trails' in [n for n, _ in orchestrate.steps_for(instrument)]
     # the cuts ship in the config, nowhere else
     cfg = get_hst_step_config('trails', 'acswfc')
     assert cfg['min_persistence'] == 0.8 and cfg['min_snr'] == 8.0
+    assert cfg['min_trail_length'] == 500
     assert cfg['grow'] == 12 and 'ignore' not in cfg
-    assert get_hst_step_config('trails', 'wfc3ir') == {}
+    ir = get_hst_step_config('trails', 'wfc3ir')
+    assert ir['lost_min_share'] == 0.7 and ir['lost_min_length'] == 300
+    assert ir['min_trail_length'] == 300 and ir['max_trail_width'] == 20
+    assert 'binsize' not in ir                       # no binning on WFC3/IR
+
+
+def _lost_map(shape=(300, 300), seed=4):
+    """Pixels that lost exposure time: scattered cosmic-ray hits, a band three
+    pixels wide across the whole detector, a cosmic-ray track 60 pixels long
+    and a round patch."""
+    rng = np.random.default_rng(seed)
+    ny, nx = shape
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    lost = rng.random(shape) < 0.005
+    angle = np.deg2rad(25.0)
+    d = -(xx - 150) * np.sin(angle) + (yy - 140) * np.cos(angle)
+    band = np.abs(d) <= 1.5
+    track = (np.abs(-(xx - 60) * np.sin(1.2) + (yy - 220) * np.cos(1.2)) <= 0.6) \
+        & (np.hypot(xx - 60, yy - 220) <= 30)
+    patch = np.hypot(xx - 240, yy - 40) <= 14
+    return lost | band | track | (patch & (rng.random(shape) < 0.6)), band
+
+
+def test_a_band_of_lost_time_is_a_trail_and_a_track_or_a_patch_is_not():
+    lost, band = _lost_map()
+    found = trails.lost_time_bands(lost, bridge=2, min_length=150,
+                                   min_share=0.7, max_rms=6.0)
+    assert len(found) == 1
+    (b,) = found
+    assert b['share'] > 0.98 and b['length'] > 300
+    assert abs(b['theta'] - 25.0) < 0.5
+    assert 1.0 <= b['half_width'] <= 2.5
+    # the line runs from edge to edge of the detector
+    xs = sorted([b['p0'][0], b['p1'][0]])
+    assert xs[0] < 1.0 and xs[1] > 298.0
+    # a band interrupted over a source is still one band
+    gap = lost.copy()
+    gap[:, 140:144] &= ~band[:, 140:144]
+    assert len(trails.lost_time_bands(gap, bridge=2, min_length=150,
+                                      min_share=0.7, max_rms=6.0)) == 1
+    # without the band: nothing, whatever the track and the patch do
+    assert trails.lost_time_bands(lost & ~band, bridge=2, min_length=150,
+                                  min_share=0.7, max_rms=6.0) == []
+    # half a band does not cover its line
+    half = lost & ~(band & (np.arange(300)[None, :] > 120))
+    assert trails.lost_time_bands(half, bridge=2, min_length=150,
+                                  min_share=0.7, max_rms=6.0) == []
+
+
+def test_a_wfc3ir_trail_becomes_a_polygon_wider_than_its_band(tmp_path, monkeypatch):
+    """The WFC3/IR step end to end on the lost-time signal: calwf3 has removed
+    the trail's core and left its wings, so the polygon reaches past the band."""
+    findsat = pytest.importorskip('acstools.findsat_mrt')
+    pytest.importorskip('shapely')
+    from test_hst_outlier import _NX, _NY, _T, _ir_file
+
+    class NoImageTrails:
+        source_list = None
+
+        def __init__(self, image, **kw):
+            assert kw['processes'] >= 2
+
+        def run_mrt(self):
+            pass
+
+        find_mrt_sources = filter_sources = run_mrt
+
+    monkeypatch.setattr(findsat, 'TrailFinder', NoImageTrails)
+    rng = np.random.default_rng(3)
+    path = _ir_file(tmp_path / 'itrl01a0q_flt.fits', 'itrl01a0q', (40.0, 40.0), rng)
+    yy, xx = np.mgrid[0:_NY, 0:_NX]
+    band = np.abs(yy - (0.3 * xx + 20.0)) / np.hypot(1.0, 0.3) <= 1.2
+    with fits.open(path, mode='update') as hdul:
+        hdul['TIME', 1].data[band] = _T - 50.0          # one interval left out
+        hdul['TIME', 1].data[5, 5] = _T - 50.0          # a cosmic ray
+    reg = str(tmp_path / 'masks' / 'f160w' / 'itrl01a0q_flt.reg')
+    small = {'lost_min_length': 40, 'min_trail_length': 40}
+
+    result = trails.trails_step(path, reg, step_config=small)
+    (t,) = result[1]
+    assert t['source'] == 'lost time' and t['accepted'] and t['share'] > 0.95
+    assert fits.getheader(path)['CFP_TRL'] == 'findsat n=1 reg=written'
+    # the band is 2.4 pixels wide; the mask is 2.2 times its half width plus
+    # `grow` (3) on each side
+    poly = np.array(t['polygon'])
+    from matplotlib.path import Path
+    inside = Path(poly).contains_points(
+        np.column_stack([xx.ravel(), yy.ravel()])).reshape(_NY, _NX)
+    assert inside[band].all()
+    dist = np.abs(yy - (0.3 * xx + 20.0)) / np.hypot(1.0, 0.3)
+    assert inside[dist <= 4.5].all() and not inside[dist >= 8.0].any()
+    assert not inside[5, 5]
+    assert 'satellite trail' in open(reg).read()
+
+    # no trail: no file, and the stamp says so
+    clean = _ir_file(tmp_path / 'itrl01a1q_flt.fits', 'itrl01a1q', (40.0, 40.0), rng)
+    reg2 = str(tmp_path / 'masks' / 'f160w' / 'itrl01a1q_flt.reg')
+    assert trails.trails_step(clean, reg2, step_config=small)[1] == []
+    assert not os.path.exists(reg2)
+    assert fits.getheader(clean)['CFP_TRL'] == 'findsat n=0 reg=none'
 
 
 def test_only_confident_trails_become_polygons(tmp_path, monkeypatch):
@@ -168,7 +262,9 @@ def test_only_confident_trails_become_polygons(tmp_path, monkeypatch):
     from astropy.table import Table
 
     path = str(tmp_path / 'jtest01aaq_flc.fits')
-    hdul = fits.HDUList([fits.PrimaryHDU()])
+    primary = fits.PrimaryHDU()
+    primary.header.update({"INSTRUME": "ACS", "DETECTOR": "WFC"})
+    hdul = fits.HDUList([primary])
     for v in (1, 2):
         for name, dtype in (('SCI', 'float32'), ('ERR', 'float32'), ('DQ', 'int16')):
             hdul.append(fits.ImageHDU(np.zeros((80, 120), dtype), name=name, ver=v))
@@ -180,12 +276,14 @@ def test_only_confident_trails_become_polygons(tmp_path, monkeypatch):
             assert kw['min_persistence'] == 0.8 and kw['threshold'] == 5.0
             self.image = np.zeros((40, 60))
             self.source_list = Table({
-                'id': [1, 2, 3], 'status': [2, 2, 0],
-                'snr': [50.0, 6.0, 30.0], 'persistence': [1.0, 0.9, 0.0],
-                'width': [4.0, 4.0, 4.0], 'theta': [90.0, 0.0, 45.0],
+                'id': [1, 2, 3, 4], 'status': [2, 2, 0, 2],
+                'snr': [50.0, 6.0, 30.0, 208.0],
+                'persistence': [1.0, 0.9, 0.0, 1.0],
+                'width': [4.0, 4.0, 4.0, 4.0], 'theta': [90.0, 0.0, 45.0, 135.0],
                 'endpoints': [[(0.0, 20.0), (59.0, 20.0)],
                               [(30.0, 0.0), (30.0, 39.0)],
-                              [(0.0, 0.0), (39.0, 39.0)]],
+                              [(0.0, 0.0), (39.0, 39.0)],
+                              [(0.0, 8.0), (8.0, 0.0)]],     # a corner chord
             })
 
         def run_mrt(self):
@@ -194,17 +292,100 @@ def test_only_confident_trails_become_polygons(tmp_path, monkeypatch):
         find_mrt_sources = filter_sources = run_mrt
 
     monkeypatch.setattr(findsat, 'WfcWrapper', Finder)
-    params = dict(get_hst_step_config('trails', 'acswfc'), grow=0)
+    # (the test chip is 80 x 120: a trail across it is 118 pixels long)
+    params = dict(get_hst_step_config('trails', 'acswfc'), grow=0,
+                  min_trail_length=60)
     found = trails.chip_trails(path, 1, params)
-    assert [(t['snr'], t['accepted']) for t in found] == [(50.0, True), (6.0, False)]
+    assert [(t['snr'], t['accepted']) for t in found] == [
+        (50.0, True), (6.0, False), (208.0, False)]
     assert found[0]['width'] == 8.0                 # binned pixels -> native
+    assert found[0]['length'] == 118.0
     assert 'polygon' not in found[1]
+    # the corner chord has every mark of a trail but its length
+    assert found[2]['persistence'] == 1.0 and found[2]['length'] < 30
+    # at the shipped length (500 pixels) nothing on this small chip is a trail
+    shipped = trails.chip_trails(path, 1, get_hst_step_config('trails', 'acswfc'))
+    assert not any(t['accepted'] for t in shipped)
     poly = np.array(found[0]['polygon'])
     # binned row 20 is native rows 40 and 41: centre 40.5, half-width 4
     assert poly[:, 1].min() == 36.5 and poly[:, 1].max() == 44.5
     assert poly[:, 0].min() == -0.5 and poly[:, 0].max() == 119.5
     grown = np.array(trails.chip_trails(path, 1, dict(params, grow=3))[0]['polygon'])
     assert grown[:, 1].min() == 33.5 and grown[:, 1].max() == 47.5
+
+
+def test_the_finder_is_never_run_on_one_process(tmp_path, monkeypatch):
+    """acstools' transform fills with zeros on one process and with NaN on
+    several (see chip_trails); the step always asks for at least two."""
+    findsat = pytest.importorskip('acstools.findsat_mrt')
+    path = str(tmp_path / 'jtest01aaq_flc.fits')
+    primary = fits.PrimaryHDU()
+    primary.header.update({"INSTRUME": "ACS", "DETECTOR": "WFC"})
+    hdul = fits.HDUList([primary])
+    for v in (1, 2):
+        for name, dtype in (('SCI', 'float32'), ('ERR', 'float32'), ('DQ', 'int16')):
+            hdul.append(fits.ImageHDU(np.zeros((80, 120), dtype), name=name, ver=v))
+    hdul.writeto(path)
+    asked = []
+
+    class Finder:
+        source_list = None
+
+        def __init__(self, image_file, processes=None, **kw):
+            asked.append(processes)
+
+        def run_mrt(self):
+            pass
+
+        find_mrt_sources = filter_sources = run_mrt
+
+    monkeypatch.setattr(findsat, 'WfcWrapper', Finder)
+    params = get_hst_step_config('trails', 'acswfc')
+    for n in (0, 1, 2, 8):
+        trails.chip_trails(path, 1, params, processes=n)
+    assert asked == [2, 2, 2, 8]
+
+
+def test_the_two_branches_of_the_finders_transform_differ_by_the_fill_value():
+    """Pins the cause of the rule above to the library as installed: the
+    one-process branch is the several-process branch with a zero fill. When a
+    release makes them agree this test says so, and the rule can go."""
+    u = pytest.importorskip('acstools.utils_findsat_mrt')
+    from skimage.transform import warp
+
+    rng = np.random.default_rng(2)
+    image = rng.normal(0.0, 1.0, (40, 64)).astype(np.float32)
+    image[20, :] += 3.0                                   # a streak
+    theta = np.arange(0.0, 180.0, 15.0)
+    one = u.radon(image, theta=theta, circle=False, median=True, processes=1)
+    two = u.radon(image, theta=theta, circle=False, median=True, processes=2)
+    if np.array_equal(np.isfinite(one), np.isfinite(two)):
+        pytest.skip('this acstools release fills alike in both branches: '
+                    'the at-least-two-processes rule in chip_trails can go')
+
+    diagonal = np.sqrt(2) * max(image.shape)
+    pad = [int(np.ceil(diagonal - s)) for s in image.shape]
+    centre_new = [(s + p) // 2 for s, p in zip(image.shape, pad)]
+    before = [nc - s // 2 for s, nc in zip(image.shape, centre_new)]
+    padded = np.pad(image, [(b, p - b) for b, p in zip(before, pad)],
+                    mode='constant', constant_values=np.nan)
+    c = padded.shape[0] // 2
+    for fill, expect in ((0.0, one), (np.nan, two)):
+        got = np.full_like(expect, np.nan)
+        for i, a in enumerate(np.deg2rad(theta)):
+            R = np.array([[np.cos(a), np.sin(a), -c * (np.cos(a) + np.sin(a) - 1)],
+                          [-np.sin(a), np.cos(a), -c * (np.cos(a) - np.sin(a) - 1)],
+                          [0, 0, 1]])
+            with np.errstate(all='ignore'):
+                import warnings as _w
+                with _w.catch_warnings():
+                    _w.simplefilter('ignore')
+                    got[:, i] = np.nanmedian(warp(padded, R, clip=False, cval=fill), axis=0)
+        assert np.array_equal(np.isfinite(got), np.isfinite(expect))
+        ok = np.isfinite(expect)
+        assert np.allclose(got[ok], expect[ok], atol=1e-5)
+    # the zero fill reaches lines the image never touches
+    assert np.isfinite(one).sum() > np.isfinite(two).sum()
 
 
 # ---------------------------------------------------------------------------
