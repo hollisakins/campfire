@@ -155,13 +155,47 @@ def test_query_spectra_nirspec_filter(store):
     assert len(store.query_spectra(gratings=["G140M"])) == 2
 
 
-def test_filter_reaches_the_server_as_a_tree_node():
-    from campfire.client import _normalize_nirspec_filters, _with_filter_node
+def test_filter_plan_never_drops_a_legacy_selection():
+    """A request carrying q ignores the legacy parameters, so the filter goes
+    as a tree node only when it would not replace them."""
+    from campfire.client import _normalize_nirspec_filters, _plan_filter
 
     assert _normalize_nirspec_filters("f070lp") == ["F070LP"]
     assert _normalize_nirspec_filters(None) is None
     node = {"col": "filter", "op": "in", "v": ["F070LP"]}
-    assert _with_filter_node(None, ["F070LP"]) == node
+    # alone: the tree
+    assert _plan_filter(None, ["F070LP"], {}) == (node, False)
+    assert _plan_filter(None, ["F070LP"], {"gratings": None, "tags": []}) == (node, False)
+    # with q: ANDed onto it
     q = {"col": "grating", "op": "eq", "v": "G140M"}
-    assert _with_filter_node(q, ["F070LP"]) == {"and": [q, node]}
-    assert _with_filter_node(q, None) is q
+    assert _plan_filter(q, ["F070LP"], {}) == ({"and": [q, node]}, False)
+    # with a legacy selection: no tree, the rows are filtered client-side
+    assert _plan_filter(None, ["F070LP"], {"gratings": ["G140M"]}) == (None, True)
+    assert _plan_filter(None, ["F070LP"], {"inspected_only": False}) == (None, True)
+    # no filter: untouched
+    assert _plan_filter(q, None, {"gratings": ["G140M"]}) == (q, False)
+
+
+def test_remote_filter_with_gratings_keeps_the_grating_selection():
+    from unittest.mock import MagicMock
+    from campfire.client import Campfire
+
+    cf = Campfire.__new__(Campfire)
+    cf._local = None
+    cf._api = MagicMock()
+    cf._api.query_spectra.return_value = ([
+        {"spectrum_id": "a", "grating": "G140M", "filter": "F070LP"},
+        {"spectrum_id": "b", "grating": "G140M", "filter": "F100LP"},
+    ], {})
+    cf._stamp = lambda t: t
+    t = cf.query_spectra(gratings=["g140m"], filters="f070lp", remote=True)
+    kw = cf._api.query_spectra.call_args.kwargs
+    assert kw["gratings"] == ["G140M"] and kw["q"] is None
+    assert list(t["spectrum_id"]) == ["a"]
+
+    cf._api.iter_spectra.return_value = iter([
+        {"spectrum_id": "a", "filter": "F070LP"}, {"spectrum_id": "b", "filter": "F100LP"},
+    ])
+    rows = list(cf.iter_spectra(gratings=["G140M"], filters=["F070LP"], remote=True))
+    assert [r["spectrum_id"] for r in rows] == ["a"]
+    assert "q" not in cf._api.iter_spectra.call_args.kwargs

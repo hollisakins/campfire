@@ -793,16 +793,27 @@ CREATE TRIGGER bump_spectra_updated_at_trigger
   FOR EACH ROW EXECUTE FUNCTION public.bump_spectra_updated_at();
 
 -- spectra.filter (#683): deploy writes it from the summary; any write that
--- leaves it NULL (an older summary without the column, a fixture, an admin
--- edit of fits_path) takes it from the file name, so the column never lags
--- fits_path.
+-- leaves it NULL (an older summary without the column, a fixture) takes it
+-- from the file name, and so does an update that moves fits_path without
+-- changing the filter (a redeploy from an older summary, an admin edit of
+-- fits_path), so the column never lags fits_path. A filter the writer changes
+-- is kept.
 CREATE OR REPLACE FUNCTION public.set_spectrum_filter() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
 AS $$
+DECLARE
+    v_parsed text;
 BEGIN
     IF NEW.filter IS NULL THEN
         NEW.filter := public.spectrum_filter_from_path(NEW.fits_path);
+    ELSIF TG_OP = 'UPDATE'
+          AND NEW.fits_path IS DISTINCT FROM OLD.fits_path
+          AND NEW.filter IS NOT DISTINCT FROM OLD.filter THEN
+        v_parsed := public.spectrum_filter_from_path(NEW.fits_path);
+        IF v_parsed IS NOT NULL THEN
+            NEW.filter := v_parsed;
+        END IF;
     END IF;
     RETURN NEW;
 END;

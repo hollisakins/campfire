@@ -1617,9 +1617,18 @@ CREATE OR REPLACE FUNCTION public.set_spectrum_filter()
   LANGUAGE plpgsql
   SET search_path TO ''
   AS $function$
+DECLARE
+    v_parsed text;
 BEGIN
     IF NEW.filter IS NULL THEN
         NEW.filter := public.spectrum_filter_from_path(NEW.fits_path);
+    ELSIF TG_OP = 'UPDATE'
+          AND NEW.fits_path IS DISTINCT FROM OLD.fits_path
+          AND NEW.filter IS NOT DISTINCT FROM OLD.filter THEN
+        v_parsed := public.spectrum_filter_from_path(NEW.fits_path);
+        IF v_parsed IS NOT NULL THEN
+            NEW.filter := v_parsed;
+        END IF;
     END IF;
     RETURN NEW;
 END;

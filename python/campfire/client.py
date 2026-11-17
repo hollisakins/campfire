@@ -58,14 +58,33 @@ def _normalize_nirspec_filters(filters) -> Optional[List[str]]:
     return [str(f).upper() for f in filters]
 
 
-def _with_filter_node(q: Optional[dict], filters: Optional[List[str]]) -> Optional[dict]:
-    """The NIRSpec filter as a predicate-tree node ANDed onto ``q``: the list
-    endpoints take no filter parameter, the tree is how a new dimension
-    reaches them."""
+# Selection kwargs the list endpoints take as legacy parameters. A request
+# carrying ``q`` ignores all of them (the tree selects in their place), so the
+# filter can only travel as a tree node when none of these is set.
+_LEGACY_SPECTRA_SELECTION = (
+    "programs", "fields", "gratings", "observations", "redshift_range",
+    "redshift_quality", "max_snr_range", "dq_flags", "tags", "inspected_only",
+    "has_photometry", "cone_search",
+)
+
+
+def _plan_filter(q: Optional[dict], filters: Optional[List[str]], legacy: dict):
+    """How ``filters=`` reaches a remote spectra query: ``(q, client_side)``.
+
+    The list endpoints take no filter parameter; the tree is how a new
+    dimension reaches them. With ``q`` given the node is ANDed onto it; with no
+    legacy selection the node becomes ``q``; otherwise sending a tree would
+    drop the legacy selection, so the filter is applied to the returned rows
+    (``client_side`` True), like the provenance filters.
+    """
     if not filters:
-        return q
+        return q, False
     node = {"col": "filter", "op": "in", "v": list(filters)}
-    return node if q is None else {"and": [q, node]}
+    if q is not None:
+        return {"and": [q, node]}, False
+    if any(legacy.get(k) not in (None, [], ()) for k in _LEGACY_SPECTRA_SELECTION):
+        return None, True
+    return node, False
 
 
 class Campfire:
@@ -636,7 +655,10 @@ class Campfire:
 
         ``filters`` narrows to NIRSpec filters (``"F070LP"``, ``"F100LP"``,
         ``"CLEAR"``, ...), the half of the disperser setup ``gratings`` does
-        not name: G140M pairs with both F070LP and F100LP.
+        not name: G140M pairs with both F070LP and F100LP. Remotely it is
+        evaluated by the server alone or with ``q``; combined with the other
+        selection arguments it filters the returned page, like the
+        provenance filters (:meth:`iter_spectra` stays exact).
 
         Inspection state (``redshift_range``, ``redshift_quality``,
         ``inspected_only``) is resolved through the parent object.
@@ -698,7 +720,13 @@ class Campfire:
             )
         else:
             remote_limit = limit if limit is not None else 1000
-            q = _with_filter_node(q, filters)
+            q, filter_client_side = _plan_filter(q, filters, {
+                "programs": programs, "fields": fields, "gratings": gratings,
+                "observations": observations, "redshift_range": redshift_range,
+                "redshift_quality": redshift_quality, "max_snr_range": max_snr_range,
+                "dq_flags": dq_flags, "tags": tags, "inspected_only": inspected_only,
+                "has_photometry": has_photometry, "cone_search": cone_search,
+            })
             spectra, pagination = self._api.query_spectra(
                 programs=programs,
                 fields=fields,
@@ -729,6 +757,8 @@ class Campfire:
                     and (not cfpipe_version or s.get("cfpipe_version") in cfpipe_version)
                     and (not reduced_after or (s.get("reduced_at") or "") >= reduced_after)
                 ]
+            if filter_client_side:
+                spectra = [s for s in spectra if (s.get("filter") or "").upper() in filters]
 
         if not use_local and pagination:
             total = pagination.get("total", 0)
@@ -763,9 +793,15 @@ class Campfire:
             yield from self._local.query_spectra(filters=nirspec_filters, **filters)
             return
 
-        if nirspec_filters:
-            filters["q"] = _with_filter_node(filters.get("q"), nirspec_filters)
-        yield from self._api.iter_spectra(**filters)
+        q, filter_client_side = _plan_filter(filters.get("q"), nirspec_filters, filters)
+        if q is not None:
+            filters["q"] = q
+        if not filter_client_side:
+            yield from self._api.iter_spectra(**filters)
+            return
+        for row in self._api.iter_spectra(**filters):
+            if (row.get("filter") or "").upper() in nirspec_filters:
+                yield row
 
     def query_lines(
         self,

@@ -5,7 +5,8 @@
 --   1. spectrum_filter_from_path parses {obs}_{grating}_{filter}_{source}_spec.fits,
 --      skipping an observation name that holds a grating token.
 --   2. set_spectrum_filter fills a NULL filter from fits_path on insert and on a
---      fits_path update, and never overrides a value the writer sent.
+--      fits_path update, re-derives it when fits_path moves and the filter
+--      does not, and never overrides a filter the writer changed.
 --   3. The predicate tree takes `filter` on spectra, and through an exists at
 --      the objects root.
 --   4. The freeze copies it into dr_spectra.
@@ -56,6 +57,21 @@ BEGIN
   UPDATE spectra SET filter = 'F070LP' WHERE id = v_id RETURNING filter INTO v_filter;
   IF v_filter IS DISTINCT FROM 'F070LP' THEN
     RAISE EXCEPTION 'an explicit filter was overridden: got %', v_filter;
+  END IF;
+
+  -- a fits_path move that leaves the filter alone re-derives it (a redeploy
+  -- from a summary without the column)
+  UPDATE spectra SET fits_path = 'nirspec/zz/zz_obs_g140h_f100lp_2_spec.fits'
+  WHERE id = v_id RETURNING filter INTO v_filter;
+  IF v_filter IS DISTINCT FROM 'F100LP' THEN
+    RAISE EXCEPTION 'fits_path move with the old filter: expected F100LP, got %', v_filter;
+  END IF;
+
+  -- a path and a new filter in one write: the writer's filter stands
+  UPDATE spectra SET fits_path = 'nirspec/zz/zz_obs_g140h_f070lp_3_spec.fits', filter = 'F170LP'
+  WHERE id = v_id RETURNING filter INTO v_filter;
+  IF v_filter IS DISTINCT FROM 'F170LP' THEN
+    RAISE EXCEPTION 'a filter changed with the path was overridden: got %', v_filter;
   END IF;
 
   -- 3. the predicate tree ----------------------------------------------------
