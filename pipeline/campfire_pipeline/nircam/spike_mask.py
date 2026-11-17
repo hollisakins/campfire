@@ -522,6 +522,46 @@ class SkyGrid:
         return np.where(ok, iy * self.n + ix, -1)
 
 
+def growth_px(mag, grow, per_mag_arcsec, ref_mag, pixscale):
+    """Growth of each star's footprint in pixels (even numbers).
+
+    ``grow`` px for every star, plus ``per_mag_arcsec`` for each magnitude the
+    star is brighter than ``ref_mag``. Rounded to 2 px so stars can be grouped.
+    """
+    extra = per_mag_arcsec * np.clip(ref_mag - np.asarray(mag, dtype=float),
+                                     0.0, None) / pixscale
+    return 2 * np.round((grow + extra) / 2.0).astype(int)
+
+
+def gate_rank(sb, level, footprint):
+    """Value used to compare a pixel between roll angles (lower is better).
+
+    In units of the threshold, so exposures of different depth compare.
+    Below 1: outside the footprint. 1 to 1.5: pixels the growth added, ordered
+    by predicted brightness (a single value made two overlapping growth
+    margins tie, and a tie masks neither). 1.5 and up: pixels over threshold.
+    """
+    rel = (np.asarray(sb) / np.float32(level)).astype(np.float32)
+    over = rel >= 1
+    grown = np.asarray(footprint, dtype=bool) & ~over
+    rel[over] += np.float32(0.5)
+    rel[grown] = 1 + np.float32(0.5) * rel[grown]
+    return rel
+
+
+def worst_nearby(best, n):
+    """Per roll angle, the largest value in the 3x3 sky cells around each cell.
+
+    A pixel is compared against this rather than its own cell. Where the mask
+    hands over from one angle to the other, each side then stops one cell
+    short; otherwise the two masks abut and the mosaic pixels on the seam,
+    fed by both, are left with no exposure.
+    """
+    from scipy.ndimage import maximum_filter
+    return np.stack([maximum_filter(b.reshape(n, n), size=3,
+                                    mode='nearest').ravel() for b in best])
+
+
 def cluster_position_angles(pa_deg, width_deg):
     """Group roll angles that give the same spike pattern on the sky.
 

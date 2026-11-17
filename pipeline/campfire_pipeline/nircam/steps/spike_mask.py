@@ -113,7 +113,7 @@ def build_spike_masks(filtname, exposures, field, cfg):
 
     Returns ``{path: dict(mask, n_raw, n_masked, sigma, cluster, stars)}``.
     """
-    from scipy.ndimage import binary_dilation, binary_opening
+    from scipy.ndimage import binary_opening, distance_transform_edt
 
     pivot = sm.PIVOT_UM[filtname.upper()]
     meta = {p: _read_exposure(p) for p in exposures}
@@ -161,21 +161,34 @@ def build_spike_masks(filtname, exposures, field, cfg):
         s_ra, s_dec = sm.stars_at_epoch(stars, m['year'])
         amp = sm.star_amplitude(mag, model.pixarea0)
         level = float(cfg['threshold_sigma']) * m['sigma']
-        sb, used = sm.predict_spike_sb(
-            ra, dec, s_ra, s_dec, amp, model, pivot / model.wave,
-            m['roll_ref'], m['ra_ref'], m['dec_ref'], level, max_radius,
-            roll_tol=float(cfg['roll_tolerance_deg']),
-            width_scale=(1.0 if measured else
-                         float(cfg['width_scale_lw'] if m['channel'] == 'LW'
-                               else cfg['width_scale'])))
-        raw = (sb >= level).reshape(ny, nx)
-        if cfg['grow'] > 0 and raw.any():
-            raw = binary_dilation(raw, iterations=int(cfg['grow']))
+        # Growth of each star's footprint: `grow` px for every star plus
+        # `grow_per_mag_arcsec` for each magnitude it is brighter than
+        # `grow_ref_mag`. Stars are grouped by growth (2 px steps) so each
+        # group is predicted and grown once.
+        g_px = sm.growth_px(
+            mag, float(cfg['grow']), float(cfg.get('grow_per_mag_arcsec', 0.0)),
+            float(cfg.get('grow_ref_mag', 18.0)),
+            0.063 if m['channel'] == 'LW' else 0.031)
+        sb = np.zeros(ra.shape, dtype=np.float32)
+        raw = np.zeros((ny, nx), dtype=bool)
+        used = []
+        for g in np.unique(g_px):
+            idx = np.nonzero(g_px == g)[0]
+            sb_g, used_g = sm.predict_spike_sb(
+                ra, dec, s_ra[idx], s_dec[idx], amp[idx], model,
+                pivot / model.wave, m['roll_ref'], m['ra_ref'], m['dec_ref'],
+                level, max_radius, roll_tol=float(cfg['roll_tolerance_deg']),
+                width_scale=(1.0 if measured else
+                             float(cfg['width_scale_lw'] if m['channel'] == 'LW'
+                                   else cfg['width_scale'])))
+            used.extend(int(idx[i]) for i in used_g)
+            np.maximum(sb, sb_g, out=sb)
+            raw_g = (sb_g >= level).reshape(ny, nx)
+            if g > 0 and raw_g.any():
+                raw_g = distance_transform_edt(~raw_g) <= g
+            raw |= raw_g
         raw = raw.ravel()
-        # in units of the threshold, so exposures of different depth compare;
-        # pixels added by the dilation count as "at threshold"
-        rel = sb / np.float32(level)
-        rel[raw & (rel < 1)] = 1.0
+        rel = sm.gate_rank(sb, level, raw)
         cell = grid.index(ra, dec)
         ok = m['valid'].ravel() & (cell >= 0)
         np.minimum.at(best[cl], cell[ok], rel[ok])
@@ -189,6 +202,11 @@ def build_spike_masks(filtname, exposures, field, cfg):
     # less predicted spike light: spike-free if possible, otherwise the fainter
     # of two crossing spikes is kept and the brighter one masked.
     require = bool(cfg['require_other_angle'])
+    # Compare against the other angle's worst value in the 3x3 cells around
+    # the pixel. Where the mask hands over from one angle to the other, each
+    # side then stops one cell short; without this the two masks abut and the
+    # mosaic pixels on the seam, fed by both, are left with no exposure.
+    best_near = sm.worst_nearby(best, grid.n)
     open_iter = int(cfg['min_width_px']) // 2
     out = {}
     for p, cl in zip(paths, clusters):
@@ -198,7 +216,7 @@ def build_spike_masks(filtname, exposures, field, cfg):
             other = np.full(cell.shape, np.inf, dtype=np.float32)
             for c2 in range(n_cl):
                 if c2 != cl:
-                    other = np.minimum(other, best[c2, np.maximum(cell, 0)])
+                    other = np.minimum(other, best_near[c2, np.maximum(cell, 0)])
             keep = (cell >= 0) & ((other < 1.0) | (other < raw_rel[p]))
         else:
             keep = np.ones(cell.shape, dtype=bool)

@@ -901,7 +901,15 @@
     # halo is not counted), in units of one exposure's pixel noise. Arms well
     # below 1 sigma per exposure still show in a mosaic.
     threshold_sigma = 0.3
-    grow = 2                      # px of dilation
+    # Growth of the thresholded footprint, per star: `grow` px for every
+    # star, plus `grow_per_mag_arcsec` for each magnitude the star (predicted
+    # AB in the filter) is brighter than `grow_ref_mag`. The measured profile
+    # is too narrow at the faint level a mosaic shows: on MACS0647 F200W the
+    # arm of an AB 7.8 star left a faint excess ~0.7" beyond the ungrown
+    # mask, three AB ~15.5 stars ~0.2". Set from those four stars only.
+    grow = 2
+    grow_per_mag_arcsec = 0.07
+    grow_ref_mag = 18.0
     roll_tolerance_deg = 0.15     # also mask the pattern rotated by +- this
     # Arm profile: "measured" = built from real stars (six isolated
     # G = 8.0-10.2 stars, F070W-F480M, after the standard process phase):

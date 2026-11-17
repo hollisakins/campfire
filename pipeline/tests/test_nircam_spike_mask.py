@@ -124,3 +124,30 @@ def test_sed_magnitude_uses_measured_near_infrared_when_present():
     assert 12.5 < ab[0] < 15.5
     # beyond W2: Rayleigh-Jeans, fainter in AB
     assert sm.sed_ab_mag(stars, 4.8)[0] > sm.sed_ab_mag(stars, 4.4)[0]
+
+
+def test_growth_increases_with_star_brightness():
+    g = sm.growth_px([19.0, 18.0, 15.5, 7.8], 2, 0.07, 18.0, 0.031)
+    assert list(g[:2]) == [2, 2]              # no extra at or below the reference
+    assert g[2] == 8 and g[3] == 26           # ~0.24" and ~0.77" at 0.031"/px
+    assert np.all(g % 2 == 0)
+    # the same angular growth is fewer pixels in the long-wavelength channel
+    assert sm.growth_px([7.8], 2, 0.07, 18.0, 0.063)[0] < g[3]
+    assert sm.growth_px([7.8], 2, 0.0, 18.0, 0.031)[0] == 2
+
+
+def test_gate_rank_orders_grown_pixels_below_thresholded_ones():
+    sb = np.array([0.2, 0.2, 0.6, 1.0, 3.0], dtype=np.float32)
+    footprint = np.array([False, True, True, True, True])
+    r = sm.gate_rank(sb, 1.0, footprint)
+    assert r[0] < 1                           # outside the footprint
+    assert 1 <= r[1] < r[2] < 1.5             # grown: ordered, no tie
+    assert 1.5 <= r[3] < r[4]                 # over threshold
+
+
+def test_worst_nearby_keeps_a_cell_between_abutting_masks():
+    # one angle clean (0) left of column 3 and spiked (5) from it on
+    best = np.zeros((1, 36), dtype=np.float32).reshape(1, 6, 6)
+    best[0, :, 3:] = 5
+    near = sm.worst_nearby(best.reshape(1, 36), 6).reshape(6, 6)
+    assert np.all(near[:, :2] == 0) and np.all(near[:, 2:] == 5)

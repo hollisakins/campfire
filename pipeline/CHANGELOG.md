@@ -70,6 +70,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   - `mag_limit` (now AB 19) only bounds run time: whether a star's arms are masked is
     decided by the profile against `threshold_sigma`. The cached star list is reused by
     every filter of a field (a cached cone that contains the needed one).
+  - *Growth and crossings*: each star's footprint is grown by `grow` (2 px) plus
+    `grow_per_mag_arcsec` (0.07") for each magnitude it is brighter than `grow_ref_mag`
+    (AB 18), because the measured profile is too narrow at the faint level a mosaic shows
+    (MACS0647 F200W: excess ~0.7" beyond the ungrown mask for the AB 7.8 star; the slope
+    rests on that star, the faint end is poorly constrained). Grown pixels are ranked by
+    predicted brightness when the two angles are compared, and a pixel is compared against
+    the other angle's worst value in the surrounding 3x3 cells, so where the mask hands
+    over between angles a strip ~1 cell wide is left unmasked in both rather than the
+    seam pixels of the mosaic being left with no exposure.
   **Beta:** coverage rule tested in one field at two roll angles; the profile comes from
   six saturated stars spanning two magnitudes, the far field from one of them; the coverage grid is held in memory (not yet
   sized for very large fields). `require_other_angle = false` masks every predicted spike
