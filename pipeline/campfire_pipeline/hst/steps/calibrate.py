@@ -129,7 +129,7 @@ def prefetch_references(raw_files, *, crds_context, crds_path,
 
 def calibrate_step(raw_file, out_dir, *, crds_context, crds_path,
                    crds_server=HST_CRDS_SERVER, nthreads=None, overwrite=False,
-                   keep_intermediates=False):
+                   keep_intermediates=False, reduction_version=None):
     """Calibrate one RAW exposure; return the canonical file's path.
 
     ``crds_context`` (e.g. ``'hst_1372.pmap'``) and ``crds_path`` (the HST
@@ -193,6 +193,17 @@ def calibrate_step(raw_file, out_dir, *, crds_context, crds_path,
             stamp = f'raw {cal_ver.split()[0] if cal_ver else "?"} {crds_context}'
             for key, val in cfp.format(keyset=cfp.HST, CFP_CAL=stamp).items():
                 hdul[0].header[key] = val
+            # The provenance cards a NIRCam canonical exposure carries, under
+            # the same names, so a deployment of either instrument records the
+            # pipeline version and the CRDS context from the exposure header
+            # (CAL_VER, the calibration software's own version, is already
+            # there). An HST context name says it is HST's ('hst_1372.pmap').
+            hdul[0].header['CRDS_CTX'] = (crds_context, 'CRDS context used')
+            if reduction_version:
+                hdul[0].header['CMPFRVER'] = (
+                    reduction_version, 'CAMPFIRE git commit (or pinned version)')
+                hdul[0].header['CMPFRTIM'] = (
+                    cfp.iso_now(), 'UTC date/time of CAMPFIRE reduction (ISO 8601)')
         os.replace(product, canonical)
 
         if keep_intermediates:

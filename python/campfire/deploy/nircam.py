@@ -81,17 +81,92 @@ _CFP_TO_STAGE = [
 ]
 
 
+# The HST instruments' process steps, in order (campfire_pipeline.common.cfp's
+# HST keyset; hst/orchestrate.py PROCESS_STEPS + COMBINE_STEPS).
+_HST_CFP_TO_STAGE = [
+    ('CFP_CAL',  'calibrate'),
+    ('CFP_WCS',  'wcs_init'),
+    ('CFP_SKY',  'sky'),
+    ('CFP_TRL',  'trails'),
+    ('CFP_CR',   'crreject'),
+    ('CFP_PREV', 'preview'),
+    ('CFP_ALGN', 'align'),
+    ('CFP_MASK', 'apply_masks'),
+    ('CFP_OUT',  'outlier'),
+]
+
+
+class ImagingProfile:
+    """What differs between the imaging instruments at deploy time.
+
+    Everything else (the field deployment, the lease, the push plan and its
+    dedup, the registry rows, the review table, the reviewer's columns) is one
+    code path. ``deploy_nircam`` is that path; the name is historical.
+    """
+
+    def __init__(self, instrument, label, exposure_glob, cfp_to_stage,
+                 first_stage, combine_stamps, has_field_plots, deploys_mosaics):
+        self.instrument = instrument
+        self.label = label
+        # The canonical exposures of a filter directory. Mosaics are
+        # ``mosaic_*`` and the triage PNGs are not FITS, so neither matches.
+        self.exposure_glob = exposure_glob
+        self.cfp_to_stage = cfp_to_stage
+        # A canonical file exists, so at least this step ran.
+        self.first_stage = first_stage
+        # Combine-phase stamps a canonical exposure must not carry: combine
+        # works on copies, and a canonical with one was mutated in place.
+        self.combine_stamps = combine_stamps
+        # Exposure maps and the field layout plot (NIRCam's field products).
+        self.has_field_plots = has_field_plots
+        self.deploys_mosaics = deploys_mosaics
+
+    def kind(self, product):
+        """Layout product kind: ``kind('exposure_preview')`` -> ``acswfc_exposure_preview``."""
+        return f'{self.instrument}_{product}'
+
+    def png_glob(self, kind):
+        """The triage PNGs sit beside the exposure, named after it."""
+        return self.exposure_glob.removesuffix('.fits') + f'_{kind}.png'
+
+    def stage_from_header(self, header):
+        stage = self.first_stage
+        for key, name in self.cfp_to_stage:
+            if key in header:
+                stage = name
+        return stage
+
+
+IMAGING_PROFILES = {
+    'nircam': ImagingProfile(
+        'nircam', 'NIRCam', 'jw*.fits', _CFP_TO_STAGE, 'detector1',
+        ('CFP_BPIX', 'CFP_OUT'), has_field_plots=True, deploys_mosaics=True),
+    # ACS/WFC keeps its calibrated exposures as <rootname>_flc.fits, WFC3/IR as
+    # <rootname>_flt.fits (the names the HST software gives them).
+    'acswfc': ImagingProfile(
+        'acswfc', 'ACS/WFC', '*_flc.fits', _HST_CFP_TO_STAGE, 'calibrate',
+        ('CFP_OUT',), has_field_plots=False, deploys_mosaics=False),
+    'wfc3ir': ImagingProfile(
+        'wfc3ir', 'WFC3/IR', '*_flt.fits', _HST_CFP_TO_STAGE, 'calibrate',
+        ('CFP_OUT',), has_field_plots=False, deploys_mosaics=False),
+}
+
+
+def imaging_profile(instrument):
+    try:
+        return IMAGING_PROFILES[instrument]
+    except KeyError:
+        raise ValueError(f"unknown imaging instrument {instrument!r} "
+                         f"(expected one of {', '.join(IMAGING_PROFILES)})") from None
+
+
 def _stage_from_header(header):
     """Return the highest-completed step name based on CFP_* keys in ``header``.
 
     Falls back to ``'detector1'`` if a canonical file exists but no CFP key is
     set — that's unusual but the file's mere existence implies detector1 ran.
     """
-    stage = 'detector1'
-    for key, name in _CFP_TO_STAGE:
-        if key in header:
-            stage = name
-    return stage
+    return IMAGING_PROFILES['nircam'].stage_from_header(header)
 
 
 # The science-only change-detection digest (SCI+DQ+CFMASK; epic #261, D1) lives
@@ -168,6 +243,13 @@ def _resolve_nircam_dirs(field):
     return _resolve_imaging_dirs('nircam', field)
 
 
+def instruments_on_disk(field):
+    """The imaging instruments with a products directory for ``field`` here,
+    NIRCam first: what a field deploy with no ``--instrument`` covers."""
+    return [instrument for instrument in IMAGING_INSTRUMENTS
+            if _resolve_imaging_dirs(instrument, field)['products'].is_dir()]
+
+
 def _discover_filters(dirs):
     """List available filters by scanning the products directory.
 
@@ -188,13 +270,14 @@ def _discover_filters(dirs):
 # Exposure discovery
 # ---------------------------------------------------------------------------
 
-def discover_exposures(dirs, filters):
+def discover_exposures(dirs, filters, profile=None):
     """Discover canonical exposures and derive metadata from their headers.
 
-    Scans ``products/nircam/{field}/{filter}/jw*.fits`` (excluding mosaics and
-    transient files), reads the primary header for CFP_* keys and basic
-    metadata. Mosaics are named ``mosaic_*.fits`` and naturally excluded by
-    the ``jw*`` glob.
+    Scans ``products/<instrument>/{field}/{filter}/`` for the instrument's
+    exposure files (``jw*.fits`` for NIRCam, ``*_flc.fits`` for ACS/WFC,
+    ``*_flt.fits`` for WFC3/IR; mosaics and transient files excluded), reads
+    the primary header for CFP_* keys and basic metadata. Mosaics are named
+    ``mosaic_*.fits`` and naturally excluded by the globs.
 
     Returns
     -------
@@ -203,17 +286,19 @@ def discover_exposures(dirs, filters):
         ``filter``, ``path`` (the canonical FITS Path), ``stage``, ``visit``,
         ``detector``, ``date_obs``, ``ra_center``, ``dec_center``.
     """
+    profile = profile or IMAGING_PROFILES['nircam']
     exposures = {}
     for filtname in filters:
         filter_dir = dirs['products'] / filtname
         if not filter_dir.exists():
             continue
-        for path in sorted(filter_dir.glob('jw*.fits')):
+        for path in sorted(filter_dir.glob(profile.exposure_glob)):
             name = path.name
-            if name.endswith('.tmp.fits') or name.endswith('_jump.fits'):
+            if (name.endswith('.tmp.fits') or name.endswith('_jump.fits')
+                    or name.startswith('mosaic_')):
                 continue
             basename = name.removesuffix('.fits')
-            info = _read_exposure_metadata(path)
+            info = _read_exposure_metadata(path, profile)
             info['basename'] = basename
             info['filter'] = filtname
             info['path'] = path
@@ -221,10 +306,12 @@ def discover_exposures(dirs, filters):
     return exposures
 
 
-def _read_exposure_metadata(path):
+def _read_exposure_metadata(path, profile=None):
     """Read header → stage + metadata in a single open."""
+    profile = profile or IMAGING_PROFILES['nircam']
+    hst = profile.instrument != 'nircam'
     info = {
-        'stage': 'detector1',
+        'stage': profile.first_stage,
         'visit': None,
         'detector': None,
         'date_obs': None,
@@ -232,22 +319,36 @@ def _read_exposure_metadata(path):
         'dec_center': None,
         'combine_stamped': False,
     }
-    # JWST naming convention: {visit}_{activity}_{exposure}_{detector}.fits
     parts = path.stem.split('_')
-    if len(parts) >= 1:
-        info['visit'] = parts[0]
-    if len(parts) >= 4:
-        info['detector'] = parts[3]
+    if hst:
+        # HST naming convention: ipppssoot_<suffix>.fits. The visit is the
+        # first six characters (instrument letter, program, visit), which is
+        # how the pipeline groups exposures (campfire_pipeline.hst.visit).
+        # Each HST instrument here is one detector, so the detector column
+        # holds the instrument token.
+        info['visit'] = parts[0][:6] if len(parts[0]) >= 6 else parts[0]
+        info['detector'] = profile.instrument
+    else:
+        # JWST naming convention: {visit}_{activity}_{exposure}_{detector}.fits
+        if len(parts) >= 1:
+            info['visit'] = parts[0]
+        if len(parts) >= 4:
+            info['detector'] = parts[3]
 
     try:
         with fits.open(path, memmap=True) as hdul:
             hdr0 = hdul[0].header
-            info['stage'] = _stage_from_header(hdr0)
+            info['stage'] = profile.stage_from_header(hdr0)
             # A canonical exposure must be the frozen process output; a
             # combine-phase stamp means it was mutated in place (old pipeline).
-            info['combine_stamped'] = ('CFP_BPIX' in hdr0 or 'CFP_OUT' in hdr0)
+            info['combine_stamped'] = any(k in hdr0 for k in profile.combine_stamps)
             info['date_obs'] = hdr0.get('DATE-OBS')
-            info['detector'] = hdr0.get('DETECTOR', info['detector'])
+            if hst:
+                # HST splits the start of the exposure over two cards.
+                if info['date_obs'] and hdr0.get('TIME-OBS'):
+                    info['date_obs'] = f"{info['date_obs']}T{hdr0['TIME-OBS']}"
+            else:
+                info['detector'] = hdr0.get('DETECTOR', info['detector'])
             # Index HDU 1 directly rather than testing len(hdul): len() forces
             # astropy to enumerate *every* HDU, parsing the full structure of a
             # ~120 MB exposure just to learn whether a second one exists. That
@@ -275,7 +376,7 @@ def _read_exposure_metadata(path):
 # Preview PNG discovery
 # ---------------------------------------------------------------------------
 
-def build_upload_tasks(dirs, field, filters):
+def build_upload_tasks(dirs, field, filters, profile=None):
     """Build OSN upload tasks for per-exposure preview PNGs.
 
     The ``preview`` pipeline step writes two PNGs per exposure:
@@ -293,23 +394,26 @@ def build_upload_tasks(dirs, field, filters):
     Returns list of (UploadTask, basename, filter, kind) tuples where
     ``kind`` is ``'thumb'`` or ``'full'``.
     """
+    profile = profile or IMAGING_PROFILES['nircam']
     tasks = []
     for filtname in filters:
         png_dir = dirs['products'] / filtname
         if not png_dir.exists():
             continue
-        for png_path in sorted(png_dir.glob('jw*_preview.png')):
+        for png_path in sorted(png_dir.glob(profile.png_glob('preview'))):
             basename = png_path.name.removesuffix('_preview.png')
-            key = storage_key('nircam_exposure_preview', Scope(field=field, filt=filtname),
+            key = storage_key(profile.kind('exposure_preview'),
+                              Scope(field=field, filt=filtname),
                               png_path.name, scheme=KeyScheme.CANONICAL)
             tasks.append((
                 UploadTask(local_path=png_path, r2_key=key,
                            content_type='image/png'),
                 basename, filtname, 'thumb',
             ))
-        for png_path in sorted(png_dir.glob('jw*_full.png')):
+        for png_path in sorted(png_dir.glob(profile.png_glob('full'))):
             basename = png_path.name.removesuffix('_full.png')
-            key = storage_key('nircam_exposure_full', Scope(field=field, filt=filtname),
+            key = storage_key(profile.kind('exposure_full'),
+                              Scope(field=field, filt=filtname),
                               png_path.name, scheme=KeyScheme.CANONICAL)
             tasks.append((
                 UploadTask(local_path=png_path, r2_key=key,
@@ -334,7 +438,7 @@ def _read_full_png_dimensions(png_path):
 # Canonical FITS + expmap discovery (epic #261, N1)
 # ---------------------------------------------------------------------------
 
-def build_fits_upload_tasks(field, exposures):
+def build_fits_upload_tasks(field, exposures, profile=None):
     """Build canonical-key OSN upload tasks for the exposure FITS.
 
     One ``nircam_exposure`` task per discovered exposure, keyed under the
@@ -351,6 +455,7 @@ def build_fits_upload_tasks(field, exposures):
     ``cfpipe nircam process``. ``CFP_MASK`` is allowed: apply_mask legitimately
     records the manual mask on the canonical.
     """
+    profile = profile or IMAGING_PROFILES['nircam']
     stamped = sorted(
         f'{filtname}/{basename}'
         for (filtname, basename), info in exposures.items()
@@ -359,15 +464,16 @@ def build_fits_upload_tasks(field, exposures):
     if stamped:
         raise RuntimeError(
             "Refusing to deploy combine-mutated canonical exposures — these carry "
-            "CFP_BPIX/CFP_OUT (bad-pixel/outlier flags baked into the canonical by "
-            "an old-pipeline combine). Re-run `cfpipe nircam process` to regenerate "
+            f"{'/'.join(profile.combine_stamps)} (combine-phase flags baked into the "
+            "canonical; combine works on copies, so a canonical with one was mutated "
+            f"in place). Re-run `cfpipe {profile.instrument} process` to regenerate "
             "the frozen canonical, then redeploy:\n  " + "\n  ".join(stamped)
         )
 
     tasks = []
     for (filtname, basename), info in sorted(exposures.items()):
         path = info['path']
-        key = storage_key('nircam_exposure', Scope(field=field, filt=filtname),
+        key = storage_key(profile.kind('exposure'), Scope(field=field, filt=filtname),
                           path.name, scheme=KeyScheme.CANONICAL)
         tasks.append(UploadTask(local_path=path, r2_key=key,
                                 content_type=_FITS_CONTENT_TYPE))
@@ -449,12 +555,19 @@ def _provenance_from_header(path):
     try:
         with fits.open(path, memmap=False) as hdul:
             hdr = hdul[0].header
-            return hdr.get('CMPFRVER'), hdr.get('CAL_VER'), hdr.get('CRDS_CTX')
+            crds = hdr.get('CRDS_CTX')
+            if not crds:
+                # An HST exposure calibrated before the cards were written
+                # still names its context in the calibrate stamp
+                # ('raw <CAL_VER> <context>.pmap').
+                last = str(hdr.get('CFP_CAL') or '').split()[-1:]
+                crds = last[0] if last and last[0].endswith('.pmap') else None
+            return hdr.get('CMPFRVER'), hdr.get('CAL_VER'), crds
     except Exception:
         return None, None, None
 
 
-def _read_field_provenance(dirs, field, filters, *, prefer_mosaic=True):
+def _read_field_provenance(dirs, field, filters, *, prefer_mosaic=True, profile=None):
     """Best-effort ``(cfpipe_version, jwst_version, crds_context)`` for a field.
 
     Prefer the local ``i2d`` mosaic header (the combined science product) — the
@@ -487,7 +600,7 @@ def _read_field_provenance(dirs, field, filters, *, prefer_mosaic=True):
 
     # No mosaic (or an unstamped one): read a representative exposure header.
     try:
-        exposures = discover_exposures(dirs, filters)
+        exposures = discover_exposures(dirs, filters, profile)
     except Exception:
         return None, None, None
     for info in exposures.values():
@@ -498,7 +611,7 @@ def _read_field_provenance(dirs, field, filters, *, prefer_mosaic=True):
 
 
 def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
-                  skip_mosaics=False, steal_lease=False):
+                  skip_mosaics=False, steal_lease=False, instrument='nircam'):
     """Push NIRCam exposure state to OSN + Supabase (epic #261, N1).
 
     Records a **field-scoped deployment** (provenance + the draft->published
@@ -534,8 +647,15 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
         to draw masks, but the mosaics built *before* those masks exist are
         superseded by the post-mask re-combine, so shipping them is wasted
         transfer over a slow link. The mosaics ride the next deploy.
+    instrument : str
+        ``'nircam'`` (default), ``'acswfc'`` or ``'wfc3ir'``. One deploy is one
+        instrument's products of the field; what differs between instruments
+        is in :class:`ImagingProfile`. The HST instruments' exposures also
+        carry the masks the pipeline found (satellite trails) into the review
+        table, once (``_discover_mask_seeds``).
     """
-    dirs = _resolve_nircam_dirs(field)
+    profile = imaging_profile(instrument)
+    dirs = _resolve_imaging_dirs(instrument, field)
 
     if not dirs['products'].exists():
         print(f"Error: Products directory not found: {dirs['products']}")
@@ -554,16 +674,24 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
         print("No filters found to deploy.")
         return
 
-    print(f"Field: {field}")
+    print(f"Field: {field} ({profile.label})")
     print(f"Filters: {', '.join(filters)}")
 
-    exposures = discover_exposures(dirs, filters)
-    expmap_tasks = discover_expmap_tasks(dirs, field, filters)
-    layout_tasks = discover_layout_tasks(dirs, field)
+    exposures = discover_exposures(dirs, filters, profile)
+    expmap_tasks = discover_expmap_tasks(dirs, field, filters) if profile.has_field_plots else []
+    layout_tasks = discover_layout_tasks(dirs, field) if profile.has_field_plots else []
     # Scope mosaic discovery to what the current fields.toml declares — a stray
     # on-disk tile/epoch from a former config must not ride into the cloud (this is
     # the guard; the count + the actual upload both use this same scoped list).
-    if skip_mosaics:
+    if not profile.deploys_mosaics:
+        # Stated, not silent: the mosaic index and the portal pages are
+        # NIRCam's until they carry an instrument, so this instrument's
+        # mosaics stay on disk.
+        skip_mosaics = True
+        mosaics_to_deploy = []
+        print(f"Mosaics: NOT DEPLOYED for {profile.label} yet — exposures, previews "
+              f"and the review table only. The mosaics stay on this machine.")
+    elif skip_mosaics:
         # Skip discovery too, not just the upload: with no mosaic shipping this
         # run, a stray on-disk tile is not this deploy's problem, and the
         # fields.toml scope check would otherwise abort a perfectly good
@@ -589,7 +717,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
         print("Nothing to deploy for this field.")
         return
 
-    png_tasks = build_upload_tasks(dirs, field, filters)
+    png_tasks = build_upload_tasks(dirs, field, filters, profile)
     thumb_r2_keys = {
         (filtname, basename): task.r2_key
         for task, basename, filtname, kind in png_tasks if kind == 'thumb'
@@ -608,7 +736,16 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     print(f"Preview PNGs: {len(png_tasks)} "
           f"({len(thumb_r2_keys)} thumb, {len(full_r2_keys)} full)")
 
-    fits_tasks = build_fits_upload_tasks(field, exposures)
+    fits_tasks = build_fits_upload_tasks(field, exposures, profile)
+
+    # Masks the pipeline found on its own and nobody has edited (satellite
+    # trails): they reach the review table with the exposure, once.
+    mask_seeds, seed_notes = _discover_mask_seeds(dirs, exposures)
+    if mask_seeds:
+        print(f"Pipeline masks: {len(mask_seeds)} exposure(s) with a mask the pipeline "
+              f"found (sent to the review table unless already reviewed)")
+    for note in seed_notes:
+        print(f"  Warning: {note}")
 
     records = []
     for (filtname, basename), info in sorted(exposures.items()):
@@ -633,7 +770,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     if dry_run:
         stage_counts = Counter(r['stage'] for r in records)
         print("\nStage breakdown:")
-        for _, stage in _CFP_TO_STAGE:
+        for _, stage in profile.cfp_to_stage:
             if stage in stage_counts:
                 print(f"  {stage}: {stage_counts[stage]}")
         print(f"\nWould record a {'draft' if draft else 'published'} field "
@@ -669,7 +806,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     # With --no-mosaics the mosaics are not part of this deployment, so a stale
     # on-disk i2d must not supply its provenance: read the exposures instead.
     cfpipe_version, jwst_version, crds_context = _read_field_provenance(
-        dirs, field, filters, prefer_mosaic=not skip_mosaics)
+        dirs, field, filters, prefer_mosaic=not skip_mosaics, profile=profile)
 
     # Record the field-scoped deployment up front — it is the provenance anchor and
     # the draft/published visibility gate every registered object hangs off.
@@ -728,8 +865,15 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
         print(f"  Registered {flusher.flushed} storage object(s)")
 
     print("\nUpserting exposures to Supabase...")
-    _upsert_exposures(client, records)
+    seed_stats = _upsert_exposures(client, records, instrument=instrument,
+                                   mask_seeds=mask_seeds)
     print(f"  Upserted {len(records)} exposures")
+    if seed_stats and seed_stats['seeded']:
+        print(f"  Sent {seed_stats['seeded']} pipeline mask(s) to the review table")
+    if seed_stats and seed_stats['kept_reviewed']:
+        print(f"  Kept {seed_stats['kept_reviewed']} reviewed mask(s): the pipeline's "
+              f"file differs from what was reviewed; `campfire pull --field {field}` "
+              f"brings the reviewed version back")
 
     # Re-point dedup-skipped objects (unchanged bytes, not re-registered) to this
     # deployment so a PUBLISHED re-deploy flips the whole field consistently. NOT on
@@ -767,8 +911,16 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     # latest_deployment_id points at this deployment. Best-effort — a missing
     # fields.toml section or layout.json never fails the deploy.
     try:
-        from campfire.deploy.fields import upsert_field_on_deploy
-        upsert_field_on_deploy(client, dirs['products'], field, deployment_id)
+        if profile.has_field_plots:
+            from campfire.deploy.fields import upsert_field_on_deploy
+            upsert_field_on_deploy(client, dirs['products'], field, deployment_id)
+        else:
+            # The field's fields.toml section (which holds this instrument's
+            # table) is synced, but the coverage area and latest_deployment_id
+            # are the NIRCam deploy's: another instrument must not point them
+            # at its own deployment.
+            from campfire.deploy.fields import sync_fields
+            sync_fields(client, [field])
     except Exception as e:  # noqa: BLE001 - registry upsert must never sink a deploy
         print(f"  fields: registry upsert skipped ({e})")
 
@@ -781,7 +933,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
         client, action='upload', actor=user_id, deployment_id=deployment_id,
         observation=None, field=field, affected_count=len(osn_uploaded),
         metadata=deploy_event_metadata(
-            'nircam', field=field, filters=filters, planned=len(records),
+            instrument, field=field, filters=filters, planned=len(records),
             succeeded=len(osn_uploaded), failed=n_failed, skipped=n_skipped,
             items=len(records), draft=draft,
             fits_uploaded=len(osn_uploaded), fits_skipped=n_skipped))
@@ -791,14 +943,15 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     # (pyramid builds are expensive; epic #337, Phase 3). Best-effort + fully guarded
     # so a missing fitsgl extra / dataset table never touches the deploy result.
     try:
-        from campfire.fitsgl.deploy import suggest_fitsgl_rebuild
-        suggest_fitsgl_rebuild(client, field)
+        if profile.deploys_mosaics:
+            from campfire.fitsgl.deploy import suggest_fitsgl_rebuild
+            suggest_fitsgl_rebuild(client, field)
     except Exception:
         pass
 
     # Closing summary — one block stating what happened, after the stage output.
     print()
-    print(f"Deploy complete: {field}")
+    print(f"Deploy complete: {field} ({profile.label})")
     print(f"  deployment:  #{deployment_id} "
           f"({'draft — admin-only' if draft else 'published'})")
     print(f"  catalog:     {len(records)} exposures"
@@ -811,6 +964,56 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     if n_failed:
         files_line += f", {n_failed} FAILED — re-run to retry"
     print(files_line)
+
+
+def _discover_mask_seeds(dirs, exposures):
+    """Masks the pipeline found on its own, as review-table payloads.
+
+    An exposure's region file (``reference/<instrument>/<field>/masks/<filter>/
+    <name>.reg``) counts only when it is one the pipeline generated and nobody
+    has edited since (it carries the pipeline's hash of its own content, and
+    the content still hashes to it): cfpipe's HST ``trails`` step writes
+    satellite trails that way. A file a person drew or changed is local
+    configuration and stays local, as it always has.
+
+    Returns ``({(filter, basename): (seed_hash, payload)}, notes)``; ``notes``
+    are things the caller should print (a region the database cannot hold).
+    The polygons are the file's, in DS9 image coordinates of the preview frame,
+    which is the frame ``mask_regions`` is in.
+    """
+    from campfire.deploy.local_first import GENERATED_HASH_MARK, is_unedited_generated
+    from campfire.deploy.nircam_masks import _utcnow_iso, polygons_from_regfile
+
+    seeds, notes = {}, []
+    masks_root = dirs.get('masks')
+    if masks_root is None:
+        return seeds, notes
+    now = _utcnow_iso()
+    for (filtname, basename) in sorted(exposures):
+        reg_path = masks_root / filtname / f'{basename}.reg'
+        try:
+            text = reg_path.read_text()
+        except OSError:
+            continue
+        if not is_unedited_generated(text):
+            continue
+        seed_hash = next(line[len(GENERATED_HASH_MARK):].strip()
+                         for line in text.splitlines()
+                         if line.startswith(GENERATED_HASH_MARK))
+        polygons, skipped = polygons_from_regfile(text)
+        if skipped:
+            notes.append(f"{filtname}/{reg_path.name}: {len(skipped)} region(s) are not "
+                         f"image-coordinate polygons and were not sent to the review table")
+        if not polygons:
+            continue
+        payload = {'version': 1, 'polygons': [
+            {'id': f'{seed_hash}-{i}', 'vertices': p['vertices'],
+             **({'label': p['label']} if p.get('label') else {}),
+             'source': 'imported', 'original_frame': 'image',
+             'imported_from': reg_path.name, 'imported_at': now}
+            for i, p in enumerate(polygons)]}
+        seeds[(filtname, basename)] = (seed_hash, payload)
+    return seeds, notes
 
 
 def _upsert_exposures(client, records, batch_size=500, instrument='nircam',

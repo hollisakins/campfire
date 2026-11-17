@@ -133,8 +133,21 @@ _WCS_KEY_RE = re.compile(
 _WCS_DIGEST_VERSION = b'campfire-wcs-1\n'
 
 # Headers scanned for WCS cards: the primary (S_REGION and friends live there)
-# and SCI (where the datamodel writes the FITS WCS + SIP).
-_WCS_HEADER_EXTS = (0, 'SCI')
+# and every SCI extension (where the datamodel, or for HST the calibration
+# software and the align step, writes the FITS WCS + SIP).
+_PIXEL_EXTNAMES = ('SCI', 'DQ', 'CFMASK')
+
+
+def _hdus_named(hdul, extname):
+    """Every HDU called ``extname``, in file order.
+
+    A NIRCam exposure has one of each. An ACS/WFC exposure has one per chip
+    (``[SCI,1]``, ``[SCI,2]``): the identity has to cover both, or a change on
+    the second chip would never re-upload the file. Walking the list (rather
+    than ``hdul[extname]``, which is the first match only) costs a header parse
+    per HDU and no data read.
+    """
+    return [hdu for hdu in hdul if hdu.name == extname]
 
 
 def _wcs_digest_from_hdul(hdul) -> Optional[str]:
@@ -143,15 +156,22 @@ def _wcs_digest_from_hdul(hdul) -> Optional[str]:
     None means *no WCS cards at all* (a product with no sky mapping, or a
     header we could not read) — callers must treat that as "this file has no
     astrometric component", never as a match.
+
+    The first SCI extension is labeled ``SCI`` and a further chip ``SCI,<n>``,
+    so a one-chip file digests exactly as it did before the multi-chip
+    instruments (no re-upload of every NIRCam exposure).
     """
     h = hashlib.sha256()
     h.update(_WCS_DIGEST_VERSION)
     found = False
-    for ext in _WCS_HEADER_EXTS:
-        try:
-            header = hdul[ext].header
-        except (KeyError, IndexError):
-            continue
+    headers = []
+    try:
+        headers.append((0, hdul[0].header))
+    except (KeyError, IndexError):
+        pass
+    for n, hdu in enumerate(_hdus_named(hdul, 'SCI'), start=1):
+        headers.append(('SCI' if n == 1 else f'SCI,{n}', hdu.header))
+    for ext, header in headers:
         # Sorted, so card ORDER in the file can never move the digest; the
         # value's repr() carries a float's full precision and round-trips
         # exactly, so a re-save that rewrites the same numbers hashes the same.
@@ -159,6 +179,22 @@ def _wcs_digest_from_hdul(hdul) -> Optional[str]:
             h.update(f'{ext}|{key}={header[key]!r}\n'.encode('utf-8', 'replace'))
             found = True
     return f'sha256:{h.hexdigest()}' if found else None
+
+
+def _update_pixel_digest(h, hdul) -> bool:
+    """Feed the SCI, DQ and CFMASK arrays into ``h``; whether any was there.
+
+    All SCI extensions, then all DQ, then all CFMASK, each in file order. With
+    one of each (NIRCam) that is the order the digest has always had.
+    """
+    hashed_any = False
+    for extname in _PIXEL_EXTNAMES:
+        for hdu in _hdus_named(hdul, extname):
+            data = hdu.data
+            if data is not None:
+                h.update(data.tobytes())
+                hashed_any = True
+    return hashed_any
 
 
 def wcs_hash(path) -> Optional[str]:
@@ -215,13 +251,7 @@ def sci_dq_hash(path) -> Optional[str]:
     hashed_any = False
     try:
         with fits.open(path, memmap=False, do_not_scale_image_data=True) as hdul:
-            for extname in ('SCI', 'DQ', 'CFMASK'):
-                if extname not in hdul:
-                    continue
-                data = hdul[extname].data
-                if data is not None:
-                    h.update(data.tobytes())
-                    hashed_any = True
+            hashed_any = _update_pixel_digest(h, hdul)
     except Exception:
         return None
     return f'sha256:{h.hexdigest()}' if hashed_any else None
@@ -249,13 +279,7 @@ def exposure_identity(path) -> Tuple[Optional[str], Optional[str]]:
             warnings.simplefilter('ignore')
             with fits.open(path, memmap=False,
                            do_not_scale_image_data=True) as hdul:
-                for extname in ('SCI', 'DQ', 'CFMASK'):
-                    if extname not in hdul:
-                        continue
-                    data = hdul[extname].data
-                    if data is not None:
-                        h.update(data.tobytes())
-                        hashed_any = True
+                hashed_any = _update_pixel_digest(h, hdul)
                 wcs = _wcs_digest_from_hdul(hdul)
     except Exception:
         return None, None

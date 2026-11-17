@@ -29,6 +29,13 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- **HST calibrated exposures carry the provenance cards a NIRCam exposure does.** The
+  `calibrate` step of `cfpipe acswfc` / `cfpipe wfc3ir` writes `CMPFRVER`, `CMPFRTIM` and
+  `CRDS_CTX` (the pinned HST context) on the primary header, next to the `CAL_VER` the
+  calibration software writes, so `campfire deploy --field` records the pipeline version
+  and context of an HST deployment from the exposures. Exposures calibrated before this
+  still name their context in the `CFP_CAL` stamp, which the deploy reads as a fallback;
+  they have no `CMPFRVER` until recalibrated. No pixel changes.
 - **Golden-pixel test and baseline tool for the NIRCam combine path.**
   `tests/test_nircam_mosaic_golden.py` runs four synthetic exposures through the
   campfire-native outlier step and tile drizzle and compares the mosaic planes (SCI, ERR,

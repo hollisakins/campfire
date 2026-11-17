@@ -182,11 +182,12 @@ def _check_modes(raw_files, filtname, field):
 # ---------------------------------------------------------------------------
 
 def _calibrate_worker(raw_file, *, out_dir, refs, nthreads, keep_intermediates,
-                      overwrite):
+                      overwrite, reduction_version=None):
     from campfire_pipeline.hst.steps.calibrate import calibrate_step
     return calibrate_step(raw_file, out_dir, nthreads=nthreads,
                           overwrite=overwrite,
-                          keep_intermediates=keep_intermediates, **refs)
+                          keep_intermediates=keep_intermediates,
+                          reduction_version=reduction_version, **refs)
 
 
 def _wcs_init_worker(exposure_file, *, reference_env, overwrite):
@@ -272,11 +273,13 @@ def _run_calibrate(field, config, filt, n_processes, overwrite):
     refs = reference_settings(config, field)
     prefetch_references(pending, **refs)
     cfg = step_config('calibrate', field, config)
+    from campfire_pipeline.common.version import get_reduction_version
     dispatch(_calibrate_worker, pending, n_processes=n_processes,
              out_dir=field.filter_dir(filt), refs=refs,
              nthreads=cfg.get('nthreads'),
              keep_intermediates=bool(cfg.get('keep_intermediates', False)),
-             overwrite=overwrite)
+             overwrite=overwrite,
+             reduction_version=get_reduction_version(config))
 
 
 def _run_wcs_init(field, config, filt, n_processes, overwrite):

@@ -105,6 +105,15 @@ def normalize_etag(etag: str | None) -> str | None:
 # Key → row mapping
 # ---------------------------------------------------------------------------
 
+# One current object per exposure: the kinds whose file name stem is the
+# exposure's natural key (the HST instruments' is the file name too:
+# ``<rootname>_flc`` / ``<rootname>_flt``).
+_EXPOSURE_REF_TYPES = frozenset({
+    'nirspec_spectrum_exposure', 'nirspec_rate',
+    'nircam_exposure', 'acswfc_exposure', 'wfc3ir_exposure',
+})
+
+
 def _exposure_ref_for(product_type: str, filename: str) -> str | None:
     """Stable per-exposure reference for exposure-level intermediates (epic #210/#261).
 
@@ -117,7 +126,7 @@ def _exposure_ref_for(product_type: str, filename: str) -> str | None:
     contract (one current object per product/exposure). None for non-exposure products
     (their exposure_ref stays NULL; NULLs are distinct, so finals never collide).
     """
-    if product_type in ('nirspec_spectrum_exposure', 'nircam_exposure', 'nirspec_rate') and filename.endswith('.fits'):
+    if product_type in _EXPOSURE_REF_TYPES and filename.endswith('.fits'):
         return filename[: -len('.fits')]
     return None
 

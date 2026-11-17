@@ -34,6 +34,7 @@ SCHEMA_VERSION = 12  # 12: line_fits / catalog_matches table names (Catalog Read
 FINAL_PRODUCT_TYPES = ("nirspec_spec", "nircam_mosaic")
 INTERMEDIATE_PRODUCT_TYPES = (
     "nirspec_spectrum_exposure", "nircam_exposure", "nircam_expmap",
+    "acswfc_exposure", "wfc3ir_exposure",
 )
 DOWNLOADABLE_PRODUCT_TYPES = FINAL_PRODUCT_TYPES + INTERMEDIATE_PRODUCT_TYPES
 

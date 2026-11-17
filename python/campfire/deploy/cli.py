@@ -312,10 +312,14 @@ def source_ids_option(f):
 @click.option('--obs', default=None, multiple=True, type=str, cls=_VariadicOption,
               help='NIRSpec observation name(s) (e.g. ember_uds_p4).')
 @click.option('--field', default=None, type=str,
-              help='NIRCam field name (e.g. cosmos). Deploys exposures/mosaics for '
-                   'the field; mutually exclusive with --obs.')
+              help='Imaging field name (e.g. cosmos). Deploys the exposures/mosaics '
+                   'of the field; mutually exclusive with --obs.')
+@click.option('--instrument', default=None,
+              type=click.Choice(['nircam', 'acswfc', 'wfc3ir']),
+              help='With --field: deploy this imaging instrument only. Default: '
+                   'every instrument that has products of the field on this machine.')
 @click.option('--filter', 'filter_names', multiple=True, cls=_VariadicOption,
-              help='NIRCam filter(s) to deploy with --field (default: all).')
+              help='Filter(s) to deploy with --field (default: all).')
 @click.option('--no-mosaics', 'no_mosaics', is_flag=True,
               help='NIRCam --field only: deploy exposures/expmaps/layout and '
                    'skip the mosaic stage. For the inspect-then-rebuild loop, '
@@ -349,16 +353,17 @@ def source_ids_option(f):
                    '(bypasses RLS + presigned URLs). For unattended / CI deploys. '
                    'Equivalent to CAMPFIRE_DEPLOY_MODE=service-role.')
 @click.pass_context
-def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run,
-                 source_ids, supabase_only, force_overwrite, auto_approve, steal_lease,
-                 no_shutters, no_photometry, skip_astrometry, draft, local,
+def deploy_group(ctx, config_path, obs, field, instrument, filter_names, no_mosaics,
+                 dry_run, source_ids, supabase_only, force_overwrite, auto_approve,
+                 steal_lease, no_shutters, no_photometry, skip_astrometry, draft, local,
                  service_role):
     """Deploy CAMPFIRE pipeline products to Supabase + object storage.
 
-    NIRSpec: `campfire deploy --obs <obs>`.  NIRCam:
-    `campfire deploy --field <field> [--filter f1 --filter f2] [--draft]` —
-    first-class parity, recording a field-scoped deployment (published by default;
-    --draft holds it admin-only for review, then `deploy publish --field`).
+    NIRSpec: `campfire deploy --obs <obs>`.  Imaging (NIRCam, ACS/WFC, WFC3/IR):
+    `campfire deploy --field <field> [--instrument X] [--filter f1 --filter f2] [--draft]` —
+    first-class parity, recording a field-scoped deployment per instrument
+    (published by default; --draft holds it admin-only for review, then
+    `deploy publish --field`).
     """
     ctx.ensure_object(dict)
     ctx.obj['local'] = local
@@ -384,16 +389,34 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
             print("Error: --no-mosaics applies to the NIRCam field deploy; "
                   "use it with --field.")
             sys.exit(1)
+        if instrument and not field:
+            print("Error: --instrument applies to the imaging field deploy; "
+                  "use it with --field.")
+            sys.exit(1)
         if field:
             config = load_config(config_path, local=local,
                                  service_role=ctx.obj['service_role'])
             _announce_auth_mode(config)
-            from campfire.deploy.nircam import deploy_nircam
-            _run_deploy_flow(
-                deploy_nircam, field, config,
-                filters=list(filter_names) if filter_names else None,
-                dry_run=dry_run, draft=draft,
-                skip_mosaics=no_mosaics, steal_lease=steal_lease)
+            from campfire.deploy.nircam import deploy_nircam, instruments_on_disk
+            # One deploy per instrument, one after another under the field's
+            # lease. Named explicitly, or every instrument with products of
+            # the field on this machine (a NIRCam-only field is unchanged).
+            instruments = [instrument] if instrument else instruments_on_disk(field)
+            if not instruments:
+                # Nothing on disk: let the NIRCam deploy say so the way it
+                # always has (the products directory it expected).
+                instruments = ['nircam']
+            if len(instruments) > 1:
+                print(f"Instruments with products of '{field}' on this machine: "
+                      f"{', '.join(instruments)} (one deploy each; "
+                      f"--instrument narrows)")
+            for inst in instruments:
+                _run_deploy_flow(
+                    deploy_nircam, field, config,
+                    filters=list(filter_names) if filter_names else None,
+                    dry_run=dry_run, draft=draft,
+                    skip_mosaics=no_mosaics, steal_lease=steal_lease,
+                    instrument=inst)
             return
         if not obs:
             print("Error: --obs (NIRSpec) or --field (NIRCam) is required for full deployment.")
