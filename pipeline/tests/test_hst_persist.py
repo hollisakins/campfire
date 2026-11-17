@@ -113,7 +113,7 @@ def test_pixels_predicted_above_the_threshold_are_flagged_and_left_out(tmp_path)
     assert sorted(zip(*np.nonzero(_flagged(exposure)))) == [(10, 12), (10, 13)]
     np.testing.assert_array_equal(fits.getdata(exposure, ('SCI', 1)), before)
     stamp = cfp.step_value(exposure, 'CFP_PERS', keyset=cfp.HST)
-    assert stamp.startswith('archive model >0.01 e-/s px=2 ')
+    assert stamp == 'archive >0.01 px=2 max=0.050'
     # the adapter leaves them out of the outlier pass and the mosaic
     good = open_exposure(exposure)[0].load().good
     assert not good[10, 12] and not good[10, 13] and good[30, 30]
@@ -158,9 +158,12 @@ def test_without_a_prediction_a_saturated_pixel_is_masked_in_what_follows(field)
     assert sorted(zip(*np.nonzero(_flagged(soon)))) == [(20, 21)]
     assert not _flagged(later).any() and not _flagged(stim).any()
     stamp = cfp.step_value(soon, 'CFP_PERS', keyset=cfp.HST)
-    assert stamp.startswith('in-field rule n=1 px=1 ')
+    assert stamp.startswith('in-field n=1 px=1 [')
     assert cfp.step_value(later, 'CFP_PERS', keyset=cfp.HST).startswith(
-        'in-field rule n=0 px=0 ')
+        'in-field n=0 px=0 [')
+    # the stamp and its comment fit the card: nothing is truncated
+    with fits.open(soon) as hdul:
+        assert 'persistence flagged' in hdul[0].header.comments['CFP_PERS']
     assert orchestrate.without_prediction(field, 'f160w') == [
         'ites01a1q', 'ites02a2q']
     assert orchestrate.unmasked_for_persistence(field, 'f160w') == []

@@ -54,8 +54,9 @@ from campfire_pipeline.imaging.outlier import warn_if_suspect
 
 PERSIST_BIT = 16384
 SATURATED_BIT = 256
-ARCHIVE = 'archive model'
-IN_FIELD = 'in-field rule'
+# How CFP_PERS begins, by source. Kept short: the card holds 80 characters.
+ARCHIVE = 'archive'
+IN_FIELD = 'in-field'
 
 
 def rootname_of(path):
@@ -125,8 +126,15 @@ def is_current(exposure_file, product_file, earlier):
 
 def _write(exposure_file, flag, stamp):
     """Set the persistence bit where ``flag`` (clearing it elsewhere, so a
-    second run replaces the first) and stamp ``CFP_PERS``. All or nothing.
-    Returns the fraction of previously unflagged pixels now flagged."""
+    second run replaces the first) and stamp ``CFP_PERS`` with
+    ``stamp(lost)``. All or nothing.
+
+    ``lost`` is the number of flagged pixels that carried no other DQ bit:
+    what the mask takes out of the exposure. (calwf3 flags the same thousand
+    or so pixels full-well in every exposure; they count as saturated and are
+    flagged, but were never usable.) Returns ``(lost, fraction of the pixels
+    with no other bit)``.
+    """
     tmp = f'{exposure_file}.persist.tmp'
     try:
         shutil.copyfile(exposure_file, tmp)
@@ -135,16 +143,18 @@ def _write(exposure_file, flag, stamp):
             dq = np.asarray(dq_hdu.data)
             dq = dq & ~np.asarray(PERSIST_BIT, dtype=dq.dtype)
             clean = dq == 0
+            lost = int((flag & clean).sum())
             dq[flag] |= np.asarray(PERSIST_BIT, dtype=dq.dtype)
             dq_hdu.data = dq
-            for key, val in cfp.format(keyset=cfp.HST, CFP_PERS=stamp).items():
+            for key, val in cfp.format(keyset=cfp.HST,
+                                       CFP_PERS=stamp(lost)).items():
                 hdul[0].header[key] = val
         os.replace(tmp, exposure_file)
     except BaseException:
         if os.path.exists(tmp):
             os.remove(tmp)
         raise
-    return float((flag & clean).sum()) / max(int(clean.sum()), 1)
+    return lost, lost / max(int(clean.sum()), 1)
 
 
 def persist_step(exposure_file, product_file, earlier=(), step_config=None,
@@ -167,12 +177,11 @@ def persist_step(exposure_file, product_file, earlier=(), step_config=None,
         threshold = float(cfg.get('threshold', 0.01))
         model = predicted(product_file, shape)
         flag = np.isfinite(model) & (model > threshold)
-        n = int(flag.sum())
         peak = float(np.nanmax(model)) if np.isfinite(model).any() else 0.0
-        stamp = (f'{ARCHIVE} >{threshold:g} e-/s px={n} '
-                 f'({100.0 * n / flag.size:.2f}%) max={peak:.3f}')
-        fraction = _write(exposure_file, flag, stamp)
-        log(f'persist: {root} {n} pixels ({100.0 * n / flag.size:.2f}%) '
+        lost, fraction = _write(
+            exposure_file, flag,
+            lambda n: f'{ARCHIVE} >{threshold:g} px={n} max={peak:.3f}')
+        log(f'persist: {root} {lost} usable pixels ({100.0 * fraction:.2f}%) '
             f'predicted above {threshold:g} e-/s, largest {peak:.3f} e-/s')
         source = ARCHIVE
     else:
@@ -180,15 +189,16 @@ def persist_step(exposure_file, product_file, earlier=(), step_config=None,
         flag = np.zeros(shape, dtype=bool)
         for other in earlier:
             flag |= saturated(other, fluence)
-        n = int(flag.sum())
-        stamp = (f'{IN_FIELD} n={len(earlier)} px={n} '
-                 f'[{_stimuli_tag(earlier)}]')
-        fraction = _write(exposure_file, flag, stamp)
+        tag = _stimuli_tag(earlier)
+        lost, fraction = _write(
+            exposure_file, flag,
+            lambda n: f'{IN_FIELD} n={len(earlier)} px={n} [{tag}]')
         log(f'persist: {root} no archive prediction on disk; in-field rule: '
-            f'{n} pixels saturated in {len(earlier)} earlier exposure(s)')
+            f'{lost} usable pixels ({100.0 * fraction:.2f}%) were saturated in '
+            f'{len(earlier)} earlier exposure(s)')
         source = IN_FIELD
     warn_if_suspect('persist', name, fraction, log)
-    return source, n
+    return source, lost
 
 
 def persist_exposures(exposure_files, field_exposures, raw_root,
