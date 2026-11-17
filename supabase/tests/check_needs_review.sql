@@ -97,8 +97,8 @@ BEGIN
   -- 7. Quality 4 never badges, whatever happens to its members.
   PERFORM pg_temp.nr_signoff('ZZZ-NR-A', 4);
   UPDATE spectra SET deploy_status = 'published' WHERE id = new_sid;
-  INSERT INTO spectra (target_id, grating, fits_path, deploy_status)
-  VALUES ('zzz-nr-a2', 'G140M', '/tmp/zzz_nr_a2_g140m.fits', 'published');
+  INSERT INTO spectra (target_id, grating, fits_path, deploy_status, filter)
+  VALUES ('zzz-nr-a2', 'G140M', '/tmp/zzz_nr_a2_g140m.fits', 'published', 'F100LP');
   IF pg_temp.nr_flag('ZZZ-NR-A') THEN RAISE EXCEPTION 'quality 4 must never badge'; END IF;
   -- Downgrading to quality 2 is itself a sign-off: it re-stamps, so no badge yet...
   PERFORM pg_temp.nr_signoff('ZZZ-NR-A', 2);

@@ -11,6 +11,7 @@ from supabase import create_client, Client
 from supabase.client import ClientOptions
 
 from campfire.auth._jwt import get_sub
+from campfire.deploy.summary import SpectrumKey, spectrum_key
 
 
 def _make_user_client(url: str, anon_key: str, supabase_token: str) -> Client:
@@ -1020,20 +1021,20 @@ def batch_upsert_spectra(
     client: Client,
     spectra: list[dict],
     batch_size: int = 100,
-) -> tuple[int, set[tuple[str, str]]]:
+) -> tuple[int, set[SpectrumKey]]:
     """
-    Upsert spectra in batches, keyed on the UNIQUE constraint (target_id, grating).
+    Upsert spectra in batches, keyed on the unique index
+    (target_id, grating, filter) (#683: one grating can pair with two filters).
 
-    Uses PostgreSQL ON CONFLICT (target_id, grating) for a single-pass upsert,
-    eliminating the need to pre-fetch existing records.
+    Uses PostgreSQL ON CONFLICT (target_id, grating, filter) for a single-pass
+    upsert, eliminating the need to pre-fetch existing records.
 
-    Phase C: also returns the set of (target_id, grating) pairs whose
-    spectrum CONTENT differs from the existing DB row — i.e. spectra that were
-    re-reduced. (Formerly drove a 'reprocessed' review badge; since P3 the
-    needs-review badge is membership-only and trigger-maintained, so this set
-    is informational.) New rows (no
-    existing hash) are NOT included; their parent object instead picks up
-    the membership-based staleness signal.
+    Phase C: also returns the set of spectrum keys whose spectrum CONTENT
+    differs from the existing DB row — i.e. spectra that were re-reduced.
+    (Formerly drove a 'reprocessed' review badge; since P3 the needs-review
+    badge is membership-only and trigger-maintained, so this set is
+    informational.) New rows (no existing hash) are NOT included; their parent
+    object instead picks up the membership-based staleness signal.
 
     "Changed" (P0c, docs/design-data-releases-impl-plan.md §2) is decided on
     the science hash when BOTH the existing row and the new record carry one:
@@ -1043,49 +1044,47 @@ def batch_upsert_spectra(
     summary without the column) the whole-file hash decides, as before.
 
     Args:
-        spectra: List of dicts from summary.get_spectra_records(), optionally
-                 enriched with thumbnail_svg_fnu / thumbnail_svg_flambda.
+        spectra: List of dicts from summary.get_spectra_records() (every one
+                 carries ``filter``), optionally enriched with
+                 thumbnail_svg_fnu / thumbnail_svg_flambda.
         batch_size: Records per batch
 
     Returns:
-        Tuple of (n_upserted, changed_hash_pairs).
+        Tuple of (n_upserted, changed spectrum keys).
     """
     if not spectra:
         return 0, set()
 
+    missing = [s.get('fits_path') or s['target_id'] for s in spectra if spectrum_key(s)[2] is None]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} spectra record(s) without a NIRSpec filter "
+            f"(e.g. {missing[0]}); the spectra key is (target_id, grating, filter)"
+        )
+
     # (file_hash, science_hash) per incoming record.
-    new_hashes: dict[tuple[str, str], tuple[str | None, str | None]] = {
-        (s['target_id'], s['grating']): (s.get('file_hash'), s.get('science_hash'))
+    new_hashes: dict[SpectrumKey, tuple[str | None, str | None]] = {
+        spectrum_key(s): (s.get('file_hash'), s.get('science_hash'))
         for s in spectra
     }
 
-    # Pre-fetch the existing hashes for these (target_id, grating) pairs.
-    # PostgREST can't filter on tuples, so we fetch by target_id IN (...) and
-    # filter Python-side. Gratings per target are few (<6), so the over-fetch
-    # is small.
-    target_ids = sorted({tid for (tid, _) in new_hashes.keys()})
-    existing_hashes: dict[tuple[str, str], tuple[str | None, str | None]] = {}
-    fetch_batch = 200
-    for i in range(0, len(target_ids), fetch_batch):
-        batch = target_ids[i:i + fetch_batch]
-        resp = (
-            client.table('spectra')
-            .select('target_id, grating, file_hash, science_hash')
-            .in_('target_id', batch)
-            .execute()
-        )
-        for row in resp.data or []:
-            key = (row['target_id'], row['grating'])
-            if key in new_hashes:
-                existing_hashes[key] = (row.get('file_hash'), row.get('science_hash'))
+    # Pre-fetch the existing hashes for these keys. PostgREST can't filter on
+    # tuples, so we fetch by target_id IN (...) and filter Python-side.
+    # Spectra per target are few (<8), so the over-fetch is small.
+    existing_hashes: dict[SpectrumKey, tuple[str | None, str | None]] = {}
+    for row in _rows_for_targets(client, {k[0] for k in new_hashes},
+                                 'target_id, grating, filter, file_hash, science_hash'):
+        key = spectrum_key(row)
+        if key in new_hashes:
+            existing_hashes[key] = (row.get('file_hash'), row.get('science_hash'))
 
     for i in range(0, len(spectra), batch_size):
         batch = spectra[i:i + batch_size]
         client.table('spectra').upsert(
-            batch, on_conflict='target_id,grating'
+            batch, on_conflict='target_id,grating,filter'
         ).execute()
 
-    changed: set[tuple[str, str]] = set()
+    changed: set[SpectrumKey] = set()
     for key, new_pair in new_hashes.items():
         if key not in existing_hashes:
             # Brand-new row. Membership signal, not a reprocessing signal.
@@ -1117,27 +1116,44 @@ def spectrum_content_changed(
     return old_file != new_file
 
 
-def fetch_spectrum_ids(client: Client, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
-    """``{(target_id, grating): spectra.id}`` for the given pairs (missing pairs absent).
-
-    PostgREST cannot filter on tuples: fetch by target_id IN (...) and filter
-    Python-side (gratings per target are few).
-    """
-    wanted = set(pairs)
-    target_ids = sorted({tid for (tid, _) in wanted})
-    out: dict[tuple[str, str], int] = {}
-    fetch_batch = 200
+def _rows_for_targets(client: Client, target_ids, columns: str, fetch_batch: int = 200):
+    """Every spectra row of these targets (``columns`` selected), batched by target_id."""
+    target_ids = sorted(target_ids)
     for i in range(0, len(target_ids), fetch_batch):
         resp = (
             client.table('spectra')
-            .select('id, target_id, grating')
+            .select(columns)
             .in_('target_id', target_ids[i:i + fetch_batch])
             .execute()
         )
-        for row in resp.data or []:
-            key = (row['target_id'], row['grating'])
-            if key in wanted:
-                out[key] = int(row['id'])
+        yield from resp.data or []
+
+
+def fetch_spectrum_ids(client: Client, keys) -> dict[SpectrumKey, int]:
+    """``{key: spectra.id}`` for the given spectrum keys (unresolved keys absent).
+
+    A key is ``(target_id, grating, filter)``. A key whose filter is None (a
+    product that predates the FILTER card) resolves only when its target has
+    exactly one spectrum with that grating; otherwise it is ambiguous and
+    left out, like a missing row.
+
+    PostgREST cannot filter on tuples: fetch by target_id IN (...) and match
+    Python-side (spectra per target are few).
+    """
+    wanted = {(str(t), str(g), f.upper() if f else None) for t, g, f in keys}
+    by_key: dict[SpectrumKey, int] = {}
+    by_pair: dict[tuple[str, str], list[int]] = {}
+    for row in _rows_for_targets(client, {k[0] for k in wanted}, 'id, target_id, grating, filter'):
+        key = spectrum_key(row)
+        by_key[key] = int(row['id'])
+        by_pair.setdefault(key[:2], []).append(int(row['id']))
+    out: dict[SpectrumKey, int] = {}
+    for key in wanted:
+        if key[2] is not None:
+            if key in by_key:
+                out[key] = by_key[key]
+        elif len(by_pair.get(key[:2], [])) == 1:
+            out[key] = by_pair[key[:2]][0]
     return out
 
 
@@ -1165,43 +1181,34 @@ def update_spectra_zfit_scalars(
     """Update row-backed zfit scalars without touching spectrum metadata.
 
     ``deploy zfit`` replaces only the fit artifact, so a full spectra upsert
-    would risk copying unrelated, stale ECSV metadata. Each (target_id,
-    grating) row gets a plain UPDATE of just the three scalar columns, which
-    also fires ``bump_spectra_updated_at`` so incremental sync sees the row.
+    would risk copying unrelated, stale ECSV metadata. Each spectrum
+    (``(target_id, grating, filter)``, resolved to its id) gets a plain UPDATE
+    of just the three scalar columns, which also fires
+    ``bump_spectra_updated_at`` so incremental sync sees the row.
 
     Not an upsert: PostgREST would send ``INSERT ... ON CONFLICT DO UPDATE``
     with only these columns, and Postgres checks NOT NULL (fits_path,
     program_slug, observation) on the proposed row *before* the conflict is
     resolved, so a partial upsert fails even when the row exists.
 
-    Every (target_id, grating) pair must already exist: a standalone re-fit
-    never creates spectra rows, so a missing one means the ECSV and the
-    catalog disagree, and nothing is written.
+    Every spectrum must already exist: a standalone re-fit never creates
+    spectra rows, so a missing one means the ECSV and the catalog disagree,
+    and nothing is written.
     """
     if not spectra:
         return 0
 
-    wanted = {(s['target_id'], s['grating']) for s in spectra}
-    existing: set[tuple[str, str]] = set()
-    target_ids = sorted({tid for (tid, _) in wanted})
-    fetch_batch = 200
-    for i in range(0, len(target_ids), fetch_batch):
-        resp = (
-            client.table('spectra')
-            .select('target_id, grating')
-            .in_('target_id', target_ids[i:i + fetch_batch])
-            .execute()
-        )
-        existing.update((row['target_id'], row['grating']) for row in resp.data or [])
-    missing = sorted(wanted - existing)
+    keys = [spectrum_key(s) for s in spectra]
+    ids = fetch_spectrum_ids(client, keys)
+    missing = sorted({k for k in keys if k not in ids}, key=lambda k: (k[0], k[1], k[2] or ''))
     if missing:
-        shown = ', '.join(f'{tid}/{grating}' for tid, grating in missing[:5])
+        shown = ', '.join('/'.join(p for p in k if p) for k in missing[:5])
         more = f' (+{len(missing) - 5} more)' if len(missing) > 5 else ''
         raise RuntimeError(
             f'zfit scalar update matched 0 spectra rows for {shown}{more}'
         )
 
-    for s in spectra:
+    for s, key in zip(spectra, keys):
         (
             client.table('spectra')
             .update({
@@ -1209,8 +1216,7 @@ def update_spectra_zfit_scalars(
                 'chi2_min': s['chi2_min'],
                 'confidence': s['confidence'],
             })
-            .eq('target_id', s['target_id'])
-            .eq('grating', s['grating'])
+            .eq('id', ids[key])
             .execute()
         )
     return len(spectra)

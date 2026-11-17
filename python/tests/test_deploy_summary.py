@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from astropy.table import Table
 
 from campfire.deploy.summary import (
@@ -164,6 +166,7 @@ def test_get_zfit_scalar_updates_uses_uploaded_json_not_stale_summary():
     assert updates == [{
         'target_id': 't1',
         'grating': 'prism',
+        'filter': 'CLEAR',
         'redshift_auto': 2.75,
         'chi2_min': 41.25,
         'confidence': 87.5,
@@ -224,16 +227,42 @@ def test_stale_summary_rows_compares_without_the_prefix(tmp_path):
 
 
 def test_get_spectra_records_carries_filter_when_present():
-    """#683: the summary's filter rides into the upsert body upper-cased (the
-    spectrum's identity becomes (target_id, grating, filter)); an empty cell is
-    sent as NULL so the database fills it from fits_path."""
+    """#683: every record carries the filter, the spectrum's key part: the
+    summary's (upper-cased), else the file name, else the grating's only one."""
     t = _spectra_table()
-    t['filter'] = ['clear', '']
+    t['grating'] = ['G140M', 'G140M']
+    t['fits_filename'] = ['obs1_g140m_f070lp_1_spec.fits', 'obs1_g140m_f100lp_2_spec.fits']
+    t['filter'] = ['f070lp', '']
     r1, r2 = get_spectra_records(t, 'obs1')
-    assert r1['filter'] == 'CLEAR'
-    assert 'filter' in r2 and r2['filter'] is None
+    assert r1['filter'] == 'F070LP'
+    assert r2['filter'] == 'F100LP'  # empty cell: from the file name
 
 
-def test_get_spectra_records_omits_filter_for_old_ecsv():
-    r1, _ = get_spectra_records(_spectra_table(), 'obs1')
-    assert 'filter' not in r1
+def test_get_spectra_records_derives_filter_for_old_ecsv():
+    # no column: the file name, else the grating's only filter (PRISM: CLEAR)
+    t = _spectra_table()
+    t['fits_filename'] = ['obs1_prism_clear_1_spec.fits', 'b_spec.fits']
+    r1, r2 = get_spectra_records(t, 'obs1')
+    assert r1['filter'] == 'CLEAR' and r2['filter'] == 'CLEAR'
+
+
+def test_get_spectra_records_refuses_an_ambiguous_grating_without_a_filter():
+    t = _spectra_table()
+    t['grating'] = ['G140M', 'G140M']
+    with pytest.raises(ValueError, match='no NIRSpec filter'):
+        get_spectra_records(t, 'obs1')
+
+
+def test_spectrum_key_and_filter_parser():
+    from campfire.deploy.summary import spectrum_filter_from_path, spectrum_key
+    # mirrors public.spectrum_filter_from_path (check_spectra_filter.sql)
+    assert spectrum_filter_from_path('nirspec/obs/ember_uds_p4_prism_clear_12345_spec.fits') == 'CLEAR'
+    assert spectrum_filter_from_path('obs/my_prism_p1_g140m_f100lp_9_spec.fits') == 'F100LP'
+    assert spectrum_filter_from_path('obs/G395H_F290LP_SRC_spec.fits') == 'F290LP'
+    assert spectrum_filter_from_path('obs/not_a_spectrum.fits') is None
+    assert spectrum_filter_from_path(None) is None
+    assert spectrum_key({'target_id': 't', 'grating': 'G140M', 'filter': 'f070lp'}) == ('t', 'G140M', 'F070LP')
+    assert spectrum_key({'target_id': 't', 'grating': 'G140M',
+                         'fits_path': 'x/o_g140m_f100lp_1_spec.fits'}) == ('t', 'G140M', 'F100LP')
+    assert spectrum_key({'target_id': 't', 'grating': 'g395m'}) == ('t', 'g395m', 'F290LP')
+    assert spectrum_key({'target_id': 't', 'grating': 'G140H'}) == ('t', 'G140H', None)
