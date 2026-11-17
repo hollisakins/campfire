@@ -321,6 +321,9 @@ export function parseRelpath(relpath: string): ParsedKey {
       if (fname.endsWith('.fits')) return live({ productType: 'nircam_exposure', scope: { field, filt }, filename: fname });
     }
   }
+  if (tree === 'products' && seg.length === 4 && (seg[1] === 'acswfc' || seg[1] === 'wfc3ir') && seg[3].endsWith('_layout.png')) {
+    return live({ productType: `${seg[1]}_layout`, scope: { field: seg[2] }, filename: seg[3] });
+  }
   if (tree === 'products' && seg.length === 5 && (seg[1] === 'acswfc' || seg[1] === 'wfc3ir')) {
     // HST instruments: the NIRCam shape. The four PNG renditions are told by
     // their suffix (checked before the 'mosaic' prefix, as for NIRCam: a
@@ -331,6 +334,7 @@ export function parseRelpath(relpath: string): ParsedKey {
     if (fname.endsWith('_thumb.png')) return live({ productType: `${seg[1]}_mosaic_thumbnail`, scope, filename: fname });
     if (fname.endsWith('_quicklook.png')) return live({ productType: `${seg[1]}_mosaic_quicklook`, scope, filename: fname });
     if (fname.startsWith('mosaic')) return live({ productType: `${seg[1]}_mosaic`, scope, filename: plainFilename(`${seg[1]}_mosaic`, fname) });
+    if (fname.startsWith('expmap')) return live({ productType: fname.endsWith('.png') ? `${seg[1]}_expmap_plot` : `${seg[1]}_expmap`, scope, filename: fname });
     if (fname.endsWith('_preview.png')) return live({ productType: `${seg[1]}_exposure_preview`, scope, filename: fname });
     if (fname.endsWith('_full.png')) return live({ productType: `${seg[1]}_exposure_full`, scope, filename: fname });
     if (fname.endsWith('.fits')) return live({ productType: `${seg[1]}_exposure`, scope, filename: fname });

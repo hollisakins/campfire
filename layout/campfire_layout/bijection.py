@@ -170,6 +170,10 @@ def parse_relpath(relpath: str) -> ParsedKey:
             if fname.endswith(".fits"):
                 return ParsedKey("nircam_exposure", scope, fname)
 
+    if (tree == "products" and len(seg) == 4 and seg[1] in ("acswfc", "wfc3ir")
+            and seg[3].endswith("_layout.png")):
+        return ParsedKey(f"{seg[1]}_layout", Scope(field=seg[2]), seg[3])
+
     if tree == "products" and len(seg) == 5 and seg[1] in ("acswfc", "wfc3ir"):
         # HST instruments: the NIRCam shape. The four PNG renditions are told
         # by their suffix (checked before the 'mosaic' prefix, as for NIRCam:
@@ -184,6 +188,11 @@ def parse_relpath(relpath: str) -> ParsedKey:
         if fname.startswith("mosaic"):
             return ParsedKey(f"{inst}_mosaic", scope,
                              _plain_filename(f"{inst}_mosaic", fname))
+        if fname.startswith("expmap"):
+            # '.png' is the dark web plot; '.fits' is the coverage map.
+            return ParsedKey(
+                f"{inst}_expmap_plot" if fname.endswith(".png")
+                else f"{inst}_expmap", scope, fname)
         if fname.endswith("_preview.png"):
             return ParsedKey(f"{inst}_exposure_preview", scope, fname)
         if fname.endswith("_full.png"):

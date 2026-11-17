@@ -1,6 +1,6 @@
 // @vitest-environment node
 // The catalog query keys carry the release (P6c-1): live and release pages
-// never share a cache entry, and the /nircam index refetches when the tag flips.
+// never share a cache entry, and the /imaging index refetches when the tag flips.
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';

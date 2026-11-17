@@ -1,5 +1,5 @@
 /**
- * In-memory exposure cache for the /admin/nircam triage flow.
+ * In-memory exposure cache for the /admin/imaging triage flow.
  *
  * Lives at module scope (per browser-tab session). Keyed by exposure id so
  * the detail page can render instantly when the user steps to a sibling
@@ -105,7 +105,7 @@ export function isPngCached(url: string | null): boolean {
 /**
  * Presigned OSN GET URLs per exposure id.
  *
- * MODULE scope on purpose: the /admin/nircam/[id] page REMOUNTS on every
+ * MODULE scope on purpose: the /admin/imaging/[id] page REMOUNTS on every
  * prev/next (the App Router re-instantiates the dynamic-segment page), so
  * holding these in React state — as the page originally did — wiped them on
  * each step. That forced a fresh presign (a new signature) on arrival, which

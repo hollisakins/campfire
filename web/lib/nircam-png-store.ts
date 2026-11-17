@@ -1,5 +1,5 @@
 /**
- * Durable pre-downloaded exposure PNG store for the /admin/nircam triage flow:
+ * Durable pre-downloaded exposure PNG store for the /admin/imaging triage flow:
  * "warm a whole filter/detector pair before an inspection run, then never
  * wait on a fetch".
  *

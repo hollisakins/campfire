@@ -30,7 +30,7 @@ export function HomeContent() {
           COSMOS Archive of MultiPle-Field Internal Reductions & Extractions
         </p>
         <p className="text-lg text-text-secondary">
-          Internal archive for JWST NIRCam imaging and NIRSpec spectroscopy data
+          Internal archive for JWST and HST imaging and NIRSpec spectroscopy data
         </p>
       </div>
 
@@ -43,24 +43,24 @@ export function HomeContent() {
         <>
           {/* Data Access Cards */}
           <div className="grid md:grid-cols-2 gap-6 mb-8">
-            {/* NIRCam Card */}
+            {/* Imaging Card */}
             <Card className="p-8">
               <div className="flex items-center mb-4">
                 <Camera className="w-8 h-8 text-primary mr-3" />
-                <h2 className="text-2xl font-bold text-text-primary">NIRCam</h2>
+                <h2 className="text-2xl font-bold text-text-primary">Imaging</h2>
               </div>
               <p className="text-text-secondary mb-6">
-                Browse and download reduced NIRCam imaging mosaics from multiple survey fields.
+                Browse and download reduced NIRCam and HST mosaics from multiple survey fields.
               </p>
               {isLoggedIn ? (
-                <Link href="/nircam">
+                <Link href="/imaging">
                   <Button variant="secondary" className="w-full">
-                    Browse NIRCam Data
+                    Browse Imaging Data
                   </Button>
                 </Link>
               ) : (
                 <Button variant="secondary" className="w-full" disabled>
-                  Browse NIRCam Data
+                  Browse Imaging Data
                 </Button>
               )}
             </Card>

@@ -88,12 +88,12 @@ export function ReviewPanel({
             label="Imaging exposures"
             done={review.nircam.done}
             total={review.nircam.total}
-            primary={{ value: review.nircam.pending, label: 'pending', href: '/admin/nircam?review=pending' }}
-            secondary={{ value: review.nircam.needs_correction, label: 'need correction', href: '/admin/nircam?correction=needed' }}
+            primary={{ value: review.nircam.pending, label: 'pending', href: '/admin/imaging?review=pending' }}
+            secondary={{ value: review.nircam.needs_correction, label: 'need correction', href: '/admin/imaging?correction=needed' }}
             chips={review.nircam.top.map((s) => ({
               label: `${s.field} / ${s.filter}`,
               count: s.pending,
-              href: `/admin/nircam?field=${encodeURIComponent(s.field)}&filter=${encodeURIComponent(s.filter)}&review=pending`,
+              href: `/admin/imaging?field=${encodeURIComponent(s.field)}&filter=${encodeURIComponent(s.filter)}&review=pending`,
             }))}
           />
           <WorkflowRow

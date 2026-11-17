@@ -100,12 +100,14 @@ class ImagingProfile:
     """What differs between the imaging instruments at deploy time.
 
     Everything else (the field deployment, the lease, the push plan and its
-    dedup, the registry rows, the review table, the reviewer's columns) is one
-    code path. ``deploy_nircam`` is that path; the name is historical.
+    dedup, the registry rows, the review table, the reviewer's columns, the
+    mosaics, the exposure maps and layout plot, the map-dataset staleness
+    hint) is one code path. ``deploy_nircam`` is that path; the name is
+    historical.
     """
 
     def __init__(self, instrument, label, exposure_glob, cfp_to_stage,
-                 first_stage, combine_stamps, has_field_plots, has_map_pyramid):
+                 first_stage, combine_stamps):
         self.instrument = instrument
         self.label = label
         # The canonical exposures of a filter directory. Mosaics are
@@ -117,11 +119,6 @@ class ImagingProfile:
         # Combine-phase stamps a canonical exposure must not carry: combine
         # works on copies, and a canonical with one was mutated in place.
         self.combine_stamps = combine_stamps
-        # Exposure maps and the field layout plot (NIRCam's field products).
-        self.has_field_plots = has_field_plots
-        # The FitsGL map pyramid is built from this instrument's mosaics
-        # (`campfire fitsgl build`); the HST bands are not in it yet.
-        self.has_map_pyramid = has_map_pyramid
 
     def kind(self, product):
         """Layout product kind: ``kind('exposure_preview')`` -> ``acswfc_exposure_preview``."""
@@ -142,15 +139,15 @@ class ImagingProfile:
 IMAGING_PROFILES = {
     'nircam': ImagingProfile(
         'nircam', 'NIRCam', 'jw*.fits', _CFP_TO_STAGE, 'detector1',
-        ('CFP_BPIX', 'CFP_OUT'), has_field_plots=True, has_map_pyramid=True),
+        ('CFP_BPIX', 'CFP_OUT')),
     # ACS/WFC keeps its calibrated exposures as <rootname>_flc.fits, WFC3/IR as
     # <rootname>_flt.fits (the names the HST software gives them).
     'acswfc': ImagingProfile(
         'acswfc', 'ACS/WFC', '*_flc.fits', _HST_CFP_TO_STAGE, 'calibrate',
-        ('CFP_OUT',), has_field_plots=False, has_map_pyramid=False),
+        ('CFP_OUT',)),
     'wfc3ir': ImagingProfile(
         'wfc3ir', 'WFC3/IR', '*_flt.fits', _HST_CFP_TO_STAGE, 'calibrate',
-        ('CFP_OUT',), has_field_plots=False, has_map_pyramid=False),
+        ('CFP_OUT',)),
 }
 
 
@@ -493,18 +490,23 @@ _EXPMAP_NONFIDUCIAL_STEMS = ('_uncal', '_canonical')
 
 # The per-filter expmap products deployed together: the coverage FITS and the
 # dark web plot PNG (NIRCam page redesign). product_type is key-derived at
-# registration, so each just needs its canonical key + content type.
+# registration, so each just needs its canonical key + content type. The kind
+# is the instrument's (``nircam_expmap``, ``acswfc_expmap``, ...).
 _EXPMAP_DEPLOY = (
-    ('expmap_*.fits', 'nircam_expmap', _FITS_CONTENT_TYPE),
-    ('expmap_*.png', 'nircam_expmap_plot', _PNG_CONTENT_TYPE),
+    ('expmap_*.fits', 'expmap', _FITS_CONTENT_TYPE),
+    ('expmap_*.png', 'expmap_plot', _PNG_CONTENT_TYPE),
 )
 
 
-def discover_expmap_tasks(dirs, field, filters):
+def discover_expmap_tasks(dirs, field, filters, profile=None):
     """Build canonical-key OSN upload tasks for the per-filter fiducial expmaps.
 
+    ``profile`` is the instrument's :class:`ImagingProfile` (NIRCam when
+    omitted); ``dirs`` are that instrument's. Every instrument's exposure maps
+    have the same names and places (``cfpipe <instrument> expmap``).
+
     Expmaps are per-``(field, filter)`` coverage maps written into the canonical
-    filter directory (``products/nircam/<field>/<filter>/expmap_*``), alongside the
+    filter directory (``products/<instrument>/<field>/<filter>/expmap_*``), alongside the
     mosaics/exposures. Deploys both the coverage **FITS** and its dark web **PNG**
     plot; only the **fiducial** map (``expmap_<field>_<filter>.{fits,png}``, no stage
     suffix) is shipped — the reducer-only ``_uncal`` quick-look (and any pre-rename
@@ -513,35 +515,40 @@ def discover_expmap_tasks(dirs, field, filters):
     process-only field may have none yet — deploy is idempotent and picks them up on
     a later run. Returns a list of ``UploadTask`` (empty if none found).
     """
+    profile = profile or IMAGING_PROFILES['nircam']
     products = dirs['products']
     tasks = []
     for filtname in filters:
         filter_dir = products / filtname
         if not filter_dir.exists():
             continue
-        for pattern, ptype, content_type in _EXPMAP_DEPLOY:
+        for pattern, product, content_type in _EXPMAP_DEPLOY:
             for path in sorted(filter_dir.glob(pattern)):
                 if path.stem.endswith(_EXPMAP_NONFIDUCIAL_STEMS):
                     continue
-                key = storage_key(ptype, Scope(field=field, filt=filtname),
+                key = storage_key(profile.kind(product),
+                                  Scope(field=field, filt=filtname),
                                   path.name, scheme=KeyScheme.CANONICAL)
                 tasks.append(UploadTask(local_path=path, r2_key=key,
                                         content_type=content_type))
     return tasks
 
 
-def discover_layout_tasks(dirs, field):
+def discover_layout_tasks(dirs, field, profile=None):
     """Canonical-key OSN upload task for the field layout plot, if present.
 
     ``<field>_layout.png`` (stacked-filter coverage + tile outlines) lives at the
-    per-field products root and is the landing-page card preview. Only the fiducial
-    (undecorated) plot is deployed; the ``_uncal`` quick-look and the ``.json``
-    coverage sidecar (read locally by the field-registry upsert) stay off OSN.
+    per-field products root of the instrument and is the landing-page card
+    preview (NIRCam's when the field has one, else the first other
+    instrument's). Only the fiducial (undecorated) plot is deployed; the
+    ``_uncal`` quick-look and the ``.json`` coverage sidecar (read locally by
+    the field-registry upsert) stay off OSN.
     """
+    profile = profile or IMAGING_PROFILES['nircam']
     path = dirs['products'] / f'{field}_layout.png'
     if not path.exists():
         return []
-    key = storage_key('nircam_layout', Scope(field=field), path.name,
+    key = storage_key(profile.kind('layout'), Scope(field=field), path.name,
                       scheme=KeyScheme.CANONICAL)
     return [UploadTask(local_path=path, r2_key=key,
                        content_type=_PNG_CONTENT_TYPE)]
@@ -684,8 +691,8 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     print(f"Filters: {', '.join(filters)}")
 
     exposures = discover_exposures(dirs, filters, profile)
-    expmap_tasks = discover_expmap_tasks(dirs, field, filters) if profile.has_field_plots else []
-    layout_tasks = discover_layout_tasks(dirs, field) if profile.has_field_plots else []
+    expmap_tasks = discover_expmap_tasks(dirs, field, filters, profile)
+    layout_tasks = discover_layout_tasks(dirs, field, profile)
     # Scope mosaic discovery to what the current fields.toml declares — a stray
     # on-disk tile/epoch from a former config must not ride into the cloud (this is
     # the guard; the count + the actual upload both use this same scoped list).
@@ -905,20 +912,15 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
 
     # --- Field registry: upsert the fields.toml config + deploy-computed survey
     # area (issue #303). Rides the deploy so a field row exists exactly for fields
-    # with deployed data; coverage_area comes from <field>_layout.json, and
-    # latest_deployment_id points at this deployment. Best-effort — a missing
+    # with deployed data; the coverage comes from this instrument's
+    # <field>_layout.json and is recorded per instrument (NIRCam's in the typed
+    # columns with latest_deployment_id, another instrument's under its own key,
+    # so neither deploy overwrites the other's). Best-effort — a missing
     # fields.toml section or layout.json never fails the deploy.
     try:
-        if profile.has_field_plots:
-            from campfire.deploy.fields import upsert_field_on_deploy
-            upsert_field_on_deploy(client, dirs['products'], field, deployment_id)
-        else:
-            # The field's fields.toml section (which holds this instrument's
-            # table) is synced, but the coverage area and latest_deployment_id
-            # are the NIRCam deploy's: another instrument must not point them
-            # at its own deployment.
-            from campfire.deploy.fields import sync_fields
-            sync_fields(client, [field])
+        from campfire.deploy.fields import upsert_field_on_deploy
+        upsert_field_on_deploy(client, dirs['products'], field, deployment_id,
+                               instrument=instrument)
     except Exception as e:  # noqa: BLE001 - registry upsert must never sink a deploy
         print(f"  fields: registry upsert skipped ({e})")
 
@@ -940,10 +942,11 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     # suggested `campfire fitsgl build/deploy` — a hint only, never an auto-build
     # (pyramid builds are expensive; epic #337, Phase 3). Best-effort + fully guarded
     # so a missing fitsgl extra / dataset table never touches the deploy result.
+    # The dataset holds every instrument's mosaics of the field's tiles, so any
+    # instrument's mosaic deploy can leave it stale.
     try:
-        if profile.has_map_pyramid:
-            from campfire.fitsgl.deploy import suggest_fitsgl_rebuild
-            suggest_fitsgl_rebuild(client, field)
+        from campfire.fitsgl.deploy import suggest_fitsgl_rebuild
+        suggest_fitsgl_rebuild(client, field)
     except Exception:
         pass
 

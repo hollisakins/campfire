@@ -192,7 +192,7 @@ export async function listReleaseMembers(
 }
 
 /**
- * The archived members of several components at once (the /nircam landing
+ * The archived members of several components at once (the /imaging landing
  * grid: every `nircam/<field>` layout in one query). Viewer-scoped.
  */
 export async function listReleaseMembersIn(

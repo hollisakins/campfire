@@ -479,6 +479,59 @@
       "compressed_suffixes": []
     },
     {
+      "name": "acswfc_expmap",
+      "instrument": "acswfc",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "acswfc/{field}/{filt}",
+      "filename": null,
+      "suffix": null,
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "acswfc_expmap_plot",
+      "instrument": "acswfc",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "acswfc/{field}/{filt}",
+      "filename": null,
+      "suffix": null,
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "acswfc_layout",
+      "instrument": "acswfc",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field"
+      ],
+      "subdir": "acswfc/{field}",
+      "filename": null,
+      "suffix": "_layout.png",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
       "name": "wfc3ir_exposure",
       "instrument": "wfc3ir",
       "tree": "products",
@@ -600,6 +653,59 @@
       "subdir": "wfc3ir/{field}/{filt}",
       "filename": null,
       "suffix": "_quicklook.png",
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "wfc3ir_expmap",
+      "instrument": "wfc3ir",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "wfc3ir/{field}/{filt}",
+      "filename": null,
+      "suffix": null,
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "wfc3ir_expmap_plot",
+      "instrument": "wfc3ir",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field",
+        "filt"
+      ],
+      "subdir": "wfc3ir/{field}/{filt}",
+      "filename": null,
+      "suffix": null,
+      "legacy_prefix": null,
+      "mirrored": true,
+      "scheme_invariant": false,
+      "compressed_suffixes": []
+    },
+    {
+      "name": "wfc3ir_layout",
+      "instrument": "wfc3ir",
+      "tree": "products",
+      "lifecycle": "cloud-backed-product",
+      "bucket": "data",
+      "scope_keys": [
+        "field"
+      ],
+      "subdir": "wfc3ir/{field}",
+      "filename": null,
+      "suffix": "_layout.png",
       "legacy_prefix": null,
       "mirrored": true,
       "scheme_invariant": false,

@@ -29,6 +29,18 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- **Exposure maps and the field layout plot for the HST instruments.** `cfpipe acswfc
+  expmap` / `cfpipe wfc3ir expmap` build the per-filter exposure maps (FITS, light PDF, dark
+  PNG), the instrument's `<field>_layout.png` + coverage JSON and the footprint regions under
+  `products/<instrument>/<field>/`, with NIRCam's names and NIRCam's code: the module moved
+  to `imaging/expmap.py` (`nircam/expmap.py` is an alias of it). What an instrument supplies
+  is how a file gives its exposure time and footprint. An HST file has no `S_REGION`, so the
+  outline of each chip is taken through the chip's own WCS (the outline that decides which
+  exposures overlap a tile) and the time is `EXPTIME`; an ACS/WFC exposure is two outlines,
+  and its time counts once wherever either chip covers. The layout JSON names its
+  `instrument`. NIRCam's maps are unchanged; the metadata cache gains the extra outlines
+  and reads older entries as before. `Field.load_grid` also reads `fiducial_tiles`, so the
+  map composite of a field with HST exposures only can be built from the field's tiles.
 - **HST calibrated exposures carry the provenance cards a NIRCam exposure does.** The
   `calibrate` step of `cfpipe acswfc` / `cfpipe wfc3ir` writes `CMPFRVER`, `CMPFRTIM` and
   `CRDS_CTX` (the pinned HST context) on the primary header, next to the `CAL_VER` the

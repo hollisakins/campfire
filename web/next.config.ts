@@ -51,6 +51,13 @@ const nextConfig: NextConfig = {
         destination: '/nirspec/metadata/programs/:slug',
         permanent: false,
       },
+      // The imaging section was `/nircam` until it took the HST instruments
+      // (2026-11). Old links, bookmarks and share-link targets keep working;
+      // the query string (`?dr=`, the review filters) travels with them.
+      { source: '/nircam', destination: '/imaging', permanent: true },
+      { source: '/nircam/:path*', destination: '/imaging/:path*', permanent: true },
+      { source: '/admin/nircam', destination: '/admin/imaging', permanent: true },
+      { source: '/admin/nircam/:path*', destination: '/admin/imaging/:path*', permanent: true },
     ];
   },
 };

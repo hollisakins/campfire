@@ -155,7 +155,19 @@ describe('generateNircamExpmapDownloadUrls', () => {
     const { urls, error } = await generateNircamExpmapDownloadUrls(keys);
     expect(error).toBeNull();
     expect(Object.keys(urls)).toHaveLength(keys.length);
-    expect(queries.every((q) => q.table === 'storage_objects' && q.column === 'storage_key')).toBe(true);
+    expect(queries.every((q) => q.table === 'storage_objects')).toBe(true);
+    // every chunk is restricted to the exposure maps of the imaging instruments
+    const types = queries.filter((q) => q.column === 'product_type');
+    const chunks = queries.filter((q) => q.column === 'storage_key');
+    expect(types).toHaveLength(chunks.length);
+    expect(types.every((q) => q.keys.join() === 'nircam_expmap,acswfc_expmap,wfc3ir_expmap')).toBe(true);
+  });
+
+  it('authorizes an HST exposure map like a NIRCam one', async () => {
+    const keys = ['data/products/acswfc/cosmos/f814w/expmap_cosmos_f814w.fits'];
+    const { urls, error } = await generateNircamExpmapDownloadUrls(keys);
+    expect(error).toBeNull();
+    expect(Object.keys(urls)).toEqual(keys);
   });
 
   it('chunks a large expmap selection too', async () => {
@@ -163,6 +175,6 @@ describe('generateNircamExpmapDownloadUrls', () => {
     const { urls, error } = await generateNircamExpmapDownloadUrls(keys);
     expect(error).toBeNull();
     expect(Object.keys(urls)).toHaveLength(120);
-    expect(queries).toHaveLength(3);
+    expect(queries.filter((q) => q.column === 'storage_key')).toHaveLength(3);
   });
 });

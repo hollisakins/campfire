@@ -281,6 +281,42 @@ class HstField:
         base = os.path.basename(exposure_file).removesuffix('.fits')
         return os.path.join(self.mask_dir, filter_name, base + '.reg')
 
+    @property
+    def products_dir(self):
+        """``products/<instrument>/<field>/``: the filter directories, and the
+        field layout plot beside them (the NIRCam shape)."""
+        if self.campfire_root is None:
+            raise RuntimeError('setup_workspace() must be called first')
+        return os.path.dirname(self.filter_dir(self.filters[0]))
+
+    def expmap_metadata(self, path):
+        """Exposure time and footprint of one calibrated exposure, for the
+        field exposure maps (``imaging/expmap.py``).
+
+        An HST file has no footprint keyword, so the outline of each chip is
+        taken through the chip's own WCS, the same outline that decides which
+        exposures overlap a tile (``steps/resample.chip_polygon``). The
+        exposure time is ``EXPTIME``, the quantity the mosaics' exposure-time
+        planes sum. An ACS/WFC exposure gives two outlines, one per chip.
+        """
+        from campfire_pipeline.hst.exposure import open_exposure
+        from campfire_pipeline.hst.steps.resample import chip_polygon
+        from campfire_pipeline.imaging.expmap import _ExposureMeta
+
+        chips = open_exposure(path)
+        outlines = []
+        for chip in chips:
+            ra, dec = chip_polygon(chip).exterior.coords.xy
+            # shapely closes the ring; the region code wants it open
+            outlines.append(([float(v) for v in ra[:-1]],
+                             [float(v) for v in dec[:-1]]))
+        if not outlines:
+            return None
+        return _ExposureMeta(path=str(path), rootname=chips[0].rootname,
+                             xposure=float(chips[0].exptime),
+                             ra=outlines[0][0], dec=outlines[0][1],
+                             more=outlines[1:])
+
     def filter_dir(self, filter_name, work=False):
         if self.campfire_root is None:
             raise RuntimeError('setup_workspace() must be called first')

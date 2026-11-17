@@ -48,7 +48,7 @@ describe('middleware: the release header (P6c-1)', () => {
     const res = applyDrDecision(req('/map?field=cosmos&dr=DR-seed&z=8'));
     expect(res?.status).toBe(307);
     expect(res?.headers.get('location')).toBe('http://localhost:3000/map?field=cosmos&z=8');
-    for (const p of ['/nirspec/tags', '/inspect?start=J1', '/profile', '/admin', '/', '/nircam/cosmos/cutouts']) {
+    for (const p of ['/nirspec/tags', '/inspect?start=J1', '/profile', '/admin', '/', '/imaging/cosmos/cutouts']) {
       const r = applyDrDecision(req(p + (p.includes('?') ? '&' : '?') + 'dr=DR-seed'));
       expect(r?.status, p).toBe(307);
       expect(r?.headers.get('location'), p).not.toContain('dr=');

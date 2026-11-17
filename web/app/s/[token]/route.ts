@@ -19,7 +19,7 @@ export const dynamic = 'force-dynamic';
 /** Where a link lands. Observation links open the spectra browser filtered to
  *  the scope; field links open the NIRCam field page. */
 function scopeDestination(link: { observation: string | null; field: string | null }): string {
-  if (link.field) return `/nircam/${encodeURIComponent(link.field)}`;
+  if (link.field) return `/imaging/${encodeURIComponent(link.field)}`;
   return `/nirspec?observations=${encodeURIComponent(link.observation ?? '')}`;
 }
 

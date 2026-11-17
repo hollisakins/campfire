@@ -68,7 +68,7 @@ interface PngPrecacheControlProps {
 }
 
 /**
- * "Pre-download all PNGs" control for the /admin/nircam list page (sits
+ * "Pre-download all PNGs" control for the /admin/imaging list page (sits
  * between the filter bar and the table). Starts a warm of the display PNG of
  * every UNCACHED exposure in the CURRENT filtered set — in list order,
  * resumable, cancellable — into the durable IndexedDB store. The warm itself

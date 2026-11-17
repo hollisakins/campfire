@@ -21,6 +21,10 @@ import { hmacBase64Url } from '@/lib/server/worker-token';
 import { authorizeKeysInChunks } from '@/lib/server/authorized-keys';
 import { releaseDownloadUrls, resolveReleaseMembers } from '@/lib/server/dr-files';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { IMAGING_INSTRUMENTS } from '@/lib/types';
+
+// The exposure-map FITS of every imaging instrument (`<instrument>_expmap`).
+const EXPMAP_TYPES: string[] = IMAGING_INSTRUMENTS.map((i) => `${i}_expmap`);
 
 // Live files are not handed out under a release (P6c-1; the archived copies come in P6c-2).
 /**
@@ -934,12 +938,12 @@ export async function generateNircamMosaicDownloadUrls(
 }
 
 /**
- * Authorize NIRCam exposure-map downloads and return ready-to-fetch Worker proxy
+ * Authorize exposure-map downloads (any imaging instrument) and return ready-to-fetch Worker proxy
  * URLs, keyed by canonical storage key.
  *
  * Same trust model as `generateNircamMosaicDownloadUrls`: client-supplied keys are
  * never trusted. The authorized set is re-derived server-side from `storage_objects`
- * (product_type `nircam_expmap`, active) under the caller's RLS session, so
+ * (product_type `<instrument>_expmap`, active) under the caller's RLS session, so
  * `select_storage_objects_by_access` returns only published (or, for admins, all)
  * rows — a draft/revoked or forged key is simply never presigned. Each authorized
  * key is presigned against its home backend (dual-read: OSN or R2) and HMAC-signed
@@ -971,7 +975,7 @@ export async function generateNircamExpmapDownloadUrls(
       // Under a release the manifest IS the authorization (RLS: a visible
       // tag's field-level rows), and the bytes are the archived copies.
       const members = await resolveReleaseMembers(supabase, dr, storageKeys);
-      for (const [k, m] of members) if (m && m.productType !== 'nircam_expmap') members.set(k, null);
+      for (const [k, m] of members) if (m && !EXPMAP_TYPES.includes(m.productType)) members.set(k, null);
       const byKey = await releaseDownloadUrls(members, PRESIGN_TTL_SECONDS, { attachment: true });
       authorizedKeys = storageKeys.filter((k) => byKey.get(k));
       signed = authorizedKeys.map((k) => byKey.get(k) as string);
@@ -982,7 +986,7 @@ export async function generateNircamExpmapDownloadUrls(
         (chunk) => supabase
           .from('storage_objects')
           .select('storage_key')
-          .eq('product_type', 'nircam_expmap')
+          .in('product_type', EXPMAP_TYPES)
           .eq('status', 'active')
           .in('storage_key', chunk),
       );

@@ -802,7 +802,7 @@ def sync_cmd(full: bool, no_snapshot: bool, base_url: Optional[str],
               help="NIRCam: narrow to these filters (e.g. f277w f356w f444w)")
 @click.option("--stale", is_flag=True, help="Re-download files updated on the server")
 @click.option("--intermediate", "include_intermediate", is_flag=True,
-              help="Also fetch canonical intermediates (NIRSpec spectrum-exposures, NIRCam exposures + expmaps)")
+              help="Also fetch canonical intermediates (NIRSpec spectrum-exposures, imaging exposures + expmaps)")
 @click.option("--all", "download_all", is_flag=True, help="Download everything accessible")
 @click.option("--workers", default=4, help="Parallel download workers")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
@@ -834,7 +834,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
 
     By default only finals are fetched (NIRSpec spectra, NIRCam mosaics);
     --intermediate also pulls the canonical intermediates (NIRSpec spectrum-
-    exposures, NIRCam exposures + expmaps) so you can restore a deleted-local
+    exposures, imaging exposures + expmaps) so you can restore a deleted-local
     observation or inspect a stage-1/2 draft.
 
     For admins with the deploy extra installed, a scoped pull also regenerates

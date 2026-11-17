@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { DrLink } from '@/lib/dr/client';
 import { ImageIcon } from 'lucide-react';
-import type { NircamFieldCard as FieldCard } from '@/lib/types';
+import { IMAGING_INSTRUMENTS, type NircamFieldCard as FieldCard } from '@/lib/types';
 
 const formatVolume = (bytes: number): string => {
   if (!bytes) return '—';
@@ -14,12 +14,26 @@ const formatVolume = (bytes: number): string => {
 };
 
 // Sky coverage label: deg² when it reads naturally, arcmin² for small fields.
+// The card shows the coverage of the instrument its layout plot is of: the
+// first instrument, NIRCam first, that the viewer can see mosaics of. (The
+// field row may hold coverage of an instrument whose mosaics are not visible,
+// a draft for instance; that is not the area of what the card lists.)
 const formatCoverage = (card: FieldCard): string => {
-  if (card.coverage_area_deg2 != null && card.coverage_area_deg2 >= 0.05) {
-    return `${card.coverage_area_deg2.toFixed(2)} deg²`;
+  const visible = card.instruments ?? ['nircam'];
+  let arcmin2: number | null | undefined = null;
+  let deg2: number | null | undefined = null;
+  for (const inst of IMAGING_INSTRUMENTS) {
+    if (!visible.includes(inst)) continue;
+    const c = card.coverage?.[inst];
+    arcmin2 = c?.area_arcmin2 ?? (inst === 'nircam' ? card.coverage_area_arcmin2 : null);
+    deg2 = c?.area_deg2 ?? (inst === 'nircam' ? card.coverage_area_deg2 : null);
+    if (arcmin2 != null || deg2 != null) break;
   }
-  if (card.coverage_area_arcmin2 != null) {
-    return `${Math.round(card.coverage_area_arcmin2)} arcmin²`;
+  if (deg2 != null && deg2 >= 0.05) {
+    return `${deg2.toFixed(2)} deg²`;
+  }
+  if (arcmin2 != null) {
+    return `${Math.round(arcmin2)} arcmin²`;
   }
   return '—';
 };
@@ -34,7 +48,7 @@ interface NircamFieldCardProps {
 /**
  * One landing-grid card: the field's `_layout.png` coverage plot as the
  * preview (dark placeholder until the field's first post-redesign deploy),
- * name + center overlay, key stats, and a link into /nircam/[field].
+ * name + center overlay, key stats, and a link into /imaging/[field].
  */
 export const NircamFieldCard: React.FC<NircamFieldCardProps> = ({ card }) => {
   // A presigned URL can exist while the object 404s (e.g. preview branches
@@ -44,7 +58,7 @@ export const NircamFieldCard: React.FC<NircamFieldCardProps> = ({ card }) => {
 
   return (
     <DrLink
-      href={`/nircam/${encodeURIComponent(card.field)}`}
+      href={`/imaging/${encodeURIComponent(card.field)}`}
       className="group block bg-card border border-border rounded-xl overflow-hidden transition-all hover:border-border-strong hover:-translate-y-0.5"
     >
       {/* Layout-plot preview */}

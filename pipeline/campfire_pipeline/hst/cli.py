@@ -9,6 +9,7 @@ Each HST detector is an instrument of its own, with the same commands as
     cfpipe wfc3ir <step>   --field pg004         # one step
     cfpipe wfc3ir status   --field pg004         # per-exposure stamps
     cfpipe wfc3ir check    --field pg004         # which tiles are stale
+    cfpipe wfc3ir expmap   --field pg004         # exposure maps + field layout
     cfpipe wfc3ir reset    --field pg004 --from align
 
 Both groups are built by :func:`make_group` from the same code; the instrument
@@ -179,6 +180,37 @@ def make_group(instrument):
     all_steps = steps_for(instrument)
     for name in step_names:
         group.add_command(_step_command(name, with_tiles=(name == 'resample')))
+
+    @group.command(help='Build the per-filter exposure maps (FITS + light PDF + '
+                        'dark PNG), the field layout plot + coverage JSON, and '
+                        'the footprint regions, from the calibrated exposures.')
+    @_common
+    @click.option('--filters', multiple=True, default=None, cls=VariadicOption,
+                  help="Filters to process (default: all of the field's for "
+                       "this instrument).")
+    @click.option('--pixel-scale', type=float, default=0.5, show_default=True,
+                  help='Output pixel scale in arcsec/pix.')
+    @click.option('--padding', type=float, default=30.0, show_default=True,
+                  help='Sky padding around the union footprint, arcsec.')
+    @click.option('--out-dir', default=None,
+                  help='Base products dir; per-filter FITS/PDF/PNG land in '
+                       '<out-dir>/<filter>/, the field layout + footprints at '
+                       f'its root (default: {{products}}/{instrument}/<field>/).')
+    @click.option('--processes', '-p', default=1, type=int, show_default=True,
+                  help='Per-filter parallelism (one filter per worker).')
+    @click.option('--overwrite', is_flag=True,
+                  help='Rebuild even if the expmap FITS already exists '
+                       '(plots + layout are always re-rendered).')
+    def expmap(config, field, filters, pixel_scale, padding, out_dir,
+               processes, overwrite):
+        # NIRCam's command and code (imaging/expmap.py). There is no 'uncal'
+        # quick-look here: a RAW HST file is not yet on the field's astrometry
+        # and the map is cheap once the exposures are calibrated.
+        from campfire_pipeline.imaging.expmap import run_expmap
+        _cfg, fld = _setup(config, field, instrument)
+        _guard(run_expmap, fld, filters=list(filters) or None,
+               stage='canonical', pixel_scale=pixel_scale, padding=padding,
+               out_dir=out_dir, n_processes=processes, overwrite=overwrite)
 
     @group.command(help='Show which steps are done on each canonical exposure.')
     @_common

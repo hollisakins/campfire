@@ -41,7 +41,41 @@ _TILE_SIZE = 256
 # Pure layer (no fitsgl import; unit-tested without real data)
 # ---------------------------------------------------------------------------
 
-def select_mosaics(dirs, field, filters, *, pixel_scale, tiles=None):
+def select_field_mosaics(field, *, pixel_scale, tiles=None):
+    """The mosaics of every imaging instrument on this machine for a field.
+
+    The tiles are the field's, shared by its instruments, so an HST mosaic of a
+    tile is on the pixel grid of the NIRCam mosaic of that tile and joins the
+    dataset as one more band. Runs :func:`select_mosaics` per instrument with a
+    products directory here (NIRCam first) and concatenates; each dict carries
+    its ``instrument``. A band is named after its filter alone, so the same
+    filter name under two instruments is refused rather than merged into one
+    band (none of NIRCam, ACS/WFC and WFC3/IR share a filter name today).
+    Returns ``[]`` when no instrument has products for the field.
+    """
+    from campfire.deploy.nircam import (
+        _discover_filters, _resolve_imaging_dirs, imaging_profile, instruments_on_disk,
+    )
+
+    out, owner = [], {}
+    for instrument in instruments_on_disk(field):
+        dirs = _resolve_imaging_dirs(instrument, field)
+        filters = _discover_filters(dirs)
+        if not filters:
+            continue
+        for m in select_mosaics(dirs, field, filters, pixel_scale=pixel_scale,
+                                tiles=tiles, profile=imaging_profile(instrument)):
+            other = owner.setdefault(m['filter'], instrument)
+            if other != instrument:
+                raise click.ClickException(
+                    f"field '{field}' has {m['filter']} mosaics from both {other} "
+                    f"and {instrument}; a map band is named after its filter, so "
+                    f"the two cannot share a dataset")
+            out.append(m)
+    return out
+
+
+def select_mosaics(dirs, field, filters, *, pixel_scale, tiles=None, profile=None):
     """Discover the mosaics to feed FitsGL for a field at one pixel scale.
 
     Wraps :func:`campfire.deploy.nircam.discover_mosaics` and keeps one mosaic per
@@ -50,14 +84,16 @@ def select_mosaics(dirs, field, filters, *, pixel_scale, tiles=None):
     Within a (filter, tile) the science image is chosen by
     :data:`_EXTENSION_PREFERENCE` (``sci`` then ``i2d``). Returns the underlying
     ``discover_mosaics`` dicts unchanged — ``{path, filter, tile, pixel_scale, epoch,
-    extension, storage_key}`` (``storage_key`` is consumed by the deploy source-hash
-    path, so keep it on the passthrough).
+    extension, storage_key, instrument}`` (``storage_key`` is consumed by the deploy
+    source-hash path, so keep it on the passthrough). ``profile`` is the
+    instrument's ``ImagingProfile`` (NIRCam when omitted); ``dirs`` are that
+    instrument's. :func:`select_field_mosaics` is the every-instrument form.
     """
     from campfire.deploy.nircam import discover_mosaics
 
     tileset = set(tiles) if tiles is not None else None
     best: dict[tuple[str, str], dict] = {}
-    for m in discover_mosaics(dirs, field, filters):
+    for m in discover_mosaics(dirs, field, filters, profile):
         # Skip epoch subset mosaics (`cfpipe nircam combine --epoch`): they share a
         # (filter, tile) with the full-field mosaic but cover only part of it, so
         # they'd yield an incomplete map. `epoch == ''` is the full-field mosaic —
@@ -93,14 +129,19 @@ def group_bands(mosaics, *, single_tile):
     Composite ⇒ each filter's value is the LIST of its tile mosaic paths (sorted by
     tile, so band inputs are deterministic). Single-tile ⇒ each filter's value is
     its one mosaic path. Filters with no surviving mosaic are simply absent.
-    Returns an ordered dict filter → (Path | list[Path]), filters sorted blue→red.
+    Returns an ordered dict filter → (Path | list[Path]), filters sorted blue→red
+    across instruments (a filter name's number is read in its instrument's units).
     """
     by_filter: dict[str, list] = {}
     for m in mosaics:
         by_filter.setdefault(m['filter'], []).append(m)
 
+    def wavelength(filt):
+        return _filter_wavelength(
+            filt, by_filter[filt][0].get('instrument') or 'nircam')
+
     bands: dict[str, object] = {}
-    for filt in sorted(by_filter, key=_filter_wavelength):
+    for filt in sorted(by_filter, key=wavelength):
         entries = sorted(by_filter[filt], key=lambda m: str(m['tile']))
         paths = [Path(m['path']) for m in entries]
         if single_tile:
@@ -113,7 +154,7 @@ def group_bands(mosaics, *, single_tile):
     return bands
 
 
-def derive_viewer(rgb_channels, band_filters, trilogy=None):
+def derive_viewer(rgb_channels, band_filters, trilogy=None, instruments=None):
     """Derive the fitsgl.toml ``[viewer]`` default from CAMPFIRE's RGB config.
 
     ``rgb_channels`` maps filter → (r, g, b) color weights (from fields.toml
@@ -128,7 +169,8 @@ def derive_viewer(rgb_channels, band_filters, trilogy=None):
     (only channel ratios matter — the composite normalizes by the weight sum).
     ``trilogy`` (optional dict of noiselum/satpercent/noisesig/noisesig0) passes
     through as ``[viewer.trilogy]``. Otherwise a single-band view on the reddest
-    present filter. Every filter is a band regardless; this only sets the
+    present filter (``instruments`` maps a filter to its instrument, whose units
+    its name's number is in). Every filter is a band regardless; this only sets the
     initial view. Nested tables are placed last so the TOML serializes cleanly.
     """
     usable = [f for f in band_filters if rgb_channels and f in rgb_channels]
@@ -164,7 +206,7 @@ def derive_viewer(rgb_channels, band_filters, trilogy=None):
         return {'default': 'single', 'stretch': 'asinh'}
     return {
         'default': 'single',
-        'band': _reddest(band_filters),
+        'band': _reddest(band_filters, instruments),
         'stretch': 'asinh',
         'colormap': 'gray',
         'north_up': False,
@@ -206,27 +248,39 @@ def build_fitsgl_toml(field, *, bands, viewer, pixel_scale, single_tile, tile=No
     }
 
 
-_WAVELEN_RE = re.compile(r'f(\d{3,4})[wmn]', re.IGNORECASE)
+_WAVELEN_RE = re.compile(r'f(\d{3,4})(?:lp|[wmnx])', re.IGNORECASE)
+
+# What the number in a filter name counts, per instrument: JWST and WFC3/IR
+# names are in units of 0.01 micron (F150W = 1.50, F160W = 1.60), the HST
+# optical cameras' in nm (ACS F814W = 814 nm). The FitsGL producer has the
+# exact pivots (fitsgl.bands); this only orders bands for the generated toml
+# and picks the default single-band view.
+_NM_PER_UNIT = {'nircam': 10, 'wfc3ir': 10, 'acswfc': 1}
 
 
-def _filter_wavelength(name: str) -> tuple:
-    """Sort key: approximate central wavelength (nm) from a JWST filter name.
+def _filter_wavelength(name: str, instrument: str = 'nircam') -> tuple:
+    """Sort key: approximate central wavelength (nm) from a filter name.
 
-    ``f150w`` → 1500, ``f444w`` → 4440. Unparseable names sort last, then
-    alphabetically, so order is always deterministic.
+    NIRCam ``f150w`` → 1500, WFC3/IR ``f160w`` → 1600, ACS/WFC ``f814w`` → 814.
+    Unparseable names sort last, then alphabetically, so order is always
+    deterministic.
     """
     m = _WAVELEN_RE.search(name or '')
     if not m:
         return (1, 0.0, name or '')
     digits = m.group(1)
     # f150w -> 150 -> 1.50 µm; f0900 style would be 4 digits already in nm*10.
-    val = int(digits) * (10 if len(digits) == 3 else 1)
+    unit = _NM_PER_UNIT.get(instrument, 10)
+    val = int(digits) * (unit if len(digits) == 3 else 1)
     return (0, val, name)
 
 
-def _reddest(band_filters):
-    """The longest-wavelength filter present (the default single-band view)."""
-    return max(band_filters, key=_filter_wavelength)
+def _reddest(band_filters, instruments=None):
+    """The longest-wavelength filter present (the default single-band view).
+    ``instruments`` maps a filter to its instrument (NIRCam when absent)."""
+    instruments = instruments or {}
+    return max(band_filters,
+               key=lambda f: _filter_wavelength(f, instruments.get(f, 'nircam')))
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +311,9 @@ def resolve_fiducial_tiles(field, *, pixel_scale='30mas'):
         from campfire_pipeline.nircam.field import Field
     except ImportError:
         return _fiducial_tiles_from_toml(field)
-    return Field.load(field).fiducial_tile_set(pixel_scale=pixel_scale)
+    # The grid is the field's: a field with HST exposures only has no top-level
+    # filters or files, and its tiles still define the composite.
+    return Field.load_grid(field).fiducial_tile_set(pixel_scale=pixel_scale)
 
 
 def _fields_toml_table(field):
@@ -408,15 +464,12 @@ def run_build(field, *, pixel_scale='30mas', tile=None, processes=None,
     ``overwrite=True`` after a mosaic's pixels change, since reuse keys on a band's
     presence, not its input content.
     """
-    from campfire.deploy.nircam import _discover_filters, _resolve_nircam_dirs
+    from campfire.deploy.nircam import instruments_on_disk
 
-    dirs = _resolve_nircam_dirs(field)
-    if not dirs['products'].exists():
-        click.echo(f"Error: no reduced products for field '{field}' at {dirs['products']}.")
-        sys.exit(1)
-    filters = _discover_filters(dirs)
-    if not filters:
-        click.echo(f"Error: no filter products found under {dirs['products']}.")
+    instruments = instruments_on_disk(field)
+    if not instruments:
+        click.echo(f"Error: no reduced imaging products for field '{field}' under "
+                   f"$CAMPFIRE_ROOT/products/.")
         sys.exit(1)
 
     single_tile = tile is not None
@@ -432,8 +485,10 @@ def run_build(field, *, pixel_scale='30mas', tile=None, processes=None,
             )
             sys.exit(1)
 
-    mosaics = select_mosaics(dirs, field, filters, pixel_scale=pixel_scale, tiles=tileset)
+    # Every imaging instrument's mosaics of these tiles: they share the grid.
+    mosaics = select_field_mosaics(field, pixel_scale=pixel_scale, tiles=tileset)
     bands = group_bands(mosaics, single_tile=single_tile)
+    band_instrument = {m['filter']: m.get('instrument') or 'nircam' for m in mosaics}
     if not bands:
         click.echo(
             f"Error: no {pixel_scale} mosaics found for "
@@ -447,9 +502,14 @@ def run_build(field, *, pixel_scale='30mas', tile=None, processes=None,
         f"Building FitsGL {'tile ' + tile if single_tile else 'composite'} for "
         f"'{field}' at {pixel_scale}: {len(bands)} band(s) / {n_inputs} mosaic(s)."
     )
+    for instrument in instruments:
+        own = [f for f in bands if band_instrument[f] == instrument]
+        if own:
+            click.echo(f"  {instrument}: {', '.join(own)}")
 
     rgb_channels, trilogy_knobs = _load_rgb_config(field)
-    viewer = derive_viewer(rgb_channels, list(bands), trilogy=trilogy_knobs)
+    viewer = derive_viewer(rgb_channels, list(bands), trilogy=trilogy_knobs,
+                           instruments=band_instrument)
     if rgb_channels and viewer.get('default') != 'rgb':
         usable = sorted(f for f in bands if f in rgb_channels)
         click.echo(

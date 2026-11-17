@@ -68,7 +68,7 @@ export default function NircamLandingPage() {
         <Breadcrumbs
           items={[
             { label: 'CAMPFIRE', href: '/' },
-            { label: 'NIRCam' },
+            { label: 'Imaging' },
           ]}
           className="mb-6"
         />
@@ -78,10 +78,10 @@ export default function NircamLandingPage() {
             <LogIn className="w-8 h-8 text-text-secondary" />
           </div>
           <h2 className="text-2xl font-semibold text-text-primary mb-2">
-            Sign in to view NIRCam images
+            Sign in to view images
           </h2>
           <p className="text-text-secondary mb-6 max-w-md">
-            Access to NIRCam imaging data requires authentication. Please sign in with your
+            Access to imaging data requires authentication. Please sign in with your
             CAMPFIRE account to browse and download images.
           </p>
           <SignInLink
@@ -100,7 +100,7 @@ export default function NircamLandingPage() {
       <Breadcrumbs
         items={[
           { label: 'CAMPFIRE', href: '/' },
-          { label: 'NIRCam' },
+          { label: 'Imaging' },
         ]}
         className="mb-6"
       />
@@ -108,7 +108,7 @@ export default function NircamLandingPage() {
       <div className="mb-6">
         <div className="flex items-center gap-3">
           <ImageIcon className="w-8 h-8 text-primary" />
-          <h1 className="text-2xl font-bold text-text-primary">NIRCam Imaging</h1>
+          <h1 className="text-2xl font-bold text-text-primary">Imaging</h1>
         </div>
       </div>
 
@@ -132,7 +132,7 @@ export default function NircamLandingPage() {
           {fields.length === 0 ? (
             <div className="text-center py-16 bg-card border border-border rounded-lg">
               <ImageIcon className="w-12 h-12 text-text-secondary mx-auto mb-4" />
-              <p className="text-text-secondary">No NIRCam fields available yet.</p>
+              <p className="text-text-secondary">No fields available yet.</p>
               <p className="text-text-secondary text-sm mt-2">
                 Check back later or contact the team if you expected to see data here.
               </p>

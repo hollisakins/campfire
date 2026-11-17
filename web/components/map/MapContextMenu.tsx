@@ -101,7 +101,7 @@ export function MapContextMenu({ coords, position, cutoutField, onClose }: MapCo
       dec: coords.dec.toFixed(6),
       fov: '10',
     });
-    router.push(`/nircam/${encodeURIComponent(cutoutField)}/cutouts?${params.toString()}`);
+    router.push(`/imaging/${encodeURIComponent(cutoutField)}/cutouts?${params.toString()}`);
     onClose();
   }, [coords, cutoutField, router, onClose]);
 

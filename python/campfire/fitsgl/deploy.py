@@ -346,12 +346,9 @@ def _select_dataset_mosaics(field, *, tile, pixel_scale):
     resolution is guarded so a broken/removed fields.toml declaration degrades to "no
     mosaics" rather than a traceback.
     """
-    from campfire.deploy.nircam import _discover_filters, _resolve_nircam_dirs
     from campfire.fitsgl.build import (
-        group_bands, resolve_fiducial_tiles, select_mosaics,
+        group_bands, resolve_fiducial_tiles, select_field_mosaics,
     )
-    dirs = _resolve_nircam_dirs(field)
-    filters = _discover_filters(dirs) if dirs['products'].exists() else []
     if tile is not None:
         tiles = [tile]
     else:
@@ -359,8 +356,9 @@ def _select_dataset_mosaics(field, *, tile, pixel_scale):
             tiles = resolve_fiducial_tiles(field, pixel_scale=pixel_scale)
         except Exception:
             tiles = []
-    mosaics = (select_mosaics(dirs, field, filters, pixel_scale=pixel_scale, tiles=tiles)
-               if filters and tiles else [])
+    # Every imaging instrument's mosaics of the tiles, as `build` selects them.
+    mosaics = (select_field_mosaics(field, pixel_scale=pixel_scale, tiles=tiles)
+               if tiles else [])
     bands = list(group_bands(mosaics, single_tile=(tile is not None)))
     return mosaics, list(tiles), bands
 

@@ -550,6 +550,82 @@
       "tree_class": "cloud-backed-product"
     },
     {
+      "product_type": "acswfc_expmap",
+      "scope": {
+        "field": "pg004",
+        "filt": "f814w"
+      },
+      "filename": "expmap_pg004_f814w.fits",
+      "relpath": "products/acswfc/pg004/f814w/expmap_pg004_f814w.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/acswfc/pg004/f814w/expmap_pg004_f814w.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "acswfc_expmap_plot",
+      "scope": {
+        "field": "pg004",
+        "filt": "f814w"
+      },
+      "filename": "expmap_pg004_f814w.png",
+      "relpath": "products/acswfc/pg004/f814w/expmap_pg004_f814w.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/acswfc/pg004/f814w/expmap_pg004_f814w.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "acswfc_layout",
+      "scope": {
+        "field": "pg004"
+      },
+      "filename": "pg004_layout.png",
+      "relpath": "products/acswfc/pg004/pg004_layout.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/acswfc/pg004/pg004_layout.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "wfc3ir_expmap",
+      "scope": {
+        "field": "pg004",
+        "filt": "f160w"
+      },
+      "filename": "expmap_pg004_f160w.fits",
+      "relpath": "products/wfc3ir/pg004/f160w/expmap_pg004_f160w.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/wfc3ir/pg004/f160w/expmap_pg004_f160w.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "wfc3ir_expmap_plot",
+      "scope": {
+        "field": "pg004",
+        "filt": "f160w"
+      },
+      "filename": "expmap_pg004_f160w.png",
+      "relpath": "products/wfc3ir/pg004/f160w/expmap_pg004_f160w.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/wfc3ir/pg004/f160w/expmap_pg004_f160w.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "wfc3ir_layout",
+      "scope": {
+        "field": "pg004"
+      },
+      "filename": "pg004_layout.png",
+      "relpath": "products/wfc3ir/pg004/pg004_layout.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/wfc3ir/pg004/pg004_layout.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
       "product_type": "acswfc_mosaic_thumbnail",
       "scope": {
         "field": "pg004",

@@ -24,7 +24,7 @@ def fitsgl_group():
 
 
 @fitsgl_group.command('build')
-@click.option('--field', required=True, help='NIRCam field name (e.g. cosmos).')
+@click.option('--field', required=True, help='Field name (e.g. cosmos).')
 @click.option('--tile', default=None,
               help='Build a single-tile standalone dataset instead of the fiducial '
                    'composite (the only path for off-grid tiles like PRIMER).')
@@ -53,7 +53,7 @@ def build_cmd(field, tile, pixel_scale, processes, out_dir, overwrite):
 
 
 @fitsgl_group.command('deploy')
-@click.option('--field', required=True, help='NIRCam field name (e.g. cosmos).')
+@click.option('--field', required=True, help='Field name (e.g. cosmos).')
 @click.option('--tile', default=None,
               help='Deploy a single-tile standalone dataset instead of the composite.')
 @click.option('--pixel-scale', default='30mas', show_default=True,

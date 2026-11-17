@@ -151,7 +151,7 @@ function groupProgress(rows: ReductionProgress[]): FieldProgress[] {
 
 // Field-level "pending" chip: that one IS labeled pending, so it filters to it.
 function pendingHref(field: string) {
-  return `/admin/nircam?${new URLSearchParams({ field, review: 'pending' })}`;
+  return `/admin/imaging?${new URLSearchParams({ field, review: 'pending' })}`;
 }
 
 // Filter/detector quick-select: scopes the table without a review filter.
@@ -163,7 +163,7 @@ function scopeHref(
   const p = new URLSearchParams({ field, instrument: flt.instrument, filter: flt.filter });
   if (extra?.detector) p.set('detector', extra.detector);
   if (extra?.correction) p.set('correction', extra.correction);
-  return `/admin/nircam?${p.toString()}`;
+  return `/admin/imaging?${p.toString()}`;
 }
 
 // Single-hue completion meter: fill = inspected (approved + excluded) share.
@@ -453,7 +453,7 @@ function AdminNircamPageInner() {
     () => buildExposureNavQuery(state.debouncedFilters, state.sort, DEFAULT_SORT),
     [state.debouncedFilters, state.sort],
   );
-  const detailHref = (id: number) => `/admin/nircam/${id}${navQuery ? `?${navQuery}` : ''}`;
+  const detailHref = (id: number) => `/admin/imaging/${id}${navQuery ? `?${navQuery}` : ''}`;
 
   const columns = useMemo<ColumnDef<NircamExposure, unknown>[]>(() => [
     {

@@ -23,6 +23,7 @@ import {
   type NircamFieldImagesResult,
 } from '@/lib/actions/nircam';
 import { getFitsglDatasets } from '@/lib/actions/map';
+import { expmapPlotKey } from '@/lib/nircam-product-keys';
 import {
   IMAGING_INSTRUMENTS,
   imagingInstrumentLabel,
@@ -41,14 +42,19 @@ const formatVolume = (bytes: number): string => {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 };
 
-const formatCoverage = (s: NircamFieldSummary): string => {
-  if (s.coverage_area_deg2 != null && s.coverage_area_deg2 >= 0.05) {
-    return `${s.coverage_area_deg2.toFixed(2)} deg²`;
-  }
-  if (s.coverage_area_arcmin2 != null) {
-    return `${Math.round(s.coverage_area_arcmin2)} arcmin²`;
-  }
-  return '—';
+const formatArea = (arcmin2: number | null | undefined, deg2: number | null | undefined): string | null => {
+  if (deg2 != null && deg2 >= 0.05) return `${deg2.toFixed(2)} deg²`;
+  if (arcmin2 != null) return `${Math.round(arcmin2)} arcmin²`;
+  return null;
+};
+
+// One instrument's sky coverage of the field. NIRCam's is the summary's typed
+// pair (the `coverage` map carries the same numbers); another instrument's is
+// in the map only.
+const coverageOf = (s: NircamFieldSummary, instrument: string): string | null => {
+  const c = s.coverage?.[instrument];
+  if (c) return formatArea(c.area_arcmin2, c.area_deg2);
+  return instrument === 'nircam' ? formatArea(s.coverage_area_arcmin2, s.coverage_area_deg2) : null;
 };
 
 // NIRCam SW/LW split: short-wavelength filters sit below the ~2.4 µm channel
@@ -182,7 +188,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
       const expmapRows: NircamProductRow[] = (expmapsRes.error ? [] : expmapsRes.expmaps).map(
         (e) => ({
           kind: 'expmap',
-          instrument: 'nircam',
+          instrument: e.instrument,
           field: e.field,
           filter: e.filter,
           tile: null,
@@ -255,7 +261,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
         <Breadcrumbs
           items={[
             { label: 'CAMPFIRE', href: '/' },
-            { label: 'NIRCam', href: readOnly ? `/nircam?dr=${encodeURIComponent(drTag as string)}` : '/nircam' },
+            { label: 'Imaging', href: readOnly ? `/imaging?dr=${encodeURIComponent(drTag as string)}` : '/imaging' },
             { label: field.toUpperCase() },
           ]}
           className="mb-6"
@@ -265,10 +271,10 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
             <LogIn className="w-8 h-8 text-text-secondary" />
           </div>
           <h2 className="text-2xl font-semibold text-text-primary mb-2">
-            Sign in to view NIRCam images
+            Sign in to view images
           </h2>
           <p className="text-text-secondary mb-6 max-w-md">
-            Access to NIRCam imaging data requires authentication. Please sign in with your
+            Access to imaging data requires authentication. Please sign in with your
             CAMPFIRE account to browse and download images.
           </p>
           <SignInLink
@@ -290,15 +296,32 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
   ) as string[];
   const nircamOnly = instruments.length === 1 && instruments[0] === 'nircam';
   // Filters per instrument, from the mosaic rows (the summary's list is the
-  // union); the SW / LW split and the exposure maps are NIRCam's.
+  // union); the SW / LW split is NIRCam's.
   const filtersOf = (inst: string) =>
     [...new Set(products.filter((p) => p.instrument === inst).map((p) => p.filter))].sort();
   const nircamFilters = nircamOnly && summary ? summary.filters : filtersOf('nircam');
   const channels = summary && nircamFilters.length > 0 ? filterChannelSplit(nircamFilters) : null;
-  // Exposure maps are built for NIRCam only: a field with HST mosaics alone
-  // has no panel to show (and, under a release, neither has one without plots).
-  const showExpmaps = nircamFilters.length > 0
+  // The exposure-map panel: one tab per (instrument, filter), instruments in
+  // their fixed order. With one instrument the tabs read as they always did;
+  // with several, each instrument's tabs sit under its name.
+  const expmapTabs = instruments.flatMap((inst) =>
+    (inst === 'nircam' ? nircamFilters : filtersOf(inst)).map((f) => ({
+      key: expmapPlotKey(inst, f),
+      label: f.toUpperCase(),
+      group: instruments.length > 1 ? imagingInstrumentLabel(inst) : undefined,
+    })));
+  // Under a release the panel shows only when the release holds a plot.
+  const showExpmaps = expmapTabs.length > 0
     && (!readOnly || Object.keys(fieldImages.expmapPlots).length > 0);
+  // Sky coverage per instrument (each has its own exposures and footprint).
+  const coverageRows: [string, React.ReactNode][] = summary
+    ? (nircamOnly
+        ? [['Sky coverage', coverageOf(summary, 'nircam') ?? '—']]
+        : instruments.map((inst): [string, React.ReactNode] => [
+            instruments.length > 1 ? `Sky coverage (${imagingInstrumentLabel(inst)})` : 'Sky coverage',
+            coverageOf(summary, inst) ?? '—',
+          ]))
+    : [];
   const namedEpochs = summary ? summary.epochs.filter((e) => e !== '') : [];
   const provenanceRows: [string, React.ReactNode][] = [];
   if (summary) {
@@ -328,7 +351,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
       <Breadcrumbs
         items={[
           { label: 'CAMPFIRE', href: '/' },
-          { label: 'NIRCam', href: readOnly ? `/nircam?dr=${encodeURIComponent(drTag as string)}` : '/nircam' },
+          { label: 'Imaging', href: readOnly ? `/imaging?dr=${encodeURIComponent(drTag as string)}` : '/imaging' },
           { label: displayName },
         ]}
         className="mb-6"
@@ -359,10 +382,10 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
         <div className="text-center py-16 bg-card border border-border rounded-lg">
           <ImageIcon className="w-12 h-12 text-text-secondary mx-auto mb-4" />
           <p className="text-text-secondary">
-            No NIRCam data available for “{field}”.
+            No imaging data available for “{field}”.
           </p>
           <DrLink
-            href="/nircam"
+            href="/imaging"
             className="inline-block mt-3 text-sm text-primary hover:text-primary-hover hover:underline"
           >
             ← All fields
@@ -382,15 +405,16 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
               <div className="flex items-center gap-2">
                 {hasCutouts && (
                   <Link
-                    href={`/nircam/${encodeURIComponent(field)}/cutouts`}
+                    href={`/imaging/${encodeURIComponent(field)}/cutouts`}
                     className="inline-flex items-center gap-2 px-4 py-2 bg-surface-2 border border-border-strong text-text-primary rounded-lg text-sm font-medium hover:bg-card-hover transition-colors"
                   >
                     <Scissors className="w-3.5 h-3.5" />
                     Cutouts
                   </Link>
                 )}
-                {/* the map pyramid is built from NIRCam mosaics */}
-                {nircamFilters.length > 0 && (
+                {/* A field with NIRCam always had the link; a field without
+                    it gets one once its bands are in a map dataset. */}
+                {(nircamFilters.length > 0 || viewableFilters.size > 0) && (
                   <Link
                     href={`/map?field=${encodeURIComponent(field)}`}
                     className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors"
@@ -457,7 +481,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
                           : 'full field',
                       ],
                       ['Mosaic files', summary.n_files.toLocaleString()],
-                      ['Sky coverage', formatCoverage(summary)],
+                      ...coverageRows,
                       ['Data volume', formatVolume(summary.total_bytes)],
                       // Reduction provenance (latest published deployment)
                       ...(summary.last_updated
@@ -481,7 +505,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
 
               {showExpmaps && (
                 <ExpmapBrowser
-                  filters={nircamFilters}
+                  tabs={expmapTabs}
                   expmapPlots={fieldImages.expmapPlots}
                 />
               )}

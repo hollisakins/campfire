@@ -15,7 +15,7 @@ interface CutoutsPageProps {
 
 /**
  * Field-scoped cutout tool (epic #337, Phase 5) — a COSMOS-cutouts-style GUI
- * over the science cutout API, living under /nircam/[field] so it's found by
+ * over the science cutout API, living under /imaging/[field] so it's found by
  * browsing the field's data. Availability follows the field's deployed FitsGL
  * dataset (RLS keeps draft-backed ones admin-only).
  */

@@ -158,7 +158,7 @@ export const Navigation: React.FC<{ drTag?: string | null }> = ({ drTag = null }
   // Tags, Releases and Docs are live-only and drop it.
   const navLinks: NavLink[] = [
     { href: '/', label: 'Home' },
-    { href: withDr('/nircam', drTag), label: 'NIRCam' },
+    { href: withDr('/imaging', drTag), label: 'Imaging' },
     {
       href: withDr('/nirspec', drTag), label: 'NIRSpec', children: [
         { href: withDr('/nirspec', drTag), label: 'Catalog' },

@@ -933,6 +933,16 @@ CREATE TABLE IF NOT EXISTS "public"."fields" (
     "config_hash" "text",
     "config_updated_at" timestamp with time zone,
     "retired_at" timestamp with time zone,
+    -- Coverage of the field's other imaging instruments, keyed by the layout
+    -- token: {"acswfc": {"area_arcmin2": .., "area_deg2": ..,
+    -- "pixel_scale_arcsec": .., "deployment_id": ..}}. Deploy-owned, from that
+    -- instrument's <field>_layout.json, written one key at a time by
+    -- set_field_coverage() and never by the config upsert. NIRCam's coverage
+    -- is the typed columns above (coverage_area_*, expmap_pixel_scale_arcsec),
+    -- which predate the other instruments and are part of the frozen release
+    -- rows; field_coverage() returns one map for every instrument, which is
+    -- what the readers use.
+    "instrument_coverage" "jsonb" NOT NULL DEFAULT '{}'::"jsonb",
     CONSTRAINT "fields_pkey" PRIMARY KEY ("name")
 );
 
@@ -1448,9 +1458,11 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
         'acswfc_exposure'::"text", 'acswfc_exposure_preview'::"text",
         'acswfc_exposure_full'::"text", 'acswfc_mosaic'::"text", 'acswfc_mask'::"text",
         'acswfc_mosaic_thumbnail'::"text", 'acswfc_mosaic_quicklook'::"text",
+        'acswfc_expmap'::"text", 'acswfc_expmap_plot'::"text", 'acswfc_layout'::"text",
         'wfc3ir_exposure'::"text", 'wfc3ir_exposure_preview'::"text",
         'wfc3ir_exposure_full'::"text", 'wfc3ir_mosaic'::"text", 'wfc3ir_mask'::"text",
-        'wfc3ir_mosaic_thumbnail'::"text", 'wfc3ir_mosaic_quicklook'::"text"
+        'wfc3ir_mosaic_thumbnail'::"text", 'wfc3ir_mosaic_quicklook'::"text",
+        'wfc3ir_expmap'::"text", 'wfc3ir_expmap_plot'::"text", 'wfc3ir_layout'::"text"
     ])))
 );
 
@@ -2066,6 +2078,9 @@ CREATE TABLE IF NOT EXISTS "public"."dr_fields" (
     "config_hash" "text",
     "config_updated_at" timestamp with time zone,
     "retired_at" timestamp with time zone,
+    -- fields.instrument_coverage at the freeze; '{}' on rows frozen before the
+    -- column existed (they had NIRCam alone, whose coverage is the typed columns).
+    "instrument_coverage" "jsonb" NOT NULL DEFAULT '{}'::"jsonb",
     CONSTRAINT "dr_fields_pkey" PRIMARY KEY ("tag", "name")
 );
 

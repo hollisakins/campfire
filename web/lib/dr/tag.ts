@@ -25,11 +25,11 @@ export const DR_HEADER = 'x-campfire-dr';
  * stamps them.
  */
 const RELEASE_PATHS = [
-  '/nirspec', '/nircam', '/releases',
+  '/nirspec', '/imaging', '/releases',
   '/api/objects', '/api/spectrum', '/api/filter-options', '/api/metadata', '/api/download',
   '/api/line-fit', '/api/redshift-fit', '/api/shutters', '/api/photometry-pz', '/api/dr',
 ];
-const LIVE_ONLY_UNDER_RELEASE_PATHS = ['/nirspec/tags', '/nircam/*/cutouts'];
+const LIVE_ONLY_UNDER_RELEASE_PATHS = ['/nirspec/tags', '/imaging/*/cutouts'];
 
 function matches(pathname: string, prefix: string): boolean {
   if (prefix.includes('*')) {

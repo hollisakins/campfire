@@ -538,8 +538,7 @@ def _push_field_instrument(
 
     exposures = discover_exposures(dirs, filters, profile)
     tasks: list[UploadTask] = list(build_fits_upload_tasks(field, exposures, profile))
-    if profile.has_field_plots:
-        tasks += list(discover_expmap_tasks(dirs, field, filters))
+    tasks += list(discover_expmap_tasks(dirs, field, filters, profile))
     tasks += [t[0] for t in build_upload_tasks(dirs, field, filters, profile)]
     # Scope mosaics to the current fields.toml — a stray on-disk tile/epoch must
     # not have its bytes pushed to OSN (they would sit orphaned, un-indexed).

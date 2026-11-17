@@ -275,6 +275,11 @@ _register(ProductSpec(
 #   <instrument>_mosaic_quicklook  its large popup rendition
 #                                  ('..._quicklook.png'); the same pair, names
 #                                  and meaning as NIRCam's
+#   <instrument>_expmap            the per-filter exposure-coverage map
+#                                  ('expmap_<field>_<filter>.fits')
+#   <instrument>_expmap_plot       its dark web plot ('.png')
+#   <instrument>_layout            the instrument's field layout plot
+#                                  ('<field>_layout.png', field-scoped)
 #   <instrument>_mask              hand-drawn region masks, under reference/
 #                                  like 'nircam_mask'
 
@@ -316,6 +321,27 @@ for _inst in (Instrument.ACSWFC, Instrument.WFC3IR):
         name=f"{_inst.value}_mosaic_quicklook", instrument=_inst, tree="products",
         bucket="data", lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
         subdir=_hst_dir, suffix="_quicklook.png", legacy_prefix=None,
+    ))
+    # The field products, with NIRCam's names and places: the per-filter
+    # exposure-coverage map ('expmap_<field>_<filter>.fits') and its dark web
+    # plot ('.png') in the filter directory, and the instrument's layout plot
+    # ('<field>_layout.png') at products/<instrument>/<field>/. One set per
+    # instrument of a field: the coverage is that instrument's exposures.
+    _register(ProductSpec(
+        name=f"{_inst.value}_expmap", instrument=_inst, tree="products",
+        bucket="data", lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
+        subdir=_hst_dir, suffix=None, legacy_prefix=None,
+    ))
+    _register(ProductSpec(
+        name=f"{_inst.value}_expmap_plot", instrument=_inst, tree="products",
+        bucket="data", lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
+        subdir=_hst_dir, suffix=None, legacy_prefix=None,
+    ))
+    _register(ProductSpec(
+        name=f"{_inst.value}_layout", instrument=_inst, tree="products",
+        bucket="data", lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field",),
+        subdir=(lambda s, _i=_inst.value: f"{_i}/{s.field}"),
+        suffix="_layout.png", legacy_prefix=None,
     ))
 
 # --- Map tiles (separate 'tiles' bucket, scheme-invariant, stays on R2) ---------

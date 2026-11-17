@@ -188,13 +188,13 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
               { value: formatBytes(s.nircam.bytes), label: 'data volume' },
             ]}
             foot={s.nircam.fields.map((f) => (
-              <Link key={f.field} href={browse(`/nircam/${encodeURIComponent(f.field)}`)} className="hover:underline">
+              <Link key={f.field} href={browse(`/imaging/${encodeURIComponent(f.field)}`)} className="hover:underline">
                 {f.field}
               </Link>
             ))}
             href={s.nircam.fields.length === 1
-              ? browse(`/nircam/${encodeURIComponent(s.nircam.fields[0].field)}`)
-              : browse('/nircam')}
+              ? browse(`/imaging/${encodeURIComponent(s.nircam.fields[0].field)}`)
+              : browse('/imaging')}
           />
         )}
         {s.hst && (
@@ -208,13 +208,13 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
               { value: formatBytes(s.hst.bytes), label: 'data volume' },
             ]}
             foot={s.hst.fields.map((f) => (
-              <Link key={f} href={browse(`/nircam/${encodeURIComponent(f)}`)} className="hover:underline">
+              <Link key={f} href={browse(`/imaging/${encodeURIComponent(f)}`)} className="hover:underline">
                 {f}
               </Link>
             ))}
             href={s.hst.fields.length === 1
-              ? browse(`/nircam/${encodeURIComponent(s.hst.fields[0])}`)
-              : browse('/nircam')}
+              ? browse(`/imaging/${encodeURIComponent(s.hst.fields[0])}`)
+              : browse('/imaging')}
           />
         )}
       </div>

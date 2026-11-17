@@ -40,13 +40,13 @@ describe('drRequestDecision (the one place ?dr= is parsed)', () => {
   it('strips the parameter from every live-only surface', () => {
     expect(drRequestDecision('http://x/map?field=cosmos&dr=DR1&z=8', 'admin'))
       .toEqual({ kind: 'strip', location: '/map?field=cosmos&z=8' });
-    for (const p of ['/map', '/nirspec/tags', '/nirspec/tags/mine', '/inspect', '/profile', '/admin/releases', '/login', '/', '/docs', '/nircam/cosmos/cutouts', '/mapping', '/api/lists/membership', '/api/users/u1']) {
+    for (const p of ['/map', '/nirspec/tags', '/nirspec/tags/mine', '/inspect', '/profile', '/admin/releases', '/login', '/', '/docs', '/imaging/cosmos/cutouts', '/mapping', '/api/lists/membership', '/api/users/u1']) {
       expect(drRequestDecision(`http://x${p}?dr=DR1`, 'admin').kind, p).toBe('strip');
     }
     expect(drRequestDecision('http://x/map', 'admin')).toEqual({ kind: 'live' });
   });
   it('browses on the release-capable paths', () => {
-    for (const p of ['/nirspec', '/nirspec/objects/J1', '/nirspec/metadata', '/nircam', '/nircam/cosmos', '/releases/DR1', '/api/objects/near', '/api/objects/adjacent', '/api/spectrum/sidecars', '/api/filter-options', '/api/metadata/observations', '/api/download', '/api/line-fit', '/api/redshift-fit', '/api/shutters', '/api/photometry-pz', '/api/dr/x']) {
+    for (const p of ['/nirspec', '/nirspec/objects/J1', '/nirspec/metadata', '/imaging', '/imaging/cosmos', '/releases/DR1', '/api/objects/near', '/api/objects/adjacent', '/api/spectrum/sidecars', '/api/filter-options', '/api/metadata/observations', '/api/download', '/api/line-fit', '/api/redshift-fit', '/api/shutters', '/api/photometry-pz', '/api/dr/x']) {
       expect(drRequestDecision(`http://x${p}?dr=DR1`, 'admin'), p).toEqual({ kind: 'release', tag: 'DR1' });
     }
     expect(isReleasePath('/api/v1/objects')).toBe(false); // the bearer gate owns /api/v1; never stamped
@@ -80,7 +80,7 @@ describe('withDr', () => {
     const tag = 'DR2026.1';
     expect(withDr('/nirspec/objects/J1234%2B5678?view=objects&sort=redshift', tag))
       .toBe('/nirspec/objects/J1234%2B5678?view=objects&sort=redshift&dr=DR2026.1');
-    expect(withDr('/nircam/cosmos', tag)).toBe('/nircam/cosmos?dr=DR2026.1');
+    expect(withDr('/imaging/cosmos', tag)).toBe('/imaging/cosmos?dr=DR2026.1');
     expect(withDr('/nirspec/metadata', tag)).toBe('/nirspec/metadata?dr=DR2026.1');
     expect(withDr('/nirspec?programs=a,b', tag)).toBe('/nirspec?programs=a%2Cb&dr=DR2026.1');
   });

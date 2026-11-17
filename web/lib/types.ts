@@ -353,21 +353,33 @@ export interface NircamImage {
   file_size_stored?: number;
 }
 
-// A per-(field, filter) exposure-coverage map (product_type 'nircam_expmap',
-// sourced from the storage_objects registry). Unlike mosaics there is one
-// fiducial map per field/filter — no tile/extension axes.
+// A per-(field, instrument, filter) exposure-coverage map (product_type
+// '<instrument>_expmap', sourced from the storage_objects registry). Unlike
+// mosaics there is one fiducial map per field/instrument/filter — no
+// tile/extension axes.
 export interface NircamExpmap {
   field: string;
+  /** Imaging instrument token (nircam | acswfc | wfc3ir). */
+  instrument: string;
   filter: string;
   storage_key: string;
   file_size?: number; // size_bytes from the registry, if available
   /** Expmap grid scale, formatted like the mosaic column ('500mas'). Comes from
-   *  fields.expmap_pixel_scale_arcsec (one grid per field, not per object);
-   *  null for a field deployed before that column was populated. */
+   *  the field's coverage of that instrument (one grid per instrument of a
+   *  field, not per object); null when the deploy recorded none. */
   pixel_scale: string | null;
 }
 
-// One row of the /nircam landing grid (get_nircam_fields RPC + a presigned
+/** One instrument's sky coverage of a field, from its layout JSON at deploy
+ *  (the SQL field_coverage() map's values). */
+export interface FieldCoverage {
+  area_arcmin2?: number;
+  area_deg2?: number;
+  pixel_scale_arcsec?: number;
+  deployment_id?: number;
+}
+
+// One row of the /imaging landing grid (get_nircam_fields RPC + a presigned
 // layout-plot URL). Coverage areas and center come from the `fields` table
 // and are null until the field's first post-redesign deploy.
 export interface NircamFieldCard {
@@ -385,6 +397,9 @@ export interface NircamFieldCard {
   layout_url: string | null;  // presigned <field>_layout.png GET, if deployed
   /** The imaging instruments with a visible mosaic of the field. */
   instruments?: string[];
+  /** Sky coverage per instrument. `coverage_area_*` above are NIRCam's; a
+   *  field without NIRCam has its area here only. */
+  coverage?: Record<string, FieldCoverage> | null;
 }
 
 /** Reduction provenance of one instrument's latest published deployment. */
@@ -396,7 +411,7 @@ export interface ImagingProvenance {
   crds_context: string | null;
 }
 
-// The /nircam/[field] overview (get_nircam_field_summary RPC): the card fields
+// The /imaging/[field] overview (get_nircam_field_summary RPC): the card fields
 // plus the per-field facet arrays that drive the metadata grid.
 export interface NircamFieldSummary extends Omit<NircamFieldCard, 'layout_url'> {
   filters: string[];
@@ -422,7 +437,7 @@ export interface NircamFieldSummary extends Omit<NircamFieldCard, 'layout_url'> 
 // kinds — the download action routes on `kind`.
 export interface NircamProductRow {
   kind: 'mosaic' | 'expmap';
-  /** Imaging instrument token; exposure maps are NIRCam's. */
+  /** Imaging instrument token (nircam | acswfc | wfc3ir). */
   instrument: string;
   field: string;
   filter: string;

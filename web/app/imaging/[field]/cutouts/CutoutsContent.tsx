@@ -52,7 +52,7 @@ function pixelScaleArcsec(tag: string): number | null {
   return null;
 }
 
-const cutoutsRoute = (field: string) => `/nircam/${encodeURIComponent(field)}/cutouts`;
+const cutoutsRoute = (field: string) => `/imaging/${encodeURIComponent(field)}/cutouts`;
 
 function isOneOf<T extends string>(list: readonly T[], value: string | undefined): value is T {
   return value !== undefined && (list as readonly string[]).includes(value);
@@ -521,8 +521,8 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
       <Breadcrumbs
         items={[
           { label: 'CAMPFIRE', href: '/' },
-          { label: 'NIRCam', href: '/nircam' },
-          { label: displayName, href: `/nircam/${encodeURIComponent(field)}` },
+          { label: 'Imaging', href: '/imaging' },
+          { label: displayName, href: `/imaging/${encodeURIComponent(field)}` },
           { label: 'Cutouts' },
         ]}
         className="mb-6"
@@ -554,7 +554,7 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
             This field&apos;s imaging hasn&apos;t been prepared for the cutout service.
           </p>
           <Link
-            href={`/nircam/${encodeURIComponent(field)}`}
+            href={`/imaging/${encodeURIComponent(field)}`}
             className="mt-4 inline-block text-sm text-primary hover:underline"
           >
             ← Back to {displayName} data

@@ -315,3 +315,89 @@ def test_render_layout_no_built_results_noop(tmp_path):
 
 class _DummyField:
     name = 'cosmos'
+
+
+# --- one module for every imaging instrument --------------------------------
+
+def test_nircam_name_is_the_shared_module():
+    from campfire_pipeline.imaging import expmap as shared
+    assert em is shared
+
+
+def _two_chip_meta():
+    # an exposure of two chips side by side with a gap between them
+    return em._ExposureMeta(
+        path='j.fits', rootname='j', xposure=400.0,
+        ra=[150.000, 150.010, 150.010, 150.000], dec=[2.00, 2.00, 2.02, 2.02],
+        more=[([150.012, 150.022, 150.022, 150.012], [2.00, 2.00, 2.02, 2.02])])
+
+
+def test_an_exposure_of_two_chips_counts_its_time_once():
+    meta = _two_chip_meta()
+    assert len(meta.polygons) == 2
+    wcs, shape = em._auto_wcs([meta], 0.5, 15.0)
+    arr = em._accumulate_expmap([meta], wcs, shape)
+    assert set(np.unique(arr)) == {0.0, 400.0}
+    for ra, expect in ((150.005, 400.0), (150.017, 400.0), (150.011, 0.0)):
+        x, y = wcs.world_to_pixel_values(ra, 2.01)
+        assert arr[int(round(float(y))), int(round(float(x)))] == expect
+    # the grid encloses the second chip too
+    x, _y = wcs.world_to_pixel_values(150.022, 2.01)
+    assert 0 <= float(x) < shape[1]
+
+
+def test_overlapping_chips_of_one_exposure_are_a_union():
+    meta = em._ExposureMeta(
+        path='j.fits', rootname='j', xposure=400.0,
+        ra=[150.00, 150.02, 150.02, 150.00], dec=[2.00, 2.00, 2.02, 2.02],
+        more=[([150.01, 150.03, 150.03, 150.01], [2.00, 2.00, 2.02, 2.02])])
+    wcs, shape = em._auto_wcs([meta], 0.5, 15.0)
+    arr = em._accumulate_expmap([meta], wcs, shape)
+    assert float(arr.max()) == 400.0
+
+
+def test_region_file_and_cache_carry_every_chip(tmp_path):
+    meta = _two_chip_meta()
+    reg = tmp_path / 'footprints.reg'
+    em._write_region_file(str(reg), [('f814w', [meta])])
+    assert sum(line.startswith('polygon(') for line in reg.read_text().splitlines()) == 2
+    entry = json.loads(json.dumps(em._cache_entry_from_meta(meta, (1, 2))))
+    back = em._meta_from_cache_entry('j.fits', entry)
+    assert back.polygons == meta.polygons
+    # an entry written before chips were recorded reads as a one-chip exposure
+    del entry['more']
+    assert len(em._meta_from_cache_entry('j.fits', entry).polygons) == 1
+
+
+class _ReaderField:
+    """A field of an instrument that supplies its own reader."""
+    instrument = 'acswfc'
+
+    def __init__(self, files):
+        self._files = files
+        self.read = []
+
+    def get_exposure_files(self, filter_name):
+        return self._files
+
+    def expmap_metadata(self, path):
+        self.read.append(path)
+        return _two_chip_meta()
+
+
+def test_the_fields_reader_decides_time_and_footprint(tmp_path):
+    f = tmp_path / 'jx_flc.fits'
+    f.write_bytes(b'not a NIRCam file')
+    field = _ReaderField([str(f)])
+    cache = {}
+    metas = em._collect_metas(field, 'f814w', 'canonical', cache=cache)
+    assert [len(m.polygons) for m in metas] == [2]
+    assert field.read == [str(f)]
+    # the second pass is answered from the cache, chips included
+    again = em._collect_metas(field, 'f814w', 'canonical', cache=cache)
+    assert field.read == [str(f)] and len(again[0].polygons) == 2
+
+
+def test_uncal_stage_is_refused_for_an_instrument_without_it():
+    with pytest.raises(ValueError, match="'canonical' exposure map only"):
+        em._collect_metas(_ReaderField([]), 'f814w', 'uncal')

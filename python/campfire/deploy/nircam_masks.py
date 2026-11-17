@@ -2,7 +2,7 @@
 Imaging mask round-trip — .reg files ↔ Supabase ``exposures.mask_regions``
 (NIRCam, ACS/WFC, WFC3/IR: one table, told apart by ``instrument``).
 
-The web admin UI ``/admin/nircam/[id]`` is the canonical editing surface for
+The web admin UI ``/admin/imaging/[id]`` is the canonical editing surface for
 per-exposure mask polygons. This module materializes that DB state back into
 the reduction workspace:
 

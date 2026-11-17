@@ -231,3 +231,38 @@ def test_surface_brightness_survives_the_drizzle(tmp_path):
     inside = np.isfinite(sci) & (nexp > 0)
     assert inside.sum() > 1000
     assert np.median(sci[inside]) == pytest.approx(expect, rel=1e-3)
+
+
+def test_exposure_map_reads_both_chips_through_their_wcs(tmp_path):
+    """The field exposure maps (imaging/expmap.py, NIRCam's code) get an HST
+    exposure's time from EXPTIME and its footprint from each chip's own WCS:
+    two outlines for an ACS/WFC file, with the exposure time counted once
+    under either chip and not at all in the gap between them."""
+    from astropy.wcs import WCS
+
+    from campfire_pipeline.hst.field import HstField
+    from campfire_pipeline.imaging import expmap as em
+
+    path = str(tmp_path / 'jtest01aaq_flc.fits')
+    ny, nx, t, _sky = _acs_file(path, sky_key=0.0)
+    field = HstField(name='f', instrument='acswfc', filters=['f606w'],
+                     files=['jtest*'], grid=None)
+    meta = field.expmap_metadata(path)
+    assert meta.rootname == 'jtest01aaq' and meta.xposure == t
+    assert len(meta.polygons) == 2                       # one outline per chip
+    with fits.open(path) as hdul:
+        centers = [WCS(hdul['SCI', v].header).pixel_to_world_values(
+            (nx - 1) / 2, (ny - 1) / 2) for v in (1, 2)]
+
+    wcs, shape = em._auto_wcs([meta], 0.1, 1.0)          # 0.1" pixels
+    expmap = em._accumulate_expmap([meta], wcs, shape)
+    for ra, dec in centers:
+        x, y = wcs.world_to_pixel_values(ra, dec)
+        assert expmap[int(round(float(y))), int(round(float(x)))] == t
+    gap_ra = 0.5 * (centers[0][0] + centers[1][0])
+    x, y = wcs.world_to_pixel_values(gap_ra, centers[0][1])
+    assert expmap[int(round(float(y))), int(round(float(x)))] == 0
+    assert set(np.unique(expmap)) == {0.0, t}            # never counted twice
+    # the covered area is the two chips' (each nx x ny pixels of 0.05")
+    area = np.count_nonzero(expmap) * 0.1 ** 2
+    assert area == pytest.approx(2 * nx * ny * 0.05 ** 2, rel=0.1)

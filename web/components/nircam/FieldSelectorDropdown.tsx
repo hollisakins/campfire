@@ -26,14 +26,14 @@ interface FieldSelectorDropdownProps {
 }
 
 /**
- * Searchable single-select field switcher for /nircam/[field] — sits top-left,
+ * Searchable single-select field switcher for /imaging/[field] — sits top-left,
  * above the field header (wireframe: "Field COSMOS ▾"). Choosing a field
  * navigates to its detail route (or a sub-route via `linkTo`).
  */
 export const FieldSelectorDropdown: React.FC<FieldSelectorDropdownProps> = ({
   fields,
   current,
-  linkTo = (field) => `/nircam/${encodeURIComponent(field)}`,
+  linkTo = (field) => `/imaging/${encodeURIComponent(field)}`,
   className = '',
 }) => {
   const router = useRouter();

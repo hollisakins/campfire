@@ -29,3 +29,9 @@ export function thumbnailBase(storageKey: string): string {
 export function quicklookBase(storageKey: string): string {
   return storageKey.replace(/_quicklook\.png$/, '');
 }
+
+/** Key of a filter's exposure-map plot in the field page's plot map. A filter
+ *  is an (instrument, filter) pair, so the instrument is part of the key. */
+export function expmapPlotKey(instrument: string, filter: string): string {
+  return `${instrument}/${filter}`;
+}

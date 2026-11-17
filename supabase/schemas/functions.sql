@@ -1105,7 +1105,8 @@ WITH (security_invoker = true) AS
          expmap_pixel_scale_arcsec,
          config_hash,
          config_updated_at,
-         retired_at
+         retired_at,
+         instrument_coverage
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -1128,7 +1129,8 @@ WITH (security_invoker = true) AS
            expmap_pixel_scale_arcsec,
            config_hash,
            config_updated_at,
-           retired_at
+           retired_at,
+           instrument_coverage
     FROM public.fields
     UNION ALL
     SELECT 'dr'::text AS cat_src,
@@ -1152,7 +1154,8 @@ WITH (security_invoker = true) AS
            expmap_pixel_scale_arcsec,
            config_hash,
            config_updated_at,
-           retired_at
+           retired_at,
+           instrument_coverage
     FROM public.dr_fields
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
@@ -1244,7 +1247,74 @@ REVOKE ALL ON FUNCTION public.dr_request_context() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.dr_request_context() TO authenticator, anon, authenticated, service_role;
 
 
+-- Sky coverage of a field, one entry per imaging instrument:
+--   {"nircam": {"area_arcmin2", "area_deg2", "pixel_scale_arcsec"},
+--    "acswfc": {..., "deployment_id"}, ...}
+-- from that instrument's <field>_layout.json at its deploy. NIRCam's entry is
+-- built from the typed columns of fields (coverage_area_*, expmap_pixel_scale_
+-- arcsec: they predate the other instruments and are part of the frozen
+-- release rows), the others come from fields.instrument_coverage. One source
+-- per instrument, so nothing is stored twice; the readers take this map.
+CREATE OR REPLACE FUNCTION public.field_coverage(
+  p_instrument_coverage jsonb,
+  p_area_arcmin2 double precision,
+  p_area_deg2 double precision,
+  p_pixel_scale_arcsec double precision
+) RETURNS jsonb
+LANGUAGE sql IMMUTABLE
+SET search_path = public
+AS $$
+  SELECT (COALESCE(p_instrument_coverage, '{}'::jsonb) - 'nircam')
+    || CASE WHEN p_area_arcmin2 IS NULL AND p_pixel_scale_arcsec IS NULL THEN '{}'::jsonb
+            ELSE jsonb_build_object('nircam', jsonb_strip_nulls(jsonb_build_object(
+                   'area_arcmin2', p_area_arcmin2,
+                   'area_deg2', p_area_deg2,
+                   'pixel_scale_arcsec', p_pixel_scale_arcsec)))
+       END;
+$$;
+
+REVOKE ALL ON FUNCTION public.field_coverage(jsonb, double precision, double precision, double precision) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.field_coverage(jsonb, double precision, double precision, double precision) TO authenticated, service_role;
+
+
+-- Record one instrument's coverage of a field (campfire deploy, after that
+-- instrument's field deploy). Merges one key, so two instruments' deploys
+-- never overwrite each other, which a whole-column upsert would. SECURITY
+-- INVOKER: the admin write policy of fields is the gate, and a caller it does
+-- not admit updates no row, which is reported as an error. NIRCam is refused:
+-- its coverage is the typed columns, written by the field upsert as before.
+CREATE OR REPLACE FUNCTION public.set_field_coverage(
+  p_field text, p_instrument text, p_coverage jsonb
+) RETURNS void
+LANGUAGE plpgsql SECURITY INVOKER
+SET search_path = public
+AS $$
+BEGIN
+  IF p_instrument IS NULL OR p_instrument NOT IN ('acswfc', 'wfc3ir') THEN
+    RAISE EXCEPTION 'set_field_coverage: instrument % is not one this records (acswfc, wfc3ir; NIRCam coverage is the typed columns of fields)', COALESCE(p_instrument, 'NULL')
+      USING ERRCODE = '22023';
+  END IF;
+  IF p_coverage IS NULL OR jsonb_typeof(p_coverage) <> 'object' THEN
+    RAISE EXCEPTION 'set_field_coverage: coverage must be a JSON object' USING ERRCODE = '22023';
+  END IF;
+  UPDATE fields
+     SET instrument_coverage = instrument_coverage || jsonb_build_object(p_instrument, p_coverage)
+   WHERE name = p_field;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'set_field_coverage: no field % (or not permitted)', p_field
+      USING ERRCODE = 'P0002';
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.set_field_coverage(text, text, jsonb) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.set_field_coverage(text, text, jsonb) TO authenticated, service_role;
+
+
 -- Landing grid: one row per field the caller can see any mosaic of.
+-- coverage_area_* stay NIRCam's (their meaning before the other instruments);
+-- `coverage` is field_coverage(): every instrument's. The layout plot is the
+-- first instrument's that has one, NIRCam first.
 CREATE OR REPLACE FUNCTION public.get_nircam_fields()
 RETURNS TABLE(
   field text,
@@ -1259,7 +1329,8 @@ RETURNS TABLE(
   total_bytes bigint,
   last_updated timestamp without time zone,
   layout_key text,
-  instruments text[]
+  instruments text[],
+  coverage jsonb
 )
 LANGUAGE sql STABLE SECURITY INVOKER
 SET search_path = public
@@ -1282,22 +1353,28 @@ AS $$
     -- until the freeze lists field products, P6b-3), never the live key
     CASE WHEN public.dr_browse_tag() IS NULL THEN
       (SELECT so.storage_key FROM storage_objects so
-         WHERE so.product_type = 'nircam_layout'
+         WHERE so.product_type IN ('nircam_layout', 'acswfc_layout', 'wfc3ir_layout')
            AND so.field = ni.field
            AND so.status = 'active'
+         ORDER BY array_position(ARRAY['nircam_layout', 'acswfc_layout', 'wfc3ir_layout'], so.product_type)
          LIMIT 1)
     ELSE
       (SELECT COALESCE(m.archive_key, m.storage_key) FROM public.dr_manifest m
          WHERE m.tag = public.dr_browse_tag()
-           AND m.component = 'nircam/' || ni.field
-           AND m.product_type = 'nircam_layout'
-         ORDER BY m.storage_key LIMIT 1)
+           AND m.product_type IN ('nircam_layout', 'acswfc_layout', 'wfc3ir_layout')
+           AND m.component = split_part(m.product_type, '_', 1) || '/' || ni.field
+         ORDER BY array_position(ARRAY['nircam_layout', 'acswfc_layout', 'wfc3ir_layout'], m.product_type),
+                  m.storage_key
+         LIMIT 1)
     END                                 AS layout_key,
-    array_agg(DISTINCT ni.instrument ORDER BY ni.instrument) AS instruments
+    array_agg(DISTINCT ni.instrument ORDER BY ni.instrument) AS instruments,
+    public.field_coverage(f.instrument_coverage, f.coverage_area_arcmin2,
+                          f.coverage_area_deg2, f.expmap_pixel_scale_arcsec) AS coverage
   FROM public.cat_mosaics ni
   LEFT JOIN public.cat_fields f ON f.name = ni.field
   GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
-           f.coverage_area_arcmin2, f.coverage_area_deg2
+           f.coverage_area_arcmin2, f.coverage_area_deg2,
+           f.instrument_coverage, f.expmap_pixel_scale_arcsec
   ORDER BY ni.field;
 $$;
 
@@ -1322,7 +1399,8 @@ RETURNS TABLE(
   total_bytes bigint,
   last_updated timestamp without time zone,
   layout_key text,
-  instruments text[]
+  instruments text[],
+  coverage jsonb
 )
 LANGUAGE sql STABLE SECURITY INVOKER
 SET search_path = public
@@ -1344,23 +1422,29 @@ AS $$
     MAX(ni.created_at)                     AS last_updated,
     CASE WHEN public.dr_browse_tag() IS NULL THEN
       (SELECT so.storage_key FROM storage_objects so
-         WHERE so.product_type = 'nircam_layout'
+         WHERE so.product_type IN ('nircam_layout', 'acswfc_layout', 'wfc3ir_layout')
            AND so.field = ni.field
            AND so.status = 'active'
+         ORDER BY array_position(ARRAY['nircam_layout', 'acswfc_layout', 'wfc3ir_layout'], so.product_type)
          LIMIT 1)
     ELSE
       (SELECT COALESCE(m.archive_key, m.storage_key) FROM public.dr_manifest m
          WHERE m.tag = public.dr_browse_tag()
-           AND m.component = 'nircam/' || ni.field
-           AND m.product_type = 'nircam_layout'
-         ORDER BY m.storage_key LIMIT 1)
+           AND m.product_type IN ('nircam_layout', 'acswfc_layout', 'wfc3ir_layout')
+           AND m.component = split_part(m.product_type, '_', 1) || '/' || ni.field
+         ORDER BY array_position(ARRAY['nircam_layout', 'acswfc_layout', 'wfc3ir_layout'], m.product_type),
+                  m.storage_key
+         LIMIT 1)
     END                                    AS layout_key,
-    array_agg(DISTINCT ni.instrument ORDER BY ni.instrument)   AS instruments
+    array_agg(DISTINCT ni.instrument ORDER BY ni.instrument)   AS instruments,
+    public.field_coverage(f.instrument_coverage, f.coverage_area_arcmin2,
+                          f.coverage_area_deg2, f.expmap_pixel_scale_arcsec) AS coverage
   FROM public.cat_mosaics ni
   LEFT JOIN public.cat_fields f ON f.name = ni.field
   WHERE ni.field = p_field
   GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
-           f.coverage_area_arcmin2, f.coverage_area_deg2;
+           f.coverage_area_arcmin2, f.coverage_area_deg2,
+           f.instrument_coverage, f.expmap_pixel_scale_arcsec;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_nircam_field_summary(text) TO authenticated;
@@ -11657,7 +11741,9 @@ AS $$
   SELECT ARRAY[
     'nircam_expmap', 'nircam_expmap_plot', 'nircam_layout',
     'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook',
+    'acswfc_expmap', 'acswfc_expmap_plot', 'acswfc_layout',
     'acswfc_mosaic_thumbnail', 'acswfc_mosaic_quicklook',
+    'wfc3ir_expmap', 'wfc3ir_expmap_plot', 'wfc3ir_layout',
     'wfc3ir_mosaic_thumbnail', 'wfc3ir_mosaic_quicklook'
   ]::text[];
 $$;
@@ -11955,8 +12041,8 @@ BEGIN
     ),
     ins_fields AS (
       -- the NIRCam components and the fields of the frozen targets
-      INSERT INTO dr_fields (tag, name, display_name, filters, tiles, fiducial_tiles, epochs, programs, jwst_program_ids, file_globs, center_ra, center_dec, config, coverage_area_arcmin2, coverage_area_deg2, expmap_pixel_scale_arcsec, latest_deployment_id, created_at, config_hash, config_updated_at, retired_at)
-      SELECT p_tag, f.name, f.display_name, f.filters, f.tiles, f.fiducial_tiles, f.epochs, f.programs, f.jwst_program_ids, f.file_globs, f.center_ra, f.center_dec, f.config, f.coverage_area_arcmin2, f.coverage_area_deg2, f.expmap_pixel_scale_arcsec, f.latest_deployment_id, f.created_at, f.config_hash, f.config_updated_at, f.retired_at
+      INSERT INTO dr_fields (tag, name, display_name, filters, tiles, fiducial_tiles, epochs, programs, jwst_program_ids, file_globs, center_ra, center_dec, config, coverage_area_arcmin2, coverage_area_deg2, expmap_pixel_scale_arcsec, instrument_coverage, latest_deployment_id, created_at, config_hash, config_updated_at, retired_at)
+      SELECT p_tag, f.name, f.display_name, f.filters, f.tiles, f.fiducial_tiles, f.epochs, f.programs, f.jwst_program_ids, f.file_globs, f.center_ra, f.center_dec, f.config, f.coverage_area_arcmin2, f.coverage_area_deg2, f.expmap_pixel_scale_arcsec, f.instrument_coverage, f.latest_deployment_id, f.created_at, f.config_hash, f.config_updated_at, f.retired_at
       FROM fields f
       WHERE f.name = ANY (comp.fields)
          OR EXISTS (SELECT 1 FROM pub p WHERE p.target_field = f.name)
@@ -12176,10 +12262,15 @@ BEGIN
                                        jsonb_build_object('files', t.n, 'bytes', t.b)
                                        -- <instrument>/<field>: how many of the files are the mosaics themselves
                                        || CASE WHEN split_part(t.component, '/', 1) IN ('nircam', 'acswfc', 'wfc3ir') THEN jsonb_build_object('mosaics', t.n_mosaics) ELSE '{}'::jsonb END
-                                       -- nircam/<field>: the field's deploy-time sky coverage
-                                       || COALESCE((SELECT jsonb_build_object('area_arcmin2', f.coverage_area_arcmin2)
-                                                    FROM fields f
-                                                    WHERE t.component = 'nircam/' || f.name AND f.coverage_area_arcmin2 IS NOT NULL),
+                                       -- <instrument>/<field>: that instrument's deploy-time sky coverage of the field
+                                       || COALESCE((SELECT jsonb_build_object('area_arcmin2', (c.cov ->> 'area_arcmin2')::double precision)
+                                                    FROM fields f,
+                                                         LATERAL (SELECT public.field_coverage(f.instrument_coverage, f.coverage_area_arcmin2,
+                                                                                               f.coverage_area_deg2, f.expmap_pixel_scale_arcsec)
+                                                                         -> split_part(t.component, '/', 1) AS cov) c
+                                                    WHERE split_part(t.component, '/', 1) IN ('nircam', 'acswfc', 'wfc3ir')
+                                                      AND t.component = split_part(t.component, '/', 1) || '/' || f.name
+                                                      AND c.cov ->> 'area_arcmin2' IS NOT NULL),
                                                    '{}'::jsonb)), '{}'::jsonb)
                               FROM (SELECT m.component, count(*) AS n, COALESCE(sum(m.size_bytes), 0) AS b,
                                            count(*) FILTER (WHERE m.product_type IN ('nircam_mosaic', 'acswfc_mosaic', 'wfc3ir_mosaic')) AS n_mosaics

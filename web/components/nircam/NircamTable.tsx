@@ -381,8 +381,9 @@ export const NircamTable: React.FC<NircamTableProps> = ({
         enableSorting: false,
         cell: ({ row }) => {
           const p = row.original;
-          // The map pyramid is built from NIRCam mosaics only.
-          const canView = p.instrument === 'nircam' && p.extension === 'sci' && viewableFilters.has(p.filter);
+          // A band of the field's map dataset, whatever its instrument (the
+          // dataset holds every instrument's mosaics of the field's tiles).
+          const canView = p.extension === 'sci' && viewableFilters.has(p.filter);
           return (
             <div className="flex items-center justify-end gap-1">
               {canView && (

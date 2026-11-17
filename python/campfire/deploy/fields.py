@@ -5,7 +5,8 @@ loop (programs / observations / fields). The full fields.toml section is mirrore
 losslessly into the `config` jsonb column; the commonly-queried bits are lifted
 into typed columns.
 
-`coverage_area_*`, `expmap_pixel_scale_arcsec` and `latest_deployment_id` are
+`coverage_area_*`, `expmap_pixel_scale_arcsec`, `latest_deployment_id` (NIRCam's)
+and `instrument_coverage` (the other imaging instruments', one key each) are
 **deploy-owned** — written by `deploy_nircam` from `<field>_layout.json` — so
 `sync_fields` never sends them and the upsert leaves them untouched on existing rows
 (PostgREST merge-duplicates only updates the columns present in the payload).
@@ -187,19 +188,65 @@ def upsert_field(client, row: dict) -> None:
         record_synced("fields", {row["name"]: row["config_hash"]})
 
 
+def instrument_coverage_payload(coverage: dict | None,
+                                deployment_id: int | None) -> dict | None:
+    """One instrument's entry of ``fields.instrument_coverage`` from its
+    ``<field>_layout.json``, or None when the file gives neither an area nor
+    the grid scale (nothing to record)."""
+    if not coverage:
+        return None
+    payload = {
+        "area_arcmin2": coverage.get("coverage_area_arcmin2"),
+        "area_deg2": coverage.get("coverage_area_deg2"),
+        "pixel_scale_arcsec": coverage.get("pixel_scale_arcsec"),
+    }
+    payload = {k: v for k, v in payload.items() if v is not None}
+    if not payload:
+        return None
+    if deployment_id is not None:
+        payload["deployment_id"] = deployment_id
+    return payload
+
+
 def upsert_field_on_deploy(client, products_dir, field: str,
-                           deployment_id: int | None) -> bool:
+                           deployment_id: int | None,
+                           instrument: str = "nircam") -> bool:
     """Ride ``deploy_nircam``: sync the field's fields.toml config AND write the
-    deploy-owned columns (coverage area from ``<field>_layout.json``,
-    latest_deployment_id). Returns True if a row was upserted."""
+    deploy-owned coverage of ``instrument`` from its ``<field>_layout.json``.
+    Returns True if a row was upserted.
+
+    The coverage is one instrument's (``products_dir`` is that instrument's).
+    NIRCam's goes into the typed columns with ``latest_deployment_id``, as it
+    always has. Another instrument's is merged under its own key of
+    ``fields.instrument_coverage`` by the ``set_field_coverage`` RPC, after the
+    config upsert has made sure the row exists; the NIRCam columns are not
+    touched, so an HST deploy can neither erase nor claim NIRCam's coverage.
+    """
     section = load_fields_toml().get(field)
     if section is None:
         print(f"  fields: '{field}' not in fields.toml — skipping registry upsert")
         return False
     row = field_config_row(field, section)
+    coverage = read_layout_coverage(products_dir, field)
+    if instrument != "nircam":
+        upsert_field(client, row)
+        payload = instrument_coverage_payload(coverage, deployment_id)
+        area_msg = ""
+        if payload is not None:
+            client.rpc("set_field_coverage", {
+                "p_field": field, "p_instrument": instrument,
+                "p_coverage": payload,
+            }).execute()
+            if payload.get("area_arcmin2") is not None:
+                area_msg = f", {instrument} area {payload['area_arcmin2']:.1f} arcmin2"
+        else:
+            print(f"  fields: no {field}_layout.json for {instrument} — coverage "
+                  f"not recorded (run `cfpipe {instrument} expmap --field {field}`)")
+        print(f"  fields: upserted '{field}' "
+              f"({len(row['filters'])} filters, {len(row['tiles'])} tiles{area_msg})")
+        return True
     if deployment_id is not None:
         row["latest_deployment_id"] = deployment_id
-    coverage = read_layout_coverage(products_dir, field)
     area_msg = ""
     if coverage and coverage.get("coverage_area_arcmin2") is not None:
         row["coverage_area_arcmin2"] = coverage["coverage_area_arcmin2"]

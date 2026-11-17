@@ -122,7 +122,7 @@ function ExposureDetailPageInner() {
   // written via history.pushState, so follow popstate ourselves as well.
   useEffect(() => {
     const onPop = () => {
-      const m = window.location.pathname.match(/\/admin\/nircam\/(\d+)(?:\/|$)/);
+      const m = window.location.pathname.match(/\/admin\/imaging\/(\d+)(?:\/|$)/);
       if (m) setId(Number(m[1]));
     };
     window.addEventListener('popstate', onPop);
@@ -744,7 +744,7 @@ function ExposureDetailPageInner() {
     // Keep the URL shareable/refreshable, carrying the filter context so the
     // next exposure's nav walks the same set (see the routeId comment above
     // for why this is history.pushState and not router.push).
-    window.history.pushState(null, '', `/admin/nircam/${targetId}${navQuery ? `?${navQuery}` : ''}`);
+    window.history.pushState(null, '', `/admin/imaging/${targetId}${navQuery ? `?${navQuery}` : ''}`);
   }, [flushDirtySave, navQuery]);
 
   const handleNext = useCallback(() => goTo(nav?.nextId ?? null), [goTo, nav]);
@@ -896,7 +896,7 @@ function ExposureDetailPageInner() {
     return (
       <div className="py-8">
         <p className="text-text-secondary">Exposure not found.</p>
-        <Link href="/admin/nircam" className="text-primary hover:underline mt-2 inline-block">
+        <Link href="/admin/imaging" className="text-primary hover:underline mt-2 inline-block">
           Back to the list
         </Link>
       </div>
@@ -956,7 +956,7 @@ function ExposureDetailPageInner() {
             blurOnMouseClick(e);
             // Leaving the triage flow still flushes a pending decision.
             flushDirtySave();
-            router.push(`/admin/nircam${navQuery ? `?${navQuery}` : ''}`);
+            router.push(`/admin/imaging${navQuery ? `?${navQuery}` : ''}`);
           }}
           className="text-text-secondary hover:text-text-primary"
           title="Back to list"
@@ -1069,7 +1069,7 @@ function ExposureDetailPageInner() {
           <p className="text-amber-800 dark:text-amber-400">
             Trouble saving{' '}
             <Link
-              href={`/admin/nircam/${saveError.id}${navQuery ? `?${navQuery}` : ''}`}
+              href={`/admin/imaging/${saveError.id}${navQuery ? `?${navQuery}` : ''}`}
               className="font-mono underline"
             >
               {saveError.filename}
@@ -1089,7 +1089,7 @@ function ExposureDetailPageInner() {
           <p className="text-red-800 dark:text-red-400">
             Failed to save{' '}
             <Link
-              href={`/admin/nircam/${saveError.id}${navQuery ? `?${navQuery}` : ''}`}
+              href={`/admin/imaging/${saveError.id}${navQuery ? `?${navQuery}` : ''}`}
               className="font-mono underline"
             >
               {saveError.filename}
@@ -1457,7 +1457,7 @@ function RelatedList({ title, hint, rows, visit }: {
           {rows.map((r) => (
             <li key={r.id}>
               <a
-                href={`/admin/nircam/${r.id}`}
+                href={`/admin/imaging/${r.id}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 title={`${r.filename} — ${r.review_status}${r.masked ? ', masked' : ''} (opens in a new tab)`}

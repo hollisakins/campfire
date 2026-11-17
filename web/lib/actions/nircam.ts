@@ -6,8 +6,8 @@ import { createClient } from '@/lib/supabase/server';
 import { paginateQuery } from '@/lib/supabase/paginate';
 import { generateDownloadUrls } from '@/lib/r2';
 import { parseKey } from '@/lib/layout';
-import { listReleaseMembers, listReleaseMembersIn, releaseDownloadUrls, type ReleaseMember } from '@/lib/server/dr-files';
-import { thumbnailBase, quicklookBase } from '@/lib/nircam-product-keys';
+import { listReleaseMembersIn, releaseDownloadUrls, type ReleaseMember } from '@/lib/server/dr-files';
+import { thumbnailBase, quicklookBase, expmapPlotKey } from '@/lib/nircam-product-keys';
 import {
   IMAGING_INSTRUMENTS,
   type ImagingProvenance, type NircamImage, type NircamExpmap, type NircamFieldCard,
@@ -20,6 +20,24 @@ import {
 const MOSAIC_TYPES: string[] = IMAGING_INSTRUMENTS.map((i) => `${i}_mosaic`);
 const THUMBNAIL_TYPES: string[] = IMAGING_INSTRUMENTS.map((i) => `${i}_mosaic_thumbnail`);
 const QUICKLOOK_TYPES: string[] = IMAGING_INSTRUMENTS.map((i) => `${i}_mosaic_quicklook`);
+// The field products, one set per instrument of a field: the per-filter
+// exposure map and its dark plot, and the instrument's layout plot. The
+// layout shown for a field is the first instrument's that has one, in
+// IMAGING_INSTRUMENTS order (NIRCam first), as get_nircam_fields picks it.
+const EXPMAP_TYPES: string[] = IMAGING_INSTRUMENTS.map((i) => `${i}_expmap`);
+const EXPMAP_PLOT_TYPES: string[] = IMAGING_INSTRUMENTS.map((i) => `${i}_expmap_plot`);
+const LAYOUT_TYPES: string[] = IMAGING_INSTRUMENTS.map((i) => `${i}_layout`);
+
+/** The instrument a product type belongs to (`acswfc_expmap` -> `acswfc`). */
+function instrumentOfType(productType: string): string {
+  return productType.split('_')[0];
+}
+
+/** Position in the fixed instrument order (NIRCam first); unknown last. */
+function instrumentRank(instrument: string): number {
+  const i = (IMAGING_INSTRUMENTS as readonly string[]).indexOf(instrument);
+  return i < 0 ? IMAGING_INSTRUMENTS.length : i;
+}
 
 // Presigned-GET lifetime for <img> sources (layout / expmap plots / thumbnails).
 // Raw presigned URLs go straight into <img> tags — no proxy hop, no CORS needed
@@ -54,7 +72,8 @@ export interface NircamFieldSummaryResult {
 export interface NircamFieldImagesResult {
   /** Presigned GET for the field's <field>_layout.png, if deployed. */
   layoutUrl: string | null;
-  /** filter -> presigned GET for its dark expmap plot PNG. */
+  /** `<instrument>/<filter>` (expmapPlotKey) -> presigned GET for that
+   *  filter's dark expmap plot PNG. */
   expmapPlots: Record<string, string>;
   /** mosaic base key (thumb key minus `_thumb.png`) -> presigned GET. */
   thumbnails: Record<string, string>;
@@ -192,10 +211,25 @@ function formatPixelScale(arcsec: unknown): string | null {
   return `${Math.round(arcsec * 1000)}mas`;
 }
 
+/** The exposure-map grid scale of each instrument of a field, formatted, from
+ *  a `cat_fields` row: NIRCam's is the typed column, another instrument's is in
+ *  `instrument_coverage` (the SQL field_coverage() map, rebuilt here because
+ *  this reads the view directly). */
+function expmapScales(row: { expmap_pixel_scale_arcsec?: unknown; instrument_coverage?: unknown } | null | undefined): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  if (!row) return out;
+  out.set('nircam', formatPixelScale(row.expmap_pixel_scale_arcsec));
+  const other = (row.instrument_coverage ?? {}) as Record<string, { pixel_scale_arcsec?: unknown } | null>;
+  for (const [instrument, entry] of Object.entries(other)) {
+    if (instrument !== 'nircam') out.set(instrument, formatPixelScale(entry?.pixel_scale_arcsec));
+  }
+  return out;
+}
+
 /**
- * Fetch the per-(field, filter) exposure-coverage maps a user may see.
+ * Fetch the per-(field, instrument, filter) exposure-coverage maps a user may see.
  *
- * Expmaps are registered in `storage_objects` (product_type `nircam_expmap`) and
+ * Expmaps are registered in `storage_objects` (product_type `<instrument>_expmap`) and
  * their visibility rides the owning field deployment via RLS: a published field
  * deployment is public to everyone, drafts stay admin-only. We simply select
  * active rows and let `select_storage_objects_by_access` do the gating — no
@@ -214,32 +248,39 @@ export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsRes
     const dr = await requestDrTag();
     if (dr) {
       if (!field) return { expmaps: [], isAuthenticated: true };
-      const members = await listReleaseMembers(supabase, dr, { component: `nircam/${field}`, productTypes: ['nircam_expmap'] });
-      const { data: fieldRow } = await supabase.from('cat_fields').select('name, expmap_pixel_scale_arcsec').eq('name', field).maybeSingle();
-      const scale = formatPixelScale(fieldRow?.expmap_pixel_scale_arcsec);
+      // every imaging instrument's component of the field
+      const members = await releaseFieldMembers(supabase, dr, field, EXPMAP_TYPES);
+      const { data: fieldRow } = await supabase.from('cat_fields').select('name, expmap_pixel_scale_arcsec, instrument_coverage').eq('name', field).maybeSingle();
+      const scales = expmapScales(fieldRow);
       const expmaps: NircamExpmap[] = [];
-      for (const m of members) {
+      for (const m of members.values()) {
+        if (!m) continue;
         let filt: string | undefined;
         try { filt = parseKey(m.storageKey).scope.filt as string | undefined; } catch { filt = undefined; }
         if (!filt) continue;
-        expmaps.push({ field, filter: filt, storage_key: m.storageKey, file_size: m.sizeBytes ?? undefined, pixel_scale: scale });
+        const instrument = instrumentOfType(m.productType);
+        expmaps.push({ field, instrument, filter: filt, storage_key: m.storageKey, file_size: m.sizeBytes ?? undefined, pixel_scale: scales.get(instrument) ?? null });
       }
+      expmaps.sort((a, b) =>
+        instrumentRank(a.instrument) - instrumentRank(b.instrument)
+        || a.filter.localeCompare(b.filter));
       return { expmaps, isAuthenticated: true };
     }
 
     const { data, error } = await paginateQuery<{
       field: string; filter: string | null; storage_key: string;
-      size_bytes: number | null;
+      size_bytes: number | null; product_type: string;
     }>(
       () => {
         let q = supabase
           .from('storage_objects')
-          .select('field, filter, storage_key, size_bytes')
-          .eq('product_type', 'nircam_expmap')
+          .select('field, filter, storage_key, size_bytes, product_type')
+          .in('product_type', EXPMAP_TYPES)
           .eq('status', 'active');
         if (field) q = q.eq('field', field);
         return q
           .order('field', { ascending: true })
+          .order('product_type', { ascending: true })
           .order('filter', { ascending: true });
       },
     );
@@ -249,27 +290,36 @@ export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsRes
       return { expmaps: [], error: error.message, isAuthenticated: true };
     }
 
-    // Grid scale per field. An expmap FITS records its scale only in CDELT1/2 and
-    // the registry row has no scale axis, so it comes from the `fields` registry,
-    // where deploy lifts it out of <field>_layout.json. One value per field —
-    // expmap builds a single shared WCS across all of a field's filters. A failure
-    // here is non-fatal: the rows still render, just without a Scale.
-    let scaleQuery = supabase.from('cat_fields').select('name, expmap_pixel_scale_arcsec');
+    // Grid scale per field and instrument. An expmap FITS records its scale only
+    // in CDELT1/2 and the registry row has no scale axis, so it comes from the
+    // `fields` registry, where deploy lifts it out of that instrument's
+    // <field>_layout.json. One value per instrument of a field — expmap builds a
+    // single shared WCS across all of an instrument's filters. A failure here is
+    // non-fatal: the rows still render, just without a Scale.
+    let scaleQuery = supabase.from('cat_fields').select('name, expmap_pixel_scale_arcsec, instrument_coverage');
     if (field) scaleQuery = scaleQuery.eq('name', field);
     const { data: fieldRows } = await scaleQuery;
-    const scaleByField = new Map(
-      (fieldRows || []).map((f) => [f.name as string, formatPixelScale(f.expmap_pixel_scale_arcsec)])
+    const scalesByField = new Map(
+      (fieldRows || []).map((f) => [f.name as string, expmapScales(f)])
     );
 
     const expmaps: NircamExpmap[] = data
       .filter((r) => r.filter)  // per-filter product; skip any unscoped row
-      .map((r) => ({
-        field: r.field,
-        filter: r.filter as string,
-        storage_key: r.storage_key,
-        file_size: r.size_bytes ?? undefined,
-        pixel_scale: scaleByField.get(r.field) ?? null,
-      }));
+      .map((r) => {
+        const instrument = instrumentOfType(r.product_type);
+        return {
+          field: r.field,
+          instrument,
+          filter: r.filter as string,
+          storage_key: r.storage_key,
+          file_size: r.size_bytes ?? undefined,
+          pixel_scale: scalesByField.get(r.field)?.get(instrument) ?? null,
+        };
+      })
+      .sort((a, b) =>
+        a.field.localeCompare(b.field)
+        || instrumentRank(a.instrument) - instrumentRank(b.instrument)
+        || a.filter.localeCompare(b.filter));
 
     return { expmaps, isAuthenticated: true };
   } catch (err) {
@@ -279,7 +329,7 @@ export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsRes
 }
 
 /**
- * The /nircam landing grid: one card per field the caller can see any mosaic
+ * The /imaging landing grid: one card per field the caller can see any mosaic
  * of (get_nircam_fields RPC — SECURITY INVOKER, so mosaics RLS scopes
  * non-admins to published data). Each row's layout key is presigned into a
  * ready-to-render <img> URL here so the client never handles storage keys.
@@ -310,12 +360,22 @@ export async function getNircamFields(): Promise<NircamFieldsResult> {
       // member of that field — decided on the manifest row's state, never on
       // the RPC's layout_key (which is the live key while the member is
       // pending). No archived layout: no preview (P6c-2: never a live file).
+      // A field's layout is the first instrument's the release holds, NIRCam
+      // first (the live rule, get_nircam_fields).
       const layoutByField = new Map<string, ReleaseMember>();
       try {
         const members = await listReleaseMembersIn(supabase, dr, {
-          components: rows.map((r) => `nircam/${r.field}`), productTypes: ['nircam_layout'],
+          components: rows.flatMap((r) => IMAGING_INSTRUMENTS.map((i) => `${i}/${r.field}`)),
+          productTypes: LAYOUT_TYPES,
         });
-        for (const m of members) layoutByField.set(m.component.slice('nircam/'.length), m);
+        for (const m of members) {
+          const slash = m.component.indexOf('/');
+          const fieldName = m.component.slice(slash + 1);
+          const held = layoutByField.get(fieldName);
+          if (!held || instrumentRank(instrumentOfType(m.productType)) < instrumentRank(instrumentOfType(held.productType))) {
+            layoutByField.set(fieldName, m);
+          }
+        }
       } catch (err) {
         console.error('Error listing the release layouts:', err);
       }
@@ -351,7 +411,7 @@ export async function getNircamFields(): Promise<NircamFieldsResult> {
 }
 
 /**
- * The /nircam/[field] overview (get_nircam_field_summary RPC). Returns null
+ * The /imaging/[field] overview (get_nircam_field_summary RPC). Returns null
  * for a field the caller can't see any mosaic of — the page treats unknown
  * and unauthorized fields identically.
  */
@@ -446,9 +506,9 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
     // release holds archived.
     const dr = await requestDrTag();
     if (dr) {
-      const fitsTypes = [...MOSAIC_TYPES, 'nircam_expmap'];
+      const fitsTypes = [...MOSAIC_TYPES, ...EXPMAP_TYPES];
       const byKey = await releaseFieldMembers(supabase, dr, field, [
-        'nircam_layout', 'nircam_expmap_plot', ...THUMBNAIL_TYPES, ...QUICKLOOK_TYPES,
+        ...LAYOUT_TYPES, ...EXPMAP_PLOT_TYPES, ...THUMBNAIL_TYPES, ...QUICKLOOK_TYPES,
         ...fitsTypes,
       ]);
       const images = new Map([...byKey].filter(([, m]) => m && !fitsTypes.includes(m.productType)));
@@ -459,14 +519,21 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
           .filter((m): m is ReleaseMember => !!m && fitsTypes.includes(m.productType))
           .map((m) => m.storageKey),
       };
+      let layoutRank = Infinity;
       for (const [key, m] of images) {
         const url = urlByKey.get(key);
         if (!url || !m) continue;
-        if (m.productType === 'nircam_layout') result.layoutUrl = url;
-        else if (m.productType === 'nircam_expmap_plot') {
+        const instrument = instrumentOfType(m.productType);
+        if (LAYOUT_TYPES.includes(m.productType)) {
+          // the first instrument's layout the release holds, NIRCam first
+          if (instrumentRank(instrument) < layoutRank) {
+            layoutRank = instrumentRank(instrument);
+            result.layoutUrl = url;
+          }
+        } else if (EXPMAP_PLOT_TYPES.includes(m.productType)) {
           let filt: string | undefined;
           try { filt = parseKey(key).scope.filt as string | undefined; } catch { filt = undefined; }
-          if (filt) result.expmapPlots[filt] = url;
+          if (filt) result.expmapPlots[expmapPlotKey(instrument, filt)] = url;
         } else if (THUMBNAIL_TYPES.includes(m.productType)) result.thumbnails[thumbnailBase(key)] = url;
         else if (QUICKLOOK_TYPES.includes(m.productType)) result.quicklooks[quicklookBase(key)] = url;
       }
@@ -481,7 +548,7 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
         .select('storage_key, product_type, filter')
         .eq('field', field)
         .eq('status', 'active')
-        .in('product_type', ['nircam_layout', 'nircam_expmap_plot', ...THUMBNAIL_TYPES, ...QUICKLOOK_TYPES])
+        .in('product_type', [...LAYOUT_TYPES, ...EXPMAP_PLOT_TYPES, ...THUMBNAIL_TYPES, ...QUICKLOOK_TYPES])
         .order('storage_key'),
     );
 
@@ -496,13 +563,19 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
     const urlByKey = new Map(keys.map((k, i) => [k, urls[i]]));
 
     const result: NircamFieldImagesResult = { layoutUrl: null, expmapPlots: {}, thumbnails: {}, quicklooks: {} };
+    let layoutRank = Infinity;
     for (const row of data) {
       const url = urlByKey.get(row.storage_key);
       if (!url) continue;
-      if (row.product_type === 'nircam_layout') {
-        result.layoutUrl = url;
-      } else if (row.product_type === 'nircam_expmap_plot' && row.filter) {
-        result.expmapPlots[row.filter] = url;
+      const instrument = instrumentOfType(row.product_type);
+      if (LAYOUT_TYPES.includes(row.product_type)) {
+        // the first instrument's layout, NIRCam first (get_nircam_fields' rule)
+        if (instrumentRank(instrument) < layoutRank) {
+          layoutRank = instrumentRank(instrument);
+          result.layoutUrl = url;
+        }
+      } else if (EXPMAP_PLOT_TYPES.includes(row.product_type) && row.filter) {
+        result.expmapPlots[expmapPlotKey(instrument, row.filter)] = url;
       } else if (THUMBNAIL_TYPES.includes(row.product_type)) {
         // Keyed by mosaic base — the shared contract with the table's
         // mosaicBase() lives in lib/nircam-product-keys.ts.

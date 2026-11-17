@@ -556,9 +556,20 @@ class Field:
         fc = fields_config[name]
         if 'tangent_point' not in fc:
             raise ValueError(f"Field '{name}' has no tangent_point")
+        tiles = parse_tiles(fc)
+        # The fiducial set is the field's too (the map composite of every
+        # instrument is built on it).
+        fiducial = fc.get('fiducial_tiles', [])
+        if isinstance(fiducial, str):
+            fiducial = [fiducial]
+        unknown = [t for t in fiducial if t not in tiles]
+        if unknown:
+            raise ValueError(
+                f"Field '{name}': `fiducial_tiles` references undeclared tile(s) "
+                f"{unknown}. Declared tiles: {list(tiles)}")
         return cls(name=name, filters=[], files=[],
                    tangent_point=tuple(fc['tangent_point']),
-                   tiles=parse_tiles(fc))
+                   tiles=tiles, fiducial_tiles=list(fiducial))
 
     @property
     def pids(self):
