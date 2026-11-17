@@ -14,10 +14,11 @@ account_id = "2d136e3d61aca8a4ae08a2ea760f6d23"
 
 # Custom domains (config-as-code): deploys assert the attachments, and
 # Cloudflare manages the DNS record + certificate for each. download.campfire-jwst.org
-# is the current name (CDN_FRONT_URL / NEXT_PUBLIC_WORKER_DOWNLOAD_URL);
-# campfire-download.hollisakins.com keeps serving for the 30-day download tokens
-# minted before the domain move (ops/README.md, "Domain move") and for older
-# baked NEXT_PUBLIC_ builds — a first-level name there on purpose, because the
+# is the primary name (CDN_FRONT_URL / NEXT_PUBLIC_WORKER_DOWNLOAD_URL);
+# campfire-download.hollisakins.com is its permanent alias: the web app mints
+# urls on it for visitors on the alias portal host (web/lib/host-aliases.ts,
+# ops/README.md "Domain move" → Afterwards), and it serves the download tokens
+# minted before the domain move — a first-level name there on purpose, because the
 # free Universal SSL wildcard (*.hollisakins.com) covers it where a deeper name
 # (download.campfire.…) gets no certificate. The CI token must have DNS edit on
 # both zones, or the deploy fails at the custom-domain step. The workers.dev

@@ -589,12 +589,22 @@ domain and origins in `wrangler.toml`, and the web fallbacks.
 and `deploy.sh <last sha built with the old urls>` (`deploys.log`). Re-creating
 the parking rule is optional; without it the new names serve the site directly.
 
-**Afterwards:** leave `campfire-api.hollisakins.com` aliased for at least three
-months and the old Worker route for at least 30 days; then drop the `ALT_API_HOST`
-line, the old route in `wrangler.toml`, and the `campfire-tiles` R2 custom
-domain. The redirects on `campfire.hollisakins.com` stay for as long as the
-domain exists. Moving the mail From to `team@campfire-jwst.org` is a separate,
-optional Resend domain verification.
+**Afterwards:** the hollisakins.com names are a permanent second domain, not
+a retirement path. Some networks block `campfire-jwst.org` (newly-registered-
+domain firewall categories, about 30 days from 2026-10-25 at Palo Alto sites)
+and others block `hollisakins.com` (Princeton), so `campfire.hollisakins.com`
+serves the whole portal (Caddy `portal_alias`, `X-Robots-Tag: noindex`) and the
+app keeps a visitor there on the alias of every host it links to
+(`web/lib/host-aliases.ts`, GitHub variable `DEPLOY_NEXT_PUBLIC_HOST_ALIASES` =
+comma-separated `alias=primary` pairs, `.env.example` has the value). That
+needs all four alias names live: `ALT_WEB_HOST`, `ALT_API_HOST`, the
+`campfire-download` Worker route in `wrangler.toml` and the `campfire-tiles` R2
+custom domain (its CORS policy must allow the alias portal origin). Keep them,
+and the alias origins in the Worker's `ALLOWED_ORIGINS` and in GoTrue's
+`ADDITIONAL_REDIRECT_URLS`, for as long as either domain is blocked anywhere.
+Auth emails still link to `SITE_URL` (the primary name). Moving the mail From
+to `team@campfire-jwst.org` is a separate, optional Resend domain
+verification.
 
 ## Rollback
 
@@ -641,6 +651,22 @@ optional Resend domain verification.
 - Outside-in check: `campfire-site-check.timer` fetches the public
   `/api/health` through Cloudflare every 5 min and pings
   `HEALTHCHECK_PING_URL_SITE`; healthchecks.io alerts when the pings stop.
+  `/api/health` is 503 (`"db":"degraded"`, `reason` `wal` or `locks`) when
+  commits are stuck on the disk or behind a lock, not only when the database
+  is unreachable (`db_stall_status()`, two samples 15 s apart).
+  A run tries up to 3 times, 5 s apart, and reports `/fail` only if all fail
+  (a single stalled request, as on 2026-11-06 and 2026-11-10, must not page).
+  Every failed try, with curl's error and the connect / TLS / first-byte times
+  or the 503 body, goes to `/srv/campfire/logs/site-check.log` and into the
+  ping body (healthchecks.io's ping log): after a notice you cannot explain,
+  read that file first. A blip that recovered on retry sends no notice, only
+  log lines.
+- Site-wide banner: shown automatically while `/api/health` would be 503.
+  For an operator message (maintenance, a provider incident) write one line on
+  the host, root disk, no restart, shown within 15 s, replaces the automatic
+  text: `echo 'Jetstream2 storage incident: sign-in and saving may fail.' |
+  sudo tee /etc/campfire/status/message`; `sudo rm /etc/campfire/status/message`
+  clears it.
 - psql: `docker exec -it campfire-db psql -U supabase_admin -d postgres`;
   slow queries in `pg_stat_statements`; statements over 1 s are logged
   (`PG_LOG_MIN_DURATION_MS`).
@@ -665,6 +691,15 @@ optional Resend domain verification.
 - Maintenance windows are announced on the Jetstream2 status list; the stack
   comes back on its own after a reboot (`restart: unless-stopped`, Docker
   `live-restore`), but check `docker compose ps` afterwards.
+- **The data volume can stall.** 2026-11-06 20:15–20:30 UTC: `/dev/sdb`
+  (Ceph-backed, holds `db/`) stopped completing writes without logging an
+  error (`jbd2/sdb-8 blocked for more than 120 seconds` in `dmesg`, commits in
+  `WalSync` in `pg_stat_activity`); reads kept working from cache, logins and
+  saves timed out; it recovered by itself and nothing on the status page
+  covered it. Diagnose with `cat /proc/pressure/io` and field 12 (in flight) of
+  `/proc/diskstats` for `sdb`. Wait it out: restarting containers or rebooting
+  hangs on the same volume. Set the banner message (Day 2), report the volume
+  id to help@jetstream-cloud.org.
 - The floating IP survives reboots and resizes; it does not survive deleting
   the instance. DNS lives in Cloudflare so a new IP is one API call.
 - Publications using the portal should acknowledge Jetstream2
@@ -672,6 +707,7 @@ optional Resend domain verification.
 
 ## Changelog
 
+- 2026-11-06 — `docker-compose.yml` web: `STATUS_MESSAGE_FILE` + read-only mount of `/etc/campfire/status` (the banner's operator message, on the root disk), after the 20:15–20:30 UTC data-volume stall; `/api/health` now reports a stalled database.
 - 2026-10-29 — Public SQL set up: `reader-setup.sh` run (`.env` `READER_PASSWORD` generated), security group admits the reader port, `db.campfire-jwst.org` DNS-only, `campfire-reader-heal.timer` enabled. Then the no-password form: `.env` `READER_PORT` 6432 → 5432 (the published string carries no port), pooler `auth_type` scram → trust over the one-name userlist (`READER_PASSWORD` is the pooler's own login now, not published), `READER_BIND` = the VM's interface address (written by the script), security group rule moved to 5432.
 - 2026-10-25 ~20:30 UTC — **Domain move executed** (see "Domain move"): certificates swapped (`origin.*` = campfire-jwst.org, `alt.*` = hollisakins.com); `.env` `WEB_HOST`, `WEB_STAGING_HOST`, `API_HOST` → the campfire-jwst.org names, `ALT_WEB_HOST`, `ALT_WEB_STAGING_HOST`, `ALT_API_HOST` → the hollisakins.com names, `SITE_URL`, `API_EXTERNAL_URL`, `SUPABASE_PUBLIC_URL`, `MAILER_TEMPLATES_*` → new urls, `ADDITIONAL_REDIRECT_URLS` = new + old lists; `web.env` `CDN_FRONT_URL`, `S3_TILES_PUBLIC_URL_BASE`, `NEXT_PUBLIC_*` → new hosts; caddy + auth recreated; parking rule deleted; `domain-move.sql` run; `DEPLOY_NEXT_PUBLIC_*` variables → new hosts; this PR's merge rebuilt the image.
 - 2026-10-25 — `.env` `ALT_API_HOST` set (early alias: the Supabase API answers on `api.campfire-jwst.org` ahead of the flip); `certs/alt.pem`/`alt.key` = the new zone's origin certificate (`jwst.*` kept as the spare); caddy recreated with the `ALT_*` Caddyfile.

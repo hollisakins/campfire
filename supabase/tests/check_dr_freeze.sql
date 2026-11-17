@@ -85,15 +85,15 @@ JOIN objects o ON o.object_id = v.oid;
 
 -- Spectra. MIX: a PRISM (z=2.50, 1000 s) and a G395M whose auto agrees
 -- (2.505) -> the refined grating anchors z_source; a G140M that disagrees.
-INSERT INTO spectra (target_id, grating, fits_path, deploy_status, redshift_auto, exposure_time, file_hash, science_hash) VALUES
-  ('zzz-dr-t-pub',   'PRISM', '/tmp/zzz_dr_pub_prism_spec.fits',  'published', 1.0,   500,  'sha256:' || repeat('1', 64), 'sha256:' || repeat('a', 64)),
-  ('zzz-dr-t-pub',   'G395M', '/tmp/zzz_dr_pub_g395m_spec.fits',  'revoked',   1.0,   500,  'sha256:' || repeat('2', 64), 'sha256:' || repeat('b', 64)),
-  ('zzz-dr-t-mixp',  'PRISM', '/tmp/zzz_dr_mixp_prism_spec.fits', 'published', 2.50,  1000, 'sha256:' || repeat('3', 64), 'sha256:' || repeat('c', 64)),
-  ('zzz-dr-t-mixq',  'G395M', '/tmp/zzz_dr_mixq_g395m_spec.fits', 'published', 2.505, 2000, 'sha256:' || repeat('4', 64), 'sha256:' || repeat('d', 64)),
-  ('zzz-dr-t-mixq',  'G140M', '/tmp/zzz_dr_mixq_g140m_spec.fits', 'published', 3.1,   2000, 'sha256:' || repeat('5', 64), 'sha256:' || repeat('e', 64)),
-  ('zzz-dr-t-priv',  'PRISM', '/tmp/zzz_dr_priv_prism_spec.fits', 'published', 4.0,   500,  'sha256:' || repeat('6', 64), 'sha256:' || repeat('f', 64)),
-  ('zzz-dr-t-draft', 'PRISM', '/tmp/zzz_dr_draft_prism_spec.fits','draft',     5.0,   500,  'sha256:' || repeat('7', 64), 'sha256:' || repeat('0', 64)),
-  ('zzz-dr-t-inact', 'PRISM', '/tmp/zzz_dr_inact_prism_spec.fits','published', 6.0,   500,  'sha256:' || repeat('8', 64), 'sha256:' || repeat('9', 64));
+INSERT INTO spectra (target_id, grating, fits_path, deploy_status, redshift_auto, exposure_time, file_hash, science_hash, filter) VALUES
+  ('zzz-dr-t-pub',   'PRISM', '/tmp/zzz_dr_pub_prism_spec.fits',  'published', 1.0,   500,  'sha256:' || repeat('1', 64), 'sha256:' || repeat('a', 64), 'CLEAR'),
+  ('zzz-dr-t-pub',   'G395M', '/tmp/zzz_dr_pub_g395m_spec.fits',  'revoked',   1.0,   500,  'sha256:' || repeat('2', 64), 'sha256:' || repeat('b', 64), 'F290LP'),
+  ('zzz-dr-t-mixp',  'PRISM', '/tmp/zzz_dr_mixp_prism_spec.fits', 'published', 2.50,  1000, 'sha256:' || repeat('3', 64), 'sha256:' || repeat('c', 64), 'CLEAR'),
+  ('zzz-dr-t-mixq',  'G395M', '/tmp/zzz_dr_mixq_g395m_spec.fits', 'published', 2.505, 2000, 'sha256:' || repeat('4', 64), 'sha256:' || repeat('d', 64), 'F290LP'),
+  ('zzz-dr-t-mixq',  'G140M', '/tmp/zzz_dr_mixq_g140m_spec.fits', 'published', 3.1,   2000, 'sha256:' || repeat('5', 64), 'sha256:' || repeat('e', 64), 'F100LP'),
+  ('zzz-dr-t-priv',  'PRISM', '/tmp/zzz_dr_priv_prism_spec.fits', 'published', 4.0,   500,  'sha256:' || repeat('6', 64), 'sha256:' || repeat('f', 64), 'CLEAR'),
+  ('zzz-dr-t-draft', 'PRISM', '/tmp/zzz_dr_draft_prism_spec.fits','draft',     5.0,   500,  'sha256:' || repeat('7', 64), 'sha256:' || repeat('0', 64), 'CLEAR'),
+  ('zzz-dr-t-inact', 'PRISM', '/tmp/zzz_dr_inact_prism_spec.fits','published', 6.0,   500,  'sha256:' || repeat('8', 64), 'sha256:' || repeat('9', 64), 'CLEAR');
 
 -- Registry rows: spec + json + 1d + master-background json (with spectrum_id)
 -- and zfit + lines.json WITHOUT spectrum_id (how deploy registered them), for

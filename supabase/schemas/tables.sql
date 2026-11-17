@@ -388,17 +388,26 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
       )
     ) STORED,
     "is_public" boolean NOT NULL DEFAULT false,
+    -- NIRSpec filter (CLEAR, F070LP, F100LP, F170LP, F290LP): with grating the
+    -- disperser setup. One grating can pair with several filters (G140M with
+    -- F070LP and F100LP, #683), so the spectrum's identity is
+    -- (target_id, grating, filter), the unique key idx_spectra_target_grating_filter.
+    -- Deploy writes it from the summary; set_spectrum_filter fills it from
+    -- fits_path when a write leaves it NULL, and a path it cannot parse fails
+    -- the write here rather than landing a row outside the key.
+    "filter" "text" NOT NULL,
     -- The master-background spectrum (SPEC1D_MBKG / SCI_MBKG of the same
     -- spec.fits) and the exposure counts behind the nodded one, written by
     -- deploy from the spec.fits primary header (MBKGPREF / MBKGWHY / NEXP /
-    -- NEXPBKG). NULL when the file predates the cards. Last, in the order the
-    -- migration appended them (cat_spectra mirrors the physical order).
+    -- NEXPBKG). NULL when the file predates the cards. Last, after filter, in
+    -- the order the migrations append them (cat_spectra mirrors the physical order).
     "has_mbkg_spectrum" boolean NOT NULL DEFAULT false,
     "mbkg_preferred" boolean,
     "mbkg_reason" "text" CONSTRAINT "spectra_mbkg_reason_check" CHECK (("mbkg_reason" IS NULL OR "mbkg_reason" = ANY (ARRAY['no_clear_background'::"text", 'single_exposure'::"text", 'extended'::"text"]))),
     "n_exp" integer,
     "n_exp_bkg" integer
 );
+COMMENT ON COLUMN "public"."spectra"."filter" IS 'NIRSpec filter paired with grating (CLEAR, F070LP, F100LP, F170LP, F290LP; #683); (target_id, grating, filter) is the spectrum''s unique key. Written by deploy; filled from fits_path by set_spectrum_filter when NULL (spectrum_filter_from_path).';
 COMMENT ON COLUMN "public"."spectra"."is_public" IS 'Planner-visible access scope (Catalog Read Model phase 1, #533): the program''s is_public, trigger-maintained (sync_row_is_public on program_slug changes; propagate_program_is_public when a program flips). select_spectra_by_access tests (NOT link AND is_public) OR program_slug = ANY(scope); same row set, real statistics.';
 
 
@@ -1818,6 +1827,7 @@ CREATE TABLE IF NOT EXISTS "public"."dr_spectra" (
     "spectrum_id" "text",
     "search_text" "text",
     "is_public" boolean NOT NULL DEFAULT false,
+    "filter" "text" NOT NULL,
     "has_mbkg_spectrum" boolean NOT NULL DEFAULT false,
     "mbkg_preferred" boolean,
     "mbkg_reason" "text",

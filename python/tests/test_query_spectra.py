@@ -139,3 +139,63 @@ def test_get_spectrum_single(store):
     row = store.get_spectrum("obs1_prism_a")
     assert row["grating"] == "PRISM"
     assert row["object_id"] == "OBJ-A"
+
+
+def test_query_spectra_nirspec_filter(store):
+    """#683: G140M pairs with F070LP and F100LP; filters= tells them apart."""
+    store.upsert_spectra([
+        {"id": 4, "spectrum_id": "obs1_g140m_f070lp_a", "target_id": "t_a", "object_id": "OBJ-A",
+         "grating": "G140M", "filter": "F070LP", "program_slug": "prog-a", "observation": "obs1", "field": "cosmos"},
+        {"id": 5, "spectrum_id": "obs1_g140m_f100lp_a", "target_id": "t_a", "object_id": "OBJ-A",
+         "grating": "G140M", "filter": "F100LP", "program_slug": "prog-a", "observation": "obs1", "field": "cosmos"},
+    ])
+    rows = store.query_spectra(gratings=["G140M"], filters=["F070LP"])
+    assert [r["spectrum_id"] for r in rows] == ["obs1_g140m_f070lp_a"]
+    assert rows[0]["filter"] == "F070LP"
+    assert len(store.query_spectra(gratings=["G140M"])) == 2
+
+
+def test_filter_plan_never_drops_a_legacy_selection():
+    """A request carrying q ignores the legacy parameters, so the filter goes
+    as a tree node only when it would not replace them."""
+    from campfire.client import _normalize_nirspec_filters, _plan_filter
+
+    assert _normalize_nirspec_filters("f070lp") == ["F070LP"]
+    assert _normalize_nirspec_filters(None) is None
+    node = {"col": "filter", "op": "in", "v": ["F070LP"]}
+    # alone: the tree
+    assert _plan_filter(None, ["F070LP"], {}) == (node, False)
+    assert _plan_filter(None, ["F070LP"], {"gratings": None, "tags": []}) == (node, False)
+    # with q: ANDed onto it
+    q = {"col": "grating", "op": "eq", "v": "G140M"}
+    assert _plan_filter(q, ["F070LP"], {}) == ({"and": [q, node]}, False)
+    # with a legacy selection: no tree, the rows are filtered client-side
+    assert _plan_filter(None, ["F070LP"], {"gratings": ["G140M"]}) == (None, True)
+    assert _plan_filter(None, ["F070LP"], {"inspected_only": False}) == (None, True)
+    # no filter: untouched
+    assert _plan_filter(q, None, {"gratings": ["G140M"]}) == (q, False)
+
+
+def test_remote_filter_with_gratings_keeps_the_grating_selection():
+    from unittest.mock import MagicMock
+    from campfire.client import Campfire
+
+    cf = Campfire.__new__(Campfire)
+    cf._local = None
+    cf._api = MagicMock()
+    cf._api.query_spectra.return_value = ([
+        {"spectrum_id": "a", "grating": "G140M", "filter": "F070LP"},
+        {"spectrum_id": "b", "grating": "G140M", "filter": "F100LP"},
+    ], {})
+    cf._stamp = lambda t: t
+    t = cf.query_spectra(gratings=["g140m"], filters="f070lp", remote=True)
+    kw = cf._api.query_spectra.call_args.kwargs
+    assert kw["gratings"] == ["G140M"] and kw["q"] is None
+    assert list(t["spectrum_id"]) == ["a"]
+
+    cf._api.iter_spectra.return_value = iter([
+        {"spectrum_id": "a", "filter": "F070LP"}, {"spectrum_id": "b", "filter": "F100LP"},
+    ])
+    rows = list(cf.iter_spectra(gratings=["G140M"], filters=["F070LP"], remote=True))
+    assert [r["spectrum_id"] for r in rows] == ["a"]
+    assert "q" not in cf._api.iter_spectra.call_args.kwargs

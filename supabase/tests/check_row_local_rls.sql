@@ -58,14 +58,14 @@ INSERT INTO targets (target_id, field, ra, dec, program_slug, observation, objec
 
 -- Spectra inserted WITHOUT the scope columns (the deploy CLI sends them, but
 -- the trigger must not depend on that) ...
-INSERT INTO spectra (target_id, grating, fits_path, deploy_status) VALUES
-  ('zzz_rl_pub_t1',  'prism_clear', 'spectra/zzz_rl_obs_pub/zzz_rl_pub_t1_prism_clear_spec.fits',   'published'),
-  ('zzz_rl_pub_t2',  'prism_clear', 'spectra/zzz_rl_obs_pub/zzz_rl_pub_t2_prism_clear_spec.fits',   'draft'),
-  ('zzz_rl_priv_t1', 'prism_clear', 'spectra/zzz_rl_obs_priv/zzz_rl_priv_t1_prism_clear_spec.fits', 'published');
+INSERT INTO spectra (target_id, grating, fits_path, deploy_status, filter) VALUES
+  ('zzz_rl_pub_t1',  'prism_clear', 'spectra/zzz_rl_obs_pub/zzz_rl_pub_t1_prism_clear_spec.fits',   'published', 'CLEAR'),
+  ('zzz_rl_pub_t2',  'prism_clear', 'spectra/zzz_rl_obs_pub/zzz_rl_pub_t2_prism_clear_spec.fits',   'draft',     'CLEAR'),
+  ('zzz_rl_priv_t1', 'prism_clear', 'spectra/zzz_rl_obs_priv/zzz_rl_priv_t1_prism_clear_spec.fits', 'published', 'CLEAR');
 -- ... and one with a deliberately WRONG scope, which the trigger must overwrite.
-INSERT INTO spectra (target_id, grating, fits_path, deploy_status, program_slug, observation) VALUES
+INSERT INTO spectra (target_id, grating, fits_path, deploy_status, program_slug, observation, filter) VALUES
   ('zzz_rl_pub_t1', 'g395m_f290lp', 'spectra/zzz_rl_obs_pub/zzz_rl_pub_t1_g395m_f290lp_spec.fits', 'published',
-   'zzz_rl_priv', 'zzz_rl_obs_priv');
+   'zzz_rl_priv', 'zzz_rl_obs_priv', 'F290LP');
 
 -- One shutter per target, plus an orphan whose object_id matches no target.
 INSERT INTO shutters (field, observation, object_id, source_id, center_ra, center_dec, position_angle, shutter_idx) VALUES

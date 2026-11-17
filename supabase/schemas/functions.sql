@@ -582,6 +582,21 @@ COMMENT ON VIEW public.cat_targets IS 'Catalog source view: targets for the live
 REVOKE ALL ON TABLE public.cat_targets FROM PUBLIC, anon, authenticated, service_role;
 GRANT SELECT ON TABLE public.cat_targets TO authenticated, service_role;
 
+-- The NIRSpec filter of a spectrum file, from its name
+-- ({obs}_{grating}_{filter}_{source_id}_spec.fits; the first grating token from
+-- the left that a filter token follows), upper-cased; NULL when the name does not follow the pattern (#683).
+CREATE OR REPLACE FUNCTION public.spectrum_filter_from_path(p_fits_path text)
+RETURNS text
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+SET search_path = ''
+AS $$
+  SELECT upper((regexp_match(
+    regexp_replace(p_fits_path, '^.*/', ''),
+    '(?:^|_)(?:prism|g[0-9]{3}[mh])_(clear|f[0-9]{3}[a-z]+)_[^/]+_spec\.fits$', 'i'))[1]);
+$$;
+
+COMMENT ON FUNCTION public.spectrum_filter_from_path(text) IS 'NIRSpec filter parsed from a spectrum file name ({obs}_{grating}_{filter}_{source_id}_spec.fits), upper-cased; NULL when the name does not match. Fills spectra.filter (set_spectrum_filter) and the backfill (#683).';
+
 DROP VIEW IF EXISTS public.cat_spectra;
 CREATE VIEW public.cat_spectra
 WITH (security_invoker = true) AS
@@ -614,6 +629,7 @@ WITH (security_invoker = true) AS
          science_hash,
          is_public,
          -- appended after is_public: the live table's physical column order
+         filter,
          has_mbkg_spectrum,
          mbkg_preferred,
          mbkg_reason,
@@ -650,6 +666,7 @@ WITH (security_invoker = true) AS
            confidence,
            science_hash,
            is_public,
+           filter,
            has_mbkg_spectrum,
            mbkg_preferred,
            mbkg_reason,
@@ -687,6 +704,7 @@ WITH (security_invoker = true) AS
            confidence,
            science_hash,
            is_public,
+           filter,
            has_mbkg_spectrum,
            mbkg_preferred,
            mbkg_reason,
@@ -2562,7 +2580,7 @@ BEGIN
   ),
   member_spectra AS MATERIALIZED (
     SELECT pm.object_id, pm.in_programs, pm.in_scope,
-           s.id, s.target_id, s.grating, s.signal_to_noise, s.exposure_time,
+           s.id, s.target_id, s.grating, s.filter, s.signal_to_noise, s.exposure_time,
            s.redshift_auto, s.dq_flags, s.deploy_status,
            (p_include_unpublished OR s.deploy_status = 'published') AS visible
     FROM page_members pm
@@ -2584,6 +2602,7 @@ BEGIN
              'id', ms.id,
              'target_id', ms.target_id,
              'grating', ms.grating,
+             'filter', ms.filter,
              'signal_to_noise', ms.signal_to_noise,
              'exposure_time', ms.exposure_time,
              'redshift_auto', ms.redshift_auto,
@@ -2874,7 +2893,7 @@ BEGIN
   RETURN QUERY
   WITH matched AS MATERIALIZED (
     SELECT s.id, s.spectrum_id, s.target_id, o.object_id AS object_id,
-           s.grating, s.fits_path, s.file_hash, s.science_hash, s.file_size,
+           s.grating, s.filter, s.fits_path, s.file_hash, s.science_hash, s.file_size,
            s.signal_to_noise, s.exposure_time,
            s.cfpipe_version, s.crds_context, s.jwst_version, s.date_obs, s.reduced_at,
            s.redshift_auto, s.dq_flags,
@@ -2985,6 +3004,7 @@ BEGIN
         'target_id', m.target_id,
         'object_id', m.object_id,
         'grating', m.grating,
+        'filter', m.filter,
         'fits_path', m.fits_path,
         'file_hash', m.file_hash,
         'science_hash', m.science_hash,
@@ -3818,6 +3838,7 @@ BEGIN
       s.id AS spectrum_pk,
       s.spectrum_id,
       s.grating,
+      s.filter,
       s.fits_path,
       s.signal_to_noise,
       s.exposure_time,
@@ -4065,6 +4086,7 @@ BEGIN
         'spectrum_id', r.spectrum_id,
         'target_id', r.target_id,
         'grating', r.grating,
+        'filter', r.filter,
         'fits_path', r.fits_path,
         'signal_to_noise', r.signal_to_noise,
         'exposure_time', r.exposure_time,
@@ -4850,7 +4872,7 @@ AS $$
       "has_published_spectrum": "bool", "is_public": "bool", "object_id": "int"
     },
     "spectra": {
-      "id": "int", "spectrum_id": "text", "target_id": "text", "grating": "text",
+      "id": "int", "spectrum_id": "text", "target_id": "text", "grating": "text", "filter": "text",
       "signal_to_noise": "num", "exposure_time": "num", "redshift_auto": "num", "chi2_min": "num",
       "confidence": "num", "has_mbkg_spectrum": "bool", "mbkg_preferred": "bool", "mbkg_reason": "text",
       "n_exp": "int", "n_exp_bkg": "int", "dq_flags": "bits", "deploy_status": "text", "program_slug": "text",
@@ -6340,7 +6362,9 @@ RETURNS TABLE(
   band_snr DOUBLE PRECISION,
   -- the several-columns maps (phase 3c, #660)
   line_columns JSONB,
-  band_columns JSONB
+  band_columns JSONB,
+  -- the NIRSpec filter (#683): with grating the disperser setup
+  filter TEXT
 )
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
@@ -6397,7 +6421,7 @@ BEGIN
     GROUP BY olm.object_id
   ),
   filtered_spectra AS (
-    SELECT s.id, s.spectrum_id, t.target_id, s.grating, t.field, t.ra, t.dec,
+    SELECT s.id, s.spectrum_id, t.target_id, s.grating, s.filter, t.field, t.ra, t.dec,
       o.redshift, o.redshift_quality,
       s.redshift_auto,
       s.signal_to_noise, s.exposure_time, s.fits_path, t.program_slug, t.observation,
@@ -6486,7 +6510,7 @@ BEGIN
     df.signal_to_noise, df.exposure_time, df.fits_path, df.program_slug,
     pr.program_name, df.last_inspected_at, up.full_name AS last_inspected_by,
     df.distance, df.dq_flags, df.lists, df.line_snr, df.band_mag, df.band_snr,
-    df.line_columns, df.band_columns
+    df.line_columns, df.band_columns, df.filter
   FROM distance_filtered df
   LEFT JOIN programs pr ON pr.slug = df.program_slug
   LEFT JOIN user_profiles up ON up.user_id = df.last_inspected_by
@@ -11870,8 +11894,8 @@ BEGIN
       WHERE o.redshift_auto IS DISTINCT FROM zsrc.z
     ),
     ins_spectra AS (
-      INSERT INTO dr_spectra (tag, id, grating, fits_path, signal_to_noise, created_at, updated_at, target_id, thumbnail_svg_fnu, thumbnail_svg_flambda, file_hash, science_hash, file_size, exposure_time, crds_context, jwst_version, cfpipe_version, date_obs, reduced_at, redshift_auto, chi2_min, confidence, has_mbkg_spectrum, mbkg_preferred, mbkg_reason, n_exp, n_exp_bkg, dq_flags, deploy_status, program_slug, observation, spectrum_id, search_text, is_public)
-      SELECT p_tag, s.id, s.grating, s.fits_path, s.signal_to_noise, s.created_at, s.updated_at, s.target_id, s.thumbnail_svg_fnu, s.thumbnail_svg_flambda, s.file_hash, s.science_hash, s.file_size, s.exposure_time, s.crds_context, s.jwst_version, s.cfpipe_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min, s.confidence, s.has_mbkg_spectrum, s.mbkg_preferred, s.mbkg_reason, s.n_exp, s.n_exp_bkg, s.dq_flags, s.deploy_status, s.program_slug, s.observation, s.spectrum_id, s.search_text, s.is_public
+      INSERT INTO dr_spectra (tag, id, grating, fits_path, signal_to_noise, created_at, updated_at, target_id, thumbnail_svg_fnu, thumbnail_svg_flambda, file_hash, science_hash, file_size, exposure_time, crds_context, jwst_version, cfpipe_version, date_obs, reduced_at, redshift_auto, chi2_min, confidence, has_mbkg_spectrum, mbkg_preferred, mbkg_reason, n_exp, n_exp_bkg, dq_flags, deploy_status, program_slug, observation, spectrum_id, search_text, is_public, filter)
+      SELECT p_tag, s.id, s.grating, s.fits_path, s.signal_to_noise, s.created_at, s.updated_at, s.target_id, s.thumbnail_svg_fnu, s.thumbnail_svg_flambda, s.file_hash, s.science_hash, s.file_size, s.exposure_time, s.crds_context, s.jwst_version, s.cfpipe_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min, s.confidence, s.has_mbkg_spectrum, s.mbkg_preferred, s.mbkg_reason, s.n_exp, s.n_exp_bkg, s.dq_flags, s.deploy_status, s.program_slug, s.observation, s.spectrum_id, s.search_text, s.is_public, s.filter
       FROM spectra s JOIN pub p ON p.id = s.id
       RETURNING 1
     ),
@@ -12947,7 +12971,7 @@ BEGIN
            jsonb_build_object(
              'id', s.id, 'spectrum_id', s.spectrum_id, 'target_id', s.target_id,
              'object_id', o.object_id, 'object_db_id', o.id,
-             'grating', s.grating, 'fits_path', s.fits_path,
+             'grating', s.grating, 'filter', s.filter, 'fits_path', s.fits_path,
              'file_hash', s.file_hash, 'science_hash', s.science_hash, 'file_size', s.file_size,
              'signal_to_noise', s.signal_to_noise, 'exposure_time', s.exposure_time,
              'cfpipe_version', s.cfpipe_version, 'crds_context', s.crds_context,
@@ -14516,6 +14540,42 @@ COMMENT ON FUNCTION public.dr_program_roster(text, text[]) IS 'The per-program r
 
 REVOKE ALL ON FUNCTION public.dr_program_roster(text, text[]) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.dr_program_roster(text, text[]) TO service_role;
+
+-- db_stall_status(): is the database stuck on its disk or on locks? Read by
+-- the web's status probe (web/lib/server/db-status.ts) behind /api/health and
+-- the site-wide degraded banner. A READ on purpose: during the 2026-11-06
+-- Jetstream2 volume stall reads were served from cache while every COMMIT
+-- waited minutes on the WAL fsync, so a write probe would have hung and held
+-- a PostgREST connection per attempt, while this one sees the waiters. Ages
+-- are since the statement started (a COMMIT stuck on the flush ages from the
+-- COMMIT), counted from 5 s for WAL waits and 30 s for lock waits; the web
+-- decides what is degraded. SECURITY DEFINER so the owner's pg_read_all_stats
+-- sees every role's wait events; service_role only.
+CREATE OR REPLACE FUNCTION public.db_stall_status()
+RETURNS jsonb
+LANGUAGE sql
+STABLE SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+  SELECT jsonb_build_object(
+           'wal_waiters', count(*) FILTER (WHERE s.wal AND s.age_s >= 5),
+           'wal_wait_s', COALESCE(round(max(s.age_s) FILTER (WHERE s.wal)), 0),
+           'lock_waiters', count(*) FILTER (WHERE s.lck AND s.age_s >= 30),
+           'lock_wait_s', COALESCE(round(max(s.age_s) FILTER (WHERE s.lck)), 0))
+  FROM (SELECT extract(epoch FROM now() - a.state_change) AS age_s,
+               (a.wait_event_type = 'IO' AND a.wait_event IN ('WalSync', 'WalWrite', 'WalInitSync', 'WalInitWrite'))
+                 OR (a.wait_event_type = 'LWLock' AND a.wait_event IN ('WALWrite', 'WALInsert')) AS wal,
+               a.wait_event_type = 'Lock' AS lck
+        FROM pg_stat_activity a
+        WHERE a.state = 'active'
+          AND a.backend_type = 'client backend'
+          AND a.pid <> pg_backend_pid()) s;
+$$;
+
+COMMENT ON FUNCTION public.db_stall_status() IS 'Backends stuck on the WAL flush (>= 5 s) or on a lock (>= 30 s), with the oldest wait of each, for the web status probe behind /api/health and the degraded banner. A read, so it answers while commits hang on a stalled disk.';
+
+REVOKE ALL ON FUNCTION public.db_stall_status() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.db_stall_status() TO service_role;
 
 
 REVOKE ALL ON FUNCTION public.update_api_key_last_used(key_hash_input text) FROM PUBLIC, anon;

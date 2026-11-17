@@ -212,6 +212,8 @@ export interface Spectrum {
   spectrum_id: string;
   target_id: string;  // FK to targets.target_id (text)
   grating: string;
+  /** NIRSpec filter paired with the grating (#683); null until backfilled. */
+  filter?: string | null;
   fits_path: string;
   cfpipe_version: string | null;
   /** Science-content sha256 (P0b); null until backfilled / redeployed. */
@@ -813,6 +815,20 @@ export const MARKER_QUALITY_COLORS: Record<number, string> = {
 };
 
 export const GRATINGS = ['PRISM', 'G140H', 'G140M', 'G235H', 'G235M', 'G395H', 'G395M'] as const;
+/** NIRSpec filters, the other half of a spectrum's disperser setup (`spectra.filter`, #683). */
+export const NIRSPEC_FILTERS = ['CLEAR', 'F070LP', 'F100LP', 'F170LP', 'F290LP'] as const;
+
+/** The filter each grating usually pairs with: the label names the filter only when it differs. */
+const USUAL_FILTER: Record<string, string> = {
+  PRISM: 'CLEAR', G140M: 'F100LP', G140H: 'F100LP',
+  G235M: 'F170LP', G235H: 'F170LP', G395M: 'F290LP', G395H: 'F290LP',
+};
+
+/** A spectrum's disperser setup as shown: `G140M`, or `G140M/F070LP` for the less usual filter. */
+export function disperserLabel(grating: string, filter?: string | null): string {
+  if (!filter || USUAL_FILTER[grating] === filter) return grating;
+  return `${grating}/${filter}`;
+}
 
 // D3 category10 palette for coloring member targets in object detail views
 export const MEMBER_COLORS = [

@@ -184,7 +184,7 @@ def test_batch_upsert_spectra_flags_null_to_hash_as_reprocessed():
         client,
         [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:A'}],
     )
-    assert changed == {('t1', 'prism')}
+    assert changed == {('t1', 'prism', 'CLEAR')}
 
 
 def test_batch_upsert_spectra_does_not_flag_brand_new_row():
@@ -215,7 +215,7 @@ def test_batch_upsert_spectra_flags_hash_change():
         client,
         [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:B'}],
     )
-    assert changed == {('t1', 'prism')}
+    assert changed == {('t1', 'prism', 'CLEAR')}
 
 
 # P0c: the science hash decides "changed" when both sides carry one.
@@ -241,7 +241,7 @@ def test_batch_upsert_spectra_science_hash_change_is_a_change():
         client,
         [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:A', 'science_hash': 'sha256:T'}],
     )
-    assert changed == {('t1', 'prism')}
+    assert changed == {('t1', 'prism', 'CLEAR')}
 
 
 def test_batch_upsert_spectra_falls_back_to_file_hash_without_a_science_hash():
@@ -255,7 +255,7 @@ def test_batch_upsert_spectra_falls_back_to_file_hash_without_a_science_hash():
         [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:B', 'science_hash': 'sha256:S'},
          {'target_id': 't2', 'grating': 'prism', 'file_hash': 'sha256:A', 'science_hash': 'sha256:S'}],
     )
-    assert changed == {('t1', 'prism')}
+    assert changed == {('t1', 'prism', 'CLEAR')}
     # ...and symmetrically when the NEW record lacks one (summary without the column).
     client = _mock_supabase_client(
         [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:A', 'science_hash': 'sha256:S'}]
@@ -264,7 +264,7 @@ def test_batch_upsert_spectra_falls_back_to_file_hash_without_a_science_hash():
         client,
         [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:B'}],
     )
-    assert changed == {('t1', 'prism')}
+    assert changed == {('t1', 'prism', 'CLEAR')}
 
 
 def test_batch_upsert_spectra_never_mixes_column_sets():
@@ -282,11 +282,11 @@ def test_batch_upsert_spectra_never_mixes_column_sets():
 
 
 def test_update_spectra_zfit_scalars_updates_only_the_scalars_per_row():
-    # A plain UPDATE per (target_id, grating), never an upsert: a partial
-    # upsert trips the NOT NULL columns (fits_path, ...) before ON CONFLICT.
-    client = _mock_supabase_client([{'target_id': 't1', 'grating': 'prism'}])
+    # A plain UPDATE per spectrum (resolved to its id), never an upsert: a
+    # partial upsert trips the NOT NULL columns (fits_path, ...) before ON CONFLICT.
+    client = _mock_supabase_client([{'id': 7, 'target_id': 't1', 'grating': 'prism', 'filter': 'CLEAR'}])
     n = update_spectra_zfit_scalars(client, [{
-        'target_id': 't1', 'grating': 'prism',
+        'target_id': 't1', 'grating': 'prism', 'filter': 'CLEAR',
         'redshift_auto': 2.75, 'chi2_min': 41.25, 'confidence': 87.5,
     }])
     assert n == 1
@@ -295,18 +295,16 @@ def test_update_spectra_zfit_scalars_updates_only_the_scalars_per_row():
     table.update.assert_called_once_with(
         {'redshift_auto': 2.75, 'chi2_min': 41.25, 'confidence': 87.5},
     )
-    eq1 = table.update.return_value.eq
-    eq1.assert_called_once_with('target_id', 't1')
-    eq1.return_value.eq.assert_called_once_with('grating', 'prism')
-    eq1.return_value.eq.return_value.execute.assert_called_once_with()
+    table.update.return_value.eq.assert_called_once_with('id', 7)
+    table.update.return_value.eq.return_value.execute.assert_called_once_with()
     table.upsert.assert_not_called()
 
 
 def test_update_spectra_zfit_scalars_writes_nothing_if_a_spectrum_row_is_missing():
-    # The existence check is per (target_id, grating): a target with only a
-    # prism row must not accept a g395m patch, which would insert a stub.
-    client = _mock_supabase_client([{'target_id': 't1', 'grating': 'prism'}])
-    with pytest.raises(RuntimeError, match='matched 0 spectra rows for t1/g395m'):
+    # The existence check is per spectrum: a target with only a prism row
+    # must not accept a g395m patch, which would insert a stub.
+    client = _mock_supabase_client([{'id': 7, 'target_id': 't1', 'grating': 'prism', 'filter': 'CLEAR'}])
+    with pytest.raises(RuntimeError, match='matched 0 spectra rows for t1/g395m/F290LP'):
         update_spectra_zfit_scalars(client, [
             {'target_id': 't1', 'grating': 'prism',
              'redshift_auto': 1.0, 'chi2_min': 1.0, 'confidence': 1.0},
@@ -314,6 +312,55 @@ def test_update_spectra_zfit_scalars_writes_nothing_if_a_spectrum_row_is_missing
              'redshift_auto': None, 'chi2_min': None, 'confidence': None},
         ])
     client.table.return_value.update.assert_not_called()
+
+
+def test_update_spectra_zfit_scalars_picks_the_filter():
+    # #683: G140M/F070LP and G140M/F100LP of one target are two rows; the
+    # patch for one never lands on the other.
+    client = _mock_supabase_client([
+        {'id': 1, 'target_id': 't1', 'grating': 'G140M', 'filter': 'F070LP'},
+        {'id': 2, 'target_id': 't1', 'grating': 'G140M', 'filter': 'F100LP'},
+    ])
+    update_spectra_zfit_scalars(client, [{
+        'target_id': 't1', 'grating': 'G140M', 'filter': 'F100LP',
+        'redshift_auto': 2.0, 'chi2_min': 1.0, 'confidence': 1.0,
+    }])
+    client.table.return_value.update.return_value.eq.assert_called_once_with('id', 2)
+
+
+def test_batch_upsert_spectra_keys_on_the_filter():
+    # Two filters of one grating are two spectra: only the re-reduced one is
+    # flagged, and the upsert conflicts on (target_id, grating, filter).
+    client = _mock_supabase_client([
+        {'target_id': 't1', 'grating': 'G140M', 'filter': 'F070LP', 'file_hash': 'sha256:A'},
+        {'target_id': 't1', 'grating': 'G140M', 'filter': 'F100LP', 'file_hash': 'sha256:B'},
+    ])
+    _, changed = batch_upsert_spectra(client, [
+        {'target_id': 't1', 'grating': 'G140M', 'filter': 'F070LP', 'file_hash': 'sha256:A'},
+        {'target_id': 't1', 'grating': 'G140M', 'filter': 'F100LP', 'file_hash': 'sha256:C'},
+    ])
+    assert changed == {('t1', 'G140M', 'F100LP')}
+    assert client.table.return_value.upsert.call_args.kwargs['on_conflict'] == 'target_id,grating,filter'
+
+
+def test_batch_upsert_spectra_refuses_a_record_without_a_filter():
+    client = _mock_supabase_client([])
+    with pytest.raises(ValueError, match='without a NIRSpec filter'):
+        batch_upsert_spectra(client, [{'target_id': 't1', 'grating': 'G140M', 'file_hash': 'sha256:A'}])
+    client.table.return_value.upsert.assert_not_called()
+
+
+def test_fetch_spectrum_ids_resolves_a_missing_filter_only_when_unambiguous():
+    from campfire.deploy.supabase import fetch_spectrum_ids
+    client = _mock_supabase_client([
+        {'id': 1, 'target_id': 't1', 'grating': 'G140M', 'filter': 'F070LP'},
+        {'id': 2, 'target_id': 't1', 'grating': 'G140M', 'filter': 'F100LP'},
+        {'id': 3, 'target_id': 't2', 'grating': 'G140M', 'filter': 'F100LP'},
+    ])
+    ids = fetch_spectrum_ids(client, [
+        ('t1', 'G140M', 'F100LP'), ('t1', 'G140M', None), ('t2', 'G140M', None),
+    ])
+    assert ids == {('t1', 'G140M', 'F100LP'): 2, ('t2', 'G140M', None): 3}
 
 
 def test_update_spectra_zfit_scalars_empty_is_a_noop():

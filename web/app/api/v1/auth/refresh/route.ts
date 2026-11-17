@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rotateRefreshToken } from '@/lib/auth/tokens';
+import { localizeUrl } from '@/lib/host-aliases';
 
 /**
  * POST /api/v1/auth/refresh
@@ -72,7 +73,8 @@ export async function POST(request: NextRequest) {
       expires_in: result.expiresIn,
       refresh_token: result.refreshToken,
       supabase_token: result.supabaseToken,
-      supabase_url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+      // The API's alias when the CLI is configured with an alias base url.
+      supabase_url: localizeUrl(process.env.NEXT_PUBLIC_SUPABASE_URL!, request.headers.get('host')),
       supabase_anon_key: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     });
   } catch (error) {

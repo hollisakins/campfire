@@ -324,6 +324,14 @@ services:
       # Server-only secrets (service role key, JWT secrets, S3/OSN, Resend, …).
       # NEXT_PUBLIC_* values are baked into the image and ignored here.
       - ./web.env
+    environment:
+      # The site-wide banner's operator message (web/lib/server/db-status.ts):
+      # write one line to /etc/campfire/status/message on the host, remove the
+      # file to clear it; picked up within 15 s, no restart. On the ROOT disk on
+      # purpose, so it can be written while the data volume is stalled.
+      STATUS_MESSAGE_FILE: /run/campfire-status/message
+    volumes:
+      - /etc/campfire/status:/run/campfire-status:ro
 
   # Public read-only SQL (Catalog Read Model phase 4, docs/reader-role.md).
   # PgBouncer in transaction mode in front of db for the campfire_reader role

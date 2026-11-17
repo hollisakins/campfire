@@ -22,8 +22,13 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
   dec,
   inspection,
 }) => {
-  const { user, userProfile } = useAuth();
-  const canEdit = user && userProfile?.can_inspect;
+  const { user, userProfile, isLinkAccount } = useAuth();
+  // Every signed-in CAMPFIRE account sees the panel for the object's tags
+  // (read-only without can_comment); the redshift controls are inspectors'.
+  // Link accounts see no lists at all (select_lists), so nothing to show.
+  const visible = !!user && !isLinkAccount;
+  const canTag = visible && !!userProfile?.can_comment;
+  const canEdit = visible && !!userProfile?.can_inspect;
 
   const setRedshiftQuality = inspection.setRedshiftQuality;
   const save = inspection.save;
@@ -33,7 +38,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
   const listsRef = useRef<ObjectListsSectionHandle>(null);
 
   useEffect(() => {
-    if (!canEdit) return;
+    if (!canEdit && !canTag) return;
     const handler = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target as HTMLElement | null;
@@ -41,6 +46,13 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
         return;
       }
+      if (e.key.toLowerCase() === 't') {
+        if (!canTag) return;
+        e.preventDefault();
+        listsRef.current?.openDropdown();
+        return;
+      }
+      if (!canEdit) return;
       if (e.key >= '1' && e.key <= '4') {
         setRedshiftQuality(parseInt(e.key));
         return;
@@ -50,10 +62,6 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
           e.preventDefault();
           overrideInputRef.current?.focus();
           overrideInputRef.current?.select();
-          break;
-        case 't':
-          e.preventDefault();
-          listsRef.current?.openDropdown();
           break;
         case 's':
           if (hasChanges && !saving && redshiftQuality !== 0) {
@@ -65,15 +73,15 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [canEdit, setRedshiftQuality, save, hasChanges, saving, redshiftQuality]);
+  }, [canEdit, canTag, setRedshiftQuality, save, hasChanges, saving, redshiftQuality]);
 
-  if (!canEdit) return null;
+  if (!visible) return null;
 
   const qualityOptions = REDSHIFT_QUALITY.filter(q => q.value > 0);
 
   return (
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-card border border-border rounded-xl shadow-xl px-5 py-3 max-w-5xl w-auto">
-      {inspection.versionConflict && inspection.conflictInfo && (
+      {canEdit && inspection.versionConflict && inspection.conflictInfo && (
         <div className="mb-2">
           <ConflictBanner
             conflict={inspection.conflictInfo}
@@ -84,14 +92,14 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
         </div>
       )}
 
-      {!inspection.versionConflict && inspection.saveError && (
+      {canEdit && !inspection.versionConflict && inspection.saveError && (
         <div className="mb-2 p-2 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded flex items-center gap-2 text-sm">
           <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 flex-shrink-0" />
           <span className="text-red-800 dark:text-red-400">{inspection.saveError}</span>
         </div>
       )}
 
-      {inspection.saveSuccess && (
+      {canEdit && inspection.saveSuccess && (
         <div className="mb-2 p-2 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded flex items-center gap-2 text-sm">
           <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0" />
           <span className="text-green-800 dark:text-green-400">Saved</span>
@@ -103,6 +111,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
           <ObjectListsSection ref={listsRef} objectId={objectId} ra={ra} dec={dec} dropdownPlacement="top" />
         </div>
 
+        {canEdit && (<>
         <div className="h-px bg-border" />
 
         <div className="flex items-center gap-3">
@@ -186,6 +195,7 @@ export const FloatingInspectionPanel: React.FC<FloatingInspectionPanelProps> = (
             )}
           </Button>
         </div>
+        </>)}
       </div>
     </div>
   );

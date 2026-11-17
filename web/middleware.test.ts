@@ -75,3 +75,17 @@ describe('middleware: the release header (P6c-1)', () => {
     }
   });
 });
+
+const createServerClient = vi.fn();
+vi.mock('@supabase/ssr', () => ({ createServerClient: (...a: unknown[]) => createServerClient(...a) }));
+
+describe('middleware: the probe routes never refresh a session', () => {
+  it('skips GoTrue for /api/health and /api/status, even with an auth cookie', async () => {
+    const { middleware } = await import('./middleware');
+    for (const path of ['/api/health', '/api/status']) {
+      const res = await middleware(req(path, { cookie: 'sb-api-auth-token=x' }));
+      expect(res.status, path).toBe(200);
+    }
+    expect(createServerClient).not.toHaveBeenCalled();
+  });
+});

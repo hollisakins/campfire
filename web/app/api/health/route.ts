@@ -1,13 +1,15 @@
-import { createServiceClient } from '@/lib/supabase/service';
+import { getDbStatus, type DbStatus } from '@/lib/server/db-status';
 
 /**
  * GET /api/health
  *
- * Liveness + database reachability for the self-hosted deployment
- * (ops/README.md): the container HEALTHCHECK, ops/scripts/deploy.sh and the
- * external uptime monitor all read it. Anonymous on purpose, no-store, and
- * cheap: one single-row read through the service client, bounded by a short
- * timeout so a stalled database answers 503 instead of hanging the probe.
+ * Liveness + database health for the self-hosted deployment (ops/README.md):
+ * the container HEALTHCHECK, ops/scripts/deploy.sh and the external site check
+ * all read it. Anonymous on purpose, no-store, and cheap: the shared database
+ * probe (lib/server/db-status.ts), which answers 503 both when the database
+ * cannot be reached and when it is stuck (commits waiting on a stalled disk,
+ * a lock pile-up) — the 2026-11-06 volume stall served reads from cache and
+ * kept a plain read green for its whole 15 minutes.
  *
  * `sha` is the deployed commit (GIT_SHA baked by web/Dockerfile; Vercel's
  * VERCEL_GIT_COMMIT_SHA while that deployment is live).
@@ -18,31 +20,20 @@ export const dynamic = 'force-dynamic';
 
 export interface HealthResult {
   ok: boolean;
-  db: 'ok' | 'error';
+  db: 'ok' | 'degraded' | 'error';
+  reason: DbStatus['reason'];
   sha: string | null;
   uptime_s: number;
 }
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
-const DB_TIMEOUT_MS = 5000;
 
 export async function GET() {
-  let db: HealthResult['db'] = 'ok';
-  try {
-    const supabase = createServiceClient();
-    const { error } = await supabase
-      .from('programs')
-      .select('slug')
-      .limit(1)
-      .abortSignal(AbortSignal.timeout(DB_TIMEOUT_MS));
-    if (error) db = 'error';
-  } catch {
-    db = 'error';
-  }
-
+  const status = await getDbStatus();
   const body: HealthResult = {
-    ok: db === 'ok',
-    db,
+    ok: status.state === 'ok',
+    db: status.state === 'down' ? 'error' : status.state,
+    reason: status.reason,
     sha: process.env.GIT_SHA || process.env.VERCEL_GIT_COMMIT_SHA || null,
     uptime_s: Math.round(process.uptime()),
   };

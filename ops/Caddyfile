@@ -20,8 +20,11 @@
 # The ALT_* hostnames are the same three roles in the alternate zone:
 # ALT_API_HOST is a live alias of API_HOST (same upstream, so stored CLI
 # refresh tokens and laptops with the old CAMPFIRE_SUPABASE_URL keep working),
-# ALT_WEB_HOST / ALT_WEB_STAGING_HOST redirect browsers to the primary names
-# (301) and keep serving /api/v1/* for Python clients still on the old URL.
+# ALT_WEB_HOST serves the whole portal too (some networks block one zone and
+# not the other; the app keeps an alias-host visitor on alias hosts, see
+# web/lib/host-aliases.ts and NEXT_PUBLIC_HOST_ALIASES), and
+# ALT_WEB_STAGING_HOST redirects browsers to the primary staging name (301)
+# while serving /api/v1/*.
 # docker-compose.yml defaults the ALT_* names to *.invalid, which makes the
 # blocks inert until .env sets them (README, "Domain move").
 
@@ -83,6 +86,14 @@
 # Portal → a Next.js container. args[0] is the upstream (host:port).
 (portal) {
 	import common
+	import proxy_web {args[0]}
+}
+
+# The portal under an alias hostname: served, not redirected, and kept out of
+# search indexes so the primary names stay the canonical ones.
+(portal_alias) {
+	import common
+	header X-Robots-Tag "noindex"
 	import proxy_web {args[0]}
 }
 
@@ -178,7 +189,7 @@ www.{$WEB_HOST} {
 
 {$ALT_WEB_HOST} {
 	import tls_alt
-	import portal_redirect {$WEB_HOST} web:3000
+	import portal_alias web:3000
 }
 
 {$ALT_WEB_STAGING_HOST} {

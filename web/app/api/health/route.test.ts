@@ -1,29 +1,16 @@
-// GET /api/health: 200 while the database answers, 503 (still JSON) when the
-// probe query errors or throws, never cached.
+// GET /api/health: 200 while the shared database probe is ok, 503 (still JSON)
+// when the database is stuck or unreachable, never cached.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { DbStatus } from '@/lib/server/db-status';
 
-let mode: 'ok' | 'error' | 'throw' = 'ok';
-vi.mock('@/lib/supabase/service', () => ({
-  createServiceClient: () => {
-    if (mode === 'throw') throw new Error('SUPABASE_SERVICE_ROLE_KEY is not configured');
-    return {
-      from: () => ({
-        select: () => ({
-          limit: () => ({
-            abortSignal: async () =>
-              mode === 'error' ? { data: null, error: { message: 'down' } } : { data: [], error: null },
-          }),
-        }),
-      }),
-    };
-  },
-}));
+let status: DbStatus = { state: 'ok', reason: null, checked_at: 1 };
+vi.mock('@/lib/server/db-status', () => ({ getDbStatus: async () => status }));
 
 import { GET } from './route';
 
 describe('GET /api/health', () => {
   beforeEach(() => {
-    mode = 'ok';
+    status = { state: 'ok', reason: null, checked_at: 1 };
     process.env.GIT_SHA = 'abc1234';
   });
 
@@ -32,21 +19,21 @@ describe('GET /api/health', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('Cache-Control')).toBe('no-store');
     const body = await res.json();
-    expect(body).toMatchObject({ ok: true, db: 'ok', sha: 'abc1234' });
+    expect(body).toMatchObject({ ok: true, db: 'ok', reason: null, sha: 'abc1234' });
     expect(typeof body.uptime_s).toBe('number');
   });
 
-  it('answers 503 when the probe query errors', async () => {
-    mode = 'error';
+  it('answers 503 while commits are stuck on the disk', async () => {
+    status = { state: 'degraded', reason: 'wal', checked_at: 1 };
     const res = await GET();
     expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ ok: false, db: 'error' });
+    expect(await res.json()).toMatchObject({ ok: false, db: 'degraded', reason: 'wal' });
   });
 
-  it('answers 503 when the client cannot be built', async () => {
-    mode = 'throw';
+  it('answers 503 when the database is unreachable', async () => {
+    status = { state: 'down', reason: 'unreachable', checked_at: 1 };
     const res = await GET();
     expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ ok: false, db: 'error' });
+    expect(await res.json()).toMatchObject({ ok: false, db: 'error', reason: 'unreachable' });
   });
 });

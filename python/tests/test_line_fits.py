@@ -175,12 +175,35 @@ def test_build_row_from_pipeline_product(tmp_path):
     assert row["spectrum_hash"] == "b" * 64 and row["n_lines"] >= 1
     # P0c: the SCIHASH card rides along for line_fit_stale_spectrum
     assert row["spectrum_science_hash"] == "sha256:" + "c" * 64
+    # #683: the FILTER card keys the spectrum (popped before the upsert)
+    assert row["_filter"] == "F290LP"
     assert row["lines"]["Halpha"]["flux"] > 4e-18 and row["lines"]["Halpha"]["label"] == "Hα"
     json.dumps(row, allow_nan=False)      # the upsert payload is JSON-clean
     rows, refused = build_line_fit_rows(paths, program_slug="ember-uds", observation="obs1",
                                         allow_auto_z=True)
     assert len(rows) == 2 and refused == []
     assert {r["z_source"] for r in rows} == {"inspected", "auto"}
+
+
+def test_publish_line_fits_matches_on_the_filter(monkeypatch):
+    """#683: a G140M/F100LP fit lands on the F100LP spectrum, never its F070LP
+    sibling, and the key part is not sent to line_fits_upsert."""
+    from campfire.deploy import lines
+
+    rows = [{"target_id": "t1", "grating": "G140M", "z_source": "inspected", "_filter": "F100LP"}]
+    monkeypatch.setattr(lines, "build_line_fit_rows", lambda *a, **k: ([dict(r) for r in rows], []))
+    seen = {}
+
+    def fake_ids(sb, keys):
+        seen["keys"] = list(keys)
+        return {("t1", "G140M", "F070LP"): 1, ("t1", "G140M", "F100LP"): 2}
+
+    sent = []
+    monkeypatch.setattr(lines, "fetch_spectrum_ids", fake_ids)
+    monkeypatch.setattr(lines, "batch_upsert_line_fits", lambda sb, keyed: sent.extend(keyed) or len(keyed))
+    out = lines.publish_line_fits(object(), "obs1", [], program_slug="p")
+    assert seen["keys"] == [("t1", "G140M", "F100LP")]
+    assert out["rows"] == 1 and sent[0]["spectrum_id"] == 2 and "_filter" not in sent[0]
 
 
 def test_fetch_all_line_fits_tolerates_missing_endpoint(monkeypatch):

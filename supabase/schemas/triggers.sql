@@ -321,6 +321,7 @@ BEGIN
        OR OLD.program_slug IS DISTINCT FROM NEW.program_slug
        OR OLD.observation IS DISTINCT FROM NEW.observation
        OR OLD.is_public IS DISTINCT FROM NEW.is_public
+       OR OLD.filter IS DISTINCT FROM NEW.filter
     THEN
         RAISE EXCEPTION 'Non-admin updates to spectra may only change dq_flags'
             USING ERRCODE = '42501';  -- insufficient_privilege
@@ -812,9 +813,54 @@ CREATE TRIGGER bump_spectra_updated_at_trigger
     -- Publication state: a publish must enter a non-admin client's incremental
     -- delta (a draft inserted before its sync cursor was otherwise never
     -- seen), and a revoke is what get_spectra_for_sync tombstones.
-    deploy_status
+    deploy_status,
+    -- The NIRSpec filter (#683): the backfill of rows that predate the column
+    -- must reach every sync mirror.
+    filter
   ON public.spectra
   FOR EACH ROW EXECUTE FUNCTION public.bump_spectra_updated_at();
+
+-- spectra.filter (#683): deploy writes it from the summary; any write that
+-- leaves it NULL (an older summary without the column, a fixture) takes it
+-- from the file name (or the grating's only filter), and so does an update that moves fits_path without
+-- changing the filter (a redeploy from an older summary, an admin edit of
+-- fits_path), so the column never lags fits_path. A filter the writer changes
+-- is kept.
+CREATE OR REPLACE FUNCTION public.set_spectrum_filter() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+DECLARE
+    v_parsed text;
+BEGIN
+    IF NEW.filter IS NULL THEN
+        -- the file name, else the one filter the grating can take (PRISM
+        -- only with CLEAR, G235M/H only with F170LP, G395M/H only with
+        -- F290LP); G140M/H take F070LP or F100LP, so they stay NULL and the
+        -- write fails NOT NULL rather than guess
+        NEW.filter := COALESCE(
+            public.spectrum_filter_from_path(NEW.fits_path),
+            CASE upper(NEW.grating)
+                WHEN 'PRISM' THEN 'CLEAR'
+                WHEN 'G235M' THEN 'F170LP' WHEN 'G235H' THEN 'F170LP'
+                WHEN 'G395M' THEN 'F290LP' WHEN 'G395H' THEN 'F290LP'
+            END);
+    ELSIF TG_OP = 'UPDATE'
+          AND NEW.fits_path IS DISTINCT FROM OLD.fits_path
+          AND NEW.filter IS NOT DISTINCT FROM OLD.filter THEN
+        v_parsed := public.spectrum_filter_from_path(NEW.fits_path);
+        IF v_parsed IS NOT NULL THEN
+            NEW.filter := v_parsed;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS set_spectrum_filter_trigger ON public.spectra;
+CREATE TRIGGER set_spectrum_filter_trigger
+  BEFORE INSERT OR UPDATE OF fits_path, filter ON public.spectra
+  FOR EACH ROW EXECUTE FUNCTION public.set_spectrum_filter();
 
 -- Belt-and-suspenders for update_spectra_dq_by_access — restricts non-admin
 -- writes to dq_flags only. See enforce_spectra_dq_user_update_scope function.

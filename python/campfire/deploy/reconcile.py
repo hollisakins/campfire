@@ -315,7 +315,7 @@ def classify(
     existing_objects: list[dict],
     members_by_obj: dict[int, set[str]],
     spectra_map: dict[str, list[dict]],
-    changed_hashes: set[tuple[str, str]],
+    changed_hashes: set[tuple[str, str, str | None]],
     *,
     position_tolerance_arcsec: float = POSITION_MATCH_RADIUS_ARCSEC,
 ) -> Proposals:
@@ -1455,7 +1455,7 @@ def reconcile_field_objects(
     dry_run: bool = False,
     yes: bool = False,
     abort_on_split_merge: bool = False,
-    changed_hashes: set[tuple[str, str]] | None = None,
+    changed_hashes: set[tuple[str, str, str | None]] | None = None,
     before_write=None,
 ) -> tuple[int, dict[str, int], set[int]]:
     """Incrementally reconcile the objects table for a field.
@@ -1472,7 +1472,7 @@ def reconcile_field_objects(
         radius: FoF clustering radius in arcseconds.
         dry_run: Print plan without writing.
         yes: Skip interactive split/merge confirmation prompts.
-        changed_hashes: Set of (target_id, grating) pairs whose spectrum
+        changed_hashes: Set of (target_id, grating, filter) keys whose spectrum
             content changed in this deploy. Accepted for call-site
             compatibility and no longer used: reprocessing is not a review
             need (P3, docs/design-needs-review.md); the badge is maintained

@@ -111,6 +111,8 @@ export const PROPERTIES: PropertyDef[] = [
   { key: 'fresh', scope: 'object', label: 'Fresh line fit (any spectrum)', kind: 'bool', shapes: { objects: { via: ['line_fits'], col: 'stale_redshift', invert: true } } },
   // Spectrum
   { key: 'grating', scope: 'spectrum', label: 'Grating', kind: 'choice', primary: true, choices: 'grating', shapes: { spectra: direct('grating') } },
+  // the other half of the disperser setup: G140M takes F070LP or F100LP (#683)
+  { key: 'filter', scope: 'spectrum', label: 'Filter', kind: 'choice', choices: 'filter', shapes: { spectra: direct('filter') } },
   { key: 'snr', scope: 'spectrum', label: 'S/N', kind: 'range', primary: true, range: { min: 0, max: 100000, step: 1, precision: 0, quick: snrQuick, side: 'min' }, shapes: { spectra: direct('signal_to_noise') } },
   { key: 'exptime', scope: 'spectrum', label: 'Exp. time', kind: 'range', primary: true, unit: 's', range: { min: 0, max: 50000, step: 100, precision: 0, side: 'min', quick: [{ label: '≥ 1000', min: 1000, max: null }, { label: '≥ 5000', min: 5000, max: null }, { label: '≥ 10000', min: 10000, max: null }] }, shapes: { spectra: direct('exposure_time') } },
   { key: 'program', scope: 'spectrum', label: 'Program', kind: 'choice', primary: true, choices: 'program', shapes: { spectra: direct('program_slug') } },

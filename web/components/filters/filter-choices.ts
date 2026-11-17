@@ -10,7 +10,7 @@ import type { Scalar } from '@/lib/catalog-query/tree';
 import type { ValueLabel } from '@/lib/catalog-query/vocabulary';
 import { DQ_FLAGS, LINE_FLAGS, REDSHIFT_QUALITY, decodeBitmask } from '@/lib/flags';
 import { LINE_FILTER_OPTIONS, lineLabel } from '@/lib/linelist';
-import { GRATINGS, type Program } from '@/lib/types';
+import { GRATINGS, NIRSPEC_FILTERS, type Program } from '@/lib/types';
 import { OBSERVATION_COLORS } from '@/components/map/observation-colors';
 
 export interface FilterChoices {
@@ -48,6 +48,7 @@ export const LINE_OPTIONS: FilterOption[] = LINE_FILTER_OPTIONS.map((o) => ({
 
 const QUALITY_OPTIONS: FilterOption[] = REDSHIFT_QUALITY.map((q) => ({ value: q.value, label: q.label, icon: q.icon, color: q.color }));
 const GRATING_OPTIONS: FilterOption[] = GRATINGS.map((g) => ({ value: g, label: g }));
+const NIRSPEC_FILTER_OPTIONS: FilterOption[] = NIRSPEC_FILTERS.map((f) => ({ value: f, label: f }));
 const DQ_OPTIONS: FilterOption[] = DQ_FLAGS.map((f) => ({ value: f.value, label: f.label, icon: f.icon, color: f.color }));
 const LINE_FLAG_OPTIONS: FilterOption[] = LINE_FLAGS.map((f) => ({ value: f.value, label: f.label, icon: f.icon, color: f.color }));
 const COMPONENT_OPTIONS: FilterOption[] = ['narrow', 'broad', 'doublet'].map((c) => ({ value: c, label: c }));
@@ -69,6 +70,7 @@ export function optionsFor(choices: LeafChoices | undefined, c: FilterChoices): 
     case 'line': return LINE_OPTIONS;
     case 'quality': return QUALITY_OPTIONS;
     case 'grating': return GRATING_OPTIONS;
+    case 'filter': return NIRSPEC_FILTER_OPTIONS;
     case 'dq_flags': return DQ_OPTIONS;
     case 'line_flags': return LINE_FLAG_OPTIONS;
     case 'component': return COMPONENT_OPTIONS;

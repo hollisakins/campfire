@@ -1,6 +1,7 @@
 import React from 'react';
 import { Navigation } from '@/components/layout/Navigation';
 import { DrBanner } from '@/components/dr/DrBanner';
+import { StatusBanner } from '@/components/layout/StatusBanner';
 import { DrProvider } from '@/lib/dr/client';
 import { requestDrTag } from '@/lib/dr/server';
 
@@ -17,6 +18,7 @@ export default async function RootTemplate({ children }: { children: React.React
   return (
     <DrProvider tag={drTag}>
       <Navigation drTag={drTag} />
+      <StatusBanner />
       <DrBanner />
       <main className="flex-1">{children}</main>
     </DrProvider>

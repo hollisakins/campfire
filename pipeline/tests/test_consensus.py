@@ -190,3 +190,23 @@ def test_filter_informative():
 def test_scalar_fallback_empty():
     assert _scalar_fallback(None) is None
     assert _scalar_fallback({}) is None
+
+
+# -----------------------------------------------------------------------
+# Setup keys (#683): 'G140M/F100LP' ranks as its grating
+# -----------------------------------------------------------------------
+def test_setup_keys_keep_grating_priority():
+    """Keys carry the filter (G140M/F070LP and G140M/F100LP of one source are
+    two entries); priorities still come from the grating."""
+    g140m = _make_flat_curve(zbest=2.0, n_pix=300)
+    g395m = _make_flat_curve(zbest=4.0, n_pix=300)
+    result = determine_best_redshift(
+        chi2_by_grating={'G140M/F100LP': g140m, 'G395M/F290LP': g395m}
+    )
+    assert result == pytest.approx(4.0, abs=0.05)
+
+    scalar = {
+        'G140M/F100LP': {'redshift': 2.0, 'signal_to_noise': 5.0, 'exposure_time': 1000},
+        'G395M/F290LP': {'redshift': 4.0, 'signal_to_noise': 5.0, 'exposure_time': 1000},
+    }
+    assert _scalar_fallback(scalar) == pytest.approx(4.0)

@@ -83,6 +83,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   those members' own columns of the inverse (the matrix is symmetric), not from a second pass over
   the target's. On two p1 G395M neighborhoods: a member build 14-15 s to 4.4 s, the design 5.4-7.7
   s to 2.2-2.8 s, the solve 17-28 s to 10-14 s.
+- **Summary redshift consensus keeps both filters of a grating (#683).** `cfpipe nirspec
+  summary` keyed its per-source zfit inputs by grating, so a source observed in G140M/F070LP
+  and G140M/F100LP fed only the last one read into `redshift_best`. They are now keyed by
+  grating + filter (PRISM unchanged). Pixel and flux values are untouched; `redshift_best`
+  can move only for sources with two filters of one grating (rare; filed as Infrastructure,
+  arguably Algorithm).
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.
@@ -369,6 +375,16 @@ Release procedure: edit the `## Unreleased` section below, then run
     optics model was fitted before this change.
   - The width prior (median 0.15, ln sigma 0.6) is provisional and now decides the shape of every
     faint source; how to re-derive it from the archive is in `docs/design-nirspec-pipeline-v2.md` 6.6.
+- **Stage 1 finishes an exposure with no open shutter on the detector (#681).** `jwst`
+  raises `NoDataOnDetectorError` when nothing projects onto a detector (e.g. NRS2 of
+  `jw01747017001_03101`). `clean_flicker_noise` with `mask_science_regions = true` hit
+  it and no rate file was written, which then broke stage 2a; the background-subtraction
+  reference pre-fetch and slit mask hit it again. Detector1 is now re-run for that
+  exposure with `mask_science_regions = false` (there are no source traces to mask),
+  the pre-fetch carries on, and the background fit masks the failed-open shutters only
+  (their WCS reference files are resolved from CRDS directly, since `assign_wcs` records none).
+  Adds rate files for exposures that used to fail; every other exposure is unchanged.
+  Stage 2a already skipped such a detector.
 - **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every
   `source_id <= 0`, so a genuine source 0 (PID 2750's `2750_0`) was never extracted.
   ID 0 is also the metafile's value for empty background shutters, so it now counts as

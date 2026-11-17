@@ -75,6 +75,8 @@ from campfire.deploy.summary import (
     get_zfit_scalar_updates,
     get_zfit_paths,
     load_summary,
+    spectrum_key,
+    summary_row_filter,
 )
 
 
@@ -169,24 +171,24 @@ def _collect_crds_contexts(spectra) -> list[str]:
 
 
 def _count_published_spectra(sb, spectra: list[dict]) -> int:
-    """How many of these (target_id, grating) spectra are currently 'published'.
+    """How many of these spectra (``(target_id, grating, filter)``) are currently 'published'.
 
     Used by the `--in-prep` guard so a re-draft never silently hides live data.
-    PostgREST can't filter on tuples, so over-fetch by target_id and filter the
-    (target_id, grating) pairs Python-side (gratings per target are few).
+    PostgREST can't filter on tuples, so over-fetch by target_id and match the
+    keys Python-side (spectra per target are few).
     """
-    wanted = {(s['target_id'], s['grating']) for s in spectra}
-    target_ids = sorted({tid for (tid, _) in wanted})
+    wanted = {spectrum_key(s) for s in spectra}
+    target_ids = sorted({k[0] for k in wanted})
     published = 0
     for i in range(0, len(target_ids), 200):
         batch = target_ids[i:i + 200]
         resp = (sb.table('spectra')
-                .select('target_id, grating, deploy_status')
+                .select('target_id, grating, filter, deploy_status')
                 .in_('target_id', batch)
                 .eq('deploy_status', 'published')
                 .execute())
         for row in resp.data or []:
-            if (row['target_id'], row['grating']) in wanted:
+            if spectrum_key(row) in wanted:
                 published += 1
     return published
 
@@ -1369,15 +1371,20 @@ def deploy_thumbnails(
         try:
             thumbs = generate_thumbnails_from_fits(spec_path)
 
-            # Extract object_id and grating from the ECSV-referenced filename
-            # Filename pattern: {obs_name}_{grating}_{filter}_{source_id}_spec.fits
-            stem = spec_path.stem  # e.g. ember_uds_p4_prism_clear_12345_spec
-            # Find the corresponding row in summary
+            # The summary row for this file names the spectrum: (target_id,
+            # grating, filter), the filter from the file name
+            # ({obs_name}_{grating}_{filter}_{source_id}_spec.fits) when the
+            # summary predates the column.
             for row in summary:
                 if row['spec_file'] == spec_path.name:
+                    filt = summary_row_filter(summary, row)
+                    if not filt:
+                        raise ValueError('no NIRSpec filter in the summary or the file name')
                     sb.table('spectra').update(thumbs).eq(
                         'target_id', row['object_id']
-                    ).eq('grating', row['grating']).execute()
+                    ).eq('grating', row['grating']).eq(
+                        'filter', filt
+                    ).execute()
                     updated += 1
                     break
         except Exception as e:

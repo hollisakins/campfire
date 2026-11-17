@@ -12,6 +12,7 @@ vi.mock('@/components/layout/Navigation', () => ({
   Navigation: ({ drTag }: { drTag: string | null }) => React.createElement('nav', { 'data-dr': String(drTag) }),
 }));
 vi.mock('@/components/dr/DrBanner', () => ({ DrBanner: () => null }));
+vi.mock('@/components/layout/StatusBanner', () => ({ StatusBanner: () => null }));
 
 import RootTemplate from './template';
 import { useDrTag } from '@/lib/dr/client';

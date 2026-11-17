@@ -56,10 +56,18 @@ export function applyDrDecision(request: NextRequest): NextResponse | null {
   }
 }
 
+/**
+ * Routes that must answer while GoTrue hangs (the 2026-11-06 volume stall):
+ * the health and status probes read no identity, so a near-expiry session
+ * refresh here would only make them wait on the outage they report.
+ */
+const NO_SESSION_REFRESH = new Set(['/api/health', '/api/status']);
+
 export async function middleware(request: NextRequest) {
   const early = applyDrDecision(request);
   if (early) return early;
 
+  if (NO_SESSION_REFRESH.has(request.nextUrl.pathname)) return NextResponse.next({ request });
   if (!hasSupabaseAuthCookie(request)) return NextResponse.next({ request });
 
   let response = NextResponse.next({ request });
