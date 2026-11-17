@@ -172,12 +172,13 @@ One row per spectrum. Inspection filters (`redshift_range`, `redshift_quality`, 
 ```python
 cf.query_spectra(
     # ... same vocabulary as query_objects, plus dq_flags applied per-spectrum
+    filters=None,            # list[str]: NIRSpec filters, e.g. ['F070LP'] (G140M pairs with F070LP or F100LP)
     sort='spectrum_id',
     ...
 )
 ```
 
-Returned columns: `spectrum_id`, `target_id`, `object_id`, `grating`, `fits_path`, `signal_to_noise`, `exposure_time`, `cfpipe_version`, `crds_context`, `jwst_version`, `date_obs`, `reduced_at`, `redshift_auto`, `dq_flags`, `local_path`.
+Returned columns: `spectrum_id`, `target_id`, `object_id`, `grating`, `filter`, `fits_path`, `signal_to_noise`, `exposure_time`, `cfpipe_version`, `crds_context`, `jwst_version`, `date_obs`, `reduced_at`, `redshift_auto`, `dq_flags`, `local_path`.
 
 The provenance columns (`cfpipe_version`, `crds_context`, `jwst_version`, `date_obs`, `reduced_at`) are carried verbatim from the FITS primary header, so a flux value can be traced to the exact pipeline version + CRDS context + reduction time without opening any FITS. You can filter on them directly — `cf.query_spectra(crds_context='jwst_1210.pmap')`, `cf.query_spectra(reduced_after='2026-06-01')` — to carve a calibration-homogeneous subsample, and summarise a sample with `obj.spectra.provenance()` (a `ProvenanceSummary` that reports the distinct contexts/versions and flags heterogeneity).
 

@@ -582,6 +582,21 @@ COMMENT ON VIEW public.cat_targets IS 'Catalog source view: targets for the live
 REVOKE ALL ON TABLE public.cat_targets FROM PUBLIC, anon, authenticated, service_role;
 GRANT SELECT ON TABLE public.cat_targets TO authenticated, service_role;
 
+-- The NIRSpec filter of a spectrum file, from its name
+-- ({obs}_{grating}_{filter}_{source_id}_spec.fits; the first grating token from
+-- the left that a filter token follows), upper-cased; NULL when the name does not follow the pattern (#683).
+CREATE OR REPLACE FUNCTION public.spectrum_filter_from_path(p_fits_path text)
+RETURNS text
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+SET search_path = ''
+AS $$
+  SELECT upper((regexp_match(
+    regexp_replace(p_fits_path, '^.*/', ''),
+    '(?:^|_)(?:prism|g[0-9]{3}[mh])_(clear|f[0-9]{3}[a-z]+)_[^/]+_spec\.fits$', 'i'))[1]);
+$$;
+
+COMMENT ON FUNCTION public.spectrum_filter_from_path(text) IS 'NIRSpec filter parsed from a spectrum file name ({obs}_{grating}_{filter}_{source_id}_spec.fits), upper-cased; NULL when the name does not match. Fills spectra.filter (set_spectrum_filter) and the backfill (#683).';
+
 DROP VIEW IF EXISTS public.cat_spectra;
 CREATE VIEW public.cat_spectra
 WITH (security_invoker = true) AS
@@ -612,7 +627,8 @@ WITH (security_invoker = true) AS
          chi2_min,
          confidence,
          science_hash,
-         is_public
+         is_public,
+         filter
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -643,7 +659,8 @@ WITH (security_invoker = true) AS
            chi2_min,
            confidence,
            science_hash,
-           is_public
+           is_public,
+           filter
     FROM public.spectra
     UNION ALL
     SELECT 'dr'::text AS cat_src,
@@ -675,7 +692,8 @@ WITH (security_invoker = true) AS
            chi2_min,
            confidence,
            science_hash,
-           is_public
+           is_public,
+           filter
     FROM public.dr_spectra
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
@@ -2546,7 +2564,7 @@ BEGIN
   ),
   member_spectra AS MATERIALIZED (
     SELECT pm.object_id, pm.in_programs, pm.in_scope,
-           s.id, s.target_id, s.grating, s.signal_to_noise, s.exposure_time,
+           s.id, s.target_id, s.grating, s.filter, s.signal_to_noise, s.exposure_time,
            s.redshift_auto, s.dq_flags, s.deploy_status,
            (p_include_unpublished OR s.deploy_status = 'published') AS visible
     FROM page_members pm
@@ -2568,6 +2586,7 @@ BEGIN
              'id', ms.id,
              'target_id', ms.target_id,
              'grating', ms.grating,
+             'filter', ms.filter,
              'signal_to_noise', ms.signal_to_noise,
              'exposure_time', ms.exposure_time,
              'redshift_auto', ms.redshift_auto,
@@ -2858,7 +2877,7 @@ BEGIN
   RETURN QUERY
   WITH matched AS MATERIALIZED (
     SELECT s.id, s.spectrum_id, s.target_id, o.object_id AS object_id,
-           s.grating, s.fits_path, s.file_hash, s.science_hash, s.file_size,
+           s.grating, s.filter, s.fits_path, s.file_hash, s.science_hash, s.file_size,
            s.signal_to_noise, s.exposure_time,
            s.cfpipe_version, s.crds_context, s.jwst_version, s.date_obs, s.reduced_at,
            s.redshift_auto, s.dq_flags,
@@ -2969,6 +2988,7 @@ BEGIN
         'target_id', m.target_id,
         'object_id', m.object_id,
         'grating', m.grating,
+        'filter', m.filter,
         'fits_path', m.fits_path,
         'file_hash', m.file_hash,
         'science_hash', m.science_hash,
@@ -3802,6 +3822,7 @@ BEGIN
       s.id AS spectrum_pk,
       s.spectrum_id,
       s.grating,
+      s.filter,
       s.fits_path,
       s.signal_to_noise,
       s.exposure_time,
@@ -4049,6 +4070,7 @@ BEGIN
         'spectrum_id', r.spectrum_id,
         'target_id', r.target_id,
         'grating', r.grating,
+        'filter', r.filter,
         'fits_path', r.fits_path,
         'signal_to_noise', r.signal_to_noise,
         'exposure_time', r.exposure_time,
@@ -4834,7 +4856,7 @@ AS $$
       "has_published_spectrum": "bool", "is_public": "bool", "object_id": "int"
     },
     "spectra": {
-      "id": "int", "spectrum_id": "text", "target_id": "text", "grating": "text",
+      "id": "int", "spectrum_id": "text", "target_id": "text", "grating": "text", "filter": "text",
       "signal_to_noise": "num", "exposure_time": "num", "redshift_auto": "num", "chi2_min": "num",
       "confidence": "num", "dq_flags": "bits", "deploy_status": "text", "program_slug": "text",
       "observation": "text", "date_obs": "text", "cfpipe_version": "text", "jwst_version": "text",
@@ -11815,8 +11837,8 @@ BEGIN
       WHERE o.redshift_auto IS DISTINCT FROM zsrc.z
     ),
     ins_spectra AS (
-      INSERT INTO dr_spectra (tag, id, grating, fits_path, signal_to_noise, created_at, updated_at, target_id, thumbnail_svg_fnu, thumbnail_svg_flambda, file_hash, science_hash, file_size, exposure_time, crds_context, jwst_version, cfpipe_version, date_obs, reduced_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status, program_slug, observation, spectrum_id, search_text, is_public)
-      SELECT p_tag, s.id, s.grating, s.fits_path, s.signal_to_noise, s.created_at, s.updated_at, s.target_id, s.thumbnail_svg_fnu, s.thumbnail_svg_flambda, s.file_hash, s.science_hash, s.file_size, s.exposure_time, s.crds_context, s.jwst_version, s.cfpipe_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min, s.confidence, s.dq_flags, s.deploy_status, s.program_slug, s.observation, s.spectrum_id, s.search_text, s.is_public
+      INSERT INTO dr_spectra (tag, id, grating, fits_path, signal_to_noise, created_at, updated_at, target_id, thumbnail_svg_fnu, thumbnail_svg_flambda, file_hash, science_hash, file_size, exposure_time, crds_context, jwst_version, cfpipe_version, date_obs, reduced_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status, program_slug, observation, spectrum_id, search_text, is_public, filter)
+      SELECT p_tag, s.id, s.grating, s.fits_path, s.signal_to_noise, s.created_at, s.updated_at, s.target_id, s.thumbnail_svg_fnu, s.thumbnail_svg_flambda, s.file_hash, s.science_hash, s.file_size, s.exposure_time, s.crds_context, s.jwst_version, s.cfpipe_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min, s.confidence, s.dq_flags, s.deploy_status, s.program_slug, s.observation, s.spectrum_id, s.search_text, s.is_public, s.filter
       FROM spectra s JOIN pub p ON p.id = s.id
       RETURNING 1
     ),
@@ -12892,7 +12914,7 @@ BEGIN
            jsonb_build_object(
              'id', s.id, 'spectrum_id', s.spectrum_id, 'target_id', s.target_id,
              'object_id', o.object_id, 'object_db_id', o.id,
-             'grating', s.grating, 'fits_path', s.fits_path,
+             'grating', s.grating, 'filter', s.filter, 'fits_path', s.fits_path,
              'file_hash', s.file_hash, 'science_hash', s.science_hash, 'file_size', s.file_size,
              'signal_to_noise', s.signal_to_noise, 'exposure_time', s.exposure_time,
              'cfpipe_version', s.cfpipe_version, 'crds_context', s.crds_context,

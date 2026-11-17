@@ -387,8 +387,15 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
         '_spec\.fits$', '', 'i'
       )
     ) STORED,
-    "is_public" boolean NOT NULL DEFAULT false
+    "is_public" boolean NOT NULL DEFAULT false,
+    -- NIRSpec filter (CLEAR, F070LP, F100LP, F170LP, F290LP): with grating the
+    -- disperser setup. One grating can pair with several filters (G140M with
+    -- F070LP and F100LP, #683), so the spectrum's identity is
+    -- (target_id, grating, filter). Deploy writes it from the summary;
+    -- set_spectrum_filter fills it from fits_path when a write leaves it NULL.
+    "filter" "text"
 );
+COMMENT ON COLUMN "public"."spectra"."filter" IS 'NIRSpec filter paired with grating (CLEAR, F070LP, F100LP, F170LP, F290LP; #683). Written by deploy; filled from fits_path by set_spectrum_filter when NULL (spectrum_filter_from_path).';
 COMMENT ON COLUMN "public"."spectra"."is_public" IS 'Planner-visible access scope (Catalog Read Model phase 1, #533): the program''s is_public, trigger-maintained (sync_row_is_public on program_slug changes; propagate_program_is_public when a program flips). select_spectra_by_access tests (NOT link AND is_public) OR program_slug = ANY(scope); same row set, real statistics.';
 
 
@@ -1704,6 +1711,7 @@ CREATE TABLE IF NOT EXISTS "public"."dr_spectra" (
     "spectrum_id" "text",
     "search_text" "text",
     "is_public" boolean NOT NULL DEFAULT false,
+    "filter" "text",
     CONSTRAINT "dr_spectra_pkey" PRIMARY KEY ("tag", "id"),
     CONSTRAINT "dr_spectra_tag_spectrum_id_key" UNIQUE ("tag", "spectrum_id")
 );

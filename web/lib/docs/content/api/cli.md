@@ -220,6 +220,7 @@ Tags are not denormalized into `objects.csv` — use `cf.query_objects(tags=[...
 | `target_id` | str | Per-program target ID |
 | `object_id` | str | Parent sky-object ID |
 | `grating` | str | Grating (PRISM, G140M, G235M, G395M, …) |
+| `filter` | str | NIRSpec filter paired with the grating (CLEAR, F070LP, F100LP, F170LP, F290LP) |
 | `fits_path` | str | Remote FITS file path |
 | `file_hash`, `file_size` | — | Remote file metadata |
 | `signal_to_noise`, `exposure_time` | float | Per-spectrum quality |

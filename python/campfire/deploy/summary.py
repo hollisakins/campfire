@@ -235,6 +235,11 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
     # written before P0b have no column; those deploys leave the row's value
     # alone (the backfill fills it).
     has_science_hash = 'science_hash' in summary.colnames
+    # #683: the NIRSpec filter paired with the grating (G140M takes F070LP or
+    # F100LP). Summaries have carried it since the metadata reader parsed it
+    # from the file name; when absent, the set_spectrum_filter trigger takes it
+    # from fits_path instead.
+    has_filter = 'filter' in summary.colnames
 
     # Fallback to metadata for old ECSVs that lack per-row columns
     meta_jwst_version = _clean_str(summary.meta.get('jwst_version'))
@@ -294,6 +299,9 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
         # (a product the hasher could not read must not keep a stale hash).
         if has_science_hash:
             rec['science_hash'] = _clean_str(row['science_hash'])
+        if has_filter:
+            filt = _clean_str(row['filter'])
+            rec['filter'] = filt.upper() if filt else None
 
         records.append(rec)
     return records

@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 #   science-only NIRCam identity, and the pushed_* columns carry the PUSH-side
 #   bookkeeping (`campfire push` / deploy dedup) — the mirror now serves both
 #   transfer directions.
-SCHEMA_VERSION = 12  # 12: line_fits / catalog_matches table names (Catalog Read Model phase 2c); 11: objects.needs_review (P3); 10: spectra.science_hash (P0b); 9: line_fits
+SCHEMA_VERSION = 13  # 13: spectra.filter (#683); 12: line_fits / catalog_matches table names (Catalog Read Model phase 2c); 11: objects.needs_review (P3); 10: spectra.science_hash (P0b); 9: line_fits
 
 
 # Product-type classes the client download engine understands. Finals are the
@@ -68,7 +68,7 @@ OBJECT_EXPORT_COLUMNS = [
 # verbatim from the FITS primary header through the catalog so a flux value can
 # be traced to its exact pipeline version + CRDS context without opening FITS.
 SPECTRA_COLUMNS = [
-    "id", "spectrum_id", "target_id", "object_id", "grating", "fits_path",
+    "id", "spectrum_id", "target_id", "object_id", "grating", "filter", "fits_path",
     "file_hash", "science_hash", "file_size", "signal_to_noise", "exposure_time",
     "cfpipe_version", "crds_context", "jwst_version", "date_obs", "reduced_at",
     "redshift_auto", "dq_flags",
@@ -78,7 +78,7 @@ SPECTRA_COLUMNS = [
 ]
 
 SPECTRA_EXPORT_COLUMNS = [
-    "spectrum_id", "target_id", "object_id", "grating", "fits_path",
+    "spectrum_id", "target_id", "object_id", "grating", "filter", "fits_path",
     "file_hash", "science_hash", "file_size", "signal_to_noise", "exposure_time",
     "cfpipe_version", "crds_context", "jwst_version", "date_obs", "reduced_at",
     "redshift_auto", "dq_flags",
@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS spectra (
     target_id TEXT,
     object_id TEXT,
     grating TEXT NOT NULL,
+    filter TEXT,
     science_hash TEXT,
     signal_to_noise REAL,
     exposure_time REAL,
@@ -202,6 +203,7 @@ CREATE INDEX IF NOT EXISTS idx_spectra_target_id ON spectra(target_id);
 CREATE INDEX IF NOT EXISTS idx_spectra_object_id ON spectra(object_id);
 CREATE INDEX IF NOT EXISTS idx_spectra_observation ON spectra(observation);
 CREATE INDEX IF NOT EXISTS idx_spectra_grating ON spectra(grating);
+CREATE INDEX IF NOT EXISTS idx_spectra_filter ON spectra(filter);
 CREATE INDEX IF NOT EXISTS idx_spectra_dq_flags ON spectra(dq_flags) WHERE dq_flags != 0;
 CREATE INDEX IF NOT EXISTS idx_spectra_crds_context ON spectra(crds_context);
 CREATE INDEX IF NOT EXISTS idx_spectra_cfpipe_version ON spectra(cfpipe_version);
@@ -796,17 +798,18 @@ class LocalStore:
             self._conn.execute(
                 """
                 INSERT INTO spectra
-                    (id, spectrum_id, target_id, object_id, grating, science_hash,
+                    (id, spectrum_id, target_id, object_id, grating, filter, science_hash,
                      signal_to_noise, exposure_time,
                      cfpipe_version, crds_context, jwst_version, date_obs, reduced_at,
                      redshift_auto, dq_flags,
                      program_slug, observation, field,
                      created_at, updated_at, _synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(spectrum_id) DO UPDATE SET
                     target_id=excluded.target_id,
                     object_id=excluded.object_id,
                     grating=excluded.grating,
+                    filter=excluded.filter,
                     science_hash=excluded.science_hash,
                     signal_to_noise=excluded.signal_to_noise,
                     exposure_time=excluded.exposure_time,
@@ -829,6 +832,7 @@ class LocalStore:
                     spec.get("target_id"),
                     spec.get("object_id"),
                     spec.get("grating"),
+                    spec.get("filter"),
                     spec.get("science_hash"),
                     spec.get("signal_to_noise"),
                     spec.get("exposure_time"),
@@ -862,6 +866,7 @@ class LocalStore:
         redshift_quality: Optional[List[int]] = None,
         max_snr_range: Optional[Tuple[float, float]] = None,
         dq_flags: Optional[dict] = None,
+        filters: Optional[List[str]] = None,
         crds_context: Optional[List[str]] = None,
         cfpipe_version: Optional[List[str]] = None,
         reduced_after: Optional[str] = None,
@@ -905,6 +910,11 @@ class LocalStore:
             placeholders = ",".join("?" * len(gratings))
             where.append(f"s.grating IN ({placeholders})")
             params.extend(gratings)
+
+        if filters:
+            placeholders = ",".join("?" * len(filters))
+            where.append(f"s.filter IN ({placeholders})")
+            params.extend(filters)
 
         if observations:
             placeholders = ",".join("?" * len(observations))
@@ -999,6 +1009,7 @@ class LocalStore:
             "target_id": "s.target_id",
             "object_id": "s.object_id",
             "grating": "s.grating",
+            "filter": "s.filter",
             "field": "s.field",
             "observation": "s.observation",
             "signal_to_noise": "s.signal_to_noise",

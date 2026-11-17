@@ -403,3 +403,20 @@ describe('columns and words', () => {
     expect(words[7]).toBe('has a line fit where χ² < 2');
   });
 });
+
+describe('the NIRSpec filter (#683)', () => {
+  it('is a Spectrum property, at the spectra root and inside a card', () => {
+    const filter = def('spectrum', 'filter');
+    const node = compileProperty(filter, { kind: 'choice', values: ['F070LP'] }, 'spectra');
+    expect(node).toEqual({ col: 'filter', op: 'in', v: ['F070LP'] });
+    expect(validateNode(node, 'spectra')).toEqual(node);
+    const [item] = readConditions([node as TreeNode], 'spectra').items as PropertyItem[];
+    expect(item.def.key).toBe('filter');
+    expect(item.value).toEqual({ kind: 'choice', values: ['F070LP'] });
+    // at the objects root: one spectrum with G140M and F070LP
+    const card: TreeNode = { exists: 'spectra', where: [{ and: [{ col: 'grating', op: 'in', v: ['G140M'] }, { col: 'filter', op: 'in', v: ['F070LP'] }] }] };
+    const [spectrum] = readConditions([card], 'objects').items as SpectrumItem[];
+    expect(spectrum.kind).toBe('spectrum');
+    expect(spectrum.items.map((it) => it.kind === 'property' && it.def.key)).toEqual(['grating', 'filter']);
+  });
+});

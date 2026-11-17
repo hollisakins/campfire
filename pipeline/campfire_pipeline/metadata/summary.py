@@ -54,11 +54,16 @@ GRATING_PRIORITY = {
 }
 
 
+def _grating_priority(setup: str) -> int:
+    """Priority of a setup key: ``'G140M/F100LP'`` ranks as ``'G140M'``."""
+    return GRATING_PRIORITY.get(setup.split('/', 1)[0], 99)
+
+
 def _grating_sort_key(name: str, data: dict) -> tuple:
     """Sort key for ranking gratings: highest SNR > longest exposure > wavelength priority."""
     snr = -(data.get('signal_to_noise') or 0)
     exposure = -(data.get('exposure_time', 0))
-    wavelength = GRATING_PRIORITY.get(name, 99)
+    wavelength = _grating_priority(name)
     return (snr, exposure, wavelength)
 
 
@@ -238,7 +243,7 @@ def determine_best_redshift(
                 return result
         # Fall back to best single grating
         pool = informative if informative else grating_chi2
-        best_g = min(pool, key=lambda g: GRATING_PRIORITY.get(g, 99))
+        best_g = min(pool, key=lambda g: _grating_priority(g))
         return pool[best_g]['zbest']
 
     # Case 6: scalar fallback
@@ -288,7 +293,7 @@ def _consensus_redshift(chi2_by_grating, delta_chi2_peak, dv_tolerance):
                 total_delta_chi2 += delta
                 n_constraining += 1
 
-        grating_prio = GRATING_PRIORITY.get(source_grating, 99)
+        grating_prio = _grating_priority(source_grating)
         scored.append((total_delta_chi2, -n_constraining, grating_prio, z_cand))
 
     # Sort: lowest total delta-chi2, most constraining gratings, best precision
@@ -369,13 +374,19 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
         zfit_path = zfit_map.get(base)
         zfit_data = read_zfit_data(zfit_path) if zfit_path else None
 
+        # One entry per disperser setup: G140M/F070LP and G140M/F100LP of one
+        # source are two spectra (#683), and keyed by grating alone the second
+        # silently replaced the first. PRISM keeps its bare key, which
+        # determine_best_redshift anchors on.
+        setup = meta['grating'] if meta['grating'] == 'PRISM' else f"{meta['grating']}/{meta['filter']}"
+
         if zfit_data:
             meta['redshift_auto'] = zfit_data['redshift']
             meta['redshift_confidence'] = zfit_data['confidence']
             meta['chi2_min'] = zfit_data['chi2_min']
 
             # Scalar data for fallback
-            scalar_by_source[meta['source_id']][meta['grating']] = {
+            scalar_by_source[meta['source_id']][setup] = {
                 'redshift': zfit_data['redshift'],
                 'exposure_time': meta.get('exposure_time', 0),
                 'signal_to_noise': meta.get('signal_to_noise', 0),
@@ -385,7 +396,7 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
             chi2_curve = read_zfit_chi2(zfit_path)
             if chi2_curve:
                 chi2_curve['n_pix'] = meta.get('n_pix', 0)
-                chi2_by_source[meta['source_id']][meta['grating']] = chi2_curve
+                chi2_by_source[meta['source_id']][setup] = chi2_curve
         else:
             meta['redshift_auto'] = None
             meta['redshift_confidence'] = None
