@@ -644,6 +644,13 @@ optional Resend domain verification.
   `/api/health` is 503 (`"db":"degraded"`, `reason` `wal` or `locks`) when
   commits are stuck on the disk or behind a lock, not only when the database
   is unreachable (`db_stall_status()`, two samples 15 s apart).
+  A run tries up to 3 times, 5 s apart, and reports `/fail` only if all fail
+  (a single stalled request, as on 2026-11-06 and 2026-11-10, must not page).
+  Every failed try, with curl's error and the connect / TLS / first-byte times
+  or the 503 body, goes to `/srv/campfire/logs/site-check.log` and into the
+  ping body (healthchecks.io's ping log): after a notice you cannot explain,
+  read that file first. A blip that recovered on retry sends no notice, only
+  log lines.
 - Site-wide banner: shown automatically while `/api/health` would be 503.
   For an operator message (maintenance, a provider incident) write one line on
   the host, root disk, no restart, shown within 15 s, replaces the automatic
