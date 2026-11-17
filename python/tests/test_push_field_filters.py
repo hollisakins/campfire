@@ -1,6 +1,6 @@
 """Regression: an explicit --filter selection must stay a selection.
 
-A typo'd filter (`campfire push --field X --filter f999w`) previously fell
+A typo'd filter (`campfire push im --field X --filters f999w`) previously fell
 back to `available` — planning/uploading the ENTIRE field instead of nothing
 (Codex review, PR #364). The guard drops unknown filters with a warning and
 returns before any Supabase/network work when none remain.

@@ -79,7 +79,7 @@ def test_opens_the_release_store_without_credentials(release_tree, no_session):
 
 
 def test_a_release_not_on_this_machine_fails_closed(tmp_path, no_session):
-    with pytest.raises(DRModeError, match=f'campfire pull --dr {TAG}'):
+    with pytest.raises(DRModeError, match=f'campfire pull spec --dr {TAG}'):
         Campfire(dr=TAG, data_dir=tmp_path)
 
 
@@ -193,7 +193,7 @@ def _write_spectrum_fits(path):
 
 def test_open_spectrum_reads_the_release_tree_and_never_the_service(release_tree, no_session):
     cf = Campfire(dr=TAG, data_dir=release_tree)
-    with pytest.raises(DRModeError, match=f'campfire pull --dr {TAG}'):
+    with pytest.raises(DRModeError, match=f'campfire pull spec --dr {TAG}'):
         cf.open_spectrum('obs_a_prism_tA')
     # the pull lands the file and records it on the storage row
     root = release_tree / 'dr' / TAG

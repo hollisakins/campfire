@@ -102,7 +102,7 @@
 [nirspec.line_fitting]
     # Emission-line fluxes at the INSPECTED redshift (cfpipe nirspec linefit).
     # Redshifts come from reference/nirspec/<obs>/redshifts.toml, written by
-    # `campfire pull --obs <obs>` from the portal's inspection state; spectra
+    # `campfire pull spec --obs <obs>` from the portal's inspection state; spectra
     # whose object is below min_quality (2 tentative, 3 probable, 4 secure) are
     # skipped, never fit at a guess. Values below 2 are clamped to 2: a
     # quality-0 object's portal redshift is the pipeline's own auto fit, which

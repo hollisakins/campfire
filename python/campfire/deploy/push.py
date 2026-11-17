@@ -39,7 +39,7 @@ from campfire.deploy.url_batches import url_batches
 import os
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 from campfire_layout import KeyScheme, Scope, storage_key
 
@@ -354,17 +354,21 @@ def push_observation(
     config: dict,
     *,
     source_ids: Optional[list[int]] = None,
+    products: Optional[Iterable[str]] = None,
     dry_run: bool = False,
     workers: Optional[int] = None,
     dry_run_note: bool = True,
 ) -> dict:
     """Push a NIRSpec observation's tree products to OSN (bytes only).
 
-    Covers the pipeline-written products: stage-3 finals, canonical
-    spectrum-exposure intermediates, and detector rate files. Deploy-generated
-    derivatives (spectrum JSON, zfit JSON, thumbnails) are NOT pushed — they
-    are cheap, regenerated at deploy time, and belong to the publication step.
+    Covers the pipeline-written products, by ``campfire push spec --products``
+    name (``None`` = all three): ``spectra`` (stage-3 finals), ``exposures``
+    (canonical spectrum-exposures) and ``rates`` (detector rate files).
+    Deploy-generated derivatives (spectrum JSON, zfit JSON, thumbnails) are NOT
+    pushed — they are cheap, regenerated at deploy time, and belong to the
+    publication step.
     """
+    want = set(products) if products is not None else {'spectra', 'exposures', 'rates'}
     from campfire.deploy.deploy import resolve_obs_dir, _filter_exposures_by_source_ids
     from campfire.deploy.discover import discover_rate_files, discover_spectrum_exposures
     from campfire.deploy.summary import filter_by_source_ids, get_spec_paths, load_summary
@@ -375,7 +379,7 @@ def push_observation(
     tasks: list[UploadTask] = []
     cfpipe_version = None
 
-    summary = load_summary(obs_dir, obs_name, required=False)
+    summary = load_summary(obs_dir, obs_name, required=False) if 'spectra' in want else None
     if summary is not None and len(summary) > 0:
         cfpipe_version = summary.meta.get('cfpipe_version')
         if source_ids:
@@ -386,7 +390,7 @@ def push_observation(
                                scheme=KeyScheme.CANONICAL),
                 'application/fits'))
 
-    exposure_files = discover_spectrum_exposures(obs_dir)
+    exposure_files = discover_spectrum_exposures(obs_dir) if 'exposures' in want else []
     if source_ids:
         exposure_files = _filter_exposures_by_source_ids(exposure_files, source_ids)
     for p in exposure_files:
@@ -396,7 +400,7 @@ def push_observation(
             'application/fits'))
 
     # Rate files are source-independent (per-detector) — never filtered.
-    for p in discover_rate_files(obs_dir):
+    for p in (discover_rate_files(obs_dir) if 'rates' in want else []):
         tasks.append(UploadTask(
             p, storage_key('nirspec_rate', scope, p.name,
                            scheme=KeyScheme.CANONICAL),
@@ -465,14 +469,20 @@ def push_field(
     config: dict,
     *,
     filters: Optional[list[str]] = None,
+    products: Optional[Iterable[str]] = None,
+    tiles: Optional[Iterable[str]] = None,
     dry_run: bool = False,
     workers: Optional[int] = None,
     dry_run_note: bool = True,
 ) -> dict:
     """Push a NIRCam field's tree products to OSN (bytes only).
 
-    Covers canonical exposures (sci_dq identity), expmaps, preview/full PNGs,
-    and mosaics (whole-file identity). No deployment is recorded and no
+    Covers, by ``campfire push im --products`` name (``None`` = all three):
+    ``exposures`` (canonical exposures, sci_dq identity, plus their preview/full
+    PNGs), ``expmaps`` (coverage maps plus their plots) and ``mosaics``
+    (whole-file identity), the mosaics optionally narrowed to ``tiles`` (the
+    tile each mosaic's manifest names; an unknown tile pushes nothing). No
+    deployment is recorded and no
     ``nircam_exposures``/``nircam_images`` rows are touched — a later
     ``campfire deploy --field`` attaches everything to a deployment and
     dedup-skips the bytes this push landed.
@@ -506,23 +516,37 @@ def push_field(
     else:
         filters = available
 
-    exposures = discover_exposures(dirs, filters)
-    tasks: list[UploadTask] = list(build_fits_upload_tasks(field, exposures))
-    tasks += list(discover_expmap_tasks(dirs, field, filters))
-    tasks += [t[0] for t in build_upload_tasks(dirs, field, filters)]
-    # Scope mosaics to the current fields.toml — a stray on-disk tile/epoch must
-    # not have its bytes pushed to OSN (they would sit orphaned, un-indexed).
-    try:
-        scoped_mosaics = scope_mosaics_to_fields_toml(
-            deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
-    except ValueError as e:
-        print(f"Error: {e}")
-        return {'planned': 0, 'pushed': 0, 'failed': 0, 'skipped': 0}
-    tasks += [UploadTask(m['path'], m['storage_key'], m['content_type'])
-              for m in scoped_mosaics]
+    want = set(products) if products is not None else {'exposures', 'expmaps', 'mosaics'}
+    tasks: list[UploadTask] = []
+    if 'exposures' in want:
+        exposures = discover_exposures(dirs, filters)
+        tasks += list(build_fits_upload_tasks(field, exposures))
+        tasks += [t[0] for t in build_upload_tasks(dirs, field, filters)]
+    if 'expmaps' in want:
+        tasks += list(discover_expmap_tasks(dirs, field, filters))
+    if 'mosaics' in want:
+        # Scope mosaics to the current fields.toml — a stray on-disk tile/epoch must
+        # not have its bytes pushed to OSN (they would sit orphaned, un-indexed).
+        try:
+            scoped_mosaics = scope_mosaics_to_fields_toml(
+                deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return {'planned': 0, 'pushed': 0, 'failed': 0, 'skipped': 0}
+        if tiles:
+            tile_set = set(tiles)
+            found = {m.get('tile') for m in scoped_mosaics}
+            missing = sorted(tile_set - found)
+            if missing:
+                print(f"Warning: no mosaics for tile(s): {', '.join(missing)} "
+                      f"(found: {', '.join(sorted(t for t in found if t)) or 'none'})")
+            scoped_mosaics = [m for m in scoped_mosaics if m.get('tile') in tile_set]
+        tasks += [UploadTask(m['path'], m['storage_key'], m['content_type'])
+                  for m in scoped_mosaics]
 
     print(f"Field: {field}")
     print(f"  Filters: {', '.join(filters)}")
+    print(f"  Products: {', '.join(sorted(want))}" + (f" (tiles: {', '.join(tiles)})" if tiles else ""))
     print(f"  Tree products discovered: {len(tasks)}")
     if not tasks:
         print("  Nothing to push.")

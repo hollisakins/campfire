@@ -60,7 +60,7 @@ cfpipe nirspec make-templates
 #### Emission-line fluxes (post-inspection)
 
 `linefit` is not part of `run --all`: it needs the redshifts that inspectors set on
-the portal *after* a deploy. `campfire pull --obs <obs>` materializes them to
+the portal *after* a deploy. `campfire pull spec --obs <obs>` materializes them to
 `reference/nirspec/<obs>/redshifts.toml`; `linefit` then fits every spectrum whose
 object is at or above `[nirspec.line_fitting].min_quality` (default 3, probable),
 skips the rest, and writes `<base>_lines.fits` (+ a QA PDF) next to the spectrum.
@@ -78,7 +78,7 @@ QA runs; those products are stamped `ZSRC=auto` and are refused by deploy unless
 `--allow-auto-z`. See `docs/design-emission-line-fitting.md`.
 
 ```bash
-campfire pull --obs ember_uds_p4
+campfire pull spec --obs ember_uds_p4
 cfpipe nirspec linefit --obs ember_uds_p4 -p 8
 campfire deploy lines --obs ember_uds_p4
 ```

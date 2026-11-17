@@ -497,12 +497,12 @@ def run_linefit(obs, config, source_ids=None, overwrite=False, n_processes=1,
     workspace = obs.workspace_dir
     if not os.path.isdir(workspace):
         log.warning(f"No products directory for {obs.name} at {workspace} — "
-                    f"run `campfire pull --obs {obs.name}` (or reduce) first")
+                    f"run `campfire pull spec --obs {obs.name}` (or reduce) first")
         return dict(fit=0, skipped_uptodate=0, skipped_no_z=0, failed=0)
     ref_file = redshifts_path(obs.reference_dir)
     redshifts = load_redshifts(ref_file)
     if not redshifts:
-        log.warning(f"No inspected redshifts at {ref_file} — run `campfire pull --obs {obs.name}` "
+        log.warning(f"No inspected redshifts at {ref_file} — run `campfire pull spec --obs {obs.name}` "
                     f"first{' (falling back to zfit redshifts)' if allow_auto else ''}")
 
     spec_files = sorted(glob.glob(os.path.join(workspace, '*_spec.fits')))

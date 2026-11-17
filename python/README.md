@@ -94,22 +94,30 @@ campfire login --api-key    # Paste an API key (for headless systems)
 campfire sync               # Pulls full object/spectra metadata (~seconds)
 ```
 
-This downloads the complete catalog into a local SQLite database and exports `objects.csv` + `spectra.csv`. No FITS files are downloaded. Safe to run often — refreshes inspection results, redshifts, and flags. After the first run a sync is incremental: only rows changed since the last sync are fetched, and rows removed on the server (regrouped objects, revoked spectra) are deleted locally. The file index covers the final products the client can download; `campfire pull --intermediate` indexes the intermediates of its selection on demand. `campfire sync --full` re-walks everything. The tail of a sync names the newest published data release (`DR2026.1 published 2026-11-01; you are on live`) and, when your program access changed since your last full sync, asks for `campfire sync --full` (an incremental sync keys on what changed on the server, and a grant changes nothing there).
+This downloads the complete catalog into a local SQLite database and exports `objects.csv` + `spectra.csv`. No FITS files are downloaded. Safe to run often — refreshes inspection results, redshifts, and flags. After the first run a sync is incremental: only rows changed since the last sync are fetched, and rows removed on the server (regrouped objects, revoked spectra) are deleted locally. The file index covers the final products the client can download; a pull that asks for `--products exposures` (or `expmaps`) indexes them for its selection on demand. `campfire sync --full` re-walks everything. The tail of a sync names the newest published data release (`DR2026.1 published 2026-11-01; you are on live`) and, when your program access changed since your last full sync, asks for `campfire sync --full` (an incremental sync keys on what changed on the server, and a grant changes nothing there).
 
-### 2. Download spectra
+### 2. Download data
+
+`campfire pull` takes a modality first: `spectroscopy` (`spec`) or `imaging` (`im`).
 
 ```bash
-campfire download --obs ember_uds_p4              # By observation
-campfire download --program EMBER-UDS             # By program
-campfire download --field COSMOS --grating PRISM   # By field + grating
-campfire download --stale                          # Re-download reprocessed files
-campfire download --all                            # Everything accessible
+campfire pull spec --obs ember_uds_p4                     # spectra of an observation
+campfire pull spec --program EMBER-UDS                    # ... of a program
+campfire pull spec --field cosmos --grating PRISM         # ... of a field, one grating
+campfire pull spec --obs ember_uds_p4 --products spectra,exposures
+campfire pull im --field cosmos --filters f444w --tile A1 # mosaics
+campfire pull im --field nep --products exposures,expmaps # inputs for your own mosaics
+campfire pull --stale                                     # re-download reprocessed files, any modality
 ```
+
+`--products` defaults to the finals (`spectra` / `mosaics`); `--instrument` defaults to every
+instrument of the modality. A narrower (`--grating`, `--filters`, `--tile`) that matches nothing
+is an error listing what is available. `campfire push spec|im` takes the same options.
 
 ### 2b. Publish emission-line fits (deploy machines)
 
 ```bash
-campfire pull --obs ember_uds_p4            # also writes reference/nirspec/<obs>/redshifts.toml
+campfire pull spec --obs ember_uds_p4            # also writes reference/nirspec/<obs>/redshifts.toml
 cfpipe nirspec linefit --obs ember_uds_p4   # pipeline: fits at the inspected redshifts
 campfire deploy lines --obs ember_uds_p4    # line_fits rows (+ _lines.fits on OSN)
 ```
@@ -118,8 +126,9 @@ campfire deploy lines --obs ember_uds_p4    # line_fits rows (+ _lines.fits on O
 
 ```bash
 campfire dr list                                  # the releases you may read
-campfire pull --dr DR2026.1                       # the release's catalog into dr/DR2026.1/, then a listing
-campfire pull --dr DR2026.1 --obs ember_uds_p4    # its frozen bytes for a selection (--program / --field / --all)
+campfire pull spec --dr DR2026.1                  # the release's catalog into dr/DR2026.1/, then a listing
+campfire pull spec --dr DR2026.1 --obs ember_uds_p4  # its frozen spectra for a selection (--program / --field / --all)
+campfire pull im --dr DR2026.1 --field cosmos     # its frozen mosaics
 campfire identify spectra/*.fits                  # what each file is: "in DR2026.1, still current", ...
 campfire cite DR2026.1 [--obs X | --program P]    # the citation sentence for the release as you read it
 ```
@@ -168,7 +177,7 @@ reported (exit 1).
 
 ```bash
 campfire status             # Credentials, catalog stats, downloads, disk usage
-campfire download           # List available observations and download status
+campfire pull spec           # List available observations and download status (pull im: fields)
 ```
 
 ### CSV-only workflow
@@ -327,7 +336,7 @@ if result['stale_count'] > 0:
 ### Data releases
 
 A data release is a frozen, citable snapshot of the published catalog
-(`docs/design-data-releases.md`). Once pulled (`campfire pull --dr DR2026.1`,
+(`docs/design-data-releases.md`). Once pulled (`campfire pull spec --dr DR2026.1`,
 which lands the release under `$CAMPFIRE_ROOT/dr/DR2026.1/`), a client opened on
 it reads that store and nothing else: no login, no network, no silent fallback to
 the live catalog. Anything only the live service answers (`remote=True`, a
@@ -432,10 +441,10 @@ See the [docs site](https://campfire-jwst.org/docs/api/python-client#calibration
 
 ```
 campfire sync       → pulls full catalog into SQLite + CSVs (no FITS)
-campfire download   → downloads FITS files by obs/program/field/grating
+campfire pull spec|im → downloads data products by modality (obs/program/field, filter/tile)
 
 Campfire.sync()          → same as campfire sync
-Campfire.download()      → same as campfire download
+Campfire.download()      → same as campfire pull spec
 Campfire.query_objects() → one row per sky position (inspection state, tags)
 Campfire.query_spectra() → one row per spectrum (fits_path, dq_flags)
 Campfire.iter_objects()  → cursor-paginated stream of matching objects

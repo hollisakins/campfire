@@ -271,7 +271,7 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
                 <Link href="/docs/api" className="text-primary hover:underline">
                   programmatic access
                 </Link>{' '}
-                for the CLI (<code className="font-mono text-xs">campfire pull --field</code>) and Python client.
+                for the CLI (<code className="font-mono text-xs">campfire pull im --field</code>) and Python client.
               </p>
             </div>
           </div>

@@ -203,7 +203,7 @@ def _apply_storage(store, fetched, updated_since, sync_ts):
 #: default. The registry also carries every spectrum's sidecars (JSON, 1-D
 #: JSON, zfit, line fits), previews and rate files — several rows per spectrum
 #: that no client command reads — and the intermediates, which are fetched per
-#: selection when `pull --intermediate` asks for them. Walking only this set is
+#: selection when a pull asks for them (`--products exposures`, ...). Walking only this set is
 #: what keeps the storage stream, the largest of the five, proportional to the
 #: spectra catalog instead of several times it.
 MIRRORED_PRODUCT_TYPES = FINAL_PRODUCT_TYPES
@@ -586,7 +586,7 @@ def refresh_storage_scope(
 
     ``campfire sync`` mirrors finals only (``MIRRORED_PRODUCT_TYPES``); the
     intermediate kinds are fetched here, for the observations / fields a
-    ``pull --intermediate`` is about to act on, so a user who never pulls
+    pull that names them in ``--products`` is about to act on, so a user who never pulls
     intermediates never pages through them. The walk is a full one for the
     slice (no ``updated_since``), after which mirror rows in the same slice the
     server no longer returned are purged — the same tree-shaped reconciliation
@@ -713,6 +713,7 @@ def download_objects(
     fields: Optional[List[str]] = None,
     filters: Optional[List[str]] = None,
     dr: Optional[str] = None,
+    tiles: Optional[List[str]] = None,
 ) -> dict:
     """Download storage objects for the given observations/fields + product types.
 
@@ -720,8 +721,8 @@ def download_objects(
     storage_objects mirror, presign the to-download set, fetch in parallel,
     verify ``content_hash``, and record local state. ``fields`` selects
     field-scoped NIRCam rows (``observation IS NULL``); ``filters`` narrows those
-    to specific NIRCam filters. Used for NIRSpec finals, intermediates, and
-    NIRCam alike. With ``dr=<tag>`` (``campfire pull --dr``) the store is the
+    to specific NIRCam filters and ``tiles`` their mosaics to specific tiles. Used for NIRSpec finals, intermediates, and
+    NIRCam alike. With ``dr=<tag>`` (``campfire pull spec --dr``) the store is the
     release's, the urls are the release's archived copies, and the verified
     ``content_hash`` is the hash of those bytes (the release store carries it).
     """
@@ -731,6 +732,7 @@ def download_objects(
         gratings=gratings,
         fields=list(fields) if fields else None,
         filters=list(filters) if filters else None,
+        tiles=list(tiles) if tiles else None,
     )
     to_download = [row for rows in pending.values() for row in rows]
 

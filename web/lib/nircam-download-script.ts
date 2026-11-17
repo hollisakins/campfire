@@ -142,7 +142,7 @@ fi`;
 ${authNote}
 #
 # The campfire CLI downloads the same products with
-# \`campfire pull --field <field>\` — see ${base}/docs/api/cli
+# \`campfire pull im --field <field> --products exposures\` — see ${base}/docs/api/cli
 
 set -u
 

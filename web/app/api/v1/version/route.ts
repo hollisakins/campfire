@@ -27,10 +27,13 @@ import { NextResponse } from 'next/server';
  * --dr`, `Campfire(dr=)`, `identify`, `cite`, `provenance`, the sync tail's
  * release and access notices (read from /auth/whoami). Older clients lose
  * nothing they had (decision D-P5-1: no floor bump).
+ * 0.8.0 (latest only): `campfire pull` / `push` take a modality first
+ * (`spec` / `im`) with `--products`, `--instrument` and `--tile`; the old flag
+ * syntax is answered with the new command. CLI only: no API change, no floor bump.
  */
 export async function GET() {
   const response = NextResponse.json({
-    latest: '0.7.0',
+    latest: '0.8.0',
     minimum: '0.5.0',
   });
 

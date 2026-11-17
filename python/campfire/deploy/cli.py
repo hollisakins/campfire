@@ -475,31 +475,48 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
 # ---------------------------------------------------------------------------
 # push — bytes-only transfer (registered TOP-LEVEL as `campfire push`)
 # ---------------------------------------------------------------------------
+#
+# The mirror of `campfire pull <modality>` (campfire/modality.py): the same
+# modalities, aliases, product names and narrowers, so a pull and a push of
+# the same selection read alike.
 
-@click.command('push')
-@click.option('--config', 'config_path', default=None,
-              help='Path to deploy config TOML.')
-@click.option('--obs', multiple=True, type=str, cls=_VariadicOption,
-              help='NIRSpec observation name(s) to push.')
-@click.option('--field', 'fields', multiple=True, type=str, cls=_VariadicOption,
-              help='NIRCam field(s) to push.')
-@click.option('--filter', 'filter_names', multiple=True, type=str, cls=_VariadicOption,
-              help='NIRCam: limit a field push to these filters.')
-@click.option('--source-ids', multiple=True, type=str, default=None,
-              cls=_VariadicOption, callback=_parse_source_ids,
-              help='NIRSpec: push only specific source IDs.')
-@click.option('--dry-run', is_flag=True,
-              help='Plan only: show new/changed/unchanged counts.')
-@click.option('--workers', type=int, default=None,
-              help='Parallel upload streams (default 16; '
-                   'env CAMPFIRE_DEPLOY_UPLOAD_WORKERS).')
-@click.option('--local', is_flag=True,
-              help='Use local Supabase (127.0.0.1:54321).')
-@click.option('--service-role', 'service_role', is_flag=True,
-              help='Explicit service-role mode for unattended pushes.')
+from campfire.modality import (  # noqa: E402
+    IMAGING, SPECTROSCOPY, ModalityGroup, normalize_names, resolve_instruments,
+    resolve_products,
+)
+
+_PUSH_LEGACY_FLAGS = ('--obs', '--field', '--filter', '--filters', '--source-ids')
+
+
+def _push_options(f):
+    """Auth / transfer flags shared by both push modalities."""
+    f = click.option('--service-role', 'service_role', is_flag=True,
+                     help='Explicit service-role mode for unattended pushes.')(f)
+    f = click.option('--local', is_flag=True,
+                     help='Use local Supabase (127.0.0.1:54321).')(f)
+    f = click.option('--workers', type=int, default=None,
+                     help='Parallel upload streams (default 16; '
+                          'env CAMPFIRE_DEPLOY_UPLOAD_WORKERS).')(f)
+    f = click.option('--dry-run', is_flag=True,
+                     help='Plan only: show new/changed/unchanged counts.')(f)
+    f = click.option('--config', 'config_path', default=None,
+                     help='Path to deploy config TOML.')(f)
+    return f
+
+
+def _push_config(ctx, config_path, local, service_role):
+    config = load_config(
+        config_path, local=_resolve_local(ctx, local),
+        service_role=bool(service_role) or _resolve_service_role(ctx))
+    _gate_admin(config)
+    _announce_auth_mode(config)
+    return config
+
+
+@click.group('push', cls=ModalityGroup, legacy_flags=_PUSH_LEGACY_FLAGS,
+             invoke_without_command=True)
 @click.pass_context
-def push_cmd(ctx, config_path, obs, fields, filter_names, source_ids, dry_run,
-             workers, local, service_role):
+def push_cmd(ctx):
     """Push local tree products to cloud storage (bytes only — no publication).
 
     The local→cloud half of the storage plane (mirror image of `campfire
@@ -516,29 +533,96 @@ def push_cmd(ctx, config_path, obs, fields, filter_names, source_ids, dry_run,
 
     \b
     Examples:
-      campfire push --obs ember_uds_p4 --dry-run
-      campfire push --obs ember_uds_p4 ember_uds_p5
-      campfire push --field cosmos --filter f444w
+      campfire push spec --obs ember_uds_p4 --dry-run
+      campfire push spec --obs ember_uds_p4 ember_uds_p5 --products spectra
+      campfire push im --field cosmos --filters f444w
+      campfire push im --field nep --products mosaics --tile core E
     """
-    if not obs and not fields:
-        raise click.UsageError('Provide --obs and/or --field to scope the push.')
-    config = load_config(
-        config_path, local=_resolve_local(ctx, local),
-        service_role=bool(service_role) or _resolve_service_role(ctx))
-    _gate_admin(config)
-    _announce_auth_mode(config)
+    if not ctx.invoked_subcommand:
+        raise click.UsageError('Pick a modality: `campfire push spec --obs ...` or '
+                               '`campfire push im --field ...`.', ctx)
 
-    from campfire.deploy.push import push_field, push_observation
-    for obs_name in obs:
+
+@click.command('spectroscopy')
+@click.option('--obs', multiple=True, type=str, cls=_VariadicOption,
+              help='Observation name(s) to push.')
+@click.option('--instrument', 'instruments', multiple=True, cls=_VariadicOption,
+              help=f"Only these instruments ({', '.join(SPECTROSCOPY.instruments)}; default: all).")
+@click.option('--products', multiple=True, cls=_VariadicOption,
+              help=f"What to push: {', '.join(SPECTROSCOPY.product_names())} "
+                   "(space or comma separated; default: all).")
+@click.option('--source-ids', multiple=True, type=str, default=None,
+              cls=_VariadicOption, callback=_parse_source_ids,
+              help='Push only specific source IDs (spectra and exposures; '
+                   'rate files are per detector and always go whole).')
+@_push_options
+@click.pass_context
+def push_spectroscopy(ctx, obs, instruments, products, source_ids, config_path, dry_run,
+                      workers, local, service_role):
+    """Spectra, exposures and detector rate files, by observation.
+
+    \b
+    Products:  spectra, exposures, rates  (default: all)
+    Scope:     --obs
+    Narrow:    --source-ids
+    """
+    if not obs:
+        raise click.UsageError('Provide --obs to scope the push.')
+    insts = resolve_instruments(SPECTROSCOPY, instruments)
+    names = resolve_products(SPECTROSCOPY, insts, products, verb='push')
+    config = _push_config(ctx, config_path, local, service_role)
+
+    from campfire.deploy.push import push_observation
+    for obs_name in normalize_names(obs):
         push_observation(
             obs_name, config,
             source_ids=list(source_ids) if source_ids else None,
-            dry_run=dry_run, workers=workers)
-    for field in fields:
+            products=names, dry_run=dry_run, workers=workers)
+
+
+@click.command('imaging')
+@click.option('--field', 'fields', multiple=True, type=str, cls=_VariadicOption,
+              help='Field name(s) to push.')
+@click.option('--instrument', 'instruments', multiple=True, cls=_VariadicOption,
+              help=f"Only these instruments ({', '.join(IMAGING.instruments)}; default: all).")
+@click.option('--products', multiple=True, cls=_VariadicOption,
+              help=f"What to push: {', '.join(IMAGING.product_names())} "
+                   "(space or comma separated; default: all).")
+@click.option('--filters', 'filter_names', multiple=True, type=str, cls=_VariadicOption,
+              help='Narrow to these filters.')
+@click.option('--tile', 'tiles', multiple=True, type=str, cls=_VariadicOption,
+              help='Narrow mosaics to these tiles (fields.toml tile names).')
+@_push_options
+@click.pass_context
+def push_imaging(ctx, fields, instruments, products, filter_names, tiles, config_path,
+                 dry_run, workers, local, service_role):
+    """Mosaics, exposures and exposure maps, by field.
+
+    \b
+    Products:  mosaics, exposures, expmaps  (default: all)
+    Scope:     --field
+    Narrow:    --filters (every product), --tile (mosaics only)
+    """
+    if not fields:
+        raise click.UsageError('Provide --field to scope the push.')
+    insts = resolve_instruments(IMAGING, instruments)
+    names = resolve_products(IMAGING, insts, products, verb='push')
+    tile_list = normalize_names(tiles)
+    if tile_list and 'mosaics' not in names:
+        raise click.UsageError('--tile narrows mosaics; exposures and expmaps cover the whole '
+                               'field. Add mosaics to --products, or drop --tile.')
+    config = _push_config(ctx, config_path, local, service_role)
+
+    from campfire.deploy.push import push_field
+    filters = [f.lower() for f in normalize_names(filter_names)] or None
+    for field in normalize_names(fields):
         push_field(
-            field, config,
-            filters=list(filter_names) if filter_names else None,
-            dry_run=dry_run, workers=workers)
+            field, config, filters=filters, products=names,
+            tiles=tile_list or None, dry_run=dry_run, workers=workers)
+
+
+push_cmd.add_modality(push_spectroscopy, SPECTROSCOPY.alias)
+push_cmd.add_modality(push_imaging, IMAGING.alias)
 
 
 # ---------------------------------------------------------------------------
@@ -778,7 +862,7 @@ def delete_local(ctx, config_path, obs, fields, verify, yes, local):
 
     if yes:
         print(f"\nDeleted {grand_deleted} files ({_fmt_bytes(grand_bytes)} freed). "
-              f"Restore with: campfire download --obs <name> "
+              f"Restore with: campfire pull spec --obs <name> "
               f"(or --field <name> --intermediate for NIRCam).")
     else:
         print(f"\nDry run — pass --yes to delete. Interlock: only registered, "
@@ -1335,7 +1419,7 @@ def nirspec_pull_redshifts(ctx, config_path, obs, dry_run, local):
     One table per target (objects.redshift + redshift_quality via the target's
     object), regenerated in full from the DB; `cfpipe nirspec linefit` fits
     emission lines at these redshifts. Any user with program access may pull —
-    `campfire pull --obs <obs>` runs this automatically.
+    `campfire pull spec --obs <obs>` runs this automatically.
     """
     from campfire.deploy.nirspec_redshifts import pull_redshifts
     config = load_config(config_path, local=_resolve_local(ctx, local))

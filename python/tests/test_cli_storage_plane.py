@@ -6,6 +6,7 @@ tests exercise registration and help rendering — the engine itself is covered
 by test_storage_plan / test_registry / test_download_objects.
 """
 
+import pytest
 from click.testing import CliRunner
 
 import campfire.cli as main_cli
@@ -43,7 +44,49 @@ def test_push_requires_scope():
     cli = _cli()
     res = CliRunner().invoke(cli, ['push'])
     assert res.exit_code != 0
-    assert '--obs' in res.output and '--field' in res.output
+    assert 'push spec --obs' in res.output and 'push im --field' in res.output
+    for args, flag in ((['push', 'spec'], '--obs'), (['push', 'im'], '--field')):
+        res = CliRunner().invoke(cli, args)
+        assert res.exit_code != 0 and flag in res.output, (args, res.output)
+
+
+def test_modality_subcommands_and_aliases():
+    cli = _cli()
+    runner = CliRunner()
+    for verb in ('pull', 'push'):
+        group = cli.commands[verb]
+        assert set(group.commands) == {'spectroscopy', 'imaging'}
+        for args in ([verb, 'spec', '--help'], [verb, 'im', '--help'],
+                     [verb, 'spectroscopy', '--help'], [verb, 'imaging', '--help']):
+            res = runner.invoke(cli, args)
+            assert res.exit_code == 0, (args, res.output)
+        res = runner.invoke(cli, [verb, '--help'])
+        assert 'spectroscopy (spec)' in res.output and 'imaging (im)' in res.output
+
+
+def test_bare_pull_asks_for_a_modality():
+    res = CliRunner().invoke(_cli(), ['pull'])
+    assert res.exit_code == 2
+    assert 'pull spec' in res.output and 'pull im' in res.output
+
+
+@pytest.mark.parametrize('args, expect', [
+    (['pull', '--obs', 'ember_uds_p4'], ['campfire pull spec --obs ember_uds_p4']),
+    (['download', '--program', 'EMBER-UDS', '--grating', 'PRISM'],
+     ['campfire download spec --program EMBER-UDS --grating PRISM']),
+    # A field holds both modalities: the hint offers both, --intermediate as --products.
+    (['pull', '--field', 'nep', '--intermediate'],
+     ['campfire pull spec --field nep --products spectra,exposures',
+      'campfire pull im --field nep --products mosaics,exposures,expmaps']),
+    (['pull', '--field', 'egs', '--filters', 'f444w'], ['campfire pull im --field egs --filters f444w']),
+    (['push', '--field', 'cosmos', '--filter', 'f444w'], ['campfire push im --field cosmos --filters f444w']),
+    (['push', '--obs', 'x', '--source-ids', '1'], ['campfire push spec --obs x --source-ids 1']),
+])
+def test_old_syntax_answered_with_the_new_command(args, expect):
+    res = CliRunner().invoke(_cli(), args)
+    assert res.exit_code == 2, res.output
+    for line in expect:
+        assert line in res.output, res.output
 
 
 def test_migration_era_commands_deleted():

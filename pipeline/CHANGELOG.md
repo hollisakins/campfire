@@ -29,6 +29,10 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- **Hints name the new `campfire pull spec` syntax.** `cfpipe nirspec linefit`'s
+  "no inspected redshifts" messages and the redshift-reference docs now say
+  `campfire pull spec --obs <obs>` (the campfire client 0.8.0 takes a modality
+  first). Text only; no output changes.
 - **Summary redshift consensus keeps both filters of a grating (#683).** `cfpipe nirspec
   summary` keyed its per-source zfit inputs by grating, so a source observed in G140M/F070LP
   and G140M/F100LP fed only the last one read into `redshift_best`. They are now keyed by

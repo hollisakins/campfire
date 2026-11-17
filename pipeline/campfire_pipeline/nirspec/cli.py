@@ -198,7 +198,7 @@ def linefit(config, obs, source_ids, processes, overwrite, allow_auto, gratings)
     """Fit emission-line fluxes at the inspected redshift.
 
     Reads reference/nirspec/<obs>/redshifts.toml (materialized by
-    `campfire pull --obs <obs>` from the portal's inspection state) and fits
+    `campfire pull spec --obs <obs>` from the portal's inspection state) and fits
     every *_spec.fits whose object meets [nirspec.line_fitting].min_quality,
     writing <base>_lines.fits (+ a QA PDF). Products whose inputs (redshift,
     quality, spectrum bytes) are unchanged are skipped unless --overwrite.

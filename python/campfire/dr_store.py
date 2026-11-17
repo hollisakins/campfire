@@ -6,7 +6,7 @@ A release the reader pulled lives under ``$CAMPFIRE_ROOT/dr/<tag>/``::
     exports/<stream>/<scope>.jsonl.gz the export files, kept as fetched
     meta/campfire.db                  a LocalStore over the same DDL as the
                                       live mirror, built from the kept files
-    products/<relpath>                the bytes (``campfire pull --dr``)
+    products/<relpath>                the bytes (``campfire pull spec --dr``)
 
 :func:`load_release` fetches the files the caller may read from
 ``GET /api/v1/dr/<tag>/files`` (docs/dr-format-v1.md), verifies each against

@@ -7,7 +7,7 @@ The `campfire` command-line tool manages authentication, catalog sync, and FITS 
 ```bash
 campfire login                        # Authenticate
 campfire sync                         # Sync the full catalog (metadata only)
-campfire download --obs ember_uds_p4  # Download FITS files
+campfire pull spec --obs ember_uds_p4  # Download spectra
 campfire status                       # Check catalog and download status
 ```
 
@@ -37,46 +37,67 @@ Syncing catalog...
 ✓ Synced 8 observations, 2450 objects, 7200 spectra
 
 ⚠ 3 local file(s) have been updated on the server.
-  Run: campfire download --stale
+  Run: campfire pull --stale
 ```
 
 Sync is fast and safe to run often — it refreshes inspection results, redshifts, flags, and any new objects added to the database.
 
 ---
 
-## Downloading FITS Files
+## Downloading Files
 
-### `campfire download`
+### `campfire pull`
 
-Download FITS spectrum files. Requires a prior `campfire sync` to populate the local catalog.
+Download data products into your local tree. Pick a modality first, then what to download. `pull` syncs the catalog before it plans; `campfire download` is the same command.
 
 ```bash
-campfire download --obs ember_uds_p4              # By observation
-campfire download --program EMBER-UDS             # By program
-campfire download --field COSMOS                  # By field
-campfire download --program EMBER-UDS --grating PRISM  # With grating filter
-campfire download --stale                         # Re-download reprocessed files
-campfire download --all                           # Everything accessible
-campfire download --obs ember_uds_p4 --dry-run    # Preview without downloading
+campfire pull spectroscopy ...   # short: campfire pull spec ...
+campfire pull imaging ...        # short: campfire pull im ...
 ```
 
-At least one filter is required (or `--all` / `--stale`).
+**Spectroscopy** (spectra and their exposures):
+
+```bash
+campfire pull spec --obs ember_uds_p4                       # By observation
+campfire pull spec --program EMBER-UDS                      # By program
+campfire pull spec --field cosmos --grating PRISM           # By field, one grating
+campfire pull spec --obs ember_uds_p4 --products spectra,exposures
+campfire pull spec --all                                    # Every observation you can read
+campfire pull spec --obs ember_uds_p4 --dry-run             # Preview without downloading
+```
+
+**Imaging** (mosaics, exposures and exposure maps):
+
+```bash
+campfire pull im --field cosmos                             # Mosaics of a field
+campfire pull im --field cosmos --filters f277w f444w --tile A1
+campfire pull im --field nep --products exposures,expmaps   # Inputs for your own mosaics
+```
+
+**Across both:**
+
+```bash
+campfire pull --stale                                       # Re-download files updated on the server
+```
 
 **Options:**
 
-| Option | Description |
-|--------|-------------|
-| `--obs NAME` | Download by observation name (repeatable) |
-| `--program NAME` | Download by program slug (repeatable) |
-| `--field NAME` | Download by field name (repeatable) |
-| `--grating NAME` | Filter by grating type (repeatable) |
-| `--stale` | Re-download files updated on the server |
-| `--all` | Download everything accessible |
-| `--workers N` | Parallel download workers (default: 4) |
-| `--yes` | Skip confirmation prompt |
-| `--dry-run` | Show plan without downloading |
+| Option | Applies to | Description |
+|--------|------------|-------------|
+| `--obs NAME` | spec | Observation name(s) |
+| `--program NAME` | spec | Program slug(s) |
+| `--field NAME` | spec, im | Field name(s) |
+| `--all` | spec, im | Everything you can read |
+| `--products A,B` | spec, im | spec: `spectra` (default), `exposures`; im: `mosaics` (default), `exposures`, `expmaps` |
+| `--instrument NAME` | spec, im | Only these instruments (default: all) |
+| `--grating NAME` | spec | Narrow spectra to these gratings |
+| `--filters NAME` | im | Narrow to these filters |
+| `--tile NAME` | im | Narrow mosaics to these tiles |
+| `--workers N` | all | Parallel download workers (default: 4) |
+| `--yes` | all | Skip confirmation prompt |
+| `--dry-run` | all | Show plan without downloading |
 
-Downloads are incremental — only new or changed files are downloaded. Files are verified with SHA-256 hashes.
+A narrowing option that matches nothing is an error that lists what is available. Downloads are incremental (only new or changed files) and verified with SHA-256 hashes.
 
 **Output:**
 
@@ -97,12 +118,12 @@ ember_uds_p4: 100%|██████████| 12/12 [00:45<00:00]
 
 ---
 
-## Listing Observations
+## Listing What's Available
 
-Running `campfire download` with no filters shows all available observations and their download status:
+`campfire pull spec` or `campfire pull im` with nothing selected lists what you can download and how much is already local:
 
 ```bash
-campfire download
+campfire pull spec
 ```
 
 **Output:**
@@ -112,8 +133,6 @@ campfire download
   ember_uds_p4              EMBER-UDS       UDS            1350   1350 (complete)
   capers_cosmos_p1          CAPERS          COSMOS          960   480/960
   rubies_egs_p2             RUBIES          EGS             600
-
-Use --obs, --program, or --field to download, or --all for everything.
 ```
 
 ---
@@ -141,7 +160,7 @@ Catalog: 8 observations (last synced 2026-03-15 14:30)
   ember_uds_p4              1350           2.1 GB
   capers_cosmos_p1          480            750 MB
 
-⚠ 3 local file(s) updated on server. Run: campfire download --stale
+⚠ 3 local file(s) updated on server. Run: campfire pull --stale
 
 Disk usage: 2.9 GB
 ```
