@@ -1396,7 +1396,11 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
         'tile'::"text", 'photometry_pz'::"text",
         'nirspec_manual_mask'::"text", 'nirspec_stuck_shutters'::"text",
         'nirspec_bkg_override'::"text", 'nircam_mask'::"text", 'nircam_astrom_cat'::"text",
-        'nircam_bad_pixel'::"text", 'nircam_flat'::"text", 'nircam_wisp'::"text"
+        'nircam_bad_pixel'::"text", 'nircam_flat'::"text", 'nircam_wisp'::"text",
+        'acswfc_exposure'::"text", 'acswfc_exposure_preview'::"text",
+        'acswfc_exposure_full'::"text", 'acswfc_mosaic'::"text", 'acswfc_mask'::"text",
+        'wfc3ir_exposure'::"text", 'wfc3ir_exposure_preview'::"text",
+        'wfc3ir_exposure_full'::"text", 'wfc3ir_mosaic'::"text", 'wfc3ir_mask'::"text"
     ])))
 );
 

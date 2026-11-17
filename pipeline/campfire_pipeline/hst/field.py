@@ -345,9 +345,10 @@ class HstField:
         """Whether a canonical exposure may go into a mosaic, and why not.
 
         What keeps an exposure out: no solved alignment (it would be drizzled
-        where it is not), and, on ACS/WFC, no cosmic-ray flags (``crreject``
-        has not run on it) or no search for satellite trails (``trails``).
-        Returns ``(ready, reason)``.
+        where it is not, NIRCam's rule), and, on ACS/WFC, no cosmic-ray flags
+        (``crreject`` has not run on it; a CCD exposure without them is
+        covered in hits). Returns ``(ready, reason)``. The caller says so
+        loudly: nothing is left out of a mosaic without a message.
         """
         steps = cfp.get_steps(exposure_file, keyset=cfp.HST)
         algn = steps.get('CFP_ALGN')
@@ -358,9 +359,6 @@ class HstField:
                 return False, 'alignment failed (NOT_ALIGNED)'
         if self.instrument == 'acswfc' and 'CFP_CR' not in steps:
             return False, 'no cosmic-ray flags yet (crreject has not run)'
-        if self.instrument == 'acswfc' and 'CFP_TRL' not in steps:
-            return False, ('not searched for satellite trails yet (trails '
-                           'has not run)')
         return True, ''
 
     def materialize_work(self, filter_name, overwrite=False,

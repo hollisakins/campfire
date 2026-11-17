@@ -1,68 +1,90 @@
-"""trails: satellite trails on ACS/WFC exposures, masked without review.
+"""trails: satellite trails on ACS/WFC exposures, as preliminary masks.
 
 Per-exposure step on a canonical ACS/WFC file, between ``sky`` and
 ``crreject``. Each chip goes through the STScI trail finder
 (``acstools.findsat_mrt``: a median Radon transform of the binned,
 background-subtracted chip, in which a straight streak is a point; Stark et
-al. 2022, ACS ISR 2022-08), and the pixels of every trail it is confident of
-get DQ bit 16384, the bit ``acstools`` itself uses for satellite trails. No
-tolerated-bits set includes it, so the cosmic-ray step, the alignment, the
-field-level outlier pass and the drizzle all leave those pixels out.
+al. 2022, ACS ISR 2022-08). Every trail the step is confident of is written
+as a polygon into the exposure's region file,
 
-Why here and not left to the cosmic-ray steps: a trail is tens of pixels wide
-with faint wings, the per-visit rejection removes its core only, and an
-exposure alone in its visit has nothing to be compared with.
+    reference/<instrument>/<field>/masks/<filter>/<file name>.reg
 
-**What is masked.** At its own defaults the finder also passes things that are
-not satellites, and each would cost a stripe across the whole chip. On 40
+the file that holds a reviewer's hand-drawn masks (Hollis, 2026-11-16: "it
+would be great if the trail masks could be converted to region files and
+stored like user masks ... admins can then adjust them if needed"). From
+there a trail is a mask like any other: ``apply_masks`` rasterizes it into
+``CFMASK`` at the start of ``combine``, a deploy stores it as the exposure's
+preliminary mask, and a reviewer can move, reshape or delete it in the
+portal. The exposure's pixels and ``DQ`` are not touched.
+
+Why a mask and not left to the cosmic-ray steps: a trail is tens of pixels
+wide with faint wings and the rejection removes its core only. In a COSMOS
+test mosaic three trails had left, after ``crreject`` and the outlier pass, a
+line at 0.1 to 0.4 of the pixel scatter; masked, the mosaic is level
+(docs/hst/design.md, section 8b).
+
+**What is written.** At its own defaults the finder also passes things that
+are not satellites, and each would cost a stripe across the whole chip. On 40
 COSMOS F814W exposures (80 chips) it reports 11 trails. Six are real (five
 satellites, one crossing both chips): persistence, the share of the streak's
 length along which it is detected, is 0.86 to 1, and the signal-to-noise 10
 to 660. Five are not (three diffraction spikes of bright stars, a line through
 two galaxies, a chord of a scattered-light arc): persistence 0.56 to 0.67,
-signal-to-noise 6 to 9 (docs/hst/design.md, section 8b). A mask nobody reviews
-has to be right, so only a candidate with at least ``min_persistence`` and
-``min_snr`` is masked.
+signal-to-noise 6 to 9. The mask is preliminary, but it goes into a mosaic
+unless somebody removes it, so only a candidate with at least
+``min_persistence`` and ``min_snr`` is written. The polygon is the finder's
+width plus ``grow`` pixels on each side (the measured reach of a bright
+trail's wings), clipped to the chip, in the frame of the exposure's preview
+(``hst/steps/preview.py``), labeled ``satellite trail``.
 
 **What is not.** A streak that does not run the length of the chip (a
 satellite that flares, or enters or leaves during the exposure) has a low
-persistence and is not masked here, at these cuts or at the finder's own. The
+persistence and is not written, at these cuts or at the finder's own. The
 cosmic-ray step removes its core like any other sharp feature: on the one case
 in those exposures (signal-to-noise 40, persistence 0.42) about half the
 pixels within 2 pixels of the line are flagged and the rest carry 0.1 to 0.5
 sigma per pixel. What is left of such a streak, and any trail too faint for
-the cuts, is for the outlier pass and a hand-drawn mask (``apply_masks``),
-like any other artifact.
+the cuts, is for the outlier pass and a reviewer.
+
+**Whose file it is.** A region file is the reviewer's. The step writes one
+where there is none, and replaces one only if it wrote it and nobody has
+edited it since (the header records a hash of the regions). A file drawn by
+hand, pulled from the portal, or edited after the step wrote it is left
+alone, and the trails found are reported in the log instead. If a re-run
+finds no trail, an unedited file the step wrote is removed.
 
 **Cost.** About 2.5 core-minutes per exposure (the transform of two chips at
 ``binsize`` 2). Binning by 4 halves that and loses the faintest of the six.
-
-**Undoing one.** ``ignore`` in ``[<field>.acswfc.trails]`` lists rootnames
-whose trails are found and logged but not masked.
+Exposures are searched one after another and the finder itself runs on the
+processes given: it has to run on at least two (see :func:`chip_trails`), and
+worker processes cannot start their own.
 
 The step is ACS/WFC only. On WFC3/IR a satellite crosses during a few reads
-of the ramp and ``calwf3`` rejects those reads as it does a cosmic ray.
+of the ramp; see docs/hst/design.md, section 8b, for what ``calwf3`` does
+with those.
 
-Stamps ``CFP_TRL = 'findsat n=<trails masked> px=<pixels>'``. A re-run clears
-bit 16384 first, so the flags are replaced, not accumulated.
+Stamps ``CFP_TRL = 'findsat n=<trails found> reg=<written|kept|none>'``.
 """
 
 import contextlib
+import hashlib
 import logging
 import os
 import shutil
 import tempfile
 import warnings
+from datetime import datetime, timezone
 
 import numpy as np
 from astropy.io import fits
-from scipy.ndimage import binary_dilation
 
 from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import log
 from campfire_pipeline.config import get_hst_step_config
 
-TRAIL_BIT = 16384
+LABEL = 'satellite trail'
+GENERATED_MARK = '# Generated by cfpipe'
+HASH_MARK = '# trails-body-sha256:'
 _FINDER_LOGGERS = ('findsat_mrt', 'utils_findsat_mrt')
 
 
@@ -81,32 +103,44 @@ def _quiet_finder():
             lg.setLevel(level)
 
 
-def _expand(mask, shape):
-    """A mask made on the binned chip, back at the chip's own shape."""
-    fy, fx = shape[0] // mask.shape[0], shape[1] // mask.shape[1]
-    if fy != fx or fy < 1:
-        raise ValueError(f'trail mask {mask.shape} does not bin into {shape}')
-    big = np.repeat(np.repeat(mask, fy, axis=0), fx, axis=1)
-    out = np.zeros(shape, dtype=bool)
-    ny, nx = min(shape[0], big.shape[0]), min(shape[1], big.shape[1])
-    out[:ny, :nx] = big[:ny, :nx]
-    # rows / columns the binning dropped take the value of their neighbor
-    out[ny:, :nx] = out[ny - 1, :nx]
-    out[:, nx:] = out[:, nx - 1:nx]
-    return out
+def trail_polygon(p0, p1, half_width, shape):
+    """The band of a trail on a chip: vertices ``[[x, y], ...]`` in the chip's
+    0-based pixel coordinates, or ``None`` when the band misses the chip.
+
+    ``p0`` and ``p1`` are two points on the trail's center line and
+    ``half_width`` the distance from it to each edge of the band. The band is
+    run past both points and then cut to the chip, so it ends at the chip's
+    edges whatever the angle.
+    """
+    from shapely.geometry import Polygon, box
+
+    p0, p1 = np.asarray(p0, dtype=float), np.asarray(p1, dtype=float)
+    length = float(np.hypot(*(p1 - p0)))
+    if length == 0 or half_width <= 0:
+        return None
+    along = (p1 - p0) / length
+    across = np.array([-along[1], along[0]])
+    reach = float(np.hypot(*shape)) + half_width
+    a, b = p0 - along * reach, p1 + along * reach
+    band = Polygon([a + across * half_width, b + across * half_width,
+                    b - across * half_width, a - across * half_width])
+    ny, nx = shape
+    cut = band.intersection(box(-0.5, -0.5, nx - 0.5, ny - 0.5))
+    if cut.is_empty or cut.geom_type != 'Polygon':
+        return None
+    return [[float(x), float(y)] for x, y in list(cut.exterior.coords)[:-1]]
 
 
-def chip_trails(exposure_file, extver, params, processes=1):
+def chip_trails(exposure_file, extver, params, processes=2):
     """Find the satellite trails of one chip.
 
-    Returns ``(mask, trails)``: ``mask`` is True on the pixels of the trails
-    that pass ``min_snr`` and ``min_persistence``, at the chip's shape and
-    grown by ``grow`` pixels; ``trails`` lists every candidate the finder kept
-    at its own thresholds, each a dict with ``snr``, ``persistence``,
-    ``width`` (native pixels), ``theta`` (degrees) and ``masked``.
+    Returns every candidate the finder kept at its own thresholds, each a
+    dict with ``snr``, ``persistence``, ``width`` (native pixels), ``theta``
+    (degrees), ``accepted`` (it passes ``min_snr`` and ``min_persistence``)
+    and, for an accepted one, ``polygon``: its band on the chip
+    (:func:`trail_polygon`), the finder's width plus ``grow`` on each side.
     """
     import acstools.findsat_mrt as findsat
-    from acstools.utils_findsat_mrt import create_mask
 
     with fits.open(exposure_file, memmap=False) as hdul:
         index = hdul.index_of(('SCI', extver))
@@ -120,13 +154,23 @@ def chip_trails(exposure_file, extver, params, processes=1):
             f'chips by position')
 
     binsize = int(params['binsize'])
+    # Never one process. With processes <= 1 the finder (acstools 3.8.2,
+    # utils_findsat_mrt.radon) rotates the image with pixels from outside it
+    # filled with zeros, and with more it fills them with NaN; the zeros enter
+    # the medians, and the transform differs. Measured on j8pu6jjiq [SCI,1]:
+    # a satellite trail found at signal-to-noise 10 and persistence 1.0 with
+    # 2 or more processes is not detected at all with one. The cuts of this
+    # step were measured on the multi-process path, which is also the one the
+    # finder's documentation runs.
+    processes = max(2, int(processes))
     with tempfile.TemporaryDirectory() as tmp, _quiet_finder(), \
             warnings.catch_warnings():
-        # medians over rows of the transform that hold no pixel
-        warnings.simplefilter('ignore', RuntimeWarning)
+        # medians over rows of the transform that hold no pixel, and the
+        # source finder's notice for every kernel that finds nothing
+        warnings.simplefilter('ignore')
         finder = findsat.WfcWrapper(
             exposure_file, extension=index, binsize=binsize,
-            processes=int(processes), execute=False, output_dir=tmp,
+            processes=processes, execute=False, output_dir=tmp,
             threshold=float(params['detect_threshold']),
             max_width=float(params['max_width']),
             min_length=float(params['min_length']),
@@ -142,61 +186,129 @@ def chip_trails(exposure_file, extver, params, processes=1):
         finder.find_mrt_sources()
         finder.filter_sources()
 
-        mask = np.zeros(shape, dtype=bool)
-        trails = []
-        src = finder.source_list
-        if src is not None and len(src):
-            def column(name):
-                return np.array([float(getattr(v, 'value', v)) for v in src[name]])
+    trails = []
+    src = finder.source_list
+    if src is None or not len(src):
+        return trails
 
-            status = column('status')
-            snr = column('snr')
-            keep = (status == 2) & (snr >= float(params['min_snr']))
-            for i in np.flatnonzero(status == 2):
-                trails.append({
-                    'snr': float(snr[i]),
-                    'persistence': float(column('persistence')[i]),
-                    'width': float(column('width')[i]) * binsize,
-                    'theta': float(column('theta')[i]),
-                    'masked': bool(keep[i]),
-                })
-            if keep.any():
-                _segment, binned = create_mask(
-                    finder.image, src['id'][keep], src['endpoints'][keep],
-                    src['width'][keep])
-                mask = _expand(np.asarray(binned) != 0, shape)
-                grow = int(params['grow'])
-                if grow > 0:
-                    mask = binary_dilation(mask, iterations=grow)
-    return mask, trails
+    def column(name):
+        return np.array([float(getattr(v, 'value', v)) for v in src[name]])
+
+    status, snr = column('status'), column('snr')
+    persistence, width, theta = column('persistence'), column('width'), column('theta')
+    for i in np.flatnonzero(status == 2):
+        accepted = bool(snr[i] >= float(params['min_snr']))
+        trail = {'snr': float(snr[i]), 'persistence': float(persistence[i]),
+                 'width': float(width[i]) * binsize, 'theta': float(theta[i]),
+                 'accepted': accepted}
+        if accepted:
+            # the finder works on the binned chip: binned pixel k covers
+            # native pixels k*binsize .. (k+1)*binsize - 1
+            ends = (np.asarray(src['endpoints'][i], dtype=float) + 0.5) * binsize - 0.5
+            trail['polygon'] = trail_polygon(
+                ends[0], ends[1],
+                0.5 * trail['width'] + float(params['grow']), shape)
+            trail['accepted'] = trail['polygon'] is not None
+        trails.append(trail)
+    return trails
 
 
-def _write_flags(canonical, masks, stamp):
-    """Set bit 16384 exactly where ``masks`` say so (clearing it elsewhere) and
-    stamp the file, in one atomic replace."""
-    tmp = f'{canonical}.trails.tmp'
+# ---------------------------------------------------------------------------
+# The region file
+# ---------------------------------------------------------------------------
+
+def _body(text):
+    """The content lines of a region file: comments and blank lines dropped
+    (the rule ``campfire pull`` compares files by)."""
+    return [ln.rstrip() for ln in text.splitlines()
+            if ln.strip() and not ln.lstrip().startswith('#')]
+
+
+def _body_hash(text):
+    return hashlib.sha256('\n'.join(_body(text)).encode()).hexdigest()[:16]
+
+
+def is_unedited_trail_file(text):
+    """Whether a region file is one this step wrote and nobody edited since:
+    it carries the step's hash line, and its regions still hash to it."""
+    for line in text.splitlines():
+        if line.startswith(HASH_MARK):
+            return line[len(HASH_MARK):].strip() == _body_hash(text)
+    return False
+
+
+def region_text(polygons, instrument):
+    """A DS9 region file for trail polygons given in preview-canvas pixel
+    coordinates (0-based): ``image`` coordinates, 1-based, one ``polygon``
+    per trail, in the layout ``campfire pull`` writes."""
+    lines = ['global color=green dashlist=8 3 width=1 font="helvetica 10 normal '
+             'roman" select=1 highlite=1 dash=0 fixed=0 edit=1 move=1 delete=1 '
+             'include=1 source=1',
+             'image']
+    for poly in polygons:
+        flat = ','.join(f'{x + 1:.2f},{y + 1:.2f}' for x, y in poly)
+        lines.append(f'polygon({flat}) # text={{{LABEL}}}')
+    body = '\n'.join(lines) + '\n'
+    stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    head = [
+        '# Region file format: DS9 version 4.1',
+        f'{GENERATED_MARK} {instrument} trails at {stamp}: satellite trails '
+        f'found by acstools.findsat_mrt.',
+        # (no semicolon in these lines: DS9 region readers split on it)
+        '# A preliminary mask. While nobody has edited it, the trails step and',
+        '# campfire pull may replace it. Once edited it is left alone.',
+        f'{HASH_MARK} {_body_hash(body)}',
+    ]
+    return '\n'.join(head) + '\n' + body
+
+
+def write_region_file(reg_file, polygons, instrument):
+    """Bring the exposure's region file in line with the trails found, without
+    touching a file that is somebody's. Returns ``'written'``, ``'removed'``
+    (no trail any more, and the file was the step's own), ``'kept'`` (a file
+    that is not the step's unedited own is in the way) or ``'none'``."""
+    existing = None
+    if os.path.exists(reg_file):
+        with open(reg_file) as f:
+            existing = f.read()
+    ours = existing is not None and is_unedited_trail_file(existing)
+    if not polygons:
+        if ours:
+            os.remove(reg_file)
+            return 'removed'
+        return 'none'
+    if existing is not None and not ours:
+        return 'kept'
+    os.makedirs(os.path.dirname(reg_file), exist_ok=True)
+    tmp = reg_file + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write(region_text(polygons, instrument))
+    os.replace(tmp, reg_file)
+    return 'written'
+
+
+def _stamp(exposure_file, value):
+    tmp = f'{exposure_file}.trails.tmp'
     try:
-        shutil.copyfile(canonical, tmp)
+        shutil.copyfile(exposure_file, tmp)
         with fits.open(tmp, mode='update', memmap=False) as dst:
-            for v, new in masks.items():
-                dq = np.asarray(dst['DQ', v].data)
-                bit = np.asarray(TRAIL_BIT, dtype=dq.dtype)
-                dst['DQ', v].data = (dq & ~bit) | (new.astype(dq.dtype) * bit)
-            for key, val in cfp.format(keyset=cfp.HST, CFP_TRL=stamp).items():
+            for key, val in cfp.format(keyset=cfp.HST, CFP_TRL=value).items():
                 dst[0].header[key] = val
-        os.replace(tmp, canonical)
+        os.replace(tmp, exposure_file)
     except BaseException:
         if os.path.exists(tmp):
             os.remove(tmp)
         raise
 
 
-def trails_step(exposure_file, step_config=None, overwrite=False, processes=1):
-    """Find and flag satellite trails on one canonical ACS/WFC exposure.
+def trails_step(exposure_file, reg_file, step_config=None, overwrite=False,
+                processes=2):
+    """Find the satellite trails of one canonical ACS/WFC exposure and write
+    them to its region file ``reg_file``.
 
-    Returns the list of trails per chip (``{extver: [trail, ...]}``), or
-    ``None`` when the file already carries ``CFP_TRL`` and ``overwrite`` is not
-    set. Raises ``ValueError`` for a file of another detector.
+    Returns the trails per chip (``{extver: [trail, ...]}``), or ``None`` when
+    the file already carries ``CFP_TRL`` and ``overwrite`` is not set. Raises
+    ``ValueError`` for a file of another detector.
     """
     rootname = os.path.basename(exposure_file).split('_')[0]
     if cfp.should_skip(exposure_file, 'CFP_TRL', rootname, 'trails', None,
@@ -209,31 +321,34 @@ def trails_step(exposure_file, step_config=None, overwrite=False, processes=1):
     if det.token != 'acswfc':
         raise ValueError(
             f'trails: {os.path.basename(exposure_file)} is a {det.token} '
-            f'exposure; the step is for ACS/WFC (calwf3 rejects the reads a '
-            f'satellite crosses)')
+            f'exposure; the step is for ACS/WFC')
     params = get_hst_step_config('trails', det.token, overrides=step_config)
-    ignored = rootname.lower() in {str(r).strip().lower()
-                                   for r in params.get('ignore', [])}
 
-    found, masks = {}, {}
+    found, polygons, row = {}, [], 0
     for v in det.sci_extvers:
-        mask, trails = chip_trails(exposure_file, v, params, processes=processes)
+        trails = chip_trails(exposure_file, v, params, processes=processes)
         found[v] = trails
-        masks[v] = np.zeros_like(mask) if ignored else mask
         for t in trails:
-            what = ('masked' if t['masked'] and not ignored else
-                    'NOT masked (listed in ignore)' if t['masked'] else
-                    'not masked (below min_snr)')
+            what = 'masked' if t['accepted'] else 'not masked (below min_snr)'
             log(f"trails: {rootname} [SCI,{v}] S/N {t['snr']:.1f}, persistence "
                 f"{t['persistence']:.2f}, width {t['width']:.0f} px, angle "
                 f"{t['theta']:.1f} deg: {what}")
-    n = sum(1 for ts in found.values() for t in ts if t['masked'])
-    npix = int(sum(m.sum() for m in masks.values()))
-    stamp = f'findsat n={0 if ignored else n} px={npix}'
-    if ignored and n:
-        stamp += f' ignored={n}'
-    _write_flags(exposure_file, masks, stamp)
-    log(f'trails: {rootname} {n} satellite trail(s)'
-        + (f', {npix} pixels flagged' if npix else '')
-        + (' (ignored by config)' if ignored and n else ''))
+            if t['accepted']:
+                # the preview stacks the chips bottom to top in this order
+                polygons.append([[x, y + row] for x, y in t['polygon']])
+        row += fits.getheader(exposure_file, ('SCI', v))['NAXIS2']
+
+    outcome = write_region_file(reg_file, polygons, det.token)
+    n = len(polygons)
+    _stamp(exposure_file, f'findsat n={n} reg={outcome}')
+    if outcome == 'kept':
+        log(f'trails: {rootname} {n} satellite trail(s) found, NOT written: '
+            f'{reg_file} exists and is not an unedited file of this step. '
+            f'Add the trail there or in the portal if it is not masked.')
+    elif outcome == 'removed':
+        log(f'trails: {rootname} no satellite trail found; removed the '
+            f'unedited trail mask of an earlier run ({reg_file})')
+    else:
+        log(f'trails: {rootname} {n} satellite trail(s)'
+            + (f' written to {reg_file}' if n else ''))
     return found

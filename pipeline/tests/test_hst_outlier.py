@@ -70,7 +70,7 @@ def test_flags_go_to_the_cfout_extension_and_the_adapter_honors_them(tmp_path):
         assert flag.dtype == np.uint8 and flag.shape == (_NY, _NX)
         assert flag[30:33, 50:53].sum() >= 7
         assert np.all(hdul['DQ', 1].data == 0)         # DQ is not touched
-        assert cfp.step_value(files[0], 'CFP_OUT', keyset=cfp.HST).startswith('field n=3')
+        assert cfp.step_value(files[0], 'CFP_OUT', keyset=cfp.HST).startswith('visit n=3')
 
     (chip,) = open_exposure(files[0])
     assert not chip.load().good[31, 51]                # dropped from the mosaic
@@ -165,7 +165,43 @@ def test_unaligned_exposures_are_refused(tmp_path):
     for other in (never, failed):
         with pytest.raises(ValueError, match='no solved alignment'):
             outlier_step([good, other])
-    with pytest.raises(ValueError, match='at least two'):
-        outlier_step([good])
+        # an unaligned exposure is no comparison material either
+        with pytest.raises(ValueError, match='no solved alignment'):
+            outlier_step([good], [other])
     with fits.open(good) as hdul:                      # nothing was written
         assert all(h.name != OUTLIER_EXT for h in hdul)
+
+
+def test_a_visit_is_flagged_against_what_overlaps_it_and_nothing_else_is_written(tmp_path):
+    """The per-visit pass: one exposure is the visit, the other two are
+    exposures of other visits that overlap it."""
+    files = _visit(tmp_path)                           # the hit is on files[0]
+    before = {f: open(f, 'rb').read() for f in files[1:]}
+    counts = outlier_step([files[0]], files[1:])
+    assert list(counts) == [files[0]] and counts[files[0]] >= 7
+    assert fits.getdata(files[0], (OUTLIER_EXT, 1))[30:33, 50:53].sum() >= 7
+    assert cfp.step_value(files[0], 'CFP_OUT', keyset=cfp.HST).startswith('visit n=3')
+    # the comparison exposures are read, not written
+    assert all(open(f, 'rb').read() == before[f] for f in files[1:])
+
+    # the other way round: the exposure with the hit is only compared with,
+    # and the visit being flagged is clean
+    counts = outlier_step([files[1]], [files[0], files[2]])
+    assert list(counts) == [files[1]] and counts[files[1]] <= 3
+
+    # a comparison exposure that does not reach the visit is simply left out
+    rng = np.random.default_rng(9)
+    far = _ir_file(tmp_path / 'itest09a0q_flt.fits', 'itest09a0q', (4000.0, 40.0), rng)
+    counts = outlier_step([files[2]], [files[1], far], overwrite=True)
+    assert list(counts) == [files[2]]
+    assert cfp.step_value(files[2], 'CFP_OUT', keyset=cfp.HST).startswith('visit n=3')
+
+
+def test_a_lone_exposure_that_nothing_overlaps_gets_a_stamp_and_no_flags(tmp_path):
+    rng = np.random.default_rng(6)
+    lone = _ir_file(tmp_path / 'itest03a0q_flt.fits', 'itest03a0q', (40.0, 40.0), rng)
+    assert outlier_step([lone]) == {lone: 0}
+    with fits.open(lone) as hdul:
+        assert hdul[OUTLIER_EXT, 1].data.sum() == 0
+        assert hdul[0].header['CFP_OUT'] == 'visit n=1 nothing to compare with'
+    assert outlier_step([lone]) is None

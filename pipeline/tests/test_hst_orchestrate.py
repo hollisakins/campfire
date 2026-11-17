@@ -72,7 +72,7 @@ def _exposures(field, n=3, hit=True):
     rng = np.random.default_rng(5)
     d = field.filter_dir('f160w')
     crpix = ((40.0, 40.0), (43.4, 38.7), (37.2, 42.6), (41.0, 44.0))[:n]
-    files = [_ir_file(os.path.join(d, f'itest01a{k}q_flt.fits'), f'itest01a{k}q',
+    files = [_ir_file(os.path.join(d, f'ites01a{k}q_flt.fits'), f'ites01a{k}q',
                       c, rng, mjd=57000.0 + k)
              for k, c in enumerate(crpix)]
     if hit:
@@ -162,13 +162,27 @@ def test_a_catalog_without_proper_motions_is_called_out(monkeypatch):
 
 # -- combine --------------------------------------------------------------------
 
-def test_exposures_are_grouped_by_overlap(field):
-    files = _exposures(field, n=3, hit=False)
+def test_a_visit_is_compared_with_what_overlaps_it_in_its_own_program(field):
+    """NIRCam's rule: the same program by default, any program on request."""
+    from campfire_pipeline.hst.exposure import open_exposure
+    from campfire_pipeline.hst.steps.resample import exposure_polygon
+
+    d = field.filter_dir('f160w')
     rng = np.random.default_rng(1)
-    far = _ir_file(os.path.join(field.filter_dir('f160w'), 'itest02a0q_flt.fits'),
-                   'itest02a0q', (4000.0, 40.0), rng)     # 8 arcmin away
-    groups = orchestrate.overlap_groups(files + [far])
-    assert groups == [sorted(files), [far]]
+    visit = _exposures(field, n=2, hit=False)                    # ites01...
+    same = _ir_file(os.path.join(d, 'ites02a0q_flt.fits'), 'ites02a0q',
+                    (45.0, 41.0), rng)                           # other visit
+    far = _ir_file(os.path.join(d, 'ites03a0q_flt.fits'), 'ites03a0q',
+                   (4000.0, 40.0), rng)                          # 8 arcmin away
+    other = _ir_file(os.path.join(d, 'ioth01a0q_flt.fits'), 'ioth01a0q',
+                     (39.0, 44.0), rng)                          # other program
+    everything = visit + [same, far, other]
+    polygons = {f: exposure_polygon(open_exposure(f)) for f in everything}
+    assert orchestrate.program_code(same) == 'tes'
+    assert orchestrate.overlap_inputs(visit, everything, polygons, False) == [same]
+    assert orchestrate.overlap_inputs(visit, everything, polygons, True) == [
+        same, other]
+    assert orchestrate.overlap_inputs([far], everything, polygons, True) == []
 
 
 def test_combine_flags_outliers_on_copies_and_drizzles_the_tile(field, config):
@@ -181,9 +195,12 @@ def test_combine_flags_outliers_on_copies_and_drizzles_the_tile(field, config):
     work = field.get_exposure_files('f160w', work=True)
     assert [os.path.basename(w) for w in work] == [os.path.basename(f) for f in files]
     assert fits.getdata(work[0], (OUTLIER_EXT, 1))[30:33, 50:53].sum() >= 7
-    groups = json.load(open(os.path.join(os.path.dirname(work[0]),
-                                         orchestrate.OUTLIER_MANIFEST)))['groups']
-    assert [g['members'] for g in groups] == [[os.path.basename(w) for w in work]]
+    # one record per visit, naming the canonical exposures it was compared with
+    record = json.load(open(orchestrate.outlier_manifest_path(
+        os.path.dirname(work[0]), 'ites01')))
+    assert [i['filename'] for i in record['inputs']] == [
+        os.path.basename(w) for w in work]
+    assert record['cross_program_overlap'] is False
 
     # one mosaic, on the field's tile, named after the instrument
     d = field.filter_dir('f160w')
@@ -218,13 +235,45 @@ def test_combine_flags_outliers_on_copies_and_drizzles_the_tile(field, config):
     assert [(r['tile'], r['stale'], r['n_inputs']) for r in status] == [
         ('T1', False, 3), ('far', False, 0)]
 
-    # dropping an exposure from the field redoes the group and the tile
-    field.skip = ['itest01a2q']
+    # dropping an exposure from the field redoes the visit and the tile
+    field.skip = ['ites01a2q']
     orchestrate.run_combine(field, config)
     assert len(field.get_exposure_files('f160w', work=True)) == 2
     manifest = json.load(open(os.path.join(d, f'{name}_manifest.json')))
     assert len(manifest['inputs']) == 2
-    assert cfp.step_value(work[0], 'CFP_OUT', keyset=cfp.HST).startswith('field n=2')
+    assert cfp.step_value(work[0], 'CFP_OUT', keyset=cfp.HST).startswith('visit n=2')
+
+
+def test_visits_of_two_programs_are_flagged_separately_unless_asked(field, config):
+    """Two visits on the same sky, one per program. By default each is
+    compared with itself only; with cross_program_overlap each also sees the
+    other, and only the visits whose comparison changed are redone."""
+    d = field.filter_dir('f160w')
+    rng = np.random.default_rng(11)
+    a = [_ir_file(os.path.join(d, f'ites01a{k}q_flt.fits'), f'ites01a{k}q', c, rng,
+                  mjd=57000.0 + k) for k, c in enumerate(((40.0, 40.0), (43.4, 38.7)))]
+    b = [_ir_file(os.path.join(d, f'itex01a{k}q_flt.fits'), f'itex01a{k}q', c, rng,
+                  mjd=57400.0 + k) for k, c in enumerate(((37.2, 42.6), (41.0, 44.0)))]
+    field.files = ['ites*', 'itex*']
+    orchestrate.run_combine(field, config, steps=('outlier',))
+    work = field.filter_dir('f160w', work=True)
+
+    def stamp(name):
+        return cfp.step_value(os.path.join(work, name), 'CFP_OUT', keyset=cfp.HST)
+
+    assert stamp('ites01a0q_flt.fits').startswith('visit n=2')
+    assert stamp('itex01a0q_flt.fits').startswith('visit n=2')
+    records = sorted(os.path.basename(p) for p in orchestrate.outlier_manifests(work))
+    assert records == ['outlier_ites01_manifest.json', 'outlier_itex01_manifest.json']
+
+    config['wfc3ir']['outlier']['cross_program_overlap'] = True
+    orchestrate.run_combine(field, config, steps=('outlier',))
+    assert stamp('ites01a0q_flt.fits').startswith('visit n=4')
+    assert stamp('itex01a1q_flt.fits').startswith('visit n=4')
+    record = json.load(open(orchestrate.outlier_manifest_path(work, 'itex01')))
+    assert len(record['inputs']) == 4 and record['cross_program_overlap'] is True
+    # nothing is written to the canonical exposures by any of this
+    assert all(not cfp.has_step(f, 'CFP_OUT', keyset=cfp.HST) for f in a + b)
 
 
 def test_a_region_drawn_after_a_mosaic_reaches_the_next_one(field, config):
@@ -242,7 +291,7 @@ def test_a_region_drawn_after_a_mosaic_reaches_the_next_one(field, config):
     times = [os.path.getmtime(w) for w in work]
 
     reg = field.mask_file(files[0], 'f160w')
-    assert reg.endswith('reference/wfc3ir/tf/masks/f160w/itest01a0q_flt.reg')
+    assert reg.endswith('reference/wfc3ir/tf/masks/f160w/ites01a0q_flt.reg')
     os.makedirs(os.path.dirname(reg))
     with open(reg, 'w') as f:
         f.write('# Region file format: DS9\nimage\nbox(40.5,40.5,20,20,0)\n')
@@ -265,7 +314,7 @@ def test_status_reads_the_outlier_stamp_from_the_copy(field, config):
     _exposures(field, hit=False)
     orchestrate.run_combine(field, config, steps=('outlier',))
     rows = orchestrate.exposure_status(field, 'f160w')
-    assert list(rows) == ['itest01a0q', 'itest01a1q', 'itest01a2q']
+    assert list(rows) == ['ites01a0q', 'ites01a1q', 'ites01a2q']
     assert all('CFP_ALGN' in s and 'CFP_OUT' in s for s in rows.values())
 
 
@@ -296,7 +345,7 @@ def test_status_and_reset_commands(field, monkeypatch):
     runner, main = _cli(monkeypatch)
     result = runner.invoke(main, ['wfc3ir', 'status', '--field', 'tf'])
     assert result.exit_code == 0, result.output
-    assert 'itest01a0q' in result.output and '3/3 done' in result.output
+    assert 'ites01a0q' in result.output and '3/3 done' in result.output
 
     # a field without a table for the instrument is a plain message
     result = runner.invoke(main, ['acswfc', 'status', '--field', 'tf'])

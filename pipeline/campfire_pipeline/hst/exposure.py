@@ -37,10 +37,11 @@ the per-pixel errors. ``var_flat`` is zero. See
 :meth:`HstChip._background_variance`.
 
 **Good pixels.** No DQ bit set outside the detector's tolerated set
-(``hst/instruments.py``; satellite trails are DQ bit 16384, ``hst/steps/trails.py``),
-finite SCI, positive finite ERR, not marked in the ``CFOUT`` extension the
-field-level outlier pass writes (``hst/steps/outlier.py``), and not inside a
-hand-drawn region (the ``CFMASK`` extension, ``hst/steps/apply_masks.py``).
+(``hst/instruments.py``), finite SCI, positive finite ERR, not marked in the
+``CFOUT`` extension the outlier pass writes (``hst/steps/outlier.py``), and
+not inside a region of the exposure's region file (the ``CFMASK`` extension,
+``hst/steps/apply_masks.py``: hand-drawn masks and the satellite trails of
+``hst/steps/trails.py``).
 """
 
 import os

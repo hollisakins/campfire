@@ -1,11 +1,15 @@
-"""outlier: field-level outlier flags for all exposures of one detector and filter.
+"""outlier: outlier flags for a visit against everything that overlaps it.
 
 The per-visit ``crreject`` step sees two to four exposures taken minutes apart.
-Once every visit is on one astrometric frame, this step compares each exposure
-with **everything** that overlaps it in the same filter, whatever the visit or
-program, and flags what the visit could not: a cosmic ray at the same place in
-both exposures of a two-exposure visit, residual trails, persistence that moves
-with the dither. The method lives in ``campfire_pipeline/imaging/outlier.py``
+Once every visit is on one astrometric frame, this step compares the exposures
+of a visit with each other and with the exposures of other visits that overlap
+them in the same filter, and flags what the visit could not: a cosmic ray at
+the same place in both exposures of a two-exposure visit, residual trails,
+persistence that moves with the dither. It goes visit by visit, as the NIRCam
+step does (``nircam/steps/outlier.py``), with the same rule for what counts as
+overlapping material: exposures of the same program by default, of any
+program with ``cross_program_overlap = true``. The grid is the visit's, so
+the memory needed does not grow with the field. The method lives in ``campfire_pipeline/imaging/outlier.py``
 (single drizzles, a median that falls back to the minimum where few exposures
 overlap, blot, a noise-plus-gradient test) and is shared with any instrument
 that provides chips.
@@ -125,30 +129,41 @@ def _write_flags(path, masks, stamp):
         raise
 
 
-def outlier_step(exposure_files, step_config=None, overwrite=False, refcat=None):
-    """Flag outliers across all given exposures of one detector and filter.
+def outlier_step(visit_files, context_files=(), step_config=None,
+                 overwrite=False, refcat=None):
+    """Flag outliers on the exposures of one visit.
+
+    The visit's exposures are compared with each other and with
+    ``context_files``: exposures of other visits that overlap them, which the
+    caller selects (``hst/orchestrate.py``: the same program by default, any
+    program with ``cross_program_overlap``). Only the visit's files are
+    flagged and stamped; the others are comparison material and are not
+    written. This is the NIRCam scheme (``nircam/steps/outlier.py``): the
+    grid is the size of the visit, so a field of any extent is done one
+    visit at a time.
 
     ``refcat`` is the reference catalog table the exposures were aligned to;
     its stars with a proper motion are protected where they moved (see the
     module docstring). Without it no star is protected.
 
-    Returns ``{path: flagged pixel count}``, or ``None`` when every file
-    already carries ``CFP_OUT`` and ``overwrite`` is not set. Raises
-    ``ValueError`` for mixed detectors or filters, for fewer than two
-    exposures, and for any exposure without a solved alignment.
+    Returns ``{path: flagged pixel count}`` for the visit's files, or ``None``
+    when every one already carries ``CFP_OUT`` and ``overwrite`` is not set.
+    A visit of one exposure that nothing overlaps has nothing to be compared
+    with: it gets no flags and a stamp that says so. Raises ``ValueError`` for
+    mixed detectors or filters and for any exposure without a solved
+    alignment.
     """
     from campfire_pipeline.hst.steps.align import _mid_mjd
     from campfire_pipeline.imaging.outlier import (
         detect_outliers, stack_grid, star_protection,
     )
 
-    files = sorted(exposure_files)
+    visit = sorted(visit_files)
     if not overwrite and all(cfp.has_step(f, 'CFP_OUT', keyset=cfp.HST)
-                             for f in files):
-        log(f'Skipping outlier: CFP_OUT already set on all {len(files)} exposures')
+                             for f in visit):
+        log(f'Skipping outlier: CFP_OUT already set on all {len(visit)} exposures')
         return None
-    if len(files) < 2:
-        raise ValueError('outlier needs at least two exposures to compare')
+    files = visit + sorted(set(context_files) - set(visit))
     unaligned = []
     for f in files:
         value = cfp.step_value(f, 'CFP_ALGN', keyset=cfp.HST)
@@ -172,19 +187,29 @@ def outlier_step(exposure_files, step_config=None, overwrite=False, refcat=None)
     params = get_hst_step_config('outlier', token, overrides=step_config)
     for name in ('snr', 'scale', 'minmed_nsigma'):
         params[name] = _pair(params[name])
+    params.pop('cross_program_overlap', None)     # the caller's selection rule
+    visit_chips = [c for f in visit for c in by_file[f]]
 
-    # One grid at the native scale covers every chip given. Refuse a set whose
-    # grid would not fit in memory, before any pixel is read.
+    # One grid at the native scale covers the visit's chips. Refuse a visit
+    # whose grid would not fit in memory, before any pixel is read.
     limit = float(params.pop('max_grid_megapixels'))
-    nx, ny = stack_grid(chips, pixel_scale=params.get('pixel_scale')).shape
+    nx, ny = stack_grid(visit_chips, pixel_scale=params.get('pixel_scale')).shape
     if nx * ny > limit * 1e6:
         raise ValueError(
-            f'outlier: the {len(files)} overlapping {token} {next(iter(filters))} '
-            f'exposures span a {nx} x {ny} pixel grid ({nx * ny / 1e6:.0f} '
+            f'outlier: the {len(visit)} {token} {next(iter(filters))} exposures '
+            f'of this visit span a {nx} x {ny} pixel grid ({nx * ny / 1e6:.0f} '
             f'megapixels), above [{token}.outlier].max_grid_megapixels = '
-            f'{limit:g}. A contiguous mosaic of this size needs the pass run '
-            f'per visit against its neighbors, which is not built; raise the '
-            f'limit if the machine has the memory (about 14 bytes per pixel).')
+            f'{limit:g}. Raise the limit if the machine has the memory (about '
+            f'14 bytes per pixel).')
+
+    if len(files) < 2:
+        # one exposure and nothing that overlaps it
+        _write_flags(visit[0], {c.extver: np.zeros(c.shape, dtype=bool)
+                                for c in visit_chips},
+                     'visit n=1 nothing to compare with')
+        log(f'outlier: {os.path.basename(visit[0])} is alone in its visit and '
+            f'nothing overlaps it; no outlier flags')
+        return {visit[0]: 0}
 
     protect_cfg = {k: params.pop(k) for k in _PROTECT_KEYS}
     protect, prot = None, 'off'
@@ -211,14 +236,15 @@ def outlier_step(exposure_files, step_config=None, overwrite=False, refcat=None)
             f"within {protect_cfg['protect_radius']:g} arcsec")
 
     result = detect_outliers(chips, workdir=os.path.dirname(files[0]),
-                             protect=protect, **params)
+                             protect=protect,
+                             flag_keys=[c.key for c in visit_chips], **params)
 
     counts = {}
-    for f in files:
+    for f in visit:
         masks = {c.extver: result['flags'][c.key] for c in by_file[f]}
         n = sum(int(m.sum()) for m in masks.values())
         npix = sum(m.size for m in masks.values())
-        stamp = (f"field n={len(files)} snr={params['snr'][0]:g} {params['snr'][1]:g} "
+        stamp = (f"visit n={len(files)} snr={params['snr'][0]:g} {params['snr'][1]:g} "
                  f"scale={params['scale'][0]:g} {params['scale'][1]:g} "
                  f"prot={prot} frac={n / npix:.5f}")
         _write_flags(f, masks, stamp)

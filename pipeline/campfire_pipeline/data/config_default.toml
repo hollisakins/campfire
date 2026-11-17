@@ -1233,8 +1233,11 @@
 
 [acswfc.trails]
     # Satellite trails, found per chip with the STScI finder
-    # (acstools.findsat_mrt) and flagged in DQ (bit 16384) without review.
-    # ACS/WFC only: on WFC3/IR calwf3 rejects the reads a satellite crosses.
+    # (acstools.findsat_mrt) and written as polygons into the exposure's
+    # region file (reference/acswfc/<field>/masks/<filter>/<file>.reg), where
+    # hand-drawn masks live: a preliminary mask that apply_masks uses, a
+    # deploy stores, and a reviewer can edit or delete in the portal. The
+    # step never replaces a region file somebody drew or edited. ACS/WFC only.
     #
     # The finder works on the chip binned by `binsize` and keeps a streak
     # whose peak in the transform stands `detect_threshold` sigma above the
@@ -1250,8 +1253,8 @@
     # share of a streak's length along which it is detected, is what tells
     # them apart: on 40 COSMOS F814W exposures the five false ones have 0.56
     # to 0.67 (S/N 6 to 9) and the six satellite trails 0.86 to 1 (S/N 10 to
-    # 660). Nobody reviews this mask, so only a streak with at least this
-    # persistence and S/N is masked. A fainter trail, or a streak that does
+    # 660). The mask goes into a mosaic unless somebody removes it, so only
+    # a streak with at least this persistence and S/N is written. A fainter trail, or a streak that does
     # not run the length of the chip, is left to the cosmic-ray and outlier
     # steps and to a hand-drawn mask. binsize 4 is twice as fast and loses
     # the faintest of the six.
@@ -1262,9 +1265,6 @@
     # blank background) the light outside it is 0.29 sigma per pixel in the
     # first 2 pixels, 0.04 sigma at 8 to 12, and nothing beyond 12.
     grow = 12
-    # Rootnames whose trails are reported but not masked (set per field,
-    # [<field>.acswfc.trails]): the way to undo a wrong one.
-    ignore = []
 
 [acswfc.crreject]
     # Per-visit cosmic-ray flags (AstroDrizzle's driz_cr): two-pass S/N
@@ -1349,9 +1349,16 @@
     fine_min_significance = 3.0
 
 [acswfc.outlier]
-    # Field-level outlier pass: two-pass S/N thresholds and gradient scales
-    # (those of crreject), growth of a flag (pixels), and the single-drizzle
-    # settings.
+    # Outlier pass, visit by visit as for NIRCam: a visit's exposures are
+    # compared with each other and with exposures of other visits that
+    # overlap them. cross_program_overlap has NIRCam's meaning and default:
+    # false compares with the visit's own program only; true adds overlapping
+    # exposures of every program (more material where a visit has one or two
+    # exposures, at the price of comparing data taken years apart with a
+    # different detector state; stars that moved are protected, see below).
+    cross_program_overlap = false
+    # Two-pass S/N thresholds and gradient scales (those of crreject),
+    # growth of a flag (pixels), and the single-drizzle settings.
     snr = "3.5 3.0"
     scale = "1.2 0.7"
     grow = 1
@@ -1375,10 +1382,9 @@
     protect_stars = true
     protect_radius = 0.5
     protect_min_motion = 0.15
-    # The pass compares all exposures of a filter that overlap, on one grid
-    # at the native pixel scale covering all of them. A group whose grid
-    # would exceed this many megapixels stops with a message instead of
-    # exhausting memory (about 14 bytes per pixel are held).
+    # The grid of a pass is the visit's, at the native pixel scale. A visit
+    # whose grid would exceed this many megapixels stops with a message
+    # instead of exhausting memory (about 14 bytes per pixel are held).
     max_grid_megapixels = 2000
 
 [acswfc.resample]
@@ -1497,6 +1503,9 @@
     fine_min_significance = 3.0
 
 [wfc3ir.outlier]
+    # Same keys and meaning as [acswfc.outlier]: visit by visit, against the
+    # visit's own program unless cross_program_overlap is true.
+    cross_program_overlap = false
     # The first scale is 5, not crreject's 2.5: a WFC3/IR star is 1.1 native
     # pixels wide and 2.5 flags the peak pixel of about one star image in a
     # hundred (docs/hst/design.md, section 8b).

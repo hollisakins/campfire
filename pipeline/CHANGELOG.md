@@ -142,9 +142,9 @@ Release procedure: edit the `## Unreleased` section below, then run
 - **New command groups `cfpipe acswfc` and `cfpipe wfc3ir`: HST imaging from RAW
   to mosaics on the field's tiles.** The NIRCam command set per HST instrument:
   `process` (calibrate, wcs_init, sky, trails on ACS/WFC, crreject, preview,
-  align), `combine` (apply_masks, then the field-level outlier pass per overlap
-  group and resample on working copies), `run`, one command per step, `status`,
-  `check`, `reset`. A field declares an instrument's
+  align), `combine` (apply_masks, then the outlier pass visit by visit and
+  resample on working copies), `run`, one command per step, `status`, `check`,
+  `reset`. A field declares an instrument's
   exposures in `fields.toml` as `[<field>.acswfc]` / `[<field>.wfc3ir]` with
   `filters`, `files` (HST rootname globs) and `skip`; tiles, tangent point and
   reference catalog are the field's, so an HST mosaic
@@ -167,38 +167,43 @@ Release procedure: edit the `## Unreleased` section below, then run
   Star protection in the ACS/WFC outlier pass is measured on two epochs of COSMOS
   F814W (stars that moved 1.6 pixels or more lose 36 to 61 percent of their core
   flux without it, none with it) and its radius is 0.5 arcsec. `calibrate`
-  repeats a CRDS call when the server fails. Not built: WFC3/IR persistence
-  masks, upload of HST products and their portal pages (so previews are not
-  reviewed in the browser yet, and masks are region files written by hand), and
-  an outlier pass that works per visit, which a contiguous field the size of
-  COSMOS needs. Run on real data: WFC3/IR on pg004 (31 exposures,
+  repeats a CRDS call when the server fails. Not built: WFC3/IR trail and
+  persistence masks, and upload of HST products and their portal pages (so
+  previews are not reviewed in the browser yet, and masks are the region files
+  on disk). Run on real data: WFC3/IR on pg004 (31 exposures,
   four filters) and ACS/WFC F814W on COSMOS (19 exposures), the latter compared
   with an existing reference mosaic on the same pixel grid: fluxes agree to 0.3
   percent, depth is equal, positions agree to 4 mas (docs/hst/design.md,
   section 8b). The HST `align` step warns when the field's reference catalog
   carries no proper motions: in that comparison the stars of such a catalog
   pulled the alignment by 6 mas over a 19 year baseline.
-- **HST masking: satellite trails without review, and the NIRCam reviewer
+- **HST masking: satellite trails as preliminary masks, and the NIRCam reviewer
   workflow.** Three steps in `cfpipe acswfc` / `cfpipe wfc3ir`. `trails`
   (ACS/WFC only, between `sky` and `crreject`; `hst/steps/trails.py`,
-  `[acswfc.trails]`): the STScI finder `acstools.findsat_mrt` on each chip, and
-  DQ bit 16384 on every trail it is confident of, grown by 12 pixels. Nobody
-  reviews this mask, so the cuts are stricter than the finder's own: on 40
-  COSMOS F814W exposures its defaults report 11 trails, 6 real (persistence 0.86
-  to 1) and 5 not (diffraction spikes, a line through two galaxies, a
-  scattered-light arc; persistence 0.56 to 0.67), and the step masks a streak
-  only at persistence 0.8 and signal-to-noise 8 or more, which keeps the six
-  and none of the five. `ignore` in `[<field>.acswfc.trails]` lists rootnames
-  whose trails are not masked. In the COSMOS test mosaic the three trails had
-  left, after the cosmic-ray and outlier steps, a line at 0.1 to 0.4 of the
-  pixel scatter; with the masks the mosaic along them is level. A streak that
-  does not run the length of the chip is not masked by this step. About 2.5
-  core-minutes per exposure. An
-  ACS/WFC exposure that has not been searched is held back from a mosaic.
+  `[acswfc.trails]`): the STScI finder `acstools.findsat_mrt` on each chip;
+  every trail it is confident of becomes a polygon, grown by 12 pixels, in the
+  exposure's region file, the one hand-drawn masks live in, so it is applied,
+  stored and edited like any other mask and the exposure's `DQ` is not touched.
+  The step never replaces a region file somebody drew or edited. The cuts are
+  stricter than the finder's own: on 40 COSMOS F814W exposures its defaults
+  report 11 trails, 6 real (persistence 0.86 to 1) and 5 not (diffraction
+  spikes, a line through two galaxies, a scattered-light arc; persistence 0.56
+  to 0.67), and the step writes a streak only at persistence 0.8 and
+  signal-to-noise 8 or more, which keeps the six and none of the five. The
+  finder always runs on two or more processes: on one it takes a different
+  code path (`acstools` 3.8.2) and misses a trail it finds otherwise. In the
+  COSMOS test mosaic the three trails had left, after the cosmic-ray and
+  outlier steps, a line at 0.1 to 0.4 of the pixel scatter; with the masks the
+  mosaic along them is level. A streak that does not run the length of the chip
+  is not found by this step. About 2.5 core-minutes per exposure. There is no
+  WFC3/IR trail step yet, and one is needed: `calwf3` removes a trail only
+  where it adds more than about 150 electrons to a pixel in one read interval,
+  and leaves fainter trails and the wings of bright ones in the image
+  (docs/hst/design.md, section 8b).
   `preview` (after `crreject`; `hst/steps/preview.py`, `[<instrument>.preview]`):
   the NIRCam pair `<file>_preview.png` and `<file>_full.png`, signal-to-noise
   per pixel with the chips stacked ([SCI,1] below [SCI,2]) and the pixels the
-  pipeline already leaves out drawn at zero. `apply_masks` (first in `combine`;
+  calibration and `crreject` flagged drawn at zero. `apply_masks` (first in `combine`;
   `hst/steps/apply_masks.py`): DS9 region files in
   `reference/<instrument>/<field>/masks/<filter>/<file>.reg` become `CFMASK`
   extensions on the canonical exposure, which the adapter leaves out of the
@@ -211,7 +216,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   `<instrument>_exposure_full` and `<instrument>_mask`. The automatic quality
   gate of the design (exposure flags, guiding, broadened stars) is dropped: HST
   gets what NIRCam has and no more. The HST step-stamp key set loses
-  `CFP_QUAL` / `CFP_HMSK` (never written) and gains `CFP_TRL`.
+  `CFP_QUAL` / `CFP_HMSK` (never written) and gains `CFP_TRL`. No selected
+  exposure is left out of a mosaic quietly: `combine` prints a banner, where it
+  happens and again at the end of its log, naming every exposure that is not
+  calibrated, not aligned, failed alignment or lacks cosmic-ray flags, with
+  the command that brings it in, and `check` prints the same.
+- **The HST outlier pass goes visit by visit, as NIRCam's does.** A visit's
+  exposures are flagged against themselves and the exposures of other visits
+  that overlap them: of the same program by default, of any program with
+  `[<instrument>.outlier].cross_program_overlap = true` (NIRCam's setting and
+  default). One record per visit, `outlier_<visit>_manifest.json` next to the
+  working copies. The grid is a visit's, so a contiguous field of any size can
+  be done; before, every exposure that touched another through a chain of
+  neighbors went onto one grid, which in COSMOS is the whole field
+  (`imaging/outlier.py::detect_outliers(flag_keys=)`, `hst/steps/outlier.py`,
+  `hst/orchestrate.py`). The default now compares within a program, where the
+  first version compared across programs.
 - **New `cfpipe nircam refcat add-gaia`: give an existing catalog Gaia's stars.**
   What `refcat extract` does to a catalog it has just made, for one that already
   exists (a survey catalog, an older reference catalog) in the reference-catalog

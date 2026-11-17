@@ -294,16 +294,23 @@ def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7), grow=1,
                     pixfrac=1.0, kernel='square', pixel_scale=None,
                     minmed_nsigma=(4.0, 3.0), minmed_max_n=3,
                     min_contributors=2, block=1024, workdir=None,
-                    protect=None):
+                    protect=None, flag_keys=None):
     """Outlier masks for ``chips`` (one detector and filter, one frame).
 
     ``protect`` is an optional ``{chip.key: bool array}`` of pixels that are
     never flagged (see :func:`star_protection`); they still enter the median.
 
+    ``flag_keys`` names the chips to flag (default: all of them). The grid
+    then covers those chips only, and the others are comparison material
+    where they fall on it: this is the per-visit pass, a visit's chips flagged
+    against themselves and whatever overlaps them. A chip that is not to be
+    flagged and misses the grid is left out.
+
     Returns ``{'flags': {chip.key: bool array, True at an outlier},
     'stats': {chip.key: {...}}, 'grid': TileGrid, 'median': float32 array,
-    'n_contributors': int16 array}``. The masks cover good pixels only: a pixel
-    the adapter already calls bad is never reported.
+    'n_contributors': int16 array}``, with ``flags`` and ``stats`` for the
+    flagged chips. The masks cover good pixels only: a pixel the adapter
+    already calls bad is never reported.
     """
     from scipy.ndimage import binary_dilation, binary_erosion
 
@@ -314,23 +321,38 @@ def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7), grow=1,
     keys = [c.key for c in chips]
     if len(set(keys)) != len(keys):
         raise ValueError('detect_outliers: chip keys must be unique')
-    grid = stack_grid(chips, pixel_scale=pixel_scale)
+    if flag_keys is None:
+        targets = chips
+    else:
+        wanted = set(flag_keys)
+        targets = [c for c in chips if c.key in wanted]
+        if len(targets) != len(wanted):
+            raise ValueError('detect_outliers: flag_keys names chips that '
+                             'were not given')
+    target_keys = {c.key for c in targets}
+    grid = stack_grid(targets, pixel_scale=pixel_scale)
     out_shape = grid.array_shape
     ny, nx = out_shape
-    log(f'outlier: {len(chips)} chips on a {nx}x{ny} grid at '
+    log(f'outlier: {len(targets)} chips to flag, {len(chips) - len(targets)} '
+        f'more to compare with, on a {nx}x{ny} grid at '
         f'{grid.pixel_scale:.4f} arcsec')
 
     tmp = tempfile.mkdtemp(prefix='.outlier_', dir=workdir)
     try:
         # -- 1. single drizzles, kept on disk ------------------------------
         singles = []          # (path, sly, slx, var_bg scalar, coefficient)
-        order = iter(chips)
-        for sci, wht, prep in drizzle_tile_singles(
-                chips, grid, out_shape, pixfrac=pixfrac, kernel=kernel,
-                weight_type='ivm'):
-            # drizzle_tile_singles yields in input order and skips chips that
-            # miss the grid; stack_grid covers every chip, so none is skipped.
-            chip = next(order)
+        for chip in chips:
+            # one chip at a time: the generator skips a chip that misses the
+            # grid, which only a comparison chip can
+            drizzled = list(drizzle_tile_singles(
+                [chip], grid, out_shape, pixfrac=pixfrac, kernel=kernel,
+                weight_type='ivm'))
+            if not drizzled:
+                if chip.key in target_keys:
+                    raise RuntimeError(
+                        f'outlier: {chip.key} did not land on the stack grid')
+                continue
+            sci, wht, prep = drizzled[0]
             good, var_bg, coefficient = _noise_terms(prep)
             positive = wht[wht > 0]
             if positive.size:
@@ -339,9 +361,7 @@ def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7), grow=1,
             np.save(path, sci.astype(np.float32))
             level = float(np.median(var_bg[good])) if good.any() else np.inf
             singles.append((path, prep['sly'], prep['slx'], level, coefficient))
-            del sci, wht, prep
-        if len(singles) != len(chips):
-            raise RuntimeError('outlier: a chip did not land on the stack grid')
+            del sci, wht, prep, drizzled
 
         # -- 2. median, minimum and contributor count, block by block -------
         median = np.full(out_shape, np.nan, dtype=np.float32)
@@ -408,7 +428,7 @@ def detect_outliers(chips, *, snr=(3.5, 3.0), scale=(1.2, 0.7), grow=1,
                                iterations=3).astype(np.float32)
         enough = (count >= int(min_contributors)).astype(np.float32)
         flags, stats = {}, {}
-        for chip in chips:
+        for chip in targets:
             prep = _prepare_chip_input(chip, grid, out_shape, weight_type='ivm')
             good, var_bg, coefficient = _noise_terms(prep)
             in_shape = prep['in_shape']

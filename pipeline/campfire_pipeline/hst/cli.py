@@ -221,16 +221,20 @@ def make_group(instrument):
                         line += f', {bad} of them failed'
                 log(line)
 
-    @group.command(help='Report which mosaic tiles are stale.')
+    @group.command(help='Report which mosaic tiles are stale, and which '
+                        'selected exposures a combine would leave out.')
     @_common
     @click.option('--filters', multiple=True, default=None, cls=VariadicOption,
                   help='Filters to check (default: all).')
     @_tiles
     def check(config, field, filters, tiles):
-        from campfire_pipeline.hst.orchestrate import stale_tiles
+        from campfire_pipeline.hst.orchestrate import (
+            _report_held_back, held_back, stale_tiles,
+        )
         cfg, fld = _setup(config, field, instrument)
         any_stale = False
         for filt in (list(filters) or fld.filters):
+            _report_held_back(fld, filt, held_back(fld, filt))
             results = _guard(stale_tiles, fld, cfg, filt,
                              tiles=list(tiles) or None)
             for r in results:
@@ -263,7 +267,7 @@ def make_group(instrument):
     @click.option('--yes', is_flag=True, help='Skip the confirmation prompt.')
     def reset(config, field, filters, from_step, raw, yes):
         from campfire_pipeline.common import cfp
-        from campfire_pipeline.hst.orchestrate import OUTLIER_MANIFEST
+        from campfire_pipeline.hst.orchestrate import outlier_manifests
         if bool(raw) == bool(from_step):
             raise click.UsageError('Specify exactly one of --raw or --from <step>.')
         if from_step and from_step not in reset_from:
@@ -303,9 +307,7 @@ def make_group(instrument):
             for path in (work + (canonical if raw else [])):
                 os.remove(path)
             for filt in filter_list:
-                manifest = os.path.join(fld.filter_dir(filt, work=True),
-                                        OUTLIER_MANIFEST)
-                if os.path.exists(manifest):
+                for manifest in outlier_manifests(fld.filter_dir(filt, work=True)):
                     os.remove(manifest)
         else:
             for path in canonical:

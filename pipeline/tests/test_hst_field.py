@@ -158,24 +158,54 @@ def test_only_aligned_and_cleaned_exposures_get_a_working_copy(root):
     assert 'CFP_OUT' not in fits.getheader(work)
 
 
-def test_an_acs_exposure_without_its_flags_is_held_back(root):
-    """An ACS exposure goes into a mosaic only with its cosmic-ray flags and
-    after the search for satellite trails."""
+def test_an_acs_exposure_without_cosmic_ray_flags_is_held_back(root):
+    """Satellite trails are masks in the region file, not a condition: an
+    exposure the trail step has not seen still goes in."""
     acs = HstField.load('pg', 'acswfc')
     acs.setup_workspace()
     d = acs.filter_dir('f814w')
-    _stamped(f'{d}/jczgo1aaq_flc.fits', CFP_TRL='findsat n=0 px=0',
-             CFP_CR='adz n=2', CFP_ALGN='fit=linear')
-    lone = _stamped(f'{d}/jczgo5aaq_flc.fits', CFP_TRL='findsat n=0 px=0',
+    _stamped(f'{d}/jczgo1aaq_flc.fits', CFP_CR='adz n=2', CFP_ALGN='fit=linear')
+    lone = _stamped(f'{d}/jczgo5aaq_flc.fits', CFP_TRL='findsat n=0 reg=none',
                     CFP_ALGN='fit=rigid')
-    unsearched = _stamped(f'{d}/jczgo6aaq_flc.fits', CFP_CR='adz n=2',
-                          CFP_ALGN='fit=linear')
     paths, held = acs.materialize_work('f814w')
     assert [os.path.basename(p) for p in paths] == ['jczgo1aaq_flc.fits']
-    assert held == [
-        (lone, 'no cosmic-ray flags yet (crreject has not run)'),
-        (unsearched, 'not searched for satellite trails yet (trails has not run)'),
-    ]
+    assert held == [(lone, 'no cosmic-ray flags yet (crreject has not run)')]
+
+
+def test_everything_selected_that_is_not_in_the_mosaic_is_named(root, monkeypatch):
+    """Held back, failed, or not even calibrated: each is reported with its
+    reason, by the combine and by `check`."""
+    from campfire_pipeline.hst import orchestrate
+
+    ir = HstField.load('pg', 'wfc3ir')
+    ir.setup_workspace()
+    d = ir.filter_dir('f160w')
+    _stamped(f'{d}/iczgo2aaq_flt.fits', CFP_ALGN='fit=linear')
+    _stamped(f'{d}/iczgo2abq_flt.fits')
+    _stamped(f'{d}/iczgo2acq_flt.fits', CFP_ALGN=cfp.NOT_ALIGNED)
+    raw = root / 'raw' / 'wfc3ir' / '14096' / 'f160w'
+    raw.mkdir(parents=True)
+    for name in ('iczgo2aaq', 'iczgo2adq'):              # the second: RAW only
+        fits.PrimaryHDU().writeto(raw / f'{name}_raw.fits')
+
+    assert orchestrate.uncalibrated(ir, 'f160w') == ['iczgo2adq']
+    reasons = orchestrate.held_back(ir, 'f160w')
+    assert reasons == {
+        'not calibrated yet (RAW file selected, no calibrated exposure)': ['iczgo2adq'],
+        'not aligned yet': ['iczgo2abq'],
+        'alignment failed (NOT_ALIGNED)': ['iczgo2acq'],
+    }
+    said = []
+    monkeypatch.setattr(orchestrate, 'log', said.append)
+    orchestrate._report_held_back(ir, 'f160w', reasons)
+    text = '\n'.join(said)
+    assert '3 selected wfc3ir f160w exposure(s) are NOT IN THE MOSAIC' in text
+    for name in ('iczgo2adq', 'iczgo2abq', 'iczgo2acq'):
+        assert name in text
+    assert 'cfpipe wfc3ir process --field pg' in text
+    said.clear()
+    orchestrate._report_held_back(ir, 'f160w', {})
+    assert said == []                                    # nothing held: no noise
 
 
 def test_reviewer_exclusions_drop_exposures_like_skip(root):

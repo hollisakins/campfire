@@ -8,7 +8,7 @@ one field at a time (``cfpipe acswfc ...`` / ``cfpipe wfc3ir ...``):
     calibrate   RAW -> <rootname>_flc.fits / _flt.fits at the pinned context
     wcs_init    distortion model into the headers
     sky         per-chip sky, ACS amplifier offsets, variance scale
-    trails      satellite trails flagged in DQ (ACS/WFC only)
+    trails      satellite trails -> the exposure's region file (ACS/WFC only)
     crreject    cosmic rays, per visit (two or more exposures)
     preview     the two review PNGs of each exposure
     align       per visit, to the field's reference catalog
@@ -19,11 +19,15 @@ one field at a time (``cfpipe acswfc ...`` / ``cfpipe wfc3ir ...``):
     outlier     flags across everything that overlaps, per overlap group
     resample    drizzle onto the field's tiles; background, split files, plots
 
-``outlier`` and ``resample`` work on copies. What a reviewer decides reaches a
-reduction as it does for NIRCam: ``reference/<instrument>/<field>/`` holds
+``outlier`` and ``resample`` work on copies, and ``outlier`` goes visit by
+visit as for NIRCam. What a reviewer decides reaches a reduction as it does
+for NIRCam: ``reference/<instrument>/<field>/`` holds
 ``masks/<filter>/<file>.reg`` and ``exposures.json`` (exposures left out
-altogether). There is no automatic quality gate beyond the satellite trails
-(Hollis, 2026-11-16: no heavier than NIRCam).
+altogether). The satellite trails the ``trails`` step finds go into those same
+region files as preliminary masks. There is no automatic quality gate
+(Hollis, 2026-11-16: no heavier than NIRCam), and no exposure is kept out of
+a mosaic without a banner that names it and says why
+(:func:`_report_held_back`).
 
 Every step is recorded by its ``CFP_*`` stamp (``common/cfp.py``, key set
 ``HST``) and is skipped where the stamp is present, so any command can be
@@ -78,7 +82,19 @@ def steps_for(instrument, steps=None):
     return [(n, k) for n, k in (ALL_STEPS if steps is None else steps)
             if n not in skip]
 
-OUTLIER_MANIFEST = 'outlier_groups.json'
+def outlier_manifest_path(work_dir, visit):
+    """The record of one visit's outlier pass, next to the working copies
+    that hold its flags (NIRCam's name: ``outlier_<visit>_manifest.json``)."""
+    return os.path.join(work_dir, f'outlier_{visit}_manifest.json')
+
+
+def outlier_manifests(work_dir):
+    """Every outlier record in a working directory (the per-visit files, and
+    the single ``outlier_groups.json`` of the pass that preceded them)."""
+    from glob import glob
+    found = glob(os.path.join(work_dir, 'outlier_*_manifest.json'))
+    old = os.path.join(work_dir, 'outlier_groups.json')
+    return sorted(found) + ([old] if os.path.exists(old) else [])
 
 
 def step_config(step, field, config):
@@ -185,11 +201,11 @@ def _sky_worker(exposure_file, *, cfg, overwrite):
     return exposure_file
 
 
-def _trails_worker(exposure_file, *, cfg, overwrite, processes):
+def _trails_worker(exposure_file, reg_file, *, cfg, overwrite, processes):
     from campfire_pipeline.hst.steps.trails import trails_step
-    found = trails_step(exposure_file, step_config=cfg, overwrite=overwrite,
-                        processes=processes)
-    masked = sum(1 for ts in (found or {}).values() for t in ts if t['masked'])
+    found = trails_step(exposure_file, reg_file, step_config=cfg,
+                        overwrite=overwrite, processes=processes)
+    masked = sum(1 for ts in (found or {}).values() for t in ts if t['accepted'])
     return exposure_file, masked
 
 
@@ -225,10 +241,10 @@ def _align_worker(key, files, *, refcat, cfg, refcat_hash):
     return key, (None if sol is None else sol.status), failed
 
 
-def _outlier_worker(files, *, cfg, refcat):
+def _outlier_worker(visit_files, context_files, *, cfg, refcat):
     from campfire_pipeline.hst.steps.outlier import outlier_step
-    counts = outlier_step(list(files), step_config=cfg, overwrite=True,
-                          refcat=refcat)
+    counts = outlier_step(list(visit_files), list(context_files),
+                          step_config=cfg, overwrite=True, refcat=refcat)
     return sum(counts.values()) if counts else 0
 
 
@@ -288,8 +304,7 @@ def _run_sky(field, config, filt, n_processes, overwrite):
 
 
 def _run_trails(field, config, filt, n_processes, overwrite):
-    """Satellite trails, ACS/WFC only. One exposure per worker; with a single
-    worker the finder itself spreads over ``n_processes``."""
+    """Satellite trails, ACS/WFC only, into the exposures' region files."""
     if 'trails' in _NOT_FOR.get(field.instrument, ()):
         return
     files = [f for f in field.get_exposure_files(filt) if _has(f, 'CFP_SKY')]
@@ -297,15 +312,19 @@ def _run_trails(field, config, filt, n_processes, overwrite):
     log(f'trails: {len(files)} {filt} exposures, {len(pending)} to search')
     if not pending:
         return
-    workers = max(1, min(n_processes, len(pending)))
-    results = dispatch(_trails_worker, pending, n_processes=workers,
-                       cfg=step_config('trails', field, config),
-                       overwrite=overwrite,
-                       processes=(n_processes if workers == 1 else 1))
+    # One exposure at a time, the finder on all the processes: it must run on
+    # at least two to give its documented result (steps/trails.py), and a
+    # worker of a process pool cannot start processes of its own.
+    cfg = step_config('trails', field, config)
+    results = [_trails_worker(f, field.mask_file(f, filt), cfg=cfg,
+                              overwrite=overwrite,
+                              processes=max(2, n_processes))
+               for f in pending]
     hit = sorted(os.path.basename(f).split('_')[0] for f, n in results if n)
     if hit:
-        log(f'trails: satellite trails masked on {len(hit)} of {len(pending)} '
-            f'{filt} exposure(s): {", ".join(hit)}')
+        log(f'trails: satellite trails found on {len(hit)} of {len(pending)} '
+            f'{filt} exposure(s): {", ".join(hit)}. Their masks are region '
+            f'files in {os.path.join(field.mask_dir, filt)}.')
 
 
 def _run_preview(field, config, filt, n_processes, overwrite):
@@ -504,31 +523,31 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False):
 # Combine steps
 # ---------------------------------------------------------------------------
 
-def overlap_groups(files):
-    """Split exposures into groups that overlap on the sky, directly or
-    through other exposures. Returns a list of sorted lists, largest group
-    first."""
-    from campfire_pipeline.hst.exposure import open_exposure
-    from campfire_pipeline.hst.steps.resample import exposure_polygon
+def program_code(path):
+    """Program of an HST exposure, from its file name: the ``ppp`` of the
+    rootname ``ipppssoot`` (one code per program and instrument)."""
+    return os.path.basename(path)[1:4]
 
-    files = sorted(files)
-    polys = [exposure_polygon(open_exposure(f)) for f in files]
-    parent = list(range(len(files)))
 
-    def find(i):
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
+def overlap_inputs(visit_files, filter_files, polygons, cross_program):
+    """Exposures of other visits that overlap a visit's exposures.
 
-    for i in range(len(files)):
-        for j in range(i + 1, len(files)):
-            if find(i) != find(j) and polys[i].intersects(polys[j]):
-                parent[find(j)] = find(i)
-    groups = {}
-    for i, f in enumerate(files):
-        groups.setdefault(find(i), []).append(f)
-    return sorted(groups.values(), key=lambda g: (-len(g), g[0]))
+    NIRCam's rule (``nircam/steps/outlier.py::_compute_overlap_inputs``): only
+    exposures of the visit's own program by default, of any program with
+    ``cross_program``. ``polygons`` maps each file to its footprint on the
+    sky. Returns the other files, in the order of ``filter_files``.
+    """
+    visit_set = set(visit_files)
+    program = program_code(visit_files[0])
+    others = []
+    for other in filter_files:
+        if other in visit_set:
+            continue
+        if not cross_program and program_code(other) != program:
+            continue
+        if any(polygons[v].intersects(polygons[other]) for v in visit_files):
+            others.append(other)
+    return others
 
 
 def _config_hash(cfg):
@@ -536,15 +555,39 @@ def _config_hash(cfg):
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
 
-def _load_outlier_manifest(work_dir):
-    path = os.path.join(work_dir, OUTLIER_MANIFEST)
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path) as f:
-            return list(json.load(f).get('groups', []))
-    except (ValueError, OSError):
-        return []
+def _visit_is_up_to_date(visit, visit_files, canonical_inputs, manifest_path,
+                         refcat_hash, cfg_hash):
+    """Whether a visit can skip the outlier pass: every one of its working
+    copies carries ``CFP_OUT``, and the record of the pass that wrote those
+    flags names the same inputs, unchanged, the same reference catalog and
+    the same settings. Logs the reason when it cannot.
+
+    The inputs are identified by their canonical files: the working copies
+    change when their own visit's flags are written, the exposures those
+    flags were derived from do not.
+    """
+    from campfire_pipeline.imaging.manifest import file_unchanged, load_manifest
+
+    if not all(_has(f, 'CFP_OUT') for f in visit_files):
+        return False
+    manifest = load_manifest(manifest_path)
+    if manifest is None:
+        log(f'  outlier: no record for visit {visit}; running')
+        return False
+    old = {e['filename']: e for e in manifest.get('inputs', [])}
+    if sorted(old) != sorted(os.path.basename(f) for f in canonical_inputs):
+        log(f'  outlier: the exposures compared with visit {visit} changed')
+        return False
+    changed = [os.path.basename(f) for f in canonical_inputs
+               if not file_unchanged(f, old[os.path.basename(f)])]
+    if changed:
+        log(f"  outlier: inputs of visit {visit} changed: {', '.join(changed)}")
+        return False
+    if manifest.get('refcat') != refcat_hash or manifest.get('config') != cfg_hash:
+        log(f'  outlier: the reference catalog or the settings changed since '
+            f'visit {visit} was flagged')
+        return False
+    return True
 
 
 def _run_apply_masks(field, filt, overwrite=False):
@@ -566,34 +609,100 @@ def _run_apply_masks(field, filt, overwrite=False):
         apply_masks_step(f, field.mask_file(f, filt), overwrite=True)
 
 
+_NOT_CALIBRATED = 'not calibrated yet (RAW file selected, no calibrated exposure)'
+_HELD_BACK_FIX = {
+    _NOT_CALIBRATED: 'run `cfpipe {inst} process --field {field}`',
+    'not aligned yet': 'run `cfpipe {inst} align --field {field}`',
+    'alignment failed (NOT_ALIGNED)':
+        'change [{field}.{inst}.align] and run `cfpipe {inst} align` again, '
+        'or drizzle them as they are with `combine --include-unaligned`',
+    'no cosmic-ray flags yet (crreject has not run)':
+        'run `cfpipe {inst} process --field {field}`',
+}
+
+
+def uncalibrated(field, filt):
+    """Rootnames of the RAW files the field selects for a filter that have no
+    calibrated exposure yet. A combine cannot see those at all, so without
+    this check a mosaic made halfway through a reduction would be short of
+    exposures and say nothing."""
+    have = {os.path.basename(f).split('_')[0]
+            for f in field.get_exposure_files(filt)}
+    return sorted({os.path.basename(f).split('_')[0]
+                   for f in field.get_raw_files(filt)} - have)
+
+
+def held_back(field, filt, include_unaligned=False):
+    """``{reason: [rootname, ...]}`` for the selected exposures of a filter
+    that a combine would keep out of the mosaic. Reads headers only."""
+    reasons = {}
+    missing = uncalibrated(field, filt)
+    if missing:
+        reasons[_NOT_CALIBRATED] = missing
+    for src in field.get_exposure_files(filt):
+        ready, reason = field.combine_ready(src, include_unaligned)
+        if not ready:
+            reasons.setdefault(reason, []).append(
+                os.path.basename(src).split('_')[0])
+    return reasons
+
+
+def _report_held_back(field, filt, reasons):
+    """A banner for exposures that are selected and do not go into the mosaic.
+
+    Leaving data out is sometimes right (an exposure drizzled where it is not
+    doubles every source) and never something to do quietly: the banner names
+    every exposure, the reason and what to run."""
+    if not reasons:
+        return
+    n = sum(len(v) for v in reasons.values())
+    bar = '!' * 72
+    log('')
+    log(bar)
+    log(f'combine: WARNING: {n} selected {field.instrument} {filt} exposure(s) '
+        f'are NOT IN THE MOSAIC:')
+    for reason, names in sorted(reasons.items()):
+        fix = _HELD_BACK_FIX.get(reason, '').format(inst=field.instrument,
+                                                    field=field.name)
+        log(f"  {reason} ({len(names)}): {', '.join(names)}")
+        if fix:
+            log(f'    to bring them in: {fix}')
+    log(bar)
+    log('')
+
+
 def _materialize(field, filt, overwrite, include_unaligned):
     paths, held = field.materialize_work(filt, overwrite=overwrite,
                                          include_unaligned=include_unaligned)
-    if held:
-        reasons = {}
-        for src, reason in held:
-            reasons.setdefault(reason, []).append(
-                os.path.basename(src).split('_')[0])
-        log(f'combine: {len(held)} {filt} exposure(s) are HELD BACK from the '
-            f'mosaic:')
-        for reason, names in sorted(reasons.items()):
-            log(f"  {reason}: {', '.join(names)}")
-    return paths
+    reasons = {}
+    for src, reason in held:
+        reasons.setdefault(reason, []).append(os.path.basename(src).split('_')[0])
+    _report_held_back(field, filt, reasons)
+    return paths, reasons
 
 
 def _run_outlier(field, config, filt, n_processes, overwrite, paths):
-    """Field-level outlier flags for the working copies of one filter.
+    """Outlier flags for the working copies of one filter, visit by visit.
 
-    The exposures are split into overlap groups; each group of two or more is
-    one outlier pass. A group is redone when its membership, the reference
-    catalog or the settings changed since the pass that flagged it (recorded
-    in ``outlier_groups.json`` next to the working copies), or when a member
-    has no flags yet.
+    The NIRCam scheme (``nircam/orchestrate.py`` and ``nircam/steps/outlier.py``):
+    each visit's exposures are flagged against themselves and the exposures
+    of other visits that overlap them, of the same program by default and of
+    any program with ``[<instrument>.outlier].cross_program_overlap = true``.
+    A visit is redone when one of its working copies has no flags, or when
+    the exposures it was compared with, the reference catalog or the settings
+    differ from the record of the pass that flagged it
+    (``outlier_<visit>_manifest.json`` next to the working copies).
     """
+    from campfire_pipeline.hst.exposure import open_exposure
+    from campfire_pipeline.hst.steps.resample import exposure_polygon
+    from campfire_pipeline.hst.visit import group_visits
+    from campfire_pipeline.imaging.manifest import whole_file_entry, write_manifest
     from campfire_pipeline.nircam.orchestrate import _refcat_hash
 
     work_dir = field.filter_dir(filt, work=True)
+    canon_dir = field.filter_dir(filt)
     cfg = step_config('outlier', field, config)
+    cross_program = bool(cfg.get('cross_program_overlap', False))
     refcat_path = field.refcat_path()
     refcat, refcat_hash = None, None
     if refcat_path and os.path.exists(refcat_path):
@@ -603,42 +712,53 @@ def _run_outlier(field, config, filt, n_processes, overwrite, paths):
             'moving star is protected')
     cfg_hash = _config_hash(cfg)
 
-    def record(group):
-        return {'members': [os.path.basename(f) for f in group],
-                'refcat': refcat_hash, 'config': cfg_hash}
+    def canonical(path):
+        return os.path.join(canon_dir, os.path.basename(path))
 
-    groups = overlap_groups(paths)
-    done_before = _load_outlier_manifest(work_dir)
-    todo, current, alone = [], [], []
-    for group in groups:
-        if len(group) < 2:
-            alone.append(group[0])
+    polygons = {f: exposure_polygon(open_exposure(f)) for f in paths}
+    visits = group_visits(paths)
+    tasks, records, alone = [], [], 0
+    for v in visits:
+        files = list(v.files)
+        context = overlap_inputs(files, paths, polygons, cross_program)
+        inputs = [canonical(f) for f in files + context]
+        manifest_path = outlier_manifest_path(work_dir, v.visit)
+        if len(files) + len(context) < 2:
+            alone += 1
+        if not overwrite and _visit_is_up_to_date(
+                v.visit, files, inputs, manifest_path, refcat_hash, cfg_hash):
             continue
-        fresh = (not overwrite and record(group) in done_before
-                 and all(_has(f, 'CFP_OUT') for f in group))
-        if fresh:
-            current.append(record(group))
-        else:
-            todo.append(group)
+        tasks.append((files, context))
+        records.append((v.visit, inputs, manifest_path))
+    known = {outlier_manifest_path(work_dir, v.visit) for v in visits}
+    for stale in outlier_manifests(work_dir):
+        if stale not in known:
+            os.remove(stale)          # a visit that left, or the older format
 
-    # An exposure that overlaps nothing is not compared with anything. If it
-    # carries flags from an earlier grouping, they are dropped with a new copy.
-    for path in alone:
-        if _has(path, 'CFP_OUT'):
-            src = os.path.join(field.filter_dir(filt), os.path.basename(path))
-            shutil.copyfile(src, path)
-    log(f'outlier: {len(paths)} {filt} exposures in {len(groups)} overlap '
-        f'group(s): {len(todo)} to do, {len(current)} up to date, '
-        f'{len(alone)} exposure(s) overlapping nothing')
-    if todo:
-        if refcat_hash is not None:
-            from campfire_pipeline.imaging.refcat.io import read_refcat
-            refcat = read_refcat(refcat_path)
-        dispatch(_outlier_worker, todo, n_processes=min(n_processes, len(todo)),
-                 cfg=cfg, refcat=refcat)
-        current += [record(g) for g in todo]
-    with open(os.path.join(work_dir, OUTLIER_MANIFEST), 'w') as f:
-        json.dump({'groups': current}, f, indent=2)
+    scope = 'any program' if cross_program else 'same program'
+    log(f'outlier: {len(paths)} {filt} exposures in {len(visits)} visit(s), '
+        f'each against what overlaps it ({scope}): {len(tasks)} to do, '
+        f'{len(visits) - len(tasks)} up to date'
+        + (f'; {alone} visit(s) of one exposure that nothing overlaps have '
+           f'nothing to be compared with' if alone else ''))
+    if not tasks:
+        return
+    if refcat_hash is not None:
+        from campfire_pipeline.imaging.refcat.io import read_refcat
+        refcat = read_refcat(refcat_path)
+    dispatch(_outlier_worker, tasks, n_processes=min(n_processes, len(tasks)),
+             use_starmap=True, cfg=cfg, refcat=refcat)
+    entries = {}
+    for visit, inputs, manifest_path in records:
+        for f in inputs:
+            if f not in entries:
+                entries[f] = whole_file_entry(f)
+        write_manifest({
+            'visit': visit, 'field': field.name, 'filter': filt,
+            'inputs': [entries[f] for f in sorted(inputs)],
+            'refcat': refcat_hash, 'config': cfg_hash,
+            'cross_program_overlap': cross_program,
+        }, manifest_path)
 
 
 def _run_resample(field, config, filt, overwrite, reduction_version, tiles, paths):
@@ -669,13 +789,21 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
     version = get_reduction_version(config)
     log(f'=== Combine phase: field={field.name}, instrument={field.instrument}, '
         f'filters={filters} ===')
+    left_out = {}
     for filt in filters:
         log(f'--- Combine: {field.instrument} {filt} ---')
         _run_apply_masks(field, filt,
                          overwrite=overwrite and 'apply_masks' in steps)
         if not set(steps) & {'outlier', 'resample'}:
             continue
-        paths = _materialize(field, filt, overwrite, include_unaligned)
+        paths, reasons = _materialize(field, filt, overwrite, include_unaligned)
+        missing = uncalibrated(field, filt)
+        if missing:
+            reasons = dict(reasons)
+            reasons[_NOT_CALIBRATED] = missing
+            _report_held_back(field, filt, {_NOT_CALIBRATED: missing})
+        if reasons:
+            left_out[filt] = reasons
         if not paths:
             log(f'combine: no {filt} exposure is ready for a mosaic')
             continue
@@ -683,6 +811,10 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
             _run_outlier(field, config, filt, n_processes, overwrite, paths)
         if 'resample' in steps:
             _run_resample(field, config, filt, overwrite, version, tiles, paths)
+    # Say it again where a long log ends: the mosaics above are missing these.
+    for filt, reasons in left_out.items():
+        _report_held_back(field, filt, reasons)
+    return left_out
 
 
 def run_step(step_name, field, config, filters=None, n_processes=1,

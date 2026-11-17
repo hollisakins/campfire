@@ -13,14 +13,12 @@ stacked bottom to top in the order of their extensions with no gap (ACS/WFC:
 ``[SCI,1]`` below ``[SCI,2]``, 4096 x 4096). A region drawn on this canvas in
 image coordinates is read back in the same frame by ``apply_masks``.
 
-**What is blanked.** A pixel the pipeline already leaves out (a DQ bit outside
-the tolerated set, which includes the cosmic rays of ``crreject`` and the
-satellite trails of ``trails``) is drawn at zero, the noise floor. On a CCD
-this is what makes the preview usable at all: a single ACS exposure carries
-tens of thousands of cosmic-ray hits. What stays visible is what would go
-into a mosaic, so what a reviewer sees is what is left to mask; a satellite
-trail that was masked shows as a clean stripe, and one that was missed shows
-as the trail.
+**What is blanked.** A pixel the calibration or ``crreject`` flagged (a DQ bit
+outside the tolerated set) is drawn at zero, the noise floor. On a CCD this is
+what makes the preview usable at all: a single ACS exposure carries tens of
+thousands of cosmic-ray hits. Masks are not blanked: a satellite trail stays
+visible, and its preliminary mask from the ``trails`` step is a polygon the
+portal draws over it, so a reviewer can judge the mask against the trail.
 
 Runs after ``crreject`` and before ``align``, so the flags are in and no
 alignment has moved anything. Reads pixels only. Stamps ``CFP_PREV`` with the
