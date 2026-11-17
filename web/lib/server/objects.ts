@@ -152,7 +152,7 @@ export async function loadObjectHeader(objectId: string): Promise<{
         ? Promise.resolve({ data: [], error: null })
         : supabase
             .from('cat_spectra')
-            .select('id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status')
+            .select('id, spectrum_id, target_id, grating, filter, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status')
             .in('target_id', targetIds),
       slugs.length === 0
         ? Promise.resolve({ data: [] as { slug: string; program_name: string | null }[] })

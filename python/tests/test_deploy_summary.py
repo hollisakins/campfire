@@ -221,3 +221,19 @@ def test_stale_summary_rows_compares_without_the_prefix(tmp_path):
     t = _summary_on_disk(tmp_path, {'a_spec.fits': b'aaa'})
     t['file_hash'] = [h.split(':', 1)[1] for h in t['file_hash']]      # an old ECSV with bare hex
     assert stale_summary_rows(t, tmp_path) == []
+
+
+def test_get_spectra_records_carries_filter_when_present():
+    """#683: the summary's filter rides into the upsert body upper-cased (the
+    spectrum's identity becomes (target_id, grating, filter)); an empty cell is
+    sent as NULL so the database fills it from fits_path."""
+    t = _spectra_table()
+    t['filter'] = ['clear', '']
+    r1, r2 = get_spectra_records(t, 'obs1')
+    assert r1['filter'] == 'CLEAR'
+    assert 'filter' in r2 and r2['filter'] is None
+
+
+def test_get_spectra_records_omits_filter_for_old_ecsv():
+    r1, _ = get_spectra_records(_spectra_table(), 'obs1')
+    assert 'filter' not in r1

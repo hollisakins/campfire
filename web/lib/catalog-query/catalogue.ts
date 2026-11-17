@@ -23,7 +23,7 @@ export type TreeRoot = 'objects' | 'spectra' | 'targets';
 /** Where a leaf's value comes from in the builder: a free input, or one of
  *  the option lists the page already carries. */
 export type LeafChoices =
-  | 'line' | 'band' | 'grating' | 'program' | 'observation' | 'field' | 'quality'
+  | 'line' | 'band' | 'grating' | 'filter' | 'program' | 'observation' | 'field' | 'quality'
   | 'component' | 'deploy_status' | 'list' | 'dq_flags' | 'spectral_features' | 'line_flags';
 
 export interface LeafDef {
@@ -68,7 +68,7 @@ export const CATALOGUE: Record<TreeTable, TableDef> = {
   },
   spectra: {
     id: int('Row id'), spectrum_id: text('Spectrum ID'), target_id: text('Target ID'),
-    grating: text('Grating', 'grating'),
+    grating: text('Grating', 'grating'), filter: text('Filter', 'filter'),
     signal_to_noise: num('S/N'), exposure_time: num('Exposure time', 's'),
     redshift_auto: num('Auto redshift'), chi2_min: num('Redshift fit χ² (min)'), confidence: num('Redshift fit confidence'),
     dq_flags: bits('Quality flags', 'dq_flags'), deploy_status: text('Deploy status', 'deploy_status'),

@@ -29,6 +29,12 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- **Summary redshift consensus keeps both filters of a grating (#683).** `cfpipe nirspec
+  summary` keyed its per-source zfit inputs by grating, so a source observed in G140M/F070LP
+  and G140M/F100LP fed only the last one read into `redshift_best`. They are now keyed by
+  grating + filter (PRISM unchanged). Pixel and flux values are untouched; `redshift_best`
+  can move only for sources with two filters of one grating (rare; filed as Infrastructure,
+  arguably Algorithm).
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.

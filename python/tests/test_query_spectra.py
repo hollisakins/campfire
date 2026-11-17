@@ -139,3 +139,29 @@ def test_get_spectrum_single(store):
     row = store.get_spectrum("obs1_prism_a")
     assert row["grating"] == "PRISM"
     assert row["object_id"] == "OBJ-A"
+
+
+def test_query_spectra_nirspec_filter(store):
+    """#683: G140M pairs with F070LP and F100LP; filters= tells them apart."""
+    store.upsert_spectra([
+        {"id": 4, "spectrum_id": "obs1_g140m_f070lp_a", "target_id": "t_a", "object_id": "OBJ-A",
+         "grating": "G140M", "filter": "F070LP", "program_slug": "prog-a", "observation": "obs1", "field": "cosmos"},
+        {"id": 5, "spectrum_id": "obs1_g140m_f100lp_a", "target_id": "t_a", "object_id": "OBJ-A",
+         "grating": "G140M", "filter": "F100LP", "program_slug": "prog-a", "observation": "obs1", "field": "cosmos"},
+    ])
+    rows = store.query_spectra(gratings=["G140M"], filters=["F070LP"])
+    assert [r["spectrum_id"] for r in rows] == ["obs1_g140m_f070lp_a"]
+    assert rows[0]["filter"] == "F070LP"
+    assert len(store.query_spectra(gratings=["G140M"])) == 2
+
+
+def test_filter_reaches_the_server_as_a_tree_node():
+    from campfire.client import _normalize_nirspec_filters, _with_filter_node
+
+    assert _normalize_nirspec_filters("f070lp") == ["F070LP"]
+    assert _normalize_nirspec_filters(None) is None
+    node = {"col": "filter", "op": "in", "v": ["F070LP"]}
+    assert _with_filter_node(None, ["F070LP"]) == node
+    q = {"col": "grating", "op": "eq", "v": "G140M"}
+    assert _with_filter_node(q, ["F070LP"]) == {"and": [q, node]}
+    assert _with_filter_node(q, None) is q

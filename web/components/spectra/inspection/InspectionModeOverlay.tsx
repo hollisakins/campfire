@@ -13,7 +13,7 @@ import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useI
 import { useAuth } from '@/lib/contexts/AuthContext';
 import type { FilterOptions } from '@/lib/actions/spectra';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
-import { GRATINGS, type ObjectDetail, type Spectrum } from '@/lib/types';
+import { GRATINGS, disperserLabel, type ObjectDetail, type Spectrum } from '@/lib/types';
 import { useQueryClient } from '@tanstack/react-query';
 import { prefetchSpectrumSidecars } from '@/lib/hooks/useSpectrumJson';
 import { useMultiObjectCache } from '@/lib/hooks/useMultiObjectCache';
@@ -52,14 +52,15 @@ function buildSpectrumTabs(object: ObjectDetail): TabSpec[] {
   for (const member of object.member_targets) {
     for (const spec of member.spectra) {
       const programShort = (member.program_slug || member.program_name || '').toUpperCase().split('_')[0];
-      const label = isMultiTarget ? `${spec.grating} (${programShort})` : spec.grating;
+      const setup = disperserLabel(spec.grating, spec.filter);
+      const label = isMultiTarget ? `${setup} (${programShort})` : setup;
       tabs.push({
         spectrum: spec,
         targetId: member.target_id,
         observation: member.observation,
         programName: member.program_name,
         label,
-        title: `${spec.grating} · ${member.program_name} · ${member.observation} · ${member.target_id}`,
+        title: `${setup} · ${member.program_name} · ${member.observation} · ${member.target_id}`,
       });
     }
   }
@@ -103,9 +104,9 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const tabs = useMemo(() => buildSpectrumTabs(currentObject), [currentObject]);
   const [activeKey, setActiveKey] = useState<string>(() => {
     const first = buildSpectrumTabs(object)[0];
-    return first ? `${first.targetId}::${first.spectrum.grating}` : '';
+    return first ? first.spectrum.fits_path : '';
   });
-  const activeTabIdx = Math.max(0, tabs.findIndex(t => `${t.targetId}::${t.spectrum.grating}` === activeKey));
+  const activeTabIdx = Math.max(0, tabs.findIndex(t => t.spectrum.fits_path === activeKey));
   const activeTab = tabs[activeTabIdx];
 
   const initialData = useMemo(() => inspectionInitialFromObject(currentObject), [currentObject]);
@@ -256,7 +257,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     // Reset active tab to the first available spectrum for the new object.
     const newTabs = buildSpectrumTabs(data.object);
     if (newTabs.length > 0) {
-      setActiveKey(`${newTabs[0].targetId}::${newTabs[0].spectrum.grating}`);
+      setActiveKey(newTabs[0].spectrum.fits_path);
     }
   }, [navigateTo, inspectionState, queue, getCachedObject, setCachedObject, deleteCachedObject, currentObject.object_id]);
 
@@ -298,7 +299,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
     if (tabs.length <= 1) return;
     const nextIdx = (activeTabIdx + 1) % tabs.length;
     const t = tabs[nextIdx];
-    setActiveKey(`${t.targetId}::${t.spectrum.grating}`);
+    setActiveKey(t.spectrum.fits_path);
   }, [tabs, activeTabIdx]);
 
   // Keyboard shortcuts.
@@ -420,7 +421,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
           activeGratingIdx={activeTabIdx}
           onGratingChange={(idx) => {
             const t = tabs[idx];
-            if (t) setActiveKey(`${t.targetId}::${t.spectrum.grating}`);
+            if (t) setActiveKey(t.spectrum.fits_path);
           }}
           onPrev={handlePrev}
           onNext={handleNext}

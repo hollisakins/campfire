@@ -49,6 +49,25 @@ class _NoRemote:
         )
 
 
+def _normalize_nirspec_filters(filters) -> Optional[List[str]]:
+    """``filters=`` as an upper-cased list (``"f070lp"`` -> ``["F070LP"]``), or None."""
+    if not filters:
+        return None
+    if isinstance(filters, str):
+        filters = [filters]
+    return [str(f).upper() for f in filters]
+
+
+def _with_filter_node(q: Optional[dict], filters: Optional[List[str]]) -> Optional[dict]:
+    """The NIRSpec filter as a predicate-tree node ANDed onto ``q``: the list
+    endpoints take no filter parameter, the tree is how a new dimension
+    reaches them."""
+    if not filters:
+        return q
+    node = {"col": "filter", "op": "in", "v": list(filters)}
+    return node if q is None else {"and": [q, node]}
+
+
 class Campfire:
     """CAMPFIRE Python API Client.
 
@@ -611,8 +630,13 @@ class Campfire:
         remote: bool = False,
         cursor: Optional[str] = None,
         q: Optional[dict] = None,
+        filters: Optional[Union[str, List[str]]] = None,
     ) -> Table:
         """Query spectra (flat, one row per spectrum) with object-level filters.
+
+        ``filters`` narrows to NIRSpec filters (``"F070LP"``, ``"F100LP"``,
+        ``"CLEAR"``, ...), the half of the disperser setup ``gratings`` does
+        not name: G140M pairs with both F070LP and F100LP.
 
         Inspection state (``redshift_range``, ``redshift_quality``,
         ``inspected_only``) is resolved through the parent object.
@@ -637,6 +661,7 @@ class Campfire:
             fields = [f.lower() for f in fields]
         if gratings:
             gratings = [g.upper() for g in gratings]
+        filters = _normalize_nirspec_filters(filters)
         if observations:
             observations = [o.lower() for o in observations]
         redshift_quality = self._normalize_quality(redshift_quality)
@@ -657,6 +682,7 @@ class Campfire:
                 redshift_quality=redshift_quality,
                 max_snr_range=max_snr_range,
                 dq_flags=dq_dict,
+                filters=filters,
                 crds_context=crds_context,
                 cfpipe_version=cfpipe_version,
                 reduced_after=reduced_after,
@@ -672,6 +698,7 @@ class Campfire:
             )
         else:
             remote_limit = limit if limit is not None else 1000
+            q = _with_filter_node(q, filters)
             spectra, pagination = self._api.query_spectra(
                 programs=programs,
                 fields=fields,
@@ -722,6 +749,7 @@ class Campfire:
     def iter_spectra(self, **filters) -> Iterator[dict]:
         """Iterate over all matching spectra with automatic pagination."""
         remote = filters.pop("remote", False)
+        nirspec_filters = _normalize_nirspec_filters(filters.pop("filters", None))
         # a predicate tree (q) is evaluated by the server, so it forces the remote path
         use_local = self._local is not None and not remote and filters.get("q") is None
 
@@ -732,9 +760,11 @@ class Campfire:
             if filters.get("redshift_quality"):
                 filters["redshift_quality"] = self._normalize_quality(filters["redshift_quality"])
             filters.setdefault("limit", 999999)
-            yield from self._local.query_spectra(**filters)
+            yield from self._local.query_spectra(filters=nirspec_filters, **filters)
             return
 
+        if nirspec_filters:
+            filters["q"] = _with_filter_node(filters.get("q"), nirspec_filters)
         yield from self._api.iter_spectra(**filters)
 
     def query_lines(
