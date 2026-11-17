@@ -1,6 +1,13 @@
 SET lock_timeout = '5s';
 SET statement_timeout = '60s';
 
+-- NIRSpec extraction v2 (claude/extraction-v2), regenerated after main's 2026-11-17 spectra.filter
+-- migrations in place of the branch's six earlier ones: stuck-closed shutters by physical shutter
+-- (nirspec_stuck_shutters, spectrum_exposures.msa_shutters), the master background (storage product
+-- type nirspec_mbkg, nirspec_rate_exposures mbkg_* and observing columns), the master-background
+-- spectrum on spectra / dr_spectra (has_mbkg_spectrum, mbkg_preferred, mbkg_reason, n_exp,
+-- n_exp_bkg, after filter) through the catalog whitelist, cat_spectra and the release freeze and
+-- export, and get_program_exposures on published spectra only. Schema only: deploy fills the columns.
 SET local check_function_bodies = off;
 
 DROP VIEW "public"."cat_spectra";
@@ -8,6 +15,32 @@ DROP VIEW "public"."cat_spectra";
 ALTER TABLE "public"."storage_objects"
   DROP CONSTRAINT "storage_objects_product_type_check";
 
+CREATE SEQUENCE "public"."nirspec_stuck_shutters_id_seq" AS integer INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START WITH 1 CACHE 1 NO CYCLE;
+
+REVOKE ALL ON SEQUENCE "public"."nirspec_stuck_shutters_id_seq" FROM "anon";
+
+CREATE TABLE "public"."nirspec_stuck_shutters" (
+  "id"            integer                  NOT NULL DEFAULT nextval('public.nirspec_stuck_shutters_id_seq'::regclass),
+  "observation"   text                     NOT NULL,
+  "exposure_root" text                     NOT NULL,
+  "shutter"       text                     NOT NULL,
+  "origin"        text                     NOT NULL,
+  "stuck"         boolean                  NOT NULL,
+  "note"          text,
+  "created_at"    timestamp with time zone NOT NULL DEFAULT now(),
+  "updated_at"    timestamp with time zone NOT NULL DEFAULT now(),
+  "updated_by"    uuid,
+  CONSTRAINT "nirspec_stuck_shutters_origin_check" CHECK ((origin = ANY (ARRAY['manual'::text, 'web'::text]))),
+  CONSTRAINT "nirspec_stuck_shutters_pkey" PRIMARY KEY (id),
+  CONSTRAINT "nirspec_stuck_shutters_shutter_check" CHECK ((shutter ~ '^q[1-4]r[0-9]+c[0-9]+$'::text)),
+  CONSTRAINT "nirspec_stuck_shutters_unique" UNIQUE (observation, exposure_root, shutter)
+);
+
+ALTER TABLE "public"."nirspec_stuck_shutters"
+  ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE "public"."nirspec_stuck_shutters" FROM "anon";
+
 ALTER TABLE "public"."dr_spectra"
   ADD COLUMN "has_mbkg_spectrum" boolean NOT NULL DEFAULT false;
 
@@ -23,6 +56,53 @@ ALTER TABLE "public"."dr_spectra"
 ALTER TABLE "public"."dr_spectra"
   ADD COLUMN "n_exp_bkg" integer;
 
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "mbkg_storage_key" text;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "mbkg_source" text;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "mbkg_rate_source" text;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "mbkg_test" text;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "mbkg_exposures" text[];
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "mbkg_n_empty_shutters" integer;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "mbkg_version" text;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "filter" text;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "exposure_time" double precision;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "date_obs" text;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "readout_pattern" text;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "n_groups" integer;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "n_integrations" integer;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "dither_position" integer;
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD COLUMN "n_dither_positions" integer;
+
+ALTER SEQUENCE "public"."nirspec_stuck_shutters_id_seq" OWNED BY "public"."nirspec_stuck_shutters"."id";
+
 ALTER TABLE "public"."spectra"
   ADD COLUMN "has_mbkg_spectrum" boolean NOT NULL DEFAULT false;
 
@@ -37,6 +117,9 @@ ALTER TABLE "public"."spectra"
 
 ALTER TABLE "public"."spectra"
   ADD COLUMN "n_exp_bkg" integer;
+
+ALTER TABLE "public"."spectrum_exposures"
+  ADD COLUMN "msa_shutters" text[];
 
 CREATE OR REPLACE FUNCTION public.catalog_query_whitelist()
   RETURNS jsonb
@@ -60,7 +143,7 @@ CREATE OR REPLACE FUNCTION public.catalog_query_whitelist()
       "has_published_spectrum": "bool", "is_public": "bool", "object_id": "int"
     },
     "spectra": {
-      "id": "int", "spectrum_id": "text", "target_id": "text", "grating": "text",
+      "id": "int", "spectrum_id": "text", "target_id": "text", "grating": "text", "filter": "text",
       "signal_to_noise": "num", "exposure_time": "num", "redshift_auto": "num", "chi2_min": "num",
       "confidence": "num", "has_mbkg_spectrum": "bool", "mbkg_preferred": "bool", "mbkg_reason": "text",
       "n_exp": "int", "n_exp_bkg": "int", "dq_flags": "bits", "deploy_status": "text", "program_slug": "text",
@@ -185,7 +268,7 @@ BEGIN
            jsonb_build_object(
              'id', s.id, 'spectrum_id', s.spectrum_id, 'target_id', s.target_id,
              'object_id', o.object_id, 'object_db_id', o.id,
-             'grating', s.grating, 'fits_path', s.fits_path,
+             'grating', s.grating, 'filter', s.filter, 'fits_path', s.fits_path,
              'file_hash', s.file_hash, 'science_hash', s.science_hash, 'file_size', s.file_size,
              'signal_to_noise', s.signal_to_noise, 'exposure_time', s.exposure_time,
              'cfpipe_version', s.cfpipe_version, 'crds_context', s.crds_context,
@@ -413,8 +496,8 @@ BEGIN
       WHERE o.redshift_auto IS DISTINCT FROM zsrc.z
     ),
     ins_spectra AS (
-      INSERT INTO dr_spectra (tag, id, grating, fits_path, signal_to_noise, created_at, updated_at, target_id, thumbnail_svg_fnu, thumbnail_svg_flambda, file_hash, science_hash, file_size, exposure_time, crds_context, jwst_version, cfpipe_version, date_obs, reduced_at, redshift_auto, chi2_min, confidence, has_mbkg_spectrum, mbkg_preferred, mbkg_reason, n_exp, n_exp_bkg, dq_flags, deploy_status, program_slug, observation, spectrum_id, search_text, is_public)
-      SELECT p_tag, s.id, s.grating, s.fits_path, s.signal_to_noise, s.created_at, s.updated_at, s.target_id, s.thumbnail_svg_fnu, s.thumbnail_svg_flambda, s.file_hash, s.science_hash, s.file_size, s.exposure_time, s.crds_context, s.jwst_version, s.cfpipe_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min, s.confidence, s.has_mbkg_spectrum, s.mbkg_preferred, s.mbkg_reason, s.n_exp, s.n_exp_bkg, s.dq_flags, s.deploy_status, s.program_slug, s.observation, s.spectrum_id, s.search_text, s.is_public
+      INSERT INTO dr_spectra (tag, id, grating, fits_path, signal_to_noise, created_at, updated_at, target_id, thumbnail_svg_fnu, thumbnail_svg_flambda, file_hash, science_hash, file_size, exposure_time, crds_context, jwst_version, cfpipe_version, date_obs, reduced_at, redshift_auto, chi2_min, confidence, has_mbkg_spectrum, mbkg_preferred, mbkg_reason, n_exp, n_exp_bkg, dq_flags, deploy_status, program_slug, observation, spectrum_id, search_text, is_public, filter)
+      SELECT p_tag, s.id, s.grating, s.fits_path, s.signal_to_noise, s.created_at, s.updated_at, s.target_id, s.thumbnail_svg_fnu, s.thumbnail_svg_flambda, s.file_hash, s.science_hash, s.file_size, s.exposure_time, s.crds_context, s.jwst_version, s.cfpipe_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min, s.confidence, s.has_mbkg_spectrum, s.mbkg_preferred, s.mbkg_reason, s.n_exp, s.n_exp_bkg, s.dq_flags, s.deploy_status, s.program_slug, s.observation, s.spectrum_id, s.search_text, s.is_public, s.filter
       FROM spectra s JOIN pub p ON p.id = s.id
       RETURNING 1
     ),
@@ -770,6 +853,7 @@ BEGIN
        OR OLD.program_slug IS DISTINCT FROM NEW.program_slug
        OR OLD.observation IS DISTINCT FROM NEW.observation
        OR OLD.is_public IS DISTINCT FROM NEW.is_public
+       OR OLD.filter IS DISTINCT FROM NEW.filter
     THEN
         RAISE EXCEPTION 'Non-admin updates to spectra may only change dq_flags'
             USING ERRCODE = '42501';  -- insufficient_privilege
@@ -779,10 +863,68 @@ BEGIN
 END;
 $function$;
 
-ALTER TABLE "public"."spectra"
-  ADD CONSTRAINT "spectra_mbkg_reason_check" CHECK (((mbkg_reason IS NULL) OR (mbkg_reason = ANY (ARRAY['no_clear_background'::text, 'single_exposure'::text, 'extended'::text])))) NOT VALID;
+CREATE OR REPLACE FUNCTION public.get_program_exposures (
+  p_program_slug text
+)
+  RETURNS TABLE (
+    observation        text,
+    exposure_root      text,
+    detector           text,
+    grating            text,
+    filter             text,
+    date_obs           text,
+    exposure_time      double precision,
+    readout_pattern    text,
+    n_groups           integer,
+    n_integrations     integer,
+    dither_position    integer,
+    n_dither_positions integer,
+    mbkg_source        text
+  )
+  LANGUAGE sql
+  STABLE
+  SECURITY DEFINER
+  SET search_path TO 'public'
+  AS $function$
+  SELECT r.observation, r.exposure_root, r.detector, r.grating, r.filter,
+         r.date_obs, r.exposure_time, r.readout_pattern,
+         r.n_groups, r.n_integrations, r.dither_position,
+         r.n_dither_positions, r.mbkg_source
+  FROM public.nirspec_rate_exposures r
+  JOIN public.observations o ON o.name = r.observation
+  WHERE o.program_slug = p_program_slug
+    AND p_program_slug = ANY(public.accessible_program_slugs())
+    AND (NOT public.is_link_account() OR r.observation = public.link_observation())
+    AND (public.is_admin() OR public.link_sees_drafts()
+         OR EXISTS (SELECT 1 FROM public.spectra s
+                    WHERE s.observation = r.observation AND s.deploy_status = 'published'))
+  ORDER BY r.observation, r.exposure_root, r.detector;
+$function$;
 
-ALTER TABLE "public"."spectra" VALIDATE CONSTRAINT "spectra_mbkg_reason_check";
+REVOKE ALL ON FUNCTION "public"."get_program_exposures"(text) FROM PUBLIC, "anon";
+
+CREATE OR REPLACE FUNCTION public.stamp_nirspec_stuck_shutter()
+  RETURNS TRIGGER
+  LANGUAGE plpgsql
+  SET search_path TO ''
+  AS $function$
+BEGIN
+    NEW.updated_at = NOW();
+    NEW.updated_by = COALESCE(auth.uid(), NEW.updated_by);
+    RETURN NEW;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION "public"."stamp_nirspec_stuck_shutter"() FROM PUBLIC, "anon";
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD CONSTRAINT "nirspec_rate_exposures_mbkg_rate_source_check" CHECK ((mbkg_rate_source = ANY (ARRAY['combined'::text, 'exposure'::text])));
+
+ALTER TABLE "public"."nirspec_rate_exposures"
+  ADD CONSTRAINT "nirspec_rate_exposures_mbkg_source_check" CHECK ((mbkg_source = ANY (ARRAY['combined'::text, 'exposure'::text])));
+
+ALTER TABLE "public"."spectra"
+  ADD CONSTRAINT "spectra_mbkg_reason_check" CHECK (((mbkg_reason IS NULL) OR (mbkg_reason = ANY (ARRAY['no_clear_background'::text, 'single_exposure'::text, 'extended'::text]))));
 
 ALTER TABLE "public"."storage_objects"
   ADD CONSTRAINT "storage_objects_product_type_check"
@@ -809,12 +951,7 @@ ALTER TABLE "public"."storage_objects"
     'photometry_pz'::text,
     'nirspec_manual_mask'::text,
     'nirspec_stuck_shutters'::text,
-    'nirspec_bkg_override'::text, 'nircam_mask'::text, 'nircam_astrom_cat'::text, 'nircam_bad_pixel'::text, 'nircam_flat'::text, 'nircam_wisp'::text]))) NOT VALID;
-
--- Added NOT VALID and validated separately, the shape main's storage_objects
--- migrations use (within one migration's transaction the table stays locked until
--- commit either way; the scan is one pass over product_type).
-ALTER TABLE "public"."storage_objects" VALIDATE CONSTRAINT "storage_objects_product_type_check";
+    'nirspec_bkg_override'::text, 'nircam_mask'::text, 'nircam_astrom_cat'::text, 'nircam_bad_pixel'::text, 'nircam_flat'::text, 'nircam_wisp'::text])));
 
 CREATE VIEW "public"."cat_spectra" WITH (security_invoker=true) AS  SELECT id,
     grating,
@@ -844,6 +981,7 @@ CREATE VIEW "public"."cat_spectra" WITH (security_invoker=true) AS  SELECT id,
     confidence,
     science_hash,
     is_public,
+    filter,
     has_mbkg_spectrum,
     mbkg_preferred,
     mbkg_reason,
@@ -879,6 +1017,7 @@ CREATE VIEW "public"."cat_spectra" WITH (security_invoker=true) AS  SELECT id,
             spectra.confidence,
             spectra.science_hash,
             spectra.is_public,
+            spectra.filter,
             spectra.has_mbkg_spectrum,
             spectra.mbkg_preferred,
             spectra.mbkg_reason,
@@ -916,6 +1055,7 @@ CREATE VIEW "public"."cat_spectra" WITH (security_invoker=true) AS  SELECT id,
             dr_spectra.confidence,
             dr_spectra.science_hash,
             dr_spectra.is_public,
+            dr_spectra.filter,
             dr_spectra.has_mbkg_spectrum,
             dr_spectra.mbkg_preferred,
             dr_spectra.mbkg_reason,
@@ -930,6 +1070,68 @@ CREATE VIEW "public"."cat_spectra" WITH (security_invoker=true) AS  SELECT id,
 
 REVOKE ALL ON TABLE "public"."cat_spectra" FROM "anon";
 
+CREATE TRIGGER stamp_nirspec_stuck_shutter_trigger
+  BEFORE INSERT OR UPDATE ON public.nirspec_stuck_shutters
+  FOR EACH ROW
+  EXECUTE FUNCTION public.stamp_nirspec_stuck_shutter();
+
+CREATE POLICY "admin_delete_nirspec_stuck_shutters" ON "public"."nirspec_stuck_shutters"
+  FOR DELETE
+  TO "authenticated"
+  USING (( SELECT public.is_admin() AS is_admin));
+
+CREATE POLICY "admin_insert_nirspec_stuck_shutters" ON "public"."nirspec_stuck_shutters"
+  FOR INSERT
+  TO "authenticated"
+  WITH CHECK (( SELECT public.is_admin() AS is_admin));
+
+CREATE POLICY "admin_select_nirspec_stuck_shutters" ON "public"."nirspec_stuck_shutters"
+  FOR SELECT
+  TO "authenticated"
+  USING (( SELECT public.is_admin() AS is_admin));
+
+CREATE POLICY "admin_update_nirspec_stuck_shutters" ON "public"."nirspec_stuck_shutters"
+  FOR UPDATE
+  TO "authenticated"
+  USING (( SELECT public.is_admin() AS is_admin))
+  WITH CHECK (( SELECT public.is_admin() AS is_admin));
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."date_obs" IS 'UTC date the exposure started (DATE-OBS).';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."dither_position" IS 'Position of the exposure in the dither / nod pattern (PATT_NUM), 1-based.';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."exposure_time" IS 'Effective exposure time in seconds (EFFEXPTM).';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."filter" IS 'FILTER of the exposure.';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_exposures" IS 'Exposures (nod/detector) combined into the master background.';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_n_empty_shutters" IS 'Empty shutters of this exposure x detector that passed (MBKGNSH).';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_rate_source" IS 'The same choice for the count-rate master background derived from the rate file (master background step 1).';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_source" IS 'Which master background the exposure uses: combined (over the exposures that agree) or exposure (its own empty shutters, when it differs from the others).';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_storage_key" IS 'Canonical key of the exposure''s master background (<root>_<nrsN>_mbkg.fits, product nirspec_mbkg).';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_test" IS 'Outcome of the test against the other exposures: consistent, differs <band> <deviation> (<significance>), or too few empty shutters.';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."mbkg_version" IS 'Master-background algorithm version (CFMBKGV).';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."n_dither_positions" IS 'Points in the dither / nod pattern (NUMDTHPT).';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."n_groups" IS 'Groups per integration (NGROUPS).';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."n_integrations" IS 'Integrations in the exposure (NINTS).';
+
+COMMENT ON COLUMN "public"."nirspec_rate_exposures"."readout_pattern" IS 'Detector readout pattern (READPATT), e.g. NRSIRS2.';
+
+COMMENT ON COLUMN "public"."nirspec_stuck_shutters"."exposure_root" IS 'Pipeline 2-token root = one MSA configuration (e.g. jw07076001001_05101); same semantics as nirspec_source_review.exposure_root. A stuck shutter never carries over to another root.';
+
+COMMENT ON COLUMN "public"."nirspec_stuck_shutters"."shutter" IS 'Physical shutter key q{shutter_quadrant}r{shutter_row}c{shutter_column} from the MSA metafile SHUTTER_INFO (unpadded).';
+
+COMMENT ON COLUMN "public"."nirspec_stuck_shutters"."updated_by" IS 'auth.uid() of the last writer (stamped by trigger); NULL for service-role writes.';
+
 COMMENT ON COLUMN "public"."spectra"."has_mbkg_spectrum" IS 'The spec.fits carries the spectrum extracted from the master-background-subtracted exposures (SPEC1D_MBKG, SCI_MBKG, ERR_MBKG); deploy uploads it as the _spec_mbkg.json sidecar.';
 
 COMMENT ON COLUMN "public"."spectra"."mbkg_preferred" IS 'MBKGPREF: the master-background spectrum is likely better than the nodded one. NULL without a master-background spectrum.';
@@ -940,7 +1142,43 @@ COMMENT ON COLUMN "public"."spectra"."n_exp" IS 'NEXP: exposures combined into t
 
 COMMENT ON COLUMN "public"."spectra"."n_exp_bkg" IS 'NEXPBKG: the fewest background exposures subtracted from any one of the combined exposures (2 for a full 3-shutter nod, 1 when a background exposure was dropped for a neighbor, 0 when an exposure had none).';
 
+COMMENT ON COLUMN "public"."spectrum_exposures"."msa_shutters" IS 'Physical shutters "q<quadrant>r<row>c<column>" of the source''s slitlet in this exposure root (every dither point of its MSA configuration), from the original metafile''s SHUTTER_INFO as stage 2a edits it for the source (MetaFile.rows_for_source); sorted by (column, row), so the k-th distinct column is the legacy stuck-shutter ordinal k. Deploy-populated; NULL for rows deployed before the column or when no metafile was found.';
+
+COMMENT ON TABLE "public"."nirspec_stuck_shutters" IS 'Stuck-closed NIRSpec MSA shutters, one row per (observation, exposure_root, physical shutter "q<quadrant>r<row>c<column>"). origin manual (pushed from the local stuck_closed_shutters.toml on deploy) or web (the nods review); auto calls stay local. stuck=false vetoes an auto call. Precedence manual > web > auto. Admin-only; supersedes nirspec_source_review.stuck_shutters.';
+
 COMMENT ON VIEW "public"."cat_spectra" IS 'Catalog source view: spectra for the live catalog, dr_spectra rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+
+GRANT EXECUTE ON FUNCTION "public"."get_program_exposures"(text) TO "authenticated";
+
+REVOKE ALL ON FUNCTION "public"."get_program_exposures"(text) FROM "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."get_program_exposures"(text) TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."get_program_exposures"(text) TO "service_role";
+
+GRANT EXECUTE ON FUNCTION "public"."stamp_nirspec_stuck_shutter"() TO "authenticated";
+
+REVOKE ALL ON FUNCTION "public"."stamp_nirspec_stuck_shutter"() FROM "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."stamp_nirspec_stuck_shutter"() TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."stamp_nirspec_stuck_shutter"() TO "service_role";
+
+GRANT SELECT, UPDATE, USAGE ON SEQUENCE "public"."nirspec_stuck_shutters_id_seq" TO "authenticated";
+
+REVOKE ALL ON SEQUENCE "public"."nirspec_stuck_shutters_id_seq" FROM "postgres";
+
+GRANT SELECT, UPDATE, USAGE ON SEQUENCE "public"."nirspec_stuck_shutters_id_seq" TO "postgres";
+
+GRANT SELECT, UPDATE, USAGE ON SEQUENCE "public"."nirspec_stuck_shutters_id_seq" TO "service_role";
+
+GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."nirspec_stuck_shutters" TO "authenticated";
+
+REVOKE ALL ON TABLE "public"."nirspec_stuck_shutters" FROM "postgres";
+
+GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."nirspec_stuck_shutters" TO "postgres";
+
+GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."nirspec_stuck_shutters" TO "service_role";
 
 REVOKE ALL ON TABLE "public"."cat_spectra" FROM "authenticated";
 
