@@ -950,7 +950,7 @@ CREATE POLICY "authenticated_select_nircam"
 -- Admins write the mosaic index. The NIRCam mosaic deploy (`campfire deploy
 -- --field`) runs in login mode through RLS and upserts these rows
 -- (_upsert_nircam_images = INSERT ... ON CONFLICT DO UPDATE), so BOTH an INSERT
--- and an UPDATE policy are required. Mirrors nircam_exposures / fields. Publish
+-- and an UPDATE policy are required. Mirrors exposures / fields. Publish
 -- and revoke flip deploy_status via the SECURITY DEFINER set_deployment_status
 -- RPC, which bypasses RLS and so is unaffected.
 DROP POLICY IF EXISTS "admin_insert_nircam" ON nircam_images;
@@ -966,27 +966,27 @@ CREATE POLICY "admin_update_nircam"
 
 
 -- =============================================================================
--- nircam_exposures (admin-only)
+-- exposures (admin-only)
 -- =============================================================================
 
-ALTER TABLE nircam_exposures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE exposures ENABLE ROW LEVEL SECURITY;
 
 -- Admins can read all exposures.
-DROP POLICY IF EXISTS "admin_select_exposures" ON nircam_exposures;
+DROP POLICY IF EXISTS "admin_select_exposures" ON exposures;
 CREATE POLICY "admin_select_exposures"
-  ON nircam_exposures FOR SELECT TO authenticated
+  ON exposures FOR SELECT TO authenticated
   USING ((SELECT public.is_admin()));
 
 -- Admins can insert exposures.
-DROP POLICY IF EXISTS "admin_insert_exposures" ON nircam_exposures;
+DROP POLICY IF EXISTS "admin_insert_exposures" ON exposures;
 CREATE POLICY "admin_insert_exposures"
-  ON nircam_exposures FOR INSERT TO authenticated
+  ON exposures FOR INSERT TO authenticated
   WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can update exposures.
-DROP POLICY IF EXISTS "admin_update_exposures" ON nircam_exposures;
+DROP POLICY IF EXISTS "admin_update_exposures" ON exposures;
 CREATE POLICY "admin_update_exposures"
-  ON nircam_exposures FOR UPDATE TO authenticated
+  ON exposures FOR UPDATE TO authenticated
   USING ((SELECT public.is_admin()))
   WITH CHECK ((SELECT public.is_admin()));
 
@@ -1095,7 +1095,7 @@ CREATE POLICY "admin_delete_lines"
 -- spectrum_exposures (admin-only — NIRSpec intermediates, epic #210 B2)
 -- =============================================================================
 -- Reduction intermediates, never user-facing science. Admin-only, mirroring
--- nircam_exposures. Deploy writes them under service_role (RLS bypassed).
+-- exposures. Deploy writes them under service_role (RLS bypassed).
 
 ALTER TABLE spectrum_exposures ENABLE ROW LEVEL SECURITY;
 

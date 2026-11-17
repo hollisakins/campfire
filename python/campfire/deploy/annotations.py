@@ -33,17 +33,47 @@ def pull_observation_annotations(obs_name: str, config: dict, *, dry_run: bool =
     pull_bkg_overrides(obs_name, config, dry_run=dry_run)
 
 
-def pull_field_annotations(field: str, config: dict, *, dry_run: bool = False) -> None:
-    """Materialize a NIRCam field's review annotations to reference/.
+def field_instruments(client, field: str) -> list[str]:
+    """The imaging instruments with exposures of ``field`` in the review table.
 
-    Masks (``masks/*.reg``), excluded exposures (``exposures.json``, honored by
-    ``cfpipe nircam combine``), plus a drift report of local .reg vs DB masks.
+    One ``LIMIT 1`` probe per instrument rather than a scan of the field's rows.
+    """
+    from campfire.deploy.nircam import IMAGING_INSTRUMENTS
+
+    found = []
+    for instrument in IMAGING_INSTRUMENTS:
+        resp = (client.table('exposures')
+                .select('id')
+                .eq('instrument', instrument)
+                .eq('field', field)
+                .limit(1)
+                .execute())
+        if resp.data:
+            found.append(instrument)
+    return found
+
+
+def pull_field_annotations(field: str, config: dict, *, dry_run: bool = False,
+                           instruments: list[str] | None = None) -> None:
+    """Materialize an imaging field's review annotations to reference/.
+
+    For every imaging instrument with exposures of the field in the cloud
+    (NIRCam, ACS/WFC, WFC3/IR; or just ``instruments``): masks
+    (``reference/<instrument>/<field>/masks/<filter>/*.reg``), excluded
+    exposures (``exposures.json``, honored by ``cfpipe <instrument> combine``),
+    plus a drift report of local .reg vs DB masks.
     """
     from campfire.deploy.nircam_exclusions import pull_exclusions
     from campfire.deploy.nircam_masks import mask_drift_report, pull_masks
+    from campfire.deploy.supabase import get_supabase_client
 
+    if instruments is None:
+        instruments = field_instruments(get_supabase_client(config), field)
     print(f"\nAnnotations for field {field}:")
-    pull_masks(field, config, dry_run=dry_run)
-    pull_exclusions(field, config, dry_run=dry_run)
-    if not dry_run:
-        mask_drift_report(field, config)
+    if not instruments:
+        print("  no exposures of this field in the review table")
+    for instrument in instruments:
+        pull_masks(field, config, dry_run=dry_run, instrument=instrument)
+        pull_exclusions(field, config, dry_run=dry_run, instrument=instrument)
+        if not dry_run:
+            mask_drift_report(field, config, instrument=instrument)

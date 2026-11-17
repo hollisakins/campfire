@@ -26,6 +26,8 @@ export interface FitsCanvasLoad {
 
 interface Props {
   fitsKey: string;
+  /** SCI extensions the detector has (ACS/WFC: 2), stacked bottom to top. Default 1. */
+  chips?: number;
   width: number;
   height: number;
   stretch: StretchMode;
@@ -38,7 +40,7 @@ interface Props {
 }
 
 export default function FitsCanvas({
-  fitsKey, width, height, stretch, colormap, vmin, vmax, onLoad, onError,
+  fitsKey, chips, width, height, stretch, colormap, vmin, vmax, onLoad, onError,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewerRef = useRef<FitsImageViewer | null>(null);
@@ -72,7 +74,7 @@ export default function FitsCanvas({
     (async () => {
       try {
         const source = await resolveFitsSource(fitsKey, controller.signal);
-        const image = await fetchSciImage(source, controller.signal);
+        const image = await fetchSciImage(source, controller.signal, { chips });
         if (controller.signal.aborted) return;
         viewer.setImage(image);          // auto-ZScales
         viewer.setStretchMode(stretch);
@@ -86,7 +88,7 @@ export default function FitsCanvas({
     })();
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitsKey]);
+  }, [fitsKey, chips]);
 
   useEffect(() => { viewerRef.current?.setStretchMode(stretch); }, [stretch]);
   useEffect(() => { viewerRef.current?.setColormap(colormap); }, [colormap]);

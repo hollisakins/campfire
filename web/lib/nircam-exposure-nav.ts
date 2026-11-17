@@ -9,7 +9,7 @@ import type { ExposureFilters, ExposureSort } from '@/lib/actions/nircam-exposur
 import { EXPOSURE_SORT_KEYS } from '@/lib/admin/sort-keys';
 
 export const EXPOSURE_FILTER_PARAM_KEYS = [
-  'field', 'filter', 'detector', 'review', 'stage', 'correction', 'search',
+  'field', 'instrument', 'filter', 'detector', 'review', 'stage', 'correction', 'search',
 ] as const;
 
 export type ExposureFilterParams = Record<
@@ -25,6 +25,7 @@ export function parseExposureNavParams(
   const dir = sp.get('dir');
   return {
     field: sp.get('field') || undefined,
+    instrument: sp.get('instrument') || undefined,
     filter: sp.get('filter') || undefined,
     detector: sp.get('detector') || undefined,
     reviewStatus: sp.get('review') || undefined,

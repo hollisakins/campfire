@@ -8754,11 +8754,14 @@ CREATE OR REPLACE FUNCTION public.get_admin_exposures(
   p_sort_direction text DEFAULT 'asc',
   p_page integer DEFAULT 1,
   p_page_size integer DEFAULT 50,
-  p_search text DEFAULT NULL               -- ILIKE pattern on filename; callers pre-translate
+  p_search text DEFAULT NULL,              -- ILIKE pattern on filename; callers pre-translate
                                            -- the operator's glob (web/lib/admin/exposure-search.ts)
+  p_instrument text DEFAULT NULL           -- 'nircam' | 'acswfc' | 'wfc3ir'; NULL = every instrument.
+                                           -- Last, so a caller that predates it still resolves.
 )
 RETURNS TABLE (
   id integer,
+  instrument text,
   field text,
   filter text,
   detector text,
@@ -8796,20 +8799,21 @@ BEGIN
     RAISE EXCEPTION 'Access denied: Admin privileges required';
   END IF;
   IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
-  IF p_sort_column NOT IN ('filename', 'field', 'filter', 'detector', 'stage',
+  IF p_sort_column NOT IN ('filename', 'field', 'instrument', 'filter', 'detector', 'stage',
                            'review_status', 'date_obs', 'updated_at') THEN
     p_sort_column := 'filename';
   END IF;
 
   RETURN QUERY
-  SELECT e.id, e.field, e.filter, e.detector, e.filename, e.visit, e.date_obs,
+  SELECT e.id, e.instrument, e.field, e.filter, e.detector, e.filename, e.visit, e.date_obs,
          e.ra_center, e.dec_center, e.stage, e.review_status,
          e.correction, e.png_path, e.full_png_path, e.image_width,
          e.image_height, e.mask_regions, e.notes, e.review_decided_at,
          e.created_at, e.updated_at,
          count(*) OVER ()
-  FROM nircam_exposures e
+  FROM exposures e
   WHERE (p_field IS NULL OR e.field = p_field)
+    AND (p_instrument IS NULL OR e.instrument = p_instrument)
     AND (p_filter IS NULL OR e.filter = p_filter)
     AND (p_detector IS NULL OR e.detector = p_detector)
     AND (p_review_status IS NULL OR e.review_status = p_review_status)
@@ -8817,15 +8821,20 @@ BEGIN
     AND (p_correction IS NULL OR e.correction = p_correction)
     AND (p_search IS NULL OR p_search = '' OR e.filename ILIKE p_search)
   ORDER BY
-    -- Keep in lockstep with get_admin_exposure_neighbors.
+    -- Keep in lockstep with get_admin_exposure_neighbors. The list order is
+    -- (field, instrument, filter, filename): a field's instruments together.
     CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.field END ASC,
+    CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.instrument END ASC,
     CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.filter END ASC,
     CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.filename END ASC,
     CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.field END DESC,
+    CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.instrument END DESC,
     CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.filter END DESC,
     CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.filename END DESC,
     CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'asc'  THEN e.field END ASC,
     CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN e.field END DESC,
+    CASE WHEN p_sort_column = 'instrument' AND p_sort_direction = 'asc'  THEN e.instrument END ASC,
+    CASE WHEN p_sort_column = 'instrument' AND p_sort_direction = 'desc' THEN e.instrument END DESC,
     CASE WHEN p_sort_column = 'filter' AND p_sort_direction = 'asc'  THEN e.filter END ASC,
     CASE WHEN p_sort_column = 'filter' AND p_sort_direction = 'desc' THEN e.filter END DESC,
     CASE WHEN p_sort_column = 'detector' AND p_sort_direction = 'asc'  THEN e.detector END ASC,
@@ -8861,7 +8870,8 @@ CREATE OR REPLACE FUNCTION public.get_admin_exposure_neighbors(
   p_sort_column text DEFAULT 'filename',
   p_sort_direction text DEFAULT 'asc',
   p_window integer DEFAULT 3,
-  p_search text DEFAULT NULL   -- ILIKE pattern on filename; same contract as get_admin_exposures
+  p_search text DEFAULT NULL,  -- ILIKE pattern on filename; same contract as get_admin_exposures
+  p_instrument text DEFAULT NULL
 )
 RETURNS TABLE (
   id integer,
@@ -8878,7 +8888,7 @@ BEGIN
     RAISE EXCEPTION 'Access denied: Admin privileges required';
   END IF;
   IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
-  IF p_sort_column NOT IN ('filename', 'field', 'filter', 'detector', 'stage',
+  IF p_sort_column NOT IN ('filename', 'field', 'instrument', 'filter', 'detector', 'stage',
                            'review_status', 'date_obs', 'updated_at') THEN
     p_sort_column := 'filename';
   END IF;
@@ -8889,13 +8899,17 @@ BEGIN
            row_number() OVER (ORDER BY
              -- Keep in lockstep with get_admin_exposures.
              CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.field END ASC,
+             CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.instrument END ASC,
              CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.filter END ASC,
              CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.filename END ASC,
              CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.field END DESC,
+             CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.instrument END DESC,
              CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.filter END DESC,
              CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'desc' THEN e.filename END DESC,
              CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'asc'  THEN e.field END ASC,
              CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN e.field END DESC,
+             CASE WHEN p_sort_column = 'instrument' AND p_sort_direction = 'asc'  THEN e.instrument END ASC,
+             CASE WHEN p_sort_column = 'instrument' AND p_sort_direction = 'desc' THEN e.instrument END DESC,
              CASE WHEN p_sort_column = 'filter' AND p_sort_direction = 'asc'  THEN e.filter END ASC,
              CASE WHEN p_sort_column = 'filter' AND p_sort_direction = 'desc' THEN e.filter END DESC,
              CASE WHEN p_sort_column = 'detector' AND p_sort_direction = 'asc'  THEN e.detector END ASC,
@@ -8911,8 +8925,9 @@ BEGIN
              e.id ASC
            ) AS rn,
            count(*) OVER () AS n
-    FROM nircam_exposures e
+    FROM exposures e
     WHERE (p_field IS NULL OR e.field = p_field)
+      AND (p_instrument IS NULL OR e.instrument = p_instrument)
       AND (p_filter IS NULL OR e.filter = p_filter)
       AND (p_detector IS NULL OR e.detector = p_detector)
       AND (p_review_status IS NULL OR e.review_status = p_review_status)
@@ -8945,13 +8960,15 @@ BEGIN
   END IF;
 
   RETURN QUERY
-  SELECT 'field'::text, e.field FROM nircam_exposures e GROUP BY e.field
+  SELECT 'field'::text, e.field FROM exposures e GROUP BY e.field
   UNION ALL
-  SELECT 'filter'::text, e.filter FROM nircam_exposures e GROUP BY e.filter
+  SELECT 'instrument'::text, e.instrument FROM exposures e GROUP BY e.instrument
   UNION ALL
-  SELECT 'detector'::text, e.detector FROM nircam_exposures e GROUP BY e.detector
+  SELECT 'filter'::text, e.filter FROM exposures e GROUP BY e.filter
   UNION ALL
-  SELECT 'stage'::text, e.stage FROM nircam_exposures e GROUP BY e.stage
+  SELECT 'detector'::text, e.detector FROM exposures e GROUP BY e.detector
+  UNION ALL
+  SELECT 'stage'::text, e.stage FROM exposures e GROUP BY e.stage
   ORDER BY 1, 2;
 END;
 $$;
@@ -9161,7 +9178,7 @@ BEGIN
     count(*) FILTER (WHERE ne.review_status IN ('approved', 'excluded')) AS done,
     count(*) FILTER (WHERE ne.correction = 'needed') AS needs_correction
   INTO v_nircam
-  FROM nircam_exposures ne;
+  FROM exposures ne;
 
   -- Uninspected = quality 0 (the "Not Inspected" enum value) on a live object
   -- with a published spectrum; needs_review is the derived P3 flag.
@@ -9226,7 +9243,7 @@ BEGIN
               'field', t.field, 'filter', t.filter, 'pending', t.pending)
             ORDER BY t.pending DESC, t.field, t.filter), '[]'::jsonb)
           FROM (SELECT ne.field, ne.filter, count(*) AS pending
-                FROM nircam_exposures ne
+                FROM exposures ne
                 WHERE ne.review_status = 'pending'
                 GROUP BY ne.field, ne.filter
                 ORDER BY count(*) DESC, ne.field, ne.filter
@@ -14172,8 +14189,8 @@ REVOKE ALL ON FUNCTION public.get_adjacent_objects(p_current_object_id text, p_p
 REVOKE ALL ON FUNCTION public.get_admin_deploy_events(p_action text, p_observation text, p_field text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_admin_deployments(p_status text, p_instrument text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_admin_exposure_facets() FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_admin_exposure_neighbors(p_current_id integer, p_field text, p_filter text, p_detector text, p_review_status text, p_stage text, p_correction text, p_sort_column text, p_sort_direction text, p_window integer, p_search text) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_admin_exposures(p_field text, p_filter text, p_detector text, p_review_status text, p_stage text, p_correction text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_search text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_admin_exposure_neighbors(p_current_id integer, p_field text, p_filter text, p_detector text, p_review_status text, p_stage text, p_correction text, p_sort_column text, p_sort_direction text, p_window integer, p_search text, p_instrument text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_admin_exposures(p_field text, p_filter text, p_detector text, p_review_status text, p_stage text, p_correction text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_search text, p_instrument text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_admin_storage_facets() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_admin_storage_objects(p_product_type text, p_status text, p_field text, p_observation text, p_backend text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_search text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_csv_export_objects(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_line_columns jsonb, p_band_columns jsonb, p_object_ids integer[], p_after_object_id text, p_page_size integer) FROM PUBLIC, anon;

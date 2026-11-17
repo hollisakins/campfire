@@ -11,7 +11,7 @@ from tests.fakes import FakePostgrest
 
 
 def _exposures_client(rows):
-    return FakePostgrest(tables={'nircam_exposures': rows})
+    return FakePostgrest(tables={'exposures': [{'instrument': 'nircam', **r} for r in rows]})
 
 
 def _patch_client(monkeypatch, rows):
@@ -22,8 +22,8 @@ def _patch_client(monkeypatch, rows):
 
 
 def _patch_dirs(monkeypatch, ref_dir):
-    monkeypatch.setattr('campfire.deploy.nircam._resolve_nircam_dirs',
-                        lambda field: {'reference': ref_dir})
+    monkeypatch.setattr('campfire.deploy.nircam._resolve_imaging_dirs',
+                        lambda instrument, field: {'reference': ref_dir})
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,8 @@ def test_pull_exclusions_writes_per_filter_json(monkeypatch, tmp_path):
     doc = json.loads((tmp_path / 'exposures.json').read_text())
     assert doc['version'] == 1
     assert doc['field'] == 'cosmos'
-    assert doc['generated_by'] == 'campfire deploy nircam pull'
+    assert doc['generated_by'] == 'campfire pull'
+    assert doc['instrument'] == 'nircam'
     assert doc['excluded'] == {
         'f200w': ['jw1_02101_00002_nrca1'],
         'f444w': ['jw1_04101_00001_nrcalong', 'jw1_04101_00003_nrcalong'],  # sorted

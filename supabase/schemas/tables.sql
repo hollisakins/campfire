@@ -972,7 +972,12 @@ ALTER SEQUENCE "public"."nircam_images_id_seq" OWNER TO "postgres";
 ALTER SEQUENCE "public"."nircam_images_id_seq" OWNED BY "public"."nircam_images"."id";
 
 
-CREATE TABLE IF NOT EXISTS "public"."nircam_exposures" (
+-- Per-exposure review rows of every imaging instrument (the review queue,
+-- preview keys, reviewer masks and exclusions). Named `nircam_exposures` until
+-- 2026-11, when the HST instruments joined: `instrument` tells them apart and
+-- is part of a row's identity. Admin-only (RLS); deploy-populated, with the
+-- reviewer's columns preserved across deploys.
+CREATE TABLE IF NOT EXISTS "public"."exposures" (
     "id" integer NOT NULL,
     "field" "text" NOT NULL,
     "filter" "text" NOT NULL,
@@ -1000,14 +1005,29 @@ CREATE TABLE IF NOT EXISTS "public"."nircam_exposures" (
     -- unambiguously.
     "review_decided_at" timestamp with time zone,
     "created_at" timestamp without time zone DEFAULT "now"(),
-    "updated_at" timestamp without time zone DEFAULT "now"()
+    "updated_at" timestamp without time zone DEFAULT "now"(),
+    -- The instrument token of the layout contract and of `cfpipe <instrument>`
+    -- (campfire_layout.Instrument). Last in the table because it was added to
+    -- existing rows, which are all NIRCam's.
+    "instrument" "text" NOT NULL DEFAULT 'nircam'::"text",
+    -- A mask the pipeline found on its own (cfpipe's HST `trails` step writes
+    -- satellite trails as a region file) reaches `mask_regions` once, on the
+    -- deploy that first sees it: this is the content hash of the region file
+    -- that deploy seeded from. A later deploy seeing the same hash leaves
+    -- `mask_regions` alone, whatever a reviewer has done to it since
+    -- (reshaped it, or deleted it: a null `mask_regions` beside a non-null
+    -- seed hash means "reviewed, no mask", which a pull writes back to disk).
+    "mask_seed_hash" "text",
+    CONSTRAINT "exposures_instrument_check" CHECK (("instrument" = ANY (ARRAY[
+        'nircam'::"text", 'acswfc'::"text", 'wfc3ir'::"text"
+    ])))
 );
 
 
-ALTER TABLE "public"."nircam_exposures" OWNER TO "postgres";
+ALTER TABLE "public"."exposures" OWNER TO "postgres";
 
 
-CREATE SEQUENCE IF NOT EXISTS "public"."nircam_exposures_id_seq"
+CREATE SEQUENCE IF NOT EXISTS "public"."exposures_id_seq"
     AS integer
     START WITH 1
     INCREMENT BY 1
@@ -1016,14 +1036,14 @@ CREATE SEQUENCE IF NOT EXISTS "public"."nircam_exposures_id_seq"
     CACHE 1;
 
 
-ALTER SEQUENCE "public"."nircam_exposures_id_seq" OWNER TO "postgres";
+ALTER SEQUENCE "public"."exposures_id_seq" OWNER TO "postgres";
 
 
-ALTER SEQUENCE "public"."nircam_exposures_id_seq" OWNED BY "public"."nircam_exposures"."id";
+ALTER SEQUENCE "public"."exposures_id_seq" OWNED BY "public"."exposures"."id";
 
 
 -- NIRSpec rate-mask triage (P2, design §3.2). Detector-grain analogue of
--- nircam_exposures, keyed on (observation, exposure_root, detector). Admin-only
+-- exposures, keyed on (observation, exposure_root, detector). Admin-only
 -- (RLS); deploy-populated (split-ownership upsert preserves web review state).
 CREATE TABLE IF NOT EXISTS "public"."nirspec_rate_exposures" (
     "id" integer NOT NULL,
@@ -2526,7 +2546,7 @@ ALTER TABLE ONLY "public"."nircam_images" ALTER COLUMN "id" SET DEFAULT "nextval
 
 
 
-ALTER TABLE ONLY "public"."nircam_exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nircam_exposures_id_seq"'::"regclass");
+ALTER TABLE ONLY "public"."exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."exposures_id_seq"'::"regclass");
 
 
 ALTER TABLE ONLY "public"."nirspec_rate_exposures" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."nirspec_rate_exposures_id_seq"'::"regclass");
@@ -2687,11 +2707,11 @@ ALTER TABLE ONLY "public"."nircam_images"
     ADD CONSTRAINT "nircam_images_unique" UNIQUE ("field", "tile", "filter", "pixel_scale", "extension", "epoch");
 
 
-ALTER TABLE ONLY "public"."nircam_exposures"
-    ADD CONSTRAINT "nircam_exposures_pkey" PRIMARY KEY ("id");
+ALTER TABLE ONLY "public"."exposures"
+    ADD CONSTRAINT "exposures_pkey" PRIMARY KEY ("id");
 
-ALTER TABLE ONLY "public"."nircam_exposures"
-    ADD CONSTRAINT "nircam_exposures_unique" UNIQUE ("field", "filter", "filename");
+ALTER TABLE ONLY "public"."exposures"
+    ADD CONSTRAINT "exposures_unique" UNIQUE ("instrument", "field", "filter", "filename");
 
 ALTER TABLE ONLY "public"."nirspec_rate_exposures"
     ADD CONSTRAINT "nirspec_rate_exposures_pkey" PRIMARY KEY ("id");
@@ -3357,18 +3377,18 @@ GRANT ALL ON TABLE "public"."nircam_images" TO "authenticated";
 GRANT ALL ON TABLE "public"."nircam_images" TO "service_role";
 
 
-REVOKE ALL ON TABLE "public"."nircam_exposures" FROM "anon";
-GRANT ALL ON TABLE "public"."nircam_exposures" TO "authenticated";
-GRANT ALL ON TABLE "public"."nircam_exposures" TO "service_role";
+REVOKE ALL ON TABLE "public"."exposures" FROM "anon";
+GRANT ALL ON TABLE "public"."exposures" TO "authenticated";
+GRANT ALL ON TABLE "public"."exposures" TO "service_role";
 
 
--- nirspec_rate_exposures is admin-only (RLS); not granted to anon. Mirrors nircam_exposures.
+-- nirspec_rate_exposures is admin-only (RLS); not granted to anon. Mirrors exposures.
 REVOKE ALL ON TABLE "public"."nirspec_rate_exposures" FROM "anon";
 GRANT ALL ON TABLE "public"."nirspec_rate_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."nirspec_rate_exposures" TO "service_role";
 
 
--- spectrum_exposures is admin-only (RLS); not granted to anon. Mirrors nircam_exposures.
+-- spectrum_exposures is admin-only (RLS); not granted to anon. Mirrors exposures.
 REVOKE ALL ON TABLE "public"."spectrum_exposures" FROM "anon";
 GRANT ALL ON TABLE "public"."spectrum_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectrum_exposures" TO "service_role";
@@ -3582,9 +3602,9 @@ GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "service_role";
 
 
-REVOKE ALL ON SEQUENCE "public"."nircam_exposures_id_seq" FROM "anon";
-GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "service_role";
+REVOKE ALL ON SEQUENCE "public"."exposures_id_seq" FROM "anon";
+GRANT ALL ON SEQUENCE "public"."exposures_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."exposures_id_seq" TO "service_role";
 
 
 REVOKE ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" FROM "anon";

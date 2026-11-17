@@ -13,7 +13,7 @@ import { getRequestIdentity } from '@/lib/auth/identity';
  * traffic.
  *
  * Body: {
- *   id: number,                       // nircam_exposures.id
+ *   id: number,                       // exposures.id
  *   decidedAt: number,                // ms epoch of the operator's decision
  *   fields: {                         // partial — only operator-touched keys
  *     review_status?, correction?, notes?,
@@ -27,7 +27,7 @@ import { getRequestIdentity } from '@/lib/auth/identity';
  * so the client treats the outrun decision as settled.
  *
  * Auth mirrors the triage server actions' requireSession fast path: confirm a
- * session exists and let nircam_exposures RLS be the authority — a non-admin
+ * session exists and let exposures RLS be the authority — a non-admin
  * update matches zero rows, which (with the row invisible to the follow-up
  * read) surfaces as 404, never as data.
  */
@@ -103,7 +103,7 @@ export async function POST(request: NextRequest) {
 
   const decidedIso = new Date(decidedAt).toISOString();
   const { data, error } = await supabase
-    .from('nircam_exposures')
+    .from('exposures')
     .update({
       ...fields,
       review_decided_at: decidedIso,
@@ -127,7 +127,7 @@ export async function POST(request: NextRequest) {
   // Zero rows: the guard rejected an older stamp, or the row doesn't exist /
   // isn't visible under RLS. Disambiguate with a plain read.
   const { data: row, error: readError } = await supabase
-    .from('nircam_exposures')
+    .from('exposures')
     .select('*')
     .eq('id', id)
     .maybeSingle();

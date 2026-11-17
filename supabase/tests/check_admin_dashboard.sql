@@ -28,7 +28,7 @@ INSERT INTO objects (object_id, field, ra, dec, programs, observations, has_publ
   ('ZZZ-AD-5', 'zzz_ad_field', 152.04, 2.0, '{zzz_ad_pub}', '{zzz_ad_obs}', false, 0, true);
 
 -- NIRCam exposures: three pending (one needing correction), one approved.
-INSERT INTO nircam_exposures (field, filter, detector, filename, stage, review_status, correction) VALUES
+INSERT INTO exposures (field, filter, detector, filename, stage, review_status, correction) VALUES
   ('zzz_ad_field', 'f444w', 'nrca1', 'zzz_ad_1.fits', 'cal', 'pending', 'none'),
   ('zzz_ad_field', 'f444w', 'nrca2', 'zzz_ad_2.fits', 'cal', 'pending', 'needed'),
   ('zzz_ad_field', 'f277w', 'nrca1', 'zzz_ad_3.fits', 'cal', 'pending', 'none'),
@@ -60,11 +60,11 @@ BEGIN
   d := public.get_admin_dashboard();
 
   -- review.nircam against the table
-  SELECT count(*) INTO n FROM nircam_exposures WHERE review_status = 'pending';
+  SELECT count(*) INTO n FROM exposures WHERE review_status = 'pending';
   IF (d #>> '{review,nircam,pending}')::bigint <> n THEN
     RAISE EXCEPTION 'nircam.pending % <> %', d #>> '{review,nircam,pending}', n;
   END IF;
-  SELECT count(*) INTO n FROM nircam_exposures WHERE correction = 'needed';
+  SELECT count(*) INTO n FROM exposures WHERE correction = 'needed';
   IF (d #>> '{review,nircam,needs_correction}')::bigint <> n THEN
     RAISE EXCEPTION 'nircam.needs_correction % <> %', d #>> '{review,nircam,needs_correction}', n;
   END IF;
@@ -72,7 +72,7 @@ BEGIN
   IF (d #> '{review,nircam,top}') <> (
        SELECT COALESCE(jsonb_agg(jsonb_build_object('field', t.field, 'filter', t.filter, 'pending', t.pending)
                                  ORDER BY t.pending DESC, t.field, t.filter), '[]'::jsonb)
-       FROM (SELECT field, filter, count(*) AS pending FROM nircam_exposures
+       FROM (SELECT field, filter, count(*) AS pending FROM exposures
              WHERE review_status = 'pending' GROUP BY field, filter
              ORDER BY count(*) DESC, field, filter LIMIT 4) t) THEN
     RAISE EXCEPTION 'nircam.top disagrees with the table: %', d #> '{review,nircam,top}';

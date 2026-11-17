@@ -34,8 +34,21 @@ const PHASE_BADGE: Record<Phase, string> = {
   done:    'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300',
 };
 
+// The HST instruments' step names (campfire_pipeline.hst.orchestrate
+// PROCESS_STEPS + COMBINE_STEPS) that NIRCam does not share; `preview` and
+// `outlier` are common to both and take NIRCam's phase.
+const HST_STAGE_PHASE: Record<string, Phase> = {
+  calibrate:   'early',
+  wcs_init:    'early',
+  sky:         'mid',
+  trails:      'mid',
+  crreject:    'mid',
+  align:       'late',
+  apply_masks: 'combine',
+};
+
 export function stageBadgeClasses(stage: NircamStage | string): string {
-  const phase = STAGE_PHASE[stage as NircamStage] ?? 'pre';
+  const phase = STAGE_PHASE[stage as NircamStage] ?? HST_STAGE_PHASE[stage] ?? 'pre';
   return PHASE_BADGE[phase];
 }
 

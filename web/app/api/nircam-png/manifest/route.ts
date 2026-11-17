@@ -4,7 +4,7 @@ import { EXPOSURE_SORT_KEYS } from '@/lib/admin/sort-keys';
 import { filenameSearchPattern } from '@/lib/admin/exposure-search';
 
 /**
- * GET /api/nircam-png/manifest?field=..&filter=..&detector=..&review=..&stage=..&correction=..&search=..&sort=..&dir=..
+ * GET /api/nircam-png/manifest?field=..&instrument=..&filter=..&detector=..&review=..&stage=..&correction=..&search=..&sort=..&dir=..
  *
  * The PNG pre-download manifest for a filtered set: which exposures have a
  * downloadable display PNG (full-res when deployed, else preview — the byte
@@ -21,7 +21,7 @@ import { filenameSearchPattern } from '@/lib/admin/exposure-search';
  * action queued AHEAD of the list page's own table fetch on every filter
  * change and froze the table until the manifest landed. As a route handler
  * it runs alongside the actions, and the client aborts it when the filters
- * change again. Reads run under the caller's RLS session (nircam_exposures
+ * change again. Reads run under the caller's RLS session (exposures
  * and storage_objects are admin-gated at the database), so a non-admin gets
  * an empty manifest, never data — same posture as the hot-path actions.
  */
@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
   const asc = sp.get('dir') !== 'desc';
   const eq: [string, string][] = [];
   for (const [param, column] of [
-    ['field', 'field'], ['filter', 'filter'], ['detector', 'detector'],
+    ['field', 'field'], ['instrument', 'instrument'], ['filter', 'filter'], ['detector', 'detector'],
     ['review', 'review_status'], ['stage', 'stage'], ['correction', 'correction'],
   ] as const) {
     const v = sp.get(param);
@@ -57,14 +57,15 @@ export async function GET(request: NextRequest) {
   try {
     const rows: { id: number; key: string }[] = [];
     for (let off = 0; off < CAP; off += CHUNK) {
-      let q = supabase.from('nircam_exposures').select('id, png_path, full_png_path');
+      let q = supabase.from('exposures').select('id, png_path, full_png_path');
       for (const [col, v] of eq) q = q.eq(col, v);
       if (searchPattern) q = q.ilike('filename', searchPattern);
       // Mirror get_admin_exposures' ORDER BY: 'filename' is the compound
-      // (field, filter, filename) list order; everything gets the id tiebreak.
+      // (field, instrument, filter, filename) list order; everything gets the id tiebreak.
       if (sortCol === 'filename') {
         q = q
           .order('field', { ascending: asc })
+          .order('instrument', { ascending: asc })
           .order('filter', { ascending: asc })
           .order('filename', { ascending: asc });
       } else {

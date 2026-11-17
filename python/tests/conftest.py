@@ -1,7 +1,25 @@
 """Shared fixtures for CAMPFIRE API tests."""
 
+import os
+
 import pytest
 import json
+
+
+# ---------------------------------------------------------------------------
+# No test touches a real data root
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _never_the_real_data_root(monkeypatch, tmp_path_factory):
+    """On a reduction machine ``$CAMPFIRE_ROOT`` points at real data. A test
+    that reaches a path helper its patch no longer covers would write there
+    (it has happened: a pulled ``exposures.json`` landed in the real
+    ``reference/`` tree). Point the variable at an empty temporary directory
+    for every test instead. Left unset where it is unset (CI), so tests of the
+    "not set" error still see it unset."""
+    if os.environ.get('CAMPFIRE_ROOT'):
+        monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path_factory.mktemp('campfire_root')))
 
 
 # ---------------------------------------------------------------------------

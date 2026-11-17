@@ -238,8 +238,9 @@ GRANT ALL ON TABLE public.spectrum_flag_summary TO service_role;
 DROP VIEW IF EXISTS public.targets_with_flags;
 
 
--- 5. nircam_reduction_progress
---    Inspection-triage progress per field/filter/detector for the admin
+-- 5. exposure_review_progress (nircam_reduction_progress until 2026-11, when
+--    the HST instruments joined the `exposures` table)
+--    Inspection-triage progress per instrument/field/filter/detector for the admin
 --    dashboard. The per-stage at_<step> distribution columns were dropped
 --    (2026-07 dashboard redesign): whole filters sit at the same pipeline
 --    stage in practice, so the distribution carried no signal. The view now
@@ -248,14 +249,15 @@ DROP VIEW IF EXISTS public.targets_with_flags;
 --    which detectors still have pending exposures (feeding the dashboard's
 --    quick-filter links). Detector granularity is aggregated back up to
 --    filter/field client-side.
-DROP VIEW IF EXISTS public.nircam_reduction_progress;
+DROP VIEW IF EXISTS public.exposure_review_progress;
 -- security_invoker (B1): this was a plain (definer) view that bypassed the
--- admin-only RLS on nircam_exposures, leaking QA aggregates to all authenticated
--- users. Flip to invoker semantics so the nircam_exposures RLS policy applies.
+-- admin-only RLS on exposures, leaking QA aggregates to all authenticated
+-- users. Flip to invoker semantics so the exposures RLS policy applies.
 -- (NIRCam deploy_status gating is deferred to B2; this is only the leak fix.)
-CREATE VIEW public.nircam_reduction_progress
+CREATE VIEW public.exposure_review_progress
 WITH (security_invoker = true) AS
 SELECT
+    instrument,
     field,
     filter,
     detector,
@@ -267,10 +269,10 @@ SELECT
     count(*) FILTER (WHERE review_status = 'excluded') AS excluded,
     count(*) FILTER (WHERE mask_regions IS NOT NULL)   AS masked,
     count(*) FILTER (WHERE correction = 'needed')      AS needs_correction
-FROM public.nircam_exposures
-GROUP BY field, filter, detector;
+FROM public.exposures
+GROUP BY instrument, field, filter, detector;
 
-GRANT SELECT ON public.nircam_reduction_progress TO authenticated;
+GRANT SELECT ON public.exposure_review_progress TO authenticated;
 
 
 -- N. line_fits_status

@@ -25,12 +25,12 @@ async function requireAdmin() {
 // Fast-path guard for the triage hot loop (save + prev/next + prefetch).
 // requireAdmin() resolves the memoized access context purely to produce a
 // clean error message: every table and RPC the hot-path functions touch is
-// already admin-gated at the database (nircam_exposures RLS policies; the
+// already admin-gated at the database (exposures RLS policies; the
 // get_admin_exposure_* RPCs' explicit is_admin() checks), so a non-admin
 // session gets zero rows or an RPC error, never data. Here we only confirm a
 // verified session exists (a cookie read + local signature check, no network)
 // and let the database be the authority. Keep requireAdmin for anything not
-// fully RLS/RPC-gated (e.g. the nircam_reduction_progress view).
+// fully RLS/RPC-gated (e.g. the exposure_review_progress view).
 async function requireSession() {
   const { user, supabase } = await getRequestIdentity();
   if (!user) throw new Error('Not authenticated');
@@ -50,6 +50,8 @@ export interface ExposuresResult {
 export interface ExposureFilters {
   field?: string;
   filter?: string;
+  /** 'nircam' | 'acswfc' | 'wfc3ir'; unset = every instrument. */
+  instrument?: string;
   detector?: string;
   reviewStatus?: string;
   stage?: string;
@@ -72,6 +74,7 @@ function rpcExposureParams(params?: ExposureFilters & ExposureSort) {
     p_field: params?.field ?? null,
     p_filter: params?.filter ?? null,
     p_detector: params?.detector ?? null,
+    p_instrument: params?.instrument ?? null,
     p_review_status: params?.reviewStatus ?? null,
     p_stage: params?.stage ?? null,
     p_correction: params?.correction ?? null,
@@ -177,7 +180,7 @@ export async function getNircamExposureById(id: number): Promise<{
     const supabase = await requireSession();
 
     const { data, error } = await supabase
-      .from('nircam_exposures')
+      .from('exposures')
       .select('*')
       .eq('id', id)
       .single();
@@ -250,8 +253,8 @@ export async function getRelatedExposures(id: number): Promise<RelatedExposuresR
     const supabase = await requireSession();
 
     const { data: cur, error } = await supabase
-      .from('nircam_exposures')
-      .select('id, field, visit, filename, detector')
+      .from('exposures')
+      .select('id, instrument, field, visit, filename, detector')
       .eq('id', id)
       .single();
     if (error) return { ...empty, error: error.message };
@@ -259,9 +262,13 @@ export async function getRelatedExposures(id: number): Promise<RelatedExposuresR
     // to relate on.
     if (!cur?.visit) return empty;
 
+    // A visit belongs to one instrument. (The "simultaneous" split below is
+    // NIRCam's dichroic; an HST file name does not parse as a JWST one, so
+    // HST rows all land in sameVisit.)
     const { data, error: listErr } = await supabase
-      .from('nircam_exposures')
+      .from('exposures')
       .select('id, filename, filter, detector, review_status, mask_regions')
+      .eq('instrument', cur.instrument)
       .eq('field', cur.field)
       .eq('visit', cur.visit)
       .neq('id', id)
@@ -320,7 +327,7 @@ export interface PresignExposurePngsResult {
  * — display needs no CORS, so we skip the `/api/nircam-preview` proxy hop and
  * let the browser fetch object storage directly.
  *
- * Keys are re-derived server-side from `nircam_exposures` under the admin's RLS
+ * Keys are re-derived server-side from `exposures` under the admin's RLS
  * session, never trusted from the client, so this can't presign arbitrary
  * objects. Urls come from the delivery front when it is configured (perf
  * T2-D1, #507 — content-addressed, edge-cached, stable across sessions); the
@@ -340,7 +347,7 @@ export async function presignExposurePngs(
   try {
     const supabase = await requireSession();
     const { data, error } = await supabase
-      .from('nircam_exposures')
+      .from('exposures')
       .select('id, png_path, full_png_path')
       .in('id', ids);
     if (error || !data) {
@@ -460,7 +467,7 @@ export async function saveExposureMaskRegions(
     const hasPolygons = (regions?.polygons?.length ?? 0) > 0;
 
     const { data, error } = await supabase
-      .from('nircam_exposures')
+      .from('exposures')
       .update({
         mask_regions: hasPolygons ? regions : null,
         updated_at: new Date().toISOString(),
@@ -487,10 +494,11 @@ export async function saveExposureMaskRegions(
 // Reduction progress (aggregated view)
 // ---------------------------------------------------------------------------
 
-// One row per (field, filter, detector) — matches the columns of the
-// nircam_reduction_progress view. Callers aggregate back up to filter/field
+// One row per (instrument, field, filter, detector) — matches the columns of
+// the exposure_review_progress view. Callers aggregate back up to filter/field
 // grain; detector grain exists to power per-detector pending quick-filters.
 export interface ReductionProgress {
+  instrument: string;
   field: string;
   filter: string;
   detector: string;
@@ -510,9 +518,10 @@ export async function getReductionProgress(): Promise<{
     const supabase = await requireAdmin();
 
     const { data, error } = await supabase
-      .from('nircam_reduction_progress')
+      .from('exposure_review_progress')
       .select('*')
       .order('field')
+      .order('instrument')
       .order('filter')
       .order('detector');
 
@@ -531,7 +540,7 @@ export async function getReductionProgress(): Promise<{
 
 // The former getExcludedExposures action (copy-paste source for fields.toml
 // skip=[]) is gone: exclusions reach the pipeline automatically via
-// `campfire pull` → reference/nircam/<field>/exposures.json
+// `campfire pull` → reference/<instrument>/<field>/exposures.json
 // (campfire.deploy.nircam_exclusions.pull_exclusions), which
 // Field._load_excluded_exposures merges into the effective skip list.
 
@@ -543,6 +552,7 @@ export async function getReductionProgress(): Promise<{
 // server-side (replaces fetching every row and deduping in JS).
 export async function getExposureFilterOptions(): Promise<{
   fields: string[];
+  instruments: string[];
   filters: string[];
   detectors: string[];
   stages: string[];
@@ -554,13 +564,17 @@ export async function getExposureFilterOptions(): Promise<{
     const { data, error } = await supabase.rpc('get_admin_exposure_facets');
 
     if (error) {
-      return { fields: [], filters: [], detectors: [], stages: [], error: error.message };
+      return {
+        fields: [], instruments: [], filters: [], detectors: [], stages: [],
+        error: error.message,
+      };
     }
 
     const rows = (data ?? []) as { kind: string; value: string }[];
     const pick = (kind: string) => rows.filter((r) => r.kind === kind).map((r) => r.value);
     return {
       fields: pick('field'),
+      instruments: pick('instrument'),
       filters: pick('filter'),
       detectors: pick('detector'),
       stages: pick('stage'),
@@ -568,6 +582,7 @@ export async function getExposureFilterOptions(): Promise<{
   } catch (err) {
     return {
       fields: [],
+      instruments: [],
       filters: [],
       detectors: [],
       stages: [],

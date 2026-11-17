@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react
 import { Check, Download, HardDrive, Loader2, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import type { SortState } from '@/lib/hooks/useTableUrlState';
+import { EXPOSURE_FILTER_PARAM_KEYS } from '@/lib/nircam-exposure-nav';
 import {
   cancelPngWarm,
   clearPngStore,
@@ -109,7 +110,7 @@ export function PngPrecacheControl({ filters, sort }: PngPrecacheControlProps) {
 
   const manifestQuery = useMemo(() => {
     const sp = new URLSearchParams();
-    for (const key of ['field', 'filter', 'detector', 'review', 'stage', 'correction', 'search'] as const) {
+    for (const key of EXPOSURE_FILTER_PARAM_KEYS) {
       if (filters[key]) sp.set(key, filters[key]);
     }
     sp.set('sort', sort.column);

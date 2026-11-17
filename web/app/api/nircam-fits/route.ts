@@ -14,12 +14,14 @@ import { isKnownKey, parseKey } from '@/lib/layout';
 
 export const runtime = 'nodejs';
 
-// Product types this proxy is allowed to serve. NIRCam exposures (epic #261),
+// Product types this proxy is allowed to serve. Imaging exposures (NIRCam, epic
+// #261; ACS/WFC and WFC3/IR),
 // NIRSpec rate files (review loop P3), and canonical NIRSpec spectrum-exposures
 // (P5 nods renderer — the S2D_* rectified cutouts) — all uncompressed FITS the
 // in-browser decoder range-fetches. Keeps the route from being an arbitrary read.
 const FITS_ALLOWED_PRODUCTS = new Set([
-  'nircam_exposure', 'nirspec_rate', 'nirspec_spectrum_exposure',
+  'nircam_exposure', 'acswfc_exposure', 'wfc3ir_exposure',
+  'nirspec_rate', 'nirspec_spectrum_exposure',
 ]);
 
 /**

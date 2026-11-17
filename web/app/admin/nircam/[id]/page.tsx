@@ -19,7 +19,7 @@ import {
   type RelatedExposure,
   type RelatedExposuresResult,
 } from '@/lib/actions/nircam-exposures';
-import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
+import { imagingInstrumentLabel, type NircamExposure, type MaskRegionsPayload } from '@/lib/types';
 import { stageBadgeClasses } from '@/lib/nircam-stages';
 import MaskEditor from '@/components/nircam/MaskEditor';
 import { storageKey } from '@/lib/layout';
@@ -897,7 +897,7 @@ function ExposureDetailPageInner() {
       <div className="py-8">
         <p className="text-text-secondary">Exposure not found.</p>
         <Link href="/admin/nircam" className="text-primary hover:underline mt-2 inline-block">
-          Back to NIRCam
+          Back to the list
         </Link>
       </div>
     );
@@ -924,12 +924,16 @@ function ExposureDetailPageInner() {
   );
 
   // Canonical OSN key for the exposure SCI FITS, for the live N4 renderer.
+  // Every imaging instrument has an `<instrument>_exposure` product; ACS/WFC
+  // is two SCI extensions, which the renderer stacks in the frame of the
+  // preview and of the mask polygons.
   let fitsKey: string | null = null;
+  const fitsChips = exposure?.instrument === 'acswfc' ? 2 : 1;
   try {
     if (exposure && exposure.field && exposure.filter && exposure.filename) {
       const fname = `${exposure.filename.replace(/\.fits$/, '')}.fits`;
       fitsKey = storageKey(
-        'nircam_exposure',
+        `${exposure.instrument ?? 'nircam'}_exposure` as 'nircam_exposure',
         { field: exposure.field, filt: exposure.filter },
         fname,
         'canonical',
@@ -966,7 +970,15 @@ function ExposureDetailPageInner() {
             {exposure ? exposure.filename : '\u00A0'}
           </h1>
           <p className="text-sm text-text-secondary">
-            {exposure ? `${exposure.field} / ${exposure.filter} / ${exposure.detector}` : '\u00A0'}
+            {exposure
+              ? [
+                exposure.field,
+                imagingInstrumentLabel(exposure.instrument),
+                exposure.filter,
+                // HST rows carry the instrument token as their detector.
+                ...(exposure.detector !== exposure.instrument ? [exposure.detector] : []),
+              ].join(' / ')
+              : '\u00A0'}
           </p>
         </div>
         {/* Rendered even while nav is unknown (RPC in flight or the exposure
@@ -1117,6 +1129,7 @@ function ExposureDetailPageInner() {
               <div className="h-[80vh]">
                 <MaskEditor
                   fitsKey={fitsKey!}
+                  fitsChips={fitsChips}
                   exposureKey={exposure.id}
                   imageWidth={exposure.image_width!}
                   imageHeight={exposure.image_height!}
@@ -1209,6 +1222,12 @@ function ExposureDetailPageInner() {
               <div className="flex justify-between">
                 <dt className="text-text-secondary">Field</dt>
                 <dd className="text-text-primary">{exposure?.field ?? '—'}</dd>
+              </div>
+              <div className="flex justify-between">
+                <dt className="text-text-secondary">Instrument</dt>
+                <dd className="text-text-primary">
+                  {exposure ? imagingInstrumentLabel(exposure.instrument) : '—'}
+                </dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-text-secondary">Filter</dt>

@@ -137,16 +137,35 @@ def _resolve_campfire_root():
     return Path(root)
 
 
-def _resolve_nircam_dirs(field):
-    """Return a dict of NIRCam directory paths for a field."""
+# The imaging instruments whose exposures share the ``exposures`` review table
+# (its CHECK lists the same three tokens; they are ``campfire_layout``'s).
+IMAGING_INSTRUMENTS = ('nircam', 'acswfc', 'wfc3ir')
+
+
+def _resolve_imaging_dirs(instrument, field):
+    """Directory paths of one imaging instrument's field.
+
+    Every imaging instrument has the same shape on disk:
+    ``products/<instrument>/<field>/<filter>/`` for the exposures, previews and
+    mosaics, ``reference/<instrument>/<field>/`` for what review sends back
+    (``masks/<filter>/<name>.reg``, ``exposures.json``).
+    """
+    if instrument not in IMAGING_INSTRUMENTS:
+        raise ValueError(f"unknown imaging instrument {instrument!r} "
+                         f"(expected one of {', '.join(IMAGING_INSTRUMENTS)})")
     root = _resolve_campfire_root()
-    products = root / 'products' / 'nircam' / field
+    products = root / 'products' / instrument / field
     return {
         'root': root,
         'products': products,
-        'reference': root / 'reference' / 'nircam' / field,
-        'masks': root / 'reference' / 'nircam' / field / 'masks',
+        'reference': root / 'reference' / instrument / field,
+        'masks': root / 'reference' / instrument / field / 'masks',
     }
+
+
+def _resolve_nircam_dirs(field):
+    """Return a dict of NIRCam directory paths for a field."""
+    return _resolve_imaging_dirs('nircam', field)
 
 
 def _discover_filters(dirs):
@@ -794,36 +813,55 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     print(files_line)
 
 
-def _upsert_exposures(client, records, batch_size=500):
+def _upsert_exposures(client, records, batch_size=500, instrument='nircam',
+                      mask_seeds=None):
     """Upsert exposure records, preserving web-triage fields for existing rows.
+
+    One imaging instrument's rows of the ``exposures`` table (every record is
+    written with that ``instrument``).
 
     New rows get default ``review_status='pending'``, ``correction='none'``.
     Existing rows: update pipeline-derived columns only (``stage``,
     ``png_path``, metadata). Preserve web-owned ``review_status``,
     ``correction``, ``mask_regions``, ``notes``.
+
+    ``mask_seeds`` is ``{(filter, filename): (seed_hash, mask_regions payload)}``
+    for exposures whose mask the pipeline found on its own and nobody has
+    edited (the HST ``trails`` step's satellite trails). Such a mask is the
+    one thing a deploy writes into ``mask_regions``, and only once: when the
+    row has no mask and was not already seeded from this same file content
+    (``mask_seed_hash``). A row a reviewer has a mask on, or deleted the
+    seeded mask from, is left as the reviewer left it.
+
+    Returns ``{'seeded': n, 'kept_reviewed': n}``.
     """
+    stats = {'seeded': 0, 'kept_reviewed': 0}
     if not records:
-        return
+        return stats
+    mask_seeds = mask_seeds or {}
 
     filenames = [r['filename'] for r in records]
-    existing = set()
+    existing = {}
     for i in range(0, len(filenames), batch_size):
         batch = filenames[i:i + batch_size]
-        resp = (client.table('nircam_exposures')
-                .select('filename, field, filter')
+        resp = (client.table('exposures')
+                .select('filename, field, filter, mask_regions, mask_seed_hash')
+                .eq('instrument', instrument)
                 .in_('filename', batch)
                 .execute())
         for row in resp.data:
-            existing.add((row['field'], row['filter'], row['filename']))
+            existing[(row['field'], row['filter'], row['filename'])] = row
 
     new_records = []
     update_records = []
     now = datetime.now(timezone.utc).isoformat()
 
     for r in records:
+        r = {**r, 'instrument': instrument}
         key = (r['field'], r['filter'], r['filename'])
         if key in existing:
             update = {
+                'instrument': instrument,
                 'field': r['field'],
                 'filter': r['filter'],
                 'filename': r['filename'],
@@ -860,14 +898,38 @@ def _upsert_exposures(client, records, batch_size=500):
 
     for i in range(0, len(new_records), batch_size):
         batch = new_records[i:i + batch_size]
-        client.table('nircam_exposures').insert(batch).execute()
+        client.table('exposures').insert(batch).execute()
 
     for i in range(0, len(update_records), batch_size):
         batch = update_records[i:i + batch_size]
-        client.table('nircam_exposures').upsert(
+        client.table('exposures').upsert(
             batch,
-            on_conflict='field,filter,filename',
+            on_conflict='instrument,field,filter,filename',
         ).execute()
+
+    # Pipeline-found masks: one row at a time (there are few: an exposure with
+    # a satellite trail), after the rows exist.
+    for r in records:
+        seed = mask_seeds.get((r['filter'], r['filename']))
+        if not seed:
+            continue
+        seed_hash, payload = seed
+        row = existing.get((r['field'], r['filter'], r['filename'])) or {}
+        if row.get('mask_seed_hash') == seed_hash:
+            continue        # already seeded from this content; the row is the reviewer's
+        if row.get('mask_regions'):
+            stats['kept_reviewed'] += 1
+            continue        # a reviewer's mask is there; never written over
+        (client.table('exposures')
+         .update({'mask_regions': payload, 'mask_seed_hash': seed_hash,
+                  'updated_at': now})
+         .eq('instrument', instrument)
+         .eq('field', r['field'])
+         .eq('filter', r['filter'])
+         .eq('filename', r['filename'])
+         .execute())
+        stats['seeded'] += 1
+    return stats
 
 
 # ---------------------------------------------------------------------------

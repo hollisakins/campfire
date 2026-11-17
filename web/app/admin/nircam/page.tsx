@@ -21,8 +21,8 @@ import {
   ensureReviewOutboxRunning,
   overlayReviewDecisions,
 } from '@/lib/nircam-review-outbox';
-import type { NircamExposure } from '@/lib/types';
-import { stageBadgeClasses, NIRCAM_STAGES } from '@/lib/nircam-stages';
+import { imagingInstrumentLabel, type NircamExposure } from '@/lib/types';
+import { stageBadgeClasses } from '@/lib/nircam-stages';
 import { buildExposureNavQuery } from '@/lib/nircam-exposure-nav';
 import { PngPrecacheControl } from '@/components/nircam/PngPrecacheControl';
 
@@ -105,6 +105,7 @@ interface TriageCounts {
 }
 
 interface FilterProgress extends TriageCounts {
+  instrument: string;
   filter: string;
   detectors: DetectorProgress[];
 }
@@ -118,8 +119,10 @@ const emptyCounts = (): TriageCounts => ({
   total: 0, pending: 0, approved: 0, excluded: 0, masked: 0, needsCorrection: 0,
 });
 
-// Rows arrive ordered by (field, filter, detector) — see getReductionProgress
-// — so grouping is a single linear pass appending to the tail.
+// Rows arrive ordered by (field, instrument, filter, detector) — see
+// getReductionProgress — so grouping is a single linear pass appending to the
+// tail. A filter row is one instrument's: the same filter name under two
+// instruments is two rows.
 function groupProgress(rows: ReductionProgress[]): FieldProgress[] {
   const out: FieldProgress[] = [];
   for (const r of rows) {
@@ -129,8 +132,8 @@ function groupProgress(rows: ReductionProgress[]): FieldProgress[] {
       out.push(fld);
     }
     let flt = fld.filters[fld.filters.length - 1];
-    if (!flt || flt.filter !== r.filter) {
-      flt = { filter: r.filter, detectors: [], ...emptyCounts() };
+    if (!flt || flt.filter !== r.filter || flt.instrument !== r.instrument) {
+      flt = { instrument: r.instrument, filter: r.filter, detectors: [], ...emptyCounts() };
       fld.filters.push(flt);
     }
     flt.detectors.push({ detector: r.detector, total: r.total, pending: r.pending_review });
@@ -152,10 +155,14 @@ function pendingHref(field: string) {
 }
 
 // Filter/detector quick-select: scopes the table without a review filter.
-function scopeHref(field: string, filter?: string, detector?: string) {
-  const p = new URLSearchParams({ field });
-  if (filter) p.set('filter', filter);
-  if (detector) p.set('detector', detector);
+function scopeHref(
+  field: string,
+  flt: { instrument: string; filter: string },
+  extra?: { detector?: string; correction?: string },
+) {
+  const p = new URLSearchParams({ field, instrument: flt.instrument, filter: flt.filter });
+  if (extra?.detector) p.set('detector', extra.detector);
+  if (extra?.correction) p.set('correction', extra.correction);
   return `/admin/nircam?${p.toString()}`;
 }
 
@@ -238,6 +245,7 @@ function FieldSection({ fp }: { fp: FieldProgress }) {
           <thead>
             <tr className="border-t border-border">
               <th className="pl-11 pr-3 py-1.5 text-left text-xs font-medium text-text-secondary uppercase">Filter</th>
+              <th className="px-3 py-1.5 text-left text-xs font-medium text-text-secondary uppercase w-24">Instrument</th>
               <th className="px-3 py-1.5 text-left text-xs font-medium text-text-secondary uppercase w-52">Inspected</th>
               <th className="px-3 py-1.5 text-right text-xs font-medium text-text-secondary uppercase w-20">Masks</th>
               <th className="px-3 py-1.5 text-left text-xs font-medium text-text-secondary uppercase">Pending by detector</th>
@@ -246,14 +254,17 @@ function FieldSection({ fp }: { fp: FieldProgress }) {
           </thead>
           <tbody className="divide-y divide-border">
             {fp.filters.map((flt) => (
-              <tr key={flt.filter} className="border-t border-border hover:bg-card-hover/50">
+              <tr key={`${flt.instrument}/${flt.filter}`} className="border-t border-border hover:bg-card-hover/50">
                 <td className="pl-11 pr-3 py-1.5">
                   <Link
-                    href={`/admin/nircam?${new URLSearchParams({ field: fp.field, filter: flt.filter })}`}
+                    href={scopeHref(fp.field, flt)}
                     className="font-mono text-text-primary hover:text-primary hover:underline"
                   >
                     {flt.filter}
                   </Link>
+                </td>
+                <td className="px-3 py-1.5 text-xs text-text-secondary whitespace-nowrap">
+                  {imagingInstrumentLabel(flt.instrument)}
                 </td>
                 <td className="px-3 py-1.5">
                   <InspectionMeter counts={flt} />
@@ -277,7 +288,7 @@ function FieldSection({ fp }: { fp: FieldProgress }) {
                             key={d.detector}
                             label={d.detector}
                             count={d.pending}
-                            href={scopeHref(fp.field, flt.filter, d.detector)}
+                            href={scopeHref(fp.field, flt, { detector: d.detector })}
                           />
                         ))}
                     </div>
@@ -286,7 +297,7 @@ function FieldSection({ fp }: { fp: FieldProgress }) {
                 <td className="px-3 py-1.5 text-right">
                   {flt.needsCorrection > 0 ? (
                     <Link
-                      href={`/admin/nircam?${new URLSearchParams({ field: fp.field, filter: flt.filter, correction: 'needed' })}`}
+                      href={scopeHref(fp.field, flt, { correction: 'needed' })}
                       className="text-orange-600 dark:text-orange-400 font-medium hover:underline tabular-nums"
                     >
                       {flt.needsCorrection}
@@ -355,7 +366,9 @@ function ProgressSummary({ progress }: { progress: ReductionProgress[] }) {
 // see lib/nircam-exposure-nav.ts.
 // ---------------------------------------------------------------------------
 
-const FILTER_KEYS = ['field', 'filter', 'detector', 'review', 'stage', 'correction', 'search'] as const;
+const FILTER_KEYS = [
+  'field', 'instrument', 'filter', 'detector', 'review', 'stage', 'correction', 'search',
+] as const;
 const codec = flatFilterCodec(FILTER_KEYS);
 const DEFAULT_SORT: SortState = { column: 'filename', direction: 'asc' };
 
@@ -395,6 +408,7 @@ function AdminNircamPageInner() {
       const f = state.debouncedFilters;
       const res = await getNircamExposures({
         field: f.field || undefined,
+        instrument: f.instrument || undefined,
         filter: f.filter || undefined,
         detector: f.detector || undefined,
         reviewStatus: f.review || undefined,
@@ -462,6 +476,16 @@ function AdminNircamPageInner() {
       meta: { sortKey: 'field' },
     },
     {
+      id: 'instrument',
+      header: 'Instrument',
+      cell: ({ row }) => (
+        <span className="text-sm text-text-secondary whitespace-nowrap">
+          {imagingInstrumentLabel(row.original.instrument)}
+        </span>
+      ),
+      meta: { sortKey: 'instrument' },
+    },
+    {
       id: 'filter',
       header: 'Filter',
       cell: ({ row }) => <span className="text-sm text-text-primary">{row.original.filter}</span>,
@@ -511,7 +535,7 @@ function AdminNircamPageInner() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold text-text-primary">NIRCam Reductions</h1>
+        <h1 className="text-2xl font-semibold text-text-primary">Imaging Reductions</h1>
       </div>
 
       {progressResult?.error && (
@@ -533,6 +557,12 @@ function AdminNircamPageInner() {
             options: (facets?.fields ?? []).map((f) => ({ value: f, label: f })),
           },
           {
+            kind: 'select', key: 'instrument', label: 'Instrument',
+            options: (facets?.instruments ?? []).map((i) => ({
+              value: i, label: imagingInstrumentLabel(i),
+            })),
+          },
+          {
             kind: 'select', key: 'filter', label: 'Filter',
             options: (facets?.filters ?? []).map((f) => ({ value: f, label: f })),
           },
@@ -542,7 +572,9 @@ function AdminNircamPageInner() {
           },
           {
             kind: 'select', key: 'stage', label: 'Stage',
-            options: NIRCAM_STAGES.map((s) => ({ value: s, label: s })),
+            // The stages the table actually holds: each instrument has its own
+            // step names.
+            options: (facets?.stages ?? []).map((s) => ({ value: s, label: s })),
           },
           { kind: 'select', key: 'review', label: 'Review', options: REVIEW_OPTIONS },
           { kind: 'select', key: 'correction', label: 'Correction', options: ACTION_STATE_OPTIONS },

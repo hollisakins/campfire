@@ -14,7 +14,7 @@
 -- are the synthetic seed accounts only.
 
 -- --- NIRCam exposure review queue (2 fields x 2 filters x 4 detectors x 8) ---
-INSERT INTO public.nircam_exposures (field, filter, detector, filename, visit, stage,
+INSERT INTO public.exposures (field, filter, detector, filename, visit, stage,
                                      review_status, correction, mask_regions, notes,
                                      review_decided_at, date_obs)
 SELECT f.name, flt.f, det.d,
@@ -37,6 +37,41 @@ FROM (SELECT name, row_number() OVER (ORDER BY name) AS rn
       FROM public.fields ORDER BY name LIMIT 2) f
 CROSS JOIN (VALUES ('f277w'), ('f444w')) AS flt(f)
 CROSS JOIN (VALUES ('nrca1'), ('nrca2'), ('nrcb1'), ('nrcb2')) AS det(d)
+CROSS JOIN generate_series(0, 7) AS n(i);
+
+-- --- HST exposure review queue (the first field: ACS/WFC and WFC3/IR) ---
+-- The same table, told apart by `instrument`. File names are HST's
+-- (<rootname>_flc / _flt, the rootname being ipppssoot), the detector column
+-- holds the instrument token, and one exposure in four carries what a deploy
+-- seeds from the pipeline's trail finder: a preliminary mask, one polygon
+-- labeled "satellite trail", for a reviewer to keep, reshape or delete.
+INSERT INTO public.exposures (instrument, field, filter, detector, filename, visit, stage,
+                              review_status, correction, mask_regions,
+                              image_width, image_height, date_obs)
+SELECT inst.token, f.name, inst.filt, inst.token,
+       format('%stst0%sa%sq_%s', inst.letter, 1 + n.i / 4, n.i % 4, inst.suffix),
+       format('%stst0%s', inst.letter, 1 + n.i / 4),
+       'align',
+       CASE WHEN n.i % 4 = 0 THEN 'approved' ELSE 'pending' END,
+       'none',
+       CASE WHEN n.i % 4 = 1 THEN jsonb_build_object(
+         'version', 1,
+         'polygons', jsonb_build_array(jsonb_build_object(
+           'id', format('seed-trail-%s-%s', inst.token, n.i),
+           'vertices', jsonb_build_array(
+             jsonb_build_array(0.5, 300.0), jsonb_build_array(inst.side + 0.5, 420.0),
+             jsonb_build_array(inst.side + 0.5, 450.0), jsonb_build_array(0.5, 330.0)),
+           'label', 'satellite trail',
+           'source', 'imported',
+           'original_frame', 'image',
+           'imported_from', format('%stst0%sa%sq_%s.reg', inst.letter, 1 + n.i / 4,
+                                   n.i % 4, inst.suffix)))) END,
+       inst.side, inst.side,
+       (now() AT TIME ZONE 'utc') - interval '900 days' + (n.i * interval '20 minutes')
+FROM (SELECT name FROM public.fields ORDER BY name LIMIT 1) f
+CROSS JOIN (VALUES ('acswfc', 'j', 'flc', 'f814w', 4096),
+                   ('wfc3ir', 'i', 'flt', 'f160w', 1014))
+     AS inst(token, letter, suffix, filt, side)
 CROSS JOIN generate_series(0, 7) AS n(i);
 
 -- --- Deploy events (audit log derived from the seeded deployments) ----------

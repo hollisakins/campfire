@@ -19,7 +19,7 @@ export const maxDuration = 60;
  * Admin-only access to one exposure's *display* PNG — the full-res mask
  * surface when the exposure has one, else the preview — for the triage
  * pre-download warm (lib/nircam-png-store.ts). The storage key is re-derived
- * server-side from nircam_exposures, never taken from the client, so the
+ * server-side from exposures, never taken from the client, so the
  * route can't be used as an arbitrary object read.
  *
  * `resolve=1` (the warm's first call) answers JSON `{ url, kind }`: `url` is a
@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
   }
 
   const { data: row } = await supabase
-    .from('nircam_exposures')
+    .from('exposures')
     .select('png_path, full_png_path')
     .eq('id', id)
     .maybeSingle();

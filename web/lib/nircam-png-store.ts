@@ -57,7 +57,7 @@ const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
 const PROGRESS_EMIT_INTERVAL_MS = 250;
 
 interface PngRecord {
-  id: number;                    // nircam_exposures.id (the IDB key)
+  id: number;                    // exposures.id (the IDB key)
   kind: 'full' | 'preview';      // which byte /api/nircam-png served
   bytes: number;
   storedAt: number;

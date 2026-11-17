@@ -10,7 +10,7 @@
 -- NON-ADMIN authenticated user (with full public-program access) gets ZERO NIRCam
 -- exposure objects through every reader — RLS, get_storage_objects_for_sync, and
 -- filter_accessible_storage_keys — while an ADMIN sees them, and that the same is
--- true for the admin-only nircam_exposures triage table.
+-- true for the admin-only exposures triage table.
 --
 -- Runs in one ROLLBACK'd transaction. Seed-anchored: user@=2222…, admin@=1111….
 --
@@ -22,7 +22,7 @@ BEGIN;
 
 -- ---- fixtures (bootstrap superuser, bypasses RLS) ---------------------------
 -- One canonical exposure storage object + expmap, admin-only by construction
--- (no spectrum_id, no deployment_id), and one nircam_exposures triage row.
+-- (no spectrum_id, no deployment_id), and one exposures triage row.
 CREATE TEMP TABLE _nc_keys (storage_key text);
 INSERT INTO _nc_keys VALUES
   ('data/products/nircam/leaktest/f444w/jw01727028001_04101_00003_nrcalong.fits'),
@@ -44,7 +44,7 @@ VALUES
    2048, 'application/fits', 'nircam_expmap', 'nircam', 'active', 'leaktest',
    NULL, NULL);
 
-INSERT INTO nircam_exposures (field, filter, detector, filename, stage)
+INSERT INTO exposures (field, filter, detector, filename, stage)
 VALUES ('leaktest', 'f444w', 'nrcalong', 'jw01727028001_04101_00003_nrcalong', 'outlier');
 
 GRANT SELECT ON _nc_keys TO authenticated, service_role;
@@ -65,9 +65,9 @@ BEGIN
     RAISE EXCEPTION 'RLS LEAK: non-admin sees % NIRCam exposure storage object(s) (expected 0)', n;
   END IF;
 
-  SELECT count(*) INTO n FROM nircam_exposures WHERE field = 'leaktest';
+  SELECT count(*) INTO n FROM exposures WHERE field = 'leaktest';
   IF n <> 0 THEN
-    RAISE EXCEPTION 'RLS LEAK: non-admin sees % nircam_exposures triage row(s) (expected 0)', n;
+    RAISE EXCEPTION 'RLS LEAK: non-admin sees % exposures triage row(s) (expected 0)', n;
   END IF;
 END $$;
 
@@ -84,8 +84,8 @@ BEGIN
     WHERE storage_key IN (SELECT storage_key FROM _nc_keys);
   IF n <> 2 THEN RAISE EXCEPTION 'ADMIN BLOCKED: admin sees %/2 NIRCam exposure objects', n; END IF;
 
-  SELECT count(*) INTO n FROM nircam_exposures WHERE field = 'leaktest';
-  IF n <> 1 THEN RAISE EXCEPTION 'ADMIN BLOCKED: admin sees %/1 nircam_exposures row', n; END IF;
+  SELECT count(*) INTO n FROM exposures WHERE field = 'leaktest';
+  IF n <> 1 THEN RAISE EXCEPTION 'ADMIN BLOCKED: admin sees %/1 exposures row', n; END IF;
 END $$;
 
 -- =========================================================================

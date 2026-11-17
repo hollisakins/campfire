@@ -155,11 +155,102 @@ function swapToFloat32(buffer: ArrayBuffer): Float32Array {
   return new Float32Array(buffer);
 }
 
+/** How many HDUs past the first SCI the chip walk reads before giving up. An
+ * ACS/WFC file is PRIMARY, SCI, ERR, DQ, SCI, ERR, DQ, ...: the second chip is
+ * three HDUs on. */
+const MAX_CHIP_WALK_HDUS = 12;
+
+/** Header of the HDU at absolute byte `offset`, from a range-fetched window
+ * there (grown on IncompleteHeaderError). Offsets in the result are absolute. */
+async function hduAtOffset(fitsUrl: string, offset: number, signal?: AbortSignal): Promise<HduHeader> {
+  let bytes = INITIAL_HEADER_BYTES;
+  for (;;) {
+    const win = new Uint8Array(await fetchRange(fitsUrl, offset, offset + bytes - 1, signal));
+    try {
+      const hdu = hduAt(win, 0);
+      return { ...hdu, dataStart: offset + hdu.dataStart, nextHdu: offset + hdu.nextHdu };
+    } catch (e) {
+      if (e instanceof IncompleteHeaderError && bytes < MAX_HEADER_BYTES) {
+        bytes = Math.min(bytes * 4, MAX_HEADER_BYTES);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+function requireFloat32Image(header: FitsHeader): { width: number; height: number } {
+  const bitpix = header.requireInt('BITPIX');
+  if (bitpix !== -32) {
+    throw new Error(`SCI is not float32 (BITPIX=${bitpix}); N4 handles uncompressed float32 only`);
+  }
+  if (header.has('ZIMAGE')) {
+    throw new Error('SCI is fpack-compressed (ZIMAGE); N4 handles uncompressed SCI only');
+  }
+  return { width: header.requireInt('NAXIS1'), height: header.requireInt('NAXIS2') };
+}
+
+/**
+ * Fetch + decode an exposure whose detector is `chips` SCI extensions (ACS/WFC:
+ * 2), stacked bottom to top in file order: [SCI,1] is the lower rows, [SCI,2]
+ * the upper. That is the frame of the exposure's preview PNG and of its mask
+ * polygons (campfire_pipeline.hst.steps.preview.snr_canvas), so the overlay
+ * lines up with either image. One header window per HDU between the chips,
+ * then the chips' data blocks in parallel.
+ */
+async function fetchStackedSci(
+  fitsUrl: string,
+  first: { header: FitsHeader; dataStart: number },
+  chips: number,
+  signal?: AbortSignal,
+): Promise<SciImage> {
+  const { width, height } = requireFloat32Image(first.header);
+  const found = [{ dataStart: first.dataStart, height }];
+  let off = first.dataStart + padToBlock(width * height * 4);
+  for (let i = 0; i < MAX_CHIP_WALK_HDUS && found.length < chips; i++) {
+    const hdu = await hduAtOffset(fitsUrl, off, signal);
+    if (hdu.extname === 'SCI') {
+      const dims = requireFloat32Image(hdu.header);
+      if (dims.width !== width) {
+        throw new Error(`SCI extensions differ in width (${width} and ${dims.width})`);
+      }
+      found.push({ dataStart: hdu.dataStart, height: dims.height });
+    }
+    off = hdu.nextHdu;
+  }
+  if (found.length < chips) {
+    throw new Error(`Expected ${chips} SCI extensions, found ${found.length}`);
+  }
+
+  const totalHeight = found.reduce((sum, c) => sum + c.height, 0);
+  const stacked = new ArrayBuffer(width * totalHeight * 4);
+  const out = new Uint8Array(stacked);
+  const blocks = await Promise.all(found.map((c) =>
+    fetchRange(fitsUrl, c.dataStart, c.dataStart + width * c.height * 4 - 1, signal)));
+  let row = 0;
+  found.forEach((c, i) => {
+    const need = width * c.height * 4;
+    const block = blocks[i]!;
+    if (block.byteLength < need) {
+      throw new Error(`Short SCI read: got ${block.byteLength} of ${need} bytes`);
+    }
+    out.set(new Uint8Array(block, 0, need), row * width * 4);
+    row += c.height;
+  });
+  return { data: swapToFloat32(stacked), width, height: totalHeight };
+}
+
 /**
  * Fetch + decode the SCI extension of the exposure served at `fitsUrl`
  * (`/api/nircam-fits?key=...`). Throws on a missing/compressed/non-float32 SCI.
+ * `chips` > 1 reads that many SCI extensions and stacks them (fetchStackedSci);
+ * the default reads the first and never looks past it.
  */
-export async function fetchSciImage(fitsUrl: string, signal?: AbortSignal): Promise<SciImage> {
+export async function fetchSciImage(
+  fitsUrl: string,
+  signal?: AbortSignal,
+  opts?: { chips?: number },
+): Promise<SciImage> {
   // 1. Header window → SCI dimensions + data offset (grow on IncompleteHeaderError).
   let headerBytes = INITIAL_HEADER_BYTES;
   let sci: { header: FitsHeader; dataStart: number } | null = null;
@@ -177,16 +268,10 @@ export async function fetchSciImage(fitsUrl: string, signal?: AbortSignal): Prom
     }
   }
 
+  if ((opts?.chips ?? 1) > 1) return fetchStackedSci(fitsUrl, sci, opts!.chips!, signal);
+
   const { header, dataStart } = sci;
-  const width = header.requireInt('NAXIS1');
-  const height = header.requireInt('NAXIS2');
-  const bitpix = header.requireInt('BITPIX');
-  if (bitpix !== -32) {
-    throw new Error(`SCI is not float32 (BITPIX=${bitpix}); N4 handles uncompressed float32 only`);
-  }
-  if (header.has('ZIMAGE')) {
-    throw new Error('SCI is fpack-compressed (ZIMAGE); N4 handles uncompressed SCI only');
-  }
+  const { width, height } = requireFloat32Image(header);
 
   // 2. SCI data block.
   const sciBytes = width * height * 4;

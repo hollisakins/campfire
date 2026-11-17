@@ -55,6 +55,8 @@ interface Props {
   pngUrl?: string;
   /** Canonical exposure key for the live FITS render (epic #261, N5). */
   fitsKey?: string;
+  /** SCI extensions the detector has (ACS/WFC: 2), stacked bottom to top. */
+  fitsChips?: number;
   imageWidth: number;        // image width in pixels (= exposure NAXIS1)
   imageHeight: number;       // image height in pixels (= exposure NAXIS2)
   initialRegions: MaskRegionsPayload | null;
@@ -158,7 +160,7 @@ function toPayload(polys: SvgPolygon[], h: number): MaskRegionsPayload {
 }
 
 function MaskEditor({
-  pngUrl, fitsKey, imageWidth, imageHeight, initialRegions, onSave,
+  pngUrl, fitsKey, fitsChips, imageWidth, imageHeight, initialRegions, onSave,
   exposureKey, clipboardSource, clipboardLive,
 }: Props) {
   const [polygons, setPolygons] = useState<SvgPolygon[]>(
@@ -759,6 +761,7 @@ function MaskEditor({
           {fitsKey ? (
             <FitsCanvas
               fitsKey={fitsKey}
+              chips={fitsChips}
               width={imageWidth}
               height={imageHeight}
               stretch={stretch}

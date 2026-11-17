@@ -459,8 +459,25 @@ export interface MaskRegionsPayload {
   polygons: MaskPolygon[];
 }
 
+// The imaging instruments whose exposures share the `exposures` review table
+// (campfire_layout.Instrument tokens; the table's CHECK lists the same three).
+export const IMAGING_INSTRUMENTS = ['nircam', 'acswfc', 'wfc3ir'] as const;
+export type ImagingInstrument = typeof IMAGING_INSTRUMENTS[number];
+export const IMAGING_INSTRUMENT_LABELS: Record<ImagingInstrument, string> = {
+  nircam: 'NIRCam',
+  acswfc: 'ACS/WFC',
+  wfc3ir: 'WFC3/IR',
+};
+export function imagingInstrumentLabel(token: string): string {
+  return IMAGING_INSTRUMENT_LABELS[token as ImagingInstrument] ?? token;
+}
+
+// A row of the `exposures` review table, any imaging instrument. (The name
+// predates the HST instruments; `stage` is NIRCam's list for a NIRCam row and
+// an HST step name for an HST one.)
 export interface NircamExposure {
   id: number;
+  instrument: ImagingInstrument;
   field: string;
   filter: string;
   detector: string;
@@ -469,7 +486,7 @@ export interface NircamExposure {
   date_obs: string | null;
   ra_center: number | null;
   dec_center: number | null;
-  stage: NircamStage;
+  stage: NircamStage | (string & {});
   review_status: 'pending' | 'approved' | 'excluded';
   correction: 'none' | 'needed' | 'done';
   png_path: string | null;

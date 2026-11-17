@@ -7,7 +7,7 @@ from tests.fakes import FakePostgrest
 
 
 def _client(rows):
-    return FakePostgrest(tables={'nircam_exposures': rows})
+    return FakePostgrest(tables={'exposures': [{'instrument': 'nircam', **r} for r in rows]})
 
 
 _GENERATED_HEADER = (
@@ -38,8 +38,8 @@ def test_mask_drift_three_categories(monkeypatch, tmp_path):
     ]
     monkeypatch.setattr('campfire.deploy.supabase.get_supabase_client',
                         lambda config: _client(rows))
-    monkeypatch.setattr('campfire.deploy.nircam._resolve_nircam_dirs',
-                        lambda field: {'masks': masks})
+    monkeypatch.setattr('campfire.deploy.nircam._resolve_imaging_dirs',
+                        lambda instrument, field: {'masks': masks})
 
     report = nm.mask_drift_report('cosmos', config={})
 
@@ -59,10 +59,11 @@ def test_mask_drift_clean(monkeypatch, tmp_path):
              'mask_regions': {'polygons': [{'vertices': [[1, 1], [2, 2], [3, 3]]}]}}]
     monkeypatch.setattr('campfire.deploy.supabase.get_supabase_client',
                         lambda config: _client(rows))
-    monkeypatch.setattr('campfire.deploy.nircam._resolve_nircam_dirs',
-                        lambda field: {'masks': masks})
+    monkeypatch.setattr('campfire.deploy.nircam._resolve_imaging_dirs',
+                        lambda instrument, field: {'masks': masks})
     report = nm.mask_drift_report('cosmos', config={})
-    assert report == {'stale': [], 'local_only': [], 'not_materialized': []}
+    assert report == {'stale': [], 'local_only': [], 'pipeline_pending': [],
+                      'not_materialized': []}
 
 
 def test_polygons_are_read_back_from_a_region_file():

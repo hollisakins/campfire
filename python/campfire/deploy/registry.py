@@ -521,7 +521,7 @@ def compute_reconcile(
     identity**, reporting the original keys.
 
     ``live_pointers`` = the union of denormalized DB storage keys
-    (spectra.fits_path, nircam_images.file_path, nircam_exposures png paths) — all
+    (spectra.fits_path, nircam_images.file_path, exposures png paths) — all
     LEGACY. ``registry_keys`` = storage_objects.storage_key (CANONICAL for objects
     A1 migrated to OSN; LEGACY for the rest). ``bucket_keys`` = actual object keys
     from a bucket LIST (optional; when None, dangling/orphan detection is skipped —
@@ -581,7 +581,7 @@ def _iter_rows(client, table: str, columns: str, *, order_by: str = 'id',
     scan under-covers a large table (and the gap varies run-to-run). That under-
     coverage is why a backfill over ~50k spectra registered only a partial, shifting
     subset. Ordering by a unique key (the PK ``id`` on every table this is used on:
-    spectra / nircam_images / nircam_exposures / storage_objects) makes the scan
+    spectra / nircam_images / exposures / storage_objects) makes the scan
     complete and repeatable.
 
     Since perf T2-F (#511) the walk is a *keyset* on ``order_by`` — each page
@@ -622,7 +622,7 @@ def live_pointers(client) -> dict[str, list[str]]:
     spectra = [r['fits_path'] for r in _iter_rows(client, 'spectra', 'fits_path') if r.get('fits_path')]
     nircam_images = [r['file_path'] for r in _iter_rows(client, 'nircam_images', 'file_path') if r.get('file_path')]
     nircam_exposures: list[str] = []
-    for r in _iter_rows(client, 'nircam_exposures', 'png_path, full_png_path'):
+    for r in _iter_rows(client, 'exposures', 'png_path, full_png_path'):
         if r.get('png_path'):
             nircam_exposures.append(r['png_path'])
         if r.get('full_png_path'):

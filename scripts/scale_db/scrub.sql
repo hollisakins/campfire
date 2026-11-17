@@ -39,7 +39,7 @@ SET username  = 'user-' || left(user_id::text, 8),
 UPDATE public.comments SET content = 'scrubbed comment ' || id;
 UPDATE public.object_lists SET name = 'list ' || id, slug = 'list-' || id, description = NULL WHERE NOT is_system;
 UPDATE public.object_list_members SET notes = NULL WHERE notes IS NOT NULL;
-UPDATE public.nircam_exposures SET notes = NULL WHERE notes IS NOT NULL;
+UPDATE public.exposures SET notes = NULL WHERE notes IS NOT NULL;
 UPDATE public.nirspec_rate_exposures SET notes = NULL WHERE notes IS NOT NULL;
 UPDATE public.spectrum_exposures SET notes = NULL WHERE notes IS NOT NULL;
 UPDATE public.nirspec_source_review SET notes = NULL WHERE notes IS NOT NULL;
@@ -76,7 +76,7 @@ BEGIN
   SELECT (SELECT count(*) FROM public.comments WHERE content NOT LIKE 'scrubbed comment %')
        + (SELECT count(*) FROM public.object_lists WHERE description IS NOT NULL)
        + (SELECT count(*) FROM public.object_list_members WHERE notes IS NOT NULL)
-       + (SELECT count(*) FROM public.nircam_exposures WHERE notes IS NOT NULL)
+       + (SELECT count(*) FROM public.exposures WHERE notes IS NOT NULL)
        + (SELECT count(*) FROM public.nirspec_rate_exposures WHERE notes IS NOT NULL)
        + (SELECT count(*) FROM public.spectrum_exposures WHERE notes IS NOT NULL)
        + (SELECT count(*) FROM public.nirspec_source_review WHERE notes IS NOT NULL)

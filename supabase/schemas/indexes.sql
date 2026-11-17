@@ -427,14 +427,14 @@ CREATE INDEX IF NOT EXISTS idx_images_filter
 
 
 -- =============================================================================
--- nircam_exposures
+-- exposures
 -- =============================================================================
 
-CREATE INDEX IF NOT EXISTS idx_nircam_exposures_field_filter
-    ON public.nircam_exposures USING btree (field, filter);
+CREATE INDEX IF NOT EXISTS idx_exposures_field_filter
+    ON public.exposures USING btree (field, filter);
 
-CREATE INDEX IF NOT EXISTS idx_nircam_exposures_review
-    ON public.nircam_exposures USING btree (review_status)
+CREATE INDEX IF NOT EXISTS idx_exposures_review
+    ON public.exposures USING btree (review_status)
     WHERE review_status != 'approved';
 
 
