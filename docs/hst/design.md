@@ -611,3 +611,21 @@ To be answered by measurement or reading, in the phase noted:
 13. Does `tweakwcs.FITSWCSCorrector` handle the ACS lookup-table distortion on write-back without loss? Its documentation says such WCS are supported; not exercised. (P3)
 14. Is an in-visit self-persistence mask adequate where no MAST model exists? (P5)
 15. What `pixfrac` gives acceptable weight uniformity for two-exposure WFC3/IR coverage at 30 mas? (P2 to P3)
+
+## First field with NIRCam and both HST instruments (2026-11-17)
+
+`macs0647` on patrick: NIRCam (program 1433, seven filters, 160 exposures), ACS/WFC F814W (programs 9722, 10493, 10793; 20 exposures in four visits, 2003 to 2006) and WFC3/IR F160W (program 12101; 10 exposures in four visits), all reduced from RAW with `cfpipe acswfc|wfc3ir process` and `combine` onto the field's one tile (`full`, 30 mas), aligned to the field's NIRCam reference catalog (`macs0647_f277w_plus_f480m_refcat.ecsv`, no proper motions).
+
+What was measured:
+
+- *Grid.* Both HST mosaics have the NIRCam mosaics' array shape, and after the header change of that day their WCS cards differ from the NIRCam F150W mosaic's only in `CRPIX` at the 3e-10 pixel level.
+- *Positions.* Compact sources found in a NIRCam mosaic, centroids measured in both mosaics in the same boxes. WFC3/IR F160W against NIRCam F150W: -2.7 and +1.0 mas (302 sources, 5 mas scatter per source). ACS F814W against NIRCam F115W: -1.2 and -2.5 mas (266 sources, 5 mas scatter).
+- *Flux.* WFC3/IR F160W over NIRCam F150W, same sources, local background from an annulus: 0.910 in 0.7 arcsec apertures, 0.935 in 1.5 arcsec. The wider HST image accounts for part of it (about 5% and 3% by encircled-energy values recalled, not looked up), which leaves 3 to 4% unexplained. This is the first comparison of the HST flux scale with NIRCam's and it is open. ACS has no NIRCam band to compare with.
+- *Exposure maps.* `cfpipe wfc3ir expmap` and `cfpipe acswfc expmap` both resolved the field grid to 967 x 964 pixels at 0.5 arcsec over 190 exposures (160 NIRCam, 20 ACS, 10 WFC3/IR). The NIRCam maps of the field were not rebuilt.
+- *Map dataset.* `campfire fitsgl build --field macs0647 --tile full` (into scratch) made nine bands in wavelength order, F814W, F115W, F150W, F160W, F200W, F277W, F356W, F444W, F480M. Served locally with `fitsgl serve` and opened headless, the viewer lists and composites all nine; galaxies show no color fringes. Not deployed, so the portal's map page and cutout tool were not exercised.
+
+What it exposed:
+
+- The three exposures of the first orbit of ACS visit `j8qu04` (`j8qu04q1q`, `q6q`, `qaq`) have one chip under scattered light: `sky` measured 118 e- on it against 36 on the other, with amplifier offsets of +23 and -51 and a variance scale of 17. `crreject` flagged 51% of each and the outlier pass another 3.9%; the rest of each exposure went into the mosaic, where faint arcs follow the edge of the affected area. Nothing warned. A warning now does (`imaging/outlier.py::warn_if_suspect`, above 10% flagged, for `crreject`, the HST outlier pass and NIRCam's); it excludes nothing. The exposures were left in: excluding them is the reviewer's list (`reference/acswfc/macs0647/masks/exposures.json`).
+- `TileGrid.header()` wrote the pixel scale inside `PCi_j` with `CDELT` = 1. Fixed to NIRCam's form.
+- Alignment residuals of those three exposures were 38 to 40 mas on about 140 sources, against 19 to 31 mas on about 300 for the other seventeen; the relative fit within the visit tied them at 19 to 21 mas.
