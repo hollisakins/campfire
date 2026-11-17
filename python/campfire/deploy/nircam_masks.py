@@ -118,6 +118,59 @@ def _serialize_regfile(polygons, generated_at):
 
 
 # ---------------------------------------------------------------------------
+# .reg → polygons (the reverse of _serialize_regfile)
+# ---------------------------------------------------------------------------
+
+def polygons_from_regfile(text):
+    """Read the ``image``-coordinate polygons of a DS9 region file.
+
+    Returns ``(polygons, skipped)``: ``polygons`` in the ``mask_regions`` shape
+    (``[{'vertices': [[x, y], ...], 'label': str or None}, ...]``, DS9 image
+    coordinates, the numbers as written), and ``skipped`` the region lines that
+    are not image polygons (a box, a circle, anything in sky coordinates). The
+    database holds polygons in image coordinates only, so those cannot be
+    stored and the caller should say so.
+
+    This is what lets a mask that starts on disk reach the portal: the
+    satellite trails cfpipe's HST ``trails`` step writes as a preliminary mask.
+    """
+    import re
+
+    polygons, skipped = [], []
+    frame = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or line.startswith('global'):
+            continue
+        if line.lower() in ('image', 'physical', 'fk5', 'icrs', 'fk4', 'galactic',
+                            'ecliptic', 'wcs', 'linear', 'amplifier', 'detector'):
+            frame = line.lower()
+            continue
+        body, _, comment = line.partition('#')
+        m = re.match(r'^\s*(?:image\s*;\s*)?polygon\s*\(([^)]*)\)\s*$', body, re.I)
+        in_image = frame == 'image' or body.strip().lower().startswith('image')
+        if not m or not in_image:
+            skipped.append(line)
+            continue
+        try:
+            numbers = [float(v) for v in m.group(1).replace(',', ' ').split()]
+        except ValueError:
+            skipped.append(line)
+            continue
+        if len(numbers) < 6 or len(numbers) % 2:
+            skipped.append(line)
+            continue
+        label = None
+        t = re.search(r'text=\{([^}]*)\}', comment)
+        if t:
+            label = t.group(1)
+        polygons.append({'vertices': [[numbers[i], numbers[i + 1]]
+                                      for i in range(0, len(numbers), 2)],
+                         'label': label})
+    return polygons, skipped
+
+
+# ---------------------------------------------------------------------------
 # Drift report (epic #261, N6, D8): local .reg vs DB masks
 # ---------------------------------------------------------------------------
 

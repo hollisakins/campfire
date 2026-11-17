@@ -63,3 +63,42 @@ def test_mask_drift_clean(monkeypatch, tmp_path):
                         lambda field: {'masks': masks})
     report = nm.mask_drift_report('cosmos', config={})
     assert report == {'stale': [], 'local_only': [], 'not_materialized': []}
+
+
+def test_polygons_are_read_back_from_a_region_file():
+    """A mask that starts on disk (a satellite trail the pipeline found) has to
+    reach the database as polygons: the reverse of the pull's serializer."""
+    polygons = [
+        {'vertices': [[1.5, 2.5], [10.0, 2.5], [10.0, 8.0]], 'label': 'satellite trail'},
+        {'vertices': [[100.0, 200.0], [150.0, 200.0], [150.0, 260.0], [100.0, 260.0]],
+         'label': None},
+    ]
+    text = nm._serialize_regfile(polygons, generated_at='2026-11-16T00:00:00+00:00')
+    got, skipped = nm.polygons_from_regfile(text)
+    assert got == polygons and skipped == []
+
+    # what cannot be stored is reported, not dropped quietly: the database
+    # holds image-coordinate polygons only
+    mixed = ('# Region file format: DS9\n'
+             'image\n'
+             'polygon(1,1,2,2,3,3) # text={a}\n'
+             'box(5,5,2,2,0)\n'
+             'polygon(1,1,2,2)\n'                  # two vertices: not a polygon
+             'fk5\n'
+             'polygon(150.1,2.2,150.2,2.2,150.2,2.3)\n')
+    got, skipped = nm.polygons_from_regfile(mixed)
+    assert got == [{'vertices': [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], 'label': 'a'}]
+    assert len(skipped) == 3
+    assert nm.polygons_from_regfile('') == ([], [])
+
+
+def test_the_trails_steps_file_reads_back_as_its_polygons():
+    import pytest
+    trails = pytest.importorskip('campfire_pipeline.hst.steps.trails')
+    text = trails.region_text([[[0.0, 1.0], [5.0, 1.0], [5.0, 3.0], [0.0, 3.0]]],
+                              'acswfc')
+    got, skipped = nm.polygons_from_regfile(text)
+    assert skipped == []
+    # the step writes 0-based canvas pixels as 1-based DS9 image coordinates
+    assert got == [{'vertices': [[1.0, 2.0], [6.0, 2.0], [6.0, 4.0], [1.0, 4.0]],
+                    'label': 'satellite trail'}]
