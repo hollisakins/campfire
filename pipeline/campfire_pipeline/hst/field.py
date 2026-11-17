@@ -109,6 +109,7 @@ class HstField:
     skip: List[str] = dc_field(default_factory=list)
     step_overrides: dict = dc_field(default_factory=dict)
     refcat: Optional[str] = None        # field-level reference catalog name
+    fields_file: Optional[str] = None   # the fields.toml this was loaded from
 
     # set by setup_workspace()
     campfire_root: Optional[str] = None
@@ -198,7 +199,7 @@ class HstField:
                 f"Keep the first.")
         return cls(name=name, instrument=instrument, filters=filters,
                    files=files, grid=grid, skip=skip, step_overrides=overrides,
-                   refcat=refcat or old or None)
+                   refcat=refcat or old or None, fields_file=str(fields_file))
 
     # -- geometry: the field's, shared with NIRCam ---------------------------
 
@@ -223,7 +224,14 @@ class HstField:
         """``_flc.fits`` (ACS/WFC) or ``_flt.fits`` (WFC3/IR)."""
         return f'_{self.detector.calibrated_suffix}.fits'
 
-    def setup_workspace(self, campfire_root=None):
+    @property
+    def tangent_point(self):
+        """The field's tangent point (shared by its instruments)."""
+        return self.grid.tangent_point if self.grid is not None else None
+
+    def setup_workspace(self, campfire_root=None, create=True):
+        """Resolve the directories of this instrument's part of the field.
+        ``create=False`` creates none (a reader that only lists files)."""
         if campfire_root is None:
             from campfire_pipeline.config import _get_campfire_root
             campfire_root = _get_campfire_root()
@@ -242,6 +250,8 @@ class HstField:
         self.mask_dir = str(dir_for(f'{self.instrument}_mask', scope,
                                     root=campfire_root))
         self.excluded_exposures = self._load_excluded_exposures()
+        if not create:
+            return
         for filt in self.filters:
             os.makedirs(self.filter_dir(filt), exist_ok=True)
         log(f"Workspace ready for field '{self.name}' ({self.instrument})")

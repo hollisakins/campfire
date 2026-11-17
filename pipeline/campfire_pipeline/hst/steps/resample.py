@@ -26,7 +26,6 @@ carry the field-level outlier flags where an exposure overlaps others.
 import os
 
 import numpy as np
-from astropy.io import fits
 
 from campfire_pipeline.common.io import log
 from campfire_pipeline.hst.exposure import open_exposure
@@ -201,8 +200,6 @@ def resample_step(filtname, exposure_files, field, step_config,
                 compress_context=step_config['compress_context'],
                 write_context=step_config['write_context'],
             )
-            with fits.open(mosaic_file, mode='update') as hdul:
-                hdul[0].header['TELESCOP'] = 'HST'
             manifest = create_manifest(
                 name, field, filtname, tile, scale_str, selected,
                 {'resample': step_config},

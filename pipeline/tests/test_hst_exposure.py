@@ -41,7 +41,7 @@ def _imset(extver, sci, err, dq, cards, extra=None):
     return hdus
 
 
-def _acs_file(path, *, sip=True, sky_key=None, source=0.0):
+def _acs_file(path, *, sip=True, sky_key=None, source=0.0, primary_extra=None):
     ny, nx, t, sky = 24, 32, 400.0, 40.0
     rng = np.random.default_rng(1)
     primary = fits.PrimaryHDU()
@@ -49,6 +49,7 @@ def _acs_file(path, *, sip=True, sky_key=None, source=0.0):
         'INSTRUME': 'ACS', 'DETECTOR': 'WFC', 'ROOTNAME': 'jtest01aaq',
         'FILTER1': 'F606W', 'FILTER2': 'CLEAR2L', 'EXPTIME': t,
         'PROPOSID': 15843, 'DATE-OBS': '2020-09-27', 'CAL_VER': '10.4.1'})
+    primary.header.update(primary_extra or {})
     hdul = fits.HDUList([primary])
     for extver in (1, 2):
         sci = np.full((ny, nx), sky) + rng.normal(0, 0.01, (ny, nx))
@@ -225,8 +226,11 @@ def test_surface_brightness_survives_the_drizzle(tmp_path):
     expect = 40.0 / 400.0 * chips[0].sb_per_rate
     with fits.open(out) as hdul:
         sci, nexp = hdul['SCI'].data, hdul['NEXP'].data
-        assert hdul[0].header['INSTRUME'] == 'acswfc'
-        assert hdul[0].header['FILTER'] == 'f606w'
+        # the archive's names, and the CAMPFIRE tokens beside them
+        assert hdul[0].header['INSTRUME'] == 'ACS'
+        assert hdul[0].header['FILTER'] == 'F606W'
+        assert hdul[0].header['CFINSTR'] == 'acswfc'
+        assert hdul[0].header['CFFILT'] == 'f606w'
         assert len(hdul['INPUTS'].data) == 2
     inside = np.isfinite(sci) & (nexp > 0)
     assert inside.sum() > 1000

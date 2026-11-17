@@ -14,13 +14,29 @@ of each chip through the chip's own WCS (``HstField.expmap_metadata``; an
 ACS/WFC exposure is two chips with a gap between them, so its footprint is two
 polygons). Everything after that is the same code.
 
-Auto-WCS: TAN projection at a user-chosen pixel scale, centered on the
-centroid of the union of all S_REGIONs and sized to enclose every polygon
-plus padding. The WCS is shared across all filters in the invocation
-(union of polygons across every filter), so per-filter expmaps are
-pixel-registered for direct stacking/comparison. No tile dependency —
-works on fields without a ``[tiles]`` block, suitable for full-field
-diagnostics.
+The grid is the field's, not the run's (``canonical`` stage). It is a north-up
+TAN projection at a user-chosen pixel scale whose tangent point is the field's
+``tangent_point`` (fields.toml), with that point at the center of a pixel: one
+fixed lattice of pixels per field and scale. A map covers the window of that
+lattice that encloses the footprints of every selected calibrated exposure of
+the field, in every filter of every imaging instrument found on this machine,
+plus padding. So:
+
+* every map of a field is on the same pixel lattice, whatever its filter or
+  instrument, whichever filters a run was asked for, and whichever machine
+  built it: two maps differ at most by a whole-pixel offset, which their
+  ``CRPIX`` gives exactly;
+* maps built from the same set of exposures on disk are the same array shape
+  and can be stacked directly, NIRCam with HST included. An instrument the
+  field declares but whose exposures are not on this machine cannot widen the
+  window; the run says so.
+
+A map already on disk is reused only when its grid, its number of exposures
+and their summed time are the current ones; otherwise it is rebuilt. No tile
+dependency — works on fields without a ``[tiles]`` block, suitable for
+full-field diagnostics. The reducer-only ``uncal`` quick-look, and a field
+object with no tangent point, keep the older rule: a grid centered on the
+footprints of the filters of that one run.
 
 Outputs (per invocation, rooted at ``{products_dir}`` = ``products/<instrument>/<field>/``).
 The fiducial ``canonical`` map is undecorated — to a user it is simply *the*
@@ -188,6 +204,117 @@ def _auto_wcs(metas, pixel_scale_arcsec, padding_arcsec):
     w.wcs.crpix = [nx / 2.0 + 0.5, ny / 2.0 + 0.5]
     w.wcs.cdelt = [-pixel_scale_arcsec / 3600.0, pixel_scale_arcsec / 3600.0]
     return w, (ny, nx)
+
+
+def _field_wcs(metas, pixel_scale_arcsec, padding_arcsec, tangent_point):
+    """The field's exposure-map grid, windowed to enclose ``metas``.
+
+    A north-up TAN projection with the field's tangent point at the center of
+    a pixel. That fixes one lattice of pixels per field and scale; the window
+    is the smallest block of whole lattice pixels that holds every polygon
+    plus the padding. ``CRPIX`` is therefore always an integer, and any two
+    maps of the field at this scale are registered: the same pixels where they
+    overlap, a whole-pixel ``CRPIX`` difference between them.
+    """
+    scale = pixel_scale_arcsec / 3600.0
+    w = WCS(naxis=2)
+    w.wcs.ctype = ['RA---TAN', 'DEC--TAN']
+    w.wcs.crval = [float(tangent_point[0]), float(tangent_point[1])]
+    w.wcs.cdelt = [-scale, scale]
+    w.wcs.crpix = [1.0, 1.0]        # tangent point = center of lattice pixel (0, 0)
+    all_ra = np.concatenate([np.asarray(r, float) for m in metas for r, _ in m.polygons])
+    all_dec = np.concatenate([np.asarray(d, float) for m in metas for _, d in m.polygons])
+    x, y = w.all_world2pix(all_ra, all_dec, 0)
+    if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
+        raise ValueError(
+            f'an exposure footprint does not project onto the tangent plane of '
+            f'the field (tangent point {tuple(tangent_point)}); check the '
+            f"field's tangent_point and its exposure selection")
+    pad = padding_arcsec / pixel_scale_arcsec
+    ix0, ix1 = int(np.floor(x.min() - pad)), int(np.ceil(x.max() + pad))
+    iy0, iy1 = int(np.floor(y.min() - pad)), int(np.ceil(y.max() + pad))
+    w.wcs.crpix = [1.0 - ix0, 1.0 - iy0]
+    return w, (iy1 - iy0 + 1, ix1 - ix0 + 1)
+
+
+def _sibling_fields(field):
+    """Field objects of the field's other imaging instruments.
+
+    The tiles and the tangent point are the field's and so is the exposure-map
+    grid, whose window has to enclose every instrument's exposures. Returns
+    one field object per other instrument that fields.toml gives the field
+    (NIRCam: top-level ``filters`` / ``files``; an HST instrument: its
+    ``[<field>.<instrument>]`` table), with its directories resolved and none
+    created. Empty when the field's workspace is not set up (nothing to look
+    in) or it names no other instrument.
+    """
+    root = getattr(field, 'campfire_root', None)
+    if not root:
+        return []
+    from campfire_pipeline.hst.field import HstField
+    from campfire_pipeline.hst.instruments import DETECTORS
+    from campfire_pipeline.nircam.field import Field as NircamField
+
+    own = getattr(field, 'instrument', 'nircam')
+    fields_file = getattr(field, 'fields_file', None)
+    siblings = []
+    for instrument in ('nircam',) + tuple(DETECTORS):
+        if instrument == own:
+            continue
+        try:
+            if instrument == 'nircam':
+                sib = NircamField.load(field.name, fields_file=fields_file)
+            else:
+                sib = HstField.load(field.name, instrument, fields_file=fields_file)
+        except (ValueError, KeyError, FileNotFoundError):
+            # The field has no such instrument: no [<field>.<instrument>]
+            # table, or (NIRCam) no top-level filters / files.
+            continue
+        sib.setup_workspace(root, create=False)
+        siblings.append(sib)
+    return siblings
+
+
+def _grid_metas(field, stage, own_metas, filter_list, cache):
+    """Every exposure the field's grid has to enclose, and a note of what was
+    looked at: ``(metas, {instrument: n exposures})``.
+
+    ``own_metas`` are the metas already collected for ``filter_list``. Added
+    to them: this instrument's other filters, and every filter of the field's
+    other instruments (:func:`_sibling_fields`). Only footprints are used; no
+    map is built for any of these here.
+    """
+    own = getattr(field, 'instrument', 'nircam')
+    metas = [m for filt in filter_list for m in own_metas[filt]]
+    counts = {own: len(metas)}
+    for filt in field.filters:
+        if filt not in filter_list:
+            extra = _collect_metas(field, filt, stage, cache=cache)
+            metas += extra
+            counts[own] += len(extra)
+    for sib in _sibling_fields(field):
+        n = 0
+        for filt in sib.filters:
+            extra = _collect_metas(sib, filt, stage, cache=cache)
+            metas += extra
+            n += len(extra)
+        counts[sib.instrument if hasattr(sib, 'instrument') else 'nircam'] = n
+    return metas, counts
+
+
+def _same_grid(header, wcs, shape):
+    """Whether a map on disk is on exactly this grid."""
+    try:
+        if (int(header['NAXIS2']), int(header['NAXIS1'])) != tuple(shape):
+            return False
+        have = WCS(header)
+        return bool(
+            np.allclose(have.wcs.crval, wcs.wcs.crval, rtol=0, atol=1e-9)
+            and np.allclose(have.wcs.crpix, wcs.wcs.crpix, rtol=0, atol=1e-6)
+            and np.allclose(have.wcs.cdelt, wcs.wcs.cdelt, rtol=0, atol=1e-12)
+            and list(have.wcs.ctype) == list(wcs.wcs.ctype))
+    except (KeyError, ValueError):
+        return False
 
 
 def _accumulate_expmap(metas, wcs, shape, *, desc=''):
@@ -560,12 +687,28 @@ def _accumulate_filter(args):
         return filter_name, [], None, None, None
 
     if not overwrite and os.path.exists(fits_path):
-        log(f'[{filter_name}] FITS up to date; loading nz-range '
-            f'for shared colorbar')
+        # Reused only when it is the map this run would build: on the current
+        # grid, of the current exposures. A map on another grid would be drawn
+        # and stacked against the wrong pixels; one from before exposures were
+        # added or dropped would under- or over-state the depth.
+        stale = None
         with fits.open(fits_path, memmap=False) as hdul:
-            data = hdul['EXPMAP'].data
-            nz_min, nz_max = _nz_range(data)
-        return filter_name, metas, fits_path, nz_min, nz_max
+            hdr = hdul['EXPMAP'].header
+            if not _same_grid(hdr, wcs, shape):
+                stale = 'it is on another grid'
+            elif hdr.get('NEXP') != len(metas):
+                stale = (f"it holds {hdr.get('NEXP')} exposure(s), "
+                         f'{len(metas)} are selected now')
+            elif not np.isclose(float(hdr.get('TEXPTOT', np.nan)),
+                                sum(m.xposure for m in metas),
+                                rtol=1e-6, atol=1e-3):
+                stale = 'the exposure times of its inputs changed'
+            if stale is None:
+                log(f'[{filter_name}] FITS up to date; loading nz-range '
+                    f'for shared colorbar')
+                nz_min, nz_max = _nz_range(hdul['EXPMAP'].data)
+                return filter_name, metas, fits_path, nz_min, nz_max
+        log(f'[{filter_name}] rebuilding {os.path.basename(fits_path)}: {stale}')
 
     expmap = _accumulate_expmap(metas, wcs, shape,
                                 desc=f'[{filter_name}] stacking')
@@ -691,6 +834,12 @@ def _render_layout(out_dir, field, stage, results, wcs, pixel_scale,
         'instrument': getattr(field, 'instrument', 'nircam'),
         'stage': stage,
         'pixel_scale_arcsec': float(pixel_scale),
+        # The grid of every map of this run (and, for the canonical maps of a
+        # field with a tangent point, of every map of the field at this scale,
+        # up to the window).
+        'grid': {'crval': [float(v) for v in wcs.wcs.crval],
+                 'crpix': [float(v) for v in wcs.wcs.crpix],
+                 'naxis': [int(stack.shape[1]), int(stack.shape[0])]},
         'n_filters': len(filters),
         'filters': filters,
         'n_tiles': len(tile_outlines),
@@ -774,18 +923,40 @@ def run_expmap(
         per_filter_metas[filt] = metas
         log(f'[{filt}] {len(metas)} {stage} exposures')
 
-    _save_metadata_cache(cache_path, cache)
-
     all_metas = [m for ms in per_filter_metas.values() for m in ms]
     if not all_metas:
+        _save_metadata_cache(cache_path, cache)
         log('No exposures found across any filter; nothing to do.')
         return
 
-    # Phase 2: one shared WCS sized to enclose every polygon across every
-    # filter, so the per-filter expmaps are pixel-registered.
-    wcs, shape = _auto_wcs(all_metas, pixel_scale, padding)
-    log(f'Shared WCS across {len(filter_list)} filters: '
-        f'{shape[1]}×{shape[0]} @ {pixel_scale}"/pix')
+    # Phase 2: the grid. For the canonical maps of a field with a tangent
+    # point it is the field's (module docstring): a fixed pixel lattice,
+    # windowed to enclose every instrument's and every filter's exposures on
+    # this machine, so this run's maps are registered with every other map of
+    # the field. Otherwise (uncal quick-look, no tangent point) the grid is
+    # centered on the footprints of this run's filters, as it always was.
+    tangent_point = getattr(field, 'tangent_point', None)
+    if stage == 'canonical' and tangent_point is not None:
+        grid_metas, counts = _grid_metas(field, stage, per_filter_metas,
+                                         filter_list, cache)
+        _save_metadata_cache(cache_path, cache)
+        wcs, shape = _field_wcs(grid_metas, pixel_scale, padding, tangent_point)
+        seen = ', '.join(f'{inst} {n}' for inst, n in counts.items())
+        log(f"Field grid: {shape[1]}×{shape[0]} @ {pixel_scale}\"/pix on the "
+            f"field's pixel lattice (tangent point "
+            f"{float(tangent_point[0]):.6f}, {float(tangent_point[1]):.6f}); "
+            f'window encloses {len(grid_metas)} exposure(s): {seen}')
+        absent = [inst for inst, n in counts.items() if n == 0]
+        if absent:
+            log(f"  note: the field also has {', '.join(absent)} in fields.toml, "
+                f'with no calibrated exposures on this machine. They cannot '
+                f'widen the window: maps built where they are present stay on '
+                f'the same pixel lattice but may be a different size.')
+    else:
+        _save_metadata_cache(cache_path, cache)
+        wcs, shape = _auto_wcs(all_metas, pixel_scale, padding)
+        log(f'Shared WCS across {len(filter_list)} filters: '
+            f'{shape[1]}×{shape[0]} @ {pixel_scale}"/pix')
 
     # Phase 3a: per-filter accumulation (parallelizable across filters).
     # Workers write FITS to disk and return only the nonzero pixel range

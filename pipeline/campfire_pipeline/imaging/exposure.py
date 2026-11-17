@@ -63,6 +63,12 @@ class Chip(Protocol):
     def provenance(self) -> dict:
         """One row of the mosaic's input table (scalars and short strings)."""
 
+    # Optional, a static method: ``mosaic_header(chips) -> (primary, sci)``,
+    # two lists of ``(keyword, value, comment)`` the mosaic writer adds to the
+    # primary and the SCI header: the instrument's identity as its archive
+    # names it, the times of the inputs, the photometric conversion and the
+    # calibration versions (``hst/exposure.HstChip.mosaic_header``).
+
 
 def is_chip(obj) -> bool:
     """True for a :class:`Chip`; False for a file path (the JWST route)."""

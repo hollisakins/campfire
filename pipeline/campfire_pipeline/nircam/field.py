@@ -384,6 +384,9 @@ class Field:
     # None when undeclared; `[<field>.align].refcat` is the older place and is
     # still read (orchestrate.field_refcat_name).
     refcat: Optional[str] = None
+    # The fields.toml this was loaded from (the field's other instruments are
+    # read from the same file).
+    fields_file: Optional[str] = None
 
     # Populated by setup_workspace()
     campfire_root: Optional[str] = None
@@ -532,6 +535,7 @@ class Field:
             epochs=epochs,
             fiducial_tiles=list(raw_fiducial),
             refcat=refcat,
+            fields_file=str(fields_file),
         )
 
     @classmethod
@@ -576,13 +580,18 @@ class Field:
         """Unique JWST program IDs referenced by this field's `files` patterns."""
         return sorted({_extract_pid(p) for p in self.files if _extract_pid(p)})
 
-    def setup_workspace(self, campfire_root=None):
+    def setup_workspace(self, campfire_root=None, create=True):
         """Create the directory tree for this field.
 
         Parameters
         ----------
         campfire_root : str, optional
             Override $CAMPFIRE_ROOT. If None, reads from environment.
+        create : bool
+            ``False`` resolves the paths without creating a directory: for a
+            reader that only lists what is there (the exposure maps of another
+            instrument look at this one's exposures for the field's grid) and
+            must not leave empty product directories behind.
         """
         if campfire_root is None:
             from campfire_pipeline.config import _get_campfire_root
@@ -621,6 +630,8 @@ class Field:
         # One flat directory per filter holds everything for that filter:
         # canonical exposures, drizzled mosaic tiles, split extensions,
         # diagnostics PDFs, and outlier/mosaic manifests.
+        if not create:
+            return
         for filt in self.filters:
             os.makedirs(os.path.join(self.products_dir, filt), exist_ok=True)
         for d in [self.bad_pixel_dir, self.refcat_dir,

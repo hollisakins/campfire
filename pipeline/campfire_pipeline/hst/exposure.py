@@ -95,6 +95,10 @@ class HstChip:
     date_obs: str = ''
     wcsname: str = ''
     cal_ver: str = ''
+    crds_ctx: str = ''             # pinned HST context of the calibration
+    expstart: float = float('nan')  # MJD of the exposure's start and end
+    expend: float = float('nan')
+    photplam: float = float('nan')  # pivot wavelength, Angstrom
     _wcs: object = field(default=None, repr=False)
     _sky_used: float = field(default=None, repr=False)
 
@@ -216,7 +220,111 @@ class HstChip:
             'sky_src': 'header' if self.header_sky is not None else 'median',
             'var_scale': self.var_scale,
             'wcsname': self.wcsname, 'cal_ver': self.cal_ver,
+            'crds_ctx': self.crds_ctx,
+            'expstart': self.expstart, 'expend': self.expend,
         }
+
+    @staticmethod
+    def mosaic_header(chips):
+        """Header cards of a mosaic drizzled from ``chips``, beyond the ones
+        the mosaic writer derives from the output grid.
+
+        Returns ``(primary, sci)``, two lists of ``(keyword, value, comment)``.
+        The mosaic writer calls this for any chip class that has it
+        (``imaging/mosaic_io.py``); the cards are the ones a NIRCam mosaic
+        carries from the JWST pipeline, under the names an HST user expects
+        where the two differ.
+
+        * Identity: ``TELESCOP``, ``INSTRUME`` / ``DETECTOR`` / ``FILTER`` as
+          the archive names them (``ACS`` / ``WFC`` / ``F814W``), on both
+          headers so a split file identifies itself; ``PROPOSID``.
+        * Time: ``DATE-OBS`` / ``TIME-OBS`` / ``DATE-BEG`` / ``DATE-END`` and
+          ``EXPSTART`` / ``EXPMID`` / ``EXPEND`` on the primary, ``MJD-BEG`` /
+          ``MJD-AVG`` / ``MJD-END`` and ``TELAPSE`` on SCI, from the first
+          start to the last end; the middle is weighted by exposure time.
+        * Photometry (SCI): ``PHOTMJSR`` / ``PHOTUJA2``, the surface
+          brightness that gives 1 e-/s in a native pixel, and ``PHOTFNU``
+          (Jy per e-/s); the exposure-time-weighted mean over the inputs,
+          whose own values differ slightly (the sensitivity changes with
+          time), with the spread in ``PHOTSPRD``. ``PHOTPLAM`` is the pivot
+          wavelength.
+        * Calibration: ``CAL_VER`` and ``CRDS_CTX`` of the inputs.
+
+        A quantity is counted once per exposure, not once per chip.
+        """
+        from astropy.time import Time
+
+        if not chips:
+            return [], []
+        first = {}
+        for c in chips:                      # one chip stands for its exposure
+            first.setdefault(c.path, c)
+        exposures = list(first.values())
+
+        def joined(values):
+            return ','.join(sorted({str(v) for v in values if str(v)}))
+
+        def one(values):
+            unique = sorted({str(v) for v in values})
+            return unique[0] if len(unique) == 1 else 'MULTIPLE'
+
+        identity = [
+            ('TELESCOP', 'HST', 'telescope'),
+            ('INSTRUME', one(c.detector.instrume for c in exposures), 'instrument'),
+            ('DETECTOR', one(c.detector.detector for c in exposures), 'detector'),
+            ('FILTER', one(c.filter.upper() for c in exposures), 'filter'),
+        ]
+        primary = list(identity)
+        sci = list(identity)
+        primary.append(('PROPOSID', joined(c.proposid for c in exposures if c.proposid),
+                        'HST proposal ID(s) of the inputs'))
+        primary.append(('CAL_VER', joined(c.cal_ver for c in exposures),
+                        'calibration software version of the inputs'))
+        primary.append(('CRDS_CTX', joined(c.crds_ctx for c in exposures),
+                        'CRDS context of the inputs'))
+
+        t = np.array([c.exptime for c in exposures], dtype=float)
+        start = np.array([c.expstart for c in exposures], dtype=float)
+        end = np.array([c.expend for c in exposures], dtype=float)
+        if np.all(np.isfinite(start)) and np.all(np.isfinite(end)):
+            beg, fin = float(start.min()), float(end.max())
+            mid = float(np.sum(0.5 * (start + end) * t) / np.sum(t))
+            iso_beg = Time(beg, format='mjd', scale='utc').isot
+            iso_end = Time(fin, format='mjd', scale='utc').isot
+            primary += [
+                ('DATE-OBS', iso_beg[:10], '[yyyy-mm-dd] UTC date of the first exposure'),
+                ('TIME-OBS', iso_beg[11:], '[hh:mm:ss.sss] UTC start of the first exposure'),
+                ('DATE-BEG', iso_beg, 'UTC start of the first exposure'),
+                ('DATE-END', iso_end, 'UTC end of the last exposure'),
+                ('EXPSTART', beg, '[d] MJD start of the first exposure'),
+                ('EXPMID', mid, '[d] MJD exposure-time-weighted mid-point'),
+                ('EXPEND', fin, '[d] MJD end of the last exposure'),
+            ]
+            sci += [
+                ('MJD-BEG', beg, '[d] start of the first exposure in MJD'),
+                ('MJD-AVG', mid, '[d] exposure-time-weighted mid-point in MJD'),
+                ('MJD-END', fin, '[d] end of the last exposure in MJD'),
+                ('TELAPSE', float(np.sum(end - start) * 86400.0),
+                 '[s] summed elapsed time of the exposures'),
+            ]
+
+        photmjsr = np.array([c.sb_per_rate for c in exposures], dtype=float)
+        photfnu_ = np.array([c.photfnu for c in exposures], dtype=float)
+        mean_mjsr = float(np.sum(photmjsr * t) / np.sum(t))
+        sci += [
+            ('PHOTMJSR', mean_mjsr, 'MJy/sr producing 1 e-/s per native pixel (mean)'),
+            # 1 MJy/sr = 1e12 uJy / (206264.806...)**2 arcsec2
+            ('PHOTUJA2', mean_mjsr * 1e12 * _ARCSEC_TO_RAD ** 2,
+             'uJy/arcsec2 producing 1 e-/s per native pixel'),
+            ('PHOTFNU', float(np.sum(photfnu_ * t) / np.sum(t)),
+             'Jy producing 1 e-/s (exposure-time-weighted mean)'),
+            ('PHOTSPRD', float((photmjsr.max() - photmjsr.min()) / mean_mjsr),
+             'fractional spread of PHOTMJSR over the inputs'),
+        ]
+        plam = np.array([c.photplam for c in exposures], dtype=float)
+        if np.all(np.isfinite(plam)):
+            sci.append(('PHOTPLAM', float(np.mean(plam)), '[Angstrom] pivot wavelength'))
+        return primary, sci
 
 
 def open_exposure(path, tolerated_bits=None, use_outlier_flags=True):
@@ -236,6 +344,20 @@ def open_exposure(path, tolerated_bits=None, use_outlier_flags=True):
                        os.path.basename(path).split('_')[0]).strip().lower()
         filt = filter_name(primary)
         exptime = float(primary['EXPTIME'])
+        # The pinned HST context: its own card, or (exposures calibrated
+        # before the card was written) the last word of the calibrate stamp,
+        # 'raw <CAL_VER> <context>.pmap'.
+        crds_ctx = str(primary.get('CRDS_CTX') or '').strip()
+        if not crds_ctx:
+            last = str(primary.get('CFP_CAL') or '').split()[-1:]
+            crds_ctx = last[0] if last and last[0].endswith('.pmap') else ''
+
+        def mjd(key):
+            try:
+                return float(primary[key])
+            except (KeyError, TypeError, ValueError):
+                return float('nan')
+
         for extver in det.sci_extvers:
             hdu = hdul['SCI', extver]
             h = hdu.header
@@ -273,6 +395,10 @@ def open_exposure(path, tolerated_bits=None, use_outlier_flags=True):
                 date_obs=str(primary.get('DATE-OBS') or ''),
                 wcsname=str(h.get('WCSNAME') or ''),
                 cal_ver=str(primary.get('CAL_VER') or ''),
+                crds_ctx=crds_ctx,
+                expstart=mjd('EXPSTART'), expend=mjd('EXPEND'),
+                photplam=float(h.get('PHOTPLAM') or primary.get('PHOTPLAM')
+                               or float('nan')),
                 _wcs=wcs,
             ))
     return chips

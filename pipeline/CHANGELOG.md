@@ -314,6 +314,39 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **The exposure-map grid is the field's (`cfpipe nircam|acswfc|wfc3ir expmap`).** The
+  canonical maps used a grid centered on the footprints of the filters of one run, so maps
+  from a run of some filters, or of another instrument, were not registered with the rest.
+  The grid is now a north-up TAN projection with the field's `tangent_point` at a pixel
+  center: one fixed pixel lattice per field and scale. A run's window encloses the
+  footprints of every selected calibrated exposure of the field, in every filter of every
+  imaging instrument found on the machine (the other instruments' exposures are read for
+  their footprints only, and no directory is created for them). Maps of different filters
+  and instruments are therefore on the same pixels, and the same array shape when built
+  from the same exposures on disk; otherwise they differ by a whole-pixel `CRPIX` offset.
+  An instrument that fields.toml gives the field but that has no exposures on the machine
+  is named in the log. A map on disk is reused only if it is on the current grid and holds
+  the current exposures (it used to be reused whenever the file existed, also after
+  exposures were added); the layout JSON records the grid. **NIRCam-visible:** a field's
+  maps move onto the new lattice the next time they are built (a shift of less than one
+  0.5" pixel; on `macs0647` the coverage is 16.5192 arcmin² against 16.5189 and the summed
+  exposure time is unchanged). The `uncal` quick-look keeps the per-run grid.
+- **Header cards of the HST mosaics.** `imaging/mosaic_io.py` now writes what a NIRCam
+  mosaic gets from the JWST pipeline. Primary: `TELESCOP`, `INSTRUME` / `DETECTOR` /
+  `FILTER` as the archive names them (`ACS` / `WFC` / `F814W`; the CAMPFIRE tokens move to
+  `CFINSTR` / `CFFILT`), `PROPOSID`, `CAL_VER`, `CRDS_CTX`, `DATE`, the times of the inputs
+  (`DATE-OBS`, `TIME-OBS`, `DATE-BEG`, `DATE-END`, `EXPSTART`, `EXPMID`, `EXPEND`) and
+  `NCOMBINE`, the number of exposures. `SCI`, and with it the split `_sci` / `_err` /
+  `_wht` / `_srcmask` files, which are written from the `SCI` header and had only the WCS
+  and `BUNIT`: the identity cards, `XPOSURE`, `NCOMBINE`, `PIXAR_SR`, `PIXAR_A2`,
+  `S_REGION`, `MJD-BEG` / `MJD-AVG` / `MJD-END`, `TELAPSE`, and the photometric conversion
+  `PHOTMJSR` / `PHOTUJA2` / `PHOTFNU` (the exposure-time-weighted mean over the inputs, with
+  their fractional spread in `PHOTSPRD`) and `PHOTPLAM`. **Fix:** `TEXPTIME` counted an
+  ACS/WFC exposure once per chip, so it was twice the exposure time (20,516 s for
+  exposures summing to 10,258 s); exposure time and `NCOMBINE` now count an exposure once
+  (`NDRIZ` stays the number of chips). The `INPUTS` table gains `crds_ctx`, `expstart`,
+  `expend`. No pixel changes. A mosaic drizzled before this keeps its old header until it
+  is drizzled again (`resample --overwrite`).
 - **NIRCam `align` pools the exposures of a visit (`[nircam.align].pool = "visit"`,
   the new default; `"exposure"` is the previous behaviour).** The exposures of one
   visit and filter are first fitted to each other on their common sources, which

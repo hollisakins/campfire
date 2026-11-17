@@ -7,9 +7,16 @@ subtraction, extension splitting, thumbnails, exposure-map backfill) read either
 kind the same way. In place of the JWST ``HDRTAB`` it writes an ``INPUTS``
 table with one row per contributing chip (:meth:`Chip.provenance`).
 
-Primary-header keywords follow the names a JWST i2d carries where one exists
-(``PIXAR_SR``, ``PIXAR_A2``, ``PIXFRAC``, ``KERNEL``, ``RESWHT``, ``NDRIZ``,
-``PXSCLRT``) plus the CAMPFIRE stamps ``CMPFRVER`` / ``CMPFRTIM``.
+Header keywords follow the names a JWST i2d carries where one exists. The
+primary has ``PIXAR_SR``, ``PIXAR_A2``, ``PIXFRAC``, ``KERNEL``, ``RESWHT``,
+``NDRIZ`` (chips), ``NCOMBINE`` (exposures), ``PXSCLRT``, ``TEXPTIME``,
+``S_REGION``, ``DATE`` and the CAMPFIRE stamps ``CMPFRVER`` / ``CMPFRTIM``.
+``SCI`` repeats what a reader of the science image alone needs (``XPOSURE``,
+``PIXAR_SR``, ``PIXAR_A2``, ``S_REGION``), because the split files are written
+from the ``SCI`` header and have no primary. The instrument adds its identity,
+times, photometric conversion and calibration versions to both through
+``Chip.mosaic_header`` (``hst/exposure.py``). Exposure time and ``NCOMBINE``
+count an exposure once, however many chips it has.
 """
 
 import os
@@ -55,27 +62,58 @@ def write_mosaic_fits(output_path, *, sci, err, wht, ctx, grid, chips,
     """
     wcs_header = grid.header()
     pixar_a2 = float(grid.pixel_scale) ** 2
+    pixar_sr = pixar_a2 * _ARCSEC_TO_RAD ** 2
+    s_region = grid.footprint_sregion()
+    now = datetime.now(timezone.utc)
+
+    # Exposure time and count are per exposure. A file with several chips (an
+    # ACS/WFC exposure has two) is one exposure: its time counts once. The
+    # ``exptime`` argument is the drizzle's own sum, which runs over chips.
+    if chips:
+        per_exposure = {}
+        for c in chips:
+            per_exposure.setdefault(c.path, float(c.xposure))
+        xposure, n_exposures = float(sum(per_exposure.values())), len(per_exposure)
+    else:
+        xposure, n_exposures = float(exptime), None
+
+    # What the instrument adds: its identity as the archive names it, the
+    # times of the inputs, the photometric conversion, the calibration
+    # versions (``Chip.mosaic_header``, optional).
+    extra_primary, extra_sci = [], []
+    if chips and hasattr(type(chips[0]), 'mosaic_header'):
+        extra_primary, extra_sci = type(chips[0]).mosaic_header(chips)
 
     primary = fits.PrimaryHDU()
     ph = primary.header
+    ph['DATE'] = (now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3],
+                  'UTC date this file was written')
     if chips:
         instruments = sorted({c.instrument for c in chips})
         filters = sorted({c.filter for c in chips})
+        # The CAMPFIRE tokens (product names, directories). INSTRUME / FILTER
+        # hold them too unless the instrument gives its archive names below.
         ph['INSTRUME'] = (','.join(instruments), 'instrument token(s) of the inputs')
         ph['FILTER'] = (','.join(filters), 'filter(s) of the inputs')
+        ph['CFINSTR'] = (','.join(instruments), 'CAMPFIRE instrument token(s)')
+        ph['CFFILT'] = (','.join(filters), 'CAMPFIRE filter token(s)')
+    for key, value, comment in extra_primary:
+        ph[key] = (value, comment)
     ph['BUNIT'] = (bunit, 'physical units of SCI and ERR')
-    ph['PIXAR_SR'] = (pixar_a2 * _ARCSEC_TO_RAD ** 2, 'output pixel area (sr)')
+    ph['PIXAR_SR'] = (pixar_sr, 'output pixel area (sr)')
     ph['PIXAR_A2'] = (pixar_a2, 'output pixel area (arcsec^2)')
     ph['PIXFRAC'] = (float(pixfrac), 'drizzle pixfrac')
     ph['KERNEL'] = (str(kernel), 'drizzle kernel')
     ph['RESWHT'] = (str(weight_type), 'drizzle weight type')
     if n_pointings is not None:
-        ph['NDRIZ'] = (int(n_pointings), 'number of contributing inputs')
+        ph['NDRIZ'] = (int(n_pointings), 'number of contributing chips')
+    if n_exposures is not None:
+        ph['NCOMBINE'] = (n_exposures, 'number of contributing exposures')
     if pixel_scale_ratio is not None:
         ph['PXSCLRT'] = (float(pixel_scale_ratio), 'output / native pixel scale')
-    ph['TEXPTIME'] = (float(exptime), 'summed exposure time of the inputs (s)')
-    ph['S_REGION'] = grid.footprint_sregion()
-    ph['CMPFRTIM'] = (datetime.now(timezone.utc).isoformat(),
+    ph['TEXPTIME'] = (xposure, '[s] summed exposure time of the exposures')
+    ph['S_REGION'] = s_region
+    ph['CMPFRTIM'] = (now.isoformat(),
                       'UTC date/time of CAMPFIRE reduction (ISO 8601)')
     ph['CMPFRVER'] = (reduction_version, 'CAMPFIRE git commit (or pinned version)')
     if ctx is None:
@@ -84,8 +122,22 @@ def write_mosaic_fits(output_path, *, sci, err, wht, ctx, grid, chips,
     def image(name, data, unit=None):
         hdu = fits.ImageHDU(data=data, header=wcs_header.copy(), name=name)
         if unit:
-            hdu.header['BUNIT'] = unit
+            hdu.header['BUNIT'] = (unit, 'physical units of the array values')
         return hdu
+
+    # SCI carries what a reader of the science image alone needs, as a JWST
+    # i2d's SCI does: the split files (`_sci.fits`, `_err.fits`, ...) are
+    # written from this header and have no primary of their own.
+    sci_hdu = image('SCI', sci.astype(np.float32, copy=False), bunit)
+    sh = sci_hdu.header
+    for key, value, comment in extra_sci:
+        sh[key] = (value, comment)
+    sh['XPOSURE'] = (xposure, '[s] summed exposure time of the exposures')
+    if n_exposures is not None:
+        sh['NCOMBINE'] = (n_exposures, 'number of contributing exposures')
+    sh['PIXAR_SR'] = (pixar_sr, 'output pixel area (sr)')
+    sh['PIXAR_A2'] = (pixar_a2, 'output pixel area (arcsec^2)')
+    sh['S_REGION'] = (s_region, 'footprint of the tile')
 
     if ctx is None:
         con = np.zeros((1, 1, 1), dtype=np.int32)
@@ -95,7 +147,7 @@ def write_mosaic_fits(output_path, *, sci, err, wht, ctx, grid, chips,
 
     hdul = fits.HDUList([
         primary,
-        image('SCI', sci.astype(np.float32, copy=False), bunit),
+        sci_hdu,
         image('ERR', err.astype(np.float32, copy=False), bunit),
         fits.ImageHDU(data=con, name='CON'),
         image('WHT', wht.astype(np.float32, copy=False)),
