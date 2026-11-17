@@ -108,6 +108,31 @@ def stack_grid(chips, pixel_scale=None, pad=8):
                     rotation=0.0, pixel_scale=scale)
 
 
+# Cosmic rays and other transients cover a few percent of an exposure at most
+# (2.5% was the largest of the seventeen normal ACS/WFC 660 s exposures of
+# macs0647). Far more than that is not transients: the exposure differs from the
+# ones it is compared with over an area (scattered light, a lost guide star, a
+# background that was not removed). The flags are written all the same, since no
+# exposure is dropped on a number; the step says so, and a person decides.
+SUSPECT_FLAGGED_FRACTION = 0.10
+
+
+def warn_if_suspect(step, name, fraction, log):
+    """Log a warning when ``step`` flagged an implausible share of an exposure.
+
+    Returns whether it warned. ``log`` is the caller's log function.
+    """
+    if not fraction > SUSPECT_FLAGGED_FRACTION:
+        return False
+    log(f'{step}: WARNING: {100 * fraction:.0f}% of {name} was flagged. Transients '
+        f'cover a few percent at most, so this exposure differs from the ones it '
+        f'was compared with over an area (scattered light, a lost guide star, a '
+        f'background that was not removed). The flagged part is left out of the '
+        f'mosaic and the rest of the exposure goes in. Look at its preview; '
+        f'reject the exposure in review if it should not be used.')
+    return True
+
+
 def _noise_terms(prep):
     """Background variance per pixel, and the source term's coefficient.
 

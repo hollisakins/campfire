@@ -43,6 +43,7 @@ from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import log
 from campfire_pipeline.config import get_hst_step_config
 from campfire_pipeline.hst.exposure import open_exposure
+from campfire_pipeline.imaging.outlier import warn_if_suspect
 
 CR_BIT = 4096
 
@@ -331,6 +332,7 @@ def crreject_step(exposure_files, step_config=None, overwrite=False):
             result[f] = sum(counts)
             log(f'crreject: {os.path.basename(f)} flagged {sum(counts)} px '
                 f'({100 * frac:.2f}%)')
+            warn_if_suspect('crreject', os.path.basename(f), frac, log)
     finally:
         os.chdir(cwd)
         shutil.rmtree(work, ignore_errors=True)

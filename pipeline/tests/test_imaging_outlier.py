@@ -363,3 +363,16 @@ def test_a_catalog_without_proper_motions_protects_nothing():
     masks, info = star_protection(chips, catalog['RA', 'DEC'], epochs)
     assert info['n_protected'] == 0
     assert not any(m.any() for m in masks.values())
+
+
+def test_a_mostly_flagged_exposure_is_warned_about():
+    from campfire_pipeline.imaging.outlier import warn_if_suspect
+
+    said = []
+    # a few percent is what cosmic rays do: nothing is said
+    assert not warn_if_suspect("crreject", "a_flc.fits", 0.025, said.append)
+    assert said == []
+    # half an exposure is not: one line, naming the step and the exposure
+    assert warn_if_suspect("crreject", "b_flc.fits", 0.51, said.append)
+    assert len(said) == 1
+    assert said[0].startswith("crreject: WARNING: 51% of b_flc.fits")

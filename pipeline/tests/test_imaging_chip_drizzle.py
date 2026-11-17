@@ -110,6 +110,20 @@ def test_tile_grid_matches_the_stcal_grid(scene, rotation):
     sx, sy = gw.invert(ra2, dec2, with_bounding_box=False)
     assert np.max(np.hypot(sx - xs, sy - ys)) < 1e-6
 
+    # The header says it the way a NIRCam mosaic does: the scale in CDELT,
+    # the rotation in all four PC cards, no CD cards; and it is the same WCS.
+    from astropy.wcs import WCS
+    header = grid.header()
+    scale = tile['pixel_scale'] / 3600.0
+    assert header['CDELT1'] == pytest.approx(scale, rel=1e-12)
+    assert header['CDELT2'] == pytest.approx(scale, rel=1e-12)
+    assert all(f'PC{i}_{j}' in header for i in (1, 2) for j in (1, 2))
+    assert not any(key.startswith('CD') and '_' in key for key in header)
+    assert header['PC1_1'] == pytest.approx(-np.cos(np.radians(rotation)))
+    assert header['PC2_2'] == pytest.approx(np.cos(np.radians(rotation)))
+    hx, hy = WCS(header).all_world2pix(ra, dec, 0)
+    assert np.max(np.hypot(hx - xs, hy - ys)) < 1e-6
+
 
 def test_chip_route_reproduces_the_jwst_route(scene):
     from campfire_pipeline.imaging.drizzle import drizzle_tile

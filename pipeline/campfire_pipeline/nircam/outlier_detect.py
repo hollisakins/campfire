@@ -98,7 +98,7 @@ def outlier_detect_for_visit(
     from jwst.lib.pipe_utils import match_nans_and_flags
     from stdatamodels.jwst.datamodels import ImageModel
 
-    from campfire_pipeline.imaging.outlier import detect_outliers
+    from campfire_pipeline.imaging.outlier import detect_outliers, warn_if_suspect
     from campfire_pipeline.nircam.exposure import open_exposure
 
     if not all_inputs:
@@ -146,7 +146,9 @@ def outlier_detect_for_visit(
             match_nans_and_flags(model)
 
             dq_after = (model.dq & outlier_bit) != 0
-            n_flagged_total += int((dq_after & ~dq_before).sum())
+            n_new = int((dq_after & ~dq_before).sum())
+            n_flagged_total += n_new
+            warn_if_suspect('outlier', rootname, n_new / max(int((~dnu_before).sum()), 1), log)
             cfp_val = None
             if key in star_masks:
                 cfp_val = f"star_protect: {stats['n_protected']} px not tested"

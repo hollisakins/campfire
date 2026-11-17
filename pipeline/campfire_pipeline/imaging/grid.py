@@ -64,8 +64,24 @@ class TileGrid:
         return self.wcs.all_pix2world(x, y, 0)
 
     def header(self):
-        """FITS WCS cards of the grid (CD form, 1-indexed CRPIX)."""
-        return self.wcs.to_header()
+        """FITS WCS cards of the grid, 1-indexed CRPIX.
+
+        The scale is written the way a NIRCam mosaic writes it: ``CDELT1`` =
+        ``CDELT2`` = the pixel scale in degrees and all four ``PCi_j`` (the
+        rotation, with the sign of the RA axis in ``PC1_1``), so that the
+        mosaics of every instrument on a tile carry the same cards.
+        """
+        header = self.wcs.to_header()
+        scale = float(self.pixel_scale) / 3600.0
+        theta = np.radians(float(self.rotation))
+        cos_t, sin_t = float(np.cos(theta)), float(np.sin(theta))
+        for key in ('CD1_1', 'CD1_2', 'CD2_1', 'CD2_2'):
+            header.remove(key, ignore_missing=True)
+        cards = (('CDELT1', scale), ('CDELT2', scale), ('PC1_1', -cos_t),
+                 ('PC1_2', sin_t), ('PC2_1', sin_t), ('PC2_2', cos_t))
+        for key, value in cards:
+            header[key] = value + 0.0          # no negative zero
+        return header
 
     def footprint_sregion(self):
         """``S_REGION``-style polygon of the tile outline."""

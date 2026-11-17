@@ -86,6 +86,7 @@ from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import log
 from campfire_pipeline.config import get_hst_step_config
 from campfire_pipeline.hst.exposure import OUTLIER_EXT, open_exposure
+from campfire_pipeline.imaging.outlier import warn_if_suspect
 
 _PROTECT_KEYS = ('protect_stars', 'protect_radius', 'protect_min_motion')
 
@@ -250,4 +251,5 @@ def outlier_step(visit_files, context_files=(), step_config=None,
         _write_flags(f, masks, stamp)
         counts[f] = n
         log(f'outlier: {os.path.basename(f)} flagged {n} px ({100 * n / npix:.3f}%)')
+        warn_if_suspect('outlier', os.path.basename(f), n / npix, log)
     return counts

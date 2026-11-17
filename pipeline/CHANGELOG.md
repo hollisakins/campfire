@@ -372,6 +372,17 @@ Release procedure: edit the `## Unreleased` section below, then run
   maps move onto the new lattice the next time they are built (a shift of less than one
   0.5" pixel; on `macs0647` the coverage is 16.5192 arcmin² against 16.5189 and the summed
   exposure time is unchanged). The `uncal` quick-look keeps the per-run grid.
+- **A warning when a transient step flags a large share of an exposure.** The HST
+  cosmic-ray step, the HST outlier pass and NIRCam's outlier pass now log a `WARNING` line
+  when more than 10% of an exposure is flagged (`imaging/outlier.py::warn_if_suspect`).
+  Nothing else changes: the flags are written and the rest of the exposure goes into the
+  mosaic, as before; whether to use the exposure stays a review decision. Found on
+  `macs0647` ACS/WFC F814W: the three exposures of the first orbit of visit `j8qu04`
+  (program 9722) have a second chip under scattered light (background 118 against 36
+  e-), the cosmic-ray step flagged 51% of each, and the log said so only as a number.
+- **HST mosaics write the pixel scale the way NIRCam mosaics do.** `TileGrid.header()`
+  now writes `CDELT1` = `CDELT2` = the scale and all four `PCi_j`; it wrote the scale
+  inside `PCi_j` with `CDELT` = 1 (the same WCS, different cards). Pixels unchanged.
 - **Header cards of the HST mosaics.** `imaging/mosaic_io.py` now writes what a NIRCam
   mosaic gets from the JWST pipeline. Primary: `TELESCOP`, `INSTRUME` / `DETECTOR` /
   `FILTER` as the archive names them (`ACS` / `WFC` / `F814W`; the CAMPFIRE tokens move to
