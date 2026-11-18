@@ -30,8 +30,9 @@ import os
 
 import numpy as np
 
-COVERAGE_VERSION = 4          # 2: footprints over the extended geometry (both ends); 3: failed-open margins;
-                              # 4: G140M/G235M always on the extended wavelengthrange
+COVERAGE_VERSION = 5          # 2: footprints over the extended geometry (both ends); 3: failed-open margins;
+                              # 4: G140M/G235M always on the extended wavelengthrange;
+                              # 5: a failed-open shutter commanded open counted once
 AUTO = 'auto'                 # wavelengthrange_override default: ``resolve_wavelengthrange``
 
 
@@ -202,7 +203,8 @@ def add_block(frame, g, values=None):
 # One rate file's slitlets: the geometry cache and the counter
 # ---------------------------------------------------------------------------
 
-GEOMETRY_VERSION = 3          # 2: failed-open shutters carry the margin of a commanded slitlet; 3: G140M/G235M on the extended wavelengthrange
+GEOMETRY_VERSION = 4          # 2: failed-open shutters carry the margin of a commanded slitlet; 3: G140M/G235M on the extended wavelengthrange;
+                              # 4: a failed-open shutter commanded open is one footprint, not two
 FIXED_SLITS = ('S200A1', 'S200A2', 'S400A1', 'S1600A1', 'S200B1')
 FAILED_OPEN_Y = 1.0           # slit-frame half extent of a failed-open shutter (open heights)
 
@@ -227,6 +229,31 @@ def failed_open_slitlets(msaoper):
                        slit_yscale=MSA_SLIT_SCALES[1]) for s in create_slitlets(msaoper)]
 
 
+def commanded_shutters(model):
+    """The physical shutters (quadrant, row, column) the metafile commands open for ``model``'s
+    configuration and dither point. A failed-open shutter a design commands open (EMBER obs
+    24 opens 22 of them) is already one of the commanded slitlets."""
+    from astropy.io import fits
+    ins = model.meta.instrument
+    path, mid = ins.msa_metadata_file, ins.msa_metadata_id
+    dither = model.meta.dither.position_number
+    if not path or not os.path.exists(path):
+        return set()
+    with fits.open(path) as h:
+        t = h['SHUTTER_INFO'].data
+        sel = t['msa_metadata_id'] == mid
+        if dither is not None:
+            sel &= t['dither_point_index'] == dither
+        return {(int(q), int(r), int(c)) for q, r, c in
+                zip(t['shutter_quadrant'][sel], t['shutter_row'][sel], t['shutter_column'][sel])}
+
+
+def not_commanded(failed, commanded):
+    """The failed-open slits (``failed_open_slitlets``) that are not also commanded open: a
+    shutter on both lists would have two identical footprints."""
+    return [s for s in failed if (int(s.quadrant), int(s.xcen), int(s.ycen)) not in commanded]
+
+
 def geometry_cache_path(rate_path, cache_dir, cutoffs=None, wavelengthrange_override=AUTO):
     """The ``RateGeometry`` cache of ``rate_path``, keyed like the counter's."""
     p = cache_path(rate_path, cache_dir, cutoffs, wavelengthrange_override)
@@ -237,7 +264,8 @@ def geometry_cache_path(rate_path, cache_dir, cutoffs=None, wavelengthrange_over
 def _assign_wcs(rate_path, wavelengthrange_override=None):
     """``assign_wcs`` on the rate file in memory with the metafile its header names (the
     original one, so every commanded-open shutter is present), plus the failed-open
-    shutters of the ``msaoper`` reference on a WCS of their own (``failed_open_slitlets``):
+    shutters of the ``msaoper`` reference that the metafile does not command open, on a WCS
+    of their own (``failed_open_slitlets``, ``not_commanded``):
     ``[(holder, slits, kind), ...]`` with kind ``'msa'`` / ``'failed'``."""
     from gwcs.wcs import WCS
     from jwst.assign_wcs import AssignWcsStep
@@ -255,7 +283,8 @@ def _assign_wcs(rate_path, wavelengthrange_override=None):
                 step.override_wavelengthrange = wavelengthrange_override
             processed = step.run(model)
         out = [(processed, list(processed.meta.wcs.get_transform('gwa', 'slit_frame').slits), 'msa')]
-        failed = failed_open_slitlets(MSAFlagOpenStep().get_reference_file(processed, 'msaoper'))
+        failed = not_commanded(failed_open_slitlets(MSAFlagOpenStep().get_reference_file(processed, 'msaoper')),
+                               commanded_shutters(processed))
         if failed:
             holder = ImageModel()
             holder.meta.wcs = WCS(slitlets_wcs(processed, create_reference_filename_dictionary(processed), failed))

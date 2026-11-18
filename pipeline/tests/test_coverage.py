@@ -122,6 +122,25 @@ def test_failed_open_shutters_carry_a_commanded_slitlets_margin(monkeypatch):
     assert g['seg'][9, 0] == SEGMENTS.index('edge_lower') and g['seg'][11, 0] == SEGMENTS.index('edge_upper')
 
 
+def test_a_failed_open_shutter_commanded_open_is_one_footprint(tmp_path):
+    """A design may command a failed-open shutter open (EMBER obs 24 places sources in 22 of
+    them): it is then a commanded slitlet, and a second, identical failed-open footprint made
+    the shutter fit singular. Only this configuration and dither point's shutters count."""
+    from types import SimpleNamespace as NS
+    from jwst.msaflagopen.msaflag_open import Slit
+    rows = np.array([(1, 1, 3, 144, 42), (1, 1, 3, 145, 42), (1, 2, 4, 23, 144), (2, 1, 2, 53, 29)],
+                    dtype=[('msa_metadata_id', 'i4'), ('dither_point_index', 'i4'), ('shutter_quadrant', 'i4'),
+                           ('shutter_row', 'i4'), ('shutter_column', 'i4')])
+    meta = tmp_path / 'x_msa.fits'
+    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU(rows, name='SHUTTER_INFO')]).writeto(meta)
+    model = NS(meta=NS(instrument=NS(msa_metadata_file=str(meta), msa_metadata_id=1), dither=NS(position_number=1)))
+    assert C.commanded_shutters(model) == {(3, 144, 42), (3, 145, 42)}
+    failed = [Slit(i, i, 0, x, y, -0.5, 0.5, q, 0, 'x', slit_id=i)
+              for i, (q, x, y) in enumerate([(3, 144, 42), (4, 23, 144), (2, 53, 29), (1, 10, 10)])]
+    kept = C.not_commanded(failed, C.commanded_shutters(model))
+    assert [(s.quadrant, s.xcen, s.ycen) for s in kept] == [(4, 23, 144), (2, 53, 29), (1, 10, 10)]
+
+
 def test_a_cached_geometry_without_its_counter_writes_the_counter(tmp_path, monkeypatch):
     # a run stopped between the two writes: the workers load the counter from its path
     import os

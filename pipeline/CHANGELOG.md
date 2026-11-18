@@ -113,6 +113,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **NIRSpec: a failed-open shutter the design commands open is one footprint.** The coverage and
+  the master background's geometry added every `msaoper` failed-open shutter as a slit of its own,
+  also when the metafile commands that shutter open (EMBER obs 24 opens 22 of its 24). The two
+  identical templates made the stuck-shutter fit singular (amplitudes of -1000 to -20000 with
+  ordinary errors), so those shutters were called stuck closed and two sources placed in them were
+  not extracted; the coverage counted those shutters twice. A failed-open shutter the exposure's
+  configuration and dither point command open is now left out of the failed-open list
+  (`coverage.commanded_shutters`, `not_commanded`; coverage version 5, geometry version 4).
 - **MAJOR: NIRSpec extraction v2.** `fnu` is now the profile extraction: a model of the source's
   light fitted to every nod difference. The optimal extraction moves to `fnu_opt`. Other slitlets'
   light is predicted and reported, and every exposure gets a master background. The full record,
