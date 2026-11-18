@@ -474,7 +474,7 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0, single_fram
             diff=_place(diff, s, y0, x0, shape), var=_place(var * pl ** 2, s, y0, x0, shape),
             ok=_place(ok.astype(float), s, y0, x0, shape, fill=0.0) > 0,
             wav=_place(np.asarray(s.wavelength, float), s, y0, x0, shape), y=_place(ys + bar, s, y0, x0, shape),
-            pl_applied=_place(pl, s, y0, x0, shape), pl_point=_place(np.asarray(s.pathloss_point, float), s, y0, x0, shape),
+            pl_applied=_place(pl, s, y0, x0, shape), pl_point=_place(CR.point_pathloss(s), s, y0, x0, shape),
             src_y=source_position(float(s.source_ypos)) + bar, src_y_jwst=float(s.source_ypos), bar_offset=bar,
             open_k=open_shutters(s.shutter_state, s.slit_ymin, s.slit_ymax),
             partners=part, use_data=(part is not None) and (science is None or name in science),

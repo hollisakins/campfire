@@ -102,6 +102,21 @@ def test_slit_position_in_slit_units():
     assert CR.slit_position(0.2) == pytest.approx(0.2 * MSA_SLIT_PITCH)
 
 
+def test_a_slit_the_pathloss_step_skipped_had_nothing_applied():
+    """jwst's step is COMPLETE on the exposure, but a slit whose source is outside it ("Source is
+    outside slit. ... Skipping") keeps its data undivided and its path-loss arrays empty: ones."""
+    from types import SimpleNamespace as NS
+    model = NS(meta=NS(cal_step=NS(pathloss='COMPLETE')))
+    data = np.zeros((4, 6))
+    done = NS(data=data, pathloss_correction_type='POINT', pathloss_point=np.full((4, 6), 0.7),
+              pathloss_uniform=np.full((4, 6), 0.5))
+    skipped = NS(data=data, pathloss_correction_type=None, pathloss_point=np.zeros((0, 0)),
+                 pathloss_uniform=np.zeros((0, 0)))
+    assert np.allclose(CR.applied_pathloss(model, done), 0.7)
+    assert np.array_equal(CR.applied_pathloss(model, skipped), np.ones((4, 6)))
+    assert np.array_equal(CR.point_pathloss(skipped), np.ones((4, 6)))
+
+
 # ---------------------------------------------------------------------------
 # the switches
 # ---------------------------------------------------------------------------

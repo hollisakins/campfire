@@ -58,13 +58,15 @@ def slit_position(srcypos):
 # ---------------------------------------------------------------------------
 def applied_pathloss(model, slit):
     """The path-loss correction jwst applied to ``slit`` of ``model`` (point or uniform, as its
-    ``do_correction_mos`` chose), or ones when none was applied."""
+    ``do_correction_mos`` chose), or ones when none was applied: the step skipped, or skipped
+    this slit alone ("Source is outside slit" leaves the slit's arrays empty although the
+    exposure's step is COMPLETE)."""
     kind = str(getattr(slit, 'pathloss_correction_type', '') or '').upper()
     applied = 'COMPLETE' in str(model.meta.cal_step.pathloss).upper()
-    if applied and kind == 'UNIFORM':
-        return np.asarray(slit.pathloss_uniform, float)
     if applied:
-        return np.asarray(slit.pathloss_point, float)
+        p = getattr(slit, 'pathloss_uniform' if kind == 'UNIFORM' else 'pathloss_point', None)
+        if p is not None and np.shape(p) == slit.data.shape:
+            return np.asarray(p, float)
     return np.ones(slit.data.shape)
 
 

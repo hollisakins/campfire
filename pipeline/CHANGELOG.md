@@ -29,6 +29,11 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- **NIRSpec: a slit jwst's path-loss step skipped.** When the source is outside a slit, jwst skips
+  that slit ("Source is outside slit") and leaves its path-loss arrays empty while the exposure's
+  step reads COMPLETE; the profile fit took the empty array as the correction applied and stopped
+  stage 3 (EMBER obs 24). An empty array now means nothing was applied (ones), as it already did
+  for jwst's point-source loss.
 - **NIRSpec forward model** (`nirspec/forward/`). Sources made of components (a point source, a
   round Gaussian, a Sersic, or stage 3's Gaussian along the slit), each with its own spectrum, are
   placed on a target's exposures by their sky offsets and the slit's orientation from each
