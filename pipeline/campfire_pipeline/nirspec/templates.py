@@ -27,12 +27,6 @@ EMISSION_LINES = {
     'OIII4363': air_to_vac(4363.210),
     'H-beta': [air_to_vac(4861.333), air_to_vac(6562.819), 2.86],
     'OIII5007d': [air_to_vac(4958.911), air_to_vac(5006.843), 2.98],
-    # HeI 5876 rides on Balmer lines so it can never be fit on its own: under
-    # NNLS (Halpha and H-beta also have their own free templates) this caps
-    # HeI/Halpha <= 0.06 and HeI/H-beta <= 0.25, roughly 1.5x and 2x the
-    # case-B values with room for dust. The H-beta term keeps the cap where
-    # Halpha falls off the red end of the coverage (z >~ 7).
-    'HeI5876': [air_to_vac(5875.624), air_to_vac(4861.333), 4.0, air_to_vac(6562.819), 1/0.06],
     'Halpha': air_to_vac(6562.819),
     'NII6585d': [air_to_vac(6548.050), air_to_vac(6583.460), 2.94],
     'SII6716': [air_to_vac(6716.440), air_to_vac(6562.819), 1.0],

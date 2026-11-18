@@ -29,14 +29,14 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
-- **The redshift fitter no longer fits HeI λ5876 on its own.** The `HeI5876` emission-line
+- **The redshift fitter no longer has a HeI λ5876 template.** The `HeI5876` emission-line
   template carried the line alone, so NNLS could put a faint noise feature at any redshift
-  down as HeI with nothing else predicted. It now carries Hβ (×4) and Hα (×16.7) with it,
-  like the H-γ / H-β templates. The free Hα and H-β templates can still add Balmer flux, so
-  this caps HeI/Hα ≤ 0.06 and HeI/Hβ ≤ 0.25 (about 1.5× and 2× case B, with room for dust)
-  without fixing the ratio. Rerunning `cfpipe nirspec zfit` can change `ZBEST` / `ZQUAL`
-  for spectra whose best fit leaned on a lone HeI line. No template pickle needs rebuilding:
-  the line templates are built from `EMISSION_LINES` at fit time.
+  down as HeI with nothing else predicted, and many spectra were fit that way. The template is
+  removed from `EMISSION_LINES`. In bright emitters, HeI's flux (a few percent of Hα) is now
+  left in the residual instead of being modeled. Rerunning `cfpipe nirspec zfit` can change
+  `ZBEST` / `ZQUAL` for spectra whose best fit leaned on HeI. No template pickle needs
+  rebuilding: the line templates are built from `EMISSION_LINES` at fit time. `linefit` still
+  measures HeI λ5876.
 - **NIRCam exposure maps are on one grid per field.** The canonical maps of `cfpipe nircam
   expmap` used a grid centered on the footprints of the filters of one run, so a run of some
   filters put its maps on a different grid from the field's other maps. The grid is now the
