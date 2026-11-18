@@ -458,7 +458,7 @@ def _fit_one(args):
 
 
 def run_linefit(obs, config, source_ids=None, overwrite=False, n_processes=1,
-                allow_auto=False, gratings=None) -> dict:
+                allow_auto=False, gratings=None, filters=None) -> dict:
     """Fit emission lines for every spectrum in *obs* at its inspected redshift.
 
     Parameters
@@ -476,6 +476,9 @@ def run_linefit(obs, config, source_ids=None, overwrite=False, n_processes=1,
         Fall back to the zfit ``ZBEST`` for spectra without a usable inspected
         redshift (QA only — flagged ``ZSRC='auto'`` in the product).
     gratings : list of str, optional
+        Restrict to spectra of these gratings (case-insensitive).
+    filters : list of str, optional
+        Restrict to spectra of these filters (case-insensitive, issue #446).
 
     Returns
     -------
@@ -508,6 +511,7 @@ def run_linefit(obs, config, source_ids=None, overwrite=False, n_processes=1,
     spec_files = sorted(glob.glob(os.path.join(workspace, '*_spec.fits')))
     wanted_sids = {str(s) for s in source_ids} if source_ids else None
     wanted_gr = {g.lower() for g in gratings} if gratings else None
+    wanted_filt = {f.lower() for f in filters} if filters else None
 
     tasks = []
     counts = dict(fit=0, skipped_uptodate=0, skipped_no_z=0, failed=0)
@@ -519,6 +523,8 @@ def run_linefit(obs, config, source_ids=None, overwrite=False, n_processes=1,
         if wanted_sids is not None and source_id not in wanted_sids:
             continue
         if wanted_gr is not None and grating not in wanted_gr:
+            continue
+        if wanted_filt is not None and parsed['filter'].lower() not in wanted_filt:
             continue
         target_id = f"{obs.name}_{source_id}"
         zfit_path = spec_file.replace('_spec.fits', '_zfit.fits')

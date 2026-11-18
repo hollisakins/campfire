@@ -14,6 +14,10 @@ GRATING_LIMITS = {
 
 GRATINGS = [k.upper() for k in GRATING_LIMITS]
 
+# Spectroscopic filters (FILTER keyword); CLEAR pairs with the prism. The CLI's
+# --filter option (issue #446) validates against this set.
+FILTERS = ["clear", "f070lp", "f100lp", "f170lp", "f290lp"]
+
 
 # ---------------------------------------------------------------------------
 # Aperture geometry for slit/shutter sky overlays (shutters ECSV → web frontend)

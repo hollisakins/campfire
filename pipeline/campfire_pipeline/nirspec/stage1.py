@@ -50,7 +50,9 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     obs.discover_raw_files()
     obs.symlink_uncal_files(overwrite=overwrite)
 
-    uncal_files = obs.glob("_uncal.fits")
+    # select_files: honour a --grating/--filter selection (issue #446); the
+    # workspace can hold uncal symlinks of other settings from earlier runs.
+    uncal_files = obs.select_files(obs.glob("_uncal.fits"))
     if not overwrite:
         uncals_to_process = [os.path.basename(f) for f in uncal_files if not os.path.exists(f.replace('_uncal.fits', '_rate.fits'))]
     else: 
@@ -92,7 +94,7 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
     )
 
     # Grab all rate files (in case there are some that didn't have background subtraction run on them!)
-    rates_to_subtract = obs.glob("_rate.fits")
+    rates_to_subtract = obs.select_files(obs.glob("_rate.fits"))
     if not overwrite:
         rates_to_subtract = [f for f in rates_to_subtract if not bkgsub_done(f)]
 

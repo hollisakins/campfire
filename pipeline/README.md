@@ -57,6 +57,14 @@ cfpipe nirspec mask clear    --obs <obs> --exposure <basename>  # Remove a mask 
 cfpipe nirspec make-templates
 ```
 
+Every reduction command (`run`, `stage1`–`stage3`, `zfit`, `linefit`, `detect-stuck`)
+takes `--grating` and `--filter` to process only exposures of those settings, e.g.
+`cfpipe nirspec run --obs <obs> --all --grating g395m` or `--grating g140m --filter f100lp`
+(G140M/G140H come with two filters). Values are case-insensitive; several values of one
+flag are OR'd, the two flags AND'd, and they combine with `--source-ids`. A selection that
+matches nothing in the observation is an error that lists the settings present. `summary`
+always covers every product on disk.
+
 #### Emission-line fluxes (post-inspection)
 
 `linefit` is not part of `run --all`: it needs the redshifts that inspectors set on

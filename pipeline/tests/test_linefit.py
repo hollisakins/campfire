@@ -527,6 +527,12 @@ def test_stage_writes_reads_and_skips(workspace):
     assert counts['fit'] == 1
     counts = run_linefit(obs, cfg, gratings=['prism'], overwrite=True, allow_auto=True)
     assert counts['fit'] == 0
+    # filter selection (issue #446): case-insensitive, AND'd with the grating
+    counts = run_linefit(obs, cfg, filters=['F290LP'], overwrite=True, allow_auto=True)
+    assert counts['fit'] == 2
+    counts = run_linefit(obs, cfg, gratings=['g395m'], filters=['f100lp'],
+                         overwrite=True, allow_auto=True)
+    assert counts['fit'] == 0
 
 
 def test_observation_carries_line_fitting_overrides(tmp_path):
