@@ -28,6 +28,19 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- **NIRCam exposure maps are on one grid per field.** The canonical maps of `cfpipe nircam
+  expmap` used a grid centered on the footprints of the filters of one run, so a run of some
+  filters put its maps on a different grid from the field's other maps. The grid is now the
+  field's: a north-up TAN projection with the field's `tangent_point` at a pixel center,
+  windowed to enclose the calibrated exposures of every filter of the field on the machine.
+  Maps of any filter from any run are on the same pixels. A map on disk is reused only when
+  its grid, its number of exposures and their summed time are the current ones (it was reused
+  whenever the file existed), and `<field>_layout.json` records the grid. A field's maps move
+  onto the new lattice the next time they are built (by less than one 0.5" pixel; on macs0647
+  the coverage area is 16.5192 arcmin² against 16.5189 before). The `uncal` quick-look keeps
+  the per-run grid. No mosaic or exposure pixel changes.
+
 ### Infrastructure
 - **Summary redshift consensus keeps both filters of a grating (#683).** `cfpipe nirspec
   summary` keyed its per-source zfit inputs by grating, so a source observed in G140M/F070LP
