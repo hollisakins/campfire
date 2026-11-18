@@ -320,9 +320,9 @@ def slit_axes(slit):
 
 def own_variance(path, slit):
     """The frame's own Poisson + read-noise variance, before stage 2b: the canonical's
-    ``PRE_BKGSUB_VAR_POISSON`` / ``_VAR_RNOISE`` when present (stage 2b adds the
-    subtracted frames' noise to the live arrays, ``stage2.background_variance``; the
-    model adds them itself, ``ProfileModel.diff_variance``), else the live arrays."""
+    ``PRE_BKGSUB_VAR_POISSON`` / ``_VAR_RNOISE`` when present (stage 2b rewrites the live
+    arrays, ``stage2.background_variance``; the model forms a difference's variance itself,
+    ``ProfileModel.diff_variance``), else the live arrays."""
     from campfire_pipeline.nirspec import canonical as C
     pre = C.read_slit_arrays(path, exts=('VAR_POISSON', 'VAR_RNOISE'), prefix=C.PRE_BKGSUB_PREFIX)
     vp = pre.get('VAR_POISSON', np.asarray(slit.var_poisson, float))
@@ -713,7 +713,12 @@ def term_weights(exps, k):
 def nod_variance(var, partner_vars):
     """Variance to weight a nod difference with, from its own frame's variance and its
     partners' (``ProfileModel.diff_variance``): ((n+1)/n)**2 times the mean frame
-    variance of the set, or ``var`` as given without partners."""
+    variance of the set, or ``var`` as given without partners.
+
+    Exact for independent frames. Real exposures share a pattern fixed to the detector
+    pixel that cancels in the difference (``stage2.background_variance``), so on data this
+    reads about 1.3x high in variance; the fit's weights are relative and the reported errors
+    come from the 2-D ERR, so only its chi2 scale and the priors' pull see it."""
     n = len(partner_vars)
     if n == 0:
         return var

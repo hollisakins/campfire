@@ -1597,7 +1597,7 @@ def pad_to_common_detector_region(models):
         new_model.slits[0].data = padded_data
         new_model.slits[0].err = padded_err
         new_model.slits[0].dq = padded_dq
-        # the variances too: stage 2b adds the subtracted frames' (background_variance)
+        # the variances too (stage 2b rewrites them, background_variance)
         for name in _VAR_ARRAYS:
             v = getattr(model.slits[0], name, None)
             if v is not None and np.shape(v) == data.shape:
@@ -1856,19 +1856,17 @@ def slitlet_overrides(obs, pending, min_sky_frac, max_distance, n_processes=1, p
 
 
 def background_variance(bkgsub, bkg):
-    """Variance of a background-subtracted slit with the subtracted frames' noise added.
+    """Variance of a background-subtracted slit: the science frame's own, as jwst's background
+    step leaves it (``jwst.background.subtract_images``); ``bkg`` (the subtracted frames) is not
+    used.
 
-    jwst's background step subtracts the mean of the ``bkg`` slits but keeps the science
-    frame's own variance (``jwst.background.subtract_images``). The mean of n frames adds
-    sum(var_j) / n**2 to each of ``var_poisson`` and ``var_rnoise``; a pixel where a
-    background frame has no variance keeps the frame's own. ``var_flat`` is unchanged.
-    Returns (var_poisson, var_rnoise, err)."""
-    n = len(bkg)
-    out = []
-    for name in ('var_poisson', 'var_rnoise'):
-        own = np.asarray(getattr(bkgsub, name), float)
-        add = sum(np.asarray(getattr(b, name), float) for b in bkg) / n ** 2
-        out.append(np.where(np.isfinite(add), own + add, own).astype(np.float32))
+    The subtracted frames' noise is left out on purpose (user, 2026-11-18). The exposures share
+    a pattern fixed to the detector pixel (EMBER obs 24: row residuals correlate 0.19 between
+    exposures at the same pixel, 0.002 one column apart) that cancels in the difference, so
+    adding the mean of n frames' variance (sum / n**2) as independent noise made the
+    differences' ERR 1.14x their scatter; the frame's own variance matches it (1.00).
+    Returns (var_poisson, var_rnoise, err), err = sqrt(VP + VR + VAR_FLAT)."""
+    out = [np.asarray(getattr(bkgsub, name), float).astype(np.float32) for name in ('var_poisson', 'var_rnoise')]
     flat = getattr(bkgsub, 'var_flat', None)
     total = out[0] + out[1] + (np.asarray(flat, float) if flat is not None and np.size(flat) else 0.0)
     return out[0], out[1], np.sqrt(total).astype(np.float32)

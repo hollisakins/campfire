@@ -76,7 +76,9 @@ def test_read_slit_arrays_with_prefix(tmp_path):
     assert set(arrs) == {'VAR_POISSON'} and np.all(arrs['VAR_POISSON'] == 7.0)   # VAR_RNOISE copy absent
 
 
-def test_background_variance_adds_the_subtracted_frames():
+def test_background_variance_keeps_the_frames_own():
+    """The subtracted frames' noise is left out: a pattern fixed to the detector pixel cancels in
+    the difference, and the frame's own variance matches the differences' scatter."""
     from types import SimpleNamespace
     from campfire_pipeline.nirspec.stage2 import background_variance
     one = np.ones((2, 3))
@@ -84,11 +86,8 @@ def test_background_variance_adds_the_subtracted_frames():
     b1 = SimpleNamespace(var_poisson=2.0 * one, var_rnoise=1.0 * one)
     b2 = SimpleNamespace(var_poisson=4.0 * one, var_rnoise=np.where(one > 0, np.nan, 0))
     vp, vr, err = background_variance(sci, [b1, b2])
-    assert np.allclose(vp, 1.0 + (2.0 + 4.0) / 4)               # mean of two frames: sum / n**2
-    assert np.allclose(vr, 0.5)                                 # a frame without variance: own kept
-    assert np.allclose(err, np.sqrt(vp + vr + 0.1))
-    vp, _, _ = background_variance(sci, [b1])
-    assert np.allclose(vp, 3.0)
+    assert np.allclose(vp, 1.0) and np.allclose(vr, 0.5)
+    assert np.allclose(err, np.sqrt(1.0 + 0.5 + 0.1))
 
 
 def test_make_prefixed_hdus():

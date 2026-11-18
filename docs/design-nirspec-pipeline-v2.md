@@ -390,11 +390,17 @@ geometry and the new G140M / G235M tables give NRS1 in range -0.1 to +0.5 %, ext
 
 ## 5. Stage 2b: nod subtraction and same-slitlet neighbors
 
-Each exposure minus the mean of its background exposures, as before. Two things are new.
+Each exposure minus the mean of its background exposures, as before; same-slitlet neighbors are new.
 
-**The variance includes the subtracted exposures' noise.** Before, the error came from the
-canonical's own variance only, because jwst's background step does not add the subtracted frames'
-variance: every nodded spectrum's error was about 20 % low with three nods.
+**The variance is the exposure's own** (as jwst's background step leaves it), on purpose. Adding
+the subtracted exposures' noise as independent (sum / n^2) overstates it: the exposures share a
+pattern fixed to the detector pixel, which cancels in the difference (EMBER obs 24, faint sources:
+row residuals of single frames correlate 0.19 between exposures at the same pixel and 0.002 one
+column apart; SCI / ERR of the differences scatters 0.87 with the partners added and 1.00 without).
+With the partners added, the quoted S/N of every nodded spectrum was about 12 % below main's for the
+same real noise (user, 2026-11-18: keep main's convention). The profile fit's own difference
+variance (`profile_fit.nod_variance`) keeps the independent-frame form: it sets relative weights
+and the fit's chi2 scale, not the reported errors.
 
 **Same-slitlet neighbors.** With three nods, a cataloged neighbor that a background exposure puts
 on the source's position takes half of its light, negative, off the source. The rule
