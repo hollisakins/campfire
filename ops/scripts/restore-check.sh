@@ -57,12 +57,17 @@ echo "[restore-check] pg_restore log: ${RESTORE_LOG} ($(grep -c 'error' "$RESTOR
 SPECTRA="$(docker exec "$NAME" psql -U supabase_admin -d postgres -Atc 'select count(*) from public.spectra')"
 OBJECTS="$(docker exec "$NAME" psql -U supabase_admin -d postgres -Atc 'select count(*) from public.objects')"
 USERS="$(docker exec "$NAME" psql -U supabase_admin -d postgres -Atc 'select count(*) from auth.users')"
+# The profile trigger lives on auth.users, i.e. in auth DDL, which the
+# 2026-10-25 cutover dropped without anyone noticing for three weeks
+# (self-signups got no user_profiles row). Assert it is in the dump.
+SIGNUP_TRIGGER="$(docker exec "$NAME" psql -U supabase_admin -d postgres -Atc "select count(*) from pg_trigger where tgname = 'on_auth_user_created' and tgrelid = 'auth.users'::regclass")"
 echo "[restore-check] spectra=${SPECTRA} objects=${OBJECTS} users=${USERS}"
 cleanup
 
 (( SPECTRA >= MIN_SPECTRA )) || fail "only ${SPECTRA} spectra restored (min ${MIN_SPECTRA})"
 (( OBJECTS > 0 )) || fail "no objects restored"
 (( USERS > 0 )) || fail "no auth.users restored"
+(( SIGNUP_TRIGGER == 1 )) || fail "on_auth_user_created missing on auth.users (self-signups get no profile)"
 
 printf '%s %s spectra=%s objects=%s users=%s\n' "$(date -u +%FT%TZ)" "$(basename "$DUMP")" "$SPECTRA" "$OBJECTS" "$USERS" \
   > "${LOCAL_DIR}/last-restore-check"
