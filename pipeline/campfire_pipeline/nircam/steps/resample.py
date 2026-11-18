@@ -199,7 +199,8 @@ def _drizzle_tile_via_jwst(
 
 
 def resample_step(filtname, exposure_files, field, step_config,
-                  reduction_version, overwrite=False, tiles=None, epoch=None):
+                  reduction_version, overwrite=False, tiles=None, epoch=None,
+                  n_threads=1):
     """Drizzle-combine canonical exposure files into mosaic tiles.
 
     Parameters
@@ -227,6 +228,10 @@ def resample_step(filtname, exposure_files, field, step_config,
         mosaic. Appended as a trailing filename segment and recorded in the
         manifest. ``None`` (the default) builds the full-field mosaics with no
         epoch segment.
+    n_threads : int
+        Worker threads for the mosaic background subtraction (the CLI's
+        ``--processes``; tiles are drizzled one at a time, so the cores are
+        free). Does not change pixels.
     """
     from campfire_pipeline.nircam.manifest import (
         BKGSUB_PIXEL_DEFAULTS, MOSAIC_BKGSUB_KEY, bkgsub_stamp_value,
@@ -391,6 +396,7 @@ def resample_step(filtname, exposure_files, field, step_config,
                     **{k: step_config.get(k, d)
                        for k, d in BKGSUB_PIXEL_DEFAULTS.items()},
                     wht_aware=step_config.get('wht_aware', True),
+                    n_threads=max(int(n_threads), 1),
                     suffix='bkgsub',
                     replace_sci=True,
                 )

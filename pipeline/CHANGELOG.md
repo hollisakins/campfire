@@ -38,8 +38,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   The negativity guard's trough pass smooths the weight once per scale and, each
   iteration, recomputes the smoothed residual only around the gated pixels, bit for
   bit the from-scratch loop; `Background2D.background` (re-interpolated by photutils
-  on every access) is evaluated once. NEXUS f444w tile E: 19.3 → 10.4 min, peak RSS
-  79 → 46 GB, SRCMASK identical, 42 pixels differing by ≤ 5e-10. No pixel setting
+  on every access) is evaluated once. The heavy kernels run on `--processes` threads
+  (`nircam/_bkg_kernels.py`: gaussian / median filters, dilations, spline zoom, robust
+  statistics, segmentation, and the photutils mesh median filter vectorized instead of
+  one Python callback per cell), each the single-threaded library result bit for bit.
+  NEXUS f444w tile E: 19.3 → 2.6 min at `-p 12` (10.4 min on one thread), peak RSS
+  79 → 43 GB, SRCMASK identical, 42 pixels differing by ≤ 5e-10. No pixel setting
   changed, so tiles are not marked stale; `crop_to_coverage = false` restores the
   full-image path.
 - **Summary redshift consensus keeps both filters of a grating (#683).** `cfpipe nirspec
