@@ -396,6 +396,10 @@ def resample_step(filtname, exposure_files, field, step_config,
                     **{k: step_config.get(k, d)
                        for k, d in BKGSUB_PIXEL_DEFAULTS.items()},
                     wht_aware=step_config.get('wht_aware', True),
+                    # Pixel-neutral runtime options: forwarded here rather
+                    # than through BKGSUB_PIXEL_DEFAULTS, so they stay out of
+                    # the tile config hash.
+                    crop_to_coverage=step_config.get('crop_to_coverage', True),
                     n_threads=max(int(n_threads), 1),
                     suffix='bkgsub',
                     replace_sci=True,
