@@ -206,3 +206,32 @@ def test_spec_filter_parses_product_names():
     from campfire_pipeline.nirspec.redshift_fitting import _spec_filter
     assert _spec_filter('/w/my_obs_g140m_f100lp_123_spec.fits') == 'f100lp'
     assert _spec_filter('/w/garbage_spec.fits') is None
+
+
+def _zfit_workspace(tmp_path, monkeypatch, calls):
+    """G395M/F290LP + PRISM/CLEAR products; record which gratings reach the fit loop."""
+    import campfire_pipeline.config as config
+    for name in ('o_g395m_f290lp_10_spec.fits', 'o_prism_clear_10_spec.fits'):
+        (tmp_path / name).write_bytes(b'')
+    monkeypatch.setattr(config, 'resolve_paths', lambda cfg: {'products_dir': str(tmp_path)})
+    # first per-grating call in the loop; no template grids -> each grating is skipped after it
+    monkeypatch.setattr(config, 'get_r_curve_path', lambda g: calls.append(g) or '/fake')
+    monkeypatch.setattr(config, 'resolve_template_grid_paths', lambda cfg: {})
+
+
+def test_zfit_filter_skips_unselected_gratings_before_templates(tmp_path, monkeypatch):
+    """--filter clear must not touch (or depend on) the G395M template grid."""
+    from campfire_pipeline.nirspec import redshift_fitting as rf
+    calls = []
+    _zfit_workspace(tmp_path, monkeypatch, calls)
+    rf.fit_redshifts('o', config={}, workspace_dir=str(tmp_path), filters=['CLEAR'])
+    assert calls == ['prism']
+
+
+def test_zfit_filter_matching_nothing_fits_nothing(tmp_path, monkeypatch):
+    from campfire_pipeline.nirspec import redshift_fitting as rf
+    calls = []
+    _zfit_workspace(tmp_path, monkeypatch, calls)
+    assert rf.fit_redshifts('o', config={}, workspace_dir=str(tmp_path),
+                            filters=['f100lp']) == 0
+    assert calls == []

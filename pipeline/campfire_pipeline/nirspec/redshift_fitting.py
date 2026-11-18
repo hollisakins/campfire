@@ -550,12 +550,29 @@ def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
             return 0
     else:
         gratings = discovered
-    wanted_filters = {f.lower() for f in filters} if filters else None
 
     # File paths
     file_paths = {}
     file_paths['input_path'] = workspace_dir if workspace_dir.endswith('/') else workspace_dir + '/'
     file_paths['output_path'] = file_paths['input_path']
+
+    # Resolve each grating's spectra (after the --filter selection) before any
+    # template work, and drop gratings left with none: a selected setting must
+    # not depend on, or wait for, the template grids of excluded ones.
+    wanted_filters = {f.lower() for f in filters} if filters else None
+    spec_files_by_grating = {}
+    for grating in gratings:
+        files = sorted(glob.glob(file_paths['input_path'] + f'/*{grating.lower()}*_spec.fits'))
+        if wanted_filters is not None:
+            files = [sf for sf in files if _spec_filter(sf) in wanted_filters]
+        if files:
+            spec_files_by_grating[grating] = files
+    if not spec_files_by_grating:
+        logging.getLogger('nirspec_fitting').warning(
+            f"No *_spec.fits files of filter(s) {sorted(wanted_filters or [])} "
+            f"in {workspace_dir} — nothing to fit")
+        return 0
+    gratings = [g for g in gratings if g in spec_files_by_grating]
 
     # Build grating -> template grid mapping from config
     template_grids_config = resolve_template_grid_paths(config)
@@ -691,13 +708,7 @@ def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
         fit_args_factory = lambda sf: [sf, file_paths, sfhz_meta, zgrid, logger, save_models, plot_zfit]
 
         # --- Discover spec files, filter, and run ---
-        all_spec_files = np.array(sorted(glob.glob(
-            file_paths['input_path'] + f'/*{grating.lower()}*_spec.fits')))
-        spec_files = all_spec_files
-
-        if wanted_filters is not None:
-            spec_files = [sf for sf in spec_files
-                          if _spec_filter(sf) in wanted_filters]
+        spec_files = spec_files_by_grating[grating]
 
         if source_ids is not None:
             actual_spec_files = []

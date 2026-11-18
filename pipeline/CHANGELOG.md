@@ -37,8 +37,9 @@ Release procedure: edit the `## Unreleased` section below, then run
   `discover_files` by their `GRATING` / `FILTER` headers, so the stuck-shutter re-run and
   the mask checks inside stage 2a follow it too; zfit and linefit filter on the product
   name. A selection matching nothing present is a usage error naming what is there; the
-  summary still covers every product. `fit_redshifts(gratings=...)` now intersects with
-  the gratings on disk instead of building template grids for absent ones. Outputs for a
+  summary still covers every product. `fit_redshifts` resolves each grating's spectra
+  (after `--grating` / `--filter`) before any template work and skips gratings left with
+  none, so a selected setting never loads, or fails on, an excluded grating's template grid. Outputs for a
   given setting are unchanged.
 - **Summary redshift consensus keeps both filters of a grating (#683).** `cfpipe nirspec
   summary` keyed its per-source zfit inputs by grating, so a source observed in G140M/F070LP
