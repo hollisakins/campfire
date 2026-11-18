@@ -307,7 +307,12 @@ _C_KMS = 299792.458
 # Default redshift bin edges (covering z=0 to z=20)
 DEFAULT_Z_BIN_EDGES = np.array([0, 0.5, 1, 2, 3, 4, 5, 7, 9, 12, 15, 20])
 
-# Continuum SED parameter grid — 16 templates spanning age/dust/metallicity
+# Continuum SED parameter grid. Delayed-tau entries scale their age with the age
+# of the universe at the bin midpoint (`age` is a fraction of it), their
+# metallicity with redshift, and their Av by `boost_av` unless they set `delta`.
+# `sfh: 'truncated'` entries are constant star formation for `duration` Gyr that
+# stopped `t_quench` Gyr ago (clipped to the age of the universe), at a fixed
+# metallicity and a fixed Salim attenuation (`av`, `delta`, never boosted).
 _SFHZ_CONTINUUM_PARAMS = {
     'age0.5_av0.8_steep': {'age': 0.5, 'tau': 2.0, 'zmet': 0.01, 'av': 0.8, 'delta': -1.5},
     'age1.0_av0.01': {'age': 0.95, 'tau': 0.1, 'zmet': 0.2, 'av': 0.1},
@@ -325,7 +330,45 @@ _SFHZ_CONTINUUM_PARAMS = {
     'age0.8_av0.01': {'age': 0.8, 'tau': 0.1, 'zmet': 0.2, 'av': 0.0},
     'age0.8_av0.25': {'age': 0.8, 'tau': 0.3, 'zmet': 0.5, 'av': 0.25},
     'age0.8_av0.50': {'age': 0.8, 'tau': 0.1, 'zmet': 1.0, 'av': 0.50},
+    # Recently quenched burst behind steep dust: red faint rest-UV, a sharp
+    # Balmer break and an unreddened rest-optical/NIR. Without it the fitter
+    # matches the break of such galaxies with emission lines at the wrong z.
+    'psb_tq0.03_av0.5_steep': {'sfh': 'truncated', 't_quench': 0.03, 'duration': 0.05,
+                               'zmet': 0.5, 'av': 0.5, 'delta': -1.0},
 }
+
+
+def _sfhz_model_components(params, z_mid, age_universe, boost_av):
+    """bagpipes model components (rest frame) for one template in one z-bin.
+
+    Returns (components, sfh_key); sfh_key names the SFH component, since a
+    bagpipes model_galaxy can only be update()d with the components it was
+    built with.
+    """
+    if params.get('sfh') == 'truncated':
+        age_max = min(params['t_quench'] + params['duration'], 0.95 * age_universe)
+        age_min = max(min(params['t_quench'], age_max - 0.05), 0.0)
+        return {
+            'redshift': 0,
+            'constant': {'massformed': 9, 'age_max': age_max, 'age_min': age_min,
+                         'metallicity': params['zmet']},
+            'dust_atten': {'type': 'Salim', 'Av': params['av'],
+                           'delta': params['delta'], 'B': 0},
+        }, 'constant'
+
+    Z = params['zmet']
+    frac = params['age']
+    delayed = {
+        'massformed': 9,
+        'tau': params['tau'],
+        'metallicity': np.interp(z_mid, [0, 10], [Z, Z / 2], left=Z, right=Z / 2),
+        'age': 0.01 if frac == 0 else age_universe * frac,
+    }
+    if 'delta' in params:
+        dust = {'type': 'Salim', 'delta': params['delta'], 'B': 0, 'Av': params['av']}
+    else:
+        dust = {'type': 'Salim', 'Av': params['av'] * boost_av, 'delta': 0, 'B': 0}
+    return {'redshift': 0, 'delayed': delayed, 'dust_atten': dust}, 'delayed'
 
 
 def _make_rest_frame_wave_grid(dv, lam_obs_min=0.54, lam_obs_max=5.6, z_max=20):
@@ -347,8 +390,8 @@ def make_sfhz_template_grid(z_min=0, z_max=20, dv=500, n_bins=None,
                              z_bin_edges=None, output_file='templates/sfhz_templates.pickle'):
     """Generate rest-frame continuum SEDs on a log-lambda grid for each z-bin.
 
-    For each redshift bin, generates 16 bagpipes SEDs at redshift=0, with
-    physical parameters (age, metallicity, dust) appropriate for the bin's
+    For each redshift bin, generates the _SFHZ_CONTINUUM_PARAMS bagpipes SEDs
+    at redshift=0, with physical parameters (age, metallicity, dust) appropriate for the bin's
     midpoint redshift. This decouples the template grid from the redshift grid.
 
     Parameters
@@ -392,6 +435,7 @@ def make_sfhz_template_grid(z_min=0, z_max=20, dv=500, n_bins=None,
     print(f"Generating sfhz template grid: {n_bins} z-bins, {n_cont} SEDs, "
           f"{n_rest} rest-frame pixels, dv={dv} km/s")
 
+    models = {}  # one bagpipes model_galaxy per SFH component
     for b in range(n_bins):
         z_lo, z_hi = z_bin_edges[b], z_bin_edges[b + 1]
         z_mid = 0.5 * (z_lo + z_hi)
@@ -402,36 +446,13 @@ def make_sfhz_template_grid(z_min=0, z_max=20, dv=500, n_bins=None,
               f"age_universe={age_universe:.2f} Gyr")
 
         for j, (name, params) in enumerate(templates.items()):
-            model_components = {'redshift': 0}  # rest-frame
-            model_components['delayed'] = {
-                'massformed': 9,
-                'tau': params['tau'],
-            }
-
-            Z = params['zmet']
-            model_components['delayed']['metallicity'] = np.interp(
-                z_mid, [0, 10], [Z, Z / 2], left=Z, right=Z / 2)
-
-            frac = params['age']
-            if frac == 0:
-                model_components['delayed']['age'] = 0.01
+            model_components, sfh_key = _sfhz_model_components(
+                params, z_mid, age_universe, boost_av)
+            if sfh_key not in models:
+                models[sfh_key] = bp.model_galaxy(model_components, spec_wavs=spec_wavs_ang)
             else:
-                model_components['delayed']['age'] = age_universe * frac
-
-            if 'delta' in params:
-                model_components['dust_atten'] = {
-                    'type': 'Salim', 'delta': params['delta'],
-                    'B': 0, 'Av': params['av'],
-                }
-            else:
-                model_components['dust_atten'] = {
-                    'type': 'Salim', 'Av': params['av'] * boost_av, 'delta': 0, 'B': 0,
-                }
-
-            if j == 0 and b == 0:
-                mgal = bp.model_galaxy(model_components, spec_wavs=spec_wavs_ang)
-            else:
-                mgal.update(model_components)
+                models[sfh_key].update(model_components)
+            mgal = models[sfh_key]
 
             flam = mgal.spectrum[:, 1]
             fnu = flam * spec_wavs_ang**2

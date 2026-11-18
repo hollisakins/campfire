@@ -29,6 +29,19 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- **A post-starburst continuum template for redshift fitting.** Galaxies with a strong Balmer
+  break and blue rest-optical colours (a faint, red rest-UV and an unreddened optical/NIR) had
+  no continuum template that matched them, so the fitter reproduced the break with emission
+  lines, often at the wrong redshift (z ≈ 0.6–1.8 for galaxies at z ≈ 2.3–4). The sfhz grid
+  gains a 17th continuum template, `psb_tq0.03_av0.5_steep`: constant star formation for 50 Myr
+  that stopped 30 Myr ago, half-solar metallicity, Salim attenuation with Av = 0.5 and
+  δ = −1.0, the same in every z-bin (clipped to the age of the universe) and never scaled by
+  `boost_av`. `make_sfhz_template_grid` takes such truncated-SFH entries in
+  `_SFHZ_CONTINUUM_PARAMS` (`sfh: 'truncated'`). The template pickles must be regenerated
+  (`cfpipe nirspec make-templates`). On 719 PRISM spectra of quality ≥ 3 objects in six
+  observations, correct auto-redshifts (|Δz|/(1+z) < 0.05) go from 679 to 691 (15 fixed, 3
+  broken, all three at S/N ≤ 11 with Δχ² < 7 between the peaks); with Hα masked at the
+  inspected redshift, from 629 to 658.
 - **The redshift fitter no longer has a HeI λ5876 template.** The `HeI5876` emission-line
   template carried the line alone, so NNLS could put a faint noise feature at any redshift
   down as HeI with nothing else predicted, and many spectra were fit that way. The template is
