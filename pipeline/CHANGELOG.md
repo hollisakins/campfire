@@ -42,6 +42,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   observations, correct auto-redshifts (|Δz|/(1+z) < 0.05) go from 679 to 691 (15 fixed, 3
   broken, all three at S/N ≤ 11 with Δχ² < 7 between the peaks); with Hα masked at the
   inspected redshift, from 629 to 658.
+- **The redshift fitter no longer has a HeI λ5876 template.** The `HeI5876` emission-line
+  template carried the line alone, so NNLS could put a faint noise feature at any redshift
+  down as HeI with nothing else predicted, and many spectra were fit that way. The template is
+  removed from `EMISSION_LINES`. In bright emitters, HeI's flux (a few percent of Hα) is now
+  left in the residual instead of being modeled. Rerunning `cfpipe nirspec zfit` can change
+  `ZBEST` / `ZQUAL` for spectra whose best fit leaned on HeI. No template pickle needs
+  rebuilding: the line templates are built from `EMISSION_LINES` at fit time. `linefit` still
+  measures HeI λ5876.
 - **NIRCam exposure maps are on one grid per field.** The canonical maps of `cfpipe nircam
   expmap` used a grid centered on the footprints of the filters of one run, so a run of some
   filters put its maps on a different grid from the field's other maps. The grid is now the
@@ -72,6 +80,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   79 → 43 GB, SRCMASK identical, 42 pixels differing by ≤ 5e-10. No pixel setting
   changed, so tiles are not marked stale; `crop_to_coverage = false` restores the
   full-image path.
+- **`--grating` / `--filter` on the NIRSpec reduction commands (#446).** `cfpipe nirspec
+  run`, `stage1`, `stage2a`, `stage2b`, `stage3`, `zfit`, `linefit` and `detect-stuck` can be
+  restricted to one or more grating/filter settings of an observation (case-insensitive,
+  OR within a flag, AND across the two, combinable with `--source-ids`). The selection
+  lives on the `Observation` (`select_modes`) and filters `rate_files`, the raw uncals and
+  `discover_files` by their `GRATING` / `FILTER` headers, so the stuck-shutter re-run and
+  the mask checks inside stage 2a follow it too; zfit and linefit filter on the product
+  name. A selection matching nothing present is a usage error naming what is there; the
+  summary still covers every product. `fit_redshifts` resolves each grating's spectra
+  (after `--grating` / `--filter`) before any template work and skips gratings left with
+  none, so a selected setting never loads, or fails on, an excluded grating's template
+  grid. Outputs for a given setting are unchanged.
 - **Summary redshift consensus keeps both filters of a grating (#683).** `cfpipe nirspec
   summary` keyed its per-source zfit inputs by grating, so a source observed in G140M/F070LP
   and G140M/F100LP fed only the last one read into `redshift_best`. They are now keyed by
