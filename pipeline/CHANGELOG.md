@@ -42,6 +42,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   the per-run grid. No mosaic or exposure pixel changes.
 
 ### Infrastructure
+- **Mosaic background subtraction runs on the coverage and updates the guard
+  incrementally.** `SubtractBackground.compute` works on the bounding box of the
+  tile's coverage, padded by 12 of the largest mesh boxes and aligned so every
+  Background2D grid and the ring-median block grid land where they do on the full
+  image (the ring-median zoom still runs at the full image's extent, since its
+  corner-aligned sampling depends on the image size), and pastes the result back.
+  The negativity guard's trough pass smooths the weight once per scale and, each
+  iteration, recomputes the smoothed residual only around the gated pixels, bit for
+  bit the from-scratch loop; `Background2D.background` (re-interpolated by photutils
+  on every access) is evaluated once. The heavy kernels run on `--processes` threads
+  (`nircam/_bkg_kernels.py`: gaussian / median filters, dilations, spline zoom, robust
+  statistics, segmentation, and the photutils mesh median filter vectorized instead of
+  one Python callback per cell), each the single-threaded library result bit for bit.
+  NEXUS f444w tile E: 19.3 → 2.6 min at `-p 12` (10.4 min on one thread), peak RSS
+  79 → 43 GB, SRCMASK identical, 42 pixels differing by ≤ 5e-10. No pixel setting
+  changed, so tiles are not marked stale; `crop_to_coverage = false` restores the
+  full-image path.
 - **Summary redshift consensus keeps both filters of a grating (#683).** `cfpipe nirspec
   summary` keyed its per-source zfit inputs by grating, so a source observed in G140M/F070LP
   and G140M/F100LP fed only the last one read into `redshift_best`. They are now keyed by
