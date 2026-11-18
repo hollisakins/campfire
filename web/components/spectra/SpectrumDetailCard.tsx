@@ -10,7 +10,7 @@ import { DQ_FLAGS, decodeBitmask, encodeBitmask } from '@/lib/flags';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useDrTag } from '@/lib/dr/client';
 import { useFileAvailability } from './release-files';
-import type { Spectrum } from '@/lib/types';
+import { disperserLabel, type Spectrum } from '@/lib/types';
 
 const DQ_OPTIONS: FilterOption[] = DQ_FLAGS.map(f => ({
   value: f.value,
@@ -129,7 +129,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
             style={{ backgroundColor: color ?? '#94a3b8' }}
           />
           <span className="text-sm font-mono font-semibold tracking-tight">
-            {spectrum.grating}
+            {disperserLabel(spectrum.grating, spectrum.filter)}
           </span>
         </span>
 

@@ -12,6 +12,7 @@ Usage (via unified CLI):
     cfpipe nirspec linefit  --obs ember_uds_p4 [--allow-auto]   # needs `campfire pull` first
     cfpipe nirspec summary  --obs ember_uds_p4
     cfpipe nirspec run      --obs ember_uds_p4 --all
+    cfpipe nirspec run      --obs ember_uds_p4 --all --grating g395m --filter f290lp
     cfpipe nirspec make-templates [--config config.toml]
 
 Multiple observations are processed serially:
@@ -72,6 +73,56 @@ def processing_options(f):
     return f
 
 
+def _parse_names(valid, kind):
+    """Click callback factory: split/lower-case names and check them against *valid*."""
+    def _callback(ctx, param, value):
+        if not value:
+            return None
+        result = []
+        for item in value:
+            for part in item.replace(',', ' ').split():
+                name = part.strip().lower()
+                if name not in valid:
+                    raise click.BadParameter(
+                        f"'{part}' is not a NIRSpec {kind}; choose from {', '.join(valid)}.")
+                if name not in result:
+                    result.append(name)
+        return tuple(result) or None
+    return _callback
+
+
+def mode_options(f):
+    """Decorator that adds --grating / --filter (issue #446)."""
+    from campfire_pipeline.nirspec.constants import FILTERS, GRATING_LIMITS
+    f = click.option('--filter', 'filters', multiple=True, type=str, default=None,
+                     cls=_VariadicOption, callback=_parse_names(FILTERS, 'filter'),
+                     help='Process only exposures with these filters (default: all).')(f)
+    f = click.option('--grating', 'gratings', multiple=True, type=str, default=None,
+                     cls=_VariadicOption, callback=_parse_names(list(GRATING_LIMITS), 'grating'),
+                     help='Process only exposures with these gratings (default: all).')(f)
+    return f
+
+
+def _apply_modes(obs, gratings, filters):
+    """Restrict *obs* to the --grating/--filter selection; fail if it matches nothing.
+
+    The check runs against the settings actually present (raw uncals, rate
+    files, spec products), so `--grating g395h` on a G395M-only observation is
+    an error naming what is there rather than a silent no-op run. When nothing
+    is on disk yet there is nothing to check against and the selection stands.
+    """
+    if not (gratings or filters):
+        return
+    obs.select_modes(gratings=gratings, filters=filters)
+    available = obs.available_modes()
+    if available and not any(obs.mode_matches(g, f) for g, f in available):
+        present = ', '.join(f'{g}/{f}' for g, f in available)
+        raise click.UsageError(
+            f"{obs.name}: {obs.mode_selection_label()} matches no exposure "
+            f"(present: {present}).")
+    log(f"{obs.name}: restricted to {obs.mode_selection_label()}")
+
+
 def _setup(config_path, obs_name):
     """Load config, set up environment, resolve paths, load observation.
 
@@ -84,6 +135,11 @@ def _setup(config_path, obs_name):
     obs = Observation.load(obs_name)
     obs.setup_workspace_directory(paths['data_dir'], paths['products_dir'], overwrite=False)
     return config, obs, paths
+
+
+def _as_list(names):
+    """Click tuple (or None) -> list or None, for the stage APIs."""
+    return list(names) if names else None
 
 
 def _resolve_source_ids(source_ids):
@@ -112,12 +168,14 @@ def main():
 @common_options
 @click.option('--processes', '-p', default=1, type=int)
 @click.option('--overwrite', is_flag=True)
-def stage1(config, obs, processes, overwrite):
+@mode_options
+def stage1(config, obs, processes, overwrite, gratings, filters):
     """Run stage 1: Detector1Pipeline + background subtraction."""
     from campfire_pipeline.nirspec.stage1 import run_stage1
 
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
+        _apply_modes(obs_obj, gratings, filters)
         stage_config = get_stage_config('stage1', cfg, obs_obj)
         run_stage1(obs_obj, stage_config, n_processes=processes, overwrite=overwrite)
 
@@ -125,12 +183,14 @@ def stage1(config, obs, processes, overwrite):
 @main.command()
 @common_options
 @processing_options
-def stage2a(config, obs, source_ids, processes, overwrite):
+@mode_options
+def stage2a(config, obs, source_ids, processes, overwrite, gratings, filters):
     """Run stage 2a: WCS assignment + rectification."""
     from campfire_pipeline.nirspec.stage2 import run_stage2a as _run_stage2a
 
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
+        _apply_modes(obs_obj, gratings, filters)
         stage_config = get_stage_config('stage2', cfg, obs_obj)
         sids = _resolve_source_ids(source_ids)
         _run_stage2a(obs_obj, stage_config, source_ids=sids, n_processes=processes, overwrite=overwrite, cfg=cfg)
@@ -139,12 +199,14 @@ def stage2a(config, obs, source_ids, processes, overwrite):
 @main.command()
 @common_options
 @processing_options
-def stage2b(config, obs, source_ids, processes, overwrite):
+@mode_options
+def stage2b(config, obs, source_ids, processes, overwrite, gratings, filters):
     """Run stage 2b: nodded background subtraction."""
     from campfire_pipeline.nirspec.stage2 import run_stage2b as _run_stage2b
 
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
+        _apply_modes(obs_obj, gratings, filters)
         stage_config = get_stage_config('stage2', cfg, obs_obj)
         sids = _resolve_source_ids(source_ids)
         _run_stage2b(obs_obj, stage_config, source_ids=sids, n_processes=processes, overwrite=overwrite)
@@ -153,12 +215,14 @@ def stage2b(config, obs, source_ids, processes, overwrite):
 @main.command()
 @common_options
 @processing_options
-def stage3(config, obs, source_ids, processes, overwrite):
+@mode_options
+def stage3(config, obs, source_ids, processes, overwrite, gratings, filters):
     """Run stage 3: Spec3Pipeline + optimal extraction."""
     from campfire_pipeline.nirspec.stage3 import run_stage3
 
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
+        _apply_modes(obs_obj, gratings, filters)
         stage_config = get_stage_config('stage3', cfg, obs_obj)
         sids = _resolve_source_ids(source_ids)
         run_stage3(obs_obj, stage_config, cfg, source_ids=sids, n_processes=processes, overwrite=overwrite)
@@ -167,12 +231,14 @@ def stage3(config, obs, source_ids, processes, overwrite):
 @main.command()
 @common_options
 @processing_options
-def zfit(config, obs, source_ids, processes, overwrite):
+@mode_options
+def zfit(config, obs, source_ids, processes, overwrite, gratings, filters):
     """Run redshift fitting."""
     from campfire_pipeline.nirspec.redshift_fitting import fit_redshifts
 
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
+        _apply_modes(obs_obj, gratings, filters)
         sids = _resolve_source_ids(source_ids)
         sids_list = sids if sids != 'all' else None
         fit_redshifts(
@@ -182,6 +248,8 @@ def zfit(config, obs, source_ids, processes, overwrite):
             overwrite=overwrite,
             workspace_dir=obs_obj.workspace_dir,
             n_processes=processes,
+            gratings=_as_list(gratings),
+            filters=_as_list(filters),
         )
 
 
@@ -192,9 +260,8 @@ def zfit(config, obs, source_ids, processes, overwrite):
               help='Fall back to the zfit redshift for spectra without a usable '
                    'inspected redshift (QA only; the product is stamped ZSRC=auto '
                    'and `campfire deploy lines` refuses it without --allow-auto-z).')
-@click.option('--grating', 'gratings', multiple=True, cls=_VariadicOption,
-              help='Restrict to these gratings (default: all).')
-def linefit(config, obs, source_ids, processes, overwrite, allow_auto, gratings):
+@mode_options
+def linefit(config, obs, source_ids, processes, overwrite, allow_auto, gratings, filters):
     """Fit emission-line fluxes at the inspected redshift.
 
     Reads reference/nirspec/<obs>/redshifts.toml (materialized by
@@ -225,7 +292,8 @@ def linefit(config, obs, source_ids, processes, overwrite, allow_auto, gratings)
             overwrite=overwrite,
             n_processes=processes,
             allow_auto=allow_auto,
-            gratings=list(gratings) if gratings else None,
+            gratings=_as_list(gratings),
+            filters=_as_list(filters),
         )
         log(f"linefit {obs_name}: {counts['fit']} fit, {counts['skipped_uptodate']} up to date, "
             f"{counts['skipped_no_z']} without a usable redshift, {counts['failed']} failed")
@@ -240,7 +308,8 @@ def linefit(config, obs, source_ids, processes, overwrite, allow_auto, gratings)
               help='Source IDs to analyze (default: all).')
 @click.option('--overwrite', is_flag=True,
               help='Replace existing TOML with fresh detection results.')
-def detect_stuck(config, obs, processes, source_ids, overwrite):
+@mode_options
+def detect_stuck(config, obs, processes, source_ids, overwrite, gratings, filters):
     """Run stuck shutter detection on existing s2d files.
 
     Detects stuck shutters, writes results to the observation's TOML file,
@@ -269,6 +338,7 @@ def detect_stuck(config, obs, processes, source_ids, overwrite):
 
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
+        _apply_modes(obs_obj, gratings, filters)
         stage_config = get_stage_config('stage2', cfg, obs_obj)
 
         # Force detection enabled (the user explicitly asked for it)
@@ -553,9 +623,15 @@ def summary(config, obs):
               help='Fit emission lines at the inspected redshift (not part of --all: '
                    'needs `campfire pull` after inspection).')
 @click.option('--all', 'do_all', is_flag=True, help='Run all reduction stages (not linefit).')
+@mode_options
 def run(config, obs, source_ids, processes, overwrite,
-        do_stage1, do_stage2a, do_stage2b, do_stage3, do_zfit, do_summary, do_linefit, do_all):
-    """Run multiple pipeline stages in sequence."""
+        do_stage1, do_stage2a, do_stage2b, do_stage3, do_zfit, do_summary, do_linefit, do_all,
+        gratings, filters):
+    """Run multiple pipeline stages in sequence.
+
+    --grating / --filter confine every stage to those settings; the summary
+    still covers every product on disk, since deploy reads it whole.
+    """
     from campfire_pipeline.nirspec.stage1 import run_stage1 as _run_stage1
     from campfire_pipeline.nirspec.stage2 import run_stage2a, run_stage2b
     from campfire_pipeline.nirspec.stage3 import run_stage3 as _run_stage3
@@ -569,6 +645,7 @@ def run(config, obs, source_ids, processes, overwrite,
 
     for obs_name in obs:
         cfg, obs_obj, paths = _setup(config, obs_name)
+        _apply_modes(obs_obj, gratings, filters)
         sids = _resolve_source_ids(source_ids)
 
         if do_stage1:
@@ -599,6 +676,8 @@ def run(config, obs, source_ids, processes, overwrite,
                 overwrite=overwrite,
                 workspace_dir=obs_obj.workspace_dir,
                 n_processes=processes,
+                gratings=_as_list(gratings),
+                filters=_as_list(filters),
             )
             # Re-generate summary with redshift results
             if do_summary:
@@ -608,7 +687,8 @@ def run(config, obs, source_ids, processes, overwrite,
             from campfire_pipeline.nirspec.linefit_stage import run_linefit
             sids_list = sids if sids != 'all' else None
             run_linefit(obs_obj, cfg, source_ids=sids_list, overwrite=overwrite,
-                        n_processes=processes)
+                        n_processes=processes,
+                        gratings=_as_list(gratings), filters=_as_list(filters))
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ This guide will help you get set up with CAMPFIRE and start accessing spectrosco
 
 ## Creating an Account
 
-Anyone can create an account on CAMPFIRE. Go to [/signup](https://campfire-jwst.org/signup), enter your name, email, and a password, then click the confirmation link we email you to activate your account. Once confirmed, you can sign in to browse public programs, comment on objects, and organize them with tags.
+Anyone can create an account on CAMPFIRE. Go to [/signup](/signup), enter your name, email, and a password, then click the confirmation link we email you to activate your account. Once confirmed, you can sign in to browse public programs, comment on objects, and organize them with tags.
 
 By default, new accounts cannot submit inspections (redshift sign-offs and quality flags). If you'd like to contribute inspections, open your Profile page and use **Request inspection access** under "Role & permissions" — an administrator will review the request and email you.
 

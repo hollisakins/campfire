@@ -3,7 +3,7 @@
 import React, { Suspense, use, useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { ObjectHeader, ObjectMemberTarget, ObjectPhotometry, Spectrum } from '@/lib/types';
-import { MEMBER_COLORS, GRATINGS } from '@/lib/types';
+import { MEMBER_COLORS, GRATINGS, disperserLabel } from '@/lib/types';
 import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
 import { MetricCards } from '@/components/spectra/MetricCards';
 import { DownloadButtons } from '@/components/spectra/DownloadButtons';
@@ -178,7 +178,10 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
         .filter(({ s }) => !plottable || plottable.has(s.fits_path))
         .map(({ s, i }) => ({
           fitsPath: s.fits_path,
-          label: selectedGrating ? m.target_id : `${m.target_id} (${s.grating})`,
+          // a selected grating goes unsaid unless the filter is the less usual one
+          label: selectedGrating && disperserLabel(s.grating, s.filter) === s.grating
+            ? m.target_id
+            : `${m.target_id} (${disperserLabel(s.grating, s.filter)})`,
           color: getSpectrumShade(colors[m.target_id], i),
           visible: spectrumVisibility[s.id] ?? true,
         }))
