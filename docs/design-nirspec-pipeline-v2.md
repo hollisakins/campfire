@@ -1011,7 +1011,14 @@ The guard with support across the slit leaves -0.01 % (PRISM) / -0.02 % (G395M) 
 start for rate files without `CFVARPS` or with another version; `masks.restore_pre_bkgsub` puts
 jwst's back. jwst's array stays in the rate file as `VAR_POISSON_JWST` (+16 MB per rate file) and
 every rewrite starts from it, so the result is the same however often it runs. `ERR` =
-sqrt(VP + VR) (before, stage 1 rescaled `VAR_RNOISE` without rewriting `ERR`). Staleness: canonicals
+sqrt(VP + VR) (before, stage 1 rescaled `VAR_RNOISE` without rewriting `ERR`).
+
+**The read noise** (`nbr-mean-v2`, `variance.read_noise_scale`): jwst's `VAR_RNOISE` is scaled by
+the factor s that gives the background pixels (`CFBKGMASK`) unit sigma-clipped scatter in
+SCI / sqrt(VAR_POISSON + s VAR_RNOISE); s is `CFBKGRMS`. Stage 1 used to fit it against
+`VAR_RNOISE` alone, so the scaled read noise already held the background pixels' Poisson noise and
+sqrt(VP + VR) counted it twice (EMBER obs 24: `ERR` 1.29x the background scatter, s 2.71 / 1.85 on
+NRS1 / NRS2; now 1.09 / 0.97 and `ERR` within 2 % of the scatter). Staleness: canonicals
 and bkgslits files carry `CFVARPS` and stage 2a remakes them when it differs from their rate's
 (`_canonical_variance_changed`); step 1 keys on `MBKGVARP`; step 2, stage 2b, the profile fit and
 Spec3 follow the remade canonicals (step 2 through the stage-2a time card); the `_spec.fits` records

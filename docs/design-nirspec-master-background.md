@@ -179,7 +179,8 @@ shutter (`msaflag_open.create_slitlets`), and masks their full traces (widened t
 remaining pixels, iteratively: the CRDS *picture frame* template (per-quarter scale + pedestal),
 optionally a `Background2D` surface (`subtract_2d`, default off), per-column 1/f (template fit) and,
 for the prism, per-row 1/f. The total is stored in the rate file as `CFBKG` with its mask
-`CFBKGMASK`, and `VAR_RNOISE` is rescaled to the measured residual rms.
+`CFBKGMASK`, and `VAR_RNOISE` is rescaled so that, with the Poisson variance, it matches the
+residual scatter (`nirspec/variance.py`).
 
 Consequence for this design: after stage 1 the rate file still contains the **sky transmitted through
 the open shutters** (zodiacal light, ISM, stray light, thermal). That is exactly the signal a master

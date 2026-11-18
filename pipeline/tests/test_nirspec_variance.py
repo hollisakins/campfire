@@ -144,7 +144,9 @@ def test_the_rate_rewrite_keeps_jwst_variance_and_repeats_identically(tmp_path):
     with fits.open(path) as h:
         vp1 = np.array(h["VAR_POISSON"].data)
         np.testing.assert_array_equal(h["VAR_POISSON_JWST"].data, vp.astype(np.float32))
-        np.testing.assert_allclose(h["ERR"].data, np.sqrt(vp1.astype(float) + vr), rtol=1e-6)
+        vr1 = np.asarray(h["VAR_RNOISE"].data, float)
+        np.testing.assert_allclose(vr1, vr / 2.0 * h[0].header["CFBKGRMS"], rtol=1e-6)   # jwst's x the new scale
+        np.testing.assert_allclose(h["ERR"].data, np.sqrt(vp1.astype(float) + vr1), rtol=1e-6)
         hdr = h[0].header
         assert (hdr["CFVARPS"], hdr["CFVARHW"], hdr["CFVARXS"], hdr["CFVARSS"]) == (V.VERSION, 5, 5.0, 2.0)
         assert hdr["CFVARNG"] == pytest.approx(frac, abs=1e-6)
@@ -156,6 +158,32 @@ def test_the_rate_rewrite_keeps_jwst_variance_and_repeats_identically(tmp_path):
         assert sum(x.name == "VAR_POISSON_JWST" for x in h) == 1
     with ImageModel(path) as m:                            # still a valid datamodel
         np.testing.assert_array_equal(m.var_poisson, vp1)
+
+
+def test_the_read_noise_scale_leaves_room_for_the_poisson_noise(tmp_path):
+    """Background pixels with their background removed: Poisson counts (variance 20) plus read
+    noise (variance 30), with jwst's read-noise variance 3x too small. The scale counts the
+    Poisson variance once: VAR_RNOISE x 3, ERR = the pixels' scatter. Fitting the read noise
+    alone (stage 1 before) would give (20 + 30) / 10 = 5 and ERR sqrt(70 / 50) = 1.18x too large."""
+    rng = np.random.default_rng(7)
+    ny, nx = 200, 400
+    counts = rng.poisson(20.0, size=(ny, nx)).astype(float)
+    sci = counts - 20.0 + rng.normal(0.0, np.sqrt(30.0), size=(ny, nx))
+    vp = np.clip(counts, 0.0, None)
+    vr = np.full((ny, nx), 10.0)
+    lit = np.zeros((ny, nx), bool)                         # all background
+    s = V.read_noise_scale(sci, vp, vr, ~lit)
+    assert s == pytest.approx(3.0, rel=0.05)
+    path = str(tmp_path / "jw00001001001_03101_00001_nrs1_rate.fits")
+    _rate(path, sci, vp, vr * 2.0, lit)                    # an older file: VAR_RNOISE x CFBKGRMS = 2
+    V.apply_to_rate(path)
+    with fits.open(path) as h:
+        assert h[0].header["CFBKGRMS"] == pytest.approx(s, rel=1e-3)
+        np.testing.assert_allclose(h["VAR_RNOISE"].data, 10.0 * h[0].header["CFBKGRMS"], rtol=1e-6)
+        err = np.median(h["ERR"].data)
+    assert err == pytest.approx(np.std(sci), rel=0.03)
+    V.apply_to_rate(path)                                  # again: the same factor
+    assert fits.getval(path, "CFBKGRMS") == pytest.approx(s, rel=1e-3)
 
 
 def test_a_rate_without_its_background_mask_is_refused(tmp_path):

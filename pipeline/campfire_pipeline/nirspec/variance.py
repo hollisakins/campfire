@@ -27,8 +27,16 @@ The rule (``poisson_variance``), frozen 2026-11-10 (user):
 A lit pixel with no neighbor keeps its own value; unlit pixels (the stage-1 background
 mask ``CFBKGMASK``) keep jwst's. jwst's own array is kept in the rate file as
 ``VAR_POISSON_JWST`` and every rewrite starts from it (``apply_to_rate``), so applying the
-rule again gives the same arrays. ERR is rewritten as sqrt(VAR_POISSON + VAR_RNOISE), which
-also brings in stage 1's read-noise rescale (``CFBKGRMS``), left out of ERR before.
+rule again gives the same arrays. ERR is rewritten as sqrt(VAR_POISSON + VAR_RNOISE).
+
+The read noise (``read_noise_scale``, from ``nbr-mean-v2``): jwst's VAR_RNOISE is scaled by
+the factor s that gives the background pixels (``CFBKGMASK``, after stage 1's background
+subtraction) unit scatter in SCI / sqrt(VAR_POISSON + s VAR_RNOISE), the sigma-clipped standard
+deviation. The factor is ``CFBKGRMS`` (VAR_RNOISE = jwst's x ``CFBKGRMS``, which
+``masks.restore_pre_bkgsub`` divides back out). Stage 1 used to fit it against VAR_RNOISE
+alone, so the scaled read noise already held the background pixels' Poisson noise and
+sqrt(VP + VR) counted it twice: EMBER obs 24's ERR was 1.29x the scatter of the background
+pixels and the extracted spectra's errors 1.26x their scatter.
 
 Cards on the rate file: ``CFVARPS`` (method and version), ``CFVARHW``, ``CFVARXS``,
 ``CFVARSS`` (the constants) and ``CFVARNG`` (fraction of lit pixels guarded). Staleness
@@ -45,7 +53,9 @@ import numpy as np
 HALF = 5                 # neighbors within +-5 columns of the same row
 EXCESS_SIGMA = 5.0       # a pixel more than this above its neighbors: left out as a neighbor, guarded if supported
 SUPPORT_SIGMA = 2.0      # ... supported when the pixel above or below stands this far above its own neighbors
-VERSION = 'nbr-mean-v1'
+VERSION = 'nbr-mean-v2'  # v2: the read-noise rescale fitted with the Poisson variance (module doc)
+RNOISE_SCALE_BOUNDS = (0.01, 1000.0)
+MIN_BACKGROUND = 100     # background pixels needed to fit the read-noise scale
 DO_NOT_USE = 1
 EXT = 'VAR_POISSON_JWST'
 CARDS = ('CFVARPS', 'CFVARHW', 'CFVARXS', 'CFVARSS', 'CFVARNG')
@@ -107,30 +117,66 @@ def poisson_variance(vp_jwst, sci, vr, dq, lit, half=HALF, excess_sigma=EXCESS_S
     return out, guarded
 
 
+def read_noise_scale(sci, vp, vr, background, bounds=RNOISE_SCALE_BOUNDS):
+    """The factor s on the read-noise variance that gives the ``background`` pixels unit scatter
+    in sci / sqrt(vp + s vr) (sigma-clipped standard deviation; module doc), by bisection in
+    log s within ``bounds`` (a bound when the scatter cannot reach 1 inside them; 1, jwst's read
+    noise, with fewer than ``MIN_BACKGROUND`` background pixels)."""
+    from astropy.stats import sigma_clipped_stats
+    sci, vp, vr = (np.asarray(a, float) for a in (sci, vp, vr))
+    ok = np.asarray(background, bool) & np.isfinite(sci) & np.isfinite(vp) & np.isfinite(vr) & (vr > 0)
+    if ok.sum() < MIN_BACKGROUND:
+        return 1.0
+    s_, p_, r_ = sci[ok], np.clip(vp[ok], 0, None), vr[ok]
+
+    def scatter(s):
+        return float(sigma_clipped_stats(s_ / np.sqrt(p_ + s * r_))[2])
+
+    lo, hi = np.log(bounds[0]), np.log(bounds[1])
+    if scatter(np.exp(lo)) <= 1:
+        return float(bounds[0])
+    if scatter(np.exp(hi)) >= 1:
+        return float(bounds[1])
+    for _ in range(40):                                   # scatter falls as s grows
+        mid = 0.5 * (lo + hi)
+        if scatter(np.exp(mid)) > 1:
+            lo = mid
+        else:
+            hi = mid
+    return float(np.exp(0.5 * (lo + hi)))
+
+
 def apply_to_rate(rate_file):
-    """Rewrite a background-subtracted rate file's VAR_POISSON and ERR by the rule (module doc),
-    in place, from jwst's array (``VAR_POISSON_JWST``, stored on the first call), the current DQ
-    and the stage-1 background mask (``CFBKGMASK``: lit = not in it). Stamps the cards. Raises
-    ValueError for a rate file without ``CFBKGMASK`` (stage 1's background subtraction has not
-    run). Returns the fraction of lit pixels guarded."""
+    """Rewrite a background-subtracted rate file's VAR_RNOISE, VAR_POISSON and ERR (module doc),
+    in place, from jwst's arrays (``VAR_POISSON_JWST``, stored on the first call; VAR_RNOISE /
+    ``CFBKGRMS``), the current DQ and the stage-1 background mask (``CFBKGMASK``: lit = not in
+    it). Stamps the cards and the new ``CFBKGRMS``. Raises ValueError for a rate file without
+    ``CFBKGMASK`` (stage 1's background subtraction has not run). Returns the fraction of lit
+    pixels guarded."""
     from astropy.io import fits
     with fits.open(rate_file, mode='update') as h:
         if 'CFBKGMASK' not in h:
             raise ValueError(f'{os.path.basename(rate_file)}: no CFBKGMASK (stage 1 background subtraction has not run)')
         if EXT not in h:
             h.append(fits.ImageHDU(np.asarray(h['VAR_POISSON'].data, np.float32).copy(), name=EXT))
+        hdr = h[0].header
         vp_j = np.asarray(h[EXT].data, float)
         sci = np.asarray(h['SCI'].data, float)
-        vr = np.asarray(h['VAR_RNOISE'].data, float)
+        vr_j = np.asarray(h['VAR_RNOISE'].data, float) / float(hdr.get('CFBKGRMS', 1.0))
         dq = np.asarray(h['DQ'].data)
         lit = ~np.asarray(h['CFBKGMASK'].data, bool)
+        good = (dq & DO_NOT_USE) == 0
+        # background pixels are unlit, where the rule leaves jwst's Poisson variance: s first
+        s = read_noise_scale(sci, vp_j, vr_j, ~lit & good)
+        vr = vr_j * s
+        h['VAR_RNOISE'].data[...] = vr.astype(h['VAR_RNOISE'].data.dtype)
+        hdr['CFBKGRMS'] = (s, 'VAR_RNOISE / jwst read-noise variance')
         vp, guarded = poisson_variance(vp_j, sci, vr, dq, lit)
         h['VAR_POISSON'].data[...] = vp.astype(h['VAR_POISSON'].data.dtype)
         with np.errstate(invalid='ignore'):
             h['ERR'].data[...] = np.sqrt(vp + vr).astype(h['ERR'].data.dtype)
-        n_lit = int(np.sum(lit & ((dq & DO_NOT_USE) == 0)))
+        n_lit = int(np.sum(lit & good))
         frac = float(guarded.sum()) / max(n_lit, 1)
-        hdr = h[0].header
         hdr['CFVARPS'] = (VERSION, 'Poisson variance: mean of row neighbors')
         hdr['CFVARHW'] = (HALF, 'its neighbors: +- columns of the same row')
         hdr['CFVARXS'] = (EXCESS_SIGMA, 'sigma above neighbors: left out / guarded')

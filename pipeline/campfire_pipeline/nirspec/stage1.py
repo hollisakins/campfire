@@ -819,12 +819,8 @@ def subtract_background_from_rate_file(
 
         model.data = rate_new
 
-        nsci = model.data / np.sqrt(model.var_rnoise)
-        from astropy.stats import sigma_clipped_stats
-        rms = sigma_clipped_stats(nsci[mask])[2]
-        var_rescale = float(rms ** 2)
-        log(f'Scaling up VAR_RNOISE by {var_rescale:.2f}')
-        model.var_rnoise = model.var_rnoise * var_rescale
+        # VAR_RNOISE is rescaled below, with the Poisson variance (nirspec/variance.py)
+        var_rescale = 1.0
 
         log(f"Saving to {os.path.basename(rate_file)}")
         time = datetime.now()
@@ -849,11 +845,13 @@ def subtract_background_from_rate_file(
         hdul.append(fits.ImageHDU(bkg_total.astype(np.float32), name='CFBKG'))
         hdul.append(fits.ImageHDU(mask.astype(np.uint8), name='CFBKGMASK'))
 
-    # The Poisson variance from each pixel's row neighbors, and ERR = sqrt(VP + VR) with the
-    # rescaled read noise (nirspec/variance.py); jwst's array is kept as VAR_POISSON_JWST.
+    # The read-noise rescale fitted on the background pixels with the Poisson variance included,
+    # the Poisson variance from each pixel's row neighbors, and ERR = sqrt(VP + VR)
+    # (nirspec/variance.py); jwst's Poisson array is kept as VAR_POISSON_JWST.
     from campfire_pipeline.nirspec import variance as V
     frac = V.apply_to_rate(rate_file)
-    log(f'Poisson variance from row neighbors ({V.VERSION}); {100 * frac:.3f} % of lit pixels keep their own')
+    log(f'VAR_RNOISE scaled by {fits.getval(rate_file, "CFBKGRMS"):.3f}; Poisson variance from row neighbors '
+        f'({V.VERSION}), {100 * frac:.3f} % of lit pixels keep their own')
 
 
 def run_stage1_single_uncal(

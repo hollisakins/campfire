@@ -335,6 +335,13 @@ Release procedure: edit the `## Unreleased` section below, then run
     rate file; canonicals and bkgslits files carry `CFVARPS` and are remade when it differs from
     their rate's, step 1 keys on it (`MBKGVARP`), and the `_spec.fits` records it. Reported fluxes of
     faint sources rise (master-background spectra most, about +7 % below integrated S/N 10).
+    *The read-noise rescale counts the Poisson noise once* (`nbr-mean-v2`). Stage 1 scaled
+    `VAR_RNOISE` until the background pixels had unit scatter in SCI / sqrt(VAR_RNOISE), so the
+    scaled read noise already held their Poisson noise and sqrt(VP + VR) counted it twice: on EMBER
+    obs 24 `ERR` was 1.29x the background pixels' scatter and the extracted spectra's errors 1.26x
+    their scatter. The scale (`CFBKGRMS`, still VAR_RNOISE / jwst's) is now fitted with the Poisson
+    variance included, in `variance.apply_to_rate` (obs 24: 2.71 / 1.85 -> 1.09 / 0.97 on NRS1 /
+    NRS2, `ERR` within 2 % of the scatter); existing rate files take it at stage 2a's start.
   - *Outliers are Spec3's; the profile fit no longer clips against its model.* The 5-sigma clip of
     pixels against the fitted model removed real light where the model is worst (zenith_p15 547856:
     257 master-background fit pixels, 1.9 % of the light, mostly above the model). Now the pixels
