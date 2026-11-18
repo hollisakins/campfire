@@ -32,6 +32,25 @@ export async function findAuthUserByEmail(
 }
 
 /**
+ * Every auth user, paging through auth.admin.listUsers (1000 per page; a bare
+ * listUsers() returns only the first 50). Requires a service-role client.
+ */
+export async function listAllAuthUsers(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  serviceClient: SupabaseClient<any, any>,
+): Promise<{ users: User[]; error: Error | null }> {
+  const perPage = 1000;
+  const users: User[] = [];
+
+  for (let page = 1; ; page++) {
+    const { data, error } = await serviceClient.auth.admin.listUsers({ page, perPage });
+    if (error) return { users, error: new Error(error.message) };
+    users.push(...data.users);
+    if (data.users.length < perPage) return { users, error: null };
+  }
+}
+
+/**
  * Paginate through all results of a Supabase RPC call.
  *
  * PostgREST silently truncates results at the configured max_rows limit.
