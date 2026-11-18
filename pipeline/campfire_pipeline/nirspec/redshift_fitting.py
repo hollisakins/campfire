@@ -469,6 +469,15 @@ def fit_single_spectrum_sfhz_optimized(spec_file, file_paths, sfhz_meta, zgrid, 
         return False, str(e)
 
 
+def _spec_filter(spec_file):
+    """Lower-case filter name of a ``*_spec.fits`` product, or None if unparseable."""
+    from campfire_pipeline.metadata.reader import parse_fits_filename
+    try:
+        return parse_fits_filename(os.path.basename(spec_file))['filter'].lower()
+    except ValueError:
+        return None
+
+
 def _discover_gratings(workspace_dir):
     """Discover gratings from existing *_spec.fits files in the workspace.
 
@@ -489,7 +498,7 @@ def _discover_gratings(workspace_dir):
 
 
 def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
-                    workspace_dir=None, gratings=None, n_processes=1):
+                    workspace_dir=None, gratings=None, n_processes=1, filters=None):
     """
     Run redshift fitting for all spectra in an observation.
 
@@ -508,7 +517,10 @@ def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
     workspace_dir : str, optional
         Explicit workspace directory.  If None, resolved from config + observations.toml.
     gratings : list of str, optional
-        Gratings to fit.  If None, auto-discovered from *_spec.fits files.
+        Restrict fitting to these gratings (case-insensitive). The fitted set is
+        always the gratings with *_spec.fits on disk, intersected with this.
+    filters : list of str, optional
+        Restrict fitting to spectra of these filters (case-insensitive, #446).
     n_processes : int
         Number of parallel workers (default: 1).
     """
@@ -522,17 +534,45 @@ def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
         # Issue #212 (PR-4): NIRSpec products live under products/nirspec/<obs>/.
         workspace_dir = paths['products_dir'] + f'/nirspec/{obs_name}/'
 
-    if gratings is None:
-        gratings = _discover_gratings(workspace_dir)
+    discovered = _discover_gratings(workspace_dir)
+    if not discovered:
+        logging.getLogger('nirspec_fitting').warning(
+            f"No *_spec.fits files found in {workspace_dir} — nothing to fit")
+        return 0
+    if gratings is not None:
+        # Intersect rather than trust the request: building a grating's
+        # template grid is expensive and pointless with no spectra to fit.
+        wanted = {g.lower() for g in gratings}
+        gratings = [g for g in discovered if g in wanted]
         if not gratings:
             logging.getLogger('nirspec_fitting').warning(
-                f"No *_spec.fits files found in {workspace_dir} — nothing to fit")
+                f"No *_spec.fits files of grating(s) {sorted(wanted)} in {workspace_dir} — nothing to fit")
             return 0
+    else:
+        gratings = discovered
 
     # File paths
     file_paths = {}
     file_paths['input_path'] = workspace_dir if workspace_dir.endswith('/') else workspace_dir + '/'
     file_paths['output_path'] = file_paths['input_path']
+
+    # Resolve each grating's spectra (after the --filter selection) before any
+    # template work, and drop gratings left with none: a selected setting must
+    # not depend on, or wait for, the template grids of excluded ones.
+    wanted_filters = {f.lower() for f in filters} if filters else None
+    spec_files_by_grating = {}
+    for grating in gratings:
+        files = sorted(glob.glob(file_paths['input_path'] + f'/*{grating.lower()}*_spec.fits'))
+        if wanted_filters is not None:
+            files = [sf for sf in files if _spec_filter(sf) in wanted_filters]
+        if files:
+            spec_files_by_grating[grating] = files
+    if not spec_files_by_grating:
+        logging.getLogger('nirspec_fitting').warning(
+            f"No *_spec.fits files of filter(s) {sorted(wanted_filters or [])} "
+            f"in {workspace_dir} — nothing to fit")
+        return 0
+    gratings = [g for g in gratings if g in spec_files_by_grating]
 
     # Build grating -> template grid mapping from config
     template_grids_config = resolve_template_grid_paths(config)
@@ -668,13 +708,11 @@ def fit_redshifts(obs_name, config, source_ids=None, overwrite=False,
         fit_args_factory = lambda sf: [sf, file_paths, sfhz_meta, zgrid, logger, save_models, plot_zfit]
 
         # --- Discover spec files, filter, and run ---
-        all_spec_files = np.array(sorted(glob.glob(
-            file_paths['input_path'] + f'/*{grating.lower()}*_spec.fits')))
-        spec_files = all_spec_files
+        spec_files = spec_files_by_grating[grating]
 
         if source_ids is not None:
             actual_spec_files = []
-            for spec_file in all_spec_files:
+            for spec_file in spec_files:
                 source_id = int(spec_file.split('_')[-2])
                 if source_id in source_ids:
                     actual_spec_files.append(spec_file)

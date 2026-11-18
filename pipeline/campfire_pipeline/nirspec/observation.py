@@ -9,7 +9,7 @@ import shutil
 import toml
 import numpy as np
 from dataclasses import dataclass, field
-from typing import List
+from typing import FrozenSet, List, Optional
 from textwrap import dedent
 from astropy.io import fits
 from astropy.table import Table
@@ -203,6 +203,12 @@ class Observation:
 
     directories_setup: bool = False
 
+    # Grating/filter selection (issue #446), set by select_modes(); None means
+    # no restriction on that axis. Lower-case names, matched case-insensitively
+    # against the GRATING / FILTER primary-header keywords.
+    selected_gratings: Optional[FrozenSet[str]] = None
+    selected_filters: Optional[FrozenSet[str]] = None
+
     @classmethod
     def load(cls, name, observations_file=None):
         from campfire_pipeline.config import resolve_observations_file
@@ -307,7 +313,7 @@ class Observation:
         self.raw_dir = str(layout_raw_dir(
             'nirspec', Scope(data_subdir=self.data_subdir),
             root=os.path.dirname(os.path.abspath(data_dir))))
-        self.rate_files = self.glob('_rate.fits')
+        self.rate_files = self.select_files(self.glob('_rate.fits'))
 
         # Manual masks live under reference/nirspec/<obs>/masks/*.reg (design §3.5);
         # load them now that reference_dir is known. Keyed by rate basename (the
@@ -336,10 +342,17 @@ class Observation:
 
         Raises RuntimeError if no raw files are found.
         """
-        self.uncal_files = self.glob('_uncal.fits', check_exp_type=True, directory=self.raw_dir)
+        all_uncal_files = self.glob('_uncal.fits', check_exp_type=True, directory=self.raw_dir)
 
-        if len(self.uncal_files) == 0:
+        if len(all_uncal_files) == 0:
             raise RuntimeError(f"No raw data files found for observation {self.name}!")
+
+        self.uncal_files = self.select_files(all_uncal_files)
+        if len(self.uncal_files) == 0:
+            raise RuntimeError(
+                f"No raw data files for observation {self.name} match "
+                f"{self.mode_selection_label()}!"
+            )
 
         msa_meta_files_needed = set()
         for src_file in self.uncal_files:
@@ -498,6 +511,98 @@ class Observation:
         """
         return os.path.getmtime(self.bkg_override_file)
 
+    # ------------------------------------------------------------------
+    # Grating/filter selection (issue #446)
+    # ------------------------------------------------------------------
+
+    def select_modes(self, gratings=None, filters=None):
+        """Restrict the observation to exposures with these gratings / filters.
+
+        Every stage picks its inputs through :attr:`rate_files`,
+        :meth:`discover_raw_files`, :meth:`discover_files` or
+        :meth:`select_files`, so setting the selection once confines a whole
+        ``run`` (including the stuck-shutter re-run inside stage2a) to the
+        chosen settings. Within one axis the values are OR'd, across the two
+        axes AND'd; an empty / None axis is unrestricted. Names are
+        case-insensitive (``'g395m'`` or ``'G395M'``).
+
+        Call after :meth:`setup_workspace_directory` (it re-filters
+        :attr:`rate_files`) and before :meth:`discover_raw_files`.
+        """
+        self.selected_gratings = (
+            frozenset(str(g).strip().lower() for g in gratings) if gratings else None)
+        self.selected_filters = (
+            frozenset(str(f).strip().lower() for f in filters) if filters else None)
+        if self.directories_setup:
+            self.rate_files = self.select_files(self.glob('_rate.fits'))
+
+    @property
+    def has_mode_selection(self) -> bool:
+        return bool(self.selected_gratings) or bool(self.selected_filters)
+
+    def mode_selection_label(self) -> str:
+        """Human-readable description of the selection, for log lines."""
+        parts = []
+        if self.selected_gratings:
+            parts.append('grating ' + '|'.join(sorted(self.selected_gratings)))
+        if self.selected_filters:
+            parts.append('filter ' + '|'.join(sorted(self.selected_filters)))
+        return ' and '.join(parts) if parts else 'all gratings/filters'
+
+    def mode_matches(self, grating, filt) -> bool:
+        """True iff a (grating, filter) pair passes the current selection."""
+        if self.selected_gratings and str(grating).strip().lower() not in self.selected_gratings:
+            return False
+        if self.selected_filters and str(filt).strip().lower() not in self.selected_filters:
+            return False
+        return True
+
+    def select_files(self, paths):
+        """Keep the exposure files whose GRATING/FILTER headers pass the selection.
+
+        A no-op (no header reads) when nothing is selected.
+        """
+        paths = list(paths)
+        if not self.has_mode_selection:
+            return paths
+        kept = []
+        for p in paths:
+            hdr = fits.getheader(p, ext=0)
+            if self.mode_matches(hdr.get('GRATING', ''), hdr.get('FILTER', '')):
+                kept.append(p)
+        return kept
+
+    def available_modes(self):
+        """Sorted lower-case (grating, filter) pairs present for this observation.
+
+        Collected from the raw uncals, the workspace rate files and the final
+        ``*_spec.fits`` products, whichever exist (call after
+        :meth:`setup_workspace_directory`). Used to reject a selection that
+        matches nothing, so a typo fails loudly instead of running zero files.
+        """
+        from campfire_pipeline.metadata.reader import parse_fits_filename
+
+        modes = set()
+        exposures = []
+        if os.path.isdir(self.raw_dir):
+            exposures += self.glob('_uncal.fits', directory=self.raw_dir)
+        exposures += self.glob('_rate.fits')
+        for p in exposures:
+            try:
+                hdr = fits.getheader(p, ext=0)
+            except OSError:
+                continue
+            grating, filt = hdr.get('GRATING'), hdr.get('FILTER')
+            if grating and filt:
+                modes.add((str(grating).strip().lower(), str(filt).strip().lower()))
+        for p in glob.glob(os.path.join(self.workspace_dir, '*_spec.fits')):
+            try:
+                parsed = parse_fits_filename(os.path.basename(p))
+            except ValueError:
+                continue
+            modes.add((parsed['grating'].lower(), parsed['filter'].lower()))
+        return sorted(modes)
+
     def glob(self, ext, check_exp_type=False, directory=None):
         """
         Search for files in the Observation's workspace directory, matching the Observation file specification and a given extension.
@@ -541,7 +646,8 @@ class Observation:
             ``_cal``/``_cal_bkgsub``/``_s2d``/``_s2d_bkgsub`` quartet). Legacy
             suffix modes (``'cal'``, ``'cal_bkgsub'``) still work for back-compat.
         source_ids : list or 'all'
-            Source IDs to filter by, or 'all' for no filtering.
+            Source IDs to filter by, or 'all' for no filtering. The grating /
+            filter selection (:meth:`select_modes`) applies on top.
 
         Returns
         -------
@@ -576,8 +682,15 @@ class Observation:
         filt, grat = [], []
         PATTTYPE, PRIDTPTS, PATT_NUM, NUMDTHPT, NOD_TYPE, SUBPXPTS = [], [], [], [], [], []
         SHUTTRID, SHUTSTA = [], []
+        kept_paths = []
         for f in paths:
             hdr = fits.getheader(f, ext=0)
+            # Grating/filter selection (issue #446). A nod / background group
+            # never spans settings (one activity = one grating+filter), so
+            # dropping rows here cannot split a group in group_files.
+            if not self.mode_matches(hdr['GRATING'], hdr['FILTER']):
+                continue
+            kept_paths.append(f)
             filt.append(hdr['FILTER'])
             grat.append(hdr['GRATING'])
             PATTTYPE.append(hdr['PATTTYPE'])
@@ -589,6 +702,7 @@ class Observation:
             hdr1 = fits.getheader(f, ext=1)
             SHUTTRID.append(hdr1['SHUTTRID'])
             SHUTSTA.append(hdr1.get('SHUTSTA', ''))
+        paths = kept_paths
 
         files = Table()
         files['path'] = paths

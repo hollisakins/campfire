@@ -67,6 +67,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   79 → 43 GB, SRCMASK identical, 42 pixels differing by ≤ 5e-10. No pixel setting
   changed, so tiles are not marked stale; `crop_to_coverage = false` restores the
   full-image path.
+- **`--grating` / `--filter` on the NIRSpec reduction commands (#446).** `cfpipe nirspec
+  run`, `stage1`, `stage2a`, `stage2b`, `stage3`, `zfit`, `linefit` and `detect-stuck` can be
+  restricted to one or more grating/filter settings of an observation (case-insensitive,
+  OR within a flag, AND across the two, combinable with `--source-ids`). The selection
+  lives on the `Observation` (`select_modes`) and filters `rate_files`, the raw uncals and
+  `discover_files` by their `GRATING` / `FILTER` headers, so the stuck-shutter re-run and
+  the mask checks inside stage 2a follow it too; zfit and linefit filter on the product
+  name. A selection matching nothing present is a usage error naming what is there; the
+  summary still covers every product. `fit_redshifts` resolves each grating's spectra
+  (after `--grating` / `--filter`) before any template work and skips gratings left with
+  none, so a selected setting never loads, or fails on, an excluded grating's template
+  grid. Outputs for a given setting are unchanged.
 - **Summary redshift consensus keeps both filters of a grating (#683).** `cfpipe nirspec
   summary` keyed its per-source zfit inputs by grating, so a source observed in G140M/F070LP
   and G140M/F100LP fed only the last one read into `redshift_best`. They are now keyed by
