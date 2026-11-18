@@ -28,7 +28,37 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- **NIRCam exposure maps are on one grid per field.** The canonical maps of `cfpipe nircam
+  expmap` used a grid centered on the footprints of the filters of one run, so a run of some
+  filters put its maps on a different grid from the field's other maps. The grid is now the
+  field's: a north-up TAN projection with the field's `tangent_point` at a pixel center,
+  windowed to enclose the calibrated exposures of every filter of the field on the machine.
+  Maps of any filter from any run are on the same pixels. A map on disk is reused only when
+  its grid, its number of exposures and their summed time are the current ones (it was reused
+  whenever the file existed), and `<field>_layout.json` records the grid. A field's maps move
+  onto the new lattice the next time they are built (by less than one 0.5" pixel; on macs0647
+  the coverage area is 16.5192 arcmin² against 16.5189 before). The `uncal` quick-look keeps
+  the per-run grid. No mosaic or exposure pixel changes.
+
 ### Infrastructure
+- **Mosaic background subtraction runs on the coverage and updates the guard
+  incrementally.** `SubtractBackground.compute` works on the bounding box of the
+  tile's coverage, padded by 12 of the largest mesh boxes and aligned so every
+  Background2D grid and the ring-median block grid land where they do on the full
+  image (the ring-median zoom still runs at the full image's extent, since its
+  corner-aligned sampling depends on the image size), and pastes the result back.
+  The negativity guard's trough pass smooths the weight once per scale and, each
+  iteration, recomputes the smoothed residual only around the gated pixels, bit for
+  bit the from-scratch loop; `Background2D.background` (re-interpolated by photutils
+  on every access) is evaluated once. The heavy kernels run on `--processes` threads
+  (`nircam/_bkg_kernels.py`: gaussian / median filters, dilations, spline zoom, robust
+  statistics, segmentation, and the photutils mesh median filter vectorized instead of
+  one Python callback per cell), each the single-threaded library result bit for bit.
+  NEXUS f444w tile E: 19.3 → 2.6 min at `-p 12` (10.4 min on one thread), peak RSS
+  79 → 43 GB, SRCMASK identical, 42 pixels differing by ≤ 5e-10. No pixel setting
+  changed, so tiles are not marked stale; `crop_to_coverage = false` restores the
+  full-image path.
 - **`--grating` / `--filter` on the NIRSpec reduction commands (#446).** `cfpipe nirspec
   run`, `stage1`, `stage2a`, `stage2b`, `stage3`, `zfit`, `linefit` and `detect-stuck` can be
   restricted to one or more grating/filter settings of an observation (case-insensitive,
@@ -39,8 +69,8 @@ Release procedure: edit the `## Unreleased` section below, then run
   name. A selection matching nothing present is a usage error naming what is there; the
   summary still covers every product. `fit_redshifts` resolves each grating's spectra
   (after `--grating` / `--filter`) before any template work and skips gratings left with
-  none, so a selected setting never loads, or fails on, an excluded grating's template grid. Outputs for a
-  given setting are unchanged.
+  none, so a selected setting never loads, or fails on, an excluded grating's template
+  grid. Outputs for a given setting are unchanged.
 - **Summary redshift consensus keeps both filters of a grating (#683).** `cfpipe nirspec
   summary` keyed its per-source zfit inputs by grating, so a source observed in G140M/F070LP
   and G140M/F100LP fed only the last one read into `redshift_best`. They are now keyed by

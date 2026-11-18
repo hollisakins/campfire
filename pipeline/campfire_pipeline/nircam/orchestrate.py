@@ -593,7 +593,8 @@ def _run_resample(field, config, filtname, n_processes, overwrite, status,
     from campfire_pipeline.nircam.steps.resample import resample_step
     cfg = get_nircam_step_config('resample', config, field)
     resample_step(filtname, exposures, field, cfg, reduction_version,
-                  overwrite=overwrite, tiles=tiles, epoch=epoch)
+                  overwrite=overwrite, tiles=tiles, epoch=epoch,
+                  n_threads=n_processes)
 
 
 # Dispatch table: step name → callable that takes (field, config, filtname,

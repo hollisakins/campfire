@@ -1025,6 +1025,11 @@
     # skippable up front by setting this false (its only cost is losing the
     # rollback and the _bkgsub.png before/after plot).
     keep_pre_bkgsub = true
+    # Run the mosaic bkgsub on the padded, grid-aligned bounding box of the
+    # tile's coverage and paste the result back (outer tiles are 30-40%
+    # covered). Same pixels as the full-image path, so not part of the tile
+    # config hash; false runs on the full image.
+    crop_to_coverage = true
     ring_radius_in = 80
     ring_width = 4
     ring_downsample = 4
