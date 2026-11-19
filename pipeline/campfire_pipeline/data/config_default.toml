@@ -290,8 +290,15 @@
         ring_clip_filter_size = 3
         tier_kernel_size = [25, 15, 5, 2]
         tier_npixels = [15, 10, 3, 1]
-        tier_nsigma = [1.5, 1.5, 1.5, 1.5]
-        tier_dilate_size = [33, 25, 21, 19]
+        # Detect deeper, grow less (2026-11): threshold 1.5 -> 0.5 sigma and
+        # the growth radii halved ([33, 25, 21, 19] -> [17, 13, 11, 9]). On
+        # MACS0647 (crowded with bright stars) the 1.5-sigma mask left the
+        # faint outskirts of sources and diffraction spikes in the fit, which
+        # over-subtracted beside them; reaching them by detection covers the
+        # sources better than reaching them by dilation. Chosen by eye on
+        # per-exposure masks and test mosaics of that one field.
+        tier_nsigma = [0.5, 0.5, 0.5, 0.5]
+        tier_dilate_size = [17, 13, 11, 9]
         # Fold JUMP_DET/SATURATED/PERSISTENCE DQ into the *fit* mask (not
         # detection): they carry residual signal that would bias the per-amp
         # estimate; the GP tolerates the extra masking.

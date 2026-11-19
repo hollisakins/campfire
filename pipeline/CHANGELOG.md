@@ -28,40 +28,6 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
-### Algorithm
-- **A post-starburst continuum template for redshift fitting.** Galaxies with a strong Balmer
-  break and blue rest-optical colours (a faint, red rest-UV and an unreddened optical/NIR) had
-  no continuum template that matched them, so the fitter reproduced the break with emission
-  lines, often at the wrong redshift (z ≈ 0.6–1.8 for galaxies at z ≈ 2.3–4). The sfhz grid
-  gains a 17th continuum template, `psb_tq0.03_av0.5_steep`: constant star formation for 50 Myr
-  that stopped 30 Myr ago, half-solar metallicity, Salim attenuation with Av = 0.5 and
-  δ = −1.0, the same in every z-bin (clipped to the age of the universe) and never scaled by
-  `boost_av`. `make_sfhz_template_grid` takes such truncated-SFH entries in
-  `_SFHZ_CONTINUUM_PARAMS` (`sfh: 'truncated'`). The template pickles must be regenerated
-  (`cfpipe nirspec make-templates`). On 719 PRISM spectra of quality ≥ 3 objects in six
-  observations, correct auto-redshifts (|Δz|/(1+z) < 0.05) go from 679 to 691 (15 fixed, 3
-  broken, all three at S/N ≤ 11 with Δχ² < 7 between the peaks); with Hα masked at the
-  inspected redshift, from 629 to 658.
-- **The redshift fitter no longer has a HeI λ5876 template.** The `HeI5876` emission-line
-  template carried the line alone, so NNLS could put a faint noise feature at any redshift
-  down as HeI with nothing else predicted, and many spectra were fit that way. The template is
-  removed from `EMISSION_LINES`. In bright emitters, HeI's flux (a few percent of Hα) is now
-  left in the residual instead of being modeled. Rerunning `cfpipe nirspec zfit` can change
-  `ZBEST` / `ZQUAL` for spectra whose best fit leaned on HeI. No template pickle needs
-  rebuilding: the line templates are built from `EMISSION_LINES` at fit time. `linefit` still
-  measures HeI λ5876.
-- **NIRCam exposure maps are on one grid per field.** The canonical maps of `cfpipe nircam
-  expmap` used a grid centered on the footprints of the filters of one run, so a run of some
-  filters put its maps on a different grid from the field's other maps. The grid is now the
-  field's: a north-up TAN projection with the field's `tangent_point` at a pixel center,
-  windowed to enclose the calibrated exposures of every filter of the field on the machine.
-  Maps of any filter from any run are on the same pixels. A map on disk is reused only when
-  its grid, its number of exposures and their summed time are the current ones (it was reused
-  whenever the file existed), and `<field>_layout.json` records the grid. A field's maps move
-  onto the new lattice the next time they are built (by less than one 0.5" pixel; on macs0647
-  the coverage area is 16.5192 arcmin² against 16.5189 before). The `uncal` quick-look keeps
-  the per-run grid. No mosaic or exposure pixel changes.
-
 ### Infrastructure
 - **Mosaic background subtraction runs on the coverage and updates the guard
   incrementally.** `SubtractBackground.compute` works on the bounding box of the
@@ -117,6 +83,48 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **NIRCam per-exposure background: deeper source mask, less growth.**
+  `[nircam.bkg.mask]` defaults change from `tier_nsigma = 1.5` to `0.5` in every tier and
+  `tier_dilate_size` from `[33, 25, 21, 19]` to `[17, 13, 11, 9]`. The 1.5-sigma mask left
+  the faint outskirts of sources and of diffraction spikes in the background fit, which
+  over-subtracted beside them (negative troughs along spikes on MACS0647); detecting
+  deeper covers them where growing the mask did not. Changes pixel values of every
+  exposure reprocessed from the `bkg` step. Chosen by eye on per-exposure masks and test
+  mosaics of one field (MACS0647, F200W and F277W); not yet checked on a blank field. The
+  mosaic-level mask settings in `[nircam.resample]` are unchanged. To keep the previous
+  behaviour set the two lists back in `[nircam.bkg.mask]` or per field.
+- **A post-starburst continuum template for redshift fitting.** Galaxies with a strong Balmer
+  break and blue rest-optical colours (a faint, red rest-UV and an unreddened optical/NIR) had
+  no continuum template that matched them, so the fitter reproduced the break with emission
+  lines, often at the wrong redshift (z ≈ 0.6–1.8 for galaxies at z ≈ 2.3–4). The sfhz grid
+  gains a 17th continuum template, `psb_tq0.03_av0.5_steep`: constant star formation for 50 Myr
+  that stopped 30 Myr ago, half-solar metallicity, Salim attenuation with Av = 0.5 and
+  δ = −1.0, the same in every z-bin (clipped to the age of the universe) and never scaled by
+  `boost_av`. `make_sfhz_template_grid` takes such truncated-SFH entries in
+  `_SFHZ_CONTINUUM_PARAMS` (`sfh: 'truncated'`). The template pickles must be regenerated
+  (`cfpipe nirspec make-templates`). On 719 PRISM spectra of quality ≥ 3 objects in six
+  observations, correct auto-redshifts (|Δz|/(1+z) < 0.05) go from 679 to 691 (15 fixed, 3
+  broken, all three at S/N ≤ 11 with Δχ² < 7 between the peaks); with Hα masked at the
+  inspected redshift, from 629 to 658.
+- **The redshift fitter no longer has a HeI λ5876 template.** The `HeI5876` emission-line
+  template carried the line alone, so NNLS could put a faint noise feature at any redshift
+  down as HeI with nothing else predicted, and many spectra were fit that way. The template is
+  removed from `EMISSION_LINES`. In bright emitters, HeI's flux (a few percent of Hα) is now
+  left in the residual instead of being modeled. Rerunning `cfpipe nirspec zfit` can change
+  `ZBEST` / `ZQUAL` for spectra whose best fit leaned on HeI. No template pickle needs
+  rebuilding: the line templates are built from `EMISSION_LINES` at fit time. `linefit` still
+  measures HeI λ5876.
+- **NIRCam exposure maps are on one grid per field.** The canonical maps of `cfpipe nircam
+  expmap` used a grid centered on the footprints of the filters of one run, so a run of some
+  filters put its maps on a different grid from the field's other maps. The grid is now the
+  field's: a north-up TAN projection with the field's `tangent_point` at a pixel center,
+  windowed to enclose the calibrated exposures of every filter of the field on the machine.
+  Maps of any filter from any run are on the same pixels. A map on disk is reused only when
+  its grid, its number of exposures and their summed time are the current ones (it was reused
+  whenever the file existed), and `<field>_layout.json` records the grid. A field's maps move
+  onto the new lattice the next time they are built (by less than one 0.5" pixel; on macs0647
+  the coverage area is 16.5192 arcmin² against 16.5189 before). The `uncal` quick-look keeps
+  the per-run grid. No mosaic or exposure pixel changes.
 - **Stage 1 finishes an exposure with no open shutter on the detector (#681).** `jwst`
   raises `NoDataOnDetectorError` when nothing projects onto a detector (e.g. NRS2 of
   `jw01747017001_03101`). `clean_flicker_noise` with `mask_science_regions = true` hit
