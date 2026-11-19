@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple
 #   layer. The spectra table holds science metadata only; file keys, hashes, and
 #   local-download bookkeeping moved to the storage_objects mirror.
 #   v7: storage_objects.filter — per-filter NIRCam scope column (mirrors the
-#   server registry), so `campfire download --filters` scopes without key parsing.
+#   server registry), so `campfire pull im --filters` scopes without key parsing.
 #   v8 (storage unification): storage_objects.sci_dq_hash mirrors the server's
 #   science-only NIRCam identity, and the pushed_* columns carry the PUSH-side
 #   bookkeeping (`campfire push` / deploy dedup) — the mirror now serves both
@@ -1318,7 +1318,7 @@ class LocalStore:
         among the mirror rows of ``product_types`` (all rows when None).
 
         The catalog sync walks finals only, so its cursor must be computed over
-        finals only: the intermediates `pull --intermediate` indexes on demand
+        finals only: the intermediates a `pull ... --products exposures` indexes on demand
         carry their own (often newer) timestamps, and a cursor taken over the
         whole mirror would skip a final update that landed between the last
         catalog sync and that pull.
@@ -1348,7 +1348,7 @@ class LocalStore:
         kinds and scope the walk actually asked the server for. Rows outside it
         were not offered for refresh and must not be purged — a catalog sync
         walks finals only, while the intermediates of an observation are
-        refreshed by ``pull --intermediate`` for that observation alone.
+        refreshed by ``pull spec --products exposures`` for that observation alone.
         Unscoped (all None) purges every row the walk did not touch, the
         pre-slicing behaviour.
 
@@ -1521,6 +1521,7 @@ class LocalStore:
         gratings: Optional[List[str]] = None,
         fields: Optional[List[str]] = None,
         filters: Optional[List[str]] = None,
+        tiles: Optional[List[str]] = None,
     ) -> Dict[str, List[dict]]:
         """Find storage objects that need downloading, grouped by scope.
 
@@ -1532,7 +1533,8 @@ class LocalStore:
         column; rows without a filter (NIRSpec, field-level) are always included,
         mirroring the grating rule. ``fields`` selects field-scoped NIRCam rows
         (``observation IS NULL``); results are grouped by ``observation`` for
-        NIRSpec and by ``field`` for NIRCam.
+        NIRSpec and by ``field`` for NIRCam. ``tiles`` narrows NIRCam mosaics to
+        the tiles their filenames name; other rows are not per-tile and pass.
         """
         where = ["so.status = 'active'"]
         params: list = []
@@ -1586,9 +1588,14 @@ class LocalStore:
             params,
         ).fetchall()
 
+        tile_set = set(tiles) if tiles else None
         result: Dict[str, List[dict]] = {}
         for row in rows:
             d = dict(row)
+            if tile_set is not None and d["product_type"] == "nircam_mosaic":
+                from ..modality import mosaic_tile
+                if mosaic_tile(d.get("field") or "", d["storage_key"].rsplit("/", 1)[-1]) not in tile_set:
+                    continue
             d["status"] = "new" if d["local_file_hash"] is None else "updated"
             # NIRSpec rows key on observation; field-scoped NIRCam rows
             # (observation NULL) key on field.
@@ -1617,7 +1624,7 @@ class LocalStore:
         """Locally materialized objects whose server hash differs from local."""
         rows = self._conn.execute(
             """
-            SELECT storage_key, observation, product_type, spectrum_id,
+            SELECT storage_key, observation, field, product_type, spectrum_id,
                    local_path, content_hash AS server_hash, local_file_hash
             FROM storage_objects
             WHERE local_path IS NOT NULL

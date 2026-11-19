@@ -474,7 +474,7 @@ class APIClient:
 
     def release_files(self, tag: str) -> dict:
         """The record of a data release with the export files the caller may
-        read (``GET /api/v1/dr/<tag>/files``): what ``campfire pull --dr``
+        read (``GET /api/v1/dr/<tag>/files``): what ``campfire pull spec --dr``
         loads and what ``campfire cite`` reads when the release is not pulled."""
         response = self._session.get(f"/dr/{tag}/files", timeout=60)
         _handle_response_error(response, f"release {tag}")

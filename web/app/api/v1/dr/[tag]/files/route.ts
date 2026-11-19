@@ -15,7 +15,7 @@ import {
 } from '@/lib/server/dr-exports';
 
 /**
- * GET /api/v1/dr/<tag>/files   (bearer; `campfire pull --dr`)
+ * GET /api/v1/dr/<tag>/files   (bearer; `campfire pull spec --dr`)
  *
  * The export files of a data release this caller may read, with presigned
  * urls: per-program files within the caller's accessible programs, and the

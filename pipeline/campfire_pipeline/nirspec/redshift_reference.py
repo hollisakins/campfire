@@ -2,7 +2,7 @@
 
 The cloud→local half of the emission-line loop. Inspection happens on the
 portal (``objects.redshift`` / ``objects.redshift_quality``, one tuple per
-sky position); ``campfire pull --obs X`` (or ``campfire deploy nirspec
+sky position); ``campfire pull spec --obs X`` (or ``campfire deploy nirspec
 pull-redshifts``) materializes those decisions into this file, keyed by
 **target_id** (``<obs>_<source_id>``, the summary ECSV's ``object_id``), and
 ``cfpipe nirspec linefit`` reads it. The pipeline never talks to the portal:

@@ -261,7 +261,7 @@ def deploy_lines(obs_name: str, config: dict, *, dry_run: bool = False,
     print(f"Found {len(lines_paths)} line-fit products for {obs_name}")
     if not lines_paths:
         print("Nothing to deploy — run `cfpipe nirspec linefit --obs "
-              f"{obs_name}` (after `campfire pull --obs {obs_name}`) first.")
+              f"{obs_name}` (after `campfire pull spec --obs {obs_name}`) first.")
         return
     if not confirm_non_release_line_fits(lines_paths, dry_run=dry_run, auto_approve=auto_approve):
         return

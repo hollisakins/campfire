@@ -7,7 +7,7 @@ Provides commands for authentication, catalog sync, and FITS downloading:
 - campfire whoami: Show current authenticated user
 - campfire status: Check credentials, catalog, and download status
 - campfire sync: Sync the full object catalog (metadata only)
-- campfire pull: Download FITS spectrum files (`download` is a back-compat alias)
+- campfire pull spec|im: Download data products by modality (`download` is a back-compat alias)
 """
 
 import shutil
@@ -25,6 +25,14 @@ from .auth.device_flow import run_device_flow
 from .auth.tokens import TokenManager
 from .exceptions import AuthenticationError
 from ._version import __version__
+from .modality import (
+    IMAGING,
+    SPECTROSCOPY,
+    ModalityGroup,
+    normalize_names,
+    resolve_instruments,
+    resolve_products,
+)
 
 
 class _VariadicOption(click.Option):
@@ -195,7 +203,7 @@ def _sync_tail(api, store, *, full: bool, say=click.echo) -> None:
     if tag:
         if store.get_meta(_LATEST_DR_META) != tag:
             say(f"\n  {tag} published {str(latest.get('published_at') or '')[:10]}; you are on live. "
-                f"`campfire pull --dr {tag}` fetches the release.")
+                f"`campfire pull spec --dr {tag}` fetches the release.")
             store.set_meta(_LATEST_DR_META, tag)
         else:
             say(f"  Latest data release: {tag}; you are on live.")
@@ -526,23 +534,23 @@ def format_budget_lines(budget: dict) -> list[str]:
 
 
 @cli.command()
-@click.option("--obs", "obs_scope", multiple=True, cls=_VariadicOption,
-              help="Also show the push-side diff for these observation(s) "
-                   "(admin, deploy extra)")
-@click.option("--field", "field_scope", multiple=True, cls=_VariadicOption,
-              help="Also show the push-side diff for these NIRCam field(s)")
+# Removed in 0.8: the scoped push-side diff is `campfire push spec|im ... --dry-run`.
+@click.option("--obs", "obs_scope", multiple=True, cls=_VariadicOption, hidden=True)
+@click.option("--field", "field_scope", multiple=True, cls=_VariadicOption, hidden=True)
 @click.option("--base-url", default=None, help="API base URL")
 def status(obs_scope, field_scope, base_url: Optional[str]):
     """Check credentials, catalog, and the local↔cloud storage state.
 
-    Unscoped: consumer view — what the cloud has vs what is materialized
-    locally, plus staleness and (for admins) the storage budget.
-
-    Scoped with --obs/--field (operators): additionally runs the push planner
-    in dry mode and reports the other direction — how many local tree products
-    are new / changed / unchanged relative to the cloud registry (what
-    `campfire push` would transfer).
+    What the cloud has vs what is materialized locally, plus staleness and
+    (for admins) the storage budget. What a push would transfer is
+    `campfire push spec --obs X --dry-run` / `campfire push im --field Y --dry-run`.
     """
+    if obs_scope or field_scope:
+        lines = ["`campfire status` no longer takes a scope; what a push would transfer is a "
+                 "push dry run:"]
+        lines += [f"  campfire push spec --obs {' '.join(obs_scope)} --dry-run"] if obs_scope else []
+        lines += [f"  campfire push im --field {' '.join(field_scope)} --dry-run"] if field_scope else []
+        raise click.UsageError("\n".join(lines))
     base_url = base_url or resolve_base_url()
 
     try:
@@ -627,7 +635,7 @@ def status(obs_scope, field_scope, base_url: Optional[str]):
             click.echo(f"  {r['observation']:<25} {finals:<12} {inter:<15} {size:<12}")
     else:
         click.echo()
-        click.echo("  No files downloaded yet. Run: campfire download --obs <name>")
+        click.echo("  No files downloaded yet. Run: campfire pull spec --obs <name>  (or: campfire pull im --field <name>)")
 
     # Global cloud storage budget (admin-only; best-effort, skipped otherwise).
     try:
@@ -650,28 +658,6 @@ def status(obs_scope, field_scope, base_url: Optional[str]):
         click.echo(f"\nDisk usage: {format_size(total)}")
 
     store.close()
-
-    # Push-side diff (operators): what `campfire push` would transfer for the
-    # requested scope — new / changed / unchanged local tree products vs the
-    # cloud registry (live key-scoped fetch + the mirror's stat fast path).
-    if obs_scope or field_scope:
-        try:
-            from campfire.deploy.config import load_config
-            from campfire.deploy.push import push_field, push_observation
-        except ImportError:
-            click.echo("\n✗ --obs/--field status needs the deploy extra: "
-                       "pip install campfire[deploy]")
-            return
-        try:
-            config = load_config(None)
-        except Exception as e:
-            click.echo(f"\n✗ Push-side status unavailable: {e}")
-            return
-        click.echo("\nPush-side diff (what `campfire push` would transfer):")
-        for name in obs_scope:
-            push_observation(name, config, dry_run=True, dry_run_note=False)
-        for name in field_scope:
-            push_field(name, config, dry_run=True, dry_run_note=False)
 
 
 # ---------------------------------------------------------------------------
@@ -790,100 +776,443 @@ def sync_cmd(full: bool, no_snapshot: bool, base_url: Optional[str],
 # ---------------------------------------------------------------------------
 # Pull command (cloud→local data products; alias: download)
 # ---------------------------------------------------------------------------
+#
+# `campfire pull <modality>`: the modality decides how data is selected and
+# what the product names mean (campfire/modality.py). Bare `campfire pull`
+# keeps only what spans every modality: --stale and --provenance.
+
+_PULL_LEGACY_FLAGS = ("--obs", "--program", "--field", "--grating", "--filters",
+                      "--intermediate", "--all", "--dr")
 
 
-@cli.command(name="pull")
-@click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption, help="Pull by observation name")
-@click.option("--program", "program_filter", multiple=True, cls=_VariadicOption, help="Pull by program slug")
-@click.option("--field", "field_filter", multiple=True, cls=_VariadicOption, help="Pull by field name")
-@click.option("--grating", "grating_filter", multiple=True, cls=_VariadicOption,
-              help="NIRSpec: narrow finals to these gratings (e.g. PRISM G395M)")
-@click.option("--filters", "filter_filter", multiple=True, cls=_VariadicOption,
-              help="NIRCam: narrow to these filters (e.g. f277w f356w f444w)")
-@click.option("--stale", is_flag=True, help="Re-download files updated on the server")
-@click.option("--intermediate", "include_intermediate", is_flag=True,
-              help="Also fetch canonical intermediates (NIRSpec spectrum-exposures, NIRCam exposures + expmaps)")
-@click.option("--all", "download_all", is_flag=True, help="Download everything accessible")
-@click.option("--workers", default=4, help="Parallel download workers")
-@click.option("--yes", is_flag=True, help="Skip confirmation")
-@click.option("--dry-run", is_flag=True, help="Show plan without downloading")
-@click.option("--no-annotations", "no_annotations", is_flag=True,
-              help="Skip regenerating review annotations (masks, stuck shutters, "
-                   "exclusions) for admins with the deploy extra installed")
-@click.option("--base-url", default=None, help="API base URL")
-@click.option("--dr", "dr_tag", default=None, metavar="TAG",
-              help="Pull a data release: its catalog into dr/TAG/meta and its archived "
-                   "bytes into dr/TAG/products (never the live tree)")
+def _transfer_options(f):
+    """--workers / --yes / --dry-run / --base-url, shared by every pull form."""
+    f = click.option("--base-url", default=None, help="API base URL")(f)
+    f = click.option("--dry-run", is_flag=True, help="Show the plan without downloading")(f)
+    f = click.option("--yes", is_flag=True, help="Skip confirmation")(f)
+    f = click.option("--workers", default=4, show_default=True, help="Parallel download workers")(f)
+    return f
+
+
+def _instrument_option(modality):
+    return click.option(
+        "--instrument", "instruments", multiple=True, cls=_VariadicOption,
+        help=f"Only these instruments ({', '.join(modality.instruments)}; default: all)")
+
+
+def _products_option(modality):
+    names = ", ".join(modality.product_names())
+    finals = ", ".join(modality.finals())
+    return click.option(
+        "--products", multiple=True, cls=_VariadicOption,
+        help=f"What to fetch: {names} (space or comma separated; default: {finals})")
+
+
+@cli.group(name="pull", cls=ModalityGroup, legacy_flags=_PULL_LEGACY_FLAGS,
+           invoke_without_command=True)
+@click.option("--stale", is_flag=True,
+              help="Re-download every local file the server has updated, any modality")
 @click.option("--provenance", "provenance_file", default=None, metavar="FILE",
               type=click.Path(exists=True, dir_okay=False, path_type=Path),
               help="Fetch the bytes a provenance file records: into the live tree while live "
                    "still carries them, else from the release holding them (into dr/TAG/products)")
-def download(obs_filter, program_filter, field_filter, grating_filter, filter_filter,
-             stale, include_intermediate, download_all, workers, yes, dry_run,
-             no_annotations, base_url, dr_tag, provenance_file):
+@click.option("--no-annotations", "no_annotations", is_flag=True,
+              help="Skip regenerating review annotations (admins with the deploy extra)")
+@_transfer_options
+@click.pass_context
+def pull_group(ctx, stale, provenance_file, no_annotations, workers, yes, dry_run, base_url):
     """Pull cloud data products into the local tree (alias: download).
 
-    The cloud→local half of the storage plane. Requires a prior 'campfire sync'
-    to populate the local catalog (run automatically here). Select what to pull
-    with --obs / --program (NIRSpec) or --field (NIRSpec observations in a
-    field, or NIRCam field products), then optionally scope within a selection:
+    The cloud→local half of the storage plane. Pick a modality, then a scope:
 
     \b
-      --grating   NIRSpec: narrow finals to these gratings (e.g. PRISM G395M)
-      --filters   NIRCam:  narrow to these filters (e.g. f277w f356w f444w)
+      campfire pull spectroscopy (spec)   --obs / --program / --field / --all
+      campfire pull imaging (im)          --field / --all
 
-    By default only finals are fetched (NIRSpec spectra, NIRCam mosaics);
-    --intermediate also pulls the canonical intermediates (NIRSpec spectrum-
-    exposures, NIRCam exposures + expmaps) so you can restore a deleted-local
-    observation or inspect a stage-1/2 draft.
-
-    For admins with the deploy extra installed, a scoped pull also regenerates
-    the web-authored review annotations (NIRSpec rate masks / stuck shutters /
-    bkg overrides; NIRCam masks + exclusions) into reference/ — the pipeline
-    inputs for the next reduction. --no-annotations skips that step.
+    Each takes --products (default: the finals), --instrument, its own
+    narrowers (spec: --grating; im: --filters, --tile) and --dr TAG for a
+    data release. Run a subcommand with no scope to list what is available.
 
     \b
     Examples:
-      campfire pull --obs ember_uds_p4
-      campfire pull --obs ember_uds_p4 ember_uds_p5
-      campfire pull --program EMBER-UDS --grating PRISM
-      campfire pull --obs ember_egs_p1 --intermediate
-      campfire pull --field egs --filters f277w f356w f444w --intermediate
-      campfire pull --field cosmos
+      campfire pull spec --obs ember_uds_p4
+      campfire pull spec --program EMBER-UDS --grating PRISM
+      campfire pull spec --obs ember_egs_p1 --products spectra,exposures
+      campfire pull im --field nep --products exposures,expmaps
+      campfire pull im --field cosmos --filters f444w --tile A1
+      campfire pull spec --dr DR2026.1 --obs ember_uds_p4
       campfire pull --stale
-      campfire pull --all
-      campfire pull --dr DR2026.1 --obs ember_uds_p4   (a data release, frozen bytes)
-      campfire pull --provenance paper.campfire.json   (the bytes a provenance file records)
+      campfire pull --provenance paper.campfire.json
     """
+    if ctx.invoked_subcommand:
+        if stale or provenance_file:
+            raise click.UsageError("--stale and --provenance span every modality; "
+                                   "use them without a subcommand.", ctx)
+        # Transfer flags given before the subcommand still apply to it.
+        ctx.obj = dict(no_annotations=no_annotations, workers=workers, yes=yes,
+                       dry_run=dry_run, base_url=base_url)
+        return
+    if provenance_file and stale:
+        raise click.UsageError("--provenance takes its selection from the file; "
+                               "it does not combine with --stale.", ctx)
     if provenance_file:
-        selection = (obs_filter, program_filter, field_filter, grating_filter, filter_filter,
-                     stale, include_intermediate, download_all, dr_tag)
-        if any(selection):
-            click.echo("✗ --provenance takes its selection from the file; it combines with no other "
-                       "selection flag (nor --dr, --stale, --intermediate, --all).", err=True)
-            sys.exit(2)
         _pull_provenance(provenance_file, yes, dry_run, base_url)
         return
-    if dr_tag:
-        _pull_release(dr_tag, obs_filter, program_filter, field_filter, grating_filter, filter_filter,
-                      stale, include_intermediate, download_all, workers, yes, dry_run, base_url)
+    if stale:
+        _pull_live(None, stale=True, no_annotations=no_annotations, workers=workers,
+                   yes=yes, dry_run=dry_run, base_url=base_url)
         return
+    raise click.UsageError("Pick a modality: `campfire pull spec ...` or `campfire pull im ...` "
+                           "(run either with no scope to list what is available).", ctx)
 
-    from .config import products_dir as _products_dir, meta_dir as _meta_dir
-    from .sync import (
-        download_objects,
-        sync_metadata,
-        format_size,
-    )
-    from .db.store import FINAL_PRODUCT_TYPES, INTERMEDIATE_PRODUCT_TYPES
+
+def _merged_transfer(ctx, **local):
+    """Subcommand transfer flags, OR'd with any given before the subcommand."""
+    parent = ctx.obj or {}
+    out = dict(local)
+    for k in ("no_annotations", "yes", "dry_run"):
+        out[k] = bool(local.get(k)) or bool(parent.get(k))
+    out["base_url"] = local.get("base_url") or parent.get("base_url")
+    if parent.get("workers") not in (None, 4) and local.get("workers") == 4:
+        out["workers"] = parent["workers"]
+    return out
+
+
+@click.command(name="spectroscopy")
+@click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption, help="Observation name(s)")
+@click.option("--program", "program_filter", multiple=True, cls=_VariadicOption, help="Program slug(s)")
+@click.option("--field", "field_filter", multiple=True, cls=_VariadicOption,
+              help="Field name(s): every observation in the field")
+@click.option("--all", "download_all", is_flag=True, help="Every observation you can read")
+@_instrument_option(SPECTROSCOPY)
+@_products_option(SPECTROSCOPY)
+@click.option("--grating", "grating_filter", multiple=True, cls=_VariadicOption,
+              help="Narrow spectra to these gratings (e.g. PRISM G395M)")
+@click.option("--dr", "dr_tag", default=None, metavar="TAG",
+              help="From a data release: its catalog into dr/TAG/meta, its frozen spectra "
+                   "into dr/TAG/products (never the live tree)")
+@click.option("--no-annotations", "no_annotations", is_flag=True,
+              help="Skip regenerating review annotations and inspected redshifts")
+@_transfer_options
+@click.pass_context
+def pull_spectroscopy(ctx, obs_filter, program_filter, field_filter, download_all, instruments,
+                      products, grating_filter, dr_tag, no_annotations, workers, yes, dry_run,
+                      base_url):
+    """Spectra and their exposures, by observation, program or field.
+
+    \b
+    Products:  spectra (default), exposures
+    Scope:     --obs, --program, --field, --all  (combine freely)
+    Narrow:    --grating (spectra only)
+
+    A scoped pull also writes the inspected redshifts to
+    reference/nirspec/<obs>/redshifts.toml, and for admins with the deploy
+    extra the review annotations (rate masks, stuck shutters, bkg overrides).
+
+    \b
+    Examples:
+      campfire pull spec --obs ember_uds_p4 ember_uds_p5
+      campfire pull spec --program EMBER-UDS --grating PRISM
+      campfire pull spec --obs ember_egs_p1 --products spectra,exposures
+      campfire pull spec --dr DR2026.1 --program EMBER-UDS
+    """
+    t = _merged_transfer(ctx, no_annotations=no_annotations, workers=workers, yes=yes,
+                         dry_run=dry_run, base_url=base_url)
+    sel = _Selection(
+        modality=SPECTROSCOPY,
+        instruments=resolve_instruments(SPECTROSCOPY, instruments),
+        obs=normalize_names(obs_filter), programs=normalize_names(program_filter),
+        fields=normalize_names(field_filter), all=download_all,
+        gratings=normalize_names(grating_filter))
+    sel.products = resolve_products(SPECTROSCOPY, sel.instruments, products, verb="pull")
+    if dr_tag:
+        _pull_release(dr_tag, sel, t["workers"], t["yes"], t["dry_run"], t["base_url"])
+        return
+    _pull_live(sel, **t)
+
+
+@click.command(name="imaging")
+@click.option("--field", "field_filter", multiple=True, cls=_VariadicOption, help="Field name(s)")
+@click.option("--all", "download_all", is_flag=True, help="Every field you can read")
+@_instrument_option(IMAGING)
+@_products_option(IMAGING)
+@click.option("--filters", "filter_filter", multiple=True, cls=_VariadicOption,
+              help="Narrow to these filters (e.g. f277w f356w f444w)")
+@click.option("--tile", "tile_filter", multiple=True, cls=_VariadicOption,
+              help="Narrow mosaics to these tiles (fields.toml tile names)")
+@click.option("--dr", "dr_tag", default=None, metavar="TAG",
+              help="From a data release: its frozen mosaics into dr/TAG/products")
+@click.option("--no-annotations", "no_annotations", is_flag=True,
+              help="Skip regenerating review annotations (masks, exclusions)")
+@_transfer_options
+@click.pass_context
+def pull_imaging(ctx, field_filter, download_all, instruments, products, filter_filter,
+                 tile_filter, dr_tag, no_annotations, workers, yes, dry_run, base_url):
+    """Mosaics, exposures and exposure maps, by field.
+
+    \b
+    Products:  mosaics (default), exposures, expmaps
+    Scope:     --field, --all
+    Narrow:    --filters (every product), --tile (mosaics only; exposures
+               and expmaps cover the whole field)
+
+    For admins with the deploy extra, a scoped pull also regenerates the
+    review annotations (masks, exclusions) into reference/.
+
+    \b
+    Examples:
+      campfire pull im --field cosmos
+      campfire pull im --field nep --products exposures,expmaps
+      campfire pull im --field egs --filters f277w f356w f444w --products mosaics,exposures
+      campfire pull im --field cosmos --tile A1 A2 --filters f444w
+    """
+    t = _merged_transfer(ctx, no_annotations=no_annotations, workers=workers, yes=yes,
+                         dry_run=dry_run, base_url=base_url)
+    sel = _Selection(
+        modality=IMAGING,
+        instruments=resolve_instruments(IMAGING, instruments),
+        fields=normalize_names(field_filter), all=download_all,
+        filters=[f.lower() for f in normalize_names(filter_filter)],
+        tiles=normalize_names(tile_filter))
+    sel.products = resolve_products(IMAGING, sel.instruments, products, verb="pull")
+    if sel.tiles and "mosaics" not in sel.products:
+        raise click.UsageError("--tile narrows mosaics; exposures and expmaps cover the whole "
+                               "field. Add mosaics to --products, or drop --tile.", ctx)
+    if dr_tag:
+        _pull_release(dr_tag, sel, t["workers"], t["yes"], t["dry_run"], t["base_url"])
+        return
+    _pull_live(sel, **t)
+
+
+pull_group.add_modality(pull_spectroscopy, SPECTROSCOPY.alias)
+pull_group.add_modality(pull_imaging, IMAGING.alias)
+
+
+class _Selection:
+    """A resolved pull request: modality, instruments, products, scope, narrowers."""
+
+    def __init__(self, modality, instruments, obs=(), programs=(), fields=(), all=False,
+                 gratings=(), filters=(), tiles=(), products=()):
+        self.modality = modality
+        self.instruments = list(instruments)
+        self.obs, self.programs, self.fields = list(obs), list(programs), list(fields)
+        self.all = all
+        self.gratings, self.filters, self.tiles = list(gratings), list(filters), list(tiles)
+        self.products = list(products)
+
+    @property
+    def scoped(self) -> bool:
+        return bool(self.obs or self.programs or self.fields or self.all)
+
+    @property
+    def product_types(self) -> list:
+        return self.modality.pull_types(self.products, self.instruments)
+
+
+def _sync_before_pull(api, store) -> None:
+    from .config import meta_dir as _meta_dir
+    from .sync import sync_metadata
+    try:
+        is_first_sync = store.get_max_objects_updated_at() is None
+        click.echo("Syncing catalog for the first time..." if is_first_sync else "Syncing catalog...")
+        result = sync_metadata(api, store, _meta_dir(), show_progress=is_first_sync)
+        if result.get("needs_full_sync"):
+            click.echo("  Local catalog out of sync with server, running full sync...")
+            # A mismatch right after a snapshot bootstrap would only repeat
+            # with the same snapshot: walk live instead.
+            result = sync_metadata(api, store, _meta_dir(), show_progress=True, full=True,
+                                   use_snapshot=not result.get("snapshot_id"))
+        parts = []
+        if result.get("objects"):
+            parts.append(f"{result['objects']} objects updated")
+        if result.get("spectra"):
+            parts.append(f"{result['spectra']} spectra updated")
+        if result.get("objects_purged"):
+            parts.append(f"{result['objects_purged']} removed")
+        click.echo(f"  {', '.join(parts)}" if parts else "  Up to date.")
+    except Exception as e:
+        click.echo(f"  ⚠ Sync failed: {e}", err=True)
+        click.echo("  Continuing with existing catalog data.")
+
+
+def _list_spectroscopy(store, *, tag: Optional[str] = None) -> None:
+    summary = store.get_observation_summary()
+    head = (f"Release {tag}: {len(summary)} observation(s) you may read" if tag
+            else f"Available observations ({len(summary)} total):")
+    lines = ["", head]
+    if len(summary) > 30:
+        lines.append("(scroll with arrow keys, q to quit)")
+    lines += ["", f"  {'OBSERVATION':<25} {'PROGRAM':<15} {'FIELD':<10} {'SPECTRA':>8}   LOCAL"]
+    for row in summary:
+        downloaded, total = row["downloaded_count"], row["spectrum_count"]
+        local_str = (f"{downloaded} (complete)" if total and downloaded >= total
+                     else f"{downloaded}/{total}" if downloaded else "")
+        lines.append(f"  {row['observation']:<25} {row['program_slug'] or '':<15} "
+                     f"{row['field'] or '':<10} {total:>8}   {local_str}")
+    dr = f" --dr {tag}" if tag else ""
+    lines += ["", f"Pull with: campfire pull spec{dr} --obs / --program / --field ..., or --all.", ""]
+    output = "\n".join(lines)
+    click.echo_via_pager(output) if len(summary) > 30 else click.echo(output)
+
+
+def _list_imaging(store, *, tag: Optional[str] = None) -> None:
+    from .sync import format_size
+    rows = store._conn.execute(
+        """SELECT field, COUNT(DISTINCT LOWER(filter)) AS n_filters,
+                  COUNT(*) AS n, SUM(size_bytes) AS bytes,
+                  SUM(local_file_hash IS NOT NULL) AS local
+           FROM storage_objects
+           WHERE product_type = 'nircam_mosaic' AND status = 'active' AND field IS NOT NULL
+           GROUP BY field ORDER BY field""").fetchall()
+    head = f"Release {tag}: imaging" if tag else "Available imaging (mosaics):"
+    lines = ["", head, "", f"  {'FIELD':<14} {'FILTERS':>7} {'MOSAIC FILES':>13} {'SIZE':>10}   LOCAL"]
+    for r in rows:
+        local = r["local"] or 0
+        local_str = (f"{local} (complete)" if local and local >= r["n"]
+                     else f"{local}/{r['n']}" if local else "")
+        lines.append(f"  {r['field']:<14} {r['n_filters']:>7} {r['n']:>13} "
+                     f"{format_size(r['bytes'] or 0):>10}   {local_str}")
+    if not rows:
+        lines.append("  (none)")
+    dr = f" --dr {tag}" if tag else ""
+    lines += ["", f"Pull with: campfire pull im{dr} --field ... [--products mosaics,exposures,expmaps], "
+                  "or --all.", ""]
+    click.echo("\n".join(lines))
+
+
+def _imaging_fields(store, product_types) -> list:
+    """Fields with an active indexed row of these product kinds."""
+    ph = ",".join("?" * len(product_types)) or "NULL"
+    return sorted(r["field"] for r in store._conn.execute(
+        f"SELECT DISTINCT field FROM storage_objects WHERE observation IS NULL "
+        f"AND field IS NOT NULL AND status = 'active' AND product_type IN ({ph})",
+        list(product_types)))
+
+
+def _resolve_scope(sel, store, catalog_obs, *, where: str = "the catalog"):
+    """(observations, fields) of a selection; exits on a name that resolves to nothing."""
+    target_obs, target_fields = set(), set()
+    if sel.modality is SPECTROSCOPY:
+        if sel.all:
+            target_obs.update(catalog_obs)
+        for name in sel.obs:
+            if name not in catalog_obs:
+                click.echo(f"✗ Observation '{name}' is not in {where}. Run: campfire sync", err=True)
+                sys.exit(1)
+            target_obs.add(name)
+        for prog in sel.programs:
+            found = {s["observation"] for s in store.query_spectra(programs=[prog], limit=999999)
+                     if s.get("observation")}
+            if not found:
+                click.echo(f"✗ No observations of program '{prog}' in {where}.", err=True)
+                sys.exit(1)
+            target_obs.update(found)
+        for fld in sel.fields:
+            found = {s["observation"] for s in store.query_spectra(fields=[fld], limit=999999)
+                     if s.get("observation")}
+            if not found:
+                click.echo(f"✗ No spectroscopy in field '{fld}' in {where}"
+                           f" (imaging? try: campfire pull im --field {fld}).", err=True)
+                sys.exit(1)
+            target_obs.update(found)
+    else:
+        if sel.all:
+            target_fields.update(_imaging_fields(store, sel.product_types))
+        for fld in sel.fields:
+            target_fields.add(fld)   # checked against the indexed rows once intermediates are in
+    return sorted(target_obs), sorted(target_fields)
+
+
+def _check_narrowers(sel, store, target_obs, target_fields) -> None:
+    """A narrower that matches nothing in the selection is an error, never a note."""
+    types = sel.product_types
+    ph = ",".join("?" * len(types))
+    if sel.modality is IMAGING:
+        for fld in target_fields:
+            n = store._conn.execute(
+                f"SELECT COUNT(*) FROM storage_objects WHERE field = ? AND status = 'active' "
+                f"AND product_type IN ({ph})", [fld, *types]).fetchone()[0]
+            if not n:
+                click.echo(f"✗ No {', '.join(sel.products)} for field '{fld}'.", err=True)
+                sys.exit(1)
+        fph = ",".join("?" * len(target_fields)) or "NULL"
+        if sel.filters:
+            have = {r[0].lower() for r in store._conn.execute(
+                f"SELECT DISTINCT filter FROM storage_objects WHERE field IN ({fph}) "
+                f"AND product_type IN ({ph}) AND filter IS NOT NULL AND status = 'active'",
+                [*target_fields, *types])}
+            missing = [f for f in sel.filters if f not in have]
+            if missing:
+                click.echo(f"✗ No {', '.join(sel.products)} in filter(s) {', '.join(missing)} here; "
+                           f"available: {', '.join(sorted(have)) or 'none'}.", err=True)
+                sys.exit(1)
+        if sel.tiles:
+            from .modality import mosaic_tile
+            have = set()
+            for r in store._conn.execute(
+                    f"SELECT field, storage_key FROM storage_objects WHERE field IN ({fph}) "
+                    f"AND product_type = 'nircam_mosaic' AND status = 'active'", list(target_fields)):
+                t = mosaic_tile(r["field"], r["storage_key"].rsplit("/", 1)[-1])
+                if t:
+                    have.add(t)
+            missing = [t for t in sel.tiles if t not in have]
+            if missing:
+                click.echo(f"✗ No mosaics for tile(s) {', '.join(missing)} here; "
+                           f"available: {', '.join(sorted(have)) or 'none'}.", err=True)
+                sys.exit(1)
+    elif sel.gratings:
+        if "spectra" not in sel.products:
+            click.echo("✗ --grating narrows spectra; exposures carry no grating in the index. "
+                       "Add spectra to --products, or drop --grating.", err=True)
+            sys.exit(2)
+        oph = ",".join("?" * len(target_obs)) or "NULL"
+        have = {r[0].upper() for r in store._conn.execute(
+            f"SELECT DISTINCT grating FROM spectra WHERE observation IN ({oph}) AND grating IS NOT NULL",
+            list(target_obs))}
+        missing = [g for g in sel.gratings if g.upper() not in have]
+        if missing:
+            click.echo(f"✗ No spectra in grating(s) {', '.join(missing)} here; "
+                       f"available: {', '.join(sorted(have)) or 'none'}.", err=True)
+            sys.exit(1)
+
+
+def _show_plan(pending, scopes, *, verb_new="new") -> tuple:
+    """Print the per-scope and per-product plan; returns (files, bytes)."""
+    from .sync import format_size
+    total_files = total_bytes = 0
+    by_type: dict = {}
+    for scope in scopes:
+        rows = pending.get(scope, [])
+        if not rows:
+            click.echo(f"  {scope}: up to date")
+            continue
+        new = sum(1 for r in rows if r["status"] == "new")
+        upd = len(rows) - new
+        size = sum(r.get("size_bytes") or 0 for r in rows)
+        parts = ([f"{new} {verb_new}"] if new else []) + ([f"{upd} updated"] if upd else [])
+        click.echo(f"  {scope}: {', '.join(parts)} ({format_size(size)})")
+        total_files += len(rows)
+        total_bytes += size
+        for r in rows:
+            n, b = by_type.get(r["product_type"], (0, 0))
+            by_type[r["product_type"]] = (n + 1, b + (r.get("size_bytes") or 0))
+    if len(by_type) > 1:
+        click.echo("  by product:")
+        for ptype, (n, b) in sorted(by_type.items()):
+            click.echo(f"    {ptype:<28} {n:>7} files  {format_size(b):>10}")
+    return total_files, total_bytes
+
+
+def _pull_live(sel, *, stale=False, no_annotations=False, workers=4, yes=False, dry_run=False,
+               base_url=None):
+    """The live tree: one selection (or every stale file), planned locally from
+    the storage_objects mirror and fetched by the product-agnostic engine."""
+    from .config import products_dir as _products_dir
+    from .sync import download_objects, format_size, refresh_storage_scope
+    from .db.store import FINAL_PRODUCT_TYPES, DOWNLOADABLE_PRODUCT_TYPES
     from .api.session import create_download_session
 
-    product_types = list(FINAL_PRODUCT_TYPES)
-    if include_intermediate:
-        product_types += list(INTERMEDIATE_PRODUCT_TYPES)
-
     base_url = base_url or resolve_base_url()
-
     try:
         api_session = APISession(base_url=base_url)
         api = APIClient(api_session)
@@ -892,38 +1221,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
         sys.exit(1)
 
     store = _open_store()
-
-    # Auto-sync catalog before download
-    try:
-        is_first_sync = store.get_max_objects_updated_at() is None
-        if is_first_sync:
-            click.echo("Syncing catalog for the first time...")
-        else:
-            click.echo("Syncing catalog...")
-
-        result = sync_metadata(api, store, _meta_dir(), show_progress=is_first_sync)
-
-        if result.get("needs_full_sync"):
-            click.echo("  Local catalog out of sync with server, running full sync...")
-            # A mismatch right after a snapshot bootstrap would only repeat
-            # with the same snapshot: walk live instead.
-            result = sync_metadata(api, store, _meta_dir(), show_progress=True, full=True,
-                                   use_snapshot=not result.get("snapshot_id"))
-
-        parts = []
-        if result.get("objects"):
-            parts.append(f"{result['objects']} objects updated")
-        if result.get("spectra"):
-            parts.append(f"{result['spectra']} spectra updated")
-        if result.get("objects_purged"):
-            parts.append(f"{result['objects_purged']} removed")
-        if parts:
-            click.echo(f"  {', '.join(parts)}")
-        else:
-            click.echo("  Up to date.")
-    except Exception as e:
-        click.echo(f"  ⚠ Sync failed: {e}", err=True)
-        click.echo("  Continuing with existing catalog data.")
+    _sync_before_pull(api, store)
 
     catalog_obs = store.get_synced_observations()
     if not catalog_obs:
@@ -931,130 +1229,66 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
         store.close()
         sys.exit(1)
 
-    # No filters specified — show available observations and exit
-    if not obs_filter and not program_filter and not field_filter and not stale and not download_all:
-        summary = store.get_observation_summary()
-        store.close()
-
-        lines = []
-        lines.append("")
-        lines.append(f"Available observations ({len(summary)} total):")
-        if len(summary) > 30:
-            lines.append("(scroll with arrow keys, q to quit)")
-        lines.append("")
-        lines.append(f"  {'OBSERVATION':<25} {'PROGRAM':<15} {'FIELD':<10} {'SPECTRA':>8}   LOCAL")
-        for row in summary:
-            downloaded = row["downloaded_count"]
-            total = row["spectrum_count"]
-            if downloaded >= total and total > 0:
-                local_str = f"{downloaded} (complete)"
-            elif downloaded > 0:
-                local_str = f"{downloaded}/{total}"
-            else:
-                local_str = ""
-            lines.append(
-                f"  {row['observation']:<25} "
-                f"{row['program_slug']:<15} "
-                f"{row['field']:<10} "
-                f"{total:>8}   {local_str}"
-            )
-
-        lines.append("")
-        lines.append("Use --obs, --program, or --field to download, or --all for everything.")
-        lines.append("")
-
-        output = "\n".join(lines)
-        if len(summary) > 30:
-            click.echo_via_pager(output)
-        else:
-            click.echo(output)
-        return
-
-    # Determine which observations (NIRSpec) + fields (NIRCam) to download
-    target_fields = set()
     if stale:
         stale_files = store.get_stale_objects()
         if not stale_files:
             click.echo("All local files are up to date.")
             store.close()
             return
-        # Group stale files by observation
-        stale_obs = set(f["observation"] for f in stale_files if f.get("observation"))
-        target_obs = sorted(stale_obs)
-        click.echo(f"Found {len(stale_files)} stale file(s) across {len(target_obs)} observation(s)")
+        target_obs = sorted({f["observation"] for f in stale_files if f.get("observation")})
+        target_fields = sorted({f["field"] for f in stale_files
+                                if not f.get("observation") and f.get("field")})
+        product_types = sorted({f["product_type"] for f in stale_files
+                                if f.get("product_type") in DOWNLOADABLE_PRODUCT_TYPES})
+        click.echo(f"Found {len(stale_files)} stale file(s) across "
+                   f"{len(target_obs) + len(target_fields)} scope(s)")
+        gratings = filters = tiles = None
     else:
-        target_obs = set()
+        if not sel.scoped:
+            (_list_spectroscopy if sel.modality is SPECTROSCOPY else _list_imaging)(store)
+            store.close()
+            return
+        target_obs, target_fields = _resolve_scope(sel, store, catalog_obs)
+        product_types = sel.product_types
+        gratings = sel.gratings or None
+        filters = sel.filters or None
+        tiles = sel.tiles or None
 
-        if download_all:
-            target_obs = set(catalog_obs)
+        # The catalog sync mirrors finals only; the other products of this
+        # selection are indexed here, on demand, so nobody pages through them otherwise.
+        to_index = [t for t in product_types if t not in FINAL_PRODUCT_TYPES]
+        if to_index:
+            names = [p for p in sel.products if p not in sel.modality.finals(sel.instruments)]
+            click.echo(f"Indexing {', '.join(names)} for this selection...")
+            # Imaging --all takes its fields from the index, which holds the
+            # finals only: a field deployed without mosaics has no row there
+            # yet. Index the requested kinds field-wide, then re-derive the
+            # roster from what came back.
+            discover = sel.modality is IMAGING and sel.all
+            try:
+                refreshed = refresh_storage_scope(
+                    api, store, product_types=to_index,
+                    observations=target_obs or None,
+                    fields=None if discover else (target_fields or None),
+                    show_progress=True)
+                click.echo(f"  {refreshed['rows']} object(s) indexed.")
+            except Exception as e:
+                click.echo(f"  ⚠ Could not index: {e}", err=True)
+                click.echo("  Continuing with what is already indexed locally.")
+            if discover:
+                target_fields = _imaging_fields(store, product_types)
+        _check_narrowers(sel, store, target_obs, target_fields)
 
-        if obs_filter:
-            for name in obs_filter:
-                if name not in catalog_obs:
-                    click.echo(f"✗ Observation '{name}' not in catalog. Run: campfire sync", err=True)
-                    store.close()
-                    sys.exit(1)
-                target_obs.add(name)
-
-        if program_filter:
-            for prog in program_filter:
-                spectra = store.query_spectra(programs=[prog], limit=999999)
-                obs_for_prog = set(s["observation"] for s in spectra if s.get("observation"))
-                if not obs_for_prog:
-                    click.echo(f"✗ No observations found for program '{prog}'", err=True)
-                    store.close()
-                    sys.exit(1)
-                target_obs.update(obs_for_prog)
-
-        if field_filter:
-            for fld in field_filter:
-                spectra = store.query_spectra(fields=[fld], limit=999999)
-                obs_for_field = set(s["observation"] for s in spectra if s.get("observation"))
-                if obs_for_field:
-                    target_obs.update(obs_for_field)  # NIRSpec field → its observations
-                else:
-                    # NIRCam (or spectra-less) field: field-scoped storage objects
-                    # (observation NULL), selected directly by field below.
-                    target_fields.add(fld)
-
-        target_obs = sorted(target_obs)
-
-    target_fields = sorted(target_fields)
     if not target_obs and not target_fields:
         click.echo("Nothing to download.")
         store.close()
         return
 
-    filter_list = list(filter_filter) if filter_filter else None
-    if filter_list and not target_fields:
-        click.echo("Note: --filters scopes NIRCam field products; this selection "
-                   "has no NIRCam field, so it has no effect.")
-
-    # The catalog sync mirrors finals only; the intermediates of this selection
-    # are indexed here, on demand, so nobody pages through them otherwise.
-    if include_intermediate:
-        from .sync import refresh_storage_scope
-        click.echo("Indexing intermediates for this selection...")
-        try:
-            refreshed = refresh_storage_scope(
-                api, store,
-                product_types=list(INTERMEDIATE_PRODUCT_TYPES),
-                observations=list(target_obs) or None,
-                fields=list(target_fields) or None,
-                show_progress=True,
-            )
-            click.echo(f"  {refreshed['rows']} intermediate object(s) indexed.")
-        except Exception as e:
-            click.echo(f"  ⚠ Could not index intermediates: {e}", err=True)
-            click.echo("  Continuing with the intermediates already indexed locally.")
-
     # Reconcile DB with filesystem before planning — scoped to this pull's
     # selection so the pre-flight stays O(selection), not O(tree).
     verify = store.verify_local_objects(
         _products_dir(), product_types=product_types, show_progress=True,
-        observations=list(target_obs) or None,
-        fields=list(target_fields) or None,
-    )
+        observations=target_obs or None, fields=target_fields or None)
     if verify["cleared"]:
         click.echo(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
     if verify.get("rehashed"):
@@ -1065,120 +1299,69 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
         click.echo(f"  {verify['mismatched']} local file(s) don't match the cloud object "
                    f"(partial/foreign); will re-download.")
 
-    # Compute download plan locally (no HTTP requests)
-    grating_list = list(grating_filter) if grating_filter else None
     click.echo("Checking files...")
-
     pending = store.get_pending_objects(
-        observations=list(target_obs),
-        product_types=product_types,
-        gratings=grating_list,
-        fields=list(target_fields),
-        filters=filter_list,
-    )
-
-    # Show per-scope status (observation for NIRSpec, field for NIRCam)
-    obs_with_downloads = []
-    total_download = 0
-    total_files = 0
-
-    for obs in list(target_obs) + list(target_fields):
-        obs_pending = pending.get(obs, [])
-        if not obs_pending:
-            click.echo(f"  {obs}: up to date")
-            continue
-
-        new_count = sum(1 for s in obs_pending if s["status"] == "new")
-        updated_count = sum(1 for s in obs_pending if s["status"] == "updated")
-        download_bytes = sum(s.get("size_bytes") or 0 for s in obs_pending)
-
-        parts = []
-        if new_count:
-            parts.append(f"{new_count} new")
-        if updated_count:
-            parts.append(f"{updated_count} updated")
-        click.echo(f"  {obs}: {', '.join(parts)} ({format_size(download_bytes)})")
-
-        obs_with_downloads.append(obs)
-        total_download += download_bytes
-        total_files += len(obs_pending)
+        observations=target_obs, product_types=product_types, gratings=gratings,
+        fields=target_fields, filters=filters, tiles=tiles)
+    total_files, total_bytes = _show_plan(pending, target_obs + target_fields)
 
     if total_files == 0:
         click.echo("\nAll files up to date.")
         store.close()
         # Annotations are not hash-tracked — regenerate them even when the
         # products are current (an inspector may have edited masks since).
-        # target_obs is the RESOLVED observation set (--obs, --program, a
-        # NIRSpec --field, --stale all land here), not just the literal --obs.
         _maybe_pull_annotations(target_obs, target_fields, no_annotations)
         return
-
     if dry_run:
-        click.echo(f"\nDry run: would download {total_files} files ({format_size(total_download)})")
+        click.echo(f"\nDry run: would download {total_files} files ({format_size(total_bytes)})")
         store.close()
         return
-
     if not yes:
-        click.echo(f"\nDownload {total_files} files ({format_size(total_download)})?")
+        click.echo(f"\nDownload {total_files} files ({format_size(total_bytes)})?")
         if not click.confirm("Proceed?", default=True):
             store.close()
             return
 
-    # Execute downloads — one product-type-agnostic pass over the planned set.
-    # Plan + URLs are computed locally then presigned; the generic engine fetches,
-    # verifies content_hash, and records local state in the storage_objects mirror.
+    # One product-type-agnostic pass over the planned set: presigned, fetched,
+    # verified against content_hash, recorded in the storage_objects mirror.
     click.echo()
     dl_session = create_download_session(max_workers=workers)
     api_session._ensure_valid_token()
-
     stats = download_objects(
-        api,
-        list(target_obs),
-        product_types,
-        store,
-        _products_dir(),
-        max_workers=workers,
-        download_session=dl_session,
-        gratings=grating_list,
-        fields=list(target_fields),
-        filters=filter_list,
-    )
+        api, target_obs, product_types, store, _products_dir(),
+        max_workers=workers, download_session=dl_session,
+        gratings=gratings, fields=target_fields, filters=filters, tiles=tiles)
 
-    click.echo(f"\n✓ Download complete")
+    click.echo("\n✓ Download complete")
     click.echo(f"  Files downloaded: {stats.get('downloaded', 0)}")
     if stats.get("failed"):
         click.echo(f"  Files failed: {stats['failed']}")
     if stats.get("unauthorized"):
         click.echo(f"  Files skipped (no access): {stats['unauthorized']}")
-    click.echo(f"  Total size: {format_size(total_download)}")
-
+    click.echo(f"  Total size: {format_size(total_bytes)}")
     store.close()
-
-    # Resolved observations (not just literal --obs): --program, NIRSpec
-    # --field, and --stale selections regenerate their annotations too.
     _maybe_pull_annotations(target_obs, target_fields, no_annotations)
 
 
-def _pull_release(tag, obs_filter, program_filter, field_filter, grating_filter, filter_filter,
-                  stale, include_intermediate, download_all, workers, yes, dry_run, base_url):
-    """`campfire pull --dr TAG` (P5-2): the release's export files into its own
+def _pull_release(tag, sel, workers, yes, dry_run, base_url):
+    """`campfire pull <modality> --dr TAG` (P5-2): the release's export files into its own
     store (campfire.dr_store.load_release), then the archived bytes of the
     selection through the release-aware presign into dr/TAG/products/,
     verified against the release manifest and recorded on the release store,
     so an interrupted pull resumes at file granularity. The live tree and the
     live mirror are never touched."""
     from .config import resolve_data_dir
-    from .db.store import FINAL_PRODUCT_TYPES
     from .dr_store import load_release, open_store, release_dir
     from .exceptions import DRLoadError
     from .sync import download_objects, format_size
     from .api.session import create_download_session
 
-    for flag, name in ((include_intermediate, "--intermediate"), (stale, "--stale")):
-        if flag:
-            click.echo(f"✗ {name} does not apply to a data release: a release holds its finals, "
-                       f"frozen; a pull fetches what is missing locally.", err=True)
-            sys.exit(2)
+    finals = sel.modality.finals(sel.instruments)
+    extra = [p for p in sel.products if p not in finals]
+    if extra:
+        click.echo(f"✗ A data release holds its finals ({', '.join(finals)}), frozen; "
+                   f"{', '.join(extra)} are not in it.", err=True)
+        sys.exit(2)
 
     base_url = base_url or resolve_base_url()
     try:
@@ -1205,46 +1388,14 @@ def _pull_release(tag, obs_filter, program_filter, field_filter, grating_filter,
     products = root / "products"
     store = open_store(root)
     try:
-        catalog_obs = store.get_synced_observations()
-        if not obs_filter and not program_filter and not field_filter and not download_all:
-            summary = store.get_observation_summary()
-            lines = ["", f"Release {tag}: {len(summary)} observation(s) you may read", "",
-                     f"  {'OBSERVATION':<25} {'PROGRAM':<15} {'FIELD':<10} {'SPECTRA':>8}   LOCAL"]
-            for row in summary:
-                downloaded, total = row["downloaded_count"], row["spectrum_count"]
-                local_str = (f"{downloaded} (complete)" if total and downloaded >= total
-                             else f"{downloaded}/{total}" if downloaded else "")
-                lines.append(f"  {row['observation']:<25} {row['program_slug'] or '':<15} "
-                             f"{row['field'] or '':<10} {total:>8}   {local_str}")
-            lines += ["", f"Use --obs, --program, or --field to pull bytes, or --all for everything in {tag}.", ""]
-            click.echo("\n".join(lines))
+        if not sel.scoped:
+            (_list_spectroscopy if sel.modality is SPECTROSCOPY else _list_imaging)(store, tag=tag)
             return
+        target_obs, target_fields = _resolve_scope(
+            sel, store, store.get_synced_observations(), where=f"release {tag} (or not in your programs)")
+        product_types = sel.product_types
+        _check_narrowers(sel, store, target_obs, target_fields)
 
-        target_obs, target_fields = set(), set()
-        if download_all:
-            target_obs.update(catalog_obs)
-            target_fields.update(r["field"] for r in store._conn.execute(
-                "SELECT DISTINCT field FROM storage_objects WHERE observation IS NULL AND field IS NOT NULL"))
-        for name in obs_filter:
-            if name not in catalog_obs:
-                click.echo(f"✗ Observation '{name}' is not in release {tag} (or not in your programs).", err=True)
-                sys.exit(1)
-            target_obs.add(name)
-        for prog in program_filter:
-            obs_for_prog = {s["observation"] for s in store.query_spectra(programs=[prog], limit=999999)
-                            if s.get("observation")}
-            if not obs_for_prog:
-                click.echo(f"✗ No observations of program '{prog}' in release {tag}.", err=True)
-                sys.exit(1)
-            target_obs.update(obs_for_prog)
-        for fld in field_filter:
-            obs_for_field = {s["observation"] for s in store.query_spectra(fields=[fld], limit=999999)
-                             if s.get("observation")}
-            target_obs.update(obs_for_field)
-            target_fields.add(fld)   # the field's mosaics, when the release holds them
-        target_obs, target_fields = sorted(target_obs), sorted(target_fields)
-
-        product_types = list(FINAL_PRODUCT_TYPES)
         # deep: a present file is hashed, never adopted on its size alone. A
         # live final copied into the release tree can have the stamped copy's
         # exact size (the CMPFRDR card usually fits in the header padding), so
@@ -1258,16 +1409,13 @@ def _pull_release(tag, obs_filter, program_filter, field_filter, grating_filter,
             click.echo(f"  {verify.get('cleared', 0) + verify.get('mismatched', 0)} local file(s) missing or "
                        f"not the release's bytes; will fetch.")
 
-        grating_list = list(grating_filter) or None
-        filter_list = list(filter_filter) or None
+        grating_list = sel.gratings or None
+        filter_list = sel.filters or None
+        tile_list = sel.tiles or None
         pending = store.get_pending_objects(observations=target_obs, product_types=product_types,
-                                            gratings=grating_list, fields=target_fields, filters=filter_list)
-        total_files = sum(len(v) for v in pending.values())
-        total_bytes = sum(r.get("size_bytes") or 0 for v in pending.values() for r in v)
-        for scope in target_obs + target_fields:
-            rows = pending.get(scope, [])
-            click.echo(f"  {scope}: " + (f"{len(rows)} to fetch ({format_size(sum(r.get('size_bytes') or 0 for r in rows))})"
-                                         if rows else "complete"))
+                                            gratings=grating_list, fields=target_fields,
+                                            filters=filter_list, tiles=tile_list)
+        total_files, total_bytes = _show_plan(pending, target_obs + target_fields, verb_new="to fetch")
         if total_files == 0:
             click.echo(f"\nRelease {tag}: everything selected is on disk under {products}.")
             return
@@ -1281,7 +1429,8 @@ def _pull_release(tag, obs_filter, program_filter, field_filter, grating_filter,
         api_session._ensure_valid_token()
         stats = download_objects(api, target_obs, product_types, store, products,
                                  max_workers=workers, download_session=create_download_session(workers),
-                                 gratings=grating_list, fields=target_fields, filters=filter_list, dr=tag)
+                                 gratings=grating_list, fields=target_fields, filters=filter_list,
+                                 tiles=tile_list, dr=tag)
         click.echo(f"\n✓ Release {tag}: {stats.get('downloaded', 0)} file(s) fetched into {products}")
         if stats.get("failed"):
             click.echo(f"  Files failed: {stats['failed']} (run the same pull again)")
@@ -1377,7 +1526,7 @@ def _pull_provenance(file, yes, dry_run, base_url):
         sys.exit(1)
 
 
-# Back-compat alias: `campfire download` ≡ `campfire pull`.
+# Back-compat alias: `campfire download` ≡ `campfire pull` (the same group).
 cli.add_command(cli.commands["pull"], name="download")
 
 
@@ -1475,7 +1624,7 @@ def cite(tag, programs, observations, as_json, base_url):
         finally:
             store.close()
     elif observations:
-        click.echo(f"✗ --obs needs the pulled release (campfire pull --dr {tag}); select with --program.", err=True)
+        click.echo(f"✗ --obs needs the pulled release (campfire pull spec --dr {tag}); select with --program.", err=True)
         sys.exit(2)
     selection = sorted(chosen) if chosen else None
     if sentence is None:
@@ -1664,34 +1813,81 @@ def _maybe_pull_annotations(obs_names, nircam_fields, disabled: bool) -> None:
         click.echo(f"  (annotations skipped: {e})")
 
 
-@cli.command()
-@click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption,
-              help="Limit to observation(s)")
+def _verify_options(f):
+    f = click.option("--json", "as_json", is_flag=True,
+                     help="Machine-readable report (for CI); exit 1 on drift")(f)
+    f = click.option("--deep", is_flag=True,
+                     help="Content-hash changed/discovered files instead of the "
+                          "size-match quick check (reads every such file)")(f)
+    return f
+
+
+@cli.group(name="verify", cls=ModalityGroup, legacy_flags=("--obs", "--field"),
+           invoke_without_command=True)
 @click.option("--cloud", "cloud", is_flag=True,
               help="Also verify the cloud registry against the actual buckets "
                    "(admin; needs S3 LIST credentials — OSN primary, legacy R2)")
-@click.option("--deep", is_flag=True,
-              help="Content-hash changed/discovered files instead of the "
-                   "size-match quick check (reads every such file)")
-@click.option("--json", "as_json", is_flag=True,
-              help="Machine-readable report (for CI); exit 1 on drift")
 @click.option("--local", is_flag=True,
               help="--cloud against local Supabase (127.0.0.1:54321)")
-def verify(obs_filter, cloud, deep, as_json, local):
+@_verify_options
+@click.pass_context
+def verify(ctx, cloud, local, deep, as_json):
     """Verify local tree ↔ index, and optionally index ↔ cloud buckets.
 
     Without --cloud: reconciles the local products tree against the storage
     index via one bulk directory scan (no file reads): clears vanished files,
     and adopts present files whose size matches the cloud object (rsync-style
     quick check — the server hash is presumed, not re-computed). --deep
-    additionally content-hashes every changed/discovered file.
+    additionally content-hashes every changed/discovered file. The whole tree
+    by default; `verify spec --obs X` / `verify im --field Y` scope the scan.
 
     With --cloud (admin): additionally compares live DB pointers vs the
     registry vs actual bucket LISTs — OSN first (the data home), then the
     legacy R2 data bucket. Exits non-zero when live pointers lack registry
     rows (missing) or registry rows lack bucket objects (dangling), so a
-    scheduled CI run can alarm on drift.
+    scheduled CI run can alarm on drift. It checks the whole catalog, so it
+    takes no modality.
     """
+    if ctx.invoked_subcommand:
+        if cloud or local:
+            raise click.UsageError("--cloud checks the whole catalog; run it without "
+                                   "spec / im.", ctx)
+        ctx.obj = dict(deep=deep, as_json=as_json)
+        return
+    _verify(None, None, None, cloud=cloud, deep=deep, as_json=as_json, local=local)
+
+
+@click.command(name="spectroscopy")
+@click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption, required=True,
+              help="Observation name(s)")
+@_verify_options
+@click.pass_context
+def verify_spectroscopy(ctx, obs_filter, deep, as_json):
+    """The local spectra and exposures of these observations."""
+    parent = ctx.obj or {}
+    _verify(normalize_names(obs_filter), None, SPECTROSCOPY,
+            cloud=False, deep=deep or parent.get("deep", False),
+            as_json=as_json or parent.get("as_json", False), local=False)
+
+
+@click.command(name="imaging")
+@click.option("--field", "field_filter", multiple=True, cls=_VariadicOption, required=True,
+              help="Field name(s)")
+@_verify_options
+@click.pass_context
+def verify_imaging(ctx, field_filter, deep, as_json):
+    """The local mosaics, exposures and expmaps of these fields."""
+    parent = ctx.obj or {}
+    _verify(None, normalize_names(field_filter), IMAGING,
+            cloud=False, deep=deep or parent.get("deep", False),
+            as_json=as_json or parent.get("as_json", False), local=False)
+
+
+verify.add_modality(verify_spectroscopy, SPECTROSCOPY.alias)
+verify.add_modality(verify_imaging, IMAGING.alias)
+
+
+def _verify(observations, fields, modality, *, cloud, deep, as_json, local):
     import json as _json
 
     from .config import products_dir as _products_dir
@@ -1700,9 +1896,16 @@ def verify(obs_filter, cloud, deep, as_json, local):
     if not as_json:
         click.echo("Verifying local tree against the index...")
     store = _open_store()
+    product_types = None
+    if modality is not None:
+        product_types = modality.pull_types(
+            [n for n in modality.product_names()
+             if any(k.pullable for k in modality.kinds([n]))])
     local_totals = store.verify_local_objects(
         _products_dir(),
-        observations=list(obs_filter) or None,
+        product_types=product_types,
+        observations=observations or None,
+        fields=fields or None,
         deep=deep,
         show_progress=not as_json,
     )
@@ -1823,7 +2026,7 @@ def _check_conditional_put(s3, say) -> None:
 @click.option("--base-url", default=None, help="API base URL")
 def dr_list(as_json, base_url):
     """The data releases you may read (P5-2): published ones; every state
-    past its freeze for admins. Pull one with `campfire pull --dr TAG`."""
+    past its freeze for admins. Pull one with `campfire pull spec --dr TAG`."""
     import json as _json
 
     try:

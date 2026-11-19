@@ -115,7 +115,7 @@ class Campfire:
     dr : str, optional
         A data-release tag (``"DR2026.1"``). The client then reads that
         release's local store under ``<data_dir>/dr/<tag>/`` (pulled with
-        ``campfire pull --dr``) and nothing else: no credentials are needed,
+        ``campfire pull spec --dr``) and nothing else: no credentials are needed,
         and anything only the live service answers (a remote query, ``sync``,
         ``download``, cutouts) raises :class:`~campfire.DRModeError` instead
         of silently falling back. Tables carry ``meta["channel"] == "dr"`` and
@@ -177,14 +177,14 @@ class Campfire:
         if not db_path.exists():
             raise DRModeError(
                 f"release {self._dr} is not on this machine ({db_path} is missing); "
-                f"run `campfire pull --dr {self._dr}` first."
+                f"run `campfire pull spec --dr {self._dr}` first."
             )
         try:
             self._local = LocalStore(db_path)
         except SchemaMismatchError as exc:
             raise DRModeError(
                 f"the local store of release {self._dr} has schema v{exc.found_version}, this "
-                f"client expects v{exc.expected_version}; run `campfire pull --dr {self._dr}` "
+                f"client expects v{exc.expected_version}; run `campfire pull spec --dr {self._dr}` "
                 f"to rebuild it from the kept export files."
             ) from exc
         self._products_dir = root / "products"
@@ -338,7 +338,7 @@ class Campfire:
 
         if self._dr:
             raise DRModeError(
-                f"a release is frozen: nothing to sync. `campfire pull --dr {self._dr}` "
+                f"a release is frozen: nothing to sync. `campfire pull spec --dr {self._dr}` "
                 f"refreshes its local store; Campfire() syncs the live catalog."
             )
         if self._meta_dir is None:
@@ -383,7 +383,7 @@ class Campfire:
 
         if self._dr:
             raise DRModeError(
-                f"the bytes of a release are pulled with `campfire pull --dr {self._dr}` "
+                f"the bytes of a release are pulled with `campfire pull spec --dr {self._dr}` "
                 f"(verified against the release manifest), not downloaded here."
             )
         if self._local is None:
@@ -970,7 +970,7 @@ class Campfire:
         if self._dr:
             raise DRModeError(
                 f"spectrum {spectrum_id} of release {self._dr} is not on this machine; "
-                f"run `campfire pull --dr {self._dr}` (the release's bytes are never "
+                f"run `campfire pull spec --dr {self._dr}` (the release's bytes are never "
                 f"fetched one at a time from the live service)."
             )
 

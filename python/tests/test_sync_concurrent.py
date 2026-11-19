@@ -447,7 +447,7 @@ def test_full_sync_has_no_tombstones_and_purges_finals_only():
     store.delete_spectra_by_ids.assert_not_called()
     store.delete_storage_objects_by_ids.assert_not_called()
     # The storage purge is scoped to the kinds the sync walked: intermediates
-    # indexed per selection by `pull --intermediate` must survive a catalog sync.
+    # indexed per selection by `pull ... --products exposures` must survive a catalog sync.
     _args, kwargs = store.purge_stale_storage_objects.call_args
     assert kwargs["product_types"] == list(MIRRORED_PRODUCT_TYPES)
     # Rows of kinds the client never downloads are dropped on every sync.

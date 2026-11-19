@@ -410,10 +410,12 @@ def test_pull_provenance_command(mirror, monkeypatch):
         res = CliRunner().invoke(main_cli.cli, ['pull', '--provenance', str(doc_path), '--yes'])
         assert res.exit_code == 1 and 'unresolved:' in res.output and 'resolve nowhere' in res.output
 
-    res = CliRunner().invoke(main_cli.cli, ['pull', '--provenance', str(doc_path), '--obs', 'obs_a'])
-    assert res.exit_code == 2 and 'combines with no other' in res.output
-    res = CliRunner().invoke(main_cli.cli, ['pull', '--provenance', str(doc_path), '--dr', 'DR-t'])
-    assert res.exit_code == 2
+    # --provenance takes its selection from the file: no scope flag, no modality
+    for extra in (['--obs', 'obs_a'], ['--dr', 'DR-t'], ['--stale']):
+        res = CliRunner().invoke(main_cli.cli, ['pull', '--provenance', str(doc_path), *extra])
+        assert res.exit_code == 2, (extra, res.output)
+    res = CliRunner().invoke(main_cli.cli, ['pull', '--provenance', str(doc_path), 'spec', '--obs', 'obs_a'])
+    assert res.exit_code == 2 and 'span every modality' in res.output
 
 
 def test_pull_loads_the_release_catalog_on_every_run_and_records_present_files(mirror):

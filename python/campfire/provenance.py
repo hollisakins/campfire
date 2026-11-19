@@ -155,7 +155,7 @@ def _release_rows(data_dir: Path, tag: str) -> dict[str, dict]:
 
     db = release_dir(data_dir, tag) / 'meta' / 'campfire.db'
     if not db.exists():
-        raise ProvenanceError(f"release {tag} is not on this machine; run `campfire pull --dr {tag}` first")
+        raise ProvenanceError(f"release {tag} is not on this machine; run `campfire pull spec --dr {tag}` first")
     conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
     conn.row_factory = sqlite3.Row
     try:

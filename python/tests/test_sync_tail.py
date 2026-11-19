@@ -26,7 +26,7 @@ def test_announces_a_new_release_once_in_full_then_in_one_line(tmp_path):
     store = LocalStore(tmp_path / 'campfire.db')
     me = {'latest_dr': {'tag': 'DR2026.1', 'published_at': '2026-11-01T12:00:00Z'}, 'access_fingerprint': 'sha256:a'}
     out = _run(Api(me), store, full=True)
-    assert 'DR2026.1 published 2026-11-01; you are on live' in out and 'campfire pull --dr DR2026.1' in out
+    assert 'DR2026.1 published 2026-11-01; you are on live' in out and 'campfire pull spec --dr DR2026.1' in out
     assert store.get_meta(_LATEST_DR_META) == 'DR2026.1' and store.get_meta(_ACCESS_META) == 'sha256:a'
     out = _run(Api(me), store, full=False)
     assert out.strip() == 'Latest data release: DR2026.1; you are on live.'

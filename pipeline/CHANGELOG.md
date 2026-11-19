@@ -86,6 +86,10 @@ Release procedure: edit the `## Unreleased` section below, then run
   added, with `--dtheta` / `--pad-arcsec`.
 
 ### Infrastructure
+- **Hints name the new `campfire pull spec` syntax.** `cfpipe nirspec linefit`'s
+  "no inspected redshifts" messages and the redshift-reference docs now say
+  `campfire pull spec --obs <obs>` (the campfire client 0.8.0 takes a modality
+  first). Text only; no output changes.
 - **Mosaic background subtraction runs on the coverage and updates the guard
   incrementally.** `SubtractBackground.compute` works on the bounding box of the
   tile's coverage, padded by 12 of the largest mesh boxes and aligned so every

@@ -260,10 +260,12 @@ products live on OSN; map tiles are the sole R2 exception.**
 
 ```bash
 campfire sync                          # refresh the local index (never touches the tree)
-campfire status [--obs X | --field Y]  # bidirectional diff; scoped = push-side dry run
-campfire pull --obs X [--intermediate] # cloud→local products (+ review annotations, admins)
-campfire push --obs X | --field Y      # local→cloud bytes ONLY — no catalog, no publication
+campfire status                        # cloud vs local, staleness, budget (push side: push … --dry-run)
+campfire pull spec --obs X [--products spectra,exposures]   # cloud→local (+ redshifts, review annotations)
+campfire pull im --field Y [--products mosaics,exposures,expmaps] [--filters …] [--tile …]
+campfire push spec --obs X | push im --field Y                # local→cloud bytes ONLY — no catalog, no publication
 campfire verify [--cloud] [--deep]     # tree↔index (bulk scan, size-match quick check); --cloud adds registry↔bucket
+campfire verify spec --obs X | verify im --field Y            # the same scan, scoped to one modality
 campfire drop-local --obs X --yes      # delete local files verified in cloud
 ```
 
@@ -272,13 +274,29 @@ Slow-link workflow (CANDIDE→OSN): `campfire push` for the heavy bytes
 already landed and attaches it to the new deployment. `download` remains an
 alias of `pull`.
 
+**Modality first (`campfire/modality.py`).** `pull` and `push` take a modality
+subcommand, `spectroscopy` (`spec`) or `imaging` (`im`), because selection follows the
+modality (spectroscopy: `--obs` / `--program` / `--field` / `--grating`; imaging:
+`--field` / `--filters` / `--tile`), and `programs` are a NIRSpec notion that imaging does
+not share. `--instrument` is an option within a modality (all of its instruments by
+default), so a new instrument (MIRI, HST) is a vocabulary entry, not a flag. `--products`
+names what (`spectra` / `exposures` / `rates`; `mosaics` / `exposures` / `expmaps`),
+defaulting to the finals for `pull` and to everything for `push`; narrowers only narrow,
+and one that matches nothing in the selection is an error. `--tile` narrows mosaics only
+(exposures and expmaps are whole-field); `pull` reads the tile from the mosaic filename
+(`modality.mosaic_tile`), `push` from the mosaic manifest. Bare `pull` keeps only what spans
+modalities (`--stale`, `--provenance`); the pre-0.8 flag syntax is answered with the
+equivalent new command (`ModalityGroup`), not accepted. `verify` takes the same optional
+modality scope (`verify spec --obs` / `verify im --field`; bare `verify` and `--cloud` are
+catalog-wide), and `status` no longer takes a scope: its old push-side diff is `push … --dry-run`.
+
 **What `campfire sync` mirrors.** The five `/api/v1/sync/*` streams (objects,
 spectra, storage, photometry, line fits) are walked concurrently with keyset
 cursors (5000 rows per page, storage 10000; `CAMPFIRE_SYNC_PAGE_SIZE` /
 `CAMPFIRE_SYNC_STORAGE_PAGE_SIZE`). The storage mirror carries **finals only**
 (`FINAL_PRODUCT_TYPES`: `nirspec_spec`, `nircam_mosaic`) — not the sidecar
 JSON / zfit / line-fit / preview / rate rows that make up most of the registry,
-and not the intermediates: `pull --intermediate` indexes the intermediates of
+and not the intermediates: a pull naming them in `--products` indexes the intermediates of
 its selection on demand (`refresh_storage_scope()`, a full walk of that
 product-kind × observation/field slice, purged within the slice) before it
 plans. `campfire push` never depends on the mirror being complete (it fetches
@@ -467,7 +485,7 @@ as the live stream keys it, manifest rows mirrored into `storage_objects` with `
 the bytes a reader gets (the stamped copy when there is one). `Campfire(dr=tag)` opens that store with no
 session at all (`_NoRemote` fails every live branch closed with `DRModeError`), serves the metadata getters
 from the store, stamps `meta["channel"]` (`"dr"` + `meta["release"]`, or `"live"`) on every table, and
-defaults `query_lines(exclude_stale=True)`. **P5-2:** `campfire pull --dr TAG` (`_pull_release` in `cli.py`) loads the
+defaults `query_lines(exclude_stale=True)`. **P5-2:** `campfire pull spec --dr TAG` (`_pull_release` in `cli.py`) loads the
 store then runs `download_objects(..., dr=TAG)`, whose presign carries `?dr=TAG` (the release's archived copies) and
 whose verification uses the store's `content_hash`; `--intermediate` / `--stale` are refused. `GET /api/v1/dr`
 (`fetchVisibleReleases`: published, every state past its freeze for admins) backs `campfire dr list`;

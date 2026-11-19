@@ -30,7 +30,7 @@ import { resolveSnapshotExtras } from '@/lib/server/sync-snapshot';
  *          finals by default — instead of paging the whole registry.
  * - observations / fields: comma-separated scope (union) for a per-scope
  *          refresh, e.g. the intermediates of one observation before
- *          `campfire pull --intermediate`.
+ *          `campfire pull <modality> --products exposures`.
  * - snapshot: id of the sync snapshot the client just loaded (extras mode):
  *          only rows in the caller's programs that snapshot was not built
  *          for (published field-deploy products, visible to everyone, come

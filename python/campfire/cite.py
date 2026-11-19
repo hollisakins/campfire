@@ -148,13 +148,13 @@ def write_readme(root: Path, release: dict, *, versions_of: Optional[Callable[[l
               f"    cf = Campfire(dr={tag!r})",
               f"    cf.cite()                         # this sentence, for the programs you select",
               "",
-              f"Bytes: `campfire pull --dr {tag} --obs ... | --program ... | --all` lands the",
+              f"Bytes: `campfire pull spec --dr {tag} --obs ... | --program ... | --all` lands the",
               "release's archived files under products/. The live tree is never touched.", ""]
     if release.get('known_issues'):
         lines += ["Known issues:", "", textwrap.indent(str(release['known_issues']).strip(), "    "), ""]
     if release.get('notes'):
         lines += ["Notes:", "", textwrap.indent(str(release['notes']).strip(), "    "), ""]
-    lines.append(f"Written by campfire pull --dr on {datetime.now(timezone.utc).date().isoformat()}; "
+    lines.append(f"Written by campfire pull spec --dr on {datetime.now(timezone.utc).date().isoformat()}; "
                  f"regenerated on every load.")
     path = root / 'README.md'
     tmp = path.with_name('README.md.part')

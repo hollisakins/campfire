@@ -6,6 +6,7 @@ tests exercise registration and help rendering — the engine itself is covered
 by test_storage_plan / test_registry / test_download_objects.
 """
 
+import pytest
 from click.testing import CliRunner
 
 import campfire.cli as main_cli
@@ -43,7 +44,49 @@ def test_push_requires_scope():
     cli = _cli()
     res = CliRunner().invoke(cli, ['push'])
     assert res.exit_code != 0
-    assert '--obs' in res.output and '--field' in res.output
+    assert 'push spec --obs' in res.output and 'push im --field' in res.output
+    for args, flag in ((['push', 'spec'], '--obs'), (['push', 'im'], '--field')):
+        res = CliRunner().invoke(cli, args)
+        assert res.exit_code != 0 and flag in res.output, (args, res.output)
+
+
+def test_modality_subcommands_and_aliases():
+    cli = _cli()
+    runner = CliRunner()
+    for verb in ('pull', 'push'):
+        group = cli.commands[verb]
+        assert set(group.commands) == {'spectroscopy', 'imaging'}
+        for args in ([verb, 'spec', '--help'], [verb, 'im', '--help'],
+                     [verb, 'spectroscopy', '--help'], [verb, 'imaging', '--help']):
+            res = runner.invoke(cli, args)
+            assert res.exit_code == 0, (args, res.output)
+        res = runner.invoke(cli, [verb, '--help'])
+        assert 'spectroscopy (spec)' in res.output and 'imaging (im)' in res.output
+
+
+def test_bare_pull_asks_for_a_modality():
+    res = CliRunner().invoke(_cli(), ['pull'])
+    assert res.exit_code == 2
+    assert 'pull spec' in res.output and 'pull im' in res.output
+
+
+@pytest.mark.parametrize('args, expect', [
+    (['pull', '--obs', 'ember_uds_p4'], ['campfire pull spec --obs ember_uds_p4']),
+    (['download', '--program', 'EMBER-UDS', '--grating', 'PRISM'],
+     ['campfire download spec --program EMBER-UDS --grating PRISM']),
+    # A field holds both modalities: the hint offers both, --intermediate as --products.
+    (['pull', '--field', 'nep', '--intermediate'],
+     ['campfire pull spec --field nep --products spectra,exposures',
+      'campfire pull im --field nep --products mosaics,exposures,expmaps']),
+    (['pull', '--field', 'egs', '--filters', 'f444w'], ['campfire pull im --field egs --filters f444w']),
+    (['push', '--field', 'cosmos', '--filter', 'f444w'], ['campfire push im --field cosmos --filters f444w']),
+    (['push', '--obs', 'x', '--source-ids', '1'], ['campfire push spec --obs x --source-ids 1']),
+])
+def test_old_syntax_answered_with_the_new_command(args, expect):
+    res = CliRunner().invoke(_cli(), args)
+    assert res.exit_code == 2, res.output
+    for line in expect:
+        assert line in res.output, res.output
 
 
 def test_migration_era_commands_deleted():
@@ -65,16 +108,52 @@ def test_migration_era_commands_deleted():
         assert nirspec.commands[name].hidden, name
 
 
-def test_status_accepts_scope_flags():
-    cli = _cli()
-    params = {p.name for p in cli.commands['status'].params}
-    assert {'obs_scope', 'field_scope'} <= params
+def test_status_scope_points_at_a_push_dry_run():
+    res = CliRunner().invoke(_cli(), ['status', '--obs', 'a', 'b', '--field', 'nep'])
+    assert res.exit_code == 2
+    assert 'campfire push spec --obs a b --dry-run' in res.output
+    assert 'campfire push im --field nep --dry-run' in res.output
 
 
-def test_verify_has_cloud_and_json_flags():
+def test_verify_has_cloud_and_json_flags_and_modality_scopes():
     cli = _cli()
-    params = {p.name for p in cli.commands['verify'].params}
-    assert {'cloud', 'as_json', 'obs_filter'} <= params
+    verify = cli.commands['verify']
+    assert {'cloud', 'as_json', 'deep', 'local'} <= {p.name for p in verify.params}
+    assert set(verify.commands) == {'spectroscopy', 'imaging'}
+    runner = CliRunner()
+    for args in (['verify', 'spec', '--help'], ['verify', 'im', '--help']):
+        assert runner.invoke(cli, args).exit_code == 0, args
+    # --cloud is catalog-wide: no modality
+    res = runner.invoke(cli, ['verify', '--cloud', 'im', '--field', 'nep'])
+    assert res.exit_code == 2 and 'whole catalog' in res.output
+    # the old flag is answered with the new command
+    res = runner.invoke(cli, ['verify', '--obs', 'ember_uds_p4'])
+    assert res.exit_code == 2 and 'campfire verify spec --obs ember_uds_p4' in res.output
+
+
+def test_verify_scopes_the_local_scan_by_modality(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeStore:
+        def verify_local_objects(self, root, **kw):
+            calls.append(kw)
+            return {'cleared': 0, 'rehashed': 0, 'discovered': 0}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main_cli, '_open_store', lambda: FakeStore())
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
+    runner = CliRunner()
+    assert runner.invoke(_cli(), ['verify', 'im', '--field', 'nep']).exit_code == 0
+    assert runner.invoke(_cli(), ['verify', '--deep', 'spec', '--obs', 'o1']).exit_code == 0
+    assert runner.invoke(_cli(), ['verify']).exit_code == 0
+    im, spec, whole = calls
+    assert im['fields'] == ['nep'] and im['observations'] is None
+    assert set(im['product_types']) == {'nircam_mosaic', 'nircam_exposure', 'nircam_expmap'}
+    assert spec['observations'] == ['o1'] and spec['deep'] is True
+    assert set(spec['product_types']) == {'nirspec_spec', 'nirspec_spectrum_exposure'}
+    assert whole['product_types'] is None and whole['observations'] is None and whole['fields'] is None
 
 
 # --- deploy --no-mosaics ----------------------------------------------------

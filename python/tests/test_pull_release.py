@@ -1,4 +1,4 @@
-"""``campfire pull --dr`` and ``campfire dr list`` (P5-2)."""
+"""``campfire pull spec --dr`` and ``campfire dr list`` (P5-2)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -58,11 +58,14 @@ def test_api_client_presign_carries_the_release_tag():
     assert s.calls[-1][0] == '/storage/presign'
 
 
-def test_pull_dr_refuses_intermediate_and_stale():
+def test_pull_dr_refuses_non_finals_and_stale():
     runner = CliRunner()
-    for flag in ('--intermediate', '--stale'):
-        res = runner.invoke(main_cli.cli, ['pull', '--dr', 'DR-t', flag])
-        assert res.exit_code == 2 and 'does not apply to a data release' in res.output
+    for args in (['pull', 'spec', '--dr', 'DR-t', '--products', 'spectra,exposures'],
+                 ['pull', 'im', '--dr', 'DR-t', '--products', 'exposures']):
+        res = runner.invoke(main_cli.cli, args)
+        assert res.exit_code == 2 and 'holds its finals' in res.output, (args, res.output)
+    res = runner.invoke(main_cli.cli, ['pull', '--stale', 'spec', '--dr', 'DR-t'])
+    assert res.exit_code == 2 and 'span every modality' in res.output
 
 
 def test_pull_dr_loads_the_release_then_lists_it_without_a_selection(tmp_path, monkeypatch):
@@ -89,15 +92,15 @@ def test_pull_dr_loads_the_release_then_lists_it_without_a_selection(tmp_path, m
     with patch('campfire.cli.APISession') as MockSession, patch('campfire.cli.APIClient'), \
             patch('campfire.dr_store.load_release', side_effect=fake_load):
         MockSession.return_value.base_url = 'https://t/api/v1'
-        res = CliRunner().invoke(main_cli.cli, ['pull', '--dr', 'DR-t'])
+        res = CliRunner().invoke(main_cli.cli, ['pull', 'spec', '--dr', 'DR-t'])
         assert res.exit_code == 0, res.output
         assert loaded == [('DR-t', tmp_path)]
         assert 'Release DR-t: 1 observation(s)' in res.output and 'obs' in res.output
         # a dry run of a selection plans against the release store's rows
-        res = CliRunner().invoke(main_cli.cli, ['pull', '--dr', 'DR-t', '--obs', 'obs', '--dry-run'])
+        res = CliRunner().invoke(main_cli.cli, ['pull', 'spec', '--dr', 'DR-t', '--obs', 'obs', '--dry-run'])
         assert res.exit_code == 0, res.output
         assert 'would fetch 1 file(s)' in res.output and str(root / 'products') in res.output
-        res = CliRunner().invoke(main_cli.cli, ['pull', '--dr', 'DR-t', '--obs', 'nope'])
+        res = CliRunner().invoke(main_cli.cli, ['pull', 'spec', '--dr', 'DR-t', '--obs', 'nope'])
         assert res.exit_code == 1 and 'not in release DR-t' in res.output
 
 
