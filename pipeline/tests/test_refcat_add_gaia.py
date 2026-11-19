@@ -112,6 +112,34 @@ def test_without_a_size_column_nothing_is_dropped_on_size(root, tmp_path):
     assert len(got) == N_STARS + 1 + 40             # only the motionless star went
 
 
+def test_gaia_query_stays_local_for_a_catalog_across_ra_zero(root, tmp_path, monkeypatch):
+    """Sources on both sides of RA 0: the Gaia cone is centered among them and
+    is as small as the catalog, not half the sky."""
+    from campfire_pipeline.nircam.refcat import cli
+
+    cat, gaia, _path, _ = _catalogs(tmp_path)
+    cat['ra'] = (np.asarray(cat['ra']) - 150.0) % 360.0     # RA 359.98 .. 0.02
+    src = tmp_path / 'wrap.ecsv'
+    cat.write(src, format='ascii.ecsv')
+    asked = {}
+
+    def fake_query(backend, center, radius):
+        asked.update(backend=backend, center=center, radius=radius)
+        out = gaia.copy()
+        out['RA'] = (np.asarray(out['RA']) - 150.0) % 360.0
+        return out
+
+    monkeypatch.setattr(cli, 'query_external', fake_query)
+    result = CliRunner().invoke(refcat, [
+        'add-gaia', '--field', 'hstonly', str(src), '--size-column', 'radius_sersic',
+        '--out', str(tmp_path / 'out.ecsv')])
+    assert result.exit_code == 0, result.output
+    assert asked['backend'] == 'gaia'
+    assert min(asked['center'][0], 360.0 - asked['center'][0]) < 0.01
+    assert asked['radius'] < 0.05
+    assert read_refcat(str(tmp_path / 'out.ecsv')).meta['params']['n_gaia_stars'] == N_STARS
+
+
 def test_a_file_that_is_not_a_catalog_is_refused(root, tmp_path):
     src = tmp_path / 'odd.ecsv'
     Table({'x': [1.0], 'y': [2.0]}).write(src, format='ascii.ecsv')
