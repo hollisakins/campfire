@@ -53,7 +53,7 @@ from campfire_pipeline.nircam.manifest import (
 # preserves them, but we capture/restore as a belt-and-suspenders measure
 # in case the round-trip path through Image3Pipeline strips them on a
 # future jwst release.
-EXTRA_EXT_NAMES = ('SRCMASK', 'CFMASK')
+EXTRA_EXT_NAMES = ('SRCMASK', 'CFMASK', 'CFSPIKE')
 
 
 def _release_unseeded_children(work, expanded, seeds, npixels=25,

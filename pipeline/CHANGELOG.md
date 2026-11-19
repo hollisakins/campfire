@@ -28,6 +28,63 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- **NIRCam `spike_mask` combine step (beta, opt-in).** New ensemble step between
+  `apply_mask` and `bad_pixel`, disabled by default (`[nircam.spike_mask].enabled`), so
+  existing reductions are unchanged. For each Gaia DR3 star an arm profile is scaled by the
+  star's predicted in-band flux (nothing is fitted to the exposure, so off-detector stars
+  are handled) and placed on every exposure at the telescope roll. Pixels whose predicted
+  arm surface brightness exceeds `threshold_sigma` (0.3) times the exposure noise are spike
+  pixels; one is masked only where another roll angle sees the same sky with less predicted
+  spike light (where two spikes cross, the brighter is masked), so a spike is never traded
+  for a hole. Recorded as a `CFSPIKE` extension + `CFP_SPKE` on the canonical exposure
+  (SCI/DQ untouched) and fused into the working copy's DQ as DO_NOT_USE; the working copy
+  records whether it was fused (`SPKFUSED`) so switching the step on or off refreshes it.
+  Core in `nircam/spike_mask.py`.
+  - *Arm profile* (`model = "measured"`, default): measured from six isolated
+    G = 8.0-10.2 stars in F070W-F480M (public programs 1433, 1727, 1837, 3293, 3990, 5398,
+    5893, 6882, 7814), on exposures taken through the standard process phase, so after the
+    per-exposure background step (which removes the faintest wings beside an arm). Two
+    measured facts set its form (`data/nircam_spike_profile_v2.fits`): along an arm, the
+    axis brightness x wavelength^2 / star flux is one curve for every filter and star
+    against distance / wavelength; across an arm, the cross-section as a fraction of the
+    axis value is the same in every filter against the offset in arcsec (against offset /
+    wavelength the filters spread apart by a factor of several). A cell is the median of
+    the star-filter cross-sections sensitive enough to see it (non-detections included),
+    zero where that is under 3x its uncertainty. The six segment arms are detected to ~117
+    arcsec/um (slope -2.15, continued as a power law); the two strut arms to ~28 arcsec/um
+    and are absent from 39 outward; the table starts 0.6 arcsec/um from the star.
+    `model = "preflight"` keeps the published WebbPSF-based models (with `width_scale` /
+    `width_scale_lw`), which over-predict the arms by 1.5-5x depending on filter and
+    distance. Both are evaluated as per-arm tables that fall monotonically from the axis
+    and with distance, so mask edges are smooth strips.
+  - *Star brightness*: an SED interpolated through Gaia G, RP and the 2MASS / AllWISE
+    magnitudes of the Gaia archive's cross-match; colour relations fitted to ~900 stars
+    stand in where there is no match. Against aperture photometry of 1400 unsaturated
+    stars the median error is within 0.06 mag with 2MASS / WISE, ~0.13 mag from Gaia alone.
+  - On MACS0647: the model axis is the telescope V3 (no detector rotation). Its G = 8 star
+    is one of the six profile stars and the only one constraining the arms far from a
+    star, so the field is not an independent test of the profile. Checked by eye with
+    every predicted spike masked in all seven filters; the predicted axis brightness of
+    that star is 10-45% low (worst in F115W).
+  - `mag_limit` (now AB 19) only bounds run time: whether a star's arms are masked is
+    decided by the profile against `threshold_sigma`. The cached star list is reused by
+    every filter of a field (a cached cone that contains the needed one).
+  - *Growth and crossings*: each star's footprint is grown by `grow` (2 px) plus
+    `grow_per_mag_arcsec` (0.07") for each magnitude it is brighter than `grow_ref_mag`
+    (AB 18), because the measured profile is too narrow at the faint level a mosaic shows
+    (MACS0647 F200W: excess ~0.7" beyond the ungrown mask for the AB 7.8 star; the slope
+    rests on that star, the faint end is poorly constrained). Grown pixels are ranked by
+    predicted brightness when the two angles are compared, and a pixel is compared against
+    the other angle's worst value in the surrounding 3x3 cells, so where the mask hands
+    over between angles a strip ~1 cell wide is left unmasked in both rather than the
+    seam pixels of the mosaic being left with no exposure.
+  **Beta:** coverage rule tested in one field at two roll angles; the profile comes from
+  six saturated stars spanning two magnitudes, the far field from one of them; the coverage grid is held in memory (not yet
+  sized for very large fields). `require_other_angle = false` masks every predicted spike
+  pixel, for inspecting footprints. The G0 harness (`experiments/spike_g0_footprint`) is
+  added, with `--dtheta` / `--pad-arcsec`.
+
 ### Infrastructure
 - **Mosaic background subtraction runs on the coverage and updates the guard
   incrementally.** `SubtractBackground.compute` works on the bounding box of the
