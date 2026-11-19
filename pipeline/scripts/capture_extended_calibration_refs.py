@@ -24,6 +24,8 @@ import crds  # noqa: E402
 
 CALIBRATION_CONTEXT = "jwst_1614.pmap"
 GATED_CONFIGS = [
+    ("NRS1", "G140M", "F070LP"),
+    ("NRS2", "G140M", "F070LP"),
     ("NRS1", "G140M", "F100LP"),
     ("NRS2", "G140M", "F100LP"),
     ("NRS1", "G235M", "F170LP"),
