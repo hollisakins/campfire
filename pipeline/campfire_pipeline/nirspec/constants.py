@@ -74,6 +74,7 @@ EXTENDED_GRID_MAX_UM = 5.301
 # Wavelength (microns) beyond which the measured flat ends and the extended flat
 # holds its last real value constant (flat extrapolation).
 FLAT_HOLD_WAVELENGTH_UM = {
+    ("G140M", "F070LP"): 1.27,
     ("G140M", "F100LP"): 1.87,
     ("G235M", "F170LP"): 3.17,
 }
@@ -81,6 +82,7 @@ FLAT_HOLD_WAVELENGTH_UM = {
 # Extended assign_wcs wavelength ranges, in METERS, keyed by the CRDS
 # wavelengthrange selector "<FILTER>_<GRATING>".
 EXTENDED_WAVELENGTHRANGE_M = {
+    "F070LP_G140M": [7.0e-7, 5.3e-6],
     "F100LP_G140M": [9.7e-7, 5.3e-6],
     "F170LP_G235M": [1.66e-6, 5.3e-6],
 }
@@ -99,6 +101,12 @@ EXTENDED_CALIBRATION_CONTEXT = "jwst_1614.pmap"
 # the calibration is re-derived against a newer context. A None field means "not yet
 # pinned" — the guard warns rather than enforces until it is filled.
 EXTENDED_CALIBRATION_REFERENCES = {
+    ("NRS1", "G140M", "F070LP"): {"fflat": "jwst_nirspec_fflat_0196.fits",
+                                  "sflat": "jwst_nirspec_sflat_0171.fits",
+                                  "photom": "jwst_nirspec_photom_0015.fits"},
+    ("NRS2", "G140M", "F070LP"): {"fflat": "jwst_nirspec_fflat_0196.fits",
+                                  "sflat": "jwst_nirspec_sflat_0200.fits",
+                                  "photom": "jwst_nirspec_photom_0015.fits"},
     ("NRS1", "G140M", "F100LP"): {"fflat": "jwst_nirspec_fflat_0200.fits",
                                   "sflat": "jwst_nirspec_sflat_0231.fits",
                                   "photom": "jwst_nirspec_photom_0015.fits"},
