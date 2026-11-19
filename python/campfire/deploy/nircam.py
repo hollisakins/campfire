@@ -94,7 +94,7 @@ def _stage_from_header(header):
     return stage
 
 
-# The science-only change-detection digest (SCI+DQ+CFMASK; epic #261, D1) lives
+# The science-only change-detection digest (SCI+DQ+CFMASK+CFSPIKE; epic #261, D1) lives
 # in the shared storage core — it is the push-dedup identity for NIRCam
 # exposures on every access point. Re-exported under the established name.
 from campfire.storage.hashing import sci_dq_hash as _sci_dq_hash  # noqa: E402
@@ -103,7 +103,7 @@ from campfire.storage.hashing import sci_dq_hash as _sci_dq_hash  # noqa: E402
 def _compute_sci_dq_hashes(fits_tasks, *, max_workers=None):
     """Return ``{r2_key: sci_dq_hash}`` for *fits_tasks*, hashed in parallel.
 
-    Computing the SCI+DQ+CFMASK digest for candidate exposures is the dominant
+    Computing the SCI+DQ+CFMASK+CFSPIKE digest for candidate exposures is the dominant
     local cost before any upload starts; the shared parallel hasher overlaps
     the I/O-bound reads. A per-file read failure records ``None`` (never dedup
     on it).
@@ -485,7 +485,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     Records a **field-scoped deployment** (provenance + the draft->published
     lifecycle), uploads the canonical exposure FITS (+ any field expmaps) to OSN
     under ``campfire-layout`` canonical keys (content-hash deduped on
-    ``sha256(SCI+DQ+CFMASK)``), uploads preview PNGs to OSN, upserts ``nircam_exposures``,
+    ``sha256(SCI+DQ+CFMASK+CFSPIKE)``), uploads preview PNGs to OSN, upserts ``nircam_exposures``,
     and registers every landed object in ``storage_objects`` tagged with that
     ``deployment_id``.
 

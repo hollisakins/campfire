@@ -62,6 +62,7 @@ _STEP_LABELS = {
     'jhat':        'jhat',
     'align':       'algn',
     'apply_mask':  'mask',
+    'spike_mask':  'spke',
     'bad_pixel':   'bpix',
     'outlier':     'out',
 }

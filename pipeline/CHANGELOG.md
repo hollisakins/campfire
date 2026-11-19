@@ -28,11 +28,97 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- **NIRCam `spike_mask` combine step (beta, opt-in).** New ensemble step between
+  `apply_mask` and `bad_pixel`, disabled by default (`[nircam.spike_mask].enabled`), so
+  existing reductions are unchanged. For each Gaia DR3 star an arm profile is scaled by the
+  star's predicted in-band flux (nothing is fitted to the exposure, so off-detector stars
+  are handled) and placed on every exposure at the telescope roll. Pixels whose predicted
+  arm surface brightness exceeds `threshold_sigma` (0.3) times the exposure noise are spike
+  pixels; one is masked only where another roll angle sees the same sky with less predicted
+  spike light (where two spikes cross, the brighter is masked), so a spike is never traded
+  for a hole. Recorded as a `CFSPIKE` extension + `CFP_SPKE` on the canonical exposure
+  (SCI/DQ untouched) and fused into the working copy's DQ as DO_NOT_USE; the working copy
+  records whether it was fused (`SPKFUSED`) so switching the step on or off refreshes it.
+  Core in `nircam/spike_mask.py`.
+  - *Arm profile* (`model = "measured"`, default): measured from six isolated
+    G = 8.0-10.2 stars in F070W-F480M (public programs 1433, 1727, 1837, 3293, 3990, 5398,
+    5893, 6882, 7814), on exposures taken through the standard process phase, so after the
+    per-exposure background step (which removes the faintest wings beside an arm). Two
+    measured facts set its form (`data/nircam_spike_profile_v2.fits`): along an arm, the
+    axis brightness x wavelength^2 / star flux is one curve for every filter and star
+    against distance / wavelength; across an arm, the cross-section as a fraction of the
+    axis value is the same in every filter against the offset in arcsec (against offset /
+    wavelength the filters spread apart by a factor of several). A cell is the median of
+    the star-filter cross-sections sensitive enough to see it (non-detections included),
+    zero where that is under 3x its uncertainty. The six segment arms are detected to ~117
+    arcsec/um (slope -2.15, continued as a power law); the two strut arms to ~28 arcsec/um
+    and are absent from 39 outward; the table starts 0.6 arcsec/um from the star.
+    `model = "preflight"` keeps the published WebbPSF-based models (with `width_scale` /
+    `width_scale_lw`), which over-predict the arms by 1.5-5x depending on filter and
+    distance. Both are evaluated as per-arm tables that fall monotonically from the axis
+    and with distance, so mask edges are smooth strips.
+  - *Star brightness*: an SED interpolated through Gaia G, RP and the 2MASS / AllWISE
+    magnitudes of the Gaia archive's cross-match; colour relations fitted to ~900 stars
+    stand in where there is no match. Against aperture photometry of 1400 unsaturated
+    stars the median error is within 0.06 mag with 2MASS / WISE, ~0.13 mag from Gaia alone.
+  - On MACS0647: the model axis is the telescope V3 (no detector rotation). Its G = 8 star
+    is one of the six profile stars and the only one constraining the arms far from a
+    star, so the field is not an independent test of the profile. Checked by eye with
+    every predicted spike masked in all seven filters; the predicted axis brightness of
+    that star is 10-45% low (worst in F115W).
+  - `mag_limit` (now AB 19) only bounds run time: whether a star's arms are masked is
+    decided by the profile against `threshold_sigma`. The cached star list is reused by
+    every filter of a field (a cached cone that contains the needed one).
+  - *Growth and crossings*: each star's footprint is grown by `grow` (2 px) plus
+    `grow_per_mag_arcsec` (0.07") for each magnitude it is brighter than `grow_ref_mag`
+    (AB 18), because the measured profile is too narrow at the faint level a mosaic shows
+    (MACS0647 F200W: excess ~0.7" beyond the ungrown mask for the AB 7.8 star; the slope
+    rests on that star, the faint end is poorly constrained). Grown pixels are ranked by
+    predicted brightness when the two angles are compared, and a pixel is compared against
+    the other angle's worst value in the surrounding 3x3 cells, so where the mask hands
+    over between angles a strip ~1 cell wide is left unmasked in both rather than the
+    seam pixels of the mosaic being left with no exposure.
+  **Beta:** coverage rule tested in one field at two roll angles; the profile comes from
+  six saturated stars spanning two magnitudes, the far field from one of them; the coverage grid is held in memory (not yet
+  sized for very large fields). `require_other_angle = false` masks every predicted spike
+  pixel, for inspecting footprints. The G0 harness (`experiments/spike_g0_footprint`) is
+  added, with `--dtheta` / `--pad-arcsec`.
+
 ### Infrastructure
 - **Hints name the new `campfire pull spec` syntax.** `cfpipe nirspec linefit`'s
   "no inspected redshifts" messages and the redshift-reference docs now say
   `campfire pull spec --obs <obs>` (the campfire client 0.8.0 takes a modality
   first). Text only; no output changes.
+- **Mosaic background subtraction runs on the coverage and updates the guard
+  incrementally.** `SubtractBackground.compute` works on the bounding box of the
+  tile's coverage, padded by 12 of the largest mesh boxes and aligned so every
+  Background2D grid and the ring-median block grid land where they do on the full
+  image (the ring-median zoom still runs at the full image's extent, since its
+  corner-aligned sampling depends on the image size), and pastes the result back.
+  The negativity guard's trough pass smooths the weight once per scale and, each
+  iteration, recomputes the smoothed residual only around the gated pixels, bit for
+  bit the from-scratch loop; `Background2D.background` (re-interpolated by photutils
+  on every access) is evaluated once. The heavy kernels run on `--processes` threads
+  (`nircam/_bkg_kernels.py`: gaussian / median filters, dilations, spline zoom, robust
+  statistics, segmentation, and the photutils mesh median filter vectorized instead of
+  one Python callback per cell), each the single-threaded library result bit for bit.
+  NEXUS f444w tile E: 19.3 → 2.6 min at `-p 12` (10.4 min on one thread), peak RSS
+  79 → 43 GB, SRCMASK identical, 42 pixels differing by ≤ 5e-10. No pixel setting
+  changed, so tiles are not marked stale; `crop_to_coverage = false` restores the
+  full-image path.
+- **`--grating` / `--filter` on the NIRSpec reduction commands (#446).** `cfpipe nirspec
+  run`, `stage1`, `stage2a`, `stage2b`, `stage3`, `zfit`, `linefit` and `detect-stuck` can be
+  restricted to one or more grating/filter settings of an observation (case-insensitive,
+  OR within a flag, AND across the two, combinable with `--source-ids`). The selection
+  lives on the `Observation` (`select_modes`) and filters `rate_files`, the raw uncals and
+  `discover_files` by their `GRATING` / `FILTER` headers, so the stuck-shutter re-run and
+  the mask checks inside stage 2a follow it too; zfit and linefit filter on the product
+  name. A selection matching nothing present is a usage error naming what is there; the
+  summary still covers every product. `fit_redshifts` resolves each grating's spectra
+  (after `--grating` / `--filter`) before any template work and skips gratings left with
+  none, so a selected setting never loads, or fails on, an excluded grating's template
+  grid. Outputs for a given setting are unchanged.
 - **Summary redshift consensus keeps both filters of a grating (#683).** `cfpipe nirspec
   summary` keyed its per-source zfit inputs by grating, so a source observed in G140M/F070LP
   and G140M/F100LP fed only the last one read into `redshift_best`. They are now keyed by
@@ -58,6 +144,70 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **NIRCam per-exposure background: deeper source mask, less growth.**
+  `[nircam.bkg.mask]` defaults change from `tier_nsigma = 1.5` to `0.5` in every tier and
+  `tier_dilate_size` from `[33, 25, 21, 19]` to `[17, 13, 11, 9]`. The 1.5-sigma mask left
+  the faint outskirts of sources and of diffraction spikes in the background fit, which
+  over-subtracted beside them (negative troughs along spikes on MACS0647); detecting
+  deeper covers them where growing the mask did not. Changes pixel values of every
+  exposure reprocessed from the `bkg` step. Chosen by eye on per-exposure masks and test
+  mosaics of one field (MACS0647, F200W and F277W); not yet checked on a blank field. The
+  mosaic-level mask settings in `[nircam.resample]` are unchanged. To keep the previous
+  behaviour set the two lists back in `[nircam.bkg.mask]` or per field.
+- **A post-starburst continuum template for redshift fitting.** Galaxies with a strong Balmer
+  break and blue rest-optical colours (a faint, red rest-UV and an unreddened optical/NIR) had
+  no continuum template that matched them, so the fitter reproduced the break with emission
+  lines, often at the wrong redshift (z ≈ 0.6–1.8 for galaxies at z ≈ 2.3–4). The sfhz grid
+  gains a 17th continuum template, `psb_tq0.03_av0.5_steep`: constant star formation for 50 Myr
+  that stopped 30 Myr ago, half-solar metallicity, Salim attenuation with Av = 0.5 and
+  δ = −1.0, the same in every z-bin (clipped to the age of the universe) and never scaled by
+  `boost_av`. `make_sfhz_template_grid` takes such truncated-SFH entries in
+  `_SFHZ_CONTINUUM_PARAMS` (`sfh: 'truncated'`). The template pickles must be regenerated
+  (`cfpipe nirspec make-templates`). On 719 PRISM spectra of quality ≥ 3 objects in six
+  observations, correct auto-redshifts (|Δz|/(1+z) < 0.05) go from 679 to 691 (15 fixed, 3
+  broken, all three at S/N ≤ 11 with Δχ² < 7 between the peaks); with Hα masked at the
+  inspected redshift, from 629 to 658.
+- **The redshift fitter no longer has a HeI λ5876 template.** The `HeI5876` emission-line
+  template carried the line alone, so NNLS could put a faint noise feature at any redshift
+  down as HeI with nothing else predicted, and many spectra were fit that way. The template is
+  removed from `EMISSION_LINES`. In bright emitters, HeI's flux (a few percent of Hα) is now
+  left in the residual instead of being modeled. Rerunning `cfpipe nirspec zfit` can change
+  `ZBEST` / `ZQUAL` for spectra whose best fit leaned on HeI. No template pickle needs
+  rebuilding: the line templates are built from `EMISSION_LINES` at fit time. `linefit` still
+  measures HeI λ5876.
+- **NIRCam exposure maps are on one grid per field.** The canonical maps of `cfpipe nircam
+  expmap` used a grid centered on the footprints of the filters of one run, so a run of some
+  filters put its maps on a different grid from the field's other maps. The grid is now the
+  field's: a north-up TAN projection with the field's `tangent_point` at a pixel center,
+  windowed to enclose the calibrated exposures of every filter of the field on the machine.
+  Maps of any filter from any run are on the same pixels. A map on disk is reused only when
+  its grid, its number of exposures and their summed time are the current ones (it was reused
+  whenever the file existed), and `<field>_layout.json` records the grid. A field's maps move
+  onto the new lattice the next time they are built (by less than one 0.5" pixel; on macs0647
+  the coverage area is 16.5192 arcmin² against 16.5189 before). The `uncal` quick-look keeps
+  the per-run grid. No mosaic or exposure pixel changes.
+- **`align`: the gross shift is refined before it is vetted, so a correct one is no
+  longer declined for the histogram's bin error.** The gross-shift guard
+  (`gross_min_keep_frac`) counts tight 1-NN pairs (2.5 px: 0.078" SW / 0.157" LW) before
+  and after the candidate shift, but the raw histogram proposal is only good to
+  ~0.1-0.25" (it snaps to a 0.25" bin centre), so a CORRECT shift kept almost none and
+  passed only through the `n_before == 0` bypass. One coincidental tight pair at the input
+  WCS closed it: the shift was declined, the fallback around the input WCS cannot reach
+  past `d2d_max` (1.5"), and a pool with a larger pointing error rejected to NOT_ALIGNED.
+  On an SW fixture with a 1.8" offset and one chance pair, the raw proposal matched 0 of
+  60 sources; refined, 60 of 60. The proposal is now moved to the median 1-NN offset inside
+  its own +-2-bin peak (`histmatch._refine_gross_shift`) and that is what the guard vets.
+  The window cannot leave the chosen peak, so a false peak is still declined (synthetic
+  mis-lock sweep: 355 / 800 false peaks adopted before and after). Expected effects on real
+  data, **not yet re-measured** on the pools the guard was validated against (EGS
+  F470N/F460M, COSMOS `jw06368013001_09201_00003`, EGS `jw06368060001`): pools with a
+  >1.5" pointing error that were NOT_ALIGNED can now solve; `ALGNGKR` rises towards 1 on
+  clean pools (median 0.119 over 1,624 EGS F115W pools before), where adopting rather than
+  declining the prior was a measured no-op. Also: a rejected exposure's header now carries
+  that attempt's own scalar diagnostics (`ALGNGTB` / `ALGNGTA` / `ALGNGKR`, the detection
+  and refcat counts) instead of `UNDEF`, and coarse pass 0's gross-stage numbers are kept
+  when that pass fails, so a declined shift is visible from the header. Fixes the 7
+  `test_align_apply.py` failures the pipeline CI job has shown since it was added.
 - **Stage 1 finishes an exposure with no open shutter on the detector (#681).** `jwst`
   raises `NoDataOnDetectorError` when nothing projects onto a detector (e.g. NRS2 of
   `jw01747017001_03101`). `clean_flicker_noise` with `mask_science_regions = true` hit

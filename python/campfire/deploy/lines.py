@@ -161,6 +161,9 @@ def build_line_fit_rows(lines_paths, *, program_slug: str, observation: str,
         if row['z_source'] != 'inspected' and not allow_auto_z:
             refused.append(path.name)
             continue
+        # the spectrum's key part line_fits does not store (#683); popped by
+        # publish_line_fits before the row is sent
+        row['_filter'] = _hdr_get(product['header'], 'FILTER', str)
         rows.append(row)
     return rows, refused
 
@@ -180,17 +183,21 @@ def publish_line_fits(sb, obs_name: str, lines_paths, *, program_slug: str,
     if dry_run:
         print(f"  Would upsert {len(rows)} line_fits rows")
         return dict(rows=len(rows), refused_auto=len(refused), missing_spectra=0)
-    ids = fetch_spectrum_ids(sb, [(r['target_id'], r['grating']) for r in rows])
+    # (target_id, grating, filter): the product's FILTER card; a product that
+    # predates it resolves only when the grating is unambiguous for the target
+    keys = [(r['target_id'], r['grating'], r.pop('_filter', None)) for r in rows]
+    ids = fetch_spectrum_ids(sb, keys)
     keyed, missing = [], []
-    for r in rows:
-        sid = ids.get((r['target_id'], r['grating']))
+    for r, key in zip(rows, keys):
+        sid = ids.get((key[0], key[1], key[2].upper() if key[2] else None))
         if sid is None:
-            missing.append(f"{r['target_id']}/{r['grating']}")
+            missing.append('/'.join(p for p in key if p))
             continue
         keyed.append({'spectrum_id': sid, **r})
     if missing:
         print(f"  {len(missing)} line fit(s) skipped: no catalog spectrum row for "
-              f"{', '.join(missing[:3])}{' …' if len(missing) > 3 else ''} (deploy the spectra first)")
+              f"{', '.join(missing[:3])}{' …' if len(missing) > 3 else ''} "
+              f"(deploy the spectra first; a product without a FILTER card needs an unambiguous grating)")
     n = batch_upsert_line_fits(sb, keyed)
     print(f"  {n} line_fits rows")
     return dict(rows=n, refused_auto=len(refused), missing_spectra=len(missing))

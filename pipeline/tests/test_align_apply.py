@@ -162,14 +162,17 @@ def test_not_aligned_preserves_wcs(tmp_path):
         assert np.allclose(after, before[m.path], atol=1e-12)   # WCS untouched
 
 
-def test_not_aligned_clears_scalar_diagnostics(tmp_path):
+def test_not_aligned_stamps_the_rejected_attempt_not_the_earlier_solve(tmp_path):
     """A file re-solved to NOT_ALIGNED must not keep the counts and peak
     contrasts of the earlier SUCCESSFUL solve standing beside the rejection —
-    they would read as provenance for the rejected attempt."""
+    they would read as provenance for the rejected attempt. Every key carries
+    the rejected attempt's own value instead, UNDEF where it measured nothing."""
     from astropy.io import fits
 
     from campfire_pipeline.nircam.align.apply import (ALGN_DIAG_COMMENTS,
-                                                      ALGN_UNDEF)
+                                                      ALGN_UNDEF,
+                                                      _ALGN_DIAG_KEYWORDS,
+                                                      _hdr_num)
     members, refcat, _ = _make_exposure(tmp_path, n_det=2, seed=3)
 
     sol = align_exposure_group(members, refcat, config={})
@@ -183,15 +186,42 @@ def test_not_aligned_clears_scalar_diagnostics(tmp_path):
     rng = np.random.default_rng(99)
     badref = Table({'RA': 80.0 + rng.uniform(-0.05, 0.05, 30),
                     'DEC': -30.0 + rng.uniform(-0.05, 0.05, 30)})
-    assert align_exposure_group(members, badref, config={},
-                                overwrite=True).status == 'NOT_ALIGNED'
+    rejected = align_exposure_group(members, badref, config={}, overwrite=True)
+    assert rejected.status == 'NOT_ALIGNED'
+    expected = {kw: _hdr_num((rejected.diagnostics or {}).get(k))
+                for k, kw in _ALGN_DIAG_KEYWORDS.items()}
+    expected['ALGNNREF'] = _hdr_num(rejected.n_refcat_in_footprint)
+    expected['ALGNNMAT'] = 0
     for m in members:
         hdr = fits.getheader(m.path, 0)
         assert hdr['ALGNSTAL'] is True
-        for key in ALGN_DIAG_COMMENTS:
-            if key == 'ALGNSTAL':
-                continue
+        assert isinstance(hdr['ALGNNDET'], int) and hdr['ALGNNDET'] > 0
+        for key, value in expected.items():
+            assert hdr[key] == value, f'{key} does not describe the rejection'
+        # the first solve's consensus peaks are not carried over: the
+        # rejected attempt never reached a consensus
+        for key in ('ALGNXPK', 'ALGNYPK', 'ALGNHBIN'):
             assert hdr[key] == ALGN_UNDEF, f'{key} kept a stale value'
+
+
+def test_declined_gross_shift_is_recorded_on_the_rejected_header(tmp_path,
+                                                                 monkeypatch):
+    # The failure the gross-shift refinement fixed: one coincidental tight pair
+    # at a 2"-off input WCS, and a correct but unrefined shift declined for
+    # losing it. Forced back here (refinement off) to pin that such a rejection
+    # says so in the header — the gross stage's tight-pair counts survive the
+    # failed coarse pass instead of being blanked to UNDEF.
+    from campfire_pipeline.nircam.align.histmatch import OffsetHistogramMatch
+    monkeypatch.setattr(OffsetHistogramMatch, '_refine_gross_shift',
+                        lambda self, tree, ref_xy, im_xy, gross: gross)
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2, offset=(2.0, 0.0))
+    assert align_exposure_group(members, refcat,
+                                config={}).status == 'NOT_ALIGNED'
+    for m in members:
+        hdr = fits.getheader(m.path, 0)
+        assert hdr['CFP_ALGN'] == 'NOT_ALIGNED'
+        assert hdr['ALGNGTB'] >= 1                       # tight pairs to lose
+        assert hdr['ALGNGKR'] < 0.8                      # ... and lost: declined
 
 
 # --- idempotency / overwrite ------------------------------------------------

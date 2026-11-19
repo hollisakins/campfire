@@ -795,7 +795,7 @@ CREATE TRIGGER bump_spectra_updated_at_trigger
 
 -- spectra.filter (#683): deploy writes it from the summary; any write that
 -- leaves it NULL (an older summary without the column, a fixture) takes it
--- from the file name, and so does an update that moves fits_path without
+-- from the file name (or the grating's only filter), and so does an update that moves fits_path without
 -- changing the filter (a redeploy from an older summary, an admin edit of
 -- fits_path), so the column never lags fits_path. A filter the writer changes
 -- is kept.
@@ -807,7 +807,17 @@ DECLARE
     v_parsed text;
 BEGIN
     IF NEW.filter IS NULL THEN
-        NEW.filter := public.spectrum_filter_from_path(NEW.fits_path);
+        -- the file name, else the one filter the grating can take (PRISM
+        -- only with CLEAR, G235M/H only with F170LP, G395M/H only with
+        -- F290LP); G140M/H take F070LP or F100LP, so they stay NULL and the
+        -- write fails NOT NULL rather than guess
+        NEW.filter := COALESCE(
+            public.spectrum_filter_from_path(NEW.fits_path),
+            CASE upper(NEW.grating)
+                WHEN 'PRISM' THEN 'CLEAR'
+                WHEN 'G235M' THEN 'F170LP' WHEN 'G235H' THEN 'F170LP'
+                WHEN 'G395M' THEN 'F290LP' WHEN 'G395H' THEN 'F290LP'
+            END);
     ELSIF TG_OP = 'UPDATE'
           AND NEW.fits_path IS DISTINCT FROM OLD.fits_path
           AND NEW.filter IS NOT DISTINCT FROM OLD.filter THEN

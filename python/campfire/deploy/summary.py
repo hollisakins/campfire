@@ -7,6 +7,7 @@ for Supabase upserts and R2 upload planning.
 """
 
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -48,6 +49,61 @@ def _clean_str(value) -> str | None:
     if not s or s.lower() in ('none', 'nan', '--'):
         return None
     return s
+
+
+# {obs}_{grating}_{filter}_{source}_spec.fits: a grating token followed by a
+# filter token, so an observation name holding "prism" (followed by anything
+# else) is skipped.
+# Mirrors public.spectrum_filter_from_path (supabase/schemas/functions.sql).
+_SPEC_FILTER_RE = re.compile(
+    r'(?:^|_)(?:prism|g[0-9]{3}[mh])_(clear|f[0-9]{3}[a-z]+)_[^/]+_spec\.fits$',
+    re.IGNORECASE,
+)
+
+
+# The one filter a grating can take; G140M/H pair with F070LP or F100LP and
+# are absent. Mirrors the fallback in set_spectrum_filter.
+_ONLY_FILTER = {
+    'PRISM': 'CLEAR',
+    'G235M': 'F170LP', 'G235H': 'F170LP',
+    'G395M': 'F290LP', 'G395H': 'F290LP',
+}
+
+
+def spectrum_filter_from_path(path) -> str | None:
+    """The NIRSpec filter named by a spectrum's file name or key (upper case), or None."""
+    if not path:
+        return None
+    m = _SPEC_FILTER_RE.search(str(path).rsplit('/', 1)[-1])
+    return m.group(1).upper() if m else None
+
+
+def summary_row_filter(summary: Table, row) -> str | None:
+    """A summary row's NIRSpec filter (upper case): the ``filter`` column, else
+    the file name, else the grating's only filter; None for a G140M/H row that
+    names none. The one rule every deploy path reads a row's filter by."""
+    filt = (_clean_str(row['filter']) if 'filter' in summary.colnames else None)
+    if not filt:
+        name = row['fits_filename'] if 'fits_filename' in summary.colnames else row['spec_file']
+        filt = spectrum_filter_from_path(name) or _ONLY_FILTER.get(str(row['grating']).upper())
+    return filt.upper() if filt else None
+
+
+SpectrumKey = tuple[str, str, str | None]
+
+
+def spectrum_key(rec: dict) -> SpectrumKey:
+    """A spectrum's identity, ``(target_id, grating, filter)`` (#683).
+
+    The catalog's unique key: G140M/F070LP and G140M/F100LP of one target are
+    two spectra. ``filter`` comes from the record, else from its ``fits_path``,
+    else the grating's only filter (what set_spectrum_filter would write);
+    None only for a G140M/H record that names none.
+    """
+    grating = str(rec['grating'])  # verbatim: the database key is case-sensitive
+    filt = (rec.get('filter') or spectrum_filter_from_path(rec.get('fits_path'))
+            or _ONLY_FILTER.get(grating.upper()))
+    return (str(rec['target_id']), grating, filt.upper() if filt else None)
 
 
 def load_summary(obs_dir: Path, obs_name: str, required: bool = True) -> Table | None:
@@ -235,11 +291,8 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
     # written before P0b have no column; those deploys leave the row's value
     # alone (the backfill fills it).
     has_science_hash = 'science_hash' in summary.colnames
-    # #683: the NIRSpec filter paired with the grating (G140M takes F070LP or
-    # F100LP). Summaries have carried it since the metadata reader parsed it
-    # from the file name; when absent, the set_spectrum_filter trigger takes it
-    # from fits_path instead.
-    has_filter = 'filter' in summary.colnames
+    # #683: the NIRSpec filter (G140M takes F070LP or F100LP) is part of the
+    # spectrum's unique key, so every record carries one (summary_row_filter).
 
     # Fallback to metadata for old ECSVs that lack per-row columns
     meta_jwst_version = _clean_str(summary.meta.get('jwst_version'))
@@ -299,9 +352,13 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
         # (a product the hasher could not read must not keep a stale hash).
         if has_science_hash:
             rec['science_hash'] = _clean_str(row['science_hash'])
-        if has_filter:
-            filt = _clean_str(row['filter'])
-            rec['filter'] = filt.upper() if filt else None
+        filt = summary_row_filter(summary, row)
+        if not filt:
+            raise ValueError(
+                f"{row['fits_filename']}: no NIRSpec filter in the summary or the file "
+                f"name; the spectra key is (target_id, grating, filter)"
+            )
+        rec['filter'] = filt
 
         records.append(rec)
     return records
@@ -353,6 +410,7 @@ def get_zfit_scalar_updates(
         updates.append({
             'target_id': str(row['object_id']),
             'grating': str(row['grating']),
+            'filter': summary_row_filter(summary, row),
             'redshift_auto': _finite_or_none(result.get('redshift')),
             'chi2_min': _finite_or_none(result.get('chi2_min')),
             'confidence': _finite_or_none(result.get('confidence')),

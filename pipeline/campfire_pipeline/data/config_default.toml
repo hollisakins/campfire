@@ -290,8 +290,15 @@
         ring_clip_filter_size = 3
         tier_kernel_size = [25, 15, 5, 2]
         tier_npixels = [15, 10, 3, 1]
-        tier_nsigma = [1.5, 1.5, 1.5, 1.5]
-        tier_dilate_size = [33, 25, 21, 19]
+        # Detect deeper, grow less (2026-11): threshold 1.5 -> 0.5 sigma and
+        # the growth radii halved ([33, 25, 21, 19] -> [17, 13, 11, 9]). On
+        # MACS0647 (crowded with bright stars) the 1.5-sigma mask left the
+        # faint outskirts of sources and diffraction spikes in the fit, which
+        # over-subtracted beside them; reaching them by detection covers the
+        # sources better than reaching them by dilation. Chosen by eye on
+        # per-exposure masks and test mosaics of that one field.
+        tier_nsigma = [0.5, 0.5, 0.5, 0.5]
+        tier_dilate_size = [17, 13, 11, 9]
         # Fold JUMP_DET/SATURATED/PERSISTENCE DQ into the *fit* mask (not
         # detection): they carry residual signal that would bias the per-amp
         # estimate; the GP tolerates the extra masking.
@@ -745,7 +752,7 @@
                                       # (= JHAT's 10px/2048px ~ 0.28 deg)
     slope_nsteps      = 200     # rotation-scan steps across [-slope_max, +]
     # The gross shift must EARN its keep. `_gross_shift` is an argmax over a
-    # 2*coarse_searchrad square of 0.5" bins, and its risk grows as the fraction
+    # 2*coarse_searchrad square of 0.25" bins, and its risk grows as the fraction
     # of true counterparts falls: on a sparse catalog (EGS f470n: ~26 true
     # refcat counterparts per detector against several hundred detections) a
     # clustering-scale peak outvotes the true one and drags the pool 6-63".
@@ -753,19 +760,19 @@
     # consistent - the 1-NN re-pairing happens at the shifted positions, d2d_max
     # confines the survivors to the false offset, and the fit's rmse is measured
     # on those same pairs (reported 0.0-0.2" on a WCS tens of arcsec wrong).
-    # So the candidate shift is vetted: count image sources with a reference
-    # within the consensus rough-cut radius (2.5 px) with and without it, and
-    # adopt it only if it retains this fraction of them. Relative, so there is
-    # no per-filter value. What it separates, measured on real pools, is "this
-    # pool NEEDS a translation prior" (COSMOS acquisition failure: 2 -> 418
-    # tight pairs, ratio 209) from "it does not" - both the 16 mis-locked EGS
-    # f470n/f460m pools (ratio 0.019-0.32) AND clean dense COSMOS pools
-    # (1248 -> 41, 0.033: the gross proposal is itself only good to ~0.25", so
-    # a CORRECT proposal also loses tight pairs). Declining a redundant prior
-    # is a measured no-op - same WCS, same 16.4/14.8 mas - while declining a
-    # harmful one is the fix. So 0.8 decides between >= 209 and <= 0.32.
-    # Declining costs only a redundant translation prior: the matcher then runs
-    # its searchrad=None path, the one every iterate pass already uses.
+    # So the candidate shift is refined to the median 1-NN offset inside its own
+    # peak, then vetted: count image sources with a reference within the
+    # consensus rough-cut radius (2.5 px) with and without it, and adopt it only
+    # if it retains this fraction of them. Relative, so there is no per-filter
+    # value. Measured on real pools (before refinement): the COSMOS acquisition
+    # failure scores 209 (2 -> 418 tight pairs), the 16 mis-locked EGS
+    # f470n/f460m pools 0.019-0.32. So 0.8 decides between >= 209 and <= 0.32.
+    # Refinement matters because the raw proposal is only good to ~0.25": vetted
+    # raw, a CORRECT shift also lost tight pairs (clean COSMOS 1248 -> 41), and
+    # where the pointing error exceeds d2d_max a declined correct shift leaves
+    # the pool NOT_ALIGNED. Below d2d_max, declining costs only a redundant
+    # translation prior: the matcher then runs its searchrad=None path, the one
+    # every iterate pass already uses.
     # 0 disables the check (A/B arm only).
     gross_min_keep_frac = 0.8
     # delta_mag_lim = [-3.0, 4.0]   # keep a 1-NN pair only if image_mag -
@@ -872,6 +879,64 @@
     # on the canonical exposure and honored via DO_NOT_USE on the combine
     # working copy (good_bits='~DO_NOT_USE'). The former mask_flag / mask_set_nan
     # knobs are gone — the mask now lives purely in the DQ contract.
+
+[nircam.spike_mask]
+    # BETA: developed on one field (MACS0647, two roll angles); not yet tested
+    # on many fields or filters.
+    # Opt-in automatic diffraction-spike mask. For each Gaia star
+    # the published spike model is scaled by the star's predicted in-band flux
+    # and placed on every exposure at the telescope roll; pixels where the
+    # predicted surface brightness exceeds `threshold_sigma` x the exposure's
+    # pixel noise are spike pixels. A spike pixel is masked ONLY where another
+    # roll angle sees the same sky with less predicted spike light (where two
+    # spikes cross, the brighter is masked), so a spike is never traded for a
+    # hole. Recorded as a CFSPIKE extension on the canonical
+    # exposure (SCI/DQ untouched) and applied on the combine working copies.
+    enabled = false
+    # "mask": apply in the combine phase. "report": write CFSPIKE only.
+    mode = "mask"
+    # Stars fainter than this predicted AB magnitude in the filter are not
+    # considered at all. Only a bound on run time: whether a star's arms are
+    # masked is decided by the profile against threshold_sigma.
+    mag_limit = 19.0
+    # Gaia G limit of the catalog query (deep enough for red stars).
+    gaia_g_max = 19.5
+    # Optional star catalog (ECSV: ra, dec, g, bp_rp, pmra, pmdec; epoch 2016.0)
+    # used instead of the Gaia query.
+    # catalog = "/path/to/stars.ecsv"
+    # Threshold on the predicted ARM surface brightness (the star's smooth
+    # halo is not counted), in units of one exposure's pixel noise. Arms well
+    # below 1 sigma per exposure still show in a mosaic.
+    threshold_sigma = 0.3
+    # Growth of the thresholded footprint, per star: `grow` px for every
+    # star, plus `grow_per_mag_arcsec` for each magnitude the star (predicted
+    # AB in the filter) is brighter than `grow_ref_mag`. The measured profile
+    # is too narrow at the faint level a mosaic shows: on MACS0647 F200W the
+    # arm of an AB 7.8 star left a faint excess ~0.7" beyond the ungrown
+    # mask, three AB ~15.5 stars ~0.2". Set from those four stars only.
+    grow = 2
+    grow_per_mag_arcsec = 0.07
+    grow_ref_mag = 18.0
+    roll_tolerance_deg = 0.15     # also mask the pattern rotated by +- this
+    # Arm profile: "measured" = built from real stars (six isolated
+    # G = 8.0-10.2 stars, F070W-F480M, after the standard process phase):
+    # brightness along an arm scales with wavelength, the shape across it is
+    # fixed in arcsec. "preflight" = the published WebbPSF-based models.
+    model = "measured"
+    # width_scale* apply to model = "preflight" only.
+    # Real arms are wider across than the pre-flight model. Measured on
+    # MACS0647 F200W (G = 8 star, 35-116"): x1.8 matches the cross-section
+    # down to 0.3 sigma. The long-wavelength model needs no widening
+    # (F277W, same star, 45-200"); x1.8 there masks about twice too much.
+    width_scale = 1.8             # short-wavelength channel
+    width_scale_lw = 1.0          # long-wavelength channel
+    max_radius_arcsec = 300.0     # never mask farther than this from a star
+    pa_cluster_deg = 3.0          # roll angles closer than this are one angle
+    # false: mask every predicted spike pixel whether or not another angle
+    # covers it. Leaves holes; for inspecting the footprints only.
+    require_other_angle = true
+    min_width_px = 6              # drop mask fragments narrower than this
+    gate_cell_arcsec = 0.12       # sky cell used to compare coverage
 
 [nircam.bad_pixel]
     # Opt-in "consistently bad" pixel detector: stacks the DO_NOT_USE bit
@@ -1025,6 +1090,11 @@
     # skippable up front by setting this false (its only cost is losing the
     # rollback and the _bkgsub.png before/after plot).
     keep_pre_bkgsub = true
+    # Run the mosaic bkgsub on the padded, grid-aligned bounding box of the
+    # tile's coverage and paste the result back (outer tiles are 30-40%
+    # covered). Same pixels as the full-image path, so not part of the tile
+    # config hash; false runs on the full image.
+    crop_to_coverage = true
     ring_radius_in = 80
     ring_width = 4
     ring_downsample = 4

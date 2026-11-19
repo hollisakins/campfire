@@ -122,6 +122,7 @@ interface SpectraCsvRow {
   spectrum_id: string | null;
   target_id: string;
   grating: string;
+  filter: string | null;       // the NIRSpec filter (#683)
   field: string;
   observation: string;         // sort-only, not a CSV column
   ra: number;
@@ -235,7 +236,7 @@ export async function generateCSV(
       return { csv, error: null };
     }
 
-    // Spectra mode: one row per (target_id, grating).
+    // Spectra mode: one row per spectrum (target_id, grating, filter).
     let spectrumIds: number[] | null = null;
     if (treePath) {
       const matched = await matchFilterIds(supabase, 'spectra', filters, accessibleProgramSlugs, user.id);
@@ -256,7 +257,7 @@ export async function generateCSV(
       rows,
       includeDistance ? SPECTRA_CSV_SORT.distance : (SPECTRA_CSV_SORT[sortColumn] ?? measurementSortValue(rows[0] ?? { line_columns: null, band_columns: null }, sortColumn) ?? SPECTRA_CSV_SORT.spectrum_id),
       includeDistance ? 'asc' : sortDirection,
-      [r => r.target_id, r => r.grating],
+      [r => r.target_id, r => r.grating, r => r.filter ?? ''],
     );
     const csv = spectraRowsToCsv(rows, includeDistance, activeLinesOf(filters), activeBandsOf(filters));
 
@@ -372,6 +373,7 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, shown
   const columns = [
     'target_id',
     'grating',
+    'filter',
     'field',
     'ra',
     'dec',
@@ -390,7 +392,7 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, shown
   ];
 
   if (includeDistance) {
-    columns.splice(5, 0, 'distance_degrees');
+    columns.splice(6, 0, 'distance_degrees');
   }
 
   const csvRows: string[] = [columns.join(',')];
@@ -399,6 +401,7 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, shown
     const values: (string | number)[] = [
       escapeCsvValue(row.target_id),
       escapeCsvValue(row.grating),
+      escapeCsvValue(row.filter),
       escapeCsvValue(row.field),
       row.ra.toFixed(8),
       row.dec.toFixed(8),
@@ -679,7 +682,7 @@ export async function generateFitsDownloadUrl(
         };
       }
     } else {
-      // Spectra view: one on-screen row per (target, grating); the spectra RPC's
+      // Spectra view: one on-screen row per spectrum; the spectra RPC's
       // per-spectrum filtering matches the visible rows exactly, and
       // result.total is the count over spectra (the same unit this download
       // acts on).

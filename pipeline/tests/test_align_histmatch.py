@@ -349,19 +349,17 @@ def test_gross_shift_kept_for_a_real_acquisition_failure():
 
 
 def test_clean_pool_keeps_its_gross_prior_and_is_unchanged():
-    """A clean, dense pool: the gross proposal is accurate, so the guard keeps it.
+    """A clean, dense pool: the refined gross shift is accurate, so the guard
+    keeps it.
 
     This assertion used to run the other way. At the old 0.5" gross bin the
-    proposal on a well-pointed exposure landed ~0.26" from the truth - outside
-    the 0.157" vetting radius - so the guard DECLINED (measured ratio 0.033 on
-    real COSMOS pools). At the shipped 0.25" bin it lands inside, and on THIS
-    fixture the ratio goes 0.01 -> 0.997.
-
-    That flip is a property of the fixture, not a claim about the sky: on the
-    1,624 real EGS F115W pools re-solved at 0.25" the median keep ratio is 0.119
-    and 1,368 pools still decline. Real detections are blended, mismatched
-    across bands and astrometrically noisier, so a correct proposal still costs
-    tight pairs. What must hold either way is the OUTCOME - same matches, same
+    raw proposal on a well-pointed exposure landed ~0.26" from the truth -
+    outside the 0.157" vetting radius - so the guard DECLINED (measured ratio
+    0.033 on real COSMOS pools). Even at 0.25" the raw proposal declined on
+    1,368 of 1,624 real EGS F115W pools (median ratio 0.119). The shift is now
+    refined to the median 1-NN offset inside its peak before it is vetted, so a
+    correct shift keeps its tight pairs whatever the bin (not yet re-measured on
+    real pools). What must hold either way is the OUTCOME - same matches, same
     astrometry, guard on or off - which is what the final assertions check.
     """
     rng = np.random.default_rng(13)
@@ -418,3 +416,66 @@ def test_gross_bin_resolves_an_arcsec_scale_offset():
     assert n_fine >= 50
     # ... and the test must not be vacuous: a coarser bin does measurably worse
     assert frac_fine >= frac_coarse
+
+
+def test_correct_shift_beyond_d2d_max_survives_a_coincidental_pair():
+    """A correct gross shift must not be declined for the proposal's own
+    bin-scale error.
+
+    The regression this pins: a 1.8" pointing error (beyond ``d2d_max``, so the
+    fallback around the input WCS cannot recover it) on an SW pool with ONE
+    coincidental tight pair at the input WCS - enough to close the
+    ``n_before == 0`` bypass. The raw histogram proposal snaps to a 0.25" bin
+    centre and misses an off-centre offset by ~0.12", outside the 0.078" SW
+    vetting radius, so vetted raw it keeps no tight pairs, is declined, and
+    nothing is matched. Refined to the median 1-NN offset inside its peak, it
+    keeps them all. Asserted PAIRED (refinement off, then on) so it cannot pass
+    with refinement being a no-op.
+    """
+    rng = np.random.default_rng(0)
+    truth = np.array([1.79, 0.21])
+    true = rng.uniform(0, 130, (60, 2))
+    im = true - truth + rng.normal(0, 0.01, true.shape)
+    coincidence = im[30] + [0.02, -0.01]     # an unrelated ref, 0.022" away
+    ref = np.vstack([true, rng.uniform(-10, 140, (300, 2)), coincidence])
+    ref_tab, im_tab = _tab(ref), _tab(im)
+
+    # arm A: the raw proposal (the pre-fix behaviour) is declined, nothing matched
+    raw = OffsetHistogramMatch(searchrad=70.0)
+    raw._refine_gross_shift = lambda tree, ref_xy, im_xy, gross: gross
+    _, ii_raw = raw(ref_tab, im_tab, tp_pscale=SW_PSCALE)
+    assert raw.diag['gross_tight_before'] >= 1        # the bypass is closed
+    assert raw.diag['gross_keep_ratio'] < 0.8         # ... and the shift declined
+    assert len(ii_raw) == 0
+
+    # arm B: refined, the shift clears the ratio test on its merits and the
+    # offset is recovered
+    m = OffsetHistogramMatch(searchrad=70.0)
+    ri, ii = m(ref_tab, im_tab, tp_pscale=SW_PSCALE)
+    nb, na = m.diag['gross_tight_before'], m.diag['gross_tight_after']
+    assert nb >= 1
+    assert na >= 0.8 * nb and na >= 55
+    assert len(ii) >= 55
+    assert np.all(ri == ii)                           # paired to their own refs
+    rec = ref[ri] - im[ii]
+    assert np.allclose(np.median(rec, axis=0), truth, atol=0.01)
+
+
+def test_refinement_cannot_move_the_shift_to_another_peak():
+    """Refinement only sharpens the peak the histogram chose: a shift on a
+    false peak stays there and is still declined (the mis-lock fixture), and a
+    proposal with no sources inside its window is returned unchanged."""
+    ref_tab, im_tab, _ = _mislock_catalogs()
+    ref_xy = np.column_stack([ref_tab['TPx'], ref_tab['TPy']])
+    im_xy = np.column_stack([im_tab['TPx'], im_tab['TPy']])
+    from scipy.spatial import cKDTree
+    tree = cKDTree(ref_xy)
+    m = OffsetHistogramMatch(searchrad=70.0)
+
+    false_peak = np.array([20.0, -15.0])     # where the decoys pile up
+    refined = m._refine_gross_shift(tree, ref_xy, im_xy, false_peak)
+    assert np.hypot(*(refined - false_peak)) < 0.5   # stayed on the false peak
+
+    empty = np.array([500.0, 500.0])         # shifts every source off the field
+    assert np.array_equal(
+        m._refine_gross_shift(tree, ref_xy, im_xy, empty), empty)
