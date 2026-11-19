@@ -31,9 +31,8 @@ def edge_step(exposure_file, field, step_config, overwrite=False, status=None):
     log(f"Running edge flagging on {rootname}")
 
     from jwst.datamodels import ImageModel
-    from stdatamodels import util as stutil
 
-    with ImageModel(exposure_file, memmap=False) as model:
+    with ImageModel(exposure_file) as model:
         size = model.data.shape[0]
 
         mean_cols = np.array([np.mean(model.data[:, ii]) for ii in range(size)])
@@ -70,9 +69,9 @@ def edge_step(exposure_file, field, step_config, overwrite=False, status=None):
                 break
 
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        model.history.append(stutil.create_history_entry(
+        model.add_history_entry(
             f'Removed edges; {now}'
-        ))
+        )
 
         atomic_save(
             model, exposure_file,

@@ -138,7 +138,6 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
     log(f"Running bkg on {rootname}")
 
     from jwst.datamodels import ImageModel, dqflags
-    from stdatamodels import util as stutil
 
     n_iter = int(step_config.get('n_iterations', 3))
     do_plot = step_config.get('plot', True)
@@ -218,7 +217,7 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
     aggressive_dq_max_frac = float(
         mask_cfg.pop('mask_aggressive_dq_max_frac', 0.50))
 
-    with ImageModel(exposure_file, memmap=False) as model:
+    with ImageModel(exposure_file) as model:
         sci0 = model.data.copy()
         err = model.err
         dq = model.dq
@@ -535,8 +534,8 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
             setattr(model, name, arr)
 
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        model.history.append(stutil.create_history_entry(
-            f'Unified bkg (pedestal + 1/f + variance) {now}'))
+        model.add_history_entry(
+            f'Unified bkg (pedestal + 1/f + variance) {now}')
 
         cfp_value = (
             f'estimator={estimator}, n_iter={n_iter}, channel={channel}, '

@@ -219,7 +219,7 @@ def test_align_step_end_to_end(tmp_path):
     for path, (x, y) in xy_by_path.items():
         with fits.open(path) as h:
             assert h[0].header.get('CFP_ALGN', '').startswith('dof=')
-        m = ImageModel(path, memmap=False)
+        m = ImageModel(path)
         ra, dec = m.meta.wcs(x, y)
         m.close()
         _, d2d, _ = SkyCoord(ra, dec, unit='deg').match_to_catalog_sky(ref)

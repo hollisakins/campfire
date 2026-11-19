@@ -9,7 +9,10 @@ dependencies:
   - numba>=0.59
   - pip
   - pip:
-    - jwst>=1.20,<1.21
+    - jwst==3.0.0
+    - stcal==1.21.0
+    - drizzle==3.0.0
+    - snowblind==1.4.1
     - -e ./layout      # campfire-layout: not on PyPI; must precede the packages that depend on it
     - -e ./pipeline
     - -e ./python

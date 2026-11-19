@@ -59,7 +59,7 @@ def _build_visit_wcs(crf_files):
     from stdatamodels.jwst.datamodels import ImageModel
 
     sregions = []
-    with ImageModel(crf_files[0], memmap=False) as ref:
+    with ImageModel(crf_files[0]) as ref:
         ref_wcs = deepcopy(ref.meta.wcs)
         ref_wcsinfo = ref.meta.wcsinfo.instance
         sregions.append(ref.meta.wcsinfo.s_region)
@@ -192,7 +192,7 @@ def outlier_detect_for_visit(
     for crf in contributing_paths:
         if crf not in visit_set:
             continue  # only flag and save the visit's own files
-        with ImageModel(crf, memmap=False) as model:
+        with ImageModel(crf) as model:
             dq_before = (model.dq & OUTLIER_BIT) != 0
             # weight-carrying state before detection: grow seeds must not
             # form on pixels that were already DO_NOT_USE (edge trim)

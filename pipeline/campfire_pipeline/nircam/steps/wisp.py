@@ -370,7 +370,7 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
     if detector not in WISP_DETECTORS:
         log(f"Skipping wisp on {rootname}: detector {detector} has no wisps")
         from jwst.datamodels import ImageModel
-        with ImageModel(exposure_file, memmap=False) as m:
+        with ImageModel(exposure_file) as m:
             atomic_save(
                 m, exposure_file,
                 header_updates=cfp.format(
@@ -414,7 +414,7 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
     mask_passes = max(int(step_config.get('mask_iterations', 5)), 1)
 
     log(f"Running NMF wisp subtraction on {rootname}")
-    model = ImageModel(exposure_file, memmap=False)
+    model = ImageModel(exposure_file)
     sci_before = model.data.copy()
 
     # wisp_path is the case shim when the installed nmfwisp needs it, else None
@@ -541,12 +541,11 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
     sci_after = model.data.copy()
 
     ver = getattr(nmfwisp, '__version__', '?')
-    from stdatamodels import util as stutil
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    model.history.append(stutil.create_history_entry(
+    model.add_history_entry(
         f'Removed wisps (NMFwisp {ver}, Wu et al. 2026, '
         f'arXiv:2601.15958) {now}'
-    ))
+    )
 
     # Record what the fit DECIDED, not just that it ran. The model is exactly
     # W . templates over versioned reference data, so storing W makes this
@@ -604,7 +603,7 @@ def _fit_template(exposure_file, field, step_config, rootname, detector,
         log(f"No wisp template in manifest for {detector}/{filtname}; "
             f"stamping skipped for {rootname}")
         from jwst.datamodels import ImageModel
-        with ImageModel(exposure_file, memmap=False) as m:
+        with ImageModel(exposure_file) as m:
             atomic_save(
                 m, exposure_file,
                 header_updates=cfp.format(CFP_WISP='skipped (no template)'),
@@ -634,7 +633,7 @@ def _fit_template(exposure_file, field, step_config, rootname, detector,
 
     from jwst.datamodels import ImageModel
 
-    model = ImageModel(exposure_file, memmap=False)
+    model = ImageModel(exposure_file)
     sci_before = model.data.copy()
 
     # Deep-copy and flat-field for fitting only; the actual subtraction goes
@@ -728,11 +727,10 @@ def _fit_template(exposure_file, field, step_config, rootname, detector,
     sci_after = model.data.copy()
 
     # Preserve the legacy HISTORY entry alongside the structured CFP_WISP key
-    from stdatamodels import util as stutil
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    model.history.append(stutil.create_history_entry(
+    model.add_history_entry(
         f'Removed wisps ({template_name}, scale = {minval:.2f}) {now}'
-    ))
+    )
 
     atomic_save(
         model, exposure_file,

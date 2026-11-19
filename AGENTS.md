@@ -82,6 +82,8 @@ extension in fν + a line summary), the fourth entry the spectrum sidecar resolv
 
 Always use the `campfire` conda environment when testing code: `conda run -n campfire python ...`
 
+The environment is tied to one JWST stack (the exact pins in `pipeline/pyproject.toml`). A checkout that pins another stack gets its own env from `install.py --stack new-env` (named `campfire-jwst<major>`, recorded as `env_name` in that checkout's `.campfire-install.json`); use that one there. `python3 install.py --doctor` reports whether the env matches the pins.
+
 ## Pipeline Versioning & Releases
 
 `campfire-pipeline` follows PEP 440 / semver. Version is resolved by `setuptools-scm` from git tags matching `pipeline-vX.Y.Z` — never edited by hand. Between tags, the version is `X.Y.Z+1.devN+g<sha>[.dDATE]`.

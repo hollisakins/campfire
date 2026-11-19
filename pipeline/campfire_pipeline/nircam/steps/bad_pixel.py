@@ -188,17 +188,16 @@ def bad_pixel_step(exposure_file, field, step_config, overwrite=False,
     log(f"Applying bad-pixel mask to {rootname}")
 
     from jwst.datamodels import ImageModel
-    from stdatamodels import util as stutil
 
     fl = _load_fl_mask(fl_path)
 
-    with ImageModel(exposure_file, memmap=False) as model:
+    with ImageModel(exposure_file) as model:
         model.dq[fl] |= 1  # DO_NOT_USE
 
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        model.history.append(stutil.create_history_entry(
+        model.add_history_entry(
             f'Masked bad pixels; {now}'
-        ))
+        )
 
         atomic_save(
             model, exposure_file,

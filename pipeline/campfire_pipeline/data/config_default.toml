@@ -9,7 +9,7 @@
 
 [environment]
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
-    CRDS_CONTEXT = "jwst_1481.pmap"
+    CRDS_CONTEXT = "jwst_1584.pmap"
 
 # All pipeline data lives under a single $CAMPFIRE_ROOT (default ~/campfire):
 # raw/, products/, reference/, cache/. Relocate the whole tree by setting
@@ -22,8 +22,17 @@
 # === NIRSpec ===
 
 [nirspec.stage1]
-    do_clean_flicker_noise = true # handled by iterative bkg subtraction
-    mask_science_regions = true
+    # In-ramp 1/f cleaning (jwst clean_flicker_noise). The rate-level pass below
+    # removes the same 1/f for faint pixels, but only the in-ramp step gets
+    # bright trace pixels right (the ramp fit weights their groups differently).
+    # The stock in-ramp picture_frame step is always skipped; the picture frame
+    # is removed by the rate-level pass.
+    do_clean_flicker_noise = true
+    mask_science_regions = true # mask traces with CAMPFIRE's own trace mask (override_wavelength_range applies)
+    # Passed explicitly so CRDS's pars-cleanflickernoisestep cannot change them.
+    flicker_fit_method = "median"
+    flicker_background_method = "median"
+    flicker_n_sigma = 1.5 # the CRDS jwst_1584 value; clips residual signal in each group image
     cleanup_uncal = true
     cleanup_rateints = true
     subtract_2d = false
@@ -36,6 +45,9 @@
     plot = true
     
     [nirspec.stage1.override_wavelength_range] # mask beyond the nominal wavelength range, to cover higher-order spectra
+        # PRISM light reaches ~30 px past the nominal 0.6-5.3 um footprint at the
+        # blue end and ~40 px at the red end (measured on the fixed slits).
+        PRISM = [0.50, 5.6]
         G140M = [0.70, 2.5]
         G235M = [1.66, 4.0]
         G395M = [2.87, 5.5]
@@ -177,6 +189,12 @@
 
 [nircam.detector1]
     clean_flicker_noise = false
+    # jwst's in-ramp persistence step (jwst >= 3.0): after a pixel saturates,
+    # the groups of the following integrations within persistence_time seconds
+    # are excluded from the ramp fit. It only acts on exposures with more than
+    # one integration; carry-over into later exposures is [nircam.persistence].
+    in_ramp_persistence = true
+    persistence_time = "packaged" # seconds, or "packaged" for snowblind's measured per-detector time
 
 [nircam.jackknife]
     # Re-zero jump-segmented ramp fits against the exposure's frame-common
@@ -192,7 +210,12 @@
     bright_clip_sigma = 5.0       # clean-sky selection (no SRCMASK exists yet)
 
 [nircam.persistence]
-    # No tunable parameters; reserved for future snowblind config.
+    # Cross-exposure persistence flagging (snowblind.PersistenceFlagStep): a
+    # pixel saturated in one exposure is flagged DO_NOT_USE | PERSISTENCE in the
+    # later exposures of the same detector whose middle falls within `time`
+    # seconds of the end of that one. "packaged" uses the time snowblind
+    # measured for each detector (2238 s for NRCA1 up to 12602 s for NRCB4).
+    time = "packaged"
 
 [nircam.wisp]
     # Subtraction method: "nmf" (multi-component NMF, Wu et al. 2026 /

@@ -209,7 +209,7 @@ def wcs_shift_step(exposure_file, field, step_config, overwrite=False,
                 data=sm.data.copy(), header=sm.header.copy(), name='SRCMASK',
             )
 
-    model = ImageModel(exposure_file, memmap=False)
+    model = ImageModel(exposure_file)
 
     if already_applied:
         if existing_wcs_bak is None:

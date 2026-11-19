@@ -348,7 +348,7 @@ def _load_detector(path, detector, detect_cfg, ImageModel):
     with fits.open(path, memmap=False) as hdul:
         zeropoint = ab_zeropoint_from_sci_header(hdul['SCI'].header)
 
-    model = ImageModel(path, memmap=False)
+    model = ImageModel(path)
     try:
         wi = model.meta.wcsinfo.instance
         wcsinfo = {'v2_ref': wi['v2_ref'], 'v3_ref': wi['v3_ref'],
@@ -405,7 +405,7 @@ def _write_solution(path, corrected_wcs, cfp_value, ImageModel,
             srcmask_hdu = fits.ImageHDU(data=sm.data.copy(),
                                         header=sm.header.copy(), name='SRCMASK')
 
-    model = ImageModel(path, memmap=False)
+    model = ImageModel(path)
     try:
         # Preserve the pre-align baseline: keep an existing ALGN_BAK across
         # re-solves, else the current (pre-align, wcs_shift-corrected) WCS
