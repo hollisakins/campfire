@@ -20,12 +20,12 @@ from campfire import Campfire
 
 os.environ['CRDS_PATH'] = os.environ.get('CAMPFIRE_ROOT')+'/cache/crds/'
 os.environ['CRDS_SERVER_URL'] = 'https://jwst-crds.stsci.edu'
-os.environ['CRDS_CONTEXT']='jwst_1464.pmap'
+os.environ['CRDS_CONTEXT']='jwst_1614.pmap'
 
 steps={'detector1':False,
        'extend_flats':True,
-       'spec2':False,
-       'spec3':False,
+       'spec2':True,   # flats are applied here: must rerun whenever the fflat/sflat change
+       'spec3':True,
        'calibrate':True}
 
 ncores=10
@@ -248,7 +248,9 @@ if steps['spec2']:
                     alt_sflat=sflat
                     break
         alt_photom = 'uncalibrated_extended_jwst_nirspec_photom_0015.fits'
-        alt_waverange = 'extended_jwst_nirspec_wavelengthrange_0008.asdf'
+        # Named after whatever wavelengthrange the active context resolved (extend_flats
+        # writes exactly one), so a CRDS bump does not leave a stale hardcoded version.
+        alt_waverange, = glob.glob('extended_jwst_nirspec_wavelengthrange_????.asdf')
         steps={'extract_1d': {'skip': True},
             'flat_field': {'override_fflat': alt_fflat,'override_sflat': alt_sflat},# 'override_dflat': alt_dflat},
             'nsclean': {'skip': True},

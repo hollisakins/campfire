@@ -22,7 +22,7 @@ os.environ["CRDS_SERVER_URL"] = "https://jwst-crds.stsci.edu"
 
 import crds  # noqa: E402
 
-CALIBRATION_CONTEXT = "jwst_1464.pmap"
+CALIBRATION_CONTEXT = "jwst_1614.pmap"
 GATED_CONFIGS = [
     ("NRS1", "G140M", "F100LP"),
     ("NRS2", "G140M", "F100LP"),

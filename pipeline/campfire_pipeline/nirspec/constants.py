@@ -89,7 +89,7 @@ EXTENDED_WAVELENGTHRANGE_M = {
 # was calibrated under. The extended flats are regenerated live under the *current*
 # context; verify_extension_crds_compatibility() refuses to run if the current
 # context resolves fflat/sflat/photom to versions newer than the baseline below.
-EXTENDED_CALIBRATION_CONTEXT = "jwst_1464.pmap"
+EXTENDED_CALIBRATION_CONTEXT = "jwst_1614.pmap"
 
 # Baseline CRDS reference basenames the calibration was derived against, keyed by
 # (DETECTOR, GRATING, FILTER). photom is detector-agnostic and is fixed by the
@@ -99,16 +99,16 @@ EXTENDED_CALIBRATION_CONTEXT = "jwst_1464.pmap"
 # the calibration is re-derived against a newer context. A None field means "not yet
 # pinned" — the guard warns rather than enforces until it is filled.
 EXTENDED_CALIBRATION_REFERENCES = {
-    ("NRS1", "G140M", "F100LP"): {"fflat": "jwst_nirspec_fflat_0168.fits",
+    ("NRS1", "G140M", "F100LP"): {"fflat": "jwst_nirspec_fflat_0200.fits",
                                   "sflat": "jwst_nirspec_sflat_0231.fits",
                                   "photom": "jwst_nirspec_photom_0015.fits"},
-    ("NRS2", "G140M", "F100LP"): {"fflat": "jwst_nirspec_fflat_0168.fits",
+    ("NRS2", "G140M", "F100LP"): {"fflat": "jwst_nirspec_fflat_0200.fits",
                                   "sflat": "jwst_nirspec_sflat_0226.fits",
                                   "photom": "jwst_nirspec_photom_0015.fits"},
-    ("NRS1", "G235M", "F170LP"): {"fflat": "jwst_nirspec_fflat_0166.fits",
+    ("NRS1", "G235M", "F170LP"): {"fflat": "jwst_nirspec_fflat_0193.fits",
                                   "sflat": "jwst_nirspec_sflat_0229.fits",
                                   "photom": "jwst_nirspec_photom_0015.fits"},
-    ("NRS2", "G235M", "F170LP"): {"fflat": "jwst_nirspec_fflat_0166.fits",
+    ("NRS2", "G235M", "F170LP"): {"fflat": "jwst_nirspec_fflat_0193.fits",
                                   "sflat": "jwst_nirspec_sflat_0224.fits",
                                   "photom": "jwst_nirspec_photom_0015.fits"},
 }

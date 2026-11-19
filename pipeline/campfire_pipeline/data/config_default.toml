@@ -9,7 +9,7 @@
 
 [environment]
     CRDS_SERVER_URL = "https://jwst-crds.stsci.edu"
-    CRDS_CONTEXT = "jwst_1584.pmap"
+    CRDS_CONTEXT = "jwst_1614.pmap"
 
 # All pipeline data lives under a single $CAMPFIRE_ROOT (default ~/campfire):
 # raw/, products/, reference/, cache/. Relocate the whole tree by setting
