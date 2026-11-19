@@ -613,9 +613,25 @@ def push_imaging(ctx, fields, instruments, products, filter_names, tiles, config
                                'field. Add mosaics to --products, or drop --tile.')
     config = _push_config(ctx, config_path, local, service_role)
 
-    from campfire.deploy.push import push_field
+    from campfire.deploy.push import field_mosaic_tiles, push_field
     filters = [f.lower() for f in normalize_names(filter_names)] or None
-    for field in normalize_names(fields):
+    field_list = normalize_names(fields)
+    if tile_list:
+        # Checked across every named field before anything moves: a tile that
+        # matches no mosaic is an invalid selection, not a warning after the
+        # exposures and expmaps were already pushed.
+        have: set[str] = set()
+        for field in field_list:
+            try:
+                have |= field_mosaic_tiles(field, filters)
+            except ValueError as e:
+                raise click.UsageError(str(e))
+        missing = [t for t in tile_list if t not in have]
+        if missing:
+            raise click.UsageError(
+                f"No mosaics for tile(s) {', '.join(missing)} in {', '.join(field_list)}; "
+                f"available: {', '.join(sorted(have)) or 'none'}.")
+    for field in field_list:
         push_field(
             field, config, filters=filters, products=names,
             tiles=tile_list or None, dry_run=dry_run, workers=workers)

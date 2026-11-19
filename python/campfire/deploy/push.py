@@ -464,6 +464,30 @@ def push_observation(
             'skipped': len(plan.unchanged)}
 
 
+def field_mosaic_tiles(field: str, filters: Optional[list[str]] = None) -> set[str]:
+    """Tiles of the field's deployable mosaics on disk, as ``push_field`` scopes them.
+
+    ``campfire push im --tile`` checks its selection against this for every named
+    field before anything is uploaded, so a tile that matches no mosaic is a usage
+    error instead of a warning after the other products were pushed. Raises
+    ``ValueError`` when the mosaics cannot be scoped to fields.toml.
+    """
+    from campfire.deploy.nircam import (
+        _discover_filters, _resolve_nircam_dirs, deployable_mosaics,
+        discover_mosaics, scope_mosaics_to_fields_toml,
+    )
+    dirs = _resolve_nircam_dirs(field)
+    if not dirs['products'].exists():
+        return set()
+    available = _discover_filters(dirs)
+    filters = [f for f in filters if f in available] if filters else available
+    if not filters:
+        return set()
+    mosaics = scope_mosaics_to_fields_toml(
+        deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
+    return {m['tile'] for m in mosaics if m.get('tile')}
+
+
 def push_field(
     field: str,
     config: dict,
@@ -481,8 +505,9 @@ def push_field(
     ``exposures`` (canonical exposures, sci_dq identity, plus their preview/full
     PNGs), ``expmaps`` (coverage maps plus their plots) and ``mosaics``
     (whole-file identity), the mosaics optionally narrowed to ``tiles`` (the
-    tile each mosaic's manifest names; an unknown tile pushes nothing). No
-    deployment is recorded and no
+    tile each mosaic's manifest names; a tile this field lacks pushes no mosaic
+    of it, and the CLI rejects a tile no named field has before any upload, via
+    ``field_mosaic_tiles``). No deployment is recorded and no
     ``nircam_exposures``/``nircam_images`` rows are touched — a later
     ``campfire deploy --field`` attaches everything to a deployment and
     dedup-skips the bytes this push landed.

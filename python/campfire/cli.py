@@ -1080,6 +1080,15 @@ def _list_imaging(store, *, tag: Optional[str] = None) -> None:
     click.echo("\n".join(lines))
 
 
+def _imaging_fields(store, product_types) -> list:
+    """Fields with an active indexed row of these product kinds."""
+    ph = ",".join("?" * len(product_types)) or "NULL"
+    return sorted(r["field"] for r in store._conn.execute(
+        f"SELECT DISTINCT field FROM storage_objects WHERE observation IS NULL "
+        f"AND field IS NOT NULL AND status = 'active' AND product_type IN ({ph})",
+        list(product_types)))
+
+
 def _resolve_scope(sel, store, catalog_obs, *, where: str = "the catalog"):
     """(observations, fields) of a selection; exits on a name that resolves to nothing."""
     target_obs, target_fields = set(), set()
@@ -1107,11 +1116,8 @@ def _resolve_scope(sel, store, catalog_obs, *, where: str = "the catalog"):
                 sys.exit(1)
             target_obs.update(found)
     else:
-        known = {r["field"] for r in store._conn.execute(
-            "SELECT DISTINCT field FROM storage_objects "
-            "WHERE observation IS NULL AND field IS NOT NULL AND product_type LIKE 'nircam%'")}
         if sel.all:
-            target_fields.update(known)
+            target_fields.update(_imaging_fields(store, sel.product_types))
         for fld in sel.fields:
             target_fields.add(fld)   # checked against the indexed rows once intermediates are in
     return sorted(target_obs), sorted(target_fields)
@@ -1254,15 +1260,23 @@ def _pull_live(sel, *, stale=False, no_annotations=False, workers=4, yes=False, 
         if to_index:
             names = [p for p in sel.products if p not in sel.modality.finals(sel.instruments)]
             click.echo(f"Indexing {', '.join(names)} for this selection...")
+            # Imaging --all takes its fields from the index, which holds the
+            # finals only: a field deployed without mosaics has no row there
+            # yet. Index the requested kinds field-wide, then re-derive the
+            # roster from what came back.
+            discover = sel.modality is IMAGING and sel.all
             try:
                 refreshed = refresh_storage_scope(
                     api, store, product_types=to_index,
-                    observations=target_obs or None, fields=target_fields or None,
+                    observations=target_obs or None,
+                    fields=None if discover else (target_fields or None),
                     show_progress=True)
                 click.echo(f"  {refreshed['rows']} object(s) indexed.")
             except Exception as e:
                 click.echo(f"  ⚠ Could not index: {e}", err=True)
                 click.echo("  Continuing with what is already indexed locally.")
+            if discover:
+                target_fields = _imaging_fields(store, product_types)
         _check_narrowers(sel, store, target_obs, target_fields)
 
     if not target_obs and not target_fields:

@@ -153,3 +153,86 @@ def test_push_field_products_and_tiles(fake_field, capsys, products, tiles, plan
     with pytest.raises(_Stop):
         push_field('nep', {}, products=products, tiles=tiles)
     assert f'Tree products discovered: {planned}' in capsys.readouterr().out
+
+
+# --- push --tile: a tile no named field has is a usage error ------------------
+
+@pytest.fixture()
+def push_cli(fake_field, monkeypatch):
+    import campfire.cli as main_cli
+    import campfire.deploy.cli as dcli
+    import campfire.deploy.push as push_mod
+
+    pushed = []
+    monkeypatch.setattr(dcli, '_push_config', lambda *a, **k: {})
+    monkeypatch.setattr(push_mod, 'push_field', lambda field, cfg, **kw: pushed.append((field, kw)))
+    main_cli._register_deploy_group()
+    return main_cli.cli, pushed
+
+
+def test_field_mosaic_tiles(fake_field):
+    from campfire.deploy.push import field_mosaic_tiles
+    assert field_mosaic_tiles('nep') == {'core', 'E'}
+    assert field_mosaic_tiles('nep', ['f999w']) == set()
+
+
+@pytest.mark.parametrize('products', [[], ['--products', 'mosaics']])
+def test_push_unknown_tile_is_a_usage_error_before_any_upload(push_cli, products):
+    from click.testing import CliRunner
+    cli, pushed = push_cli
+    res = CliRunner().invoke(cli, ['push', 'im', '--field', 'nep', '--tile', 'core', 'Q', *products])
+    assert res.exit_code == 2
+    assert 'No mosaics for tile(s) Q' in res.output and 'available: E, core' in res.output
+    assert pushed == []
+
+
+def test_push_known_tile_proceeds(push_cli):
+    from click.testing import CliRunner
+    cli, pushed = push_cli
+    res = CliRunner().invoke(cli, ['push', 'im', '--field', 'nep', '--tile', 'E'])
+    assert res.exit_code == 0, res.output
+    assert [(f, kw['tiles']) for f, kw in pushed] == [('nep', ['E'])]
+
+
+# --- pull im --all: fields known only by their intermediates -------------------
+
+def test_pull_imaging_all_discovers_fields_without_mosaics(tmp_path, monkeypatch):
+    """The catalog sync mirrors finals only, so a field deployed with
+    --no-mosaics has no row until its exposures are indexed; --all must index
+    field-wide and take its roster from what came back."""
+    from click.testing import CliRunner
+    import campfire.cli as main_cli
+    import campfire.sync as sync_mod
+
+    store = LocalStore(tmp_path / 'campfire.db')
+    store.upsert_storage_objects([
+        _row('data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_A1_sci.fits.gz',
+             'nircam_mosaic')])
+    monkeypatch.setattr(store, 'get_synced_observations', lambda: ['obs1'])
+    monkeypatch.setattr(store, 'close', lambda: None)
+    refreshed, verified = [], []
+
+    def _refresh(api, st, *, product_types, observations=None, fields=None, show_progress=False):
+        refreshed.append(fields)
+        st.upsert_storage_objects([
+            _row(f'data/products/nircam/{f}/f444w/jw0_{f}_nrcalong.fits', 'nircam_exposure', field=f)
+            for f in ('cosmos', 'nep')])
+        return {'rows': 2, 'purged': 0, 'orphaned_files': []}
+
+    def _verify(root, **kw):
+        verified.append(kw['fields'])
+        raise _Stop
+
+    monkeypatch.setattr(store, 'verify_local_objects', _verify)
+    monkeypatch.setattr(sync_mod, 'refresh_storage_scope', _refresh)
+    monkeypatch.setattr(main_cli, 'resolve_base_url', lambda: 'http://x')
+    monkeypatch.setattr(main_cli, 'APISession', lambda **kw: None)
+    monkeypatch.setattr(main_cli, 'APIClient', lambda s: None)
+    monkeypatch.setattr(main_cli, '_open_store', lambda: store)
+    monkeypatch.setattr(main_cli, '_sync_before_pull', lambda api, st: None)
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
+
+    res = CliRunner().invoke(main_cli.cli, ['pull', 'im', '--all', '--products', 'exposures'])
+    assert isinstance(res.exception, _Stop), res.output
+    assert refreshed == [None]
+    assert verified == [['cosmos', 'nep']]
