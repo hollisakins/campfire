@@ -60,7 +60,12 @@ def _stars_from_gaia(table, gaia_catalog, epoch_hint, *, size_column="rhalf",
     else:
         sky = SkyCoord(np.asarray(table["RA"], float), np.asarray(table["DEC"], float),
                        unit="deg")
-        center = SkyCoord(np.median(sky.ra.deg), np.median(sky.dec.deg), unit="deg")
+        # Mean direction on the sphere, not a median of RA: a catalog that
+        # straddles RA 0 would otherwise get a center on the far side of the
+        # sky and an all-sky query.
+        from astropy.coordinates import UnitSphericalRepresentation
+        center = SkyCoord(
+            sky.cartesian.mean().represent_as(UnitSphericalRepresentation))
         radius = float(center.separation(sky).max().deg) + 0.01
         log(f"{command}: querying Gaia within {radius * 60:.1f}' of "
             f"({center.ra.deg:.5f}, {center.dec.deg:.5f})")
