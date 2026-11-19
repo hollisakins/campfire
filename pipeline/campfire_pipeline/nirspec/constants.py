@@ -41,6 +41,14 @@ FIXED_SLIT_SIZE_ARCSEC = {
     "S1600A1": (1.60, 1.60),
     "S200B1": (0.20, 3.20),
 }
+FIXED_SLIT_NAMES = frozenset(FIXED_SLIT_SIZE_ARCSEC)
+
+# Pixels the stage-1 background mask grows each fixed slit's WCS footprint by.
+# The slit's light reaches 2-3 px past the footprint in the cross-dispersion
+# direction (measured on ZENITH PRISM exposures, 2026-11); spill along the
+# dispersion axis is the wavelength range's job
+# ([nirspec.stage1.override_wavelength_range]).
+FIXED_SLIT_MASK_GROW_PX = 3
 
 
 # ---------------------------------------------------------------------------

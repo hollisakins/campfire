@@ -7,9 +7,8 @@ ImageModel to ``products/nircam/<field>/<filter>/<rootname>.fits``, and
 stamps ``CFP_DET1``.
 
 The jump substep keeps ``save_results=True`` so that ``<rootname>_jump.fits``
-lands alongside the canonical file. The persistence step that follows reads
-those jump products via ``input_dir`` and removes them once flagging is
-complete.
+lands alongside the canonical file. The jackknife step that follows reads it
+(its only input); the cross-exposure persistence step removes it afterwards.
 """
 
 import os
@@ -53,6 +52,16 @@ def detector1_step(uncal_file, field, step_config, overwrite=False,
     # when clean_flicker_noise is enabled; merged over the defaults below.
     cfn_opts = step_config.get('clean_flicker_noise_opts', {})
 
+    in_ramp_persistence = step_config.get('in_ramp_persistence', True)
+    persistence_time = None
+    if in_ramp_persistence:
+        from astropy.io import fits
+        from campfire_pipeline.nircam.steps.persistence import persistence_time_for
+        # the step takes whole seconds
+        persistence_time = int(round(persistence_time_for(
+            fits.getval(uncal_file, 'DETECTOR', ext=0),
+            step_config.get('persistence_time', 'packaged'))))
+
     filtname = uncal_file.split('/')[-2]
     assert (filtname.lower() in SW_FILTERS) or (filtname.lower() in LW_FILTERS)
 
@@ -69,7 +78,7 @@ def detector1_step(uncal_file, field, step_config, overwrite=False,
     # Pipeline-level save_results=False suppresses both _rate.fits and
     # _rateints.fits auto-save; we save the result explicitly to the canonical
     # path below. The jump substep keeps save_results=True so _jump.fits lands
-    # in output_dir for the persistence step to consume.
+    # in output_dir for the jackknife step to consume.
     kwargs = {
         'output_dir': output_dir,
         'save_results': False,
@@ -109,12 +118,17 @@ def detector1_step(uncal_file, field, step_config, overwrite=False,
                 'dark_output': None,
             },
             'reset': {'skip': False},
+            # jwst >= 3.0: flags the groups that follow a saturation, within
+            # this exposure only (no persistence_array_file), so it acts on
+            # multi-integration exposures; a single integration only gains the
+            # PERSISTENCE bit on pixels that are already SATURATED. Carry-over
+            # into later exposures is the cross-exposure `persistence` step
+            # (snowblind), which runs on the rates.
             'persistence': {
-                'skip': False,
-                'flag_pers_cutoff': 40.0,
-                'save_persistence': False,
+                'skip': not in_ramp_persistence,
+                'persistence_time': persistence_time,
+                'persistence_dnu': True,
                 'save_results': False,
-                'save_trapsfilled': False,
             },
             'charge_migration': {'skip': True},
             'jump': {

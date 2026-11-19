@@ -42,9 +42,7 @@ def _get_flat(flatfile):
 
     flat = _FLAT_CACHE.pop(flatfile, None)
     if flat is None:
-        # memmap=False: the arrays are consumed in full, and one sequential
-        # read beats memmap's page-faulted small reads on NFS.
-        flat = FlatModel(flatfile, memmap=False)
+        flat = FlatModel(flatfile)
     _FLAT_CACHE[flatfile] = flat  # (re-)insert as most recently used
     while len(_FLAT_CACHE) > _FLAT_CACHE_MAX:
         oldest = next(iter(_FLAT_CACHE))

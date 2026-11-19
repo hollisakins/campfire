@@ -5,7 +5,12 @@ requires-python = ">=3.12"
 dynamic = ["version"]
 dependencies = [
     "campfire-layout",  # shared directory/key contract (#213); install from ./layout (not on PyPI)
-    "jwst>=1.20,<1.21",
+    # Pinned exactly: any jwst change is a calibration change (MINOR release).
+    "jwst==3.0.0",
+    # jwst 3.0.0 accepts any stcal 1.19.1+, and stcal carries the ramp fit, jump
+    # and saturation numerics, so it is pinned exactly too (1.21.0 is the version
+    # the 3.0 migration was validated against).
+    "stcal==1.21.0",
     "astropy>=6.1",
     "numpy>=2.0",
     "scipy>=1.13",
@@ -23,14 +28,17 @@ dependencies = [
     "crds",
     "asdf",
     "stdatamodels",
-    "stcal",
-    "drizzle",
+    # NIRCam drizzles with this library directly (and through stcal); 3.0.0 is the
+    # version validated against 2.1 (bit-identical for the square kernel).
+    "drizzle==3.0.0",
     "gwcs",
     "spectres>=2.2",
     "numba>=0.59",
     "bagpipes @ git+https://github.com/hollisakins/bagpipes.git",
     "jhat",
-    "snowblind",
+    # NIRCam cross-exposure persistence flagging. 1.x needs jwst >= 2 and reads
+    # saturation from the rate DQ; its measured per-detector times are the default.
+    "snowblind==1.4.1",
     "shapely",
     "photutils>=1.13",
     "nmfwisp>=1.1.4",  # NIRCam NMF wisp templates + fit_wisp (Wu et al. 2026, arXiv:2601.15958)

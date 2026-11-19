@@ -20,6 +20,16 @@ Non-interactive use mirrors every prompt with a flag, e.g.:
   python3 install.py --doctor          # verify only, install nothing
   python3 install.py --dry-run         # show the plan, run nothing
 
+The pipeline pins its JWST stack exactly (jwst, stcal, drizzle, snowblind in
+pipeline/pyproject.toml), because another version is another calibration. When
+the environment carries a different stack than this checkout pins — after a
+jwst upgrade, on an old release, or in a second worktree — the installer shows
+the difference and either upgrades the env in place or builds a sibling env
+(`campfire-jwst3`) for this checkout and leaves the first untouched
+(`--stack upgrade|new-env`). `--doctor` fails when the env has drifted from the
+pins, and notes when it runs another checkout's pipeline. Answers are saved per checkout, so
+each worktree remembers its own env.
+
 The script never uses sudo and never touches git (pulling/stashing is yours).
 """
 
@@ -360,6 +370,199 @@ def required_python(profiles):
     if "reduction" in profiles or "deploy" in profiles:
         return (3, 12), (3, 14), "campfire-pipeline needs >=3.12; numba caps at <3.14"
     return (3, 11), None, "campfire (client) needs >=3.11"
+
+
+# --------------------------------------------------------------------------
+# Calibration stack: the exact pins in pipeline/pyproject.toml vs the env
+# --------------------------------------------------------------------------
+#
+# The pipeline pins jwst (and the libraries that carry its numerics) exactly:
+# a different version is a different calibration. An environment is therefore
+# tied to one stack, and a checkout that pins another one (a jwst upgrade, an
+# old release, a worktree of either) must not silently repoint an environment
+# other checkouts still reduce data with. The installer compares the two and
+# either converges the env in place or builds a sibling env for this checkout.
+
+_PIN_RE = re.compile(r'^\s*"([A-Za-z0-9_.\-]+)==([^"\s;]+)"', re.MULTILINE)
+
+_STACK_PROBE = """
+import json, sys
+from importlib import metadata as m
+versions = {}
+for name in sys.argv[1:]:
+    try:
+        versions[name] = m.version(name)
+    except m.PackageNotFoundError:
+        versions[name] = None
+url = None
+try:
+    text = m.distribution('campfire-pipeline').read_text('direct_url.json')
+    if text:
+        url = json.loads(text).get('url')
+except m.PackageNotFoundError:
+    pass
+print('STACK ' + json.dumps({'versions': versions, 'pipeline_url': url}))
+"""
+
+
+def pinned_stack():
+    """{package: version} for every exact pin in pipeline/pyproject.toml."""
+    try:
+        text = (REPO_ROOT / "pipeline" / "pyproject.toml").read_text()
+    except OSError:
+        return {}
+    return dict(_PIN_RE.findall(text))
+
+
+def installed_stack(env, names):
+    """(versions, pipeline_source) as the env has them; ({}, None) if unknown.
+
+    ``pipeline_source`` is the checkout an editable campfire-pipeline points
+    at, or None for a regular / missing install."""
+    py = env.python() if env is not None and env.exists() else None
+    if py is None or not names:
+        return {}, None
+    result = run([py, "-c", _STACK_PROBE] + list(names), capture=True,
+                 check=False, probe=True)
+    for line in reversed((result.stdout or "").splitlines()):
+        if line.startswith("STACK "):
+            try:
+                data = json.loads(line[len("STACK "):])
+            except json.JSONDecodeError:
+                break
+            url = data.get("pipeline_url") or ""
+            source = None
+            if url.startswith("file://"):
+                from urllib.parse import unquote, urlparse
+                source = Path(unquote(urlparse(url).path))
+            return data.get("versions", {}), source
+    return {}, None
+
+
+def stack_status(env):
+    """Compare the env with this checkout's pins.
+
+    Returns {'drift': [(package, installed, pinned)], 'other_checkout': Path
+    or None, 'has_stack': bool}. ``drift`` lists only packages that are
+    installed at another version; a package that is simply missing is an
+    ordinary first install. ``other_checkout`` is set when the env's editable
+    pipeline belongs to a different checkout that still exists."""
+    pins = pinned_stack()
+    versions, source = installed_stack(env, pins)
+    drift = [(name, versions.get(name), want) for name, want in pins.items()
+             if versions.get(name) and versions.get(name) != want]
+    other = None
+    if source is not None:
+        here = (REPO_ROOT / "pipeline").resolve()
+        try:
+            same = source.resolve() == here
+        except OSError:
+            same = False
+        if not same and source.exists():
+            other = source
+    return {"drift": drift, "other_checkout": other,
+            "has_stack": any(versions.values())}
+
+
+def stack_env_suffix():
+    """'-jwst3' for a checkout that pins jwst 3.x; '' when jwst is unpinned."""
+    jwst = pinned_stack().get("jwst")
+    return f"-jwst{jwst.split('.')[0]}" if jwst else ""
+
+
+def sibling_env(env, sel):
+    """The stack-specific environment next to ``env`` (same manager)."""
+    suffix = stack_env_suffix() or "-alt"
+    conda = isinstance(env, CondaEnv)
+    current = env.name if conda else str(env.path)
+
+    def make(name):
+        return CondaEnv(env.manager, env.exe, name) if conda else VenvEnv(name, env.base_python)
+
+    if not current.endswith(suffix):
+        name = current + suffix
+    else:
+        # ``env`` already carries the suffix (e.g. two checkouts pinning
+        # different jwst 3.x releases), so it cannot be its own sibling: the
+        # caller asked to leave it alone. Number the name; an existing numbered
+        # env is reused only when it already carries this checkout's stack.
+        n = 2
+        while True:
+            name = f"{current}-{n}"
+            candidate = make(name)
+            if not candidate.exists() or not stack_status(candidate)["drift"]:
+                break
+            n += 1
+    sel["env_name" if conda else "venv_path"] = name
+    return make(name)
+
+
+def resolve_stack(env, sel, args):
+    """Decide what to do when the env's JWST stack is not this checkout's.
+
+    Returns the environment to install into (the same one, or a sibling) and
+    records a one-line description in ``sel['stack_note']`` for the plan."""
+    sel["stack_note"] = None
+    if env is None or "reduction" not in sel["profiles"] or not env.exists():
+        return env
+    status = stack_status(env)
+    if not status["has_stack"] or not (status["drift"] or status["other_checkout"]):
+        return env
+    if args.recreate_env:
+        return env  # the env is about to be rebuilt from this checkout's pins
+
+    changes = ", ".join(f"{n} {have} -> {want}" for n, have, want in status["drift"])
+    Ui.say("")
+    if status["drift"]:
+        Ui.warn(f"{env.describe()} carries a different JWST stack than this "
+                "checkout pins (a different stack is a different calibration):")
+        width = max(len(n) for n, _, _ in status["drift"])
+        for name, have, want in status["drift"]:
+            Ui.say(f"    {name:<{width}}  {have}  ->  {want}")
+    if status["other_checkout"]:
+        Ui.warn(f"its campfire-pipeline is installed from another checkout: "
+                f"{status['other_checkout']}")
+
+    sibling = sibling_env(env, dict(sel))  # peek at the name without committing
+    choice = args.stack
+    if choice is None:
+        # A second checkout is still using the env: leave it alone by default.
+        default = "new-env" if status["other_checkout"] else "upgrade"
+        if interactive():
+            Ui.say(f"  upgrade — converge {env.describe()} in place"
+                   + (" (the other checkout then runs on this stack and this code)"
+                      if status["other_checkout"] else ""))
+            Ui.say(f"  new-env — leave it untouched; use {sibling.describe()} "
+                   "for this checkout")
+            Ui.say("  abort   — change nothing")
+            while True:
+                choice = text_prompt("JWST stack (upgrade/new-env/abort)", default)
+                if choice in ("upgrade", "new-env", "abort"):
+                    break
+        else:
+            choice = "upgrade"
+            Ui.warn("non-interactive: upgrading in place (pass --stack new-env "
+                    "to build a separate environment instead).")
+
+    if choice == "abort":
+        raise InstallError("stack change declined — nothing was changed.")
+    if choice == "new-env":
+        target = sibling_env(env, sel)
+        if target.exists():
+            again = stack_status(target)["drift"]
+            sel["stack_note"] = (
+                f"Reuse {target.describe()} for this checkout's JWST stack"
+                + (" (converging: " + ", ".join(f"{n} {h} -> {w}" for n, h, w in again) + ")"
+                   if again else ""))
+        else:
+            sel["stack_note"] = (f"Leave {env.describe()} untouched; build "
+                                 f"{target.describe()} for this checkout's JWST stack")
+        return target
+    sel["stack_note"] = (f"Change the JWST stack of {env.describe()} in place"
+                         + (f": {changes}" if changes else "")
+                         + ("; repoint campfire-pipeline to this checkout"
+                            if status["other_checkout"] else ""))
+    return env
 
 
 # --------------------------------------------------------------------------
@@ -704,6 +907,22 @@ def doctor(env, sel):
         probe_cli("cfpipe CLI", "cfpipe")
         probe_import("jwst stack", "jwst")
         probe_import("numba", "numba")
+        # The pins are the calibration: an env that drifted from them reduces
+        # data with a stack this checkout was not validated against.
+        status = stack_status(env)
+        pins = pinned_stack()
+        if pins:
+            drift = "; ".join(f"{n} {have} installed, {want} pinned"
+                              for n, have, want in status["drift"])
+            checks.append((f"JWST stack matches the pins "
+                           f"({', '.join(f'{n} {v}' for n, v in pins.items())})",
+                           status["has_stack"] and not status["drift"],
+                           drift or ("" if status["has_stack"] else "not installed")))
+        # Sharing one env between worktrees is normal while their pins agree,
+        # so this is a hint, not a failure.
+        stack_hint = (f"the env's campfire-pipeline is another checkout "
+                      f"({status['other_checkout']}): cfpipe runs that code, not "
+                      "this one." if status["other_checkout"] else None)
     if "deploy" in profiles:
         probe_import("deploy round-trips (pipeline in env)", "campfire_pipeline")
         probe_import("supabase client", "supabase")
@@ -720,6 +939,8 @@ def doctor(env, sel):
 
     # Environment hints (informational, never fail the doctor)
     hints = []
+    if "reduction" in profiles and stack_hint:
+        hints.append(stack_hint)
     if "reduction" in profiles or "deploy" in profiles:
         if not os.environ.get("CAMPFIRE_ROOT"):
             hints.append("CAMPFIRE_ROOT is not set — the pipeline and client "
@@ -785,6 +1006,8 @@ def build_plan(env, sel):
     plan = []
     needs_py = any(p in sel["profiles"] for p in PY_PROFILES)
     if needs_py:
+        if sel.get("stack_note"):
+            plan.append(sel["stack_note"])
         if env.exists():
             plan.append(f"Reuse {env.describe()} (update packages in place)")
         elif isinstance(env, VenvEnv):
@@ -824,6 +1047,11 @@ def main(argv=None):
                         help="client plotting extras ([all] = plotly + specutils)")
     parser.add_argument("--no-editable", action="store_true", default=None,
                         help="regular installs instead of editable (-e)")
+    parser.add_argument("--stack", choices=["upgrade", "new-env", "abort"],
+                        help="when the env carries another JWST stack than this "
+                        "checkout pins (or runs another checkout's pipeline): "
+                        "upgrade it in place, or build a sibling env "
+                        "(<env>-jwst<major>) and leave it untouched")
     parser.add_argument("--recreate-env", action="store_true",
                         help="destroy and recreate the environment (asks first)")
     parser.add_argument("--fresh", action="store_true",
@@ -853,6 +1081,7 @@ def main(argv=None):
             ok = doctor(env, sel)
             return 0 if ok else 1
 
+        env = resolve_stack(env, sel, args)
         plan = build_plan(env, sel)
         Ui.say("\nPlan:")
         for i, step in enumerate(plan, 1):

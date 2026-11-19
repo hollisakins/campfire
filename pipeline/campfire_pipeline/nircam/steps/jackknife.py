@@ -182,7 +182,7 @@ def _measure_deltas(diff, classmap, zonemap, n_zones, clean, cands,
 def _stamp_skip(exposure_file, reason):
     """Sentinel-stamp CFP_JACK without touching pixel data."""
     from jwst.datamodels import ImageModel
-    with ImageModel(exposure_file, memmap=False) as model:
+    with ImageModel(exposure_file) as model:
         atomic_save(model, exposure_file,
                     header_updates=cfp.format(CFP_JACK=f'skipped ({reason})'))
 
@@ -233,7 +233,7 @@ def jackknife_step(exposure_file, field, step_config, overwrite=False,
 
     applied = False   # set the moment the corrected SCI is durably saved
     try:
-        with ImageModel(exposure_file, memmap=False) as model:
+        with ImageModel(exposure_file) as model:
             rate = np.asarray(model.data, dtype=np.float64)
             dq2d = np.asarray(model.dq)
             nints = int(model.meta.exposure.nints or 1)
@@ -248,7 +248,7 @@ def jackknife_step(exposure_file, field, step_config, overwrite=False,
                     CFP_JACK=f'skipped (nints={nints})'))
                 return
 
-            with RampModel(jump_path, memmap=False) as jump:
+            with RampModel(jump_path) as jump:
                 gdq = np.asarray(jump.groupdq[0], dtype=np.uint8)
                 ngroups = gdq.shape[0]
                 if ngroups > _MAX_NGROUPS or ngroups < 4:

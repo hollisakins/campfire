@@ -63,7 +63,7 @@ def _stamp_aligned(path):
 
 def _probe_ra(path):
     from jwst.datamodels import ImageModel
-    m = ImageModel(path, memmap=False)
+    m = ImageModel(path)
     ra, _ = m.meta.wcs(32.0, 32.0)
     m.close()
     return float(ra)

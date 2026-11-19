@@ -72,6 +72,19 @@ or changed dependency pins, new extras, `web/package-lock.json` drift. It
 never runs git for you, so pulling (and dealing with local changes) stays in
 your hands.
 
+The pipeline pins its JWST stack exactly (`jwst`, `stcal`, `drizzle`,
+`snowblind`), because another version is another calibration. When a pull
+changes those pins, or you install from a second worktree, the installer shows
+what the environment carries against what the checkout pins and asks:
+
+```bash
+python3 install.py --stack upgrade    # converge the existing env in place
+python3 install.py --stack new-env    # leave it alone; build campfire-jwst3 for this checkout
+```
+
+`--doctor` fails while the environment's stack differs from the pins. The
+choice is saved per checkout, so each worktree remembers its own environment.
+
 ### Pipeline
 
 ```bash

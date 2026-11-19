@@ -80,7 +80,7 @@ def _cfp_algn(path):
 
 def _reload_residual(path, xy, refcat):
     from jwst.datamodels import ImageModel
-    m = ImageModel(path, memmap=False)
+    m = ImageModel(path)
     ra, dec = m.meta.wcs(xy[0], xy[1])
     m.close()
     ref = SkyCoord(refcat['RA'], refcat['DEC'], unit='deg')
@@ -146,7 +146,7 @@ def test_not_aligned_preserves_wcs(tmp_path):
     from jwst.datamodels import ImageModel
     before = {}
     for m in members:
-        mo = ImageModel(m.path, memmap=False)
+        mo = ImageModel(m.path)
         before[m.path] = tuple(float(v) for v in mo.meta.wcs(500.0, 700.0))
         mo.close()
     rng = np.random.default_rng(99)
@@ -156,7 +156,7 @@ def test_not_aligned_preserves_wcs(tmp_path):
     assert sol.status == 'NOT_ALIGNED'
     for m in members:
         assert _cfp_algn(m.path) == 'NOT_ALIGNED'
-        mo = ImageModel(m.path, memmap=False)
+        mo = ImageModel(m.path)
         after = tuple(float(v) for v in mo.meta.wcs(500.0, 700.0))
         mo.close()
         assert np.allclose(after, before[m.path], atol=1e-12)   # WCS untouched
@@ -321,7 +321,7 @@ def test_algncat_written_and_matches_the_written_wcs(tmp_path):
             cat = Table(h[ALGNCAT_EXTNAME].data)
         assert len(cat) == by_det[m.detector].n_detected > 0
         assert int(np.count_nonzero(cat['matched'])) == by_det[m.detector].n_matched
-        mo = ImageModel(m.path, memmap=False)
+        mo = ImageModel(m.path)
         ra, dec = mo.meta.wcs(np.asarray(cat['x'], float),
                              np.asarray(cat['y'], float))
         mo.close()

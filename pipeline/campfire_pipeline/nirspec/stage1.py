@@ -11,6 +11,7 @@ from astropy.io import fits
 
 from campfire_pipeline.common.io import log
 from campfire_pipeline.common.wcs import boundingbox_to_indices, wcs_to_dq
+from campfire_pipeline.nirspec.constants import FIXED_SLIT_MASK_GROW_PX, FIXED_SLIT_NAMES
 
 
 def bkgsub_done(rate_file: str) -> bool:
@@ -63,6 +64,10 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         mask_science_regions=stage_config['mask_science_regions'],
         cleanup_uncal=stage_config['cleanup_uncal'],
         cleanup_rateints=stage_config['cleanup_rateints'],
+        override_wavelength_range=stage_config.get('override_wavelength_range', {}),
+        flicker_fit_method=stage_config.get('flicker_fit_method', 'median'),
+        flicker_background_method=stage_config.get('flicker_background_method', 'median'),
+        flicker_n_sigma=stage_config.get('flicker_n_sigma', 1.5),
     )
 
     # Phase 1: Run Detector1Pipeline on all uncal files
@@ -118,6 +123,18 @@ def run_stage1(obs, stage_config, n_processes=1, overwrite=False, data_dir=None,
         )
 
 
+def _slit_selector(slitlet):
+    """The key jwst's compound bounding box and slit WCS use for *slitlet*."""
+    slit_id = getattr(slitlet, 'slit_id', None)
+    return slitlet.name if slit_id is None else slit_id
+
+
+def _open_fixed_slits(model):
+    """The NIRSpec fixed slits, as the slit objects jwst builds a WCS from."""
+    from jwst.assign_wcs.nirspec import get_open_fixed_slits
+    return get_open_fixed_slits(model)
+
+
 def mask_slits(
         input_model,
         input_dir,
@@ -127,8 +144,9 @@ def mask_slits(
     """
     Flag pixels within science regions.
 
-    Find pixels located within MOS or fixed slit footprints
-    and flag them in the mask, so that they do not get used.
+    Find pixels located within the footprints of the MOS slitlets, the
+    failed-open shutters and the five fixed slits, and flag them in the
+    mask, so that they do not get used.
 
     Adapted from jwst.clean_flicker_noise.clean_flicker_noise
     and jwst.msaflagopen.msaflag_open to extend the masks
@@ -149,7 +167,6 @@ def mask_slits(
         2D output mask with additional flags for slit pixels
     """
 
-    from jwst.clean_flicker_noise.clean_flicker_noise import _make_processed_rate_image
     from jwst.msaflagopen.msaflagopen_step import create_reference_filename_dictionary, MSAFlagOpenStep
     from jwst.msaflagopen.msaflag_open import create_slitlets
     from jwst.assign_wcs.nirspec import generate_compound_bbox, slitlets_wcs
@@ -208,7 +225,6 @@ def mask_slits(
         processed_model = input_model.copy()
         has_science = False
 
-    # # processed_model = _make_processed_rate_image(model, single_mask=True, input_dir=os.path.dirname(rate_file), exp_type="NRS_MSASPEC", mask_science_regions=True, flat=None)
 
     msaoper_reffile = MSAFlagOpenStep().get_reference_file(processed_model, "msaoper")
     failed_slits = create_slitlets(msaoper_reffile)
@@ -232,10 +248,23 @@ def mask_slits(
             for reftype in ref_step.reference_file_types
         }
 
+    # The fixed slits are always open, so their traces land on every exposure
+    # whether or not the MSA configuration names them. Mask each one's own
+    # footprint through the same WCS path (and the same wavelength-range
+    # override) as the MSA slitlets, instead of blanking the whole band of rows
+    # they sit in: most of that band is ordinary background, and the row and
+    # per-quarter fits need it. A fixed slit the exposure's WCS already carries
+    # (a fixed-slit source in the MSA metafile, or an NRS_FIXEDSLIT exposure)
+    # is masked from there.
+    in_wcs = {slit.name for slit in source_slits}
+    fixed_slits = [slit for slit in _open_fixed_slits(processed_model)
+                   if slit.name not in in_wcs]
+
     temp_mask = np.zeros(input_model.data.shape,dtype=int)
+    fixed_mask = np.zeros(input_model.data.shape[-2:], dtype=bool)
 
     from jwst.datamodels import ImageModel
-    for slits in [source_slits, failed_slits]:
+    for slits in [source_slits, failed_slits, fixed_slits]:
         if not slits:
             continue
         pipeline = slitlets_wcs(processed_model, wcs_reffile_names, slits)
@@ -248,17 +277,27 @@ def mask_slits(
         meta_model.meta.wcs.bounding_box = generate_compound_bbox(meta_model, slits)
 
         for slitlet in slits:
-            
-            if slitlet.name in ["S200A1", "S200A2", "S400A1", "S1600A1", "S200B1"]:
-                continue #override if fixed slits are present, as these are auto-masked anyways
-            bbox = meta_model.meta.wcs.bounding_box[slitlet.name]
+            # The compound bounding box and the WCS are keyed on slit_id, which
+            # is the name for an MSA slitlet and a number for a fixed slit.
+            selector = _slit_selector(slitlet)
+            bbox = meta_model.meta.wcs.bounding_box[selector]
             xmin, xmax, ymin, ymax = boundingbox_to_indices(processed_model.data.shape, bbox)
+            if xmax <= xmin or ymax <= ymin:
+                continue  # the slit does not project onto this detector
             y_indices, x_indices = np.mgrid[ymin:ymax, xmin:xmax]
-            ra, dec, lam, _ = meta_model.meta.wcs(x_indices, y_indices, slitlet.name)
+            ra, dec, lam, _ = meta_model.meta.wcs(x_indices, y_indices, selector)
             subarray = wcs_to_dq((ra,dec,lam), 1)
-            temp_mask[..., ymin:ymax, xmin:xmax] += subarray
+            if slitlet.name in FIXED_SLIT_NAMES:
+                fixed_mask[ymin:ymax, xmin:xmax] |= subarray > 0
+            else:
+                temp_mask[..., ymin:ymax, xmin:xmax] += subarray
 
     mask[temp_mask>0] = False
+    if fixed_mask.any():
+        # A fixed slit is far wider than a shutter and its light spills a few
+        # pixels past the footprint in the cross-dispersion direction.
+        from scipy.ndimage import binary_dilation
+        mask[..., binary_dilation(fixed_mask, iterations=FIXED_SLIT_MASK_GROW_PX)] = False
 
     # Clean up per-process temp file if one was created
     if override_grating_wavelength_range:
@@ -527,9 +566,7 @@ def subtract_background_from_rate_file(
         save_backup: bool = False,
     ):
 
-    from stdatamodels import util as stutil
     from jwst.datamodels import ImageModel
-    from jwst.clean_flicker_noise.clean_flicker_noise import _make_processed_rate_image
     from astropy.stats import median_absolute_deviation
 
     input_dir = os.path.dirname(rate_file)
@@ -564,9 +601,8 @@ def subtract_background_from_rate_file(
         # True indicates valid pixels
         slitmask = np.full(model.data.shape, True)
 
-        # always mask fixed slit area
-        slitmask[2048//2-100:2048//2+100,:] = False
-
+        # mask_slits covers the MSA slitlets, the failed-open shutters and the
+        # fixed slits' own traces
         slitmask = mask_slits(model, input_dir, slitmask, override_wavelength_range=override_wavelength_range)
 
         slitmask[model.dq > 0] = False
@@ -811,8 +847,7 @@ def subtract_background_from_rate_file(
         log(f"Saving to {os.path.basename(rate_file)}")
         time = datetime.now()
         stepdescription = f"Subtracted pedestal, rescaled variance {time.strftime('%Y-%m-%d %H:%M:%S')}"
-        substr = stutil.create_history_entry(stepdescription)
-        model.history.append(substr)
+        model.add_history_entry(stepdescription)
 
         if save_backup:
             shutil.copy2(rate_file, rate_file.replace('_rate.fits', '_rate_before_bkgsub.fits'))
@@ -832,6 +867,44 @@ def subtract_background_from_rate_file(
         hdul.append(fits.ImageHDU(mask.astype(np.uint8), name='CFBKGMASK'))
 
 
+def _write_flicker_mask(uncal_file, workspace_dir, override_wavelength_range=None):
+    """Write CAMPFIRE's trace mask as a ``user_mask`` for clean_flicker_noise.
+
+    The mask must exist before Detector1Pipeline runs, so it is built from the
+    uncal's metadata alone: ``mask_slits`` only needs the instrument setup and
+    the MSA metafile to place the traces. Nonzero marks background pixels.
+    Returns the path of the mask file, written next to the uncal.
+    """
+    from jwst import datamodels
+    from jwst.datamodels import ImageModel
+
+    with datamodels.open(uncal_file) as uncal:
+        shape = (uncal.meta.subarray.ysize, uncal.meta.subarray.xsize)
+        model = ImageModel(data=np.zeros(shape, dtype=np.float32))
+        model.update(uncal)
+
+    mask = mask_slits(
+        model, workspace_dir, np.full(shape, True),
+        override_wavelength_range=override_wavelength_range or {})
+    model.close()
+
+    mask_file = os.path.join(
+        workspace_dir,
+        os.path.basename(uncal_file).replace('_uncal.fits', '_flickermask.fits'))
+    out = ImageModel(data=mask.astype(np.float32))
+    out.save(mask_file)
+    out.close()
+    return mask_file
+
+
+def _flicker_step_status(rate_file):
+    """clean_flicker_noise's recorded status in *rate_file* (None if unreadable)."""
+    try:
+        return fits.getheader(rate_file).get('S_CLNFNS')
+    except Exception:
+        return None
+
+
 def run_stage1_single_uncal(
         uncal_file,
         workspace_dir,
@@ -839,10 +912,16 @@ def run_stage1_single_uncal(
         mask_science_regions=True,
         cleanup_uncal=True,
         cleanup_rateints=True,
+        override_wavelength_range=None,
+        flicker_fit_method='median',
+        flicker_background_method='median',
+        flicker_n_sigma=1.5,
     ):
     """
     Runs the JWST Detector1Pipeline on a single *_uncal.fits file.
-    Optionally includes the clean_flicker_noise step.
+    Optionally includes the clean_flicker_noise step, masked with CAMPFIRE's
+    trace mask (*override_wavelength_range* as in the rate-level pass). The
+    stock picture_frame step is always skipped.
     """
 
     # Handle directory changes
@@ -854,37 +933,74 @@ def run_stage1_single_uncal(
         from jwst.pipeline import Detector1Pipeline
         from jwst.assign_wcs.util import NoDataOnDetectorError
 
-        def _call(mask_science_regions):
+        rate_file = uncal_file.replace('_uncal.fits', '_rate.fits')
+
+        # The in-ramp 1/f fit must not see source light. Hand the step
+        # CAMPFIRE's own trace mask (the one the rate-level pass uses: full
+        # traces over the extended wavelength range, failed-open shutters,
+        # the fixed slits) rather than let it build its nominal-range one.
+        # If that mask cannot be built, fall back to the step's own.
+        user_mask = None
+        if do_clean_flicker_noise and mask_science_regions:
+            try:
+                user_mask = _write_flicker_mask(
+                    uncal_file, workspace_dir, override_wavelength_range)
+            except Exception as e:
+                log(f"Could not build the trace mask for {uncal_file} ({e}); "
+                    "clean_flicker_noise will mask science regions itself")
+
+        def _call(mask_science_regions, user_mask=None):
+            flicker = {
+                'skip': not do_clean_flicker_noise,
+                # Set explicitly: CRDS supplies its own values for these
+                # (pars-cleanflickernoisestep) and would otherwise decide them.
+                'fit_method': flicker_fit_method,
+                'background_method': flicker_background_method,
+                'n_sigma': flicker_n_sigma,
+                'mask_science_regions': mask_science_regions and user_mask is None,
+                'save_mask': False,
+            }
+            if user_mask is not None:
+                flicker['user_mask'] = user_mask
             steps = {
-                    'clean_flicker_noise' :{
-                        'skip': not do_clean_flicker_noise,
-                        'mask_science_regions':mask_science_regions,
-                        'save_mask': False,
-                    },
+                    'clean_flicker_noise': flicker,
                     'jump': {
                         'skip': False, # testing, should be False normally
                         'expand_large_events': True, # testing, should be True normally
                     }
                 }
+            if 'picture_frame' in Detector1Pipeline.step_defs:
+                # jwst >= 2.0. The picture frame is removed by the rate-level
+                # pass (subtract_background_from_rate_file), never in-ramp.
+                steps['picture_frame'] = {'skip': True}
             Detector1Pipeline.call(uncal_file,
                 save_results=True,
                 steps=steps,
             )
 
         try:
-            _call(mask_science_regions)
+            _call(mask_science_regions, user_mask)
+            # jwst >= 3.0 no longer raises when the step cannot assign a WCS
+            # for its own science mask: it marks itself FAILED and returns the
+            # ramp uncorrected.
+            flicker_failed = (do_clean_flicker_noise
+                              and _flicker_step_status(rate_file) == 'FAILED')
         except NoDataOnDetectorError:
-            # clean_flicker_noise runs assign_wcs to find the science regions,
-            # which raises when no open shutter projects onto this detector
-            # (typically NRS2, #681). There are then no source traces to mask
-            # (failed-open shutters are left to the step's sigma clip); without
-            # the rerun no rate file is written and every later stage trips
-            # over the gap.
+            # jwst < 3.0: clean_flicker_noise runs assign_wcs to find the
+            # science regions, which raises when no open shutter projects onto
+            # this detector (typically NRS2, #681).
             if not (do_clean_flicker_noise and mask_science_regions):
                 raise
-            log(f"No open slits fall on the detector for {uncal_file}; "
+            flicker_failed = True
+        if flicker_failed:
+            # There are no source traces to mask (failed-open shutters are left
+            # to the step's sigma clip); without the rerun the exposure gets no
+            # in-ramp 1/f correction (or, before jwst 3.0, no rate file at all).
+            log(f"clean_flicker_noise could not mask science regions for {uncal_file}; "
                 "re-running Detector1Pipeline with mask_science_regions=False")
             _call(False)
+        if user_mask is not None and os.path.exists(user_mask):
+            os.remove(user_mask)
         if cleanup_uncal:
             log(f'Finished Detector1Pipeline for {uncal_file}, removing...')
             os.remove(uncal_file)

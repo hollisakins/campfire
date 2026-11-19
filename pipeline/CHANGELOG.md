@@ -85,6 +85,77 @@ Release procedure: edit the `## Unreleased` section below, then run
   pixel, for inspecting footprints. The G0 harness (`experiments/spike_g0_footprint`) is
   added, with `--dtheta` / `--pad-arcsec`.
 
+### Calibration
+- **`jwst` 1.20.2 -> 3.0.0, CRDS context `jwst_1481.pmap` -> `jwst_1584.pmap`** (the
+  3.0.0 build context). `jwst` and `stcal` are now pinned exactly (`jwst==3.0.0`,
+  `stcal==1.21.0`): jwst 3.0.0 accepts any stcal from 1.19.1, and stcal holds the ramp-fit,
+  jump and saturation numerics. Every rate changes: the ramp-fit slope no longer uses the
+  Poisson variance in its weights (stcal 1.19), and saturation / snowball flagging for
+  group-averaged (IRS2) data changed (stcal 1.16-1.21). For NIRSpec MOS and fixed slit the
+  flux-calibration references (`fflat`, `sflat`, `dflat`, `photom`, `pathloss`,
+  `wavelengthrange`) are the same files in both contexts; `dark`, `superbias`, `mask` and
+  `msaoper` gained new deliveries. The extended-wavelength baseline
+  (`EXTENDED_CALIBRATION_CONTEXT`) still resolves, so no re-derivation is forced by CRDS.
+- **NIRCam flux calibration changes with `jwst_1584`.** The imaging `photom` references
+  were redelivered for every detector: e.g. F444W -2.7% (module A) / -1.6% (B), F200W
+  -1.9% (NRCA1), F115W -1.2% (NRCA1), F356W +0.5%. Flats and distortion are unchanged;
+  darks, superbias and masks gained new deliveries. Mosaics and photometry move accordingly.
+- **NIRCam persistence follows the new stack.** jwst 3.0 replaced its in-ramp trap-model
+  persistence step (which CAMPFIRE ran with `flag_pers_cutoff = 40`) by one that flags the
+  groups following a saturation. Detector1 now runs that step
+  (`[nircam.detector1].in_ramp_persistence`, `persistence_dnu = True`): it acts within an
+  exposure, so only multi-integration exposures change; a single integration merely gains
+  the PERSISTENCE bit on pixels that are already SATURATED. Cross-exposure flagging stays
+  with `snowblind`, now 1.4.1: saturation is read from the rate DQ (identical to the
+  jump-product mask under stcal 1.21) rather than from `_jump.fits`, the window runs from
+  the end of the saturated exposure to the middle of the later one, and its length is
+  snowblind's measured per-detector time (`[nircam.persistence].time = "packaged"`: 2238 s
+  for NRCA1 up to 12602 s for NRCB4; was a flat 2500 s). Both steps use the same time. On
+  432 NEP F444W exposures the longer window adds ~25% more flags on NRCALONG and none on
+  NRCBLONG (about 0.01% of pixels either way). The `_jump.fits` sidecar is still written,
+  for the jackknife step; the persistence step no longer needs it and only removes it.
+- **`drizzle` 2.1 -> 3.0.0 and `snowblind` 0.2.1 -> 1.4.1, both pinned.** drizzle is
+  bit-identical for the square kernel; jwst outlier detection + resample on three NEP F444W
+  exposures agree with 1.20.2 on ~21,000 outlier flags per exposure (4 dropped, 19-44
+  added) and the mosaic differs only at those pixels (0.09%).
+
+### Infrastructure
+- **Datamodel calls updated for `stdatamodels` 6.** `memmap=` is no longer passed to
+  datamodel constructors (it has been ignored since stdatamodels 4 and is now a
+  `TypeError`), and HISTORY entries are written with `model.add_history_entry(...)` in place
+  of the deprecated `model.history.append(...)`. No change to outputs.
+
+### Algorithm
+- **Stage 1 background mask follows the fixed slits' traces instead of blanking a band
+  of rows.** `subtract_background_from_rate_file` used to exclude detector rows 924-1124
+  wholesale. Those rows therefore got no row 1/f correction and only an extrapolated
+  per-quarter picture-frame fit, which left row-to-row residuals of ~0.1 sigma there.
+  `mask_slits` now masks each of the five fixed slits by its own footprint, through the
+  same WCS path and `[nirspec.stage1.override_wavelength_range]` extension as the MSA
+  slitlets (grown by `FIXED_SLIT_MASK_GROW_PX` = 3 px), and the rest of the band is used
+  as background. Measured on ZENITH PRISM first exposures: band row residual 0.09-0.11 ->
+  0.015-0.02 sigma; background elsewhere on the detector changes by ~0.02 sigma rms.
+  Changes rate pixel values (MINOR).
+- **In-ramp `clean_flicker_noise` is masked with CAMPFIRE's own trace mask.** Stage 1 now
+  builds the `mask_slits` mask from the uncal's metadata before `Detector1Pipeline` runs and
+  passes it to the step as `user_mask`, in place of the step's own nominal-range
+  `mask_science_regions` mask; if the mask cannot be built the step masks for itself as
+  before. The step's `fit_method`, `background_method` and `n_sigma` are passed explicitly
+  (`[nirspec.stage1].flicker_*`), so the values CRDS delivers from `jwst_1584` on cannot
+  change them unnoticed; `flicker_n_sigma` adopts the CRDS value, 1.5 (was the step default,
+  2.0). The stock `picture_frame` step (jwst >= 2.0) is skipped explicitly: the picture frame
+  stays with the rate-level pass. Measured on ZENITH PRISM: background and faint-trace pixels
+  are unchanged (~0.1% of the pixel noise); trace pixels brighter than ~0.2 DN/s move by
+  0.02-0.03 sigma rms. Changes rate pixel values (MINOR).
+- **Stage 1 recovers when `clean_flicker_noise` reports FAILED (#681 under jwst 3.0).** jwst
+  3.0 no longer raises `NoDataOnDetectorError` out of the step; it marks itself FAILED and
+  returns the ramp uncorrected. Stage 1 now reads `S_CLNFNS` from the rate and reruns
+  without the science mask, as it already did for the exception on older jwst.
+- **`override_wavelength_range` gains a PRISM default, `[0.50, 5.6]`.** PRISM light
+  reaches ~30 px (blue) and ~40 px (red) past the nominal 0.6-5.3 um footprint; the
+  background mask now covers it, for MSA slitlets and fixed slits alike. Changes rate
+  pixel values (MINOR).
+
 ### Infrastructure
 - **Hints name the new `campfire pull spec` syntax.** `cfpipe nirspec linefit`'s
   "no inspected redshifts" messages and the redshift-reference docs now say

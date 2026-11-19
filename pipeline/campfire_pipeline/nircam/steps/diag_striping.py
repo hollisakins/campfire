@@ -679,7 +679,7 @@ def diag_striping_step(exposure_file, field, step_config, overwrite=False,
 
     from jwst.datamodels import ImageModel, dqflags
 
-    model = ImageModel(exposure_file, memmap=False)
+    model = ImageModel(exposure_file)
     sci_before = model.data.copy()
     dq_before = model.dq.copy()
     err_before = model.err.copy()
