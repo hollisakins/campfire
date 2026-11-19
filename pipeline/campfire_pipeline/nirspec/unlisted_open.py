@@ -26,6 +26,9 @@ Three steps, on the rate files and master-background products of one detector:
    (step 1's ``MBKG1DR``) along the trace; the best few are painted exactly as the
    master background paints a failed-open shutter (``_rate_sky_through``: their own
    WCS, the quadrant scale, the bar-shadow table) and fitted on the trace's pixels.
+   ``grow``: the best one is extended to its neighbors across the dispersion while each
+   neighbor passes light of its own, so a leak through a run of adjacent shutters
+   (EMBER obs 24 next to slitlet 161: three) is fitted, judged and painted as that run.
 """
 import os
 
@@ -216,13 +219,19 @@ def _holder(processed, slits, bbox=True):
     return holder, keep
 
 
-def one_shutter(name, q, x, y):
-    """A one-shutter slit at MSA shutter (quadrant, x along the dispersion, y across it),
-    with a commanded slitlet's margin and pitch scales (``coverage.failed_open_slitlets``)."""
+def one_shutter(name, q, x, y, ny=1):
+    """A slit of ``ny`` adjacent shutters starting at MSA shutter (quadrant, x along the
+    dispersion, y across it) and running up in y, with a commanded slitlet's margin and
+    pitch scales (``coverage.failed_open_slitlets``). A run is one slit, as jwst builds a
+    commanded slitlet (``ymax`` one pitch higher per shutter): its interior bars get the
+    bar-shadow segments of two open neighbors, not two outer edges."""
     from jwst.assign_wcs.nirspec import MSA_SLIT_SCALES
     from stdatamodels.jwst.transforms.models import Slit
-    return Slit(int(name), int(x) + (int(y) - 1) * SHUTTERS_X, 0, int(x), int(y), -CV.FAILED_OPEN_Y, CV.FAILED_OPEN_Y,
-                int(q), 0, 'x', slit_id=int(name), slit_xscale=MSA_SLIT_SCALES[0], slit_yscale=MSA_SLIT_SCALES[1])
+    ny = int(ny)
+    ymax = CV.FAILED_OPEN_Y + (ny - 1) * CV._pitch(MSA_SLIT_SCALES[1])
+    return Slit(int(name), int(x) + (int(y) - 1) * SHUTTERS_X, 0, int(x), int(y), -CV.FAILED_OPEN_Y, ymax,
+                int(q), 0, 'x' + '1' * (ny - 1), slit_id=int(name), slit_xscale=MSA_SLIT_SCALES[0],
+                slit_yscale=MSA_SLIT_SCALES[1])
 
 
 class MsaMap:
@@ -281,8 +290,9 @@ class MsaMap:
 
     def exact(self, candidates):
         """Exact geometry (``coverage.slitlet_geometry_extended``, with bar-shadow segments)
-        of candidate shutters [(q, x, y), ...]: a list of blocks, None where off the detector."""
-        slits = [one_shutter(2000 + i, q, x, y) for i, (q, x, y) in enumerate(candidates)]
+        of candidate shutters or runs [(q, x, y) or (q, x, y, ny), ...]: a list of blocks,
+        None where off the detector."""
+        slits = [one_shutter(2000 + i, *c) for i, c in enumerate(candidates)]
         holder, kept = _holder(self.processed, slits)
         names = {int(s.name) for s in kept}
         out = []
@@ -443,12 +453,84 @@ def scan(trace, msamap, rate_sky, fixed=None, row_tol=2.5, n_lam=120, quadrants=
     return out[:keep]
 
 
+def fit_run(trace, fixed, g, rate_sky, rate_q, table):
+    """One shutter or run of shutters (geometry ``g`` from ``MsaMap.exact``) painted
+    exactly and fitted to the trace's pixels, one transmission per shutter (linear least
+    squares over the trace mask and the run's footprint above 10 % of its peak, with the
+    map's errors, once more without the pixels beyond 5 sigma of the first fit: the map has
+    no outlier rejection of its own). Returns None when a shutter has no pixel to fit,
+    else a dict: ``ts`` / ``terrs`` (per shutter, up the slit), ``t`` (their mean weighted
+    by each shutter's painted light), chi-square ``chi2`` over ``n`` pixels, ``gain`` (the
+    improvement over no light on the same pixels: explaining the trace raises it,
+    predicting light where there is none lowers it, empty pixels add nothing; 0 unless
+    every shutter passes light), and ``bands``: the ratio excess / painted in wavelength
+    bands ((lam_lo, lam_hi, ratio, err), the painted model at each shutter's fitted share)
+    to judge the spectral shape. One shutter: its transmission and the ratio to its paint."""
+    ex, er = fixed['excess'], fixed['err']
+    ny, nx = ex.shape
+    ns = len(g['state'])
+    val = background_through(g, rate_sky, rate_q, table)
+    r0, h = g['row_lo'], val.shape[0]
+    model = np.full((ny, nx), np.nan)
+    lamf = np.full((ny, nx), np.nan)
+    jf = np.full((ny, nx), -1, int)
+    model[r0:r0 + h] = val
+    lamf[r0:r0 + h] = g['lam']
+    jf[r0:r0 + h] = np.where(g['footprint'], g['j'], -1)
+    peak = np.nanmax(model) if np.isfinite(model).any() else 0
+    if not peak > 0:
+        return None
+    with np.errstate(invalid='ignore'):
+        reg = (trace['mask'] | (model > 0.1 * peak)) & np.isfinite(ex) & np.isfinite(er) & (er > 0)
+    m = np.where(np.isfinite(model), model, 0.0)
+    if not reg.any():
+        return None
+
+    def design(r):
+        return np.stack([np.where(jf[r] == i, m[r], 0.0) for i in range(ns)], 1)
+
+    for _ in range(2):
+        w = 1.0 / er[reg] ** 2
+        a = design(reg)
+        nrm = (a * w[:, None]).T @ a
+        if not np.all(np.diag(nrm) > 0):
+            return None
+        ts = np.linalg.solve(nrm, (a * w[:, None]).T @ ex[reg])
+        z = np.zeros(reg.shape)
+        z[reg] = (ex[reg] - a @ ts) / er[reg]
+        reg = reg & (np.abs(z) < 5)
+        if not reg.any():
+            return None
+    terrs = np.sqrt(np.diag(np.linalg.inv(nrm)))
+    a = design(reg)
+    chi2 = float(np.sum((ex[reg] - a @ ts) ** 2 / er[reg] ** 2))
+    gain = float(np.sum(ex[reg] ** 2 / er[reg] ** 2)) - chi2 if np.all(ts > 0) else 0.0
+    light = a.sum(0)
+    t = float(np.sum(ts * light) / np.sum(light)) if ns > 1 else float(ts[0])
+    # the painted model with each shutter at its share of the mean transmission
+    share = ts / t if t != 0 else np.ones(ns)
+    pm = np.where(jf >= 0, m * share[np.clip(jf, 0, ns - 1)], 0.0) if ns > 1 else m
+    ppk = float(np.max(pm)) if ns > 1 else peak
+    bands = []
+    lam_t = lamf[reg & (pm > 0.3 * ppk)]
+    if lam_t.size:
+        edges = np.quantile(lam_t, np.linspace(0, 1, 7))
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            b = reg & (pm > 0.3 * ppk) & (lamf >= lo) & (lamf <= hi)
+            if b.sum() < 5:
+                continue
+            wb = 1.0 / er[b] ** 2
+            rb = np.sum(wb * ex[b] * pm[b]) / np.sum(wb * pm[b] ** 2)
+            eb = 1.0 / np.sqrt(np.sum(wb * pm[b] ** 2))
+            bands.append((float(lo), float(hi), float(rb), float(eb)))
+    return dict(ny=ns, t=t, ts=[float(v) for v in ts], terrs=[float(v) for v in terrs], chi2=chi2, gain=gain,
+                n=int(reg.sum()), bands=bands, model=pm, region=reg)
+
+
 def refine(trace, fixed, msamap, candidates, rate_sky, rate_q, table, neighbors=1):
-    """The candidates and their neighbors (+-``neighbors`` shutters in x and y), painted
-    exactly and fitted to the trace's pixels: transmission ``t`` (least squares over the
-    trace mask with the map's errors), chi-square, and the ratio excess / painted in
-    wavelength bands (``bands``: (lam_lo, lam_hi, ratio, err)) to judge the spectral
-    shape. Best first."""
+    """The candidates and their neighbors (+-``neighbors`` shutters in x and y), each
+    painted alone and fitted to the trace's pixels (``fit_run``). Best (highest gain)
+    first; each dict carries its shutter's ``q`` / ``x`` / ``y``."""
     seen = []
     for c in candidates:
         for dx in range(-neighbors, neighbors + 1):
@@ -456,61 +538,46 @@ def refine(trace, fixed, msamap, candidates, rate_sky, rate_q, table, neighbors=
                 k = (c['q'], c['x'] + dx, c['y'] + dy)
                 if k not in seen and 1 <= k[1] <= SHUTTERS_X and 1 <= k[2] <= SHUTTERS_Y:
                     seen.append(k)
-    geos = msamap.exact(seen)
-    ex, er = fixed['excess'], fixed['err']
-    ny, nx = ex.shape
     res = []
-    for k, g in zip(seen, geos):
-        if g is None:
-            continue
-        val = background_through(g, rate_sky, rate_q, table)
-        model = np.full((ny, nx), np.nan)
-        lamf = np.full((ny, nx), np.nan)
-        r0 = g['row_lo']
-        model[r0:r0 + val.shape[0]] = val
-        lamf[r0:r0 + val.shape[0]] = g['lam']
-        # the region: the trace's mask and the candidate's own footprint above 10 % of its peak
-        peak = np.nanmax(model) if np.isfinite(model).any() else 0
-        if not peak > 0:
-            continue
-        with np.errstate(invalid='ignore'):
-            reg = (trace['mask'] | (model > 0.1 * peak)) & np.isfinite(ex) & np.isfinite(er) & (er > 0)
-        m = np.where(np.isfinite(model), model, 0.0)
-        if not reg.any():
-            continue
-        # transmission by least squares, once more without the pixels beyond 5 sigma of the
-        # first fit (hot pixels, a bad column: the map has no outlier rejection of its own)
-        for _ in range(2):
-            w = 1.0 / er[reg] ** 2
-            den = np.sum(w * m[reg] ** 2)
-            if den <= 0:
-                break
-            t = np.sum(w * ex[reg] * m[reg]) / den
-            z = np.zeros(reg.shape)
-            z[reg] = (ex[reg] - t * m[reg]) / er[reg]
-            reg = reg & (np.abs(z) < 5)
-        if den <= 0 or not reg.any():
-            continue
-        chi2 = float(np.sum((ex[reg] - t * m[reg]) ** 2 / er[reg] ** 2))
-        # the improvement over no light on the same pixels: explaining the trace raises it,
-        # predicting light where there is none lowers it, empty pixels add nothing
-        gain = float(np.sum(ex[reg] ** 2 / er[reg] ** 2)) - chi2 if t > 0 else 0.0
-        bands = []
-        lam_t = lamf[reg & (m > 0.3 * peak)]
-        if lam_t.size:
-            edges = np.quantile(lam_t, np.linspace(0, 1, 7))
-            for lo, hi in zip(edges[:-1], edges[1:]):
-                b = reg & (m > 0.3 * peak) & (lamf >= lo) & (lamf <= hi)
-                if b.sum() < 5:
-                    continue
-                wb = 1.0 / er[b] ** 2
-                rb = np.sum(wb * ex[b] * m[b]) / np.sum(wb * m[b] ** 2)
-                eb = 1.0 / np.sqrt(np.sum(wb * m[b] ** 2))
-                bands.append((float(lo), float(hi), float(rb), float(eb)))
-        res.append(dict(q=k[0], x=k[1], y=k[2], t=float(t), chi2=chi2, gain=gain, n=int(reg.sum()), bands=bands,
-                        model=model, region=reg))
+    for k, g in zip(seen, msamap.exact(seen)):
+        r = fit_run(trace, fixed, g, rate_sky, rate_q, table) if g is not None else None
+        if r is not None:
+            res.append(dict(r, q=k[0], x=k[1], y=k[2]))
     res.sort(key=lambda d: -d['gain'])
     return res
+
+
+# a run grows by a neighbor across the dispersion (same quadrant and x: a neighbor along
+# it lands on the same rows a few columns over, which a smooth background cannot tell
+# from more transmission) when the neighbor's own transmission is above MIN_RATIO and
+# GROW_SNR of its error and the fit's gain rises; at most MAX_RUN shutters
+GROW_SNR, MAX_RUN = 5.0, 5
+
+
+def grow(trace, fixed, msamap, best, rate_sky, rate_q, table):
+    """``best`` (a ``refine`` result) extended one shutter at a time, up or down the slit,
+    whichever passes the rule above with the larger gain, until neither does. Returns the
+    run's ``fit_run`` dict with ``q`` / ``x`` / ``y`` (its lowest shutter) / ``ny``."""
+    cur = best
+    while cur['ny'] < MAX_RUN:
+        q, x, y, n = cur['q'], cur['x'], cur['y'], cur['ny']
+        trials = []
+        if y > 1:
+            trials.append(((q, x, y - 1, n + 1), 0))          # the new shutter is the run's first
+        if y + n <= SHUTTERS_Y:
+            trials.append(((q, x, y, n + 1), n))              # ... or its last
+        ok = []
+        for (key, i), g in zip(trials, msamap.exact([k for k, i in trials])):
+            r = fit_run(trace, fixed, g, rate_sky, rate_q, table) if g is not None else None
+            if r is None:
+                continue
+            tn, en = r['ts'][i], r['terrs'][i]
+            if min(r['ts']) > 0 and tn > MIN_RATIO and tn > GROW_SNR * en and r['gain'] > cur['gain']:
+                ok.append(dict(r, q=key[0], x=key[1], y=key[2]))
+        if not ok:
+            break
+        cur = max(ok, key=lambda d: d['gain'])
+    return cur
 
 
 # ---------------------------------------------------------------------------
@@ -604,39 +671,50 @@ def detect(rate_paths, snr=5.0, min_frac=0.2, min_rows=4, max_traces=40, logger=
         best = refine(t, fx, mm, cands, rate_sky, rate_q, table, neighbors=2)
         if not best:
             continue
-        b = best[0]
+        b = grow(t, fx, mm, best[0], rate_sky, rate_q, table)
         ok = verdict(b)
         rb = [r for lo, hi, r, e in b['bands']]
-        say(f'{where}: q{b["q"]} x{b["x"]} y{b["y"]} transmission {b["t"]:.2f} chi2/n {b["chi2"] / b["n"]:.2f} '
+        each = f' (each {", ".join(f"{v:.2f}" for v in b["ts"])})' if b['ny'] > 1 else ''
+        say(f'{where}: {run_label(b["q"], b["x"], b["y"], b["ny"])} transmission {b["t"]:.2f}{each} '
+            f'chi2/n {b["chi2"] / b["n"]:.2f} '
             f'excess/background {min(rb, default=np.nan):.2f}-{max(rb, default=np.nan):.2f} -> '
             + ('passes the background: painted' if ok else 'not the background\'s spectrum: left'))
-        if ok and (b['q'], b['x'], b['y']) not in {(f['q'], f['x'], f['y']) for f in found}:
-            found.append(dict(q=int(b['q']), x=int(b['x']), y=int(b['y']), t=float(b['t']), chi2n=float(b['chi2'] / b['n']),
+        taken = {(f['q'], f['x'], y) for f in found for y in range(f['y'], f['y'] + f['ny'])}
+        if ok and not taken & {(b['q'], b['x'], y) for y in range(b['y'], b['y'] + b['ny'])}:
+            found.append(dict(q=int(b['q']), x=int(b['x']), y=int(b['y']), ny=int(b['ny']), t=float(b['t']),
+                              ts=list(b['ts']), chi2n=float(b['chi2'] / b['n']),
                               ratio_lo=float(min(rb)), ratio_hi=float(max(rb)),
                               rows=t['rows'], cols=(int(t['cols'].min()), int(t['cols'].max()))))
     return found
 
 
-def shutter_name(q, x, y):
-    """The painter's name of an unlisted shutter (never an msaoper index or a slitlet id)."""
-    return f'U{int(q)}_{int(x)}_{int(y)}'
+def run_label(q, x, y, ny=1):
+    """``q4 x188 y24-26`` (a run) or ``q4 x188 y26`` (one shutter)."""
+    return f'q{int(q)} x{int(x)} y{int(y)}' + (f'-{int(y) + int(ny) - 1}' if int(ny) > 1 else '')
+
+
+def shutter_name(q, x, y, ny=1):
+    """The painter's name of an unlisted shutter or run (never an msaoper index or a
+    slitlet id): ``U4_86_43``, ``U4_188_24-26``."""
+    return f'U{int(q)}_{int(x)}_{int(y)}' + (f'-{int(y) + int(ny) - 1}' if int(ny) > 1 else '')
 
 
 def failed_blocks(rate_path, shutters, shape=(2048, 2048)):
-    """The footprints of unlisted shutters [(q, x, y), ...] on one rate file, in the form
-    ``coverage.RateGeometry.blocks`` gives the msaoper failed-open shutters (kind
-    ``failed``, flat ``pix``, ``lam``, ``f``, ``j``, ``is_open``, ``seg`` / ``yseg``, one
-    shutter with a commanded slitlet's margin), on the rate file's own WCS. Shutters off
-    the detector are left out."""
+    """The footprints of unlisted shutters or runs [(q, x, y) or (q, x, y, ny), ...] on one
+    rate file, in the form ``coverage.RateGeometry.blocks`` gives the msaoper failed-open
+    shutters (kind ``failed``, flat ``pix``, ``lam``, ``f``, ``j``, ``is_open``, ``seg`` /
+    ``yseg``, a commanded slitlet's margin; a run is one slit, so one block with one
+    transmission), on the rate file's own WCS. Shutters off the detector are left out."""
     from astropy.io import fits
     processed = CV._assign_wcs(rate_path, CV.resolve_wavelengthrange(rate_path))[0][0]
     h = fits.getheader(rate_path)
     cutoffs = CV.cutoffs_for(h.get('GRATING', ''), h.get('FILTER', ''))
-    slits = [one_shutter(3000 + i, q, x, y) for i, (q, x, y) in enumerate(shutters)]
+    shutters = [tuple(s) + (1,) * (4 - len(s)) for s in shutters]
+    slits = [one_shutter(3000 + i, *s) for i, s in enumerate(shutters)]
     holder, kept = _holder(processed, slits)
     names = {int(s.name) for s in kept}
     out = []
-    for (q, x, y), s in zip(shutters, slits):
+    for (q, x, y, ny), s in zip(shutters, slits):
         if int(s.name) not in names:
             continue
         try:
@@ -647,7 +725,8 @@ def failed_blocks(rate_path, shutters, shape=(2048, 2048)):
         if not foot.any():
             continue
         rr, cc = np.nonzero(foot)
-        out.append(dict(kind='failed', name=shutter_name(q, x, y), quadrant=int(q), ycen=0.0, source_id=0, state='x',
+        out.append(dict(kind='failed', name=shutter_name(q, x, y, ny), quadrant=int(q), ycen=0.0, source_id=0,
+                        state=str(s.shutter_state),
                         pix=((rr + g['row_lo']) * shape[1] + cc).astype(np.int64), lam=g['lam'][foot].astype(float),
                         ys=g['ys'][foot].astype(float), k=g['k'][foot], f=g['f'][foot], j=g['j'][foot],
                         is_open=g['is_open'][foot], kx=0, seg=g['seg'][foot], yseg=g['yseg'][foot]))

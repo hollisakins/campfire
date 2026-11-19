@@ -346,14 +346,24 @@ configuration, disperser, filter, detector), with at least two nod positions:
    shutter already paints (`MBKG2DDQ` bit 8);
 3. candidate shutters for each trace from every MSA shutter placed on the detector through one
    reference slit per quadrant, the best of them painted exactly and compared with the trace;
+   the best one is then extended to its neighbors across the dispersion, one at a time, while the
+   neighbor passes light of its own (its transmission, fitted jointly with the others', above
+   0.05 and 5 sigma) and the fit improves, up to five shutters. A leak often runs through
+   several listed-failed-closed shutters beside a slitlet (EMBER obs 24: three beside slitlet
+   161, which one shutter fitted at chi2/n 5.7 and the run at 1.2; two runs of two), and judged
+   one shutter at a time it fails step 4 for the light the other shutters put there. Neighbors
+   along the dispersion are not tried: they land on the same rows a few columns over, which a
+   smooth background cannot tell from more transmission;
 4. kept when the trace has the background's spectrum: at least 3 wavelength bands, a median
    ratio to the painted background above 0.05, every band within 15 % of the median, chi2/n
    below 2.
 
 The shutters kept are painted like the MSA operations reference's failed-open shutters (their
-own transmission per exposure, combined over the nods), the configuration is painted again, and
-its products carry `MBKGNUO` (how many), `MBKGUOS` (searched, how many found, or not searched)
-and an `UNLISTED` table (quadrant, x, y, transmission, chi2/n, band ratio range). On p1 the
+own transmission per exposure, combined over the nods; a run as one slit, as jwst builds a
+commanded slitlet, so its interior bars are bars and not two outer edges), the configuration is
+painted again, and its products carry `MBKGNUO` (how many shutters), `MBKGUOS` (searched, how
+many found, or not searched) and an `UNLISTED` table (quadrant, x, y and `ny` for a run up the
+slit, transmission, chi2/n, band ratio range). On p1 the
 search rediscovers the MSA operations reference's failed-open shutters at their listed
 positions. On zenith_p15 it finds five, transmissions 0.95-1.00, and the light left
 on the detector there drops to the level of no light; master background minus nodded (median

@@ -84,3 +84,63 @@ def test_search_per_configuration_prism_only(monkeypatch):
     assert set(found) == {'a_00001_nrs1', 'a_00002_nrs1'}
     assert status['b_00001_nrs1'] == 'not searched (G395M)'
     assert status['a_00001_nrs1'] == 'searched, 1 found'
+
+
+class _FakeMap:
+    """MsaMap stand-in: shutter y of a run fills detector rows 5 (y - 1) .. 5 y - 1 over
+    every column, wavelength rising along the columns; x does not matter."""
+    shape = (60, 200)
+
+    def exact(self, candidates):
+        out = []
+        for c in candidates:
+            q, x, y, ny = (tuple(c) + (1,))[:4]
+            r0, h = 5 * (y - 1), 5 * ny
+            rows = np.arange(h)
+            j = np.repeat((rows // 5)[:, None], self.shape[1], 1)
+            lam = np.broadcast_to(1.0 + np.arange(self.shape[1]) / 50.0, (h, self.shape[1])).copy()
+            out.append(dict(state='x' + '1' * (ny - 1), row_lo=r0, lam=lam, j=j, footprint=np.ones((h, self.shape[1]), bool)))
+        return out
+
+
+def _background(g, rate_sky, rate_q, table):
+    return np.where(g['footprint'], 2.0 / g['lam'], np.nan)       # a smooth, falling background
+
+
+def _leak(ys, t=0.9, seed=1, sigma=0.25):
+    rng = np.random.default_rng(seed)
+    ex = np.zeros(_FakeMap.shape)
+    for y in ys:
+        lam = 1.0 + np.arange(_FakeMap.shape[1]) / 50.0
+        ex[5 * (y - 1):5 * y] += t * 2.0 / lam
+    mask = ex > 0
+    ex += rng.normal(0, sigma, ex.shape)
+    return dict(excess=ex, err=np.full(ex.shape, sigma)), dict(mask=mask)   # a trace a few sigma per pixel, as obs 24's
+
+
+def test_a_leak_through_three_shutters_grows_to_the_run(monkeypatch):
+    monkeypatch.setattr(U, 'background_through', _background)
+    fixed, trace = _leak([4, 5, 6])
+    best = U.refine(trace, fixed, _FakeMap(), [dict(q=4, x=188, y=6)], None, None, None, neighbors=2)
+    assert best[0]['ny'] == 1 and not U.verdict(best[0])           # one shutter leaves two thirds of the trace
+    run = U.grow(trace, fixed, _FakeMap(), best[0], None, None, None)
+    assert (run['y'], run['ny']) == (4, 3)
+    assert np.allclose(run['ts'], 0.9, atol=0.01) and abs(run['t'] - 0.9) < 0.01
+    assert U.verdict(run)
+
+
+def test_a_one_shutter_leak_does_not_grow(monkeypatch):
+    monkeypatch.setattr(U, 'background_through', _background)
+    fixed, trace = _leak([5])
+    best = U.refine(trace, fixed, _FakeMap(), [dict(q=4, x=188, y=5)], None, None, None, neighbors=2)
+    run = U.grow(trace, fixed, _FakeMap(), best[0], None, None, None)
+    assert (run['y'], run['ny']) == (5, 1) and U.verdict(run)
+
+
+def test_a_run_is_one_slit_like_a_commanded_slitlet():
+    from jwst.assign_wcs.nirspec import MSA_SLIT_SCALES
+    s = U.one_shutter(7, 4, 188, 24, 3)
+    assert s.shutter_state == 'x11' and (s.xcen, s.ycen) == (188, 24)
+    pitch = U.CV._pitch(MSA_SLIT_SCALES[1])
+    assert s.ymin == -U.CV.FAILED_OPEN_Y and abs(s.ymax - (U.CV.FAILED_OPEN_Y + 2 * pitch)) < 1e-9
+    assert U.shutter_name(4, 188, 24, 3) == 'U4_188_24-26' and U.run_label(4, 188, 24, 3) == 'q4 x188 y24-26'

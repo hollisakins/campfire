@@ -1206,8 +1206,9 @@ def _worker_paint(args):
     Each slitlet is painted once (two sources of one slitlet get cutouts a pixel apart);
     the layers are combined by ``merge_painted``. ``unlisted``: shutters found passing
     the background without being in the metafile or the msaoper list
-    (``unlisted_open.detect``, dicts with ``q`` / ``x`` / ``y``), painted exactly like the
-    msaoper failed-open shutters.
+    (``unlisted_open.detect``, dicts with ``q`` / ``x`` / ``y`` and ``ny`` for a run of
+    shutters up the slit, painted as one slit), painted exactly like the msaoper
+    failed-open shutters.
     """
     (rate_path, product, canonicals, bs_path, counter_path, centres, rate_sky, opt, rate_q,
      geometry_path, stuck, unlisted) = args
@@ -1304,7 +1305,7 @@ def _worker_paint(args):
             painted.add((b['name'], b['quadrant']))
     if rs_fin and unlisted:
         from campfire_pipeline.nirspec import unlisted_open as U
-        for b in U.failed_blocks(rate_path, [(u['q'], u['x'], u['y']) for u in unlisted], rate.shape):
+        for b in U.failed_blocks(rate_path, [(u['q'], u['x'], u['y'], u.get('ny', 1)) for u in unlisted], rate.shape):
             val = _rate_sky_through(b['lam'], b['seg'], b['yseg'], b['j'], len(b['state']),
                                     rate_q.get(int(b['quadrant']), np.nan), centres, rate_sky, table, floor_bs)
             fo_layers.append((b, val))
@@ -1567,7 +1568,7 @@ def _unlisted_open(rate_paths):
             continue
         status_of.update({b: f'searched, {len(found)} found' for b in bases})
         log(f'master background: unlisted open, {tag}: {len(ps)} exposures, '
-            + (', '.join(f'q{f["q"]} x{f["x"]} y{f["y"]}' for f in found) if found else 'none'))
+            + (', '.join(U.run_label(f['q'], f['x'], f['y'], f.get('ny', 1)) for f in found) if found else 'none'))
         if found:
             found_of.update({b: found for b in bases})
     return found_of, status_of
@@ -1811,11 +1812,12 @@ def run_master_bkg(obs, stage_config, n_processes=1, overwrite=False, plot=True)
                                           'failed-open transmission: how, over what')
             hdul[0].header['MBKGNGEO'] = (int(counts['geometry']), 'slitlets painted with no slit (rate units)')
             unl = counts.get('unlisted', [])
-            hdul[0].header['MBKGNUO'] = (len(unl), 'unlisted shutters passing background, painted')
+            hdul[0].header['MBKGNUO'] = (int(sum(u.get('ny', 1) for u in unl)), 'unlisted shutters passing background, painted')
             if unl:
-                hdul.append(fits.BinTableHDU(Table(rows=[(u['q'], u['x'], u['y'], u['t'], u['chi2n'], u['ratio_lo'], u['ratio_hi'])
+                hdul.append(fits.BinTableHDU(Table(rows=[(u['q'], u['x'], u['y'], u.get('ny', 1), u['t'], u['chi2n'],
+                                                          u['ratio_lo'], u['ratio_hi'])
                                                          for u in unl],
-                                                   names=('quadrant', 'x', 'y', 't_found', 'chi2n', 'ratio_lo', 'ratio_hi')),
+                                                   names=('quadrant', 'x', 'y', 'ny', 't_found', 'chi2n', 'ratio_lo', 'ratio_hi')),
                                              name='UNLISTED'))
             hdul[0].header['MBKGCBLU'] = (float(blue) if blue is not None else 'edge', 'footprint blue cutoff [um]')
             hdul[0].header['MBKGCRED'] = (float(red) if red is not None else 'edge', 'footprint red cutoff [um]')

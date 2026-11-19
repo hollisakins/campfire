@@ -380,6 +380,13 @@ Release procedure: edit the `## Unreleased` section below, then run
     0.01, 543127 0.16 to 0.07. Not searched on the gratings: G395M's featureless background
     places a shutter only to about 10 shutters along the dispersion, and its failed-open shutters
     pass a fraction rising with wavelength.
+    A leak through a run of adjacent shutters is fitted, judged and painted as that run
+    (`unlisted_open.grow`): the best single shutter is extended across the dispersion while the
+    neighbor's own transmission (one per shutter, fitted jointly) is above 0.05 and 5 sigma and the
+    fit improves, up to five shutters; the run is one slit like a commanded slitlet (`UNLISTED`
+    gains `ny`, `MBKGNUO` counts shutters). EMBER obs 24: three shutters next to slitlet 161
+    (transmissions 0.89 / 0.88 / 0.89, chi2/n 5.7 as one shutter, 1.2 as the run) and two runs of
+    two were left unpainted, so 15023 and 15075's frames read 2.0x their master background.
   - *The shape fit reaches its minimum, and the width lands stretched (`FIT_VERSION` 12).* The
     optics tables are float32, so a model evaluation is good to about 1e-7, and `least_squares`'
     default finite-difference step (1.5e-8) returned noise for the shape derivatives. The fit
