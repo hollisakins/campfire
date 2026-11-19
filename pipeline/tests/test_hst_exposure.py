@@ -10,7 +10,7 @@ import pytest
 from astropy.io import fits
 
 from campfire_pipeline.hst import instruments
-from campfire_pipeline.hst.exposure import (SKY_KEY, VARSCALE_KEY, open_exposure,
+from campfire_pipeline.hst.exposure import (BKG_KEY, VARSCALE_KEY, open_exposure,
                                             photfnu)
 
 _ARCSEC = np.pi / (180.0 * 3600.0)
@@ -41,7 +41,11 @@ def _imset(extver, sci, err, dq, cards, extra=None):
     return hdus
 
 
-def _acs_file(path, *, sip=True, sky_key=None, source=0.0, primary_extra=None):
+def _acs_file(path, *, sip=True, bkg_key=None, source=0.0, primary_extra=None):
+    """A two-chip ACS/WFC file with a 40 e- background. ``bkg_key``: the file
+    as the bkg step leaves it, that level subtracted from SCI and recorded as
+    ``CFBKG`` (ERR still carries the background's Poisson noise); ``None``: the
+    file before the step, background in the pixels."""
     ny, nx, t, sky = 24, 32, 400.0, 40.0
     rng = np.random.default_rng(1)
     primary = fits.PrimaryHDU()
@@ -60,8 +64,9 @@ def _acs_file(path, *, sip=True, sky_key=None, source=0.0, primary_extra=None):
         extra = {'BUNIT': 'ELECTRONS', 'PHOTFLAM': _PHOTFLAM,
                  'PHOTPLAM': _PHOTPLAM, 'IDCSCALE': 0.05,
                  'WCSNAME': 'IDC_test', 'CCDCHIP': 3 - extver}
-        if sky_key is not None:
-            extra[SKY_KEY] = sky_key
+        if bkg_key is not None:
+            extra[BKG_KEY] = bkg_key
+            sci = sci - bkg_key
         hdul += _imset(extver, sci.astype('float32'), err.astype('float32'), dq,
                        _wcs_cards(0.05, (40.0 + 0.001 * extver, 26.0), sip=sip),
                        extra)
@@ -97,7 +102,7 @@ def test_photfnu_from_header_or_flam():
 
 def test_acs_file_gives_two_chips_in_surface_brightness(tmp_path):
     path = str(tmp_path / 'jtest01aaq_flc.fits')
-    ny, nx, t, sky = _acs_file(path, sky_key=40.0, source=4000.0)
+    ny, nx, t, sky = _acs_file(path, bkg_key=40.0, source=4000.0)
     chips = open_exposure(path)
 
     assert [c.key for c in chips] == ['jtest01aaq_sci1', 'jtest01aaq_sci2']
@@ -109,7 +114,7 @@ def test_acs_file_gives_two_chips_in_surface_brightness(tmp_path):
     a = c.load()
     f = c.photfnu * 1e-6 / (0.05 * _ARCSEC) ** 2       # MJy/sr per e-/s
     assert c.sb_per_rate == pytest.approx(f)
-    # sky removed; the 4000 e- source is 10 e-/s
+    # the background is out (the bkg step took it); the 4000 e- source is 10 e-/s
     assert abs(np.median(a.sci)) < 1e-3 * f
     assert a.sci[10, 10] == pytest.approx(10.0 * f, rel=1e-3)
 
@@ -142,13 +147,15 @@ def test_acs_file_gives_two_chips_in_surface_brightness(tmp_path):
     assert r2[0] - r1[0] == pytest.approx(0.001)
 
     row = c.provenance()
-    assert row['sky_src'] == 'header' and row['sky'] == 40.0
+    assert row['sky_src'] == 'bkg' and row['sky'] == 40.0
     assert row['proposid'] == 15843 and row['wcsname'] == 'IDC_test'
 
 
-def test_sky_is_estimated_when_the_keyword_is_absent(tmp_path):
+def test_a_file_before_the_bkg_step_has_its_level_estimated(tmp_path):
+    """The cosmic-ray and trail steps open exposures before bkg has run: the
+    background is still in the pixels, and a median is taken out on load."""
     path = str(tmp_path / 'jtest01aaq_flc.fits')
-    _acs_file(path, sky_key=None)
+    _acs_file(path, bkg_key=None)
     c = open_exposure(path)[0]
     a = c.load()
     assert abs(np.median(a.sci)) < 1e-3 * c.sb_per_rate
@@ -174,13 +181,13 @@ def test_wfc3ir_rate_file_uses_the_time_array(tmp_path):
     time = np.full((ny, nx), 1000.0, 'float32')
     time[5, 5] = 500.0                                 # ramp cut short there
     err = np.sqrt(sci / time + 0.001).astype('float32')
+    sci = sci - np.float32(1.0)                        # the bkg step took it out
     dq = np.zeros((ny, nx), 'int16')
     dq[1, 1], dq[1, 2] = 16, 512                       # stable hot, blob
-    # CFVARSC as the sky step measures it on real WFC3/IR frames (pixel scatter
-    # below ERR). It is applied, as for ACS/WFC and NIRCam: the background
-    # variance follows the pixel scatter.
+    # CFVARSC as the bkg step records it. It is applied, as for ACS/WFC and
+    # NIRCam: the background variance follows the measured scatter.
     extra = {'BUNIT': 'ELECTRONS/S', 'PHOTFNU': 1.5246e-07, 'IDCSCALE': 0.1282500,
-             SKY_KEY: 1.0, VARSCALE_KEY: 0.7}
+             BKG_KEY: 1.0, VARSCALE_KEY: 0.7}
     hdul = fits.HDUList([primary] + _imset(1, sci, err, dq,
                                            _wcs_cards(0.128, (34.4, -5.2)), extra))
     hdul.append(fits.ImageHDU(data=time, name='TIME', ver=1))
@@ -217,7 +224,7 @@ def test_surface_brightness_survives_the_drizzle(tmp_path):
     from campfire_pipeline.imaging.drizzle import drizzle_tile
 
     path = str(tmp_path / 'jtest01aaq_flc.fits')
-    _acs_file(path, sky_key=0.0)                       # keep the 40 e- "sky"
+    _acs_file(path, bkg_key=0.0)                       # keep the 40 e- "sky"
     chips = open_exposure(path)
     out = str(tmp_path / 'mosaic_i2d.fits')
     drizzle_tile(chips, out, crval=(40.0015, 26.0), crpix=(49.5, 49.5),
@@ -248,7 +255,7 @@ def test_exposure_map_reads_both_chips_through_their_wcs(tmp_path):
     from campfire_pipeline.imaging import expmap as em
 
     path = str(tmp_path / 'jtest01aaq_flc.fits')
-    ny, nx, t, _sky = _acs_file(path, sky_key=0.0)
+    ny, nx, t, _sky = _acs_file(path, bkg_key=0.0)
     field = HstField(name='f', instrument='acswfc', filters=['f606w'],
                      files=['jtest*'], grid=None)
     meta = field.expmap_metadata(path)

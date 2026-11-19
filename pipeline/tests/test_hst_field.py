@@ -60,9 +60,13 @@ def root(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _stamped(path, **stamps):
+def _stamped(path, bkg=True, **stamps):
+    """An exposure with these step stamps, and (unless ``bkg=False``) the
+    background step's: a combine keeps out an exposure without it."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     hdu = fits.PrimaryHDU()
+    if bkg:
+        stamps.setdefault('CFP_BKG', 'n_iter=3')
     for key, val in cfp.format(keyset=cfp.HST, **stamps).items():
         hdu.header[key] = val
     hdu.writeto(path, overwrite=True)
@@ -134,14 +138,19 @@ def test_only_aligned_and_cleaned_exposures_get_a_working_copy(root):
     d = ir.filter_dir('f160w')
     good = _stamped(f'{d}/iczgo2aaq_flt.fits', CFP_ALGN='fit=rigid rc=abc')
     _stamped(f'{d}/iczgo2abq_flt.fits', CFP_ALGN=cfp.NOT_ALIGNED)
-    _stamped(f'{d}/iczgo2acq_flt.fits', CFP_SKY='1.0')
+    _stamped(f'{d}/iczgo2acq_flt.fits')
+    # aligned, but its background is still in the pixels
+    _stamped(f'{d}/iczgo2adq_flt.fits', bkg=False, CFP_ALGN='fit=rigid rc=abc')
     paths, held = ir.materialize_work('f160w')
     assert [os.path.basename(p) for p in paths] == ['iczgo2aaq_flt.fits']
     assert sorted(reason for _, reason in held) == [
-        'alignment failed (NOT_ALIGNED)', 'not aligned yet']
-    # everything that has pixels can be forced in
+        'alignment failed (NOT_ALIGNED)',
+        'background not subtracted yet (bkg has not run)', 'not aligned yet']
+    # an unaligned exposure can be forced in; one with its background cannot
     paths, held = ir.materialize_work('f160w', include_unaligned=True)
-    assert len(paths) == 3 and not held
+    assert len(paths) == 3
+    assert [reason for _, reason in held] == [
+        'background not subtracted yet (bkg has not run)']
     # and a copy of an exposure that is no longer ready is removed again
     paths, _ = ir.materialize_work('f160w')
     assert os.listdir(ir.filter_dir('f160w', work=True)) == ['iczgo2aaq_flt.fits']

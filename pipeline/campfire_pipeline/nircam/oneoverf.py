@@ -303,27 +303,6 @@ def fit_residual_striping(
 # VAR_RNOISE rescale (moved from steps/variance.py:72-88)
 # ---------------------------------------------------------------------------
 
-def variance_rescale(sci, var_rnoise, mask, block_size):
-    """Return the factor that rescales ``VAR_RNOISE`` to the measured sky variance.
-
-    Block-reduces SCI and VAR_RNOISE, measures the sky variance
-    (``biweight_midvariance``) and the mean VAR_RNOISE (``biweight_location``)
-    over unmasked bins, and returns ``skyvar / masked_mean_var_rnoise``. The
-    caller multiplies ``VAR_RNOISE`` by this factor. Identical math to the
-    retired ``variance_step``.
-    """
-    block_mask = block_reduce(mask, block_size)
-    block_mask_bool = block_mask != 0
-
-    block_sci = block_reduce(sci, block_size)
-    unmasked_bins = block_sci[block_mask_bool == 0]
-    variance = biweight_midvariance(unmasked_bins)
-    skyvar = variance / block_size ** 2
-
-    block_var_rnoise = block_reduce(var_rnoise, block_size)
-    unmasked_bins = block_var_rnoise[block_mask_bool == 0]
-    masked_mean_var_rnoise = (
-        biweight_location(unmasked_bins) / block_size ** 2
-    )
-
-    return float(skyvar / masked_mean_var_rnoise)
+# The rule lives with the shared chain (the HST instruments apply it too);
+# imported here under the name this module has always exported.
+from campfire_pipeline.imaging.bkg_chain import variance_rescale  # noqa: E402,F401

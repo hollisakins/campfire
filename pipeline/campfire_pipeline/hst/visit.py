@@ -12,7 +12,7 @@ the transmission source (HST Data Handbooks, "HST File Names"). The first six
 characters therefore name one visit of one program on one instrument.
 
 ``process_visit`` runs the per-visit chain on calibrated exposures in the order
-``wcs_init`` -> ``sky`` -> ``crreject`` -> ``align``. Every step is idempotent
+``wcs_init`` -> ``crreject`` -> ``bkg`` -> ``align``. Every step is idempotent
 through its step stamp, so the chain can be re-run after an interruption.
 """
 
@@ -66,9 +66,9 @@ def group_visits(files):
 
 def process_visit(visit, refcat=None, *, reference_env=None, config=None,
                   refcat_hash=None, overwrite=False):
-    """Run ``wcs_init``, ``sky``, ``crreject`` and ``align`` on one visit.
+    """Run ``wcs_init``, ``crreject``, ``bkg`` and ``align`` on one visit.
 
-    ``config`` holds one optional table per step (``sky``, ``crreject``,
+    ``config`` holds one optional table per step (``crreject``, ``bkg``,
     ``align``). ``reference_env`` is the ``{'jref': dir}`` / ``{'iref': dir}``
     mapping ``wcs_init`` needs. With ``refcat=None`` the visit is not aligned.
 
@@ -82,13 +82,12 @@ def process_visit(visit, refcat=None, *, reference_env=None, config=None,
     """
     from campfire_pipeline.hst.steps.align import align_visit
     from campfire_pipeline.hst.steps.crreject import crreject_step
-    from campfire_pipeline.hst.steps.sky import sky_step
+    from campfire_pipeline.hst.steps.bkg import bkg_step
     from campfire_pipeline.hst.steps.wcs_init import wcs_init_step
 
     cfg = config or {}
     for f in visit.files:
         wcs_init_step(f, reference_env=reference_env, overwrite=overwrite)
-        sky_step(f, step_config=cfg.get('sky'), overwrite=overwrite)
 
     ready = True
     if len(visit.files) >= 2:
@@ -103,6 +102,10 @@ def process_visit(visit, refcat=None, *, reference_env=None, config=None,
         cosmic_rays = 'single'
         log(f'visit {visit.key}: a single {visit.instrument} exposure, cleaned '
             f'from its own pixels')
+
+    # the background, once the cosmic-ray flags are in
+    for f in visit.files:
+        bkg_step(f, step_config=cfg.get('bkg'), overwrite=overwrite)
 
     status = None
     if refcat is not None:

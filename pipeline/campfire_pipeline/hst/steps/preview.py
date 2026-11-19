@@ -59,8 +59,9 @@ def snr_canvas(exposure_file):
                     else c.tolerated_bits)
             good = ((dq & ~np.int64(bits)) == 0) & np.isfinite(sci) \
                 & np.isfinite(err) & (err > 0)
-            sky = c.header_sky
-            if sky is None:
+            if c.bkg_level is not None:
+                sky = 0.0                # the bkg step has subtracted it
+            else:
                 sky = float(np.median(sci[good])) if good.any() else 0.0
             with np.errstate(divide='ignore', invalid='ignore'):
                 snr = np.where(good, (sci - sky) / err, 0.0)

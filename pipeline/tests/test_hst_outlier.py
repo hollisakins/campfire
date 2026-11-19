@@ -10,7 +10,7 @@ import pytest
 from astropy.io import fits
 
 from campfire_pipeline.common import cfp
-from campfire_pipeline.hst.exposure import OUTLIER_EXT, SKY_KEY, open_exposure
+from campfire_pipeline.hst.exposure import BKG_KEY, OUTLIER_EXT, open_exposure
 from campfire_pipeline.hst.steps.outlier import outlier_step
 
 _NY = _NX = 80
@@ -25,10 +25,13 @@ def _ir_file(path, root, crpix, rng, aligned='fit=rigid pool=visit', mjd=None):
                            'FILTER': 'F160W', 'EXPTIME': _T})
     if mjd is not None:
         primary.header.update({'EXPSTART': mjd, 'EXPEND': mjd + _T / 86400.0})
+    for key, val in cfp.format(keyset=cfp.HST, CFP_BKG='n_iter=3').items():
+        primary.header[key] = val
     if aligned is not None:
         for key, val in cfp.format(keyset=cfp.HST, CFP_ALGN=aligned).items():
             primary.header[key] = val
-    sci = (_SKY + rng.normal(0, _SIGMA, (_NY, _NX))).astype('float32')
+    # as the bkg step leaves it: the background out of SCI, its level recorded
+    sci = rng.normal(0, _SIGMA, (_NY, _NX)).astype('float32')
     err = np.full((_NY, _NX), _SIGMA, 'float32')
     s = 0.128 / 3600.0
     hdus = []
@@ -42,7 +45,7 @@ def _ir_file(path, root, crpix, rng, aligned='fit=rigid pool=visit', mjd=None):
                 'CD1_1': -s, 'CD1_2': 0.0, 'CD2_1': 0.0, 'CD2_2': s,
                 'A_ORDER': 2, 'B_ORDER': 2, 'A_2_0': 0.0, 'B_0_2': 0.0,
                 'BUNIT': 'ELECTRONS/S', 'PHOTFNU': 1.5e-07, 'IDCSCALE': 0.128,
-                'WCSNAME': 'IDC_test-CFALIGN', SKY_KEY: _SKY})
+                'WCSNAME': 'IDC_test-CFALIGN', BKG_KEY: _SKY})
         hdus.append(hdu)
     hdus.append(fits.ImageHDU(data=np.full((_NY, _NX), _T, 'float32'), name='TIME', ver=1))
     fits.HDUList([primary] + hdus).writeto(path)

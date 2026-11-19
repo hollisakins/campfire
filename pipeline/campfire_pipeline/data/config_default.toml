@@ -1239,11 +1239,65 @@
     # the intermediate files) next to it.
     keep_intermediates = false
 
-[acswfc.sky]
-    # Source mask for the sky and amplifier-offset measurement: threshold in
-    # sigma, and the number of pixels the mask is grown by.
-    mask_nsigma = 3.0
-    mask_grow = 3
+[acswfc.bkg]
+    # The per-exposure background step: the chain of [nircam.bkg] (source
+    # mask, conditioning detrend, pedestal per amplifier, applied 2-D
+    # background, variance scale; imaging/bkg_chain.py), without NIRCam's 1/f
+    # readout terms, which a CCD exposure out of calacs does not have. The
+    # result is subtracted from SCI. Every value below is [nircam.bkg]'s
+    # unless a comment says why it differs; see that block for what each one
+    # does and how it was chosen.
+    n_iterations = 3
+    plot = true
+    subtract_2d = true
+    # Lengths below are angular scales written in pixels of 30 mas, as in
+    # [nircam.bkg]; they are multiplied by this, 30 mas / 50 mas.
+    pixel_scale_factor = 0.6
+
+    [acswfc.bkg.mask]
+        ring_radius_in = 80
+        ring_width = 4
+        ring_downsample = 4
+        ring_clip_max_sigma = 5.0
+        ring_clip_box_size = 100
+        ring_clip_filter_size = 3
+        tier_kernel_size = [25, 15, 5, 2]
+        tier_npixels = [15, 10, 3, 1]
+        tier_nsigma = [1.5, 1.5, 1.5, 1.5]
+        tier_dilate_size = [33, 25, 21, 19]
+
+    [acswfc.bkg.pedestal]
+        # "per_amp": one level per amplifier (the two halves of a full-frame
+        # chip; calacs leaves an offset of a few tenths of a DN between them).
+        # "frame": one level per chip.
+        scope = "per_amp"
+        sigma = 3.0
+        maxiters = 3
+
+    [acswfc.bkg.variance]
+        block_size = 7
+
+    [acswfc.bkg.detrend]
+        # The conditioning detrend in its square form (NIRCam's box_size_x = 0
+        # mode, 256 px at 30 mas). NIRCam's default is anisotropic, 96 rows by
+        # 32 columns, a shape chosen for its row banding; a CCD has none.
+        enabled = true
+        box_size = 256
+        filter_size = 3
+        sigma = 3.0
+        exclude_percentile = 90
+
+    [acswfc.bkg.bkg2d]
+        box_size = 32
+        filter_size = 3
+        sigma = 3.0
+        exclude_percentile = 90
+        extra_dilate = 20
+        reject = false
+        reject_sigma_hi = 4.0
+        reject_sigma_lo = 3.0
+        reject_percentile = 60.0
+        reject_dilate = 40
 
 [acswfc.trails]
     # Satellite trails, found per chip with the STScI finder
@@ -1484,9 +1538,61 @@
     # no nthreads here). Keep the per-read IMA file next to the canonical FLT.
     keep_intermediates = false
 
-[wfc3ir.sky]
-    mask_nsigma = 3.0
-    mask_grow = 3
+[wfc3ir.bkg]
+    # The per-exposure background step: the chain of [nircam.bkg] without its
+    # 1/f readout terms (calwf3 has used the reference pixels). The result is
+    # subtracted from SCI. Every value below is [nircam.bkg]'s unless a
+    # comment says why it differs.
+    n_iterations = 3
+    plot = true
+    subtract_2d = true
+    # Lengths below are angular scales written in pixels of 30 mas; they are
+    # multiplied by this, 30 mas / 128 mas.
+    pixel_scale_factor = 0.234
+
+    [wfc3ir.bkg.mask]
+        ring_radius_in = 80
+        ring_width = 4
+        # NIRCam's 4 is a speed setting for a 2048-pixel detector with an
+        # 80-pixel ring; here the ring is 19 pixels on a 1014-pixel detector.
+        ring_downsample = 1
+        ring_clip_max_sigma = 5.0
+        ring_clip_box_size = 100
+        ring_clip_filter_size = 3
+        tier_kernel_size = [25, 15, 5, 2]
+        tier_npixels = [15, 10, 3, 1]
+        tier_nsigma = [1.5, 1.5, 1.5, 1.5]
+        tier_dilate_size = [33, 25, 21, 19]
+
+    [wfc3ir.bkg.pedestal]
+        # One level for the detector ("per_amp" and "frame" are the same here:
+        # WFC3/IR is treated as one region).
+        scope = "per_amp"
+        sigma = 3.0
+        maxiters = 3
+
+    [wfc3ir.bkg.variance]
+        block_size = 7
+
+    [wfc3ir.bkg.detrend]
+        # Square form, as for ACS/WFC (see [acswfc.bkg.detrend]).
+        enabled = true
+        box_size = 256
+        filter_size = 3
+        sigma = 3.0
+        exclude_percentile = 90
+
+    [wfc3ir.bkg.bkg2d]
+        box_size = 32
+        filter_size = 3
+        sigma = 3.0
+        exclude_percentile = 90
+        extra_dilate = 20
+        reject = false
+        reject_sigma_hi = 4.0
+        reject_sigma_lo = 3.0
+        reject_percentile = 60.0
+        reject_dilate = 40
 
 [wfc3ir.crreject]
     # Looser than ACS/WFC: the up-the-ramp fit has already removed most hits.

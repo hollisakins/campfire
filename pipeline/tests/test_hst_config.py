@@ -13,7 +13,7 @@ from campfire_pipeline.nircam.orchestrate import (check_align_config,
                                                   field_refcat_name)
 
 _DETECTORS = ('acswfc', 'wfc3ir')
-_STEPS = ('sky', 'crreject', 'align', 'outlier')
+_STEPS = ('bkg', 'crreject', 'align', 'outlier')
 
 
 def test_every_step_of_every_detector_has_its_block():
@@ -64,7 +64,7 @@ def test_user_config_and_field_overrides_take_precedence():
 
 def test_an_unknown_detector_is_refused():
     with pytest.raises(KeyError, match='wfc3uvis'):
-        get_hst_step_config('sky', 'wfc3uvis')
+        get_hst_step_config('bkg', 'wfc3uvis')
     with pytest.raises(KeyError, match='not an HST instrument'):
         get_hst_step_config('align', 'nircam')          # an instrument, not HST's
 

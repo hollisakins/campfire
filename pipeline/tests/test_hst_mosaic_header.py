@@ -22,9 +22,9 @@ def _two_exposures(tmp_path):
     """Two ACS/WFC exposures (four chips) at the same place, a day apart."""
     a = str(tmp_path / 'jtest01aaq_flc.fits')
     b = str(tmp_path / 'jtest02bbq_flc.fits')
-    _acs_file(a, sky_key=0.0, primary_extra={
+    _acs_file(a, bkg_key=0.0, primary_extra={
         'EXPSTART': 59119.25, 'EXPEND': 59119.255, 'CRDS_CTX': 'hst_1372.pmap'})
-    _acs_file(b, sky_key=0.0, primary_extra={
+    _acs_file(b, bkg_key=0.0, primary_extra={
         'ROOTNAME': 'jtest02bbq', 'PROPOSID': 9822,
         'EXPSTART': 59120.50, 'EXPEND': 59120.505,
         # calibrated before the context had its own card: the stamp names it
@@ -64,7 +64,7 @@ def test_cards_count_an_exposure_once_and_name_the_instrument(tmp_path):
 
 def test_time_cards_are_left_out_when_an_input_has_no_times(tmp_path):
     path = str(tmp_path / 'jtest01aaq_flc.fits')
-    _acs_file(path, sky_key=0.0)                         # no EXPSTART / EXPEND
+    _acs_file(path, bkg_key=0.0)                         # no EXPSTART / EXPEND
     primary, sci = HstChip.mosaic_header(open_exposure(path))
     keys = {k for k, _v, _c in primary} | {k for k, _v, _c in sci}
     assert not keys & {'EXPSTART', 'EXPEND', 'MJD-BEG', 'MJD-END', 'TELAPSE', 'DATE-OBS'}

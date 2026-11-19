@@ -127,6 +127,73 @@ def _transfer_flags(canonical, masks):
     return counts
 
 
+def _restore_background(work_copy):
+    """Put the background level back into a working copy of an exposure.
+
+    The noise model of cosmic-ray rejection is Poisson: it needs the counts
+    with their background. The step normally runs before ``bkg``; when it is
+    run again on an exposure whose background has been subtracted, the level
+    the ``bkg`` step recorded (``CFBKG``, one number per chip) is added back
+    to the copy this step works on. The canonical file is not touched.
+    """
+    from campfire_pipeline.hst.exposure import BKG_KEY
+
+    with fits.open(work_copy, mode='update', memmap=False) as hdul:
+        for hdu in hdul:
+            if hdu.name == 'SCI' and BKG_KEY in hdu.header:
+                hdu.data = (hdu.data + float(hdu.header[BKG_KEY])).astype(
+                    hdu.data.dtype)
+                del hdu.header[BKG_KEY]
+
+
+def _level_background(work_copy, bkg_config):
+    """Take the shape of the background out of a working copy, keeping its level.
+
+    The exposures of a visit are compared with their median. A light pattern
+    that belongs to one exposure (scattered earthlight on a third of the
+    WFC3/IR detector, up to 0.5 e-/s over a background of 0.8) stands above
+    that median over its whole area, and the comparison flags pixels all
+    across it: 3.5 percent of one macs0647 F140W exposure, against 0.4 percent
+    of a clean exposure of the same visit. So each copy gets a coarse 2-D
+    background fitted, and the fit minus its median subtracted: the copy is
+    level, and still at its own counts, which the noise model needs.
+
+    The fit is the conditioning detrend of the ``bkg`` step (``[<instrument>.
+    bkg.detrend]``, a clipped estimate in large boxes), with only the unusable
+    pixels masked: it has to work on a CCD exposure that is still covered in
+    cosmic rays, where the source mask of the real background step would
+    blank most of the frame. It is used for the comparison alone. The
+    exposure itself is not touched; the ``bkg`` step runs on it afterwards,
+    with the cosmic-ray flags in.
+    """
+    from campfire_pipeline.imaging.bkgsub import SubtractBackground
+
+    det = bkg_config['detrend']
+    if not bool(det['enabled']):
+        return
+    box = max(1, int(round(det['box_size'] * float(bkg_config['pixel_scale_factor']))))
+    filt = det['filter_size']
+    fitter = SubtractBackground(
+        bg_box_size=box,
+        bg_filter_size=tuple(filt) if isinstance(filt, list) else filt,
+        bg_sigma=det['sigma'], bg_exclude_percentile=det['exclude_percentile'],
+        bg_reject=False)
+    chips = {c.extver: c for c in open_exposure(work_copy)}
+    with fits.open(work_copy, mode='update', memmap=False) as hdul:
+        for v, chip in chips.items():
+            sci = np.asarray(hdul['SCI', v].data, dtype=np.float64)
+            dq = np.asarray(hdul['DQ', v].data).astype(np.int64)
+            # a cosmic-ray bit from an earlier run is not a reason to mask:
+            # this run sets it again
+            bad = ((dq & ~np.int64(chip.detector.tolerated_bits | CR_BIT)) != 0) \
+                | ~np.isfinite(sci)
+            if (~bad).sum() < 100:
+                continue
+            model = fitter.estimate_background(sci, bad).background
+            shape = model - float(np.median(model[~bad]))
+            hdul['SCI', v].data = (sci - shape).astype(hdul['SCI', v].data.dtype)
+
+
 def single_exposure_masks(exposure_file, params):
     """Cosmic-ray masks of one CCD exposure from its own pixels.
 
@@ -164,6 +231,9 @@ def single_exposure_masks(exposure_file, params):
         for chip in chips:
             v = chip.extver
             sci = np.asarray(hdul['SCI', v].data, dtype=np.float32)
+            if chip.bkg_level is not None:
+                # run again after bkg: the counts with their background
+                sci = sci + np.float32(chip.bkg_level)
             dq = np.asarray(hdul['DQ', v].data).astype(np.int64)
             bad = ((dq & ~np.int64(chip.detector.tolerated_bits | CR_BIT)) != 0) \
                 | ~np.isfinite(sci)
@@ -231,11 +301,14 @@ def crreject_single_step(exposure_file, step_config=None, overwrite=False):
     return sum(counts)
 
 
-def crreject_step(exposure_files, step_config=None, overwrite=False):
+def crreject_step(exposure_files, step_config=None, overwrite=False,
+                  bkg_config=None):
     """Flag cosmic rays in the exposures of one visit and filter.
 
     ``exposure_files`` are canonical files of one detector and filter that
-    overlap on the sky. Returns ``{path: flagged pixel count}``, or ``None``
+    overlap on the sky. ``bkg_config`` is the field's ``bkg`` step table (the
+    working copies are leveled with its conditioning detrend,
+    :func:`_level_background`); ``None`` takes the shipped one. Returns ``{path: flagged pixel count}``, or ``None``
     when every file already carries ``CFP_CR`` and ``overwrite`` is not set.
     A single exposure cannot be treated this way and raises ``ValueError``
     (:func:`crreject_single_step` is for that).
@@ -259,6 +332,7 @@ def crreject_step(exposure_files, step_config=None, overwrite=False):
     token = tokens.pop()
     first = chips[files[0]][0]
     params = get_hst_step_config('crreject', token, overrides=step_config)
+    bkg_cfg = get_hst_step_config('bkg', token, overrides=bkg_config)
     bits = first.detector.tolerated_bits
 
     from drizzlepac import astrodrizzle
@@ -271,6 +345,8 @@ def crreject_step(exposure_files, step_config=None, overwrite=False):
         for f in files:
             shutil.copyfile(f, os.path.join(work, os.path.basename(f)))
             names.append(os.path.basename(f))
+            _restore_background(os.path.join(work, os.path.basename(f)))
+            _level_background(os.path.join(work, os.path.basename(f)), bkg_cfg)
         os.chdir(work)
         # AstroDrizzle prints several hundred lines per visit. They go to a
         # file in the work directory; its end is shown only if the run fails.

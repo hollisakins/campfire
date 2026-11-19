@@ -133,12 +133,13 @@ HST = Keyset(
     keys=[
         'CFP_CAL',   # calibration: calacs / calwf3 at a pinned context, or archive
         'CFP_WCS',   # distortion model written into the headers (stwcs)
-        'CFP_SKY',   # per-chip sky, ACS amplifier offsets, variance scale
         'CFP_TRL',   # satellite trails flagged in DQ (ACS/WFC)
         # crreject runs before align (align detects on the cleaned pixels), so
         # a reset from crreject clears the alignment as well. The preview
         # shows the pixels left after the flags, so it is cleared with them.
         'CFP_CR',    # cosmic-ray flags (per visit)
+        # after the cosmic-ray flags, as NIRCam's bkg follows its jump flags
+        'CFP_BKG',   # per-exposure background subtracted, variance scale
         'CFP_PERS',  # persistence flagged in DQ from the archive's prediction
                      # (WFC3/IR)
         'CFP_PREV',  # preview PNG
@@ -149,7 +150,7 @@ HST = Keyset(
     comments={
         'CFP_CAL':  'campfire: calibration source, version, context',
         'CFP_WCS':  'campfire: distortion WCS written',
-        'CFP_SKY':  'campfire: sky, amp offsets, variance scale',
+        'CFP_BKG':  'campfire: background subtracted, variance scale',
         'CFP_TRL':  'campfire: satellite trails flagged',
         'CFP_ALGN': 'campfire: align solve',
         'CFP_CR':   'campfire: cosmic rays flagged',

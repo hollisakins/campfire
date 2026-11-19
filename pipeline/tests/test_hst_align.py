@@ -68,6 +68,7 @@ def _exposure(path, rootname, dither, rng, sky_sources, extra=(0.0, 0.0)):
             if -5 < xs < _NX + 5 and -5 < ys < _NY + 5:
                 sci += f * np.exp(-0.5 * ((xx - xs) ** 2 + (yy - ys) ** 2) / 1.1 ** 2)
         err = np.sqrt(np.clip(sci, 0, None) + 16.0)
+        sci -= 50.0          # as the bkg step leaves it (CFBKG below)
         for name, data in (('SCI', sci.astype('float32')),
                            ('ERR', err.astype('float32')),
                            ('DQ', np.zeros((_NY, _NX), 'int16'))):
@@ -77,7 +78,7 @@ def _exposure(path, rootname, dither, rng, sky_sources, extra=(0.0, 0.0)):
                                          extra=extra))
                 hdu.header.update({'BUNIT': 'ELECTRONS', 'PHOTFLAM': 7.0e-20,
                                    'PHOTPLAM': 8045.0, 'IDCSCALE': 0.05,
-                                   'WCSNAME': 'IDC_test', 'CFSKY': 50.0})
+                                   'WCSNAME': 'IDC_test', 'CFBKG': 50.0})
             hdul.append(hdu)
     hdul.writeto(path)
     return crval

@@ -56,14 +56,14 @@ def field(tmp_path, monkeypatch):
 
 
 def _exposure(directory, root, seed=5, mjd=57000.0, star=None):
-    """A calibrated exposure through the sky step, of program 12101; ``star``
+    """A calibrated exposure through the bkg step, of program 12101; ``star``
     is a pixel (y, x) that collects 100 000 electrons."""
     os.makedirs(directory, exist_ok=True)
     path = _ir_file(os.path.join(directory, f'{root}_flt.fits'), root,
                     (40.0, 40.0), np.random.default_rng(seed), mjd=mjd)
     with fits.open(path, mode='update') as hdul:
         hdul[0].header['PROPOSID'] = PROPOSAL
-        for key, val in cfp.format(keyset=cfp.HST, CFP_SKY=None).items():
+        for key, val in cfp.format(keyset=cfp.HST, CFP_BKG=None).items():
             hdul[0].header[key] = val
         if star is not None:
             hdul['SCI', 1].data[star] = 100000.0 / hdul[0].header['EXPTIME']

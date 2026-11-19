@@ -70,10 +70,9 @@ from datetime import datetime
 
 import numpy as np
 from astropy.io import fits
-from scipy.ndimage import distance_transform_edt
-
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
+from campfire_pipeline.imaging.bkg_chain import run_chain, scale_mask_config
 from campfire_pipeline.nircam.bkgsub import SubtractBackground
 from campfire_pipeline.nircam import oneoverf
 
@@ -81,27 +80,9 @@ from campfire_pipeline.nircam import oneoverf
 # Mask parameters are angular scales in pixels, tuned at 30 mas; rescale per
 # channel (SW native ≈31 mas → 1.0; LW native ≈63 mas → 0.5) to hold the
 # angular scale fixed. Linear lengths × f, area counts × f², rest unchanged.
-_MASK_LINEAR = ('ring_radius_in', 'ring_width', 'ring_clip_box_size')
-_MASK_LINEAR_LIST = ('tier_kernel_size', 'tier_dilate_size')
-_MASK_AREA_LIST = ('tier_npixels',)
-
-
 def _scale_mask_config(mask_cfg, channel, factors):
     """Return a copy of ``mask_cfg`` with length params scaled for ``channel``."""
-    f = float(factors.get(channel, 1.0))
-    out = {k: v for k, v in mask_cfg.items()}
-    if f == 1.0:
-        return out
-    for k in _MASK_LINEAR:
-        if k in out:
-            out[k] = type(out[k])(out[k] * f)
-    for k in _MASK_LINEAR_LIST:
-        if k in out:
-            out[k] = [max(1, int(round(v * f))) for v in out[k]]
-    for k in _MASK_AREA_LIST:
-        if k in out:
-            out[k] = [max(1, int(round(v * f * f))) for v in out[k]]
-    return out
+    return scale_mask_config(mask_cfg, factors.get(channel, 1.0))
 
 
 def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
@@ -322,22 +303,13 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
                 dq_bits |= dqflags.pixel[bit]
         dq_fit = np.bitwise_and(dq, dq_bits) != 0
 
-        resid = sci0.astype(np.float64, copy=True)
-        correction = np.zeros_like(resid)
-        srcmask = None
-        srcbits = None
         ks_last = ''
         ampc_last = ''
-        if components_out is not None:
-            for k in ('ped', 'vcol', 'h', 'b2d'):
-                components_out[k] = np.zeros_like(resid)
 
-        for it in range(n_iter):
+        # The loop itself is imaging/bkg_chain.run_chain, shared with the HST
+        # instruments; the comments below describe its stages in order.
             # (1) SOURCE MASK — rebuilt on the running residual (sharpens as the
             #     frame flattens). mask_from_arrays = mask only, no 2-D bg.
-            if srcmask is None or remask:
-                srcmask, srcbits = sb.mask_from_arrays(resid, err, dq)
-            fitmask = srcmask | dq_fit
 
             # Optional grown fit mask for the 1/f terms ONLY
             # ([nircam.bkg.striping].extra_dilate): the amp-row medians are
@@ -350,37 +322,6 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
             # rho_long is for), reverting to the per-amp DC where nothing
             # anchors — i.e. leaving the halo alone. Detrend, pedestal and
             # the applied 2-D fit keep their own masks.
-            if strp_extra_dilate > 0:
-                src_only_1f = (srcbits >> 1) != 0
-                if strp_min_area > 0:
-                    # grow only the large footprints (the artifact drivers);
-                    # see the config-parse comment for why growing all tiers
-                    # backfires
-                    from scipy.ndimage import label as ndi_label
-                    lab, nlab = ndi_label(src_only_1f)
-                    if nlab:
-                        areas = np.bincount(lab.ravel())
-                        keep = areas >= strp_min_area * f2 * f2
-                        keep[0] = False
-                        src_only_1f = keep[lab]
-                if src_only_1f.any():
-                    grown_1f = (distance_transform_edt(~src_only_1f)
-                                <= strp_extra_dilate * f2)
-                    fitmask_1f = fitmask | grown_1f
-                else:
-                    # Nothing selected to grow — either no source tiers at all
-                    # or extra_dilate_min_area filtered every component out.
-                    # `distance_transform_edt` measures the distance to the
-                    # nearest ZERO, so on an all-True input it has no seed and
-                    # returns distances measured from OUTSIDE the array: a 256²
-                    # frame yields min 1.0 / max 361, and `<= extra_dilate`
-                    # then masks a border-and-corner band (314 px at 20 px
-                    # dilation) that no source put there. Those are exactly the
-                    # edge amp-row anchors, so it would degrade the 1/f fit on
-                    # the emptiest frames — the ones with the least to spare.
-                    fitmask_1f = fitmask
-            else:
-                fitmask_1f = fitmask
 
             # (2) CONDITIONING DETREND — fit-only, zero-median structure
             #     model. Subtracted from the *measurement copies* below so
@@ -398,20 +339,9 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
             #     the per-amp h term as per-amp ramps — the within-amp
             #     top/bottom gradient pathology (diagnosed on rj0911 F444W
             #     NRCB, 2026-07-17, via the component harness).
-            if detrend_on:
-                det = sb_det.estimate_background(
-                    resid, fitmask).background.astype(resid.dtype)
-                good = ~fitmask & np.isfinite(resid)
-                det_struct = det - (float(np.median(det[good]))
-                                    if good.any() else 0.0)
-            else:
-                det_struct = 0.0
-            cond = resid - det_struct
 
             # (3) PEDESTAL — owns the DC (skymatch, §4.5), measured on the
             #     conditioned residual so per-amp stays gradient-safe
-            ped, _ = pedestal_fn(cond, fitmask,
-                                 sigma=ped_sigma, maxiters=maxiters)
 
             # (4) APPLIED smooth background (subtract_2d) — the sky-match /
             #     ICL subtraction, with the source tiers grown by
@@ -427,26 +357,21 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
             #     on the striping-corrected residual anyway.
             #     fit_order='last' is the legacy order: fit on the
             #     1/f-corrected residual, after the amp-row terms.
-            b2d = 0.0
-            if subtract_2d:
-                src_only = (srcbits >> 1) != 0
-                if b2d_extra_dilate > 0:
-                    grown = (distance_transform_edt(~src_only)
-                             <= b2d_extra_dilate)
-                else:
-                    grown = src_only
-                b2d_mask = srcmask | grown | dq_fit
-                if b2d_order == 'first':
-                    b2d = sb.estimate_background(
-                        resid - ped, b2d_mask).background.astype(resid.dtype)
 
             # (5) VERTICAL + HORIZONTAL 1/f, on the conditioned residual
             #     (additionally minus the applied 2-D model when fit first —
             #     b2d is 0.0 in the legacy order at this point)
-            meas = cond - ped - b2d
+
+        def _pedestal(image, mask):
+            ped, _ = pedestal_fn(image, mask, sigma=ped_sigma,
+                                 maxiters=maxiters)
+            return ped
+
+        def _striping(meas, fitmask_1f, det_struct):
+            nonlocal ks_last, ampc_last
             if estimator == 'none':
-                vcol = np.zeros_like(resid)
-                h = np.zeros_like(resid)
+                vcol = np.zeros_like(meas)
+                h = np.zeros_like(meas)
             elif estimator == 'gp':
                 from campfire_pipeline.nircam.gp_striping import gp_amprow_offsets
                 vcol = oneoverf.column_pattern(meas, fitmask_1f, maxiters)
@@ -483,25 +408,25 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
                 h, vcol, ampc, _ = oneoverf.fit_residual_striping(
                     meas, fitmask_1f, maxiters, estimator='median')
                 ampc_last = ','.join(ampc)
+            return vcol, h
 
             # (6) legacy fit_order='last': applied fit on the 1/f-corrected
             #     residual. Whatever the amp-row terms absorbed above is
             #     invisible to this fit — the reason 'first' exists.
-            if subtract_2d and b2d_order == 'last':
-                b2d = sb.estimate_background(
-                    resid - ped - vcol - h, b2d_mask
-                ).background.astype(resid.dtype)
 
-            step = ped + vcol + h + b2d
-            resid -= step
-            correction += step
-            if components_out is not None:
-                components_out['ped'] += ped
-                components_out['vcol'] += vcol
-                components_out['h'] += h
-                components_out['b2d'] += b2d
-                components_out['det_struct'] = (
-                    det_struct if detrend_on else np.zeros_like(resid))
+        chain = run_chain(
+            sci0, err, dq, dq_fit, sb=sb,
+            sb_det=sb_det if detrend_on else None,
+            n_iter=n_iter, remask=remask, pedestal_fn=_pedestal,
+            striping_fn=_striping, subtract_2d=subtract_2d,
+            b2d_order=b2d_order,
+            b2d_extra_dilate=b2d_extra_dilate if subtract_2d else 0.0,
+            strp_extra_dilate=strp_extra_dilate, strp_min_area=strp_min_area,
+            f2=f2, components_out=components_out)
+        resid = chain['resid']
+        correction = chain['correction']
+        srcmask = chain['srcmask']
+        det_struct = chain['det_struct']
 
         # (7) VARIANCE rescale on the final mask. Measure the sky variance on
         #     the *conditioned* corrected residual (resid - det_struct): when

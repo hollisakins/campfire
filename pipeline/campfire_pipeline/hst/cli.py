@@ -30,8 +30,8 @@ from campfire_pipeline.common.io import log
 
 NAMES = {'acswfc': 'ACS/WFC', 'wfc3ir': 'WFC3/IR'}
 
-_LABELS = {'calibrate': 'cal', 'wcs_init': 'wcs', 'sky': 'sky',
-           'trails': 'trl', 'crreject': 'cr', 'persist': 'pers',
+_LABELS = {'calibrate': 'cal', 'wcs_init': 'wcs',
+           'trails': 'trl', 'crreject': 'cr', 'bkg': 'bkg', 'persist': 'pers',
            'preview': 'prev',
            'align': 'algn', 'apply_masks': 'mask', 'outlier': 'out'}
 

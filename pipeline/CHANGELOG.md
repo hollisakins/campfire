@@ -96,10 +96,8 @@ Release procedure: edit the `## Unreleased` section below, then run
   docs/hst/design.md section 8b. Also: an `HST` step-stamp key set in `common/cfp.py`,
   `hst/steps/wcs_init.py` (distortion model into the headers with `stwcs.updatewcs`,
   no astrometry database, reference variables scoped to the call) and
-  `hst/steps/sky.py` (per-chip sky recorded as `CFSKY`, ACS amplifier offsets removed
-  from the pixels, and `CFVARSC`, the ratio of measured sky variance to the `ERR`
-  model, which the adapter applies to its background variance for ACS/WFC and only
-  records for WFC3/IR, where neighboring pixels are correlated),
+  `hst/steps/bkg.py` (the per-exposure background, NIRCam's chain; see the `bkg`
+  entry below),
   `hst/steps/calibrate.py` (RAW to canonical FLC/FLT with `crds bestrefs` at a pinned
   HST context and `calacs` / `calwf3`, the HST CRDS and reference variables confined to
   the subprocesses) and `hst/steps/crreject.py` (AstroDrizzle's `minmed` / `driz_cr`
@@ -126,7 +124,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   step passes on).
   HST detection uses the background-only error and drops sources on saturated pixels
   (both found on real data, docs/hst/design.md section 8b). `hst/visit.py` groups
-  exposures into visits and runs the per-visit chain (`wcs_init`, `sky`, `crreject`,
+  exposures into visits and runs the per-visit chain (`wcs_init`, `crreject`, `bkg`,
   `align`). `imaging/outlier.py` and `hst/steps/outlier.py` add the field-level outlier
   pass: every aligned exposure of a detector and filter is compared with all that
   overlap it (single drizzles, a median that takes the minimum where two or three
@@ -169,8 +167,8 @@ Release procedure: edit the `## Unreleased` section below, then run
   command instead of by the option parser, with the same effect.
 - **New command groups `cfpipe acswfc` and `cfpipe wfc3ir`: HST imaging from RAW
   to mosaics on the field's tiles.** The NIRCam command set per HST instrument:
-  `process` (calibrate, wcs_init, sky, trails on ACS/WFC, crreject, preview,
-  align), `combine` (apply_masks, then the outlier pass visit by visit and
+  `process` (calibrate, wcs_init, trails on ACS/WFC, crreject, bkg, persist on
+  WFC3/IR, preview, align), `combine` (apply_masks, then the outlier pass visit by visit and
   resample on working copies), `run`, one command per step, `status`, `check`,
   `reset`. A field declares an instrument's
   exposures in `fields.toml` as `[<field>.acswfc]` / `[<field>.wfc3ir]` with
@@ -205,9 +203,35 @@ Release procedure: edit the `## Unreleased` section below, then run
   section 8b). The HST `align` step warns when the field's reference catalog
   carries no proper motions: in that comparison the stars of such a catalog
   pulled the alignment by 6 mas over a 19 year baseline.
+- **HST `bkg` step: NIRCam's per-exposure background chain, one code path.** The loop
+  of the NIRCam `bkg` step (source mask, conditioning detrend, pedestal per amplifier,
+  applied 2-D background, readout terms) is now `imaging/bkg_chain.run_chain`, called
+  by `nircam/steps/bkg.py` and by the new `hst/steps/bkg.py`; the variance rule
+  (`variance_rescale`) and the pixel-scale rule for mask lengths moved with it.
+  NIRCam pixels are unchanged (the step before and after gives identical arrays and
+  the same stamp on a real F150W exposure; `test_nircam_bkg.py` passes). The HST step
+  (`cfpipe acswfc bkg`, `cfpipe wfc3ir bkg`, `[acswfc.bkg]`, `[wfc3ir.bkg]`, stamp
+  `CFP_BKG`) replaces `sky`, which recorded one constant per chip and subtracted
+  nothing, so a pattern belonging to one exposure went into the mosaic: scattered
+  earthlight on the left third of six macs0647 F140W exposures (up to 0.5 e-/s over a
+  0.8 e-/s background) left a noisy patch with a sharp edge. The step subtracts from
+  `SCI`, as NIRCam's does, with `[nircam.bkg]`'s values scaled to the detector's
+  pixel; it has no 1/f readout terms (the HST detectors have none after calacs /
+  calwf3), one pedestal per amplifier (the two halves of an ACS/WFC chip; WFC3/IR as
+  one region), and the conditioning detrend in NIRCam's square form. It runs after
+  `crreject`, as NIRCam's follows its jump flags; run again after it, the cosmic-ray
+  step adds the recorded level (`CFBKG`) back to its working copy, since its noise
+  model needs the counts. `crreject` itself now levels each working copy before the
+  visit comparison (the coarse fit of `[<instrument>.bkg.detrend]` minus its median,
+  subtracted from the copy only): the scattered light stood above the visit's median
+  over its whole area and 3.49% of one exposure was flagged, 9.3% of its left third;
+  leveled, 0.39% and 0.25%, the same as the clean exposure of the visit. `CFVARSC` is now measured by NIRCam's function (7x7 block
+  sums) where `sky` used the single-pixel scatter. A combine keeps out, and names, an
+  exposure the step has not run on. On the F140W exposure with the most scattered
+  light the background across the detector goes from a 0.7 e-/s range to 0.01.
 - **HST masking: satellite trails as preliminary masks, and the NIRCam reviewer
   workflow.** Three steps in `cfpipe acswfc` / `cfpipe wfc3ir`. `trails`
-  (ACS/WFC only, between `sky` and `crreject`; `hst/steps/trails.py`,
+  (ACS/WFC only, before `crreject`; `hst/steps/trails.py`,
   `[acswfc.trails]`): the STScI finder `acstools.findsat_mrt` on each chip;
   every trail it is confident of becomes a polygon, grown by 12 pixels, in the
   exposure's region file, the one hand-drawn masks live in, so it is applied,

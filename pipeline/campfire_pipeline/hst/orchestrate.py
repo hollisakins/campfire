@@ -35,7 +35,7 @@ re-run after an interruption. The settings of a step are
 ``[<instrument>.<step>]`` of the config with the field's
 ``[<field>.<instrument>.<step>]`` on top (:func:`step_config`).
 
-Parallelism is across exposures (calibrate, wcs_init, sky), across visits
+Parallelism is across exposures (calibrate, wcs_init, bkg), across visits
 (crreject, align) and across overlap groups (outlier); the drizzle of a tile
 is one process.
 """
@@ -57,9 +57,12 @@ from campfire_pipeline.config import (
 PROCESS_STEPS = [
     ('calibrate', 'CFP_CAL'),
     ('wcs_init',  'CFP_WCS'),
-    ('sky',       'CFP_SKY'),
     ('trails',    'CFP_TRL'),
     ('crreject',  'CFP_CR'),
+    # after the cosmic-ray flags, as NIRCam's bkg follows its jump flags: the
+    # background is fitted on pixels that are already clean, and the
+    # cosmic-ray step sees the counts with their background
+    ('bkg',       'CFP_BKG'),
     ('persist',   'CFP_PERS'),
     ('preview',   'CFP_PREV'),
     ('align',     'CFP_ALGN'),
@@ -197,9 +200,9 @@ def _wcs_init_worker(exposure_file, *, reference_env, overwrite):
                          overwrite=overwrite)
 
 
-def _sky_worker(exposure_file, *, cfg, overwrite):
-    from campfire_pipeline.hst.steps.sky import sky_step
-    sky_step(exposure_file, step_config=cfg, overwrite=overwrite)
+def _bkg_worker(exposure_file, *, cfg, overwrite):
+    from campfire_pipeline.hst.steps.bkg import bkg_step
+    bkg_step(exposure_file, step_config=cfg, overwrite=overwrite)
     return exposure_file
 
 
@@ -217,9 +220,10 @@ def _preview_worker(exposure_file, *, cfg, overwrite):
     return exposure_file
 
 
-def _crreject_worker(key, files, *, cfg, overwrite):
+def _crreject_worker(key, files, *, cfg, overwrite, bkg_cfg=None):
     from campfire_pipeline.hst.steps.crreject import crreject_step
-    crreject_step(list(files), step_config=cfg, overwrite=overwrite)
+    crreject_step(list(files), step_config=cfg, overwrite=overwrite,
+                  bkg_config=bkg_cfg)
     return key
 
 
@@ -297,21 +301,37 @@ def _run_wcs_init(field, config, filt, n_processes, overwrite):
              reference_env={var: refdir}, overwrite=overwrite)
 
 
-def _run_sky(field, config, filt, n_processes, overwrite):
-    files = [f for f in field.get_exposure_files(filt) if _has(f, 'CFP_WCS')]
-    pending = [f for f in files if overwrite or not _has(f, 'CFP_SKY')]
-    log(f'sky: {len(files)} {filt} exposures, {len(pending)} to do')
+def _bkg_ready(field, f):
+    """Whether the background step may run on an exposure: its cosmic-ray
+    flags are in. Every ACS/WFC exposure gets them. A WFC3/IR exposure alone
+    in its visit gets none (its ramp fit has rejected cosmic rays), and is
+    ready once it has its WCS."""
+    if _has(f, 'CFP_CR'):
+        return True
+    return field.instrument != 'acswfc' and _has(f, 'CFP_WCS')
+
+
+def _run_bkg(field, config, filt, n_processes, overwrite):
+    files = [f for f in field.get_exposure_files(filt) if _bkg_ready(field, f)]
+    if field.instrument != 'acswfc':
+        # a WFC3/IR visit of several exposures waits for its cosmic-ray flags
+        from campfire_pipeline.hst.visit import group_visits
+        waiting = {f for v in group_visits(files) if len(v.files) > 1
+                   for f in v.files if not _has(f, 'CFP_CR')}
+        files = [f for f in files if f not in waiting]
+    pending = [f for f in files if overwrite or not _has(f, 'CFP_BKG')]
+    log(f'bkg: {len(files)} {filt} exposures, {len(pending)} to do')
     if not pending:
         return
-    dispatch(_sky_worker, pending, n_processes=n_processes,
-             cfg=step_config('sky', field, config), overwrite=overwrite)
+    dispatch(_bkg_worker, pending, n_processes=n_processes,
+             cfg=step_config('bkg', field, config), overwrite=overwrite)
 
 
 def _run_trails(field, config, filt, n_processes, overwrite):
     """Satellite trails, ACS/WFC only, into the exposures' region files."""
     if 'trails' in _NOT_FOR.get(field.instrument, ()):
         return
-    files = [f for f in field.get_exposure_files(filt) if _has(f, 'CFP_SKY')]
+    files = [f for f in field.get_exposure_files(filt) if _has(f, 'CFP_WCS')]
     pending = [f for f in files if overwrite or not _has(f, 'CFP_TRL')]
     log(f'trails: {len(files)} {filt} exposures, {len(pending)} to search')
     if not pending:
@@ -338,7 +358,7 @@ def unmasked_for_persistence(field, filt):
         return []
     return sorted(os.path.basename(f).split('_')[0]
                   for f in field.get_exposure_files(filt)
-                  if _has(f, 'CFP_SKY') and not _has(f, 'CFP_PERS'))
+                  if _has(f, 'CFP_BKG') and not _has(f, 'CFP_PERS'))
 
 
 def without_prediction(field, filt):
@@ -362,7 +382,7 @@ def _run_persist(field, config, filt, n_processes, overwrite):
     from campfire_pipeline.hst.steps.persist import IN_FIELD, persist_exposures
 
     def ready(f):
-        return _has(f, 'CFP_SKY')
+        return _has(f, 'CFP_BKG')
     files = [f for f in field.get_exposure_files(filt) if ready(f)]
     everything = sorted({f for other in field.filters
                          for f in field.get_exposure_files(other) if ready(f)})
@@ -384,13 +404,11 @@ def _run_persist(field, config, filt, n_processes, overwrite):
 
 
 def _run_preview(field, config, filt, n_processes, overwrite):
-    """Review PNGs, once the flags they blank are in: after crreject on
-    ACS/WFC (every exposure gets cosmic-ray flags there), after sky on
-    WFC3/IR."""
+    """Review PNGs, once the flags they blank are in and the background is
+    out: after bkg, which follows the cosmic-ray flags."""
     from campfire_pipeline.hst.steps.preview import PREVIEW_KIND, preview_paths
 
-    need = 'CFP_CR' if field.instrument == 'acswfc' else 'CFP_SKY'
-    files = [f for f in field.get_exposure_files(filt) if _has(f, need)]
+    files = [f for f in field.get_exposure_files(filt) if _has(f, 'CFP_BKG')]
 
     def done(f):
         return (all(os.path.exists(p) for p in preview_paths(f))
@@ -415,7 +433,7 @@ def _visits(field, filt, need):
 
 
 def _run_crreject(field, config, filt, n_processes, overwrite):
-    visits = _visits(field, filt, 'CFP_SKY')
+    visits = _visits(field, filt, 'CFP_WCS')
     tasks, single = [], []
     for v in visits:
         if len(v.files) < 2:
@@ -444,7 +462,8 @@ def _run_crreject(field, config, filt, n_processes, overwrite):
     if tasks:
         dispatch(_crreject_worker, tasks, n_processes=n_processes,
                  use_starmap=True, cfg=step_config('crreject', field, config),
-                 overwrite=overwrite)
+                 overwrite=overwrite,
+                 bkg_cfg=step_config('bkg', field, config))
 
 
 def check_align_config(field):
@@ -517,7 +536,7 @@ def _run_align(field, config, filt, n_processes, overwrite):
     # flags a 400 s ACS exposure gives thousands of false detections and the
     # fit fails. A visit that has not been through crreject yet is not
     # solved. WFC3/IR does not depend on it.
-    visits = _visits(field, filt, 'CFP_SKY')
+    visits = _visits(field, filt, 'CFP_BKG')
     if field.instrument == 'acswfc':
         visits = [v for v in visits if all(_has(f, 'CFP_CR') for f in v.files)]
     tasks = [(v.key, v.files) for v in visits
@@ -554,9 +573,9 @@ def _run_align(field, config, filt, n_processes, overwrite):
 _PROCESS_RUNNERS = {
     'calibrate': _run_calibrate,
     'wcs_init': _run_wcs_init,
-    'sky': _run_sky,
     'trails': _run_trails,
     'crreject': _run_crreject,
+    'bkg': _run_bkg,
     'persist': _run_persist,
     'preview': _run_preview,
     'align': _run_align,

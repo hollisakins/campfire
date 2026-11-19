@@ -64,7 +64,7 @@ from campfire_pipeline.nircam.field import Field, _expand_braces, parse_tiles
 ROOTNAME_LETTER = {'acswfc': 'j', 'wfc3ir': 'i'}
 
 # The steps a field may override, [<field>.<instrument>.<step>].
-STEP_TABLES = ('calibrate', 'sky', 'trails', 'crreject', 'persist', 'preview',
+STEP_TABLES = ('calibrate', 'trails', 'crreject', 'bkg', 'persist', 'preview',
                'align', 'outlier', 'resample')
 
 _KEYS = {'filters', 'files', 'skip'} | set(STEP_TABLES)
@@ -393,7 +393,8 @@ class HstField:
         What keeps an exposure out: no solved alignment (it would be drizzled
         where it is not, NIRCam's rule), and, on ACS/WFC, no cosmic-ray flags
         (``crreject`` has not run on it; a CCD exposure without them is
-        covered in hits). Returns ``(ready, reason)``. The caller says so
+        covered in hits), and no background subtraction (``bkg`` has not run
+        on it). Returns ``(ready, reason)``. The caller says so
         loudly: nothing is left out of a mosaic without a message.
         """
         steps = cfp.get_steps(exposure_file, keyset=cfp.HST)
@@ -405,6 +406,10 @@ class HstField:
                 return False, 'alignment failed (NOT_ALIGNED)'
         if self.instrument == 'acswfc' and 'CFP_CR' not in steps:
             return False, 'no cosmic-ray flags yet (crreject has not run)'
+        if 'CFP_BKG' not in steps:
+            # its background is still in the pixels: drizzled as it is, it
+            # would put its own level and pattern into the mosaic
+            return False, 'background not subtracted yet (bkg has not run)'
         return True, ''
 
     def materialize_work(self, filter_name, overwrite=False,

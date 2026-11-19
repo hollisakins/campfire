@@ -48,12 +48,12 @@ def recorder(monkeypatch):
 
     import campfire_pipeline.hst.steps.align as align
     import campfire_pipeline.hst.steps.crreject as crreject
-    import campfire_pipeline.hst.steps.sky as sky
+    import campfire_pipeline.hst.steps.bkg as bkg
     import campfire_pipeline.hst.steps.wcs_init as wcs_init
 
     monkeypatch.setattr(wcs_init, 'wcs_init_step',
                         lambda f, **kw: calls.append(('wcs_init', f)))
-    monkeypatch.setattr(sky, 'sky_step', lambda f, **kw: calls.append(('sky', f)))
+    monkeypatch.setattr(bkg, 'bkg_step', lambda f, **kw: calls.append(('bkg', f)))
     monkeypatch.setattr(crreject, 'crreject_step',
                         lambda files, **kw: calls.append(('crreject', tuple(files))))
     monkeypatch.setattr(crreject, 'crreject_single_step',
@@ -70,8 +70,9 @@ def test_chain_order_and_result(recorder):
     calls, _ = recorder
     v = Visit('je2860', 'acswfc', 'f606w', ('a.fits', 'b.fits'))
     out = process_visit(v, refcat=object())
-    assert [c[0] for c in calls] == ['wcs_init', 'sky', 'wcs_init', 'sky',
-                                     'crreject', 'align']
+    # the background after the cosmic-ray flags, as NIRCam's follows its jumps
+    assert [c[0] for c in calls] == ['wcs_init', 'wcs_init', 'crreject',
+                                     'bkg', 'bkg', 'align']
     assert calls[-1] == ('align', ('a.fits', 'b.fits'), 'je2860-acswfc-f606w')
     assert out == {'key': 'je2860-acswfc-f606w', 'cosmic_rays': 'visit',
                    'align': 'SOLVED', 'ready': True}

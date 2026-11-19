@@ -86,9 +86,9 @@ _CFP_TO_STAGE = [
 _HST_CFP_TO_STAGE = [
     ('CFP_CAL',  'calibrate'),
     ('CFP_WCS',  'wcs_init'),
-    ('CFP_SKY',  'sky'),
     ('CFP_TRL',  'trails'),
     ('CFP_CR',   'crreject'),
+    ('CFP_BKG',  'bkg'),
     ('CFP_PREV', 'preview'),
     ('CFP_ALGN', 'align'),
     ('CFP_MASK', 'apply_masks'),

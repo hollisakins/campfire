@@ -386,7 +386,7 @@ def test_each_instrument_has_the_nircam_command_set(field, monkeypatch):
     for instrument in ('acswfc', 'wfc3ir'):
         out = runner.invoke(main, [instrument, '--help']).output
         for command in ('process', 'combine', 'run', 'status', 'check', 'reset',
-                        'calibrate', 'wcs_init', 'sky', 'trails', 'crreject',
+                        'calibrate', 'wcs_init', 'trails', 'crreject', 'bkg',
                         'preview', 'align', 'apply_masks', 'outlier', 'resample'):
             assert command in out
 
@@ -403,7 +403,7 @@ def test_status_and_reset_commands(field, monkeypatch):
     assert result.exit_code != 0 and 'has no [tf.acswfc] table' in result.output
 
     # steps that change pixels are not redone in place
-    result = runner.invoke(main, ['wfc3ir', 'reset', '--field', 'tf', '--from', 'sky'])
+    result = runner.invoke(main, ['wfc3ir', 'reset', '--field', 'tf', '--from', 'bkg'])
     assert result.exit_code != 0 and '--raw' in result.output
 
     result = runner.invoke(main, ['wfc3ir', 'reset', '--field', 'tf',

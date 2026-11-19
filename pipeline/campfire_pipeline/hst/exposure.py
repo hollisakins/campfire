@@ -21,10 +21,12 @@ applied per exposure. ``IDCSCALE`` is the reference pixel scale of the
 distortion solution, i.e. the pixel size at which the flat-fielded count rate is
 a surface brightness.
 
-**Sky.** A constant per chip, taken from the ``CFSKY`` keyword of the chip's
-SCI header when the sky step has written it, otherwise estimated here as a
-sigma-clipped median of the good pixels. It is subtracted from the returned
-``sci``; the file is never modified.
+**Background.** The ``bkg`` step (``hst/steps/bkg.py``) subtracts it from the
+file and records the level it removed as ``CFBKG`` in the chip's SCI header;
+such a chip is returned as it is. A file the step has not run on yet (the
+cosmic-ray and trail steps open exposures before it) still has its background:
+a sigma-clipped median of the good pixels is subtracted from the returned
+``sci``, and the file is not modified.
 
 **Variance.** HST gives one ``ERR`` array, which includes the Poisson noise of
 sources and is computed from the noisy counts. The adapter splits it into the
@@ -55,8 +57,9 @@ from campfire_pipeline.hst.instruments import Detector, detector_for, filter_nam
 from campfire_pipeline.imaging.exposure import ChipArrays
 
 _ARCSEC_TO_RAD = np.pi / (180.0 * 3600.0)
-SKY_KEY = 'CFSKY'          # per-chip sky level, native SCI units (sky step)
-VARSCALE_KEY = 'CFVARSC'   # measured / modelled background variance (sky step)
+BKG_KEY = 'CFBKG'          # background level the bkg step removed from SCI,
+                           # native SCI units; present = SCI is subtracted
+VARSCALE_KEY = 'CFVARSC'   # measured / modelled background variance (bkg step)
 OUTLIER_EXT = 'CFOUT'      # per-chip image extension, non-zero at an outlier
                            # found by the field-level pass (outlier step)
 MASK_EXT = 'CFMASK'        # per-chip image extension, non-zero inside a
@@ -86,7 +89,8 @@ class HstChip:
     photfnu: float                 # Jy per e-/s, this exposure's own
     idcscale: float                # arcsec, reference pixel scale
     is_rate: bool                  # True when SCI is already e-/s
-    header_sky: float = None       # CFSKY, native SCI units, if present
+    bkg_level: float = None        # CFBKG: the level the bkg step removed
+                                   # (native SCI units); None = not subtracted
     var_scale: float = 1.0         # CFVARSC: measured / modelled sky variance
     tolerated_bits: int = None
     use_outlier_flags: bool = True  # honor the CFOUT extension when present
@@ -146,8 +150,9 @@ class HstChip:
         if masked is not None:
             good &= ~masked
 
-        sky = self.header_sky
-        if sky is None:
+        if self.bkg_level is not None:
+            sky = 0.0                    # the bkg step has subtracted it
+        else:
             sky = float(sigma_clipped_stats(sci[good], sigma=3.0, maxiters=5)[1]) \
                 if good.any() else 0.0
         self._sky_used = sky
@@ -175,7 +180,7 @@ class HstChip:
 
     def to_rate(self, sci, err, time, sky):
         """Native SCI/ERR to sky-subtracted count rate (e-/s), its variance and
-        the effective exposure time per pixel. Shared with the sky step."""
+        the effective exposure time per pixel. Shared with the bkg step."""
         if self.is_rate:
             t_eff = np.full(sci.shape, self.exptime) if time is None else time
             return sci - sky, err ** 2, t_eff
@@ -216,8 +221,11 @@ class HstChip:
             'proposid': self.proposid, 'date_obs': self.date_obs,
             'exptime': self.exptime, 'photfnu': self.photfnu,
             'idcscale': self.idcscale,
-            'sky': np.nan if self._sky_used is None else self._sky_used,
-            'sky_src': 'header' if self.header_sky is not None else 'median',
+            # the background level taken out of this chip, native units: by
+            # the bkg step ('bkg'), or here on load ('median')
+            'sky': (self.bkg_level if self.bkg_level is not None
+                    else np.nan if self._sky_used is None else self._sky_used),
+            'sky_src': 'bkg' if self.bkg_level is not None else 'median',
             'var_scale': self.var_scale,
             'wcsname': self.wcsname, 'cal_ver': self.cal_ver,
             'crds_ctx': self.crds_ctx,
@@ -385,7 +393,7 @@ def open_exposure(path, tolerated_bits=None, use_outlier_flags=True):
                 key=f'{rootname}_sci{extver}', filter=filt, exptime=exptime,
                 shape=hdu.data.shape, photfnu=fnu, idcscale=float(idcscale),
                 is_rate=(bunit == 'ELECTRONS/S'),
-                header_sky=(float(h[SKY_KEY]) if SKY_KEY in h else None),
+                bkg_level=(float(h[BKG_KEY]) if BKG_KEY in h else None),
                 # applied for every detector: the variance follows the
                 # measured pixel scatter (see instruments.py)
                 var_scale=float(h.get(VARSCALE_KEY, 1.0)),

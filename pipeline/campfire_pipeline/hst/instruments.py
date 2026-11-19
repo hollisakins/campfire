@@ -33,22 +33,24 @@ class Detector:
     native_scale: float     # nominal arcsec / pixel (for reporting only)
 
 
-# The sky step measures, for every detector, the scatter of blank background
+# The bkg step measures, for every detector, the scatter of blank background
 # against the variance derived from ERR and records the ratio as CFVARSC. The
 # adapter scales its background variance by that ratio for every detector, so
-# the variance means the same thing on ACS/WFC, WFC3/IR and NIRCam (whose
-# `bkg` step rescales VAR_RNOISE the same way): the pixel scatter.
+# the variance means the same thing on ACS/WFC, WFC3/IR and NIRCam. The
+# measurement is NIRCam's own function (`variance_rescale`, the scatter of
+# 7x7 block sums; imaging/bkg_chain.py), which NIRCam's `bkg` step uses to
+# rescale VAR_RNOISE.
 #
 # * ACS/WFC: on CTE-corrected data ERR is low by tens of percent in variance.
-# * WFC3/IR: the pixel scatter is 0.63 to 0.80 of ERR**2 (eight exposures of
-#   one visit, four filters). Neighboring pixels are correlated: the variance
-#   of 2x2 block averages times 4 is 1.09 to 1.17 times the single-pixel
-#   variance, and of 4x4 blocks times 16 is 1.27 to 1.50 times. A first
-#   version left WFC3/IR unscaled for that reason (ERR is about right for an
-#   aperture a few pixels across). Decided otherwise 2026-11-14 (Hollis): the
-#   error is correlated for NIRCam too, correlated noise is measured downstream
-#   with random apertures for every instrument, and one rule is better than
-#   two (docs/hst/design.md section 8b).
+# * WFC3/IR: the single-pixel scatter is 0.63 to 0.80 of ERR**2 (eight
+#   exposures of one visit, four filters), but neighboring pixels are
+#   correlated: the variance of 2x2 block averages times 4 is 1.09 to 1.17
+#   times the single-pixel variance, and of 4x4 blocks times 16 is 1.27 to
+#   1.50 times. A first version left WFC3/IR unscaled; a second (2026-11-14)
+#   scaled every detector by the single-pixel scatter and called that NIRCam's
+#   rule, which it was not: NIRCam measures blocks. Since 2026-11-18 the
+#   function is shared, so the factor includes the correlation a 7-pixel block
+#   sees (0.9 to 1.2 on WFC3/IR F140W).
 ACS_WFC = Detector(
     token='acswfc', instrume='ACS', detector='WFC',
     sci_extvers=(1, 2), calibrated_suffix='flc',
