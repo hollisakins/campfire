@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
+import { TablePagination } from '@/components/ui/TablePagination';
 import {
   Loader2,
   RefreshCw,
@@ -20,12 +21,13 @@ import {
   EyeOff,
   Dices,
   Copy,
+  Search,
+  UserX,
 } from 'lucide-react';
-import type { UserProfile, Program } from '@/lib/types';
+import type { Program } from '@/lib/types';
+import type { AdminUserRow, OrphanAuthUser } from '@/app/api/users/route';
 
-interface UserWithAccess extends UserProfile {
-  program_access: string[];
-}
+type UserWithAccess = AdminUserRow;
 
 interface PendingInvite {
   id: number;
@@ -46,6 +48,12 @@ export default function AdminUsersPage() {
   const [error, setError] = useState<string | null>(null);
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
   const [savingUser, setSavingUser] = useState<string | null>(null);
+  const [orphans, setOrphans] = useState<OrphanAuthUser[]>([]);
+  const [authUnavailable, setAuthUnavailable] = useState(false);
+  const [showOrphans, setShowOrphans] = useState(false);
+  const [query, setQuery] = useState('');
+  const [pageIndex, setPageIndex] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
 
   // Invite state
   const [invites, setInvites] = useState<PendingInvite[]>([]);
@@ -115,6 +123,8 @@ export default function AdminUsersPage() {
       }
 
       setUsers(data.users || []);
+      setOrphans(data.orphans || []);
+      setAuthUnavailable(!!data.auth_unavailable);
       setPrograms(data.programs || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch users');
@@ -449,6 +459,20 @@ export default function AdminUsersPage() {
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleDateString();
   };
+
+  const filteredUsers = useMemo(() => {
+    const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return users;
+    return users.filter(u => {
+      const haystack = `${u.full_name} ${u.username} ${u.email ?? ''}`.toLowerCase();
+      return terms.every(t => haystack.includes(t));
+    });
+  }, [users, query]);
+
+  // Keep the page in range when a search or a deletion shrinks the list.
+  const pageCount = Math.max(1, Math.ceil(filteredUsers.length / pageSize));
+  const currentPage = Math.min(pageIndex, pageCount - 1);
+  const pageUsers = filteredUsers.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
 
   if (loading) {
     return (
@@ -931,6 +955,66 @@ export default function AdminUsersPage() {
         </Card>
       )}
 
+      {authUnavailable && (
+        <Card className="mb-6 p-4 text-sm text-red-700 dark:text-red-400">
+          Auth users unavailable: emails and logins without a profile are not shown.
+        </Card>
+      )}
+
+      {/* Auth logins with no profile row */}
+      {orphans.length > 0 && (
+        <Card className="mb-6 p-4">
+          <button
+            onClick={() => setShowOrphans(v => !v)}
+            className="flex w-full items-center justify-between text-sm font-medium text-text-primary"
+          >
+            <span className="flex items-center gap-2">
+              <UserX className="w-4 h-4 text-red-600 dark:text-red-400" />
+              No profile ({orphans.length})
+            </span>
+            {showOrphans ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+          {showOrphans && (
+            <table className="w-full mt-3">
+              <thead>
+                <tr className="text-left text-xs font-medium text-text-secondary uppercase tracking-wider">
+                  <th className="py-2 pr-4">Email</th>
+                  <th className="py-2 pr-4">Source</th>
+                  <th className="py-2 pr-4">Created</th>
+                  <th className="py-2">Last sign-in</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {orphans.map((o) => (
+                  <tr key={o.user_id} className="text-sm">
+                    <td className="py-2 pr-4 text-text-primary">{o.email ?? o.user_id}</td>
+                    <td className="py-2 pr-4 text-text-secondary">
+                      {o.self_signup ? 'Signup' : o.invited_at ? 'Invite' : 'Other'}
+                      {!o.email_confirmed_at && ' · unconfirmed'}
+                    </td>
+                    <td className="py-2 pr-4 text-text-secondary">{formatDate(o.created_at)}</td>
+                    <td className="py-2 text-text-secondary">
+                      {o.last_sign_in_at ? formatDate(o.last_sign_in_at) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      )}
+
+      <div className="relative mb-3">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setPageIndex(0); }}
+          placeholder="Search name, username or email"
+          className="w-full pl-9 pr-3 py-2 text-sm border border-border-strong rounded-md bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary"
+        />
+      </div>
+
       <Card className="overflow-hidden">
         <table className="w-full">
           <thead className="bg-table-header border-b border-border">
@@ -953,14 +1037,14 @@ export default function AdminUsersPage() {
             </tr>
           </thead>
           <tbody className="bg-card divide-y divide-border">
-            {users.length === 0 ? (
+            {pageUsers.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-6 py-12 text-center text-text-secondary">
                   No users found.
                 </td>
               </tr>
             ) : (
-              users.map((user) => (
+              pageUsers.map((user) => (
                 <React.Fragment key={user.user_id}>
                   <tr className={expandedUser === user.user_id ? 'bg-surface-2' : ''}>
                     <td className="px-6 py-4">
@@ -968,6 +1052,10 @@ export default function AdminUsersPage() {
                         <div>
                           <div className="text-sm font-medium text-text-primary">
                             {user.full_name}
+                          </div>
+                          <div className="text-xs text-text-secondary">
+                            {user.username}
+                            {user.email && ` · ${user.email}`}
                           </div>
                           {user.is_group_account && (
                             <span className="text-xs text-text-secondary">(Group account)</span>
@@ -1137,6 +1225,14 @@ export default function AdminUsersPage() {
             )}
           </tbody>
         </table>
+        <TablePagination
+          className="border-t border-border"
+          pageIndex={currentPage}
+          pageSize={pageSize}
+          totalRows={filteredUsers.length}
+          onPageChange={setPageIndex}
+          onPageSizeChange={setPageSize}
+        />
       </Card>
     </div>
   );

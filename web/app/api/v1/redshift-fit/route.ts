@@ -30,6 +30,8 @@ export interface RedshiftFitData {
  * Query parameters:
  * - target_id: Target ID to fetch fit for
  * - grating: Grating type (e.g., PRISM, G395M)
+ * - filter: optional NIRSpec filter (e.g., F070LP); needed only when the
+ *   target has the grating with two filters (#683)
  * OR
  * - path: Direct FITS path (from query results)
  * - dr: browse a data release (P6c-2): the frozen spectrum's ARCHIVED zfit
@@ -73,6 +75,7 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const targetId = searchParams.get('target_id');
     const grating = searchParams.get('grating');
+    const filter = searchParams.get('filter');
     let fitsPath = searchParams.get('path');
 
     // If target_id and grating provided, look up the fits_path
@@ -103,20 +106,29 @@ export async function GET(request: NextRequest) {
         .from('cat_spectra')
         .select('fits_path')
         .eq('target_id', targetId)
-        .eq('grating', grating);
+        .eq('grating', grating.toUpperCase());
+      if (filter) {
+        spectrumLookup = spectrumLookup.eq('filter', filter.toUpperCase());
+      }
       if (!isAdmin) {
         spectrumLookup = spectrumLookup.eq('deploy_status', 'published');
       }
-      const { data: spectrumData, error: spectrumError } = await spectrumLookup.single();
+      const { data: spectrumRows, error: spectrumError } = await spectrumLookup.limit(2);
 
-      if (spectrumError || !spectrumData) {
+      if (spectrumError || !spectrumRows || spectrumRows.length === 0) {
         return NextResponse.json(
           { error: `No ${grating} spectrum found for ${targetId}` },
           { status: 404 }
         );
       }
+      if (spectrumRows.length > 1) {
+        return NextResponse.json(
+          { error: `${targetId} has ${grating} with more than one filter: pass filter= or path=` },
+          { status: 400 }
+        );
+      }
 
-      fitsPath = spectrumData.fits_path;
+      fitsPath = spectrumRows[0].fits_path;
     }
 
     if (!fitsPath) {

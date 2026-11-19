@@ -24,6 +24,7 @@ import { MapContextMenu } from './MapContextMenu';
 import { CanvasMarkerLayer } from './CanvasMarkerLayer';
 import { CanvasSlitLayer } from './CanvasSlitLayer';
 import type { SlitRegion, Shutter, SkyBbox } from '@/lib/actions/map';
+import { browserUrl } from '@/lib/host-aliases';
 
 import 'leaflet/dist/leaflet.css';
 
@@ -520,7 +521,8 @@ export function MapViewer({
     return null;
   }
 
-  const tileUrl = `${activeLayer.tile_base_url}/{z}/{x}/{y}.png?v=${activeLayer.tile_version}`;
+  // Stored on the primary tiles host; an alias-host visitor loads its alias.
+  const tileUrl = `${browserUrl(activeLayer.tile_base_url)}/{z}/{x}/{y}.png?v=${activeLayer.tile_version}`;
 
   return (
     <div ref={mapWrapperRef} className="relative h-full w-full">

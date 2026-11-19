@@ -37,18 +37,12 @@ from photutils.background import (
     Background2D,
     BiweightLocationBackground,
     BkgIDWInterpolator,
-    BkgZoomInterpolator,
 )
-from photutils.segmentation import detect_sources
 from photutils.utils import ShepardIDWInterpolator as idw  # noqa: F401
-from scipy.ndimage import (
-    distance_transform_edt,
-    gaussian_filter,
-    median_filter,
-    zoom,
-)
+from scipy.ndimage import gaussian_filter, median_filter
 
 from campfire_pipeline.common.io import log
+from campfire_pipeline.nircam import _bkg_kernels as K
 
 
 @dataclass
@@ -188,6 +182,23 @@ class SubtractBackground:
     # source-independent.
     wht_aware: bool = True
 
+    # -- Coverage crop -----------------------------------------------------------
+    # Run on the bounding box of the image's coverage (any finite SCI / ERR or
+    # positive WHT), padded and aligned so every mesh grid lands where it does
+    # on the full image, and paste the result back. Outside the box there is
+    # nothing to fit: every pixel there is off-detector (bit 0), and the
+    # output there is the input NaN. An outer mosaic tile is 30-40% covered.
+    # Not a pixel setting (the result is the full-image one), so it is not in
+    # the manifest hash.
+    crop_to_coverage: bool = True
+
+    # -- Threads -------------------------------------------------------------------
+    # Worker threads for the heavy kernels (gaussian / median filters, the
+    # dilations, the robust statistics; see _bkg_kernels). Every kernel gives
+    # the single-threaded result bit for bit, so this is not a pixel setting
+    # either. The mosaic resample step passes the CLI's --processes.
+    n_threads: int = 1
+
     # -- Output options --------------------------------------------------------
     plot_smooth: int = 0
     suffix: str = "bkgsub"
@@ -203,6 +214,8 @@ class SubtractBackground:
     dqmask: Optional[np.ndarray] = field(default=None, init=False, repr=False)
     outfile: Optional[str] = field(default=None, init=False, repr=False)
     mask_final: Optional[np.ndarray] = field(default=None, init=False, repr=False)
+    # (full shape, crop origin) while compute() works on a coverage crop
+    _crop_frame: Optional[tuple] = field(default=None, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -305,7 +318,7 @@ class SubtractBackground:
         historical global-scalar behaviour.
         """
         # Smooth background at large scale
-        bkg = Background2D(
+        bkg = K.FastBackground2D(
             sci,
             box_size=self.ring_clip_box_size,
             sigma_clip=astrostats.SigmaClip(sigma=self.bg_sigma),
@@ -313,22 +326,27 @@ class SubtractBackground:
             bkg_estimator=BiweightLocationBackground(),
             exclude_percentile=90,
             mask=mask,
-            interpolator=BkgZoomInterpolator(),
+            interpolator=K.ExactZoomInterpolator(),
+            **K.background2d_threads(self.n_threads),
         )
-        resid = sci - bkg.background
+        # Background2D.background re-runs the full-size interpolation on every
+        # access (photutils 3.x), so evaluate it once.
+        bkg_img = bkg.background
+        resid = sci - bkg_img
         if sqw is None:
             # RMS after subtracting the smooth background
-            background_rms = astrostats.biweight_scale(resid[~mask])
+            background_rms = K.biweight_scale(resid[~mask], self.n_threads)
             # Floating ceiling: pixels above this are masked before ring-median
-            ceiling = self.ring_clip_max_sigma * background_rms + bkg.background
+            ceiling = self.ring_clip_max_sigma * background_rms + bkg_img
         else:
             # Depth-aware ceiling: one RMS in noise-equalized units, scaled to
             # local flux units per pixel (sqw == 0 pixels are already masked).
-            nrms = astrostats.biweight_scale((resid * sqw)[~mask])
+            nrms = K.biweight_scale((resid * sqw)[~mask], self.n_threads)
             with np.errstate(divide="ignore"):
                 local_rms = np.where(sqw > 0, nrms / sqw, np.inf)
-            ceiling = self.ring_clip_max_sigma * local_rms + bkg.background
+            ceiling = self.ring_clip_max_sigma * local_rms + bkg_img
         ceiling_mask = sci > ceiling
+        del resid, ceiling
 
         f = max(int(self.ring_downsample), 1)
         log(
@@ -338,7 +356,7 @@ class SubtractBackground:
         if sqw is None:
             sci_filled = self.replace_masked(sci, mask | ceiling_mask)
         else:
-            sci_filled = np.where(mask | ceiling_mask, bkg.background, sci)
+            sci_filled = np.where(mask | ceiling_mask, bkg_img, sci)
 
         if f > 1:
             # Block-reduce, ring-median at scaled radius/width, zoom back.
@@ -354,15 +372,36 @@ class SubtractBackground:
             else:
                 sci_padded = sci_filled
             small = block_reduce(sci_padded, f, func=np.mean)
+            del sci_padded
+            if self._crop_frame is not None:
+                # zoom's corner-aligned mapping (grid_mode=False) samples at
+                # positions that depend on the image size, so a crop of the
+                # image would sample differently. Run the (1/f^2-sized)
+                # median and the zoom on the full image's block grid, with
+                # the crop's blocks at their place (the crop origin is a
+                # multiple of f) and edge values elsewhere (beyond the pad,
+                # so never inside a ring of the crop), then cut the crop out.
+                (H, W), (y0, x0) = self._crop_frame
+                sy0, sx0 = y0 // f, x0 // f
+                SH, SW = -(-H // f), -(-W // f)
+                small = np.pad(small, (
+                    (sy0, SH - sy0 - small.shape[0]),
+                    (sx0, SW - sx0 - small.shape[1])), mode='edge')
             radius_small = max(int(round(self.ring_radius_in / f)), 1)
             width_small = max(int(round(self.ring_width / f)), 1)
             ring_small = Ring2DKernel(radius_small, width_small)
-            filtered_small = median_filter(small, footprint=ring_small.array)
-            filtered_padded = zoom(filtered_small, f, order=1, mode='nearest')
-            filtered = filtered_padded[:h, :w]
+            filtered_small = K.median_filter(small, ring_small.array,
+                                             self.n_threads)
+            filtered_padded = K.zoom(filtered_small, f, order=1,
+                                     mode='nearest', threads=self.n_threads)
+            if self._crop_frame is not None:
+                filtered = filtered_padded[y0:y0 + h, x0:x0 + w]
+            else:
+                filtered = filtered_padded[:h, :w]
         else:
             ring = Ring2DKernel(self.ring_radius_in, self.ring_width)
             filtered = median_filter(sci_filled, footprint=ring.array)
+        del sci_filled, bkg_img
 
         return sci - filtered
 
@@ -383,23 +422,27 @@ class SubtractBackground:
         :meth:`mask_sources` (they don't change across tiers) and passed in
         to avoid redundant biweight passes over a multi-GB array.
         """
-        convolved = gaussian_filter(
+        convolved = K.gaussian(
             replaced_img,
-            sigma=self.tier_kernel_size[tiernum],
+            self.tier_kernel_size[tiernum],
             mode='reflect',
+            threads=self.n_threads,
         )
 
-        seg_detect = detect_sources(
+        labels = K.detect(
             convolved,
-            threshold=self.tier_nsigma[tiernum] * background_rms,
-            npixels=self.tier_npixels[tiernum],
+            self.tier_nsigma[tiernum] * background_rms,
+            self.tier_npixels[tiernum],
             mask=mask,
+            threads=self.n_threads,
         )
-        if seg_detect is None:
+        del convolved
+        if labels is None:
             log(f"No sources detected for tier {tiernum}, moving to next tier...")
             return None
 
-        base = seg_detect.make_source_mask()
+        base = labels != 0
+        del labels
         if self.tier_dilate_size[tiernum] == 0:
             tier_result = base
         else:
@@ -407,7 +450,7 @@ class SubtractBackground:
             # of O(N * footprint_area) for binary_dilation with a large
             # circular footprint, and bit-identical for integer radii.
             radius = float(self.tier_dilate_size[tiernum])
-            tier_result = distance_transform_edt(~base) <= radius
+            tier_result = K.dilate(base, radius, self.n_threads)
 
         log(f"Tier #{tiernum}:")
         log(f"  kernel_size = {self.tier_kernel_size[tiernum]}")
@@ -436,9 +479,10 @@ class SubtractBackground:
         det_img = img if sqw is None else img * sqw
         first_mask = bitmask != 0
         valid = det_img[~first_mask]
-        background_rms = astrostats.biweight_scale(valid)
-        background_level = astrostats.biweight_location(valid)
-        log(f"Ring-filtered background median: {np.median(valid)}")
+        background_rms = K.biweight_scale(valid, self.n_threads)
+        background_level = K.biweight_location(valid, self.n_threads)
+        log(f"Ring-filtered background median: "
+            f"{K.median(valid, self.n_threads)}")
 
         replaced_img = np.where(first_mask, background_level, det_img)
 
@@ -462,13 +506,13 @@ class SubtractBackground:
     ) -> Background2D:
         """Single Background2D fit on unmasked pixels (no rejection pass)."""
         if self.bg_interpolator == "zoom":
-            interpolator = BkgZoomInterpolator()
+            interpolator = K.ExactZoomInterpolator()
         elif self.bg_interpolator == "IDW":
             interpolator = BkgIDWInterpolator()
         else:
             raise ValueError(f"Unknown bg_interpolator: {self.bg_interpolator!r}")
 
-        return Background2D(
+        return K.FastBackground2D(
             img,
             box_size=self.bg_box_size,
             sigma_clip=astrostats.SigmaClip(sigma=self.bg_sigma),
@@ -477,6 +521,7 @@ class SubtractBackground:
             exclude_percentile=self.bg_exclude_percentile,
             mask=mask,
             interpolator=interpolator,
+            **K.background2d_threads(self.n_threads),
         )
 
     def reject_background_outliers(
@@ -496,7 +541,7 @@ class SubtractBackground:
         vals = bmap[~mask & np.isfinite(bmap)]
         if vals.size == 0:
             return None
-        med = np.median(vals)
+        med = K.median(vals, self.n_threads)
         cut = np.percentile(vals, self.bg_reject_percentile)
         std = np.std(vals[vals < cut])
         if not np.isfinite(std) or std <= 0:
@@ -507,9 +552,8 @@ class SubtractBackground:
         if not outliers.any():
             return None
         if self.bg_reject_dilate > 0:
-            outliers = (
-                distance_transform_edt(~outliers) <= self.bg_reject_dilate
-            )
+            outliers = K.dilate(outliers, self.bg_reject_dilate,
+                                self.n_threads)
         return outliers
 
     def estimate_background(
@@ -570,11 +614,11 @@ class SubtractBackground:
                 sqw = np.where(good, np.sqrt(np.where(good, self.wht, 0.0)),
                                np.nan)
             sel = skymask & good & np.isfinite(resid)
-            s = float(astrostats.biweight_scale((resid * sqw)[sel]))
+            s = float(K.biweight_scale((resid * sqw)[sel], self.n_threads))
             with np.errstate(divide="ignore", invalid="ignore"):
                 return np.where(good, s / sqw, np.nan)
         sel = skymask & np.isfinite(resid)
-        s = float(astrostats.biweight_scale(resid[sel]))
+        s = float(K.biweight_scale(resid[sel], self.n_threads))
         return np.full(resid.shape, s, dtype=np.float32)
 
     def _onesided_ceiling_map(
@@ -584,7 +628,7 @@ class SubtractBackground:
         image with a hard upper clip: tracks the lower envelope of the local
         flux distribution — an upper bound on the background up to a
         (calibrated) clip bias."""
-        bkg = Background2D(
+        bkg = K.FastBackground2D(
             e_img,
             box_size=box,
             sigma_clip=astrostats.SigmaClip(
@@ -596,7 +640,8 @@ class SubtractBackground:
             bkg_estimator=BiweightLocationBackground(),
             exclude_percentile=95,
             mask=off,
-            interpolator=BkgZoomInterpolator(),
+            interpolator=K.ExactZoomInterpolator(),
+            **K.background2d_threads(self.n_threads),
         )
         return bkg.background
 
@@ -628,12 +673,16 @@ class SubtractBackground:
         for box in self.guard_ceiling_boxes:
             om = self._onesided_ceiling_map(e_sci, off_e, int(box))
             diff = (om - e_bkg)[quiet]
-            delta = float(astrostats.biweight_location(diff))
-            scatter = float(astrostats.biweight_scale(diff))
+            delta = float(K.biweight_location(diff, self.n_threads))
+            scatter = float(K.biweight_scale(diff, self.n_threads))
+            del diff
             ceils.append(om - delta + self.guard_ceiling_k * scatter)
+            del om
             log(f"  guard ceiling box={box}: clip bias={delta:.3f} "
                 f"quiet-sky scatter={scatter:.3f} (equalized units)")
+        del e_sci, e_bkg, off_e, quiet
         ceil_e = np.minimum.reduce(ceils)
+        del ceils
         return np.where(good, ceil_e * sigma_map, np.inf)
 
     def _cap_mesh(self, bkg2d: Background2D, ceiling: np.ndarray,
@@ -689,17 +738,84 @@ class SubtractBackground:
         stay visible to the negativity detector.
         """
         field_img = np.where(np.isfinite(resid_eq), resid_eq, 0.0)
-        sm = gaussian_filter(np.where(off, 0.0, field_img).astype(np.float32),
-                             2.0, mode="reflect")
-        rms = astrostats.biweight_scale(sm[~off])
-        lvl = astrostats.biweight_location(sm[~off])
-        seg = detect_sources(sm, threshold=lvl + 2.0 * rms, npixels=8,
-                             mask=off)
-        if seg is None:
+        sm = K.gaussian(np.where(off, 0.0, field_img).astype(np.float32),
+                        2.0, mode="reflect", threads=self.n_threads)
+        sky = sm[~off]
+        rms = K.biweight_scale(sky, self.n_threads)
+        lvl = K.biweight_location(sky, self.n_threads)
+        del sky
+        labels = K.detect(sm, lvl + 2.0 * rms, 8, mask=off,
+                          threads=self.n_threads)
+        if labels is None:
             return off.copy()
-        m = seg.make_source_mask()
-        m = distance_transform_edt(~m) <= 5.0
+        m = K.dilate(labels != 0, 5.0, self.n_threads)
         return m | off
+
+    # Side of the blocks the trough pass uses to find what an iteration's
+    # correction touched (see _refresh_smoothed). Coarser blocks waste area on
+    # sparse corrections, finer ones pay more halo per block row.
+    _TROUGH_BLOCK = 512
+
+    @staticmethod
+    def _refresh_smoothed(sm, f0, den, valid, changed, sigma, block,
+                          threads=1):
+        """Recompute ``sm = num / den`` where ``f0`` changed, in place.
+
+        ``num`` is ``gaussian_filter(f0, sigma, mode="reflect")``. A changed
+        input pixel moves the output only within the kernel radius
+        ``r = int(4 * sigma + 0.5)`` (scipy's default truncate), so the
+        refresh covers the blocks within ``r`` of a changed pixel, merged into
+        runs along each block row, and filters each run with an ``r`` halo
+        around it. ``gaussian_filter`` is a sequence of 1-D correlations
+        whose every output pixel is a fixed-order sum over its own ``r``
+        neighbourhood, so a window that holds that neighbourhood (or meets
+        the real image edge, where ``reflect`` is the same rule) yields the
+        full-image result bit for bit. The runs write disjoint parts of
+        ``sm``, so ``threads`` refresh them concurrently.
+        """
+        r = int(4.0 * float(sigma) + 0.5)
+        ny, nx = changed.shape
+        nby, nbx = -(-ny // block), -(-nx // block)
+        pad = np.zeros((nby * block, nbx * block), dtype=bool)
+        pad[:ny, :nx] = changed
+        touched = pad.reshape(nby, block, nbx, block).any(axis=(1, 3))
+        if not touched.any():
+            return
+        # every block within r px of a touched block
+        g = -(-r // block)
+        grown = np.zeros_like(touched)
+        for dy in range(-g, g + 1):
+            for dx in range(-g, g + 1):
+                ys = slice(max(dy, 0), nby + min(dy, 0))
+                yd = slice(max(-dy, 0), nby + min(-dy, 0))
+                xs = slice(max(dx, 0), nbx + min(dx, 0))
+                xd = slice(max(-dx, 0), nbx + min(-dx, 0))
+                grown[yd, xd] |= touched[ys, xs]
+        runs = []
+        for by in range(nby):
+            row = grown[by]
+            bx = 0
+            while bx < nbx:
+                if not row[bx]:
+                    bx += 1
+                    continue
+                start = bx
+                while bx < nbx and row[bx]:
+                    bx += 1
+                runs.append((by * block, min((by + 1) * block, ny),
+                             start * block, min(bx * block, nx)))
+
+        def refresh(run):
+            y0, y1, x0, x1 = run
+            wy0, wy1 = max(y0 - r, 0), min(y1 + r, ny)
+            wx0, wx1 = max(x0 - r, 0), min(x1 + r, nx)
+            num = gaussian_filter(f0[wy0:wy1, wx0:wx1], sigma, mode="reflect")
+            num = num[y0 - wy0:y1 - wy0, x0 - wx0:x1 - wx0]
+            with np.errstate(invalid="ignore", divide="ignore"):
+                sm[y0:y1, x0:x1] = np.where(
+                    valid[y0:y1, x0:x1], num / den[y0:y1, x0:x1], np.nan)
+
+        K._run(refresh, runs, threads)
 
     def _gated_trough_pass(
         self,
@@ -712,17 +828,50 @@ class SubtractBackground:
 
         Returns the corrected background map (only ever lowered, and only
         inside detected coherent negative regions).
+
+        Equivalent to recomputing ``_smooth_masked((sci - m) / sigma)`` from
+        scratch every iteration, bit for bit, but incremental: the smoothing
+        weight is fixed (exclusion and finiteness never change, since a
+        correction is always finite), and an iteration's correction touches
+        only its gated pixels, so only those pixels of the smoothing input and
+        their kernel neighbourhood of the smoothed map are recomputed.
         """
         m = bkgmap.copy()
+        mv = m.reshape(-1)
+        sci_v = sci.reshape(-1)
         with np.errstate(invalid="ignore"):
             inv_sigma = np.where(
                 np.isfinite(sigma_map) & (sigma_map > 0),
                 1.0 / sigma_map, np.nan)
+        inv_v = inv_sigma.reshape(-1)
+        sigma_fill = np.where(np.isfinite(sigma_map), sigma_map, 0.0)
+        sigma_fill_v = sigma_fill.reshape(-1)
+        excl_v = exclude.reshape(-1)
+        sky = ~exclude
+
+        # The smoothing input as _smooth_masked builds it: the equalized
+        # residual, zero where excluded or non-finite, and its weight.
+        with np.errstate(invalid="ignore"):
+            resid_eq = (sci - m) * inv_sigma
+        filled = np.where(exclude, np.nan, resid_eq)
+        del resid_eq
+        w_ok = np.isfinite(filled)
+        f0 = np.where(w_ok, filled, 0.0).astype(np.float32)
+        del filled
+        f0_v = f0.reshape(-1)
+
         for s in self.guard_trough_sigmas:
             npixels = max(int(self.guard_trough_npix * s * s), 30)
+            den = K.gaussian(w_ok.astype(np.float32), s, mode="reflect",
+                             threads=self.n_threads)
+            valid = den > 0.05
+            num = K.gaussian(f0, s, mode="reflect", threads=self.n_threads)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                sm = np.where(valid, num / den, np.nan)
+            del num
+            # sm is finite exactly where valid (den > 0.05, f0 finite)
+            stat_sel = valid & sky
             for it in range(self.guard_trough_max_iter):
-                resid_eq = (sci - m) * inv_sigma
-                sm = self._smooth_masked(resid_eq, exclude, s)
                 # exclude keeps source flux out of the smoothing inputs and
                 # the rms estimate ONLY. The gate and the correction use sm
                 # wherever it is finite — including under excluded source
@@ -733,15 +882,21 @@ class SubtractBackground:
                 # source inside a fired trough, leaving each one on a
                 # pedestal at the original trough depth (a seam the class
                 # docstring promises not to make).
-                finite = np.isfinite(sm)
-                rms = float(astrostats.biweight_scale(sm[finite & ~exclude]))
+                rms = float(K.biweight_scale(sm[stat_sel], self.n_threads))
                 if not np.isfinite(rms) or rms <= 0:
                     break
-                signif = np.where(finite, sm / rms, 0.0)
-                seg = detect_sources(-signif,
-                                     threshold=self.guard_trough_t,
-                                     npixels=npixels)
-                if seg is None:
+                # detect_sources(-signif, guard_trough_t, npixels) with
+                # signif = where(valid, sm / rms, 0), evaluated per band
+                above = np.empty(sm.shape, dtype=bool)
+
+                def _above(rows, rms=rms):
+                    signif = np.where(valid[rows], sm[rows] / rms, 0.0)
+                    above[rows] = -signif > self.guard_trough_t
+
+                K.map_bands(_above, sm.shape, self.n_threads)
+                labels = K.segments(above, npixels, self.n_threads)
+                del above
+                if labels is None:
                     break
                 # A region's significance must rest on at least npixels of
                 # real (non-excluded) sky: interpolated sm under excluded
@@ -749,22 +904,41 @@ class SubtractBackground:
                 # but must never create or carry a firing on its own —
                 # otherwise shallow negative patches bridged by source
                 # footprints erode the blank-field near-no-op guarantee.
-                sky_area = np.bincount(
-                    seg.data[~exclude].ravel(), minlength=seg.nlabels + 1)
+                sky_lab = np.where(sky, labels, 0)
+                sky_area = K.bincount(sky_lab, int(labels.max()) + 1,
+                                      self.n_threads)
+                del sky_lab
+                sky_area[0] = 0          # == bincount(labels[sky]) off label 0
                 keep = sky_area >= npixels
                 keep[0] = False
                 if not keep.any():
                     break
-                gate = keep[seg.data]
-                corr = np.where(
-                    gate,
-                    np.minimum(sm + self.guard_trough_t * rms, 0.0), 0.0)
+                gate = keep[labels]
+                del labels
+                idx = np.flatnonzero(gate)
+                # The correction is zero off the gate, so it is applied at the
+                # gated pixels only (m + 0 == m).
+                corr = np.minimum(sm.reshape(-1)[idx] + self.guard_trough_t * rms,
+                                  0.0)
                 corr[~np.isfinite(corr)] = 0.0
-                corr = corr * np.where(np.isfinite(sigma_map), sigma_map, 0.0)
-                m = m + corr
+                corr = corr * sigma_fill_v[idx]
+                mv[idx] += corr
+                corr_min = float(corr.min())
+                if idx.size < gate.size:
+                    corr_min = min(corr_min, 0.0)
                 log(f"  guard trough sigma={s} iter={it}: corrected "
-                    f"{float(gate.mean()):.4f} of area, "
-                    f"min={float(corr.min()):.3g}")
+                    f"{idx.size / gate.size:.4f} of area, "
+                    f"min={corr_min:.3g}")
+                # Refresh the smoothing input at the gated pixels, then the
+                # smoothed map around them.
+                with np.errstate(invalid="ignore"):
+                    r_new = (sci_v[idx] - mv[idx]) * inv_v[idx]
+                r_new[excl_v[idx]] = np.nan
+                f0_v[idx] = np.where(np.isfinite(r_new), r_new, 0.0)
+                self._refresh_smoothed(sm, f0, den, valid, gate, s,
+                                       self._TROUGH_BLOCK, self.n_threads)
+                del gate, idx, corr, r_new
+            del den, valid, sm, stat_sel
         return m
 
     def apply_negativity_guard(
@@ -773,23 +947,29 @@ class SubtractBackground:
         bkg2d: Background2D,
         mask_final: np.ndarray,
         off: np.ndarray,
+        bkgmap: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Apply ceiling meshcap + gated trough pass to a fitted background.
 
         Parameters: the SCI image, the fitted ``Background2D``, the full fit
         mask, and the off-detector/DQ/zero-weight seed mask (bit 0 of the
-        bitmask). Returns the guarded background map.
+        bitmask); ``bkgmap`` is ``bkg2d.background`` when the caller already
+        has it (photutils re-interpolates on every access). Returns the
+        guarded background map.
         """
-        bkgmap = bkg2d.background
+        if bkgmap is None:
+            bkgmap = bkg2d.background
         sigma_map = self._guard_sigma_map(sci - bkgmap, ~mask_final & ~off)
         ceiling = self._multiscale_ceiling(
             sci, off, bkgmap, mask_final, sigma_map)
         capped = self._cap_mesh(bkg2d, ceiling, sci.shape)
+        del ceiling
         with np.errstate(invalid="ignore"):
             resid_eq = np.where(
                 np.isfinite(sigma_map) & (sigma_map > 0),
                 (sci - capped) / sigma_map, np.nan)
         excl = self._residual_exclusion(resid_eq, off)
+        del resid_eq
         return self._gated_trough_pass(sci, capped, excl, sigma_map)
 
     # ------------------------------------------------------------------
@@ -886,6 +1066,56 @@ class SubtractBackground:
         mask_final = bitmask != 0
         return mask_final, bitmask
 
+    def coverage_crop(
+        self,
+        sci: np.ndarray,
+        err: np.ndarray,
+        wht: Optional[np.ndarray] = None,
+    ) -> Optional[Tuple[slice, slice]]:
+        """The region :meth:`compute` works on, or None for the whole image.
+
+        The bounding box of every pixel with a finite SCI or ERR or a positive
+        WHT, grown by ``pad`` and with its origin moved down to a multiple of
+        every mesh box (and the ring-median block size), so each Background2D
+        grid and the block-reduce land on the same pixels as on the full
+        image. ``pad`` is 12 of the largest mesh boxes: the boxes beyond the
+        coverage are all masked and IDW-filled from their nearest valid cells
+        either way, and the cubic zoom couples mesh cells only through a
+        prefilter decaying by 0.27 per cell (0.27**12 ~ 1e-7), far beyond
+        every image-plane kernel (ring median, tier kernels and dilations,
+        guard smoothing). None when the crop would keep 90% of the image or
+        there is no coverage.
+        """
+        ny, nx = sci.shape
+        rows = np.zeros(ny, bool)
+        cols = np.zeros(nx, bool)
+        step = 2048
+        for y0 in range(0, ny, step):
+            sl = slice(y0, min(y0 + step, ny))
+            cov = np.isfinite(sci[sl]) | np.isfinite(err[sl])
+            if wht is not None:
+                with np.errstate(invalid="ignore"):
+                    cov |= np.asarray(wht[sl]) > 0
+            rows[sl] = cov.any(axis=1)
+            cols |= cov.any(axis=0)
+        if not rows.any():
+            return None
+        boxes = [self.ring_clip_box_size, self.bg_box_size,
+                 max(int(self.ring_downsample), 1)]
+        if self.bg_guard:
+            boxes += [int(b) for b in self.guard_ceiling_boxes]
+        align = int(np.lcm.reduce(np.array(boxes, dtype=np.int64)))
+        pad = 12 * max(boxes)
+        y = np.flatnonzero(rows)
+        x = np.flatnonzero(cols)
+        y0 = max(int(y[0]) - pad, 0) // align * align
+        x0 = max(int(x[0]) - pad, 0) // align * align
+        y1 = min(int(y[-1]) + 1 + pad, ny)
+        x1 = min(int(x[-1]) + 1 + pad, nx)
+        if (y1 - y0) * (x1 - x0) >= 0.9 * ny * nx:
+            return None
+        return slice(y0, y1), slice(x0, x1)
+
     def compute(
         self, filepath: str
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -907,19 +1137,44 @@ class SubtractBackground:
         """
         log(f"Running background subtraction on {os.path.basename(filepath)}")
         sci, err = self.open_file(filepath)
+        full_shape, full_dtype = sci.shape, sci.dtype
+
+        crop = None
+        if self.crop_to_coverage:
+            crop = self.coverage_crop(sci, err, self.wht)
+        if crop is not None:
+            (ys, xs) = crop
+            log(f"  cropping to coverage: [{ys.start}:{ys.stop}, "
+                f"{xs.start}:{xs.stop}] = {ys.stop - ys.start}x"
+                f"{xs.stop - xs.start} of {full_shape[0]}x{full_shape[1]} "
+                f"({(ys.stop - ys.start) * (xs.stop - xs.start) / sci.size:.0%})")
+
+            def _cut(a):
+                return None if a is None else np.ascontiguousarray(a[crop])
+            sci, err = _cut(sci), _cut(err)
+            self.wht = _cut(self.wht)
+            self._crop_frame = (full_shape, (ys.start, xs.start))
+            if self.has_dq:
+                self.dq = _cut(self.dq)
 
         # open_file set self.has_dq / self.dq / self.wht; hand the DQ and WHT
         # arrays (or None) to the shared mask builder.
-        mask_final, bitmask = self.mask_from_arrays(
-            sci, err, self.dq if self.has_dq else None, wht=self.wht
-        )
+        try:
+            mask_final, bitmask = self.mask_from_arrays(
+                sci, err, self.dq if self.has_dq else None, wht=self.wht
+            )
+        finally:
+            self._crop_frame = None
 
         bkg = self.estimate_background(sci, mask_final)
         bkgmap = bkg.background
         if self.bg_guard:
             log("Applying negativity guard (ceiling meshcap + trough pass)")
             off = (bitmask & 1) != 0
-            bkgmap = self.apply_negativity_guard(sci, bkg, mask_final, off)
+            bkgmap = self.apply_negativity_guard(
+                sci, bkg, mask_final, off, bkgmap=bkgmap)
+            del off
+        del bkg
         # Cast back to the input precision. The guard works in float64 —
         # _cap_mesh reads the mesh as `dtype=float` — so `sci - bkgmap` would
         # otherwise promote a float32 mosaic to float64 and double every SCI
@@ -930,6 +1185,19 @@ class SubtractBackground:
         # that invariant. Keeping the arithmetic in float64 and casting only
         # the result costs 2.4e-07 relative rounding.
         bkgd_subtracted = (sci - bkgmap).astype(sci.dtype, copy=False)
+        del bkgmap
+
+        if crop is not None:
+            # Outside the crop every pixel is off-detector (bit 0 only: no
+            # tier dilation reaches past the pad) and the output is the
+            # input's NaN.
+            out = np.full(full_shape, np.nan, dtype=full_dtype)
+            out[crop] = bkgd_subtracted
+            bkgd_subtracted = out
+            full_bits = np.ones(full_shape, dtype=bitmask.dtype)
+            full_bits[crop] = bitmask
+            bitmask = full_bits
+            mask_final = bitmask != 0
 
         self.mask_final = mask_final
         return bkgd_subtracted, mask_final, bitmask

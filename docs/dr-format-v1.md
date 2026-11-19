@@ -116,7 +116,8 @@ since P6b): `photo_z*` / `has_photometry` are the live cross-match fields,
 
 `id` (live `spectra.id`), `spectrum_id` (the text key), `target_id`,
 `object_id` (the object's public name, null when the spectrum's target had no
-active object), `object_db_id`, `grating`, `fits_path`, `file_hash`,
+active object), `object_db_id`, `grating`, `filter` (the NIRSpec filter, #683;
+null in releases frozen before the column was backfilled), `fits_path`, `file_hash`,
 `science_hash`, `file_size`, `signal_to_noise`, `exposure_time`,
 `cfpipe_version`, `crds_context`, `jwst_version`, `date_obs`, `reduced_at`,
 `redshift_auto`, `chi2_min`, `confidence`, `dq_flags`, `program_slug`,

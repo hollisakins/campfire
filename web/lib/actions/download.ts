@@ -18,6 +18,7 @@ import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
 import { generateDownloadUrls } from '@/lib/r2';
 import { hmacBase64Url } from '@/lib/server/worker-token';
+import { urlForRequest } from '@/lib/server/request-host';
 import { authorizeKeysInChunks } from '@/lib/server/authorized-keys';
 import { releaseDownloadUrls, resolveReleaseMembers } from '@/lib/server/dr-files';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -42,6 +43,13 @@ async function presignForRequest(
 }
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_DOWNLOAD_URL || 'http://localhost:8787';
+
+/** The Worker origin as this request's visitor must reach it: its alias on an
+ * alias host (lib/host-aliases.ts). The signature covers the presigned url
+ * only, so either origin serves the same proxy url. */
+function workerBase(): Promise<string> {
+  return urlForRequest(WORKER_URL);
+}
 const JWT_SECRET = process.env.WORKER_JWT_SECRET;
 
 // Presigned-URL lifetime. Must outlive the WHOLE client-side download (the browser
@@ -114,6 +122,7 @@ interface SpectraCsvRow {
   spectrum_id: string | null;
   target_id: string;
   grating: string;
+  filter: string | null;       // the NIRSpec filter (#683)
   field: string;
   observation: string;         // sort-only, not a CSV column
   ra: number;
@@ -227,7 +236,7 @@ export async function generateCSV(
       return { csv, error: null };
     }
 
-    // Spectra mode: one row per (target_id, grating).
+    // Spectra mode: one row per spectrum (target_id, grating, filter).
     let spectrumIds: number[] | null = null;
     if (treePath) {
       const matched = await matchFilterIds(supabase, 'spectra', filters, accessibleProgramSlugs, user.id);
@@ -248,7 +257,7 @@ export async function generateCSV(
       rows,
       includeDistance ? SPECTRA_CSV_SORT.distance : (SPECTRA_CSV_SORT[sortColumn] ?? measurementSortValue(rows[0] ?? { line_columns: null, band_columns: null }, sortColumn) ?? SPECTRA_CSV_SORT.spectrum_id),
       includeDistance ? 'asc' : sortDirection,
-      [r => r.target_id, r => r.grating],
+      [r => r.target_id, r => r.grating, r => r.filter ?? ''],
     );
     const csv = spectraRowsToCsv(rows, includeDistance, activeLinesOf(filters), activeBandsOf(filters));
 
@@ -364,6 +373,7 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, shown
   const columns = [
     'target_id',
     'grating',
+    'filter',
     'field',
     'ra',
     'dec',
@@ -382,7 +392,7 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, shown
   ];
 
   if (includeDistance) {
-    columns.splice(5, 0, 'distance_degrees');
+    columns.splice(6, 0, 'distance_degrees');
   }
 
   const csvRows: string[] = [columns.join(',')];
@@ -391,6 +401,7 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, shown
     const values: (string | number)[] = [
       escapeCsvValue(row.target_id),
       escapeCsvValue(row.grating),
+      escapeCsvValue(row.filter),
       escapeCsvValue(row.field),
       row.ra.toFixed(8),
       row.dec.toFixed(8),
@@ -671,7 +682,7 @@ export async function generateFitsDownloadUrl(
         };
       }
     } else {
-      // Spectra view: one on-screen row per (target, grating); the spectra RPC's
+      // Spectra view: one on-screen row per spectrum; the spectra RPC's
       // per-spectrum filtering matches the visible rows exactly, and
       // result.total is the count over spectra (the same unit this download
       // acts on).
@@ -717,10 +728,11 @@ export async function generateFitsDownloadUrl(
     if (keys.length === 0) {
       return { files: null, zipFilename: null, error: 'No FITS files found for selected objects' };
     }
+    const worker = await workerBase();
     const files: DownloadFile[] = await Promise.all(
       urls.map(async (signedUrl, i) => {
         const sig = await hmacBase64Url(signedUrl, JWT_SECRET);
-        const proxyUrl = `${WORKER_URL}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
+        const proxyUrl = `${worker}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
         return { proxyUrl, filename: filenames[i] };
       })
     );
@@ -829,10 +841,11 @@ export async function generateObjectFitsDownloadUrls(
     }
 
     const filenames = keys.map((k) => k.split('/').pop() || k);
+    const worker = await workerBase();
     const files: DownloadFile[] = await Promise.all(
       urls.map(async (signedUrl, i) => {
         const sig = await hmacBase64Url(signedUrl, JWT_SECRET);
-        const proxyUrl = `${WORKER_URL}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
+        const proxyUrl = `${worker}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
         return { proxyUrl, filename: filenames[i] };
       })
     );
@@ -919,10 +932,11 @@ export async function generateNircamMosaicDownloadUrls(
     // URLs we authorized.
     const { keys: authorizedKeys, urls: signed } = await presignForRequest(supabase, dr, authorized, { attachment: true });
     const urls: Record<string, string> = {};
+    const worker = await workerBase();
     await Promise.all(
       authorizedKeys.map(async (key, i) => {
         const sig = await hmacBase64Url(signed[i], JWT_SECRET);
-        urls[key] = `${WORKER_URL}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
+        urls[key] = `${worker}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
       })
     );
 
@@ -1001,10 +1015,11 @@ export async function generateNircamExpmapDownloadUrls(
       return { urls: {}, error: null };
     }
     const urls: Record<string, string> = {};
+    const worker = await workerBase();
     await Promise.all(
       authorizedKeys.map(async (key, i) => {
         const sig = await hmacBase64Url(signed[i], JWT_SECRET);
-        urls[key] = `${WORKER_URL}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
+        urls[key] = `${worker}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
       })
     );
 

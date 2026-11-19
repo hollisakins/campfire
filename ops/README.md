@@ -589,12 +589,22 @@ domain and origins in `wrangler.toml`, and the web fallbacks.
 and `deploy.sh <last sha built with the old urls>` (`deploys.log`). Re-creating
 the parking rule is optional; without it the new names serve the site directly.
 
-**Afterwards:** leave `campfire-api.hollisakins.com` aliased for at least three
-months and the old Worker route for at least 30 days; then drop the `ALT_API_HOST`
-line, the old route in `wrangler.toml`, and the `campfire-tiles` R2 custom
-domain. The redirects on `campfire.hollisakins.com` stay for as long as the
-domain exists. Moving the mail From to `team@campfire-jwst.org` is a separate,
-optional Resend domain verification.
+**Afterwards:** the hollisakins.com names are a permanent second domain, not
+a retirement path. Some networks block `campfire-jwst.org` (newly-registered-
+domain firewall categories, about 30 days from 2026-10-25 at Palo Alto sites)
+and others block `hollisakins.com` (Princeton), so `campfire.hollisakins.com`
+serves the whole portal (Caddy `portal_alias`, `X-Robots-Tag: noindex`) and the
+app keeps a visitor there on the alias of every host it links to
+(`web/lib/host-aliases.ts`, GitHub variable `DEPLOY_NEXT_PUBLIC_HOST_ALIASES` =
+comma-separated `alias=primary` pairs, `.env.example` has the value). That
+needs all four alias names live: `ALT_WEB_HOST`, `ALT_API_HOST`, the
+`campfire-download` Worker route in `wrangler.toml` and the `campfire-tiles` R2
+custom domain (its CORS policy must allow the alias portal origin). Keep them,
+and the alias origins in the Worker's `ALLOWED_ORIGINS` and in GoTrue's
+`ADDITIONAL_REDIRECT_URLS`, for as long as either domain is blocked anywhere.
+Auth emails still link to `SITE_URL` (the primary name). Moving the mail From
+to `team@campfire-jwst.org` is a separate, optional Resend domain
+verification.
 
 ## Rollback
 
@@ -644,6 +654,13 @@ optional Resend domain verification.
   `/api/health` is 503 (`"db":"degraded"`, `reason` `wal` or `locks`) when
   commits are stuck on the disk or behind a lock, not only when the database
   is unreachable (`db_stall_status()`, two samples 15 s apart).
+  A run tries up to 3 times, 5 s apart, and reports `/fail` only if all fail
+  (a single stalled request, as on 2026-11-06 and 2026-11-10, must not page).
+  Every failed try, with curl's error and the connect / TLS / first-byte times
+  or the 503 body, goes to `/srv/campfire/logs/site-check.log` and into the
+  ping body (healthchecks.io's ping log): after a notice you cannot explain,
+  read that file first. A blip that recovered on retry sends no notice, only
+  log lines.
 - Site-wide banner: shown automatically while `/api/health` would be 503.
   For an operator message (maintenance, a provider incident) write one line on
   the host, root disk, no restart, shown within 15 s, replaces the automatic

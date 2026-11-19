@@ -6,7 +6,7 @@ Three kinds of content identity live here:
   ``content_hash`` stored in the ``storage_objects`` registry and verified on
   download. Byte-exact, so it churns whenever a FITS is re-saved with fresh
   header timestamps.
-* **Science-only** (``sci_dq_hash``): SHA-256 over the SCI+DQ+CFMASK arrays of
+* **Science-only** (``sci_dq_hash``): SHA-256 over the SCI+DQ+CFMASK+CFSPIKE arrays of
   a FITS file — the pixel half of the *change-detection* identity for push
   dedup (epic #261, D1). Stable across a science-identical re-save, which is
   exactly why whole-file hashes can't drive "should I re-upload this exposure".
@@ -189,7 +189,7 @@ def wcs_hash(path) -> Optional[str]:
 
 
 def sci_dq_hash(path) -> Optional[str]:
-    """Return ``'sha256:<hex>'`` over the SCI+DQ+CFMASK arrays, or None.
+    """Return ``'sha256:<hex>'`` over the SCI+DQ+CFMASK+CFSPIKE arrays, or None.
 
     The science-only change-detection digest for the push dedup (epic #261,
     D1). Reproduces ``campfire_pipeline.nircam.manifest.compute_file_hash``
@@ -204,6 +204,11 @@ def sci_dq_hash(path) -> Optional[str]:
     to the old SCI+DQ-only digest (no spurious re-upload on the first
     post-N7 deploy).
 
+    CFSPIKE (the pipeline's diffraction-spike mask, same contract as CFMASK:
+    recorded on the canonical, SCI/DQ untouched) follows under the same rule,
+    so a changed spike mask re-uploads and an exposure without one hashes as
+    before.
+
     Returns None if none of the arrays are present or the file is unreadable
     (never dedup on an empty hash). This is the *pixel* half of an exposure's
     identity only — pair it with :func:`wcs_hash`, or call
@@ -215,7 +220,7 @@ def sci_dq_hash(path) -> Optional[str]:
     hashed_any = False
     try:
         with fits.open(path, memmap=False, do_not_scale_image_data=True) as hdul:
-            for extname in ('SCI', 'DQ', 'CFMASK'):
+            for extname in ('SCI', 'DQ', 'CFMASK', 'CFSPIKE'):
                 if extname not in hdul:
                     continue
                 data = hdul[extname].data
@@ -249,7 +254,7 @@ def exposure_identity(path) -> Tuple[Optional[str], Optional[str]]:
             warnings.simplefilter('ignore')
             with fits.open(path, memmap=False,
                            do_not_scale_image_data=True) as hdul:
-                for extname in ('SCI', 'DQ', 'CFMASK'):
+                for extname in ('SCI', 'DQ', 'CFMASK', 'CFSPIKE'):
                     if extname not in hdul:
                         continue
                     data = hdul[extname].data

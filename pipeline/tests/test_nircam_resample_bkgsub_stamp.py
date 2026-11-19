@@ -40,8 +40,12 @@ class FakeSubtractBackground:
     double subtraction is visible as SKY - 2*BKG.
     """
 
+    instances = []
+
     def __init__(self, **kwargs):
+        self.kwargs = kwargs
         self.outfile = None
+        FakeSubtractBackground.instances.append(self)
 
     def call(self, filepath):
         self.outfile = filepath.replace('.fits', '_bkgsub.fits')
@@ -85,9 +89,10 @@ def _sci_level(path):
     return float(fits.getdata(path, extname='SCI')[0, 0])
 
 
-def _run(tmp_path, monkeypatch, step_config=None):
+def _run(tmp_path, monkeypatch, step_config=None, **step_kwargs):
     """Run resample_step on the fixture tile; returns the captured log."""
     captured = []
+    FakeSubtractBackground.instances.clear()
     monkeypatch.setattr(resample_mod, 'select_overlapping_files',
                         lambda files, poly: ['exp1.fits'])
     monkeypatch.setattr(resample_mod, 'log', captured.append)
@@ -114,6 +119,7 @@ def _run(tmp_path, monkeypatch, step_config=None):
     cfg.update(step_config or {})
     resample_mod.resample_step(
         'f444w', ['exp1.fits'], field, cfg, 'v0.0.0', overwrite=False,
+        **step_kwargs,
     )
     return captured
 
@@ -238,6 +244,25 @@ def test_keep_pre_bkgsub_false_skips_snapshot(tmp_path, monkeypatch):
     assert _sci_level(mosaic) == SKY - BKG
 
 
+def test_runtime_options_reach_subtract_background(tmp_path, monkeypatch):
+    # crop_to_coverage and n_threads are not in BKGSUB_PIXEL_DEFAULTS, so
+    # resample_step must forward them itself.
+    _write_mosaic(_mosaic_path(tmp_path), SKY)
+    _run(tmp_path, monkeypatch, step_config={'crop_to_coverage': False},
+         n_threads=6)
+    (sb,) = FakeSubtractBackground.instances
+    assert sb.kwargs['crop_to_coverage'] is False
+    assert sb.kwargs['n_threads'] == 6
+
+
+def test_runtime_option_defaults(tmp_path, monkeypatch):
+    _write_mosaic(_mosaic_path(tmp_path), SKY)
+    _run(tmp_path, monkeypatch)
+    (sb,) = FakeSubtractBackground.instances
+    assert sb.kwargs['crop_to_coverage'] is True
+    assert sb.kwargs['n_threads'] == 1
+
+
 # ---------------------------------------------------------------------------
 # Stamp value
 # ---------------------------------------------------------------------------
@@ -251,3 +276,4 @@ def test_stamp_value_tracks_pixel_settings_only():
     # ...pixel-neutral settings do not.
     assert bkgsub_stamp_value({'keep_pre_bkgsub': False}) == base
     assert bkgsub_stamp_value({'split_extensions': False}) == base
+    assert bkgsub_stamp_value({'crop_to_coverage': False}) == base
