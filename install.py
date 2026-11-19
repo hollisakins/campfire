@@ -473,13 +473,28 @@ def stack_env_suffix():
 def sibling_env(env, sel):
     """The stack-specific environment next to ``env`` (same manager)."""
     suffix = stack_env_suffix() or "-alt"
-    if isinstance(env, CondaEnv):
-        name = env.name if env.name.endswith(suffix) else env.name + suffix
-        sel["env_name"] = name
-        return CondaEnv(env.manager, env.exe, name)
-    path = str(env.path) if str(env.path).endswith(suffix) else str(env.path) + suffix
-    sel["venv_path"] = path
-    return VenvEnv(path, env.base_python)
+    conda = isinstance(env, CondaEnv)
+    current = env.name if conda else str(env.path)
+
+    def make(name):
+        return CondaEnv(env.manager, env.exe, name) if conda else VenvEnv(name, env.base_python)
+
+    if not current.endswith(suffix):
+        name = current + suffix
+    else:
+        # ``env`` already carries the suffix (e.g. two checkouts pinning
+        # different jwst 3.x releases), so it cannot be its own sibling: the
+        # caller asked to leave it alone. Number the name; an existing numbered
+        # env is reused only when it already carries this checkout's stack.
+        n = 2
+        while True:
+            name = f"{current}-{n}"
+            candidate = make(name)
+            if not candidate.exists() or not stack_status(candidate)["drift"]:
+                break
+            n += 1
+    sel["env_name" if conda else "venv_path"] = name
+    return make(name)
 
 
 def resolve_stack(env, sel, args):

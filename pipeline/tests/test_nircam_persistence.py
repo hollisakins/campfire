@@ -36,6 +36,14 @@ def test_time_explicit_and_fallback():
     assert persistence.persistence_time_for("NOSUCHDET") == snowblind.persist.DEFAULT_TIME
 
 
+@pytest.fixture
+def no_crds(monkeypatch):
+    """Keep ``Step.call`` off CRDS: it looks up a ``pars-`` reference for every
+    step, and CI has neither a server nor a cache. snowblind's step has no such
+    reference, so nothing is lost by not asking."""
+    monkeypatch.setenv("STPIPE_DISABLE_CRDS_STEPPARS", "true")
+
+
 def _exposure(path, start_mjd, saturated=None):
     model = ImageModel(data=np.zeros((16, 16), dtype=np.float32))
     model.dq = np.zeros((16, 16), dtype=np.uint32)
@@ -50,7 +58,7 @@ def _exposure(path, start_mjd, saturated=None):
     model.close()
 
 
-def test_step_runs_without_jump_sidecars_and_cleans_them_up(tmp_path):
+def test_step_runs_without_jump_sidecars_and_cleans_them_up(tmp_path, no_crds):
     first = str(tmp_path / "jw00001001001_02101_00001_nrcalong.fits")
     second = str(tmp_path / "jw00001001001_02101_00002_nrcalong.fits")
     _exposure(first, 60000.0, saturated=(slice(4, 6), slice(4, 6)))
@@ -72,7 +80,7 @@ def test_step_runs_without_jump_sidecars_and_cleans_them_up(tmp_path):
     assert not os.path.exists(sidecar)                    # removed: jackknife is not waiting on it
 
 
-def test_step_keeps_sidecar_while_jackknife_is_pending(tmp_path):
+def test_step_keeps_sidecar_while_jackknife_is_pending(tmp_path, no_crds):
     first = str(tmp_path / "jw00001001001_02101_00001_nrcalong.fits")
     _exposure(first, 60000.0)
     sidecar = persistence._jump_path(first)
