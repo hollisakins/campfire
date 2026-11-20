@@ -74,7 +74,7 @@ EXTENDED_GRID_MAX_UM = 5.301
 # Wavelength (microns) beyond which the measured flat ends and the extended flat
 # holds its last real value constant (flat extrapolation).
 FLAT_HOLD_WAVELENGTH_UM = {
-    ("G140M", "F070LP"): 1.27,
+    ("G140M", "F070LP"): 1.26,
     ("G140M", "F100LP"): 1.87,
     ("G235M", "F170LP"): 3.15,
 }
