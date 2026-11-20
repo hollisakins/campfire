@@ -120,6 +120,22 @@ def test_f070lp_is_stitched_onto_the_extended_f100lp(tmp_path):
     assert w[-1] == pytest.approx(5.3, abs=1e-6)
 
 
+def test_stitch_drops_nan_before_smoothing_the_seam(tmp_path):
+    """The F070LP F-flat ends in NaN: those samples go, the seam stays finite."""
+    data = F070_DATA.copy()
+    data[F070_WAVE > 1.26] = np.nan
+    f100, f070 = tmp_path / "f100.fits", tmp_path / "f070.fits"
+    _write_fflat(f100, F100_WAVE, F100_DATA, "F100LP")
+    _write_fflat(f070, F070_WAVE, data, "F070LP")
+    ext100, ext070 = tmp_path / "ext100.fits", tmp_path / "ext070.fits"
+    ew._build_extended_fflat(str(f100), "G140M", "F100LP", str(ext100))
+    ew._build_stitched_fflat(str(f070), str(ext100), str(ext070))
+    w, d, nelem = _table(ext070, 5)
+    assert np.all(np.isfinite(d)) and nelem == len(w)
+    assert not np.any((w > 1.26) & (w <= F070_WAVE.max() + 1e-6))
+    assert np.all(np.diff(w) > 0)
+
+
 def test_cache_names_carry_the_version_and_the_stitch_source():
     assert ew._extended_output_path("/c/jwst_nirspec_fflat_0200.fits", "/x") == \
         f"/x/extended_v{ew._EXTENSION_VERSION}_jwst_nirspec_fflat_0200.fits"

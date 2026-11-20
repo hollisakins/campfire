@@ -120,9 +120,10 @@ Release procedure: edit the `## Unreleased` section below, then run
   nearest the hold wavelength held (an S-flat table's zero padding dropped, its *last*
   plane moved to 5.3 um; the live code used to write `FLAT_05` on the 12-plane S-flats);
   G140M/F070LP flats with the extended F100LP flats (same quadrant / detector) stitched on
-  and the seam smoothed. A held sample that is NaN now raises instead of blanking the
-  extension. The guard also checks the F100LP flats behind an F070LP reduction. Cached
-  extended files are named `extended_v2_*` (a stitched flat also carries its source's
+  and the seam smoothed (non-finite samples dropped first, so the F070LP F-flat's NaN tail
+  from 1.261 um cannot blank the seam window). A held sample that is NaN now raises
+  instead of blanking the extension. The guard also checks the F100LP flats behind an F070LP reduction. Cached
+  extended files are named `extended_v3_*` (a stitched flat also carries its source's
   version), so files built by the previous construction are never reused.
 - **NIRCam under `jwst_1614`:** full-frame `superbias` redelivered for all ten detectors,
   `photom` for NRCA2 / NRCA4 (not yet quantified), new `mask` files for data after

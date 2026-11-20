@@ -59,7 +59,7 @@ _STITCH_SIGMA = 10
 # Version of the extension construction, part of every cached filename: bump it
 # whenever the flat / wavelengthrange construction changes, so a cache file built by
 # an older construction is never reused against a photom calibrated with a newer one.
-_EXTENSION_VERSION = 2
+_EXTENSION_VERSION = 3
 
 
 def _crds_params(det, grating, filt, hdr=None):
@@ -100,7 +100,7 @@ def _extended_output_path(src_path, cache_dir, stitched_onto=None):
     ``jwst_nirspec_fflat_0200.fits``), so a CRDS bump that changes the underlying
     flat produces a different output name and naturally invalidates the cache. A
     stitched flat also depends on the flat stitched onto it, whose version is
-    appended (``extended_v2_jwst_nirspec_fflat_0196+0200.fits``).
+    appended (``extended_v3_jwst_nirspec_fflat_0196+0200.fits``).
     """
     stem, ext = os.path.splitext(os.path.basename(src_path))
     if stitched_onto:
@@ -138,7 +138,8 @@ def _stitch_flat_table(tab, red_tab):
     """Append the samples of ``red_tab`` redward of ``tab``'s last wavelength.
 
     Returns ``(newwave, newflux)``: ``tab``'s positive-wavelength samples, then the
-    (already extended) ``red_tab`` beyond them, with the seam smoothed by a gaussian.
+    (already extended) ``red_tab`` beyond them, non-finite samples dropped, with the
+    seam smoothed by a gaussian.
     """
     wave = tab['wavelength'][0]
     red_wave = red_tab['wavelength'][0]
@@ -147,6 +148,9 @@ def _stitch_flat_table(tab, red_tab):
     newflux[:len(wave[wave > 0])] = tab['data'][0][wave > 0]
     newflux[newwave > np.max(wave)] = red_tab['data'][0][red_wave > np.max(wave)]
     newflux[newflux <= 0] = np.nan
+    # Drop the non-finite samples before smoothing: a NaN inside the seam window would
+    # spread over the whole window (the F070LP F-flat is NaN from 1.261 um).
+    newflux, newwave = newflux[np.isfinite(newflux)], newwave[np.isfinite(newflux)]
     idx = np.where(newwave > np.max(wave))[0][0]
     seam = slice(idx - _STITCH_HALF_WINDOW, idx + _STITCH_HALF_WINDOW)
     newflux[seam] = gaussian_filter(newflux[seam], _STITCH_SIGMA)  # smooth the transition slightly
