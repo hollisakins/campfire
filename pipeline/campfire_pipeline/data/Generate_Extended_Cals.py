@@ -156,6 +156,7 @@ def generate_extended_cals(rate_files,cwd):
                 newflux[:len(tab['wavelength'][0][tab['wavelength'][0]>0])]=tab['data'][0][tab['wavelength'][0]>0]
                 newflux[newwave>np.max(tab['wavelength'][0])]=f100lp['data'][0][f100lp['wavelength'][0]>np.max(tab['wavelength'][0])]
                 newflux[newflux<=0]=np.nan
+                newflux,newwave=newflux[np.isfinite(newflux)],newwave[np.isfinite(newflux)]
                 idx=np.where(newwave>np.max(tab['wavelength'][0]))[0][0]
                 newflux[idx-15:idx+15]=gaussian_filter(newflux[idx-15:idx+15],10)#smooth the transition slightly
                 tab['newwavelength']=newwave[:,None].T.astype('float32')
@@ -217,6 +218,7 @@ def generate_extended_cals(rate_files,cwd):
                 newflux[:len(tab['wavelength'][0][tab['wavelength'][0]>0])]=tab['data'][0][tab['wavelength'][0]>0]
                 newflux[newwave>np.max(tab['wavelength'][0])]=f100lp['data'][0][f100lp['wavelength'][0]>np.max(tab['wavelength'][0])]
                 newflux[newflux<=0]=np.nan
+                newflux,newwave=newflux[np.isfinite(newflux)],newwave[np.isfinite(newflux)]
                 idx=np.where(newwave>np.max(tab['wavelength'][0]))[0][0]
                 newflux[idx-15:idx+15]=gaussian_filter(newflux[idx-15:idx+15],10)#smooth the transition slightly
                 tab['newwavelength']=newwave[:,None].T.astype('float32')
@@ -618,12 +620,12 @@ if steps['calibrate']:
             tab['newreluncertainty']=newflux[:,None].T.astype('float32')*0
             for b_idx in b_idxs:
                 tab['newrelresponse'][b_idx]=1/bcorr
-                tab['newwavelength'][b_idx][np.isnan(tab['newrelresponse'][b_idx])]=0
-                tab['newrelresponse'][b_idx][np.isnan(tab['newrelresponse'][b_idx])]=0
+                tab['newwavelength'][b_idx][~np.isfinite(tab['newrelresponse'][b_idx])]=0
+                tab['newrelresponse'][b_idx][~np.isfinite(tab['newrelresponse'][b_idx])]=0
             for g_idx in g_idxs:
                 tab['newrelresponse'][g_idx]=1/gcorr
-                tab['newwavelength'][g_idx][np.isnan(tab['newrelresponse'][g_idx])]=0
-                tab['newrelresponse'][g_idx][np.isnan(tab['newrelresponse'][g_idx])]=0
+                tab['newwavelength'][g_idx][~np.isfinite(tab['newrelresponse'][g_idx])]=0
+                tab['newrelresponse'][g_idx][~np.isfinite(tab['newrelresponse'][g_idx])]=0
             for col in ['wavelength','relresponse','reluncertainty']:
                 del tab[col]
                 tab['new'+col].name=col
