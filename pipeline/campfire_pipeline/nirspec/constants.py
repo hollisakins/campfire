@@ -76,7 +76,7 @@ EXTENDED_GRID_MAX_UM = 5.301
 FLAT_HOLD_WAVELENGTH_UM = {
     ("G140M", "F070LP"): 1.27,
     ("G140M", "F100LP"): 1.87,
-    ("G235M", "F170LP"): 3.17,
+    ("G235M", "F170LP"): 3.15,
 }
 
 # Extended assign_wcs wavelength ranges, in METERS, keyed by the CRDS
