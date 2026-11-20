@@ -72,7 +72,8 @@ def _empty_catalog(mag_calibrated=False):
 
 def detect_sources(sci, err=None, *, mask=None, fwhm=1.5, snr_thresh=3.0,
                    minarea=15, deblend_nthresh=32, deblend_cont=0.001,
-                   edge=8, snr_min=10.0, objmag_lim=None, zeropoint=None):
+                   edge=8, snr_min=10.0, objmag_lim=None, zeropoint=None,
+                   centroid_sigma=None):
     """Detect sources on a detector image by SEP segmentation of the SNR map.
 
     Returns an astropy ``Table`` with columns ``x, y, flux, fluxerr, mag, snr,
@@ -115,6 +116,10 @@ def detect_sources(sci, err=None, *, mask=None, fwhm=1.5, snr_thresh=3.0,
         only when *zeropoint* is available — on an uncalibrated frame the cut
         is skipped with a loud (once-per-process) log, because an AB window on
         instrumental mags would cut everything.
+    centroid_sigma : float, optional
+        Gaussian sigma (pixels) of a FIXED centroid window on the science image
+        (``[nircam.align].centroid_sigma``). ``None`` / 0 keeps the adaptive
+        window on the S/N map. See ``refcat/extract.py::sep_extract_sources``.
     zeropoint : float, optional
         AB zeropoint for one image unit of integrated flux: ``mag = zeropoint
         - 2.5·log10(flux)``. For jwst cal frames in MJy/sr, ``zeropoint =
@@ -140,7 +145,8 @@ def detect_sources(sci, err=None, *, mask=None, fwhm=1.5, snr_thresh=3.0,
 
     cat = sep_extract_sources(sci, err, mask=mask, snr_thresh=snr_thresh,
                               minarea=minarea, deblend_nthresh=deblend_nthresh,
-                              deblend_cont=deblend_cont, filter_fwhm=fwhm)
+                              deblend_cont=deblend_cont, filter_fwhm=fwhm,
+                              centroid_sigma=centroid_sigma or None)
     if len(cat) == 0:
         return _empty_catalog(calibrated)
 

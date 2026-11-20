@@ -126,7 +126,7 @@ _SEP_THETA_MAX = float(np.nextafter(np.float32(np.pi / 2), np.float32(0)))
 
 def sep_extract_sources(sci, err, *, mask=None, snr_thresh=3.0, minarea=15,
                         deblend_nthresh=32, deblend_cont=0.001,
-                        filter_fwhm=1.5):
+                        filter_fwhm=1.5, centroid_sigma=None):
     """SEP-on-SNR segmentation + Kron photometry, in pixel space.
 
     The shared detection core of both the refcat build
@@ -218,6 +218,21 @@ def sep_extract_sources(sci, err, *, mask=None, snr_thresh=3.0, minarea=15,
     )
     sigma = 2.0 / 2.35 * rhalf
     xwin, ywin, _ = sep.winpos(snr, objs["x"], objs["y"], sigma, mask=snr_mask)
+    if centroid_sigma:
+        # Fixed narrow window on the science image, started from the adaptive
+        # positions: the centroid of the core. The adaptive window follows each
+        # source's size, so on an asymmetric PSF (NIRCam LW module B) its
+        # centroid sits off the core by an amount that depends on the source,
+        # which shows up as visit-to-visit offsets of several mas when the
+        # detector lands at another angle (measured on A2744, 2026-11).
+        sci0 = np.where(bad, 0.0, sci).astype(np.float32)
+        xn, yn, _ = sep.winpos(sci0, xwin, ywin,
+                               np.full(len(objs), float(centroid_sigma)),
+                               mask=snr_mask)
+        ok = (np.isfinite(xn) & np.isfinite(yn)
+              & (np.hypot(xn - xwin, yn - ywin) < 5.0))
+        xwin = np.where(ok, xn, xwin)
+        ywin = np.where(ok, yn, ywin)
 
     # Photometry on the SCI map (Kron + small-source circle fallback)
     flux, fluxerr, _, _ = _kron_with_circle_fallback(

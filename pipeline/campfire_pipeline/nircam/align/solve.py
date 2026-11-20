@@ -64,6 +64,7 @@ from astropy.coordinates import SkyCoord
 from astropy.table import Table
 from tweakwcs.correctors import JWSTWCSCorrector
 from tweakwcs.imalign import align_wcs
+from tweakwcs.linearfit import iter_linear_fit
 
 from campfire_pipeline.common.io import log
 from campfire_pipeline.nircam.align.footprint import clip_refcat_to_exposure
@@ -129,6 +130,11 @@ class DetectorSolution:
     matched: Optional[object] = None    # bool array: row paired one-to-one
     sep_arcsec: Optional[object] = None  # float array: separation to the NEAREST
                              # refcat source (all rows, matched or not)
+    tstat: float = float('nan')         # significance of this detector's OWN
+                             # fit (its shift over the shift's standard error,
+                             # from all of its matches), accepted or not; nan
+                             # when no such fit was attempted
+    own_fit: bool = False    # True: that fit was accepted
     ref_ra: Optional[object] = None     # float array: matched refcat RA (deg),
     ref_dec: Optional[object] = None    # ... and Dec; nan on unmatched rows.
                              # VALUES, not indices: they index the
@@ -155,6 +161,10 @@ class GroupSolution:
     # consensus keys from the last pass that was KEPT.
     n_refcat_in_footprint: Optional[int] = None
     diagnostics: Optional[dict] = None
+    # Only with ``fine_groups``: the solution with the fits shared by each
+    # group and nothing more, same order as ``detectors`` (which may add a fit
+    # of each detector's own). The caller ties the exposures again from these.
+    shared_detectors: Optional[List[DetectorSolution]] = None
 
 
 def _has_radec(refcat):
@@ -264,6 +274,11 @@ def _not_aligned(key, detectors, wcs_getter, *, n_refcat=None, diag=None):
     )
 
 
+def _make_corrector(wcs, wcsinfo, meta):
+    """The ``tweakwcs`` corrector for one detector's gwcs."""
+    return JWSTWCSCorrector(wcs, wcsinfo, meta=meta)
+
+
 def _pool_fit(detectors, wcs_by_det, refcat, match, *, key, fitgeom, nclip, sigma):
     """Fit one shared correction over the pool and return
     ``(correctors, fit_info)``.
@@ -274,7 +289,7 @@ def _pool_fit(detectors, wcs_by_det, refcat, match, *, key, fitgeom, nclip, sigm
     place on success, so the caller reads the corrected WCS back off them.
     """
     correctors = [
-        JWSTWCSCorrector(
+        _make_corrector(
             wcs_by_det[d.detector], d.wcsinfo,
             meta={'catalog': d.catalog, 'group_id': key, 'name': d.detector},
         )
@@ -287,7 +302,7 @@ def _pool_fit(detectors, wcs_by_det, refcat, match, *, key, fitgeom, nclip, sigm
 
 
 def _coarse(detectors, wcs_by_det, refcat, key, *, match0, match_iter, niter,
-            nclip, sigma):
+            nclip, sigma, fitgeom='rshift'):
     """Iterate a pooled ``rshift`` to convergence; return
     ``(correctors, last_info, first_info, wcs_by_det, diag)`` or
     ``(None, {}, {}, wcs_by_det, {})``.
@@ -316,7 +331,7 @@ def _coarse(detectors, wcs_by_det, refcat, key, *, match0, match_iter, niter,
         match = match0 if i == 0 else match_iter
         try:
             c, fi = _pool_fit(detectors, wcs_by_det, refcat, match, key=key,
-                              fitgeom='rshift', nclip=nclip, sigma=sigma)
+                              fitgeom=fitgeom, nclip=nclip, sigma=sigma)
         except Exception as e:  # noqa: BLE001 — a matcher/fit crash degrades to
             # NOT_ALIGNED, never aborts the worker. Keep any prior good pass.
             log(f"align solve[{key}]: coarse pass {i} raised "
@@ -347,8 +362,11 @@ def _choose_fitgeom(n, coverage, ceiling, mins, min_coverage):
     Falls to a lower geometry when *n* matches are too few for the chosen one,
     and skips rotating geometries (``general``/``rshift``) when *coverage* is
     below *min_coverage* (an unconditioned rotation). ``None`` = keep the coarse
-    attitude for this detector.
+    attitude for this detector. A *ceiling* of ``'none'`` (or ``None``) turns
+    the per-detector stage off: every detector keeps the pooled attitude.
     """
+    if ceiling is None or str(ceiling).lower() == 'none':
+        return None
     try:
         start = _FINE_LADDER.index(ceiling)
     except ValueError:
@@ -385,7 +403,41 @@ def _fine_shift_arcsec(coarse, trial, catalog, src_idx):
     return float(np.median(np.hypot(d_ra, d_dec)) * 3600.0)
 
 
-def _fine_significance(shift_arcsec, new_resid, new_n, geom='shift'):
+def _averaged_scatter(sep, nclip, sigma):
+    """Per-axis rms (arcsec) of the pairs a fit averages, and how many they are.
+
+    *sep* holds the separations of the matched pairs after the fit. The fit is
+    an unweighted least-squares fit that drops pairs beyond *sigma* times the
+    rms, *nclip* times; the same passes are applied here, so the result is the
+    scatter of the pairs that set the fitted shift. For a 2-D Gaussian the mean
+    squared separation is twice the per-axis variance.
+
+    This, not the median separation, is what the noise of the fitted shift
+    follows. The two agree for Gaussian residuals. They do not when part of the
+    pairs scatter a few times more than the rest and stay inside the clipping
+    (stars that moved since the catalog's epoch, faint stars with uncertain
+    proper motions): measured on three ACS visits against a NIRCam-derived
+    catalog and against Gaia, the rms of the averaged pairs was 1.4 to 3 times
+    the sigma inferred from the median, and chip fits that were noise scored 3
+    to 6 (docs/hst/design.md section 8b). Wrong pairs spread over the whole
+    match radius are removed by the clipping and do not count here either.
+    """
+    sep = np.asarray(sep, dtype=float)
+    sep = sep[np.isfinite(sep)]
+    for _ in range(int(nclip or 0)):
+        if sep.size < 2:
+            break
+        kept = sep[sep <= float(sigma) * np.sqrt(np.mean(sep ** 2))]
+        if kept.size == sep.size:
+            break
+        sep = kept
+    if sep.size == 0:
+        return float('nan'), 0
+    return float(np.sqrt(0.5 * np.mean(sep ** 2))), int(sep.size)
+
+
+def _fine_significance(shift_arcsec, new_resid, new_n, geom='shift',
+                       sigma_axis=None):
     """``t = |shift| / se(geom)`` — the fine fit's shift measured against the
     estimation noise that adopting it costs.
 
@@ -400,8 +452,11 @@ def _fine_significance(shift_arcsec, new_resid, new_n, geom='shift'):
     f410m/f210m: median t ~ 3.1-3.4 against a null expectation of 1.18, yet the
     residual test accepted only 44-59%).
 
-    ``sigma_axis`` comes from the post-fit residual: for a 2-D Gaussian the
-    median radial deviation is ``sqrt(2 ln 2)`` per-axis sigmas.
+    *sigma_axis* is the per-axis scatter of the pairs the fit averaged
+    (``_averaged_scatter``) and *new_n* their number. Without it the scatter is
+    inferred from the median residual *new_resid* (for a 2-D Gaussian the median
+    radial deviation is ``sqrt(2 ln 2)`` per-axis sigmas), which understates the
+    noise of the fitted shift whenever the residuals have a long tail.
 
     **Normalized for the fit geometry.** A richer geometry moves sources further
     on noise alone: summing the leverage over the fitted points gives a mean
@@ -417,8 +472,11 @@ def _fine_significance(shift_arcsec, new_resid, new_n, geom='shift'):
             or new_n < 2 or new_resid <= 0):
         return float('nan')
     nparam = _FITGEOM_NPARAM.get(geom, 2)
-    se = (np.sqrt(nparam / 2.0) * (new_resid / _RAYLEIGH_MEDIAN)
-          / np.sqrt(new_n))
+    if sigma_axis is None:
+        sigma_axis = new_resid / _RAYLEIGH_MEDIAN
+    elif not np.isfinite(sigma_axis) or sigma_axis <= 0:
+        return float('nan')
+    se = np.sqrt(nparam / 2.0) * sigma_axis / np.sqrt(new_n)
     return float('inf') if se <= 0 else float(shift_arcsec / se)
 
 
@@ -445,6 +503,119 @@ def _fine_fit(corr, detector, catalog, refcat, src_idx, ref_idx, geom, *,
     return trial, trial.meta.get('fit_info', {})
 
 
+def _fine_groups_fit(correctors, detectors, prelim, refcat, ref_sky, groups, *,
+                     key, fine_fitgeom, mins, min_coverage_arcsec, nclip, sigma,
+                     match_radius, fine_min_significance, tstats=None):
+    """One fine fit per GROUP of detectors instead of one per detector.
+
+    Used when a pool holds several exposures of one visit: *groups* maps each
+    detector name to a label, and the entries sharing a label are the same
+    physical detector in different exposures. A detector's offset from the
+    pooled attitude is a property of the detector, the same in every exposure of
+    the visit (measured to 0.1-0.4 mas over four dithers, docs/hst/design.md
+    section 8b), so it is estimated once from all of them and applied to all of
+    them. The exposures then keep the relative positions the pooled fit gave
+    them, where independent fits would each add their own noise.
+
+    The rules are those of the per-detector fit: geometry down the ladder by
+    match count and coverage, accepted when the shift is significant and the
+    residual is not degraded. One difference: the count is of DISTINCT reference
+    sources. A source matched in four exposures carries the same catalog error
+    four times and is one measurement of the detector's offset, not four.
+
+    Returns ``{detector: None | (corrector, geom, resid, n, src_idx, ref_idx,
+    keep, sep)}``; ``None`` keeps the pooled attitude.
+    """
+    out = {d.detector: None for d in detectors}
+    by_label = {}
+    for i, d in enumerate(detectors):
+        by_label.setdefault(groups.get(d.detector, d.detector), []).append(i)
+    for label, indices in by_label.items():
+        members = [i for i in indices if np.isfinite(prelim[i][0])]
+        if not members:
+            continue
+        distinct = np.unique(np.concatenate([prelim[i][3] for i in members]))
+        coverage = _coverage_arcsec(ref_sky.ra.deg[distinct], ref_sky.dec.deg[distinct])
+        geom = _choose_fitgeom(len(distinct), coverage, fine_fitgeom, mins,
+                               min_coverage_arcsec)
+        if geom is None:
+            continue
+        # The fit is made in each member's OWN tangent plane (fixed to the
+        # detector: origin at its reference point, axes along V2/V3), with the
+        # matches of all members pooled, and the result is applied to each
+        # member in its own plane. That is one correction of the detector,
+        # carried to wherever each dither put it. Fitting the members as one
+        # tweakwcs group would instead apply one rotation about a single point
+        # on the sky to all of them, which shifts dithers 25" apart against
+        # each other by the rotation's error times 25" (COSMOS-Web: 3 mas).
+        trials, im_xy, ref_xy = [], [], []
+        try:
+            for i in members:
+                src_idx, ref_idx = prelim[i][2], prelim[i][3]
+                trial = copy.deepcopy(correctors[i])
+                x = np.asarray(detectors[i].catalog['x'], dtype=float)[src_idx]
+                y = np.asarray(detectors[i].catalog['y'], dtype=float)[src_idx]
+                im_xy.append(np.column_stack(
+                    trial.world_to_tanp(*trial.det_to_world(x, y))))
+                ref_xy.append(np.column_stack(trial.world_to_tanp(
+                    ref_sky.ra.deg[ref_idx], ref_sky.dec.deg[ref_idx])))
+                trials.append(trial)
+            # Same call, order and shift convention as tweakwcs' own
+            # WCSGroupCatalog.fit2ref.
+            fit = iter_linear_fit(np.vstack(ref_xy), np.vstack(im_xy),
+                                  fitgeom=geom, nclip=nclip,
+                                  sigma=(sigma, 'rmse'), center=None)
+            shift = (fit['shift_ld'] + fit['center_ld']
+                     - np.dot(fit['center_ld'], fit['matrix_ld'].T)).astype(float)
+            matrix = np.array(fit['matrix_ld'], dtype=np.float64)
+            shift = np.array(shift, dtype=np.float64)
+            for trial in trials:
+                # Each member's own plane, named explicitly as the plane the
+                # correction is defined in: the route align_wcs itself takes
+                # for a single image.
+                trial.set_correction(matrix=matrix, shift=shift,
+                                     ref_tpwcs=copy.deepcopy(trial))
+        except Exception as e:  # noqa: BLE001 — keep the pooled solution
+            log(f"align solve[{key}]: fine {geom} fit for {label} raised "
+                f"{type(e).__name__}: {e}; keeping the pooled attitude.")
+            continue
+        new = [_match(t, detectors[i].catalog, ref_sky, match_radius)
+               for t, i in zip(trials, members)]
+        seps = np.concatenate([n[5][n[4]] for n in new])
+        old = np.concatenate([prelim[i][5][prelim[i][4]] for i in members])
+        if seps.size == 0 or old.size == 0:
+            continue
+        new_resid, old_resid = float(np.median(seps)), float(np.median(old))
+        n_distinct = len(np.unique(np.concatenate([n[3] for n in new])))
+        shifts = [_fine_shift_arcsec(correctors[i], t, detectors[i].catalog,
+                                     prelim[i][2])
+                  for t, i in zip(trials, members)]
+        weights = [len(prelim[i][2]) for i in members]
+        shift = float(np.average(shifts, weights=weights))
+        # The noise of the shift: the scatter of the pairs the fit averaged,
+        # over the distinct sources among them (a source seen in four
+        # exposures is one measurement of the detector's offset).
+        scatter, n_averaged = _averaged_scatter(seps, nclip, sigma)
+        tstat = _fine_significance(
+            shift, new_resid, n_distinct * n_averaged / seps.size, geom,
+            sigma_axis=scatter)
+        if tstats is not None:
+            tstats[label] = float(tstat)
+        degraded = new_resid > old_resid * _FINE_MAX_DEGRADE
+        accept = bool(np.isfinite(tstat) and tstat > fine_min_significance
+                      and not degraded)
+        log(f"align solve[{key}]: fit shared by {label} over {len(members)} "
+            f"exposures ({geom}, {n_distinct} distinct sources): shift "
+            f"{shift * 1000:.2f} mas, {tstat:.1f} sigma, residual "
+            f"{old_resid * 1000:.1f} -> {new_resid * 1000:.1f} mas: "
+            f"{'taken' if accept else 'not taken'}.")
+        if accept:
+            for t, i, n in zip(trials, members, new):
+                if np.isfinite(n[0]):
+                    out[detectors[i].detector] = (t, geom) + tuple(n)
+    return out
+
+
 def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          coarse_searchrad=70.0, refine_niter=3,
                          d2d_max=1.5, binsize_px=0.02, gaussian_sigma_px=0.2,
@@ -458,7 +629,10 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          ref_border_arcmin=1.2, nclip=3, sigma=3.0,
                          max_residual_arcsec=0.1,
                          dva_repivot=True, dva_pivot='pool',
-                         fine_min_significance=1.4, gross_min_keep_frac=0.8):
+                         fine_min_significance=3.0, gross_min_keep_frac=0.8,
+                         coarse_fitgeom='rshift', fine_groups=None,
+                         fine_individual=False,
+                         exposure_min_significance=None):
     """Solve one pool of detectors; return a :class:`GroupSolution`.
 
     *detectors* is one pool (a module, or a whole channel when the caller pooled
@@ -588,7 +762,7 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     correctors, last_info, first_info, wcs_by_det, diag = _coarse(
         detectors, wcs_by_det, refcat, key,
         match0=match0, match_iter=match_iter,
-        niter=refine_niter, nclip=nclip, sigma=sigma)
+        niter=refine_niter, nclip=nclip, sigma=sigma, fitgeom=coarse_fitgeom)
     if correctors is None or not _succeeded(last_info):
         log(f"align solve[{key}]: coarse fit "
             f"{last_info.get('status', 'FAILED')}; NOT_ALIGNED (WCS preserved).")
@@ -638,13 +812,29 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     #    on), so a detector below `fine_min_shift` verified matches keeps the
     #    pooled attitude — the better estimate at that point. `tolerance` no
     #    longer gates anything; it is the reporting threshold for `within`.
-    solutions = []
-    for corr, d, (resid, nmatch, src_idx, ref_idx, keep, sep) in zip(
-            correctors, detectors, prelim):
-        within = bool(np.isfinite(resid) and resid <= tolerance)
-        dof, out_wcs = 'coarse', corr.wcs
+    #    With `fine_groups` (a pool of several exposures of one visit) the
+    #    detectors sharing a label get ONE fit between them; see
+    #    _fine_groups_fit. Without it, exactly the per-detector fit below.
+    group_fit, shared_tstats = {}, {}
+    if fine_groups:
+        group_fit = _fine_groups_fit(
+            correctors, detectors, prelim, refcat, ref_sky, fine_groups, key=key,
+            fine_fitgeom=fine_fitgeom, mins=mins,
+            min_coverage_arcsec=min_coverage_arcsec, nclip=nclip, sigma=sigma,
+            match_radius=match_radius,
+            fine_min_significance=fine_min_significance, tstats=shared_tstats)
 
-        if np.isfinite(resid):
+    def detector_solution(d, corr, pre, dof, individual, threshold):
+        """One detector's outcome from the corrector it starts with (the pooled
+        one, or the one its group's shared fit produced). With *individual* it
+        also gets a fit of its own on top, accepted when its shift exceeds
+        *threshold* times the shift's standard error (all of its matches)."""
+        resid, nmatch, src_idx, ref_idx, keep, sep = pre
+        within = bool(np.isfinite(resid) and resid <= tolerance)
+        out_wcs = corr.wcs
+        tstat, own_fit = float('nan'), False
+
+        if individual and np.isfinite(resid):
             det_cov = _coverage_arcsec(ref_sky.ra.deg[ref_idx],
                                        ref_sky.dec.deg[ref_idx])
             geom = _choose_fitgeom(len(ref_idx), det_cov, fine_fitgeom, mins,
@@ -666,13 +856,16 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                     # improvement (see _fine_significance) — but never adopt a
                     # fit that materially degrades the residual, however
                     # significant its shift.
+                    scatter, n_averaged = _averaged_scatter(
+                        new_sep[new_keep], nclip, sigma)
                     tstat = _fine_significance(
                         _fine_shift_arcsec(corr, trial, d.catalog, src_idx),
-                        new_resid, new_n, geom)
+                        new_resid, n_averaged, geom, sigma_axis=scatter)
                     degraded = (np.isfinite(new_resid) and np.isfinite(resid)
                                 and new_resid > resid * _FINE_MAX_DEGRADE)
                     if (np.isfinite(new_resid) and np.isfinite(tstat)
-                            and tstat > fine_min_significance and not degraded):
+                            and tstat > threshold and not degraded):
+                        own_fit = True
                         out_wcs, dof = trial.wcs, geom
                         resid, nmatch = new_resid, new_n
                         within = bool(resid <= tolerance)
@@ -695,18 +888,43 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
             log(f"align solve[{key}]: {d.detector} residual {resid:.3f}\" "
                 f"exceeds max_residual_arcsec={float(max_residual_arcsec):g}; "
                 f"rejecting this detector to NOT_ALIGNED (WCS preserved).")
-            solutions.append(DetectorSolution(d.detector,
-                                              original_wcs.get(d.detector,
-                                                               d.wcs),
-                                              'identity',
-                                              resid, nmatch, False,
-                                              aligned=False, **per_source))
-            continue
+            return DetectorSolution(d.detector,
+                                    original_wcs.get(d.detector, d.wcs),
+                                    'identity', resid, nmatch, False,
+                                    aligned=False, **per_source)
+        return DetectorSolution(d.detector, out_wcs, dof, resid, nmatch, within,
+                                tstat=float(tstat), own_fit=own_fit, **per_source)
 
-        solutions.append(DetectorSolution(d.detector, out_wcs, dof,
-                                          resid, nmatch, within,
-                                          **per_source))
-
+    # Where each detector starts: from its group's shared fit when that was
+    # accepted, else from the pooled attitude.
+    start = []
+    for corr, d, pre in zip(correctors, detectors, prelim):
+        shared = group_fit.get(d.detector)
+        if shared is not None:
+            start.append((d, shared[0], tuple(shared[2:]), shared[1]))
+        else:
+            start.append((d, corr, pre, 'coarse'))
+    # Without groups: every detector's own fit, as always. With groups: the
+    # shared fits, and, with `fine_individual`, on top of them a fit of every
+    # detector in every exposure, each accepted on the significance of its own
+    # shift (`exposure_min_significance`, default `fine_min_significance`).
+    shared_solutions = None
+    own_threshold = (fine_min_significance if exposure_min_significance is None
+                     else float(exposure_min_significance))
+    if fine_groups:
+        shared_solutions = [detector_solution(*s, individual=False, threshold=0.0)
+                            for s in start]
+        solutions = ([detector_solution(*s, individual=True, threshold=own_threshold)
+                      for s in start] if fine_individual else shared_solutions)
+        diag = {**(diag or {}),
+                'shared_tstat': dict(shared_tstats),
+                'shared_fits': sorted({fine_groups.get(d.detector, d.detector)
+                                       for d in detectors
+                                       if group_fit.get(d.detector) is not None})}
+    else:
+        solutions = [detector_solution(*s, individual=True,
+                                       threshold=fine_min_significance)
+                     for s in start]
     # If the gate rejected every detector, the pool as a whole failed — report
     # NOT_ALIGNED so the orchestration surfaces it in the end-of-run warning.
     status = ('SOLVED' if any(s.aligned for s in solutions) else 'NOT_ALIGNED')
@@ -720,4 +938,5 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     return GroupSolution(key, status, shift, rot_deg, rmse,
                          group_nmatched, solutions,
                          n_refcat_in_footprint=n_ref_footprint,
-                         diagnostics=(diag or None))
+                         diagnostics=(diag or None),
+                         shared_detectors=shared_solutions)

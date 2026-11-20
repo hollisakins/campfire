@@ -28,6 +28,45 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- **NIRCam field-level visit tie (`cfpipe nircam tie`, opt-in).** New module
+  `nircam/align/tie.py` and command. For a field with
+  `[<field>.align.tie].enabled = true` it (1) aligns the tie filters
+  (`[nircam.align.tie].filters`, default F277W / F356W / F444W) to the field's
+  external catalog, (2) solves one linear map per visit and filter for the whole
+  field at once from the sources the visits share, and (3) aligns every filter to
+  the solved source positions, written as `<field>_tie_consensus.ecsv` (with a
+  `_units.ecsv` table of the maps). `align` then uses that catalog for the field.
+  No visit is the reference and no geometry is shared between filters or modules.
+  Catalog stars enter at each visit's epoch (proper motions applied per visit,
+  with one solved proper-motion error per star held by the catalog's errors); the
+  stationary catalog is a weak anchor; a visit that shares few sources with the
+  rest is still solved and reported as weak. A first solve holds out half of the
+  shared sources and reports visit-to-visit agreement on them. Off by default, so
+  existing reductions are unchanged. Design notes: `nircam/align/DESIGN.md`
+  section 11.
+- **NIRCam align: pooling over a visit (`[nircam.align].pool = "visit"`, opt-in).**
+  The exposures of a visit are fitted to each other on their common sources, then
+  to the reference catalog as one body (`visit_fitgeom`: `rshift` / `rscale` /
+  `general`), with one fit per detector shared by the visit (`visit_fine_fitgeom`,
+  `"none"` to switch it off) and, with `exposure_fits`, a per-exposure fit on top.
+  Falls back to the per-exposure fit for a visit of one exposure, an exposure
+  that shares fewer than `tie_min_matched` sources, or a failed joint fit. Brought
+  over from the `hst-feasibility` branch. The default stays `pool = "exposure"`.
+- **NIRCam align: fixed-window centroid (`[nircam.align].centroid_sigma`, opt-in).**
+  With a value > 0 a detection's position is a windowed centroid on the science
+  image with that fixed Gaussian sigma (pixels) instead of the adaptive window on
+  the S/N map. On Abell 2744 LW broadbands a 1.5 px window, with the visit tie,
+  took epoch-to-epoch offsets of the mosaics in 12 arcsec cells from 15 mas to
+  3 mas at the 90th percentile (52% to 1% of cells above 5 mas). Default 0 (the
+  adaptive window): not measured on SW.
+- **NIRCam align: the gross-shift stage counts distinct sources.** A bin of the
+  gross offset histogram, and the tight-pair vet, count distinct reference
+  sources, so a pile of detections beside one catalog source is one vote, not
+  many (it could win the histogram on a sparse star catalog and leave every pool
+  NOT_ALIGNED). On dense catalogs the two counts differ by a few percent and the
+  solutions are the same to 0.1 mas. Brought over from `hst-feasibility`.
+
 ### Infrastructure
 - **NIRCam `apply_mask` no longer crashes on exposures that have a mask file.** The step
   called `DataModel.get_fits_wcs()`, removed in stdatamodels 6 (the jwst 3.0 stack), so

@@ -217,6 +217,26 @@ from `tweakwcs.XYXYMatch`:
   pass and stamped as `ALGNGKR` (with `ALGNGTB` / `ALGNGTA`), on a rejected
   exposure too, so both a silent mis-lock and a declined shift are a header
   grep, not a re-reduction.
+- **Both gross-stage counts are of distinct sources (2026-11-13).** A bin of
+  the gross histogram holds the number of distinct sources with a pair in it,
+  on the side with fewer, and the vet counts the reference sources that have an
+  image source inside the tight radius. Both used to count pairs by image
+  source, so several detections beside one reference source were several
+  votes. JWST 1433 obs 020 F480M against Gaia (13 detected stars, about 730
+  detections per pool, raw WCS within 10 mas): 22 detections within 0.3″ of
+  one another made the tallest bin, 17.6″ from the truth (62.6″ in the next
+  pool), at a peak contrast of 1.0; the vet then scored that shift 13 → 22 and
+  adopted it, and all four pools ended `NOT_ALIGNED`. Counted by reference
+  source the same shift is 13 → 1. With both counts distinct the histogram
+  itself picks the 13 stars (contrast 2.0–3.25), and the four pools solve at
+  the default 70″ radius with 12–13 matches, 4–6 mas rms and shifts under
+  10 mas. Chance pairs were not the cause: 13 stars against 700 unrelated
+  detections with no pile solve correctly with the earlier code
+  (`test_sparse_catalog_at_zero_shift_returns_zero_not_a_chance_peak`). On
+  dense catalogs the two counts differ by 2–13% and nothing else moves:
+  three MACS0647 F200W pools give identical solutions, and four F480M pools
+  give the same matches with detector fits identical and the pooled solution
+  within 0.1 mas.
 
 Later passes start from the corrected WCS and re-match with the same consensus
 matcher minus the gross stage (JHAT's `iterate_with_xyshifts`, generalized:
@@ -261,10 +281,92 @@ refit consumes the detector's own mutual-NN pairs *as a pre-matched list*: the
 row-aligned pair catalogs go to `align_wcs` with `match=None` — precisely
 JHAT's `already_matched=True` design (no matcher runs in the fit; the
 sigma-clipped fit alone decides) — on a deep-copied corrector so a rejected
-trial never touches the shared solution, and the new WCS is **accepted only if
-it measurably reduces** the one-to-one residual. The chosen geometry is
+trial never touches the shared solution. The chosen geometry is
 recorded per detector as the `dof` (`coarse` | `shift` | `rshift` | `general` |
 `identity`). No `tweakwcs.XYXYMatch` remains anywhere in `align`.
+
+**Acceptance (`solve._fine_significance`, `fine_min_significance = 3`).** The
+new WCS is taken when the shift it applies, measured at the matched sources,
+exceeds `fine_min_significance` times the shift's standard error, and the
+median residual does not rise by more than a quarter. The standard error is the
+per-axis rms of the pairs the fit averaged, after the fit's own clipping
+(`solve._averaged_scatter`), over the square root of their number, with a
+factor for the geometry's free parameters. Until 2026-11-12 the scatter was
+inferred from the median separation, which is the same thing for Gaussian
+residuals and too small when part of the pairs scatter a few times more than
+the rest (stars that moved since the catalog's epoch): on ACS visits the rms of
+the averaged pairs was 1.4 to 3 times that estimate and fits that were noise
+scored 3 to 6. With the scatter measured, the real detector offsets of a
+pg004 F200W visit score 6 to 14 and noise fits stay near or below 3. The
+threshold was 1.4 before that date, a value derived with every detector
+carrying a real offset of 3 to 5 mas against about 1 mas of fit noise; raised
+to 3 on four checks against independent catalogs in which 3 was equal or
+better (measured on the `hst-feasibility` branch, its docs/hst/design.md section 8b). Not rechecked: a field where the real
+offsets sit between 1.4 and 3 standard errors, where a bar of 3 leaves them in.
+
+### 3.5 Pooling the exposures of a visit (`pool = "visit"`, opt-in)
+
+Sections 3.1 to 3.4 describe one exposure solved on its own, which is
+`pool = "exposure"`. With `pool = "visit"` (`apply.align_visit_pools`,
+`orchestrate._visit_tasks`) the exposures of one visit and filter go together:
+
+1. **Tie.** Each exposure, all of its pool's detectors as one body, is fitted
+   with one shift and rotation to the detections of the visit's richest
+   exposure (`apply._tie_exposures`; the same solver, per-detector stage off).
+   This measures the offsets between dithers from hundreds to thousands of
+   common sources. The header pointing is only the starting point, as it is for
+   a fit to the reference catalog; it is not trusted (measured: one dither of a
+   four-dither visit 16 mas from where its header put it relative to the
+   others).
+2. **Visit fit.** The tied exposures are fitted to the reference catalog as one
+   pool: one shift and rotation for all of them.
+3. **One fit per detector for the visit.** The same detector in every tied
+   exposure shares one fit (`solve._fine_groups_fit`), under the rules of 3.4
+   with one difference: the match count is of distinct reference sources, since
+   a source matched in four exposures carries the same catalog error four
+   times. A detector's offset from the pooled attitude is the same in every
+   exposure of a visit (measured to 0.1 to 0.4 mas over four dithers), so it is
+   estimated once.
+
+4. **Tie again.** A correction of a detector in its own frame, above all its
+   rotation, moves a source by a different amount in each dither (the rotation
+   times the dither step), so after step 3 the tie of step 1 is slightly off:
+   milliarcseconds when the dithers are 25 arcsec apart. When any shared fit
+   was accepted the exposures are tied once more with the corrected detectors
+   and steps 2 and 3 are repeated from there.
+5. **A fit per detector and exposure, where its shift is significant.** On top
+   of the shared fits, every detector of every exposure gets the fit of 3.4
+   against the reference catalog (`exposure_fits = true`), accepted detector by
+   detector by the same test as every per-detector fit: its shift against the
+   shift's own standard error, from all of that detector's matches
+   (`fine_min_significance`, or `exposure_min_significance` for these fits
+   alone). Recorded per file as `ALGNXFIT` and `ALGNTSIG`. Why it is needed
+   at all: agreement between the exposures is not absolute accuracy. Making
+   common sources coincide turns a small scale or rotation error of the
+   detector geometry into a position error of each exposure, of that error
+   times the dither step; a dense catalog ties every detector of every
+   exposure down directly and removes it (COSMOS-Web, 25 arcsec dithers,
+   against COSMOS2025: 2.8 mas per detector with these fits, 3.8 without). A
+   sparse catalog cannot, the shifts are not significant there, and the fits
+   are not taken.
+
+**Fallback, always to 3.1 to 3.4.** A visit of one exposure; an exposure that
+shares fewer than `tie_min_matched` sources with the others (those are tried
+among themselves first, so two separate pointings in one visit become two
+groups); a visit whose joint fit fails. A visit with any pending pool is
+re-solved as a whole, so its exposures always share one recipe.
+
+**Why.** With a dense NIRCam-derived catalog the two ways agree to a fraction
+of a milliarcsecond. With a sparse catalog (a first alignment to Gaia or Legacy
+Surveys, 20 to 80 matches per detector) exposures fitted on their own ended 3.5
+to 8 mas apart, against 0.5 mas when tied (measured on the `hst-feasibility` branch, its docs/hst/design.md section 8b).
+
+Recorded per file: `ALGNNEXP` (exposures fitted together, 1 = on its own),
+`ALGNTIE` (sources shared with the visit's reference exposure) and `ALGNXFIT`
+(whether the per-exposure fits of step 5 were kept).
+
+Note on 3.1: `pool_modules = true` is the package default now (both modules of
+a channel are one pool); the per-module split is `pool_modules = false`.
 
 ---
 
@@ -282,6 +384,18 @@ pixel-area conversion jhat uses. No aperture correction (irrelevant to the
 wide mag windows, ill-defined for galaxies). `table.meta['mag_calibrated']`
 records which regime a catalog is in; without a zeropoint, `mag` falls back to
 the uncalibrated `−2.5·log10(flux)`.
+
+**Centroid (`centroid_sigma`).** By default the position is `sep.winpos` on the
+S/N map with a window that follows each source's half-light radius. With
+`centroid_sigma > 0` it is a second `sep.winpos` on the science image with a
+FIXED Gaussian sigma (detector pixels), started from the adaptive position: the
+centroid of the core. The adaptive window weighs in the wings, so on an
+asymmetric image its centroid is displaced from the core by an amount that
+depends on the source and turns with the detector. On A2744 F444W (2026-11)
+stacks of sources and of Gaia stars on single exposures showed an asymmetric
+image on module B, and the epoch-pair offsets of the mosaics in 12″ cells went
+from 15 mas to 3 mas at the 90th percentile with a 1.5 px window. Off by
+default (0): measured on LW broadbands only.
 
 **Why segmentation, not point sources.** The refcat is galaxy-based (SEP
 segmentation of a mosaic), and the coarse gross-shift stage histograms *all*
@@ -442,6 +556,8 @@ All knobs live in `config_default.toml`; per-field overrides go in
 | `fine_min_general` | `10` | ≥ this many 1-to-1 matches ⇒ allow `general` |
 | `fine_min_rshift` | `4` | ≥ this ⇒ allow `rshift` |
 | `fine_min_shift` | `3` | ≥ this ⇒ allow `shift`; below ⇒ keep coarse (= jhat's `minobj`) |
+| `fine_min_significance` | `3.0` | a per-detector fit is taken when its shift exceeds this many standard errors (3.4) |
+| `exposure_min_significance` | unset | the same bar for the per-exposure fits of 3.5 alone; unset ⇒ `fine_min_significance` |
 | `tolerance` | `0.05` | arcsec — QA/reporting only (`within_tolerance` flag); gates nothing |
 | `match_radius` | `0.5` | arcsec — 1-to-1 NN radius for residuals + fine match |
 | `min_matched` | `6` | per-pool reject-to-NOT_ALIGNED floor (1-to-1 count) |
@@ -523,3 +639,86 @@ All knobs live in `config_default.toml`; per-field overrides go in
   cross-exposure residuals ever show stable per-detector/A↔B structure, that is a
   *calibration* signal (a SIAF-residual term learned across many dithers), not
   per-exposure freedom to add here.
+
+## 11. Field-level tie (`tie.py`, `cfpipe nircam tie`)
+
+`align` fits each visit to a catalog on its own, so two visits agree where they
+overlap only as well as the catalog allows. With an external catalog (Legacy
+Surveys galaxies at ~50 mas per source, a few tens of usable Gaia stars) that
+left epoch-to-epoch offsets of 15 mas at the 90th percentile of 12″ cells on
+Abell 2744 F444W (27 visits over three years, 2026-11). The JWST detections are
+good to a few mas each and overlapping visits share hundreds to thousands of
+them; the tie uses those.
+
+**Three stages** (`orchestrate.run_tie`), for a field with
+`[<field>.align.tie].enabled = true`:
+
+1. the tie filters (`[nircam.align.tie].filters`, default the LW broadbands) are
+   aligned to the external catalog `[<field>.align].refcat`, as ever;
+2. `tie.tie_field` solves the whole field at once and writes the solved source
+   positions as `<field>_tie_consensus.ecsv` (a `campfire-refcat-v1` catalog)
+   with `<field>_tie_consensus_units.ecsv` beside it (one row per visit and
+   filter: its map, formal errors, what tied it);
+3. every filter is aligned to the consensus catalog. From then on
+   `_resolve_align_refcat` hands `align` the consensus catalog for this field,
+   so later exposures and other filters land on the same frame; the refcat hash
+   in `CFP_ALGN` makes the switch a normal staleness re-solve.
+
+**The solve** (x and y independent, sparse normal equations):
+
+| Term | Statement | Weight |
+|---|---|---|
+| unknowns | a linear map per *unit* (visit × filter; `unit = "module"` adds the module), a position per source, a position per (source, filter) when several filters are tied, a proper-motion error per catalog star | |
+| ties | a unit's mean position of a source, moved by the unit's map, is the source's position in that filter | `sig_detection`/√n ⊕ `sig_floor` |
+| chromatic | a source's position in a filter is its position | `sig_chromatic` |
+| stars | a star detection, moved by the unit's map, is the catalog position **at the unit's epoch** plus the star's proper-motion error × years since the catalog epoch | `sig_star` ⊕ `sig_detection`/√n |
+| star prior | a star's proper-motion error is zero | catalog `pmra_err`/`pmdec_err` ⊕ `sig_pm_floor` |
+| galaxies | a source with a stationary catalog row is at the catalog position | `sig_catalog` |
+| prior | a unit's four matrix terms are zero | `sig_linear` per arcmin |
+
+Design points, each tied to a requirement:
+
+- **No visit is the reference** and no instrument geometry, dither pattern or
+  cross-filter geometry is assumed: every unit has its own six-parameter map
+  and the relative frame comes from JWST–JWST ties alone. The catalog places
+  the field and holds its low-order shape.
+- **Stars at the exposure epoch.** Gaia stars move ~10 mas/yr; a consensus
+  position for a star would be wrong for every visit but one. They are not
+  sources of the solve: each detection is compared with the catalog position
+  propagated to that visit's epoch (`refcat/motion.propagate_to_epoch`). The
+  per-star proper-motion error is solved, held by the catalog's quoted error, so
+  a star seen by ten visits does not count as ten independent measurements of
+  the frame. Only unsaturated stars are usable: a saturated core is masked and
+  its fragments sit ~0.2″ off, which `star_radius` (0.08″) excludes. On A2744
+  F444W that is 39 of 518 Gaia stars, at the faint end, with proper-motion
+  errors that amount to 5–10 mas by 2023.
+- **Several filters, one frame.** A visit that only partly overlaps the F444W
+  footprint is misplaced by 2–7 mas where it does not overlap if F444W alone
+  defines the frame (measured by fitting on one module and testing on the
+  other). Tying the LW broadbands together removes the dependence on one band's
+  footprint; the chromatic term keeps same-filter ties the stronger ones.
+- **Graceful where visits barely overlap.** A unit sharing fewer than
+  `min_shared` sources with others is still solved, on its stars, its catalog
+  rows and the prior, and is listed as `weak`.
+- **Measured on sources that did not make it.** A first solve leaves out half
+  of the shared sources and reports unit-to-unit agreement on them before and
+  after (`heldout_*` in the catalog's `tie` metadata).
+- **Numerics.** Positions enter relative to each source's mean measured
+  position. With raw tangent-plane coordinates (10⁶ mas) the normal equations
+  lost precision and an isolated visit 30′ from the field centre moved by
+  17 mas (`test_weak_unit_is_reported_and_still_placed_by_the_catalog`).
+
+**Centroids.** The tie is only as good as the positions. `centroid_sigma`
+(section 4) must be set for the tie to reach the numbers above: on A2744 the
+narrow centroid, not the tie's map unit, was what brought the epoch-pair cells
+from 15 mas to 3 mas.
+
+**Recipe validated on A2744 LW broadbands** (not the default):
+`pool = "visit"`, `visit_fitgeom = "general"`, `visit_fine_fitgeom = "none"`,
+`exposure_fits = false`, `centroid_sigma = 1.5`, tie enabled.
+
+**Not done.** SW and medium bands have been neither tied nor aligned to a
+consensus catalog; `centroid_sigma` for SW is unmeasured; one map per visit
+ignores offsets between the eight SW detectors, which the shared per-detector
+fits (`visit_fine_fitgeom`) would have to carry. The tie is a command, not a
+step of `run --process`: it needs every tie filter aligned first.

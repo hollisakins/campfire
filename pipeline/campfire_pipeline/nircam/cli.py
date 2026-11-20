@@ -184,6 +184,33 @@ def process(config, field, filters, processes, overwrite, tiles):
 
 @main.command()
 @common_options
+@click.option('--filters', multiple=True, default=None, cls=VariadicOption,
+              help='Filters to align to the tie catalog afterwards '
+                   '(default: all from field).')
+@click.option('--processes', '-p', default=1, type=int,
+              help='Number of parallel processes.')
+@click.option('--overwrite', is_flag=True,
+              help='Re-solve the first stage (tie filters to the external '
+                   'catalog) even where it is already done.')
+def tie(config, field, filters, processes, overwrite):
+    """Tie the visits of a field to each other, then align every filter to it.
+
+    Needs [<field>.align.tie].enabled = true. Aligns the tie filters
+    ([nircam.align.tie].filters) to the field's external catalog, solves one
+    map per visit and filter from the sources the visits share (catalog stars
+    at each visit's epoch, the stationary catalog as a weak anchor), writes
+    <field>_tie_consensus.ecsv, and aligns --filters (default: all) to it.
+    Afterwards `align` uses the consensus catalog for this field. Re-run after
+    adding visits or changing the external catalog.
+    """
+    from campfire_pipeline.nircam.orchestrate import run_tie
+    cfg, field_obj = _setup(config, field)
+    run_tie(field_obj, cfg, filters=_resolve_filters(filters, field_obj),
+            n_processes=processes, overwrite=overwrite)
+
+
+@main.command()
+@common_options
 @processing_options
 @tile_option
 def align(config, field, filters, processes, overwrite, tiles):

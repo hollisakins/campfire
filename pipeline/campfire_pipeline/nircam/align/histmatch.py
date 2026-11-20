@@ -42,7 +42,10 @@ recover acquisition failures (tens of arcsec), an optional first stage finds
 the gross translation as the peak of the 2-D pairwise-offset histogram within
 ``searchrad`` — the same idea ``XYXYMatch(use2dhist=True)`` uses for its
 initial estimate (bake-off-validated at 97–100%), implemented here by direct
-accumulation so no pair list is ever materialized. ``searchrad=None`` skips
+accumulation so no pair list is ever materialized. A bin's height is the
+number of distinct sources with a pair in it (on the side with fewer), so
+several detections beside one reference source are one vote, not several.
+``searchrad=None`` skips
 the stage (the iterate passes, already roughly aligned, don't need it). The
 candidate gross shift is first refined to the median 1-NN offset inside its own
 peak (:meth:`OffsetHistogramMatch._refine_gross_shift`) and then VETTED before it
@@ -189,6 +192,52 @@ def _sigma_clip_median(values, mask, nsigma, nitmax=10, first_percentile=75.0):
     return out
 
 
+def _tight_pairs(tree, im_xy, r_tight):
+    """How many reference sources have an image source within *r_tight* whose
+    nearest reference they are.
+
+    Reference sources are counted, not image sources: several detections on
+    one reference source are one counterpart. (Each image source has a single
+    nearest reference, so the image side is distinct already.)
+    """
+    d, nn = tree.query(im_xy, k=1)
+    return int(np.unique(nn[d <= r_tight]).size)
+
+
+def _distinct_offset_hist(a_xy, b_tree, b_xy, sign, r, nbins):
+    """2-D histogram of the offsets ``sign * (b - a)`` over every pair closer
+    than *r*, in which each source of *a* counts at most once per bin.
+
+    ``(nbins, nbins)`` floats over ``[-r, r]`` on both axes (first index x), or
+    ``None`` when no pair exists. Accumulated in chunks of *a*, so memory is
+    bounded by the histogram and one chunk's pairs, never the full pair list.
+    """
+    width = 2.0 * r / nbins
+    acc = np.zeros(nbins * nbins, dtype=float)
+    found = False
+    for start in range(0, a_xy.shape[0], 256):
+        chunk = a_xy[start:start + 256]
+        neighbours = b_tree.query_ball_point(chunk, r=r)
+        counts = np.fromiter((len(n) for n in neighbours), dtype=np.int64,
+                             count=len(neighbours))
+        if not counts.any():
+            continue
+        found = True
+        owner = np.repeat(np.arange(len(chunk)), counts)
+        others = np.concatenate(
+            [np.asarray(n, dtype=np.int64) for n in neighbours if n])
+        offs = sign * (b_xy[others] - chunk[owner])
+        ix = np.clip(np.floor((offs[:, 0] + r) / width).astype(np.int64),
+                     0, nbins - 1)
+        iy = np.clip(np.floor((offs[:, 1] + r) / width).astype(np.int64),
+                     0, nbins - 1)
+        cell = np.unique((owner * nbins + ix) * nbins + iy) % (nbins * nbins)
+        acc += np.bincount(cell, minlength=nbins * nbins)
+    if not found:
+        return None
+    return acc.reshape(nbins, nbins)
+
+
 class OffsetHistogramMatch(MatchCatalogs):
     """Match pooled tangent-plane catalogs by 1-NN + offset-histogram consensus.
 
@@ -263,8 +312,10 @@ class OffsetHistogramMatch(MatchCatalogs):
         ``gross_peak``, ``gross_runner_up``, ``gross_contrast``, ``gross_mass``
             Gross 2-D offset histogram (``searchrad`` passes only): the winning
             bin's smoothed height, the tallest height outside its +-2-bin
-            neighbourhood, their ratio, and the pair count in the winner's
-            neighbourhood (the mass the sub-bin centroid was measured from). A
+            neighbourhood, their ratio, and the count in the winner's
+            neighbourhood (the mass the sub-bin centroid was measured from).
+            Heights count distinct sources, so several detections on one
+            reference source count once per bin. A
             contrast near 1 means a second gross offset was nearly as popular —
             the clustering-scale false peak that dragged the COSMOS A2/A3
             exposures.
@@ -277,8 +328,8 @@ class OffsetHistogramMatch(MatchCatalogs):
             was degenerate — no slope was distinguishable from the winner — which
             is what a collapsed ``hist_binsize_arcsec`` produces.
         ``gross_tight_before`` / ``gross_tight_after``, ``gross_keep_ratio``
-            Image sources with a reference inside ``_GROSS_TIGHT_PX`` pixels
-            BEFORE and AFTER the (refined) candidate gross shift, and their ratio
+            Reference sources with an image source inside ``_GROSS_TIGHT_PX``
+            pixels BEFORE and AFTER the (refined) candidate gross shift, and their ratio
             (:meth:`_vet_gross_shift`). Recorded on every ``searchrad`` pass
             whether or not the shift was declined, so a survey can ask "did an
             aligned exposure ship a gross shift that cost it matches?" from the
@@ -328,33 +379,36 @@ class OffsetHistogramMatch(MatchCatalogs):
         ``(dx0, dy0)`` arcsec, or ``None`` when no pair exists.
 
         Offsets are accumulated straight into the histogram (chunked over
-        image sources), so — unlike a pair-enumerating matcher — memory is
-        bounded by the histogram, not the pair count. The peak is refined by
-        an intensity-weighted centroid over its ±2-bin neighbourhood.
+        sources), so — unlike a pair-enumerating matcher — memory is bounded
+        by the histogram, not the pair count. A bin holds the number of
+        distinct sources with a pair in it, on the side with fewer (see the
+        comment below). The peak is refined by an intensity-weighted centroid
+        over its ±2-bin neighbourhood.
 
         Records the winner's height, the runner-up height (tallest bin outside
         that same neighbourhood), their contrast and the neighbourhood mass in
         ``self.diag`` — the triage numbers for a low-contrast (ambiguous) lock.
         """
+        from scipy.spatial import cKDTree
+
         r = float(self.searchrad)
         nbins = max(int(np.ceil(2.0 * r / _GROSS_BIN_ARCSEC)), 4)
         edges = np.linspace(-r, r, nbins + 1)
-        acc = np.zeros((nbins, nbins), dtype=float)
 
-        found = False
-        for start in range(0, im_xy.shape[0], 256):
-            chunk = im_xy[start:start + 256]
-            neighbours = tree.query_ball_point(chunk, r=r)
-            offs = [ref_xy[nbrs] - pt
-                    for pt, nbrs in zip(chunk, neighbours) if nbrs]
-            if not offs:
-                continue
-            found = True
-            offs = np.concatenate(offs)
-            acc += np.histogram2d(offs[:, 0], offs[:, 1],
-                                  bins=(edges, edges))[0]
-        if not found:
+        # A bin's height is the number of DISTINCT sources that put a pair in
+        # it, on whichever side has fewer: an offset is a consensus only when
+        # many different reference sources each find a different image source
+        # there. Counting pairs instead lets one reference source with a pile
+        # of detections beside it (or one detection beside a pile of reference
+        # sources) outvote the true offset by itself. Measured on JWST 1433
+        # obs 020 F480M against Gaia: 22 detections within 0.3" of one another
+        # gave the tallest bin, 17.6" from the truth, over 13 real stars.
+        per_image = _distinct_offset_hist(im_xy, tree, ref_xy, +1.0, r, nbins)
+        per_ref = _distinct_offset_hist(ref_xy, cKDTree(im_xy), im_xy, -1.0,
+                                        r, nbins)
+        if per_image is None or per_ref is None:
             return None
+        acc = np.minimum(per_image, per_ref)
 
         # light smoothing so a peak split across bin edges still wins
         k = np.array([0.25, 0.5, 0.25])
@@ -429,10 +483,22 @@ class OffsetHistogramMatch(MatchCatalogs):
         The gross stage exists for exactly one purpose — to make the true
         counterpart *be* the nearest neighbour, which 1-NN needs and which is
         false after an acquisition failure — so judge it on exactly that and
-        nothing else. Count image sources with a reference inside *r_tight*
-        with and without the candidate shift; keep the shift only if it does
-        not lose them. The test is RELATIVE, so it carries no per-filter value
-        and nothing to remember.
+        nothing else. Count the reference sources with an image source inside
+        *r_tight* with and without the candidate shift; keep the shift only if
+        it does not lose them. The test is RELATIVE, so it carries no
+        per-filter value and nothing to remember.
+
+        The count is of distinct reference sources (:func:`_tight_pairs`), not
+        of image sources. Until 2026-11-13 it counted image sources, and a
+        shift that put a pile of detections on one reference source scored as
+        many pairs as the pile had members: on JWST 1433 obs 020 F480M against
+        Gaia, 13 real stars at the input WCS lost to 22 detections (within
+        0.3" of one another) on a single star, 17.6" away, and all four pools
+        ended NOT_ALIGNED. Counted by reference source that shift scores 1
+        against 13. The numbers in the table below were measured with the
+        earlier count; on the dense pools rerun since (MACS0647 F200W and
+        F480M) the two counts differ by 2 to 13 percent and the verdicts are
+        the same.
 
         This is the guard the stage never had. ``argmax`` over a
         ``2*searchrad`` square of 0.25" bins is a maximum-likelihood estimate
@@ -501,9 +567,8 @@ class OffsetHistogramMatch(MatchCatalogs):
         to NOT_ALIGNED, which is why the shift must be vetted at full precision
         rather than declined for the proposal's own bin-scale error.
         """
-        n_before = int(np.count_nonzero(tree.query(im_xy, k=1)[0] <= r_tight))
-        n_after = int(np.count_nonzero(
-            tree.query(im_xy + gross, k=1)[0] <= r_tight))
+        n_before = _tight_pairs(tree, im_xy, r_tight)
+        n_after = _tight_pairs(tree, im_xy + gross, r_tight)
         self.diag.update(
             gross_tight_before=n_before, gross_tight_after=n_after,
             gross_keep_ratio=(n_after / n_before if n_before

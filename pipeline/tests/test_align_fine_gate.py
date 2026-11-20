@@ -9,7 +9,8 @@ import numpy as np
 import pytest
 
 from campfire_pipeline.nircam.align.solve import (  # noqa: E402
-    _FINE_MAX_DEGRADE, _RAYLEIGH_MEDIAN, _fine_significance)  # noqa: F401
+    _FINE_MAX_DEGRADE, _RAYLEIGH_MEDIAN, _averaged_scatter,
+    _fine_significance)  # noqa: F401
 
 
 def se_for(resid, n):
@@ -56,15 +57,22 @@ def test_significance_guards_degenerate_inputs():
 
 
 def test_default_threshold_accepts_real_offsets_rejects_noise():
-    """At the shipped k=1.4, a COSMOS-typical real offset is accepted and a
-    noise-level one is not. Numbers from the f410m calibration: sigma ~19 mas,
-    n ~ 285 -> se ~ 0.95 mas; observed real offsets ~3 mas."""
-    k = 1.4
-    resid, n = 0.019, 285
-    se = se_for(resid, n)
-    assert se * 1e3 == pytest.approx(0.95, abs=0.15)
-    assert _fine_significance(0.003, resid, n) > k       # real 3 mas offset
-    assert _fine_significance(0.0005, resid, n) < k      # 0.5 mas: noise
+    """At the shipped threshold a real detector offset is accepted and a
+    noise-level one is not. Numbers from a pg004 F200W visit fitted to a dense
+    catalog: 328 distinct sources, 7.8 mas of scatter per axis among the pairs
+    averaged, an `rshift` fit; the detector's offset was 4.6 mas, and the fit
+    repeated after it was applied moved things by 0.7 mas."""
+    import inspect
+
+    from campfire_pipeline.nircam.align.solve import solve_exposure_group
+    k = inspect.signature(solve_exposure_group).parameters[
+        'fine_min_significance'].default
+    assert k == 3.0
+    n, scatter = 328, 0.0078
+    t_real = _fine_significance(0.0046, 0.006, n, 'rshift', sigma_axis=scatter)
+    assert t_real == pytest.approx(8.7, abs=0.2)
+    assert t_real > k
+    assert _fine_significance(0.0007, 0.006, n, 'rshift', sigma_axis=scatter) < k
 
 
 def test_significance_is_normalized_for_fit_geometry():
@@ -87,6 +95,56 @@ def test_unknown_geometry_falls_back_to_translation():
     resid, n = 0.019, 100
     assert (_fine_significance(0.002, resid, n, 'nonsense')
             == pytest.approx(_fine_significance(0.002, resid, n, 'shift')))
+
+
+def test_averaged_scatter_equals_the_median_estimate_for_gaussian_residuals():
+    """With Gaussian residuals the scatter of the pairs a fit averages is the
+    sigma the median separation implies, so the two noise estimates agree."""
+    rng = np.random.default_rng(7)
+    sep = np.hypot(*rng.normal(0, 0.020, size=(2, 5000)))
+    scatter, n = _averaged_scatter(sep, nclip=3, sigma=3.0)
+    assert scatter == pytest.approx(0.020, rel=0.03)
+    assert scatter == pytest.approx(np.median(sep) / _RAYLEIGH_MEDIAN, rel=0.05)
+    assert n > 0.98 * sep.size                 # clipping at 3 rms drops ~1%
+
+
+def test_averaged_scatter_sees_the_tail_the_median_does_not():
+    """Three pairs in ten are stars that moved since the catalog's epoch and
+    scatter three times as much as the rest (60 against 20 mas per axis). The
+    clipping at 3 times the rms keeps nearly all of them, so the fit averages
+    them; the median separation barely notices them. The significance of a
+    given shift falls by the ratio of the two noise estimates."""
+    rng = np.random.default_rng(8)
+    core = np.hypot(*rng.normal(0, 0.020, size=(2, 700)))
+    moved = np.hypot(*rng.normal(0, 0.060, size=(2, 300)))
+    sep = np.concatenate([core, moved])
+    from_median = np.median(sep) / _RAYLEIGH_MEDIAN
+    scatter, n = _averaged_scatter(sep, nclip=3, sigma=3.0)
+    assert from_median < 0.027
+    assert scatter > 1.3 * from_median
+    assert n > 0.95 * sep.size                 # the tail is inside the clipping
+    t_median = _fine_significance(0.004, float(np.median(sep)), sep.size)
+    t_scatter = _fine_significance(0.004, float(np.median(sep)), n,
+                                   sigma_axis=scatter)
+    assert t_scatter < 0.8 * t_median
+
+
+def test_averaged_scatter_drops_what_the_fit_clips():
+    """Wrong pairs spread over the whole 0.5 arcsec match radius are removed by
+    the fit's clipping, so they do not count toward the noise either."""
+    rng = np.random.default_rng(9)
+    core = np.hypot(*rng.normal(0, 0.020, size=(2, 900)))
+    wrong = 0.5 * np.sqrt(rng.uniform(0, 1, 100))      # uniform over the disk
+    scatter, n = _averaged_scatter(np.concatenate([core, wrong]), 3, 3.0)
+    assert scatter == pytest.approx(0.020, rel=0.15)
+    assert n < 950
+
+
+def test_averaged_scatter_guards_degenerate_inputs():
+    scatter, n = _averaged_scatter(np.array([np.nan, np.nan]), 3, 3.0)
+    assert n == 0 and not np.isfinite(scatter)
+    assert not np.isfinite(_fine_significance(0.002, 0.02, 100, sigma_axis=np.nan))
+    assert not np.isfinite(_fine_significance(0.002, 0.02, 100, sigma_axis=0.0))
 
 
 def test_fine_shift_wraps_ra_at_the_meridian():

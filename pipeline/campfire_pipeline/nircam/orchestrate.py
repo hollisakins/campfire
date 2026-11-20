@@ -802,11 +802,28 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False,
                                 status, tiles=tiles)
 
 
-def _resolve_align_refcat(align_cfg, refcat_dir):
+def tie_catalog_name(align_cfg, field_name):
+    """File name of the field's tie (consensus) catalog, in the astrometric-
+    catalog directory: ``[<field>.align.tie].catalog`` or
+    ``<field>_tie_consensus.ecsv``."""
+    return ((align_cfg.get('tie') or {}).get('catalog')
+            or f"{field_name}_tie_consensus.ecsv")
+
+
+def _resolve_align_refcat(align_cfg, refcat_dir, field_name=None,
+                          external=False):
     """Resolve the single per-field align reference-catalog path.
 
     Align ties a whole multi-filter exposure to ONE refcat, so — unlike jhat —
-    there is no per-filter mapping; just ``[<field>.align].refcat``.
+    there is no per-filter mapping; just ``[<field>.align].refcat``, the
+    *external* catalog.
+
+    With the field-level tie enabled (``[<field>.align.tie].enabled``) and its
+    consensus catalog present, align uses that instead: every filter and every
+    later exposure lands on the frame the tie made. ``external=True`` asks for
+    the external catalog regardless (the tie's own first stage). Until
+    ``cfpipe nircam tie`` has written the consensus catalog, a tie-enabled
+    field aligns to the external one.
     """
     name = align_cfg.get('refcat')
     if not name:
@@ -814,6 +831,14 @@ def _resolve_align_refcat(align_cfg, refcat_dir):
             "align config missing 'refcat'. Set [<field>.align].refcat = "
             '"<file>" in fields.toml (a Gaia-tied campfire-refcat-v1 ECSV in '
             "the field's astrometric-catalog directory).")
+    tie_cfg = align_cfg.get('tie') or {}
+    if tie_cfg.get('enabled', False) and not external and field_name:
+        consensus = os.path.join(refcat_dir, tie_catalog_name(align_cfg, field_name))
+        if os.path.exists(consensus):
+            return consensus
+        log(f"align: [{field_name}.align.tie] is enabled but {os.path.basename(consensus)} "
+            f"does not exist yet; aligning to the external catalog {name}. "
+            f"Run `cfpipe nircam tie --field {field_name}`.")
     return os.path.join(refcat_dir, name)
 
 
@@ -845,6 +870,40 @@ def _align_group_worker(key, members, *, refcat, config, overwrite, status):
     from campfire_pipeline.nircam.align.apply import align_exposure_group
     return align_exposure_group(members, refcat, key=key, config=config,
                                 overwrite=overwrite, status=status)
+
+
+def _align_visit_worker(key, pools, *, refcat, config, overwrite, status):
+    """``dispatch`` worker: align the pools of one visit together. Module-level
+    for pickling. Returns one solution per pool."""
+    from campfire_pipeline.nircam.align.apply import align_visit_pools
+    return align_visit_pools(pools, refcat, key=key, config=config,
+                             overwrite=overwrite, status=status)
+
+
+def _visit_tasks(pools, pending):
+    """Group pools by visit for ``pool = "visit"``; return ``(tasks, solved)``.
+
+    A task is ``(visit key, [(pool key, members), ...])``: the same pool (the
+    channel, or one module) in every exposure of one visit. A visit with any
+    pending pool is solved as a whole, so its exposures always share one recipe;
+    *solved* lists every pool that will be (re)solved.
+    """
+    def visit_of(pool):
+        visit = pool.members[0].rootname.split('_')[0]        # jwPPPPPOOOVVV
+        suffix = pool.key.split(':', 1)[1] if ':' in pool.key else ''
+        return f'{visit}:{suffix}' if suffix else visit
+
+    by_visit = {}
+    for p in pools:
+        by_visit.setdefault(visit_of(p), []).append(p)
+    pending_keys = {p.key for p in pending}
+    tasks, solved = [], []
+    for visit, members in by_visit.items():
+        if not any(p.key in pending_keys for p in members):
+            continue
+        tasks.append((visit, [(p.key, list(p.members)) for p in members]))
+        solved.extend(members)
+    return tasks, solved
 
 
 def _warn_not_aligned(field, failed_groups):
@@ -919,7 +978,7 @@ def _pending_pools(pools, status, overwrite, refcat_hash):
 
 
 def _run_align(field, config, filtname, n_processes, overwrite, status,
-               tiles=None):
+               tiles=None, external=False):
     """Per-filter astrometric align step (replaces ``jhat`` for align-enabled
     fields; runs inside the process loop).
 
@@ -962,7 +1021,8 @@ def _run_align(field, config, filtname, n_processes, overwrite, status,
             f"with --filters / --tiles.")
 
     pools = split_pools(groups, pool_modules=align_cfg.get('pool_modules', True))
-    refcat_path = _resolve_align_refcat(align_cfg, field.refcat_dir)
+    refcat_path = _resolve_align_refcat(align_cfg, field.refcat_dir,
+                                        field_name=field.name, external=external)
     refcat_hash = _refcat_hash(refcat_path)   # cheap; drives the staleness skip
     pending, retry = _pending_pools(pools, status, overwrite, refcat_hash)
     skipped = len(pools) - len(pending)
@@ -980,10 +1040,25 @@ def _run_align(field, config, filtname, n_processes, overwrite, status,
         f"({len(refcat)} sources, rc={refcat_hash}); solving {len(pending)} "
         f"pool(s)")
     worker_cfg = {**align_cfg, '_refcat_hash': refcat_hash}
-    tasks = [(p.key, list(p.members)) for p in pending]
-    results = dispatch(_align_group_worker, tasks, n_processes=n_processes,
-                       use_starmap=True, refcat=refcat, config=worker_cfg,
-                       overwrite=overwrite, status=status)
+    pool_mode = str(align_cfg.get('pool', 'visit')).lower()
+    if pool_mode not in ('visit', 'exposure'):
+        raise ValueError(f"[nircam.align].pool = {pool_mode!r}: expected "
+                         f"'visit' or 'exposure'")
+    if pool_mode == 'visit':
+        # The exposures of a visit are fitted to each other, then to the
+        # reference catalog as one body; anything that cannot go that way is
+        # fitted on its own, as with pool = "exposure".
+        tasks, pending = _visit_tasks(pools, pending)
+        log(f"align[{filtname}]: {len(pending)} pool(s) in {len(tasks)} visit(s)")
+        nested = dispatch(_align_visit_worker, tasks, n_processes=n_processes,
+                          use_starmap=True, refcat=refcat, config=worker_cfg,
+                          overwrite=True, status=status)
+        results = [r for group in nested if group for r in group]
+    else:
+        tasks = [(p.key, list(p.members)) for p in pending]
+        results = dispatch(_align_group_worker, tasks, n_processes=n_processes,
+                           use_starmap=True, refcat=refcat, config=worker_cfg,
+                           overwrite=overwrite, status=status)
 
     # Workers stamped CFP_ALGN on disk in child processes; sync the parent cache
     # so a later step/phase in the same run sees the fresh stamps.
@@ -1013,6 +1088,94 @@ def _run_align(field, config, filtname, n_processes, overwrite, status,
 
 
 _RUNNERS['align'] = _run_align
+
+
+def _tie_read_worker(path, snr_min):
+    """``dispatch`` worker: one exposure's detections for the tie."""
+    from campfire_pipeline.nircam.align.tie import read_exposure
+    return read_exposure(path, snr_min)
+
+
+def run_tie(field, config, filters=None, n_processes=1, overwrite=False):
+    """Field-level tie: one frame for every visit and filter of the field.
+
+    Three stages, ``cfpipe nircam tie --field X``:
+
+    1. the tie filters (``[nircam.align.tie].filters``, those the field has)
+       are aligned to the external catalog, ``[<field>.align].refcat``; pools
+       already aligned to it are skipped unless *overwrite*;
+    2. their aligned exposures are tied (``align/tie.py``): one linear map per
+       visit and filter, catalog stars at each visit's epoch, the stationary
+       catalog as a weak anchor. The solved source positions are written as the
+       consensus catalog, with one table row per visit and filter beside it;
+    3. *filters* (default: every filter of the field) are aligned to the
+       consensus catalog. From then on ``align`` uses it for this field.
+
+    Returns the :class:`~campfire_pipeline.nircam.align.tie.TieResult`.
+    """
+    from campfire_pipeline.nircam.align import tie as _tie
+    from campfire_pipeline.nircam.refcat.io import (
+        make_meta, read_refcat, write_refcat,
+    )
+
+    align_cfg = get_nircam_step_config('align', config, field)
+    if not align_cfg.get('enabled', False):
+        raise ValueError(f"tie: align is not enabled for field '{field.name}' "
+                         f"([{field.name}.align].enabled = true).")
+    tie_cfg = {**_tie.DEFAULTS, **(align_cfg.get('tie') or {})}
+    if not tie_cfg.get('enabled', False):
+        raise ValueError(
+            f"tie: set [{field.name}.align.tie].enabled = true in fields.toml "
+            f"(or [nircam.align.tie].enabled in the config) to use the "
+            f"field-level tie.")
+    all_filters = _resolve_filters(None, field)
+    wanted = [f.lower() for f in (tie_cfg.get('filters') or [])]
+    tie_filters = [f for f in all_filters if f.lower() in wanted]
+    if not tie_filters:
+        raise ValueError(f"tie: none of the tie filters {wanted} are filters of "
+                         f"field '{field.name}' ({all_filters}).")
+
+    log(f"=== tie: field={field.name}, stage 1: {tie_filters} to the external "
+        f"catalog {align_cfg.get('refcat')} ===")
+    status = _scan_status(field, tie_filters, overwrite=overwrite)
+    for filt in tie_filters:
+        _run_align(field, config, filt, n_processes, overwrite, status,
+                   external=True)
+
+    log(f"=== tie: stage 2: tying {tie_filters} ===")
+    paths = [p for filt in tie_filters for p in field.get_exposure_files(filt)]
+    tasks = [(p, float(tie_cfg['snr_min'])) for p in paths]
+    exposures = dispatch(_tie_read_worker, tasks, n_processes=n_processes,
+                         use_starmap=True)
+    n_aligned = sum(e is not None for e in exposures)
+    log(f"tie: {n_aligned}/{len(paths)} exposures aligned and readable")
+    external_path = _resolve_align_refcat(align_cfg, field.refcat_dir,
+                                          field_name=field.name, external=True)
+    result = _tie.tie_field(exposures, read_refcat(external_path),
+                            field_name=field.name, config=tie_cfg)
+    out = os.path.join(field.refcat_dir, tie_catalog_name(align_cfg, field.name))
+    params = {k: tie_cfg[k] for k in _tie.DEFAULTS if k in tie_cfg}
+    params.update(filters=tie_filters, external=os.path.basename(external_path),
+                  external_rc=_refcat_hash(external_path))
+    table = result.consensus
+    table.meta.update(make_meta(
+        field.name, 'extract', params=params,
+        notes='consensus positions from the field-level visit tie '
+              '(nircam/align/tie.py); stationary sources only'))
+    table.meta['tie'] = {k: (list(v) if isinstance(v, tuple) else v)
+                         for k, v in result.stats.items()}
+    write_refcat(table, out, overwrite=True)
+    units_path = os.path.splitext(out)[0] + '_units.ecsv'
+    result.units.write(units_path, format='ascii.ecsv', overwrite=True)
+    log(f"tie: wrote {os.path.basename(out)} ({len(table)} sources) and "
+        f"{os.path.basename(units_path)} ({len(result.units)} units)")
+
+    stage3 = _resolve_filters(filters, field)
+    log(f"=== tie: stage 3: {stage3} to {os.path.basename(out)} ===")
+    status = _scan_status(field, stage3, overwrite=False)
+    for filt in stage3:
+        _run_align(field, config, filt, n_processes, False, status)
+    return result
 
 
 def run_combine(field, config, filters=None, n_processes=1, overwrite=False,

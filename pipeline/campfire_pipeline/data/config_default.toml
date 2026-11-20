@@ -734,6 +734,41 @@
     # per-module pool is a single detector), which should help sparse or
     # low-match exposures — the regime that is still untested.
     pool_modules      = true
+    # --- Pooling over a visit ------------------------------------------------
+    # "exposure" (default): every exposure is fitted to the reference catalog
+    #   on its own.
+    # "visit": the exposures of a visit are first fitted to EACH OTHER on their
+    #   common sources, which measures the offsets between dithers (the pointing
+    #   in the headers is only the starting point, and can be off by 15 mas
+    #   between dithers of one visit). The tied exposures are then fitted to
+    #   the reference catalog as one body, with `visit_fitgeom`, and each
+    #   detector gets ONE fit for the visit, shared by that detector in every
+    #   tied exposure, with ceiling `visit_fine_fitgeom`.
+    #   Fallback, always: an exposure that shares fewer than `tie_min_matched`
+    #   sources with the others, a visit of one exposure, or a visit whose
+    #   joint fit fails, is fitted on its own exactly as with "exposure".
+    # With a sparse or noisy catalog (a first alignment to Gaia or Legacy
+    # Surveys) exposures fitted on their own end several mas apart; tied, they
+    # agree to a fraction of a mas.
+    pool              = "exposure"  # "exposure" | "visit"
+    tie_min_matched   = 20          # common sources needed to tie two exposures
+    # Geometry of the visit's fit to the catalog: "rshift" (shift + rotation),
+    # "rscale", or "general" (a full linear map, six parameters per visit).
+    visit_fitgeom      = "rshift"
+    # Ceiling of the per-detector fits shared by the visit: a geometry of the
+    # `fine_fitgeom` ladder, or "none" for no per-detector fit (the visit moves
+    # as one body). Unset: `fine_fitgeom`.
+    # visit_fine_fitgeom = "none"
+    # With pool = "visit": on top of the fits shared by the visit, every
+    # detector of every exposure also gets a fit of its own against the
+    # reference catalog, accepted when its shift is significant
+    # (`fine_min_significance`; `exposure_min_significance`, when set, is the
+    # bar for these fits alone). Worth having with a dense catalog and large
+    # dithers; with a noisy catalog it chases the catalog's noise.
+    exposure_fits     = true
+    # Recipe validated on Abell 2744 LW broadbands with the field-level tie
+    # ([nircam.align.tie]): pool = "visit", visit_fitgeom = "general",
+    # visit_fine_fitgeom = "none", exposure_fits = false, centroid_sigma = 1.5.
     # --- Differential velocity aberration (DVA) re-reference ------------------
     # jwst's assign_wcs corrects DVA per detector, scaling about THAT detector's
     # own aperture reference (dva_corr_model(va_scale, v2_ref, v3_ref) builds
@@ -869,6 +904,15 @@
     deblend_nthresh = 32        # SEP deblender: number of thresholds
     deblend_cont = 0.001        # SEP deblender: min contrast
     snr_min = 10.0              # drop sources below this integrated flux SNR
+    # Centroid of a detection. 0: an adaptive window on the S/N map, whose
+    # width follows each source's size. > 0: a FIXED Gaussian window of this
+    # sigma (detector pixels) on the science image, i.e. the centroid of the
+    # core. The adaptive window sits off the core of an asymmetric image by an
+    # amount that depends on the source and on the detector's orientation; on
+    # Abell 2744 F444W that was the whole of a 15 mas (90th percentile)
+    # epoch-to-epoch error, which a 1.5 px window brings to 3 mas. Measured on
+    # LW broadbands only; the right width for SW has not been measured.
+    centroid_sigma = 0.0
                                 # (flux/fluxerr; same cut as the refcat build)
     edge = 8                    # drop detections within this many px of a border
     fwhm = 1.5                  # fallback matched-filter kernel FWHM (px);
@@ -896,6 +940,40 @@
         f480m = 2.6
 
 # --- combine phase (ensemble) ---
+
+[nircam.align.tie]
+    # Field-level tie (`cfpipe nircam tie --field X`, align/tie.py): one frame
+    # for every visit and filter of a field, from the sources the visits share.
+    # `align` fits each visit to the catalog on its own, so two visits agree
+    # only as well as the catalog allows where they overlap; the tie solves one
+    # linear map per visit and filter for the whole field at once (no visit is
+    # the reference), with catalog stars placed at each visit's epoch and the
+    # stationary catalog as a weak anchor, and writes the solved source
+    # positions as <field>_tie_consensus.ecsv. With `enabled`, `align` uses
+    # that catalog for the field once it exists. Enable per field in
+    # fields.toml: [<field>.align.tie] enabled = true.
+    enabled        = false
+    # Filters that enter the tie. Tied together so a visit that only partly
+    # overlaps one band is still held by the others; each visit gets its own
+    # map in each filter (no geometry is shared across filters).
+    filters        = ["f277w", "f356w", "f444w"]
+    unit           = "visit"   # "visit" | "module": what gets its own map (per filter)
+    snr_min        = 50.0      # detections used
+    link_radius    = 0.10      # arcsec; detections closer than this are one source
+    min_detections = 2         # exposures of a visit that must see a source
+    star_radius    = 0.08      # arcsec; detection to catalog star at the visit epoch
+                               #   (tight: fragments of a saturated star sit ~0.2" off)
+    anchor_radius  = 0.20      # arcsec; source to stationary catalog row
+    sig_detection  = 8.0       # mas per detection
+    sig_floor      = 2.0       # mas; floor of a visit's mean position of a source
+    sig_catalog    = 60.0      # mas per stationary catalog row (Legacy Surveys: ~50)
+    sig_star       = 5.0       # mas floor per star detection
+    sig_pm_floor   = 0.1       # mas/yr added to the catalog's proper-motion errors
+    sig_linear     = 5.0       # mas/arcmin prior on a visit's scale/rotation/shear
+    sig_chromatic  = 3.0       # mas; a source's position from one filter to another
+    min_shared     = 30        # shared sources below which a visit is reported weak
+    holdout        = true      # first measure the tie on held-out sources
+    # catalog = "<field>_tie_consensus.ecsv"   # output name (default shown)
 
 [nircam.apply_mask]
     # No tunable keys: the user region masks are recorded as a CFMASK extension

@@ -107,6 +107,10 @@ ALGN_DIAG_COMMENTS = {
     'ALGNYCON': 'align: dy peak contrast (peak/runner-up)',
     'ALGNHBIN': 'align: consensus histogram bin (arcsec)',
     'ALGNSTAL': 'align: ALGNCAT does not match the current WCS',
+    'ALGNNEXP': 'align: exposures fitted together (1 = alone)',
+    'ALGNTIE':  'align: sources shared with the visit reference',
+    'ALGNXFIT': 'align: this detector took its own fit',
+    'ALGNTSIG': 'align: significance of its own fit shift',
 }
 
 # GroupSolution.diagnostics key -> FITS keyword (see histmatch's ``diag``).
@@ -140,9 +144,11 @@ _SOLVE_KEYS = ('coarse_searchrad', 'refine_niter',
                'fine_min_rshift', 'fine_min_shift', 'tolerance', 'match_radius',
                'min_matched', 'min_coverage_arcsec', 'ref_border_arcmin',
                'nclip', 'sigma', 'max_residual_arcsec',
-               'dva_repivot', 'dva_pivot', 'fine_min_significance')
+               'dva_repivot', 'dva_pivot', 'fine_min_significance',
+               'exposure_min_significance')
 _DETECT_KEYS = ('fwhm', 'snr_thresh', 'minarea', 'deblend_nthresh',
-                'deblend_cont', 'edge', 'snr_min', 'objmag_lim')
+                'deblend_cont', 'edge', 'snr_min', 'objmag_lim',
+                'centroid_sigma')
 
 
 # --- gwcs <-> ASDF-in-FITS backup (technique shared with steps/wcs_shift.py) --
@@ -254,6 +260,15 @@ def _diag_header_updates(solution, det, n_detected=None):
     values['ALGNNREF'] = _hdr_num(solution.n_refcat_in_footprint)
     # This solve wrote a matching ALGNCAT, so nothing is stale.
     values['ALGNSTAL'] = False
+    # How the exposure was pooled: with the other exposures of its visit
+    # (ALGNNEXP of them, ALGNTIE sources shared with the visit's reference
+    # exposure, 0 for the reference itself), or on its own.
+    values['ALGNNEXP'] = int(diag.get('visit_n_exposures', 1))
+    values['ALGNTIE'] = int(diag.get('visit_tie', 0))
+    # Did this detector take a fit of its own in this exposure (on top of any
+    # fit shared by the visit), and how significant was that fit's shift?
+    values['ALGNXFIT'] = bool(getattr(det, 'own_fit', False))
+    values['ALGNTSIG'] = _hdr_num(getattr(det, 'tstat', None))
     return {kw: (values[kw], ALGN_DIAG_COMMENTS[kw])
             for kw in ALGN_DIAG_COMMENTS}
 
@@ -444,7 +459,7 @@ def _write_solution(path, corrected_wcs, cfp_value, ImageModel,
 
 
 def align_exposure_group(members, refcat, *, key=None, config=None,
-                         overwrite=False, status=None):
+                         overwrite=False, status=None, _detectors=None):
     """Align one exposure group and write the results to its canonicals.
 
     Parameters
@@ -494,8 +509,41 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
         return GroupSolution(key, 'SKIPPED', None, None, None, 0, [])
 
     solve_cfg = {k: config[k] for k in _SOLVE_KEYS if k in config}
-    detect_cfg = {k: config[k] for k in _DETECT_KEYS if k in config}
 
+    # Reading + solving one exposure must never abort a whole field's align. Any
+    # unexpected failure (a corrupt canonical, an unforeseen solver error the
+    # in-solve guards missed) degrades this exposure to NOT_ALIGNED — surfaced
+    # loudly by the align step and quarantined from combine — not crashing.
+    try:
+        detectors = (_load_members(members, config) if _detectors is None
+                     else list(_detectors))
+        refcat = _propagate_refcat(refcat, members[0].path, key)
+        solution = solve_exposure_group(detectors, refcat, key=key, **solve_cfg)
+    except Exception as e:  # noqa: BLE001 — one bad exposure must not abort the field
+        log(f"align[{key}]: FAILED — {type(e).__name__}: {e}; "
+            f"stamping NOT_ALIGNED (WCS preserved, excluded from combine).")
+        _stamp_not_aligned(members, key)
+        return GroupSolution(key, 'NOT_ALIGNED', None, None, None, 0, [])
+
+    _write_pool(members, solution, detectors, refcat_hash)
+    log(f"align[{key}]: {solution.status} "
+        f"({len(members)} detectors, n_matched={solution.n_matched})")
+    return solution
+
+
+def _stamp_not_aligned(members, key):
+    for m in members:
+        try:
+            _stamp_algn(m.path, NOT_ALIGNED_SENTINEL)
+        except Exception as se:  # noqa: BLE001 — best-effort stamp
+            log(f"align[{key}]: could not stamp NOT_ALIGNED on "
+                f"{os.path.basename(m.path)} ({type(se).__name__}).")
+
+
+def _load_members(members, config):
+    """Detect sources on every member; return their ``DetectorInput`` list
+    (``detector`` is the member's detector name)."""
+    detect_cfg = {k: config[k] for k in _DETECT_KEYS if k in config}
     # Per-filter matched-filter kernel FWHM: the kernel should track the PSF
     # core, whose width runs from ~F070W to ~F480M, so a single fwhm is wrong
     # across the exposure's SW+LW channels. Key it off each member's filter,
@@ -503,36 +551,24 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
     psf_by_filter = {str(k).lower(): float(v)
                      for k, v in (config.get('psf_fwhm_by_filter') or {}).items()}
     default_fwhm = detect_cfg.get('fwhm', 1.5)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        from jwst.datamodels import ImageModel
+    detectors = []
+    for m in members:
+        member_cfg = dict(detect_cfg)
+        member_cfg['fwhm'] = psf_by_filter.get(m.filter_name.lower(), default_fwhm)
+        detectors.append(_load_detector(m.path, m.detector, member_cfg, ImageModel))
+    return detectors
 
+
+def _write_pool(members, solution, detectors, refcat_hash):
+    """Write one pool's solution to its files (corrected gwcs, ``CFP_ALGN``,
+    diagnostics), or the ``NOT_ALIGNED`` sentinel for what was rejected."""
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         from jwst.datamodels import ImageModel
         from jwst.assign_wcs.util import update_fits_wcsinfo
-
-    # Reading + solving one exposure must never abort a whole field's align. Any
-    # unexpected failure (a corrupt canonical, an unforeseen solver error the
-    # in-solve guards missed) degrades this exposure to NOT_ALIGNED — surfaced
-    # loudly by the align step and quarantined from combine — not crashing.
-    try:
-        detectors = []
-        for m in members:
-            member_cfg = dict(detect_cfg)
-            member_cfg['fwhm'] = psf_by_filter.get(m.filter_name.lower(),
-                                                   default_fwhm)
-            detectors.append(_load_detector(m.path, m.detector, member_cfg,
-                                            ImageModel))
-        refcat = _propagate_refcat(refcat, members[0].path, key)
-        solution = solve_exposure_group(detectors, refcat, key=key, **solve_cfg)
-    except Exception as e:  # noqa: BLE001 — one bad exposure must not abort the field
-        log(f"align[{key}]: FAILED — {type(e).__name__}: {e}; "
-            f"stamping NOT_ALIGNED (WCS preserved, excluded from combine).")
-        for m in members:
-            try:
-                _stamp_algn(m.path, NOT_ALIGNED_SENTINEL)
-            except Exception as se:  # noqa: BLE001 — best-effort stamp
-                log(f"align[{key}]: could not stamp NOT_ALIGNED on "
-                    f"{os.path.basename(m.path)} ({type(se).__name__}).")
-        return GroupSolution(key, 'NOT_ALIGNED', None, None, None, 0, [])
 
     by_detector = {d.detector: d for d in solution.detectors}
     # The detection catalogs are still live here (the solve read, never replaced,
@@ -568,6 +604,289 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
                                 else None))
             _stamp_algn(m.path, NOT_ALIGNED_SENTINEL, diag_updates=updates)
 
-    log(f"align[{key}]: {solution.status} "
-        f"({len(members)} detectors, n_matched={solution.n_matched})")
-    return solution
+
+def _world(wcs, x, y):
+    ra, dec = wcs(np.asarray(x, dtype=float), np.asarray(y, dtype=float))
+    return np.asarray(ra, dtype=float), np.asarray(dec, dtype=float)
+
+
+def _tie_exposures(loaded, solve_cfg, tie_min_matched):
+    """Fit the exposures of a visit to each other on their common sources.
+
+    *loaded* maps pool key -> its ``DetectorInput`` list. The richest exposure
+    is the reference; every other exposure, all of its detectors as one body,
+    is fitted to the reference's detections with one shift and rotation. The
+    offsets between dithers are measured here; the pointing in the headers is
+    only the starting point, as it is for a fit to the reference catalog.
+    Exposures that could not be fitted go through the same procedure among
+    themselves (a visit can hold several separate pointings).
+
+    Returns ``(groups, alone)``. Each group is ``{pool key: (detectors, n)}``
+    with at least two exposures: the detectors carry the tied WCS and *n* is the
+    number of sources shared with the group's reference (0 for the reference).
+    *alone* lists the pool keys that belong to no group.
+    """
+    import dataclasses
+
+    from astropy.table import Table
+
+    from campfire_pipeline.nircam.align.dva import repivot_pool_dva
+
+    # Each exposure's velocity-aberration scale about its own pool pivot, once,
+    # exactly as the per-exposure solve does; later solves then leave it alone.
+    if solve_cfg.get('dva_repivot', True):
+        pivot = solve_cfg.get('dva_pivot', 'pool')
+        loaded = {k: repivot_pool_dva(d, pivot=pivot, key=k)[0]
+                  for k, d in loaded.items()}
+    cfg = {k: v for k, v in solve_cfg.items()
+           if k not in ('min_matched', 'fine_fitgeom', 'dva_repivot', 'dva_pivot')}
+
+    remaining, groups, alone = list(loaded), [], []
+    while len(remaining) >= 2:
+        reference = max(remaining,
+                        key=lambda k: sum(len(d.catalog) for d in loaded[k]))
+        ra, dec = [], []
+        for d in loaded[reference]:
+            r, c = _world(d.wcs, d.catalog['x'], d.catalog['y'])
+            ra.append(r)
+            dec.append(c)
+        relcat = Table({'RA': np.concatenate(ra), 'DEC': np.concatenate(dec)})
+        group, rest = {reference: (loaded[reference], 0)}, []
+        for k in remaining:
+            if k == reference:
+                continue
+            try:
+                sol = solve_exposure_group(
+                    loaded[k], relcat, key=f'{k}:tie', dva_repivot=False,
+                    fine_fitgeom='none', min_matched=tie_min_matched, **cfg)
+            except Exception as e:  # noqa: BLE001 — this exposure is fitted alone
+                log(f"align[{k}]: tie to {reference} raised "
+                    f"{type(e).__name__}: {e}")
+                sol = None
+            if (sol is None or sol.status != 'SOLVED'
+                    or not all(d.aligned for d in sol.detectors)):
+                rest.append(k)
+                continue
+            fitted = {d.detector: d.wcs for d in sol.detectors}
+            group[k] = ([dataclasses.replace(d, wcs=fitted[d.detector])
+                         for d in loaded[k]], int(sol.n_matched))
+            log(f"align[{k}]: tied to {reference}: shift "
+                f"({sol.shift[0] * 1000:+.1f}, {sol.shift[1] * 1000:+.1f}) mas, "
+                f"{sol.n_matched} common sources, rms "
+                f"{sol.rmse_arcsec * 1000:.1f} mas")
+        if len(group) >= 2:
+            groups.append(group)
+        else:
+            alone.append(reference)
+        remaining = rest
+    return groups, alone + remaining
+
+
+def _between_exposures(group, wcs_of):
+    """How well the exposures of a tied group agree under a candidate solution.
+
+    *group* is ``{pool key: (detectors, n)}`` from :func:`_tie_exposures`;
+    *wcs_of* maps ``'<pool key>|<detector>'`` to the candidate's WCS. Every
+    detection of every exposure is paired with the nearest detection of the
+    group's reference exposure (within 0.15 arcsec), and for each detector of
+    each other exposure the median offset of its pairs is taken.
+
+    Returns ``(rms, floor, n)``: the rms over those detectors of the median
+    offset (mas), what the scatter of the pairs alone would give for perfectly
+    aligned exposures (scatter over the square root of the pairs, same rms), and
+    the number of detectors that had at least 10 pairs.
+    """
+    from astropy.coordinates import SkyCoord
+
+    reference = next(k for k, (_, n) in group.items() if n == 0)
+    ra0, dec0 = [], []
+    for d in group[reference][0]:
+        r, c = _world(wcs_of[f'{reference}|{d.detector}'], d.catalog['x'],
+                      d.catalog['y'])
+        ra0.append(r)
+        dec0.append(c)
+    ra0, dec0 = np.concatenate(ra0), np.concatenate(dec0)
+    if ra0.size == 0:
+        return float('nan'), float('nan'), 0
+    ref_sky = SkyCoord(ra0, dec0, unit='deg')
+    cosd = np.cos(np.radians(np.median(dec0)))
+    med2, var = [], []
+    for k, (dets, _) in group.items():
+        if k == reference:
+            continue
+        for d in dets:
+            if len(d.catalog) == 0:
+                continue
+            ra, dec = _world(wcs_of[f'{k}|{d.detector}'], d.catalog['x'],
+                             d.catalog['y'])
+            idx, d2d, _ = SkyCoord(ra, dec, unit='deg').match_to_catalog_sky(ref_sky)
+            ok = d2d.arcsec < 0.15
+            if ok.sum() < 10:
+                continue
+            dx = (ra[ok] - ra0[idx[ok]]) * cosd * 3.6e6
+            dy = (dec[ok] - dec0[idx[ok]]) * 3.6e6
+            med2.append(np.median(dx) ** 2 + np.median(dy) ** 2)
+            mad = [1.4826 * np.median(np.abs(v - np.median(v))) for v in (dx, dy)]
+            var.append((mad[0] ** 2 + mad[1] ** 2) / ok.sum())
+    if not med2:
+        return float('nan'), float('nan'), 0
+    return float(np.sqrt(np.mean(med2))), float(np.sqrt(np.mean(var))), len(med2)
+
+
+def align_visit_pools(pools, refcat, *, key=None, config=None, overwrite=False,
+                      status=None):
+    """Align the exposures of one visit together; write the results.
+
+    *pools* is a list of ``(pool key, members)``: the same pool (the channel's
+    detectors, or one module) in each exposure of one visit and filter. The
+    recipe, ``[nircam.align].pool = "visit"``:
+
+    1. the exposures are fitted to each other on their common sources
+       (:func:`_tie_exposures`);
+    2. the tied exposures are fitted to the reference catalog as one body, one
+       shift and rotation for all of them;
+    3. each detector gets its own fit, one for the visit: the same detector in
+       every tied exposure shares it (``solve._fine_groups_fit``).
+
+    Whatever cannot go that way is done as before, each exposure on its own
+    (:func:`align_exposure_group`): a visit of one exposure, an exposure that
+    shares too few sources with the others, a visit whose joint fit fails.
+
+    Returns one ``GroupSolution`` per pool, in the order given.
+    """
+    import dataclasses
+
+    pools = [(k, list(m)) for k, m in pools]
+    config = dict(config or {})
+    key = key or (pools[0][0] if pools else '')
+    refcat_hash = config.get('_refcat_hash')
+
+    def alone(k, members, detectors=None):
+        return align_exposure_group(members, refcat, key=k, config=config,
+                                    overwrite=True, status=status,
+                                    _detectors=detectors)
+
+    if len(pools) < 2:
+        return [align_exposure_group(m, refcat, key=k, config=config,
+                                     overwrite=overwrite, status=status)
+                for k, m in pools]
+
+    solve_cfg = {k: config[k] for k in _SOLVE_KEYS if k in config}
+    # On top of the fits shared by the visit, a fit of every detector in every
+    # exposure, each accepted on the significance of its own shift.
+    exposure_fits = bool(config.get('exposure_fits', True))
+    members_of = dict(pools)
+    results, loaded = {}, {}
+    for k, members in pools:
+        try:
+            loaded[k] = _load_members(members, config)
+        except Exception as e:  # noqa: BLE001 — one bad exposure, not the visit
+            log(f"align[{k}]: FAILED — {type(e).__name__}: {e}; "
+                f"stamping NOT_ALIGNED (WCS preserved, excluded from combine).")
+            _stamp_not_aligned(members, k)
+            results[k] = GroupSolution(k, 'NOT_ALIGNED', None, None, None, 0, [])
+
+    try:
+        groups, single = _tie_exposures(
+            loaded, solve_cfg, int(config.get('tie_min_matched', 20)))
+    except Exception as e:  # noqa: BLE001 — fall back to the per-exposure fit
+        log(f"align[{key}]: could not tie the visit's exposures "
+            f"({type(e).__name__}: {e}); fitting each on its own.")
+        groups, single = [], list(loaded)
+
+    from tweakwcs.wcsimage import WCSGroupCatalog
+    def joint(group, visit_key):
+        """Fit a tied group to the reference catalog as one pool, with one fit
+        per detector for the visit and, with `exposure_fits`, a fit of every
+        detector in every exposure on top."""
+        detectors, groups_of = [], {}
+        for k, (dets, _) in group.items():
+            for d in dets:
+                name = f'{k}|{d.detector}'
+                detectors.append(dataclasses.replace(d, detector=name))
+                groups_of[name] = d.detector
+        # tweakwcs unions the footprint polygons of a pool exactly unless it has
+        # more members than this threshold (default 50); the exact union of the
+        # 32 detectors of a four-dither visit takes tens of minutes. The polygon
+        # plays no part in a fit against a given catalog in a fixed order.
+        saved = WCSGroupCatalog.bb_approx_threshold
+        WCSGroupCatalog.bb_approx_threshold = min(saved, 8)
+        try:
+            ref = _propagate_refcat(refcat, members_of[next(iter(group))][0].path,
+                                    visit_key)
+            return solve_exposure_group(
+                detectors, ref, key=visit_key,
+                **{**solve_cfg, 'dva_repivot': False,
+                   # geometry of the visit's fit to the catalog, and the
+                   # ceiling of the fits per detector shared by the visit
+                   'coarse_fitgeom': config.get('visit_fitgeom', 'rshift'),
+                   'fine_fitgeom': config.get(
+                       'visit_fine_fitgeom',
+                       solve_cfg.get('fine_fitgeom', 'rshift'))},
+                fine_groups=groups_of, fine_individual=exposure_fits)
+        except Exception as e:  # noqa: BLE001 — fall back to the per-exposure fit
+            log(f"align[{visit_key}]: joint fit raised {type(e).__name__}: {e}")
+            return None
+        finally:
+            WCSGroupCatalog.bb_approx_threshold = saved
+
+    for n_group, group in enumerate(groups):
+        visit_key = f'{key}:visit{n_group}' if len(groups) > 1 else f'{key}:visit'
+        sol = joint(group, visit_key)
+        first_dof = {}
+        if (sol is not None and sol.status == 'SOLVED'
+                and (sol.diagnostics or {}).get('shared_fits')):
+            # The exposures were tied before the detectors were corrected. A
+            # correction of a detector in its own frame (above all its rotation)
+            # moves a source by a different amount in each dither, by the
+            # rotation times the dither step, so the tie is now slightly off:
+            # with 25" between dithers, by milliarcseconds. Tie once more with
+            # the corrected detectors, then fit again from there.
+            # (from the shared fits alone, not from the per-exposure ones).
+            fitted = {d.detector: d for d in sol.shared_detectors}
+            corrected = {k: [dataclasses.replace(d, wcs=fitted[f'{k}|{d.detector}'].wcs)
+                             for d in dets] for k, (dets, _) in group.items()}
+            try:
+                again, _ = _tie_exposures(
+                    corrected, {**solve_cfg, 'dva_repivot': False},
+                    int(config.get('tie_min_matched', 20)))
+            except Exception as e:  # noqa: BLE001 — keep the first pass
+                log(f"align[{visit_key}]: second tie raised {type(e).__name__}: {e}")
+                again = []
+            if len(again) == 1 and set(again[0]) == set(group):
+                second = joint(again[0], visit_key)
+                if second is not None and second.status == 'SOLVED':
+                    first_dof = {d.detector: d.dof for d in sol.shared_detectors}
+                    group, sol = again[0], second
+        if sol is None or sol.status != 'SOLVED':
+            log(f"align[{visit_key}]: the joint fit of {len(group)} exposures did "
+                f"not solve; fitting each on its own.")
+            single.extend(group)
+            continue
+        log(f"align[{visit_key}]: SOLVED ({len(group)} exposures, "
+            f"{len(sol.detectors)} detectors, n_matched={sol.n_matched})")
+        by_name = {d.detector: d for d in sol.detectors}
+        # After a second pass a detector whose shared fit was made in the first
+        # reads 'coarse'; report the fit it actually carries.
+        for name, dof in first_dof.items():
+            if by_name[name].dof == 'coarse' and dof not in ('coarse', 'identity'):
+                by_name[name] = dataclasses.replace(by_name[name], dof=dof)
+        for k, (dets, n_shared) in group.items():
+            mine = [dataclasses.replace(by_name[f'{k}|{d.detector}'],
+                                        detector=d.detector) for d in dets]
+            pool_sol = GroupSolution(
+                key=k,
+                status='SOLVED' if any(d.aligned for d in mine) else 'NOT_ALIGNED',
+                shift=sol.shift, rot_deg=sol.rot_deg, rmse_arcsec=sol.rmse_arcsec,
+                n_matched=int(sum(d.n_matched for d in mine)), detectors=mine,
+                n_refcat_in_footprint=sol.n_refcat_in_footprint,
+                diagnostics={**(sol.diagnostics or {}),
+                             'visit_n_exposures': len(group),
+                             'visit_tie': n_shared})
+            _write_pool(members_of[k], pool_sol, loaded[k], refcat_hash)
+            results[k] = pool_sol
+
+    for k in single:
+        log(f"align[{k}]: fitted to the reference catalog on its own.")
+        results[k] = alone(k, members_of[k], loaded[k])
+    return [results[k] for k, _ in pools]
