@@ -37,6 +37,37 @@ Release procedure: edit the `## Unreleased` section below, then run
   comes from the exposure's SCI header.
 
 ### Algorithm
+- **Reference catalogs take their stars from Gaia, so they hold at any epoch.**
+  A catalog extracted from a mosaic, or queried from Legacy Surveys, lists each
+  star where it was at the date of that imaging; an exposure from another date
+  aligned to it is pulled toward positions the stars no longer have. Three
+  `cfpipe nircam refcat` commands now build catalogs by one rule
+  (`nircam/refcat/motion.py::use_gaia_for_stars`): a source matched to a Gaia star
+  with a proper motion takes Gaia's position, epoch and proper motion (the align
+  step already moves such stars to each exposure's date); a point source without
+  a proper motion is dropped, since it moves by an unknown amount; extended
+  sources stay where they are listed.
+  - `refcat extract`: `--stars gaia` is the new default (`--stars keep` gives the
+    previous catalog). Compact means as small as the matched Gaia stars in the
+    new `rhalf` column (half-light radius, arcsec). Gaia is queried unless
+    `--gaia-catalog` names a table on disk. Measured on `pg004` across nine
+    years: galaxies landed 25 mas from their catalog positions with the catalog
+    as extracted and 4 mas with the new one.
+  - `refcat query --backend ls_dr10`: `--stars gaia` is the new default. DR10
+    lists the stars it takes from Gaia at their 2016.0 positions; the query now
+    fetches their proper motions. Dropped: Gaia point sources without a motion,
+    and `PSF` sources Gaia does not list with a signal-to-noise of 20 or more in
+    the band (`star_snr_min`); fainter `PSF` sources stay, since at that depth
+    they sit with the galaxies. Measured in COSMOS against COSMOS2025: Gaia stars
+    moved to the date scatter 10 to 15 mas, against 35 mas at their listed
+    positions.
+  - New `refcat add-gaia`: the same for a catalog that already exists (a survey
+    catalog, an older reference catalog), from any table file astropy reads, with
+    `--size-column` naming its size column.
+
+  Existing catalogs and the align step are unchanged: a field's alignment changes
+  only when its catalog is rebuilt. `tests/test_refcat_motion.py`,
+  `tests/test_refcat_query.py`, `tests/test_refcat_add_gaia.py`.
 - **NIRCam `spike_mask` combine step (beta, opt-in).** New ensemble step between
   `apply_mask` and `bad_pixel`, disabled by default (`[nircam.spike_mask].enabled`), so
   existing reductions are unchanged. For each Gaia DR3 star an arm profile is scaled by the

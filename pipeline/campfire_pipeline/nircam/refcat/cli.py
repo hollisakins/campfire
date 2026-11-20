@@ -46,6 +46,54 @@ def _parse_center(center_str, field_obj):
         raise click.BadParameter(f"--center parse error: {e}")
 
 
+def _stars_from_gaia(table, gaia_catalog, epoch_hint, *, size_column="rhalf",
+                     match_radius=0.3, command="refcat extract"):
+    """Apply ``motion.use_gaia_for_stars`` to a catalog; the Gaia table is
+    read from *gaia_catalog* or queried over the catalog's extent."""
+    import numpy as np
+    from astropy.coordinates import SkyCoord
+
+    from campfire_pipeline.nircam.refcat.motion import use_gaia_for_stars
+
+    if gaia_catalog:
+        gaia = read_refcat(gaia_catalog)
+    else:
+        sky = SkyCoord(np.asarray(table["RA"], float), np.asarray(table["DEC"], float),
+                       unit="deg")
+        # Mean direction on the sphere, not a median of RA: a catalog that
+        # straddles RA 0 would otherwise get a center on the far side of the
+        # sky and an all-sky query.
+        from astropy.coordinates import UnitSphericalRepresentation
+        center = SkyCoord(
+            sky.cartesian.mean().represent_as(UnitSphericalRepresentation))
+        radius = float(center.separation(sky).max().deg) + 0.01
+        log(f"{command}: querying Gaia within {radius * 60:.1f}' of "
+            f"({center.ra.deg:.5f}, {center.dec.deg:.5f})")
+        gaia = query_external("gaia", (center.ra.deg, center.dec.deg), radius)
+    out, info = use_gaia_for_stars(table, gaia, epoch_hint=epoch_hint,
+                                   size_column=size_column,
+                                   match_radius=match_radius)
+    log(f"{command}: {info['n_gaia_stars']} Gaia stars now carry Gaia's "
+        f"position and proper motion; dropped {info['n_dropped_no_motion']} Gaia "
+        f"stars without a proper motion and {info['n_dropped_compact']} compact "
+        f"sources not in Gaia; {info['n_kept']} of {info['n_catalog']} kept.")
+    if info.get("frame_offset_mas"):
+        dra, ddec = info["frame_offset_mas"]
+        log(f"{command}: at the hinted epoch the catalog's own positions of "
+            f"those stars sit ({dra:+.1f}, {ddec:+.1f}) mas in RA, Dec from "
+            f"Gaia's. The stars now follow Gaia and the galaxies keep the "
+            f"catalog's frame, so that is how far the two parts disagree.")
+    if info["size_limit"] is None:
+        if size_column not in table.colnames:
+            log(f"{command}: the catalog has no '{size_column}' column, so no "
+                f"source was dropped for being compact. Point sources that are "
+                f"not in Gaia remain at the catalog's own epoch.")
+        else:
+            log(f"{command}: too few Gaia stars to say what a point source "
+                f"looks like here; no source was dropped for being compact.")
+    return out, info
+
+
 def _parse_mag_range(spec):
     """``--mag-range MIN,MAX`` parser → ``(float, float)`` or ``None``."""
     if spec is None:
@@ -76,7 +124,8 @@ def _resolve_output(out_arg, default_name, field_obj):
 
 @click.group()
 def refcat():
-    """Manage astrometric reference catalogs (query / extract / merge / compare)."""
+    """Manage astrometric reference catalogs (query / extract / add-gaia /
+    merge / compare)."""
     pass
 
 
@@ -104,6 +153,13 @@ def refcat():
               help="Upper magnitude cut applied server-side.")
 @click.option("--no-point-sources", is_flag=True,
               help="ls_dr10 / hsc_ssp: include extended sources too.")
+@click.option("--stars", type=click.Choice(["gaia", "keep"]), default=None,
+              help="ls_dr10 only. 'gaia' (default): Gaia stars carry their "
+                   "proper motion (the align step moves them to each "
+                   "exposure's date), and point sources bright enough to be "
+                   "recognized as stars that have no proper motion are "
+                   "dropped. 'keep': sources as listed, which puts Gaia "
+                   "stars at their 2016 positions.")
 @click.option("--row-limit", default=-1, type=int,
               help="gaia only: cap on returned rows (-1 = unlimited).")
 @click.option("--hsc-release", "hsc_release",
@@ -125,7 +181,7 @@ def refcat():
               help="Free-form note stamped into the catalog meta.")
 @click.option("--overwrite", is_flag=True)
 def query(config, field_name, backend, center, radius_deg, mag_band, mag_max,
-          no_point_sources, row_limit, hsc_release, hsc_user, hsc_password,
+          no_point_sources, stars, row_limit, hsc_release, hsc_user, hsc_password,
           out_path, notes, overwrite):
     """Query an external catalog over the field."""
     _, field_obj = _refcat_setup(config, field_name)
@@ -133,12 +189,17 @@ def query(config, field_name, backend, center, radius_deg, mag_band, mag_max,
 
     if mag_band is None:
         mag_band = "G" if backend == "gaia" else "i"
+    if stars is not None and backend != "ls_dr10":
+        raise click.ClickException(
+            f"--stars applies to the ls_dr10 backend only (got backend {backend!r})."
+        )
 
     kwargs = {"mag_band": mag_band, "mag_max": mag_max}
     if backend == "gaia":
         kwargs["row_limit"] = row_limit
     elif backend == "ls_dr10":
         kwargs["point_sources"] = not no_point_sources
+        kwargs["stars"] = stars or "gaia"
     elif backend == "hsc_ssp":
         kwargs["point_sources"] = not no_point_sources
         kwargs["release"] = hsc_release
@@ -205,12 +266,25 @@ def query(config, field_name, backend, center, radius_deg, mag_band, mag_max,
 @click.option("--out", "out_path", default=None,
               help="Output path; default = "
                    "<field.refcat_dir>/<field>_<filter>_extract_refcat.ecsv.")
+@click.option("--stars", type=click.Choice(["gaia", "keep"]), default="gaia",
+              show_default=True,
+              help="gaia: stars take their Gaia position and proper motion, "
+                   "and compact sources without a proper motion are dropped, "
+                   "so the catalog holds at any epoch. keep: the catalog as "
+                   "extracted.")
+@click.option("--gaia-catalog", "gaia_catalog", default=None,
+              help="A Gaia catalog already on disk (from 'refcat query "
+                   "--backend gaia'), instead of a new query.")
+@click.option("--epoch-hint", "epoch_hint", default=None, type=float,
+              help="Rough date of the mosaic's data as a year (e.g. 2025.8). "
+                   "Only helps pair fast stars with Gaia; not written to "
+                   "the catalog.")
 @click.option("--notes", default=None,
               help="Free-form note stamped into the catalog meta.")
 @click.option("--overwrite", is_flag=True)
 def extract(config, field_name, mosaic_path, filter_name, tile, scale,
-            err_path, snr_thresh, minarea, snr_min, mag_range, out_path,
-            notes, overwrite):
+            err_path, snr_thresh, minarea, snr_min, mag_range, stars,
+            gaia_catalog, epoch_hint, out_path, notes, overwrite):
     """Build a refcat by extracting sources from a mosaic.
 
     Two ways to point at the mosaic:
@@ -245,6 +319,8 @@ def extract(config, field_name, mosaic_path, filter_name, tile, scale,
         snr_thresh=snr_thresh, minarea=minarea,
         snr_min=snr_min, mag_range=mag_range_t,
     )
+    if stars == "gaia":
+        table, info["stars"] = _stars_from_gaia(table, gaia_catalog, epoch_hint)
 
     table.meta.update(make_meta(
         field_obj.name, source="extract",
@@ -264,6 +340,116 @@ def extract(config, field_name, mosaic_path, filter_name, tile, scale,
         out = os.path.abspath(out_path)
     write_refcat(table, out, overwrite=overwrite)
     log(f"refcat extract: wrote {out}")
+
+
+# ---------------------------------------------------------------------------
+# add-gaia
+# ---------------------------------------------------------------------------
+
+def _read_any_catalog(path):
+    """A catalog in the reference-catalog layout from any table file astropy
+    reads (ECSV, FITS, ...), with the usual column aliases applied."""
+    from astropy.table import Table
+
+    from .io import REFCAT_COLUMNS, _canonicalize_columns
+
+    if str(path).endswith(".ecsv"):
+        table = read_refcat(path)
+    else:
+        table = Table.read(path)
+        _canonicalize_columns(table)
+    missing = [c for c in REFCAT_COLUMNS if c not in table.colnames]
+    if missing:
+        raise click.ClickException(
+            f"{path} is not in the reference-catalog layout: no column(s) "
+            f"{missing}. A reference catalog has RA and DEC (degrees, ICRS), "
+            f"mag and mag_err; found {table.colnames[:12]}"
+            f"{' ...' if len(table.colnames) > 12 else ''}.")
+    return table
+
+
+@refcat.command(name="add-gaia")
+@click.option("--field", "field_name", required=True,
+              help="Field name from fields.toml (the catalog's home and the "
+                   "name recorded in it).")
+@click.argument("catalog", type=click.Path(exists=True))
+@click.option("--out", "out_path", default=None,
+              help="Output path; default = <field's catalog directory>/"
+                   "<input name>_gaia.ecsv.")
+@click.option("--size-column", default="rhalf", show_default=True,
+              help="Column that measures source size, in any unit. Sources "
+                   "not in Gaia that are as small as the Gaia stars in this "
+                   "column are dropped (they are stars with an unknown "
+                   "motion). Without the column nothing is dropped on size.")
+@click.option("--match-radius", default=0.3, type=float, show_default=True,
+              help="Match radius to Gaia in arcsec.")
+@click.option("--gaia-catalog", "gaia_catalog", default=None,
+              help="A Gaia catalog already on disk (from 'refcat query "
+                   "--backend gaia'), instead of a new query.")
+@click.option("--epoch-hint", "epoch_hint", default=None, type=float,
+              help="Rough date of the catalog's positions as a year (e.g. "
+                   "2023.3). Gaia is moved there before matching, so fast "
+                   "stars still pair up; not written to the catalog.")
+@click.option("--notes", default=None,
+              help="Free-form note stamped into the catalog meta.")
+@click.option("--overwrite", is_flag=True)
+def add_gaia(field_name, catalog, out_path, size_column, match_radius,
+             gaia_catalog, epoch_hint, notes, overwrite):
+    """Give an existing catalog Gaia's stars, so it holds at any epoch.
+
+    What `refcat extract` does to a catalog it has just made, for a catalog
+    that already exists (a survey catalog, an older reference catalog). CATALOG
+    is in the reference-catalog layout: RA, DEC, mag, mag_err. In the result
+
+    \b
+      - a source matched to a Gaia star takes Gaia's position, epoch and
+        proper motion; the align steps move it to each exposure's date;
+      - a source matched to a Gaia star without a proper motion is dropped;
+      - a source not in Gaia but as small as the Gaia stars (--size-column)
+        is dropped;
+      - every other source stays where it is.
+
+    A catalog without proper motions holds stars only at the date of its own
+    imaging: on COSMOS ACS data from 2004, the stars of a 2023 catalog sat 70
+    mas away and pulled the alignment by 6 mas.
+
+    \b
+    Example:
+        cfpipe nircam refcat add-gaia --field cosmos cosmos2025_cut.ecsv \\
+            --size-column radius_sersic --epoch-hint 2023.3
+    """
+    import toml
+    from campfire_layout import Scope, dir_for
+    from campfire_pipeline.config import resolve_fields_file
+
+    # Only the field's name is needed (the catalog's home), so the field is
+    # looked up in fields.toml without loading its exposures.
+    try:
+        fields_file = resolve_fields_file(None)
+        with open(fields_file, 'r') as f:
+            known = list(toml.load(f))
+    except (FileNotFoundError, ValueError) as e:
+        raise click.ClickException(str(e))
+    if field_name not in known:
+        raise click.ClickException(
+            f"Field '{field_name}' not found in {fields_file}. Available: {known}")
+    table = _read_any_catalog(catalog)
+    log(f"refcat add-gaia: {catalog}: {len(table)} sources")
+    table, info = _stars_from_gaia(table, gaia_catalog, epoch_hint,
+                                   size_column=size_column,
+                                   match_radius=match_radius,
+                                   command="refcat add-gaia")
+    info["input"] = os.path.abspath(catalog)
+    table.meta.update(make_meta(field_name, source="add-gaia",
+                                params=info, notes=notes))
+    if out_path is None:
+        stem = os.path.splitext(os.path.basename(catalog))[0]
+        refcat_dir = dir_for("nircam_astrom_cat", Scope(field=field_name))
+        out = os.path.join(str(refcat_dir), f"{stem}_gaia.ecsv")
+    else:
+        out = os.path.abspath(out_path)
+    write_refcat(table, out, overwrite=overwrite)
+    log(f"refcat add-gaia: wrote {out}")
 
 
 # ---------------------------------------------------------------------------
