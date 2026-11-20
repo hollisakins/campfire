@@ -28,6 +28,14 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+- **NIRCam `apply_mask` no longer crashes on exposures that have a mask file.** The step
+  called `DataModel.get_fits_wcs()`, removed in stdatamodels 6 (the jwst 3.0 stack), so
+  the combine phase failed with `AttributeError: No attribute 'get_fits_wcs'` on the first
+  exposure with a reviewer `.reg` file; exposures without one never reached the call. The
+  WCS (used only to project sky-coordinate regions; portal masks are pixel regions) now
+  comes from the exposure's SCI header.
+
 ### Algorithm
 - **NIRCam `spike_mask` combine step (beta, opt-in).** New ensemble step between
   `apply_mask` and `bad_pixel`, disabled by default (`[nircam.spike_mask].enabled`), so

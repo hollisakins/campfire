@@ -66,6 +66,20 @@ def _rasterize_regions(regs, wcs, shape, reg_file=''):
     return cfmask
 
 
+def _exposure_fits_wcs(exposure_file):
+    """The FITS (TAN-SIP) WCS of a canonical exposure, from its SCI header.
+
+    Only sky regions are projected through it; portal masks are pixel regions.
+    ``DataModel.get_fits_wcs()``, used here before, was removed in
+    stdatamodels 6 (jwst 3.0), which crashed every exposure with a mask file.
+    """
+    from astropy.wcs import WCS
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        return WCS(fits.getheader(exposure_file, 'SCI'))
+
+
 def apply_masks_step(exposure_file, field, step_config, overwrite=False,
                      status=None):
     """Apply region-file masks to a single canonical exposure.
@@ -107,9 +121,7 @@ def apply_masks_step(exposure_file, field, step_config, overwrite=False,
     from jwst.datamodels import ImageModel
 
     with ImageModel(exposure_file) as model:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            wcs = model.get_fits_wcs()
+        wcs = _exposure_fits_wcs(exposure_file)
         shape = model.data.shape
 
         # CFMASK is a plain 0/1 union of the user regions, rebuilt from scratch
