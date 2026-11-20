@@ -105,17 +105,25 @@ Release procedure: edit the `## Unreleased` section below, then run
   G395M +1.6% (3.2 um) to -2% (5 um); the H gratings within ~+-2-3%; PRISM within ~+-1%.
   `pars-extract1dstep_0002` (`use_source_posn = True` for MOS) is a no-op at the default
   `set_stellarity = 1.0`, where sources are already extracted at the source position.
-- **Extended-wavelength calibration re-derived against `jwst_1614`.**
-  `EXTENDED_CALIBRATION_CONTEXT` and the guard baseline now pin `fflat_0200` (G140M/F100LP)
-  and `fflat_0193` (G235M/F170LP); S-flats and photom baselines are unchanged.
-  `Generate_Extended_Cals.py` runs under `jwst_1614`, reruns spec2 / spec3 by default and
-  no longer hardcodes the wavelengthrange version. The extended F-flat now holds the last
-  finite sample at or below the hold wavelength (both copies of the extension): the new
-  F-flats are NaN at the red edge (G235M/F170LP from 3.153 um, G140M/F100LP from 1.884 um),
-  and the old nearest-sample rule picked a NaN at 3.17 um for G235M, which blanked the
-  whole 3.17-5.3 um extension. **TODO before merge:** commit the
-  re-derived `extended_jwst_nirspec_photom_0014/0015.fits`; until then the committed photom
-  is the one calibrated against the old F-flats.
+- **Extended-wavelength calibration re-derived against `jwst_1614`, and extended to
+  G140M/F070LP.** The committed `extended_jwst_nirspec_photom_0014/0015.fits` are
+  re-derived (Anthony Taylor, `data/Generate_Extended_Cals.py`); the G140M correction now
+  applies to the F070LP rows too. `EXTENDED_CALIBRATION_CONTEXT` and the guard baseline pin
+  `fflat_0196` (G140M/F070LP), `fflat_0200` (G140M/F100LP) and `fflat_0193` (G235M/F170LP);
+  S-flat and photom baselines are unchanged. The G235M/F170LP flat is now held from
+  3.15 um (was 3.17): the new F-flats are NaN at the red edge (G235M from 3.153 um,
+  G140M/F100LP from 1.884 um, G140M/F070LP from 1.261 um).
+- **`extend_g140m_g235m` covers G140M/F070LP** (Algorithm). The live extension
+  (`nirspec/extended_wavelength.py`) is a port of the script's construction, kept nearly
+  verbatim and checked byte-identical against it on the `jwst_1614` references for all six
+  detector / filter configs: F100LP / F170LP flats continued on a 1 nm grid with the value
+  nearest the hold wavelength held (an S-flat table's zero padding dropped, its *last*
+  plane moved to 5.3 um; the live code used to write `FLAT_05` on the 12-plane S-flats);
+  G140M/F070LP flats with the extended F100LP flats (same quadrant / detector) stitched on
+  and the seam smoothed. A held sample that is NaN now raises instead of blanking the
+  extension. The guard also checks the F100LP flats behind an F070LP reduction. Cached
+  extended files are named `extended_v2_*` (a stitched flat also carries its source's
+  version), so files built by the previous construction are never reused.
 - **NIRCam under `jwst_1614`:** full-frame `superbias` redelivered for all ten detectors,
   `photom` for NRCA2 / NRCA4 (not yet quantified), new `mask` files for data after
   2026-09-29.

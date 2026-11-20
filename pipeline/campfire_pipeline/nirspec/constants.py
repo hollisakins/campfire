@@ -52,16 +52,21 @@ FIXED_SLIT_MASK_GROW_PX = 3
 
 
 # ---------------------------------------------------------------------------
-# Extended-wavelength reduction (G140M/F100LP, G235M/F170LP)
+# Extended-wavelength reduction (G140M/F070LP, G140M/F100LP, G235M/F170LP)
 # ---------------------------------------------------------------------------
 # Constants for the opt-in extended-wavelength feature
 # ([nirspec.stage2].extend_g140m_g235m). See
 # docs/extended-wavelength-integration.md and campfire_pipeline/nirspec/
 # extended_wavelength.py.
 
-# The only grating/filter combos the extension applies to. F070LP (hard filter
-# cutoff) and the H gratings are intentionally excluded.
-EXTENDED_GRATING_FILTERS = {("G140M", "F100LP"), ("G235M", "F170LP")}
+# The only grating/filter combos the extension applies to. The H gratings are
+# intentionally excluded.
+EXTENDED_GRATING_FILTERS = {("G140M", "F070LP"), ("G140M", "F100LP"), ("G235M", "F170LP")}
+
+# Configs whose flats are extended by stitching the extended flats of another filter
+# of the same grating (and detector, for the S-flat) onto their own red end, instead
+# of holding their last value: (grating, filter) -> source filter.
+STITCHED_FLAT_SOURCE_FILTER = {("G140M", "F070LP"): "F100LP"}
 
 # Red edge the extension reaches: the assign_wcs wavelengthrange and the stage1
 # background mask are pushed out to this, in microns.
@@ -72,7 +77,9 @@ EXTENDED_MAX_WAVELENGTH_UM = 5.3
 EXTENDED_GRID_MAX_UM = 5.301
 
 # Wavelength (microns) beyond which the measured flat ends and the extended flat
-# holds its last real value constant (flat extrapolation).
+# holds its last real value constant (flat extrapolation). Mirrors ``maxwaves`` in
+# data/Generate_Extended_Cals.py. F070LP is not held (it is stitched, see
+# STITCHED_FLAT_SOURCE_FILTER); its entry is the support marker the script keeps.
 FLAT_HOLD_WAVELENGTH_UM = {
     ("G140M", "F070LP"): 1.26,
     ("G140M", "F100LP"): 1.87,
