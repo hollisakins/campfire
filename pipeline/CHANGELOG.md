@@ -109,7 +109,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   `EXTENDED_CALIBRATION_CONTEXT` and the guard baseline now pin `fflat_0200` (G140M/F100LP)
   and `fflat_0193` (G235M/F170LP); S-flats and photom baselines are unchanged.
   `Generate_Extended_Cals.py` runs under `jwst_1614`, reruns spec2 / spec3 by default and
-  no longer hardcodes the wavelengthrange version. **TODO before merge:** commit the
+  no longer hardcodes the wavelengthrange version. The extended F-flat now holds the last
+  finite sample at or below the hold wavelength (both copies of the extension): the new
+  F-flats are NaN at the red edge (G235M/F170LP from 3.153 um, G140M/F100LP from 1.884 um),
+  and the old nearest-sample rule picked a NaN at 3.17 um for G235M, which blanked the
+  whole 3.17-5.3 um extension. **TODO before merge:** commit the
   re-derived `extended_jwst_nirspec_photom_0014/0015.fits`; until then the committed photom
   is the one calibrated against the old F-flats.
 - **NIRCam under `jwst_1614`:** full-frame `superbias` redelivered for all ten detectors,
