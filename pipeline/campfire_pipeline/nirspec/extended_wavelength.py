@@ -87,14 +87,6 @@ def _extended_output_path(src_path, cache_dir):
 # Flat / wavelengthrange extension (faithful port of generate_extended_cals)
 # ---------------------------------------------------------------------------
 
-def _held_flat_value(wave, flux, hold):
-    """Last finite, positive flat value at or below ``hold`` (microns)."""
-    ok = (wave <= hold) & np.isfinite(flux) & (flux > 0)
-    if not ok.any():
-        raise ValueError(f"no finite flat value at or below the hold wavelength {hold} um")
-    return flux[np.flatnonzero(ok)[-1]]
-
-
 def _build_extended_fflat(src_path, grating, filt, out_path):
     """Extend an fflat reference file's wavelength-dependent flat tables to 5.3 um."""
     hold = FLAT_HOLD_WAVELENGTH_UM[(grating, filt)]
@@ -107,12 +99,9 @@ def _build_extended_fflat(src_path, grating, filt, out_path):
                 newwave = np.concatenate([wav0, np.round(np.arange(np.round(np.max(tab['wavelength'][0])+_FLAT_GRID_STEP_UM, 3), EXTENDED_GRID_MAX_UM, _FLAT_GRID_STEP_UM), 3)])
                 newflux=np.ones_like(newwave)
                 newflux[:len(wav0)]=tab['data'][0]
-                # Hold the flat constant beyond the last measured wavelength, at the
-                # last finite sample at or below the hold wavelength: the jwst_1614
-                # F-flats are NaN at the red edge (G235M/F170LP from 3.153 um), so the
-                # sample nearest the hold wavelength can be NaN, which would blank the
-                # whole extended region.
-                newflux[newwave >= hold] = _held_flat_value(newwave, newflux, hold)
+                # Hold the flat constant beyond the last measured wavelength.
+                hold_idx = int(np.argmin(np.abs(newwave - hold)))
+                newflux[newwave >= hold] = newflux[hold_idx]
                 newflux[newflux<=0] = np.nan
                 tab["newwavelength"] = newwave[:, None].T.astype("float32")
                 tab["newdata"] = newflux[:, None].T.astype("float32")
