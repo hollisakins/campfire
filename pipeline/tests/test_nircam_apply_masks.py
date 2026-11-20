@@ -22,7 +22,7 @@ pytest.importorskip("regions")
 
 from regions import Regions
 
-from campfire_pipeline.nircam.steps.apply_masks import _rasterize_regions
+from campfire_pipeline.nircam.steps.apply_masks import _exposure_fits_wcs, _rasterize_regions
 
 
 def _parse(text):
@@ -122,3 +122,19 @@ class TestMixed:
                    "149.9997,2.0003,150.0003,2.0003)"),
             wcs=wcs, shape=(10, 10))
         np.testing.assert_array_equal(both, (pix | sky))
+
+
+class TestExposureWcs:
+    """The step's WCS comes from the SCI header (``get_fits_wcs`` left with jwst 3.0)."""
+
+    def test_sky_region_rasterizes_through_sci_header_wcs(self, tmp_path):
+        from astropy.io import fits
+
+        hdr = _tan_wcs().to_header()
+        f = tmp_path / "exp_nrcalong.fits"
+        fits.HDUList([fits.PrimaryHDU(),
+                      fits.ImageHDU(np.zeros((10, 10), np.float32), header=hdr, name="SCI")]).writeto(f)
+        wcs = _exposure_fits_wcs(str(f))
+        regs = _parse('fk5\ncircle(150.0,2.0,0.72")')
+        mask = _rasterize_regions(regs, wcs, (10, 10))
+        assert mask[4, 4] == 1 and mask[0, 0] == 0
