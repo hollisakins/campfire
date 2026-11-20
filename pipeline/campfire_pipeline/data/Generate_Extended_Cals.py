@@ -58,7 +58,7 @@ if steps['detector1']:
 
 # Extends Flats
 
-maxwaves={'G140M':{'F100LP':1.87,'F070LP':1.27},'G235M':{'F170LP':3.17}}#'PRISM':{'CLEAR':5.3},}
+maxwaves={'G140M':{'F100LP':1.87,'F070LP':1.27},'G235M':{'F170LP':3.15}}  # must match FLAT_HOLD_WAVELENGTH_UM in nirspec/constants.py#'PRISM':{'CLEAR':5.3},}
 
 def generate_extended_cals(rate_files,cwd):
     print('Fetching CRDS data...')
