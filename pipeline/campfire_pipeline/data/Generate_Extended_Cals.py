@@ -117,7 +117,12 @@ def generate_extended_cals(rate_files,cwd):
                     newwave=np.concatenate([tab['wavelength'][0],np.round(np.arange(np.round(np.max(tab['wavelength'][0])+0.001,3),5.301,0.001),3)])
                     newflux=np.ones_like(newwave)
                     newflux[:len(tab['wavelength'][0])]=tab['data'][0]
-                    newflux[newwave>=maxwaves[grat][filt]]=newflux[np.argmin(np.abs(newwave-maxwaves[grat][filt]))] #flat after last real value
+                    # flat after last real value: hold the last finite sample at or below the
+                    # hold wavelength (the jwst_1614 F-flats are NaN at the red edge, so the
+                    # nearest sample can be NaN). Must match _held_flat_value in extended_wavelength.py.
+                    hold=maxwaves[grat][filt]
+                    ok=np.flatnonzero((newwave<=hold)&np.isfinite(newflux)&(newflux>0))
+                    newflux[newwave>=hold]=newflux[ok[-1]]
                     newflux[newflux<=0]=np.nan
                     tab['newwavelength']=newwave[:,None].T.astype('float32')
                     tab['newdata']=newflux[:,None].T.astype('float32')
