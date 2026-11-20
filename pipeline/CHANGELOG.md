@@ -108,7 +108,9 @@ Release procedure: edit the `## Unreleased` section below, then run
 - **Extended-wavelength calibration re-derived against `jwst_1614`, and extended to
   G140M/F070LP.** The committed `extended_jwst_nirspec_photom_0014/0015.fits` are
   re-derived (Anthony Taylor, `data/Generate_Extended_Cals.py`); the G140M correction now
-  applies to the F070LP rows too. `EXTENDED_CALIBRATION_CONTEXT` and the guard baseline pin
+  applies to the F070LP rows too, and its relresponse ends at 3.15 um (the entries beyond,
+  previously `inf`, are zeroed and outside `nelem`, so jwst's photom returns NaN there
+  instead of infinite flux). `EXTENDED_CALIBRATION_CONTEXT` and the guard baseline pin
   `fflat_0196` (G140M/F070LP), `fflat_0200` (G140M/F100LP) and `fflat_0193` (G235M/F170LP);
   S-flat and photom baselines are unchanged. The G235M/F170LP flat is now held from
   3.15 um (was 3.17): the new F-flats are NaN at the red edge (G235M from 3.153 um,
@@ -123,7 +125,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   and the seam smoothed (non-finite samples dropped first, so the F070LP F-flat's NaN tail
   from 1.261 um cannot blank the seam window). A held sample that is NaN now raises
   instead of blanking the extension. The guard also checks the F100LP flats behind an F070LP reduction. Cached
-  extended files are named `extended_v3_*` (a stitched flat also carries its source's
+  extended files are named `extended_v2_*` (a stitched flat also carries its source's
   version), so files built by the previous construction are never reused.
 - **NIRCam under `jwst_1614`:** full-frame `superbias` redelivered for all ten detectors,
   `photom` for NRCA2 / NRCA4 (not yet quantified), new `mask` files for data after

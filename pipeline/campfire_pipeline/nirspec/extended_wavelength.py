@@ -59,7 +59,7 @@ _STITCH_SIGMA = 10
 # Version of the extension construction, part of every cached filename: bump it
 # whenever the flat / wavelengthrange construction changes, so a cache file built by
 # an older construction is never reused against a photom calibrated with a newer one.
-_EXTENSION_VERSION = 3
+_EXTENSION_VERSION = 2
 
 
 def _crds_params(det, grating, filt, hdr=None):
@@ -100,7 +100,7 @@ def _extended_output_path(src_path, cache_dir, stitched_onto=None):
     ``jwst_nirspec_fflat_0200.fits``), so a CRDS bump that changes the underlying
     flat produces a different output name and naturally invalidates the cache. A
     stitched flat also depends on the flat stitched onto it, whose version is
-    appended (``extended_v3_jwst_nirspec_fflat_0196+0200.fits``).
+    appended (``extended_v2_jwst_nirspec_fflat_0196+0200.fits``).
     """
     stem, ext = os.path.splitext(os.path.basename(src_path))
     if stitched_onto:
