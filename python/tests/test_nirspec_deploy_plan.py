@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from campfire.deploy import deploy as dmod
-from campfire.deploy.nirspec_plan import format_bytes, render_plan
+from campfire.deploy.deploy_plan import format_bytes, render_nirspec_plan as render_plan
 from campfire.deploy.r2 import UploadTask
 from campfire.storage.plan import PushPlan
 

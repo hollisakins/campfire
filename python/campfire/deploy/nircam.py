@@ -35,13 +35,15 @@ fully-overwritten artifact — don't hand-edit it.
 
 import os
 import sys
-from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
 from astropy.io import fits
 
 from campfire_layout import KeyScheme, Scope, is_compressed_key, storage_key
+from campfire.deploy.deploy_plan import (
+    FileGroup, NircamDeployPlan, format_bytes, path_size, render_nircam_plan,
+)
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
     ScopeLease, deploy_event_metadata,
@@ -479,15 +481,23 @@ def _read_field_provenance(dirs, field, filters, *, prefer_mosaic=True):
 
 
 def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
-                  skip_mosaics=False, steal_lease=False):
-    """Push NIRCam exposure state to OSN + Supabase (epic #261, N1).
+                  skip_mosaics=False, steal_lease=False, auto_approve=False):
+    """Deploy a NIRCam field: plan, confirm, execute (epic #261, N1/N2).
 
     Records a **field-scoped deployment** (provenance + the draft->published
-    lifecycle), uploads the canonical exposure FITS (+ any field expmaps) to OSN
-    under ``campfire-layout`` canonical keys (content-hash deduped on
-    ``sha256(SCI+DQ+CFMASK+CFSPIKE)``), uploads preview PNGs to OSN, upserts ``nircam_exposures``,
-    and registers every landed object in ``storage_objects`` tagged with that
-    ``deployment_id``.
+    lifecycle), uploads the canonical exposure FITS, field expmaps, preview and
+    layout PNGs and the field's mosaics (+ their thumbnails) to OSN under
+    ``campfire-layout`` canonical keys (exposures content-hash deduped on
+    ``sha256(SCI+DQ+CFMASK+CFSPIKE)`` and their WCS digest, everything else on
+    the whole file), upserts ``nircam_exposures`` and the ``nircam_images``
+    mosaic index, and registers every landed object in ``storage_objects``
+    tagged with that ``deployment_id``.
+
+    The plan (:class:`~campfire.deploy.deploy_plan.NircamDeployPlan`) is built
+    first, from the products on disk plus a read-only check against the
+    database and the storage registry, and printed. ``dry_run`` stops there;
+    otherwise one confirmation (skipped by *auto_approve*) and the plan is
+    executed as printed.
 
     Visibility rides the deployment (not a bespoke admin-only special case): a
     ``published`` field deployment is public to everyone (NIRCam fields span
@@ -504,7 +514,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
         Filters to deploy. If None, discovers every directory under
         ``products/nircam/{field}/``.
     dry_run : bool
-        If True, print what would be done without making changes.
+        If True, print the plan without making changes.
     draft : bool
         If True, record the deployment as ``draft`` (admin-only) for review;
         otherwise ``published`` (public) immediately.
@@ -515,86 +525,91 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
         to draw masks, but the mosaics built *before* those masks exist are
         superseded by the post-mask re-combine, so shipping them is wasted
         transfer over a slow link. The mosaics ride the next deploy.
+    auto_approve : bool
+        Skip the confirmation prompt.
     """
-    dirs = _resolve_nircam_dirs(field)
+    plan = _build_nircam_plan(field, filters, draft=draft, skip_mosaics=skip_mosaics)
+    if plan is None:
+        return
 
+    from campfire.deploy.push import open_reducer_store
+    client = get_supabase_client(config)
+    store = open_reducer_store()
+    _check_nircam_plan_remote(client, plan, store)
+
+    print()
+    print(render_nircam_plan(plan, dry_run=dry_run))
+    print()
+    if dry_run:
+        return
+    # The one interactive gate, before the lease, the deployment row or any byte.
+    if not auto_approve:
+        resp = input("Proceed? [y/N]: ")
+        if resp.strip().lower() != 'y':
+            print("Aborted.")
+            return
+    _execute_nircam_plan(plan, client, store, config, steal_lease=steal_lease)
+
+
+def _build_nircam_plan(field, filters, *, draft, skip_mosaics):
+    """The local half of a field's deploy plan, or None when there is nothing
+    to deploy (the reason is printed). Reads headers and PNG sizes; touches no
+    network."""
+    dirs = _resolve_nircam_dirs(field)
     if not dirs['products'].exists():
         print(f"Error: Products directory not found: {dirs['products']}")
         sys.exit(1)
 
+    warnings = []
     available = _discover_filters(dirs)
     if filters:
         missing = [f for f in filters if f not in available]
         if missing:
-            print(f"Warning: No products for filters: {', '.join(missing)}")
+            warnings.append(f"No products for filter(s): {', '.join(missing)}")
         filters = [f for f in filters if f in available]
     else:
         filters = available
-
     if not filters:
         print("No filters found to deploy.")
-        return
-
-    print(f"Field: {field}")
-    print(f"Filters: {', '.join(filters)}")
+        return None
 
     exposures = discover_exposures(dirs, filters)
     expmap_tasks = discover_expmap_tasks(dirs, field, filters)
     layout_tasks = discover_layout_tasks(dirs, field)
-    # Scope mosaic discovery to what the current fields.toml declares — a stray
-    # on-disk tile/epoch from a former config must not ride into the cloud (this is
-    # the guard; the count + the actual upload both use this same scoped list).
-    if skip_mosaics:
-        # Skip discovery too, not just the upload: with no mosaic shipping this
-        # run, a stray on-disk tile is not this deploy's problem, and the
-        # fields.toml scope check would otherwise abort a perfectly good
-        # exposure deploy over a mosaic we were never going to send.
-        mosaics_to_deploy = []
-        print("Mosaics: SKIPPED (--no-mosaics) — exposures, expmaps and "
-              "layout only.")
-    else:
+    # Scope mosaic discovery to what the current fields.toml declares: a stray
+    # on-disk tile/epoch from a former config must not ride into the cloud. With
+    # --no-mosaics skip discovery too, not just the upload: the fields.toml scope
+    # check would otherwise abort a good exposure deploy over a mosaic we were
+    # never going to send.
+    mosaics = []
+    if not skip_mosaics:
         try:
-            mosaics_to_deploy = scope_mosaics_to_fields_toml(
+            mosaics = scope_mosaics_to_fields_toml(
                 deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
         except ValueError as e:
             print(f"Error: {e}")
             sys.exit(1)
-    n_mosaics = len(mosaics_to_deploy)
-    print(f"Discovered {len(exposures)} canonical exposure(s), "
-          f"{len(expmap_tasks)} expmap file(s), {n_mosaics} mosaic(s), "
-          f"{len(layout_tasks)} layout plot(s)")
-    # Deploy whatever the field has — mosaics/expmaps are independent of the
+    # Deploy whatever the field has: mosaics/expmaps are independent of the
     # per-exposure FITS (a field can keep its science mosaics after the large cal
     # exposures are pruned). Only bail if there is genuinely nothing to ship.
-    if not exposures and not expmap_tasks and not n_mosaics and not layout_tasks:
-        print("Nothing to deploy for this field.")
-        return
+    if not exposures and not expmap_tasks and not mosaics and not layout_tasks:
+        print(f"Nothing to deploy for field {field}.")
+        return None
 
     png_tasks = build_upload_tasks(dirs, field, filters)
-    thumb_r2_keys = {
-        (filtname, basename): task.r2_key
-        for task, basename, filtname, kind in png_tasks if kind == 'thumb'
-    }
-    full_r2_keys = {
-        (filtname, basename): task.r2_key
-        for task, basename, filtname, kind in png_tasks if kind == 'full'
-    }
-    # Image dimensions come from the full-res PNG (= native exposure shape),
-    # so the web canvas can place mask polygons in DS9 image coords without
-    # ever needing the FITS file.
-    full_dims = {
-        (filtname, basename): _read_full_png_dimensions(task.local_path)
-        for task, basename, filtname, kind in png_tasks if kind == 'full'
-    }
-    print(f"Preview PNGs: {len(png_tasks)} "
-          f"({len(thumb_r2_keys)} thumb, {len(full_r2_keys)} full)")
+    thumb_r2_keys = {(f, b): t.r2_key for t, b, f, kind in png_tasks if kind == 'thumb'}
+    full_r2_keys = {(f, b): t.r2_key for t, b, f, kind in png_tasks if kind == 'full'}
+    # Image dimensions come from the full-res PNG (= native exposure shape), so
+    # the web canvas can place mask polygons in DS9 image coords without ever
+    # needing the FITS file.
+    full_dims = {(f, b): _read_full_png_dimensions(t.local_path)
+                 for t, b, f, kind in png_tasks if kind == 'full'}
 
     fits_tasks = build_fits_upload_tasks(field, exposures)
-
     records = []
     for (filtname, basename), info in sorted(exposures.items()):
         dims = full_dims.get((filtname, basename))
-        record = {
+        records.append({
             'field': field,
             'filter': filtname,
             'detector': info['detector'] or 'unknown',
@@ -608,164 +623,216 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
             'full_png_path': full_r2_keys.get((filtname, basename)),
             'image_width': dims[0] if dims else None,
             'image_height': dims[1] if dims else None,
-        }
-        records.append(record)
+        })
 
-    if dry_run:
-        stage_counts = Counter(r['stage'] for r in records)
-        print("\nStage breakdown:")
-        for _, stage in _CFP_TO_STAGE:
-            if stage in stage_counts:
-                print(f"  {stage}: {stage_counts[stage]}")
-        print(f"\nWould record a {'draft' if draft else 'published'} field "
-              f"deployment and upload {len(fits_tasks)} canonical FITS + "
-              f"{len(expmap_tasks)} expmap file(s) + {n_mosaics} mosaic(s) + "
-              f"{len(layout_tasks)} layout plot(s) to OSN (subject to content-hash "
-              f"dedup), and {len(png_tasks)} preview PNG(s) to OSN, then upsert the "
-              f"fields registry row for '{field}'.")
-        print("Dry run — no changes made.")
-        return
+    mosaic_tasks = [UploadTask(local_path=m['path'], r2_key=m['storage_key'],
+                               content_type=m['content_type']) for m in mosaics]
+    # Per-mosaic science thumbnails ride the same plan/registration: they get a
+    # nircam_mosaic_thumbnail storage_objects row (key-derived product_type) but
+    # NO nircam_images row; the web shows them on the sci extension row.
+    mosaic_thumb_tasks = discover_mosaic_thumbnail_tasks(mosaics, field)
 
-    from campfire.deploy.push import (
-        open_reducer_store, plan_remote_push, registration_flusher,
-    )
-    from campfire.deploy.registry import set_active_deployment
-
-    client = get_supabase_client(config)
-    user_id = get_user_id_from_token(config)
-
-    # Deploy lease (data releases P1) + the B4 / D12 optimistic-concurrency
-    # version, taken BEFORE any work: the lease makes this deploy visible while
-    # it runs (refusing — DeployScopeBusy, surfaced by the CLI with
-    # --steal-lease — if another deploy of this field is live; a lease with no
-    # heartbeat for 30 minutes is taken over as stale), and the version is
-    # compare-and-set at finalize so a concurrent same-field deploy is detected.
-    lease = ScopeLease(client, 'field', field, actor=user_id, steal=steal_lease)
-    lease.begin()
-
-    # Batch-level provenance (audit B2, Phase 3). Best-effort: only mosaics carry
-    # the version cards, so an exposure-only --draft deploy (no mosaic yet)
-    # records NULL provenance — the pipeline version that produced the exposures
-    # is not stamped on exposure headers.
-    # With --no-mosaics the mosaics are not part of this deployment, so a stale
-    # on-disk i2d must not supply its provenance: read the exposures instead.
+    # Batch-level provenance (audit B2). With --no-mosaics the mosaics are not
+    # part of this deployment, so a stale on-disk i2d must not supply it: read
+    # the exposures instead.
     cfpipe_version, jwst_version, crds_context = _read_field_provenance(
         dirs, field, filters, prefer_mosaic=not skip_mosaics)
 
-    # Record the field-scoped deployment up front — it is the provenance anchor and
-    # the draft/published visibility gate every registered object hangs off.
+    from campfire.deploy.fields import load_fields_toml
+    try:
+        in_fields_toml = field in load_fields_toml()
+    except Exception:  # noqa: BLE001 - the registry upsert is best-effort too
+        in_fields_toml = False
+
+    return NircamDeployPlan(
+        field=field,
+        filters=filters,
+        file_groups=[
+            FileGroup('Exposures (FITS)', fits_tasks),
+            FileGroup('Exposure previews (PNG)', [t[0] for t in png_tasks]),
+            FileGroup('Exposure maps (FITS)', expmap_tasks),
+            FileGroup('Layout plots', layout_tasks),
+            FileGroup('Mosaics (FITS)', mosaic_tasks),
+            FileGroup('Mosaic thumbnails (PNG)', mosaic_thumb_tasks),
+        ],
+        records=records,
+        mosaics=mosaics,
+        cfpipe_version=cfpipe_version,
+        jwst_version=jwst_version,
+        crds_context=crds_context,
+        in_fields_toml=in_fields_toml,
+        draft=draft,
+        skip_mosaics=skip_mosaics,
+        warnings=warnings,
+        fits_keys={t.r2_key for t in fits_tasks},
+    )
+
+
+def _check_nircam_plan_remote(client, plan, store, *, progress=True):
+    """The remote half of the plan, read-only: which exposure rows exist and
+    which files the cloud registry already holds (no wcs_hash backfill, so a
+    dry run writes nothing to the server)."""
+    from campfire.deploy.push import plan_remote_push
+    plan.existing_exposures = len(_existing_exposure_keys(client, plan.records))
+    plan.push, _ = plan_remote_push(client, store, plan.upload_tasks,
+                                    backend=_CANONICAL_BACKEND, progress=progress)
+
+
+def _execute_nircam_plan(plan, client, store, config, *, steal_lease=False):
+    """Carry out a confirmed field plan: deployment, one upload, catalog, summary."""
+    from campfire.deploy.push import plan_remote_push, registration_flusher
+    from campfire.deploy.registry import set_active_deployment
+
+    field, draft = plan.field, plan.draft
+    user_id = get_user_id_from_token(config)
+
+    # Deploy lease (data releases P1) + the B4 / D12 optimistic-concurrency
+    # version: the lease makes this deploy visible while it runs (refusing —
+    # DeployScopeBusy, surfaced by the CLI with --steal-lease — if another
+    # deploy of this field is live; a lease with no heartbeat for 30 minutes is
+    # taken over as stale), and the version is compare-and-set at finalize so a
+    # concurrent same-field deploy is detected.
+    lease = ScopeLease(client, 'field', field, actor=user_id, steal=steal_lease)
+    lease.begin()
+
+    # Re-check the upload set under the lease (the plan's check ran before the
+    # prompt): cheap, since files the first pass confirmed take the stat fast
+    # path. This pass writes the legacy exposure wcs_hash backfill a dry run
+    # must not.
+    push_plan, _ = plan_remote_push(client, store, plan.upload_tasks,
+                                    backend=_CANONICAL_BACKEND, progress=False,
+                                    apply_backfill=True)
+    if plan.push is not None and (
+            len(push_plan.to_upload), len(push_plan.unchanged)) != (
+            len(plan.push.to_upload), len(plan.push.unchanged)):
+        print(f"Note: the cloud registry changed since the plan was made; "
+              f"now {push_plan.summary()}")
+
+    # The field-scoped deployment is opened before any upload: it is the
+    # provenance anchor and the draft/published visibility gate every
+    # registered object hangs off, and each upload batch registers against it
+    # as it lands (so an interrupted deploy resumes with its uploads attached).
     deployment_id = insert_deployment(
         client, field=field, deployed_by=user_id,
-        status='draft' if draft else 'published', n_targets=len(records),
-        cfpipe_version=cfpipe_version, jwst_version=jwst_version, crds_context=crds_context)
-    print(f"Deployment #{deployment_id} recorded "
-          f"({'draft — admin-only' if draft else 'published — public'})")
+        status='draft' if draft else 'published', n_targets=len(plan.records),
+        cfpipe_version=plan.cfpipe_version, jwst_version=plan.jwst_version,
+        crds_context=plan.crds_context)
+    status_word = 'draft, admin-only' if draft else 'published, public'
+    print(f"Deployment #{deployment_id} opened ({status_word})")
 
-    # --- Plan the exposure/expmap/PNG push (D1 dedup, unified) ---------------
-    # One plan over every OSN-bound tree product: the differ compares NIRCam
-    # exposures on the science-only sci_dq identity (a pipeline re-save with
-    # fresh header timestamps shifts the whole-file hash but not this) and
-    # expmaps/PNGs on the whole-file hash. Files this machine already confirmed
-    # against the same cloud identity skip via the pushed_* stat fast path —
-    # without reading a byte — so an unchanged re-deploy no longer pays the
-    # "hash every exposure" pause before uploading.
-    png_upload_list = [t[0] for t in png_tasks]
-    osn_tasks = fits_tasks + expmap_tasks + png_upload_list + layout_tasks
-    store = open_reducer_store()
-    # apply_backfill: this path is past every dry-run return, so it is a real
-    # deploy — legacy exposure rows proven unchanged can learn their wcs_hash.
-    plan, _server_rows = plan_remote_push(
-        client, store, osn_tasks, backend=_CANONICAL_BACKEND,
-        apply_backfill=True)
-    print(f"\nPlan: {plan.summary()}")
-
-    # --- Upload new/changed products to OSN, registering per batch -----------
-    # Visibility rides deployment.status via the storage_objects gate: published
-    # -> public to everyone, draft -> admin-only. The FITS carry a science-only
-    # sci_dq_hash for change detection; content_hash stays the authoritative
-    # whole-file digest for download/copy verification. Registration is durable
-    # per batch (registration_flusher), so an interrupted deploy resumes at file
-    # granularity instead of re-uploading everything already landed.
+    # ---- Upload: one pass, one byte bar ------------------------------------
+    # Mosaic rows register with their stored (gzipped) size and no cfpipe
+    # stamp; everything else with the field's cfpipe version — two flushers fed
+    # from the one upload, routed by key.
     upload_workers = _upload_workers(_CANONICAL_BACKEND)
-    n_failed = 0
-    osn_uploaded: set[str] = set()
-    flusher = registration_flusher(
-        client, store, plan, backend=_CANONICAL_BACKEND,
+    mosaic_keys = plan.mosaic_keys
+    stored_sizes: dict[str, int] = {}
+    tree_flusher = registration_flusher(
+        client, store, push_plan, backend=_CANONICAL_BACKEND,
         deployment_id=deployment_id, uploaded_by=user_id,
-        cfpipe_version=cfpipe_version, max_workers=upload_workers,
+        cfpipe_version=plan.cfpipe_version, max_workers=upload_workers,
         heartbeat=lease.heartbeat)
-    if plan.to_upload:
-        print(f"Uploading {len(plan.to_upload)} canonical FITS/expmap/PNG(s) to OSN...")
-        success, failed, failures = upload_files_parallel(
-            config, plan.to_upload, desc='OSN uploads', max_workers=upload_workers,
-            succeeded_out=osn_uploaded, backend=_CANONICAL_BACKEND,
-            on_success=flusher.add)
-        flusher.flush()
-        n_failed += failed
-        print(f"  Uploaded: {success}, Failed: {failed}")
-        for msg in failures:
-            print(f"  Error: {msg}")
-    if flusher.flushed:
-        print(f"  Registered {flusher.flushed} storage object(s)")
+    mosaic_flusher = registration_flusher(
+        client, store, push_plan, backend=_CANONICAL_BACKEND,
+        deployment_id=deployment_id, uploaded_by=user_id,
+        max_workers=upload_workers, stored_sizes=stored_sizes,
+        heartbeat=lease.heartbeat)
 
-    print("\nUpserting exposures to Supabase...")
-    _upsert_exposures(client, records)
-    print(f"  Upserted {len(records)} exposures")
+    def _register(task):
+        (mosaic_flusher if task.r2_key in mosaic_keys else tree_flusher).add(task)
 
-    # Re-point dedup-skipped objects (unchanged bytes, not re-registered) to this
-    # deployment so a PUBLISHED re-deploy flips the whole field consistently. NOT on
-    # a --draft re-deploy: draft is staging — leave already-published unchanged
-    # objects on their published deployment (only the new/changed ones stage as
-    # draft), else the whole live field goes dark. Covers the canonical FITS,
-    # expmaps, and preview PNGs alike.
-    if deployment_id and not draft:
-        skipped_keys = [t.r2_key for t in plan.unchanged]
+    uploaded: set[str] = set()
+    n_failed = 0
+    up_bytes = 0
+    if push_plan.to_upload:
+        up_bytes = sum(path_size(t.local_path) for t in push_plan.to_upload)
+        print(f"\nUploading {len(push_plan.to_upload):,} file(s), "
+              f"{format_bytes(up_bytes)} → OSN")
+        _success, n_failed, failures = upload_files_parallel(
+            config, push_plan.to_upload, desc='OSN upload', max_workers=upload_workers,
+            succeeded_out=uploaded, backend=_CANONICAL_BACKEND,
+            on_success=_register, stored_sizes_out=stored_sizes)
+        tree_flusher.flush()
+        mosaic_flusher.flush()
+        if failures:
+            print(f"  {n_failed} upload(s) failed:")
+            for msg in failures[:10]:
+                print(f"    - {msg}")
+            if len(failures) > 10:
+                print(f"    ... and {len(failures) - 10} more")
     else:
-        skipped_keys = []
-    if skipped_keys:
-        n_moved = set_active_deployment(client, skipped_keys, deployment_id)
-        if n_moved:
-            print(f"  Re-pointed {n_moved} unchanged object(s) to deployment #{deployment_id}")
+        print("\nNothing to upload: the cloud already holds every file")
 
-    # Exposure-only skip count for the audit-event metadata (fits_skipped).
-    _fits_keys = {t.r2_key for t in fits_tasks}
-    n_skipped = sum(1 for t in plan.unchanged if t.r2_key in _fits_keys)
+    # ---- Catalog ------------------------------------------------------------
+    print("\nWriting catalog...")
+    n_new = _upsert_exposures(client, plan.records)
+    print(f"  {len(plan.records):,} exposures ({n_new:,} new)")
 
-    # --- Mosaics: deploy under the same field deployment (epic #261, N2) ----
-    # Reuse the fields.toml-scoped list computed up front (single discovery +
-    # single skip-log; stray tiles/epochs were already filtered out above).
-    if skip_mosaics:
-        mosaic_stats = None
-    else:
-        mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
-                                             deployment_id, draft, user_id, store=store,
-                                             mosaics=mosaics_to_deploy,
-                                             heartbeat=lease.heartbeat)
+    unchanged_keys = {t.r2_key for t in push_plan.unchanged}
+    n_img = 0
+    if plan.mosaics:
+        # Local size for nircam_images.file_size: the plan stat()s every file.
+        for m in plan.mosaics:
+            m['size'] = push_plan.stats.get(m['storage_key'], (None, None))[1]
+        # A failed upload must NOT get a nircam_images row (it would advertise a
+        # file_path with no object and no registry row; the slot 404s). A re-run
+        # heals. PUBLISHED: (re-)index every present mosaic under this
+        # deployment. DRAFT is staging: index only the new/changed (uploaded)
+        # mosaics, and leave unchanged, already-published ones on their live
+        # deployment so the field doesn't go dark.
+        present = uploaded | unchanged_keys
+        img_status = 'draft' if draft else 'published'
+        indexable = uploaded if draft else present
+        img_rows = [{
+            'field': field, 'tile': m['tile'], 'filter': m['filter'],
+            'pixel_scale': m['pixel_scale'], 'extension': m['extension'],
+            'epoch': m.get('epoch', ''),
+            'file_path': m['storage_key'], 'file_size': m['size'],
+            'deploy_status': img_status, 'deployment_id': deployment_id,
+        } for m in plan.mosaics if m['storage_key'] in indexable]
+        n_img = _upsert_nircam_images(client, img_rows)
+        note = ''
+        n_unindexed = len(mosaic_keys) - n_img if not draft else 0
+        if n_unindexed:
+            note = f"; {n_unindexed:,} not indexed (upload failed, re-run to retry)"
+        print(f"  {n_img:,} mosaic index rows ({img_status}){note}")
 
-    # --- Field registry: upsert the fields.toml config + deploy-computed survey
-    # area (issue #303). Rides the deploy so a field row exists exactly for fields
-    # with deployed data; coverage_area comes from <field>_layout.json, and
-    # latest_deployment_id points at this deployment. Best-effort — a missing
+    # Re-point dedup-skipped objects (unchanged bytes, not re-registered) to
+    # this deployment so a PUBLISHED re-deploy flips the whole field
+    # consistently. NOT on a --draft re-deploy: draft is staging, so
+    # already-published unchanged objects stay on their published deployment
+    # (only the new/changed ones stage as draft), else the live field goes dark.
+    if deployment_id and not draft and unchanged_keys:
+        set_active_deployment(client, sorted(unchanged_keys - uploaded), deployment_id)
+
+    # Field registry: the fields.toml config + deploy-computed survey area
+    # (issue #303), latest_deployment_id pointing here. Best-effort: a missing
     # fields.toml section or layout.json never fails the deploy.
     try:
         from campfire.deploy.fields import upsert_field_on_deploy
-        upsert_field_on_deploy(client, dirs['products'], field, deployment_id)
+        upsert_field_on_deploy(client, _resolve_nircam_dirs(field)['products'], field,
+                               deployment_id)
     except Exception as e:  # noqa: BLE001 - registry upsert must never sink a deploy
         print(f"  fields: registry upsert skipped ({e})")
 
-    # --- Multi-reducer scope claim + audit (epic #210, B4 / D12) -----------
+    # ---- Finalize -----------------------------------------------------------
     claim = lease.claim()
     if claim.get('conflict'):
         print(f"⚠  CONCURRENT DEPLOY DETECTED for field '{field}': another reducer "
               f"advanced this field while this deploy was running. Re-run to reconcile.")
+    # Audit counts keep their historical meaning: files outside the mosaic
+    # stage (exposure FITS, expmaps, PNGs, layout); `skipped` the exposure FITS
+    # the dedup left alone.
+    n_tree_uploaded = len(uploaded - mosaic_keys)
+    n_skipped = sum(1 for k in unchanged_keys if k in plan.fits_keys)
     log_deploy_event(
         client, action='upload', actor=user_id, deployment_id=deployment_id,
-        observation=None, field=field, affected_count=len(osn_uploaded),
+        observation=None, field=field, affected_count=n_tree_uploaded,
         metadata=deploy_event_metadata(
-            'nircam', field=field, filters=filters, planned=len(records),
-            succeeded=len(osn_uploaded), failed=n_failed, skipped=n_skipped,
-            items=len(records), draft=draft,
-            fits_uploaded=len(osn_uploaded), fits_skipped=n_skipped))
+            'nircam', field=field, filters=plan.filters, planned=len(plan.records),
+            succeeded=n_tree_uploaded, failed=n_failed, skipped=n_skipped,
+            items=len(plan.records), draft=draft,
+            fits_uploaded=n_tree_uploaded, fits_skipped=n_skipped))
 
     # If the field's FitsGL map pyramid is missing or its mosaics changed, print a
     # suggested `campfire fitsgl build/deploy` — a hint only, never an auto-build
@@ -777,34 +844,21 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     except Exception:
         pass
 
-    # Closing summary — one block stating what happened, after the stage output.
+    # Closing summary: one block stating what happened, after the stage output.
     print()
-    print(f"Deploy complete: {field}")
-    print(f"  deployment:  #{deployment_id} "
-          f"({'draft — admin-only' if draft else 'published'})")
-    print(f"  catalog:     {len(records)} exposures"
-          + (f", {mosaic_stats['indexed']} mosaic rows" if mosaic_stats else ""))
-    files_line = (f"  files:       {len(osn_uploaded)} uploaded, "
-                  f"{len(plan.unchanged)} unchanged skipped")
-    if mosaic_stats:
-        files_line += (f"; mosaics: {mosaic_stats['uploaded']} uploaded, "
-                       f"{mosaic_stats['unchanged']} unchanged")
-    if n_failed:
-        files_line += f", {n_failed} FAILED — re-run to retry"
-    print(files_line)
+    print(f"Deploy complete: field {field} → deployment #{deployment_id} "
+          f"({'draft, admin-only' if draft else 'published'})")
+    print(f"  files:    {len(uploaded):,} uploaded ({format_bytes(up_bytes)}), "
+          f"{len(unchanged_keys):,} already in the cloud"
+          + (f", {n_failed:,} FAILED (re-run to retry)" if n_failed else ''))
+    catalog = [f"{len(plan.records):,} exposures ({n_new:,} new)"]
+    if plan.mosaics:
+        catalog.append(f"{n_img:,} mosaic index rows")
+    print(f"  catalog:  {', '.join(catalog)}")
 
 
-def _upsert_exposures(client, records, batch_size=500):
-    """Upsert exposure records, preserving web-triage fields for existing rows.
-
-    New rows get default ``review_status='pending'``, ``correction='none'``.
-    Existing rows: update pipeline-derived columns only (``stage``,
-    ``png_path``, metadata). Preserve web-owned ``review_status``,
-    ``correction``, ``mask_regions``, ``notes``.
-    """
-    if not records:
-        return
-
+def _existing_exposure_keys(client, records, batch_size=500):
+    """``{(field, filter, filename)}`` of *records* already in ``nircam_exposures``."""
     filenames = [r['filename'] for r in records]
     existing = set()
     for i in range(0, len(filenames), batch_size):
@@ -815,6 +869,21 @@ def _upsert_exposures(client, records, batch_size=500):
                 .execute())
         for row in resp.data:
             existing.add((row['field'], row['filter'], row['filename']))
+    return existing
+
+
+def _upsert_exposures(client, records, batch_size=500):
+    """Upsert exposure records, preserving web-triage fields for existing rows.
+
+    New rows get default ``review_status='pending'``, ``correction='none'``.
+    Existing rows: update pipeline-derived columns only (``stage``,
+    ``png_path``, metadata). Preserve web-owned ``review_status``,
+    ``correction``, ``mask_regions``, ``notes``. Returns the number of new rows.
+    """
+    if not records:
+        return 0
+
+    existing = _existing_exposure_keys(client, records, batch_size)
 
     new_records = []
     update_records = []
@@ -868,6 +937,7 @@ def _upsert_exposures(client, records, batch_size=500):
             batch,
             on_conflict='field,filter,filename',
         ).execute()
+    return len(new_records)
 
 
 # ---------------------------------------------------------------------------
@@ -1061,122 +1131,6 @@ def discover_mosaic_thumbnail_tasks(mosaics, field):
                                        png_path.name, scheme=KeyScheme.CANONICAL),
                     content_type=_PNG_CONTENT_TYPE))
     return tasks
-
-
-def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
-                          draft, user_id, store=None, mosaics=None, heartbeat=None):
-    """Deploy this field's mosaics under the field deployment (epic #261, N2).
-
-    Called from :func:`deploy_nircam` so ``campfire deploy --field`` ships exposures
-    and mosaics as one field deployment. Uploads each deployable mosaic product (the
-    split ``_sci/_err/_wht/_srcmask/_exp`` extensions — the heavy ``_i2d`` cube is
-    discovered but filtered out by :func:`deployable_mosaics`) to OSN under canonical
-    keys — whole-file content-hash deduped via the push planner (with the pushed_*
-    stat fast path, so an unchanged multi-GB mosaic is skipped without re-hashing)
-    — upserts one ``nircam_images`` row per
-    ``(field, tile, filter, pixel_scale, extension)`` carrying ``deploy_status``
-    (draft/published to match the deployment) + ``deployment_id``, and registers
-    ``nircam_mosaic`` storage objects tagged with the deployment. Re-combine
-    overwrites the same key in place (stable, version-free — D3/D4); visibility
-    rides the deployment (published => public to everyone).
-    """
-    from campfire.deploy.push import (
-        open_reducer_store, plan_remote_push, registration_flusher,
-    )
-    from campfire.deploy.registry import set_active_deployment
-
-    # discover_mosaics returns i2d too (provenance / FitsGL read it locally); the
-    # cloud deploy ships only the deployable extensions AND only the tiles/epochs
-    # the current fields.toml declares. deploy_nircam passes that scoped list in;
-    # fall back to computing it here for any direct caller.
-    if mosaics is None:
-        mosaics = scope_mosaics_to_fields_toml(
-            deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
-    if not mosaics:
-        return None
-    print(f"\nMosaics: {len(mosaics)} product(s)")
-
-    if store is None:
-        store = open_reducer_store()
-
-    mosaic_tasks = [UploadTask(local_path=m['path'], r2_key=m['storage_key'],
-                               content_type=m['content_type']) for m in mosaics]
-
-    # Per-mosaic science thumbnails ride the same plan/registration (see
-    # discover_mosaic_thumbnail_tasks): they get a nircam_mosaic_thumbnail
-    # storage_objects row (key-derived product_type) but NO nircam_images row —
-    # the web shows them on the sci extension row.
-    thumb_tasks = discover_mosaic_thumbnail_tasks(mosaics, field)
-    if thumb_tasks:
-        print(f"  Thumbnails: {len(thumb_tasks)}")
-
-    plan, server_rows = plan_remote_push(
-        client, store, mosaic_tasks + thumb_tasks, backend=_CANONICAL_BACKEND)
-    unchanged_keys = {t.r2_key for t in plan.unchanged}
-    print(f"  Plan: {plan.summary()}")
-
-    # Local file size for nircam_images.file_size: the plan stat()s every file.
-    for m in mosaics:
-        m['size'] = plan.stats.get(m['storage_key'], (None, None))[1]
-
-    uploaded: set[str] = set()
-    # Gzipped mosaic uploads report the bytes actually PUT; the flusher writes
-    # them to registry.stored_size_bytes (size_bytes stays the logical size).
-    stored_sizes: dict[str, int] = {}
-    flusher = registration_flusher(
-        client, store, plan, backend=_CANONICAL_BACKEND,
-        deployment_id=deployment_id, uploaded_by=user_id,
-        max_workers=_upload_workers(_CANONICAL_BACKEND), stored_sizes=stored_sizes,
-        heartbeat=heartbeat)
-    if plan.to_upload:
-        print(f"  Uploading {len(plan.to_upload)} mosaic file(s) to OSN...")
-        success, failed, failures = upload_files_parallel(
-            config, plan.to_upload, desc='OSN mosaic uploads', max_workers=_upload_workers(_CANONICAL_BACKEND),
-            succeeded_out=uploaded, backend=_CANONICAL_BACKEND,
-            on_success=flusher.add, stored_sizes_out=stored_sizes)
-        flusher.flush()
-        print(f"  Uploaded: {success}, Failed: {failed}")
-        for msg in failures:
-            print(f"  Error: {msg}")
-        if flusher.flushed:
-            print(f"  Registered {flusher.flushed} mosaic storage object(s)")
-
-    # A failed upload must NOT get a nircam_images row (it would advertise a
-    # file_path with no object + no registry row; the slot 404s). A re-run heals.
-    present = set(uploaded) | unchanged_keys
-    # PUBLISHED: (re-)index every present mosaic under this deployment. DRAFT is
-    # staging — only index the NEW/CHANGED (uploaded) mosaics as draft; leave
-    # unchanged, already-published mosaics on their live deployment so the field
-    # doesn't go dark. (A first-time deploy has uploaded == present anyway.)
-    img_status = 'draft' if draft else 'published'
-    indexable = uploaded if draft else present
-    img_rows = [{
-        'field': field, 'tile': m['tile'], 'filter': m['filter'],
-        'pixel_scale': m['pixel_scale'], 'extension': m['extension'],
-        'epoch': m.get('epoch', ''),
-        'file_path': m['storage_key'], 'file_size': m['size'],
-        'deploy_status': img_status, 'deployment_id': deployment_id,
-    } for m in mosaics if m['storage_key'] in indexable]
-    n_img = _upsert_nircam_images(client, img_rows)
-    print(f"  Indexed {n_img} nircam_images row(s) ({img_status})")
-    # Only mosaic FITS get nircam_images rows — thumbnails (also in `present`) do
-    # not, so count failures against mosaic keys alone or every thumb reads as a
-    # non-indexed mosaic.
-    mosaic_keys = {m['storage_key'] for m in mosaics}
-    n_failed = len(present & mosaic_keys) - len(img_rows) if not draft else 0
-    if n_failed:
-        print(f"  ({n_failed} mosaic(s) not indexed — upload failed; re-run to retry)")
-
-    # Re-point unchanged (skipped) mosaics to the current deployment — only on a
-    # PUBLISHED deploy. On --draft, leave unchanged mosaics on their live deployment
-    # (staging: don't take the published field dark).
-    if not draft:
-        skipped_keys = sorted(unchanged_keys - uploaded)
-        if skipped_keys:
-            set_active_deployment(client, skipped_keys, deployment_id)
-
-    return {'uploaded': len(uploaded), 'unchanged': len(unchanged_keys),
-            'indexed': n_img}
 
 
 def _upsert_nircam_images(client, rows, batch_size=500):

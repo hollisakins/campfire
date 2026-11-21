@@ -39,8 +39,8 @@ from campfire.deploy.lines import (
     get_lines_paths, line_fit_versions, lines_upload_tasks, publish_line_fits,
     split_auto_line_fits,
 )
-from campfire.deploy.nirspec_plan import (
-    FileGroup, NirspecDeployPlan, format_bytes, path_size, render_plan,
+from campfire.deploy.deploy_plan import (
+    FileGroup, NirspecDeployPlan, format_bytes, path_size, render_nirspec_plan,
 )
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
@@ -618,7 +618,7 @@ def deploy_observation(
 ) -> dict:
     """Full deployment of one NIRSpec observation: plan, confirm, execute.
 
-    The plan (:class:`~campfire.deploy.nirspec_plan.NirspecDeployPlan`) is
+    The plan (:class:`~campfire.deploy.deploy_plan.NirspecDeployPlan`) is
     built first, from the summary ECSV and the products on disk plus a
     read-only check against the database and the storage registry, and
     printed. ``dry_run`` stops there; otherwise one confirmation (skipped by
@@ -708,7 +708,7 @@ def deploy_observation(
         _check_plan_remote(sb, plan, store)
 
         print()
-        print(render_plan(plan, dry_run=dry_run))
+        print(render_nirspec_plan(plan, dry_run=dry_run))
         print()
         if dry_run:
             return {'field': field, 'needs_reconcile': False}

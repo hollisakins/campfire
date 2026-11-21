@@ -393,7 +393,8 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
                 deploy_nircam, field, config,
                 filters=list(filter_names) if filter_names else None,
                 dry_run=dry_run, draft=draft,
-                skip_mosaics=no_mosaics, steal_lease=steal_lease)
+                skip_mosaics=no_mosaics, steal_lease=steal_lease,
+                auto_approve=auto_approve)
             return
         if not obs:
             print("Error: --obs (NIRSpec) or --field (NIRCam) is required for full deployment.")
