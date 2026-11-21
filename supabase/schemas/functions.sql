@@ -8583,6 +8583,7 @@ RETURNS TABLE (
   deployed_at timestamptz,
   published_at timestamptz,
   revoked_at timestamptz,
+  completed_at timestamptz,
   total_count bigint
 )
 LANGUAGE plpgsql STABLE
@@ -8603,7 +8604,7 @@ BEGIN
   RETURN QUERY
   SELECT d.id, d.observation, d.field, d.status, d.n_targets, d.n_spectra,
          d.cfpipe_version, d.deployed_at, d.published_at, d.revoked_at,
-         count(*) OVER ()
+         d.completed_at, count(*) OVER ()
   FROM deployments d
   WHERE (p_status IS NULL OR d.status = p_status)
     AND (p_instrument IS NULL

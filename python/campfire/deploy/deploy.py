@@ -51,6 +51,7 @@ from campfire.deploy.supabase import (
     get_user_id_from_token,
     insert_deployment,
     log_deploy_event,
+    mark_deployment_completed,
     recompute_target_aggregates,
     refresh_filter_options,
     refresh_programs_overview,
@@ -407,6 +408,11 @@ def _deploy_intermediates_only(
             sb, build_spectrum_exposure_records(exposure_files, observation=obs_name, scope=scope))
         print(f"Upserted {n_grid} spectrum-exposure grid rows")
 
+    # Completion marker: every write of this deploy has landed. A failed upload
+    # leaves it NULL — the deploy told the operator to re-run, it did not finish.
+    if not failed:
+        mark_deployment_completed(sb, deployment_id)
+
     claim = lease.claim()
     if claim.get('conflict'):
         print(f"⚠  CONCURRENT DEPLOY DETECTED for {obs_name}: another deploy advanced "
@@ -416,6 +422,36 @@ def _deploy_intermediates_only(
           f"+ {len(rate_files)} detector rate files (draft — no finals yet). "
           f"Finish stage3 + re-deploy to publish.")
     return {'field': field, 'needs_reconcile': False}
+
+
+def _finish_nirspec_deployment(sb, deployment_id, push_plan, *, draft: bool,
+                               failed: int) -> None:
+    """The last writes of a NIRSpec finals deploy: re-point, then completion.
+
+    Re-points unchanged dedup-skipped objects at this deployment, only on a
+    PUBLISHED deploy, so deployment-gated intermediates ride the current
+    deployment's visibility. Uploaded objects were already registered with this
+    deployment_id as batches landed (registration_flusher). On --draft,
+    unchanged objects stay on their prior (possibly published) deployment:
+    staging must not take live data dark.
+
+    Then stamps ``deployments.completed_at``. The row was opened up front, so
+    until this lands a crashed deploy is indistinguishable from a finished one.
+    A failed upload leaves it NULL: the deploy asked for a re-run, it did not
+    finish.
+    """
+    if not deployment_id:
+        return
+    if push_plan is not None and not draft:
+        skipped = {t.r2_key for t in push_plan.unchanged}
+        if skipped:
+            from campfire.deploy.registry import set_active_deployment
+            n_att = set_active_deployment(sb, sorted(skipped), deployment_id)
+            if n_att:
+                print(f"Re-pointed {n_att} unchanged storage object(s) to "
+                      f"deployment #{deployment_id}")
+    if not failed:
+        mark_deployment_completed(sb, deployment_id)
 
 
 def deploy_observation(
@@ -1018,20 +1054,10 @@ def deploy_observation(
         if not defer_rebuild:
             refresh_observations_overview(sb)
 
-        # Re-point unchanged dedup-skipped objects at this deployment — only on
-        # a PUBLISHED deploy, so deployment-gated intermediates ride the current
-        # deployment's visibility. Uploaded objects were already registered with
-        # this deployment_id as batches landed (registration_flusher). On
-        # --draft, unchanged objects stay on their prior (possibly published)
-        # deployment — staging must not take live data dark.
-        if deployment_id and push_plan is not None and not draft:
-            skipped = {t.r2_key for t in push_plan.unchanged}
-            if skipped:
-                from campfire.deploy.registry import set_active_deployment
-                n_att = set_active_deployment(sb, sorted(skipped), deployment_id)
-                if n_att:
-                    print(f"Re-pointed {n_att} unchanged storage object(s) to "
-                          f"deployment #{deployment_id}")
+        # Re-point the unchanged objects (published only), then stamp the
+        # completion marker as the last write of the deploy.
+        _finish_nirspec_deployment(sb, deployment_id, push_plan,
+                                   draft=draft, failed=failed)
 
         # B4 multi-reducer safety: compare-and-set the scope version. A conflict
         # means another reducer deployed this same observation while we were

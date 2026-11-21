@@ -46,6 +46,7 @@ from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
     ScopeLease, deploy_event_metadata,
     get_supabase_client, get_user_id_from_token, insert_deployment, log_deploy_event,
+    mark_deployment_completed,
 )
 
 # The OSN data backend NIRCam canonical intermediates are homed on (epic #210/#216,
@@ -753,6 +754,13 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     except Exception as e:  # noqa: BLE001 - registry upsert must never sink a deploy
         print(f"  fields: registry upsert skipped ({e})")
 
+    # Completion marker, after the last write of the field deploy (exposures,
+    # mosaics, re-points, field registry). The row was recorded up front, so a
+    # deploy that died before here keeps completed_at NULL; so does one whose
+    # exposure or mosaic uploads failed (it asked for a re-run).
+    if not n_failed and not (mosaic_stats or {}).get('failed'):
+        mark_deployment_completed(client, deployment_id)
+
     # --- Multi-reducer scope claim + audit (epic #210, B4 / D12) -----------
     claim = lease.claim()
     if claim.get('conflict'):
@@ -1128,6 +1136,7 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
         deployment_id=deployment_id, uploaded_by=user_id,
         max_workers=_upload_workers(_CANONICAL_BACKEND), stored_sizes=stored_sizes,
         heartbeat=heartbeat)
+    failed = 0
     if plan.to_upload:
         print(f"  Uploading {len(plan.to_upload)} mosaic file(s) to OSN...")
         success, failed, failures = upload_files_parallel(
@@ -1176,7 +1185,7 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
             set_active_deployment(client, skipped_keys, deployment_id)
 
     return {'uploaded': len(uploaded), 'unchanged': len(unchanged_keys),
-            'indexed': n_img}
+            'indexed': n_img, 'failed': failed}
 
 
 def _upsert_nircam_images(client, rows, batch_size=500):

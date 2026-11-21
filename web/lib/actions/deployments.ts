@@ -32,6 +32,9 @@ export interface DeploymentRow {
   deployed_at: string | null;
   published_at: string | null;
   revoked_at: string | null;
+  // Stamped by the deploy CLI's last write. NULL: still running, died part-way,
+  // or left failed uploads to retry (the row is opened before any upload).
+  completed_at: string | null;
 }
 
 export interface DeploymentsResult {

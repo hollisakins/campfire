@@ -45,6 +45,12 @@ SELECT '11111111-1111-1111-1111-111111111111', 'upload', d.id, d.observation, d.
        COALESCE(d.n_spectra, d.n_targets), COALESCE(d.deployed_at, now() - interval '30 days')
 FROM public.deployments d;
 
+-- Completion markers (the deploy CLI stamps completed_at last): every seeded
+-- deployment finished except the newest, so the "incomplete" badge renders.
+UPDATE public.deployments d
+   SET completed_at = COALESCE(d.deployed_at, now() - interval '30 days') + interval '20 minutes'
+ WHERE d.id <> (SELECT max(id) FROM public.deployments);
+
 INSERT INTO public.deploy_events (actor, action, deployment_id, observation, field, status_from, status_to, affected_count, occurred_at)
 SELECT '11111111-1111-1111-1111-111111111111', 'publish', d.id, d.observation, d.field, 'draft', 'published',
        COALESCE(d.n_spectra, d.n_targets), COALESCE(d.published_at, d.deployed_at, now() - interval '30 days')

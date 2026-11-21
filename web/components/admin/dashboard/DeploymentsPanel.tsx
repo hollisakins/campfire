@@ -91,8 +91,18 @@ export function RecentDeploymentsPanel({
                   {items ? `${fmtCount(items.count)} ${items.unit}` : '—'}
                 </span>
                 <span className="hidden md:inline"><VersionCell version={d.cfpipe_version} /></span>
-                <span className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${STATUS_CLASS[d.status] ?? 'bg-surface-2 text-text-secondary'}`}>
-                  {d.status}
+                <span className="flex items-center gap-1">
+                  {!d.completed_at && (
+                    <span
+                      className="rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide bg-surface-2 text-text-secondary"
+                      title="No completion stamp: running, interrupted, or failed uploads"
+                    >
+                      incomplete
+                    </span>
+                  )}
+                  <span className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${STATUS_CLASS[d.status] ?? 'bg-surface-2 text-text-secondary'}`}>
+                    {d.status}
+                  </span>
                 </span>
                 <span className="text-xs text-text-tertiary tabular-nums whitespace-nowrap text-right" title={fmtWhen(d.deployed_at)}>
                   {fmtAgo(d.deployed_at)}
