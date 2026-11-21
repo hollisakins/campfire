@@ -29,6 +29,7 @@ from campfire.deploy.discover import (
     load_slits_json,
 )
 from campfire.deploy.generate import (
+    new_deploy_temp_dir,
     generate_spectrum_jsons,
     generate_spectrum_products,
     generate_thumbnails_from_fits,
@@ -725,8 +726,7 @@ def deploy_observation(
             print("  Deploy the B1 migration first, or omit --draft to publish directly.")
             sys.exit(1)
 
-    temp_dir = obs_dir / '.deploy_temp'
-    temp_dir.mkdir(exist_ok=True)
+    temp_dir = new_deploy_temp_dir(obs_dir)
     try:
         plan = _build_nirspec_plan(
             obs_name, obs_dir, summary, temp_dir,
@@ -1107,8 +1107,7 @@ def deploy_json(
             print(f"  ... and {len(spec_paths) - 5} more")
         return
 
-    temp_dir = obs_dir / '.deploy_temp'
-    temp_dir.mkdir(exist_ok=True)
+    temp_dir = new_deploy_temp_dir(obs_dir)
 
     try:
         print("Generating JSON files...")
@@ -1194,8 +1193,7 @@ def deploy_zfit(
                 return
 
     # Upload zfit JSONs
-    temp_dir = obs_dir / '.deploy_temp'
-    temp_dir.mkdir(exist_ok=True)
+    temp_dir = new_deploy_temp_dir(obs_dir)
 
     try:
         print("Generating zfit JSON files...")

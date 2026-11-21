@@ -7,6 +7,7 @@ because the ECSV doesn't contain spectrum arrays.
 """
 
 import json
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -128,6 +129,27 @@ def generate_thumbnails_from_fits(fits_path: Path) -> dict[str, str]:
         'thumbnail_svg_fnu': generate_spectrum_thumbnail_svg(wave, fnu, flux_unit='fnu'),
         'thumbnail_svg_flambda': generate_spectrum_thumbnail_svg(wave, fnu, flux_unit='flambda'),
     }
+
+
+# ---------------------------------------------------------------------------
+# Scratch directory for generated sidecars
+# ---------------------------------------------------------------------------
+
+DEPLOY_TEMP_PREFIX = '.deploy_temp-'
+
+
+def new_deploy_temp_dir(obs_dir: Path) -> Path:
+    """A fresh scratch directory under *obs_dir* for one deploy invocation.
+
+    Unique per invocation, never a shared ``.deploy_temp``: the full deploy
+    generates its sidecars while building the plan, before the observation's
+    lease, so a second invocation on the same observation (a dry run, a
+    declined prompt, one the lease refuses, or a leased ``deploy json`` /
+    ``zfit`` / ``lines``) must not be able to overwrite or delete the files
+    another one is still uploading. Dot-prefixed, so tree scans skip it like
+    any hidden entry. The caller removes it when done.
+    """
+    return Path(tempfile.mkdtemp(prefix=DEPLOY_TEMP_PREFIX, dir=obs_dir))
 
 
 # ---------------------------------------------------------------------------

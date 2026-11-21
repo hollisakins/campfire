@@ -275,7 +275,7 @@ def test_dry_run_prints_the_plan_and_writes_nothing(fake_obs, entry_stubs, monke
     assert 'Spectrum-exposure intermediates' in out
     # the registry check never asks for the wcs_hash backfill write
     assert entry_stubs['calls'] == [{'n': 18, 'apply_backfill': False}]
-    assert not (fake_obs.obs_dir / '.deploy_temp').exists()
+    assert _scratch_dirs(fake_obs.obs_dir) == []
 
 
 def test_declining_the_prompt_writes_nothing(fake_obs, entry_stubs, monkeypatch, capsys):
@@ -284,6 +284,58 @@ def test_declining_the_prompt_writes_nothing(fake_obs, entry_stubs, monkeypatch,
     result = dmod.deploy_observation(fake_obs.obs, {})
     assert result['needs_reconcile'] is False
     assert 'Aborted.' in capsys.readouterr().out
+
+
+def _scratch_dirs(obs_dir):
+    return sorted(p.name for p in obs_dir.glob('.deploy_temp*'))
+
+
+@pytest.mark.parametrize('how', ['dry_run', 'declined', 'lease_refused'])
+def test_a_second_invocation_never_touches_another_deploys_scratch(
+        fake_obs, entry_stubs, monkeypatch, how):
+    """The plan's sidecars are generated before the observation's lease, so a
+    second `deploy --obs` on the same observation (a dry run, a declined prompt,
+    one the lease refuses) runs while the first is still uploading from its
+    scratch directory. It must use and remove only its own."""
+    other = fake_obs.obs_dir / '.deploy_temp-other'
+    _touch(other / 'demo_p1_1_prism_spec.json')
+    # the legacy shared name a pre-#705 client or a stale run may leave behind
+    _touch(fake_obs.obs_dir / '.deploy_temp' / 'legacy.json')
+    monkeypatch.setattr(dmod, 'get_supabase_client', lambda c: _RecordingClient())
+    seen = []
+    real_build = dmod._build_nirspec_plan
+
+    def build(obs, obs_dir, summary, temp_dir, **kw):
+        seen.append(temp_dir)
+        return real_build(obs, obs_dir, summary, temp_dir, **kw)
+    monkeypatch.setattr(dmod, '_build_nirspec_plan', build)
+
+    if how == 'dry_run':
+        dmod.deploy_observation(fake_obs.obs, {}, dry_run=True)
+    elif how == 'declined':
+        monkeypatch.setattr('builtins.input', lambda *a: 'n')
+        dmod.deploy_observation(fake_obs.obs, {})
+    else:
+        class Busy(Exception):
+            pass
+
+        def refuse(*a, **k):
+            raise Busy('another deploy of demo_p1 holds the lease')
+        monkeypatch.setattr('builtins.input', lambda *a: 'y')
+        monkeypatch.setattr(dmod, 'upsert_programs', lambda *a, **k: None)
+        monkeypatch.setattr(dmod, 'load_observations', lambda: {})
+        monkeypatch.setattr(dmod, 'upsert_observation', lambda *a, **k: None)
+        monkeypatch.setattr(dmod, 'get_user_id_from_token', lambda c: 'u1')
+        monkeypatch.setattr(dmod, 'ScopeLease',
+                            lambda *a, **k: SimpleNamespace(begin=refuse))
+        with pytest.raises(Busy):
+            dmod.deploy_observation(fake_obs.obs, {})
+
+    (mine,) = seen
+    assert mine.name.startswith('.deploy_temp-') and mine != other
+    assert not mine.exists()                                   # its own: removed
+    assert (other / 'demo_p1_1_prism_spec.json').exists()      # another's: untouched
+    assert (fake_obs.obs_dir / '.deploy_temp' / 'legacy.json').exists()
 
 
 def test_live_run_uploads_exactly_the_planned_files(fake_obs, entry_stubs, monkeypatch, capsys):
@@ -382,4 +434,4 @@ def test_live_run_uploads_exactly_the_planned_files(fake_obs, entry_stubs, monke
     assert 'Deploy complete: demo_p1 → deployment #616 (published)' in out
     assert 'files:    16 uploaded' in out and '2 already in the cloud' in out
     assert 'objects:  2 updated, 0 new (of 10 in cosmos)' in out
-    assert not (fake_obs.obs_dir / '.deploy_temp').exists()
+    assert _scratch_dirs(fake_obs.obs_dir) == []
