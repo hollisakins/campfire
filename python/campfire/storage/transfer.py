@@ -45,6 +45,8 @@ def run_transfers(
     on_success: Optional[Callable[[T, R], None]] = None,
     on_failure: Optional[Callable[[T, Exception], None]] = None,
     show_progress: bool = True,
+    progress: Optional[tqdm] = None,
+    weight: Optional[Callable[[T], int]] = None,
 ) -> TransferResult:
     """Run ``worker(item)`` for every item in a thread pool, with progress.
 
@@ -54,6 +56,12 @@ def run_transfers(
     single-threaded state (SQLite, the Supabase client). A callback exception
     is not swallowed — it aborts the drain loop, because losing bookkeeping
     silently is worse than stopping.
+
+    ``progress`` is a bar the caller owns: it is advanced but never closed
+    here, so one bar can span several passes (an upload split into presign
+    batches shows as one bar, not one per batch). ``weight(item)`` is how far
+    a finished item advances the bar (its byte size, for a bar counted in
+    bytes); 1 per item by default. A failed item does not advance it.
 
     Returns a :class:`TransferResult`; failures never raise out of the pool.
     """
@@ -66,7 +74,9 @@ def run_transfers(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_item = {executor.submit(worker, item): item for item in items}
-        pbar = tqdm(total=len(items), desc=desc, unit=unit, disable=not show_progress)
+        own_bar = progress is None
+        pbar = (tqdm(total=len(items), desc=desc, unit=unit, disable=not show_progress)
+                if own_bar else progress)
         try:
             for future in as_completed(future_to_item):
                 item = future_to_item[future]
@@ -81,9 +91,13 @@ def run_transfers(
                     succeeded += 1
                     if on_success is not None:
                         on_success(item, result)
-                pbar.update(1)
+                    if not own_bar:
+                        pbar.update(weight(item) if weight else 1)
+                if own_bar:
+                    pbar.update(1)
         finally:
-            pbar.close()
+            if own_bar:
+                pbar.close()
 
     return TransferResult(succeeded, failed, failures)
 

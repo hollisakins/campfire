@@ -826,6 +826,7 @@ def upsert_programs(
     programs_config: dict[str, dict],
     *,
     force_visibility: bool = False,
+    quiet: bool = False,
 ) -> None:
     """Upsert program records.
 
@@ -872,7 +873,8 @@ def upsert_programs(
                              metadata={'kind': 'program_visibility',
                                        'slug': slug, 'from': True, 'to': False,
                                        'forced': True})
-        print(f"  + {slug} ({data['program_name']})")
+        if not quiet:
+            print(f"  + {slug} ({data['program_name']})")
         if 'config_hash' in data:
             from .config_sync import record_synced
             record_synced('programs', {slug: data['config_hash']})
@@ -1339,39 +1341,55 @@ def fetch_deployment_config(client: Client, obs_name: str) -> dict | None:
     }
 
 
-def refresh_filter_options(client: Client) -> None:
-    """Refresh the filter options materialized view."""
-    print("  Refreshing filter options cache...")
+def refresh_filter_options(client: Client, *, quiet: bool = False) -> bool:
+    """Refresh the filter options materialized view.
+
+    The three ``refresh_*`` helpers return whether the refresh succeeded; a
+    failure is always reported, ``quiet`` drops only the progress lines.
+    """
+    if not quiet:
+        print("  Refreshing filter options cache...")
     try:
         client.rpc('refresh_filter_options').execute()
-        print("  Done")
+        if not quiet:
+            print("  Done")
+        return True
     except Exception as e:
         print(f"  Warning: Failed to refresh filter options: {e}")
         print("  Run manually: SELECT refresh_filter_options();")
+        return False
 
 
-def refresh_programs_overview(client: Client) -> None:
+def refresh_programs_overview(client: Client, *, quiet: bool = False) -> bool:
     """Refresh the programs overview materialized view."""
-    print("  Refreshing programs overview cache...")
+    if not quiet:
+        print("  Refreshing programs overview cache...")
     try:
         client.rpc('refresh_programs_overview').execute()
-        print("  Done")
+        if not quiet:
+            print("  Done")
+        return True
     except Exception as e:
         print(f"  Warning: Failed to refresh programs overview: {e}")
         print("  Run manually: SELECT refresh_programs_overview();")
+        return False
 
 
-def refresh_observations_overview(client: Client) -> None:
+def refresh_observations_overview(client: Client, *, quiet: bool = False) -> bool:
     """Refresh the observations overview materialized view (perf T1-5, #501).
 
     Backs get_observations_overview / get_observation_stats for published
     data; a nightly pg_cron job (refresh_all_matviews) is the backstop if a
     deploy is interrupted before this runs.
     """
-    print("  Refreshing observations overview cache...")
+    if not quiet:
+        print("  Refreshing observations overview cache...")
     try:
         client.rpc('refresh_observations_overview').execute()
-        print("  Done")
+        if not quiet:
+            print("  Done")
+        return True
     except Exception as e:
         print(f"  Warning: Failed to refresh observations overview: {e}")
         print("  Run manually: SELECT refresh_observations_overview();")
+        return False

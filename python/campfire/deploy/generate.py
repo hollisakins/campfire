@@ -165,9 +165,16 @@ def _spectrum_data_from_hdul(hdul) -> dict:
         snr_2d = np.where(np.isfinite(snr_2d), snr_2d, 0)
     snr_2d_list = [[round(x, 2) for x in row] for row in snr_2d.tolist()]
 
-    # Cross-dispersion profile
-    with np.errstate(divide='ignore', invalid='ignore'):
-        collapsed = np.nanmedian(sci, axis=1)
+    # Cross-dispersion profile. The rectified 2-D frame from resample_spec
+    # carries spatial rows that no input pixel lands on (the slitlet's edges
+    # beyond the nod coverage); those rows are all-NaN by construction, so the
+    # median is taken over covered rows only and the rest stay NaN (zeroed by
+    # the finite guard below). stage3 meets the same rows when it builds the
+    # optimal-extraction profile.
+    collapsed = np.full(sci.shape[0], np.nan)
+    covered = np.isfinite(sci).any(axis=1)
+    if covered.any():
+        collapsed[covered] = np.nanmedian(sci[covered], axis=1)
 
     ypos = prof1d['ypos']
     opt_weight = prof1d['opt']

@@ -335,3 +335,23 @@ def test_lines_upload_tasks_refuse_auto_redshift_fits_unless_allowed(tmp_path, c
 
     tasks = lines_upload_tasks("obs", [inspected, auto], temp, allow_auto_z=True)
     assert len(tasks) == 4 and (temp / "obs_prism_clear_2_lines.json").exists()
+
+
+def test_uncovered_spatial_rows_give_a_zero_profile_without_warning(tmp_path):
+    """resample_spec leaves spatial rows no input pixel lands on all-NaN. They
+    are a zero in the profile, and the median skips them rather than emitting
+    numpy's 'All-NaN slice' RuntimeWarning once per deploy."""
+    import warnings
+
+    sci = np.ones((5, 4))
+    sci[0] = np.nan
+    sci[-1] = np.nan
+    fits_path = tmp_path / "obj_prism_clear_1_spec.fits"
+    _write_spec_fits(fits_path, opt=[0.0, 1.0, 2.0, 1.0, 0.0], sci=sci)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        data = read_spectrum_data(fits_path)
+
+    assert data["profile"][0] == 0.0 and data["profile"][-1] == 0.0
+    assert data["profile"][1:4] == [1.0, 1.0, 1.0]
