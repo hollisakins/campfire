@@ -503,7 +503,8 @@ def push_field(
 
     Covers, by ``campfire push im --products`` name (``None`` = all three):
     ``exposures`` (canonical exposures, sci_dq identity, plus their preview/full
-    PNGs), ``expmaps`` (coverage maps plus their plots) and ``mosaics``
+    PNGs), ``expmaps`` (coverage maps plus their plots and the field layout
+    plot) and ``mosaics``
     (whole-file identity), the mosaics optionally narrowed to ``tiles`` (the
     tile each mosaic's manifest names; a tile this field lacks pushes no mosaic
     of it, and the CLI rejects a tile no named field has before any upload, via
@@ -515,8 +516,8 @@ def push_field(
     from campfire.deploy.nircam import (
         _discover_filters, _resolve_nircam_dirs, build_fits_upload_tasks,
         build_upload_tasks, deployable_mosaics, discover_expmap_tasks,
-        discover_exposures, discover_mosaics, scope_mosaics_to_fields_toml,
-        _read_field_provenance,
+        discover_exposures, discover_layout_tasks, discover_mosaics,
+        scope_mosaics_to_fields_toml, _read_field_provenance,
     )
     from campfire.deploy.supabase import get_supabase_client, get_user_id_from_token
 
@@ -548,7 +549,10 @@ def push_field(
         tasks += list(build_fits_upload_tasks(field, exposures))
         tasks += [t[0] for t in build_upload_tasks(dirs, field, filters)]
     if 'expmaps' in want:
+        # The coverage maps and the field layout plot drawn from them: the same
+        # files `campfire deploy --field --products expmaps` ships.
         tasks += list(discover_expmap_tasks(dirs, field, filters))
+        tasks += list(discover_layout_tasks(dirs, field))
     if 'mosaics' in want:
         # Scope mosaics to the current fields.toml — a stray on-disk tile/epoch must
         # not have its bytes pushed to OSN (they would sit orphaned, un-indexed).

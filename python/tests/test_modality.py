@@ -155,6 +155,16 @@ def test_push_field_products_and_tiles(fake_field, capsys, products, tiles, plan
     assert f'Tree products discovered: {planned}' in capsys.readouterr().out
 
 
+def test_push_expmaps_include_the_field_layout_plot(fake_field, tmp_path, capsys):
+    """`expmaps` means the coverage maps and the layout plot drawn from them, in
+    push as in `campfire deploy --field --products expmaps`."""
+    from campfire.deploy.push import push_field
+    (tmp_path / 'products' / 'nep_layout.png').write_bytes(b'png')
+    with pytest.raises(_Stop):
+        push_field('nep', {}, products=['expmaps'])
+    assert 'Tree products discovered: 2' in capsys.readouterr().out
+
+
 # --- push --tile: a tile no named field has is a usage error ------------------
 
 @pytest.fixture()

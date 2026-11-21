@@ -189,11 +189,11 @@ def test_no_mosaics_rejected_without_field(monkeypatch):
     assert '--no-mosaics' in res.output
 
 
-def test_no_mosaics_threads_through_to_deploy_nircam(monkeypatch):
-    """The flag must reach deploy_nircam as skip_mosaics; a dropped kwarg would
-    ship ~60 GB of superseded mosaics without any visible error."""
+def _field_deploy(monkeypatch, *args, tiles=None):
+    """Invoke `campfire deploy` with deploy_nircam stubbed; returns (result, kwargs)."""
     import campfire.deploy.cli as dcli
     import campfire.deploy.nircam as dn
+    import campfire.deploy.push as push
 
     seen = {}
 
@@ -205,30 +205,50 @@ def test_no_mosaics_threads_through_to_deploy_nircam(monkeypatch):
     monkeypatch.setattr(dcli, 'load_config', lambda *a, **k: {})
     monkeypatch.setattr(dcli, '_announce_auth_mode', lambda *a, **k: None)
     monkeypatch.setattr(dcli, '_gate_admin', lambda *a, **k: None)
+    monkeypatch.setattr(push, 'field_mosaic_tiles', lambda f, filters=None: set(tiles or ()))
+    res = CliRunner().invoke(_cli(), ['deploy', *args])
+    return res, seen
 
-    cli = _cli()
-    res = CliRunner().invoke(cli, ['deploy', '--field', 'egs',
-                                   '--filter', 'f070w', '--no-mosaics'])
+
+def test_no_mosaics_threads_through_to_deploy_nircam(monkeypatch):
+    """--no-mosaics must drop mosaics from the products deploy_nircam gets; a
+    dropped flag would ship ~60 GB of superseded mosaics without any error."""
+    res, seen = _field_deploy(monkeypatch, '--field', 'egs', '--filter', 'f070w',
+                              '--no-mosaics')
     assert res.exit_code == 0, res.output
     assert seen['field'] == 'egs'
-    assert seen['skip_mosaics'] is True
+    assert seen['products'] == ['exposures', 'expmaps']
+    assert seen['explicit_products'] is False
     assert seen['filters'] == ['f070w']
 
 
 def test_mosaics_deployed_by_default(monkeypatch):
-    """Absent the flag, skip_mosaics must be False — the default path is
-    unchanged."""
-    import campfire.deploy.cli as dcli
-    import campfire.deploy.nircam as dn
-
-    seen = {}
-    monkeypatch.setattr(dn, 'deploy_nircam',
-                        lambda field, config, **kw: seen.update(kw))
-    monkeypatch.setattr(dcli, 'load_config', lambda *a, **k: {})
-    monkeypatch.setattr(dcli, '_announce_auth_mode', lambda *a, **k: None)
-    monkeypatch.setattr(dcli, '_gate_admin', lambda *a, **k: None)
-
-    cli = _cli()
-    res = CliRunner().invoke(cli, ['deploy', '--field', 'egs'])
+    """With no selection every product deploys — the default path is unchanged."""
+    res, seen = _field_deploy(monkeypatch, '--field', 'egs')
     assert res.exit_code == 0, res.output
-    assert seen['skip_mosaics'] is False
+    assert seen['products'] == ['mosaics', 'exposures', 'expmaps']
+    assert seen['tiles'] is None
+
+
+def test_field_deploy_products_use_the_push_vocabulary(monkeypatch):
+    res, seen = _field_deploy(monkeypatch, '--field', 'egs', '--products', 'mosaics',
+                              '--tile', 'core', '--filters', 'F444W,f277w', tiles={'core'})
+    assert res.exit_code == 0, res.output
+    assert seen['products'] == ['mosaics']
+    assert seen['explicit_products'] is True
+    assert seen['tiles'] == ['core']
+    assert seen['filters'] == ['f444w', 'f277w']
+
+
+@pytest.mark.parametrize('args, message', [
+    (['--field', 'egs', '--products', 'spectra'], 'imaging has no product spectra'),
+    (['--field', 'egs', '--products', 'exposures', '--tile', 'core'], '--tile narrows mosaics'),
+    (['--field', 'egs', '--tile', 'nope'], 'No mosaics for tile(s) nope'),
+    (['--field', 'egs', '--products', 'mosaics', '--no-mosaics'], 'use one or the other'),
+    (['--obs', 'ember_uds_p4', '--products', 'mosaics'], 'use them with --field'),
+])
+def test_field_deploy_selection_errors(monkeypatch, args, message):
+    res, seen = _field_deploy(monkeypatch, *args, tiles={'core'})
+    assert res.exit_code != 0
+    assert message in res.output
+    assert 'field' not in seen  # refused before deploy_nircam ran

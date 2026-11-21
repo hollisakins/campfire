@@ -388,6 +388,7 @@ lifecycle. Part of the unified `campfire` CLI (install from `python/`):
 cd python && pip install -e .
 campfire deploy --obs <obs_name>                         # full deploy
 campfire deploy --obs <obs_name> --dry-run               # validate only
+campfire deploy --field cosmos --products mosaics --tile core  # NIRCam field; --products / --filters / --tile as for `push im`
 campfire deploy pointings --obs <obs_name>               # pointings JSONB backfill
 campfire deploy tiles --field cosmos --filter f444w      # map tiles
 campfire deploy photometry --field goods-n --supersede  # catalog cross-match + P(z) sidecars; retire the previous catalog_name

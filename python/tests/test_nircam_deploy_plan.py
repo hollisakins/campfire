@@ -105,7 +105,7 @@ def _push(plan, unchanged=lambda k: False):
 # ---------------------------------------------------------------------------
 
 def test_plan_lists_every_product_including_mosaics(fake_field):
-    plan = nc._build_nircam_plan(fake_field.field, None, draft=False, skip_mosaics=False)
+    plan = nc._build_nircam_plan(fake_field.field, None, draft=False)
     counts = {g.label: len(g.tasks) for g in plan.file_groups}
     assert counts == {
         'Exposures (FITS)': 4,
@@ -121,22 +121,64 @@ def test_plan_lists_every_product_including_mosaics(fake_field):
 
 
 def test_no_mosaics_drops_the_mosaic_groups_and_says_so(fake_field):
-    plan = nc._build_nircam_plan(fake_field.field, None, draft=False, skip_mosaics=True)
+    plan = nc._build_nircam_plan(fake_field.field, None, draft=False,
+                                 products=['exposures', 'expmaps'])
     assert plan.mosaics == []
     text = render_nircam_plan(plan, dry_run=True)
-    assert 'Mosaics: skipped (--no-mosaics)' in text
+    assert 'Not in this deploy: mosaics' in text
     assert 'Mosaic index' not in text
+
+
+def test_mosaics_only_discovers_and_writes_no_exposures(fake_field, monkeypatch):
+    monkeypatch.setattr(nc, 'discover_exposures',
+                        lambda *a: pytest.fail('exposures discovered'))
+    plan = nc._build_nircam_plan(fake_field.field, None, draft=False, products=['mosaics'])
+    counts = {g.label: len(g.tasks) for g in plan.file_groups if g.tasks}
+    assert counts == {'Mosaics (FITS)': 4, 'Mosaic thumbnails (PNG)': 2}
+    assert plan.records == []
+    text = render_nircam_plan(plan, dry_run=True)
+    assert 'Not in this deploy: exposures, expmaps' in text
+    rows = text.split('Catalog → database')[1]
+    assert 'Exposures' not in rows and 'Mosaic index' in rows
+
+
+def test_expmaps_carry_the_layout_plot(fake_field):
+    plan = nc._build_nircam_plan(fake_field.field, None, draft=False, products=['expmaps'])
+    counts = {g.label: len(g.tasks) for g in plan.file_groups if g.tasks}
+    assert counts == {'Exposure maps (FITS)': 1, 'Layout plots': 1}
+
+
+def test_tile_narrows_mosaics(fake_field):
+    for m in fake_field.mosaics:
+        if m['filter'] == 'f444w':
+            m['tile'] = 't2'
+    plan = nc._build_nircam_plan(fake_field.field, None, draft=False, tiles=['t2'])
+    assert {m['tile'] for m in plan.mosaics} == {'t2'}
+    assert 'Mosaics narrowed to tile(s): t2' in render_nircam_plan(plan, dry_run=True)
+
+
+def test_a_named_product_with_nothing_on_disk_is_an_error(fake_field, monkeypatch, capsys):
+    monkeypatch.setattr(nc, 'discover_expmap_tasks', lambda *a: [])
+    monkeypatch.setattr(nc, 'discover_layout_tasks', lambda *a: [])
+    with pytest.raises(SystemExit):
+        nc._build_nircam_plan(fake_field.field, None, draft=False,
+                              products=['mosaics', 'expmaps'], explicit_products=True)
+    assert 'nothing on disk for --products expmaps' in capsys.readouterr().out
+    # the same selection by default (not named) just deploys what there is
+    plan = nc._build_nircam_plan(fake_field.field, None, draft=False,
+                                 products=['mosaics', 'expmaps'])
+    assert len(plan.mosaics) == 4
 
 
 def test_unknown_filter_is_a_plan_warning(fake_field):
     plan = nc._build_nircam_plan(fake_field.field, ['f115w', 'f999w'],
-                                 draft=False, skip_mosaics=False)
+                                 draft=False)
     assert plan.filters == ['f115w']
     assert '! No products for filter(s): f999w' in render_nircam_plan(plan, dry_run=True)
 
 
 def test_render_names_each_count(fake_field):
-    plan = nc._build_nircam_plan(fake_field.field, None, draft=False, skip_mosaics=False)
+    plan = nc._build_nircam_plan(fake_field.field, None, draft=False)
     plan.existing_exposures = 3
     plan.push = _push(plan, unchanged=lambda k: 'f115w' in k and k.endswith('.gz'))
     text = render_nircam_plan(plan, dry_run=True)
@@ -152,7 +194,7 @@ def test_render_names_each_count(fake_field):
 
 
 def test_draft_indexes_only_new_or_changed_mosaics(fake_field):
-    plan = nc._build_nircam_plan(fake_field.field, None, draft=True, skip_mosaics=False)
+    plan = nc._build_nircam_plan(fake_field.field, None, draft=True)
     plan.push = _push(plan, unchanged=lambda k: 'f115w' in k and k.endswith('.gz'))
     assert plan.n_mosaic_rows() == 2
     assert 'new/changed only (draft)' in render_nircam_plan(plan, dry_run=True)

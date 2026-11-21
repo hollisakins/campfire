@@ -303,6 +303,39 @@ def source_ids_option(f):
     return f
 
 
+def _field_deploy_products(field, product_names, tiles, filter_names, no_mosaics):
+    """Resolve a field deploy's ``--products`` / ``--no-mosaics`` / ``--tile``
+    against the `campfire push im` vocabulary, before any network call.
+
+    ``--no-mosaics`` is shorthand for every product but mosaics. ``--tile``
+    narrows mosaics, so it needs them in the selection, and a tile that names no
+    deployable mosaic of the field is a usage error, as for ``push im --tile``.
+    """
+    if no_mosaics and product_names:
+        raise click.UsageError('--no-mosaics is shorthand for --products exposures,expmaps; '
+                               'use one or the other.')
+    products = resolve_products(IMAGING, ['nircam'], product_names, verb='push')
+    if no_mosaics:
+        products = [p for p in products if p != 'mosaics']
+    tile_list = normalize_names(tiles)
+    if tile_list:
+        if 'mosaics' not in products:
+            raise click.UsageError('--tile narrows mosaics; exposures and expmaps cover the '
+                                   'whole field. Add mosaics to --products, or drop --tile.')
+        from campfire.deploy.push import field_mosaic_tiles
+        filters = [f.lower() for f in normalize_names(filter_names)] or None
+        try:
+            have = field_mosaic_tiles(field, filters)
+        except ValueError as e:
+            raise click.UsageError(str(e))
+        missing = [t for t in tile_list if t not in have]
+        if missing:
+            raise click.UsageError(
+                f"No mosaics for tile(s) {', '.join(missing)} in {field}; "
+                f"available: {', '.join(sorted(have)) or 'none'}.")
+    return products
+
+
 # ---------------------------------------------------------------------------
 # CLI group (invoke_without_command=True for full deployment)
 # ---------------------------------------------------------------------------
@@ -314,12 +347,17 @@ def source_ids_option(f):
 @click.option('--field', default=None, type=str,
               help='NIRCam field name (e.g. cosmos). Deploys exposures/mosaics for '
                    'the field; mutually exclusive with --obs.')
-@click.option('--filter', 'filter_names', multiple=True, cls=_VariadicOption,
-              help='NIRCam filter(s) to deploy with --field (default: all).')
+@click.option('--filter', '--filters', 'filter_names', multiple=True, cls=_VariadicOption,
+              help='NIRCam --field only: narrow to these filters (default: all).')
+@click.option('--products', 'product_names', multiple=True, cls=_VariadicOption,
+              help='NIRCam --field only: what to deploy, as for `campfire push im`: '
+                   'mosaics, exposures, expmaps (space or comma separated; default: all).')
+@click.option('--tile', 'tiles', multiple=True, type=str, cls=_VariadicOption,
+              help='NIRCam --field only: narrow mosaics to these fields.toml tiles.')
 @click.option('--no-mosaics', 'no_mosaics', is_flag=True,
-              help='NIRCam --field only: deploy exposures/expmaps/layout and '
-                   'skip the mosaic stage. For the inspect-then-rebuild loop, '
-                   'where mosaics built before masking are superseded anyway.')
+              help='NIRCam --field only: shorthand for --products exposures,expmaps. '
+                   'For the inspect-then-rebuild loop, where mosaics built before '
+                   'masking are superseded anyway.')
 @click.option('--dry-run', is_flag=True, help='Show what would happen without making changes.')
 @click.option('--source-ids', multiple=True, type=str, default=None,
               cls=_VariadicOption, callback=_parse_source_ids,
@@ -349,16 +387,19 @@ def source_ids_option(f):
                    '(bypasses RLS + presigned URLs). For unattended / CI deploys. '
                    'Equivalent to CAMPFIRE_DEPLOY_MODE=service-role.')
 @click.pass_context
-def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run,
+def deploy_group(ctx, config_path, obs, field, filter_names, product_names, tiles,
+                 no_mosaics, dry_run,
                  source_ids, supabase_only, force_overwrite, auto_approve, steal_lease,
                  no_shutters, no_photometry, skip_astrometry, draft, local,
                  service_role):
     """Deploy CAMPFIRE pipeline products to Supabase + object storage.
 
     NIRSpec: `campfire deploy --obs <obs>`.  NIRCam:
-    `campfire deploy --field <field> [--filter f1 --filter f2] [--draft]` —
-    first-class parity, recording a field-scoped deployment (published by default;
-    --draft holds it admin-only for review, then `deploy publish --field`).
+    `campfire deploy --field <field> [--products ...] [--filters ...] [--tile ...]
+    [--draft]` — first-class parity, recording a field-scoped deployment
+    (published by default; --draft holds it admin-only for review, then
+    `deploy publish --field`). --products takes the `campfire push im` names
+    (mosaics, exposures, expmaps); --tile narrows mosaics.
     """
     ctx.ensure_object(dict)
     ctx.obj['local'] = local
@@ -384,17 +425,24 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
             print("Error: --no-mosaics applies to the NIRCam field deploy; "
                   "use it with --field.")
             sys.exit(1)
+        if (product_names or tiles or filter_names) and not field:
+            raise click.UsageError(
+                '--products, --filters and --tile apply to the NIRCam field deploy; '
+                'use them with --field.')
         if field:
+            products = _field_deploy_products(field, product_names, tiles, filter_names,
+                                              no_mosaics)
             config = load_config(config_path, local=local,
                                  service_role=ctx.obj['service_role'])
             _announce_auth_mode(config)
             from campfire.deploy.nircam import deploy_nircam
             _run_deploy_flow(
                 deploy_nircam, field, config,
-                filters=list(filter_names) if filter_names else None,
+                filters=[f.lower() for f in normalize_names(filter_names)] or None,
                 dry_run=dry_run, draft=draft,
-                skip_mosaics=no_mosaics, steal_lease=steal_lease,
-                auto_approve=auto_approve)
+                products=products, tiles=normalize_names(tiles) or None,
+                explicit_products=bool(product_names),
+                steal_lease=steal_lease, auto_approve=auto_approve)
             return
         if not obs:
             print("Error: --obs (NIRSpec) or --field (NIRCam) is required for full deployment.")

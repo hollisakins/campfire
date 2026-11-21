@@ -45,6 +45,7 @@ from campfire.deploy.deploy_plan import (
     FileGroup, NircamDeployPlan, format_bytes, path_size, render_nircam_plan,
 )
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
+from campfire.modality import IMAGING
 from campfire.deploy.supabase import (
     ScopeLease, deploy_event_metadata,
     get_supabase_client, get_user_id_from_token, insert_deployment, log_deploy_event,
@@ -54,6 +55,8 @@ from campfire.deploy.supabase import (
 # same as NIRSpec canonical spectrum-exposures). As of N5 the preview/full PNGs
 # also land here under canonical keys (served via presigned OSN GET URLs).
 _CANONICAL_BACKEND = 'osn'
+# The `campfire push im` / `pull im` product names, in display order.
+IMAGING_PRODUCTS = tuple(IMAGING.product_names(['nircam']))
 _FITS_CONTENT_TYPE = 'application/fits'
 _GZIP_CONTENT_TYPE = 'application/gzip'  # compressed mosaic FITS (stored as .fits.gz)
 _PNG_CONTENT_TYPE = 'image/png'
@@ -481,7 +484,8 @@ def _read_field_provenance(dirs, field, filters, *, prefer_mosaic=True):
 
 
 def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
-                  skip_mosaics=False, steal_lease=False, auto_approve=False):
+                  products=None, tiles=None, steal_lease=False, auto_approve=False,
+                  explicit_products=False):
     """Deploy a NIRCam field: plan, confirm, execute (epic #261, N1/N2).
 
     Records a **field-scoped deployment** (provenance + the draft->published
@@ -518,17 +522,26 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     draft : bool
         If True, record the deployment as ``draft`` (admin-only) for review;
         otherwise ``published`` (public) immediately.
-    skip_mosaics : bool
-        If True, deploy exposures/expmaps/layout only and skip the mosaic
-        stage entirely (no discovery, no upload, no ``mosaics`` rows). For the
-        inspect-then-rebuild loop: a reviewer needs the exposures in the portal
-        to draw masks, but the mosaics built *before* those masks exist are
-        superseded by the post-mask re-combine, so shipping them is wasted
-        transfer over a slow link. The mosaics ride the next deploy.
+    products : list of str, optional
+        What to deploy, in the ``campfire push im`` vocabulary
+        (:data:`campfire.modality.IMAGING`): ``exposures`` (the exposure FITS,
+        their preview PNGs and the ``nircam_exposures`` rows), ``expmaps`` (the
+        coverage maps and the field layout plot) and ``mosaics`` (the mosaic
+        FITS, their thumbnails and the ``nircam_images`` index). ``None`` deploys
+        all three. A product left out is not discovered at all: e.g. without
+        ``mosaics`` (``--no-mosaics``, the inspect-then-rebuild loop, where the
+        mosaics built before the masks exist are superseded by the post-mask
+        re-combine) a stray on-disk tile cannot abort the deploy.
+    tiles : list of str, optional
+        Narrow the mosaics to these fields.toml tiles.
+    explicit_products : bool
+        *products* was named by the user (``--products``): a named product with
+        nothing on disk is then an error, as for push and pull.
     auto_approve : bool
         Skip the confirmation prompt.
     """
-    plan = _build_nircam_plan(field, filters, draft=draft, skip_mosaics=skip_mosaics)
+    plan = _build_nircam_plan(field, filters, draft=draft, products=products, tiles=tiles,
+                              explicit_products=explicit_products)
     if plan is None:
         return
 
@@ -551,10 +564,13 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     _execute_nircam_plan(plan, client, store, config, steal_lease=steal_lease)
 
 
-def _build_nircam_plan(field, filters, *, draft, skip_mosaics):
+def _build_nircam_plan(field, filters, *, draft, products=None, tiles=None,
+                       explicit_products=False):
     """The local half of a field's deploy plan, or None when there is nothing
     to deploy (the reason is printed). Reads headers and PNG sizes; touches no
-    network."""
+    network. *products* / *tiles* as for :func:`deploy_nircam`."""
+    products = list(products) if products else list(IMAGING_PRODUCTS)
+    want = set(products)
     dirs = _resolve_nircam_dirs(field)
     if not dirs['products'].exists():
         print(f"Error: Products directory not found: {dirs['products']}")
@@ -573,21 +589,39 @@ def _build_nircam_plan(field, filters, *, draft, skip_mosaics):
         print("No filters found to deploy.")
         return None
 
-    exposures = discover_exposures(dirs, filters)
-    expmap_tasks = discover_expmap_tasks(dirs, field, filters)
-    layout_tasks = discover_layout_tasks(dirs, field)
+    # A product left out of the selection is not discovered at all.
+    exposures = discover_exposures(dirs, filters) if 'exposures' in want else {}
+    expmap_tasks, layout_tasks = [], []
+    if 'expmaps' in want:
+        expmap_tasks = discover_expmap_tasks(dirs, field, filters)
+        layout_tasks = discover_layout_tasks(dirs, field)
     # Scope mosaic discovery to what the current fields.toml declares: a stray
-    # on-disk tile/epoch from a former config must not ride into the cloud. With
-    # --no-mosaics skip discovery too, not just the upload: the fields.toml scope
-    # check would otherwise abort a good exposure deploy over a mosaic we were
-    # never going to send.
+    # on-disk tile/epoch from a former config must not ride into the cloud.
+    # Without mosaics in the selection skip discovery too, not just the upload:
+    # the fields.toml scope check would otherwise abort a good exposure deploy
+    # over a mosaic we were never going to send.
     mosaics = []
-    if not skip_mosaics:
+    if 'mosaics' in want:
         try:
             mosaics = scope_mosaics_to_fields_toml(
                 deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
         except ValueError as e:
             print(f"Error: {e}")
+            sys.exit(1)
+        if tiles:
+            mosaics = [m for m in mosaics if m.get('tile') in set(tiles)]
+
+    # A product the user named that matches nothing is an invalid selection
+    # (the modality rule push and pull follow), never a silent no-op.
+    if explicit_products:
+        found = {'exposures': bool(exposures),
+                 'expmaps': bool(expmap_tasks or layout_tasks),
+                 'mosaics': bool(mosaics)}
+        empty = [p for p in products if not found.get(p)]
+        if empty:
+            print(f"Error: nothing on disk for --products {', '.join(empty)} in field "
+                  f"{field} (filters: {', '.join(filters)}"
+                  + (f"; tiles: {', '.join(tiles)}" if tiles else '') + ").")
             sys.exit(1)
     # Deploy whatever the field has: mosaics/expmaps are independent of the
     # per-exposure FITS (a field can keep its science mosaics after the large cal
@@ -596,7 +630,7 @@ def _build_nircam_plan(field, filters, *, draft, skip_mosaics):
         print(f"Nothing to deploy for field {field}.")
         return None
 
-    png_tasks = build_upload_tasks(dirs, field, filters)
+    png_tasks = build_upload_tasks(dirs, field, filters) if 'exposures' in want else []
     thumb_r2_keys = {(f, b): t.r2_key for t, b, f, kind in png_tasks if kind == 'thumb'}
     full_r2_keys = {(f, b): t.r2_key for t, b, f, kind in png_tasks if kind == 'full'}
     # Image dimensions come from the full-res PNG (= native exposure shape), so
@@ -632,11 +666,11 @@ def _build_nircam_plan(field, filters, *, draft, skip_mosaics):
     # NO nircam_images row; the web shows them on the sci extension row.
     mosaic_thumb_tasks = discover_mosaic_thumbnail_tasks(mosaics, field)
 
-    # Batch-level provenance (audit B2). With --no-mosaics the mosaics are not
-    # part of this deployment, so a stale on-disk i2d must not supply it: read
-    # the exposures instead.
+    # Batch-level provenance (audit B2). Without mosaics in the selection they
+    # are not part of this deployment, so a stale on-disk i2d must not supply
+    # it: read the exposures instead.
     cfpipe_version, jwst_version, crds_context = _read_field_provenance(
-        dirs, field, filters, prefer_mosaic=not skip_mosaics)
+        dirs, field, filters, prefer_mosaic='mosaics' in want)
 
     from campfire.deploy.fields import load_fields_toml
     try:
@@ -662,7 +696,8 @@ def _build_nircam_plan(field, filters, *, draft, skip_mosaics):
         crds_context=crds_context,
         in_fields_toml=in_fields_toml,
         draft=draft,
-        skip_mosaics=skip_mosaics,
+        products=products,
+        tiles=list(tiles) if tiles else [],
         warnings=warnings,
         fits_keys={t.r2_key for t in fits_tasks},
     )

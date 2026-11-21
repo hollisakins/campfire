@@ -291,7 +291,10 @@ class NircamDeployPlan:
     in_fields_toml: bool = True  # whether the field registry row is written
 
     draft: bool = False
-    skip_mosaics: bool = False
+    # The `push im` product names in this deploy (default all three), and the
+    # tiles the mosaics are narrowed to (empty: every tile)
+    products: list[str] = field(default_factory=lambda: ['mosaics', 'exposures', 'expmaps'])
+    tiles: list[str] = field(default_factory=list)
 
     warnings: list[str] = field(default_factory=list)
 
@@ -338,22 +341,26 @@ def render_nircam_plan(plan: NircamDeployPlan, *, dry_run: bool) -> str:
     out = _render_header(f"field {plan.field}", facts, dry_run=dry_run, draft=plan.draft)
     out += _render_warnings(plan.warnings)
 
-    notes = ["Mosaics: skipped (--no-mosaics)"] if plan.skip_mosaics else []
+    left_out = [p for p in ('mosaics', 'exposures', 'expmaps') if p not in plan.products]
+    notes = [f"Not in this deploy: {', '.join(left_out)}"] if left_out else []
+    if plan.tiles:
+        notes.append(f"Mosaics narrowed to tile(s): {', '.join(plan.tiles)}")
     out += _render_files(plan.file_groups, plan.push, notes)
 
     rows: list[tuple[str, str, str]] = []
-    n = len(plan.records)
-    if plan.existing_exposures is None:
-        enote = "review state kept on existing rows"
-    else:
-        enote = (f"{n - plan.existing_exposures:,} new, {plan.existing_exposures:,} updated; "
-                 f"review state kept")
-    stages = Counter(r['stage'] for r in plan.records)
-    if stages:
-        enote += "\nlatest stage: " + ', '.join(
-            f"{s} {c:,}" for s, c in sorted(stages.items(), key=lambda kv: -kv[1]))
-    rows.append(("Exposures", f"{n:,}", enote))
-    if not plan.skip_mosaics and plan.mosaics:
+    if 'exposures' in plan.products:
+        n = len(plan.records)
+        if plan.existing_exposures is None:
+            enote = "review state kept on existing rows"
+        else:
+            enote = (f"{n - plan.existing_exposures:,} new, "
+                     f"{plan.existing_exposures:,} updated; review state kept")
+        stages = Counter(r['stage'] for r in plan.records)
+        if stages:
+            enote += "\nlatest stage: " + ', '.join(
+                f"{s} {c:,}" for s, c in sorted(stages.items(), key=lambda kv: -kv[1]))
+        rows.append(("Exposures", f"{n:,}", enote))
+    if plan.mosaics:
         n_rows = plan.n_mosaic_rows()
         mnote = "one per tile × filter × extension"
         if plan.draft:
