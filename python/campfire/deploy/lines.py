@@ -29,7 +29,7 @@ from pathlib import Path
 from campfire_layout import KeyScheme, Scope, storage_key
 
 from campfire.deploy.config import resolve_obs_dir
-from campfire.deploy.generate import generate_lines_json
+from campfire.deploy.generate import generate_lines_json, new_deploy_temp_dir
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.summary import filter_by_source_ids, get_program_slug, load_summary
 from campfire.deploy.supabase import batch_upsert_line_fits, fetch_spectrum_ids, get_supabase_client
@@ -276,8 +276,7 @@ def deploy_lines(obs_name: str, config: dict, *, dry_run: bool = False,
 
     sb = get_supabase_client(config)
     if upload:
-        temp_dir = obs_dir / '.deploy_temp'
-        temp_dir.mkdir(exist_ok=True)
+        temp_dir = new_deploy_temp_dir(obs_dir)
         try:
             tasks = lines_upload_tasks(obs_name, lines_paths, temp_dir, allow_auto_z=allow_auto_z)
             uploaded: set[str] = set()

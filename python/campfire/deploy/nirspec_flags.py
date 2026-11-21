@@ -349,11 +349,12 @@ def plan_review_push(local, db, column):
     return out
 
 
-def push_review_flags(sb, obs, dry_run=False):
+def push_review_flags(sb, obs, dry_run=False, quiet=False):
     """Push the local background overrides and hand/web stuck shutters of ``obs`` to
     ``nirspec_source_review`` (upsert on (observation, exposure_root, source_id),
     touching only the pushed column, so web notes and the other flag survive).
-    Auto-detected stuck shutters stay local: the pipeline regenerates them."""
+    Auto-detected stuck shutters stay local: the pipeline regenerates them.
+    Returns the number of rows pushed; ``quiet`` skips the per-column line."""
     from campfire_pipeline.nirspec.stuck_shutters import load_stuck_shutters_tagged
 
     ref = _ref_dir(obs)
@@ -375,8 +376,9 @@ def push_review_flags(sb, obs, dry_run=False):
                 (sb.table('nirspec_source_review')
                  .upsert(rows[i:i + 500], on_conflict='observation,exposure_root,source_id')
                  .execute())
-        print(f"  {'Would push' if dry_run else 'Pushed'} {len(rows)} local {column} "
-              f"entr{'y' if len(rows) == 1 else 'ies'} to nirspec_source_review "
-              f"({len(local) - len(rows)} already in the DB)")
+        if not quiet:
+            print(f"  {'Would push' if dry_run else 'Pushed'} {len(rows)} local {column} "
+                  f"entr{'y' if len(rows) == 1 else 'ies'} to nirspec_source_review "
+                  f"({len(local) - len(rows)} already in the DB)")
         n += len(rows)
     return n

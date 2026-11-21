@@ -40,6 +40,8 @@ from typing import Callable, Iterator, NamedTuple, Optional
 import requests as http_requests  # module-global: patchable seam for tests
 from urllib.parse import urlparse
 
+from tqdm import tqdm
+
 from campfire_layout import is_compressed_key
 from campfire.storage.session import create_transfer_session
 from campfire.storage.transfer import run_transfers
@@ -51,6 +53,31 @@ _R2_PRESIGN_HOST_FRAGMENT = 'r2.cloudflarestorage.com'
 # level 6's ratio on float32 FITS (the win is NaN-run collapse, not entropy
 # coding) at ~40% less CPU — measured on a 55%-NaN f444w mosaic.
 _GZIP_LEVEL = 1
+
+
+def _task_bytes(task) -> int:
+    """Local size of an upload task's file (0 if it vanished): the progress weight."""
+    try:
+        return task.local_path.stat().st_size
+    except OSError:
+        return 0
+
+
+@contextmanager
+def byte_progress(tasks, desc: str):
+    """One progress bar counted in bytes over ``tasks``.
+
+    Uploads report progress by bytes rather than files: a deploy mixes 10 kB
+    JSON sidecars with 50 MB exposures, so a file count says little about how
+    long is left. Sizes are the local (uncompressed) sizes; a file advances
+    the bar when it lands.
+    """
+    bar = tqdm(total=sum(_task_bytes(t) for t in tasks), desc=desc,
+               unit='B', unit_scale=True, unit_divisor=1024)
+    try:
+        yield bar
+    finally:
+        bar.close()
 
 
 @contextmanager
@@ -336,6 +363,7 @@ def upload_files_presigned(
     session=None,
     on_success: Optional[Callable[[UploadTask], None]] = None,
     stored_sizes_out: Optional[dict[str, int]] = None,
+    progress: Optional[tqdm] = None,
 ) -> tuple[int, int, list[str]]:
     """
     Upload files using presigned URLs.
@@ -362,6 +390,9 @@ def upload_files_presigned(
         safe for single-threaded bookkeeping (registry batches, the local
         mirror) *during* the transfer, which is what makes an interrupted push
         resumable at file granularity.
+    progress : tqdm, optional
+        A byte-counted bar owned by the caller (see :func:`byte_progress`),
+        shared across batches. One is made per call when omitted.
 
     Returns
     -------
@@ -385,16 +416,25 @@ def upload_files_presigned(
         if on_success is not None:
             on_success(task)
 
-    result = run_transfers(
-        runnable,
-        lambda t: _upload_to_presigned_url(
-            session, urls[t.r2_key], t.local_path, t.content_type,
-            compress=is_compressed_key(t.r2_key)),
-        max_workers=max_workers,
-        desc=desc,
-        label=lambda t: t.local_path.name,
-        on_success=_success,
-    )
+    def _run(bar):
+        return run_transfers(
+            runnable,
+            lambda t: _upload_to_presigned_url(
+                session, urls[t.r2_key], t.local_path, t.content_type,
+                compress=is_compressed_key(t.r2_key)),
+            max_workers=max_workers,
+            desc=desc,
+            label=lambda t: t.local_path.name,
+            on_success=_success,
+            progress=bar,
+            weight=_task_bytes,
+        )
+
+    if progress is None:
+        with byte_progress(runnable, desc) as bar:
+            result = _run(bar)
+    else:
+        result = _run(progress)
     return result.succeeded, result.failed, result.failures
 
 
@@ -468,12 +508,14 @@ def upload_files_direct(
     cache_control: Optional[str] = None,
     on_success: Optional[Callable[[UploadTask], None]] = None,
     stored_sizes_out: Optional[dict[str, int]] = None,
+    progress: Optional[tqdm] = None,
 ) -> tuple[int, int, list[str]]:
     """
     Upload multiple files via boto3 in parallel with progress bar.
 
     ``succeeded_out``, if given, collects the ``r2_key`` of each landed object;
-    ``on_success(task)`` runs on the calling thread per landed object.
+    ``on_success(task)`` runs on the calling thread per landed object;
+    ``progress`` is a caller-owned byte bar (one is made when omitted).
 
     Returns
     -------
@@ -491,16 +533,25 @@ def upload_files_direct(
         if on_success is not None:
             on_success(task)
 
-    result = run_transfers(
-        tasks,
-        lambda t: upload_to_r2(client, bucket, t.local_path, t.r2_key,
-                               t.content_type, cache_control,
-                               compress=is_compressed_key(t.r2_key)),
-        max_workers=max_workers,
-        desc=desc,
-        label=lambda t: t.local_path.name,
-        on_success=_success,
-    )
+    def _run(bar):
+        return run_transfers(
+            tasks,
+            lambda t: upload_to_r2(client, bucket, t.local_path, t.r2_key,
+                                   t.content_type, cache_control,
+                                   compress=is_compressed_key(t.r2_key)),
+            max_workers=max_workers,
+            desc=desc,
+            label=lambda t: t.local_path.name,
+            on_success=_success,
+            progress=bar,
+            weight=_task_bytes,
+        )
+
+    if progress is None:
+        with byte_progress(tasks, desc) as bar:
+            result = _run(bar)
+    else:
+        result = _run(progress)
     return result.succeeded, result.failed, result.failures
 
 
@@ -573,73 +624,76 @@ def upload_files_parallel(
     # fallback. In login mode (default) uploads go only via presigned URLs.
     mode = config.get('supabase', {}).get('_auth_mode')
     if mode not in ('service_role', 'local'):
-        session = create_transfer_session(max_workers, methods=("GET", "PUT"))
-        total_success, total_failed = 0, 0
-        all_failures: list[str] = []
-        # Just-in-time presigning: mint each batch's URLs immediately before
-        # that batch uploads so none can expire mid-run. Batches are bounded
-        # by total bytes (the quantity the TTL actually races), not file
-        # count.
-        for batch in iter_presign_batches(tasks):
-            urls = request_presigned_urls(
-                config, batch, bucket=bucket_id, cache_control=cache_control,
-                backend=backend,
-            )
-            if not urls:
-                raise RuntimeError(
-                    "Presigned upload URLs are unavailable, and login-mode deploys "
-                    "upload only via presigned URLs (no direct-S3 fallback — issue #250). "
-                    "This usually means the login session expired or the deploy API is "
-                    "unreachable. Re-run `campfire login`; or, for an unattended run, set "
-                    "CAMPFIRE_DEPLOY_MODE=service-role with CAMPFIRE_S3_* credentials to "
-                    "upload directly."
+        # One byte-counted bar across every presign batch and retry round.
+        with byte_progress(tasks, desc) as bar:
+            session = create_transfer_session(max_workers, methods=("GET", "PUT"))
+            total_success, total_failed = 0, 0
+            all_failures: list[str] = []
+            # Just-in-time presigning: mint each batch's URLs immediately before
+            # that batch uploads so none can expire mid-run. Batches are bounded
+            # by total bytes (the quantity the TTL actually races), not file
+            # count.
+            for batch in iter_presign_batches(tasks):
+                urls = request_presigned_urls(
+                    config, batch, bucket=bucket_id, cache_control=cache_control,
+                    backend=backend,
                 )
-            # Guard against a web deployment that predates OSN upload support: an old
-            # /deploy/presign ignores `backend` and signs R2, which would land bytes in
-            # R2 under canonical keys while the registry records backend='osn' — silent
-            # divergence. Refuse if we asked for OSN but got R2-host URLs.
-            if backend == 'osn':
-                _assert_presigned_backend_osn(urls)
-            # Re-mint and retry this batch's stragglers. On a slow uplink the
-            # dominant failure is the presigned URL ageing out mid-batch, which
-            # surfaces as a 5xx indistinguishable from a transient fault --
-            # fresh URLs fix the former and cost nothing for the latter (PUT is
-            # idempotent). Only unfinished tasks are retried, so `on_success`
-            # never fires twice for the same file.
-            pending, msgs = batch, []
-            for attempt in range(1 + _PRESIGN_RETRY_ROUNDS):
-                if attempt:
-                    urls = request_presigned_urls(
-                        config, pending, bucket=bucket_id,
-                        cache_control=cache_control, backend=backend,
+                if not urls:
+                    raise RuntimeError(
+                        "Presigned upload URLs are unavailable, and login-mode deploys "
+                        "upload only via presigned URLs (no direct-S3 fallback — issue #250). "
+                        "This usually means the login session expired or the deploy API is "
+                        "unreachable. Re-run `campfire login`; or, for an unattended run, set "
+                        "CAMPFIRE_DEPLOY_MODE=service-role with CAMPFIRE_S3_* credentials to "
+                        "upload directly."
                     )
-                    if not urls:
+                # Guard against a web deployment that predates OSN upload support: an old
+                # /deploy/presign ignores `backend` and signs R2, which would land bytes in
+                # R2 under canonical keys while the registry records backend='osn' — silent
+                # divergence. Refuse if we asked for OSN but got R2-host URLs.
+                if backend == 'osn':
+                    _assert_presigned_backend_osn(urls)
+                # Re-mint and retry this batch's stragglers. On a slow uplink the
+                # dominant failure is the presigned URL ageing out mid-batch, which
+                # surfaces as a 5xx indistinguishable from a transient fault --
+                # fresh URLs fix the former and cost nothing for the latter (PUT is
+                # idempotent). Only unfinished tasks are retried, so `on_success`
+                # never fires twice for the same file.
+                pending, msgs = batch, []
+                for attempt in range(1 + _PRESIGN_RETRY_ROUNDS):
+                    if attempt:
+                        bar.set_postfix_str(f'retry {attempt}')
+                        urls = request_presigned_urls(
+                            config, pending, bucket=bucket_id,
+                            cache_control=cache_control, backend=backend,
+                        )
+                        if not urls:
+                            break
+                        if backend == 'osn':
+                            _assert_presigned_backend_osn(urls)
+                    landed: set[str] = set()
+                    s, _f, msgs = upload_files_presigned(
+                        urls, pending, max_workers=max_workers,
+                        desc=desc, succeeded_out=landed, session=session,
+                        on_success=on_success, stored_sizes_out=stored_sizes_out,
+                        progress=bar,
+                    )
+                    total_success += s
+                    if succeeded_out is not None:
+                        succeeded_out |= landed
+                    if not _f:
+                        # The uploader is the authority on what failed; `landed` is
+                        # only used to decide WHICH tasks to retry. Trusting it for
+                        # "are we done" would re-upload everything against an
+                        # implementation that reports success without populating it.
+                        pending = []
                         break
-                    if backend == 'osn':
-                        _assert_presigned_backend_osn(urls)
-                landed: set[str] = set()
-                s, _f, msgs = upload_files_presigned(
-                    urls, pending, max_workers=max_workers,
-                    desc=(desc if not attempt else f'{desc} (retry {attempt})'),
-                    succeeded_out=landed, session=session,
-                    on_success=on_success, stored_sizes_out=stored_sizes_out,
-                )
-                total_success += s
-                if succeeded_out is not None:
-                    succeeded_out |= landed
-                if not _f:
-                    # The uploader is the authority on what failed; `landed` is
-                    # only used to decide WHICH tasks to retry. Trusting it for
-                    # "are we done" would re-upload everything against an
-                    # implementation that reports success without populating it.
-                    pending = []
-                    break
-                pending = [t for t in pending if t.r2_key not in landed]
-                if not pending:
-                    break
-            total_failed += len(pending)
-            all_failures.extend(msgs)
-        return total_success, total_failed, all_failures
+                    pending = [t for t in pending if t.r2_key not in landed]
+                    if not pending:
+                        break
+                total_failed += len(pending)
+                all_failures.extend(msgs)
+            return total_success, total_failed, all_failures
 
     # Explicit direct-boto3 upload via the per-purpose backend factory.
     from campfire.deploy.backend import (

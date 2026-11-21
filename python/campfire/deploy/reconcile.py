@@ -1457,6 +1457,7 @@ def reconcile_field_objects(
     abort_on_split_merge: bool = False,
     changed_hashes: set[tuple[str, str, str | None]] | None = None,
     before_write=None,
+    verbose: bool = True,
 ) -> tuple[int, dict[str, int], set[int]]:
     """Incrementally reconcile the objects table for a field.
 
@@ -1472,6 +1473,9 @@ def reconcile_field_objects(
         radius: FoF clustering radius in arcseconds.
         dry_run: Print plan without writing.
         yes: Skip interactive split/merge confirmation prompts.
+        verbose: Print the fetch steps and the summary table. The full deploy
+            passes False and prints one line from the returned stats; errors
+            and split/merge details are printed either way.
         changed_hashes: Set of (target_id, grating, filter) keys whose spectrum
             content changed in this deploy. Accepted for call-site
             compatibility and no longer used: reprocessing is not a review
@@ -1487,14 +1491,15 @@ def reconcile_field_objects(
     """
     if changed_hashes is None:
         changed_hashes = set()
+    say = print if verbose else (lambda *a, **k: None)
 
-    print(f"  Fetching targets for field '{field}'...")
+    say(f"  Fetching targets for field '{field}'...")
     targets = fetch_field_targets(client, field)
-    print(f"    {len(targets)} targets")
+    say(f"    {len(targets)} targets")
 
-    print(f"  Fetching existing objects + membership...")
+    say(f"  Fetching existing objects + membership...")
     existing_objects, members_by_obj, _ = fetch_existing_objects(client, field)
-    print(f"    {len(existing_objects)} existing objects ({sum(1 for o in existing_objects if o['is_active'])} active)")
+    say(f"    {len(existing_objects)} existing objects ({sum(1 for o in existing_objects if o['is_active'])} active)")
 
     if not targets:
         if dry_run:
@@ -1513,15 +1518,15 @@ def reconcile_field_objects(
                     }).eq('id', obj['id']).execute()
         return 0, {'soft_deleted': sum(1 for o in existing_objects if o.get('is_active'))}, set()
 
-    print(f"  Fetching spectra metadata...")
+    say(f"  Fetching spectra metadata...")
     target_ids_str = [t['target_id'] for t in targets]
     spectra_map = fetch_spectra_metadata(client, target_ids_str)
     n_spectra = sum(len(v) for v in spectra_map.values())
-    print(f"    {n_spectra} spectra for {len(spectra_map)} targets")
+    say(f"    {n_spectra} spectra for {len(spectra_map)} targets")
 
-    print(f"  Clustering with radius={radius}\"...")
+    say(f"  Clustering with radius={radius}\"...")
     groups = cluster_targets(targets, radius)
-    print(f"    {len(groups)} clusters")
+    say(f"    {len(groups)} clusters")
 
     proposals = classify(
         groups=groups,
@@ -1532,7 +1537,8 @@ def reconcile_field_objects(
         changed_hashes=changed_hashes,
     )
 
-    print_summary(field, proposals, stats=None)
+    if verbose:
+        print_summary(field, proposals, stats=None)
 
     if dry_run:
         confirm_proposals(proposals, yes=True, dry_run=True)
@@ -1543,16 +1549,16 @@ def reconcile_field_objects(
         abort_on_changes=abort_on_split_merge,
     )
 
-    print(f"  Applying...")
+    say(f"  Applying...")
     if before_write is not None:
         before_write()
     stats, changed_ids = apply_proposals(client, field, proposals)
 
-    print(f"  Computing object redshift_auto from member spectra...")
+    say(f"  Computing object redshift_auto from member spectra...")
     if before_write is not None:
         before_write()          # a field-wide UPDATE too (Codex on #602)
     n_recomputed = compute_object_redshift_auto(client, field)
     stats['redshift_auto_set'] = n_recomputed
-    print(f"    Updated {n_recomputed} objects")
+    say(f"    Updated {n_recomputed} objects")
 
     return len(groups), stats, changed_ids

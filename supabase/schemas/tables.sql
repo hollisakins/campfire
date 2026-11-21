@@ -843,6 +843,17 @@ CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "deployments_status_check" CHECK (("status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
     "published_at" timestamp with time zone,
     "revoked_at" timestamp with time zone,
+    -- Completion marker. The deploy CLI inserts this row BEFORE it uploads (the
+    -- registration flusher tags storage_objects with the id as batches land), so
+    -- `status` alone cannot tell a finished deploy from one that died part-way.
+    -- Stamped by the CLI's finalize step (mark_deployment_completed) only when the
+    -- deploy ran to the end with no failed upload; NULL means it is still running,
+    -- crashed, or left failures to retry. Provenance only: storage visibility does
+    -- NOT wait on it (select_storage_objects_by_access gates on `status`), because
+    -- an overwritten key has already lost its old bytes and hiding the new row
+    -- would only take that key dark until a re-deploy. Rows that predate the
+    -- column are filled by scripts/backfill_deployments_completed_at.sql.
+    "completed_at" timestamp with time zone,
     -- Exactly one scope: a NIRSpec observation or a NIRCam field (epic #261, N1).
     CONSTRAINT "deployments_scope_check" CHECK (("num_nonnulls"("observation", "field") = 1))
 );

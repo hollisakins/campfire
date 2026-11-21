@@ -36,6 +36,19 @@ function statusBadge(status: DeployStatus) {
   );
 }
 
+// The deploy CLI opens the row before uploading and stamps completed_at last.
+function incompleteBadge(d: DeploymentRow) {
+  if (d.completed_at) return null;
+  return (
+    <span
+      className="ml-1.5 inline-block px-2 py-0.5 rounded text-xs font-medium bg-surface-2 text-text-secondary"
+      title="No completion stamp: running, interrupted, or failed uploads"
+    >
+      incomplete
+    </span>
+  );
+}
+
 function fmt(ts: string | null): string {
   if (!ts) return '—';
   let iso = ts;
@@ -216,7 +229,12 @@ function DeploymentsPageInner() {
     {
       id: 'status',
       header: 'Status',
-      cell: ({ row }) => statusBadge(row.original.status),
+      cell: ({ row }) => (
+        <span className="whitespace-nowrap">
+          {statusBadge(row.original.status)}
+          {incompleteBadge(row.original)}
+        </span>
+      ),
       meta: { sortKey: 'status' },
     },
     {
