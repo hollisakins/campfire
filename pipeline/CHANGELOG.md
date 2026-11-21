@@ -28,6 +28,8 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+## v1.0.0 — 2026-11-21
+
 ### Infrastructure
 - **NIRCam `apply_mask` no longer crashes on exposures that have a mask file.** The step
   called `DataModel.get_fits_wcs()`, removed in stdatamodels 6 (the jwst 3.0 stack), so
