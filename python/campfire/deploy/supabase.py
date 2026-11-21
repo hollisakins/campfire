@@ -747,6 +747,24 @@ def update_latest_deployment(
     ).eq('name', observation).execute()
 
 
+def mark_deployment_completed(client: Client, deployment_id: int | None) -> None:
+    """Stamp ``deployments.completed_at`` — the deploy ran to its end cleanly.
+
+    The deployment row is inserted before any upload (it is the anchor the
+    registration flusher tags storage rows with), so a row whose ``completed_at``
+    stays NULL is one that died part-way or left failed uploads to retry. Callers
+    stamp it last, after every write of the deploy (including the re-point of
+    unchanged objects), and only when no upload failed. Provenance only: storage
+    visibility gates on ``status``, not on this column.
+    """
+    if not deployment_id:
+        return
+    from datetime import datetime, timezone
+    client.table('deployments').update(
+        {'completed_at': datetime.now(timezone.utc).isoformat()}
+    ).eq('id', deployment_id).execute()
+
+
 def check_existing_objects(client: Client, target_ids: list[str]) -> dict[str, dict]:
     """
     Return existing target_ids as a dict keyed by target_id.

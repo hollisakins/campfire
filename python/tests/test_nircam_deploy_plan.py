@@ -251,8 +251,9 @@ def test_declining_the_prompt_writes_nothing(fake_field, remote_stubs, monkeypat
     assert 'Aborted.' in capsys.readouterr().out
 
 
-@pytest.mark.parametrize('draft', [False, True])
-def test_live_run_is_one_upload_pass(fake_field, remote_stubs, monkeypatch, capsys, draft):
+@pytest.mark.parametrize('draft, n_failed', [(False, 0), (True, 0), (False, 1)])
+def test_live_run_is_one_upload_pass(fake_field, remote_stubs, monkeypatch, capsys,
+                                     draft, n_failed):
     import campfire.deploy.fields as fields
     import campfire.deploy.push as push
     import campfire.deploy.registry as reg
@@ -280,10 +281,11 @@ def test_live_run_is_one_upload_pass(fake_field, remote_stubs, monkeypatch, caps
     def upload(config, tasks, *, succeeded_out, on_success, **k):
         calls.append('upload')
         uploads.append(list(tasks))
-        for t in tasks:
+        # with n_failed, the last task (a mosaic thumbnail) fails to land
+        for t in tasks[:len(tasks) - n_failed]:
             succeeded_out.add(t.r2_key)
             on_success(t)
-        return len(tasks), 0, []
+        return len(tasks) - n_failed, n_failed, ['boom'] * n_failed
 
     def note(name, ret=None):
         def fn(*a, **k):
@@ -306,6 +308,7 @@ def test_live_run_is_one_upload_pass(fake_field, remote_stubs, monkeypatch, caps
                         lambda client, keys, dep: repointed.extend(keys))
     monkeypatch.setattr(fields, 'upsert_field_on_deploy', note('field_row', True))
     monkeypatch.setattr(nc, 'log_deploy_event', note('audit'))
+    monkeypatch.setattr(nc, 'mark_deployment_completed', note('complete'))
 
     nc.deploy_nircam(fake_field.field, {}, draft=draft)
 
@@ -313,6 +316,12 @@ def test_live_run_is_one_upload_pass(fake_field, remote_stubs, monkeypatch, caps
                                      {'n': 20, 'apply_backfill': True}]
     # one upload pass carrying exposures AND mosaics, minus the unchanged
     assert len(uploads) == 1 and len(uploads[0]) == 17
+    # completed_at: the last write before the lease claim, and only when every
+    # upload landed (mosaics included: they share the one pass)
+    if n_failed:
+        assert 'complete' not in calls
+        return
+    assert calls.index('field_row') < calls.index('complete')
     assert len(flushed['mosaic']) == 2 and len(flushed['tree']) == 15
     assert (calls.index('lease') < calls.index('deployment') < calls.index('upload')
             < calls.index('exposures') < calls.index('images') < calls.index('field_row'))

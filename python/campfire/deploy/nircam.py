@@ -49,6 +49,7 @@ from campfire.modality import IMAGING
 from campfire.deploy.supabase import (
     ScopeLease, deploy_event_metadata,
     get_supabase_client, get_user_id_from_token, insert_deployment, log_deploy_event,
+    mark_deployment_completed,
 )
 
 # The OSN data backend NIRCam canonical intermediates are homed on (epic #210/#216,
@@ -849,6 +850,14 @@ def _execute_nircam_plan(plan, client, store, config, *, steal_lease=False):
                                deployment_id)
     except Exception as e:  # noqa: BLE001 - registry upsert must never sink a deploy
         print(f"  fields: registry upsert skipped ({e})")
+
+    # Completion marker, the last write of the field deploy (exposures, mosaic
+    # index, re-points, field registry). The row was recorded up front, so a
+    # deploy that died before here keeps completed_at NULL; so does one with a
+    # failed upload (it asked for a re-run). Exposures and mosaics share one
+    # upload pass, so n_failed covers both.
+    if not n_failed:
+        mark_deployment_completed(client, deployment_id)
 
     # ---- Finalize -----------------------------------------------------------
     claim = lease.claim()

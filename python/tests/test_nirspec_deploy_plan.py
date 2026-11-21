@@ -362,6 +362,7 @@ def test_live_run_uploads_exactly_the_planned_files(fake_obs, entry_stubs, monke
     monkeypatch.setattr(dmod, 'update_latest_deployment', note('finalize'))
     monkeypatch.setattr(dmod, 'log_deploy_event', note('audit'))
     monkeypatch.setattr(reg, 'set_active_deployment', note('repoint', 2))
+    monkeypatch.setattr(dmod, 'mark_deployment_completed', note('complete'))
 
     result = dmod.deploy_observation(fake_obs.obs, {})
 
@@ -374,6 +375,8 @@ def test_live_run_uploads_exactly_the_planned_files(fake_obs, entry_stubs, monke
     assert calls.index('lease') < calls.index('deployment') < calls.index('upload')
     assert (calls.index('targets') < calls.index('pointings') < calls.index('shutters')
             < calls.index('reconcile') < calls.index('finalize'))
+    # the completion marker is the last write: after the re-point of unchanged files
+    assert calls.index('repoint') < calls.index('complete') == len(calls) - 1
     out = capsys.readouterr().out
     assert 'Deployment #616 opened (published)' in out
     assert 'Deploy complete: demo_p1 → deployment #616 (published)' in out
