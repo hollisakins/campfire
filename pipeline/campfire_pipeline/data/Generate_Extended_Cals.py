@@ -17,18 +17,20 @@ import json
 from datetime import datetime
 from tqdm import tqdm
 from campfire import Campfire
+from scipy.ndimage import gaussian_filter
 
 os.environ['CRDS_PATH'] = os.environ.get('CAMPFIRE_ROOT')+'/cache/crds/'
 os.environ['CRDS_SERVER_URL'] = 'https://jwst-crds.stsci.edu'
-os.environ['CRDS_CONTEXT']='jwst_1464.pmap'
+os.environ['CRDS_CONTEXT']='jwst_1614.pmap'
 
 steps={'detector1':False,
        'extend_flats':True,
        'spec2':False,
        'spec3':False,
+       'fit_lines':False,
        'calibrate':True}
 
-ncores=10
+ncores=12
 
 # Run detector1
 
@@ -36,9 +38,9 @@ if steps['detector1']:
 
     print('Downloading uncal and MSA data from MAST...')
     subprocess.run(['cfpipe','download','--program','9214'])
-    for msa_meta_file in glob.glob(os.environ.get('CAMPFIRE_ROOT')+'/raw/9214/*msa.fits'):
+    for msa_meta_file in glob.glob(os.environ.get('CAMPFIRE_ROOT')+'/raw/nirspec/9214/*msa.fits'):
         shutil.copy2(msa_meta_file, f'{os.getcwd()}/{msa_meta_file.split('/')[-1]}')
-    for uncal_file in glob.glob(os.environ.get('CAMPFIRE_ROOT')+'/raw/9214/*uncal.fits'):
+    for uncal_file in glob.glob(os.environ.get('CAMPFIRE_ROOT')+'/raw/nirspec/9214/*uncal.fits'):
         os.symlink(uncal_file,f'{os.getcwd()}/{uncal_file.split('/')[-1]}')
     files=sorted(glob.glob('*uncal.fits'))
 
@@ -55,50 +57,57 @@ if steps['detector1']:
     with Pool(ncores) as pool:
         _=pool.map(runS1,sorted(glob.glob('*uncal.fits')))
 
-
 # Extends Flats
 
-maxwaves={'G140M':{'F100LP':1.87,'F070LP':1.27},'G235M':{'F170LP':3.17}}#'PRISM':{'CLEAR':5.3},}
+maxwaves={'G140M':{'F100LP':1.87,'F070LP':1.26},'G235M':{'F170LP':3.15}}#'PRISM':{'CLEAR':5.3},}
 
 def generate_extended_cals(rate_files,cwd):
     print('Fetching CRDS data...')
     allrefs=set()
+    seen_configs = set()
     for rate_file in rate_files:
         hdr = fits.getheader(rate_file)
         det = hdr.get('DETECTOR', 'NRS1')
         grating = hdr.get('GRATING', 'UNKNOWN')
         filt = hdr.get('FILTER', 'UNKNOWN')
         config_key = (det, grating, filt)
-        seen_configs = set()
         if config_key in seen_configs: continue
         seen_configs.add(config_key)
         reftypes = ['fflat','sflat','photom','wavelengthrange']
-        params = {
-            "INSTRUME": "NIRSPEC",
-            "DETECTOR": det,
-            "EXP_TYPE": hdr.get('EXP_TYPE', 'NRS_MSASPEC'),
-            "FILTER": filt,
-            "GRATING": grating,
-            "DATE-OBS": hdr.get('DATE-OBS', '2023-01-01'),
-            "TIME-OBS": hdr.get('TIME-OBS', '00:00:00'),
-        }
-        try: 
-            refs = crds.getreferences(params, reftypes=reftypes, observatory='jwst')
-            for i in refs: allrefs.add(refs[i])
-            params['EXP_TYPE']='NRS_FIXEDSLIT' #also get fixed_slit photom file
-            refs = crds.getreferences(params, reftypes=['photom'], observatory='jwst')
-            for i in refs: allrefs.add(refs[i])
-        except Exception as e: print(f"CRDS prefetch warning for {config_key}: {e}")
+        if grating=='G140M': filts=['F100LP','F070LP']
+        else: filts=[filt]
+        for filt in filts:
+            params = {
+                "INSTRUME": "NIRSPEC",
+                "DETECTOR": det,
+                "EXP_TYPE": hdr.get('EXP_TYPE', 'NRS_MSASPEC'),
+                "FILTER": filt,
+                "GRATING": grating,
+                "DATE-OBS": hdr.get('DATE-OBS', '2023-01-01'),
+                "TIME-OBS": hdr.get('TIME-OBS', '00:00:00'),
+            }
+            try: 
+                refs = crds.getreferences(params, reftypes=reftypes, observatory='jwst')
+                for i in refs: allrefs.add(refs[i])
+                params['EXP_TYPE']='NRS_FIXEDSLIT' #also get fixed_slit photom file
+                refs = crds.getreferences(params, reftypes=['photom'], observatory='jwst')
+                for i in refs: allrefs.add(refs[i])
+            except Exception as e: print(f"CRDS prefetch warning for {config_key}: {e}")
     
-
     photoms=sorted([ref for ref in allrefs if 'photom' in ref])
-    fflats=[ref for ref in allrefs if 'fflat' in ref]
-    sflats=[ref for ref in allrefs if 'sflat' in ref]
+    fflats={}
+    for ref in [i for i in allrefs if 'fflat' in i]:
+        with fits.open(ref) as hdul: fflats[hdul[0].header['FILTER']]=ref    
+    sflats={'NRS1':{},'NRS2':{}}
+    for ref in [i for i in allrefs if 'sflat' in i]:
+        with fits.open(ref) as hdul: sflats[hdul[0].header['DETECTOR']][hdul[0].header['FILTER']]=ref
+
     wavelengthrange_file=[ref for ref in allrefs if 'wavelengthrange' in ref][0]
 
     print('Extending Flat Fields...')
 
-    for file in fflats:
+    for filt in ['F170LP','F100LP']:
+        file=fflats[filt]
         with fits.open(file) as fflat:
             grat=fflat[0].header['GRATING'].strip()
             filt=fflat[0].header['FILTER'].strip()
@@ -114,9 +123,9 @@ def generate_extended_cals(rate_files,cwd):
             for num,i in enumerate(fflat):
                 if num in [5,10,15,20]:
                     tab=table.Table.read(file,hdu=num)
-                    newwave=np.concatenate([tab['wavelength'][0],np.round(np.arange(np.round(np.max(tab['wavelength'][0])+0.001,3),5.301,0.001),3)])
+                    newwave=np.concatenate([tab['wavelength'][0][tab['wavelength'][0]>0],np.round(np.arange(np.round(np.max(tab['wavelength'][0])+0.001,3),5.301,0.001),3)])
                     newflux=np.ones_like(newwave)
-                    newflux[:len(tab['wavelength'][0])]=tab['data'][0]
+                    newflux[:len(tab['wavelength'][0][tab['wavelength'][0]>0])]=tab['data'][0][tab['wavelength'][0]>0]
                     newflux[newwave>=maxwaves[grat][filt]]=newflux[np.argmin(np.abs(newwave-maxwaves[grat][filt]))] #flat after last real value
                     newflux[newflux<=0]=np.nan
                     tab['newwavelength']=newwave[:,None].T.astype('float32')
@@ -131,34 +140,98 @@ def generate_extended_cals(rate_files,cwd):
                 else: newflat.append(fflat[num])
             newflat.writeto(f'{cwd}/extended_{file.split('/')[-1]}',overwrite=1)
 
-    for file in sflats:
+    # now extend F070LP using F100LP
+    file=fflats['F070LP']
+    with fits.open(file) as fflat:
+        grat=fflat[0].header['GRATING'].strip()
+        filt=fflat[0].header['FILTER'].strip()
+        F100LP=f"{cwd}/extended_{fflats['F100LP'].split('/')[-1]}"
+        newflat=fits.HDUList()
+        for num,i in enumerate(fflat):
+            if num in [5,10,15,20]:
+                tab=table.Table.read(file,hdu=num)
+                f100lp=table.Table.read(F100LP,hdu=num)
+                newwave=np.concatenate([tab['wavelength'][0][tab['wavelength'][0]>0],f100lp['wavelength'][0][f100lp['wavelength'][0]>np.max(tab['wavelength'][0])]])
+                newflux=np.ones_like(newwave)
+                newflux[:len(tab['wavelength'][0][tab['wavelength'][0]>0])]=tab['data'][0][tab['wavelength'][0]>0]
+                newflux[newwave>np.max(tab['wavelength'][0])]=f100lp['data'][0][f100lp['wavelength'][0]>np.max(tab['wavelength'][0])]
+                newflux[newflux<=0]=np.nan
+                newflux,newwave=newflux[np.isfinite(newflux)],newwave[np.isfinite(newflux)]
+                idx=np.where(newwave>np.max(tab['wavelength'][0]))[0][0]
+                newflux[idx-15:idx+15]=gaussian_filter(newflux[idx-15:idx+15],10)#smooth the transition slightly
+                tab['newwavelength']=newwave[:,None].T.astype('float32')
+                tab['newdata']=newflux[:,None].T.astype('float32')
+                tab['newerror']=newflux[:,None].T.astype('float32')*np.nan
+                for col in ['wavelength','data','error']:
+                    del tab[col]
+                    tab['new'+col].name=col
+                tab['nelem']=len(newflux)
+                temp=fits.table_to_hdu(tab)
+                newflat.append(temp)
+            else: newflat.append(fflat[num])
+        newflat.writeto(f'{cwd}/extended_{file.split('/')[-1]}',overwrite=1)
+
+    for det in ['NRS1','NRS2']:
+        for filt in ['F170LP','F100LP']:
+            file=sflats[det][filt]
+            with fits.open(file) as sflat:
+                grat=sflat[0].header['GRATING'].strip()
+                filt=sflat[0].header['FILTER'].strip()
+                if grat in maxwaves:
+                    if filt in maxwaves[grat]: pass
+                    else: 
+                        print(f"Grating/filter: {grat}/{filt} not supported")
+                        continue
+                else: 
+                    print(f"Grating: {grat} not supported")
+                    continue    
+                tab=table.Table.read(file,hdu=5)
+                newwave=np.concatenate([tab['wavelength'][0][tab['wavelength'][0]>0],np.round(np.arange(np.round(np.max(tab['wavelength'][0])+0.001,3),5.301,0.001),3)])
+                newflux=np.ones_like(newwave)
+                newflux[:len(tab['wavelength'][0][tab['wavelength'][0]>0])]=tab['data'][0][tab['wavelength'][0]>0]
+                newflux[newwave>=maxwaves[grat][filt]]=newflux[np.argmin(np.abs(newwave-maxwaves[grat][filt]))] #flat after last real value
+                newflux[newflux<=0]=np.nan
+                tab['newwavelength']=newwave[:,None].T.astype('float32')
+                tab['newdata']=newflux[:,None].T.astype('float32')
+                for col in ['wavelength','data']:
+                    del tab[col]
+                    tab['new'+col].name=col
+                tab['nelem']=len(newflux)
+                sflat[5]=fits.table_to_hdu(tab)
+                sflat[1].header[f"FLAT_{sflat[1].data.shape[0]:02}"]=5.3
+                sflat[4].data[-1]=(5.3,)
+                sflat.writeto(f'{cwd}/'+file.split('/')[-1].replace('jwst','extended_jwst'),overwrite=1)
+
+    # now extend F070LP using F100LP
+    for det in ['NRS1','NRS2']:
+        file=sflats[det]['F070LP']
         with fits.open(file) as sflat:
             grat=sflat[0].header['GRATING'].strip()
             filt=sflat[0].header['FILTER'].strip()
-            if grat in maxwaves:
-                if filt in maxwaves[grat]: pass
-                else: 
-                    print(f"Grating/filter: {grat}/{filt} not supported")
-                    continue
-            else: 
-                print(f"Grating: {grat} not supported")
-                continue    
-            tab=table.Table.read(file,hdu=5)
-            newwave=np.concatenate([tab['wavelength'][0],np.round(np.arange(np.round(np.max(tab['wavelength'][0])+0.001,3),5.301,0.001),3)])
-            newflux=np.ones_like(newwave)
-            newflux[:len(tab['wavelength'][0])]=tab['data'][0]
-            newflux[newwave>=maxwaves[grat][filt]]=newflux[np.argmin(np.abs(newwave-maxwaves[grat][filt]))] #flat after last real value
-            newflux[newflux<=0]=np.nan
-            tab['newwavelength']=newwave[:,None].T.astype('float32')
-            tab['newdata']=newflux[:,None].T.astype('float32')
-            for col in ['wavelength','data']:
-                del tab[col]
-                tab['new'+col].name=col
-            tab['nelem']=len(newflux)
-            sflat[5]=fits.table_to_hdu(tab)
-            sflat[1].header["FLAT_05"]=5.3
-            sflat[4].data[-1]=(5.3,)
-            sflat.writeto(f'{cwd}/'+file.split('/')[-1].replace('jwst','extended_jwst'),overwrite=1)
+            F100LP=f"{cwd}/extended_{sflats[det]['F100LP'].split('/')[-1]}"
+            newflat=fits.HDUList()
+            for num,i in enumerate(sflat):
+                tab=table.Table.read(file,hdu=5)
+                f100lp=table.Table.read(F100LP,hdu=5)
+                newwave=np.concatenate([tab['wavelength'][0][tab['wavelength'][0]>0],f100lp['wavelength'][0][f100lp['wavelength'][0]>np.max(tab['wavelength'][0])]])
+                newflux=np.ones_like(newwave)
+                newflux[:len(tab['wavelength'][0][tab['wavelength'][0]>0])]=tab['data'][0][tab['wavelength'][0]>0]
+                newflux[newwave>np.max(tab['wavelength'][0])]=f100lp['data'][0][f100lp['wavelength'][0]>np.max(tab['wavelength'][0])]
+                newflux[newflux<=0]=np.nan
+                newflux,newwave=newflux[np.isfinite(newflux)],newwave[np.isfinite(newflux)]
+                idx=np.where(newwave>np.max(tab['wavelength'][0]))[0][0]
+                newflux[idx-15:idx+15]=gaussian_filter(newflux[idx-15:idx+15],10)#smooth the transition slightly
+                tab['newwavelength']=newwave[:,None].T.astype('float32')
+                tab['newdata']=newflux[:,None].T.astype('float32')
+                for col in ['wavelength','data']:
+                    del tab[col]
+                    tab['new'+col].name=col
+                tab['nelem']=len(newflux)
+                sflat[5]=fits.table_to_hdu(tab)
+                sflat[1].header[f"FLAT_{sflat[1].data.shape[0]:02}"]=5.3
+                sflat[4].data[-1]=(5.3,)
+                sflat.writeto(f'{cwd}/'+file.split('/')[-1].replace('jwst','extended_jwst'),overwrite=1)
+            sflat.writeto(f'{cwd}/extended_{file.split('/')[-1]}',overwrite=1)
 
     for photom in photoms:
         with fits.open(photom) as hdul: #create temporary extended photom file, to be updated later after extended calibration
@@ -175,7 +248,7 @@ def generate_extended_cals(rate_files,cwd):
             hdul[1]=fits.table_to_hdu(tab)
             hdul.writeto(f'{cwd}/uncalibrated_extended_'+photom.split('/')[-1],overwrite=1)
 
-    wavelength_updates = {'F100LP_G140M': [9.7e-07, 5.3e-06],'F170LP_G235M': [1.66e-06, 5.3e-06]}
+    wavelength_updates = {'F070LP_G140M': [7.0e-07, 5.3e-06],'F100LP_G140M': [9.7e-07, 5.3e-06],'F170LP_G235M': [1.66e-06, 5.3e-06]}
     with asdf.open(wavelengthrange_file) as af:
         selectors = af['waverange_selector']
         wavelength_ranges = af['wavelengthrange']
@@ -251,11 +324,9 @@ if steps['spec2']:
         alt_waverange = 'extended_jwst_nirspec_wavelengthrange_0008.asdf'
         steps={'extract_1d': {'skip': True},
             'flat_field': {'override_fflat': alt_fflat,'override_sflat': alt_sflat},# 'override_dflat': alt_dflat},
-            'nsclean': {'skip': True},
             'assign_wcs': {'override_wavelengthrange': alt_waverange},
             'photom': {'override_photom': alt_photom},
             }
-        # steps={'extract_1d': {'skip': True},'flat_field': {'override_fflat': alt_fflat},'nsclean': {'skip': True}}
         try: 
             _=pipeline.Spec2Pipeline.call(x, save_results=True, steps=steps)
             os.remove(x)
@@ -325,7 +396,7 @@ if steps['spec3']:
 
 # Read in all spectra
 
-if steps['calibrate']:
+if steps['fit_lines']:
     print('Fitting emission lines and calibrating extended wavelength ranges...')
     allobs=table.Table()
     allobs['filename']=glob.glob('*_s?????????_x1d.fits')
@@ -410,7 +481,7 @@ if steps['calibrate']:
 
     lines=np.array([3727,4861,4959,5007,6563,9069,9531,10830,10938,12820])
 
-    def fit_line(row,line,grat,iters=1000,plot=False):
+    def fit_line(row,line,grat,iters=100,plot=False):
         maxfwhm=1500
         oneplusz=1+row['redshift']
         waverange=np.abs(line/1e4*oneplusz-row[f'wave_{grat}'])/(line/1e4*oneplusz)*3e5<maxfwhm
@@ -434,7 +505,7 @@ if steps['calibrate']:
                     plt.plot(xrange/oneplusz,linemodel(xrange,amp,fwhm,center,cont,slope))
                     plt.show()
                 out.append(amp*np.sqrt(2*np.pi)*(fwhm/3e5*center*1e4/2.335))
-            except RuntimeError: out.append(np.nan)
+            except: out.append(np.nan)
         if np.nanmedian(out)*2/(np.nanquantile(out,0.84)-np.nanquantile(out,0.16))<10: return np.nan
         else: return np.nanmedian(out)
 
@@ -460,10 +531,19 @@ if steps['calibrate']:
 
     bcal=table.Table([np.array([lines*(1+test['z'])/1e4 for test in tests]).flatten(),np.array([test['b']/test['g'] for test in tests]).flatten()],names=['wave','ratio'])
     gcal=table.Table([np.array([lines*(1+test['z'])/1e4 for test in tests]).flatten(),np.array([test['g']/test['r'] for test in tests]).flatten()],names=['wave','ratio'])
+    
+    bcal.write('bcal.fits',overwrite=1)
+    gcal.write('gcal.fits',overwrite=1)
+
+if steps['calibrate']:
+    bcal=table.Table.read('bcal.fits')
+    gcal=table.Table.read('gcal.fits')
+    
     bcal=bcal[np.isfinite(bcal['ratio'])]# & (bcal['wave']>1.9)]
     gcal=gcal[np.isfinite(gcal['ratio'])]# & (gcal['wave']>3.2)]
     # bcal['ratio'][bcal['ratio']>1]=1
     # gcal['ratio'][gcal['ratio']>1]=1
+
 
     bpfit=np.polyfit(bcal['wave'][bcal['wave']>1.9],bcal['ratio'][bcal['wave']>1.9],2)
     gpfit=np.polyfit(gcal['wave'][gcal['wave']>3.2],gcal['ratio'][gcal['wave']>3.2],2)
@@ -488,33 +568,39 @@ if steps['calibrate']:
 
     waverange=np.arange(0.6,5.301,0.001)
     bcorr=np.dot(bpfit,np.array([waverange**i for i in np.arange(len(bpfit))[::-1]]))
-    bcorr[waverange<1.87]=1
-    bcorr[waverange>3.17]=0
+    bcorr[waverange<maxwaves['G140M']['F100LP']]=1
+    bcorr[waverange>maxwaves['G235M']['F170LP']]=0
+    bcorr[bcorr>1]=1
     gcorr=np.dot(gpfit,np.array([waverange**i for i in np.arange(len(gpfit))[::-1]]))
-    gcorr[waverange<3.17]=1
-    corrs=[gcorr,bcorr]
+    gcorr[waverange<maxwaves['G235M']['F170LP']]=1
+    gcorr[gcorr>1]=1
+    corrs={'F170LP':gcorr,'F100LP':bcorr,'F070LP':bcorr}
 
-    sflats=[]
-    fflats=[]
+    sflats={'NRS1':{},'NRS2':{}}
+    fflats={}    
     for i in sorted(glob.glob('extended_jwst_nirspec_sflat_????.fits')):
+        with fits.open(i) as hdul: 
+            filt=hdul[0].header['FILTER']
+            nrs=hdul[0].header['DETECTOR']
         tab=table.Table.read(i,hdu=5)
         subtab=table.Table([tab['wavelength'][0],tab['data'][0]],names=['wavelength','data'])
         subtab.sort('wavelength')
         subtab=subtab[subtab['data']>0]
-        sflats.append(np.interp(waverange,subtab['wavelength'],subtab['data']))
+        sflats[nrs][filt]=np.interp(waverange,subtab['wavelength'],subtab['data'])
     for i in sorted(glob.glob('extended_jwst_nirspec_fflat_????.fits')):
+        with fits.open(i) as hdul: filt=hdul[0].header['FILTER']
         tab=table.Table.read(i,hdu=5)
         subtab=table.Table([tab['wavelength'][0],tab['data'][0]],names=['wavelength','data'])
         subtab.sort('wavelength')
         subtab=subtab[subtab['data']>0]
-        fflats.append(np.interp(waverange,subtab['wavelength'],subtab['data']))
+        fflats[filt]=np.interp(waverange,subtab['wavelength'],subtab['data'])
 
     plt.figure(dpi=150)
-    for num,f in enumerate(fflats):
-        for s in sflats[num::2]:
-            plt.plot(waverange,s*f*corrs[num])
-            if num==1: plt.scatter(bcal['wave'],bcal['ratio']*np.interp(bcal['wave'],waverange,s*f),c='grey',marker='.',lw=0)
-            else: plt.scatter(gcal['wave'],gcal['ratio']*np.interp(gcal['wave'],waverange,s*f),c='grey',marker='.',lw=0)
+    for filt in ['F070LP','F100LP','F170LP']:
+        for nrs in ['NRS1','NRS2']:
+            plt.plot(waverange,sflats[nrs][filt]*fflats[filt]*corrs[filt])
+            if filt in ['F100LP']: plt.scatter(bcal['wave'],bcal['ratio']*np.interp(bcal['wave'],waverange,sflats[nrs][filt]*fflats[filt]),c='grey',marker='.',lw=0)
+            else: plt.scatter(gcal['wave'],gcal['ratio']*np.interp(gcal['wave'],waverange,sflats[nrs][filt]*fflats[filt]),c='grey',marker='.',lw=0)
     plt.ylabel('Throughput')
     plt.xlabel('Wavelength [um]')
     plt.ylim(0,1.3e11)
@@ -525,7 +611,7 @@ if steps['calibrate']:
     for photom_file in photom_files:
         with fits.open(photom_file) as hdul: #create final extended photom file
             tab=table.Table.read(photom_file,hdu=1)
-            b_idxs=np.where((tab['filter']=='F100LP') & (tab['grating']=='G140M'))
+            b_idxs=np.where(((tab['filter']=='F100LP') | (tab['filter']=='F070LP')) & (tab['grating']=='G140M'))
             g_idxs=np.where((tab['filter']=='F170LP') & (tab['grating']=='G235M'))
             newwave=np.round(np.arange(0.6,5.301,0.001),3)
             newflux=np.ones_like(newwave)
@@ -534,12 +620,12 @@ if steps['calibrate']:
             tab['newreluncertainty']=newflux[:,None].T.astype('float32')*0
             for b_idx in b_idxs:
                 tab['newrelresponse'][b_idx]=1/bcorr
-                tab['newwavelength'][b_idx][np.isnan(tab['newrelresponse'][b_idx])]=0
-                tab['newrelresponse'][b_idx][np.isnan(tab['newrelresponse'][b_idx])]=0
+                tab['newwavelength'][b_idx][~np.isfinite(tab['newrelresponse'][b_idx])]=0
+                tab['newrelresponse'][b_idx][~np.isfinite(tab['newrelresponse'][b_idx])]=0
             for g_idx in g_idxs:
                 tab['newrelresponse'][g_idx]=1/gcorr
-                tab['newwavelength'][g_idx][np.isnan(tab['newrelresponse'][g_idx])]=0
-                tab['newrelresponse'][g_idx][np.isnan(tab['newrelresponse'][g_idx])]=0
+                tab['newwavelength'][g_idx][~np.isfinite(tab['newrelresponse'][g_idx])]=0
+                tab['newrelresponse'][g_idx][~np.isfinite(tab['newrelresponse'][g_idx])]=0
             for col in ['wavelength','relresponse','reluncertainty']:
                 del tab[col]
                 tab['new'+col].name=col

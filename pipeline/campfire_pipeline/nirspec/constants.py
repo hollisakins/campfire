@@ -52,16 +52,21 @@ FIXED_SLIT_MASK_GROW_PX = 3
 
 
 # ---------------------------------------------------------------------------
-# Extended-wavelength reduction (G140M/F100LP, G235M/F170LP)
+# Extended-wavelength reduction (G140M/F070LP, G140M/F100LP, G235M/F170LP)
 # ---------------------------------------------------------------------------
 # Constants for the opt-in extended-wavelength feature
 # ([nirspec.stage2].extend_g140m_g235m). See
 # docs/extended-wavelength-integration.md and campfire_pipeline/nirspec/
 # extended_wavelength.py.
 
-# The only grating/filter combos the extension applies to. F070LP (hard filter
-# cutoff) and the H gratings are intentionally excluded.
-EXTENDED_GRATING_FILTERS = {("G140M", "F100LP"), ("G235M", "F170LP")}
+# The only grating/filter combos the extension applies to. The H gratings are
+# intentionally excluded.
+EXTENDED_GRATING_FILTERS = {("G140M", "F070LP"), ("G140M", "F100LP"), ("G235M", "F170LP")}
+
+# Configs whose flats are extended by stitching the extended flats of another filter
+# of the same grating (and detector, for the S-flat) onto their own red end, instead
+# of holding their last value: (grating, filter) -> source filter.
+STITCHED_FLAT_SOURCE_FILTER = {("G140M", "F070LP"): "F100LP"}
 
 # Red edge the extension reaches: the assign_wcs wavelengthrange and the stage1
 # background mask are pushed out to this, in microns.
@@ -72,15 +77,19 @@ EXTENDED_MAX_WAVELENGTH_UM = 5.3
 EXTENDED_GRID_MAX_UM = 5.301
 
 # Wavelength (microns) beyond which the measured flat ends and the extended flat
-# holds its last real value constant (flat extrapolation).
+# holds its last real value constant (flat extrapolation). Mirrors ``maxwaves`` in
+# data/Generate_Extended_Cals.py. F070LP is not held (it is stitched, see
+# STITCHED_FLAT_SOURCE_FILTER); its entry is the support marker the script keeps.
 FLAT_HOLD_WAVELENGTH_UM = {
+    ("G140M", "F070LP"): 1.26,
     ("G140M", "F100LP"): 1.87,
-    ("G235M", "F170LP"): 3.17,
+    ("G235M", "F170LP"): 3.15,
 }
 
 # Extended assign_wcs wavelength ranges, in METERS, keyed by the CRDS
 # wavelengthrange selector "<FILTER>_<GRATING>".
 EXTENDED_WAVELENGTHRANGE_M = {
+    "F070LP_G140M": [7.0e-7, 5.3e-6],
     "F100LP_G140M": [9.7e-7, 5.3e-6],
     "F170LP_G235M": [1.66e-6, 5.3e-6],
 }
@@ -89,7 +98,7 @@ EXTENDED_WAVELENGTHRANGE_M = {
 # was calibrated under. The extended flats are regenerated live under the *current*
 # context; verify_extension_crds_compatibility() refuses to run if the current
 # context resolves fflat/sflat/photom to versions newer than the baseline below.
-EXTENDED_CALIBRATION_CONTEXT = "jwst_1464.pmap"
+EXTENDED_CALIBRATION_CONTEXT = "jwst_1614.pmap"
 
 # Baseline CRDS reference basenames the calibration was derived against, keyed by
 # (DETECTOR, GRATING, FILTER). photom is detector-agnostic and is fixed by the
@@ -99,16 +108,22 @@ EXTENDED_CALIBRATION_CONTEXT = "jwst_1464.pmap"
 # the calibration is re-derived against a newer context. A None field means "not yet
 # pinned" — the guard warns rather than enforces until it is filled.
 EXTENDED_CALIBRATION_REFERENCES = {
-    ("NRS1", "G140M", "F100LP"): {"fflat": "jwst_nirspec_fflat_0168.fits",
+    ("NRS1", "G140M", "F070LP"): {"fflat": "jwst_nirspec_fflat_0196.fits",
+                                  "sflat": "jwst_nirspec_sflat_0171.fits",
+                                  "photom": "jwst_nirspec_photom_0015.fits"},
+    ("NRS2", "G140M", "F070LP"): {"fflat": "jwst_nirspec_fflat_0196.fits",
+                                  "sflat": "jwst_nirspec_sflat_0200.fits",
+                                  "photom": "jwst_nirspec_photom_0015.fits"},
+    ("NRS1", "G140M", "F100LP"): {"fflat": "jwst_nirspec_fflat_0200.fits",
                                   "sflat": "jwst_nirspec_sflat_0231.fits",
                                   "photom": "jwst_nirspec_photom_0015.fits"},
-    ("NRS2", "G140M", "F100LP"): {"fflat": "jwst_nirspec_fflat_0168.fits",
+    ("NRS2", "G140M", "F100LP"): {"fflat": "jwst_nirspec_fflat_0200.fits",
                                   "sflat": "jwst_nirspec_sflat_0226.fits",
                                   "photom": "jwst_nirspec_photom_0015.fits"},
-    ("NRS1", "G235M", "F170LP"): {"fflat": "jwst_nirspec_fflat_0166.fits",
+    ("NRS1", "G235M", "F170LP"): {"fflat": "jwst_nirspec_fflat_0193.fits",
                                   "sflat": "jwst_nirspec_sflat_0229.fits",
                                   "photom": "jwst_nirspec_photom_0015.fits"},
-    ("NRS2", "G235M", "F170LP"): {"fflat": "jwst_nirspec_fflat_0166.fits",
+    ("NRS2", "G235M", "F170LP"): {"fflat": "jwst_nirspec_fflat_0193.fits",
                                   "sflat": "jwst_nirspec_sflat_0224.fits",
                                   "photom": "jwst_nirspec_photom_0015.fits"},
 }

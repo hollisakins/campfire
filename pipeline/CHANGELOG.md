@@ -94,16 +94,50 @@ Release procedure: edit the `## Unreleased` section below, then run
   added, with `--dtheta` / `--pad-arcsec`.
 
 ### Calibration
-- **`jwst` 1.20.2 -> 3.0.0, CRDS context `jwst_1481.pmap` -> `jwst_1584.pmap`** (the
-  3.0.0 build context). `jwst` and `stcal` are now pinned exactly (`jwst==3.0.0`,
+- **`jwst` 1.20.2 -> 3.0.0, CRDS context `jwst_1481.pmap` -> `jwst_1614.pmap`.** The
+  3.0.0 build context is `jwst_1584`; `jwst_1614` (2026-11-18) is adopted on top of it for
+  the NIRSpec MOS F-flat redelivery below. STScI does not test contexts past 1584 with
+  jwst 3.0.0: the references that change for MSA and NIRCam imaging between the two were
+  checked for format (same `fflat` layout, no new reference types, `filteroffset` values
+  unchanged). `jwst` and `stcal` are now pinned exactly (`jwst==3.0.0`,
   `stcal==1.21.0`): jwst 3.0.0 accepts any stcal from 1.19.1, and stcal holds the ramp-fit,
   jump and saturation numerics. Every rate changes: the ramp-fit slope no longer uses the
   Poisson variance in its weights (stcal 1.19), and saturation / snowball flagging for
-  group-averaged (IRS2) data changed (stcal 1.16-1.21). For NIRSpec MOS and fixed slit the
-  flux-calibration references (`fflat`, `sflat`, `dflat`, `photom`, `pathloss`,
-  `wavelengthrange`) are the same files in both contexts; `dark`, `superbias`, `mask` and
-  `msaoper` gained new deliveries. The extended-wavelength baseline
-  (`EXTENDED_CALIBRATION_CONTEXT`) still resolves, so no re-derivation is forced by CRDS.
+  group-averaged (IRS2) data changed (stcal 1.16-1.21). For NIRSpec MOS and fixed slit
+  `sflat`, `dflat`, `photom`, `pathloss` and `wavelengthrange` are the same files as under
+  `jwst_1481`; `dark`, `superbias`, `mask` and `msaoper` gained new deliveries.
+- **NIRSpec MOS flux calibration changes with `jwst_1614`: new F-flats for all nine
+  settings** (`fflat_0193`-`0201`; gratings re-derived from white-dwarf standards, program
+  6643). Flux new/old from the fast-variation tables: G140M/F100LP -5 to -9% at 1.1-1.3 um
+  and ~-1% redward of 1.4 um; G140M/F070LP +3% (0.77 um) to -7% (1.2 um); G235M -1 to -2%;
+  G395M +1.6% (3.2 um) to -2% (5 um); the H gratings within ~+-2-3%; PRISM within ~+-1%.
+  `pars-extract1dstep_0002` (`use_source_posn = True` for MOS) is a no-op at the default
+  `set_stellarity = 1.0`, where sources are already extracted at the source position.
+- **Extended-wavelength calibration re-derived against `jwst_1614`, and extended to
+  G140M/F070LP.** The committed `extended_jwst_nirspec_photom_0014/0015.fits` are
+  re-derived (Anthony Taylor, `data/Generate_Extended_Cals.py`); the G140M correction now
+  applies to the F070LP rows too, and its relresponse ends at 3.15 um (the entries beyond,
+  previously `inf`, are zeroed and outside `nelem`, so jwst's photom returns NaN there
+  instead of infinite flux). `EXTENDED_CALIBRATION_CONTEXT` and the guard baseline pin
+  `fflat_0196` (G140M/F070LP), `fflat_0200` (G140M/F100LP) and `fflat_0193` (G235M/F170LP);
+  S-flat and photom baselines are unchanged. The G235M/F170LP flat is now held from
+  3.15 um (was 3.17): the new F-flats are NaN at the red edge (G235M from 3.153 um,
+  G140M/F100LP from 1.884 um, G140M/F070LP from 1.261 um).
+- **`extend_g140m_g235m` covers G140M/F070LP** (Algorithm). The live extension
+  (`nirspec/extended_wavelength.py`) is a port of the script's construction, kept nearly
+  verbatim and checked byte-identical against it on the `jwst_1614` references for all six
+  detector / filter configs: F100LP / F170LP flats continued on a 1 nm grid with the value
+  nearest the hold wavelength held (an S-flat table's zero padding dropped, its *last*
+  plane moved to 5.3 um; the live code used to write `FLAT_05` on the 12-plane S-flats);
+  G140M/F070LP flats with the extended F100LP flats (same quadrant / detector) stitched on
+  and the seam smoothed (non-finite samples dropped first, so the F070LP F-flat's NaN tail
+  from 1.261 um cannot blank the seam window). A held sample that is NaN now raises
+  instead of blanking the extension. The guard also checks the F100LP flats behind an F070LP reduction. Cached
+  extended files are named `extended_v2_*` (a stitched flat also carries its source's
+  version), so files built by the previous construction are never reused.
+- **NIRCam under `jwst_1614`:** full-frame `superbias` redelivered for all ten detectors,
+  `photom` for NRCA2 / NRCA4 (not yet quantified), new `mask` files for data after
+  2026-09-29.
 - **NIRCam flux calibration changes with `jwst_1584`.** The imaging `photom` references
   were redelivered for every detector: e.g. F444W -2.7% (module A) / -1.6% (B), F200W
   -1.9% (NRCA1), F115W -1.2% (NRCA1), F356W +0.5%. Flats and distortion are unchanged;
