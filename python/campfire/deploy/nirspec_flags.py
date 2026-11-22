@@ -267,7 +267,7 @@ def write_local(obs: str, channel: str, entries: dict, root: Path | None = None)
         for (r, sid), value in entries.items():
             data.setdefault(r, {})[sid] = list(value['shutters'])
             provenance[(r, sid)] = value['source'] or 'hand'
-        write_stuck_shutters_toml(data, str(tmp), obs, provenance=provenance)
+        write_stuck_shutters_toml(data, str(tmp), obs, provenance=provenance, quiet=True)
     else:
         tmp.write_text(serialize_bkg_overrides(entries, obs))
     if path.exists():
@@ -896,3 +896,61 @@ def deployment_snapshot(reference_obs_dir: Path) -> dict:
             nested.setdefault(root, {})[sid] = entry
         snap['bkg_overrides'] = nested
     return snap
+
+
+# ---------------------------------------------------------------------------
+# Seeding the cloud from deployment snapshots (scripts/backfill_nirspec_review_flags.py)
+# ---------------------------------------------------------------------------
+
+def snapshot_entries(snapshot, sources=None, *, channel: str = 'stuck') -> tuple[dict, list[str]]:
+    """A deployment snapshot as ``{key: entry}`` plus the entries that could not be
+    read (``['root sid: why', ...]``, skipped rather than guessed).
+
+    ``snapshot`` is ``deployments.stuck_shutters`` (``{root: {sid: [ordinals]}}``) or
+    ``.bkg_overrides``; ``sources`` is ``.stuck_shutter_sources`` when the deploy
+    recorded tags. A stuck entry without a recorded tag keeps ``source`` None:
+    provenance unknown, which is what the snapshots taken before tags were stored
+    are."""
+    out, bad = {}, []
+    if not isinstance(snapshot, dict):
+        return out, ([] if snapshot is None else [f"snapshot is not a table: {snapshot!r:.60}"])
+    for root, table in snapshot.items():
+        if not isinstance(table, dict):
+            bad.append(f"{root}: not a table")
+            continue
+        for sid, value in table.items():
+            try:
+                key = _key(root, sid)
+                if channel == 'stuck':
+                    tag = ((sources or {}).get(root) or {}).get(str(sid))
+                    out[key] = stuck_entry(value, tag if tag in SOURCES else None)
+                else:
+                    entry = bkg_entry(value)
+                    if entry is not None:
+                        out[key] = entry
+            except (FlagsError, TypeError, ValueError) as e:
+                bad.append(f"{root} {sid}: {e}")
+    return out, bad
+
+
+def plan_snapshot_backfill(channel: str, snapshot: dict, cloud: dict) -> tuple[list[dict], dict]:
+    """Guarded writes that add a snapshot's entries where the cloud has none. Pure.
+
+    The cloud wins wherever it already holds an entry (same or different): this
+    never changes one. ``snapshot``: ``{key: entry}`` from ``snapshot_entries``;
+    ``cloud``: one channel of ``cloud_entries``. Returns ``(changes, stats)`` with
+    counts ``insert``, ``same`` and ``differ`` (cloud kept)."""
+    changes, stats = [], {'insert': 0, 'same': 0, 'differ': 0}
+    for key in sorted(snapshot, key=_sort_key):
+        entry = snapshot[key]
+        rec = cloud.get(key)
+        theirs = rec['value'] if rec else None
+        if theirs is None:
+            item = Item(channel, key, entry, None, None, LOCAL_NEW, cloud_raw=rec['raw'] if rec else None)
+            changes.append(_change(item))
+            stats['insert'] += 1
+        elif (theirs['shutters'] == entry['shutters'] if channel == 'stuck' else theirs == entry):
+            stats['same'] += 1
+        else:
+            stats['differ'] += 1
+    return changes, stats

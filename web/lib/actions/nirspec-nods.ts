@@ -124,19 +124,15 @@ export async function getNirspecSourceReviews(
   }
 }
 
-/**
- * Upsert a source's review row by its natural key. BOTH flag channels are written
- * on every save (the caller passes the current sibling value) so a single-channel
- * edit can't null the other column — the upsert writes a whole row. Empty
- * stuck-shutter lists / empty override maps are stored as SQL NULL (see the
- * normalizeBkgOverrides / caller conventions).
- */
-export async function saveSourceReview(
+// The row holds two independent entries (stuck shutters, background overrides), each
+// synced on its own by `campfire config push / pull`. A save therefore writes ONE
+// channel: the upsert names only that channel's columns, so the other entry is left
+// exactly as it is (and a new row starts with it NULL).
+async function upsertReviewChannel(
   observation: string,
   exposureRoot: string,
   sourceId: number,
-  stuckShutters: number[] | null,
-  bkgOverrides: Record<string, number[]> | null,
+  channel: Partial<Pick<NirspecSourceReview, 'stuck_shutters' | 'stuck_source' | 'bkg_overrides'>>,
 ): Promise<{ review?: NirspecSourceReview; error?: string }> {
   try {
     const supabase = await requireAdmin();
@@ -147,8 +143,7 @@ export async function saveSourceReview(
           observation,
           exposure_root: exposureRoot,
           source_id: sourceId,
-          stuck_shutters: stuckShutters && stuckShutters.length ? stuckShutters : null,
-          bkg_overrides: bkgOverrides,
+          ...channel,
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'observation,exposure_root,source_id' },
@@ -160,4 +155,37 @@ export async function saveSourceReview(
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Failed to save source review' };
   }
+}
+
+/**
+ * Save a source's stuck-shutter entry, tagged `web`. An empty list is stored as
+ * `[]`, not NULL: it records "reviewed, none stuck", which the pipeline's
+ * auto-detector respects (it never re-adds a source that has an entry), so
+ * un-flagging a detected shutter here is durable.
+ */
+export async function saveStuckShutters(
+  observation: string,
+  exposureRoot: string,
+  sourceId: number,
+  stuckShutters: number[],
+): Promise<{ review?: NirspecSourceReview; error?: string }> {
+  return upsertReviewChannel(observation, exposureRoot, sourceId, {
+    stuck_shutters: stuckShutters,
+    stuck_source: 'web',
+  });
+}
+
+/**
+ * Save a source's background-override entry (`null` = no overrides; see
+ * normalizeBkgOverrides for the empty-map / empty-list conventions).
+ */
+export async function saveBkgOverrides(
+  observation: string,
+  exposureRoot: string,
+  sourceId: number,
+  bkgOverrides: Record<string, number[]> | null,
+): Promise<{ review?: NirspecSourceReview; error?: string }> {
+  return upsertReviewChannel(observation, exposureRoot, sourceId, {
+    bkg_overrides: bkgOverrides,
+  });
 }

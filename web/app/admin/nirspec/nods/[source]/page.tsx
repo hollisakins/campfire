@@ -5,7 +5,7 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
 import { Loader2, ArrowLeft } from 'lucide-react';
-import { getNirspecNodGrid, getNirspecSourceReviews, saveSourceReview } from '@/lib/actions/nirspec-nods';
+import { getNirspecNodGrid, getNirspecSourceReviews, saveStuckShutters, saveBkgOverrides } from '@/lib/actions/nirspec-nods';
 import {
   buildNodGrid, decodeSource, NOD_DETECTORS,
   nodKey, toggleStuckOrdinal, normalizeBkgOverrides,
@@ -15,11 +15,13 @@ import type { SpectrumExposure } from '@/lib/types';
 import NodCell from '@/components/nirspec/NodCell';
 
 // Per-(exposure_root) editable review state, held in memory with optimistic updates.
+// stuck_shutters: null = no entry yet; [] = reviewed, none stuck. The first toggle
+// creates the entry, and toggling the last shutter off leaves [] (never back to null).
 interface ReviewState {
-  stuck_shutters: number[];
+  stuck_shutters: number[] | null;
   bkg_overrides: Record<string, number[]>;
 }
-const EMPTY_REVIEW: ReviewState = { stuck_shutters: [], bkg_overrides: {} };
+const EMPTY_REVIEW: ReviewState = { stuck_shutters: null, bkg_overrides: {} };
 
 /** exposure_root shared by a nod-grid row's ≤2 detector cells (nrs1/nrs2 of one nod). */
 function rowRoot(row: { cells: Record<string, SpectrumExposure | null> }): string | null {
@@ -110,7 +112,7 @@ function NodGridInner() {
       const m = new Map<string, ReviewState>();
       for (const r of res.reviews) {
         m.set(r.exposure_root, {
-          stuck_shutters: r.stuck_shutters ?? [],
+          stuck_shutters: r.stuck_shutters,
           bkg_overrides: r.bkg_overrides ?? {},
         });
       }
@@ -126,29 +128,27 @@ function NodGridInner() {
     return [...s].sort((a, b) => Number(a) - Number(b));
   }, [rows]);
 
-  // Optimistic save: update local state immediately, persist both flag channels.
-  const persist = useCallback((root: string, next: ReviewState) => {
-    if (!decoded) return;
-    setReviews((prev) => new Map(prev).set(root, next));
-    saveSourceReview(
-      decoded.observation, root, decoded.sourceId,
-      next.stuck_shutters.length ? next.stuck_shutters : null,
-      normalizeBkgOverrides(next.bkg_overrides),
-    ).then((res) => { if (res.error) setSaveError(res.error); });
-  }, [decoded?.observation, decoded?.sourceId]); // eslint-disable-line react-hooks/exhaustive-deps
-
+  // Optimistic saves: update local state immediately, persist the ONE channel that
+  // changed (each is its own entry; the other is never rewritten).
   const handleToggleShutter = useCallback((root: string, ordinal: number) => {
+    if (!decoded) return;
     const cur = reviews.get(root) ?? EMPTY_REVIEW;
-    persist(root, { ...cur, stuck_shutters: toggleStuckOrdinal(cur.stuck_shutters, ordinal) });
-  }, [reviews, persist]);
+    const stuck = toggleStuckOrdinal(cur.stuck_shutters ?? [], ordinal);
+    setReviews((prev) => new Map(prev).set(root, { ...cur, stuck_shutters: stuck }));
+    saveStuckShutters(decoded.observation, root, decoded.sourceId, stuck)
+      .then((res) => { if (res.error) setSaveError(res.error); });
+  }, [reviews, decoded?.observation, decoded?.sourceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleBkgChange = useCallback((root: string, nk: string, list: number[] | null) => {
+    if (!decoded) return;
     const cur = reviews.get(root) ?? EMPTY_REVIEW;
     const bkg = { ...cur.bkg_overrides };
     if (list === null) delete bkg[nk];
     else bkg[nk] = list;
-    persist(root, { ...cur, bkg_overrides: bkg });
-  }, [reviews, persist]);
+    setReviews((prev) => new Map(prev).set(root, { ...cur, bkg_overrides: bkg }));
+    saveBkgOverrides(decoded.observation, root, decoded.sourceId, normalizeBkgOverrides(bkg))
+      .then((res) => { if (res.error) setSaveError(res.error); });
+  }, [reviews, decoded?.observation, decoded?.sourceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return <div className="flex items-center justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
@@ -228,7 +228,7 @@ function NodGridInner() {
                         bkgsub={bkgsub}
                         onData={onData}
                         onSettled={onSettled}
-                        stuckList={review.stuck_shutters}
+                        stuckList={review.stuck_shutters ?? []}
                         onToggleShutter={(ordinal) => { if (root) handleToggleShutter(root, ordinal); }}
                       />
                     </div>

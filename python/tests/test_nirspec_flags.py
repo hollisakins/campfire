@@ -642,6 +642,67 @@ def test_a_veto_survives_the_trip(pipeline, tree):
 
 
 # ---------------------------------------------------------------------------
+# The questions an interactive session is asked
+# ---------------------------------------------------------------------------
+
+def _answer(monkeypatch, answer):
+    asked = []
+
+    def confirm(question, default=False):
+        asked.append(question)
+        return answer
+    import click
+    monkeypatch.setattr(click, "confirm", confirm)
+    return asked
+
+
+def test_interactive_push_asks_before_removing(pipeline, tree, monkeypatch):
+    _write(tree, nf.STUCK_FILE, _stuck_text(f"[{ROOT_A}]", "    101 = [2]  # hand"))
+    client = _cloud()
+    state = {}
+    _push(client, state, tree)
+    _write(tree, nf.STUCK_FILE, _stuck_text())
+
+    asked = _answer(monkeypatch, False)
+    counts, out = _push(client, state, tree, interactive=True)
+    assert asked == ["    Remove them from the cloud?"]
+    assert f"{ROOT_A} 101: [2] (hand)" in out               # shown before the question
+    assert counts["pushed"] == 0
+    assert _cloud_view(client)["stuck"][(ROOT_A, "101")] == ([2], "hand")
+
+    _answer(monkeypatch, True)
+    counts, _ = _push(client, state, tree, interactive=True)
+    assert counts["pushed"] == 1 and _cloud_view(client)["stuck"] == {}
+    # a dry run never asks
+    asked = _answer(monkeypatch, True)
+    _push(client, state, tree, interactive=True, dry_run=True)
+    assert asked == []
+
+
+def test_interactive_pull_asks_before_removing_and_before_taking_a_conflict(pipeline, tree, monkeypatch):
+    client = _cloud([_row(1, ROOT_A, 101, stuck=[2], source="hand"),
+                     _row(2, ROOT_A, 102, stuck=[3], source="hand")])
+    state = {}
+    _pull(client, state, tree)
+    client.rows(TABLE)[0].update(stuck_shutters=None, stuck_source=None)        # removed there
+    client.rows(TABLE)[1].update(stuck_shutters=[9], stuck_source="web")        # changed there
+    _write(tree, nf.STUCK_FILE, _stuck_text(
+        f"[{ROOT_A}]", "    101 = [2]  # hand", "    102 = [4]  # hand"))       # and here
+
+    asked = _answer(monkeypatch, False)
+    counts, _ = _pull(client, state, tree, interactive=True)
+    assert asked == ["    Take the cloud's version of these?", "    Remove them here too?"]
+    assert counts["applied"] == 0
+    assert _local(tree)["stuck"] == {(ROOT_A, "101"): _S([2], "hand"),
+                                     (ROOT_A, "102"): _S([4], "hand")}
+
+    _answer(monkeypatch, True)
+    counts, _ = _pull(client, state, tree, interactive=True)
+    assert counts["applied"] == 2
+    assert _local(tree)["stuck"] == {(ROOT_A, "102"): _S([9], "web")}
+
+
+# ---------------------------------------------------------------------------
 # The non-interactive callers
 # ---------------------------------------------------------------------------
 
@@ -683,6 +744,72 @@ def test_deployment_snapshot_shapes(pipeline, tmp_path):
     assert snap["stuck_shutters"] == {ROOT_A: {"101": [2], "102": [], "103": [3]}}
     assert snap["stuck_shutter_sources"] == {ROOT_A: {"101": "hand", "102": "web", "103": "auto"}}
     assert snap["bkg_overrides"] == {ROOT_A: {"101": {"3": [1]}}}
+
+
+# ---------------------------------------------------------------------------
+# Seeding the cloud from deployment snapshots (the backfill script's planner)
+# ---------------------------------------------------------------------------
+
+def test_snapshot_entries_reads_the_historical_shape_and_skips_what_it_cannot():
+    snapshot = {ROOT_A: {"101": [2, 1], "102": [], "bad": [1], "103": "x"}, "junk": 3}
+    entries, bad = nf.snapshot_entries(snapshot)
+    # no tags were recorded before this change: provenance unknown (None), not "hand"
+    assert entries == {(ROOT_A, "101"): _S([1, 2], None), (ROOT_A, "102"): _S([], None)}
+    assert len(bad) == 3
+    # a deploy that recorded tags
+    entries, _ = nf.snapshot_entries({ROOT_A: {"101": [2]}}, {ROOT_A: {"101": "auto"}})
+    assert entries == {(ROOT_A, "101"): _S([2], "auto")}
+    assert nf.snapshot_entries(None) == ({}, [])
+    entries, _ = nf.snapshot_entries({ROOT_A: {"101": {"3": [1]}, "102": {}}}, channel="bkg")
+    assert entries == {(ROOT_A, "101"): {"3": [1]}}
+
+
+def test_backfill_inserts_only_where_the_cloud_has_no_entry():
+    snapshot, _ = nf.snapshot_entries({ROOT_A: {"101": [1], "102": [2], "103": [3], "104": [4]}})
+    cloud = nf.cloud_entries([
+        _row(1, ROOT_A, 101, stuck=[1], source="web"),     # same shutters: left alone
+        _row(2, ROOT_A, 102, stuck=[9], source="web"),     # differs: the review table wins
+        _row(3, ROOT_A, 103, bkg={"3": [1]}),              # row exists, no stuck entry
+    ])
+    changes, stats = nf.plan_snapshot_backfill("stuck", snapshot, cloud["stuck"])
+    assert stats == {"insert": 2, "same": 1, "differ": 1}
+    assert [(c["source_id"], c["expect"], c["set"]) for c in changes] == [
+        (103, None, {"value": [3], "source": None}),
+        (104, None, {"value": [4], "source": None}),
+    ]
+    # applied through the guarded write, it changes nothing that was there
+    client = _cloud([_row(1, ROOT_A, 101, stuck=[1], source="web"),
+                     _row(2, ROOT_A, 102, stuck=[9], source="web"),
+                     _row(3, ROOT_A, 103, bkg={"3": [1]})])
+    result = nf.apply_changes(client, OBS, changes)
+    assert result["applied"] == 2 and result["refused"] == []
+    assert _cloud_view(client)["stuck"] == {
+        (ROOT_A, "101"): ([1], "web"), (ROOT_A, "102"): ([9], "web"),
+        (ROOT_A, "103"): ([3], None), (ROOT_A, "104"): ([4], None)}
+    assert _cloud_view(client)["bkg"] == {(ROOT_A, "103"): {"3": [1]}}
+
+
+def test_first_pull_after_a_backfill_merges_with_restored_local_files(pipeline, tree):
+    # The cloud was seeded from a snapshot (no tags). This machine restored some hand
+    # entries locally first and re-detected others: nothing local may be overwritten.
+    client = _cloud([_row(1, ROOT_A, 101, stuck=[1]), _row(2, ROOT_A, 102, stuck=[2]),
+                     _row(3, ROOT_A, 103, stuck=[3])])
+    _write(tree, nf.STUCK_FILE, _stuck_text(
+        f"[{ROOT_A}]",
+        "    101 = [1]  # hand",      # restored by hand, same as the snapshot
+        "    102 = [2]  # auto",      # re-detected, same shutters: keeps its auto tag
+        "    104 = [7]  # hand"))     # only here
+    state = {}
+    counts, out = _pull(client, state, tree)
+    assert _local(tree)["stuck"] == {
+        (ROOT_A, "101"): _S([1], "hand"), (ROOT_A, "102"): _S([2], "auto"),
+        (ROOT_A, "103"): _S([3], "hand"),      # unknown provenance reads as hand
+        (ROOT_A, "104"): _S([7], "hand")}
+    assert counts["applied"] == 1 and "conflict" not in out
+    _push(client, state, tree)
+    assert _cloud_view(client)["stuck"] == {
+        (ROOT_A, "101"): ([1], None), (ROOT_A, "102"): ([2], "auto"),   # the tag went up
+        (ROOT_A, "103"): ([3], None), (ROOT_A, "104"): ([7], "hand")}
 
 
 # ---------------------------------------------------------------------------

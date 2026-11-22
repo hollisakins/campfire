@@ -593,7 +593,7 @@ def load_stuck_shutters_tagged(filepath):
 
 
 def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None,
-                              provenance=None):
+                              provenance=None, quiet=False):
     """Write the stuck shutters TOML file.
 
     Parameters
@@ -613,6 +613,8 @@ def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None,
         / ``# auto`` tag to emit per entry (the provenance the config plane syncs).
         When provided it supersedes ``auto_detected``; any entry missing from the
         map defaults to ``hand``.
+    quiet : bool
+        Skip the log line (``campfire config pull`` reports the write itself).
     """
     if auto_detected is None:
         auto_detected = set()
@@ -647,4 +649,5 @@ def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None,
     with open(filepath, 'w') as f:
         f.write('\n'.join(lines))
 
-    log(f'Wrote stuck shutter TOML to {filepath}')
+    if not quiet:
+        log(f'Wrote stuck shutter TOML to {filepath}')

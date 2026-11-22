@@ -150,3 +150,12 @@ def test_refresh_veto_blocks_a_detection():
     out, stats = _apply(existing, {"r": {1: [2]}}, {("r", 1)})
     assert out == {("r", "1"): ([], "hand")}
     assert stats["blocked"] == 1 and stats["auto"] == 0
+
+
+def test_negative_source_ids_keep_their_tag(tmp_path):
+    # MSA background / virtual sources carry negative ids; `-7 = [1]  # auto` used to
+    # fall through the line parser and read back as `hand`.
+    path = str(tmp_path / "stuck_closed_shutters.toml")
+    write_stuck_shutters_toml({"r": {"-7": [1], "5": [2]}}, path, "obs",
+                              provenance={("r", "-7"): "auto", ("r", "5"): "web"}, quiet=True)
+    assert read_stuck_shutters(path) == {("r", "-7"): ([1], "auto"), ("r", "5"): ([2], "web")}

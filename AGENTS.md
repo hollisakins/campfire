@@ -356,7 +356,7 @@ losslessly in `config` jsonb (stage overrides, tile WCS, everything) with a
 canonical sha256 in `config_hash`.
 
 ```bash
-campfire config push [--programs|--observations|--fields|--obs X|--field Y]  # local → cloud (admin)
+campfire config push [--programs|--observations|--fields|--flags|--obs X|--field Y]  # local → cloud (admin)
 campfire config pull [--theirs]        # cloud → local TOMLs, comment-preserving (any logged-in user)
 campfire config diff                   # three-way divergence report (read-only)
 campfire config retire <kind> <name> [--undo]  # soft-retire a definition (admin; rename = retire + push)
@@ -378,6 +378,59 @@ it. Bare TOML datetimes are rejected at push
 `config push` is the explicit/bulk path. `deploy sync-programs` /
 `deploy sync-fields` are hidden legacy aliases now. This is what lets an
 ephemeral container bootstrap: `campfire config pull` → reduce → deploy.
+
+**NIRSpec stuck-shutter and background-override lists (`--flags`, admin).** The same
+verbs carry the two per-observation reducer-decision files stage 2 reads,
+`reference/nirspec/<obs>/stuck_closed_shutters.toml` (each entry tagged `# hand` /
+`# web` / `# auto`) and `nodded_background_overrides.toml`. Their cloud home is
+`nirspec_source_review`: one row per observation × exposure root × source, holding one
+entry of each file (`stuck_shutters` + its provenance `stuck_source`; `bkg_overrides`),
+which the portal's nods view edits too (`web/lib/actions/nirspec-nods.ts`, one channel
+per save, stuck edits tagged `web`). Everything is in
+`python/campfire/deploy/nirspec_flags.py`:
+
+- **The sync unit is the entry** (one channel of one root × source), not the
+  observation: the auto-detector and a reviewer routinely change the same observation
+  at once. Each entry is reconciled three-way against the *base*, the value this
+  machine and the cloud last agreed on, stored per entry under `nirspec_flags` in
+  `config_sync_state.json`. Cloud additions and changes to entries this machine has not
+  touched are applied on pull; local additions and edits are sent on push; an entry
+  changed on both sides is a conflict (`pull --theirs` / `push --force`), except that
+  a person's entry beats a detection (exactly one side tagged `auto`).
+- **A removal travels only on an explicit yes.** An entry missing from a file is
+  ambiguous (deleted, or the file was regenerated without it), so push asks before
+  clearing a cloud entry and pull asks before deleting a local one (`--force` /
+  `--theirs` answer for a script), and `pull --theirs` restores an entry the file
+  lost. **A missing file is not an empty list**: with no file the base is ignored, so
+  a pull on a wiped tree rewrites every cloud entry. Rows are never deleted; clearing
+  an entry NULLs its column.
+- **`12345 = []` is an entry** ("vetted, none stuck"): the detector never re-adds a
+  source that has one, so it is the durable veto of a false detection, from the TOML or
+  from the portal (un-flagging stores `[]`, not NULL). `cfpipe nirspec detect-stuck
+  --overwrite` replaces only the `auto` entries of the sources it analysed.
+- **Writes are guarded**: the CLI writes only through `nirspec_review_apply(observation,
+  changes)`, where each change carries the value the client read; it lands only while
+  the entry still holds that value, so a portal edit made in between is refused and
+  reported. A cloud entry with `stuck_source` NULL is of unknown provenance (older rows,
+  backfilled snapshots): it reads as `hand`, and a machine holding the same shutters
+  under another tag sends its tag up.
+- **The table is admin-only**, so a non-admin reads zero rows; every caller checks
+  `can_sync()` (a positive `is_admin()`, or a service-role / local client) first, since
+  zero rows must never read as "the cloud has no entries".
+- `campfire deploy --obs` pushes the lists it used and `campfire pull spec --obs` pulls
+  them, both through the same code in its non-interactive form: additions and edits
+  only, nothing removed, no conflict resolved (they print what is left for an explicit
+  `config push / pull`). `deployments.stuck_shutters` / `.stuck_shutter_sources` /
+  `.bkg_overrides` stay the frozen record of what one deploy used.
+- A file is rewritten only when its entries change (atomic, previous file kept as
+  `.prev`), the stuck list by the pipeline's own writer. Guards:
+  `supabase/tests/check_nirspec_review_flags.sql` (RLS + the guarded write),
+  `python/tests/test_nirspec_flags.py` (the rules as pure functions, the TOML → row →
+  TOML round trip). `scripts/backfill_nirspec_review_flags.py` seeds the table from the
+  latest deployment snapshots (report only unless `--apply`).
+
+`deploy nirspec pull-stuck-shutters` / `pull-bkg-overrides` and `deploy fetch-config`
+are retired and answer with `campfire config pull --obs <obs>`.
 
 ### Deploy CLI (publication)
 
@@ -418,8 +471,10 @@ Migration-era one-time tools (the `deploy registry` subgroup —
 backfill/reconcile/copy/prune — and `deploy nircam import-*`) are deleted (A1/A2
 complete, issue #371). The storage budget shows in `campfire status` (admins);
 registry↔bucket verification is `campfire verify --cloud`. The `deploy nircam
-pull*` / `deploy nirspec pull-*` annotation round-trips are folded into
-`campfire pull` (hidden but working individually). RGB/SED static cutouts are
+pull*` / `deploy nirspec pull-redshifts` / `pull-rate-masks` annotation
+materializers are folded into `campfire pull` (hidden but working individually);
+the NIRSpec stuck-shutter / background-override lists are synced by the config
+plane instead (above). RGB/SED static cutouts are
 fully deprecated (superseded by the on-the-fly `/api/v1/cutout` API): deploy
 neither generates nor uploads them, the `deploy rgb`/`deploy sed` subcommands
 and their generators are removed, and the `targets.has_sed_plot` column is

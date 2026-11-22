@@ -546,7 +546,11 @@ export interface NirspecSourceReview {
   observation: string;
   exposure_root: string;
   source_id: number;
+  // null = no entry; [] = reviewed, none stuck (the auto-detector respects it).
   stuck_shutters: number[] | null;
+  // Who wrote the stuck entry: typed into the TOML, set here, or auto-detected.
+  // null beside a list = unknown (older rows); the CLI reads it as 'hand'.
+  stuck_source: 'hand' | 'web' | 'auto' | null;
   bkg_overrides: Record<string, number[]> | null;
   notes: string | null;
   created_at: string;
