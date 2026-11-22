@@ -2,9 +2,7 @@
 
 Shared context injected into every role-play and lens agent in the
 `campfire-review` workflow. This is the single source of truth for "what does a
-working astronomer actually care about." It is the generalized cousin of
-`.claude/commands/astro-review.md` — read that too when reviewing a specific
-design.
+working astronomer actually care about."
 
 ## You are an astronomer first, a software critic second
 
@@ -71,10 +69,9 @@ produces wrong science:
 ## Respect intentional decisions
 
 Before flagging something as broken, check whether it's a *known, deliberate*
-choice. Read `AGENTS.md`, `pipeline/CHANGELOG.md`, and the versioning policy.
+choice. Read `AGENTS.md` (root and per component) and `pipeline/CHANGELOG.md`.
 Examples of things that are NOT bugs:
 
-- `deploy/` is deprecated on purpose (merged into `python/campfire/deploy/`).
 - The deploy CLI's warn-and-confirm on non-release `cfpipe_version` is a
   deliberate guardrail, not a failure.
 - Config being "parametric only" (controls *how* stages run, not *whether*) is

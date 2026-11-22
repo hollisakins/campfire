@@ -4,6 +4,7 @@
 # Usage:
 #   scripts/release-pipeline.sh <X.Y.Z>           # local commit + tag only
 #   scripts/release-pipeline.sh <X.Y.Z> --push    # also push to origin
+#   scripts/release-pipeline.sh <X.Y.Z> --message-file FILE   # tag body from FILE
 #
 # Pre-conditions enforced:
 #   - on `main`, working tree clean, up-to-date with origin/main
@@ -14,7 +15,8 @@
 #   - rewrites `pipeline/CHANGELOG.md`: `## Unreleased` -> `## vX.Y.Z — YYYY-MM-DD`,
 #     with a fresh empty `## Unreleased` block above it
 #   - commits as `release(pipeline): vX.Y.Z`
-#   - creates an annotated tag `pipeline-v<X.Y.Z>` whose body is the changelog
+#   - creates an annotated tag `pipeline-v<X.Y.Z>` whose body is the Unreleased
+#     section verbatim, or the contents of --message-file (a written summary)
 #   - with --push, pushes both commit and tag to origin
 
 set -euo pipefail
@@ -27,19 +29,31 @@ info() { printf '==> %s\n' "$*"; }
 
 usage() {
   cat >&2 <<EOF
-Usage: $0 <X.Y.Z> [--push]
+Usage: $0 <X.Y.Z> [--push] [--message-file FILE]
 
 Examples:
-  $0 0.4.0           # local tag only
-  $0 0.4.0 --push    # local tag + push to origin
+  $0 0.4.0                           # local tag only
+  $0 0.4.0 --push                    # local tag + push to origin
+  $0 0.4.0 --message-file notes.md   # tag body from notes.md
 EOF
   exit 1
 }
 
-[[ $# -ge 1 && $# -le 2 ]] || usage
-NEW_VERSION="$1"
+[[ $# -ge 1 ]] || usage
+NEW_VERSION="$1"; shift
 PUSH=false
-[[ ${2:-} == "--push" ]] && PUSH=true
+MESSAGE_FILE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --push) PUSH=true; shift ;;
+    --message-file) [[ $# -ge 2 ]] || usage; MESSAGE_FILE="$2"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+if [[ -n "$MESSAGE_FILE" ]]; then
+  [[ -s "$MESSAGE_FILE" ]] || err "message file '$MESSAGE_FILE' is missing or empty"
+  MESSAGE_FILE="$(cd "$(dirname "$MESSAGE_FILE")" && pwd)/$(basename "$MESSAGE_FILE")"
+fi
 
 [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || err "version must be X.Y.Z (got: '$NEW_VERSION')"
@@ -113,8 +127,16 @@ info "Updated $CHANGELOG"
 git add "$CHANGELOG"
 git commit --quiet -m "release(pipeline): v${NEW_VERSION}"
 
-TAG_BODY=$(printf 'pipeline v%s\n\n%s\n' "$NEW_VERSION" "$UNRELEASED")
-git tag -a "$TAG" -m "$TAG_BODY"
+# Tag from a file with --cleanup=verbatim: `-m` strips lines starting with `#`,
+# which would eat the `### Calibration` / ... headings.
+TAG_MSG=$(mktemp)
+if [[ -n "$MESSAGE_FILE" ]]; then
+  cp "$MESSAGE_FILE" "$TAG_MSG"
+else
+  printf 'pipeline v%s\n\n%s\n' "$NEW_VERSION" "$UNRELEASED" > "$TAG_MSG"
+fi
+git tag -a "$TAG" --cleanup=verbatim -F "$TAG_MSG"
+rm -f "$TAG_MSG"
 
 info "Created commit $(git rev-parse --short HEAD) and tag $TAG"
 

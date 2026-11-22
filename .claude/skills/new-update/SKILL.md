@@ -1,3 +1,10 @@
+---
+name: new-update
+description: Write a new entry for the portal's Updates feed (landing page and /updates) as a Markdown file under web/lib/updates/content/. Use when announcing new data, pipeline changes, client features or a data release.
+argument-hint: "<description of the update>"
+allowed-tools: Read, Write, Bash(date:*)
+---
+
 # New update entry
 
 Create a new entry for the **Updates** feed shown on the CAMPFIRE landing page

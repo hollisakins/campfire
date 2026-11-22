@@ -2,13 +2,13 @@
 """Render a campfire-review findings JSON file into a self-contained triage HTML page.
 
 Usage:
-    python scripts/render_review_report.py findings.json -o report.html
+    python .claude/skills/campfire-review/render_report.py findings.json -o report.html
 
 The findings JSON is the object returned by the `campfire-review` workflow. The
 generated HTML embeds the data inline (so it works over file://), lets you mark
 each theme valid/invalid and add notes (persisted in localStorage, keyed by the
 report's version+generation), and exports your triage decisions as JSON for the
-`/campfire-review-file-issues` command to turn into GitHub issues.
+`/campfire-review file-issues` to turn into GitHub issues.
 """
 import argparse
 import datetime

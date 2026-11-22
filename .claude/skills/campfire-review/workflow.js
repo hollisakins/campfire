@@ -23,11 +23,11 @@ const PERSONA = `You are part of a CAMPFIRE codebase review. CAMPFIRE is a JWST 
 data platform (pipeline + Next.js web portal + Python client/CLI + Supabase).
 
 BEFORE doing anything, read these for grounding and to calibrate "is this a real problem":
-  - .claude/review/persona.md   (your astronomer instincts + the G/D/D bar — REQUIRED)
-  - AGENTS.md                   (architecture, intentional decisions, conventions)
+  - .claude/skills/campfire-review/persona.md  (your astronomer instincts + the G/D/D bar — REQUIRED)
+  - AGENTS.md and the AGENTS.md of each component you review (rules, intentional decisions)
 You are an astronomer first, a software critic second. Judge everything by "does this
 help real astronomy science, defensibly and reproducibly?" Respect documented/deliberate
-decisions (e.g. deploy/ is deprecated on purpose) — do not report those as defects.
+decisions — do not report those as defects.
 
 THIS IS A CODE-READING REVIEW. Do NOT start servers, run npm/the app, drive a browser,
 or run the pipeline. Reason about behavior from the source, schemas, components, docs,
@@ -199,7 +199,7 @@ Trace these concretely (pipeline/ and python/campfire/deploy/):
   - Versioning & provenance: setuptools-scm version flow, CMPFRVER/cfpipe_version,
     CRDS_CONTEXT, the changelog/release policy in AGENTS.md. Is provenance airtight
     from reduction to deployed spectra?
-  - Deploy: campfire deploy (full, --dry-run, rgb, pointings, tiles, sync-programs).
+  - Deploy: campfire deploy (full, --dry-run, lines, pointings, tiles, photometry).
     Guardrails, idempotency, failure recovery, credential handling.
 Flag operational footguns, provenance gaps, and places the docs and code disagree.
 file:line evidence required.`,
@@ -210,8 +210,8 @@ file:line evidence required.`,
 
 ROLE: Code & docs HYGIENE sweep across the whole repo. You are looking specifically for
 the low-glamour rot the user wants cleaned up:
-  - Dead code, commented-out blocks left behind, unused files/scripts (note scripts/ has
-    a deploy_old.py etc. — check what's genuinely orphaned vs intentionally kept).
+  - Dead code, commented-out blocks left behind, unused files/scripts (check what's
+    genuinely orphaned vs intentionally kept).
   - Stale, missing, or wrong docstrings; README/docs that no longer match the code.
   - Comments that describe a previously-fixed bug or a PAST behavior instead of the CURRENT
     state of the code. These get written in the moment of a fix and lose all context once
@@ -224,8 +224,7 @@ the low-glamour rot the user wants cleaned up:
     comment and the code it disagrees with.
   - TODO/FIXME/HACK markers and what they imply.
   - Obvious inconsistencies in naming/conventions across the codebase.
-Be concrete and cite file:line. Do NOT flag the deprecated deploy/ dir as dead — it is
-documented as deprecated. Prefer a tight, real list over an exhaustive padded one.`,
+Be concrete and cite file:line. Prefer a tight, real list over an exhaustive padded one.`,
   },
   {
     key: 'consistency',
