@@ -391,7 +391,8 @@ def test_live_run_uploads_exactly_the_planned_files(fake_obs, entry_stubs, monke
     monkeypatch.setattr(dmod, 'ScopeLease', Lease)
     monkeypatch.setattr(dmod, 'insert_deployment', note('deployment', 616))
     monkeypatch.setattr(dmod, '_load_config_snapshot', lambda *a: None)
-    monkeypatch.setattr(dmod, '_load_stuck_shutters', lambda *a: None)
+    monkeypatch.setattr(dmod, 'deployment_snapshot', lambda *a: {
+        'stuck_shutters': None, 'stuck_shutter_sources': None, 'bkg_overrides': None})
     monkeypatch.setattr(dmod, 'resolve_reference_obs_dir', lambda o: fake_obs.obs_dir)
     monkeypatch.setattr(push, 'registration_flusher', lambda *a, **k: Flusher())
     monkeypatch.setattr(dmod, 'upload_files_parallel', upload)
@@ -405,7 +406,7 @@ def test_live_run_uploads_exactly_the_planned_files(fake_obs, entry_stubs, monke
     monkeypatch.setattr(rate_mod, 'build_rate_exposure_records', lambda *a, **k: [])
     monkeypatch.setattr(grid, 'upsert_spectrum_exposures', note('grid_rows', 6))
     monkeypatch.setattr(grid, 'build_spectrum_exposure_records', lambda *a, **k: [])
-    monkeypatch.setattr(flags, 'push_review_flags', note('review_flags', 0))
+    monkeypatch.setattr(flags, 'push_on_deploy', note('review_flags', {'pushed': 0, 'pending': 0, 'lines': []}))
     monkeypatch.setattr(rec, 'reconcile_field_objects',
                         note('reconcile', (10, {'updated': 2, 'inserted': 0}, set())))
     monkeypatch.setattr(dmod, 'refresh_filter_options', note('refresh', True))

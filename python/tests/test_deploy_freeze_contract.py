@@ -41,13 +41,14 @@ EXEMPT = {
     'delete-local': 'local files only',
     'sync-programs': 'config tables, not frozen',
     'sync-fields': 'config tables, not frozen',
-    'fetch-config': 'read-only',
+    'fetch-config': 'retired (answers with its replacement)',
     'tiles': 'map tiles (R2) are not release members',
     'objects': 'group (defaults to reconcile)',
     'nircam': 'group', 'nirspec': 'group',
     'nircam pull': 'read-only (cloud -> local)', 'nircam pull-masks': 'read-only (cloud -> local)',
     'nirspec pull-redshifts': 'read-only', 'nirspec pull-rate-masks': 'read-only',
-    'nirspec pull-stuck-shutters': 'read-only', 'nirspec pull-bkg-overrides': 'read-only',
+    'nirspec pull-stuck-shutters': 'retired (answers with its replacement)',
+    'nirspec pull-bkg-overrides': 'retired (answers with its replacement)',
 }
 
 KNOWN_GAP: dict = {}

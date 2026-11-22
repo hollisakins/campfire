@@ -148,6 +148,8 @@ def insert_deployment(
     crds_context: str | None = None,
     config_snapshot: dict | None = None,
     stuck_shutters: dict | None = None,
+    stuck_shutter_sources: dict | None = None,
+    bkg_overrides: dict | None = None,
     reduced_at: str | None = None,
     n_targets: int | None = None,
     n_spectra: int | None = None,
@@ -196,8 +198,14 @@ def insert_deployment(
         data['crds_context'] = crds_context
     if config_snapshot is not None:
         data['config_snapshot'] = config_snapshot
+    # The lists the reduction used, frozen for provenance (nirspec_flags.
+    # deployment_snapshot): the stuck list, its hand/web/auto tags, the overrides.
     if stuck_shutters is not None:
         data['stuck_shutters'] = stuck_shutters
+    if stuck_shutter_sources is not None:
+        data['stuck_shutter_sources'] = stuck_shutter_sources
+    if bkg_overrides is not None:
+        data['bkg_overrides'] = bkg_overrides
     if reduced_at:
         data['reduced_at'] = reduced_at
     if n_targets is not None:
@@ -1314,49 +1322,6 @@ def deploy_shutters(
         total += len(batch)
 
     return total
-
-
-def fetch_deployment_config(client: Client, obs_name: str) -> dict | None:
-    """
-    Fetch observation metadata and latest deployment for config reconstruction.
-
-    Returns a dict with 'observation' and 'deployment' keys, or None if
-    the observation is not found or has no deployment record.
-    """
-    # Query observation
-    obs_resp = client.table('observations').select(
-        'name, program_slug, jwst_program_id, field, '
-        'file_globs, gratings, data_subdir, latest_deployment_id'
-    ).eq('name', obs_name).execute()
-
-    if not obs_resp.data:
-        return None
-
-    obs_row = obs_resp.data[0]
-    dep_id = obs_row.get('latest_deployment_id')
-    if not dep_id:
-        return None
-
-    # Query latest deployment
-    dep_resp = client.table('deployments').select(
-        'id, config_snapshot, stuck_shutters, deployed_at, reduced_at, '
-        'deployed_by, cfpipe_version, jwst_version, crds_context'
-    ).eq('id', dep_id).execute()
-
-    if not dep_resp.data:
-        return None
-
-    return {
-        'observation': {
-            'name': obs_row['name'],
-            'program_slug': obs_row['program_slug'],
-            'field': obs_row['field'],
-            'file_globs': obs_row.get('file_globs', []),
-            'gratings': obs_row.get('gratings', []),
-            'data_subdir': obs_row.get('data_subdir'),
-        },
-        'deployment': dep_resp.data[0],
-    }
 
 
 def refresh_filter_options(client: Client, *, quiet: bool = False) -> bool:

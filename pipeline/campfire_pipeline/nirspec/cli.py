@@ -307,7 +307,8 @@ def linefit(config, obs, source_ids, processes, overwrite, allow_auto, gratings,
               cls=_VariadicOption, callback=_parse_source_ids,
               help='Source IDs to analyze (default: all).')
 @click.option('--overwrite', is_flag=True,
-              help='Replace existing TOML with fresh detection results.')
+              help='Refresh the auto-detected entries of the analysed sources '
+                   '(hand and web entries are kept).')
 @mode_options
 def detect_stuck(config, obs, processes, source_ids, overwrite, gratings, filters):
     """Run stuck shutter detection on existing s2d files.
@@ -315,6 +316,12 @@ def detect_stuck(config, obs, processes, source_ids, overwrite, gratings, filter
     Detects stuck shutters, writes results to the observation's TOML file,
     and generates diagnostic plots.  Does NOT re-run stage2a — use this to
     inspect results before re-running downstream stages manually.
+
+    By default a detection is only added for a source the file has no entry
+    for. --overwrite also replaces (or drops, when no longer detected) the
+    entries tagged `# auto` of the sources analysed this run; entries a person
+    wrote (`# hand`, `# web`, untagged, including an empty `12345 = []`) are
+    never touched.
 
     Typical workflow for an already-completed observation:
 
@@ -332,6 +339,7 @@ def detect_stuck(config, obs, processes, source_ids, overwrite, gratings, filter
     from campfire_pipeline.nirspec.stuck_shutters import (
         detect_stuck_shutters, merge_stuck_shutters,
         write_stuck_shutters_toml, load_stuck_shutters_tagged,
+        read_stuck_shutters, refresh_auto_entries,
         _get_n_shutters,
     )
     from campfire_pipeline.nirspec.plots import plot_stuck_shutter_diagnostics
@@ -371,26 +379,35 @@ def detect_stuck(config, obs, processes, source_ids, overwrite, gratings, filter
         # Ensure s2d files exist (skips if already present)
         dispatch(resample_single_exposure, list(files), n_processes=processes)
 
+        analysed = set()
         detected = detect_stuck_shutters(obs_obj, files, stage_config,
-                                         n_processes=processes)
+                                         n_processes=processes,
+                                         analysed=analysed)
+
+        if overwrite:
+            # Refresh the auto entries of the analysed sources (also when nothing
+            # is detected any more: a stale auto entry must go). Entries a person
+            # wrote are kept; see refresh_auto_entries.
+            data, provenance, stats = refresh_auto_entries(
+                read_stuck_shutters(obs_obj.stuck_closed_shutters_file),
+                detected, analysed)
+            write_stuck_shutters_toml(
+                data, obs_obj.stuck_closed_shutters_file, obs_obj.name,
+                provenance=provenance,
+            )
+            log(f"Refreshed auto entries: {stats['auto']} detected, "
+                f"{stats['auto_dropped']} no longer detected and dropped, "
+                f"{stats['kept']} hand/web kept"
+                + (f", {stats['blocked']} detection(s) held back by a hand/web entry"
+                   if stats['blocked'] else '')
+                + (f", {stats['auto_kept']} auto kept (not analysed)"
+                   if stats['auto_kept'] else ''))
 
         if detected:
-            if overwrite:
-                # Write fresh detection results, replacing existing TOML — every
-                # entry is auto-detected, so tag them all `# auto`.
-                data = {r: {str(s): sh for s, sh in srcs.items()}
-                        for r, srcs in detected.items()}
-                provenance = {(r, str(s)): 'auto'
-                              for r, sources in detected.items()
-                              for s in sources.keys()}
-                write_stuck_shutters_toml(
-                    data, obs_obj.stuck_closed_shutters_file, obs_obj.name,
-                    provenance=provenance,
-                )
-            else:
+            if not overwrite:
                 # Merge with existing TOML entries (manual entries preserved),
                 # carrying each entry's provenance tag (hand/web/auto) through the
-                # rewrite so a later pull-stuck-shutters merge still tells them apart.
+                # rewrite: the tags travel with the list on `campfire config push / pull`.
                 prior_tags = load_stuck_shutters_tagged(obs_obj.stuck_closed_shutters_file)
                 existing = _toml.load(obs_obj.stuck_closed_shutters_file)
                 merged, updated = merge_stuck_shutters(existing, detected)

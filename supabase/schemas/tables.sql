@@ -832,7 +832,16 @@ CREATE TABLE IF NOT EXISTS "public"."deployments" (
     "force_overwrite" boolean DEFAULT false,
     "source_ids_filter" integer[],
     "supabase_only" boolean DEFAULT false,
+    -- What this deploy's reduction used, frozen at deploy time (provenance only; the
+    -- current, editable lists are the nirspec_source_review rows). stuck_shutters is
+    -- the stuck_closed_shutters.toml as {root: {source_id: [ordinals]}} (shape
+    -- unchanged since the column was added); stuck_shutter_sources carries each
+    -- entry's provenance tag beside it as {root: {source_id: 'hand'|'web'|'auto'}}
+    -- (NULL on deploys that predate it); bkg_overrides is the
+    -- nodded_background_overrides.toml as {root: {source_id: {nod: [nods]}}}.
     "stuck_shutters" "jsonb",
+    "stuck_shutter_sources" "jsonb",
+    "bkg_overrides" "jsonb",
     "reduced_at" timestamp with time zone,
     -- B2 (#218): deployment lifecycle. A deployment is the batch anchor for the
     -- draft -> published -> revoked flow. 'published' is the default so existing
@@ -1141,18 +1150,31 @@ COMMENT ON COLUMN "public"."spectrum_exposures"."exposure_root" IS 'Pipeline 2-t
 COMMENT ON COLUMN "public"."spectrum_exposures"."exp_group" IS 'Pipeline-computed exposure-group id (subpixel-dither), read from the canonical FITS CFEXPGRP header card. One value per group, spanning nods+detectors; a render/grouping attribute, NOT part of the unique key. Nullable (files predating the P4 stamp).';
 
 
--- nirspec_source_review: the editable flag channel for the NIRSpec nods review
--- loop (P6, design §4.3). One row per (observation, exposure_root, source_id) — a
--- SOURCE-scoped grain, coarser than the spectrum_exposures render grid (which is
--- per nod×detector), so the two flag channels live here rather than duplicating
--- across every nod/detector row. Both channels are jsonb mirroring the local
--- reference/nirspec/<obs>/ TOMLs 1:1, so P7's pull serializes without transform:
---   stuck_shutters  = [1,2,3]     ordinal list   (mirrors stuck_closed_shutters.toml)
---   bkg_overrides   = {"3":[1]}   {nod: [nods]}  (mirrors nodded_background_overrides.toml;
---                                  keys/values are exposure-sequence numbers, not indices)
--- Admin-only (RLS); web-editable; NOT deployed to OSN (deployments.stuck_shutters is a
--- per-deploy snapshot, this is the live editable record). exposure_root is the 2-token
--- root (jw07076020001_04101), same semantics as spectrum_exposures.exposure_root.
+-- nirspec_source_review: the cloud home of the two per-observation reducer-decision
+-- files, reference/nirspec/<obs>/stuck_closed_shutters.toml and
+-- nodded_background_overrides.toml. One row per (observation, exposure_root,
+-- source_id) — a SOURCE-scoped grain, coarser than the spectrum_exposures render grid
+-- (which is per nod×detector). Each row carries two independent entries, one per file:
+--   stuck_shutters  = [1,2,3]     ordinal list, as the TOML holds it. [] is an entry
+--                                  too: "vetted, none stuck", which stops the pipeline's
+--                                  auto-detector re-adding the source. NULL = no entry.
+--   stuck_source    = provenance of the stuck entry: 'hand' (typed into the TOML),
+--                                  'web' (set in the portal's nods view), 'auto' (the
+--                                  pipeline's detector). NULL beside a non-null list is
+--                                  "unknown" (rows that predate the column, backfilled
+--                                  deployment snapshots) and reads as 'hand'.
+--   bkg_overrides   = {"3":[1]}   {nod: [nods]}; keys/values are exposure-sequence
+--                                  numbers, not indices; an empty list excludes the nod.
+--                                  NULL = no entry.
+-- The entries are the sync unit of `campfire config push / pull / diff` (the config
+-- plane): each is reconciled three-way against the value a machine last agreed on with
+-- this table. The CLI writes only through nirspec_review_apply (a guarded write: a
+-- change lands only if the entry still holds the value the client read); the portal
+-- writes a channel at a time. Rows are never deleted; clearing an entry sets its
+-- column NULL. Admin-only (RLS); never uploaded to object storage
+-- (deployments.stuck_shutters / .bkg_overrides are the per-deploy snapshots of what a
+-- reduction used). exposure_root is the 2-token root (jw07076020001_04101), same
+-- semantics as spectrum_exposures.exposure_root.
 CREATE TABLE IF NOT EXISTS "public"."nirspec_source_review" (
     "id" integer NOT NULL,
     "observation" "text" NOT NULL,
@@ -1162,7 +1184,8 @@ CREATE TABLE IF NOT EXISTS "public"."nirspec_source_review" (
     "bkg_overrides" "jsonb",
     "notes" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "stuck_source" "text" CONSTRAINT "nirspec_source_review_stuck_source_check" CHECK (("stuck_source" = ANY (ARRAY['hand'::"text", 'web'::"text", 'auto'::"text"])))
 );
 
 
@@ -1184,7 +1207,7 @@ ALTER SEQUENCE "public"."nirspec_source_review_id_seq" OWNER TO "postgres";
 ALTER SEQUENCE "public"."nirspec_source_review_id_seq" OWNED BY "public"."nirspec_source_review"."id";
 
 
-COMMENT ON TABLE "public"."nirspec_source_review" IS 'Editable flag channel for the NIRSpec nods review loop (P6). One row per (observation, exposure_root, source_id); admin-only, web-editable, NOT deployed. stuck_shutters/bkg_overrides jsonb mirror the reference/nirspec/<obs>/ TOMLs 1:1 for the P7 pull-back.';
+COMMENT ON TABLE "public"."nirspec_source_review" IS 'Cloud home of the NIRSpec stuck-shutter and nodded-background-override lists (reference/nirspec/<obs>/*.toml), synced by `campfire config push / pull / diff` and edited in the portal''s nods view. One row per (observation, exposure_root, source_id) holding two independent entries: stuck_shutters ([ordinals]; [] = vetted, none stuck; NULL = no entry) with its provenance stuck_source (hand / web / auto; NULL = unknown, reads as hand), and bkg_overrides ({nod: [nods]}; NULL = no entry). Admin-only; rows are never deleted; CLI writes go through nirspec_review_apply.';
 
 
 -- storage_objects: the keystone shadow index of every object in cloud storage

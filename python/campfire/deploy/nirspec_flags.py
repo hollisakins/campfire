@@ -1,191 +1,221 @@
-"""NIRSpec flag pull-back: DB nirspec_source_review → reference/nirspec/<obs>/ TOMLs.
+"""NIRSpec stuck-shutter and background-override lists on the config plane.
 
-The cloud→local half of the NIRSpec nods review loop (design §4.3/§7, P7). Reads the
-web-editable ``nirspec_source_review`` table (one row per
-``(observation, exposure_root, source_id)``) and materializes its two jsonb flag
-channels into the two local TOMLs that pipeline stage 2 already consumes:
+Two per-observation reducer-decision files drive stage 2 of the NIRSpec pipeline:
 
-- ``stuck_shutters``  ([1,2,3]) → ``reference/nirspec/<obs>/stuck_closed_shutters.toml``
-- ``bkg_overrides``   ({"3":[1]}) → ``reference/nirspec/<obs>/nodded_background_overrides.toml``
+- ``reference/nirspec/<obs>/stuck_closed_shutters.toml``: per (exposure root, source),
+  the shutter ordinals to drop, each line tagged ``# hand`` / ``# web`` / ``# auto``;
+- ``reference/nirspec/<obs>/nodded_background_overrides.toml``: per (root, source),
+  the background nods to use for each nod.
 
-The P6 jsonb shapes were stored to mirror these TOMLs 1:1, so the DB→TOML mapping is
-``toml[exposure_root][str(source_id)] = <jsonb>`` with no transform.
+They are hand-edited, written by the pipeline's auto-detector and set in the portal's
+nods view, so they are synced, not regenerated: ``campfire config push / pull / diff``
+reconcile them with the cloud table ``nirspec_source_review`` (one row per
+observation x root x source, holding one entry of each file).
 
-Two behaviors (design §4.3):
+**The sync unit is the entry**: one channel (``stuck`` or ``bkg``) of one (root,
+source). An observation is only the scope named on the command line. Each entry is
+reconciled three-way, by the rule the rest of the config plane applies to a TOML
+section (``config_cli._pull_decision``), against the *base*: the value this machine
+and the cloud last agreed on, kept per entry in
+``$CAMPFIRE_ROOT/meta/config_sync_state.json`` under ``nirspec_flags``.
 
-- **Background overrides — local-first merge.** The bkg TOML is hand-edited locally as
-  well as set on the web, so the pull never removes or changes a local entry: it adds
-  DB entries for (root, source) keys the file does not have, and keeps (and reports)
-  local entries that differ from the DB. Local entries reach the DB on deploy
-  (``annotation_push``). A full overwrite here once wiped every hand-set override.
-- **Stuck shutters — authority merge, hand > web > auto.** The stuck TOML is written by
-  three sources (hand edits, this pull = "web", and the pipeline auto-detector). Because
-  hand and web are both manual identification, the pull *merges* rather than overwrites,
-  reading the ``# hand`` / ``# web`` / ``# auto`` provenance tags back out of the existing
-  file (``stuck_shutters.load_stuck_shutters_tagged``) so a re-pull preserves hand entries,
-  refreshes web entries from the DB (keeping, and reporting, ones the DB no longer flags:
-  a pull never deletes local config), and lets auto fill gaps. The shared pipeline writer (``write_stuck_shutters_toml``) emits the tags, so
-  the file the pull writes and the file the pipeline auto-detector writes are byte-compatible.
+==================  ==================  =========================  ====================
+local vs base       cloud vs base       pull                       push
+==================  ==================  =========================  ====================
+same                changed / added     takes the cloud            reports it
+same                removed             asks (or ``--theirs``)     reports it
+changed / added     same                keeps local                sends local
+removed             same                reports (``--theirs``      asks (or ``--force``)
+                                        restores it)
+both, equal                             records the base           records the base
+both, different                         keeps local, reports       refuses (``--force``)
+                                        (``--theirs``)
+==================  ==================  =========================  ====================
 
-Both writes are atomic (tmp + rename). These flags are DB-resident and never registered
-in ``storage_objects``.
+Rules that keep this safe:
+
+- **A removal travels only on an explicit yes.** An entry missing from a file is
+  ambiguous (deleted on purpose, or the file was regenerated without it), so neither
+  side drops an entry because the other lacks it: push asks before clearing a cloud
+  entry, pull asks before deleting a local one, and the non-interactive callers
+  (``campfire deploy``, ``campfire pull spec``) never remove anything.
+- **A missing file is not an empty list.** With no file on disk the base is ignored:
+  a pull writes every cloud entry, a push sends nothing.
+- **A human entry beats a detection.** Where both sides changed an entry and exactly
+  one of them is tagged ``auto``, the other wins without a conflict.
+- **An empty stuck list is an entry**: ``12345 = []`` means "vetted, none stuck", which
+  keeps the auto-detector from re-adding the source. It syncs like any other entry.
+- **Unknown provenance.** A cloud stuck entry with no ``stuck_source`` (rows that
+  predate the column, backfilled deployment snapshots) reads as ``hand``; a machine
+  whose file holds the same shutters under another tag keeps its tag and sends it up.
+- Cloud writes go through ``nirspec_review_apply``, a guarded write: a change lands
+  only while the entry still holds the value this client read, so a portal edit made
+  in between is refused and reported, never overwritten.
+- A file is rewritten only when its entries change (atomic, previous file kept as
+  ``.prev``), with the pipeline's own writer for the stuck list so the result is
+  byte-compatible with what the auto-detector writes.
+
+The table is admin-only (RLS): a non-admin session reads zero rows, which must never
+be mistaken for an empty cloud. ``can_sync`` is the positive check every caller makes
+first.
 """
 from __future__ import annotations
 
+import datetime as _dt
+from dataclasses import dataclass
 from pathlib import Path
 
-from campfire.deploy.nircam_masks import _utcnow_iso
-from campfire.deploy.supabase import get_supabase_client
+STUCK_FILE = 'stuck_closed_shutters.toml'
+BKG_FILE = 'nodded_background_overrides.toml'
+CHANNELS = ('stuck', 'bkg')
+SOURCES = ('hand', 'web', 'auto')
+STATE_KEY = 'nirspec_flags'
+_FILES = {'stuck': STUCK_FILE, 'bkg': BKG_FILE}
+_APPLY_CHUNK = 500
+
+# Verdicts of the three-way rule (one per entry).
+IN_SYNC = 'in-sync'
+CLOUD_NEW, CLOUD_CHANGED, CLOUD_REMOVED = 'cloud-new', 'cloud-changed', 'cloud-removed'
+LOCAL_NEW, LOCAL_CHANGED, LOCAL_REMOVED = 'local-new', 'local-changed', 'local-removed'
+CONFLICT = 'conflict'
 
 
-def _ref_dir(obs):
-    """reference/nirspec/<obs>/ — equals observation.reference_dir, so the pull writes
-    exactly where the pipeline reads."""
-    from campfire_layout import Scope, reference_dir
+class FlagsError(Exception):
+    """A file or a cloud row that cannot be read as entries. The observation is
+    skipped and nothing is written: an unreadable side is never treated as empty."""
+
+
+# ---------------------------------------------------------------------------
+# The entry model: normalised, JSON-representable values compared with ==
+# ---------------------------------------------------------------------------
+
+def _int_list(values) -> list[int]:
+    if isinstance(values, (str, bytes)) or not hasattr(values, '__iter__'):
+        raise FlagsError(f"expected a list of integers, got {values!r}")
+    out = set()
+    for v in values:
+        if isinstance(v, bool) or int(v) != v:
+            raise FlagsError(f"expected a list of integers, got {values!r}")
+        out.add(int(v))
+    return sorted(out)
+
+
+def stuck_entry(shutters, source) -> dict:
+    """``{'shutters': [sorted unique ints], 'source': tag}``; ``source`` may be None
+    for a cloud entry of unknown provenance (resolved in ``plan_channel``)."""
+    if source is not None and source not in SOURCES:
+        raise FlagsError(f"unknown stuck-shutter source {source!r}")
+    return {'shutters': _int_list(shutters), 'source': source}
+
+
+def bkg_entry(nodmap) -> dict | None:
+    """``{nod_str: [sorted unique ints]}``, or None for an empty map (no override).
+    An empty list for a nod is kept: it excludes that nod."""
+    if not isinstance(nodmap, dict):
+        raise FlagsError(f"expected a {{nod: [nods]}} table, got {nodmap!r}")
+    out = {str(int(nod)): _int_list(nods) for nod, nods in nodmap.items()}
+    return out or None
+
+
+def _key(root, sid) -> tuple[str, str]:
+    return (str(root), str(int(sid)))
+
+
+def _sort_key(key):
+    return (key[0], int(key[1]))
+
+
+def fmt_entry(channel: str, value) -> str:
+    if value is None:
+        return 'none'
+    if channel == 'stuck':
+        return f"{value['shutters']} ({value['source'] or 'unknown'})"
+    return '{' + ', '.join(f"{nod} = {value[nod]}" for nod in sorted(value, key=int)) + '}'
+
+
+# ---------------------------------------------------------------------------
+# Local files
+# ---------------------------------------------------------------------------
+
+def campfire_root() -> Path:
     from campfire.deploy.nircam import _resolve_campfire_root
-    return reference_dir('nirspec', Scope(obs=obs), root=_resolve_campfire_root())
+    return _resolve_campfire_root()
 
 
-# ---------------------------------------------------------------------------
-# Stuck shutters — authority merge (hand > web > auto)
-# ---------------------------------------------------------------------------
-
-def merge_pulled_stuck_shutters(existing_tagged, db_web):
-    """Resolve the stuck-shutter authority merge for the pull.
-
-    Pure function (no DB / no I/O) so the ranking rules are unit-testable.
-
-    Parameters
-    ----------
-    existing_tagged : dict
-        ``{(root, source_id_str): ([shutters], tag)}`` from
-        ``load_stuck_shutters_tagged`` (tag ∈ {'hand','web','auto'}).
-    db_web : dict
-        ``{(root, source_id_str): [shutters]}`` — the web tier from the DB
-        (empty lists already filtered out by the caller).
-
-    Returns
-    -------
-    data : dict
-        ``{root: {source_id_str: [shutters]}}`` ready for ``write_stuck_shutters_toml``.
-    provenance : dict
-        ``{(root, source_id_str): tag}`` — the tag to emit per surviving entry.
-    stats : dict
-        Counts: ``hand``, ``auto``, ``web``, ``hand_protected``, ``web_kept``.
-
-    Rules (net realized ranking hand > web > auto):
-      1. every hand entry is kept, never overwritten;
-      2. auto entries are kept unless a hand entry holds the key;
-      3. web (DB) overlays auto and prior web, but a hand entry protects its key;
-      4. a prior web entry absent from the DB (and not hand-held) is kept: a pull
-         never deletes local config. Clear it locally to remove it.
-    """
-    merged = {}       # (root, sid_str) -> [shutters]
-    provenance = {}   # (root, sid_str) -> tag
-    stats = {'hand': 0, 'auto': 0, 'web': 0, 'hand_protected': 0, 'web_kept': 0}
-
-    hand_keys = {k for k, (_sh, tag) in existing_tagged.items() if tag == 'hand'}
-
-    # 1. hand entries — always retained
-    for k, (sh, tag) in existing_tagged.items():
-        if tag == 'hand':
-            merged[k] = sh
-            provenance[k] = 'hand'
-            stats['hand'] += 1
-
-    # 2. auto entries — retained unless a hand entry holds the key
-    for k, (sh, tag) in existing_tagged.items():
-        if tag == 'auto' and k not in hand_keys:
-            merged[k] = sh
-            provenance[k] = 'auto'
-            stats['auto'] += 1
-
-    # 3. web (DB) overlay — wins over auto/prior-web, yields to hand
-    for k, shutters in db_web.items():
-        if k in hand_keys:
-            stats['hand_protected'] += 1
-            continue
-        merged[k] = shutters
-        provenance[k] = 'web'
-        stats['web'] += 1
-
-    # 4. prior web entries the DB no longer flags — kept (a pull never deletes local config)
-    for k, (sh, tag) in existing_tagged.items():
-        if tag == 'web' and k not in db_web and k not in hand_keys:
-            merged[k] = sh
-            provenance[k] = 'web'
-            stats['web_kept'] += 1
-
-    data = {}
-    for (root, sid_str), shutters in merged.items():
-        data.setdefault(root, {})[sid_str] = shutters
-    return data, provenance, stats
+def ref_dir(obs: str, root: Path | None = None) -> Path:
+    """reference/nirspec/<obs>/ — equals ``Observation.reference_dir``, so the sync
+    writes exactly where the pipeline reads."""
+    from campfire_layout import Scope, reference_dir
+    return reference_dir('nirspec', Scope(obs=obs), root=root or campfire_root())
 
 
-def pull_stuck_shutters(obs, config, dry_run=False):
-    """Merge nirspec_source_review.stuck_shutters (web tier) into the local TOML.
+def local_observations(root: Path | None = None) -> list[str]:
+    """Observations with at least one of the two files on disk."""
+    parent = ref_dir('_', root).parent
+    if not parent.is_dir():
+        return []
+    return sorted(d.name for d in parent.iterdir()
+                  if d.is_dir() and any((d / f).exists() for f in _FILES.values()))
 
-    Authority merge hand > web > auto; atomic write; reuses the pipeline's
-    tag-emitting ``write_stuck_shutters_toml`` so the file stays byte-compatible
-    with what the auto-detector writes.
-    """
+
+def read_stuck_file(path) -> dict | None:
+    """``{(root, sid): stuck entry}`` from the stuck TOML; None when the file is
+    absent. Values are what ``toml.load`` reads (what stage 2 uses); tags come from
+    the pipeline's line parser (``read_stuck_shutters``)."""
+    path = Path(path)
+    if not path.exists():
+        return None
     from campfire.deploy import require_pipeline
-    require_pipeline("Pulling stuck shutters (byte-compatible TOML writer)")
-    from campfire_pipeline.nirspec.stuck_shutters import (
-        load_stuck_shutters_tagged, write_stuck_shutters_toml,
-    )
-
-    stuck_file = _ref_dir(obs) / 'stuck_closed_shutters.toml'
-
-    client = get_supabase_client(config)
-    resp = (client.table('nirspec_source_review')
-            .select('exposure_root, source_id, stuck_shutters')
-            .eq('observation', obs)
-            .not_.is_('stuck_shutters', 'null')
-            .execute())
-    rows = resp.data or []
-
-    db_web = {}
-    n_empty = 0
-    for row in rows:
-        shutters = row.get('stuck_shutters') or []
-        if not shutters:
-            n_empty += 1
-            continue
-        db_web[(row['exposure_root'], str(row['source_id']))] = list(shutters)
-
-    existing_tagged = load_stuck_shutters_tagged(str(stuck_file))
-    data, provenance, stats = merge_pulled_stuck_shutters(existing_tagged, db_web)
-
-    print(f"Observation: {obs}")
-    print(f"DB web stuck-shutter entries: {len(db_web)} ({n_empty} empty skipped)")
-    print(f"Merged: {stats['hand']} hand, {stats['web']} web, {stats['auto']} auto"
-          f" — {stats['hand_protected']} web overlays blocked by hand,"
-          f" {stats['web_kept']} web entries kept that the DB no longer has")
-
-    if dry_run:
-        print(f"\nDry run — would write {stuck_file}")
-        return
-
-    stuck_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp = str(stuck_file) + '.tmp'
-    write_stuck_shutters_toml(data, tmp, obs, provenance=provenance)
-    Path(tmp).replace(stuck_file)
-    print(f"\nWrote {stuck_file}")
+    require_pipeline("Syncing the stuck-shutter list (the pipeline's tagged reader)")
+    from campfire_pipeline.nirspec.stuck_shutters import read_stuck_shutters
+    try:
+        tagged = read_stuck_shutters(str(path))
+        return {_key(root, sid): stuck_entry(shutters, tag)
+                for (root, sid), (shutters, tag) in tagged.items()}
+    except FlagsError as e:
+        raise FlagsError(f"{path}: {e}") from e
+    except Exception as e:   # toml.TomlDecodeError, a non-integer key, ...
+        raise FlagsError(f"{path}: cannot read it ({e})") from e
 
 
-# ---------------------------------------------------------------------------
-# Background overrides — local-first merge
-# ---------------------------------------------------------------------------
+def read_bkg_file(path) -> dict | None:
+    """``{(root, sid): bkg entry}`` from the override TOML, read the way
+    ``Observation.bkg_overrides`` reads it; None when the file is absent. A source
+    with an empty table (``12345 = {}``) carries no override and is no entry."""
+    import toml
+    path = Path(path)
+    if not path.exists():
+        return None
+    try:
+        out = {}
+        for root, table in toml.load(str(path)).items():
+            if not isinstance(table, dict):
+                raise FlagsError(f"[{root}] is not a table")
+            for sid, nodmap in table.items():
+                entry = bkg_entry(nodmap)
+                if entry is not None:
+                    out[_key(root, sid)] = entry
+        return out
+    except FlagsError as e:
+        raise FlagsError(f"{path}: {e}") from e
+    except Exception as e:
+        raise FlagsError(f"{path}: cannot read it ({e})") from e
 
-def _serialize_bkg_overrides(data, obs_name, generated_at=None):
-    """Render ``{root: {sid_str: {nod_str: [bkg nods]}}}`` as the nodded-background
-    override TOML, using inline tables (``12345 = {3 = [1]}``) that
-    ``observation.bkg_overrides``'s ``toml.load`` reads back verbatim.
 
-    An empty bkg list for a nod (``{"3": []}`` → ``3 = []``) is meaningful — it means
-    "exclude this nod" (CFP_BKG='excluded:override' in stage2) — and is preserved.
-    """
+def read_local(obs: str, root: Path | None = None) -> dict:
+    """``{'stuck': entries | None, 'bkg': entries | None}`` (None: no file)."""
+    d = ref_dir(obs, root)
+    return {'stuck': read_stuck_file(d / STUCK_FILE), 'bkg': read_bkg_file(d / BKG_FILE)}
+
+
+def _utcnow_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def serialize_bkg_overrides(entries: dict, obs_name: str, generated_at: str | None = None) -> str:
+    """Render ``{(root, sid): {nod: [nods]}}`` as the override TOML, with inline
+    tables (``12345 = {3 = [1]}``) that ``Observation.bkg_overrides``'s ``toml.load``
+    reads back verbatim. ``3 = []`` (exclude this nod) is preserved."""
     generated_at = generated_at or _utcnow_iso()
     lines = [
         f'# nodded background overrides for {obs_name}',
@@ -204,181 +234,665 @@ def _serialize_bkg_overrides(data, obs_name, generated_at=None):
         '# sequential indices. If a TACONFIRM exposure is 00001, the',
         '# first science nod will be 2, not 1.',
         '#',
-        f'# Generated by campfire deploy nirspec pull-bkg-overrides at {generated_at}',
-        '# Local entries are kept on every pull (DB entries are only added) and pushed to the DB on deploy.',
+        f'# Written by campfire config pull at {generated_at}.',
+        '# Synced with the cloud by `campfire config push / pull` (edit freely).',
         '',
     ]
-
-    for root in sorted(data.keys()):
+    by_root: dict[str, dict] = {}
+    for (root, sid), nodmap in entries.items():
+        by_root.setdefault(root, {})[sid] = nodmap
+    for root in sorted(by_root):
         lines.append(f'[{root}]')
-        for sid_str in sorted(data[root].keys(), key=int):
-            nodmap = data[root][sid_str]
-            inner = ', '.join(
-                f'{nod} = [{", ".join(str(n) for n in nodmap[nod])}]'
-                for nod in sorted(nodmap.keys(), key=int)
-            )
-            lines.append(f'    {sid_str} = {{{inner}}}')
+        for sid in sorted(by_root[root], key=int):
+            nodmap = by_root[root][sid]
+            inner = ', '.join(f'{nod} = [{", ".join(str(n) for n in nodmap[nod])}]'
+                              for nod in sorted(nodmap, key=int))
+            lines.append(f'    {sid} = {{{inner}}}')
         lines.append('')
-
     return '\n'.join(lines) + '\n'
 
 
-def read_bkg_overrides(path):
-    """``{root: {sid_str: {nod_str: [nods]}}}`` from a local override TOML ({} if absent),
-    read the way ``observation.bkg_overrides`` reads it."""
-    import toml
-    path = Path(path)
-    if not path.exists():
-        return {}
-    raw = toml.load(str(path))
-    return {str(root): {str(sid): {str(nod): [int(n) for n in nods] for nod, nods in nodmap.items()}
-                        for sid, nodmap in table.items()}
-            for root, table in raw.items() if isinstance(table, dict)}
+def write_local(obs: str, channel: str, entries: dict, root: Path | None = None) -> Path:
+    """Rewrite one of the two files from ``entries`` (atomic; the previous file is
+    kept beside it as ``.prev``). The stuck list goes through the pipeline's writer."""
+    path = ref_dir(obs, root) / _FILES[channel]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    if channel == 'stuck':
+        from campfire.deploy import require_pipeline
+        require_pipeline("Writing the stuck-shutter list (the pipeline's byte-compatible writer)")
+        from campfire_pipeline.nirspec.stuck_shutters import write_stuck_shutters_toml
+        data: dict[str, dict] = {}
+        provenance = {}
+        for (r, sid), value in entries.items():
+            data.setdefault(r, {})[sid] = list(value['shutters'])
+            provenance[(r, sid)] = value['source'] or 'hand'
+        write_stuck_shutters_toml(data, str(tmp), obs, provenance=provenance)
+    else:
+        tmp.write_text(serialize_bkg_overrides(entries, obs))
+    if path.exists():
+        path.with_suffix(path.suffix + '.prev').write_bytes(path.read_bytes())
+    tmp.replace(path)
+    return path
 
 
-def merge_pulled_bkg_overrides(local, db):
-    """Local-first merge of background overrides. Pure, for unit tests.
+# ---------------------------------------------------------------------------
+# Cloud rows
+# ---------------------------------------------------------------------------
 
-    Every local (root, source) entry is kept as it is; a DB entry is added only where
-    the file has none. Returns ``(merged, stats)`` with counts ``local``, ``added``,
-    ``same`` and ``conflict`` (local differs from the DB; local kept)."""
-    merged = {root: {sid: dict(nm) for sid, nm in tab.items()} for root, tab in local.items()}
-    stats = {'local': sum(len(t) for t in local.values()), 'added': 0, 'same': 0, 'conflict': 0}
-    conflicts = []
-    for root, tab in db.items():
-        for sid, nodmap in tab.items():
-            mine = local.get(root, {}).get(sid)
-            if mine is None:
-                merged.setdefault(root, {})[sid] = nodmap
-                stats['added'] += 1
-            elif mine == nodmap:
-                stats['same'] += 1
-            else:
-                stats['conflict'] += 1
-                conflicts.append((root, sid, mine, nodmap))
-    stats['conflicts'] = conflicts
-    return merged, stats
-
-
-def pull_bkg_overrides(obs, config, dry_run=False):
-    """Merge nirspec_source_review.bkg_overrides into the local override TOML.
-
-    Local-first (``merge_pulled_bkg_overrides``): local entries are never removed or
-    changed; the file is rewritten only when the DB adds entries, and the previous
-    file is kept alongside as ``.prev``. Atomic write.
-    """
-    bkg_file = _ref_dir(obs) / 'nodded_background_overrides.toml'
-
-    client = get_supabase_client(config)
-    resp = (client.table('nirspec_source_review')
-            .select('exposure_root, source_id, bkg_overrides')
-            .eq('observation', obs)
-            .not_.is_('bkg_overrides', 'null')
-            .execute())
-    rows = resp.data or []
-
-    db = {}
-    for row in rows:
-        overrides = row.get('bkg_overrides') or {}
-        if not overrides:
-            continue
-        db.setdefault(row['exposure_root'], {})[str(row['source_id'])] = {
-            str(nod): [int(n) for n in nods] for nod, nods in overrides.items()
-        }
-
+def can_sync(config: dict, sb) -> bool:
+    """True when this session can read and write ``nirspec_source_review``: a
+    service-role / local client (RLS bypassed), or a login session whose user is an
+    admin. Anything else (including a failed check) is False: under RLS a non-admin
+    reads zero rows, and zero rows must never read as "the cloud has no entries"."""
+    if config.get('supabase', {}).get('_auth_mode') in ('service_role', 'local'):
+        return True
     try:
-        local = read_bkg_overrides(bkg_file)
-    except (ValueError, TypeError, AttributeError) as e:
-        # Unreadable local file: keep it as it is (local-first) and carry on.
-        print(f"Observation: {obs}")
-        print(f"  kept local {bkg_file} unchanged: cannot read it ({e}); "
-              f"{sum(len(t) for t in db.values())} DB override(s) not merged")
-        return
-    merged, stats = merge_pulled_bkg_overrides(local, db)
-
-    print(f"Observation: {obs}")
-    print(f"Background overrides: {stats['local']} local kept, {stats['added']} added from the DB, "
-          f"{stats['conflict']} local entries differ from the DB (local kept)")
-    for root, sid, mine, theirs in stats['conflicts']:
-        print(f"  kept local {root} {sid} = {mine} (DB has {theirs})")
-
-    if stats['added'] == 0 and bkg_file.exists():
-        return
-    if dry_run:
-        print(f"\nDry run — would write {bkg_file}")
-        return
-
-    bkg_file.parent.mkdir(parents=True, exist_ok=True)
-    if bkg_file.exists():
-        bkg_file.with_suffix(bkg_file.suffix + '.prev').write_text(bkg_file.read_text())
-    tmp = bkg_file.with_suffix(bkg_file.suffix + '.tmp')
-    tmp.write_text(_serialize_bkg_overrides(merged, obs))
-    tmp.replace(bkg_file)
-    print(f"\nWrote {bkg_file}")
+        return bool(sb.rpc('is_admin').execute().data)
+    except Exception:
+        return False
 
 
-# ---------------------------------------------------------------------------
-# Push: local TOMLs -> nirspec_source_review (on deploy)
-# ---------------------------------------------------------------------------
+def cloud_entries(rows: list[dict]) -> dict:
+    """Rows of one observation -> ``{channel: {key: {'value': entry, 'raw': ...}}}``.
 
-def _fetch_review_rows(sb, obs, column):
-    rows, start = [], 0
-    while True:
-        r = (sb.table('nirspec_source_review')
-             .select(f'exposure_root, source_id, {column}')
-             .eq('observation', obs)
-             .range(start, start + 999)
-             .execute()).data or []
-        rows += r
-        start += 1000
-        if len(r) < 1000:
-            return {(row['exposure_root'], str(row['source_id'])): row.get(column) for row in rows}
-
-
-def plan_review_push(local, db, column):
-    """Rows to upsert so the DB carries every local entry. Pure, for unit tests.
-
-    ``local`` and ``db`` map ``(root, sid_str)`` to the column value. A local entry is
-    pushed when the DB lacks it or holds a different value (local config wins on
-    deploy). DB entries with no local counterpart are left alone; a push never
-    deletes."""
-    out = []
-    for (root, sid), value in sorted(local.items()):
-        if db.get((root, sid)) != value:
-            out.append({'exposure_root': root, 'source_id': int(sid), column: value})
+    ``raw`` is the stored value exactly as read (``{'value': ..., 'source': ...}``,
+    no ``source`` for bkg): it is what a guarded write sends back as ``expect``."""
+    out: dict = {'stuck': {}, 'bkg': {}}
+    for row in rows:
+        key = _key(row['exposure_root'], row['source_id'])
+        where = f"{row['exposure_root']} {row['source_id']}"
+        raw_stuck = row.get('stuck_shutters')
+        if raw_stuck is not None:
+            try:
+                value = stuck_entry(raw_stuck, row.get('stuck_source'))
+            except (FlagsError, TypeError, ValueError) as e:
+                raise FlagsError(f"cloud stuck entry {where}: {e}") from e
+            out['stuck'][key] = {'value': value,
+                                 'raw': {'value': raw_stuck, 'source': row.get('stuck_source')}}
+        raw_bkg = row.get('bkg_overrides')
+        if raw_bkg is not None:
+            try:
+                value = bkg_entry(raw_bkg)
+            except (FlagsError, TypeError, ValueError) as e:
+                raise FlagsError(f"cloud bkg entry {where}: {e}") from e
+            if value is not None:
+                out['bkg'][key] = {'value': value, 'raw': {'value': raw_bkg}}
+            # An empty map ({}) is "no override": no entry, but a write over it
+            # must still expect what is stored.
+            else:
+                out['bkg'][key] = {'value': None, 'raw': {'value': raw_bkg}}
     return out
 
 
-def push_review_flags(sb, obs, dry_run=False, quiet=False):
-    """Push the local background overrides and hand/web stuck shutters of ``obs`` to
-    ``nirspec_source_review`` (upsert on (observation, exposure_root, source_id),
-    touching only the pushed column, so web notes and the other flag survive).
-    Auto-detected stuck shutters stay local: the pipeline regenerates them.
-    Returns the number of rows pushed; ``quiet`` skips the per-column line."""
-    from campfire_pipeline.nirspec.stuck_shutters import load_stuck_shutters_tagged
-
-    ref = _ref_dir(obs)
-    bkg_local = {(root, sid): nodmap
-                 for root, tab in read_bkg_overrides(ref / 'nodded_background_overrides.toml').items()
-                 for sid, nodmap in tab.items()}
-    stuck_local = {k: list(sh) for k, (sh, tag) in
-                   load_stuck_shutters_tagged(str(ref / 'stuck_closed_shutters.toml')).items()
-                   if tag in ('hand', 'web')}
-    n = 0
-    for column, local in (('bkg_overrides', bkg_local), ('stuck_shutters', stuck_local)):
-        if not local:
-            continue
-        rows = plan_review_push(local, _fetch_review_rows(sb, obs, column), column)
+def fetch_cloud_rows(sb, observations: list[str] | None = None) -> dict[str, list[dict]]:
+    """``{observation: [rows]}`` of ``nirspec_source_review`` (every observation when
+    ``observations`` is None), paged on the primary key."""
+    cols = 'id, observation, exposure_root, source_id, stuck_shutters, stuck_source, bkg_overrides'
+    out: dict[str, list[dict]] = {o: [] for o in (observations or [])}
+    if observations is not None and not observations:
+        return out
+    last = 0
+    while True:
+        q = sb.table('nirspec_source_review').select(cols).gt('id', last).order('id').limit(1000)
+        if observations is not None:
+            q = q.in_('observation', list(observations))
+        rows = q.execute().data or []
         for row in rows:
-            row['observation'] = obs
-        if rows and not dry_run:
-            for i in range(0, len(rows), 500):
-                (sb.table('nirspec_source_review')
-                 .upsert(rows[i:i + 500], on_conflict='observation,exposure_root,source_id')
-                 .execute())
-        if not quiet:
-            print(f"  {'Would push' if dry_run else 'Pushed'} {len(rows)} local {column} "
-                  f"entr{'y' if len(rows) == 1 else 'ies'} to nirspec_source_review "
-                  f"({len(local) - len(rows)} already in the DB)")
-        n += len(rows)
-    return n
+            out.setdefault(row['observation'], []).append(row)
+        if len(rows) < 1000:
+            return out
+        last = rows[-1]['id']
+
+
+def apply_changes(sb, obs: str, changes: list[dict]) -> dict:
+    """Send guarded writes through ``nirspec_review_apply`` (one transaction per
+    call). Returns ``{'applied': n, 'unchanged': n, 'refused': [...]}``."""
+    total = {'applied': 0, 'unchanged': 0, 'refused': []}
+    for i in range(0, len(changes), _APPLY_CHUNK):
+        res = sb.rpc('nirspec_review_apply', {
+            'p_observation': obs, 'p_changes': changes[i:i + _APPLY_CHUNK],
+        }).execute().data or {}
+        total['applied'] += int(res.get('applied') or 0)
+        total['unchanged'] += int(res.get('unchanged') or 0)
+        total['refused'] += list(res.get('refused') or [])
+    return total
+
+
+# ---------------------------------------------------------------------------
+# The three-way rule
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Item:
+    """One entry's reconciliation: its three values and the verdict."""
+    channel: str
+    key: tuple
+    local: dict | None
+    cloud: dict | None
+    base: dict | None
+    verdict: str
+    note: str = ''              # 'human-over-auto' when a detection yielded
+    cloud_raw: dict | None = None   # the stored value as read (the write's `expect`)
+    tag_upgrade: bool = False   # cloud source unknown; this machine knows it
+
+    @property
+    def where(self) -> str:
+        return f"{self.key[0]} {self.key[1]}"
+
+
+def decide(local, cloud, base) -> str:
+    """The three-way verdict for one entry (None = no entry on that side)."""
+    if local == cloud:
+        return IN_SYNC
+    if local == base:      # only the cloud moved
+        return CLOUD_NEW if local is None else (CLOUD_REMOVED if cloud is None else CLOUD_CHANGED)
+    if cloud == base:      # only this machine moved
+        return LOCAL_NEW if cloud is None else (LOCAL_REMOVED if local is None else LOCAL_CHANGED)
+    return CONFLICT
+
+
+def plan_channel(channel: str, local: dict | None, cloud: dict, base: dict | None) -> list[Item]:
+    """Reconcile every entry of one channel of one observation. Pure.
+
+    ``local``: ``{key: entry}`` or None when the file is absent (then the base is
+    ignored: a missing file is not a statement about any entry). ``cloud``:
+    ``{key: {'value', 'raw'}}`` from ``cloud_entries``. ``base``: ``{key: entry}``.
+    """
+    if local is None:
+        local, base = {}, {}
+    base = base or {}
+    items = []
+    for key in sorted(set(local) | set(cloud) | set(base), key=_sort_key):
+        mine = local.get(key)
+        theirs_rec = cloud.get(key)
+        theirs = theirs_rec['value'] if theirs_rec else None
+        raw = theirs_rec['raw'] if theirs_rec else None
+        was = base.get(key)
+        upgrade = False
+        if channel == 'stuck' and theirs is not None and theirs['source'] is None:
+            # Unknown provenance: same shutters here -> this machine's tag stands
+            # (and is sent up unless it is the default reading, `hand`).
+            if mine is not None and mine['shutters'] == theirs['shutters']:
+                theirs = dict(theirs, source=mine['source'])
+                upgrade = mine['source'] != 'hand'
+            else:
+                theirs = dict(theirs, source='hand')
+        verdict, note = decide(mine, theirs, was), ''
+        if (verdict == CONFLICT and channel == 'stuck'
+                and mine is not None and theirs is not None):
+            mine_auto, theirs_auto = mine['source'] == 'auto', theirs['source'] == 'auto'
+            if mine_auto != theirs_auto:
+                verdict = CLOUD_CHANGED if mine_auto else LOCAL_CHANGED
+                note = 'human-over-auto'
+        if mine is None and theirs is None and was is None:
+            continue    # an empty cloud map and nothing else: no entry anywhere
+        items.append(Item(channel, key, mine, theirs, was, verdict, note, raw,
+                          upgrade and verdict == IN_SYNC))
+    return items
+
+
+def _change(item: Item) -> dict:
+    """The guarded write that makes the cloud hold this item's local value."""
+    root, sid = item.key
+    change = {'channel': item.channel, 'exposure_root': root, 'source_id': int(sid),
+              'expect': item.cloud_raw, 'set': None}
+    if item.local is not None:
+        if item.channel == 'stuck':
+            change['set'] = {'value': item.local['shutters'], 'source': item.local['source']}
+        else:
+            change['set'] = {'value': item.local}
+    return change
+
+
+# ---------------------------------------------------------------------------
+# Base state ($CAMPFIRE_ROOT/meta/config_sync_state.json, key `nirspec_flags`)
+# ---------------------------------------------------------------------------
+
+def _base_of(state: dict, obs: str, channel: str) -> dict:
+    stored = state.get(STATE_KEY, {}).get(obs, {}).get(channel, {})
+    out = {}
+    for name, value in stored.items():
+        root, _, sid = name.rpartition('/')
+        out[(root, sid)] = value
+    return out
+
+
+def _set_base(state: dict, obs: str, channel: str, base: dict) -> None:
+    per_obs = state.setdefault(STATE_KEY, {}).setdefault(obs, {})
+    per_obs[channel] = {f"{root}/{sid}": base[(root, sid)]
+                        for root, sid in sorted(base, key=_sort_key)}
+
+
+# ---------------------------------------------------------------------------
+# Reporting
+# ---------------------------------------------------------------------------
+
+def _count(items, *verdicts) -> int:
+    return sum(1 for it in items if it.verdict in verdicts)
+
+
+def _n_entries(items, channel: str) -> str:
+    """'3 stuck entries (2 hand, 1 auto)' / '1 bkg entry'."""
+    n = len(items)
+    text = f"{n} {channel} entr{'y' if n == 1 else 'ies'}"
+    if channel != 'stuck':
+        return text
+    counts: dict[str, int] = {}
+    for it in items:
+        value = it.local or it.cloud or it.base or {}
+        tag = value.get('source') or 'hand'
+        counts[tag] = counts.get(tag, 0) + 1
+    return text + ' (' + ', '.join(f"{c} {tag}" for tag, c in sorted(counts.items())) + ')'
+
+
+def _listing(items, channel: str, side: str, limit: int = 10) -> list[str]:
+    """One line per entry (the value on ``side``), capped."""
+    lines = [f"      {it.where}: {fmt_entry(channel, getattr(it, side))}" for it in items[:limit]]
+    if len(items) > limit:
+        lines.append(f"      ... and {len(items) - limit} more")
+    return lines
+
+
+def _ask(question: str, interactive: bool) -> bool:
+    if not interactive:
+        return False
+    import click
+    return click.confirm(question, default=False)
+
+
+class _Report:
+    """Prints an observation's header before its first line (and nothing at all
+    for an observation with nothing to say)."""
+
+    def __init__(self, obs: str, out, dry_run: bool):
+        self._header = f"  {obs}" + (' (dry run)' if dry_run else '')
+        self._out = out
+        self._opened = False
+
+    def __call__(self, line: str) -> None:
+        if not self._opened:
+            self._out(self._header)
+            self._opened = True
+        self._out(line)
+
+
+# ---------------------------------------------------------------------------
+# pull / push / diff for one observation
+# ---------------------------------------------------------------------------
+
+def _plan(obs, rows, state, root):
+    local = read_local(obs, root)
+    cloud = cloud_entries(rows)
+    return local, {ch: plan_channel(ch, local[ch], cloud[ch], _base_of(state, obs, ch))
+                   for ch in CHANNELS}
+
+
+def pull_observation(obs: str, rows: list[dict], state: dict, *, theirs: bool = False,
+                     interactive: bool = False, dry_run: bool = False,
+                     root: Path | None = None, out=print) -> dict:
+    """Bring the cloud's entries of ``obs`` into the two local files.
+
+    Applies cloud additions and changes to entries this machine has not touched
+    since the base; keeps everything else and reports it. ``theirs`` takes the
+    cloud wherever pull would otherwise stop and ask (conflicts, cloud removals,
+    local removals the cloud still has). Returns counts: ``applied``, ``kept``."""
+    local, plan = _plan(obs, rows, state, root)
+    say = _Report(obs, out, dry_run)
+    ask = interactive and not dry_run and not theirs
+    counts = {'applied': 0, 'kept': 0}
+    for channel in CHANNELS:
+        items = plan[channel]
+        if not items:
+            continue
+        have = dict(local[channel] or {})
+        take = [it for it in items if it.verdict in (CLOUD_NEW, CLOUD_CHANGED)]
+        removed = [it for it in items if it.verdict == CLOUD_REMOVED]
+        dropped = [it for it in items if it.verdict == LOCAL_REMOVED]
+        conflicts = [it for it in items if it.verdict == CONFLICT]
+        ahead = [it for it in items if it.verdict in (LOCAL_NEW, LOCAL_CHANGED)]
+
+        take_conflicts = take_removals = False
+        if conflicts:
+            say(f"    ! {_n_entries(conflicts, channel)} changed here AND in the cloud since your last sync:")
+            for it in conflicts:
+                say(f"      {it.where}: local {fmt_entry(channel, it.local)}, "
+                    f"cloud {fmt_entry(channel, it.cloud)}")
+            take_conflicts = theirs or _ask(f"    Take the cloud's version of these?", ask)
+        if removed:
+            say(f"    - {_n_entries(removed, channel)} removed in the cloud:")
+            for line in _listing(removed, channel, 'local'):
+                say(line)
+            take_removals = theirs or _ask(f"    Remove them here too?", ask)
+        restore = bool(dropped) and theirs
+
+        new, base = dict(have), {}   # base: rebuilt from what both sides hold now
+        for it in items:
+            v = it.verdict
+            if v == IN_SYNC:
+                if it.local is not None:
+                    base[it.key] = it.local
+                continue
+            if (v in (CLOUD_NEW, CLOUD_CHANGED) or (v == CONFLICT and take_conflicts)
+                    or (v == CLOUD_REMOVED and take_removals) or (v == LOCAL_REMOVED and restore)):
+                if it.cloud is None:
+                    new.pop(it.key, None)
+                else:
+                    new[it.key] = it.cloud
+                    base[it.key] = it.cloud
+                counts['applied'] += 1
+            else:
+                if it.base is not None:
+                    base[it.key] = it.base   # still pending: the base stands
+                counts['kept'] += 1
+
+        parts = []
+        if take:
+            n_over = sum(1 for it in take if it.note)
+            parts.append(f"{len(take)} from the cloud"
+                         + (f" ({n_over} replacing a detection)" if n_over else ''))
+        if conflicts:
+            parts.append(f"{len(conflicts)} conflict(s) "
+                         + ('taken from the cloud' if take_conflicts
+                            else 'kept local (--theirs takes the cloud)'))
+        if removed:
+            parts.append(f"{len(removed)} cloud removal(s) "
+                         + ('applied' if take_removals else 'not applied (--theirs applies them)'))
+        if dropped:
+            parts.append(f"{_n_entries(dropped, channel)} in the cloud but not in your file: "
+                         + ('restored' if restore else
+                            '`campfire config push` removes them there, `config pull --theirs` restores them here'))
+        if ahead:
+            parts.append(f"{len(ahead)} local-only or edited (`campfire config push`)")
+        if parts:
+            say(f"    {channel}: " + '; '.join(parts))
+
+        if dry_run:
+            continue
+        if new != have or (local[channel] is None and new):
+            say(f"    wrote {write_local(obs, channel, new, root)}")
+        _set_base(state, obs, channel, base)
+    return counts
+
+
+def push_observation(obs: str, rows: list[dict], state: dict, sb, *, force: bool = False,
+                     interactive: bool = False, send_removals: bool | None = None,
+                     dry_run: bool = False, root: Path | None = None, out=print) -> dict:
+    """Send this machine's entries of ``obs`` to the cloud.
+
+    Sends additions and edits (and the tag of an entry the cloud holds without
+    one); an entry the cloud also changed is refused unless ``force``. Removals
+    are sent only on a yes: ``send_removals`` True/False decides, None asks when
+    ``interactive`` (``force`` also sends them). Returns counts: ``pushed``
+    (entries written, tag-only updates included) and ``pending``."""
+    local, plan = _plan(obs, rows, state, root)
+    say = _Report(obs, out, dry_run)
+    counts = {'pushed': 0, 'pending': 0}
+    changes, sent = [], []
+    bases: dict[str, dict] = {}
+    for channel in CHANNELS:
+        items = plan[channel]
+        base = bases[channel] = {}
+        if not items:
+            continue
+        removals = [it for it in items if it.verdict == LOCAL_REMOVED]
+        conflicts = [it for it in items if it.verdict == CONFLICT]
+        ahead = [it for it in items if it.verdict in (CLOUD_NEW, CLOUD_CHANGED, CLOUD_REMOVED)]
+
+        remove = False
+        if removals:
+            if send_removals is not None:
+                remove = send_removals
+            elif force:
+                remove = True
+            elif interactive and not dry_run:
+                say(f"    - {_n_entries(removals, channel)} in the cloud but no longer in your file:")
+                for line in _listing(removals, channel, 'cloud'):
+                    say(line)
+                remove = _ask("    Remove them from the cloud?", True)
+        if conflicts and not force:
+            say(f"    ! {_n_entries(conflicts, channel)} changed here AND in the cloud since your last sync:")
+            for it in conflicts:
+                say(f"      {it.where}: local {fmt_entry(channel, it.local)}, "
+                    f"cloud {fmt_entry(channel, it.cloud)}")
+
+        n_send = n_tags = 0
+        for it in items:
+            v = it.verdict
+            if v == IN_SYNC:
+                if it.local is not None:
+                    base[it.key] = it.local
+                if it.tag_upgrade:
+                    changes.append(_change(it))
+                    sent.append(it)
+                    n_tags += 1
+                continue
+            if (v in (LOCAL_NEW, LOCAL_CHANGED) or (v == CONFLICT and force)
+                    or (v == LOCAL_REMOVED and remove)):
+                changes.append(_change(it))
+                sent.append(it)
+                n_send += 1
+            else:
+                if it.base is not None:
+                    base[it.key] = it.base   # still pending: the base stands
+                counts['pending'] += 1
+
+        verb = 'would send' if dry_run else 'sent'
+        parts = []
+        if n_send:
+            parts.append(f"{verb} {n_send}"
+                         + (f" ({len(removals)} removal(s))" if remove else '')
+                         + (f" ({len(conflicts)} over a cloud change)" if conflicts and force else ''))
+        if n_tags:
+            parts.append(f"{verb} the tag of {n_tags} the cloud held untagged")
+        if removals and not remove:
+            parts.append(f"{_n_entries(removals, channel)} in the cloud but not in your file: not removed "
+                         "(`campfire config push` asks, --force removes; "
+                         "`config pull --theirs` restores them here)")
+        if conflicts and not force:
+            parts.append(f"{len(conflicts)} conflict(s) not sent (`campfire config pull`, or --force)")
+        if ahead:
+            parts.append(f"{len(ahead)} newer in the cloud (`campfire config pull`)")
+        if parts:
+            say(f"    {channel}: " + '; '.join(parts))
+
+    if dry_run:
+        counts['pushed'] = len(sent)
+        return counts
+    if changes:
+        result = apply_changes(sb, obs, changes)
+        refused = {(r['channel'], str(r['exposure_root']), str(r['source_id']))
+                   for r in result['refused']}
+        for it in sent:
+            if (it.channel, *it.key) in refused:
+                # Someone changed it between our read and our write: nothing was
+                # overwritten; the entry is a conflict for the next pull.
+                if it.base is not None:
+                    bases[it.channel][it.key] = it.base
+                else:
+                    bases[it.channel].pop(it.key, None)
+                counts['pending'] += 1
+                say(f"    ! {it.channel} {it.where}: changed in the cloud while pushing, "
+                    f"not sent (`campfire config pull`)")
+                continue
+            if it.local is not None:
+                bases[it.channel][it.key] = it.local
+            counts['pushed'] += 1
+    for channel in CHANNELS:
+        if local[channel] is not None:   # no file: no statement, the base stands
+            _set_base(state, obs, channel, bases[channel])
+    return counts
+
+
+_DIFF_LABEL = {
+    CLOUD_NEW: '< cloud-only', CLOUD_CHANGED: '< cloud-modified', CLOUD_REMOVED: '< cloud-removed',
+    LOCAL_NEW: '> local-only', LOCAL_CHANGED: '> local-modified', LOCAL_REMOVED: '> local-removed',
+    CONFLICT: '! diverged', IN_SYNC: '=',
+}
+
+
+def diff_observation(obs: str, rows: list[dict], state: dict, *, show_all: bool = False,
+                     root: Path | None = None) -> list[str]:
+    """Report lines for the entries of ``obs`` that differ (read-only)."""
+    _, plan = _plan(obs, rows, state, root)
+    lines = []
+    for channel in CHANNELS:
+        for it in plan[channel]:
+            if it.verdict == IN_SYNC and not (show_all or it.tag_upgrade):
+                continue
+            label = _DIFF_LABEL[it.verdict]
+            detail = {
+                CLOUD_NEW: fmt_entry(channel, it.cloud),
+                CLOUD_CHANGED: f"{fmt_entry(channel, it.local)} -> {fmt_entry(channel, it.cloud)}",
+                CLOUD_REMOVED: fmt_entry(channel, it.local),
+                LOCAL_NEW: fmt_entry(channel, it.local),
+                LOCAL_CHANGED: f"{fmt_entry(channel, it.cloud)} -> {fmt_entry(channel, it.local)}",
+                LOCAL_REMOVED: fmt_entry(channel, it.cloud),
+                CONFLICT: f"local {fmt_entry(channel, it.local)}, cloud {fmt_entry(channel, it.cloud)}",
+                IN_SYNC: fmt_entry(channel, it.local),
+            }[it.verdict]
+            if it.verdict == IN_SYNC and it.tag_upgrade:
+                label, detail = '> tag', f"{fmt_entry(channel, it.local)} (the cloud has no tag)"
+            lines.append(f"  {label:<18} {obs} {channel} {it.where}: {detail}"
+                         + (' (a person over a detection)' if it.note else ''))
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Drivers over a scope of observations
+# ---------------------------------------------------------------------------
+
+def _scope(observations, cloud, state, root, *, local: bool, remote: bool) -> list[str]:
+    if observations is not None:
+        return list(observations)
+    names = set()
+    if local:
+        names |= set(local_observations(root))
+    if remote:
+        names |= {o for o, rows in cloud.items()
+                  if any(r.get('stuck_shutters') is not None or r.get('bkg_overrides') is not None
+                         for r in rows)}
+        # ...and observations this machine synced before: an entry removed in the
+        # cloud since then is only visible against the base.
+        names |= {o for o, chans in state.get(STATE_KEY, {}).items()
+                  if any(chans.get(ch) for ch in CHANNELS)}
+    return sorted(names)
+
+
+def sync_pull(sb, observations: list[str] | None, state: dict, **kw) -> dict:
+    """Pull every observation in scope (None: every observation with cloud
+    entries). Returns the summed counts; unreadable observations are skipped."""
+    out = kw.get('out', print)
+    cloud = fetch_cloud_rows(sb, observations)
+    totals = {'applied': 0, 'kept': 0, 'observations': 0, 'errors': 0}
+    for obs in _scope(observations, cloud, state, kw.get('root'), local=False, remote=True):
+        try:
+            c = pull_observation(obs, cloud.get(obs, []), state, **kw)
+        except FlagsError as e:
+            out(f"  ! {obs}: {e} — skipped, nothing written")
+            totals['errors'] += 1
+            continue
+        totals['observations'] += 1
+        totals['applied'] += c['applied']
+        totals['kept'] += c['kept']
+    return totals
+
+
+def sync_push(sb, observations: list[str] | None, state: dict, **kw) -> dict:
+    """Push every observation in scope (None: every observation with a local
+    file). Returns the summed counts; unreadable observations are skipped."""
+    out = kw.get('out', print)
+    names = observations if observations is not None else local_observations(kw.get('root'))
+    cloud = fetch_cloud_rows(sb, list(names)) if names else {}
+    totals = {'pushed': 0, 'pending': 0, 'observations': 0, 'errors': 0}
+    for obs in names:
+        try:
+            c = push_observation(obs, cloud.get(obs, []), state, sb, **kw)
+        except FlagsError as e:
+            out(f"  ! {obs}: {e} — skipped, nothing sent")
+            totals['errors'] += 1
+            continue
+        totals['observations'] += 1
+        totals['pushed'] += c['pushed']
+        totals['pending'] += c['pending']
+    return totals
+
+
+def sync_diff(sb, observations: list[str] | None, state: dict, *, show_all: bool = False,
+              root: Path | None = None) -> list[str]:
+    """Report lines for every differing entry in scope (None: every observation
+    with a local file or cloud entries)."""
+    cloud = fetch_cloud_rows(sb, observations)
+    lines = []
+    for obs in _scope(observations, cloud, state, root, local=True, remote=True):
+        try:
+            lines += diff_observation(obs, cloud.get(obs, []), state, show_all=show_all, root=root)
+        except FlagsError as e:
+            lines.append(f"  ! {obs}: {e}")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# The non-interactive callers: `campfire deploy --obs` and `campfire pull spec --obs`
+# ---------------------------------------------------------------------------
+
+def push_on_deploy(sb, obs: str) -> dict:
+    """Send the lists a deploy just used. Additions and edits only: a deploy never
+    removes a cloud entry and never overrides one the cloud changed (both are
+    reported for an explicit ``campfire config push / pull``). The base is recorded
+    so the deployer's own push does not later read as someone else's."""
+    from . import config_sync as cs
+    state = cs.load_state()
+    lines: list[str] = []
+    counts = push_observation(obs, fetch_cloud_rows(sb, [obs]).get(obs, []), state, sb,
+                              send_removals=False, out=lines.append)
+    cs.save_state(state)
+    counts['lines'] = lines if counts['pending'] else []
+    return counts
+
+
+def pull_on_pull(sb, obs: str, *, dry_run: bool = False, out=print) -> dict:
+    """The lists' part of ``campfire pull spec --obs``: cloud additions and changes
+    to entries this machine has not touched. Never removes and never resolves a
+    conflict (``campfire config pull`` does, interactively)."""
+    from . import config_sync as cs
+    state = cs.load_state()
+    counts = pull_observation(obs, fetch_cloud_rows(sb, [obs]).get(obs, []), state,
+                              dry_run=dry_run, out=out)
+    if not dry_run:
+        cs.save_state(state)
+    return counts
+
+
+# ---------------------------------------------------------------------------
+# Per-deploy snapshot (deployments.stuck_shutters / stuck_shutter_sources / bkg_overrides)
+# ---------------------------------------------------------------------------
+
+def deployment_snapshot(reference_obs_dir: Path) -> dict:
+    """What the reduction being deployed used, for the deployment row: the stuck
+    list in its historical ``{root: {sid: [ordinals]}}`` shape, the tags beside it
+    as ``{root: {sid: tag}}``, and the overrides as ``{root: {sid: {nod: [nods]}}}``.
+    A key is None when its file is absent or unreadable (a deploy never fails over
+    its provenance snapshot)."""
+    snap = {'stuck_shutters': None, 'stuck_shutter_sources': None, 'bkg_overrides': None}
+    try:
+        stuck = read_stuck_file(Path(reference_obs_dir) / STUCK_FILE)
+    except Exception:
+        stuck = None
+    if stuck is not None:
+        values: dict = {}
+        sources: dict = {}
+        for (root, sid), entry in sorted(stuck.items(), key=lambda kv: _sort_key(kv[0])):
+            values.setdefault(root, {})[sid] = entry['shutters']
+            sources.setdefault(root, {})[sid] = entry['source']
+        snap['stuck_shutters'], snap['stuck_shutter_sources'] = values, sources
+    try:
+        bkg = read_bkg_file(Path(reference_obs_dir) / BKG_FILE)
+    except Exception:
+        bkg = None
+    if bkg is not None:
+        nested: dict = {}
+        for (root, sid), entry in sorted(bkg.items(), key=lambda kv: _sort_key(kv[0])):
+            nested.setdefault(root, {})[sid] = entry
+        snap['bkg_overrides'] = nested
+    return snap

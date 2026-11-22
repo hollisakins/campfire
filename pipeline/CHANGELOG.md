@@ -28,6 +28,19 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+- **`cfpipe nirspec detect-stuck --overwrite` no longer discards hand and web entries.** It
+  replaced the whole `stuck_closed_shutters.toml` with fresh detections, silently dropping
+  every entry a person had written, and with `--source-ids` (or a grating filter) every entry
+  of the sources it did not look at. It now refreshes only the entries tagged `# auto` of the
+  sources analysed in that run (replaced, or dropped when no longer detected, including when
+  nothing is detected at all); `# hand`, `# web` and untagged entries are kept, and an empty
+  `12345 = []` stays a veto that keeps the detector from re-adding the source
+  (`refresh_auto_entries`). New `read_stuck_shutters` returns the tagged entries with the
+  values `toml.load` reads, the reader `campfire config push / pull` uses now that the list
+  and its tags are carried on the config plane. No change to science output: the same file
+  produces the same reduction.
+
 ## v1.0.0 — 2026-11-21
 
 ### Infrastructure
