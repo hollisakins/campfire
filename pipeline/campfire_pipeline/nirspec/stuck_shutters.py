@@ -107,7 +107,8 @@ def _build_tasks(group_files, threshold):
     return tasks
 
 
-def detect_stuck_shutters(obs, files, stage_config, n_processes=1):
+def detect_stuck_shutters(obs, files, stage_config, n_processes=1,
+                          analysed=None):
     """Detect stuck closed shutters from s2d files.
 
     Processes PRISM files by default and optionally grating files when
@@ -128,6 +129,13 @@ def detect_stuck_shutters(obs, files, stage_config, n_processes=1):
         - stuck_shutter_low_frac_threshold_grating (default 0.7)
     n_processes : int
         Number of parallel workers for analysis (default 1 = serial).
+    analysed : set, optional
+        Filled with the ``(root, source_id)`` pairs that were actually analysed
+        (a source with no s2d view, a single shutter, a grating while grating
+        detection is off, or whose files could not be measured is not; neither
+        is a source retired as nodata, which has no canonical to look at).
+        ``refresh_auto_entries`` needs it: only an analysed source's earlier
+        auto entry may be dropped as "no longer detected".
 
     Returns
     -------
@@ -187,6 +195,10 @@ def detect_stuck_shutters(obs, files, stage_config, n_processes=1):
     # Collect detections
     detections = {}
     for (root, source_id, _, n_shutters, _), stuck in zip(all_tasks, results):
+        if stuck is None:
+            continue    # nothing could be measured: says nothing about this source
+        if analysed is not None:
+            analysed.add((root, source_id))
         if stuck:
             if root not in detections:
                 detections[root] = {}
@@ -302,8 +314,10 @@ def _analyze_source_shutters(s2d_paths, n_shutters, low_frac_threshold):
 
     Returns
     -------
-    list of int
-        1-indexed shutter numbers flagged as stuck, or empty list.
+    list of int or None
+        1-indexed shutter numbers flagged as stuck, or empty list. None when no
+        file could be measured (no read-noise extension, too few rows): the
+        analysis is inconclusive, which is not the same as "none stuck".
     """
     # Collect per-shutter low_frac values across all s2d files
     shutter_low_fracs = [[] for _ in range(n_shutters)]
@@ -338,6 +352,9 @@ def _analyze_source_shutters(s2d_paths, n_shutters, low_frac_threshold):
 
             low_frac = np.sum(d < 2 * rn_sigma) / len(d)
             shutter_low_fracs[k].append(low_frac)
+
+    if not any(shutter_low_fracs):
+        return None
 
     # Flag shutters where ALL nods show a high fraction of noise-level pixels
     # Spatial axis is inverted: region 0 (bottom) = shutter N, region N-1 (top) = shutter 1
@@ -436,17 +453,112 @@ def merge_stuck_shutters(existing_toml, detected):
     return merged, updated
 
 
+def refresh_auto_entries(existing_tagged, detected, analysed):
+    """Replace the auto-detected entries of the analysed sources with a fresh
+    detection, keeping everything a person wrote (``detect-stuck --overwrite``).
+
+    Pure function (no I/O), so the rules are unit-testable:
+
+    1. every ``hand`` / ``web`` entry is kept as it is, including an empty list
+       (``12345 = []``: "vetted, none stuck"), which also keeps the detector from
+       re-adding that source;
+    2. an ``auto`` entry of a source that was NOT analysed this run is kept (a
+       run scoped by ``--source-ids`` or a grating says nothing about the rest);
+    3. an ``auto`` entry of an analysed source is dropped, and replaced by the
+       fresh detection when there is one.
+
+    Parameters
+    ----------
+    existing_tagged : dict
+        ``{(root, source_id_str): ([shutters], tag)}`` from ``read_stuck_shutters``.
+    detected : dict
+        ``{root: {source_id: [shutters]}}`` from ``detect_stuck_shutters``.
+    analysed : set
+        ``(root, source_id)`` pairs the detector analysed (its ``analysed`` set).
+
+    Returns
+    -------
+    data : dict
+        ``{root: {source_id_str: [shutters]}}`` for ``write_stuck_shutters_toml``.
+    provenance : dict
+        ``{(root, source_id_str): tag}``.
+    stats : dict
+        Counts: ``kept`` (hand/web), ``auto_kept`` (not analysed), ``auto_dropped``
+        (analysed, no longer detected), ``auto`` (fresh detections written),
+        ``blocked`` (detections a hand/web entry kept out).
+    """
+    analysed_keys = {(root, str(sid)) for root, sid in analysed}
+    entries = {}
+    stats = {'kept': 0, 'auto_kept': 0, 'auto_dropped': 0, 'auto': 0, 'blocked': 0}
+
+    for key, (shutters, tag) in existing_tagged.items():
+        if tag != 'auto':
+            entries[key] = (list(shutters), tag)
+            stats['kept'] += 1
+        elif key not in analysed_keys:
+            entries[key] = (list(shutters), 'auto')
+            stats['auto_kept'] += 1
+        else:
+            stats['auto_dropped'] += 1
+
+    for root, sources in detected.items():
+        for source_id, shutters in sources.items():
+            key = (root, str(source_id))
+            if key in entries and entries[key][1] != 'auto':
+                stats['blocked'] += 1
+                log(f'Skipping auto-detected stuck shutters for '
+                    f'{root}/{source_id}: manual entry already exists')
+                continue
+            if key in existing_tagged and existing_tagged[key][1] == 'auto':
+                stats['auto_dropped'] -= 1   # re-detected, not dropped
+            entries[key] = (list(shutters), 'auto')
+            stats['auto'] += 1
+
+    data, provenance = {}, {}
+    for (root, sid_str), (shutters, tag) in entries.items():
+        data.setdefault(root, {})[sid_str] = shutters
+        provenance[(root, sid_str)] = tag
+    return data, provenance, stats
+
+
+def read_stuck_shutters(filepath):
+    """The stuck-shutters TOML as ``{(root, source_id_str): ([shutters], tag)}``.
+
+    The values are what ``toml.load`` reads (so this is exactly the list stage 2
+    uses, whatever the layout of the file), and the tags come from
+    ``load_stuck_shutters_tagged``'s line parser; an entry that parser cannot
+    see (a multi-line list, say) is ``hand``. Returns ``{}`` for a missing file
+    and raises ``toml.TomlDecodeError`` for one that does not parse. This is the
+    one reader a rewrite of the file should start from: nothing ``toml.load``
+    sees can go missing in it.
+    """
+    if not os.path.exists(filepath):
+        return {}
+    tags = load_stuck_shutters_tagged(filepath)
+    result = {}
+    for root, table in toml.load(filepath).items():
+        if not isinstance(table, dict):
+            continue
+        for sid, shutters in table.items():
+            key = (str(root), str(sid))
+            _, tag = tags.get(key, (None, 'hand'))
+            result[key] = ([int(x) for x in shutters], tag)
+    return result
+
+
 def load_stuck_shutters_tagged(filepath):
     """Parse the stuck-shutters TOML raw, recovering each entry's provenance tag.
 
     ``toml.load`` drops the trailing ``# hand`` / ``# web`` / ``# auto`` comments,
-    but those tags are the ledger that the ``campfire deploy nirspec
-    pull-stuck-shutters`` authority merge (hand > web > auto) reads back on a
-    re-pull. This is a comment-preserving line parser (regex over ``[root]``
-    headers and ``sid = [..]  # tag`` lines), classifying each entry by its
-    comment: containing ``web`` -> ``'web'``; ``auto`` (covers the legacy
-    ``# auto-detected``) -> ``'auto'``; ``hand`` or untagged -> ``'hand'`` (the
-    conservative default — a hand entry is never dropped by the pull).
+    but those tags are the provenance that ``campfire config push / pull`` carries
+    to and from the cloud (``nirspec_source_review.stuck_source``) and that
+    ``refresh_auto_entries`` reads to tell a detected entry from a vetted one.
+    This is a comment-preserving line parser (regex over ``[root]``
+    headers and ``sid = [..]  # tag`` lines), classifying each entry by the first
+    word of its comment: ``web`` -> ``'web'``; ``auto`` (covers the legacy
+    ``# auto-detected``) -> ``'auto'``; anything else, or no comment -> ``'hand'``
+    (the conservative default — a hand entry is never replaced by a detection).
+    Prefer ``read_stuck_shutters``, which takes the values from ``toml.load``.
 
     Parameters
     ----------
@@ -466,36 +578,35 @@ def load_stuck_shutters_tagged(filepath):
     if not os.path.exists(filepath):
         return result
 
-    header_re = re.compile(r'^\s*\[([^\]]+)\]\s*$')
-    entry_re = re.compile(r'^\s*(\d+)\s*=\s*\[([^\]]*)\]\s*(?:#\s*(.*))?$')
+    header_re = re.compile(r'^\[\s*([^\]]+?)\s*\]$')
+    entry_re = re.compile(r'^\s*(-?\d+)\s*=\s*\[([^\]]*)\]\s*(?:#\s*(.*))?$')
+    # The tag is the FIRST word of the trailing comment (`# auto`, `# auto-detected`,
+    # `# web`, `# hand`). A word further in is prose: `# hand: auto-detect missed 2`
+    # is a hand entry, and must never read as a detection (which a refresh drops).
+    tag_re = re.compile(r'^(hand|web|auto)\b', re.IGNORECASE)
 
     current_root = None
     with open(filepath) as f:
         for line in f:
-            stripped = line.split('#', 1)[0].strip()
-            hm = header_re.match(line if stripped.startswith('[') else stripped)
-            if stripped.startswith('[') and hm:
-                current_root = hm.group(1).strip()
+            # A table header, with or without a trailing comment.
+            hm = header_re.match(line.split('#', 1)[0].strip())
+            if hm:
+                current_root = hm.group(1).strip().strip('"\'')
                 continue
             em = entry_re.match(line)
             if em and current_root is not None:
                 sid_str = em.group(1)
                 body = em.group(2).strip()
                 shutters = [int(x) for x in body.split(',') if x.strip()]
-                comment = (em.group(3) or '').lower()
-                if 'web' in comment:
-                    tag = 'web'
-                elif 'auto' in comment:
-                    tag = 'auto'
-                else:
-                    tag = 'hand'
+                tm = tag_re.match((em.group(3) or '').strip())
+                tag = tm.group(1).lower() if tm else 'hand'
                 result[(current_root, sid_str)] = (shutters, tag)
 
     return result
 
 
 def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None,
-                              provenance=None):
+                              provenance=None, quiet=False):
     """Write the stuck shutters TOML file.
 
     Parameters
@@ -512,9 +623,11 @@ def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None,
         output.
     provenance : dict, optional
         ``{(root, source_id_str_or_int): tag}`` giving the ``# hand`` / ``# web``
-        / ``# auto`` tag to emit per entry (the pull-back / auto-detect ledger).
+        / ``# auto`` tag to emit per entry (the provenance the config plane syncs).
         When provided it supersedes ``auto_detected``; any entry missing from the
         map defaults to ``hand``.
+    quiet : bool
+        Skip the log line (``campfire config pull`` reports the write itself).
     """
     if auto_detected is None:
         auto_detected = set()
@@ -549,4 +662,5 @@ def write_stuck_shutters_toml(data, filepath, obs_name, auto_detected=None,
     with open(filepath, 'w') as f:
         f.write('\n'.join(lines))
 
-    log(f'Wrote stuck shutter TOML to {filepath}')
+    if not quiet:
+        log(f'Wrote stuck shutter TOML to {filepath}')

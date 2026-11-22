@@ -328,8 +328,8 @@ def run_stage2a(obs, stage_config, source_ids='all', overwrite=False,
 
         if detected:
             # Merge with existing TOML entries, preserving each entry's
-            # provenance tag (hand/web/auto) through the rewrite so a later
-            # `pull-stuck-shutters` authority merge still tells web from hand.
+            # provenance tag (hand/web/auto) through the rewrite: the tags travel
+            # with the list on `campfire config push / pull`.
             prior_tags = load_stuck_shutters_tagged(obs.stuck_closed_shutters_file)
             existing = _toml.load(obs.stuck_closed_shutters_file)
             merged, updated = merge_stuck_shutters(existing, detected)

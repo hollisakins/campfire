@@ -3270,6 +3270,159 @@ COMMENT ON FUNCTION public.catalog_matches_upsert(jsonb) IS 'Writes photometric 
 REVOKE ALL ON FUNCTION public.catalog_matches_upsert(jsonb) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.catalog_matches_upsert(jsonb) TO authenticated, service_role;
 
+-- nirspec_review_apply: the guarded write of every writer of nirspec_source_review:
+-- `campfire config push`, the deploy that pushes an observation's lists, and the
+-- portal's nods view (one change per click). Each element of p_changes names one
+-- entry of nirspec_source_review -- a channel ('stuck' or 'bkg') of one
+-- (exposure_root, source_id) of p_observation -- with the value the client READ
+-- ('expect') and the value it wants ('set'):
+--   {"channel": "stuck", "exposure_root": "jw...", "source_id": 123,
+--    "expect": {"value": [1, 2], "source": "auto"},    -- null: the client saw no entry
+--    "set":    {"value": [1, 2, 3], "source": "hand"}}  -- null: clear the entry
+-- (a 'bkg' entry has no "source"). A change is applied only while the entry still
+-- holds 'expect' (jsonb equality, so key order and number spelling do not matter;
+-- the client sends back exactly what it read), which is what keeps a portal edit
+-- made between the client's read and its write from being overwritten: that entry
+-- comes back under 'refused' with its current value, and the others still land.
+-- An entry that already holds 'set' is 'unchanged', whatever was expected. There
+-- is no bypass: the CLI's --force resolves a conflict in its own favour and still
+-- sends what it read. One transaction: a call that fails part-way writes nothing. SECURITY INVOKER, so the table's admin policies
+-- apply on top of the explicit gate.
+CREATE OR REPLACE FUNCTION public.nirspec_review_apply(p_observation text, p_changes jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  c            jsonb;
+  v_channel    text;
+  v_root       text;
+  v_sid        integer;
+  v_row        public.nirspec_source_review%ROWTYPE;
+  v_found      boolean;
+  cur_value    jsonb;
+  cur_source   text;
+  exp_value    jsonb;
+  exp_source   text;
+  new_value    jsonb;
+  new_source   text;
+  v_applied    integer := 0;
+  v_unchanged  integer := 0;
+  v_refused    jsonb := '[]'::jsonb;
+BEGIN
+  IF NOT (COALESCE((SELECT public.is_admin()), false)
+          OR COALESCE(auth.role(), '') = 'service_role'
+          OR COALESCE(current_setting('request.jwt.claims', true), '') = '') THEN
+    RAISE EXCEPTION 'nirspec_review_apply: admin only' USING ERRCODE = '42501';
+  END IF;
+  IF p_observation IS NULL OR p_observation = '' THEN
+    RAISE EXCEPTION 'nirspec_review_apply: p_observation is required' USING ERRCODE = '22023';
+  END IF;
+  IF p_changes IS NULL OR jsonb_typeof(p_changes) <> 'array' THEN
+    RAISE EXCEPTION 'nirspec_review_apply: p_changes must be a JSON array' USING ERRCODE = '22023';
+  END IF;
+
+  FOR c IN SELECT * FROM jsonb_array_elements(p_changes) LOOP
+    v_channel := c ->> 'channel';
+    v_root    := c ->> 'exposure_root';
+    IF v_channel IS NULL OR v_channel NOT IN ('stuck', 'bkg') THEN
+      RAISE EXCEPTION 'nirspec_review_apply: channel must be stuck or bkg, got %', COALESCE(v_channel, 'null')
+        USING ERRCODE = '22023';
+    END IF;
+    IF v_root IS NULL OR v_root = '' OR jsonb_typeof(c -> 'source_id') IS DISTINCT FROM 'number' THEN
+      RAISE EXCEPTION 'nirspec_review_apply: a change needs exposure_root and an integer source_id'
+        USING ERRCODE = '22023';
+    END IF;
+    v_sid := (c ->> 'source_id')::integer;
+
+    -- JSON null and a missing key both mean "no entry".
+    exp_value  := NULLIF(c -> 'expect' -> 'value', 'null'::jsonb);
+    exp_source := c -> 'expect' ->> 'source';
+    new_value  := NULLIF(c -> 'set' -> 'value', 'null'::jsonb);
+    new_source := c -> 'set' ->> 'source';
+
+    IF v_channel = 'stuck' THEN
+      IF new_value IS NOT NULL AND jsonb_typeof(new_value) <> 'array' THEN
+        RAISE EXCEPTION 'nirspec_review_apply: a stuck entry is a list of shutter ordinals (% %)', v_root, v_sid
+          USING ERRCODE = '22023';
+      END IF;
+      IF new_source IS NOT NULL AND new_source NOT IN ('hand', 'web', 'auto') THEN
+        RAISE EXCEPTION 'nirspec_review_apply: stuck source must be hand, web or auto, got %', new_source
+          USING ERRCODE = '22023';
+      END IF;
+      IF new_value IS NULL THEN
+        new_source := NULL;   -- no entry, no provenance
+      END IF;
+    ELSE
+      IF new_value IS NOT NULL AND jsonb_typeof(new_value) <> 'object' THEN
+        RAISE EXCEPTION 'nirspec_review_apply: a bkg entry is a {nod: [nods]} map (% %)', v_root, v_sid
+          USING ERRCODE = '22023';
+      END IF;
+      new_source := NULL;
+      exp_source := NULL;
+    END IF;
+
+    SELECT * INTO v_row FROM nirspec_source_review
+     WHERE observation = p_observation AND exposure_root = v_root AND source_id = v_sid
+       FOR UPDATE;
+    v_found := FOUND;
+    IF NOT v_found AND new_value IS NOT NULL THEN
+      -- Take the row (an empty one: no entry in either channel) so the comparison
+      -- below runs under its lock even when another session inserts it first.
+      INSERT INTO nirspec_source_review (observation, exposure_root, source_id)
+      VALUES (p_observation, v_root, v_sid)
+      ON CONFLICT (observation, exposure_root, source_id) DO NOTHING;
+      SELECT * INTO v_row FROM nirspec_source_review
+       WHERE observation = p_observation AND exposure_root = v_root AND source_id = v_sid
+         FOR UPDATE;
+      v_found := FOUND;
+    END IF;
+
+    IF v_found AND v_channel = 'stuck' THEN
+      cur_value  := NULLIF(v_row.stuck_shutters, 'null'::jsonb);
+      cur_source := CASE WHEN cur_value IS NULL THEN NULL ELSE v_row.stuck_source END;
+    ELSIF v_found THEN
+      cur_value  := NULLIF(v_row.bkg_overrides, 'null'::jsonb);
+      cur_source := NULL;
+    ELSE
+      cur_value  := NULL;
+      cur_source := NULL;
+    END IF;
+
+    IF cur_value IS NOT DISTINCT FROM new_value AND cur_source IS NOT DISTINCT FROM new_source THEN
+      v_unchanged := v_unchanged + 1;
+      CONTINUE;
+    END IF;
+
+    IF cur_value IS DISTINCT FROM exp_value OR cur_source IS DISTINCT FROM exp_source THEN
+      v_refused := v_refused || jsonb_build_array(jsonb_build_object(
+        'channel', v_channel, 'exposure_root', v_root, 'source_id', v_sid,
+        'current', CASE WHEN cur_value IS NULL THEN NULL
+                        WHEN v_channel = 'stuck' THEN jsonb_build_object('value', cur_value, 'source', cur_source)
+                        ELSE jsonb_build_object('value', cur_value) END));
+      CONTINUE;
+    END IF;
+
+    IF v_channel = 'stuck' THEN
+      UPDATE nirspec_source_review
+         SET stuck_shutters = new_value, stuck_source = new_source, updated_at = now()
+       WHERE id = v_row.id;
+    ELSE
+      UPDATE nirspec_source_review
+         SET bkg_overrides = new_value, updated_at = now()
+       WHERE id = v_row.id;
+    END IF;
+    v_applied := v_applied + 1;
+  END LOOP;
+
+  RETURN jsonb_build_object('applied', v_applied, 'unchanged', v_unchanged, 'refused', v_refused);
+END;
+$$;
+
+COMMENT ON FUNCTION public.nirspec_review_apply(text, jsonb) IS 'Guarded write of the NIRSpec stuck-shutter / background-override entries (campfire config push, the deploy of an observation, the portal''s nods view): each change carries the value the client read (expect) and the value it wants (set) for one channel of one (exposure_root, source_id), and lands only while the entry still holds what was read, so an edit made in between by another writer is refused and reported instead of overwritten. Returns {applied, unchanged, refused: [{channel, exposure_root, source_id, current}]}. Admin or service role.';
+REVOKE ALL ON FUNCTION public.nirspec_review_apply(text, jsonb) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.nirspec_review_apply(text, jsonb) TO authenticated, service_role;
+
 
 -- =============================================================================
 -- get_photometry_for_sync

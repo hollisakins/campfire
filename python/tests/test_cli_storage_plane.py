@@ -104,8 +104,26 @@ def test_migration_era_commands_deleted():
     for name in ('pull', 'pull-masks'):
         assert nircam.commands[name].hidden, name
     nirspec = deploy_group.commands['nirspec']
-    for name in ('pull-rate-masks', 'pull-stuck-shutters', 'pull-bkg-overrides'):
-        assert nirspec.commands[name].hidden, name
+    assert nirspec.commands['pull-rate-masks'].hidden
+
+
+def test_retired_commands_answer_with_their_replacement():
+    # The stuck-shutter / background-override lists moved to the config plane, and
+    # fetch-config with them: the old spellings name the new command (exit 2)
+    # whatever arguments they are given, instead of "No such command".
+    from campfire.deploy.cli import deploy_group
+    runner = CliRunner()
+    # (--local on the group: the admin gate runs before any subcommand.)
+    for args in (['nirspec', 'pull-stuck-shutters', '--obs', 'x', '--dry-run'],
+                 ['nirspec', 'pull-bkg-overrides', '--obs', 'x', '--local']):
+        res = runner.invoke(deploy_group, ['--local', *args], obj={})
+        assert res.exit_code == 2, res.output
+        assert 'campfire config pull --obs <obs>' in res.output
+        assert deploy_group.commands['nirspec'].commands[args[1]].hidden
+    res = runner.invoke(deploy_group, ['--local', 'fetch-config', '--obs', 'x', '--output-dir', 'y'], obj={})
+    assert res.exit_code == 2, res.output
+    assert 'campfire config pull --obs <obs>' in res.output
+    assert deploy_group.commands['fetch-config'].hidden
 
 
 def test_status_scope_points_at_a_push_dry_run():

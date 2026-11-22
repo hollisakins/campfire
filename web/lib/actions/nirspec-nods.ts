@@ -124,40 +124,88 @@ export async function getNirspecSourceReviews(
   }
 }
 
+// The row holds two independent entries (stuck shutters, background overrides), each
+// synced on its own by `campfire config push / pull`. A save writes ONE of them, through
+// the same guarded write the CLI uses (nirspec_review_apply): the caller passes the
+// entry as the page last saw it, and the change lands only if the row still holds
+// that. A page left open across a CLI push (or another reviewer's edit) therefore gets
+// `conflict` back instead of overwriting what it never saw.
+export type StuckExpect = { value: number[]; source: NirspecSourceReview['stuck_source'] } | null;
+export type BkgExpect = { value: Record<string, number[]> } | null;
+export interface SaveReviewResult {
+  ok: boolean;
+  conflict?: boolean;   // the entry changed since the page read it; nothing was written
+  error?: string;
+}
+
+async function applyReviewChange(
+  observation: string,
+  change: {
+    channel: 'stuck' | 'bkg';
+    exposure_root: string;
+    source_id: number;
+    expect: StuckExpect | BkgExpect;
+    set: { value: number[]; source: 'web' } | { value: Record<string, number[]> } | null;
+  },
+): Promise<SaveReviewResult> {
+  try {
+    const supabase = await requireAdmin();
+    const { data, error } = await supabase.rpc('nirspec_review_apply', {
+      p_observation: observation,
+      p_changes: [change],
+    });
+    if (error) return { ok: false, error: error.message };
+    const result = data as { applied?: number; unchanged?: number; refused?: unknown[] } | null;
+    if (result?.refused?.length) return { ok: false, conflict: true };
+    if ((result?.applied ?? 0) + (result?.unchanged ?? 0) !== 1) {
+      return { ok: false, error: 'Save was not confirmed' };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Failed to save source review' };
+  }
+}
+
 /**
- * Upsert a source's review row by its natural key. BOTH flag channels are written
- * on every save (the caller passes the current sibling value) so a single-channel
- * edit can't null the other column — the upsert writes a whole row. Empty
- * stuck-shutter lists / empty override maps are stored as SQL NULL (see the
- * normalizeBkgOverrides / caller conventions).
+ * Save a source's stuck-shutter entry, tagged `web`. An empty list is stored as
+ * `[]`, not NULL: it records "reviewed, none stuck", which the pipeline's
+ * auto-detector respects (it never re-adds a source that has an entry), so
+ * un-flagging a detected shutter here is durable. `expect` is the entry as the
+ * page last saw it (null = none).
  */
-export async function saveSourceReview(
+export async function saveStuckShutters(
   observation: string,
   exposureRoot: string,
   sourceId: number,
-  stuckShutters: number[] | null,
+  stuckShutters: number[],
+  expect: StuckExpect,
+): Promise<SaveReviewResult> {
+  return applyReviewChange(observation, {
+    channel: 'stuck',
+    exposure_root: exposureRoot,
+    source_id: sourceId,
+    expect,
+    set: { value: stuckShutters, source: 'web' },
+  });
+}
+
+/**
+ * Save a source's background-override entry (`null` = no overrides; see
+ * normalizeBkgOverrides for the empty-map / empty-list conventions). `expect` is
+ * the entry as the page last saw it (null = none).
+ */
+export async function saveBkgOverrides(
+  observation: string,
+  exposureRoot: string,
+  sourceId: number,
   bkgOverrides: Record<string, number[]> | null,
-): Promise<{ review?: NirspecSourceReview; error?: string }> {
-  try {
-    const supabase = await requireAdmin();
-    const { data, error } = await supabase
-      .from('nirspec_source_review')
-      .upsert(
-        {
-          observation,
-          exposure_root: exposureRoot,
-          source_id: sourceId,
-          stuck_shutters: stuckShutters && stuckShutters.length ? stuckShutters : null,
-          bkg_overrides: bkgOverrides,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'observation,exposure_root,source_id' },
-      )
-      .select()
-      .single();
-    if (error) return { error: error.message };
-    return { review: data as NirspecSourceReview };
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : 'Failed to save source review' };
-  }
+  expect: BkgExpect,
+): Promise<SaveReviewResult> {
+  return applyReviewChange(observation, {
+    channel: 'bkg',
+    exposure_root: exposureRoot,
+    source_id: sourceId,
+    expect,
+    set: bkgOverrides ? { value: bkgOverrides } : null,
+  });
 }

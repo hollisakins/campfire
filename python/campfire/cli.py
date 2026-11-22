@@ -1309,8 +1309,10 @@ def _pull_live(sel, *, stale=False, no_annotations=False, workers=4, yes=False, 
         click.echo("\nAll files up to date.")
         store.close()
         # Annotations are not hash-tracked — regenerate them even when the
-        # products are current (an inspector may have edited masks since).
-        _maybe_pull_annotations(target_obs, target_fields, no_annotations)
+        # products are current (an inspector may have edited masks since). Not
+        # on a dry run: they write files under reference/ (and sync state).
+        if not dry_run:
+            _maybe_pull_annotations(target_obs, target_fields, no_annotations)
         return
     if dry_run:
         click.echo(f"\nDry run: would download {total_files} files ({format_size(total_bytes)})")

@@ -4,8 +4,9 @@ The files under ``$CAMPFIRE_ROOT/reference/`` are local configuration: they are
 hand-edited as well as materialized from the web review tables. A pull therefore
 never overwrites or deletes what is already on disk. It creates files and entries
 that are missing locally, leaves identical ones alone, and keeps (and reports) a
-local file or entry that disagrees with the DB. Local config reaches the DB the
-other way, on deploy (``annotation_push``).
+local file or entry that disagrees with the DB. (The NIRSpec stuck-shutter and
+background-override lists are synced both ways instead, by the config plane:
+``nirspec_flags``.)
 """
 from __future__ import annotations
 

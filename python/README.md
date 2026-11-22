@@ -32,7 +32,8 @@ To install straight from GitHub without cloning the repo, see
 The `deploy` extra covers publication workflows (`campfire deploy`, the
 annotation round-trips in `campfire pull`). It depends on `campfire-pipeline` —
 deploy machines always carry the pipeline, since several deploy paths reuse
-pipeline code directly (the stuck-shutter TOML writer, the `Field` skip-glob
+pipeline code directly (the stuck-shutter TOML reader and writer that
+`campfire config push / pull` sync the lists with, the `Field` skip-glob
 loader, jwst-based WCS for mask imports). Like `campfire-layout`, the pipeline
 isn't on PyPI, so install it editable first:
 

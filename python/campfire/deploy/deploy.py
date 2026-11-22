@@ -43,6 +43,7 @@ from campfire.deploy.lines import (
 from campfire.deploy.deploy_plan import (
     FileGroup, NirspecDeployPlan, format_bytes, path_size, render_nirspec_plan,
 )
+from campfire.deploy.nirspec_flags import deployment_snapshot
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
     batch_upsert_objects,
@@ -51,7 +52,6 @@ from campfire.deploy.supabase import (
     deploy_event_metadata,
     deploy_shutters as db_deploy_shutters,
     deploy_slits as db_deploy_slits,
-    fetch_deployment_config,
     ScopeLease,
     get_lifecycle_status,
     get_supabase_client,
@@ -94,24 +94,6 @@ def _load_config_snapshot(obs_dir: Path, obs_name: str) -> dict | None:
     try:
         import tomllib
         with open(config_path, 'rb') as f:
-            return tomllib.load(f)
-    except Exception:
-        return None
-
-
-def _load_stuck_shutters(reference_obs_dir: Path) -> dict | None:
-    """Load the stuck closed shutters TOML, if it exists.
-
-    Issue #212 (PR-4): the reducer-decision TOML moved to
-    ``reference/nirspec/<obs>/stuck_closed_shutters.toml`` (was
-    ``products/<obs>/_<obs>_stuck_closed_shutters.toml``).
-    """
-    shutters_path = reference_obs_dir / "stuck_closed_shutters.toml"
-    if not shutters_path.exists():
-        return None
-    try:
-        import tomllib
-        with open(shutters_path, 'rb') as f:
             return tomllib.load(f)
     except Exception:
         return None
@@ -837,7 +819,9 @@ def _execute_nirspec_plan(
         jwst_version=summary.meta.get('jwst_version'),
         crds_context=summary.meta.get('crds_context'),
         config_snapshot=_load_config_snapshot(obs_dir, obs_name),
-        stuck_shutters=_load_stuck_shutters(resolve_reference_obs_dir(obs_name)),
+        # What this reduction used (stuck list + tags, background overrides),
+        # frozen on the deployment row; the live lists are synced below.
+        **deployment_snapshot(resolve_reference_obs_dir(obs_name)),
         # Real reduction time (earliest CMPFRTIM across products), not the
         # summary-build wall-clock — so re-running `summary` on unchanged
         # pixels no longer advances reduced_at.
@@ -943,14 +927,27 @@ def _execute_nirspec_plan(
         n_grid = upsert_spectrum_exposures(sb, build_spectrum_exposure_records(
             plan.exposure_files, observation=obs_name, scope=Scope(obs=obs_name)))
         review.append(f"{n_grid:,} exposure grid")
-    # Local review config (background overrides, hand/web stuck shutters) is
-    # pushed to nirspec_source_review so a later pull can never lose it.
-    from campfire.deploy.nirspec_flags import push_review_flags
-    n_flags = push_review_flags(sb, obs_name, quiet=True)
-    if n_flags:
-        review.append(f"{n_flags:,} review flag(s) pushed")
+    # The stuck-shutter / background-override lists this reduction used go to the
+    # cloud (nirspec_source_review) with the deploy, under the config plane's
+    # three-way rule: additions and edits are sent; an entry the cloud changed, and
+    # any removal, is left for an explicit `campfire config push / pull`.
+    flag_notes = []
+    try:
+        from campfire.deploy.nirspec_flags import push_on_deploy
+        flags = push_on_deploy(sb, obs_name, config)
+        if flags['pushed']:
+            review.append(f"{flags['pushed']:,} stuck-shutter / bkg-override "
+                          f"entr{'y' if flags['pushed'] == 1 else 'ies'} pushed")
+        flag_notes = flags['lines']
+    except Exception as e:   # never fail a deploy over the lists
+        flag_notes = [f"  ! stuck-shutter / bkg-override lists not synced: {e}",
+                      f"    run `campfire config push --obs {obs_name}`"]
     if review:
         print(f"  review rows: {', '.join(review)}")
+    if flag_notes:
+        print("  stuck-shutter / bkg-override lists differ from the cloud:")
+        for line in flag_notes:
+            print(line)
 
     # ---- Objects ------------------------------------------------------------
     # Incremental object reconciliation: preserves inspection state on existing
@@ -1446,91 +1443,3 @@ def deploy_pointings(
         print(f"  Run 'campfire deploy --obs {obs_name}' first to create the row.")
         return
     print(f"Deployed {len(pointings_data)} pointing(s) for {obs_name}")
-
-
-def fetch_config(
-    obs_name: str,
-    config: dict,
-    output_dir: Path | None = None,
-) -> None:
-    """
-    Reconstitute reduction config files from the database.
-
-    Fetches the latest deployment for the observation and writes:
-    - {obs}_config.toml from deployments.config_snapshot
-    - {obs}_stuck_closed_shutters.toml from deployments.stuck_shutters
-      (place at reference/nirspec/<obs>/stuck_closed_shutters.toml to re-reduce)
-    - observations.toml fragment from observations metadata
-
-    Parameters
-    ----------
-    obs_name : str
-        Observation name
-    config : dict
-        Deploy config (for Supabase credentials)
-    output_dir : Path, optional
-        Output directory (default: current directory)
-    """
-    import toml
-
-    sb = get_supabase_client(config)
-    result = fetch_deployment_config(sb, obs_name)
-
-    if result is None:
-        print(f"Error: Observation '{obs_name}' not found or has no deployment record.")
-        return
-
-    obs_data = result['observation']
-    dep_data = result['deployment']
-    out = output_dir or Path('.')
-    out.mkdir(parents=True, exist_ok=True)
-
-    files_written = []
-
-    # 1. Pipeline config snapshot
-    if dep_data.get('config_snapshot'):
-        config_path = out / f"{obs_name}_config.toml"
-        with open(config_path, 'w') as f:
-            toml.dump(dep_data['config_snapshot'], f)
-        files_written.append(config_path)
-
-    # 2. Stuck shutters. Issue #212 (PR-4): the pipeline reads this from
-    # reference/nirspec/<obs>/stuck_closed_shutters.toml; reconstitute under that
-    # bare basename (obs-prefixed here so a flat output dir stays unambiguous).
-    if dep_data.get('stuck_shutters'):
-        shutters_path = out / f"{obs_name}_stuck_closed_shutters.toml"
-        with open(shutters_path, 'w') as f:
-            toml.dump(dep_data['stuck_shutters'], f)
-        files_written.append(shutters_path)
-
-    # 3. Observations.toml fragment
-    obs_fragment = {obs_name: {}}
-    if obs_data.get('field'):
-        obs_fragment[obs_name]['field'] = obs_data['field']
-    if obs_data.get('program_slug'):
-        obs_fragment[obs_name]['program'] = obs_data['program_slug']
-    if obs_data.get('data_subdir'):
-        obs_fragment[obs_name]['data_subdir'] = obs_data['data_subdir']
-    if obs_data.get('file_globs'):
-        globs = obs_data['file_globs']
-        obs_fragment[obs_name]['files'] = globs[0] if len(globs) == 1 else globs
-    if obs_data.get('gratings'):
-        obs_fragment[obs_name]['gratings'] = obs_data['gratings']
-
-    obs_path = out / 'observations.toml'
-    with open(obs_path, 'w') as f:
-        toml.dump(obs_fragment, f)
-    files_written.append(obs_path)
-
-    # Summary
-    print(f"Fetched config for '{obs_name}':")
-    for p in files_written:
-        print(f"  {p}")
-
-    print(f"\nDeployment #{dep_data.get('id')}:")
-    print(f"  Deployed by: {dep_data.get('deployed_by', 'unknown')}")
-    print(f"  Deployed at: {dep_data.get('deployed_at', 'unknown')}")
-    print(f"  Reduced at:  {dep_data.get('reduced_at', 'unknown')}")
-    print(f"  cfpipe:      {dep_data.get('cfpipe_version', 'unknown')}")
-    print(f"  jwst:        {dep_data.get('jwst_version', 'unknown')}")
-    print(f"  CRDS:        {dep_data.get('crds_context', 'unknown')}")

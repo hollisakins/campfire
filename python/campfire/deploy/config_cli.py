@@ -13,6 +13,12 @@ recorded in ``$CAMPFIRE_ROOT/meta/config_sync_state.json`` (the *base*):
 push refuses to clobber a cloud section someone else changed, pull refuses to
 clobber local hand-edits — each names the conflict and how to resolve it.
 
+The same verbs carry the per-observation NIRSpec reducer-decision lists
+(``reference/nirspec/<obs>/stuck_closed_shutters.toml`` and
+``nodded_background_overrides.toml``, the ``--flags`` kind; admin only), by
+the same three-way rule applied to each (exposure root, source) entry instead
+of a section — see :mod:`campfire.deploy.nirspec_flags`.
+
 `campfire deploy` keeps its narrow automatic upsert of the config it deploys
 (programs + observation, or field); this group is the explicit/bulk path. The
 old ``deploy sync-programs`` / ``deploy sync-fields`` commands are hidden
@@ -44,31 +50,74 @@ def _scope_options(f):
                      help='Only observations.toml.')(f)
     f = click.option('--fields', 'kind_fields', is_flag=True,
                      help='Only fields.toml.')(f)
+    f = click.option('--flags', 'kind_flags', is_flag=True,
+                     help='Only the NIRSpec stuck-shutter / background-override '
+                          'lists (admin).')(f)
     f = click.option('--obs', multiple=True,
-                     help='Specific observation(s) (implies --observations).')(f)
+                     help='Specific observation(s): their observations.toml '
+                          'section and their lists.')(f)
     f = click.option('--field', multiple=True,
                      help='Specific field(s) (implies --fields).')(f)
     return f
 
 
-def _resolve_scope(kind_programs, kind_observations, kind_fields, obs, field):
-    """``{kind: names-or-None}`` — None means every section in scope. With no
-    flags at all, all three kinds are selected in full."""
+_NO_FLAGS = False
+
+
+def _resolve_scope(kind_programs, kind_observations, kind_fields, obs, field,
+                   kind_flags=False):
+    """``({kind: names-or-None}, flags)`` — None means every section in scope.
+
+    ``flags`` is the scope of the NIRSpec lists: ``_NO_FLAGS`` (not selected),
+    None (every observation) or a list of observations. With no flags at all,
+    all three kinds and the lists are selected in full. ``--obs X`` selects X's
+    observations.toml section and X's lists; add ``--observations`` or
+    ``--flags`` to take only one of the two."""
     scope: dict[str, list | None] = {}
+    flags = _NO_FLAGS
     if obs:
-        scope['observations'] = list(obs)
-    elif kind_observations:
-        scope['observations'] = None
+        if kind_observations or not kind_flags:
+            scope['observations'] = list(obs)
+        if kind_flags or not kind_observations:
+            flags = list(obs)
+    else:
+        if kind_observations:
+            scope['observations'] = None
+        if kind_flags:
+            flags = None
     if field:
         scope['fields'] = list(field)
     elif kind_fields:
         scope['fields'] = None
     if kind_programs:
         scope['programs'] = None
-    if not scope:
+    if not scope and flags is _NO_FLAGS:
         scope = {k: None for k in cs.KINDS}
+        flags = None
     # Stable order: programs first (observations FK programs.slug).
-    return {k: scope[k] for k in cs.KINDS if k in scope}
+    return {k: scope[k] for k in cs.KINDS if k in scope}, flags
+
+
+def _flags_ready(config, sb, flags, explicit: bool) -> bool:
+    """Whether the NIRSpec lists take part in this command. They are admin-only
+    and need the pipeline's TOML reader/writer; where either is missing they are
+    skipped, quietly unless ``--flags`` / ``--obs`` asked for them by name."""
+    if flags is _NO_FLAGS:
+        return False
+    from . import nirspec_flags as nf
+    if not nf.can_sync(config, sb):
+        if explicit:
+            print("flags: skipped — the NIRSpec stuck-shutter / background-override "
+                  "lists are admin-only")
+        return False
+    try:
+        import campfire_pipeline  # noqa: F401
+    except ImportError:
+        if explicit:
+            print("flags: skipped — syncing the NIRSpec lists needs the pipeline "
+                  "(install the deploy profile)")
+        return False
+    return True
 
 
 def _client(config_path, local, service_role):
@@ -97,20 +146,27 @@ def config_group():
 @click.option('--dry-run', is_flag=True, help='Show what would happen without writing.')
 @click.option('--force', is_flag=True,
               help='Overwrite cloud sections that changed since your last sync.')
+@click.option('--prune', is_flag=True,
+              help='Also remove from the cloud the NIRSpec list entries your files '
+                   'no longer have (asked interactively otherwise).')
 @click.option('--local', is_flag=True, help='Use local Supabase (127.0.0.1:54321).')
 @click.option('--service-role', 'service_role', is_flag=True,
               help='Service-role auth for unattended runs (bypasses RLS).')
-def push_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
-             field, dry_run, force, local, service_role):
+def push_cmd(config_path, kind_programs, kind_observations, kind_fields,
+             kind_flags, obs, field, dry_run, force, prune, local, service_role):
     """Upsert local TOML sections into the cloud registry (admin).
 
-    Defaults to everything local: all programs, all observations, and every
-    field that already has deployed data (matching the old sync-fields scope;
-    name one explicitly with --field to push it regardless). A cloud section
-    that changed since your last sync is refused, not clobbered — pull or
-    diff first, or --force.
+    Defaults to everything local: all programs, all observations, every field
+    that already has deployed data (matching the old sync-fields scope; name
+    one explicitly with --field to push it regardless), and the NIRSpec
+    stuck-shutter / background-override lists of every observation. A cloud
+    section (or list entry) that changed since your last sync is refused, not
+    clobbered — pull or diff first, or --force. An entry you removed from a
+    list is removed from the cloud only when you confirm it (or --prune), and a
+    detection is never sent over an entry a person wrote.
     """
-    scope = _resolve_scope(kind_programs, kind_observations, kind_fields, obs, field)
+    scope, flags = _resolve_scope(kind_programs, kind_observations, kind_fields,
+                                  obs, field, kind_flags)
     config, sb = _client(config_path, local, service_role)
 
     from .cli import _gate_admin
@@ -148,6 +204,17 @@ def push_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
         if not dry_run:
             cs.record_base(state, kind, pushed)
 
+    if _flags_ready(config, sb, flags, explicit=bool(kind_flags or obs)):
+        from . import nirspec_flags as nf
+        print("flags: pushing the lists of "
+              + ("every local observation" if flags is None
+                 else f"{len(flags)} observation(s)"))
+        res = nf.sync_push(sb, flags, nf.backend_state(state, config), force=force,
+                           prune=prune, dry_run=dry_run, interactive=sys.stdin.isatty())
+        totals['flags'] = res['pushed']
+        if not (res['pushed'] or res['pending'] or res['errors']):
+            print("  in sync")
+
     if dry_run:
         print("\nDry run — no changes made.")
         return
@@ -160,7 +227,9 @@ def push_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
             affected_count=sum(totals.values()), host=socket.gethostname(),
             metadata={'scope': 'config_push', 'counts': totals},
         )
-    print(f"\nDone. Pushed {sum(totals.values())} section(s).")
+    n_flags = totals.pop('flags', 0)
+    print(f"\nDone. Pushed {sum(totals.values())} section(s)"
+          + (f", {n_flags} list entr{'y' if n_flags == 1 else 'ies'}." if n_flags else "."))
 
 
 # ---------------------------------------------------------------------------
@@ -189,11 +258,14 @@ def _pull_decision(lhash, chash, base):
 @click.option('--dry-run', is_flag=True, help='Show what would happen without writing.')
 @click.option('--theirs', is_flag=True,
               help='Resolve conflicts by taking the cloud version (no prompt).')
+@click.option('--prune', is_flag=True,
+              help='Also delete the NIRSpec list entries the cloud removed '
+                   '(asked interactively otherwise).')
 @click.option('--local', is_flag=True, help='Use local Supabase (127.0.0.1:54321).')
 @click.option('--service-role', 'service_role', is_flag=True,
               help='Service-role auth for unattended runs (bypasses RLS).')
-def pull_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
-             field, dry_run, theirs, local, service_role):
+def pull_cmd(config_path, kind_programs, kind_observations, kind_fields,
+             kind_flags, obs, field, dry_run, theirs, prune, local, service_role):
     """Bring cloud config into your local TOMLs (works for any logged-in user).
 
     Pulls every section your program access lets you read, converging the
@@ -202,9 +274,15 @@ def pull_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
     section you edited locally is never clobbered silently — local-ahead
     sections are skipped (push them), and true conflicts prompt (or take the
     cloud with --theirs).
+
+    Admins also get the NIRSpec stuck-shutter / background-override lists
+    (reference/nirspec/<obs>/), entry by entry under the same rule. An entry
+    a person wrote that your file lost is put back; an entry removed in the
+    cloud is removed here only when you confirm it (or --prune).
     """
-    scope = _resolve_scope(kind_programs, kind_observations, kind_fields, obs, field)
-    _, sb = _client(config_path, local, service_role)
+    scope, flags = _resolve_scope(kind_programs, kind_observations, kind_fields,
+                                  obs, field, kind_flags)
+    config, sb = _client(config_path, local, service_role)
     from .toml_surgery import set_section
 
     state = cs.load_state()
@@ -270,12 +348,24 @@ def pull_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
             cs.record_base(state, kind, {name: chash})
             counts['applied'] += 1
             print(f"  {'+' if verdict == 'new' else '~'} {name}")
+    n_flags = n_flags_kept = 0
+    if _flags_ready(config, sb, flags, explicit=bool(kind_flags or obs)):
+        from . import nirspec_flags as nf
+        print("flags: pulling the lists of "
+              + ("every observation" if flags is None else f"{len(flags)} observation(s)"))
+        res = nf.sync_pull(sb, flags, nf.backend_state(state, config), theirs=theirs,
+                           prune=prune, dry_run=dry_run, interactive=sys.stdin.isatty())
+        n_flags, n_flags_kept = res['applied'], res['kept']
+        if not (n_flags or n_flags_kept or res['errors']):
+            print("  in sync")
     if dry_run:
         print("\nDry run — no changes made.")
         return
     cs.save_state(state)
     print(f"\nDone. Applied {counts['applied']} section(s), "
-          f"skipped {counts['skipped']}.")
+          f"skipped {counts['skipped']}"
+          + (f"; {n_flags} list entr{'y' if n_flags == 1 else 'ies'} applied, "
+             f"{n_flags_kept} kept local." if (n_flags or n_flags_kept) else "."))
 
 
 # ---------------------------------------------------------------------------
@@ -298,15 +388,17 @@ _DIFF_LABEL = {
 @click.option('--local', is_flag=True, help='Use local Supabase (127.0.0.1:54321).')
 @click.option('--service-role', 'service_role', is_flag=True,
               help='Service-role auth for unattended runs (bypasses RLS).')
-def diff_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
-             field, show_all, local, service_role):
+def diff_cmd(config_path, kind_programs, kind_observations, kind_fields,
+             kind_flags, obs, field, show_all, local, service_role):
     """Show where local TOMLs and the cloud registry diverge (read-only).
 
     `<` means pull would apply the cloud's version, `>` means push would
-    publish yours, `!` means both sides changed since your last sync.
+    publish yours, `!` means both sides changed since your last sync. For
+    the NIRSpec lists (admins) each line is one (root, source) entry.
     """
-    scope = _resolve_scope(kind_programs, kind_observations, kind_fields, obs, field)
-    _, sb = _client(config_path, local, service_role)
+    scope, flags = _resolve_scope(kind_programs, kind_observations, kind_fields,
+                                  obs, field, kind_flags)
+    config, sb = _client(config_path, local, service_role)
 
     state = cs.load_state()
     clean = True
@@ -344,6 +436,14 @@ def diff_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
         for line in lines:
             print(line)
         clean = clean and not lines
+    if _flags_ready(config, sb, flags, explicit=bool(kind_flags or obs)):
+        from . import nirspec_flags as nf
+        lines = nf.sync_diff(sb, flags, nf.backend_state(state, config), show_all=show_all)
+        n_diff = sum(1 for line in lines if not line.lstrip().startswith('='))
+        print("flags: " + (f"{n_diff} difference(s)" if n_diff else "in sync"))
+        for line in lines:
+            print(line)
+        clean = clean and not n_diff
     if clean:
         print("\nLocal config and cloud registry are in sync.")
 

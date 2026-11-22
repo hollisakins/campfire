@@ -336,6 +336,12 @@ is a per-deploy *snapshot*, not this).
 **The consumption side needs no change** — stage 2 already reads both TOMLs (`stage2.py:708-736`,
 `:1144-1155`). What's built:
 
+> **Superseded (2026-11).** The two pull verbs and the hand > web > auto authority merge
+> described below were replaced by the config plane: `campfire config push / pull / diff`
+> reconcile both files with `nirspec_source_review` entry by entry, three-way, with the
+> tag stored in `stuck_source` (AGENTS.md "Config plane"; `nirspec_flags.py`). The old
+> verbs answer with `campfire config pull --obs <obs>`.
+
 1. **New pull verbs** `campfire deploy nirspec pull-stuck-shutters` / `pull-bkg-overrides` (modeled on
    `pull_masks`/`pull_exclusions`, `nircam_exclusions.py:34-79`): atomic, reversible, generated-header.
 2. **Bkg overrides** — clean full-overwrite (no auto-writer to conflict with).

@@ -15,7 +15,6 @@ Usage (as subcommand of campfire):
     campfire deploy thumbnails --obs ember_uds_p4
     campfire deploy slits --obs ember_uds_p4
     campfire deploy remove --obs ember_uds_p4 --dry-run
-    campfire deploy fetch-config --obs ember_uds_p4 --output-dir ./config
 
     campfire deploy objects                    # reconcile (default)
     campfire deploy objects reconcile --field cosmos
@@ -1387,32 +1386,28 @@ def sync_fields_cmd(ctx, config_path, field, dry_run, local):
 
 
 # ---------------------------------------------------------------------------
-# fetch-config subcommand
+# Retired commands: answered with their replacement, not a bare "no such command"
 # ---------------------------------------------------------------------------
 
-@deploy_group.command('fetch-config')
-@click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
-@click.option('--obs', required=True, type=str, help='Observation name.')
-@click.option('--output-dir', default=None, type=click.Path(),
-              help='Output directory (default: current directory).')
-@click.option('--local', is_flag=True,
-              help='Use local Supabase (127.0.0.1:54321).')
-@click.pass_context
-def fetch_config_cmd(ctx, config_path, obs, output_dir, local):
-    """Fetch reduction config from the database for reproducibility.
+def _retired(group, name: str, message: str):
+    """Register hidden command ``name`` on ``group`` that takes any arguments and
+    fails with ``message`` (exit 2), so an old script or habit learns the new
+    command instead of reading "No such command"."""
+    @group.command(name, hidden=True, add_help_option=False,
+                   context_settings={'ignore_unknown_options': True,
+                                     'allow_extra_args': True})
+    @click.argument('_args', nargs=-1, type=click.UNPROCESSED)
+    def _cmd(_args):
+        raise click.UsageError(message)
+    _cmd.help = f"Retired. {message}"
+    return _cmd
 
-    Retrieves the latest deployment record for the observation and writes:
-    - {obs}_config.toml (effective pipeline config)
-    - {obs}_stuck_closed_shutters.toml (stuck shutter definitions; place at
-      reference/nirspec/<obs>/stuck_closed_shutters.toml to re-reduce)
-    - observations.toml (observation definition fragment)
-    """
-    from pathlib import Path
-    from campfire.deploy.deploy import fetch_config
 
-    config = load_config(config_path, local=_resolve_local(ctx, local))
-    out = Path(output_dir) if output_dir else None
-    fetch_config(obs, config, output_dir=out)
+_retired(deploy_group, 'fetch-config',
+         "`campfire deploy fetch-config` is retired. The current definitions come from "
+         "`campfire config pull --obs <obs>` (the observations.toml section and the "
+         "stuck-shutter / background-override lists); what one deploy used is recorded "
+         "on its `deployments` row (config_snapshot, stuck_shutters, bkg_overrides).")
 
 
 # ---------------------------------------------------------------------------
@@ -1457,14 +1452,19 @@ def nirspec():
     """NIRSpec inspection round-trip utilities (NIRSpec review loop, design §3.5).
 
     Observation deploy is the top-level `campfire deploy --obs <obs>`. These
-    subcommands round-trip the portal's DB-resident review state with the reduction
-    workspace: `pull-redshifts` materializes the inspected redshifts
+    subcommands materialize the portal's DB-resident review state into the reduction
+    workspace: `pull-redshifts` writes the inspected redshifts
     (objects.redshift / redshift_quality) to reference/nirspec/<obs>/redshifts.toml for
-    `cfpipe nirspec linefit`; `pull-rate-masks` materializes the web-drawn rate-file masks
-    (nirspec_rate_exposures.mask_regions) to reference/nirspec/<obs>/masks/*.reg;
-    `pull-stuck-shutters` / `pull-bkg-overrides` materialize the nods-view flags
-    (nirspec_source_review) to reference/nirspec/<obs>/stuck_closed_shutters.toml and
-    nodded_background_overrides.toml. The pipeline reads all three before stage 2.
+    `cfpipe nirspec linefit`; `pull-rate-masks` writes the web-drawn rate-file masks
+    (nirspec_rate_exposures.mask_regions) to reference/nirspec/<obs>/masks/*.reg.
+    `campfire pull spec --obs <obs>` runs both.
+
+    The stuck-shutter and background-override lists
+    (reference/nirspec/<obs>/stuck_closed_shutters.toml, nodded_background_overrides.toml)
+    are not here: they are two-way config, synced entry by entry with
+    nirspec_source_review by `campfire config push / pull / diff` (and by the deploy
+    of the observation). The old `pull-stuck-shutters` / `pull-bkg-overrides` answer
+    with that command.
     """
     pass
 
@@ -1513,45 +1513,12 @@ def nirspec_pull_rate_masks(ctx, config_path, obs, dry_run, local):
     pull_rate_masks(obs, config, dry_run=dry_run)
 
 
-@nirspec.command('pull-stuck-shutters', hidden=True)
-@click.option('--config', 'config_path', default=None,
-              help='Path to deploy config TOML.')
-@click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
-@click.option('--dry-run', is_flag=True,
-              help='Show what would be written without touching files.')
-@click.option('--local', is_flag=True,
-              help='Use local Supabase (127.0.0.1:54321).')
-@click.pass_context
-def nirspec_pull_stuck_shutters(ctx, config_path, obs, dry_run, local):
-    """Merge nirspec_source_review.stuck_shutters into stuck_closed_shutters.toml.
-
-    Authority merge hand > web > auto: preserves hand entries, refreshes web entries
-    from the DB (dropping ones the DB no longer flags), and leaves auto-detected
-    entries to fill gaps. The pipeline reads the TOML before stage 2.
-    """
-    from campfire.deploy.nirspec_flags import pull_stuck_shutters
-    config = load_config(config_path, local=_resolve_local(ctx, local))
-    pull_stuck_shutters(obs, config, dry_run=dry_run)
-
-
-@nirspec.command('pull-bkg-overrides', hidden=True)
-@click.option('--config', 'config_path', default=None,
-              help='Path to deploy config TOML.')
-@click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
-@click.option('--dry-run', is_flag=True,
-              help='Show what would be written without touching files.')
-@click.option('--local', is_flag=True,
-              help='Use local Supabase (127.0.0.1:54321).')
-@click.pass_context
-def nirspec_pull_bkg_overrides(ctx, config_path, obs, dry_run, local):
-    """Regenerate nodded_background_overrides.toml from nirspec_source_review.bkg_overrides.
-
-    Clean full-overwrite (no auto-writer to conflict with). The pipeline reads the
-    TOML before stage 2 to pick per-nod background nods (empty list = exclude nod).
-    """
-    from campfire.deploy.nirspec_flags import pull_bkg_overrides
-    config = load_config(config_path, local=_resolve_local(ctx, local))
-    pull_bkg_overrides(obs, config, dry_run=dry_run)
+for _name in ('pull-stuck-shutters', 'pull-bkg-overrides'):
+    _retired(nirspec, _name,
+             f"`campfire deploy nirspec {_name}` is retired: the stuck-shutter and "
+             "background-override lists are synced by the config plane. Use "
+             "`campfire config pull --obs <obs>` (and `campfire config push --obs <obs>` "
+             "to publish local edits; `campfire config diff --obs <obs>` to compare).")
 
 
 @nircam.command('pull', hidden=True)

@@ -376,9 +376,13 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
+    """Atomic (tmp + rename): the file is the base of every three-way decision, and
+    a half-written one would read as "never synced"."""
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
 
 
 def record_base(state: dict, kind: str, hashes: dict[str, str]) -> None:

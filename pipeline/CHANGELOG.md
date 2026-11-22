@@ -47,6 +47,23 @@ Release procedure: edit the `## Unreleased` section below, then run
     never touched, and runs without `--overwrite` or without `--source-ids` behave as
     before. Infrastructure and not Algorithm because nothing a surviving source produces
     changes; flag it at release time if you read "which spectra exist" as Algorithm.
+- **`cfpipe nirspec detect-stuck --overwrite` no longer discards hand and web entries.** It
+  replaced the whole `stuck_closed_shutters.toml` with fresh detections, silently dropping
+  every entry a person had written, and with `--source-ids` (or a grating filter) every entry
+  of the sources it did not look at. It now refreshes only the entries tagged `# auto` of the
+  sources analysed in that run (replaced, or dropped when no longer detected, including when
+  nothing is detected at all); `# hand`, `# web` and untagged entries are kept, and an empty
+  `12345 = []` stays a veto that keeps the detector from re-adding the source
+  (`refresh_auto_entries`). New `read_stuck_shutters` returns the tagged entries with the
+  values `toml.load` reads, the reader `campfire config push / pull` uses now that the list
+  and its tags are carried on the config plane. The tag parser is stricter about what a
+  tag is, since a mis-read tag now decides what a refresh may drop: the tag is the first
+  word of the trailing comment (`# hand: auto-detect missed 2` read as `auto`), a table
+  header with a trailing comment starts a new root (its entries were filed under the
+  previous one), and negative source ids keep their tag (`-7 = [1]  # auto` read back as
+  `hand`). A source whose files could not be measured counts as not analysed, so its
+  earlier detection is kept. `write_stuck_shutters_toml` takes `quiet=True`. No change to
+  science output: the same file produces the same reduction.
 
 ## v1.0.0 — 2026-11-21
 
