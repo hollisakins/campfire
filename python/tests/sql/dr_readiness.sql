@@ -1,5 +1,5 @@
 -- =============================================================================
--- dr_readiness() harness (data releases P1, docs/design-data-releases-impl-plan.md §3).
+-- dr_readiness() harness.
 -- =============================================================================
 -- Proves the readiness report:
 --   1. runs for service_role and for an authenticated admin, with every key

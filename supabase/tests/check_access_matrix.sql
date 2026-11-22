@@ -1,4 +1,4 @@
--- Access matrix + privilege lints (P-1, docs/design-data-releases-infra-proposal.md §3.3).
+-- Access matrix + privilege lints.
 --
 -- Part A, lints over the whole schema (no fixtures):
 --   1. no policy applies to PUBLIC (every CREATE POLICY carries an explicit TO);
@@ -6,8 +6,7 @@
 --   3. no postgres-owned function in public is executable by anon or by PUBLIC;
 --   4. postgres' default privileges (schema-less and IN SCHEMA public) grant
 --      nothing to anon and no PUBLIC execute on functions.
---   These four lines would have caught findings §0.1 and §0.2 of
---   docs/design-data-releases-impl-findings.md. Add a surface, keep them green.
+--   Add a surface, keep them green.
 --
 -- Part B, a table-driven matrix over principals × surfaces on a fixture with one
 -- public and one private program:

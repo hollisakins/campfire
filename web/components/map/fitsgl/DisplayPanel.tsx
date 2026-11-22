@@ -2,9 +2,8 @@
 
 /**
  * Display panel (epic #337, Phase 4.5; RGB rework per the map-RGB-defaults
- * follow-up) — the docked-right control for how the imagery is rendered
- * (`docs/design-fitsgl-map-ux.md` §4). ALL RGB construction lives here (revised
- * decision 1 — the band rail stays a simple band/RGB switch):
+ * follow-up) — the docked-right control for how the imagery is rendered.
+ * ALL RGB construction lives here (the band rail stays a simple band/RGB switch):
  *
  *  - **single mode**: Scale chips + Limits presets/histogram + colormap dropdown
  *    (locked decision 3: a dropdown, not a swatch row).

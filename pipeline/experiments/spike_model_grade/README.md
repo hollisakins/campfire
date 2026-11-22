@@ -1,7 +1,7 @@
 # spike_model_grade — mask-grade downsample validation (M2 → G0)
 
-How far can the spike footprint models (WebbPSF PSF+scatlight, see
-`docs/design-nircam-spike-masking.md` §3.4, §7 OQ6) be block-downsampled
+How far can the spike footprint models (WebbPSF PSF+scatlight) be
+block-downsampled
 before threshold isophotes move by more than the mask tolerance
 (`grow` = 2 detector px)?
 

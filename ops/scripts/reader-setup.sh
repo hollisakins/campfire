@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up (or rotate) the public read-only SQL login (docs/reader-role.md).
+# Set up (or rotate) the public read-only SQL login (supabase/reader-role.md).
 #
 #   ops/scripts/reader-setup.sh            # set the pooler's credential, apply, start the pooler
 #   ops/scripts/reader-setup.sh rotate     # new password, same steps

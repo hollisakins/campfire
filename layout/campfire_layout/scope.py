@@ -26,8 +26,6 @@ class Instrument(str, Enum):
 
 class LifecycleClass(str, Enum):
     """Per-tree lifecycle, driving ``download --intermediate`` / ``delete-local``.
-
-    Mirrors the table in design-intermediate-products.md §3 PR-2.
     """
 
     CLOUD_PRODUCT = "cloud-backed-product"   # products/, tiles/ — re-fetchable from cloud

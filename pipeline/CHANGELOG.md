@@ -46,6 +46,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   - Algorithm, because a mosaic's pixels can change when masks that used to be skipped are
     applied. The output for a fresh run of the same inputs doesn't change.
 
+### Infrastructure
+- **The NIRCam CRDS warm-up now fetches every reference the run will use (#700).** It used
+  to look up one uncal per `(DETECTOR, READPATT, SUBARRAY)` / `(DETECTOR, FILTER, PUPIL)`,
+  which missed references selected by observation date (`USEAFTER`, e.g. the newer darks)
+  and the `pars-*` step parameter references, so workers downloaded them concurrently and
+  one failed download aborted the whole process phase. It now asks CRDS
+  (`getrecommendations`, no download) what every pending exposure uses, groups exposures
+  by that exact set and downloads each distinct set once. No change to which references a
+  step selects.
+- **Documentation cleanup.** Comments and docstrings no longer point at removed
+  design docs and handoffs; the emission-line fitter's rationale moved into the
+  `linefit_stage.py` docstring. No code or output changes.
+- **`cfpipe nircam refcat` paths follow the field.** A relative `--out` is written
+  into the field's `astrom_cats/` directory (where `[<field>.align].refcat` looks),
+  and relative input catalogs for `merge` / `compare` are looked up there first,
+  then in the current directory. Absolute paths are unchanged.
+
 ## v1.0.1 — 2026-11-22
 
 ### Infrastructure

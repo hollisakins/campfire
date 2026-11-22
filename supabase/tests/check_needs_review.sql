@@ -1,4 +1,4 @@
--- Guard: the needs-review rule (docs/design-needs-review.md, data releases P3).
+-- Guard: the needs-review rule.
 --
 -- An object signed off at quality 1-3 needs review iff its published member
 -- spectrum set differs from the set the inspector saw at sign-off. Quality 4

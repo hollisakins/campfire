@@ -1,6 +1,6 @@
 /**
- * The emission-line catalog the pipeline measures (`cfpipe nirspec linefit`,
- * docs/design-emission-line-fitting.md), mirrored from
+ * The emission-line catalog the pipeline measures (`cfpipe nirspec linefit`),
+ * mirrored from
  * pipeline/campfire_pipeline/nirspec/linelist.py by scripts/sync_linelist.py
  * into linelist.json (CI fails on drift). Keys are the `lines` jsonb keys of
  * line_fits and the `line` column of lines.

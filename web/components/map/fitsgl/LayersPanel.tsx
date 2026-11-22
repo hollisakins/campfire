@@ -2,7 +2,7 @@
 
 /**
  * Layers panel (epic #337, Phase 4.5) — docked-right toggles for what's drawn OVER
- * the imagery (`docs/design-fitsgl-map-ux.md` §4): NIRSpec objects, MSA shutters
+ * the imagery: NIRSpec objects, MSA shutters
  * (Phase 4b, rendered as FitsGL regions), and the RA/Dec graticule. No quality
  * legend (locked decision 5).
  */

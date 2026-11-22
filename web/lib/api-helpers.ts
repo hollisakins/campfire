@@ -72,7 +72,7 @@ export type { LinkScope } from '@/lib/auth/access-context';
  * The API layer's mirror of the SQL helpers (is_link_account() + link_*()):
  * routes that authorize through service-role queries instead of RLS must
  * consult this, or a link session/bearer JWT walks straight past the RLS
- * narrowing (docs/design-public-mirror.md §5). An inactive (revoked or
+ * narrowing. An inactive (revoked or
  * expired) link resolves to active: false, which callers must treat as
  * "sees nothing" — never as "ordinary user". Fail-closed: a profile lookup
  * failure counts as a link account with no scope. Memoized (see isAdminUser).

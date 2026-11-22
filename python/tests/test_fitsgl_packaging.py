@@ -18,7 +18,7 @@ fitsgl = pytest.importorskip(
 )
 
 
-# (module, attribute) pairs CAMPFIRE consumes; see docs/design-fitsgl-integration.md §4.
+# (module, attribute) pairs CAMPFIRE consumes.
 LIBRARY_ENTRYPOINTS = [
     ("fitsgl.build", "build_dataset"),
     ("fitsgl.build_pyramid", "build_pyramid"),

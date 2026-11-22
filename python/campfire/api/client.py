@@ -806,8 +806,7 @@ class APIClient:
         """Fetch all emission-line fits via the /sync/lines endpoint.
 
         One record per spectrum (``spectrum_id`` keyset cursor) with the
-        per-line measurements as a nested ``lines`` dict — see
-        docs/design-emission-line-fitting.md for the record shape.
+        per-line measurements as a nested ``lines`` dict.
 
         A server that predates the endpoint (404) yields an empty catalog
         rather than failing the whole sync: the other four streams are

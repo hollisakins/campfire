@@ -15,7 +15,7 @@ name: Python
 # The `python` job is the only name branch protection should require: it runs
 # on every PR, even when nothing matched the filters, so a docs-only PR still
 # gets a green required check instead of a "waiting for status" that never
-# resolves. See docs/design-data-releases-infra-proposal.md §3.2.
+# resolves.
 
 on:
   pull_request:

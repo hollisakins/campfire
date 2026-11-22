@@ -10,8 +10,7 @@ import { rejectLegacyOffset } from '@/lib/api-sync-pagination';
 /**
  * GET /api/v1/sync/lines
  *
- * Bulk fetch for the Python client's emission-line catalog sync
- * (docs/design-emission-line-fitting.md). Returns line_fits rows —
+ * Bulk fetch for the Python client's emission-line catalog sync. Returns line_fits rows —
  * one per spectrum, with the per-line measurements as JSONB — for programs
  * accessible to the authenticated user, keyset-paginated, with optional
  * incremental filtering via updated_since. Mirrors /sync/photometry.

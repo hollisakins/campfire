@@ -216,7 +216,7 @@ class LineFlags(IntFlag):
     Per-line flags in the emission-line catalog (``lines.csv`` ``flag_<line>``
     columns / ``line_fits.lines[<line>].flags``).
 
-    Set by ``cfpipe nirspec linefit``; see docs/design-emission-line-fitting.md.
+    Set by ``cfpipe nirspec linefit``.
     """
 
     TIED = 1

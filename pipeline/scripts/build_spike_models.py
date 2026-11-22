@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 """Repack + manifest builder for the NIRCam spike footprint model set.
 
-Sibling of ``build_wisp_manifest.py``; see ``docs/design-nircam-spike-masking.md``
-§3.4 and ``pipeline/WISP_TEMPLATE_HOSTING.md`` (the hosting flow carries over
+Sibling of ``build_wisp_manifest.py``; see ``pipeline/WISP_TEMPLATE_HOSTING.md`` (the hosting flow carries over
 as-is, with a ``spike_models/<version>/`` path prefix).
 
 Two subcommands:

@@ -1,7 +1,6 @@
 """Emission-line catalog publication: ``_lines.fits`` products → ``line_fits``.
 
-The local→cloud half of the emission-line loop
-(docs/design-emission-line-fitting.md §4). ``cfpipe nirspec linefit`` writes
+The local→cloud half of the emission-line loop. ``cfpipe nirspec linefit`` writes
 one ``<base>_lines.fits`` next to each spectrum it fit; this module turns
 those into ``line_fits`` rows (one per spectrum, per-line values in
 the ``lines`` jsonb) and upserts them keyed on the spectrum's catalog id,

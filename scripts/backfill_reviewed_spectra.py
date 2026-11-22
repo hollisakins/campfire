@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-One-time seeding of the needs-review state (docs/design-needs-review.md, P3,
-decision D-P3-1).
+One-time seeding of the needs-review state.
 
 The server-side ``seed_reviewed_spectra()`` pages over the signed-off objects
 whose ``reviewed_spectrum_ids`` is still NULL and records, for each, the

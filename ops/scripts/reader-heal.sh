@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Keep the campfire_reader password and role settings in step with the repository
-# (docs/reader-role.md, supabase/roles.sql).
+# (supabase/reader-role.md, supabase/roles.sql).
 #
 # Readers log in to the pooler without a password, but the pooler logs in to db
 # with the role's password (READER_PASSWORD, in the pooler's userlist). Any
