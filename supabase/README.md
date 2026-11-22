@@ -1,8 +1,8 @@
 # Local database
 
 `supabase/schemas/` is the source of truth for the schema; `supabase/migrations/` is how
-it is deployed; `seed.sql` is the sample dataset preview branches and CI load. This page is
-the local workflow after P-1 (`docs/design-data-releases-infra-proposal.md`).
+it is deployed; `seed.sql` is the sample dataset local stacks and CI load. This page is
+the local workflow.
 
 ## Start the stack (no Docker needed)
 

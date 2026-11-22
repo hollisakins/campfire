@@ -282,7 +282,7 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
         # depends on how many ROWS it spans, not on the angle it subtends:
         # channel-scaling it would give LW half the rows (96 -> 48) and half
         # the attenuation, which is not the configuration validated on real
-        # frames (docs/findings-aniso-detrend-a2744.md ran 96 rows in BOTH
+        # frames (the A2744 validation ran 96 rows in BOTH
         # channels, via box_size=192 on LW under the old scaling rule). The
         # x box IS still scaled: it tracks the halo's angular column profile.
         # Legacy square mode (box_size_x = 0) keeps the old scaled behavior

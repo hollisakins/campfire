@@ -1,12 +1,11 @@
 # spike_g0_footprint — G0 footprint validation harness (M2 → M3 gate)
 
-The G0 gate (design doc `docs/design-nircam-spike-masking.md` §6.1) asks:
+The G0 gate asks:
 **does the scaled spike-model isophote envelope real in-flight spikes to
 within `grow`, across magnitude and filter?** The packaged models are
 pre-flight (WebbPSF 1.0.0, requirements OPD — §7 OQ6), so this must be
 answered on real frames before M3 is built. This harness makes the G0 run
-mechanical on any machine holding an existing reduction; see
-`docs/handoff-spike-g0-footprint.md` for the run plan and pass criteria.
+mechanical on any machine holding an existing reduction.
 
 ## Method (per bright Gaia star, per level-2 cal frame)
 

@@ -1,611 +1,94 @@
 # AGENTS.md
 
-Shared guidance for AI coding agents working in this repository.
+Guidance for AI coding agents (and humans) working in this repository. This file is loaded at the start of every session, so it holds what applies everywhere. Each component has its own `AGENTS.md` with the rules for working there; read it before editing files in that directory.
 
-## Project Overview
+## What CAMPFIRE is
 
-Monorepo with several main components — see each directory's README for details:
-- **`layout/`** — `campfire-layout`: the single, zero-dependency authority for the directory/key contract (local paths, storage keys, key↔path bijection, tree lifecycle). Pure-python core depended on by both `pipeline/` and `python/`; mirrored in TypeScript at `web/lib/layout.ts`. **Install this first** (it's not on PyPI).
-- **`pipeline/`** — JWST data reduction (NIRSpec + NIRCam). Local-only, no cloud dependencies.
-- **`web/`** — Next.js web portal. Self-hosted on the Jetstream2 VM (`ops/`), deployed by `.github/workflows/deploy.yml` on merge to `main`.
-- **`python/`** — Unified Python package: API client, CLI, and deployment tools (including the `campfire deploy` CLI). Install with `pip install -e .` for full functionality — the base install carries the science stack (matplotlib, scipy, photutils, reproject, Pillow); interactive Plotly figures (`[plotting]`) and `specutils` are optional extras.
-- **`etc/`** — `campfire-etc`: the empirical NIRSpec/MSA exposure-time calculator and spectrum simulator fitted to the archive, with its MCP server. Deliberately **numpy-only** and independent of `campfire-layout` so `uvx` can install it straight from GitHub; the model builder is behind the `[build]` extra. See `etc/README.md`.
+CAMPFIRE (COSMOS Archive of MultiPle-Field Internal Reductions & Extractions) is an end-to-end framework for reducing and distributing JWST survey data, built for imaging and spectroscopy in extragalactic deep fields (originally COSMOS) by a small team of astronomers. It has three parts:
 
-Supporting: `supabase/` (migrations), `scripts/` (one-off utilities)
+1. **Reduction.** The `cfpipe` CLI (`pipeline/`) downloads raw data from MAST and runs custom reductions of NIRCam imaging and NIRSpec MSA spectroscopy on a local machine. Outputs land in a structured data directory outside the repo, `$CAMPFIRE_ROOT`. It needs no cloud connection: anyone can install and run `cfpipe` on their own data.
+2. **The archive.** Reductions are published to the cloud by the `campfire` CLI (`campfire push` / `campfire deploy`, in `python/`): bulk files go to object storage (OSN for data products, Cloudflare R2 for `fitsgl` map tiles), and catalog info (targets, spectra, objects, line fits, photometry, etc.) goes to a Postgres database (self-hosted Supabase, `supabase/`). The database is the record of every published reduction, and frozen **data releases** are snapshots of it.
+3. **Access.** The archive is read three ways:
+   - the web portal (`web/`, Next.js) at campfire-jwst.org, where collaborators browse, filter, inspect and visually classify spectra and imaging;
+   - a REST API (`/api/v1`, served by the same app) and a read-only SQL login for public data;
+   - the `campfire` Python client and CLI (`python/`) for bulk work: mirroring the catalog (`campfire sync`), pulling files (`campfire pull`), and reading data releases with citations and provenance (`campfire dr`, `Campfire(dr=tag)`).
 
-**Editable install order** (in the `campfire` conda env): `pip install -e ./layout && pip install -e ./pipeline && pip install -e ./python` — `campfire-layout` must precede the two packages that depend on it. The repo-root `install.py` automates this (component profiles, conda env management, ordering, verification — see `install.py --help`). `campfire[deploy]` additionally depends on `campfire-pipeline` (deploy machines always carry the pipeline), resolved the same editable-first way.
+Alongside these, `campfire-etc` (`etc/`) is an empirical NIRSpec exposure-time calculator fitted to the archive, served as an MCP server and a portal page.
 
-**FitsGL co-development** (epic #337): the `campfire[fitsgl]` extra depends on [FitsGL](https://github.com/hollisakins/fitsgl)'s `fitsgl-py` producer, which isn't on PyPI and lives in that repo's `fitsgl-py/` subdirectory. The extra pins a git dependency as the reproducible fallback (`pip install -e "./python[fitsgl]"`), but the dev convention is to check `fitsgl` out **as a sibling of this repo** and install it editable *before* the base client, so local FitsGL edits stay live and pip never fetches from git:
+Programs carry access control: proprietary programs are visible only to their members, public ones to everyone. Access rules live in the database via RLS.
 
-```bash
-pip install -e ../fitsgl/fitsgl-py[deploy]   # sibling checkout, editable
-pip install -e ./python                      # base client leaves fitsgl untouched
-```
+## Repository map
 
-The web side consumes FitsGL as the published npm package `@fitsgl/core` (a plain version range in `web/package.json`); use `npm link` against a local `fitsgl-core` checkout only when co-editing. See `python/README.md` and `docs/design-fitsgl-integration.md` §4.
+| Path | What | Read |
+|---|---|---|
+| `layout/` | `campfire-layout`: the single authority for directory and storage-key layout (local paths ↔ keys). Zero-dependency Python; mirrored in TS at `web/lib/layout.ts`. | `layout/AGENTS.md` |
+| `pipeline/` | `campfire-pipeline` (`cfpipe`): JWST reduction. Runs locally, doesn't interface with the cloud. | `pipeline/AGENTS.md` |
+| `python/` | `campfire`: API client, CLI, sync/storage engine, deployment and data-release tooling. | `python/AGENTS.md` |
+| `web/` | Next.js portal + `/api/v1` REST API. | `web/AGENTS.md` |
+| `supabase/` | Declarative database schema, migrations, seed, SQL guard tests. | `supabase/AGENTS.md` |
+| `etc/` | `campfire-etc`: numpy-only ETC, simulator and MCP server. | `etc/AGENTS.md` |
+| `ops/` | Production VM (Docker Compose, Caddy, backups, deploy script). | `ops/AGENTS.md`, `ops/README.md` |
+| `scripts/` | One-off utilities, backfills, generators. | |
+| `.claude/skills/` | Claude Code skills: reduction cookbooks (`nircam-reduction`), `pipeline-release`, `campfire-review`, `new-update`. | each `SKILL.md` |
+| `docs/` | Temporary: design docs and plans for work in progress (see Documentation). | |
 
-## Pipeline
+## Environment and install
 
-### Running
+- Preferred installation via the `install.py` script, which installs each package in the correct order, and editable. 
+- Installation prefers a clean mamba/conda environment (default: `campfire`). Use `conda run -n campfire python ...`.
+- **Git worktrees:** the editable installs point at the main checkout; if running code from a worktree, make sure to set  `PYTHONPATH=<worktree>/layout:<worktree>/pipeline:<worktree>/python` (only the packages you changed are needed).
+- [FitsGL](https://github.com/hollisakins/fitsgl) (`campfire[fitsgl]` extra) is installed as a sibling checkout before `./python`, if needed; details in `python/README.md`.
+- The web app needs `web/.env.local` (see `web/README.md`). A local database runs without Docker: `supabase start --runtime native` (see `supabase/AGENTS.md`).
 
-```bash
-cd pipeline && pip install -e .
-cfpipe nirspec run --obs <obs_name> --all --processes 4
-cfpipe nircam run --field <field_name> --all --processes 4
-cfpipe config > my_config.toml   # export defaults
-cfpipe download --program 6585 --instrument nirspec
-```
+## Build and test
 
-### Configuration
+| Component | Command | CI check |
+|---|---|---|
+| web | `cd web && npm run typecheck && npm test && npm run build` (`npm run budget` for the bundle budget) | `web` |
+| python client | `CAMPFIRE_ROOT=<scratch dir> pytest python -q` | `python` |
+| layout | `pytest pipeline/tests/test_layout.py -q` and `cd web && npx vitest run lib/layout.test.ts` | `python` |
+| pipeline | `pytest pipeline/tests -q` (informational in CI) | `python` |
+| database | `supabase db reset`, then the `supabase/tests/check_*.sql` guards (see `supabase/AGENTS.md`) | `database` |
+| etc | `pytest etc -q` | `etc-server.yml` workflow |
 
-Config resolution: package defaults → user config (`--config` or `$CAMPFIRE_ROOT/config/config.toml`) → per-observation overrides.
-Config is parametric only — controls *how* stages run, not *whether*. `--overwrite` and `--processes` are CLI-only.
+`python`, `web` and `database` are required status checks on `main`; each path-filters internally.
 
-Observations defined in `$CAMPFIRE_ROOT/config/observations.toml`, fields in `fields.toml`.
+## Rules that apply everywhere
 
-The `[environment].CRDS_CONTEXT` value in `config_default.toml` is the canonical CRDS context for the current `cfpipe` release. Bumping it always implies a MINOR release (CRDS changes are scientifically equivalent to a calibration update). PRs that change this line must categorize the changelog entry as **Calibration**.
+**Real data is not a test fixture.** Machines running agents often hold the production data tree (under `$CAMPFIRE_ROOT`). Run tests and experiments with `CAMPFIRE_ROOT` pointed at a scratch directory. A test that misses a patch can otherwise write into the real tree. 
 
-### Emission-line fluxes (post-inspection loop)
+**Secrets are never committed.** They live in the VM's `ops/.env` / `ops/web.env`, 1Password, or gitignored config (`web/.env.local`, `$CAMPFIRE_ROOT/config/deploy.toml`). Never print them.
 
-`cfpipe nirspec linefit` measures line fluxes **only at the inspected redshift**
-(docs/design-emission-line-fitting.md). It is not part of `run --all`: `campfire pull
---obs X` materializes `objects.redshift` / `redshift_quality` to
-`reference/nirspec/<obs>/redshifts.toml` (any user with program access; writer and
-reader in `campfire_pipeline/nirspec/redshift_reference.py`), `linefit` fits spectra
-at `[nirspec.line_fitting].min_quality` (default 3) or better into `<base>_lines.fits`
-(refit only when redshift / quality / spectrum bytes change), and `campfire deploy
-lines --obs X` (or the full deploy) upserts one `line_fits` row per spectrum
-(its `lines` rows, one per line keyed by the `nirspec/linelist.py` names — components plus the
-doublet totals `CIII1908` / `OII3727` / `SII6725` / ... that are consistent across
-gratings, `component` narrow | broad | doublet; provenance `z_used`,
-`z_quality`, `object_version`, `fit_version`, `spectrum_hash`). `campfire sync` mirrors
-it to `meta/lines.csv` (wide) and `Campfire.query_lines()`; the
-`line_fits_status` view and the sync records flag `stale_redshift` /
-`stale_spectrum`. Fits at the auto redshift are opt-in end to end (`--allow-auto`,
-`--allow-auto-z`, `z_source`). The portal filters and sorts on a line through
-`lines` (one row per spectrum × line, the source of truth since phase 2c, indexed on
-`(line, snr)`): every RPC on the catalog filter contract takes `p_line` /
-`p_line_snr_min` / `p_line_snr_max` / `p_line_include_stale` and the `line_snr` sort,
-the web sends them only while a line is set (`buildFilterParams`), the objects-side
-filter and `line_snr` column both come from `object_line_values` (SECURITY DEFINER with
-the two `object_band_values` gates, plan pinned with `LATERAL … LIMIT 1` lookups — #619;
-guarded by `check_line_filter_scoping.sql`), the picker offers
-doublet totals and stand-alone lines only (`web/lib/linelist.ts`, generated from
-`linelist.py` by `scripts/sync_linelist.py`; CI fails on drift), and the object page's
-Emission Lines section reads `/api/objects/lines`. Deploy also emits a `_lines.json`
-sidecar per product (layout kind `nirspec_lines_json`; `generate_lines_json`: the `MODEL`
-extension in fν + a line summary), the fourth entry the spectrum sidecar resolver answers
-(`lines` / `has_lines`), which the spectrum plot's "Lines" toggle draws (model + continuum;
-`/api/line-fit` streams it when the front is off).
+**Single sources of truth, with generated mirrors.** Edit the source, regenerate the mirror, and commit both. CI fails on drift.
 
-### Python Environment
+| Source | Mirror | Regenerate |
+|---|---|---|
+| `supabase/schemas/*.sql` | `supabase/migrations/` | `supabase db schema declarative sync -f <name> --no-apply` |
+| `layout/campfire_layout/products.py` (+ `bijection.py` dispatch tables) | `web/lib/layout-products.json` | `python scripts/sync_layout_products.py` (checked by `pipeline/tests/test_layout.py`) |
+| `pipeline/campfire_pipeline/nirspec/linelist.py` | `web/lib/linelist.json` (read by `linelist.ts`) | `python scripts/sync_linelist.py` |
+| `etc/campfire_etc/models/` | `web/public/etc/models/` | `cd web && npm run etc-models` |
 
-Always use the `campfire` conda environment when testing code: `conda run -n campfire python ...`
+Never edit an applied migration, a published ETC model file, or a generated mirror by hand.
 
-The environment is tied to one JWST stack (the exact pins in `pipeline/pyproject.toml`). A checkout that pins another stack gets its own env from `install.py --stack new-env` (named `campfire-jwst<major>`, recorded as `env_name` in that checkout's `.campfire-install.json`); use that one there. `python3 install.py --doctor` reports whether the env matches the pins.
+**Access control is enforced in the database.** Reads run under RLS as the requesting user. Don't add a path that reads catalog rows with the service-role client on a user's behalf, unless it scopes the rows itself the same way the policies do.
 
-## Pipeline Versioning & Releases
+**Pipeline changes are versioned science.** A change to `pipeline/**` needs one categorized entry under `## Unreleased` in `pipeline/CHANGELOG.md` by the time the PR opens (see `pipeline/AGENTS.md`). Don't stress about it; the changelog should be written before the PR opens, not as soon as a task is done. 
 
-`campfire-pipeline` follows PEP 440 / semver. Version is resolved by `setuptools-scm` from git tags matching `pipeline-vX.Y.Z` — never edited by hand. Between tags, the version is `X.Y.Z+1.devN+g<sha>[.dDATE]`.
+**User-facing copy is minimal.** Portal pages carry as little text as possible: avoid explanatory microcopy, irrelevant backend/implementation details, CLI hints. Write in American English. 
 
-### Bump policy
+## Git and deployment
 
-- **MAJOR** (X.0.0): breaking output format change (FITS schema, summary columns, file naming)
-- **MINOR** (0.X.0): any change to pixel/flux values for the same input — CRDS bump, `jwst` upgrade, new calibration default, algorithmic change with scientific impact
-- **PATCH** (0.0.X): no change to scientific output (CLI, plots, perf, internal refactor)
+- Branch off `main`; open a PR. Commit or push only when asked.
+- Merging to `main` deploys production: `.github/workflows/deploy.yml` builds the web image, and `ops/scripts/deploy.sh` on the VM applies pending migrations, swaps the image, and rolls back if `/api/health` fails. There are no preview deployments or preview databases.
+- Production runs on one Jetstream2 VM (`ops/`): Next.js container, self-hosted Supabase (Postgres 17, PostgREST, GoTrue, Kong), Caddy behind Cloudflare. The API host is `campfire-api.hollisakins.com`; `campfire.hollisakins.com` is an alias of the portal (see `web/AGENTS.md`).
+- Pipeline tags (`pipeline-vX.Y.Z`) are cut separately after merge with `/pipeline-release` or `scripts/release-pipeline.sh`.
 
-CHANGELOG categories map directly: **Calibration → MINOR**, **Algorithm → MINOR/MAJOR**, **Infrastructure → PATCH**.
+## Documentation
 
-### Workflow
+- **The code is the documentation of current behavior.** Rationale lives in module docstrings and comments next to the code it explains; invariants live in tests (`supabase/tests/check_*.sql`, `python/tests/`).
+- **Permanent docs live with their component:** each directory's `README.md` (usage) and `AGENTS.md` (rules), plus a few contracts read by people outside the code: `python/dr-format-v1.md` (data-release format), `supabase/reader-role.md` (public SQL access), `web/design-system.md` (visual language), `ops/README.md` (production runbook). User-facing docs for the portal are in `web/lib/docs/content/`.
+- **`docs/` is temporary.** It holds design docs and plans for work in progress, and nothing in it is a source of truth. A design doc may be out of date the day its work merges: never cite it as current behavior, and don't link to it from code. When the work lands, move whatever rationale is still needed into docstrings, comments or the component's `AGENTS.md`, then delete the doc (git history keeps it).
 
-- Before a PR touching `pipeline/**` is opened, its `## Unreleased` section in `pipeline/CHANGELOG.md` should carry one categorized entry covering the pipeline changes in that PR. This is a **PR-completeness** check, not a per-edit obligation: edit freely during a session and add (or update) the single entry once, before you open the PR — several related commits share one entry. Everything that ships in a pipeline tag stays logged, including pure Infrastructure/refactor changes (PATCH).
-- **Do not defer or avoid a pipeline change to sidestep the changelog.** If a pipeline fix belongs in the session you're working, make it — then add the Unreleased line. The entry is cheap; a deferred fix that should have shipped is the real cost. Uncertain which category? Pick the closest of Calibration / Algorithm / Infrastructure and note the uncertainty in the entry — a rough categorization is far better than skipping the change.
-- Tags happen separately, after merge, when you're ready to deploy. PRs do not bump versions.
-- Use `/pipeline-release [X.Y.Z]` (or `bash scripts/release-pipeline.sh X.Y.Z`) to do the rollover, commit, and tag. The script enforces: on `main`, clean tree, up-to-date with origin, non-empty Unreleased section, tag does not exist.
-- `campfire deploy` warns and requires explicit confirmation when any FITS being deployed carries a non-release `cfpipe_version` (anything not matching `^X.Y.Z$` — i.e. `.dev`, `+dirty`, `+nondefault`, or a free-form override string). The dev string is preserved verbatim in `spectra.cfpipe_version` so provenance stays visible downstream; the prompt exists so deployers consciously choose to ship unreleased data, not to block it. Pass `--auto-approve` to skip the prompt when knowingly redeploying old or experimental data.
+## Maintaining these files
 
-### Override
-
-For ad-hoc tagged runs that aren't going through the release flow, set `[pipeline].version = "..."` in your config. The string passes through verbatim into `CMPFRVER` and deploys through the same warn-and-confirm path as `.dev` builds.
-
-## Empirical NIRSpec ETC (`etc/`)
-
-`campfire-etc` turns the archive into an exposure-time calculator: per disperser, σ²_pix(λ) = A(λ)/T + B(λ)/(T·t_exp²) fitted to faint standard-configuration spectra, plus the measured 1-D/2-D noise ratios, pixel correlation, shutter-placement penalty, source-Poisson term and flux-recovery fractions. `campfire_etc/model.py` (arithmetic), `sed.py`, `simulate.py` (mock spectra on the native pixel grid with correlated noise) depend on numpy only; `server.py` is the MCP server (`mcp>=2`, `MCPServer`), serving stdio locally and streamable HTTP when hosted (Fly.io via `etc/Dockerfile` + `etc/fly.toml`, deployed by `.github/workflows/etc-server.yml` on merge; hosted URL `https://campfire-etc.hollisakins.com/mcp`). The Claude Code plugin (skill + `.mcp.json`) lives in the separate `claude-astro-tools` marketplace as `nirspec-etc`; this repo owns the code, the models and the deployment.
-
-- **Models are versioned data**: `etc/campfire_etc/models/nirspec-<version>.json` (schema 1) + `manifest.json` (`latest`). Never edit a published model file; add a new version with `campfire-etc build assemble --version <YYYY.MM>` after re-running the harvest/fit steps on a fresh archive snapshot (`etc/README.md` has the run order and the pitfalls). Every tool result carries `model_version`. The regression numbers in `etc/tests/test_model.py` pin the 2026.09 model; if a rebuild changes the default, keep those tests pointing at 2026.09 explicitly (`load_model("2026.09")`) rather than loosening them.
-- Test with `pytest etc` (numpy + mcp only, ~5 s). The HTTP transport is smoke-tested in CI by starting the server and curling `/health`.
-- Keep the core numpy-only: anything needing astropy/scipy goes behind the `[fits]` or `[build]` extras with a lazy import.
-
-## Web Portal
-
-### Development
-
-```bash
-cd web && npm install && npm run dev
-```
-
-Requires `.env.local` with Supabase + R2 credentials (see `web/README.md`).
-
-### Key Patterns
-
-- **Copy**: pages carry as little text as possible. No explanatory microcopy, no implementation detail (hashes, formats, snapshot semantics), no CLI hints on user-facing pages (those belong under `/admin`). A header gets one short line; sections show numbers in cards or badges; detail goes behind a collapsible or into `/docs`.
-- **Server actions**: `web/lib/actions/` with `"use server"` directive
-- **Reads vs mutations (decision D-C, #506)**: server actions are for *mutations* only. Read-only data that a client component fetches (mount effects, TanStack queries) goes through a `GET` route handler under `web/app/api/` — Next serializes server-action POSTs per client, so a read implemented as an action queues behind every other action on the page and cannot be aborted or cached. Pattern: the route resolves identity with `getRequestIdentity()` / `getRequestPrincipal()`, queries under RLS, exports its response type, and sets `Cache-Control: private, …` (never `public`; add `Vary: Cookie` when the response is browser-cached for longer than a session, since sign-out does not clear the HTTP cache); the client fetches it with `fetchJson()` from `web/lib/fetch-json.ts` inside a `useQuery` whose key names *what* is fetched, never the viewer (the QueryClient is cleared on sign-out in `AuthContext`). Shared read logic that both a route and an action need lives in `web/lib/server/` (`import 'server-only'`). Examples: `/api/shutters`, `/api/objects/adjacent`, `/api/objects/near`, `/api/filter-options`, `/api/metadata/*`, `/api/lists/membership`.
-- **Types**: `web/lib/types.ts` (DB types), `web/lib/actions/spectra-types.ts` (sort columns)
-- **Flags**: `web/lib/flags.ts` — bitmask flags (spectral features, object flags, DQ) + quality enum
-- **Auth (client)**: `useAuth()` from `web/lib/contexts/AuthContext.tsx`
-- **Auth (server)**: identity is resolved once per request — `getRequestIdentity()` / `getRequestPrincipal()` / `requireAdmin()` from `web/lib/auth/identity.ts` (cookie session verified locally against `SUPABASE_JWT_SECRET`; `middleware.ts` refreshes the cookie), and `getAccessContext(userId)` from `web/lib/auth/access-context.ts` (60 s per-user memo of admin flag, share-link scope and accessible program slugs, mirroring `accessible_program_slugs()`). Bearer `/api/v1` routes go through `validateAuth()` / `authenticateApiRequest()` in `web/lib/api-auth.ts`. Never call `supabase.auth.getUser()` or read `SUPABASE_SERVICE_ROLE_KEY` directly — ESLint rejects both; use `createServiceClient()` from `web/lib/supabase/service.ts`.
-- **Planner-visible access scope (Catalog Read Model phase 1, #533)**: `objects.is_public` (any member program public), `targets.is_public` and `spectra.is_public` (the row's program) are trigger-maintained copies of `programs.is_public` (`sync_object_is_public` / `sync_row_is_public` on the row, `propagate_program_is_public` when a program flips; never written by hand). The three read policies test `(NOT is_link_account() AND is_public) OR <scope array>` so the planner sees a real column's statistics instead of the opaque `accessible_program_slugs()` InitPlan (whose default ~1% selectivity picked the programs index for a predicate that matches ~76% of rows). Same row set as the array alone; `supabase/tests/check_is_public_scoping.sql` guards both the maintenance and the no-widening invariant. A new program-gated catalog table gets the same column, trigger and policy shape.
-- **Measurement rows carry their object (Catalog Read Model phase 2a)**: `lines.object_id`, `photometry.object_id` and `line_fits.stale_redshift` are trigger-maintained (set on write by the unnest / `compute_line_fit_stale` triggers, re-pointed by `relink_lines_from_targets` / `relink_lines_from_spectra` / `relink_photometry_from_matches`, recomputed by `recompute_line_fit_stale_from_objects` when an object is inspected or bumped; FKs are ON DELETE SET NULL for the objects rebuild). The filter helpers (`object_line_values`, `object_band_values`, `spectra_matching_line_filter`) read them directly; `check_measurement_object_links.sql` guards every maintenance path and the catalog-wide invariants. Never write these columns by hand; `scripts/backfill_measurement_links.sql` fills rows that predate them.
-- **The predicate tree (Catalog Read Model phase 3a, 2026-10-26)**: one query language for the catalog, JSON carried as `?q=` in the portal and `q=` on `/api/v1/objects` and `/api/v1/spectra/list` (the Python client's `q=`). Three node kinds: a group (`{"and": [...]}` / `{"or": [...]}`), a predicate on a column of the table the node is evaluated against (`{"col", "op", "v"}`), and an exists over a child table (`{"exists": "lines", "where": [...], "not"?}`), plus `{"cone": {ra, dec, radius}}`. `catalog_tree_sql(tree, root)` compiles it in plpgsql against `catalog_query_whitelist()` (table → column → type, the only source of identifiers; the objects' member aggregates `programs` / `gratings` / `observations` / `n_targets` / `n_spectra` are deliberately not in it, since they count hidden members, so those questions are an exists over `targets` or `spectra`) and `catalog_query_correlations()` (how each child joins its parent); every value is a literal, anything else raises 22023, which the routes turn into a 400. `catalog_match_ids(root, tree)` runs it SECURITY INVOKER against the base tables (or the `cat_*` views while a release is browsed; the views cost 7x on the EXISTS shape), and `catalog_query_objects` / `catalog_query_spectra` hand the ids to the legacy list RPCs through their new `p_object_ids` / `p_spectrum_ids`, so the row shape, sort, paging, cursor and the Line S/N / Mag columns are one code path; `p_line` / `p_band` on the wrappers are display knobs only. `check_catalog_query.sql` guards the whitelist, the semantics, parity with every legacy filter as a viewer, RLS, release browsing and the wrappers. New filter dimensions are whitelist entries, not RPC parameters.
-- **The tree is the filter state, two nouns are its words (Catalog Read Model phase 3b)**: the portal's `FilterOptions` keeps its legacy slots for the RPC contract, but the UI state is `conditions: TreeNode[]` (plus the search box), carried as `?q=` (`lib/utils/url-params.ts`; an older link's `programs=` / `z_min=` / `line=` … become leading nodes). What the user sees is the vocabulary of `lib/catalog-query/vocabulary.ts` (design doc "The vocabulary: two nouns", rev. 4): **Object** (properties: program, field, position, redshift, quality, tags, grating coverage, max S/N, …; measurements keyed by band) and **Spectrum** (properties: grating, S/N, exposure time, quality flags, …; measurements keyed by line). `targets`, `line_fits`, `catalog_matches` and `object_list_members` are folds behind a property, never named. At the object level a spectrum's grating and a line are questions about any of the object's spectra (the Grating chip's any / all / none of are the legacy grating pill's three shapes; a bare `exists lines` is the object's line row), and **scope is containment** only inside a Spectrum card: one card is one row of `spectra`, written as `exists spectra where [{and: [...]}]` so a card holding a grating alone is never the chip's bare shape; a card is "one spectrum with all of" / "no spectrum with all of"; "any of" is the only group, for alternatives across properties (a multi-select chip is already the OR over one property's values). A choice or flags chip owns every node of its key at its level: three-state options include, exclude or clear a value (`FilterChip`'s `excluded`, reported with the included set in one change), with an any / all switch for the multi-valued relations, so "tagged A but not B" is one chip (`compileChoice` / `readChoiceState`); a replacement is compiled against the table its node sits in (`tableAtPath`) and replaces in place. Objects view = Object chips, Photometry and Lines tables and Spectrum cards; spectra view = Spectrum chips and Lines plus one "its object" section; the view switch is `rerootConditions` (the first explicit card becomes the spectrum, everything else its object's, and back without loss). `readConditions` turns the tree into items with paths (`replaceAt` / `appendAt` / `removePaths` / `addToCard` / `setNegated` / `tidyConditions` edit it); anything the cards cannot show is an `advanced` item printed in the same words, never hidden. `compileProperty` / `compileMeasurement` write the legacy pills' own shapes for the primary properties (proven at parity by the SQL guard; `vocabulary.test.ts` checks them against `legacyNodes`), so a tree of cards still takes the legacy RPCs: every server boundary calls `normalizeFilters(filters, root)` and then `needsTreePath` (a residual, or a column other than the pill's line / band) decides between the legacy RPCs and the tree path (list pages → `catalog_query_objects` / `_spectra`; map, inspection queue, CSV, prev/next → `catalog_match_ids`, null ids when there is nothing to select on, then `p_object_ids` / `p_spectrum_ids`); a column with nothing to select on is the legacy RPC with `p_measurements_display_only`. A spectra-view `grating nin` is never lifted (the spectra RPCs apply `= ANY(p_gratings)` whatever the mode). Columns follow the rows (phase 3c, #660): `show_lines` / `show_bands` are derived from the tree at every boundary (`columnKeys`: every line and band filtered on that every selected row is sure to have, not negated, not under an OR; `components/filters/filter-state.ts`), `activeLinesOf` / `activeBandsOf` read nothing else, and every catalog RPC takes them as `p_line_columns` / `p_band_columns`, JSON maps of the shown keys each with the window of its own row (`{"Halpha": {"snr_min": 3}}`, `{"f444w": {"mag_max": 27}}`, tested on the aggregates the filters test, max S/N over the fits of the line and min magnitude / max S/N over the matches in the band, so a column shows the pair the filter admitted and never a value outside its window), display only (`measurementColumnParams` / `columnSpecs`; with no line pill set `p_line_include_stale` is false only when a shown line's row asks for a fresh fit, with a pill set the flag stays the pill's own, since it governs the pill's filter): the rows carry `line_columns` (`{line: {snr, flux}}`, the object's best fit or this spectrum's) and `band_columns` (`{band: {mag, snr}}`) beside the API's scalar `line_snr` / `band_mag` / `band_snr`, the table shows one column per key (`line_snr:<line>`, `band_mag:<band>`, `band_snr:<band>`, which are also the sort keys the RPCs take, `measurement_sort_key()`), the CSV exports write `snr_<line>` / `flux_<line>` / `mag_<band>` / `snr_<band>`, and `/api/v1/objects` / `/spectra/list` take `line_columns=` / `band_columns=` and the prefixed `sort=`. `object_line_columns` / `object_band_columns` are the scoped helpers (the gates of `object_line_values` / `object_band_values`, one row per object with the map; `check_catalog_query.sql` section 9). Components: `components/filters/FiltersModal.tsx` ("Advanced Filters", centred, a draft applied on Done, Escape closes an open dropdown first, a live count through `GET /api/catalog-query/count` aborted on the next edit, Copy / Paste of the `?q=` JSON through the clipboard; the same on the map), `FilterCards.tsx` (`PropertyChip` over the familiar chips, `MeasurementTable` with click-to-edit range cells over the shared `components/ui/RangeEditor.tsx`, a multi-select picker that adds and removes rows and a per-row details expander, `SpectrumCard`, any-of groups seeded by one property picker, a checkbox "+ property" adder, the advanced block, `NounBody`), `filter-choices.ts` (option lists and value labels); the filter bar shows Program, Field, Position | Redshift, Quality | Grating, Tags, then one chip per other item, then "Advanced", with the Map link beside the search box. Chip dropdowns render through `components/ui/Popover.tsx` so a scrolling container never clips them, and nothing in a three-state dropdown moves under the pointer (no re-sort, the any / all switch and Clear always in place).
-- **Direct SQL for public data (Catalog Read Model phase 4, 2026-10-28)**: `campfire_reader` is a read-only Postgres login (`supabase/roles.sql` locally and for the shadow database, `20261028193000_phase4_reader_role.sql` in production; the operator sets the password with `ops/scripts/reader-setup.sh`, which also runs the PgBouncer `reader` profile on 5432; readers log in without a password, trust auth with a one-name userlist) with SELECT on the eleven catalog tables and eleven `dr_*` tables (not `dr_filter_options`, whose arrays span every frozen member) and nothing else, under its own `reader_select_*` policies in `policies.sql`: pure column predicates (`is_public`, `is_active`, `has_published_spectrum`, `deploy_status = 'published'`, a published tag for the twins), children gated through the parent they reference, never a helper function, since the role has no JWT. `objects` / `dr_objects` are granted column by column without the member aggregates (which count private members) and read through `reader.objects` / `reader.dr_objects` (`views.sql`, the role's `search_path` is `reader, public`), the same columns with the aggregates computed over public published members, stored ones reused when every member is visible as in `object_scoped_aggregates`. A new catalog table gets a grant in `tables.sql`, a reader policy, and a row in the allowlist of `check_reader_role.sql`, which asserts the grant set, the fixture counts (a mixed object included), the frozen reads and that functions and writes are denied; a new aggregate column on objects joins the view and the excluded list. `docs/reader-role.md` is the reader-facing contract.
-- **Measurement tables carry their scientist-facing names (Catalog Read Model phase 2b, 2026-10-26)**: `line_fits` (was `spectrum_line_fits`, the fit run), `lines` (was `spectrum_lines`, one row per spectrum x line), `catalog_matches` (was `object_photometry`, the cross-match) and `photometry` (was `object_photometry_bands`, one row per match x band; its parent key is `match_id`), with frozen twins `dr_lines` / `dr_catalog_matches` / `dr_photometry` and source views `cat_lines` / `cat_catalog_matches` / `cat_photometry`; `line_fits_status` is the staleness view. The API contract did not move: the `/api/v1/sync/lines` and `/sync/photometry` stream names, the release `counts` keys and the RPC signatures are unchanged, and the Python mirror (`campfire/db/store.py`) keeps its old sqlite table names until phase 2c changes their shape (one forced resync, not two). A rename is a hand-authored migration (`ALTER ... RENAME`; pg-delta would DROP + CREATE) followed by a generated one for the function bodies and comments. Every trigger that copies a parent value onto a row reads the parent `FOR SHARE` (`sync_spectra_target_scope` included); `python/tests/test_target_scope_race.py` is its two-session check.
-- **Long tables carry every field (Catalog Read Model phase 2c-1, 2026-10-26)**: `lines` holds all 24 fields of a per-line record (`label`, `wave_obs`, continuum, kinematics, `complex` / `chi2` / `dof` / `npix`, `tied_to`, `members` as `text[]`) and `photometry` holds `wav_min` / `wav_max`, copied by the unnest triggers and, for rows that predate the columns, by `scripts/backfill_long_table_fields.sql` (resumable, per-parent batches, no table lock); frozen twins and `cat_*` views match; `check_long_table_fields.sql` guards the copy. **2c-2 (2026-10-26) dropped the blobs**: `line_fits_upsert(p_rows)` / `catalog_matches_upsert(p_rows)` take the payload the deploy has always sent and write the parent row plus its `lines` / `photometry` rows in one transaction, replacing a parent's rows wholesale (the deploy's only write path; the admin policies gate them); `lines_jsonb_of(spectrum_id, tag)` / `bands_jsonb_of(match_id, tag)` rebuild the map shape for the sync streams, the release exports and the CSV export, so no wire format moved; the object page reads `cat_lines` / `cat_photometry` rows; `sync_line_object` / `sync_photometry_object` BEFORE triggers set `object_id` (a client value is recomputed away); the seed inserts rows; the Python mirror's sqlite tables took the production names (`SCHEMA_VERSION` 12, one forced resync).
-- **Alias hosts (two domains, one portal)**: `campfire.hollisakins.com` serves the same container as `campfire-jwst.org` (Caddy `portal_alias`), because some networks block one domain and some the other. A visitor on an alias host must never be sent to a primary host, so every absolute url the browser follows goes through `web/lib/host-aliases.ts`: `browserUrl()` in client code (the Supabase browser client, map tiles, FitsGL), `localizeUrl(url, request.headers.get('host'))` in route handlers, `urlForRequest()` (`lib/server/request-host.ts`) elsewhere on the server (CDN front urls, Worker proxy urls). The map is the build-time `NEXT_PUBLIC_HOST_ALIASES` (`alias=primary` pairs, GitHub variable `DEPLOY_NEXT_PUBLIC_HOST_ALIASES`). Server-to-server urls (tile fetches for cutouts, presigned OSN/R2 urls) and canonical ones (`metadataBase`, citations) stay primary; prefer relative links. The session cookie keeps the primary API's name on both hosts.
-- **Theme/Prefs**: `useTheme()` and `usePreferences()` from respective contexts in `web/lib/contexts/`
-- **Immutable product delivery (decision D-D, #507)**: bulk product bytes (sidecar JSON, NIRCam PNG/FITS) are not streamed through Vercel functions. A route authorizes the read, then mints a content-addressed url on the Cloudflare Worker's `/o/<key>` endpoint via `frontUrlFor()` / `frontUrlsFor()` in `web/lib/server/cdn-front.ts` (registry `content_hash` as the cache identity, a 6 h window-stable presigned upstream, an HMAC token the Worker checks on every serve, and the row's `updated_at` so an upstream overwritten in place is served but never cached under the old hash). Products are immutable per `storage_objects.content_hash`, not per path. Gated on `CDN_FRONT_URL` + `WORKER_JWT_SECRET`; callers fall back to streaming when it returns null. Serving side: `web/workers/download-worker/src/object.ts`. Spectrum sidecars (#508): the client resolves all four urls (full JSON, 1-D, zfit, line fit) with one `/api/spectrum/sidecars` call and fetches the 1-D sidecar (`_spec_1d.json`, layout kind `spectrum_1d_json`, emitted by deploy next to the full JSON) before the full payload; the zfit scalars `chi2_min` / `confidence` live on `spectra` rows (deploy writes them; `scripts/backfill_zfit_scalars.py` and `scripts/split_spectrum_json.py` backfill older deploys).
-- **Object page streaming (decision D-C, #510)**: `app/nirspec/objects/[id]/page.tsx` renders its HTML from `loadObjectHeader()` alone (object row + access-scoped member targets/spectra; `lib/server/objects.ts`, request-memoized so `generateMetadata` shares the row lookup) and streams the rest: `loadObjectPhotometry()` is passed to the client tree as a promise and settles behind a `<Suspense>` in `UnifiedObjectPage` (it never rejects — a rejection there is a page error, not a missing section). The same render resolves every member spectrum's sidecar urls once (`resolveSpectrumSidecars()` in `lib/server/spectrum-sidecars.ts`, shared with `/api/spectrum/sidecars`), seeds them into the TanStack cache through a `<HydrationBoundary>` (keys in `lib/spectrum-sidecars.ts`, no directive, importable from both sides), and emits `ReactDOM.preload` hints for the 1-D payloads and — via `components/plot/PlotlyPreload.tsx`, which reads the react-loadable manifest under the ids in `plotly-loadable-ids.json` (CI checks they still exist) — the Plotly chunks, so the browser's first spectrum request is the 1-D payload itself, in flight before any script runs. Below-the-fold sections (comments, nearby objects, the SED's P(z)) fetch when they scroll into view; 2-D S/N arrays load only for expanded cards, after their 1-D trace. Inspection mode still fetches the joined `ObjectDetail` through the `getObjectById` action.
-- **Cutout store (decision D-D, #509)**: the three render routes (`/api/tile-thumbnail`, `/api/og-image`, `/api/v1/cutout`) consult the content-addressed store in `web/lib/cutout/store.ts` first — `cutouts/<field>/v<imaging version>/<size>/<fov>/<ra>_<dec>.png` on the public tiles bucket, written after the response — and 302/stream from it on a hit; browser sizes round up to the 64 / 300 / 600 ladder. Program access is checked in the route before the store is consulted; only renders from public imagery are stored. Needs `S3_TILES_PUBLIC_URL_BASE`; a 30-day lifecycle rule on `cutouts/` expires prefixes orphaned by a field re-deploy.
-- **Photometry band filter**: the portal filters and sorts on a broadband magnitude or S/N through `photometry` — one row per (cross-match, band), written with the match by `catalog_matches_upsert` (the source of truth since phase 2c), with `snr` and `mag` (AB, `23.9 - 2.5*log10(flux[uJy])`, NULL for a non-positive flux) as STORED generated columns and partial indexes on `(band, mag)` / `(band, snr)`. Exactly the `lines` pattern on the photometry side, and the same filter contract: every catalog RPC takes `p_band` / `p_band_mag_min` / `p_band_mag_max` / `p_band_snr_min` / `p_band_snr_max` plus the `band_mag` / `band_snr` sorts, and the web sends them only while a band is set (`buildFilterParams`). Rows are keyed on `match_id`, never `object_id` (that FK is refreshed out-of-band after every objects rebuild), so readers join through the parent. One helper serves both matching and display: `object_band_values(p_band, mag/snr bounds, p_program_slugs, p_include_unpublished)` returns `(object_id, mag, snr)` for every caller-visible object in the window, with `mag` = min and `snr` = max over the object's cross-matches in that band; `objects_matching_band_filter` is its id projection (materialized once per RPC call into an `INTEGER[]`), and each RPC `LEFT JOIN`s the function for the `Mag` / `Band S/N` columns and sort keys, so a row can never show a value outside the window that admitted it. It is **SECURITY DEFINER** on purpose: read under RLS, every band row re-ran the derived table's two-hop policy chain (parent cross-match → object) and the filter timed out in production, so the function bypasses RLS and scopes its rows itself with two gates: the caller's explicit `p_program_slugs` / `p_include_unpublished` (the same arguments `objects_matching_line_filter` takes, and the only gate when the caller is the service-role client the `/api/v1` bearer routes use, which carries no `auth.uid()`), plus, whenever there is a user identity, a verbatim copy of the `select_objects_by_access` predicate (keep the two in step; `supabase/tests/check_band_filter_scoping.sql` guards both gates). The picker is fed by `mv_filter_options.photometry_bands` via `/api/filter-options` — band names are per-field `photometry.toml` config, not a fixed catalog like the line list, so an unknown name is passed through and simply matches nothing.
-- **Cursor pagination (decision D-F, #511)**: `/api/v1/objects` and `/api/v1/spectra/list` page with an opaque keyset cursor. The list RPCs (`get_filtered_objects_paginated` / `get_filtered_spectra_paginated`) take `p_after_sort_text` / `p_after_sort_num` / `p_after_tiebreak` and return `has_more` plus the next cursor's components (`next_sort_text` / `next_sort_num` / `next_tiebreak`), computed from the same columns the ORDER BY sorts on (one row past the page is fetched so `has_more` is exact; the spectra ORDER BY tail is `target_id, grating, spectrum_id`, a total order). The route encodes them with `web/lib/api-cursor.ts` — base64url JSON carrying a fingerprint of the filter+sort, so a cursor sent under different filters is a 400 — and returns `pagination.next_cursor` (null on the last page); the count runs on the first page only (`total` is -1 when skipped; `count=` overrides). `offset=` is accepted for one client release with a `Deprecation` header. The `/api/v1/sync/*` routes are keyset-only: `offset>0` is a 400 via `rejectLegacyOffset()` (`web/lib/api-sync-pagination.ts`), the RPCs have no `p_offset` (it stayed on the signatures for one release after #536 because the migration and the Vercel deploy land independently on merge — a signature drop while the old routes still sent it would have 500'd every sync), and `/api/v1/version` floors the client at 0.5.0. Python: `iter_objects` / `iter_spectra` follow `next_cursor`; `query_*` return the pagination block in `Table.meta`; `campfire.deploy.registry._iter_rows` keysets on the PK with pushed-down `.eq()` filters.
-- **Plotting**: `web/components/spectra/plotting-utils.ts`
-- **NIRSpec ETC page (`/nirspec/etc`, unlisted)**: the empirical exposure-time calculator lives at `web/app/nirspec/etc` + `web/components/etc/` with the arithmetic in `web/lib/etc/model.ts` (a port of `etc/campfire_etc/model.py`; `model.test.ts` pins the same 2026.09 numbers as `etc/tests/test_model.py`). It is deliberately not in the navbar — share the URL. It fetches the model JSON from `web/public/etc/models/`, which must be a verbatim copy of `etc/campfire_etc/models/`: run `cd web && npm run etc-models` after adding a model version (CI's `web-etc-models.yml` fails on drift). The summary / ETC-comparison tables and per-disperser caveats are generated from the model file, so a rebuilt model updates the page without prose edits.
-
-### Database (Supabase)
-
-Core tables: `targets` (target catalog), `spectra` (unique spectra, joinable to targets), `programs` (JWST program metadata), `user_profiles` (auth + access, linked to Supabase `auth.users`).
-
-Main RPC function: `get_filtered_target_ids` — server-side filtering, sorting, pagination with Haversine coordinate search.
-
-#### Declarative Schemas (`supabase/schemas/`)
-
-The database uses Supabase's native declarative schema system. **`supabase/schemas/` is the single source of truth** for the entire database schema — tables, functions, triggers, views, indexes, and policies are all defined here. Never read migration files to understand current definitions; read the schema files instead.
-
-`supabase db diff` works by building two databases: one from migrations (the "current" state) and one from schema files (the "desired" state), then generating a migration to reconcile any differences. This means schema files must define the complete database.
-
-Files (applied in this order via `schema_paths` in `config.toml`):
-- `tables.sql` — extensions, tables, sequences, constraints, table grants, default privileges
-- `functions.sql` — all RPC and helper functions
-- `triggers.sql` — trigger functions and triggers
-- `views.sql` — views and materialized views
-- `indexes.sql` — all indexes
-- `policies.sql` — RLS policies
-
-**Workflow for schema changes** (pg-delta engine, `[experimental.pgdelta]` in `config.toml`; see `supabase/README.md`):
-1. Edit the relevant file in `supabase/schemas/`
-2. Generate the migration from the schema files: `supabase db schema declarative sync -f <description> --no-apply` (compares `supabase/schemas/` against the migration chain in a shadow database; needs a running local stack, `supabase start`)
-3. Prepend the header every migration must start with, one statement per line (CI reads the first two non-comment lines and rejects anything else):
-   ```sql
-   SET lock_timeout = '5s';
-   SET statement_timeout = '60s';
-   ```
-4. Apply locally and review: `supabase db reset` (migration chain + `seed.sql`), read the generated SQL
-5. Commit both the schema file change and the generated migration
-6. Open a PR — the `database` check rebuilds the stack, fails on any schema↔migration drift (`--strict-coverage`), runs the `supabase/tests/check_*.sql` guards and the Python SQL harnesses; Supabase also runs the migrations on a preview branch
-7. On merge to `main`, migrations are applied to production via the GitHub integration (`supabase db push --linked` only if necessary)
-
-**Local stack without Docker:** `config.toml` enables the CLI's experimental `stack` commands, so `supabase start --runtime native` runs Postgres and the services as host processes (Linux, Apple-silicon macOS; CLI ≥ 2.119, `npx -y supabase@2.120.0 …` works without a global install). `db reset` takes ~5 s. `pg_cron` jobs do not run on the native runtime (nothing local needs them).
-
-**Caveats:** pg-delta models materialized views, comments, publications and security-invoker views (the migra blind spots that forced hand-authored migrations are gone), but casts, operators, text-search objects and DML are not declarative: put those in versioned migrations under `supabase/migrations/` directly. Never edit an applied migration.
-
-#### Migrations (`supabase/migrations/`)
-
-Migrations are the deployment mechanism, not the source of truth. They are applied sequentially by `supabase db reset` and `supabase db push`. Never edit existing migrations. New migrations are generated by `supabase db schema declarative sync` (pg-delta); the 50 hand-authored migrations from the no-Docker era (e.g. `20260904030000_row_local_rls.sql`) predate the native stack and stay as they are. Every new migration starts with `SET lock_timeout = '5s'; SET statement_timeout = '60s';` and never contains a bulk backfill over `spectra`, `objects` or `storage_objects` (backfills are resumable scripts, template `scripts/backfill_zfit_scalars.py`).
-
-The migration history was squashed on 2026-03-28 into a single baseline (`20260328200000`) + normalization (`20260328204719`). Pre-squash migrations are archived in `supabase/migrations_archive/` for reference.
-
-### Local Supabase
-
-`supabase/seed.sql` contains seed data used for preview database branches & deployments.
-It should be periodically re-generated from a sample of public production data
-
-```bash
-python scripts/generate_seed.py          # stratified sample (~100 targets)
-python scripts/generate_seed.py --objects-per-program 10  # more targets per program
-supabase db reset                        # applies migrations + seed locally (or automatic on PR)
-```
-
-Because `seed.sql` is applied automatically on preview branches, it must stay compatible
-with the current migration state. If a migration adds/removes/renames columns or tables,
-regenerate the seed file. Seed failures will show up as a failed Supabase check on the PR.
-
-`supabase/seed_admin_fixtures.sql` (second entry in `[db.seed] sql_paths`) is hand-maintained
-and derives from the rows `seed.sql` inserted: the NIRCam exposure-review queue, deploy
-events and leases, an inspection access request, a sync snapshot and a fresh burst of
-inspection activity, so `/admin` renders populated locally. A seed regeneration never
-touches it.
-
-Test users: `admin@campfire.dev`, `user@campfire.dev`, `viewer@campfire.dev` (password: `password123`)
-
-## Deployment
-
-### Git Workflow
-
-- **`main`** → production: on merge, `.github/workflows/deploy.yml` builds the web image, pushes it to GHCR and the VM's `ops/scripts/deploy.sh` applies pending `supabase/migrations/` to the self-hosted database, swaps the image and gates on `/api/health` (rollback on failure)
-- Feature/fix branches off `main` → PR; CI's `web`, `python` and `database` checks (the `database` job rebuilds a local stack from the migration chain + seed and runs the SQL guards). There are no preview deployments or preview databases since the 2026-10-25 cutover.
-- On PR open: nothing is deployed; the `database` check is the only database gate.
-- On PR merge to `main`: `deploy.sh` on the VM applies the new migrations to the production database, then swaps the web image
-- A PR touching `pipeline/**` should, by the time it's opened, have one categorized entry (Calibration / Algorithm / Infrastructure) under `## Unreleased` in `pipeline/CHANGELOG.md` covering its pipeline changes — a PR-completeness check, not a gate on individual edits (see Pipeline Versioning & Releases → Workflow). Don't hold back an in-session pipeline change to avoid the entry; make the change and log it. PRs touching only `web/`, `python/`, or `supabase/` do not need a changelog entry.
-
-### Build Verification
-
-**Required status checks on `main`** (`.github/workflows/`): `python` (client + layout golden; pipeline suite informational), `web` (typecheck, vitest, build, bundle budget), `database` (drift gate, migration chain + seed, SQL guards, Python SQL harnesses). Each runs on every PR and path-filters internally. Locally, the same build:
-```bash
-cd web && npm run typecheck && npm test && npm run build && cd ..
-```
-
-### Infrastructure
-
-- **Frontend**: Next.js standalone container on the Jetstream2 VM behind Caddy and Cloudflare (`ops/`); the Vercel project is a decommissioning fallback only
-- **Database**: self-hosted Supabase (Postgres 17 + PostgREST + GoTrue + Kong) on the same VM, `ops/docker-compose.yml`; API at `campfire-api.hollisakins.com`
-- **Storage**: Cloudflare R2 for FITS files
-- **Auth**: Supabase Auth with email/password
-- **CI/CD**: GitHub Actions (`web` / `python` / `database` checks on PRs; `deploy.yml` on merge to `main`). The Supabase GitHub integration and Vercel previews are retired.
-- **Self-hosting**: done 2026-10-25 (web on 2026-10-24, database on 2026-10-25). `ops/README.md` is the runbook: architecture, first boot, deploy, backups, the dump/restore scripts, the executed cutover checklist and the rollback paths.
-
-### Storage plane (push / pull / verify)
-
-The local products tree and cloud storage are two ends of one sync relationship,
-mediated by the `storage_objects` registry (server) and its local mirror
-(`$CAMPFIRE_ROOT/meta/campfire.db`). One engine (`python/campfire/storage/` +
-`campfire/deploy/push.py`) serves both directions with content-identity dedup
-(whole-file everywhere except NIRCam exposures, which use the two-component
-**exposure identity**: `sci_dq_hash` over the SCI/DQ/CFMASK arrays *and*
-`wcs_hash` over the WCS header cards — both must match to skip an upload,
-because `align`/`wcs_shift` move an exposure's astrometry without touching a
-science pixel), a stat fast-path (unchanged files are never re-read), and
-per-batch registration (interrupted transfers resume at file granularity).
-Registry rows predating `wcs_hash` are reconciled against `content_hash` and
-backfilled in place, so upgrading never stampedes a full re-upload. **All data
-products live on OSN; map tiles are the sole R2 exception.**
-
-```bash
-campfire sync                          # refresh the local index (never touches the tree)
-campfire status                        # cloud vs local, staleness, budget (push side: push … --dry-run)
-campfire pull spec --obs X [--products spectra,exposures]   # cloud→local (+ redshifts, review annotations)
-campfire pull im --field Y [--products mosaics,exposures,expmaps] [--filters …] [--tile …]
-campfire push spec --obs X | push im --field Y                # local→cloud bytes ONLY — no catalog, no publication
-campfire verify [--cloud] [--deep]     # tree↔index (bulk scan, size-match quick check); --cloud adds registry↔bucket
-campfire verify spec --obs X | verify im --field Y            # the same scan, scoped to one modality
-campfire drop-local --obs X --yes      # delete local files verified in cloud
-```
-
-Slow-link workflow (CANDIDE→OSN): `campfire push` for the heavy bytes
-(re-runnable until clean), then `campfire deploy` — it dedup-skips everything
-already landed and attaches it to the new deployment. `download` remains an
-alias of `pull`.
-
-**Modality first (`campfire/modality.py`).** `pull` and `push` take a modality
-subcommand, `spectroscopy` (`spec`) or `imaging` (`im`), because selection follows the
-modality (spectroscopy: `--obs` / `--program` / `--field` / `--grating`; imaging:
-`--field` / `--filters` / `--tile`), and `programs` are a NIRSpec notion that imaging does
-not share. `--instrument` is an option within a modality (all of its instruments by
-default), so a new instrument (MIRI, HST) is a vocabulary entry, not a flag. `--products`
-names what (`spectra` / `exposures` / `rates`; `mosaics` / `exposures` / `expmaps`),
-defaulting to the finals for `pull` and to everything for `push`; narrowers only narrow,
-and one that matches nothing in the selection is an error. `--tile` narrows mosaics only
-(exposures and expmaps are whole-field); `pull` reads the tile from the mosaic filename
-(`modality.mosaic_tile`), `push` from the mosaic manifest. Bare `pull` keeps only what spans
-modalities (`--stale`, `--provenance`); the pre-0.8 flag syntax is answered with the
-equivalent new command (`ModalityGroup`), not accepted. `verify` takes the same optional
-modality scope (`verify spec --obs` / `verify im --field`; bare `verify` and `--cloud` are
-catalog-wide), and `status` no longer takes a scope: its old push-side diff is `push … --dry-run`.
-
-**What `campfire sync` mirrors.** The five `/api/v1/sync/*` streams (objects,
-spectra, storage, photometry, line fits) are walked concurrently with keyset
-cursors (5000 rows per page, storage 10000; `CAMPFIRE_SYNC_PAGE_SIZE` /
-`CAMPFIRE_SYNC_STORAGE_PAGE_SIZE`). The storage mirror carries **finals only**
-(`FINAL_PRODUCT_TYPES`: `nirspec_spec`, `nircam_mosaic`) — not the sidecar
-JSON / zfit / line-fit / preview / rate rows that make up most of the registry,
-and not the intermediates: a pull naming them in `--products` indexes the intermediates of
-its selection on demand (`refresh_storage_scope()`, a full walk of that
-product-kind × observation/field slice, purged within the slice) before it
-plans. `campfire push` never depends on the mirror being complete (it fetches
-the live registry rows for its keys). Incremental syncs carry **tombstones**:
-the first page of each of objects / spectra / storage returns `deleted_ids`
-(soft-deleted objects, revoked spectra and members of a deleted object,
-registry rows that left the visible set) which the client deletes locally, so
-`pull` no longer falls back to a full resync after every deploy that regroups
-objects. Tombstones key on `updated_at`: soft-deletes stamp it in
-`apply_object_reconciliation`, `recompute_has_published_spectrum` stamps objects whose
-publication flag flips, and `bump_spectra_updated_at_trigger` fires on
-`deploy_status`. A tombstone taken on the first page yields to a row a later
-page of the same walk re-fetched (the fetched row is the newer fact). Not
-covered: hard deletes (`deploy remove`) and NIRCam field-deploy revokes
-(`deployments` has no `updated_at`, so the storage stream cannot key a
-tombstone on them) still need `campfire sync --full`; the count-mismatch
-fallback that triggers one from `pull` exists for the objects stream only. The sync RPCs
-run under a 120 s `statement_timeout` (service_role otherwise inherits
-authenticator's 8 s): the first page of every stream runs catalog-wide counts.
-
-**Sync catalog snapshot.** A first-time or `--full` sync does not page the streams out
-of Postgres. A systemd timer on the VM (`ops/systemd/campfire-sync-snapshot.timer`, 05:00 UTC, `CRON_SECRET`; formerly a Vercel cron) runs
-`/api/cron/sync-snapshot`, which walks the five streams once for the **public programs
-only** through the same `fetchSyncPage` the routes use (`web/lib/server/sync-streams.ts`).
-It writes one gzip JSONL file per stream to the private OSN bucket under
-`sync-snapshots/<id>/` and records the build in `sync_snapshots` (service-role only;
-the builder keeps the newest 3 ready builds). The keys are not a layout product: they
-are served only through the authenticated `/api/v1/sync/snapshot`, which returns
-presigned urls, or `available:false` for admins (they mirror drafts), before the first
-build, or when a snapshot program went private. The client (`campfire/snapshot.py`,
-`_bootstrap_from_snapshot` in `sync.py`) runs four steps:
-1. loads the files (sha256-verified);
-2. runs the **extras walk**, `snapshot=<id>` on every sync route: the caller's
-   accessible programs minus the snapshot's set, read from the row and never the
-   request. `get_objects_for_sync(p_filter_program_slugs)` also returns mixed
-   public/proprietary objects, whose aggregates need the full scope, and members of
-   the caller's private lists;
-3. runs the normal walk as the catch-up from the snapshot's `started_at`;
-4. applies the hard deletes since `started_at` from `/api/v1/sync/deletions`, because a
-   hard-deleted row leaves nothing for the catch-up to return. Statement triggers
-   journal every delete from the five synced tables into `sync_deletions`, which the
-   builder trims to its oldest kept snapshot; the endpoint answers 410 for anything
-   older, and the client then walks live in the same run;
-5. purges what none of the steps touched.
-
-`started_at` is a watermark, not the build time: the start of the oldest transaction open when the build began, minus 5 minutes, so a write already in flight is not missed. The purge runs after the catch-up, so rows the catch-up restores keep their local download state. A `sync_bootstrap` `_meta` state makes an interrupted bootstrap recover on the next sync: an interrupted load forces a full sync, and an interrupted catch-up resumes from `started_at`. Any unusable snapshot, or any failure during load or the extras walk, falls back to the live walk in the same run (`--no-snapshot` forces it).
-
-### Config plane (issue #303)
-
-The storage plane moves bytes; the **config plane** moves the three
-data-management TOMLs (`programs.toml` / `observations.toml` / `fields.toml`)
-with the same verbs. The cloud registry (`programs` / `observations` /
-`fields` tables) is the source of truth: each row mirrors its TOML section
-losslessly in `config` jsonb (stage overrides, tile WCS, everything) with a
-canonical sha256 in `config_hash`.
-
-```bash
-campfire config push [--programs|--observations|--fields|--flags|--obs X|--field Y]  # local → cloud (admin)
-campfire config pull [--theirs] [--prune]  # cloud → local TOMLs, comment-preserving (any logged-in user)
-campfire config diff                   # three-way divergence report (read-only)
-campfire config retire <kind> <name> [--undo]  # soft-retire a definition (admin; rename = retire + push)
-```
-
-Reconciliation is three-way per section against the last-synced hash in
-`$CAMPFIRE_ROOT/meta/config_sync_state.json`: push refuses to clobber a cloud
-section someone else changed (`--force` to override), pull refuses to clobber
-local hand-edits (local-ahead sections are kept; true conflicts prompt, or
-`--theirs`). Pull rewrites only changed sections via tomlkit, preserving
-comments and formatting elsewhere. Rows are never deleted — removal is the
-explicit `config retire` (never inferred from a section missing locally),
-which pull skips and push refuses; `--undo` re-activates. `fields.programs`
-is resolved at write time by mapping the field's `jwst_program_ids` through
-`observations` rows; unresolved writes omit the column rather than clobber
-it. Bare TOML datetimes are rejected at push
-(they wouldn't survive the jsonb round trip — use quoted ISO strings).
-`campfire deploy` still upserts the config of what it deploys automatically;
-`config push` is the explicit/bulk path. `deploy sync-programs` /
-`deploy sync-fields` are hidden legacy aliases now. This is what lets an
-ephemeral container bootstrap: `campfire config pull` → reduce → deploy.
-
-**NIRSpec stuck-shutter and background-override lists (`--flags`, admin).** The same
-verbs carry the two per-observation reducer-decision files stage 2 reads,
-`reference/nirspec/<obs>/stuck_closed_shutters.toml` (each entry tagged `# hand` /
-`# web` / `# auto`) and `nodded_background_overrides.toml`. Their cloud home is
-`nirspec_source_review`: one row per observation × exposure root × source, holding one
-entry of each file (`stuck_shutters` + its provenance `stuck_source`; `bkg_overrides`),
-which the portal's nods view edits too (`web/lib/actions/nirspec-nods.ts`, one channel
-per save through the same guarded write, stuck edits tagged `web`). Everything is in
-`python/campfire/deploy/nirspec_flags.py`:
-
-- **The sync unit is the entry** (one channel of one root × source), not the
-  observation: the auto-detector and a reviewer routinely change the same observation
-  at once. Each entry is reconciled three-way against the *base*, the value this
-  machine and the cloud last agreed on, stored per entry (and per backend host, so a
-  `--local` run never stands in for production) under `nirspec_flags` in
-  `config_sync_state.json`. Cloud additions and changes to entries this machine has not
-  touched are applied on pull; local additions and edits are sent on push; an entry
-  changed on both sides is a conflict (`pull --theirs` / `push --force`).
-- **A person's entry beats a detection, always.** Where the two sides differ and exactly
-  one is tagged `auto`, the other wins whatever the base says. A file regenerated by a
-  re-reduction looks exactly like "this machine edited the entry", so three-way alone
-  would send its detections over the hand and web entries: instead they are never sent
-  (pull restores the person's entry), and a person's local entry is sent over a cloud
-  detection. To make a detection stand, vet it: retag it `# hand`.
-- **A pull puts back what a file lost.** An entry a person wrote that the cloud holds
-  and the file lacks is restored by every pull (`config pull` and `pull spec`), whatever
-  the base says and whether or not the cloud's copy was edited since. **A missing file is not an empty list**: with no file the base is
-  ignored, so a pull on a wiped tree rewrites every cloud entry.
-- **A removal travels only on an explicit yes.** Push asks before clearing a cloud
-  entry and pull asks before deleting a local one; `--prune` answers yes for a script
-  (`--force` / `--theirs` do not, not even inside a conflict: an entry removed on one
-  side and edited on the other is deleted only with both the conflict flag and the
-  yes), and the non-interactive callers never remove. So an
-  entry is removed everywhere by deleting it and running `campfire config push` (before
-  the next pull, which would restore it). Rows are never deleted; clearing an entry
-  NULLs its column. No tombstones: a machine that never synced an entry and still has
-  it sends it again.
-- **`12345 = []` is an entry** ("vetted, none stuck"): the detector never re-adds a
-  source that has one, so it is the durable veto of a false detection, from the TOML or
-  from the portal (un-flagging stores `[]`, not NULL). `cfpipe nirspec detect-stuck
-  --overwrite` replaces only the `auto` entries of the sources it analysed. The tag is
-  the first word of the trailing comment (`# auto`, `# web`, `# hand`; anything else, or
-  none, is `hand`).
-- **Every write is guarded**: the CLI, the deploy and the portal write only through
-  `nirspec_review_apply(observation, changes)`, where each change carries the value the
-  writer read; it lands only while the entry still holds that value, so an edit made in
-  between (a portal click during a push, a push while a nods page is open) is refused
-  and reported, never overwritten. A cloud entry with `stuck_source` NULL is of unknown
-  provenance (older rows, backfilled snapshots): it takes the tag this machine holds for
-  the same shutters (its file's, sent up; else its base's), otherwise reads as `hand`,
-  and until a machine has agreed on it, it is not "a person's entry" for the rule above
-  (against a different local detection it is a plain conflict: local kept).
-- **The table is admin-only**, so a non-admin reads zero rows; every caller checks
-  `can_sync()` (a positive `is_admin()`, or a service-role / local client) first, since
-  zero rows must never read as "the cloud has no entries".
-- `campfire deploy --obs` pushes the lists it used and `campfire pull spec --obs` pulls
-  them, both through the same code in its non-interactive form: additions and edits
-  (and, on pull, restores) only; nothing removed, no conflict resolved, no detection
-  over a person's entry (they print what is left for an explicit `config push / pull`).
-  `deployments.stuck_shutters` / `.stuck_shutter_sources` / `.bkg_overrides` stay the
-  frozen record of what one deploy used.
-- A file is rewritten only when its entries change (atomic, previous file kept as
-  `.prev`), the stuck list by the pipeline's own writer. Guards:
-  `supabase/tests/check_nirspec_review_flags.sql` (RLS + the guarded write),
-  `python/tests/test_nirspec_flags.py` (the rules as pure functions, the TOML → row →
-  TOML round trip, the regenerated-file scenario end to end).
-  `scripts/backfill_nirspec_review_flags.py` seeds the table from each observation's
-  newest deployment snapshot (report only unless `--apply`).
-
-`deploy nirspec pull-stuck-shutters` / `pull-bkg-overrides` and `deploy fetch-config`
-are retired and answer with `campfire config pull --obs <obs>`.
-
-### Deploy CLI (publication)
-
-`campfire deploy` = push (via the shared engine) + catalog upserts + deployment
-lifecycle. Part of the unified `campfire` CLI (install from `python/`):
-
-```bash
-cd python && pip install -e .
-campfire deploy --obs <obs_name>                         # full deploy
-campfire deploy --obs <obs_name> --dry-run               # validate only
-campfire deploy --field cosmos --products mosaics --tile core  # NIRCam field; --products / --filters / --tile as for `push im`
-campfire deploy pointings --obs <obs_name>               # pointings JSONB backfill
-campfire deploy tiles --field cosmos --filter f444w      # map tiles
-campfire deploy photometry --field goods-n --supersede  # catalog cross-match + P(z) sidecars; retire the previous catalog_name
-campfire config push --programs                          # programs.toml → cloud (config plane)
-```
-
-The catalog rows' `file_hash` / `science_hash` come from the observation's `<obs>_summary.ecsv`, so a
-final reprocessed in place after `cfpipe nirspec summary` ran would deploy a row the freeze later refuses:
-`campfire deploy --obs X` hashes every final the summary names first and refuses a stale summary (dry run
-included; the fix is regenerating it, #665). Every idempotent request a `dr export` / `dr archive` / `dr purge` /
-`archive gc` run makes (page reads, ledger reads, begin / status, the byte pass's member and its mark, the
-collection's claim / verify / delete / finish) is retried on a transport error (`campfire/transient.py`, three
-attempts with backoff; an answer such as a precondition failure or a refusal is never retried, #666). Not
-retried on purpose: a new archive claim and the export's per-file marks, each bound to a claim the call itself
-takes, so a resend after a lost answer would be refused as another run's.
-
-Photometry is configured per field in `$CAMPFIRE_ROOT/config/photometry.toml`
-(schema and a UNICORN example: `python/campfire/deploy/photometry.example.toml`).
-Rows key on `(field, catalog_name, catalog_id)`, so a new catalog release lands
-beside the old one until `--supersede` deletes the other `catalog_name`s in the
-field (refused when the new match count is under half the rows it would retire,
-unless `--force`); `[field.photoz].format` selects the `lazy` (native Lazy.jl) or `unicorn`
-(release `*_photz_v*.fits` + template cube) reader. UNICORN releases are pulled
-from the open Corral host `https://web.corral.tacc.utexas.edu/unicorn/Catalogs/`.
-
-Migration-era one-time tools (the `deploy registry` subgroup —
-backfill/reconcile/copy/prune — and `deploy nircam import-*`) are deleted (A1/A2
-complete, issue #371). The storage budget shows in `campfire status` (admins);
-registry↔bucket verification is `campfire verify --cloud`. The `deploy nircam
-pull*` / `deploy nirspec pull-redshifts` / `pull-rate-masks` annotation
-materializers are folded into `campfire pull` (hidden but working individually);
-the NIRSpec stuck-shutter / background-override lists are synced by the config
-plane instead (above). RGB/SED static cutouts are
-fully deprecated (superseded by the on-the-fly `/api/v1/cutout` API): deploy
-neither generates nor uploads them, the `deploy rgb`/`deploy sed` subcommands
-and their generators are removed, and the `targets.has_sed_plot` column is
-dropped — their legacy R2 remnants retire with A2.
-
-**Deploy leases and data-release freezes.** A freeze (`campfire dr freeze`) is one
-snapshot transaction, so it is internally consistent by construction; its post-freeze
-integrity checks (finals present with matching hashes, mosaics of the published
-deployment, non-empty components) are what make the release usable. The deploy lease
-(`deploy_scope_state`) exists so a freeze never snapshots a catalog write that spans
-several requests half-way: `begin_deploy_scope` refuses while a freeze runs, and a freeze
-refuses while any lease is live. So every `deploy` command that writes, over several
-requests, anything the freeze reads (spectra, objects, line fits, photometry, registry
-rows of release members, `nircam_images`) runs under a scope lease (`_under_scope_lease`
-and friends in `deploy/cli.py`), and no deploy runs unleased (`ScopeLease.begin` fails
-closed). `python/tests/test_deploy_freeze_contract.py` classifies every command; a new one
-fails it until it is classified. Run `dr freeze` when `dr status` shows no activity; an
-unleased admin edit overlapping a freeze yields a consistent snapshot of an intermediate
-catalog, not a corrupt one.
-
-**Retain-on-supersede.** The archive (`archive/<sha256>/<relpath>` on OSN, registry rows with
-`root = 'archive'`, immutable by trigger) holds exactly the files data releases reference. Before
-a deploy overwrites a live NIRSpec final or sidecar, the gate (`web/lib/server/retain.ts` on the
-presign route for login-mode deploys, `campfire/deploy/retain.py` on the direct path) asks
-`retain_required_hashes` whether the object's current bytes belong to a frozen release whose
-`dr archive` has not copied them yet; only then are they copied first, and a copy that drifts or
-fails refuses the batch (409 `retain_failed`). Every other overwrite proceeds as always and
-nothing else is retained. The gate is always on and has no mode or override (decision D-P2-4);
-the fix for a refused batch is finishing `campfire dr archive` or purging the release. An archive
-object lives while any release's manifest references it (`archive_object_references`: by
-`archive_key`, or by `storage_key` + `content_hash` for a copy the gate retained) and is
-collectable otherwise, whatever its type or age (D-P4-6 / D-P4-7). Collection is three phases,
-since no lock spans the bucket delete: `dr_archive_collect_begin` claims the rows (`archived` →
-`collecting`) under the freeze advisory lock and the release row lock after re-checking the
-references and the release state, and leaves the tag in state `purging` (publish, archive, export
-and re-freeze refuse it until `dr_purge_release` removes the tag); the caller deletes the bytes; and
-`dr_archive_collect_finish` deletes the rows, writes a 7-day tombstone per key in
-`archive_collections` and logs one `collect` event. One collector per object: the claim carries the
-run's token (`collect_claim`), a claim refreshed in the last 10 minutes refuses another run, an
-older one is taken over, and `dr_archive_collect_verify` / `_finish` act only on rows the token
-still owns (the collector re-verifies if more than a minute passed before its delete), so a run taken
-over after a stall deletes nothing it no longer holds. Nothing builds on a `collecting` row: the byte
-pass never offers it as a source or a stamp, `dr_bytes_mark` fails the member on it and on any
-outcome whose key a collection deleted after the pass fetched its page (`page_at`, the server time
-`dr_bytes_pending` hands out with the row, against the tombstone; `target_collected_at` lets the pass
-copy again instead of healing on a stale object), and the gate
-registers through `archive_register_retained` BEFORE it copies, which refuses a `collecting` row
-and otherwise makes the row referenced before the copy is in flight. Once the rows are gone the key
-is free for a fresh row. `campfire dr purge <tag>` runs the three phases over the objects only that
-unpublished release references (`dr_purge_archive_plan`, keyset-paged; `--keep-archive` skips it,
-`--local` touches no bytes), `campfire archive gc` runs them over what no release references at all
-(`archive_collectable`); both list `collecting` rows too, so an interrupted run resumes. The byte pass reuses a `CMPFRDR` stamp only from a published (or withdrawn)
-release, so an unpublished tag never reaches a published file's header. `check_archive_collect.sql`
-guards the reference rule and the phases; `check_archive_immutability.sql` the trigger.
-
-**The release store (P5-1).** A pulled release lives under `$CAMPFIRE_ROOT/dr/<tag>/`: the export
-files as fetched (`exports/<stream>/<scope>.jsonl.gz`, verified against the files route's sha256 / size),
-`meta/campfire.db` (a `LocalStore` over the live mirror's DDL plus a release-only `release_manifest` table
-holding the manifest rows whole: archive key, byte state, stamped hash), `release.json` and `products/`.
-`campfire.dr_store.load_release(session, tag)` builds it: the store is derived from the kept files, so it is
-rebuilt from them whenever the file set or `SCHEMA_VERSION` changes (the `storage_objects.local_*` download
-state is carried over), and the live mirror's purge / tombstone / schema-mismatch-delete logic never touches
-it. Merging follows `docs/dr-format-v1.md`: objects deduplicated by id across the reader's program files
-(`programs` unioned, the aggregates recomputed over the spectra held), photometry keyed by the object's name
-as the live stream keys it, manifest rows mirrored into `storage_objects` with `content_hash` = the hash of
-the bytes a reader gets (the stamped copy when there is one). `Campfire(dr=tag)` opens that store with no
-session at all (`_NoRemote` fails every live branch closed with `DRModeError`), serves the metadata getters
-from the store, stamps `meta["channel"]` (`"dr"` + `meta["release"]`, or `"live"`) on every table, and
-defaults `query_lines(exclude_stale=True)`. **P5-2:** `campfire pull spec --dr TAG` (`_pull_release` in `cli.py`) loads the
-store then runs `download_objects(..., dr=TAG)`, whose presign carries `?dr=TAG` (the release's archived copies) and
-whose verification uses the store's `content_hash`; `--intermediate` / `--stale` are refused. `GET /api/v1/dr`
-(`fetchVisibleReleases`: published, every state past its freeze for admins) backs `campfire dr list`;
-`POST /api/v1/identify` backs `campfire identify FILE...` through `identify_files(p_files, p_program_slugs,
-p_include_unpublished)`, a SECURITY DEFINER RPC with explicit scope (the bearer routes carry no `auth.uid()`) that
-returns facts per file (the live spectra, the release members with `current` = the live spectrum still carries the
-frozen science hash, the archive tombstones keyed by the sha256 in the archive key); `campfire/identify.py` hashes
-(whole-file sha256; the science hash through `campfire_pipeline.metadata.science_hash` when installed, never a copy
-of it), looks up the live mirror and every release store on the machine, and phrases the answer. Guard
-`check_identify.sql`; never sentence-build in SQL. **P5-3:** `dr_program_roster(p_tag, p_program_slugs)` (SECURITY DEFINER,
-service-role only) answers a release's per-program roster as one caller may see it (`{slug: {is_public, spectra,
-cfpipe_versions, crds_contexts}}`: the programs public at the freeze, the set the DOI record holds, plus the caller's own);
-`GET /api/v1/dr` and `/dr/<tag>/files` attach it as `programs` under the principal's slugs. Never store it on `dr_releases`,
-which every account and `campfire_reader` read whole (`check_dr_freeze.sql` asserts both). `campfire cite TAG` /
-`Campfire.cite()` (`campfire/cite.py`) build design §4.5's sentence from the release record (`release.json` of a pulled tree,
-else `GET /dr/<tag>/files`), the programs the reader holds (the spectra stream's scopes) and that roster: public programs
-through the DOI, the others described with their pipeline versions (the pulled store's `spectra` when there is one);
-a live client answers "generate a provenance file"; `load_release` writes the sentence into `dr/<tag>/README.md`.
-`campfire provenance [--list|--obs|--program|--object] [-o FILE]` (`campfire/provenance.py`, format
-`campfire-provenance/1`) records from the local ledgers only the objects as they are now and every spectrum's file
-with the sha256 of the bytes on disk beside the registry's and the pulled releases holding them; `provenance check
-FILE [--dr TAG] [--offline]` re-hashes, asks `identify` about the recorded bytes, compares science hashes against a
-pulled release and exits 1 on a modified or unresolvable file; `campfire pull --provenance FILE` (`provenance.plan_pull` /
-`pull`) asks `identify` where each recorded hash still lives and fetches it, live-exact into the live tree, else the newest
-release's archived copy into `dr/<tag>/products/` (its catalog loaded first; exact bytes before a same-science stamped copy),
-setting other bytes at the destination aside under `.superseded/` and exiting 1 on anything unresolved. `/api/v1/auth/whoami` carries `latest_dr` (the newest
-published release) and `access_fingerprint` (sha256 of the admin flag + sorted accessible slugs,
-`web/lib/server/access-fingerprint.ts`), on the authenticated endpoint and not the public hour-cached
-`/api/v1/version`; the tail of `campfire sync` (`_sync_tail`) announces the release and, when the fingerprint moved
-since the last full sync (`_meta.access_fingerprint`), asks for `sync --full`, since a grant bumps no `updated_at`.
-Client 0.7.0; the floor stays 0.5.0 (D-P5-1).
-
-**Deploy auth (issue #250).** Two decisions, kept independent:
-
-- **Supabase auth mode** is chosen *explicitly*, never inferred from which creds are present:
-  - `login` (**default**): `campfire login` (device-flow OAuth). Operates through RLS; uploads go via **presigned URLs** so admin machines hold no object-store write keys. This is the only path the normal `campfire deploy` uses — presigning is required, with **no silent boto3 fallback**.
-  - `service-role` (**explicit opt-in** — `--service-role` or `CAMPFIRE_DEPLOY_MODE=service-role`): bypasses RLS for unattended / CI deploys. Needs `CAMPFIRE_SUPABASE_URL` + `CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY` (or a TOML `[supabase]` block). A service-role key merely *present* in the env no longer wins by precedence.
-  - `local` (`--local` / `CAMPFIRE_DEPLOY_MODE=local`): local Supabase (127.0.0.1:54321) with the standard CLI service-role key.
-- **Object-store credentials** (`CAMPFIRE_S3_*`; legacy `CAMPFIRE_R2_*` aliases; or a gitignored `$CAMPFIRE_ROOT/config/deploy.toml`) resolve the same way in every mode and are decoupled from the Supabase decision. In `login` mode they're only needed by the direct-boto3 maintenance commands (`deploy remove`, `objects reconcile`, `registry backfill`/`copy`, tile deletion) — the LIST/HEAD/DELETE/cross-bucket-COPY ops presigned PutObject URLs can't express. Storage endpoint/region/path-style are configurable per purpose (`CAMPFIRE_S3_*` data, `CAMPFIRE_S3_TILES_*` tiles, `CAMPFIRE_S3_OSN_*` OSN); see `python/campfire/deploy/backend.py`.
-
-## General Notes
-
-- Pipeline code is local-only, never deployed
-- Large files (FITS, raw data) are gitignored and stored in R2
-- Secrets are never committed — they live in the VM's `ops/.env` / `ops/web.env` (and 1Password) or gitignored config files
-- Database schema definitions live in `supabase/schemas/` (source of truth); migrations in `supabase/migrations/` (deployment)
+AGENTS.md files are instructions, not a changelog or a design record. Add something only when an agent would otherwise get it wrong: a rule, a non-obvious invariant, a command, or a pointer. Explain how a subsystem works in its module docstrings, record history in commits and PRs, and leave out what the code already says. Prefer the nested `AGENTS.md` closest to the code, and edit existing text rather than appending a new paragraph.

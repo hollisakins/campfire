@@ -18,7 +18,6 @@ list memberships, and photometry stay attached without any per-row migration.
 The other daughters/losers are inserted as new objects (split) or
 soft-deleted with associated state migrated to the survivor (merge).
 
-See `docs/design-objects-migration.md` for the full design.
 """
 
 from __future__ import annotations
@@ -473,7 +472,7 @@ def classify(
         # updated_at on every row and cause every incremental sync to re-pull
         # the full field. A reprocessed spectrum is not a reason to write: the
         # needs-review badge is membership-driven and maintained by database
-        # triggers (P3, docs/design-needs-review.md).
+        # triggers.
         # The object must already be active (inactive 1:1 matches need a
         # reactivation write in apply_proposals).
         if obj.get('is_active') and _aggregates_match_object(agg, obj):
@@ -1479,7 +1478,7 @@ def reconcile_field_objects(
         changed_hashes: Set of (target_id, grating, filter) keys whose spectrum
             content changed in this deploy. Accepted for call-site
             compatibility and no longer used: reprocessing is not a review
-            need (P3, docs/design-needs-review.md); the badge is maintained
+            need; the badge is maintained
             by database triggers on membership.
 
     Returns:

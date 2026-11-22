@@ -1,5 +1,5 @@
 """
-Data-release exports (P4b; format in docs/dr-format-v1.md).
+Data-release exports (P4b; format in python/dr-format-v1.md).
 
 ``campfire dr export --tag T`` turns a frozen release into one gzip JSONL file
 per (stream, scope) under ``dr/T/exports/`` on the private OSN data bucket: the

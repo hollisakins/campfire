@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Backfill ``science_hash`` on ``spectra`` and on the NIRSpec FITS rows of
-``storage_objects`` (plan P0b, docs/design-data-releases-impl-plan.md §2).
+``storage_objects``.
 
 Streams every ``_spec.fits`` / ``_lines.fits`` once from OSN (read-only GETs,
 ~58 GB in total for the live catalog), computes the science-content hash with

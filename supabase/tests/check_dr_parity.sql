@@ -1,5 +1,5 @@
 -- =============================================================================
--- Frozen-table parity (P6b, docs/design-data-releases-impl-plan.md §8 P6b).
+-- Frozen-table parity.
 -- =============================================================================
 -- Every frozen catalog table is `tag` + the live table's columns, same names
 -- and types (a generated live column is a plain column of the same type in

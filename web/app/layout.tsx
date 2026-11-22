@@ -42,7 +42,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'),
   title: 'CAMPFIRE - JWST Spectroscopy Archive',
   description: 'COSMOS Archive of MultiPle-Field Internal Reductions & Extractions',
-  // Nothing in CAMPFIRE is indexed (design-public-mirror.md §9). The
+  // Nothing in CAMPFIRE is indexed. The
   // X-Robots-Tag header in next.config.ts covers responses this cannot reach
   // (redirects, API routes); this covers crawlers that only parse HTML.
   robots: { index: false, follow: false },

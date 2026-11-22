@@ -1,5 +1,5 @@
 -- =============================================================================
--- Data-release freeze core (P4a, docs/design-data-releases-impl-plan.md §6).
+-- Data-release freeze core.
 -- =============================================================================
 -- Proves, on a fixture with one public and one private program:
 --   1. dr_enqueue_freeze validates: bad tag, unknown component, NIRCam field

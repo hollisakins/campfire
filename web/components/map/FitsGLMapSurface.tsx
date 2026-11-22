@@ -4,7 +4,7 @@
  * FitsGL map surface (epic #337, Phase 4.5). Renders a deployed FitsGL tile-pyramid
  * dataset in `<FitsViewer>` as the map for a field that has one, replacing the
  * Leaflet + PNG-tile path (`MapViewer` dispatches to it per field). The full CAMPFIRE
- * "cloud DS9" control surface (`docs/design-fitsgl-map-ux.md`): the map is the hero,
+ * "cloud DS9" control surface: the map is the hero,
  * full-bleed, with glass/blur chrome floating over it — a top-center band rail
  * (field + band/RGB) and a collapsible right dock (Display panel). Object markers go
  * through the viewer's ref handle (FitsGL owns culling/hit-test), and the shared

@@ -3,7 +3,7 @@ import { createClient, createServiceClient } from '@/lib/supabase/server';
 
 // ---------------------------------------------------------------------------
 // GET /s/<token> — exchange a share-link token for a session, then redirect to
-// the shared scope. See docs/design-public-mirror.md §4.3.
+// the shared scope.
 //
 // The token is a PATH SEGMENT that immediately redirects, not a query
 // parameter: it must not linger in the address bar of the pages the visitor

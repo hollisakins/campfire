@@ -1,8 +1,8 @@
 // Delivery front for immutable products (perf T2-D1, #507; decision D-D).
 //
 // A route that has authorized a read mints a url on the Cloudflare Worker's
-// `/o/<key>` endpoint instead of streaming the bytes through the Vercel
-// function. The url carries the object's registry content_hash (the cache
+// `/o/<key>` endpoint instead of streaming the bytes through the app
+// server. The url carries the object's registry content_hash (the cache
 // identity — products are immutable per hash, not per path), a window-stable
 // presigned upstream url the Worker fetches on a miss, and an HMAC token over
 // all of it that the Worker verifies on every serve. See

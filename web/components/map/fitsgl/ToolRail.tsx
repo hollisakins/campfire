@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * Left tool rail (epic #337, Phase 4.5) — a slim docked-left glass column
- * (`docs/design-fitsgl-map-ux.md` §4): modal cursor tools (pan / ruler) above a
+ * Left tool rail (epic #337, Phase 4.5) — a slim docked-left glass column:
+ * modal cursor tools (pan / ruler) above a
  * divider, then the launchers and one-shot actions: go-to-coordinate, fit-to-view,
  * export PNG, and the Filters slide-over. The Display/Layers panels live in the
  * right dock (its own collapse chevron), so they're not duplicated here.

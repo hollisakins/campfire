@@ -1,9 +1,8 @@
 'use client';
 
 /**
- * StretchHistogram (epic #337, Phase 4.5) — the FitsExplorer-style "fine adjust"
- * (`docs/design-fitsgl-map-ux.md` §4, locked decision 6), rebuilt in CAMPFIRE
- * chrome. Draws one band's precomputed display histogram (`ExplorerBand.histogram`,
+ * StretchHistogram (epic #337, Phase 4.5) — the FitsExplorer-style "fine adjust",
+ * rebuilt in CAMPFIRE chrome. Draws one band's precomputed display histogram (`ExplorerBand.histogram`,
  * 128 bins over `[lo, hi]`) and overlays draggable black/white-point handles that
  * live-drive the viewer's stretch (`setStretch` / `setChannelStretch`). Controlled:
  * the parent holds the `[min, max]` and pushes each change to the GPU imperatively.

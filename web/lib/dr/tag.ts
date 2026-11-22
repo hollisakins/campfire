@@ -1,5 +1,5 @@
 /**
- * The data-release browsing mode (P6c-1, docs/design-data-releases-impl-plan.md §8).
+ * The data-release browsing mode.
  *
  * A release is selected by `?dr=<tag>` on the page URL. The parameter is
  * parsed in exactly ONE place — middleware (`drRequestDecision`) — which

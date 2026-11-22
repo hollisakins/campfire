@@ -146,6 +146,20 @@ def shared_options(f):
     return f
 
 
+def _lifecycle_options(f):
+    """Decorator for publish / revoke: like shared_options, but --obs is optional
+    because --field is the alternative (exactly one is checked at run time)."""
+    f = click.option('--config', 'config_path', default=None,
+                     help='Path to deploy config TOML.')(f)
+    f = click.option('--obs', multiple=True, type=str, cls=_VariadicOption,
+                     help='Observation name(s) (e.g. ember_uds_p4).')(f)
+    f = click.option('--dry-run', is_flag=True,
+                     help='Show what would happen without making changes.')(f)
+    f = click.option('--local', is_flag=True,
+                     help='Use local Supabase (127.0.0.1:54321).')(f)
+    return f
+
+
 def _resolve_local(ctx, local: bool) -> bool:
     """Let top-level ``deploy --local`` propagate into subcommands.
 
@@ -796,6 +810,8 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
     set_deployment_status, which flips the deployment + its spectra / nircam_images
     + writes audit rows server-side.
     """
+    if bool(field) == bool(obs):
+        raise click.UsageError("Pass exactly one of --obs or --field.")
     config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
     actor = get_user_id_from_token(config)
@@ -845,7 +861,7 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
 
 
 @deploy_group.command()
-@shared_options
+@_lifecycle_options
 @click.option('--field', default=None, help='NIRCam field to publish (instead of --obs).')
 @click.pass_context
 def publish(ctx, config_path, obs, dry_run, local, field):
@@ -855,7 +871,7 @@ def publish(ctx, config_path, obs, dry_run, local, field):
 
 
 @deploy_group.command()
-@shared_options
+@_lifecycle_options
 @click.option('--field', default=None, help='NIRCam field to revoke (instead of --obs).')
 @click.pass_context
 def revoke(ctx, config_path, obs, dry_run, local, field):

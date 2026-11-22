@@ -7,7 +7,7 @@ import { frontUrlsForResolved } from '@/lib/server/cdn-front';
 import { generateDownloadUrls, type ResolvedObject } from '@/lib/r2';
 
 /**
- * Files of a data release (P6c-2, docs/design-data-releases-impl-plan.md §8).
+ * Files of a data release.
  *
  * Under a release a file is served ONLY from its archived copy: the member's
  * `archive_key` in `dr_manifest`, once the byte pass has copied or stamped

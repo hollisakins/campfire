@@ -2,8 +2,7 @@
 
 /**
  * ColormapControl (epic #337, Phase 4.5) — a custom colormap picker for the
- * Display panel (`docs/design-fitsgl-map-ux.md`, locked decision 3: a dropdown,
- * not a swatch row), replacing the native `<select>`. The trigger and every option
+ * Display panel (a dropdown, not a swatch row), replacing the native `<select>`. The trigger and every option
  * render the actual colormap as a gradient bar (sampled from the engine's
  * `colormapRGB` LUT), and a "reverse" toggle lives inside the popover — reversing
  * flips the applied LUT, which the parent drives imperatively (deriveViewerConfig

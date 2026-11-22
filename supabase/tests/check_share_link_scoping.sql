@@ -1,6 +1,6 @@
 -- Guard: a share-link account must see EXACTLY its own scope and nothing else.
 --
--- Share links (docs/design-public-mirror.md) back each link with a synthetic
+-- Share links back each link with a synthetic
 -- but fully real authenticated principal, so that every existing reader in the
 -- portal works unchanged. The flip side is that a link account inherits every
 -- policy written as "any logged-in user may read this" -- and a missed policy

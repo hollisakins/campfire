@@ -47,7 +47,7 @@ export const DQ_FLAGS: FlagDef[] = [
 
 // Per-line flags of the emission-line catalog (line_fits.lines[<line>].flags,
 // lines.flags) — set by `cfpipe nirspec linefit`; mirrors
-// campfire.flags.LineFlags / linefit.FLAG_* (docs/design-emission-line-fitting.md).
+// campfire.flags.LineFlags / linefit.FLAG_*.
 export const LINE_FLAGS: FlagDef[] = [
   { key: 'tied', bit: 0, value: 1, label: 'Tied', short: 'TIED', icon: '🔗', color: '#e0e0e0', description: 'Flux ratio-tied to its doublet primary ([OIII], [NII], [OI])' },
   { key: 'blended', bit: 1, value: 2, label: 'Blended', short: 'BLENDED', icon: '⊂', color: '#e0e0e0', description: 'Unresolved at this resolution: folded into a blend primary, no flux of its own' },
