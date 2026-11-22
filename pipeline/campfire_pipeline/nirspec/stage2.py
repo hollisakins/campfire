@@ -12,6 +12,9 @@ from astropy.table import Table
 
 from campfire_pipeline.common.io import log
 from campfire_pipeline.nirspec.metafile import MetaFile
+from campfire_pipeline.nirspec.nodata import (
+    REASON_NO_DATA_ON_DETECTOR, mark_all_shutters_stuck, mark_nodata,
+)
 from campfire_pipeline.nirspec.observation import Observation
 
 
@@ -590,8 +593,9 @@ def _run_stage2a_fixedslit(
             source_ids_processed.append(source_id)
         except NoDataOnDetectorError:
             log(f'No data on detector for {prod_name}')
-            with open(nodata_marker, 'w') as f:
-                f.write('NoDataOnDetectorError\n')
+            # Retire a canonical an earlier run left (e.g. before a stuck-shutter
+            # edit moved every open shutter off this detector).
+            mark_nodata(prod_name, REASON_NO_DATA_ON_DETECTOR)
 
         # Promote the cal product to the bare canonical file + stamp cards + CFP_CAL.
         _finalize_canonical(prod_name, cards)
@@ -748,9 +752,13 @@ def run_stage2a_single_rate(
             else:
                 cards.append(('STKSHTRS', 'N/A', 'Stuck shutters masked'))
 
-            # Skip extraction if all shutters are stuck closed
+            # Skip extraction if all shutters are stuck closed. Retire any
+            # canonical an earlier run left (else 2b / 3 take it as current) and
+            # mark the product nodata, like a NoDataOnDetectorError.
             if len(source_metafile.shutter_table) == 0:
-                log(f'All shutters marked as stuck closed for {prod_name}, skipping extraction')
+                removed = mark_all_shutters_stuck(prod_name)
+                log(f'All shutters marked as stuck closed for {prod_name}, skipping extraction'
+                    + (f' (removed stale {", ".join(removed)})' if removed else ''))
                 continue  # Skip to next source_id in the loop
 
             source_metafile.write(obs.workspace_dir, overwrite=True)
@@ -820,8 +828,9 @@ def run_stage2a_single_rate(
 
             except NoDataOnDetectorError:
                 log(f'No data on detector for {prod_name}')
-                with open(nodata_marker, 'w') as f:
-                    f.write('NoDataOnDetectorError\n')
+                # Retire a canonical an earlier run left (e.g. before a stuck-shutter
+                # edit moved every open shutter off this detector).
+                mark_nodata(prod_name, REASON_NO_DATA_ON_DETECTOR)
 
             # Promote the cal product to the bare canonical file + stamp cards + CFP_CAL.
             _finalize_canonical(prod_name, cards)
