@@ -779,6 +779,69 @@ def test_interactive_pull_asks_before_removing_and_before_taking_a_conflict(pipe
     assert _local(tree)["stuck"] == {(ROOT_A, "102"): _S([9], "web")}
 
 
+def test_a_removal_inside_a_conflict_still_needs_its_own_yes(pipeline, tree):
+    # Removed on one side, edited on the other is a conflict whose resolution deletes
+    # an entry. --force / --theirs pick the side; they are not consent to delete.
+    def synced():
+        client = _cloud([_row(1, ROOT_A, 101, stuck=[2], source="hand"),
+                         _row(2, ROOT_A, 102, stuck=[3], source="hand")])
+        state = {}
+        _pull(client, state, tree)
+        return client, state
+
+    # push: 101 removed here (the file still exists), edited in the cloud meanwhile
+    client, state = synced()
+    _write(tree, nf.STUCK_FILE, _stuck_text(f"[{ROOT_A}]", "    102 = [3]  # hand"))
+    client.rows(TABLE)[0].update(stuck_shutters=[2, 5], stuck_source="auto")
+    counts, out = _push(client, state, tree, force=True)
+    assert counts["pushed"] == 0 and client.rpcs == []
+    assert _cloud_view(client)["stuck"][(ROOT_A, "101")] == ([2, 5], "auto")
+    assert "not removed" in out
+    counts, _ = _push(client, state, tree, prune=True)          # a yes without --force
+    assert counts["pushed"] == 0                                 # ... it is still a conflict
+    counts, out = _push(client, state, tree, force=True, prune=True)
+    assert counts["pushed"] == 1 and (ROOT_A, "101") not in _cloud_view(client)["stuck"]
+    assert f"{ROOT_A} 101: [2, 5] (auto)" in out                 # what was removed is listed
+
+    # pull: 101 edited here, removed in the cloud meanwhile
+    client, state = synced()
+    _write(tree, nf.STUCK_FILE, _stuck_text(
+        f"[{ROOT_A}]", "    101 = [2, 7]  # hand", "    102 = [3]  # hand"))
+    client.rows(TABLE)[0].update(stuck_shutters=None, stuck_source=None)
+    for kw in ({"theirs": True}, {"prune": True}):
+        counts, _ = _pull(client, state, tree, **kw)
+        assert counts["applied"] == 0
+        assert _local(tree)["stuck"][(ROOT_A, "101")] == _S([2, 7], "hand")
+    counts, _ = _pull(client, state, tree, theirs=True, prune=True)
+    assert counts["applied"] == 1 and (ROOT_A, "101") not in _local(tree)["stuck"]
+
+
+def test_a_lost_persons_entry_is_restored_even_if_the_cloud_copy_changed(pipeline, tree):
+    # The file was regenerated without a hand entry AND a reviewer edited that entry
+    # in the cloud since the last sync. Three-way calls that a conflict; the file is
+    # still missing a person's entry, and stage 2 reads the file.
+    client = _cloud([_row(1, ROOT_A, 101, stuck=[2], source="hand", bkg={"3": [1]}),
+                     _row(2, ROOT_A, 102, stuck=[4], source="auto")])
+    config = {"supabase": {}}
+    nf.pull_on_pull(client, OBS, config, out=lambda _l: None)
+    _write(tree, nf.STUCK_FILE, _stuck_text())
+    _write(tree, nf.BKG_FILE, "# nodded background overrides\n")
+    client.rows(TABLE)[0].update(stuck_shutters=[2, 3], stuck_source="web", bkg_overrides={"3": [2]})
+    client.rows(TABLE)[1].update(stuck_shutters=[4, 5], stuck_source="auto")
+
+    lines = []
+    nf.pull_on_pull(client, OBS, config, out=lines.append)     # the non-interactive pull
+    local = _local(tree)
+    assert local["stuck"] == {(ROOT_A, "101"): _S([2, 3], "web")}     # the cloud's current value
+    assert local["bkg"] == {(ROOT_A, "101"): {"3": [2]}}
+    assert (ROOT_A, "102") not in local["stuck"]                      # a detection waits for --theirs
+    assert any("restored" in line for line in lines)
+    # and the deploy never clears the one still missing
+    res = nf.push_on_deploy(client, OBS, config)
+    assert res["pushed"] == 0
+    assert _cloud_view(client)["stuck"][(ROOT_A, "102")] == ([4, 5], "auto")
+
+
 def test_apply_changes_does_not_trust_an_answer_that_does_not_add_up(pipeline, tree):
     # If the function's answer does not account for every change, nothing is recorded
     # as agreed (a base for a write that did not land would lose the edit on a later pull).

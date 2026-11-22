@@ -405,11 +405,13 @@ per save through the same guarded write, stuck edits tagged `web`). Everything i
   detection. To make a detection stand, vet it: retag it `# hand`.
 - **A pull puts back what a file lost.** An entry a person wrote that the cloud holds
   and the file lacks is restored by every pull (`config pull` and `pull spec`), whatever
-  the base says. **A missing file is not an empty list**: with no file the base is
+  the base says and whether or not the cloud's copy was edited since. **A missing file is not an empty list**: with no file the base is
   ignored, so a pull on a wiped tree rewrites every cloud entry.
 - **A removal travels only on an explicit yes.** Push asks before clearing a cloud
   entry and pull asks before deleting a local one; `--prune` answers yes for a script
-  (`--force` / `--theirs` do not), and the non-interactive callers never remove. So an
+  (`--force` / `--theirs` do not, not even inside a conflict: an entry removed on one
+  side and edited on the other is deleted only with both the conflict flag and the
+  yes), and the non-interactive callers never remove. So an
   entry is removed everywhere by deleting it and running `campfire config push` (before
   the next pull, which would restore it). Rows are never deleted; clearing an entry
   NULLs its column. No tombstones: a machine that never synced an entry and still has
