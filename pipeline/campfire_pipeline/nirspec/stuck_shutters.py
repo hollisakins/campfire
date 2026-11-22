@@ -132,9 +132,10 @@ def detect_stuck_shutters(obs, files, stage_config, n_processes=1,
     analysed : set, optional
         Filled with the ``(root, source_id)`` pairs that were actually analysed
         (a source with no s2d view, a single shutter, a grating while grating
-        detection is off, or whose files could not be measured is not). ``refresh_auto_entries`` needs it: only an
-        analysed source's earlier auto entry may be dropped as "no longer
-        detected".
+        detection is off, or whose files could not be measured is not; neither
+        is a source retired as nodata, which has no canonical to look at).
+        ``refresh_auto_entries`` needs it: only an analysed source's earlier
+        auto entry may be dropped as "no longer detected".
 
     Returns
     -------
@@ -149,8 +150,15 @@ def detect_stuck_shutters(obs, files, stage_config, n_processes=1,
     grating_threshold = stage_config.get(
         'stuck_shutter_low_frac_threshold_grating', 0.7)
 
+    # Nothing to analyse: every canonical of the selection can be nodata (e.g.
+    # all shutters stuck), and an empty mask must not reach the ``~`` below.
+    if len(files) == 0:
+        log('No files eligible for stuck shutter detection')
+        return {}
+
     # Partition files into PRISM and grating groups
-    prism_mask = np.array([g.upper() == 'PRISM' for g in files['grating']])
+    prism_mask = np.array([str(g).upper() == 'PRISM' for g in files['grating']],
+                          dtype=bool)
     grating_mask = ~prism_mask
 
     # Build tasks per group with per-group thresholds

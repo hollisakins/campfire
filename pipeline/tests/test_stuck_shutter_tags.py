@@ -144,6 +144,17 @@ def test_refresh_leaves_sources_it_did_not_analyse():
     assert stats["auto_kept"] == 1
 
 
+def test_refresh_with_nothing_analysed_keeps_every_entry():
+    # A source whose shutters are all listed as stuck is retired as nodata by stage 2a,
+    # so it has no canonical for the detector to look at. When that is the whole
+    # selection, detect_stuck_shutters returns {} having analysed nothing, and the
+    # refresh must leave the list (the very entries that retired those sources) alone.
+    existing = {("r", "1"): ([1, 2, 3], "auto"), ("r", "2"): ([1], "hand")}
+    out, stats = _apply(existing, {}, set())
+    assert out == existing
+    assert stats["auto_kept"] == 1 and stats["auto_dropped"] == 0
+
+
 def test_refresh_veto_blocks_a_detection():
     # `12345 = []  # hand` means "vetted, none stuck": the detector must not re-add it.
     existing = {("r", "1"): ([], "hand")}
