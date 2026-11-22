@@ -1,6 +1,6 @@
 -- Guard: nirspec_source_review, the cloud home of the NIRSpec stuck-shutter and
 -- background-override lists (`campfire config push / pull / diff`), and its guarded
--- write nirspec_review_apply.
+-- write nirspec_review_apply, which every writer uses (CLI, deploy, portal).
 --
 -- What must hold:
 --   1. The table is admin-only. A signed-in non-admin reads ZERO rows and can write
@@ -241,7 +241,7 @@ BEGIN
   EXCEPTION WHEN invalid_parameter_value THEN NULL;
   END;
 
-  -- 4. the CHECK on stuck_source (direct writes: the portal's path)
+  -- 4. the CHECK on stuck_source (a direct write, should anyone make one)
   BEGIN
     UPDATE public.nirspec_source_review SET stuck_source = 'robot'
      WHERE observation = 'zzz_fl_obs' AND source_id = 1;

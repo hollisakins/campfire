@@ -131,8 +131,8 @@ def detect_stuck_shutters(obs, files, stage_config, n_processes=1,
         Number of parallel workers for analysis (default 1 = serial).
     analysed : set, optional
         Filled with the ``(root, source_id)`` pairs that were actually analysed
-        (a source with no s2d view, a single shutter, or a grating while grating
-        detection is off is not). ``refresh_auto_entries`` needs it: only an
+        (a source with no s2d view, a single shutter, a grating while grating
+        detection is off, or whose files could not be measured is not). ``refresh_auto_entries`` needs it: only an
         analysed source's earlier auto entry may be dropped as "no longer
         detected".
 
@@ -173,9 +173,6 @@ def detect_stuck_shutters(obs, files, stage_config, n_processes=1,
         log('Grating files present but detect_stuck_shutters_grating is '
             'disabled, skipping')
 
-    if analysed is not None:
-        analysed.update((root, source_id) for root, source_id, *_ in all_tasks)
-
     if not all_tasks:
         log('No files eligible for stuck shutter detection')
         return {}
@@ -190,6 +187,10 @@ def detect_stuck_shutters(obs, files, stage_config, n_processes=1,
     # Collect detections
     detections = {}
     for (root, source_id, _, n_shutters, _), stuck in zip(all_tasks, results):
+        if stuck is None:
+            continue    # nothing could be measured: says nothing about this source
+        if analysed is not None:
+            analysed.add((root, source_id))
         if stuck:
             if root not in detections:
                 detections[root] = {}
@@ -305,8 +306,10 @@ def _analyze_source_shutters(s2d_paths, n_shutters, low_frac_threshold):
 
     Returns
     -------
-    list of int
-        1-indexed shutter numbers flagged as stuck, or empty list.
+    list of int or None
+        1-indexed shutter numbers flagged as stuck, or empty list. None when no
+        file could be measured (no read-noise extension, too few rows): the
+        analysis is inconclusive, which is not the same as "none stuck".
     """
     # Collect per-shutter low_frac values across all s2d files
     shutter_low_fracs = [[] for _ in range(n_shutters)]
@@ -341,6 +344,9 @@ def _analyze_source_shutters(s2d_paths, n_shutters, low_frac_threshold):
 
             low_frac = np.sum(d < 2 * rn_sigma) / len(d)
             shutter_low_fracs[k].append(low_frac)
+
+    if not any(shutter_low_fracs):
+        return None
 
     # Flag shutters where ALL nods show a high fraction of noise-level pixels
     # Spatial axis is inverted: region 0 (bottom) = shutter N, region N-1 (top) = shutter 1
@@ -540,10 +546,10 @@ def load_stuck_shutters_tagged(filepath):
     to and from the cloud (``nirspec_source_review.stuck_source``) and that
     ``refresh_auto_entries`` reads to tell a detected entry from a vetted one.
     This is a comment-preserving line parser (regex over ``[root]``
-    headers and ``sid = [..]  # tag`` lines), classifying each entry by its
-    comment: containing ``web`` -> ``'web'``; ``auto`` (covers the legacy
-    ``# auto-detected``) -> ``'auto'``; ``hand`` or untagged -> ``'hand'`` (the
-    conservative default — a hand entry is never replaced by a detection).
+    headers and ``sid = [..]  # tag`` lines), classifying each entry by the first
+    word of its comment: ``web`` -> ``'web'``; ``auto`` (covers the legacy
+    ``# auto-detected``) -> ``'auto'``; anything else, or no comment -> ``'hand'``
+    (the conservative default — a hand entry is never replaced by a detection).
     Prefer ``read_stuck_shutters``, which takes the values from ``toml.load``.
 
     Parameters
@@ -564,29 +570,28 @@ def load_stuck_shutters_tagged(filepath):
     if not os.path.exists(filepath):
         return result
 
-    header_re = re.compile(r'^\s*\[([^\]]+)\]\s*$')
+    header_re = re.compile(r'^\[\s*([^\]]+?)\s*\]$')
     entry_re = re.compile(r'^\s*(-?\d+)\s*=\s*\[([^\]]*)\]\s*(?:#\s*(.*))?$')
+    # The tag is the FIRST word of the trailing comment (`# auto`, `# auto-detected`,
+    # `# web`, `# hand`). A word further in is prose: `# hand: auto-detect missed 2`
+    # is a hand entry, and must never read as a detection (which a refresh drops).
+    tag_re = re.compile(r'^(hand|web|auto)\b', re.IGNORECASE)
 
     current_root = None
     with open(filepath) as f:
         for line in f:
-            stripped = line.split('#', 1)[0].strip()
-            hm = header_re.match(line if stripped.startswith('[') else stripped)
-            if stripped.startswith('[') and hm:
-                current_root = hm.group(1).strip()
+            # A table header, with or without a trailing comment.
+            hm = header_re.match(line.split('#', 1)[0].strip())
+            if hm:
+                current_root = hm.group(1).strip().strip('"\'')
                 continue
             em = entry_re.match(line)
             if em and current_root is not None:
                 sid_str = em.group(1)
                 body = em.group(2).strip()
                 shutters = [int(x) for x in body.split(',') if x.strip()]
-                comment = (em.group(3) or '').lower()
-                if 'web' in comment:
-                    tag = 'web'
-                elif 'auto' in comment:
-                    tag = 'auto'
-                else:
-                    tag = 'hand'
+                tm = tag_re.match((em.group(3) or '').strip())
+                tag = tm.group(1).lower() if tm else 'hand'
                 result[(current_root, sid_str)] = (shutters, tag)
 
     return result

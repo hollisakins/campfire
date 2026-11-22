@@ -6,7 +6,8 @@ stuck-shutter and background-override lists) from the per-deploy snapshots.
 Until the lists moved onto the config plane (``campfire config push / pull``), the
 only cloud copy of most hand-made stuck-shutter lists was the snapshot each deploy
 stored in ``deployments.stuck_shutters``. This copies, per observation, the entries
-of its LATEST deployment snapshot into ``nirspec_source_review`` wherever that table
+of its LATEST deployment snapshot (the newest deployment that recorded the list;
+an intermediates-only deploy records none) into ``nirspec_source_review`` wherever that table
 has no stuck entry for the (exposure_root, source_id) yet, so a ``campfire config
 pull`` on any machine gets the list the last deploy used.
 
@@ -79,23 +80,36 @@ def fetch_deployments(sb, observations: list[str] | None) -> dict[str, list[dict
 
 
 def plan_observation(deployments: list[dict], cloud: dict) -> dict:
-    """The backfill of one observation from its newest deployment."""
-    latest = deployments[0]
-    plan = {'deployment': latest, 'changes': [], 'bad': [], 'earlier': [],
+    """The backfill of one observation from its newest snapshot.
+
+    "Newest" is the newest deployment that RECORDED the list: an intermediates-only
+    (rate / exposure) deploy inserts a deployment row with no snapshot at all, and
+    must not hide the full deploy before it. Each channel looks for its own newest
+    snapshot (overrides are only recorded by deploys made after this change)."""
+    plan = {'deployment': None, 'changes': [], 'bad': [], 'earlier': [],
             'stuck': {'snapshot': 0, 'insert': 0, 'same': 0, 'differ': 0},
             'bkg': {'snapshot': 0, 'insert': 0, 'same': 0, 'differ': 0}}
-    snaps = {}
+    snaps = {'stuck': {}, 'bkg': {}}
+    used = None
     for channel, column in (('stuck', 'stuck_shutters'), ('bkg', 'bkg_overrides')):
-        entries, bad = nf.snapshot_entries(latest.get(column), latest.get('stuck_shutter_sources'),
+        source = next((d for d in deployments if d.get(column) is not None), None)
+        if source is None:
+            continue
+        if channel == 'stuck':
+            used = source
+        entries, bad = nf.snapshot_entries(source.get(column), source.get('stuck_shutter_sources'),
                                            channel=channel)
         snaps[channel] = entries
         plan['bad'] += [f"{channel} {b}" for b in bad]
         changes, stats = nf.plan_snapshot_backfill(channel, entries, cloud[channel])
         plan['changes'] += changes
         plan[channel] = {'snapshot': len(entries), **stats}
+    plan['deployment'] = used
     # Stuck entries only an earlier snapshot holds (informational; never written).
     seen = set(snaps['stuck']) | {k for k, rec in cloud['stuck'].items() if rec['value'] is not None}
-    for dep in deployments[1:]:
+    for dep in deployments:
+        if dep is used:
+            continue
         entries, _ = nf.snapshot_entries(dep.get('stuck_shutters'), dep.get('stuck_shutter_sources'))
         for key, entry in sorted(entries.items()):
             if key not in seen:
@@ -142,7 +156,7 @@ def main() -> int:
             print(f"{obs:<28} ! skipped: {e}")
             continue
         plans[obs] = plan
-        dep = plan['deployment']
+        dep = plan['deployment'] or {'id': '-'}
         n = {k: plan['stuck'][k] + plan['bkg'][k] for k in ('snapshot', 'same', 'differ', 'insert')}
         n['earlier'] = len(plan['earlier'])
         for k in totals:

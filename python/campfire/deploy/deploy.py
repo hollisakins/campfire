@@ -934,7 +934,7 @@ def _execute_nirspec_plan(
     flag_notes = []
     try:
         from campfire.deploy.nirspec_flags import push_on_deploy
-        flags = push_on_deploy(sb, obs_name)
+        flags = push_on_deploy(sb, obs_name, config)
         if flags['pushed']:
             review.append(f"{flags['pushed']:,} stuck-shutter / bkg-override "
                           f"entr{'y' if flags['pushed'] == 1 else 'ies'} pushed")

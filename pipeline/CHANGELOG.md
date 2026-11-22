@@ -38,10 +38,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   `12345 = []` stays a veto that keeps the detector from re-adding the source
   (`refresh_auto_entries`). New `read_stuck_shutters` returns the tagged entries with the
   values `toml.load` reads, the reader `campfire config push / pull` uses now that the list
-  and its tags are carried on the config plane. The tag parser also reads negative source
-  ids (`-7 = [1]  # auto` lost its tag and read back as `hand`), and
-  `write_stuck_shutters_toml` takes `quiet=True`. No change to science output: the same
-  file produces the same reduction.
+  and its tags are carried on the config plane. The tag parser is stricter about what a
+  tag is, since a mis-read tag now decides what a refresh may drop: the tag is the first
+  word of the trailing comment (`# hand: auto-detect missed 2` read as `auto`), a table
+  header with a trailing comment starts a new root (its entries were filed under the
+  previous one), and negative source ids keep their tag (`-7 = [1]  # auto` read back as
+  `hand`). A source whose files could not be measured counts as not analysed, so its
+  earlier detection is kept. `write_stuck_shutters_toml` takes `quiet=True`. No change to
+  science output: the same file produces the same reduction.
 
 ## v1.0.0 — 2026-11-21
 

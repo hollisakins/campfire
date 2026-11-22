@@ -159,3 +159,33 @@ def test_negative_source_ids_keep_their_tag(tmp_path):
     write_stuck_shutters_toml({"r": {"-7": [1], "5": [2]}}, path, "obs",
                               provenance={("r", "-7"): "auto", ("r", "5"): "web"}, quiet=True)
     assert read_stuck_shutters(path) == {("r", "-7"): ([1], "auto"), ("r", "5"): ([2], "web")}
+
+
+def test_header_with_a_trailing_comment_starts_a_new_root(tmp_path):
+    # `[rootB]  # second visit` used to be missed, so rootB's entries were filed under
+    # rootA: a hand entry of rootA then read as rootB's `auto` and a refresh dropped it.
+    path = tmp_path / "stuck_closed_shutters.toml"
+    path.write_text(
+        "[rootA]\n    123 = [1]  # hand\n"
+        "[rootB]  # second visit\n    123 = [2]  # auto\n"
+    )
+    assert read_stuck_shutters(str(path)) == {
+        ("rootA", "123"): ([1], "hand"), ("rootB", "123"): ([2], "auto")}
+
+
+def test_tag_is_the_first_word_of_the_comment(tmp_path):
+    # Prose that mentions the detector (or the web) does not make an entry a detection.
+    path = tmp_path / "stuck_closed_shutters.toml"
+    path.write_text(
+        "[r]\n"
+        "    1 = [1, 2]  # hand: auto-detect missed shutter 2\n"
+        "    2 = []  # vetted, autodetect false positive (see web notes)\n"
+        "    3 = [3]  # auto-detected\n"
+        "    4 = [4]  # WEB\n"
+        "    5 = [5]  # automatic\n"
+    )
+    tags = {k[1]: t for k, (_sh, t) in read_stuck_shutters(str(path)).items()}
+    assert tags == {"1": "hand", "2": "hand", "3": "auto", "4": "web", "5": "hand"}
+    # ... so a refresh that analysed them keeps both hand entries
+    out, _ = _apply(read_stuck_shutters(str(path)), {}, {("r", 1), ("r", 2), ("r", 3)})
+    assert set(k[1] for k in out) == {"1", "2", "4", "5"}

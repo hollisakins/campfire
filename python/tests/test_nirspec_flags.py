@@ -243,6 +243,29 @@ def test_plan_human_entry_beats_a_detection():
     assert items[0].verdict == nf.CONFLICT
 
 
+def test_plan_a_detection_never_replaces_a_persons_entry_whatever_the_base_says():
+    # The regenerated-file case: this machine synced a person's [1, 2], lost the file,
+    # and a re-reduction wrote a detection in its place. Three-way alone reads that as
+    # "this machine edited the entry" and would send the detection over the person's.
+    k = ("r", "1")
+    for tag in ("hand", "web"):
+        base = {k: _S([1, 2], tag)}
+        items = nf.plan_channel("stuck", {k: _S([3], "auto")}, {k: _cloud_stuck([1, 2], tag)}, base)
+        assert (items[0].verdict, items[0].note) == (nf.CLOUD_CHANGED, "human-over-auto")
+    # a portal veto ([] web) is a person's entry too
+    items = nf.plan_channel("stuck", {k: _S([2], "auto")}, {k: _cloud_stuck([], "web")},
+                            {k: _S([], "web")})
+    assert items[0].verdict == nf.CLOUD_CHANGED
+    # and the mirror image: a detection in the cloud never stands over a person's entry here
+    items = nf.plan_channel("stuck", {k: _S([1, 2], "hand")}, {k: _cloud_stuck([3], "auto")},
+                            {k: _S([1, 2], "hand")})
+    assert (items[0].verdict, items[0].note) == (nf.LOCAL_CHANGED, "human-over-auto")
+    # vetting a detection (retagging it hand) is an ordinary local edit
+    items = nf.plan_channel("stuck", {k: _S([3], "hand")}, {k: _cloud_stuck([1, 2], "web")},
+                            {k: _S([1, 2], "web")})
+    assert (items[0].verdict, items[0].note) == (nf.LOCAL_CHANGED, "")
+
+
 def test_plan_unknown_cloud_source():
     k = ("r", "1")
     # same shutters here under `auto`: in sync, and this machine's tag is sent up
@@ -254,9 +277,25 @@ def test_plan_unknown_cloud_source():
     # nothing here: pulled as `hand`
     items = nf.plan_channel("stuck", {}, {k: _cloud_stuck([1, 2], None)}, {})
     assert items[0].verdict == nf.CLOUD_NEW and items[0].cloud == _S([1, 2], "hand")
-    # different shutters under a detection here: unknown reads as hand, and wins
+    # different shutters under a detection here, never synced: nobody has agreed the
+    # untagged entry is a person's, so it does NOT win. A plain conflict: local kept.
     items = nf.plan_channel("stuck", {k: _S([7], "auto")}, {k: _cloud_stuck([1, 2], None)}, {})
+    assert (items[0].verdict, items[0].note) == (nf.CONFLICT, "")
+    # once this machine pulled it (base holds it as hand), it is a person's entry here
+    items = nf.plan_channel("stuck", {k: _S([7], "auto")}, {k: _cloud_stuck([1, 2], None)},
+                            {k: _S([1, 2], "hand")})
     assert (items[0].verdict, items[0].note) == (nf.CLOUD_CHANGED, "human-over-auto")
+
+
+def test_plan_unknown_cloud_source_takes_the_base_tag():
+    # The cloud holds [1, 2] untagged; this machine agreed on it as `auto` (base) but
+    # has not pushed the tag. A refreshed detection [1, 2, 3] is an ordinary local
+    # edit -- not a conflict with a "hand" entry the cloud never held.
+    k = ("r", "1")
+    items = nf.plan_channel("stuck", {k: _S([1, 2, 3], "auto")}, {k: _cloud_stuck([1, 2], None)},
+                            {k: _S([1, 2], "auto")})
+    assert (items[0].verdict, items[0].note) == (nf.LOCAL_CHANGED, "")
+    assert nf._change(items[0])["expect"] == {"value": [1, 2], "source": None}
 
 
 def test_plan_empty_cloud_bkg_map_is_no_entry_but_keeps_its_raw_value():
@@ -273,6 +312,8 @@ def test_plan_empty_cloud_bkg_map_is_no_entry_but_keeps_its_raw_value():
 def test_cloud_entries_rejects_a_malformed_row():
     with pytest.raises(nf.FlagsError):
         nf.cloud_entries([_row(1, "r", 1, stuck="1,2")])
+    with pytest.raises(nf.FlagsError):
+        nf.cloud_entries([_row(1, "r", 1, stuck={})])     # {} is not the veto []
     with pytest.raises(nf.FlagsError):
         nf.cloud_entries([_row(1, "r", 1, stuck=[1], source="robot")])
 
@@ -430,8 +471,11 @@ def test_pull_does_not_apply_a_cloud_removal_without_a_yes(pipeline, tree):
     assert counts["applied"] == 0 and counts["kept"] == 2
     assert _local(tree)["stuck"] == {(ROOT_A, "101"): _S([2], "hand")}
     assert "removed in the cloud" in out
-    # still pending on the next pull (the base stands), applied with --theirs
+    # --theirs settles conflicts; it does not delete anything
     counts, _ = _pull(client, state, tree, theirs=True)
+    assert counts["applied"] == 0 and len(_local(tree)["stuck"]) == 1
+    # still pending (the base stands), applied with --prune
+    counts, _ = _pull(client, state, tree, prune=True)
     assert counts["applied"] == 2
     assert _local(tree) == {"stuck": {}, "bkg": {}}
 
@@ -447,21 +491,53 @@ def test_pull_restores_everything_when_the_file_is_gone(pipeline, tree):
     assert set(_local(tree)["stuck"]) == {(ROOT_A, "101"), (ROOT_A, "102")}
 
 
-def test_pull_reports_entries_a_regenerated_file_lost(pipeline, tree):
-    # The EMBER failure mode: the lists were synced, the reference dir was wiped, and a
-    # re-reduction regenerated the file with detections only. The hand entry is not in
-    # the file any more; nothing may treat that as a decision to delete it.
-    client = _cloud([_row(1, ROOT_A, 101, stuck=[2], source="hand"),
-                     _row(2, ROOT_A, 102, stuck=[3], source="auto")])
-    state = {}
-    _pull(client, state, tree)
-    _write(tree, nf.STUCK_FILE, _stuck_text(f"[{ROOT_A}]", "    102 = [3]  # auto"))
-    counts, out = _pull(client, state, tree)
-    assert counts["applied"] == 0
-    assert "1 stuck entry (1 hand) in the cloud but not in your file" in out
-    assert _cloud_view(client)["stuck"][(ROOT_A, "101")] == ([2], "hand")   # untouched
-    counts, _ = _pull(client, state, tree, theirs=True)                     # restore
-    assert _local(tree)["stuck"][(ROOT_A, "101")] == _S([2], "hand")
+def test_a_regenerated_file_never_costs_a_persons_entry(pipeline, tree, monkeypatch):
+    # The EMBER failure mode, end to end. The lists were synced; the reference dir was
+    # lost while the sync state survived; a re-reduction recreated the files and its
+    # detector wrote what it found. The file now lacks a hand entry (101), holds a
+    # detection where a reviewer's veto was (102) and where a hand list was (103),
+    # lacks an old detection (104), and the override file is blank.
+    client = _cloud([_row(1, ROOT_A, 101, stuck=[2], source="hand", bkg={"3": [1]}),
+                     _row(2, ROOT_A, 102, stuck=[], source="web"),
+                     _row(3, ROOT_A, 103, stuck=[1, 2], source="hand"),
+                     _row(4, ROOT_A, 104, stuck=[4], source="auto")])
+    before = _cloud_view(client)
+    config = {"supabase": {"url": "https://api.example.org"}}
+    nf.pull_on_pull(client, OBS, config, out=lambda _l: None)
+    _write(tree, nf.STUCK_FILE, _stuck_text(
+        f"[{ROOT_A}]", "    102 = [2]  # auto", "    103 = [3]  # auto", "    105 = [1]  # auto"))
+    _write(tree, nf.BKG_FILE, "# nodded background overrides\n")
+
+    # The deploy of that re-reduction sends the new detection only: no person's entry
+    # is replaced, nothing is removed.
+    res = nf.push_on_deploy(client, OBS, config)
+    assert res["pushed"] == 1 and res["pending"] == 5
+    after = _cloud_view(client)
+    assert after["stuck"].pop((ROOT_A, "105")) == ([1], "auto")
+    assert after == before
+    assert any("differ from a person's entry in the cloud" in line for line in res["lines"])
+    # even an explicit, forced, non-interactive push leaves them (removal needs --prune,
+    # and a detection is never sent over a person's entry)
+    state = cs.load_state()
+    _push(client, nf.backend_state(state, config), tree, force=True)
+    assert _cloud_view(client)["stuck"] == {**before["stuck"], (ROOT_A, "105"): ([1], "auto")}
+
+    # A plain `campfire pull spec --obs` puts the person's entries back.
+    lines = []
+    nf.pull_on_pull(client, OBS, config, out=lines.append)
+    local = _local(tree)
+    assert local["stuck"] == {
+        (ROOT_A, "101"): _S([2], "hand"),        # restored
+        (ROOT_A, "102"): _S([], "web"),          # the veto, over the detection
+        (ROOT_A, "103"): _S([1, 2], "hand"),     # the hand list, over the detection
+        (ROOT_A, "105"): _S([1], "auto"),
+    }                                            # 104 (a detection) is not restored
+    assert local["bkg"] == {(ROOT_A, "101"): {"3": [1]}}
+    assert any("restored" in line for line in lines)
+    # the old detection the file lacks stays a pending decision: --theirs restores it
+    state = cs.load_state()
+    _pull(client, nf.backend_state(state, config), tree, theirs=True)
+    assert _local(tree)["stuck"][(ROOT_A, "104")] == _S([4], "auto")
 
 
 def test_pull_skips_an_unreadable_file_and_writes_nothing(pipeline, tree):
@@ -550,11 +626,12 @@ def test_push_never_removes_without_a_yes(pipeline, tree):
     assert _cloud_view(client)["bkg"][(ROOT_A, "101")] == {"3": [1]}
     assert "not removed" in out
 
-    counts, _ = _push(client, state, tree, send_removals=False)    # the deploy's form
-    assert counts["pushed"] == 0
+    counts, _ = _push(client, state, tree, force=True)             # --force is not a yes
+    assert counts["pushed"] == 0 and _cloud_view(client)["bkg"] != {}
 
-    counts, _ = _push(client, state, tree, force=True)             # the explicit yes
+    counts, out = _push(client, state, tree, prune=True)           # the explicit yes
     assert counts["pushed"] == 2
+    assert f"{ROOT_A} 101: [2] (hand)" in out                      # what was removed is listed
     assert _cloud_view(client) == {"stuck": {(ROOT_A, "102"): ([3], "auto")}, "bkg": {}}
     # the row itself stays (rows are never deleted), with both entries cleared
     assert any(r["source_id"] == 101 and r["stuck_shutters"] is None for r in client.rows(TABLE))
@@ -565,7 +642,7 @@ def test_push_with_no_file_sends_nothing(pipeline, tree):
     # reported as newer.
     client = _cloud([_row(1, ROOT_A, 101, stuck=[2], source="hand")])
     state = {nf.STATE_KEY: {OBS: {"stuck": {f"{ROOT_A}/101": _S([2], "hand")}}}}
-    counts, out = _push(client, state, tree, force=True)
+    counts, out = _push(client, state, tree, force=True, prune=True)
     assert counts["pushed"] == 0 and client.rpcs == []
     assert "newer in the cloud" in out
     assert state[nf.STATE_KEY][OBS]["stuck"] == {f"{ROOT_A}/101": _S([2], "hand")}
@@ -702,6 +779,30 @@ def test_interactive_pull_asks_before_removing_and_before_taking_a_conflict(pipe
     assert _local(tree)["stuck"] == {(ROOT_A, "102"): _S([9], "web")}
 
 
+def test_apply_changes_does_not_trust_an_answer_that_does_not_add_up(pipeline, tree):
+    # If the function's answer does not account for every change, nothing is recorded
+    # as agreed (a base for a write that did not land would lose the edit on a later pull).
+    _write(tree, nf.STUCK_FILE, _stuck_text(f"[{ROOT_A}]", "    101 = [2]  # hand"))
+    for answer in (None, {}, {"applied": 0, "unchanged": 0, "refused": []}):
+        client = _cloud()
+        client.rpc_handlers["nirspec_review_apply"] = answer
+        state = {}
+        counts, out = _push(client, state, tree)
+        assert counts["errors"] == 1 and "nothing sent" in out
+        assert state == {}
+
+
+def test_the_base_is_kept_per_backend():
+    # What was agreed with a local test stack says nothing about production.
+    state = {}
+    local = nf.backend_state(state, {"supabase": {"url": "http://127.0.0.1:54321"}})
+    prod = nf.backend_state(state, {"supabase": {"url": "https://api.example.org"}})
+    nf._set_base(local, OBS, "stuck", {(ROOT_A, "101"): _S([2], "hand")})
+    assert nf._base_of(prod, OBS, "stuck") == {}
+    assert nf._base_of(local, OBS, "stuck") == {(ROOT_A, "101"): _S([2], "hand")}
+    assert set(state[nf.STATE_KEY]) == {"127.0.0.1:54321", "api.example.org"}
+
+
 # ---------------------------------------------------------------------------
 # The non-interactive callers
 # ---------------------------------------------------------------------------
@@ -710,12 +811,14 @@ def test_push_on_deploy_sends_edits_and_reports_the_rest(pipeline, tree):
     _write(tree, nf.STUCK_FILE, _stuck_text(
         f"[{ROOT_A}]", "    101 = [2]  # hand", "    102 = [3]  # auto"))
     client = _cloud()
-    assert nf.push_on_deploy(client, OBS)["pushed"] == 2
+    config = {"supabase": {"url": "https://api.example.org"}}
+    assert nf.push_on_deploy(client, OBS, config)["pushed"] == 2
     # the deployer's own push is recorded as the base ...
-    assert cs.load_state()[nf.STATE_KEY][OBS]["stuck"][f"{ROOT_A}/101"] == _S([2], "hand")
+    assert (cs.load_state()[nf.STATE_KEY]["api.example.org"][OBS]["stuck"][f"{ROOT_A}/101"]
+            == _S([2], "hand"))
     # ... so a later local removal is seen as one, and a deploy does not send it
     _write(tree, nf.STUCK_FILE, _stuck_text(f"[{ROOT_A}]", "    102 = [3]  # auto"))
-    res = nf.push_on_deploy(client, OBS)
+    res = nf.push_on_deploy(client, OBS, config)
     assert res["pushed"] == 0 and res["pending"] == 1
     assert any("not removed" in line for line in res["lines"])
     assert _cloud_view(client)["stuck"][(ROOT_A, "101")] == ([2], "hand")
@@ -723,10 +826,11 @@ def test_push_on_deploy_sends_edits_and_reports_the_rest(pipeline, tree):
 
 def test_pull_on_pull_adds_but_never_removes_or_overrides(pipeline, tree):
     client = _cloud([_row(1, ROOT_A, 101, stuck=[2], source="hand")])
-    nf.pull_on_pull(client, OBS, out=lambda _l: None)
+    config = {"supabase": {}}
+    nf.pull_on_pull(client, OBS, config, out=lambda _l: None)
     assert _local(tree)["stuck"] == {(ROOT_A, "101"): _S([2], "hand")}
     client.rows(TABLE)[0].update(stuck_shutters=None, stuck_source=None)
-    counts = nf.pull_on_pull(client, OBS, out=lambda _l: None)
+    counts = nf.pull_on_pull(client, OBS, config, out=lambda _l: None)
     assert counts["kept"] == 1
     assert _local(tree)["stuck"] == {(ROOT_A, "101"): _S([2], "hand")}
 
@@ -857,7 +961,7 @@ def test_cli_push_pull_diff_carry_the_lists(pipeline, tree, monkeypatch):
     assert _local(tree)["stuck"] == {(ROOT_A, "101"): _S([2], "hand"),
                                      (ROOT_A, "102"): _S([3], "web")}
     # the base lives beside the TOML kinds' base, in the same state file
-    assert cs.load_state()[nf.STATE_KEY][OBS]["stuck"][f"{ROOT_A}/102"] == _S([3], "web")
+    assert cs.load_state()[nf.STATE_KEY]["default"][OBS]["stuck"][f"{ROOT_A}/102"] == _S([3], "web")
 
     res = runner.invoke(config_group, ["diff", "--flags"])
     assert "flags: in sync" in res.output
@@ -881,11 +985,11 @@ def test_cli_non_admin_session_never_touches_the_lists(pipeline, tree, monkeypat
     # all unless the session is positively an admin.
     _write(tree, nf.STUCK_FILE, _stuck_text(f"[{ROOT_A}]", "    101 = [2]  # hand"))
     cs.save_state({"version": 1, "base": {k: {} for k in cs.KINDS},
-                   nf.STATE_KEY: {OBS: {"stuck": {f"{ROOT_A}/101": _S([2], "hand")}}}})
+                   nf.STATE_KEY: {"default": {OBS: {"stuck": {f"{ROOT_A}/101": _S([2], "hand")}}}}})
     client = _cloud()
     client.rpc_handlers["is_admin"] = False
     runner = _wire(monkeypatch, tree, client, mode="login")
-    res = runner.invoke(config_group, ["pull", "--flags", "--theirs"])
+    res = runner.invoke(config_group, ["pull", "--flags", "--theirs", "--prune"])
     assert res.exit_code == 0, res.output
     assert "admin-only" in res.output
     assert _local(tree)["stuck"] == {(ROOT_A, "101"): _S([2], "hand")}

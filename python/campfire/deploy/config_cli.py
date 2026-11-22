@@ -146,11 +146,14 @@ def config_group():
 @click.option('--dry-run', is_flag=True, help='Show what would happen without writing.')
 @click.option('--force', is_flag=True,
               help='Overwrite cloud sections that changed since your last sync.')
+@click.option('--prune', is_flag=True,
+              help='Also remove from the cloud the NIRSpec list entries your files '
+                   'no longer have (asked interactively otherwise).')
 @click.option('--local', is_flag=True, help='Use local Supabase (127.0.0.1:54321).')
 @click.option('--service-role', 'service_role', is_flag=True,
               help='Service-role auth for unattended runs (bypasses RLS).')
 def push_cmd(config_path, kind_programs, kind_observations, kind_fields,
-             kind_flags, obs, field, dry_run, force, local, service_role):
+             kind_flags, obs, field, dry_run, force, prune, local, service_role):
     """Upsert local TOML sections into the cloud registry (admin).
 
     Defaults to everything local: all programs, all observations, every field
@@ -159,7 +162,8 @@ def push_cmd(config_path, kind_programs, kind_observations, kind_fields,
     stuck-shutter / background-override lists of every observation. A cloud
     section (or list entry) that changed since your last sync is refused, not
     clobbered — pull or diff first, or --force. An entry you removed from a
-    list is removed from the cloud only when you confirm it (or --force).
+    list is removed from the cloud only when you confirm it (or --prune), and a
+    detection is never sent over an entry a person wrote.
     """
     scope, flags = _resolve_scope(kind_programs, kind_observations, kind_fields,
                                   obs, field, kind_flags)
@@ -205,8 +209,8 @@ def push_cmd(config_path, kind_programs, kind_observations, kind_fields,
         print("flags: pushing the lists of "
               + ("every local observation" if flags is None
                  else f"{len(flags)} observation(s)"))
-        res = nf.sync_push(sb, flags, state, force=force, dry_run=dry_run,
-                           interactive=sys.stdin.isatty())
+        res = nf.sync_push(sb, flags, nf.backend_state(state, config), force=force,
+                           prune=prune, dry_run=dry_run, interactive=sys.stdin.isatty())
         totals['flags'] = res['pushed']
         if not (res['pushed'] or res['pending'] or res['errors']):
             print("  in sync")
@@ -254,11 +258,14 @@ def _pull_decision(lhash, chash, base):
 @click.option('--dry-run', is_flag=True, help='Show what would happen without writing.')
 @click.option('--theirs', is_flag=True,
               help='Resolve conflicts by taking the cloud version (no prompt).')
+@click.option('--prune', is_flag=True,
+              help='Also delete the NIRSpec list entries the cloud removed '
+                   '(asked interactively otherwise).')
 @click.option('--local', is_flag=True, help='Use local Supabase (127.0.0.1:54321).')
 @click.option('--service-role', 'service_role', is_flag=True,
               help='Service-role auth for unattended runs (bypasses RLS).')
 def pull_cmd(config_path, kind_programs, kind_observations, kind_fields,
-             kind_flags, obs, field, dry_run, theirs, local, service_role):
+             kind_flags, obs, field, dry_run, theirs, prune, local, service_role):
     """Bring cloud config into your local TOMLs (works for any logged-in user).
 
     Pulls every section your program access lets you read, converging the
@@ -269,8 +276,9 @@ def pull_cmd(config_path, kind_programs, kind_observations, kind_fields,
     cloud with --theirs).
 
     Admins also get the NIRSpec stuck-shutter / background-override lists
-    (reference/nirspec/<obs>/), entry by entry under the same rule; an entry
-    removed in the cloud is removed here only when you confirm it (or --theirs).
+    (reference/nirspec/<obs>/), entry by entry under the same rule. An entry
+    a person wrote that your file lost is put back; an entry removed in the
+    cloud is removed here only when you confirm it (or --prune).
     """
     scope, flags = _resolve_scope(kind_programs, kind_observations, kind_fields,
                                   obs, field, kind_flags)
@@ -345,8 +353,8 @@ def pull_cmd(config_path, kind_programs, kind_observations, kind_fields,
         from . import nirspec_flags as nf
         print("flags: pulling the lists of "
               + ("every observation" if flags is None else f"{len(flags)} observation(s)"))
-        res = nf.sync_pull(sb, flags, state, theirs=theirs, dry_run=dry_run,
-                           interactive=sys.stdin.isatty())
+        res = nf.sync_pull(sb, flags, nf.backend_state(state, config), theirs=theirs,
+                           prune=prune, dry_run=dry_run, interactive=sys.stdin.isatty())
         n_flags, n_flags_kept = res['applied'], res['kept']
         if not (n_flags or n_flags_kept or res['errors']):
             print("  in sync")
@@ -430,7 +438,7 @@ def diff_cmd(config_path, kind_programs, kind_observations, kind_fields,
         clean = clean and not lines
     if _flags_ready(config, sb, flags, explicit=bool(kind_flags or obs)):
         from . import nirspec_flags as nf
-        lines = nf.sync_diff(sb, flags, state, show_all=show_all)
+        lines = nf.sync_diff(sb, flags, nf.backend_state(state, config), show_all=show_all)
         n_diff = sum(1 for line in lines if not line.lstrip().startswith('='))
         print("flags: " + (f"{n_diff} difference(s)" if n_diff else "in sync"))
         for line in lines:

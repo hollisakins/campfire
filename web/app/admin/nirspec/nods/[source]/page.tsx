@@ -5,7 +5,10 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
 import { Loader2, ArrowLeft } from 'lucide-react';
-import { getNirspecNodGrid, getNirspecSourceReviews, saveStuckShutters, saveBkgOverrides } from '@/lib/actions/nirspec-nods';
+import {
+  getNirspecNodGrid, getNirspecSourceReviews, saveStuckShutters, saveBkgOverrides,
+  type StuckExpect, type BkgExpect, type SaveReviewResult,
+} from '@/lib/actions/nirspec-nods';
 import {
   buildNodGrid, decodeSource, NOD_DETECTORS,
   nodKey, toggleStuckOrdinal, normalizeBkgOverrides,
@@ -17,11 +20,17 @@ import NodCell from '@/components/nirspec/NodCell';
 // Per-(exposure_root) editable review state, held in memory with optimistic updates.
 // stuck_shutters: null = no entry yet; [] = reviewed, none stuck. The first toggle
 // creates the entry, and toggling the last shutter off leaves [] (never back to null).
+// server_*: each entry as the server holds it (as loaded, then as last saved), which
+// is what a save expects to find there; a save over anything else is refused.
 interface ReviewState {
   stuck_shutters: number[] | null;
   bkg_overrides: Record<string, number[]>;
+  server_stuck: StuckExpect;
+  server_bkg: BkgExpect;
 }
-const EMPTY_REVIEW: ReviewState = { stuck_shutters: null, bkg_overrides: {} };
+const EMPTY_REVIEW: ReviewState = {
+  stuck_shutters: null, bkg_overrides: {}, server_stuck: null, server_bkg: null,
+};
 
 /** exposure_root shared by a nod-grid row's ≤2 detector cells (nrs1/nrs2 of one nod). */
 function rowRoot(row: { cells: Record<string, SpectrumExposure | null> }): string | null {
@@ -101,25 +110,37 @@ function NodGridInner() {
 
   // --- Editable flags (P6): nirspec_source_review, keyed by exposure_root ---
   const [reviews, setReviews] = useState<Map<string, ReviewState>>(new Map());
+  // Edits are refused until the entries are loaded: a toggle from an empty page
+  // would otherwise be saved as the whole entry.
+  const [reviewsLoaded, setReviewsLoaded] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadReviews = useCallback(async () => {
     if (!decoded) return;
-    let cancelled = false;
-    getNirspecSourceReviews(decoded.observation, decoded.sourceId).then((res) => {
-      if (cancelled) return;
-      if (res.error) { setSaveError(res.error); return; }
-      const m = new Map<string, ReviewState>();
-      for (const r of res.reviews) {
-        m.set(r.exposure_root, {
-          stuck_shutters: r.stuck_shutters,
-          bkg_overrides: r.bkg_overrides ?? {},
-        });
-      }
-      setReviews(m);
-    });
-    return () => { cancelled = true; };
+    const res = await getNirspecSourceReviews(decoded.observation, decoded.sourceId);
+    if (res.error) { setSaveError(res.error); return; }
+    const m = new Map<string, ReviewState>();
+    for (const r of res.reviews) {
+      m.set(r.exposure_root, {
+        stuck_shutters: r.stuck_shutters,
+        bkg_overrides: r.bkg_overrides ?? {},
+        server_stuck: r.stuck_shutters ? { value: r.stuck_shutters, source: r.stuck_source } : null,
+        server_bkg: r.bkg_overrides ? { value: r.bkg_overrides } : null,
+      });
+    }
+    setReviews(m);
+    setReviewsLoaded(true);
   }, [decoded?.observation, decoded?.sourceId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { void loadReviews(); }, [loadReviews]);
+
+  // A refused save means the entry changed elsewhere (a CLI push, another reviewer):
+  // nothing was written, so show what is there now.
+  const afterSave = useCallback((res: SaveReviewResult) => {
+    if (res.ok) return;
+    setSaveError(res.conflict ? 'Changed elsewhere; reloaded.' : (res.error ?? 'Save failed'));
+    void loadReviews();
+  }, [loadReviews]);
 
   // Candidate background nods for the whole source: distinct nod sequence numbers.
   const availableNods = useMemo(() => {
@@ -130,25 +151,32 @@ function NodGridInner() {
 
   // Optimistic saves: update local state immediately, persist the ONE channel that
   // changed (each is its own entry; the other is never rewritten).
+  // Server actions run one at a time per client, so a save always expects the value
+  // the previous save of the same entry wrote.
   const handleToggleShutter = useCallback((root: string, ordinal: number) => {
-    if (!decoded) return;
+    if (!decoded || !reviewsLoaded) return;
     const cur = reviews.get(root) ?? EMPTY_REVIEW;
     const stuck = toggleStuckOrdinal(cur.stuck_shutters ?? [], ordinal);
-    setReviews((prev) => new Map(prev).set(root, { ...cur, stuck_shutters: stuck }));
-    saveStuckShutters(decoded.observation, root, decoded.sourceId, stuck)
-      .then((res) => { if (res.error) setSaveError(res.error); });
-  }, [reviews, decoded?.observation, decoded?.sourceId]); // eslint-disable-line react-hooks/exhaustive-deps
+    setReviews((prev) => new Map(prev).set(root, {
+      ...cur, stuck_shutters: stuck, server_stuck: { value: stuck, source: 'web' },
+    }));
+    saveStuckShutters(decoded.observation, root, decoded.sourceId, stuck, cur.server_stuck)
+      .then(afterSave);
+  }, [reviews, reviewsLoaded, afterSave, decoded?.observation, decoded?.sourceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleBkgChange = useCallback((root: string, nk: string, list: number[] | null) => {
-    if (!decoded) return;
+    if (!decoded || !reviewsLoaded) return;
     const cur = reviews.get(root) ?? EMPTY_REVIEW;
     const bkg = { ...cur.bkg_overrides };
     if (list === null) delete bkg[nk];
     else bkg[nk] = list;
-    setReviews((prev) => new Map(prev).set(root, { ...cur, bkg_overrides: bkg }));
-    saveBkgOverrides(decoded.observation, root, decoded.sourceId, normalizeBkgOverrides(bkg))
-      .then((res) => { if (res.error) setSaveError(res.error); });
-  }, [reviews, decoded?.observation, decoded?.sourceId]); // eslint-disable-line react-hooks/exhaustive-deps
+    const stored = normalizeBkgOverrides(bkg);
+    setReviews((prev) => new Map(prev).set(root, {
+      ...cur, bkg_overrides: bkg, server_bkg: stored ? { value: stored } : null,
+    }));
+    saveBkgOverrides(decoded.observation, root, decoded.sourceId, stored, cur.server_bkg)
+      .then(afterSave);
+  }, [reviews, reviewsLoaded, afterSave, decoded?.observation, decoded?.sourceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return <div className="flex items-center justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
@@ -235,7 +263,7 @@ function NodGridInner() {
                   ))}
                   <div className="w-44 h-32 border border-border rounded p-2 overflow-y-auto">
                     <BkgOverrideControl
-                      disabled={!root}
+                      disabled={!root || !reviewsLoaded}
                       availableNods={availableNods.filter((n) => n !== nk)}
                       value={review.bkg_overrides[nk]}
                       onChange={(list) => { if (root) handleBkgChange(root, nk, list); }}

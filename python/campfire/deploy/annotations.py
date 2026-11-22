@@ -42,7 +42,7 @@ def pull_observation_annotations(obs_name: str, config: dict, *, dry_run: bool =
     if not nf.can_sync(config, sb):
         return   # admin-only table: zero rows here would not mean "no entries"
     try:
-        counts = nf.pull_on_pull(sb, obs_name, dry_run=dry_run)
+        counts = nf.pull_on_pull(sb, obs_name, config, dry_run=dry_run)
     except nf.FlagsError as e:
         print(f"  ! stuck-shutter / bkg-override lists: {e} — nothing written")
         return

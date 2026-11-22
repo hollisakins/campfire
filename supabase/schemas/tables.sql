@@ -1168,10 +1168,10 @@ COMMENT ON COLUMN "public"."spectrum_exposures"."exp_group" IS 'Pipeline-compute
 --                                  NULL = no entry.
 -- The entries are the sync unit of `campfire config push / pull / diff` (the config
 -- plane): each is reconciled three-way against the value a machine last agreed on with
--- this table. The CLI writes only through nirspec_review_apply (a guarded write: a
--- change lands only if the entry still holds the value the client read); the portal
--- writes a channel at a time. Rows are never deleted; clearing an entry sets its
--- column NULL. Admin-only (RLS); never uploaded to object storage
+-- this table. Every writer (the CLI, the deploy, the portal's nods view) goes through
+-- nirspec_review_apply, a guarded write: a change to one entry lands only if the
+-- entry still holds the value that writer read. Rows are never deleted; clearing an
+-- entry sets its column NULL. Admin-only (RLS); never uploaded to object storage
 -- (deployments.stuck_shutters / .bkg_overrides are the per-deploy snapshots of what a
 -- reduction used). exposure_root is the 2-token root (jw07076020001_04101), same
 -- semantics as spectrum_exposures.exposure_root.
@@ -1207,7 +1207,7 @@ ALTER SEQUENCE "public"."nirspec_source_review_id_seq" OWNER TO "postgres";
 ALTER SEQUENCE "public"."nirspec_source_review_id_seq" OWNED BY "public"."nirspec_source_review"."id";
 
 
-COMMENT ON TABLE "public"."nirspec_source_review" IS 'Cloud home of the NIRSpec stuck-shutter and nodded-background-override lists (reference/nirspec/<obs>/*.toml), synced by `campfire config push / pull / diff` and edited in the portal''s nods view. One row per (observation, exposure_root, source_id) holding two independent entries: stuck_shutters ([ordinals]; [] = vetted, none stuck; NULL = no entry) with its provenance stuck_source (hand / web / auto; NULL = unknown, reads as hand), and bkg_overrides ({nod: [nods]}; NULL = no entry). Admin-only; rows are never deleted; CLI writes go through nirspec_review_apply.';
+COMMENT ON TABLE "public"."nirspec_source_review" IS 'Cloud home of the NIRSpec stuck-shutter and nodded-background-override lists (reference/nirspec/<obs>/*.toml), synced by `campfire config push / pull / diff` and edited in the portal''s nods view. One row per (observation, exposure_root, source_id) holding two independent entries: stuck_shutters ([ordinals]; [] = vetted, none stuck; NULL = no entry) with its provenance stuck_source (hand / web / auto; NULL = unknown, reads as hand), and bkg_overrides ({nod: [nods]}; NULL = no entry). Admin-only; rows are never deleted; every writer (CLI, deploy, portal) goes through nirspec_review_apply.';
 
 
 -- storage_objects: the keystone shadow index of every object in cloud storage

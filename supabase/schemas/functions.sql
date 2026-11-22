@@ -3270,8 +3270,9 @@ COMMENT ON FUNCTION public.catalog_matches_upsert(jsonb) IS 'Writes photometric 
 REVOKE ALL ON FUNCTION public.catalog_matches_upsert(jsonb) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.catalog_matches_upsert(jsonb) TO authenticated, service_role;
 
--- nirspec_review_apply: the guarded write of `campfire config push` (and of the
--- deploy that pushes an observation's lists). Each element of p_changes names one
+-- nirspec_review_apply: the guarded write of every writer of nirspec_source_review:
+-- `campfire config push`, the deploy that pushes an observation's lists, and the
+-- portal's nods view (one change per click). Each element of p_changes names one
 -- entry of nirspec_source_review -- a channel ('stuck' or 'bkg') of one
 -- (exposure_root, source_id) of p_observation -- with the value the client READ
 -- ('expect') and the value it wants ('set'):
@@ -3418,7 +3419,7 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.nirspec_review_apply(text, jsonb) IS 'Guarded write of the NIRSpec stuck-shutter / background-override entries (campfire config push, and the deploy of an observation): each change carries the value the client read (expect) and the value it wants (set) for one channel of one (exposure_root, source_id), and lands only while the entry still holds what was read, so a portal edit made in between is refused and reported instead of overwritten. Returns {applied, unchanged, refused: [{channel, exposure_root, source_id, current}]}. Admin or service role.';
+COMMENT ON FUNCTION public.nirspec_review_apply(text, jsonb) IS 'Guarded write of the NIRSpec stuck-shutter / background-override entries (campfire config push, the deploy of an observation, the portal''s nods view): each change carries the value the client read (expect) and the value it wants (set) for one channel of one (exposure_root, source_id), and lands only while the entry still holds what was read, so an edit made in between by another writer is refused and reported instead of overwritten. Returns {applied, unchanged, refused: [{channel, exposure_root, source_id, current}]}. Admin or service role.';
 REVOKE ALL ON FUNCTION public.nirspec_review_apply(text, jsonb) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.nirspec_review_apply(text, jsonb) TO authenticated, service_role;
 
