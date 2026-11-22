@@ -222,3 +222,28 @@ def test_multi_obs_deferred_reconcile_holds_the_field_lease(patched, monkeypatch
     assert res.exit_code == 0, (res.output, res.exception)
     assert keys == [('field', 'cosmos')]
     assert order == ['begin', 'reconcile cosmos', 'claim']
+
+
+@pytest.mark.parametrize('verb', ['publish', 'revoke'])
+def test_field_lifecycle_parses_without_obs(patched, monkeypatch, verb):
+    # `deploy publish --field F` once failed at parse time with "Missing option
+    # '--obs'": the lifecycle commands shared the decorator that requires it.
+    from click.testing import CliRunner
+    c, order = _client({'version': 3})
+    patched(c)
+    monkeypatch.setattr(dcli, '_gate_admin', lambda *a, **k: None)
+    monkeypatch.setattr(dcli, 'load_config', lambda path, **kw: {})
+    monkeypatch.setattr(dcli, 'get_supabase_client', lambda config: c)
+    monkeypatch.setattr(dcli, 'get_user_id_from_token', lambda config: 'user-1')
+    monkeypatch.setattr(dcli, 'get_field_deployment_ids', lambda client, field: [7])
+    res = CliRunner().invoke(dcli.deploy_group, [verb, '--field', 'cosmos', '--dry-run'], obj={})
+    assert res.exit_code == 0, (res.output, res.exception)
+    assert 'field cosmos' in res.output and order == []
+
+
+@pytest.mark.parametrize('args', [[], ['--obs', 'o1', '--field', 'cosmos']])
+def test_lifecycle_needs_exactly_one_target(monkeypatch, args):
+    from click.testing import CliRunner
+    monkeypatch.setattr(dcli, '_gate_admin', lambda *a, **k: None)
+    res = CliRunner().invoke(dcli.deploy_group, ['publish', *args, '--dry-run'], obj={})
+    assert res.exit_code == 2 and 'exactly one of --obs or --field' in res.output

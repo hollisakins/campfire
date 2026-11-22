@@ -10,6 +10,8 @@ cfpipe config > my_config.toml          # export the defaults
 pytest pipeline/tests -q
 ```
 
+For a NIRCam reduction end to end (field setup, alignment catalogs, tiles, inspection, publishing), follow the `nircam-reduction` skill in `.claude/skills/nircam-reduction/`.
+
 ## Configuration
 
 - Resolution order: package defaults (`campfire_pipeline/data/config_default.toml`), then the user config (`--config` or `$CAMPFIRE_ROOT/config/config.toml`), then per-observation / per-field overrides (in `config/observations.toml` or `config/fields.toml`).

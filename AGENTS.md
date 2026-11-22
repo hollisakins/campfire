@@ -29,6 +29,7 @@ Programs carry access control: proprietary programs are visible only to their me
 | `etc/` | `campfire-etc`: numpy-only ETC, simulator and MCP server. | `etc/AGENTS.md` |
 | `ops/` | Production VM (Docker Compose, Caddy, backups, deploy script). | `ops/AGENTS.md`, `ops/README.md` |
 | `scripts/` | One-off utilities, backfills, generators. | |
+| `.claude/skills/` | Claude Code skills: reduction cookbooks (`nircam-reduction`), `pipeline-release`, `campfire-review`, `new-update`. | each `SKILL.md` |
 | `docs/` | Temporary: design docs and plans for work in progress (see Documentation). | |
 
 ## Environment and install
