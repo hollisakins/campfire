@@ -138,3 +138,165 @@ class TestExposureWcs:
         regs = _parse('fk5\ncircle(150.0,2.0,0.72")')
         mask = _rasterize_regions(regs, wcs, (10, 10))
         assert mask[4, 4] == 1 and mask[0, 0] == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #478 item 1: the skip follows the .reg input, not the stamp's presence
+# ---------------------------------------------------------------------------
+
+from campfire_pipeline.nircam.steps import apply_masks as am  # noqa: E402
+
+_SQUARE = "image\npolygon(2,2,8,2,8,8,2,8)\n"
+_BIGGER = "image\npolygon(1,1,15,1,15,15,1,15)\n"
+
+
+class TestStaleness:
+    """``mask_staleness`` as a pure function of (stamp, .reg on disk)."""
+
+    def test_not_yet_run(self, tmp_path):
+        assert am.mask_staleness(None, str(tmp_path / "x.reg")) == "not yet run"
+
+    def test_no_reg_stays_current(self, tmp_path):
+        assert am.mask_staleness(am.NO_REG, str(tmp_path / "x.reg")) is None
+
+    def test_reg_appearing_after_no_reg_stamp_is_stale(self, tmp_path):
+        # The sequence the issue measured: combine stamps 'no .reg file', then
+        # a pull materializes the reviewer's mask.
+        reg = tmp_path / "x.reg"
+        reg.write_text(_SQUARE)
+        assert am.mask_staleness(am.NO_REG, str(reg)) is not None
+
+    def test_hash_match_and_mismatch(self, tmp_path):
+        reg = tmp_path / "x.reg"
+        reg.write_text(_SQUARE)
+        stamp = am.mask_stamp(am.reg_hash(str(reg)))
+        assert am.mask_staleness(stamp, str(reg)) is None
+        reg.write_text(_BIGGER)
+        assert am.mask_staleness(stamp, str(reg)) == "its .reg file changed"
+
+    def test_comment_lines_do_not_count(self, tmp_path):
+        reg = tmp_path / "x.reg"
+        reg.write_text("# Generated at 2026-01-01\n" + _SQUARE)
+        stamp = am.mask_stamp(am.reg_hash(str(reg)))
+        reg.write_text("# Generated at 2026-11-22\n\n" + _SQUARE)
+        assert am.mask_staleness(stamp, str(reg)) is None
+
+    def test_removed_reg_is_stale(self, tmp_path):
+        assert am.mask_staleness("2026-01-01T00:00:00 reg=abc",
+                                 str(tmp_path / "x.reg")) == "its .reg file was removed"
+
+    def test_legacy_timestamp_judged_by_mtime(self, tmp_path):
+        import os
+        reg = tmp_path / "x.reg"
+        reg.write_text(_SQUARE)
+        t = 1_700_000_000
+        os.utime(reg, (t, t))
+        from datetime import datetime, timedelta
+        at = datetime.fromtimestamp(t)
+        older = (at - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        newer = (at + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        assert am.mask_staleness(newer, str(reg)) is None
+        assert am.mask_staleness(older, str(reg)) is not None
+
+    def test_unreadable_stamp_is_stale(self, tmp_path):
+        reg = tmp_path / "x.reg"
+        reg.write_text(_SQUARE)
+        assert am.mask_staleness("garbage", str(reg)) is not None
+
+
+@pytest.fixture
+def exposure(tmp_path):
+    """A canonical-like exposure ``<tmp>/products/f277w/<root>.fits`` plus a
+    ``field`` stand-in whose ``mask_dir`` is ``<tmp>/masks``."""
+    pytest.importorskip("jwst")
+    from types import SimpleNamespace
+    from jwst.datamodels import ImageModel
+
+    prod = tmp_path / "products" / "f277w"
+    prod.mkdir(parents=True)
+    path = prod / "jw01176221001_08101_00003_nrcblong.fits"
+    m = ImageModel(data=np.zeros((20, 20), np.float32),
+                   dq=np.zeros((20, 20), np.uint32))
+    m.save(str(path))
+    m.close()
+    (tmp_path / "masks" / "f277w").mkdir(parents=True)
+    field = SimpleNamespace(mask_dir=str(tmp_path / "masks"))
+    reg = tmp_path / "masks" / "f277w" / f"{path.stem}.reg"
+    return str(path), field, reg
+
+
+def _state(path):
+    from astropy.io import fits
+    with fits.open(path) as h:
+        stamp = h[0].header.get("CFP_MASK")
+        n = int(h["CFMASK"].data.sum()) if "CFMASK" in h else None
+        spke = "CFP_SPKE" in h[0].header
+    return stamp, n, spke
+
+
+class TestStepRoundTrip:
+    """``apply_masks_step`` end to end on a real datamodel file, no overwrite."""
+
+    def test_mask_drawn_after_first_combine_is_applied(self, exposure):
+        path, field, reg = exposure
+        am.apply_masks_step(path, field, {})
+        assert _state(path)[:2] == (am.NO_REG, None)
+
+        reg.write_text(_SQUARE)                       # the reviewer's mask arrives
+        am.apply_masks_step(path, field, {})          # combine re-run, no --overwrite
+        stamp, n, _ = _state(path)
+        assert n and n > 0
+        assert am.stamp_reg_hash(stamp) == am.reg_hash(str(reg))
+
+    def test_unchanged_mask_is_skipped(self, exposure):
+        import os
+        path, field, reg = exposure
+        reg.write_text(_SQUARE)
+        am.apply_masks_step(path, field, {})
+        before = os.stat(path).st_mtime_ns
+        am.apply_masks_step(path, field, {})
+        assert os.stat(path).st_mtime_ns == before   # not rewritten
+
+    def test_edited_mask_rebuilds_and_clears_spike_stamp(self, exposure):
+        from astropy.io import fits
+        path, field, reg = exposure
+        reg.write_text(_SQUARE)
+        am.apply_masks_step(path, field, {})
+        n_small = _state(path)[1]
+        with fits.open(path, mode="update") as h:     # as spike_mask stamps it
+            h[0].header["CFP_SPKE"] = "x"
+        reg.write_text(_BIGGER)
+        am.apply_masks_step(path, field, {})
+        stamp, n_big, spke = _state(path)
+        assert n_big > n_small
+        assert am.stamp_reg_hash(stamp) == am.reg_hash(str(reg))
+        assert not spke
+
+    def test_removed_mask_drops_cfmask_and_file_still_loads(self, exposure):
+        from jwst.datamodels import ImageModel
+        path, field, reg = exposure
+        reg.write_text(_SQUARE)
+        am.apply_masks_step(path, field, {})
+        reg.unlink()
+        am.apply_masks_step(path, field, {})
+        assert _state(path)[:2] == (am.NO_REG, None)
+        with ImageModel(path) as m:                   # no dangling ASDF reference
+            assert m.data.shape == (20, 20)
+        am.apply_masks_step(path, field, {})          # and a later save is clean
+        assert _state(path)[1] is None
+
+
+class TestDispatchFilter:
+    """The orchestrator's pre-dispatch filter re-queues changed masks."""
+
+    def test_pending_follows_reg_input(self, exposure):
+        from campfire_pipeline.nircam.orchestrate import _filter_pending_masks
+        path, field, reg = exposure
+        assert _filter_pending_masks([path], field, False) == [path]
+        am.apply_masks_step(path, field, {})
+        assert _filter_pending_masks([path], field, False) == []
+        reg.write_text(_SQUARE)
+        assert _filter_pending_masks([path], field, False) == [path]
+        am.apply_masks_step(path, field, {})
+        assert _filter_pending_masks([path], field, False) == []
+        assert _filter_pending_masks([path], field, True) == [path]

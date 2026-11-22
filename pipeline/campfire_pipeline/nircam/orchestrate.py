@@ -202,6 +202,40 @@ def _filter_pending(step_name, exposures, cfp_key, status, overwrite):
     return pending, skipped
 
 
+def _filter_pending_masks(exposures, field, overwrite):
+    """apply_mask's pending set: exposures whose CFMASK does not match the .reg.
+
+    The mask's input is a file a reviewer can add, edit or remove after the
+    first combine, so a ``CFP_MASK`` stamp alone does not mean done (#478).
+    An exposure is pending when it has no stamp or its stamp was built from
+    other ``.reg`` contents; each re-run for a changed mask is logged, so a
+    mask drawn after the first combine is never skipped in silence.
+    """
+    if overwrite:
+        return list(exposures)
+    from campfire_pipeline.nircam.steps.apply_masks import (
+        mask_staleness, reg_file_for)
+    pending, changed = [], []
+    for f in exposures:
+        reason = mask_staleness(cfp.step_value(f, 'CFP_MASK'),
+                                reg_file_for(f, field.mask_dir))
+        if reason is None:
+            continue
+        pending.append(f)
+        if reason != 'not yet run':
+            changed.append((os.path.basename(f).removesuffix('.fits'), reason))
+    skipped = len(exposures) - len(pending)
+    if skipped:
+        log(f"apply_mask: {skipped}/{len(exposures)} have CFP_MASK matching "
+            f"their .reg input; skipping those")
+    if changed:
+        log(f"apply_mask: re-applying {len(changed)} exposure(s) whose mask "
+            f"input changed since the last run:")
+        for root, reason in changed:
+            log(f"  {root}: {reason}")
+    return pending
+
+
 _GRISM_EXP_TYPES = ('NRC_WFSS', 'NRC_TSGRISM')
 
 
@@ -335,8 +369,11 @@ def _run_per_exposure(step_name, field, config, filtname,
     if not exposures:
         log(f"{step_name}: no exposures for {filtname}")
         return
-    pending, _ = _filter_pending(step_name, exposures, cfp_key, status,
-                                 overwrite)
+    if step_name == 'apply_mask':
+        pending = _filter_pending_masks(exposures, field, overwrite)
+    else:
+        pending, _ = _filter_pending(step_name, exposures, cfp_key, status,
+                                     overwrite)
     if not pending:
         return
     fn = _load_step(module_basename, func_name)
