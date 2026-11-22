@@ -68,6 +68,17 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
     else:
         raise NotImplementedError
 
+    # A requested source x grating whose exposures are now all nodata never
+    # enters the work list below, so its final (built from data now masked)
+    # would survive --overwrite and be deployed again. Only on an explicit,
+    # overwriting request, and only with nodata markers behind it.
+    if overwrite and source_ids != 'all':
+        from campfire_pipeline.nirspec.nodata import (
+            find_orphaned_finals, remove_orphaned_finals,
+        )
+        remove_orphaned_finals(find_orphaned_finals(
+            obs.workspace_dir, obs.name, source_ids, mode_matches=obs.mode_matches))
+
     if len(files) == 0:
         log(f"No canonical files found for {obs.name}")
         return

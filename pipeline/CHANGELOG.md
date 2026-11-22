@@ -28,6 +28,26 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+- **Fully stuck sources no longer leave stale products behind.** No pixel changes for a
+  source that still has data, but this changes **which spectra exist**: finals built from
+  exposures that are now masked are removed instead of surviving a re-run.
+  - When every shutter of a source is stuck, stage 2a with `--overwrite` used to skip the
+    source and keep the canonical from the earlier, unmasked run. Stages 2b and 3 then used
+    that canonical as current. Stage 2a now removes the canonical and writes
+    `<prod>_nodata` (`AllShuttersStuck`).
+  - The same now happens when `NoDataOnDetectorError` hits a product that still had a
+    canonical from an earlier run. The marker says `NoDataOnDetectorError`, as before.
+  - `detect_stuck_shutters` returns `{}` on an empty files table. It used to raise
+    `TypeError`, which made `detect-stuck` and stage 2a's detection exit rc=1 when every
+    canonical of the selection was nodata.
+  - `stage3 --overwrite --source-ids …` deletes the files of a requested source × grating
+    that has nodata markers but no canonicals left: `_spec` / `_s2d` / `_x1d` / PDFs /
+    zfit / lines and the per-exposure-group parts. A final with no marker behind it is
+    never touched, and runs without `--overwrite` or without `--source-ids` behave as
+    before. Infrastructure and not Algorithm because nothing a surviving source produces
+    changes; flag it at release time if you read "which spectra exist" as Algorithm.
+
 ## v1.0.0 — 2026-11-21
 
 ### Infrastructure
