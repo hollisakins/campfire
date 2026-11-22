@@ -50,7 +50,6 @@ catalog, then use that mosaic as the reference for everything else.
    as the field's refcat, then re-align every filter and combine:
    ```bash
    cfpipe nircam refcat extract --field F --filter f444w --tile T --mag-range 18,26
-   cd $CAMPFIRE_ROOT/reference/nircam/F/astrom_cats
    cfpipe nircam refcat merge --field F F_f444w_extract_refcat.ecsv F_ls_dr10_i_refcat.ecsv \
        --out F_f444w_plus_lsdr10_refcat.ecsv
    # set [F.align].refcat = "F_f444w_plus_lsdr10_refcat.ecsv", then:
@@ -61,9 +60,9 @@ catalog, then use that mosaic as the reference for everything else.
    The anchor filter ends up re-aligned against a catalog built from its own
    mosaic. That's circular but harmless.
 
-`query` and `extract` write into the field's `astrom_cats/` by default. `merge`
-takes its inputs and `--out` relative to the current directory, hence the `cd`.
-In `merge`, the first catalog wins duplicates (3″ match radius).
+All `refcat` commands work in the field's `astrom_cats/`: outputs land there
+(including a relative `--out`), and relative input names are looked up there
+first. In `merge`, the first catalog wins duplicates (3″ match radius).
 `refcat compare --field F A.ecsv B.ecsv` plots the ΔRA / ΔDec offsets between two
 catalogs, which is the quickest check for a frame offset.
 
@@ -78,8 +77,7 @@ catalogs, which is the quickest check for a frame offset.
   every filter comes from the same visit.
 - **HSC SSP** (`hsc_ssp`) needs an account (`HSC_SSP_USER` / `HSC_SSP_PASSWORD`, or
   `~/.netrc`).
-- **An existing deep catalog** of the field (e.g. UNICORN for GOODS-N, COSMOS2025
-  for COSMOS) can be the refcat directly, skipping hop 1.
+- **An existing deep catalog** of the field can be the refcat directly, skipping hop 1.
 
 ## Catalog format (`campfire-refcat-v1`)
 

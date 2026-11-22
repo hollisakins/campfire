@@ -30,18 +30,26 @@ Two outcomes per exposure:
    The pull writes masks to `reference/nircam/F/masks/<filter>/<rootname>.reg` and
    exclusions to `reference/nircam/F/exposures.json`, and prints how the local
    masks differ from the portal's. (`campfire pull im --field F` also refreshes
-   them, but downloads products too.)
+   them, but downloads products too.) **Don't delete masks on the report's
+   "STALE … remove it" advice** for a field with more than 5,000 exposures: the
+   report reads a capped query there and flags live masks (#478).
 
 **Use `--overwrite` on a combine after masks change.** The first combine step
 records that an exposure's masks were applied and skips it on later runs, so an
 edited mask isn't picked up otherwise. Combine's other work is redone from
 disposable copies, so `--overwrite` costs time but nothing else.
 
-The pull adds exclusions and never removes them: to un-exclude an exposure, also
-delete its rootname from `exposures.json`. A local `.reg` with no portal mask is
-left alone.
+The pull only adds, it never overwrites or removes:
+- a `.reg` that already exists locally is kept even if the mask was edited in the
+  portal since (the pull reports the difference). To take the portal's version,
+  delete the local `.reg` and pull again;
+- to un-exclude an exposure, also delete its rootname from `exposures.json`;
+- a local `.reg` with no portal mask is left alone.
 
-## In DS9 (without CAMPFIRE)
+(Issue #709 tracks moving masks onto `campfire config pull/push`, which would make
+edits and removals travel both ways.)
+
+## In DS9 (without CAMPFIRE admin access)
 
 Draw regions on the canonical exposure
 (`products/nircam/F/<filter>/<rootname>.fits`) and save them as

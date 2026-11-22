@@ -70,12 +70,6 @@ logs/
 .claude/settings.local.json
 .claude/worktrees/
 .claude/scheduled_tasks.lock
-.ds-sync/
-ds-bundle/
-.design-sync/.cache/
-.design-sync/learnings/
-.design-sync/node_modules
-web/.ds-sync-styles.css
 
 # Periodic /campfire-review output (local triage artifacts)
 reports/
