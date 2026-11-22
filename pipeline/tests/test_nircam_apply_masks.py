@@ -300,3 +300,33 @@ class TestDispatchFilter:
         am.apply_masks_step(path, field, {})
         assert _filter_pending_masks([path], field, False) == []
         assert _filter_pending_masks([path], field, True) == [path]
+
+    def test_dispatch_refreshes_status_so_spike_mask_reruns(self, exposure):
+        # Codex review on #712: clearing CFP_SPKE on disk must reach the
+        # phase's StepStatus snapshot, or spike_mask skips in the same run.
+        from types import SimpleNamespace
+        from unittest import mock
+        from astropy.io import fits
+        from campfire_pipeline.nircam import orchestrate
+        from campfire_pipeline.nircam.status import StepStatus
+
+        path, field, reg = exposure
+        reg.write_text(_SQUARE)
+        am.apply_masks_step(path, field, {})
+        with fits.open(path, mode="update") as h:
+            h[0].header["CFP_SPKE"] = "x"
+        reg.write_text(_BIGGER)
+        status = StepStatus.scan([path])
+        assert status.has(path, "CFP_SPKE")
+
+        fld = SimpleNamespace(mask_dir=field.mask_dir,
+                              get_exposure_files=lambda *a, **k: [path])
+        with mock.patch.object(orchestrate, "get_nircam_step_config",
+                               return_value={}), \
+             mock.patch.object(orchestrate, "dispatch",
+                               side_effect=lambda fn, items, **kw:
+                               [fn(i, kw["field"], kw["step_config"]) for i in items]):
+            orchestrate._run_per_exposure("apply_mask", fld, {}, "f277w", 1,
+                                          False, status)
+        assert status.has(path, "CFP_MASK")
+        assert not status.has(path, "CFP_SPKE")

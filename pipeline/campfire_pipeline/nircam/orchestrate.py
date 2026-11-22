@@ -383,7 +383,12 @@ def _run_per_exposure(step_name, field, config, filtname,
     dispatch(fn, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
              status=status)
-    status.mark_all(pending, cfp_key)
+    if step_name == 'apply_mask':
+        # A changed or removed mask also clears CFP_SPKE on the canonical;
+        # re-read the headers so spike_mask sees that in this same run.
+        status.rescan(pending)
+    else:
+        status.mark_all(pending, cfp_key)
 
 
 def _run_diag_striping(field, config, filtname, n_processes, overwrite, status,
