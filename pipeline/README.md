@@ -83,7 +83,7 @@ resolves the pair — select on the total, not on a component.
 `campfire deploy lines --obs <obs>` (or a full deploy) publishes the rows to the
 `line_fits` catalog. `--allow-auto` falls back to the `zfit` redshift for
 QA runs; those products are stamped `ZSRC=auto` and are refused by deploy unless
-`--allow-auto-z`. See `docs/design-emission-line-fitting.md`.
+`--allow-auto-z`.
 
 ```bash
 campfire pull spec --obs ember_uds_p4

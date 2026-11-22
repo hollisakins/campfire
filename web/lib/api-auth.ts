@@ -47,7 +47,7 @@ export async function authenticateApiRequest(request: NextRequest): Promise<ApiP
 
   const access = await getAccessContext(userId);
 
-  // Share links (docs/design-public-mirror.md §5.5): the programmatic API is
+  // Share links: the programmatic API is
   // closed to link accounts, full stop. Every bearer-authorized /api/v1 route
   // authorizes at program grain (accessibleSlugs), which cannot express
   // "one observation" or the download opt-out — so a link visitor lifting the

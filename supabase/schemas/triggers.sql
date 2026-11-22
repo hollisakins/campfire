@@ -564,7 +564,7 @@ CREATE TRIGGER pin_redshift_on_signoff_trigger
   FOR EACH ROW EXECUTE FUNCTION public.pin_redshift_on_signoff();
 
 -- ---------------------------------------------------------------------------
--- Needs-review (docs/design-needs-review.md, data releases P3)
+-- Needs-review
 -- ---------------------------------------------------------------------------
 -- stamp_reviewed_spectra: at every sign-off (any UPDATE that moves
 -- last_inspected_at: the inspect route, "mark as reviewed", admin SQL) record

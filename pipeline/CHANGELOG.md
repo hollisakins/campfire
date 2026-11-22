@@ -37,6 +37,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   (`getrecommendations`, no download) what every pending exposure uses, groups exposures
   by that exact set and downloads each distinct set once. No change to which references a
   step selects.
+- **Documentation cleanup.** Comments and docstrings no longer point at removed
+  design docs and handoffs; the emission-line fitter's rationale moved into the
+  `linefit_stage.py` docstring. No code or output changes.
+- **`cfpipe nircam refcat` paths follow the field.** A relative `--out` is written
+  into the field's `astrom_cats/` directory (where `[<field>.align].refcat` looks),
+  and relative input catalogs for `merge` / `compare` are looked up there first,
+  then in the current directory. Absolute paths are unchanged.
 
 ## v1.0.1 — 2026-11-22
 

@@ -1,5 +1,5 @@
 -- =============================================================================
--- Data-release exports (P4b, docs/dr-format-v1.md) on the seed's DR-seed.
+-- Data-release exports (P4b, python/dr-format-v1.md) on the seed's DR-seed.
 -- =============================================================================
 -- DR-seed is frozen by the real freeze from the seeded catalog (seed.sql §13)
 -- and nothing changes it afterwards, so for a seeded program P the export

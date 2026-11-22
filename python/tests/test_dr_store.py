@@ -1,5 +1,5 @@
 """The release store (P5-1): fetching, verifying, merging and rebuilding
-(docs/dr-format-v1.md "Local store")."""
+(python/dr-format-v1.md "Local store")."""
 from __future__ import annotations
 
 import gzip

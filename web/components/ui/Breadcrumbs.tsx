@@ -16,7 +16,7 @@ interface BreadcrumbsProps {
 }
 
 export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({ items, className = '' }) => {
-  // Share-link visitors get no breadcrumbs (docs/design-public-mirror.md §7):
+  // Share-link visitors get no breadcrumbs:
   // every ancestor crumb points outside the shared scope, so the trail reads as
   // an invitation to explore a site that renders empty for them.
   const { isLinkAccount } = useAuth();

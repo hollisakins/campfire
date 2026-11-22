@@ -540,7 +540,7 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "photo_z_err_hi" double precision,
     "has_photometry" boolean NOT NULL DEFAULT false,
     "updated_at" timestamp with time zone DEFAULT "now"(),
-    -- Phase A: inspection state (populated in Phase D migration; see docs/design-objects-migration.md)
+    -- Inspection state
     "redshift_auto" double precision,
     "redshift_inspected" numeric(10,6),
     "redshift_quality" integer NOT NULL DEFAULT 0,
@@ -555,7 +555,7 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "last_inspected_by" "uuid",
     "last_data_change_at" timestamp with time zone,
     "staleness_reason" "text",
-    -- Needs-review (docs/design-needs-review.md, data releases P3): the published
+    -- Needs-review: the published
     -- member spectrum ids the inspector saw at the last sign-off (stamped by the
     -- stamp_reviewed_spectra trigger on last_inspected_at; NULL = never signed off
     -- under this scheme) and the one derived badge flag, maintained by
@@ -1215,8 +1215,8 @@ COMMENT ON TABLE "public"."nirspec_source_review" IS 'Cloud home of the NIRSpec 
 -- from the campfire_layout contract; a backfill/reconcile pass covers historical
 -- pointers and adopts bucket orphans. Additive + inert: nothing reads it as
 -- authoritative until a coverage gate proves 100% of live pointers have rows.
--- line_fits: emission-line fluxes measured at the INSPECTED redshift
--- (docs/design-emission-line-fitting.md). Produced by `cfpipe nirspec linefit`
+-- line_fits: emission-line fluxes measured at the INSPECTED redshift.
+-- Produced by `cfpipe nirspec linefit`
 -- from reference/nirspec/<obs>/redshifts.toml (itself materialized from
 -- objects.redshift / redshift_quality by `campfire pull`) and published by
 -- `campfire deploy lines` / `campfire deploy --obs`. One row per spectrum,
@@ -1528,7 +1528,7 @@ COMMENT ON TABLE "public"."deploy_events" IS 'Append-only audit log for the inte
 -- claim_deploy_scope; a mismatch means another reducer deployed the same scope
 -- concurrently, so the clobber is DETECTED (and surfaced) rather than silent.
 --
--- Deploy lease (data releases P1, docs/design-data-releases-impl-plan.md §3):
+-- Deploy lease:
 -- the CAS only detects an overlap after the fact. The in_progress_* columns
 -- make a running deploy VISIBLE while it runs: begin_deploy_scope takes the
 -- lease at the start of a deploy (and refuses while another deploy holds a
@@ -1640,7 +1640,7 @@ CREATE TABLE IF NOT EXISTS "public"."archive_collections" (
 ALTER TABLE "public"."archive_collections" OWNER TO "postgres";
 
 -- =============================================================================
--- Data releases (P4a, docs/design-data-releases.md §4.3, impl plan §6)
+-- Data releases
 -- =============================================================================
 -- A DR is an immutable freeze of the published catalog: frozen tables (here),
 -- per-partition exports (dr_exports, P4b) and archive bytes (dr_manifest.
@@ -1703,7 +1703,7 @@ ALTER TABLE "public"."dr_releases" OWNER TO "postgres";
 COMMENT ON TABLE "public"."dr_releases" IS 'Data releases (P4a): one row per tag with the freeze/export/byte-pass state machine, provenance (who, when, snapshot xmin, counts) and the publication fields. Readable by authenticated non-link accounts once published, by admins always; written only through the dr_* RPCs.';
 
 -- ---------------------------------------------------------------------------
--- Frozen catalog tables (P6b, docs/design-data-releases-impl-plan.md §8 P6b).
+-- Frozen catalog tables.
 -- Every table is `tag` + the live table's columns, same names and types
 -- (generated columns become plain columns holding the generated value;
 -- auth.users references become bare uuids; no foreign keys), then the
@@ -2446,7 +2446,7 @@ CREATE TABLE IF NOT EXISTS "public"."user_profiles" (
     "can_inspect" boolean DEFAULT false,
     "is_admin" boolean DEFAULT false,
     "preferences" "jsonb" DEFAULT '{}'::"jsonb",
-    -- Share links (docs/design-public-mirror.md): a link account is a synthetic
+    -- Share links: a link account is a synthetic
     -- principal backing one share_links row. It authenticates like any other
     -- user -- which is the whole point, since every reader then works unchanged
     -- -- so this flag is the discriminator every narrowing rule keys on. It is
@@ -2487,7 +2487,7 @@ CREATE TABLE IF NOT EXISTS "public"."user_program_access" (
 ALTER TABLE "public"."user_program_access" OWNER TO "postgres";
 
 
--- Share links (docs/design-public-mirror.md): an admin-minted URL that exposes
+-- Share links: an admin-minted URL that exposes
 -- exactly one NIRCam field or one NIRSpec observation to someone with no
 -- CAMPFIRE account.
 --

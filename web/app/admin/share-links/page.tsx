@@ -11,7 +11,6 @@ import {
 
 // ---------------------------------------------------------------------------
 // /admin/share-links — mint and revoke share links.
-// See docs/design-public-mirror.md §7.
 //
 // Deliberately NOT a per-row action on /admin/deployments: a link is scoped to
 // a field or observation and tracks its CURRENT state, so hanging it off one

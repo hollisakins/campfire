@@ -14,7 +14,7 @@ export interface NearbyShuttersResponse {
 // by session: signing out clears the TanStack cache but not the HTTP cache,
 // so without it a share-link account opening the same URL on the same
 // browser could be served a previous account's response, which may carry
-// other observations' shutters (docs/design-public-mirror.md §5.2). The
+// other observations' shutters. The
 // session cookie also rotates on token refresh, so an entry lives at most
 // about an hour in practice.
 const PRIVATE_DAY = 'private, max-age=86400, stale-while-revalidate=86400';

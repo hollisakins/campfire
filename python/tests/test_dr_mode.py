@@ -1,5 +1,5 @@
 """``Campfire(dr=...)`` (P5-1): a release is read from its local store and
-never falls back to the live service (docs/design-data-releases.md §4.7)."""
+never falls back to the live service."""
 from __future__ import annotations
 
 import json

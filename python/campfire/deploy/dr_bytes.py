@@ -1,5 +1,5 @@
 """
-Data-release byte pass (P4c, docs/design-data-releases-impl-plan.md §6).
+Data-release byte pass.
 
 ``campfire dr archive --tag T`` makes every member of a frozen release exist
 under ``archive/`` on the data bucket, so the release keeps resolving after the

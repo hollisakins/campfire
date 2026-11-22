@@ -58,7 +58,7 @@ function NavDropdown({ link, isActive }: { link: NavLink; isActive: boolean }) {
   );
 }
 
-// The nav a share-link visitor sees (docs/design-public-mirror.md §7).
+// The nav a share-link visitor sees.
 //
 // Everything that would dead-end is gone: no nav links (every destination
 // renders empty for them), no profile, no admin, no sign-in. What remains is

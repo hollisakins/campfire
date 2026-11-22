@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
 
   try {
     // This route authorizes via service-role queries, not RLS, so the link
-    // scope must be enforced here (docs/design-public-mirror.md §5.5): a link
+    // scope must be enforced here: a link
     // session may only cut out its own field (observation-scoped links have no
     // field axis at all), and FITS bytes honour the link's download opt-out.
     // The cross-scope refusal is a 404 indistinguishable from a missing

@@ -1064,7 +1064,7 @@ def batch_upsert_spectra(
     informational.) New rows (no existing hash) are NOT included; their parent
     object instead picks up the membership-based staleness signal.
 
-    "Changed" (P0c, docs/design-data-releases-impl-plan.md §2) is decided on
+    "Changed" is decided on
     the science hash when BOTH the existing row and the new record carry one:
     a rerun that only rewrote the volatile header cards (CMPFRTIM, the DR
     stamp) moves `file_hash` but not `science_hash`, and must not flag the

@@ -1,4 +1,4 @@
-"""Provenance files (P5-3, docs/design-data-releases.md §4.8).
+"""Provenance files.
 
 A provenance file (``paper.campfire.json``) is what an author writes from
 live: the objects and files a piece of work drew on, with the hashes of the

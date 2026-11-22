@@ -1,6 +1,6 @@
 -- Guard: line_fit_stale_spectrum decides "the spectrum changed since the fit"
 -- on the SCIENCE hash when both sides carry one, and on the whole-file hash
--- otherwise (P0c, docs/design-data-releases-impl-plan.md §2) -- and the
+-- otherwise -- and the
 -- line_fits_status view and get_line_fits_for_sync agree, because
 -- both call the same function.
 --

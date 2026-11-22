@@ -16,7 +16,7 @@ html {
   /* Accent color — ember (applied dynamically by AccentColorContext; this is the fallback) */
   --primary: #c63f0c;
   --primary-hover: #ad3408;
-  /* Direction 2 (Ember & Dusk) — warm accent. AA-verified. See docs/design-system.md */
+  /* Direction 2 (Ember & Dusk) — warm accent. AA-verified. See web/design-system.md */
   --primary-text: #b8390a;          /* accent used as inline text/links (AA on card) */
   --on-primary: #ffffff;            /* text/icon on a primary fill */
   --primary-soft: rgba(198, 63, 12, 0.10); /* active-chip / selected background */

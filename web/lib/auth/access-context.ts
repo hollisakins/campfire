@@ -12,7 +12,7 @@
 //   - ordinary user: grants (user_program_access) ∪ public programs
 //   - admin: every program (the single point where operators inherit access)
 //   - link account: ONLY its scoped observation's program; no is_public
-//     union, no grants (docs/design-public-mirror.md §5.1); a field-scoped
+//     union, no grants; a field-scoped
 //     link gets '{}' (NIRCam narrows on the field axis instead)
 //   - revoked / expired link, or an unreadable profile: nothing (fail-closed)
 // Keep the two in lock-step; lib/auth/access-context.test.ts pins them.
