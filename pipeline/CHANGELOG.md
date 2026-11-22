@@ -28,6 +28,16 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+- **The NIRCam CRDS warm-up now fetches every reference the run will use (#700).** It used
+  to look up one uncal per `(DETECTOR, READPATT, SUBARRAY)` / `(DETECTOR, FILTER, PUPIL)`,
+  which missed references selected by observation date (`USEAFTER`, e.g. the newer darks)
+  and the `pars-*` step parameter references, so workers downloaded them concurrently and
+  one failed download aborted the whole process phase. It now asks CRDS
+  (`getrecommendations`, no download) what every pending exposure uses, groups exposures
+  by that exact set and downloads each distinct set once. No change to which references a
+  step selects.
+
 ## v1.0.1 — 2026-11-22
 
 ### Infrastructure
