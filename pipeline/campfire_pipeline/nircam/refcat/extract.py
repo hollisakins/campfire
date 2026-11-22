@@ -126,8 +126,13 @@ _SEP_THETA_MAX = float(np.nextafter(np.float32(np.pi / 2), np.float32(0)))
 
 def sep_extract_sources(sci, err, *, mask=None, snr_thresh=3.0, minarea=15,
                         deblend_nthresh=32, deblend_cont=0.001,
-                        filter_fwhm=1.5):
+                        filter_fwhm=1.5, with_size=False):
     """SEP-on-SNR segmentation + Kron photometry, in pixel space.
+
+    ``with_size`` adds a column ``rhalf``: the radius (pixels) holding half of
+    the Kron flux on *sci*. It is what tells a point source from a galaxy when
+    a reference catalog is built (``refcat/motion.py::use_gaia_for_stars``);
+    the align detector does not ask for it.
 
     The shared detection core of both the refcat build
     (:func:`extract_from_mosaic`) and the align per-exposure detector
@@ -224,13 +229,26 @@ def sep_extract_sources(sci, err, *, mask=None, snr_thresh=3.0, minarea=15,
         sci_clean, err_clean, objs, kronrad, krflag, segmap, ids, snr_mask,
     )
 
-    return Table({
+    out = Table({
         "x": np.asarray(xwin, dtype=float),
         "y": np.asarray(ywin, dtype=float),
         "flux": np.asarray(flux, dtype=float),
         "fluxerr": np.asarray(fluxerr, dtype=float),
         "npix": np.asarray(objs["npix"], dtype=int),
     })
+    if with_size:
+        # Half-light radius on the science image (not the SNR map, where a
+        # bright star's profile is flattened by its own Poisson noise and so
+        # grows with brightness).
+        flux_ok = np.where(np.isfinite(flux) & (flux > 0), flux, np.nan)
+        size, _ = sep.flux_radius(
+            np.where(snr_mask, 0.0, sci_clean).astype(np.float32),
+            objs["x"], objs["y"], 6.0 * objs["a"], 0.5,
+            seg_id=ids, segmap=segmap, mask=snr_mask,
+            normflux=np.where(np.isfinite(flux_ok), flux_ok, 1.0), subpix=5,
+        )
+        out["rhalf"] = np.where(np.isfinite(flux_ok), np.asarray(size, float), np.nan)
+    return out
 
 
 def _ab_conversion_factor(header, wcs):
@@ -320,7 +338,7 @@ def extract_from_mosaic(
     srcs = sep_extract_sources(
         sci, err, snr_thresh=snr_thresh, minarea=minarea,
         deblend_nthresh=deblend_nthresh, deblend_cont=deblend_cont,
-        filter_fwhm=filter_fwhm,
+        filter_fwhm=filter_fwhm, with_size=True,
     )
     n_detected = len(srcs)
     log(f"refcat extract: {n_detected} raw detections")
@@ -346,10 +364,14 @@ def extract_from_mosaic(
     ra = coords.ra.value
     dec = coords.dec.value
 
+    from astropy.wcs.utils import proj_plane_pixel_scales
+    pixel_arcsec = float(np.mean(proj_plane_pixel_scales(wcs.celestial))) * 3600.0
     table = Table({
         "RA": ra, "DEC": dec,
         "mag": mag.astype(np.float32),
         "mag_err": mag_err.astype(np.float32),
+        # half-light radius, arcsec: separates point sources from galaxies
+        "rhalf": (np.asarray(srcs["rhalf"], dtype=float) * pixel_arcsec).astype(np.float32),
     })
 
     # Cuts: finite, SNR, optional mag bracket
