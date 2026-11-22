@@ -245,5 +245,6 @@ def test_field_lifecycle_parses_without_obs(patched, monkeypatch, verb):
 def test_lifecycle_needs_exactly_one_target(monkeypatch, args):
     from click.testing import CliRunner
     monkeypatch.setattr(dcli, '_gate_admin', lambda *a, **k: None)
+    monkeypatch.setattr(dcli, 'load_config', lambda *a, **k: {})
     res = CliRunner().invoke(dcli.deploy_group, ['publish', *args, '--dry-run'], obj={})
     assert res.exit_code == 2 and 'exactly one of --obs or --field' in res.output
