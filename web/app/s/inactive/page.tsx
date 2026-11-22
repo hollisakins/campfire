@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { Logo } from '@/components/brand/Logo';
 
-// The dead-link page (docs/design-public-mirror.md §7.1). Reached when a token
+// The dead-link page. Reached when a token
 // is unknown, revoked, or expired -- and, since links never expire by default,
 // in practice this means "an admin revoked it".
 //

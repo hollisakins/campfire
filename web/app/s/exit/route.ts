@@ -4,8 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 // ---------------------------------------------------------------------------
 // GET /s/exit — leave a shared view. The mirror of /s/<token>: that route
 // mints a link-account cookie session, this one destroys it and lands on the
-// public home page. Reached from the wordmark in the stripped shared-view nav
-// (docs/design-public-mirror.md §7).
+// public home page. Reached from the wordmark in the stripped shared-view nav.
 //
 // This is a route handler rather than a client-side signOut() because
 // supabase-js only removes the local session when its /logout call succeeds:

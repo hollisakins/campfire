@@ -333,7 +333,7 @@ services:
     volumes:
       - /etc/campfire/status:/run/campfire-status:ro
 
-  # Public read-only SQL (Catalog Read Model phase 4, docs/reader-role.md).
+  # Public read-only SQL (Catalog Read Model phase 4, supabase/reader-role.md).
   # PgBouncer in transaction mode in front of db for the campfire_reader role
   # only. Clients log in without a password (auth_type trust: the data is
   # public and the role's grants are the gate); trust still requires the

@@ -1,4 +1,4 @@
--- campfire_reader (Catalog Read Model phase 4, docs/reader-role.md): the
+-- campfire_reader (Catalog Read Model phase 4, supabase/reader-role.md): the
 -- read-only Postgres login for public data.
 --
 --   1. the role exists with its settings (statement timeout, read-only

@@ -21,7 +21,7 @@ ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
 -- All authenticated users can read all profiles (needed for comment author
 -- names, inspection tracking "last inspected by", admin user list).
 --
--- EXCEPT link accounts (docs/design-public-mirror.md §5.4), which see only
+-- EXCEPT link accounts, which see only
 -- themselves. This is the sharpest edge in the whole share-link feature: a link
 -- account is a real authenticated principal, so without this conjunct handing
 -- someone a share link would also hand them the name and username of every
@@ -102,7 +102,7 @@ ALTER TABLE programs ENABLE ROW LEVEL SECURITY;
 -- Public programs visible to all authenticated users.
 -- Private programs visible only to users with explicit access.
 --
--- Link accounts (docs/design-public-mirror.md §5.4) see only the program their
+-- Link accounts see only the program their
 -- scope belongs to -- accessible_program_slugs() already excludes the is_public
 -- union for them, and this policy has to say the same thing directly since it
 -- predates that helper and tests is_public inline.
@@ -148,7 +148,7 @@ ALTER TABLE fields ENABLE ROW LEVEL SECURITY;
 -- the deploy_status gate on nircam_images so a field's config (name, filters,
 -- tangent point) is not exposed while its data is still draft. Admins see all.
 --
--- Link accounts (docs/design-public-mirror.md §5.3) see only their own field's
+-- Link accounts see only their own field's
 -- config row, and only when the link may see some mosaic of it -- an
 -- include_drafts link can see a field whose data is still entirely in prep,
 -- which is exactly the "shared but not published" case.
@@ -193,7 +193,7 @@ CREATE POLICY "admin_fields_update"
 ALTER TABLE observations ENABLE ROW LEVEL SECURITY;
 
 -- Observations visible if the parent program is accessible.
--- Share links (docs/design-public-mirror.md §5.2): a link sees only the one
+-- Share links: a link sees only the one
 -- observation it was minted for, not its program's siblings.
 DROP POLICY IF EXISTS "accessible_observations_select" ON observations;
 CREATE POLICY "accessible_observations_select"
@@ -237,7 +237,7 @@ CREATE POLICY "select_targets_by_access"
     -- /api/targets/[id], tile-thumbnail). Admins see all.
     AND (has_published_spectrum OR (SELECT public.is_admin())
          OR (SELECT public.link_sees_drafts()))
-    -- Share links (docs/design-public-mirror.md §5.2): narrow from the whole
+    -- Share links: narrow from the whole
     -- program to the one shared observation. accessible_program_slugs() already
     -- pinned a link to its scope's program, but a program can hold many
     -- observations and only one of them was shared.
@@ -309,7 +309,7 @@ CREATE POLICY "select_objects_by_access"
     -- filter them too; this makes a direct read of the table correct as well
     -- (docs: Catalog Read Model, phase 0). Share links do not see them either.
     AND (is_active OR (SELECT public.is_admin()))
-    -- Share links (docs/design-public-mirror.md §5.2). Array-overlap form: an
+    -- Share links. Array-overlap form: an
     -- object is a cross-observation merge, so it is in scope when the shared
     -- observation is ANY of its members. The object's OTHER members stay hidden
     -- at the target/spectrum level, so a link sees the object as a stub carrying
@@ -372,7 +372,7 @@ ALTER TABLE catalog_matches ENABLE ROW LEVEL SECURITY;
 
 -- Photometry visible if the linked object is accessible.
 -- The object subquery mirrors select_objects_by_access, including its share-link
--- conjuncts (docs/design-public-mirror.md §5.2). Re-derived inline rather than
+-- conjuncts. Re-derived inline rather than
 -- inherited, matching how this policy already re-derives the program check.
 --
 -- Perf T2-A (#504): correlated on the object PRIMARY KEY rather than
@@ -484,7 +484,7 @@ ALTER TABLE object_lists ENABLE ROW LEVEL SECURITY;
 -- for every non-admin. Evaluated against the candidate row itself, the
 -- disjunct passes for owned rows (and short-circuits the function call).
 --
--- Link accounts (docs/design-public-mirror.md §5.4) see no lists at all. A list
+-- Link accounts see no lists at all. A list
 -- is a curation artifact of the CAMPFIRE community, not part of a data scope --
 -- its name and description would leak collaborators' working notes to an
 -- outside viewer. Members are separately gated (select_list_members).
@@ -542,7 +542,7 @@ ALTER TABLE object_list_members ENABLE ROW LEVEL SECURITY;
 -- Members with NULL object_id (orphaned) are visible to anyone who can edit
 -- the list's members (owner, public_edit, editor-role share) — co-editors
 -- need to see orphans; read-only viewers don't.
--- Link accounts (docs/design-public-mirror.md §5.4) see no list members: they
+-- Link accounts see no list members: they
 -- see no lists at all (select_lists), and membership would leak which sources
 -- CAMPFIRE users have curated together.
 DROP POLICY IF EXISTS "select_list_members" ON object_list_members;
@@ -719,7 +719,7 @@ CREATE POLICY "select_spectra_by_access"
     -- Program scope; is_public first as a planner aid (see select_objects_by_access).
     (((SELECT NOT public.is_link_account()) AND is_public)
      OR program_slug = ANY((SELECT public.accessible_program_slugs())::text[]))
-    -- Share links (docs/design-public-mirror.md §5.2): narrow from the whole
+    -- Share links: narrow from the whole
     -- program to the one shared observation. The old targets subquery got this
     -- for free from select_targets_by_access; row-local means restating it.
     AND ((SELECT NOT public.is_link_account())
@@ -729,7 +729,7 @@ CREATE POLICY "select_spectra_by_access"
     -- web routes that read spectra directly and never call an RPC (/api/spectrum,
     -- /api/download, /api/redshift-fit, /api/spectrum-thumbnail). Admins see all.
     --
-    -- ...and, since share links (docs/design-public-mirror.md §6), an
+    -- ...and, since share links, an
     -- include_drafts link account -- but only for rows already inside its scope,
     -- which the program + observation conjuncts above enforce. 'revoked' stays
     -- hidden from links too: link_sees_drafts() relaxes the gate to draft,
@@ -787,7 +787,7 @@ CREATE POLICY "update_spectra_dq_by_access"
 ALTER TABLE comments ENABLE ROW LEVEL SECURITY;
 
 -- Comments visible if their parent target or object is in an accessible program.
--- Link accounts (docs/design-public-mirror.md §5.4) see no comments at all.
+-- Link accounts see no comments at all.
 -- Unlike photometry, a comment is not part of the data -- it is CAMPFIRE users
 -- talking to each other about a source, often candidly and often about sources
 -- the link holder can legitimately see. Scoping it to the shared observation
@@ -862,7 +862,7 @@ ALTER TABLE flag_audit_log ENABLE ROW LEVEL SECURITY;
 -- Audit log visible if the parent target/object/spectrum is in an accessible
 -- program. Rows now point at exactly one of the three subject columns
 -- (enforced by the table check constraint), so we OR across them.
--- Link accounts (docs/design-public-mirror.md §5.4) see no audit history, for
+-- Link accounts see no audit history, for
 -- the same reason they see no comments: it is a record of CAMPFIRE users'
 -- inspection decisions (who changed what quality flag, when), not data about
 -- the scope.
@@ -929,7 +929,7 @@ ALTER TABLE nircam_images ENABLE ROW LEVEL SECURITY;
 -- Published mosaics are public science (a field spans multiple programs, so there
 -- is no per-program scope — published => visible to everyone); draft/revoked are
 -- admin-only (epic #261, N2). Mirrors the spectra deploy_status gate.
--- Link accounts (docs/design-public-mirror.md §5.3) see only their own field's
+-- Link accounts see only their own field's
 -- mosaics, plus that field's drafts when the link opted in. NIRCam carries no
 -- program gating at all -- a field spans programs, so accessible_program_slugs()
 -- has nothing to say here -- which makes the field name the ONLY thing standing
@@ -1225,7 +1225,7 @@ DROP POLICY IF EXISTS "admin_select_storage_objects" ON storage_objects;
 -- select_spectra_by_access hashed every accessible target per row (~900
 -- buffers for a one-row read on the download / manifest path).
 --
--- Share links (docs/design-public-mirror.md §5.2/§5.3) enter here in two ways.
+-- Share links enter here in two ways.
 -- allow_download gates the whole policy: a link minted with downloads off sees
 -- catalog rows and plots but cannot presign a single byte, because every
 -- download path in the portal and the API runs through storage_objects. Then
@@ -1334,7 +1334,7 @@ ALTER TABLE map_layers ENABLE ROW LEVEL SECURITY;
 
 -- All authenticated users can read map layers.
 --
--- A link account (docs/design-public-mirror.md §5.3) sees only its own field's
+-- A link account sees only its own field's
 -- layers. The tiles themselves are served from a public CDN base URL with no
 -- auth, so this controls which layers are DISCOVERABLE -- exactly the same
 -- protection every other user has, no more and no less. An observation-scoped
@@ -1378,7 +1378,7 @@ ALTER TABLE fitsgl_datasets ENABLE ROW LEVEL SECURITY;
 -- SECURITY DEFINER fitsgl_dataset_is_public() so it can see the draft rows a
 -- non-admin's own RLS would hide (mirrors how the PNG map only shows deliberately-
 -- published tiles). Admins see every dataset.
--- Link accounts (docs/design-public-mirror.md §5.3) see only their own field's
+-- Link accounts see only their own field's
 -- datasets. The is_public derivation still applies on top: a link account is not
 -- an admin, so a composite mixing published and draft mosaics stays hidden the
 -- same way it does for everyone else. Deliberately NOT relaxed for
@@ -1425,7 +1425,7 @@ ALTER TABLE slit_regions ENABLE ROW LEVEL SECURITY;
 -- hidden only when a matching objects row exists AND is unpublished — orphan
 -- slits (no objects row) stay visible, so there is zero change while everything
 -- is published. Program-scoping of this table is tracked in #229.
--- Link accounts (docs/design-public-mirror.md §5.2) see only their own
+-- Link accounts see only their own
 -- observation's slits. This policy has no program gate at all -- it is
 -- admin-or-not-unpublished -- so without the scope conjunct a NIRSpec link would
 -- expose slit geometry for every observation in the archive. The table carries
@@ -1486,7 +1486,7 @@ ALTER TABLE shutters ENABLE ROW LEVEL SECURITY;
 -- Program-scoping of this table is tracked in #229.
 -- Same shape as slit_regions above: no program gate of its own, so the share
 -- link scope conjunct is what keeps a NIRSpec link off every other
--- observation's shutter layout (docs/design-public-mirror.md §5.2).
+-- observation's shutter layout.
 DROP POLICY IF EXISTS "Authenticated users can view shutters" ON shutters;
 CREATE POLICY "Authenticated users can view shutters"
   ON shutters FOR SELECT TO authenticated
@@ -1523,7 +1523,7 @@ ALTER TABLE deployments ENABLE ROW LEVEL SECURITY;
 
 -- All authenticated users can read the deployment log (transparency).
 --
--- A link account (docs/design-public-mirror.md §5.4) sees only deployments of
+-- A link account sees only deployments of
 -- its OWN scope. Narrowed rather than denied outright, deliberately: the
 -- provenance a colleague looking at someone else's reduction most needs
 -- (cfpipe_version, CRDS context, who deployed it and when) lives on these rows,
@@ -1773,8 +1773,8 @@ CREATE POLICY "Users can view own API keys"
   ON api_keys FOR SELECT TO authenticated
   USING ((SELECT auth.uid()) = user_id);
 
--- Users can create own API keys. Link accounts cannot (docs/design-public-mirror.md
--- §5.5): an sk_ key is a durable credential that outlives revocation, and the
+-- Users can create own API keys. Link accounts cannot:
+-- an sk_ key is a durable credential that outlives revocation, and the
 -- programmatic API refuses link accounts anyway (validateAuth) -- refuse the
 -- mint at the source too, mirroring authorize_device_code.
 DROP POLICY IF EXISTS "Users can create own API keys" ON api_keys;
@@ -1800,7 +1800,7 @@ CREATE POLICY "Users can delete own API keys"
 
 
 -- =============================================================================
--- share_links  (docs/design-public-mirror.md)
+-- share_links
 -- =============================================================================
 
 ALTER TABLE share_links ENABLE ROW LEVEL SECURITY;
@@ -1826,7 +1826,7 @@ CREATE POLICY "admin_manage_share_links"
 
 
 -- =============================================================================
--- Data releases (P4a, docs/design-data-releases.md §4.4)
+-- Data releases
 -- =============================================================================
 -- A reader sees a DR ∩ the programs they currently hold, through the same
 -- accessible_program_slugs() path as live. Rows are visible only under a tag
@@ -2004,7 +2004,7 @@ CREATE POLICY "admin_select_dr_exports"
   USING ((SELECT public.is_admin()));
 
 -- ============================================================================
--- campfire_reader (Catalog Read Model phase 4, docs/reader-role.md)
+-- campfire_reader (Catalog Read Model phase 4, supabase/reader-role.md)
 -- ============================================================================
 -- A read-only Postgres login for public data: what an anonymous reader of the
 -- portal could see, as SQL. Every predicate is a stored column, never a

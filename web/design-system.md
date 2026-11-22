@@ -3,8 +3,7 @@
 > **Status: committed.** This is the single source of truth for CAMPFIRE's visual language.
 > The brand direction is decided (Direction 2 — *Ember & Dusk*); the values below are the
 > implemented target. All chrome color/contrast values are **WCAG AA verified** (see the
-> contrast notes per token). Companion docs: `docs/token-migration-plan.md` (how we get the
-> codebase there) and `docs/design-mockups/` (visual reference).
+> contrast notes per token).
 
 ---
 
@@ -141,6 +140,3 @@ WCAG AA for text & meaningful UI in both themes (table §5 — re-verify if valu
 visible focus rings; never color-only signaling (quality also uses label/shape); respect
 `prefers-reduced-motion`; hit targets ≥ ~32px even when dense.
 
----
-*Implementation status & how the codebase reaches this system:* see
-`docs/token-migration-plan.md`.

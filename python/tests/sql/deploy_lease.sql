@@ -1,5 +1,5 @@
 -- =============================================================================
--- Deploy lease harness (data releases P1, docs/design-data-releases-impl-plan.md §3).
+-- Deploy lease harness.
 -- =============================================================================
 -- Proves the visible lease on deploy_scope_state:
 --   1. begin on a fresh scope inserts the row, takes the lease, bumps the

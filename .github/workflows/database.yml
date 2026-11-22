@@ -16,7 +16,7 @@ name: Database
 #
 # Replaces supabase-mv-indexes.yml. The `database` job is the only name branch
 # protection should require: it is green when `check` was skipped by the path
-# filter. See docs/design-data-releases-infra-proposal.md §3.2–3.4.
+# filter.
 
 on:
   pull_request:

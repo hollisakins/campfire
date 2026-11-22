@@ -2,8 +2,7 @@
  * Shared "glass" surface vocabulary for the FitsGL map chrome (epic #337,
  * Phase 4.5). Every floating control — band rail, Display/Layers dock, status
  * pill, tool rail — sits on the same translucent, blurred panel over the
- * full-bleed viewer, so the map stays the hero (see `docs/design-fitsgl-map-ux.md`
- * §2). Centralised here so the aesthetic is defined once, not copy-pasted per
+ * full-bleed viewer, so the map stays the hero. Centralised here so the aesthetic is defined once, not copy-pasted per
  * panel, and follows the Ember & Dusk tokens (`bg-card`, `border-border`, …) in
  * both themes.
  */

@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 
-// P3 (docs/design-needs-review.md): one rule, one reason. The server
+// P3: one rule, one reason. The server
 // maintains objects.needs_review — true iff a quality 1-3 object's published
 // member spectra differ from the set the inspector saw at sign-off — and
 // "Mark as reviewed" is a sign-off with no value change, which re-stamps the

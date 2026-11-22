@@ -1,6 +1,6 @@
 # Scale DB: a local Postgres shaped like production
 
-P-1 tooling (`docs/design-data-releases-infra-proposal.md` §3.1). A copy of production's
+P-1 tooling. A copy of production's
 *data* loaded into the local stack built from the migration chain, with user identities
 and free text scrubbed. It is for timings, query plans, freeze rehearsals, backfill
 rehearsals and the needs-review work over real distributions. It lives on your machine

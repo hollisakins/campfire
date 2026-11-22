@@ -1,7 +1,7 @@
 # Spike model hosting — public bucket setup
 
-The NIRCam spike footprint models (WebbPSF extended PSF + scattered-light,
-see `docs/design-nircam-spike-masking.md` §3.4) are distributed exactly like
+The NIRCam spike footprint models (WebbPSF extended PSF + scattered-light)
+are distributed exactly like
 the wisp templates: anonymous-HTTPS GET from a public bucket, validated
 against a checksummed manifest shipped inside the package, cached under
 `$CAMPFIRE_ROOT/cache/spike_models/`.

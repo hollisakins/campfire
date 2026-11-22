@@ -27,6 +27,36 @@ The ``_lines.fits`` product::
 
 :func:`read_lines_file` and :func:`lines_payload` are what ``campfire deploy
 lines`` uses to turn the product into a ``line_fits`` row.
+
+Why this is a separate, post-inspection step
+--------------------------------------------
+The pipeline's own redshift is wrong often enough that fitting lines at it
+would fill the catalog with junk (mis-assigned [OIII]/Hα, "lines" on continuum
+bumps). The redshift that is right is the one a person signed off on the
+portal, at the object level, usually weeks after the reduction ran on a
+machine with no cloud access. So line fitting is not a stage of ``run --all``
+but its own loop::
+
+    reduce → deploy → inspect on the portal → campfire pull
+           → cfpipe nirspec linefit → campfire deploy lines
+
+Alternatives that were rejected: fitting at the automatic redshift and
+re-fitting "later" (no trigger, and every consumer must remember to filter);
+fitting in the web tier on sign-off (re-implements pipeline numerics outside
+the package that versions them); fitting in the Python client (the client is a
+consumer, not a producer).
+
+The pipeline owns the fitter because line fluxes are scientific output under
+its changelog discipline (``CMPFRVER`` plus ``LFITVER``), because the line
+widths must use the same R-curves and ``f_LSF`` calibration as the redshift
+fitter, and because ``linelist.py`` is the catalog's key space.
+
+A published fit records what it was fit at (``z_used``, ``z_quality``,
+``object_version``, ``spectrum_hash``). When an inspector revises a redshift
+or a spectrum is re-reduced, the catalog flags the fit ``stale_redshift`` /
+``stale_spectrum``; re-running the same loop refits only what changed. Fits at
+the automatic redshift are an opt-in escape hatch at every step
+(``--allow-auto`` here, ``--allow-auto-z`` on deploy, ``z_source`` in every row).
 """
 
 from __future__ import annotations

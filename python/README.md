@@ -312,7 +312,7 @@ spec = SpectrumData.from_fits('/path/to/file.fits')
 spectrum with `f_<line>` / `e_<line>` / `ew_<line>` / `ewe_<line>` / `flag_<line>`
 columns per line; fluxes in erg/s/cm², rest-frame EW in Å, flags per
 `campfire.flags.LineFlags`). They are measured by the pipeline **at the inspected
-redshift only** (see `docs/design-emission-line-fitting.md`):
+redshift only**:
 
 ```python
 t = cf.query_lines(observations=["ember_uds_p4"], min_quality=4, exclude_stale=True)
@@ -337,7 +337,7 @@ if result['stale_count'] > 0:
 ### Data releases
 
 A data release is a frozen, citable snapshot of the published catalog
-(`docs/design-data-releases.md`). Once pulled (`campfire pull spec --dr DR2026.1`,
+(format: `python/dr-format-v1.md`). Once pulled (`campfire pull spec --dr DR2026.1`,
 which lands the release under `$CAMPFIRE_ROOT/dr/DR2026.1/`), a client opened on
 it reads that store and nothing else: no login, no network, no silent fallback to
 the live catalog. Anything only the live service answers (`remote=True`, a

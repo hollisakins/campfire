@@ -4,7 +4,7 @@ The on-disk shape of a CAMPFIRE data release (DR), as written by `campfire dr
 export` (on the admin's machine, `python/campfire/dr_export.py`) and read by
 `campfire pull --dr` and `Campfire(dr=...)`. `dr_releases.dr_format_version`
 records which version a release was exported with; a reader refuses versions it
-does not know. Design: `docs/design-data-releases.md` §4.3, plan §6 P4b.
+does not know.
 
 ## Files
 

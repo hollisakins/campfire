@@ -69,7 +69,7 @@ $$;
 GRANT EXECUTE ON FUNCTION public.is_group_account() TO authenticated;
 
 -- =============================================================================
--- Share links (docs/design-public-mirror.md)
+-- Share links
 -- =============================================================================
 -- A share link is backed by a synthetic authenticated principal (a "link
 -- account"). Because it authenticates like any other user, every reader in the
@@ -310,8 +310,7 @@ GRANT EXECUTE ON FUNCTION public.fitsgl_dataset_is_public(text, text[], text[], 
 -- storage_objects supplies the deployed layout-plot key for the card preview.
 
 -- =============================================================================
--- Catalog source views + the data-release browsing context (P6b-2,
--- docs/design-data-releases-impl-plan.md §8 P6b-2, D-P6-2)
+-- Catalog source views + the data-release browsing context
 -- =============================================================================
 -- A request may browse a data release instead of the live catalog. The
 -- PostgREST pre-request hook (dr_request_context, below) reads the
@@ -1611,7 +1610,7 @@ GRANT EXECUTE ON FUNCTION public.objects_matching_grating_filter(TEXT[], TEXT, T
 
 
 -- =============================================================================
--- Emission-line catalog helpers (lines; docs/design-emission-line-fitting.md)
+-- Emission-line catalog helpers (lines)
 -- =============================================================================
 
 -- line_fit_stale_redshift: the ONE definition of "the object's inspected
@@ -1642,8 +1641,7 @@ GRANT EXECUTE ON FUNCTION public.line_fit_stale_redshift(INTEGER, INTEGER, DOUBL
 GRANT EXECUTE ON FUNCTION public.line_fit_stale_redshift(INTEGER, INTEGER, DOUBLE PRECISION, INTEGER, INTEGER, DOUBLE PRECISION) TO service_role;
 
 -- line_fit_stale_spectrum: the ONE definition of "the spectrum this fit was
--- made from has changed since" (P0c, docs/design-data-releases-impl-plan.md
--- §2). When both the live spectrum and the fit carry a science hash the
+-- made from has changed since". When both the live spectrum and the fit carry a science hash the
 -- science hash decides: a redeploy that only rewrote volatile header cards
 -- (CMPFRTIM, the DR stamp) moves file_hash but not science_hash and must not
 -- read as stale. When either side lacks one (rows that predate P0b, products
@@ -3779,7 +3777,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_page_size INTEGER DEFAULT 50,
   p_include_thumbnails BOOLEAN DEFAULT false,
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -4297,7 +4295,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_page INTEGER DEFAULT 1,
   p_page_size INTEGER DEFAULT 50,
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -5737,7 +5735,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_sort_column TEXT DEFAULT 'object_id',
   p_sort_direction TEXT DEFAULT 'asc',
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -6104,7 +6102,7 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -6455,7 +6453,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -6698,7 +6696,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -9665,7 +9663,7 @@ GRANT EXECUTE ON FUNCTION public.recompute_has_published_spectrum(text[], text) 
 
 
 -- =============================================================================
--- Needs-review (docs/design-needs-review.md, data releases P3)
+-- Needs-review
 -- =============================================================================
 -- One rule: an object signed off at quality 1-3 needs review iff its set of
 -- PUBLISHED member spectra differs from the set the inspector saw at sign-off
@@ -10411,7 +10409,7 @@ GRANT EXECUTE ON FUNCTION public.claim_deploy_scope(text, text, integer, uuid) T
 -- dr_readiness: "is the catalog ready to freeze?" (data releases P1)
 -- =============================================================================
 -- One jsonb report of the stage-1 numbers an admin checks before a data
--- release (docs/design-data-releases-impl-findings.md §1): the published
+-- release: the published
 -- cfpipe_version mix, draft / revoked rows, live deploy leases, NIRCam fields
 -- whose mosaics went back to draft, registry rows pointing at deleted spectra,
 -- provisional etag: hashes, line-fit staleness, needs-review and implicit-pin
@@ -10438,8 +10436,8 @@ GRANT EXECUTE ON FUNCTION public.claim_deploy_scope(text, text, integer, uuid) T
 -- No per-row function calls except inside line_fits_status (16k rows,
 -- the ledger's own definition of staleness — reuse, do not re-derive).
 --
--- needs_review is the maintained objects.needs_review flag (P3,
--- docs/design-needs-review.md; the catalog RPCs filter on the same column),
+-- needs_review is the maintained objects.needs_review flag (the catalog RPCs
+-- filter on the same column),
 -- counted over active objects, the rows those RPCs list.
 --
 -- redrafted_nircam_fields: nircam_images is UNIQUE on (field, tile, filter,
@@ -11344,7 +11342,7 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_
 -- for every signed-off object — this function never has to worry about
 -- moving a value out from under an inspector.
 --
--- No staleness signal (P3, docs/design-needs-review.md): the auto fit
+-- No staleness signal: the auto fit
 -- moving never badges. The pinned displayed redshift is unchanged; the
 -- needs-review badge is driven by membership only (objects.needs_review),
 -- and the pinned-to-auto class is a `dr status` count, not a to-do.
@@ -11699,7 +11697,7 @@ GRANT EXECUTE ON FUNCTION public.sync_photometry_to_objects(TEXT) TO service_rol
 
 
 -- =============================================================================
--- Data releases: freeze core (P4a, docs/design-data-releases-impl-plan.md §6)
+-- Data releases: freeze core
 -- =============================================================================
 -- Four pieces:
 --   dr_visible_tags()        the RLS helper: tags the caller may read
@@ -12489,7 +12487,6 @@ GRANT EXECUTE ON FUNCTION public.dr_purge_release(text) TO authenticated, servic
 
 -- =============================================================================
 -- The archive is exactly the releases: references, the purge sweep, collection
--- (P4e, docs/design-data-releases-impl-plan.md §9a, decisions D-P4-6 / D-P4-7)
 -- =============================================================================
 -- An archive object exists because a release's manifest references it, in one
 -- of two ways: the byte pass's copy (dr_manifest.archive_key = the object's
@@ -12867,8 +12864,7 @@ GRANT EXECUTE ON FUNCTION public.archive_register_retained(jsonb) TO authenticat
 
 
 -- =============================================================================
--- Data releases: exports (P4b, docs/design-data-releases-impl-plan.md §6,
--- docs/dr-format-v1.md)
+-- Data releases: exports (format: python/dr-format-v1.md)
 -- =============================================================================
 -- One gzip JSONL file per (stream, partition) under dr/<tag>/exports/ on the
 -- data bucket, built from the frozen tables by `campfire dr export` (on the
@@ -12888,7 +12884,7 @@ GRANT EXECUTE ON FUNCTION public.archive_register_retained(jsonb) TO authenticat
 --   dr_export_rows(tag, stream, partition, after, limit)
 --                                  one keyset page of a partition, each row
 --                                  shaped like the live sync row of the same
---                                  stream (dr-format-v1.md lists the fields);
+--                                  stream (python/dr-format-v1.md lists the fields);
 --   dr_export_begin(tag)           seed the dr_exports ledger, state -> exporting;
 --   dr_export_mark(tag, stream, partition, ...)
 --                                  record a built (or failed) file;
@@ -13438,7 +13434,7 @@ GRANT EXECUTE ON FUNCTION public.dr_export_invalidate(text, text, text) TO authe
 
 
 -- =============================================================================
--- Data releases: byte pass (P4c, docs/design-data-releases-impl-plan.md §6)
+-- Data releases: byte pass
 -- =============================================================================
 -- `campfire dr archive` makes every member's bytes exist under archive/: NIRSpec
 -- FITS finals (nirspec_spec, nirspec_lines) are downloaded, stamped (CMPFRDR in
@@ -13873,7 +13869,6 @@ GRANT EXECUTE ON FUNCTION public.dr_bytes_summary(text) TO authenticated, servic
 
 -- =============================================================================
 -- Retain-on-supersede: which hashes a deploy must copy before overwriting
--- (P4e, docs/design-data-releases-impl-plan.md §9a, decision D-P2-4)
 -- =============================================================================
 -- The archive holds exactly the files that releases reference. Before a deploy
 -- overwrites a live object, the gate (web/lib/server/retain.ts on the presign
@@ -14426,8 +14421,7 @@ REVOKE ALL ON FUNCTION public.spectra_matching_line_filter(p_line text, p_snr_mi
 REVOKE ALL ON FUNCTION public.sync_photometry_to_objects(p_field text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.sync_snapshot_begin(p_format_version integer) FROM PUBLIC, anon;
 -- =============================================================================
--- identify_files (P5-2, docs/design-data-releases.md §4.6 "Any file is
--- identifiable by its bytes")
+-- identify_files: any file is identifiable by its bytes
 -- =============================================================================
 -- `campfire identify FILE...`: for each file's whole-file sha256 (and science
 -- hash when the caller could compute one), everything the archive knows about

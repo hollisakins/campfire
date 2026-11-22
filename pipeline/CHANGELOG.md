@@ -28,6 +28,11 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+- **Documentation cleanup.** Comments and docstrings no longer point at removed
+  design docs and handoffs; the emission-line fitter's rationale moved into the
+  `linefit_stage.py` docstring. No code or output changes.
+
 ## v1.0.1 — 2026-11-22
 
 ### Infrastructure

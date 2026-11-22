@@ -1,6 +1,5 @@
 /**
- * The two-noun vocabulary over the predicate tree (Catalog Read Model phase
- * 3b, design doc "The vocabulary: two nouns"). A user names what was
+ * The two-noun vocabulary over the predicate tree. A user names what was
  * measured, never where it is stored:
  *
  *   Object    properties (redshift, quality, position, field, program, tag, …)

@@ -1,9 +1,11 @@
-# ops/ — Claude Code on the CAMPFIRE VM
+# ops/ — the production VM
 
-You are on the production host (Jetstream2, Ubuntu 24.04). Everything that
-serves the CAMPFIRE portal and API hostnames (`.env`: WEB_HOST, API_HOST) runs from this directory with Docker
-Compose. Read `README.md` here first; the repo-wide `AGENTS.md` describes the
-application, not the host.
+This directory runs production on the Jetstream2 VM (Ubuntu 24.04): everything
+that serves the portal and API hostnames (`.env`: WEB_HOST, API_HOST) runs from
+here with Docker Compose. If you are on the VM, read `README.md` here first; the
+repo-wide `AGENTS.md` describes the application, not the host. If you are
+editing these files from a laptop checkout, they reach the VM through its git
+checkout, which `scripts/deploy.sh` moves to a commit on `main`.
 
 ## Layout
 

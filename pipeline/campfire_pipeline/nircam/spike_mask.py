@@ -1,6 +1,5 @@
 """
-Automatic diffraction-spike masking for NIRCam (M3/M4 of
-``docs/design-nircam-spike-masking.md``).
+Automatic diffraction-spike masking for NIRCam.
 
 **Beta.** Developed and checked on one field (MACS0647, two roll angles, mostly
 F200W). The arm width, the threshold and the flux prediction have not been

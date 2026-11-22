@@ -1,4 +1,4 @@
-"""The local store of a data release (P5-1, docs/design-data-releases.md §4.7).
+"""The local store of a data release.
 
 A release the reader pulled lives under ``$CAMPFIRE_ROOT/dr/<tag>/``::
 
@@ -9,7 +9,7 @@ A release the reader pulled lives under ``$CAMPFIRE_ROOT/dr/<tag>/``::
     products/<relpath>                the bytes (``campfire pull spec --dr``)
 
 :func:`load_release` fetches the files the caller may read from
-``GET /api/v1/dr/<tag>/files`` (docs/dr-format-v1.md), verifies each against
+``GET /api/v1/dr/<tag>/files`` (python/dr-format-v1.md), verifies each against
 the sha256 / size / row count the route gave, keeps it, and loads the set into
 the store. The store is derived from the kept files and nothing else: it is
 rebuilt from them whenever the file set changes, the client's schema moved
@@ -19,7 +19,7 @@ schema-mismatch-delete logic never touch it. The one piece of state that is
 not derived, which products are on disk (``storage_objects.local_*``), is
 carried across a rebuild.
 
-Merging (dr-format-v1.md): a stream's files are one table. An object that
+Merging (python/dr-format-v1.md): a stream's files are one table. An object that
 belongs to several of the reader's programs appears in each program's
 ``objects`` file with the aggregates scoped to that program; the loader keeps
 one row per id, unions ``programs`` / ``evidence_programs`` /
