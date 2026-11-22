@@ -28,6 +28,8 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+## v1.0.1 — 2026-11-22
+
 ### Infrastructure
 - **Fully stuck sources no longer leave stale products behind.** No pixel changes for a
   source that still has data, but this changes **which spectra exist**: finals built from
