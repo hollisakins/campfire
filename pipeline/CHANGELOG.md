@@ -28,6 +28,24 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- **NIRCam `apply_mask` no longer skips masks drawn after the first combine (#478).** The
+  step skipped any exposure that already had `CFP_MASK`. An exposure first combined
+  without a `.reg` is stamped `CFP_MASK = 'no .reg file'`, so a mask pulled from the
+  portal later was never applied unless you ran with `--overwrite`, and the mosaic left
+  out pixels the reviewer had masked. Nothing was reported.
+  - `CFP_MASK` now records what it was built from: `<timestamp> reg=<sha256[:12]>`, a hash
+    of the `.reg` file's region lines. Comment lines are left out, so the generation
+    header a pull writes doesn't count as a change.
+  - The step and the combine dispatcher re-run an exposure whose `.reg` appeared, changed
+    or was removed since the stamp, and log why. A removed `.reg` drops `CFMASK`.
+  - A changed mask also clears `CFP_SPKE`, so spike_mask recomputes the filter.
+  - The rewritten canonical refreshes its work copy, and bad_pixel / outlier re-run on it.
+  - Stamps written before this change (a bare timestamp) are compared with the `.reg`
+    mtime instead, so upgrading doesn't re-apply every mask.
+  - Algorithm, because a mosaic's pixels can change when masks that used to be skipped are
+    applied. The output for a fresh run of the same inputs doesn't change.
+
 ### Infrastructure
 - **The NIRCam CRDS warm-up now fetches every reference the run will use (#700).** It used
   to look up one uncal per `(DETECTOR, READPATT, SUBARRAY)` / `(DETECTOR, FILTER, PUPIL)`,
