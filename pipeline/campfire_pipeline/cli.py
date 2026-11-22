@@ -132,12 +132,6 @@ def info(config_path):
 # download command
 # ---------------------------------------------------------------------------
 
-INSTRUMENT_DEFAULTS = {
-    'NIRSPEC': 'NRS_MSASPEC',
-    'NIRCAM': 'NRC_IMAGE',
-}
-
-
 @main.command()
 @click.option('--program', type=int, required=True,
               help='JWST program ID.')
@@ -157,8 +151,9 @@ INSTRUMENT_DEFAULTS = {
 @click.option('--radius-units', type=click.Choice(['arcmin', 'arcsec'],
               case_sensitive=False), default='arcmin', show_default=True,
               help='Units for --radius.')
-@click.option('--exp-type', default=None,
-              help='Exposure type (default: auto from instrument).')
+@click.option('--exp-type', 'exp_types', multiple=True,
+              help='Exposure type; repeat for several (default: NIRSpec MSA '
+                   'and fixed slit, NIRCam imaging).')
 @click.option('--download-dir', default=None,
               help='Download directory (default: $CAMPFIRE_ROOT/raw, or ~/campfire/raw if unset).')
 @click.option('--dry-run', is_flag=True,
@@ -174,7 +169,7 @@ INSTRUMENT_DEFAULTS = {
                    '(/search + /list_products), which can take very long '
                    'under load. --target always uses "search".')
 def download(program, instrument, obs_ids, filters, targets, radius, radius_units,
-             exp_type, download_dir, dry_run, token, processes, backend):
+             exp_types, download_dir, dry_run, token, processes, backend):
     """Download raw JWST data from MAST.
 
     NIRSpec layout: $CAMPFIRE_ROOT/raw/nirspec/{PID}/{filename}
@@ -187,12 +182,14 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
     import requests
     from campfire_pipeline.common.query import (
         MastQueryError, MastTransientError, download_jwst_data,
+        normalize_exp_types,
     )
 
     instrument_upper = instrument.upper()
-
-    if exp_type is None:
-        exp_type = INSTRUMENT_DEFAULTS.get(instrument_upper, 'NRS_MSASPEC')
+    try:
+        exp_types = normalize_exp_types(exp_types, instrument_upper)
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint='--exp-type')
 
     if download_dir is None:
         from campfire_pipeline.config import _get_campfire_root
@@ -226,7 +223,7 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
         download_jwst_data(
             program_id=program,
             instrument=instrument_upper,
-            exp_type=exp_type,
+            exp_type=exp_types,
             download_dir=download_dir,
             dry_run=dry_run,
             obs_ids=list(obs_ids) if obs_ids else None,

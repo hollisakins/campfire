@@ -47,6 +47,10 @@ Release procedure: edit the `## Unreleased` section below, then run
     applied. The output for a fresh run of the same inputs doesn't change.
 
 ### Infrastructure
+- **`cfpipe download` fetches NIRSpec MSA and fixed-slit data by default (#259).** NIRSpec
+  downloads used to fetch only `NRS_MSASPEC`, so fixed-slit exposures needed a second run
+  with `--exp-type NRS_FIXEDSLIT`. Both types are now fetched by default. `--exp-type` can
+  be repeated to choose specific types, and the Python API's `exp_type` accepts a list.
 - **The NIRCam CRDS warm-up now fetches every reference the run will use (#700).** It used
   to look up one uncal per `(DETECTOR, READPATT, SUBARRAY)` / `(DETECTOR, FILTER, PUPIL)`,
   which missed references selected by observation date (`USEAFTER`, e.g. the newer darks)
