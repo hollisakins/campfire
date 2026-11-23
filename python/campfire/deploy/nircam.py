@@ -24,13 +24,11 @@ keys), derives a ``stage`` value from the highest completed CFP key, and:
 A normal deploy publishes immediately; ``--draft`` holds the field admin-only for
 portal inspection, then ``campfire deploy publish --field`` makes it public.
 
-Excluded exposures flagged by reviewers in the admin UI round-trip back to the
-pipeline via ``campfire deploy nircam pull`` (epic #261, N6): it materializes
-``review_status='excluded'`` rows into
-``$CAMPFIRE_ROOT/reference/nircam/<field>/exposures.json``
-(``nircam_exclusions.pull_exclusions``), which ``combine`` reads to drop those
-rootnames. The DB is the source of truth; the JSON file is a generated,
-fully-overwritten artifact — don't hand-edit it.
+Reviewer masks and triage status (``mask_regions``, ``review_status``) round-trip
+with the reduction workspace through the config plane (``nircam_review``;
+``campfire config push / pull --masks``): ``reference/nircam/<field>/masks/`` and
+``exposures.json``, whose exclusions ``combine`` reads to drop those rootnames.
+The deploy pushes local additions and edits of both.
 """
 
 import os
@@ -803,6 +801,25 @@ def _execute_nircam_plan(plan, client, store, config, *, steal_lease=False):
     print("\nWriting catalog...")
     n_new = _upsert_exposures(client, plan.records)
     print(f"  {len(plan.records):,} exposures ({n_new:,} new)")
+
+    # The masks and triage status this reduction used go to the cloud with the
+    # deploy, under the config plane's three-way rule (nircam_review): additions
+    # and edits are sent; an entry the cloud changed, and any removal, is left
+    # for an explicit `campfire config push / pull --masks`.
+    try:
+        from campfire.deploy import nircam_review
+        if nircam_review.can_sync(config, client):
+            review = nircam_review.push_on_deploy(client, field, config)
+            if review['pushed']:
+                print(f"  {review['pushed']:,} mask / triage-status "
+                      f"entr{'y' if review['pushed'] == 1 else 'ies'} pushed")
+            if review['lines']:
+                print("  masks / triage status differ from the cloud:")
+                for line in review['lines']:
+                    print(line)
+    except Exception as e:   # never fail a deploy over the review state
+        print(f"  ! masks / triage status not synced: {e}\n"
+              f"    run `campfire config push --masks --field {field}`")
 
     unchanged_keys = {t.r2_key for t in push_plan.unchanged}
     n_img = 0

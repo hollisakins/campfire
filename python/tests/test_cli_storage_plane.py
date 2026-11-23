@@ -100,7 +100,7 @@ def test_migration_era_commands_deleted():
     nircam = deploy_group.commands['nircam']
     for name in ('import-masks', 'import-skip'):
         assert name not in nircam.commands, name
-    # The annotation round-trips survive (hidden; folded into `campfire pull`).
+    # The NIRCam round-trips moved to the config plane (retired, hidden).
     for name in ('pull', 'pull-masks'):
         assert nircam.commands[name].hidden, name
     nirspec = deploy_group.commands['nirspec']
@@ -120,6 +120,12 @@ def test_retired_commands_answer_with_their_replacement():
         assert res.exit_code == 2, res.output
         assert 'campfire config pull --obs <obs>' in res.output
         assert deploy_group.commands['nirspec'].commands[args[1]].hidden
+    # The NIRCam masks and exclusions moved to the config plane too.
+    for args in (['nircam', 'pull', '--field', 'x', '--dry-run'],
+                 ['nircam', 'pull-masks', '--field', 'x']):
+        res = runner.invoke(deploy_group, ['--local', *args], obj={})
+        assert res.exit_code == 2, res.output
+        assert 'campfire config pull --masks --field <field>' in res.output
     res = runner.invoke(deploy_group, ['--local', 'fetch-config', '--obs', 'x', '--output-dir', 'y'], obj={})
     assert res.exit_code == 2, res.output
     assert 'campfire config pull --obs <obs>' in res.output

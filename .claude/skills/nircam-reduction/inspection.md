@@ -24,30 +24,29 @@ Two outcomes per exposure:
    bookkeeping; only masks and exclusions change the mosaic.
 3. **Pull the decisions down** and combine:
    ```bash
-   campfire deploy nircam pull --field F
-   cfpipe nircam combine --field F --filters f444w -p 4 --overwrite
+   campfire config pull --masks --field F
+   cfpipe nircam combine --field F --filters f444w -p 4
    ```
    The pull writes masks to `reference/nircam/F/masks/<filter>/<rootname>.reg` and
-   exclusions to `reference/nircam/F/exposures.json`, and prints how the local
-   masks differ from the portal's. (`campfire pull im --field F` also refreshes
-   them, but downloads products too.) **Don't delete masks on the report's
-   "STALE … remove it" advice** for a field with more than 5,000 exposures: the
-   report reads a capped query there and flags live masks (#478).
+   the triage status to `reference/nircam/F/exposures.json` (`excluded`, which
+   combine drops, and `approved`; anything unlisted is pending). Combine re-applies
+   the mask of any exposure whose `.reg` changed. (`campfire pull im --field F`
+   also pulls them, but downloads products too.)
 
-**Use `--overwrite` on a combine after masks change.** The first combine step
-records that an exposure's masks were applied and skips it on later runs, so an
-edited mask isn't picked up otherwise. Combine's other work is redone from
-disposable copies, so `--overwrite` costs time but nothing else.
-
-The pull only adds, it never overwrites or removes:
-- a `.reg` that already exists locally is kept even if the mask was edited in the
-  portal since (the pull reports the difference). To take the portal's version,
-  delete the local `.reg` and pull again;
-- to un-exclude an exposure, also delete its rootname from `exposures.json`;
-- a local `.reg` with no portal mask is left alone.
-
-(Issue #709 tracks moving masks onto `campfire config pull/push`, which would make
-edits and removals travel both ways.)
+Masks and status sync both ways, per exposure, like the NIRSpec stuck-shutter
+lists (`campfire config diff --masks --field F` shows where they differ):
+- a portal edit to a mask or status you haven't touched locally is taken by the
+  pull; one you also changed locally is a conflict, kept local and reported
+  (`--theirs` takes the portal's);
+- a mask drawn or edited in DS9, or an exposure added to `exposures.json`, goes up
+  with `campfire config push --masks --field F` (and with `campfire deploy --field F`);
+- removals travel only on a yes. To drop a mask or un-exclude an exposure
+  everywhere, delete it locally, then `config push --masks` (it asks; `--prune`
+  answers yes). A pull before that push puts it back. A removal made in the portal
+  is asked about on the next `config pull --masks`.
+- The portal stores image-coordinate polygons only: a `.reg` holding a circle or
+  sky-coordinate region is reported and left out of the sync (combine still
+  applies it).
 
 ## In DS9 (without CAMPFIRE admin access)
 
@@ -56,7 +55,7 @@ Draw regions on the canonical exposure
 `reference/nircam/F/masks/<filter>/<rootname>.reg`. The step rasterizes each
 region with the exposure's WCS, so image or sky coordinates both work. To drop an
 exposure entirely, add its rootname to the field's `skip` list in `fields.toml`.
-Then run combine with `--overwrite` as above.
+Then run combine as above.
 
 ## What to look at
 

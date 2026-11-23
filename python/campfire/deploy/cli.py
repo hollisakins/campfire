@@ -1432,35 +1432,23 @@ _retired(deploy_group, 'fetch-config',
 
 @deploy_group.group('nircam')
 def nircam():
-    """NIRCam inspection round-trip utilities (epic #261).
+    """NIRCam inspection round-trip (retired commands only).
 
-    Field deploy is the top-level `campfire deploy --field <field>` (parity with
-    `--obs`). These subcommands round-trip the portal's DB-resident inspection
-    state with the reduction workspace: `pull` (masks + exclusions + drift
-    report, the reducer's one-shot after inspecting) and `pull-masks`
-    (region masks → reference/.../masks/*.reg).
+    Field deploy is the top-level `campfire deploy --field <field>`. The portal's
+    reviewer masks and exposure triage status are two-way config, synced per
+    exposure with nircam_exposures by `campfire config push / pull / diff --masks`
+    (and by the deploy of the field). The old `pull` / `pull-masks` answer with
+    that command.
     """
     pass
 
 
-@nircam.command('pull-masks', hidden=True)
-@click.option('--config', 'config_path', default=None,
-              help='Path to deploy config TOML.')
-@click.option('--field', required=True, help='Field name (e.g. cosmos).')
-@click.option('--dry-run', is_flag=True,
-              help='Show what would be written without touching files.')
-@click.option('--local', is_flag=True,
-              help='Use local Supabase (127.0.0.1:54321).')
-@click.pass_context
-def nircam_pull_masks(ctx, config_path, field, dry_run, local):
-    """Materialize Supabase mask_regions back to reference/.../masks/*.reg.
-
-    Only writes files for exposures with a non-null mask_regions row;
-    .reg files without a DB representation are left alone.
-    """
-    from campfire.deploy.nircam_masks import pull_masks
-    config = load_config(config_path, local=_resolve_local(ctx, local))
-    pull_masks(field, config, dry_run=dry_run)
+for _name in ('pull', 'pull-masks'):
+    _retired(nircam, _name,
+             f"`campfire deploy nircam {_name}` is retired: the NIRCam masks and triage "
+             "status are synced by the config plane. Use `campfire config pull --masks "
+             "--field <field>` (and `campfire config push --masks --field <field>` to "
+             "publish local edits; `campfire config diff --masks --field <field>` to compare).")
 
 
 @deploy_group.group('nirspec')
@@ -1535,31 +1523,6 @@ for _name in ('pull-stuck-shutters', 'pull-bkg-overrides'):
              "background-override lists are synced by the config plane. Use "
              "`campfire config pull --obs <obs>` (and `campfire config push --obs <obs>` "
              "to publish local edits; `campfire config diff --obs <obs>` to compare).")
-
-
-@nircam.command('pull', hidden=True)
-@click.option('--config', 'config_path', default=None,
-              help='Path to deploy config TOML.')
-@click.option('--field', required=True, help='Field name (e.g. cosmos).')
-@click.option('--dry-run', is_flag=True,
-              help='Show what would be written without touching files.')
-@click.option('--local', is_flag=True,
-              help='Use local Supabase (127.0.0.1:54321).')
-@click.pass_context
-def nircam_pull(ctx, config_path, field, dry_run, local):
-    """Pull the full review loop: masks + exclusions + drift report (epic #261).
-
-    Materializes DB masks to reference/.../masks/*.reg, the excluded-exposure
-    list to reference/nircam/<field>/exposures.json (which `cfpipe nircam
-    combine` honors), and prints a drift report of local .reg vs DB masks.
-    """
-    from campfire.deploy.nircam_masks import pull_masks, mask_drift_report
-    from campfire.deploy.nircam_exclusions import pull_exclusions
-    config = load_config(config_path, local=_resolve_local(ctx, local))
-    pull_masks(field, config, dry_run=dry_run)
-    pull_exclusions(field, config, dry_run=dry_run)
-    if not dry_run:
-        mask_drift_report(field, config)
 
 
 # ---------------------------------------------------------------------------
