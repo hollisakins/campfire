@@ -180,3 +180,25 @@ def test_request_presigned_urls_sends_plan_hashes_only_when_set(monkeypatch, tmp
     plain, stamped = captured['uploads']
     assert set(plain) == {'key', 'content_type'}
     assert stamped['expected_old_hash'] == old and stamped['new_hash'] == new
+
+
+def test_request_presigned_urls_retries_a_dropped_connection(monkeypatch, tmp_path):
+    import requests
+
+    from campfire import transient
+    monkeypatch.setattr(transient, "_sleep", lambda s: None)
+    calls = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise requests.ConnectionError("('Connection aborted.', RemoteDisconnected())")
+        return _FakeResp(json)
+
+    monkeypatch.setattr(r2mod, "http_requests", types.SimpleNamespace(post=fake_post))
+    monkeypatch.setattr(r2mod, "_get_presign_headers", lambda cfg: {"Authorization": "Bearer x"})
+    monkeypatch.setattr(r2mod, "_get_presign_base_url", lambda: "https://example.com/api/v1")
+
+    task = UploadTask(tmp_path / "x.fits", "data/products/nirspec/o/x_spec.fits", "application/fits")
+    assert r2mod.request_presigned_urls({}, [task], backend="osn") == {task.r2_key: OSN_URL}
+    assert len(calls) == 2
