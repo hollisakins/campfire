@@ -1,4 +1,5 @@
 import { isAuthRetryableFetchError, type Session, type SupabaseClient } from '@supabase/supabase-js';
+import { parkBroadcastChannel } from '@/lib/park-broadcast-channel';
 
 /**
  * Keep signed-in pages restorable from the back/forward cache (#540).
@@ -19,13 +20,12 @@ import { isAuthRetryableFetchError, type Session, type SupabaseClient } from '@s
  * `BroadcastChannel` global while the client is constructed) would drop the
  * live delivery of a sign-out to the other open tabs, which works today.
  *
- * So: on `pagehide` the channel is closed and the app's current user id is
- * snapshotted; on a `persisted` `pageshow` a fresh channel of the same name
- * is opened whose posts are re-dispatched on the closed original — a closed
- * `BroadcastChannel` is still an `EventTarget` carrying the listener the
- * auth-js constructor attached, so nothing of the library's wiring is copied.
- * The original is captured once; each replacement is closed and dropped at
- * the next park, so the forwarding is always one hop.
+ * So the channel is parked with `parkBroadcastChannel`
+ * (`lib/park-broadcast-channel.ts`): closed on `pagehide`, reopened on a
+ * `persisted` `pageshow`, with the reopened channel's posts re-dispatched on
+ * the closed original, which still carries the listener the auth-js
+ * constructor attached, so nothing of the library's wiring is copied. The
+ * app's current user id is snapshotted at park time.
  * Then the session in cookie storage is compared with the snapshot and the
  * caller is told when the identity changed while parked (sign-out, or a
  * different user in another tab). Same user: nothing to do — auth-js's own
@@ -88,45 +88,10 @@ export function installAuthChannelBfcacheGuard(
     return () => {};
   }
 
-  let parked = false;
   let parkedUserId: string | null | undefined;
-  // The channel the auth-js constructor created, kept after we close it: its
-  // 'message' listener is what turns a cross-tab post into auth events.
-  let wired: ChannelLike | null = null;
   let generation = 0;
 
-  const onPageHide = () => {
-    parked = true;
-    parkedUserId = options.getUserId();
-    const channel = auth.broadcastChannel as ChannelLike | null | undefined;
-    if (!channel) return;
-    channel.close(); // idempotent per spec
-    auth.broadcastChannel = null;
-    // First park: this is the constructor's channel. Later parks close one of
-    // our replacements, which is simply dropped.
-    if (!wired) wired = channel;
-  };
-
-  const reopenChannel = () => {
-    if (!wired || auth.broadcastChannel) return;
-    const original = wired;
-    try {
-      const channel = createChannel(original.name);
-      channel.addEventListener('message', (e) => {
-        // Hand the post to the listener auth-js attached to the original.
-        original.dispatchEvent(new MessageEvent('message', { data: (e as MessageEvent).data }));
-      });
-      auth.broadcastChannel = channel as unknown as BroadcastChannel;
-    } catch (e) {
-      // `wired` is kept, so the next restore retries.
-      console.error('Failed to reopen the auth BroadcastChannel after a bfcache restore', e);
-    }
-  };
-
-  const onPageShow = (event: Event) => {
-    if (!(event as PageTransitionEvent).persisted || !parked) return;
-    parked = false;
-    reopenChannel();
+  const onRestore = () => {
     const before = parkedUserId;
     if (before === undefined) return; // parked mid-boot: the boot's own load settles it
     const gen = ++generation;
@@ -146,10 +111,23 @@ export function installAuthChannelBfcacheGuard(
     );
   };
 
-  target.addEventListener('pagehide', onPageHide);
-  target.addEventListener('pageshow', onPageShow);
-  return () => {
-    target.removeEventListener('pagehide', onPageHide);
-    target.removeEventListener('pageshow', onPageShow);
-  };
+  return parkBroadcastChannel<ChannelLike>({
+    get: () => auth.broadcastChannel as ChannelLike | null | undefined,
+    set: (channel) => {
+      auth.broadcastChannel = channel as unknown as BroadcastChannel | null;
+    },
+    // Hand each post to the listener auth-js attached to its own channel.
+    wire: (fresh, original) => {
+      fresh.addEventListener('message', (e) => {
+        original.dispatchEvent(new MessageEvent('message', { data: (e as MessageEvent).data }));
+      });
+    },
+    onPark: () => {
+      parkedUserId = options.getUserId();
+    },
+    onRestore,
+    label: 'auth',
+    target,
+    createChannel,
+  });
 }
