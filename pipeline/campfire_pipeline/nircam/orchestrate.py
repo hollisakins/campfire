@@ -1021,7 +1021,10 @@ def _run_align(field, config, filtname, n_processes, overwrite, status,
     log(f"align[{filtname}]: refcat={os.path.basename(refcat_path)} "
         f"({len(refcat)} sources, rc={refcat_hash}); solving {len(pending)} "
         f"pool(s)")
-    worker_cfg = {**align_cfg, '_refcat_hash': refcat_hash}
+    # Resolved once here, not per worker: each worker's first git call over NFS
+    # is what degrades to '+unresolved' (#576).
+    worker_cfg = {**align_cfg, '_refcat_hash': refcat_hash,
+                  '_reduction_version': _resolve_reduction_version(config)}
     tasks = [(p.key, list(p.members)) for p in pending]
     results = dispatch(_align_group_worker, tasks, n_processes=n_processes,
                        use_starmap=True, refcat=refcat, config=worker_cfg,

@@ -351,6 +351,32 @@ def test_algn_diag_keywords_all_present(tmp_path):
         assert hdr['ALGNSTAL'] is False
 
 
+def test_algnver_records_the_code_that_solved_or_rejected(tmp_path, monkeypatch):
+    """#566: CMPFRVER is the process phase's version; align, re-run later, records
+    its own in ALGNVER on every outcome — solved, rejected, and a solve that
+    raised — and a re-solve replaces it."""
+    from campfire_pipeline.nircam.align import apply
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2, seed=3)
+
+    assert align_exposure_group(members, refcat, config={
+        '_reduction_version': '9.9.9+solved'}).status == 'SOLVED'
+    assert all(fits.getheader(m.path, 0)['ALGNVER'] == '9.9.9+solved' for m in members)
+
+    rng = np.random.default_rng(99)
+    badref = Table({'RA': 80.0 + rng.uniform(-0.05, 0.05, 30),
+                    'DEC': -30.0 + rng.uniform(-0.05, 0.05, 30)})
+    assert align_exposure_group(members, badref, overwrite=True, config={
+        '_reduction_version': '9.9.9+rejected'}).status == 'NOT_ALIGNED'
+    assert all(fits.getheader(m.path, 0)['ALGNVER'] == '9.9.9+rejected' for m in members)
+
+    def boom(*a, **k):
+        raise RuntimeError('solver blew up')
+    monkeypatch.setattr(apply, 'solve_exposure_group', boom)
+    assert align_exposure_group(members, refcat, overwrite=True, config={
+        '_reduction_version': '9.9.9+raised'}).status == 'NOT_ALIGNED'
+    assert all(fits.getheader(m.path, 0)['ALGNVER'] == '9.9.9+raised' for m in members)
+
+
 def test_algncat_replaced_not_accumulated_on_overwrite(tmp_path):
     from campfire_pipeline.nircam.align.apply import ALGNCAT_EXTNAME
     members, refcat, _ = _make_exposure(tmp_path, n_det=2)

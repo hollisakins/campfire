@@ -62,6 +62,16 @@ Release procedure: edit the `## Unreleased` section below, then run
 - **Documentation cleanup.** Comments and docstrings no longer point at removed
   design docs and handoffs; the emission-line fitter's rationale moved into the
   `linefit_stage.py` docstring. No code or output changes.
+- **NIRCam align records the code that wrote each WCS (#566).** A new `ALGNVER` card
+  holds the pipeline version of the align run that solved or rejected the exposure. This
+  matters because `CMPFRVER` is stamped by `process`, and align is often re-run long
+  after it.
+  - `ALGNVER` is written on every outcome: solved, rejected, or a solve that raised.
+    Like the other `ALGN*` diagnostics, it is cleared by `wcs_shift`.
+  - The orchestration resolves the version once per run and hands it to every worker,
+    so workers don't call git themselves. A `[pipeline].version` override applies here
+    as it does to `CMPFRVER`.
+  - No solution changes.
 - **NIRCam masks and exclusions now come from `campfire config pull --masks` (#709).**
   Docstrings name the new command instead of the retired `campfire deploy nircam pull`.
   `exposures.json` gains an `approved` list beside `excluded`; the pipeline still reads

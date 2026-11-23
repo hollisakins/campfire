@@ -226,12 +226,16 @@ def plan_remote_push(
     if store:
         # Cache the fresh server rows (preserves local_*/pushed_* on conflict)
         # and record identity-confirmed unchanged files so the next run takes
-        # the stat fast path.
-        if server_rows:
-            store.upsert_storage_objects(list(server_rows.values()))
-        for key, identity, mtime, size in plan.confirmed:
-            store.mark_object_pushed(key, identity, mtime, size, commit=False)
-        store.commit()
+        # the stat fast path. Best-effort, as every mirror write (#575).
+        try:
+            if server_rows:
+                store.upsert_storage_objects(list(server_rows.values()))
+            for key, identity, mtime, size in plan.confirmed:
+                store.mark_object_pushed(key, identity, mtime, size, commit=False)
+            store.commit()
+        except Exception as e:  # noqa: BLE001 - the mirror must not sink a push
+            print(f"  Note: local storage mirror write failed ({type(e).__name__}: {e}); "
+                  f"planning continues from the cloud registry.")
 
     return plan, server_rows
 
@@ -305,44 +309,63 @@ def registration_flusher(
         )
         upsert_storage_objects(client, rows)
 
-        if store:
-            store.upsert_storage_objects(rows)
-            by_key = {r['storage_key']: r for r in rows}
-            for t in batch:
-                row = by_key.get(t.r2_key)
-                if row is None:
-                    continue  # unregistered product type
-                try:
-                    st = os.stat(t.local_path)
-                except OSError:
-                    continue
-                kind = identity_kind_for_key(t.r2_key)
-                identity = (
-                    compose_identity(row.get('sci_dq_hash'), row.get('wcs_hash'))
-                    if kind == 'sci_dq' else row.get('content_hash')
-                )
-                store.mark_object_pushed(
-                    t.r2_key, identity, st.st_mtime, st.st_size, commit=False)
-                # Pull-side write-through: a pushed tree file IS materialized
-                # locally and byte-identical to the cloud copy — record it so
-                # `status`/`pull` see it without a verify pass. Generated
-                # (temp-dir) products fall outside the products tree and skip.
-                try:
-                    rel = Path(t.local_path).resolve().relative_to(prod_dir)
-                except ValueError:
-                    continue
-                store.mark_object_synced(
-                    storage_key=t.r2_key,
-                    local_path=str(rel),
-                    local_file_hash=row.get('content_hash'),
-                    local_file_size=st.st_size,
-                    local_file_mtime=st.st_mtime,
-                )
-            store.commit()
+        # The local mirror is best-effort (see open_reducer_store): it only
+        # supplies the next run's stat fast path. The server registry write above
+        # is what makes this batch durable, so a mirror failure (a corrupted
+        # meta/campfire.db, e.g. two hosts writing it over NFS, #575) is reported
+        # once and the mirror is dropped for the rest of the run, never the push.
+        if mirror['store'] is not None:
+            try:
+                _mirror_batch(mirror['store'], batch, rows, prod_dir)
+            except Exception as e:  # noqa: BLE001 - the mirror must not sink a push
+                mirror['store'] = None
+                print(f"\n  Note: local storage mirror write failed ({type(e).__name__}: {e}); "
+                      f"continuing without it. The cloud registry is unaffected; "
+                      f"the next push re-plans from it.")
+
+    mirror = {'store': store}
 
     if heartbeat is not None:
         return _HeartbeatingFlusher(_flush, batch_size=batch_size, heartbeat=heartbeat)
     return BatchFlusher(_flush, batch_size=batch_size)
+
+
+def _mirror_batch(store, batch: list[UploadTask], rows: list[dict], prod_dir: Path) -> None:
+    """Record one registered batch in the local mirror: the registry rows, the
+    pushed_* fast-path state and, for tree files, the synced local copy."""
+    store.upsert_storage_objects(rows)
+    by_key = {r['storage_key']: r for r in rows}
+    for t in batch:
+        row = by_key.get(t.r2_key)
+        if row is None:
+            continue  # unregistered product type
+        try:
+            st = os.stat(t.local_path)
+        except OSError:
+            continue
+        kind = identity_kind_for_key(t.r2_key)
+        identity = (
+            compose_identity(row.get('sci_dq_hash'), row.get('wcs_hash'))
+            if kind == 'sci_dq' else row.get('content_hash')
+        )
+        store.mark_object_pushed(
+            t.r2_key, identity, st.st_mtime, st.st_size, commit=False)
+        # Pull-side write-through: a pushed tree file IS materialized
+        # locally and byte-identical to the cloud copy — record it so
+        # `status`/`pull` see it without a verify pass. Generated
+        # (temp-dir) products fall outside the products tree and skip.
+        try:
+            rel = Path(t.local_path).resolve().relative_to(prod_dir)
+        except ValueError:
+            continue
+        store.mark_object_synced(
+            storage_key=t.r2_key,
+            local_path=str(rel),
+            local_file_hash=row.get('content_hash'),
+            local_file_size=st.st_size,
+            local_file_mtime=st.st_mtime,
+        )
+    store.commit()
 
 
 # ---------------------------------------------------------------------------
