@@ -202,40 +202,40 @@ async function onChannelMessage(msg: ChannelMessage): Promise<void> {
   }
 }
 
-function getAllKeys(): Promise<number[]> {
+function getAllRecords(): Promise<PngRecord[]> {
   return new Promise((resolve, reject) => {
     if (!db) { resolve([]); return; }
-    const req = db.transaction(STORE, 'readonly').objectStore(STORE).getAllKeys();
-    req.onsuccess = () => resolve(req.result as number[]);
-    req.onerror = () => reject(req.error ?? new Error('PNG store key read failed'));
+    // Blobs come back as disk-backed handles, so this does not load image bytes.
+    const req = db.transaction(STORE, 'readonly').objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result as PngRecord[]);
+    req.onerror = () => reject(req.error ?? new Error('PNG store read failed'));
   });
 }
 
 /**
  * Bring this tab's map back in line with disk after a bfcache restore: the
  * channel was closed while parked, so 'stored' and 'cleared' posts from other
- * tabs were missed. Records that vanished are dropped (their object URLs
- * revoked) and new ones are pulled in; only keys are read for the rest.
+ * tabs were missed. Entries are matched on storedAt, not just id: a clear and
+ * re-warm of the same ids leaves the key set unchanged, and keeping the old
+ * timestamp would make sweepExpired() delete the fresh records later.
  */
 async function reconcileWithDb(): Promise<void> {
   try {
-    const keys = new Set(await getAllKeys());
+    const onDisk = new Map<number, PngRecord>();
+    for (const rec of await getAllRecords()) onDisk.set(rec.id, rec);
     let changed = false;
-    for (const id of [...mem.keys()]) {
-      if (!keys.has(id)) { dropMemEntry(id); changed = true; }
+    for (const [id, e] of [...mem]) {
+      if (onDisk.get(id)?.storedAt !== e.storedAt) { dropMemEntry(id); changed = true; }
     }
-    for (const id of keys) {
-      if (mem.has(id)) continue;
-      const rec = await getRecord(id);
-      if (rec && !isExpired(rec.storedAt) && !mem.has(rec.id)) {
-        mem.set(rec.id, {
-          kind: rec.kind,
-          url: URL.createObjectURL(rec.blob),
-          bytes: rec.bytes,
-          storedAt: rec.storedAt,
-        });
-        changed = true;
-      }
+    for (const rec of onDisk.values()) {
+      if (mem.has(rec.id) || isExpired(rec.storedAt)) continue;
+      mem.set(rec.id, {
+        kind: rec.kind,
+        url: URL.createObjectURL(rec.blob),
+        bytes: rec.bytes,
+        storedAt: rec.storedAt,
+      });
+      changed = true;
     }
     if (changed) emit();
   } catch {
