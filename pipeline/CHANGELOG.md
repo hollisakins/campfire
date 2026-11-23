@@ -58,6 +58,10 @@ Release procedure: edit the `## Unreleased` section below, then run
 - **Documentation cleanup.** Comments and docstrings no longer point at removed
   design docs and handoffs; the emission-line fitter's rationale moved into the
   `linefit_stage.py` docstring. No code or output changes.
+- **NIRCam masks and exclusions now come from `campfire config pull --masks` (#709).**
+  Docstrings name the new command instead of the retired `campfire deploy nircam pull`.
+  `exposures.json` gains an `approved` list beside `excluded`; the pipeline still reads
+  only `excluded`. No code or output changes.
 - **`cfpipe nircam refcat` paths follow the field.** A relative `--out` is written
   into the field's `astrom_cats/` directory (where `[<field>.align].refcat` looks),
   and relative input catalogs for `merge` / `compare` are looked up there first,

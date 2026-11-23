@@ -29,7 +29,11 @@ SELECT f.name, flt.f, det.d,
             WHEN n.i % 8 = 4 THEN 'done'
             ELSE 'none' END,
        CASE WHEN n.i % 8 = 3
-            THEN '[{"kind": "polygon", "points": [[64, 64], [192, 64], [192, 192]]}]'::jsonb END,
+            -- the shape the portal's mask editor writes (MaskRegionsPayload, web/lib/types.ts)
+            THEN jsonb_build_object('version', 1, 'polygons', jsonb_build_array(jsonb_build_object(
+                   'id', format('seed-%s-%s-%s-%s', f.rn, flt.f, det.d, n.i),
+                   'vertices', '[[64, 64], [192, 64], [192, 192]]'::jsonb,
+                   'source', 'web', 'label', 'seed fixture'))) END,
        CASE WHEN n.i % 8 = 5 THEN 'seed fixture: cosmic-ray cluster near detector edge' END,
        CASE WHEN n.i % 8 < 5 THEN now() - (n.i % 21) * interval '1 day' - interval '3 hours' END,
        (now() AT TIME ZONE 'utc') - interval '200 days' + (n.i * interval '1 hour')

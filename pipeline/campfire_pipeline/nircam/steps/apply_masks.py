@@ -63,7 +63,7 @@ def reg_hash(reg_file):
     """sha256[:12] of a ``.reg`` file's region lines, or None if it is absent.
 
     Comment and blank lines are left out, so the generation header
-    ``campfire deploy nircam pull`` writes does not count as a mask change.
+    ``campfire config pull --masks`` writes does not count as a mask change.
     """
     try:
         with open(reg_file, encoding='utf-8', errors='replace') as fh:

@@ -600,8 +600,8 @@ class Field:
     def _load_excluded_exposures(self):
         """Load reviewer exclusions from ``reference/<field>/exposures.json``.
 
-        Materialized by ``campfire deploy nircam pull`` from the portal's
-        ``review_status='excluded'`` flags (epic #261, N6). Returns
+        Synced with the portal's ``review_status='excluded'`` flags by
+        ``campfire config pull / push --masks``. Returns
         ``{filter: [rootname]}``; a missing/blank file → ``{}`` (today's
         behavior); a malformed file → ``{}`` + a warning (never hard-fail a
         reduction over an advisory list).

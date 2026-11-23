@@ -27,7 +27,7 @@ setting up the field, not in running it.
 3. **Combine** into mosaics (outlier detection, drizzle, mosaic background
    subtraction):
    ```bash
-   campfire deploy nircam pull --field F            # admins: bring the portal's masks/exclusions down
+   campfire config pull --masks --field F           # admins: bring the portal's masks/exclusions down
    cfpipe nircam combine --field F --filters f444w -p 4
    ```
 

@@ -1,7 +1,7 @@
 """Pipeline consumer for reviewer exclusions (epic #261, N6, D10).
 
 `Field.setup_workspace` reads `reference/<field>/exposures.json` (materialized by
-`campfire deploy nircam pull`) and `get_exposure_files` drops the listed
+`campfire config pull --masks`) and `get_exposure_files` drops the listed
 rootnames — so they leave both combine and outlier detection. Reversible: an
 empty list re-includes; a missing file is today's behavior.
 """

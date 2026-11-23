@@ -1,23 +1,23 @@
 """Annotation materialization — the cloud→local half of the review loop.
 
 Web-authored review state (masks, stuck shutters, background overrides,
-exposure exclusions) lives in the database; the pipeline consumes it as files
+exposure triage) lives in the database; the pipeline consumes it as files
 under ``$CAMPFIRE_ROOT/reference/``. These helpers regenerate those files for
 a scope — they are the annotation half of ``campfire pull`` (admin-only; the
 storage engine handles the products half).
 
 Unlike products, annotations are KB-scale DB rows with no content-hash
-tracking. The files are local configuration too (hand-edited as well as pulled),
-so every materializer is local-first (``local_first``): a pull creates what is
-missing and never overwrites or deletes a local file or entry; a local entry
-that disagrees with the DB is kept and reported.
+tracking. The files are local configuration too (hand-edited as well as pulled).
+The NIRSpec rate masks are local-first (``local_first``): a pull creates what is
+missing and never overwrites or deletes a local file; a local file that
+disagrees with the DB is kept and reported.
 
-The NIRSpec stuck-shutter and background-override lists are different: they are
-two-way config, reconciled entry by entry by the config plane
-(``nirspec_flags``; ``campfire config push / pull / diff``). The pull here runs
-that same reconciliation in its non-interactive form: cloud additions and
-changes to entries this machine has not touched are applied, and nothing is
-removed or overridden.
+The NIRSpec stuck-shutter and background-override lists and the NIRCam masks and
+triage status are different: they are two-way config, reconciled entry by entry
+by the config plane (``nirspec_flags`` / ``nircam_review``; ``campfire config
+push / pull / diff``). The pull here runs that same reconciliation in its
+non-interactive form: cloud additions and changes to entries this machine has not
+touched are applied, and nothing is removed or overridden.
 """
 
 from __future__ import annotations
@@ -52,16 +52,25 @@ def pull_observation_annotations(obs_name: str, config: dict, *, dry_run: bool =
 
 
 def pull_field_annotations(field: str, config: dict, *, dry_run: bool = False) -> None:
-    """Materialize a NIRCam field's review annotations to reference/.
+    """Bring a NIRCam field's review state into reference/nircam/<field>/.
 
-    Masks (``masks/*.reg``), excluded exposures (``exposures.json``, honored by
-    ``cfpipe nircam combine``), plus a drift report of local .reg vs DB masks.
+    Masks (``masks/<filter>/*.reg``) and triage status (``exposures.json``, whose
+    exclusions ``cfpipe nircam combine`` honors), through the config plane's
+    three-way rule (``nircam_review.pull_on_pull``): what needs a decision (a
+    conflict, a removal) is reported for ``campfire config pull --masks``.
     """
-    from campfire.deploy.nircam_exclusions import pull_exclusions
-    from campfire.deploy.nircam_masks import mask_drift_report, pull_masks
+    from campfire.deploy import nircam_review as nr
+    from campfire.deploy.supabase import get_supabase_client
 
     print(f"\nAnnotations for field {field}:")
-    pull_masks(field, config, dry_run=dry_run)
-    pull_exclusions(field, config, dry_run=dry_run)
-    if not dry_run:
-        mask_drift_report(field, config)
+    sb = get_supabase_client(config)
+    if not nr.can_sync(config, sb):
+        return   # admin-only table: zero rows here would not mean "no entries"
+    try:
+        counts = nr.pull_on_pull(sb, field, config, dry_run=dry_run)
+    except nr.ReviewError as e:
+        print(f"  ! masks / triage status: {e} — nothing written")
+        return
+    if counts['kept']:
+        print(f"  run `campfire config pull --masks --field {field}` to settle the "
+              f"{counts['kept']} entr{'y' if counts['kept'] == 1 else 'ies'} kept local")
