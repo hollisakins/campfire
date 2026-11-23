@@ -446,11 +446,20 @@ def upsert_storage_objects(client, rows: list[dict], batch_size: int = UPSERT_BA
     """
     if not rows:
         return 0
+    from campfire.transient import retry_transient
     for i in range(0, len(rows), batch_size):
         batch = rows[i:i + batch_size]
-        client.table('storage_objects').upsert(
-            batch, on_conflict='backend,bucket,storage_key'
-        ).execute()
+        # postgrest-py retries only GET/HEAD, so a POST written into a pooled
+        # HTTP/2 connection the server already closed (e.g. one left idle at the
+        # deploy's "Proceed?" prompt) surfaced as "Server disconnected" and
+        # aborted the deploy mid-upload. The upsert is idempotent on its
+        # conflict key, so resending it is safe.
+        retry_transient(
+            lambda b=batch: client.table('storage_objects').upsert(
+                b, on_conflict='backend,bucket,storage_key'
+            ).execute(),
+            what='registry upsert', log=print,
+        )
     return len(rows)
 
 
