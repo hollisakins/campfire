@@ -28,6 +28,8 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+## v1.0.2 — 2026-11-23
+
 ### Algorithm
 - **Which sources get a spectrum: a source at a shutter's edge is extracted, a source with
   every one of its own shutters stuck is not.** Additive (MINOR): no pixel or flux value of an
