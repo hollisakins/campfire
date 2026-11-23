@@ -76,10 +76,12 @@ def has_primary_source(shutter_table):
 def _prune_detached_shutters(shutter_table, source_id):
     """Remove background shutters that are not contiguous with the source.
 
-    Splits the shutter columns into contiguous groups (allowing gaps of 1
-    for stuck/closed shutters within a slitlet) and keeps only the group
+    Splits the shutter columns into contiguous groups (allowing gaps of up
+    to 2 for stuck/closed shutters within a slitlet) and keeps only the group
     that contains the source shutter(s).  Detached background shutters —
-    separated by gaps of 2+ columns — are removed.
+    separated by gaps of 3+ columns — are removed.  A slitlet APT lays out
+    across a quadrant gap (columns 170-171 of one quadrant plus column 1 of
+    the next) is two physical slits; the source's piece is kept.
 
     Parameters
     ----------
@@ -97,9 +99,15 @@ def _prune_detached_shutters(shutter_table, source_id):
     if len(all_cols) <= 1:
         return shutter_table
 
-    # Find which columns contain the source
+    # Find which columns contain the source: the rows that give its position in
+    # the shutter. The source ID alone is not enough: some MSA plans (RUBIES)
+    # write the dither's source ID on every row of the slitlet, detached shutter
+    # included, which would keep the empty shutter and drop the source's own.
+    # The ID-only match is the fallback when no row holds a position.
+    rows = _source_rows(shutter_table, source_id)
+    placed = rows & _source_in_shutter(shutter_table)
     source_cols = set(np.unique(
-        shutter_table['shutter_column'][_source_rows(shutter_table, source_id)]
+        shutter_table['shutter_column'][placed if placed.any() else rows]
     ))
 
     # Split columns into contiguous groups (gap of 3+ starts a new group,
