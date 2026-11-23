@@ -43,7 +43,7 @@ tied to the move.
 
 ## Public read-only SQL (`campfire_reader`)
 
-`docs/reader-role.md` is the reader's side. The host side is one compose
+`supabase/reader-role.md` is the reader's side. The host side is one compose
 profile and one script, and it is the one sanctioned exception to "only Caddy
 listens publicly" (Catalog Read Model phase 4; the role sees public rows only,
 under its own RLS policies, with no function and no other table):

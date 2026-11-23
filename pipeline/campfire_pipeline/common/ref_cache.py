@@ -1,7 +1,6 @@
 """Generic manifest-driven fetch + cache engine for large reference data.
 
-Extracted from ``nircam/wisp_cache.py`` (M1 of the spike-masking build plan,
-``docs/design-nircam-spike-masking.md`` §3.4) so the wisp templates and the
+Extracted from ``nircam/wisp_cache.py`` so the wisp templates and the
 spike footprint models share one engine instead of forked copies.
 ``wisp_cache`` is now a thin wrapper over this module.
 

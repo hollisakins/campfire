@@ -98,8 +98,8 @@ const FitHeader: React.FC<{ fit: ObjectLineFit; observation?: string; showObserv
 };
 
 /**
- * Object-page section: the emission-line fluxes of every member spectrum
- * (docs/design-emission-line-fitting.md), one column per fit and one row per
+ * Object-page section: the emission-line fluxes of every member spectrum,
+ * one column per fit and one row per
  * catalog line, ordered by rest wavelength. Doublet totals and stand-alone
  * lines are the default rows; the doublet components and broad components
  * open behind a disclosure, because the totals are the quantities that mean

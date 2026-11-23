@@ -3,7 +3,7 @@ import 'server-only';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 /**
- * Data-release exports (P4b, docs/dr-format-v1.md).
+ * Data-release exports (P4b, python/dr-format-v1.md).
  *
  * A frozen release is exported as one gzip JSONL file per (stream, scope:
  * program slug or field-level component) under `dr/<tag>/exports/` on the

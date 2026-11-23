@@ -5,7 +5,7 @@
 -- 20261028193000_phase4_reader_role.sql, and the grants and policies that name
 -- it are declarative in supabase/schemas/ as usual. Keep the two in step.
 --
--- campfire_reader (Catalog Read Model phase 4, docs/reader-role.md): a
+-- campfire_reader (Catalog Read Model phase 4, supabase/reader-role.md): a
 -- read-only Postgres login for public data. SELECT on the catalog tables and
 -- the published data releases under its own RLS policies, nothing else: no
 -- functions, no sequences, no other schema. No password here: the operator

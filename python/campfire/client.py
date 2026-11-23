@@ -37,7 +37,7 @@ def _safe_cache_path(cache_dir: Path, filename: str, key: str) -> Path:
 class _NoRemote:
     """What ``Campfire(dr=...)`` holds in place of the API client: every
     remote branch of the client reaches it and fails closed with the reason
-    (docs/design-data-releases.md §4.7: a release never falls back to live)."""
+    (a release never falls back to live)."""
 
     def __init__(self, tag: str):
         self._tag = tag
@@ -817,7 +817,7 @@ class Campfire:
         """Query the emission-line catalog (local catalog only; run ``sync()`` first).
 
         One row per spectrum, measured at the inspected redshift by the
-        pipeline's line fitter (docs/design-emission-line-fitting.md).
+        pipeline's line fitter.
 
         Parameters
         ----------

@@ -8,8 +8,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { archiveKey, parseKey, toCanonicalKey } from '@/lib/layout';
 
 /**
- * Retain-on-supersede (data releases; docs/design-data-releases-impl-plan.md
- * §4 for the mechanism, §9a / decision D-P2-4 for what it protects).
+ * Retain-on-supersede (data releases).
  *
  * The archive holds exactly the files that releases reference. Before a
  * redeploy overwrites a live NIRSpec final or sidecar whose current bytes a

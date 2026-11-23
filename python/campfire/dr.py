@@ -1,6 +1,6 @@
 """Data-release tooling: readiness (`campfire dr status`), freeze and purge.
 
-P1 of the data-release plan (docs/design-data-releases-impl-plan.md §3) for the
+P1 of the data-release plan for the
 readiness report -- one SECURITY DEFINER RPC, ``dr_readiness()`` (admin or
 service role), fetched and rendered here -- and P4a (§6) for the freeze:
 ``dr_enqueue_freeze`` starts it (pg_cron on production, inline where pg_cron is

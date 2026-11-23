@@ -531,8 +531,8 @@ export async function getReductionProgress(): Promise<{
 
 // The former getExcludedExposures action (copy-paste source for fields.toml
 // skip=[]) is gone: exclusions reach the pipeline automatically via
-// `campfire pull` → reference/nircam/<field>/exposures.json
-// (campfire.deploy.nircam_exclusions.pull_exclusions), which
+// `campfire config pull --masks` (and `campfire pull im`) →
+// reference/nircam/<field>/exposures.json (campfire.deploy.nircam_review), which
 // Field._load_excluded_exposures merges into the effective skip list.
 
 // ---------------------------------------------------------------------------

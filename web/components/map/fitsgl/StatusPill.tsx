@@ -1,9 +1,8 @@
 'use client';
 
 /**
- * Status pill (epic #337, Phase 4.5) — the bottom-center glass readout
- * (`docs/design-fitsgl-map-ux.md` §4): dual RA/Dec (sexagesimal + decimal, keeping
- * the existing CAMPFIRE formatters — decision 8), the cursor's pixel value per
+ * Status pill (epic #337, Phase 4.5) — the bottom-center glass readout:
+ * dual RA/Dec (sexagesimal + decimal, keeping the existing CAMPFIRE formatters), the cursor's pixel value per
  * active band, zoom, and `band · stretch`. Grows to show separation + position
  * angle while the ruler tool has a measurement, and the pinned sky position while
  * the go-to crosshair is set.

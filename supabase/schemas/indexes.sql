@@ -742,7 +742,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_fitsgl_datasets_field_default
 
 
 -- =============================================================================
--- share_links (docs/design-public-mirror.md)
+-- share_links
 -- =============================================================================
 
 -- The hot path: every RLS-narrowing helper (is_link_account, link_observation,

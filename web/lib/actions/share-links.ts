@@ -7,7 +7,7 @@ import { requireAdmin as requireAdminIdentity } from '@/lib/auth/identity';
 import { createServiceClient } from '@/lib/supabase/server';
 
 // ---------------------------------------------------------------------------
-// Share links (docs/design-public-mirror.md).
+// Share links.
 //
 // Admin-minted URLs scoped to one NIRCam field or one NIRSpec observation, for
 // collaborators with no CAMPFIRE account. Each link is backed by a synthetic

@@ -35,7 +35,7 @@ class DRModeError(CampfireError):
     """Raised when a client opened on a data release (``Campfire(dr=...)``) is
     asked for something only the live service answers: a remote query, a
     sync, a download, a cutout. A release is read from its local store and
-    never falls back to live routes (docs/design-data-releases.md §4.7)."""
+    never falls back to live routes."""
     pass
 
 

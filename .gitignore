@@ -66,14 +66,10 @@ logs/
 *.tmp
 .cache/
 
-# Claude Code per-user state
-.claude/
-.ds-sync/
-ds-bundle/
-.design-sync/.cache/
-.design-sync/learnings/
-.design-sync/node_modules
-web/.ds-sync-styles.css
+# Claude Code per-user state (shared settings and skills under .claude/ are tracked)
+.claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # Periodic /campfire-review output (local triage artifacts)
 reports/

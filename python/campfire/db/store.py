@@ -585,7 +585,7 @@ class LocalStore:
             where.append("COALESCE(o.redshift_quality, 0) = 0")
 
         if staleness:
-            # P3: the server-maintained badge flag (docs/design-needs-review.md).
+            # P3: the server-maintained badge flag.
             where.append("o.needs_review = 1")
 
         if has_photometry is True:

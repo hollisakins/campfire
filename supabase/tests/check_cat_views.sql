@@ -1,5 +1,5 @@
 -- =============================================================================
--- Catalog source views + the browsing hook (P6b-2, docs/design-data-releases-impl-plan.md §8 P6b-2).
+-- Catalog source views + the browsing hook.
 -- =============================================================================
 --   1. every cat_* view carries exactly the live table's columns, by name,
 --      type and order, is security_invoker, readable by authenticated and

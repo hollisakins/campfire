@@ -1,4 +1,4 @@
-"""``campfire identify FILE...`` (P5-2, docs/design-data-releases.md §4.6):
+"""``campfire identify FILE...``:
 what the archive knows about a file, from its bytes.
 
 A file is hashed twice: the whole-file sha256 (the registry's ``content_hash``

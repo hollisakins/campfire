@@ -2,7 +2,7 @@
 
 /**
  * Go-to-coordinate box (epic #337) — the "coord search" launcher the tool-rail spec
- * reserved (`docs/design-fitsgl-map-ux.md` §4) and Phase 4.5 never built.
+ * reserved and Phase 4.5 never built.
  *
  * A floating glass panel over the map: type an RA/Dec, Enter recentres the view and
  * pins FitsGL's sky-locked crosshair there (`handle.setTarget`), so the position

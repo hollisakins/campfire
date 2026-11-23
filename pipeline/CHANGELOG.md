@@ -46,6 +46,57 @@ Release procedure: edit the `## Unreleased` section below, then run
     A source with one open dither is still extracted. Example: `zenith_p3` source 20040588,
     in shutter 3 of slitlet 99 only, which is listed stuck. On its own this part would be
     Infrastructure (it changes which products exist, not their values).
+- **NIRCam `apply_mask` no longer skips masks drawn after the first combine (#478).** The
+  step skipped any exposure that already had `CFP_MASK`. An exposure first combined
+  without a `.reg` is stamped `CFP_MASK = 'no .reg file'`, so a mask pulled from the
+  portal later was never applied unless you ran with `--overwrite`, and the mosaic left
+  out pixels the reviewer had masked. Nothing was reported.
+  - `CFP_MASK` now records what it was built from: `<timestamp> reg=<sha256[:12]>`, a hash
+    of the `.reg` file's region lines. Comment lines are left out, so the generation
+    header a pull writes doesn't count as a change.
+  - The step and the combine dispatcher re-run an exposure whose `.reg` appeared, changed
+    or was removed since the stamp, and log why. A removed `.reg` drops `CFMASK`.
+  - A changed mask also clears `CFP_SPKE`, so spike_mask recomputes the filter.
+  - The rewritten canonical refreshes its work copy, and bad_pixel / outlier re-run on it.
+  - Stamps written before this change (a bare timestamp) are compared with the `.reg`
+    mtime instead, so upgrading doesn't re-apply every mask.
+  - Algorithm, because a mosaic's pixels can change when masks that used to be skipped are
+    applied. The output for a fresh run of the same inputs doesn't change.
+
+### Infrastructure
+- **`cfpipe download` fetches NIRSpec MSA and fixed-slit data by default (#259).** NIRSpec
+  downloads used to fetch only `NRS_MSASPEC`, so fixed-slit exposures needed a second run
+  with `--exp-type NRS_FIXEDSLIT`. Both types are now fetched by default. `--exp-type` can
+  be repeated to choose specific types, and the Python API's `exp_type` accepts a list.
+- **The NIRCam CRDS warm-up now fetches every reference the run will use (#700).** It used
+  to look up one uncal per `(DETECTOR, READPATT, SUBARRAY)` / `(DETECTOR, FILTER, PUPIL)`,
+  which missed references selected by observation date (`USEAFTER`, e.g. the newer darks)
+  and the `pars-*` step parameter references, so workers downloaded them concurrently and
+  one failed download aborted the whole process phase. It now asks CRDS
+  (`getrecommendations`, no download) what every pending exposure uses, groups exposures
+  by that exact set and downloads each distinct set once. No change to which references a
+  step selects.
+- **Documentation cleanup.** Comments and docstrings no longer point at removed
+  design docs and handoffs; the emission-line fitter's rationale moved into the
+  `linefit_stage.py` docstring. No code or output changes.
+- **NIRCam align records the code that wrote each WCS (#566).** A new `ALGNVER` card
+  holds the pipeline version of the align run that solved or rejected the exposure. This
+  matters because `CMPFRVER` is stamped by `process`, and align is often re-run long
+  after it.
+  - `ALGNVER` is written on every outcome: solved, rejected, or a solve that raised.
+    Like the other `ALGN*` diagnostics, it is cleared by `wcs_shift`.
+  - The orchestration resolves the version once per run and hands it to every worker,
+    so workers don't call git themselves. A `[pipeline].version` override applies here
+    as it does to `CMPFRVER`.
+  - No solution changes.
+- **NIRCam masks and exclusions now come from `campfire config pull --masks` (#709).**
+  Docstrings name the new command instead of the retired `campfire deploy nircam pull`.
+  `exposures.json` gains an `approved` list beside `excluded`; the pipeline still reads
+  only `excluded`. No code or output changes.
+- **`cfpipe nircam refcat` paths follow the field.** A relative `--out` is written
+  into the field's `astrom_cats/` directory (where `[<field>.align].refcat` looks),
+  and relative input catalogs for `merge` / `compare` are looked up there first,
+  then in the current directory. Absolute paths are unchanged.
 
 ## v1.0.1 — 2026-11-22
 

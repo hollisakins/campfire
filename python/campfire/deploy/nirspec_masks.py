@@ -1,7 +1,7 @@
 """NIRSpec rate-mask pull: DB mask_regions → reference/nirspec/<obs>/masks/*.reg.
 
 The cloud→local half of the rate-mask review loop (design §3.5), the NIRSpec
-analogue of ``nircam_masks.pull_masks``. Reads ``nirspec_rate_exposures.mask_regions``
+counterpart of the NIRCam masks (``nircam_review``). Reads ``nirspec_rate_exposures.mask_regions``
 (the jsonb the web editor writes) and materializes each into a DS9 ``image``-coord
 ``.reg`` file the pipeline reads before stage 2 (``masks.py``). DB-resident: these
 files are never registered in ``storage_objects``.

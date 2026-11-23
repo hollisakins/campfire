@@ -1,7 +1,6 @@
 """Inspected-redshift pull: portal objects → ``reference/nirspec/<obs>/redshifts.toml``.
 
-The cloud→local half of the emission-line loop
-(docs/design-emission-line-fitting.md §3). Inspection is recorded on the
+The cloud→local half of the emission-line loop. Inspection is recorded on the
 portal at the *object* level (``objects.redshift`` — the generated
 ``COALESCE(redshift_inspected, redshift_auto)`` that is NULL for quality 1 —
 and ``objects.redshift_quality``); the pipeline consumes it per *target*

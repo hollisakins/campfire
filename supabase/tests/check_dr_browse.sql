@@ -1,5 +1,5 @@
 -- =============================================================================
--- Browsing-mode equivalence (P6b-2, docs/design-data-releases-impl-plan.md §8 P6b-2).
+-- Browsing-mode equivalence.
 -- =============================================================================
 -- DR-seed is the seeded catalog frozen at the end of seeding (seed.sql §13),
 -- so every switched read-only catalog RPC must return the same rows live and

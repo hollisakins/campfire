@@ -17,7 +17,10 @@ The same verbs carry the per-observation NIRSpec reducer-decision lists
 (``reference/nirspec/<obs>/stuck_closed_shutters.toml`` and
 ``nodded_background_overrides.toml``, the ``--flags`` kind; admin only), by
 the same three-way rule applied to each (exposure root, source) entry instead
-of a section — see :mod:`campfire.deploy.nirspec_flags`.
+of a section — see :mod:`campfire.deploy.nirspec_flags`. The NIRCam reviewer
+masks and exposure triage status (``reference/nircam/<field>/``, the ``--masks``
+kind; admin only) sync by the same rule, per exposure — see
+:mod:`campfire.deploy.nircam_review`.
 
 `campfire deploy` keeps its narrow automatic upsert of the config it deploys
 (programs + observation, or field); this group is the explicit/bulk path. The
@@ -53,11 +56,15 @@ def _scope_options(f):
     f = click.option('--flags', 'kind_flags', is_flag=True,
                      help='Only the NIRSpec stuck-shutter / background-override '
                           'lists (admin).')(f)
+    f = click.option('--masks', 'kind_masks', is_flag=True,
+                     help='Only the NIRCam reviewer masks and exposure triage '
+                          'status (admin).')(f)
     f = click.option('--obs', multiple=True,
                      help='Specific observation(s): their observations.toml '
                           'section and their lists.')(f)
     f = click.option('--field', multiple=True,
-                     help='Specific field(s) (implies --fields).')(f)
+                     help='Specific field(s): their fields.toml section and '
+                          'their masks / triage status.')(f)
     return f
 
 
@@ -65,14 +72,15 @@ _NO_FLAGS = False
 
 
 def _resolve_scope(kind_programs, kind_observations, kind_fields, obs, field,
-                   kind_flags=False):
+                   kind_flags=False, kind_masks=False):
     """``({kind: names-or-None}, flags)`` — None means every section in scope.
 
     ``flags`` is the scope of the NIRSpec lists: ``_NO_FLAGS`` (not selected),
     None (every observation) or a list of observations. With no flags at all,
     all three kinds and the lists are selected in full. ``--obs X`` selects X's
     observations.toml section and X's lists; add ``--observations`` or
-    ``--flags`` to take only one of the two."""
+    ``--flags`` to take only one of the two. ``--field X --masks`` takes only X's
+    masks (see ``_resolve_masks``), not its fields.toml section."""
     scope: dict[str, list | None] = {}
     flags = _NO_FLAGS
     if obs:
@@ -86,16 +94,53 @@ def _resolve_scope(kind_programs, kind_observations, kind_fields, obs, field,
         if kind_flags:
             flags = None
     if field:
-        scope['fields'] = list(field)
+        if kind_fields or not kind_masks:
+            scope['fields'] = list(field)
     elif kind_fields:
         scope['fields'] = None
     if kind_programs:
         scope['programs'] = None
-    if not scope and flags is _NO_FLAGS:
+    if not scope and flags is _NO_FLAGS and not kind_masks:
         scope = {k: None for k in cs.KINDS}
         flags = None
     # Stable order: programs first (observations FK programs.slug).
     return {k: scope[k] for k in cs.KINDS if k in scope}, flags
+
+
+def _resolve_masks(kind_programs, kind_observations, kind_fields, obs, field,
+                   kind_flags=False, kind_masks=False):
+    """The scope of the NIRCam masks / triage status: ``_NO_FLAGS`` (not selected),
+    None (every field) or a list of fields. ``--field X`` selects X's fields.toml
+    section and X's masks; ``--masks`` alone every field's; no selector at all
+    selects everything, masks included."""
+    if field:
+        return list(field) if (kind_masks or not kind_fields) else _NO_FLAGS
+    if kind_masks:
+        return None
+    if not any((kind_programs, kind_observations, kind_fields, kind_flags, obs)):
+        return None
+    return _NO_FLAGS
+
+
+def _masks_ready(config, sb, masks, explicit: bool) -> bool:
+    """Whether the NIRCam masks / triage status take part in this command: admin
+    only (nircam_exposures is admin-only), and reading ``.reg`` files needs
+    ``regions`` (the deploy profile)."""
+    if masks is _NO_FLAGS:
+        return False
+    from . import nircam_review as nr
+    if not nr.can_sync(config, sb):
+        if explicit:
+            print("masks: skipped — the NIRCam masks and triage status are admin-only")
+        return False
+    try:
+        import regions  # noqa: F401
+    except ImportError:
+        if explicit:
+            print("masks: skipped — reading .reg files needs `regions` "
+                  "(install the deploy profile)")
+        return False
+    return True
 
 
 def _flags_ready(config, sb, flags, explicit: bool) -> bool:
@@ -153,7 +198,7 @@ def config_group():
 @click.option('--service-role', 'service_role', is_flag=True,
               help='Service-role auth for unattended runs (bypasses RLS).')
 def push_cmd(config_path, kind_programs, kind_observations, kind_fields,
-             kind_flags, obs, field, dry_run, force, prune, local, service_role):
+             kind_flags, kind_masks, obs, field, dry_run, force, prune, local, service_role):
     """Upsert local TOML sections into the cloud registry (admin).
 
     Defaults to everything local: all programs, all observations, every field
@@ -163,10 +208,12 @@ def push_cmd(config_path, kind_programs, kind_observations, kind_fields,
     section (or list entry) that changed since your last sync is refused, not
     clobbered — pull or diff first, or --force. An entry you removed from a
     list is removed from the cloud only when you confirm it (or --prune), and a
-    detection is never sent over an entry a person wrote.
+    detection is never sent over an entry a person wrote. The NIRCam masks and
+    triage status (--masks) follow the same rules, per exposure.
     """
-    scope, flags = _resolve_scope(kind_programs, kind_observations, kind_fields,
-                                  obs, field, kind_flags)
+    sel = (kind_programs, kind_observations, kind_fields, obs, field, kind_flags, kind_masks)
+    scope, flags = _resolve_scope(*sel)
+    masks = _resolve_masks(*sel)
     config, sb = _client(config_path, local, service_role)
 
     from .cli import _gate_admin
@@ -215,6 +262,16 @@ def push_cmd(config_path, kind_programs, kind_observations, kind_fields,
         if not (res['pushed'] or res['pending'] or res['errors']):
             print("  in sync")
 
+    if _masks_ready(config, sb, masks, explicit=bool(kind_masks or field)):
+        from . import nircam_review as nr
+        print("masks: pushing the masks and triage status of "
+              + ("every local field" if masks is None else f"{len(masks)} field(s)"))
+        res = nr.sync_push(sb, masks, nr.backend_state(state, config), force=force,
+                           prune=prune, dry_run=dry_run, interactive=sys.stdin.isatty())
+        totals['masks'] = res['pushed']
+        if not (res['pushed'] or res['pending'] or res['errors']):
+            print("  in sync")
+
     if dry_run:
         print("\nDry run — no changes made.")
         return
@@ -228,8 +285,11 @@ def push_cmd(config_path, kind_programs, kind_observations, kind_fields,
             metadata={'scope': 'config_push', 'counts': totals},
         )
     n_flags = totals.pop('flags', 0)
+    n_masks = totals.pop('masks', 0)
     print(f"\nDone. Pushed {sum(totals.values())} section(s)"
-          + (f", {n_flags} list entr{'y' if n_flags == 1 else 'ies'}." if n_flags else "."))
+          + (f", {n_flags} list entr{'y' if n_flags == 1 else 'ies'}" if n_flags else "")
+          + (f", {n_masks} mask / status entr{'y' if n_masks == 1 else 'ies'}" if n_masks else "")
+          + ".")
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +325,7 @@ def _pull_decision(lhash, chash, base):
 @click.option('--service-role', 'service_role', is_flag=True,
               help='Service-role auth for unattended runs (bypasses RLS).')
 def pull_cmd(config_path, kind_programs, kind_observations, kind_fields,
-             kind_flags, obs, field, dry_run, theirs, prune, local, service_role):
+             kind_flags, kind_masks, obs, field, dry_run, theirs, prune, local, service_role):
     """Bring cloud config into your local TOMLs (works for any logged-in user).
 
     Pulls every section your program access lets you read, converging the
@@ -278,10 +338,13 @@ def pull_cmd(config_path, kind_programs, kind_observations, kind_fields,
     Admins also get the NIRSpec stuck-shutter / background-override lists
     (reference/nirspec/<obs>/), entry by entry under the same rule. An entry
     a person wrote that your file lost is put back; an entry removed in the
-    cloud is removed here only when you confirm it (or --prune).
+    cloud is removed here only when you confirm it (or --prune). The NIRCam
+    masks and triage status (--masks; reference/nircam/<field>/) follow the
+    same rules, per exposure.
     """
-    scope, flags = _resolve_scope(kind_programs, kind_observations, kind_fields,
-                                  obs, field, kind_flags)
+    sel = (kind_programs, kind_observations, kind_fields, obs, field, kind_flags, kind_masks)
+    scope, flags = _resolve_scope(*sel)
+    masks = _resolve_masks(*sel)
     config, sb = _client(config_path, local, service_role)
     from .toml_surgery import set_section
 
@@ -358,13 +421,23 @@ def pull_cmd(config_path, kind_programs, kind_observations, kind_fields,
         n_flags, n_flags_kept = res['applied'], res['kept']
         if not (n_flags or n_flags_kept or res['errors']):
             print("  in sync")
+    if _masks_ready(config, sb, masks, explicit=bool(kind_masks or field)):
+        from . import nircam_review as nr
+        print("masks: pulling the masks and triage status of "
+              + ("every field" if masks is None else f"{len(masks)} field(s)"))
+        res = nr.sync_pull(sb, masks, nr.backend_state(state, config), theirs=theirs,
+                           prune=prune, dry_run=dry_run, interactive=sys.stdin.isatty())
+        n_flags += res['applied']
+        n_flags_kept += res['kept']
+        if not (res['applied'] or res['kept'] or res['errors']):
+            print("  in sync")
     if dry_run:
         print("\nDry run — no changes made.")
         return
     cs.save_state(state)
     print(f"\nDone. Applied {counts['applied']} section(s), "
           f"skipped {counts['skipped']}"
-          + (f"; {n_flags} list entr{'y' if n_flags == 1 else 'ies'} applied, "
+          + (f"; {n_flags} list / mask entr{'y' if n_flags == 1 else 'ies'} applied, "
              f"{n_flags_kept} kept local." if (n_flags or n_flags_kept) else "."))
 
 
@@ -389,15 +462,17 @@ _DIFF_LABEL = {
 @click.option('--service-role', 'service_role', is_flag=True,
               help='Service-role auth for unattended runs (bypasses RLS).')
 def diff_cmd(config_path, kind_programs, kind_observations, kind_fields,
-             kind_flags, obs, field, show_all, local, service_role):
+             kind_flags, kind_masks, obs, field, show_all, local, service_role):
     """Show where local TOMLs and the cloud registry diverge (read-only).
 
     `<` means pull would apply the cloud's version, `>` means push would
     publish yours, `!` means both sides changed since your last sync. For
-    the NIRSpec lists (admins) each line is one (root, source) entry.
+    the NIRSpec lists (admins) each line is one (root, source) entry; for the
+    NIRCam masks and triage status, one exposure's mask or status.
     """
-    scope, flags = _resolve_scope(kind_programs, kind_observations, kind_fields,
-                                  obs, field, kind_flags)
+    sel = (kind_programs, kind_observations, kind_fields, obs, field, kind_flags, kind_masks)
+    scope, flags = _resolve_scope(*sel)
+    masks = _resolve_masks(*sel)
     config, sb = _client(config_path, local, service_role)
 
     state = cs.load_state()
@@ -441,6 +516,14 @@ def diff_cmd(config_path, kind_programs, kind_observations, kind_fields,
         lines = nf.sync_diff(sb, flags, nf.backend_state(state, config), show_all=show_all)
         n_diff = sum(1 for line in lines if not line.lstrip().startswith('='))
         print("flags: " + (f"{n_diff} difference(s)" if n_diff else "in sync"))
+        for line in lines:
+            print(line)
+        clean = clean and not n_diff
+    if _masks_ready(config, sb, masks, explicit=bool(kind_masks or field)):
+        from . import nircam_review as nr
+        lines = nr.sync_diff(sb, masks, nr.backend_state(state, config), show_all=show_all)
+        n_diff = sum(1 for line in lines if not line.lstrip().startswith('='))
+        print("masks: " + (f"{n_diff} difference(s)" if n_diff else "in sync"))
         for line in lines:
             print(line)
         clean = clean and not n_diff

@@ -1,5 +1,5 @@
 /**
- * The data-release pages flag (P6, docs/design-data-releases-impl-plan.md §8).
+ * The data-release pages flag.
  *
  * `NEXT_PUBLIC_DR_PAGES`:
  *   unset / anything else  pages 404 for everyone, no nav entry

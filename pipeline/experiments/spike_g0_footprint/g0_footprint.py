@@ -1,6 +1,5 @@
 #!/usr/bin/env python
-"""G0 footprint validation harness — model isophotes vs real spikes (design
-doc `docs/design-nircam-spike-masking.md` §6.1, gate G0).
+"""G0 footprint validation harness — model isophotes vs real spikes.
 
 The gate question: does the scaled spike-model isophote actually **envelope**
 real in-flight spikes to within the mask tolerance (`grow`), across magnitude

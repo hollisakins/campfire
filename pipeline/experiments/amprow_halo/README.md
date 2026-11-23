@@ -83,5 +83,4 @@ python run_harness.py --out out --seed 3 --halo-peak 3 --sky-patch-amp 0.15
   with no visible banding absorption; judged by eye (HA): "genuinely
   pretty good", 96×32 preferred, marginally better with `bkg2d.reject =
   false`. The remaining smooth halo-shaped residual is the b2d fit's own
-  error (identical in `ideal_1f`) — a separate workstream. Real-frame
-  validation: `docs/handoff-aniso-detrend.md`.
+  error (identical in `ideal_1f`) — a separate workstream.

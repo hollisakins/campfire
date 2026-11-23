@@ -474,8 +474,7 @@
         # ON BY DEFAULT since the real-frame validation on A2744 (32 exposures
         # rebuilt from uncal, three arms, judged by eye on post-bkg SCI at a
         # stretch held common across arms — 96x32 with bkg2d.reject = false was
-        # preferred over the square-box production configuration). Details and
-        # the rejected alternatives: docs/findings-aniso-detrend-a2744.md.
+        # preferred over the square-box production configuration).
         box_size_x = 32
         # [y, x]. y = 1 keeps full mesh resolution in the row direction, which
         # is the point of the anisotropic mesh; the x median filter smooths
@@ -551,7 +550,7 @@
         #       the 1/f measurement on the fitted model, so smooth structure
         #       is claimed by the smooth model. Recommended for the
         #       bright-galaxy fields subtract_2d exists for; kept opt-in
-        #       pending the real-frame A/B (docs/handoff-bkg2d-fit-order.md).
+        #       pending the real-frame A/B.
         #       CAUTION: pair with reject = false — the map-outlier reject
         #       below flags the halo bump in the first-order map as leaked
         #       source flux and refits it away, cancelling the benefit
@@ -578,7 +577,7 @@
         # background map as leaked source flux and refits them away, undoing
         # part of what the conditioning buys). Only affects subtract_2d
         # fields, since bkg2d runs nowhere else. Set true to restore the
-        # leaked-compact-source guard. See docs/findings-aniso-detrend-a2744.md.
+        # leaked-compact-source guard.
         reject = false
         reject_sigma_hi = 4.0
         reject_sigma_lo = 3.0

@@ -28,7 +28,10 @@
  * Tabs cooperate through a BroadcastChannel: each stored image and each
  * clear is announced, and other tabs fold the change into their own map — so
  * warming in one tab feeds a triage session already running in another
- * without a reload.
+ * without a reload. The channel is closed while the page sits in the
+ * back/forward cache (a post would evict it; lib/park-broadcast-channel.ts),
+ * and on restore the map is reconciled with IndexedDB to pick up whatever
+ * was announced meanwhile.
  *
  * Lifecycle: every record carries storedAt. Expiry (PNG_STORE_TTL_MS after
  * download — inspection session + buffer) is enforced three ways so the
@@ -40,6 +43,8 @@
  * their record is dropped; blobs stay on disk until then, so the in-memory
  * map costs a few strings per exposure, not the image bytes.
  */
+
+import { parkBroadcastChannel } from '@/lib/park-broadcast-channel';
 
 export const PNG_STORE_TTL_MS = 24 * 60 * 60 * 1000; // inspection session + buffer
 
@@ -197,6 +202,47 @@ async function onChannelMessage(msg: ChannelMessage): Promise<void> {
   }
 }
 
+function getAllRecords(): Promise<PngRecord[]> {
+  return new Promise((resolve, reject) => {
+    if (!db) { resolve([]); return; }
+    // Blobs come back as disk-backed handles, so this does not load image bytes.
+    const req = db.transaction(STORE, 'readonly').objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result as PngRecord[]);
+    req.onerror = () => reject(req.error ?? new Error('PNG store read failed'));
+  });
+}
+
+/**
+ * Bring this tab's map back in line with disk after a bfcache restore: the
+ * channel was closed while parked, so 'stored' and 'cleared' posts from other
+ * tabs were missed. Entries are matched on storedAt, not just id: a clear and
+ * re-warm of the same ids leaves the key set unchanged, and keeping the old
+ * timestamp would make sweepExpired() delete the fresh records later.
+ */
+async function reconcileWithDb(): Promise<void> {
+  try {
+    const onDisk = new Map<number, PngRecord>();
+    for (const rec of await getAllRecords()) onDisk.set(rec.id, rec);
+    let changed = false;
+    for (const [id, e] of [...mem]) {
+      if (onDisk.get(id)?.storedAt !== e.storedAt) { dropMemEntry(id); changed = true; }
+    }
+    for (const rec of onDisk.values()) {
+      if (mem.has(rec.id) || isExpired(rec.storedAt)) continue;
+      mem.set(rec.id, {
+        kind: rec.kind,
+        url: URL.createObjectURL(rec.blob),
+        bytes: rec.bytes,
+        storedAt: rec.storedAt,
+      });
+      changed = true;
+    }
+    if (changed) emit();
+  } catch {
+    // Best effort: the map keeps what it had, and live posts resume now.
+  }
+}
+
 /**
  * Open the database, sweep expired records, mint object URLs for the rest,
  * and start the cross-tab channel + periodic re-sweep. Idempotent
@@ -234,8 +280,20 @@ export function ensurePngStoreReady(): Promise<void> {
           tx.onerror = () => reject(tx.error ?? new Error('PNG store sweep failed'));
         });
         if (typeof BroadcastChannel !== 'undefined') {
+          const wire = (c: BroadcastChannel) => {
+            c.onmessage = (ev) => { onChannelMessage(ev.data as ChannelMessage); };
+          };
           channel = new BroadcastChannel(CHANNEL_NAME);
-          channel.onmessage = (ev) => { onChannelMessage(ev.data as ChannelMessage); };
+          wire(channel);
+          // Module state outlives every client-side navigation, so this is
+          // installed once and never removed.
+          parkBroadcastChannel<BroadcastChannel>({
+            get: () => channel,
+            set: (c) => { channel = c; },
+            wire,
+            onRestore: () => { void reconcileWithDb(); },
+            label: 'NIRCam PNG store',
+          });
         }
         setInterval(sweepExpired, SWEEP_INTERVAL_MS);
       } catch {

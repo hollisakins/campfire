@@ -1,4 +1,4 @@
-"""``campfire cite`` and ``Campfire.cite()`` (P5-3, docs/design-data-releases.md §4.5).
+"""``campfire cite`` and ``Campfire.cite()``.
 
 One DOI per data release; proprietary programs are described, not cited. The
 sentence a reader puts in a paper is built from the release record (the files

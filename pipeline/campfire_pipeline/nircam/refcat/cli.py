@@ -64,10 +64,31 @@ def _default_query_outname(field_name, backend, mag_band):
 
 
 def _resolve_output(out_arg, default_name, field_obj):
-    """Output is either an explicit path or ``field.refcat_dir/<default>``."""
-    if out_arg:
-        return os.path.abspath(out_arg)
-    return os.path.join(field_obj.refcat_dir, default_name)
+    """Where a catalog is written: ``field.refcat_dir/<default>`` without
+    ``--out``; a relative ``--out`` is also taken inside ``field.refcat_dir``,
+    so every command writes where ``[<field>.align].refcat`` looks. An absolute
+    ``--out`` is used as given."""
+    if not out_arg:
+        return os.path.join(field_obj.refcat_dir, default_name)
+    if os.path.isabs(out_arg):
+        return out_arg
+    return os.path.join(field_obj.refcat_dir, out_arg)
+
+
+def _resolve_input(path, field_obj):
+    """An input catalog: absolute paths as given; a relative path is looked up in
+    ``field.refcat_dir`` first (where query / extract write), then in the current
+    directory."""
+    if os.path.isabs(path):
+        candidates = [path]
+    else:
+        candidates = [os.path.join(field_obj.refcat_dir, path), os.path.abspath(path)]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    raise click.BadParameter(
+        f"catalog {path!r} not found (looked in: {', '.join(candidates)})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -252,16 +273,13 @@ def extract(config, field_name, mosaic_path, filter_name, tile, scale,
         notes=notes,
     ))
 
-    if out_path is None:
-        if filter_name:
-            default = (f"{field_obj.name}_{filter_name.lower()}_extract"
-                       f"_refcat.ecsv")
-        else:
-            base = os.path.splitext(os.path.basename(mosaic_path))[0]
-            default = f"{base}_refcat.ecsv"
-        out = os.path.join(field_obj.refcat_dir, default)
+    if filter_name:
+        default = (f"{field_obj.name}_{filter_name.lower()}_extract"
+                   f"_refcat.ecsv")
     else:
-        out = os.path.abspath(out_path)
+        base = os.path.splitext(os.path.basename(mosaic_path))[0]
+        default = f"{base}_refcat.ecsv"
+    out = _resolve_output(out_path, default, field_obj)
     write_refcat(table, out, overwrite=overwrite)
     log(f"refcat extract: wrote {out}")
 
@@ -274,20 +292,24 @@ def extract(config, field_name, mosaic_path, filter_name, tile, scale,
 @click.option("--config", default=None, help="Path to configuration file.")
 @click.option("--field", "field_name", required=True,
               help="Field name from fields.toml.")
-@click.argument("catalogs", nargs=-1, type=click.Path(exists=True))
+@click.argument("catalogs", nargs=-1, type=str)
 @click.option("--label", "labels", multiple=True,
               help="Label per input (matched by order). Defaults to the "
                    "input filename.")
 @click.option("--match-radius", default=3.0, type=float,
               help="Sky-match dedup tolerance in arcsec (default 3.0).")
 @click.option("--out", "out_path", required=True,
-              help="Output path for the merged catalog.")
+              help="Output catalog; a relative path lands in the field's "
+                   "astrom_cats/ dir.")
 @click.option("--notes", default=None,
               help="Free-form note stamped into the merged catalog meta.")
 @click.option("--overwrite", is_flag=True)
 def merge(config, field_name, catalogs, labels, match_radius, out_path, notes,
           overwrite):
     """Merge two or more refcats with positional dedup. First wins.
+
+    Relative input names are looked up in the field's astrom_cats/ dir (then
+    the current directory), and a relative --out is written there.
 
     \b
     Example:
@@ -304,6 +326,8 @@ def merge(config, field_name, catalogs, labels, match_radius, out_path, notes,
             "If --label is given, pass exactly one per input catalog."
         )
 
+    catalogs = [_resolve_input(p, field_obj) for p in catalogs]
+    out_path = _resolve_output(out_path, None, field_obj)
     tables = [read_refcat(p) for p in catalogs]
     label_list = list(labels) if labels else [label_from_path(p) for p in catalogs]
 
@@ -320,7 +344,7 @@ def merge(config, field_name, catalogs, labels, match_radius, out_path, notes,
                 "summary": info},
         notes=notes,
     ))
-    write_refcat(merged, os.path.abspath(out_path), overwrite=overwrite)
+    write_refcat(merged, out_path, overwrite=overwrite)
     log(f"refcat merge: wrote {out_path} ({len(merged)} rows)")
 
 
@@ -332,8 +356,8 @@ def merge(config, field_name, catalogs, labels, match_radius, out_path, notes,
 @click.option("--config", default=None, help="Path to configuration file.")
 @click.option("--field", "field_name", required=True,
               help="Field name from fields.toml.")
-@click.argument("cat_a", type=click.Path(exists=True))
-@click.argument("cat_b", type=click.Path(exists=True))
+@click.argument("cat_a", type=str)
+@click.argument("cat_b", type=str)
 @click.option("--match-radius", default=0.5, type=float,
               help="Match radius in arcsec (default 0.5).")
 @click.option("--save-plot", "save_plot", default=None,
@@ -348,8 +372,13 @@ def merge(config, field_name, catalogs, labels, match_radius, out_path, notes,
               help="Display name for catalog B (default: filename).")
 def compare(config, field_name, cat_a, cat_b, match_radius, save_plot,
             no_plot, name_a, name_b):
-    """Compare two catalogs and report ΔRA/ΔDec residuals."""
+    """Compare two catalogs and report ΔRA/ΔDec residuals.
+
+    Relative catalog names are looked up in the field's astrom_cats/ dir first,
+    then in the current directory."""
     _, field_obj = _refcat_setup(config, field_name)
+    cat_a = _resolve_input(cat_a, field_obj)
+    cat_b = _resolve_input(cat_b, field_obj)
     a = read_refcat(cat_a)
     b = read_refcat(cat_b)
     name_a = name_a or label_from_path(cat_a)

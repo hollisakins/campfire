@@ -2,8 +2,7 @@
 and the delete-then-collect step `campfire dr purge` shares with it.
 
 The content-addressed archive (``archive/<sha256>/<relpath>``, registry rows
-with ``root = 'archive'``) holds exactly the files data releases reference
-(docs/design-data-releases-impl-plan.md §9a, decisions D-P4-6 / D-P4-7). An
+with ``root = 'archive'``) holds exactly the files data releases reference. An
 object is referenced by a release when its manifest names it, either as the
 byte pass's copy (``dr_manifest.archive_key``) or as a copy the deploy gate
 retained for a member (the object's ``archived_from_key`` / ``content_hash``
