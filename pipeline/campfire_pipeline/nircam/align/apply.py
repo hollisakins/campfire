@@ -107,6 +107,11 @@ ALGN_DIAG_COMMENTS = {
     'ALGNYCON': 'align: dy peak contrast (peak/runner-up)',
     'ALGNHBIN': 'align: consensus histogram bin (arcsec)',
     'ALGNSTAL': 'align: ALGNCAT does not match the current WCS',
+    # Which code wrote this WCS (or rejected it). CMPFRVER is the version that
+    # made the pixels (process); align can be re-run long after, and its
+    # behavior changes the astrometry, so it records its own beside the
+    # refcat's rc= token in CFP_ALGN. Kept short: the version can be ~40 chars.
+    'ALGNVER':  'align: pipeline version',
 }
 
 # GroupSolution.diagnostics key -> FITS keyword (see histmatch's ``diag``).
@@ -163,12 +168,13 @@ def _deserialize_gwcs_from_hdu(hdu):
         return af['wcs']
 
 
-def _stamp_algn(path, value, diag_updates=None):
+def _stamp_algn(path, value, diag_updates=None, version=None):
     """Atomically set CFP_ALGN=*value* (header only; WCS untouched).
 
     *diag_updates* (``{keyword: (value, comment)}``, as
     :func:`_diag_header_updates` builds) are the rejected attempt's own scalar
-    diagnostics; without them (a solve that raised) every key is ``UNDEF``.
+    diagnostics; without them (a solve that raised) every key is ``UNDEF``
+    except ``ALGNVER``, which records *version* (the code that rejected it).
 
     Also marks any ``ALGNCAT`` from an earlier successful solve as **stale**
     (``ALGNSTAL``), because this path leaves the extension in place: the WCS it
@@ -190,10 +196,11 @@ def _stamp_algn(path, value, diag_updates=None):
         # provenance for the rejected attempt. Overwrite every key with the
         # rejected attempt's own value (UNDEF where it measured nothing); the
         # all-keys-on-every-solve contract is what makes staleness impossible.
+        fallback = {'ALGNVER': (version or ALGN_UNDEF, ALGN_DIAG_COMMENTS['ALGNVER'])}
         for key in ALGN_DIAG_COMMENTS:
             if key != 'ALGNSTAL':
                 hdul[0].header[key] = (diag_updates or {}).get(
-                    key, (ALGN_UNDEF, ALGN_DIAG_COMMENTS[key]))
+                    key, fallback.get(key, (ALGN_UNDEF, ALGN_DIAG_COMMENTS[key])))
         hdul[0].header['ALGNSTAL'] = (True, ALGN_DIAG_COMMENTS['ALGNSTAL'])
         hdul.writeto(tmp, overwrite=True)
     os.replace(tmp, path)
@@ -236,14 +243,14 @@ def _hdr_num(value):
     return int(value) if isinstance(value, (int, np.integer)) else v
 
 
-def _diag_header_updates(solution, det, n_detected=None):
+def _diag_header_updates(solution, det, n_detected=None, version=None):
     """``{keyword: (value, comment)}`` for the scalar align diagnostics.
 
     Every :data:`ALGN_DIAG_COMMENTS` key is present (undefined where unmeasured)
     so a re-solve overwrites the previous solve's numbers wholesale. ``det`` is
     this detector's :class:`~...solve.DetectorSolution`, *solution* its pool.
     *n_detected* overrides ``det.n_detected``, which a pool-level reject leaves
-    at its default of 0.
+    at its default of 0. *version* is the pipeline version doing the solve.
     """
     diag = solution.diagnostics or {}
     values = {kw: _hdr_num(diag.get(k))
@@ -252,6 +259,7 @@ def _diag_header_updates(solution, det, n_detected=None):
                                   else getattr(det, 'n_detected', None))
     values['ALGNNMAT'] = _hdr_num(det.n_matched)
     values['ALGNNREF'] = _hdr_num(solution.n_refcat_in_footprint)
+    values['ALGNVER'] = version or ALGN_UNDEF
     # This solve wrote a matching ALGNCAT, so nothing is stale.
     values['ALGNSTAL'] = False
     return {kw: (values[kw], ALGN_DIAG_COMMENTS[kw])
@@ -472,6 +480,13 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
         key = exposure_key(members[0].path)
     config = dict(config or {})
     refcat_hash = config.get('_refcat_hash')   # provenance/staleness (orchestration)
+    # The orchestration resolves the version once per run (honoring a
+    # [pipeline].version override) and hands it to every worker, so no worker
+    # shells out to git; a direct call resolves it here (cached per process).
+    version = config.get('_reduction_version')
+    if not version:
+        from campfire_pipeline.common.version import get_reduction_version
+        version = get_reduction_version()
 
     def _aligned_ok(path):
         # A detector counts as done only if it carries a *completed, non-rejected*
@@ -528,7 +543,7 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
             f"stamping NOT_ALIGNED (WCS preserved, excluded from combine).")
         for m in members:
             try:
-                _stamp_algn(m.path, NOT_ALIGNED_SENTINEL)
+                _stamp_algn(m.path, NOT_ALIGNED_SENTINEL, version=version)
             except Exception as se:  # noqa: BLE001 — best-effort stamp
                 log(f"align[{key}]: could not stamp NOT_ALIGNED on "
                     f"{os.path.basename(m.path)} ({type(se).__name__}).")
@@ -553,8 +568,8 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
                             _format_algn_value(det_sol, refcat_hash),
                             ImageModel, update_fits_wcsinfo,
                             algncat=algncat,
-                            diag_updates=_diag_header_updates(solution,
-                                                              det_sol))
+                            diag_updates=_diag_header_updates(solution, det_sol,
+                                                              version=version))
         else:
             # The rejected attempt's own numbers (the gross guard's tight-pair
             # counts above all) are what explain a rejection, so they are
@@ -565,8 +580,10 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
                 updates = _diag_header_updates(
                     solution, det_sol,
                     n_detected=(len(det_in.catalog) if det_in is not None
-                                else None))
-            _stamp_algn(m.path, NOT_ALIGNED_SENTINEL, diag_updates=updates)
+                                else None),
+                    version=version)
+            _stamp_algn(m.path, NOT_ALIGNED_SENTINEL, diag_updates=updates,
+                        version=version)
 
     log(f"align[{key}]: {solution.status} "
         f"({len(members)} detectors, n_matched={solution.n_matched})")
