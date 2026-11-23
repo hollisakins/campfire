@@ -45,6 +45,7 @@ from tqdm import tqdm
 from campfire_layout import is_compressed_key
 from campfire.storage.session import create_transfer_session
 from campfire.storage.transfer import run_transfers
+from campfire.transient import retry_transient
 
 # A returned presigned URL on this host means the web route signed R2, not OSN.
 _R2_PRESIGN_HOST_FRAGMENT = 'r2.cloudflarestorage.com'
@@ -290,7 +291,15 @@ def request_presigned_urls(
             payload['cache_control'] = cache_control
 
         try:
-            resp = http_requests.post(presign_url, json=payload, headers=headers, timeout=30)
+            # A dropped connection (RemoteDisconnected, a reset, a timeout) is
+            # retried: minting URLs changes nothing server-side, and the retain
+            # gate the route runs registers before it copies, so a resend after a
+            # lost answer is safe. An HTTP error status is an answer, not retried.
+            resp = retry_transient(
+                lambda p=payload: http_requests.post(
+                    presign_url, json=p, headers=headers, timeout=30),
+                what='presign request', log=print,
+            )
             resp.raise_for_status()
             data = resp.json()
             all_urls.update(data['urls'])
