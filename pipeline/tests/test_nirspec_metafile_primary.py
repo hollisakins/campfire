@@ -5,6 +5,8 @@
 2. After stuck-shutter removal, a source with no primary row left at any dither
    is nodata (``AllShuttersStuck``) even when its slitlet keeps other shutters;
    a source open at one dither is still extracted.
+3. A slitlet APT lays out across a quadrant gap keeps the piece holding the
+   source, not the first piece carrying its ID.
 
 Synthetic tables only; no JWST stack.
 """
@@ -164,3 +166,44 @@ def test_no_primary_takes_the_all_stuck_nodata_path(tmp_path):
 @pytest.mark.parametrize('value, expected', [('Y', True), ('N', False), (' Y ', True)])
 def test_has_primary_source_reads_the_flag(value, expected):
     assert has_primary_source(Table({'primary_source': [value, 'N']})) is expected
+
+
+# --- Slitlet across a quadrant gap: keep the piece the source is in -------------
+
+def _quadrant_gap_slitlet():
+    """rubies_uds_p11 (jw04233001001) slitlet 60, row for row.
+
+    APT's slitlet is Q1 columns 170-171 plus Q2 column 1: two physical slits on
+    either side of the quadrant gap. Dithers 1 / 2 hold virtual source -14 in
+    columns 171 / 170; at dither 3 source 22242 sits in column 170 at
+    (0.098, 0.863), and the metafile writes 22242 on all three rows, the Q2
+    column-1 shutter included (with NaN position).
+    """
+    rows = []
+    for dither, sid, primary_col, x in ((1, -14, 171, 0.5), (2, -14, 170, 0.509),
+                                        (3, 22242, 170, 0.098)):
+        for quadrant, col in ((1, 170), (1, 171), (2, 1)):
+            here = col == primary_col and quadrant == 1
+            row = _row(col, dither, sid, x if here else np.nan,
+                       0.863 if here else np.nan, background='N' if here else 'Y')
+            row.update(slitlet_id=60, shutter_quadrant=quadrant, shutter_row=182)
+            rows.append(row)
+    return _metafile(rows, [-14, 22242])
+
+
+def test_quadrant_gap_keeps_the_sources_piece():
+    extract, st = _stage2a_extracts(_quadrant_gap_slitlet(), 22242, [])
+    assert sorted(set(st['shutter_column'])) == [170, 171]
+    assert set(st['shutter_quadrant']) == {1}
+    assert extract
+    primary = st[st['primary_source'] == 'Y']
+    assert list(zip(primary['dither_point_index'], primary['shutter_column'])) == [(3, 170)]
+
+
+def test_prune_falls_back_to_the_id_without_a_position():
+    """No row gives a position: the ID-only match still picks the group."""
+    rows = [_row(10, 1, 555, np.nan), _row(11, 1, 0, np.nan, np.nan, 'Y'),
+            _row(40, 1, 0, np.nan, np.nan, 'Y')]
+    st = _metafile(rows, [555]).shutter_table
+    from campfire_pipeline.nirspec.metafile import _prune_detached_shutters
+    assert sorted(set(_prune_detached_shutters(st, 555)['shutter_column'])) == [10, 11]

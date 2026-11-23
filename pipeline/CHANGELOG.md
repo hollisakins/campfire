@@ -28,6 +28,23 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- **Stage 2a keeps the part of a split slitlet that holds the source.** Some RUBIES slitlets
+  are laid out by APT as columns 170-171 at the edge of one MSA quadrant plus column 1 of the
+  next: two physical slits on either side of the quadrant gap. Detached-shutter pruning
+  rightly keeps only one of them, but it chose the first column group with any row carrying
+  the source ID. RUBIES metafiles write the dither's source ID on every row of the slitlet,
+  including the detached shutter with no position, so a source in columns 170-171 kept the
+  empty column-1 shutter. It then had no shutter of its own and was skipped as all-stuck,
+  with no failure reported. The group is now chosen from the rows that give the source's
+  position in the shutter (finite x >= 0); the ID-only match is the fallback when no row has
+  a position.
+  - Additive: no existing spectrum changes; 7 RUBIES sources (22242, 129302, 147838, 30079,
+    20942, 21573, 20099) get spectra again. Example: `rubies_uds_p11` 22242 is extracted
+    from columns 170-171 (a 22-row 2D, source in the shutter at dither 3 only). The v0.3
+    spectrum, from before pruning, spanned the whole column range (866 rows).
+  - No other program on disk has a slitlet across two quadrants.
+
 ## v1.0.2 — 2026-11-23
 
 ### Algorithm
