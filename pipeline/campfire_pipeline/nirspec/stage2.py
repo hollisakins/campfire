@@ -11,7 +11,9 @@ from astropy.io import fits
 from astropy.table import Table
 
 from campfire_pipeline.common.io import log
-from campfire_pipeline.nirspec.metafile import MetaFile
+from campfire_pipeline.nirspec.metafile import (
+    MetaFile, has_primary_source, remove_stuck_shutters,
+)
 from campfire_pipeline.nirspec.nodata import (
     REASON_NO_DATA_ON_DETECTOR, mark_all_shutters_stuck, mark_nodata,
 )
@@ -745,19 +747,22 @@ def run_stage2a_single_rate(
                               'NIRSpec fixed-slit aperture'))
             if len(stuck) > 0:
                 cards.append(('STKSHTRS', str(stuck['shutters'][0]), 'Stuck shutters masked'))
-                for stuck_shutter in np.sort(stuck['shutters'][0])[::-1]:
-                    print(stuck_shutter)
-                    stuck_shutter_column = np.sort(np.unique(source_metafile.shutter_table['shutter_column']))[stuck_shutter-1] # get number of stuck shutter
-                    source_metafile.shutter_table = source_metafile.shutter_table[source_metafile.shutter_table['shutter_column'] != stuck_shutter_column] # remove shutter from metafile
+                source_metafile.shutter_table = remove_stuck_shutters(
+                    source_metafile.shutter_table, stuck['shutters'][0])
             else:
                 cards.append(('STKSHTRS', 'N/A', 'Stuck shutters masked'))
 
-            # Skip extraction if all shutters are stuck closed. Retire any
-            # canonical an earlier run left (else 2b / 3 take it as current) and
-            # mark the product nodata, like a NoDataOnDetectorError.
-            if len(source_metafile.shutter_table) == 0:
+            # Skip extraction if every shutter of the source is stuck closed,
+            # at every dither, even when the slitlet keeps other shutters (a
+            # neighbour's, background): Spec2 on a slit with no primary writes
+            # a canonical of other light (SRCFLUX=F). Retire any canonical an
+            # earlier run left (else 2b / 3 take it as current) and mark the
+            # product nodata, like a NoDataOnDetectorError.
+            if not has_primary_source(source_metafile.shutter_table):
                 removed = mark_all_shutters_stuck(prod_name)
-                log(f'All shutters marked as stuck closed for {prod_name}, skipping extraction'
+                what = ('All shutters' if len(source_metafile.shutter_table) == 0
+                        else 'All shutters of the source')
+                log(f'{what} marked as stuck closed for {prod_name}, skipping extraction'
                     + (f' (removed stale {", ".join(removed)})' if removed else ''))
                 continue  # Skip to next source_id in the loop
 

@@ -32,6 +32,47 @@ def _source_rows(shutter_table, source_id=None):
     return rows
 
 
+def _source_in_shutter(shutter_table):
+    """Mask of SHUTTER_INFO rows whose intra-shutter source x is a position.
+
+    ``estimated_source_in_shutter_x`` runs continuously over [0, 1], so 0.0
+    (the shutter's edge) is a real position; NaN (or a masked value) is what
+    the metafile writes for rows that do not hold the source. A plain array is
+    returned: a masked value never compares True.
+    """
+    x = np.ma.filled(np.ma.asarray(
+        shutter_table['estimated_source_in_shutter_x'], dtype=float), np.nan)
+    with np.errstate(invalid='ignore'):
+        return np.asarray(np.isfinite(x) & (x >= 0), dtype=bool)
+
+
+def remove_stuck_shutters(shutter_table, stuck_shutters):
+    """Drop the shutter columns listed as stuck closed from a per-source table.
+
+    ``stuck_shutters`` are 1-indexed positions in the sorted unique
+    ``shutter_column`` values of ``shutter_table`` (the stuck-closed TOML's
+    convention). Removed from the highest down, so an earlier removal never
+    shifts a later index.
+    """
+    for stuck_shutter in np.sort(stuck_shutters)[::-1]:
+        column = np.sort(np.unique(shutter_table['shutter_column']))[stuck_shutter - 1]
+        shutter_table = shutter_table[shutter_table['shutter_column'] != column]
+    return shutter_table
+
+
+def has_primary_source(shutter_table):
+    """True when any row of a per-source table still holds the source.
+
+    After :func:`remove_stuck_shutters`, a slitlet can keep other shutters (a
+    neighbour's, background) while every shutter of the source itself, at
+    every dither, is gone: nothing of the source is left to extract.
+    """
+    if len(shutter_table) == 0:
+        return False
+    return bool(np.any(np.char.strip(
+        np.asarray(shutter_table['primary_source']).astype(str)) == 'Y'))
+
+
 def _prune_detached_shutters(shutter_table, source_id):
     """Remove background shutters that are not contiguous with the source.
 
@@ -265,7 +306,8 @@ class MetaFile:
         mf.shutter_table = _prune_detached_shutters(
             mf.shutter_table, source_id)
 
-        is_primary = (mf.shutter_table['source_id'] == source_id) & (mf.shutter_table['estimated_source_in_shutter_x'] > 0)
+        is_primary = ((mf.shutter_table['source_id'] == source_id)
+                      & _source_in_shutter(mf.shutter_table))
         mf.shutter_table['primary_source'][is_primary] = 'Y'
         mf.shutter_table['primary_source'][~is_primary] = 'N'
         mf.shutter_table['source_id'][~is_primary] = 0

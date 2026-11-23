@@ -28,6 +28,25 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- **Which sources get a spectrum: a source at a shutter's edge is extracted, a source with
+  every one of its own shutters stuck is not.** Additive (MINOR): no pixel or flux value of an
+  existing spectrum changes, but the set of spectra does. Both fixes are in stage 2a.
+  - A source at intra-shutter x = 0.0 (the shutter's edge, a real position on the
+    continuous [0, 1] range) was never marked primary (`x > 0`), so it got no spectrum. Any
+    finite x >= 0 is now a position; NaN or masked x (rows that do not hold the source) still
+    is not. Example: `capers_uds_p2` source 148172 (slitlet 105, dither 3, x = 0.0) now gets a
+    spectrum. This is the part that adds science output, hence Algorithm.
+  - When stuck-shutter removal left the slitlet some shutters but none of the source's own
+    (no `primary_source == 'Y'` row at any dither), stage 2a still ran Spec2. Spec2 then wrote
+    canonicals of a neighbour's or the background's light with SRCFLUX=F, and stuck-shutter
+    detection and background triage treated those canonicals as the source. Such a source is
+    now handled like the all-stuck case: `<prod>_nodata` (`AllShuttersStuck`), stale
+    canonicals removed, and stage 3 `--overwrite --source-ids` removes the orphaned final.
+    A source with one open dither is still extracted. Example: `zenith_p3` source 20040588,
+    in shutter 3 of slitlet 99 only, which is listed stuck. On its own this part would be
+    Infrastructure (it changes which products exist, not their values).
+
 ## v1.0.1 — 2026-11-22
 
 ### Infrastructure
