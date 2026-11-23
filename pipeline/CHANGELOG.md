@@ -28,6 +28,8 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+## v1.0.3 — 2026-11-23
+
 ### Algorithm
 - **Stage 2a keeps the part of a split slitlet that holds the source.** Some RUBIES slitlets
   are laid out by APT as columns 170-171 at the edge of one MSA quadrant plus column 1 of the
