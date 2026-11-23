@@ -9,7 +9,7 @@ product lists for all calibration levels.
 Usage:
     python query.py --program 6585
     python query.py --program 6585 --dry-run
-    python query.py --program 2561 --exp-type NRS_MSASPEC
+    python query.py --program 2561 --exp-type NRS_MSASPEC   # MSA only
 """
 
 import argparse
@@ -40,6 +40,35 @@ MAST_DOWNLOAD_URL = "https://mast.stsci.edu/api/v0.1/Download/file"
 TAP_MAXREC = 500_000
 
 BACKENDS = ("tap", "search")
+
+# Exposure types downloaded when none is requested. A NIRSpec program can mix
+# MSA and fixed-slit exposures (e.g. a fixed-slit target observed alongside
+# the MSA), and the reduction handles both, so both are fetched by default.
+DEFAULT_EXP_TYPES = {
+    "NIRSPEC": ("NRS_MSASPEC", "NRS_FIXEDSLIT"),
+    "NIRCAM": ("NRC_IMAGE",),
+}
+
+
+def normalize_exp_types(exp_type, instrument=None):
+    """Return the requested exposure types as a tuple of upper-case names.
+
+    ``exp_type`` may be one name, an iterable of names, or ``None``/empty;
+    ``None`` falls back to ``DEFAULT_EXP_TYPES[instrument]`` (or ``()``,
+    meaning no exp_type filtering, when no instrument default exists).
+    Names go into ADQL, so anything but ``[A-Za-z0-9_]`` is rejected.
+    """
+    if not exp_type:
+        return DEFAULT_EXP_TYPES.get((instrument or "").upper(), ())
+    names = [exp_type] if isinstance(exp_type, str) else list(exp_type)
+    out = []
+    for name in names:
+        if not name or not name.replace("_", "").isalnum():
+            raise ValueError(f"invalid exp_type {name!r}")
+        name = name.upper()
+        if name not in out:
+            out.append(name)
+    return tuple(out)
 
 
 class MastTransientError(RuntimeError):
@@ -110,7 +139,7 @@ def _raise_for_status_verbose(resp, context=""):
     )
 
 
-def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
+def search_filesets(program_id, instrument="NIRSPEC", exp_type=None,
                     obs_ids=None, filters=None, targets=None, radius=None,
                     radius_units=None, token=None):
     """Query MAST for level 1b filesets in a program.
@@ -119,6 +148,9 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
 
     Parameters
     ----------
+    exp_type : str or iterable of str, optional
+        Exposure type(s); default ``DEFAULT_EXP_TYPES[instrument]``. Fanned
+        out one search per type, like ``obs_ids``.
     obs_ids : list of int, optional
         Restrict to these observation numbers. Sent server-side as multiple
         equality conditions; an ``in`` operator isn't documented for the JWST
@@ -141,6 +173,7 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     if targets:
         targets = [_normalize_target(t) for t in targets]
 
+    exp_list = list(normalize_exp_types(exp_type, instrument)) or [None]
     obs_list = list(obs_ids) if obs_ids else [None]
     filt_list = list(filters) if filters else [None]
 
@@ -164,52 +197,54 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         r_str = f", r={radius} {units_short}" if radius is not None else ""
         label_extras.append(f"near {'; '.join(targets)}{r_str}")
     extra = (" " + ", ".join(label_extras)) if label_extras else ""
-    print(f"Searching for {instrument} {exp_type} level 1b filesets in program {program_id}{extra}...")
+    exp_label = "/".join(e for e in exp_list if e)
+    print(f"Searching for {instrument} {exp_label} level 1b filesets in program {program_id}{extra}...")
 
     seen = set()
     merged = []
-    for obs_id in obs_list:
-        for filt in filt_list:
-            conditions = [
-                {"program": str(program_id)},
-                {"instrume": instrument},
-                {"exp_type": exp_type},
-                {"productLevel": "1b"},
-            ]
-            if obs_id is not None:
-                conditions.append({"observtn": str(obs_id)})
-            if filt is not None:
-                conditions.append({"filter": filt.upper()})
+    for exp, obs_id, filt in (
+            (e, o, f) for e in exp_list for o in obs_list for f in filt_list):
+        conditions = [
+            {"program": str(program_id)},
+            {"instrume": instrument},
+            {"productLevel": "1b"},
+        ]
+        if exp is not None:
+            conditions.append({"exp_type": exp})
+        if obs_id is not None:
+            conditions.append({"observtn": str(obs_id)})
+        if filt is not None:
+            conditions.append({"filter": filt.upper()})
 
-            payload = {
-                "conditions": conditions,
-                "select_cols": select_cols,
-                "limit": 5000,
-            }
-            if targets:
-                payload["target"] = list(targets)
-                if radius is not None:
-                    payload["radius"] = radius
-                if radius_units is not None:
-                    payload["radius_units"] = radius_units
+        payload = {
+            "conditions": conditions,
+            "select_cols": select_cols,
+            "limit": 5000,
+        }
+        if targets:
+            payload["target"] = list(targets)
+            if radius is not None:
+                payload["radius"] = radius
+            if radius_units is not None:
+                payload["radius_units"] = radius_units
 
-            resp = requests.post(
-                f"{BASE_URL}/search",
-                json=payload,
-                headers=headers,
-            )
-            _raise_for_status_verbose(
-                resp, context=f"searching program {program_id}")
-            data = resp.json()
-            for r in data["results"]:
-                key = r["fileSetName"]
-                if key in seen:
-                    continue
-                seen.add(key)
-                merged.append(r)
-            total = data["totalResults"]
-            if total > len(data["results"]):
-                print(f"  Warning: {total} filesets found but only {len(data['results'])} returned (limit 5000)")
+        resp = requests.post(
+            f"{BASE_URL}/search",
+            json=payload,
+            headers=headers,
+        )
+        _raise_for_status_verbose(
+            resp, context=f"searching program {program_id}")
+        data = resp.json()
+        for r in data["results"]:
+            key = r["fileSetName"]
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(r)
+        total = data["totalResults"]
+        if total > len(data["results"]):
+            print(f"  Warning: {total} filesets found but only {len(data['results'])} returned (limit 5000)")
 
     print(f"Found {len(merged)} filesets")
     return merged
@@ -478,7 +513,7 @@ def _tap_fileset(row, kw):
     }
 
 
-def search_products_tap(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
+def search_products_tap(program_id, instrument="NIRSPEC", exp_type=None,
                         obs_ids=None):
     """Find a program's uncal (and NIRSpec MSA) files through CAOM TAP.
 
@@ -486,10 +521,10 @@ def search_products_tap(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC"
     returns: dicts with ``filename``, ``uri``, ``size`` and ``exp_type``.
     Uncal dicts also carry the detector's raw ``filter`` (NIRCam: the
     effective filter, a pupil-mounted bandpass winning over its wide
-    companion) and a ``_fileset`` dict for the manifest.
+    companion) and a ``_fileset`` dict for the manifest. ``exp_type`` is one
+    or more exposure types (default ``DEFAULT_EXP_TYPES[instrument]``).
     """
-    if exp_type and not exp_type.replace("_", "").isalnum():
-        raise ValueError(f"invalid exp_type {exp_type!r}")
+    exp_types = normalize_exp_types(exp_type, instrument)
     pid = int(program_id)
     prefixes = ([f"jw{pid:05d}{int(o):03d}" for o in obs_ids]
                 if obs_ids else [f"jw{pid:05d}"])
@@ -504,9 +539,10 @@ def search_products_tap(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC"
         f"o.insname LIKE '{_INSTRUMENT_INSNAME.get(instrument, instrument)}%'",
         "(" + " OR ".join(file_clauses) + ")",
     ]
-    if exp_type:
+    if exp_types:
         # Coarse server-side cut; the exact match is enforced per row below.
-        where.append(f"o.inskeywords LIKE '%EXP_TYPE={exp_type.upper()}%'")
+        where.append("(" + " OR ".join(
+            f"o.inskeywords LIKE '%EXP_TYPE={e}%'" for e in exp_types) + ")")
     adql = (
         f"SELECT {_TAP_SELECT} FROM dbo.caomobservation o "
         "JOIN dbo.caomplane p ON p.observationtid = o.observationtid "
@@ -515,7 +551,7 @@ def search_products_tap(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC"
     )
 
     label = f" obs {','.join(str(o) for o in obs_ids)}" if obs_ids else ""
-    print(f"Querying MAST CAOM (TAP) for {instrument} {exp_type} uncal files "
+    print(f"Querying MAST CAOM (TAP) for {instrument} {'/'.join(exp_types)} uncal files "
           f"in program {program_id}{label}...")
     t0 = time.time()
     rows = _tap_query(adql)
@@ -526,7 +562,6 @@ def search_products_tap(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC"
         from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
         sw_set, lw_set = set(SW_FILTERS), set(LW_FILTERS)
 
-    requested = exp_type.upper() if exp_type else None
     uncal_files, aux_files = [], []
     seen = set()
     for row in rows:
@@ -535,7 +570,7 @@ def search_products_tap(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC"
             continue
         kw = _parse_inskeywords(row.get("inskeywords"))
         row_exp = kw.get("EXP_TYPE", "").upper()
-        if requested and row_exp != requested:
+        if exp_types and row_exp not in exp_types:
             continue
         product = {
             "filename": filename,
@@ -570,16 +605,16 @@ def filter_products(products, instrument="NIRSPEC", exp_type=None):
 
     For NIRSPEC, also returns deduplicated MSA metadata files.
 
-    When ``exp_type`` is given, uncal products whose own ``exp_type`` is set
-    and doesn't match are dropped. JWST visits can bundle imaging + WFSS
-    exposures into the same MAST fileset, so the search-level fileset
-    condition isn't enough — each product's exp_type has to be checked
-    individually.
+    When ``exp_type`` (one type or several) is given, uncal products whose
+    own ``exp_type`` is set and isn't one of them are dropped. JWST visits
+    can bundle imaging + WFSS exposures into the same MAST fileset, so the
+    search-level fileset condition isn't enough — each product's exp_type
+    has to be checked individually.
 
     Returns (uncal_files, aux_files) where each is a list of
     dicts with 'filename', 'uri', and 'size' keys.
     """
-    requested = exp_type.upper() if exp_type else None
+    requested = normalize_exp_types(exp_type) if exp_type else ()
     uncal_files = []
     dropped_by_exp_type = 0
     for p in products:
@@ -587,13 +622,13 @@ def filter_products(products, instrument="NIRSPEC", exp_type=None):
             continue
         if requested:
             p_exp = (p.get("exp_type") or "").upper()
-            if p_exp and p_exp != requested:
+            if p_exp and p_exp not in requested:
                 dropped_by_exp_type += 1
                 continue
         uncal_files.append(p)
     if dropped_by_exp_type:
         print(f"  Dropped {dropped_by_exp_type} uncal product(s) whose "
-              f"exp_type wasn't {requested}")
+              f"exp_type wasn't {'/'.join(requested)}")
 
     aux_files = []
     if instrument == "NIRSPEC":
@@ -869,6 +904,7 @@ def _select_via_search(program_id, instrument, exp_type, obs_ids, filters,
 
     Returns ``(uncal_files, aux_files)``, or ``None`` when no fileset matched.
     """
+    exp_type = normalize_exp_types(exp_type, instrument)
     # Step 1: Search for filesets
     filesets = search_filesets(
         program_id, instrument, exp_type,
@@ -955,7 +991,7 @@ def _keep_requested_filters(uncal_files, filters):
     return kept
 
 
-def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
+def download_jwst_data(program_id, instrument="NIRSPEC", exp_type=None,
                        download_dir="data", dry_run=False, obs_ids=None,
                        filters=None, targets=None, radius=None,
                        radius_units=None, token=None, workers=4,
@@ -977,8 +1013,10 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
         JWST program ID.
     instrument : str
         Instrument name ('NIRSPEC' or 'NIRCAM').
-    exp_type : str
-        Exposure type (e.g. 'NRS_MSASPEC', 'NRC_IMAGE').
+    exp_type : str or iterable of str, optional
+        Exposure type(s) (e.g. 'NRS_MSASPEC', 'NRC_IMAGE'). Default
+        ``DEFAULT_EXP_TYPES[instrument]``: NIRSpec MSA and fixed slit, NIRCam
+        imaging.
     download_dir : str
         Base download directory (the ``raw/`` root).
     dry_run : bool
@@ -1006,6 +1044,7 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     """
     if backend not in BACKENDS:
         raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+    exp_type = normalize_exp_types(exp_type, instrument)
     if token:
         print("Using MAST API token for authentication.")
     if backend == "tap" and targets:
@@ -1114,7 +1153,7 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     print(f"Complete: {downloaded} downloaded, {len(to_skip)} skipped, {errors} errors")
 
     # Belt-and-suspenders: read EXP_TYPE from each uncal's FITS header and
-    # delete any whose value disagrees with --exp-type. MAST's per-product
+    # delete any whose value isn't one of the requested exp types. MAST's per-product
     # exp_type is the primary gate (in filter_products); this catches the
     # case where it came back empty or where a stale local file from a
     # previous --exp-type=NRC_WFSS run is now masquerading in the imaging
@@ -1141,7 +1180,7 @@ def _purge_mismatched_uncals(uncal_files, requested_exp_type):
     if not requested_exp_type:
         return 0
     from astropy.io import fits
-    requested = requested_exp_type.upper()
+    requested = normalize_exp_types(requested_exp_type)
     removed = 0
     for f in uncal_files:
         path = f["_path"]
@@ -1151,7 +1190,7 @@ def _purge_mismatched_uncals(uncal_files, requested_exp_type):
             header_exp_type = fits.getval(str(path), 'EXP_TYPE', ext=0)
         except (OSError, KeyError):
             continue
-        if (header_exp_type or "").upper() != requested:
+        if (header_exp_type or "").upper() not in requested:
             try:
                 path.unlink()
             except OSError:
@@ -1159,7 +1198,7 @@ def _purge_mismatched_uncals(uncal_files, requested_exp_type):
             removed += 1
     if removed:
         print(f"  Removed {removed} uncal(s) whose EXP_TYPE header "
-              f"wasn't {requested}")
+              f"wasn't {'/'.join(requested)}")
     return removed
 
 
@@ -1184,7 +1223,7 @@ def _manifest_row(f):
     }
 
 
-def download_nirspec_uncal(program_id, download_dir="data", exp_type="NRS_MSASPEC",
+def download_nirspec_uncal(program_id, download_dir="data", exp_type=None,
                            dry_run=False, workers=4):
     """Backwards-compatible wrapper for download_jwst_data()."""
     download_jwst_data(
@@ -1213,7 +1252,9 @@ Examples:
     parser.add_argument("--program", type=int, required=True, help="JWST program ID")
     parser.add_argument("--download-dir", default="data", help="Base directory for downloads (default: data)")
     parser.add_argument("--dry-run", action="store_true", help="List files without downloading")
-    parser.add_argument("--exp-type", default="NRS_MSASPEC", help="NIRSpec exposure type (default: NRS_MSASPEC)")
+    parser.add_argument("--exp-type", action="append", default=None,
+                        help="NIRSpec exposure type; repeat for several "
+                             "(default: NRS_MSASPEC and NRS_FIXEDSLIT)")
     parser.add_argument("-p", "--processes", type=int, default=4, help="Parallel download streams (default: 4)")
 
     args = parser.parse_args()
